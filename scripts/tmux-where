@@ -188,6 +188,23 @@ if ssh_cmd; then
     exit 0
 fi
 
+# The walk did not find an ssh process -- but tmux already told us the pane's
+# foreground command IS ssh, and that is the more reliable witness. The walk can
+# fail for reasons that say nothing about the pane: no /proc at all (macOS,
+# BSD), or a pid that has since exited.
+#
+# Fail closed. Falling through to the local path here is precisely the
+# confidently-wrong answer this script exists to prevent: it would label a pane
+# sitting on another machine with THIS machine's directory and git branch. Say
+# ssh without a destination instead -- less information, none of it false.
+if [ "$cmd" = ssh ]; then
+    case "$mode" in
+        path)   printf ' 󰢹 ssh' ;;
+        branch) printf '' ;;
+    esac
+    exit 0
+fi
+
 case "$mode" in
     path)
         printf ' %s' "${path/#${HOME:-/nonexistent}/\~}"

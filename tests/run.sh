@@ -390,9 +390,17 @@ is "-o value with spaces"  "host12"      "$(sshdest ssh -o 'ProxyCommand=ssh -W 
 
 echo "== tmux-where: local rendering =="
 is "local path is ~-shortened" " ~"      "$("$DIR/scripts/tmux-where" path 1 "$HOME" bash | plain)"
-# cmd=ssh forces the /proc walk; cmd=bash returns on the fast path before $pid
-# is read, so the old version asserted nothing about a dead pid at all.
-is "dead pid stays quiet"      " /tmp/x" "$("$DIR/scripts/tmux-where" path 999999 /tmp/x ssh 2>&1 | plain)"
+# A dead pid with cmd=ssh used to print the LOCAL path -- the confidently-wrong
+# answer this script exists to prevent, since tmux has already said the pane is
+# in ssh. The walk failing says nothing about the pane: the pid may have exited,
+# or there may be no /proc at all (macOS, BSD). Fail closed instead.
+is "an ssh pane whose walk fails says ssh, not a local path" " 󰢹 ssh" \
+   "$("$DIR/scripts/tmux-where" path 999999 /tmp/x ssh 2>&1 | plain)"
+is "and reports no branch for it"      "" \
+   "$("$DIR/scripts/tmux-where" branch 999999 "$DIR" ssh 2>&1 | plain)"
+# The ordinary case is untouched: a non-ssh command never reaches the walk.
+is "a normal pane still shows its path" " /tmp/x" \
+   "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
 
 
