@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
 # tmux-cockpit -- ours, not a tpm plugin. Load with:
 #
+#   run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
+#
 # Agent state is a per-pane tmux option (@panestate), written by Claude Code
 # hooks via scripts/agent-state. The border colour, window dots and the
 # cross-window alert are all plain tmux formats in ~/.tmux.conf, so a redraw
 # costs no shell spawns. Only the ssh-aware path/branch still needs a script.
-#   run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
 #
 # Tokens it expands in status-left / status-right:
 #   #{agent_where_path}   ~/path locally, ssh destination when remote
 #   #{agent_where_branch} git branch locally, blank when remote
+#
+# Keys it binds (see the README for the status-right marker the click needs):
+#   MouseDown1Control1    branch picker, on whatever you marked range=control|1
+#   prefix + b            the same picker, without the mouse
+#   M-MouseDown1Pane      path picker for the alt-clicked line
 set -u
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,9 +44,48 @@ update_option() {
 }
 
 # Exported so the Claude Code hooks can find agent-state without a hardcoded path.
-tmux set-environment -g TMUX_PANESTATE_DIR "$DIR"
+tmux set-environment -g TMUX_COCKPIT_DIR "$DIR"
+tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null   # the pre-rename name
 
-for opt in \
+# Every option that can carry a token, not only the two this theme happens to
+# use. The README documents #{agent_where_path} as usable in status-left and
+# status-right; those were never visited, so anyone following the README got the
+# literal "#{agent_where_path}" printed in their status bar. update_option skips
+# anything without a token, so listing an option costs nothing.
+for opt in status-left status-right \
+           window-status-format window-status-current-format \
            @catppuccin_directory_text @catppuccin_gitmux_text; do
     update_option "$opt"
 done
+
+# --- keys ---------------------------------------------------------------------
+# Bound here, not in ~/.tmux.conf, so installing the plugin is the whole install.
+# Paths go through $DIR: the scripts work whether or not install.sh symlinked
+# them into ~/.local/bin.
+
+# tmux hands these strings to sh, so a plugin directory containing a space has
+# to arrive shell-quoted or sh splits it and the binding dies with 127.
+#
+# SINGLE quotes, not printf %q. The open_path binding below embeds its path
+# inside a tmux double-quoted string, and tmux processes backslash escapes in
+# there -- so %q's backslashes are eaten before sh ever sees them, and the path
+# splits anyway. Single quotes mean nothing to tmux inside double quotes, so
+# they survive intact and sh does the right thing with them.
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # POSIX: close, escaped quote, reopen
+Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
+Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
+
+# Branch picker. The click half needs the status bar to mark a range -- the
+# plugin cannot inject into a status-right it does not own. See the README.
+tmux bind-key -n MouseDown1Control1 display-popup -E -w 70% -h 70% "$Q_BRANCH"
+tmux bind-key b display-popup -E -w 70% -h 70% "$Q_BRANCH"
+
+# Click a line of output to pick a path off it. -F is load-bearing: without it
+# set-option stores the literal "#{mouse_line}". The line travels in a pane
+# option rather than on the command line because pane output is full of quotes,
+# and those would tear the shell string apart.
+# The three commands go in ONE quoted string. Passed as separate argv words,
+# "cmd \; cmd" does not separate: tmux keeps only the first command in the
+# binding and runs the rest once, at load time.
+open_path="select-pane -t= ; set -pF @click_line \"#{mouse_line}\" ; run-shell -b \"$Q_OPEN #{pane_id}\""
+tmux bind-key -n M-MouseDown1Pane "$open_path"

@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# tm — tmux session launcher.
+#   tm <name>        attach to <name>, creating it if missing
+#   tm               pick from a session list; if none exist, ask for a name
+#   tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
+#   tm -l            list sessions
+#   tm -h            this help
+set -uo pipefail
+
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+NEW_LABEL='+ new session'
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+command -v tmux >/dev/null || die "tmux is not installed"
+
+usage() {
+  cat >&2 <<'USAGE'
+tm — tmux session launcher.
+  tm <name>        attach to <name>, creating it if missing
+  tm               pick from a session list; if none exist, ask for a name
+  tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
+  tm -l            list sessions
+  tm -h            this help
+In the picker: arrows move, Enter attaches, k kills the highlighted session,
+  / turns on type-to-search (k then types again), Esc cancels.
+USAGE
+}
+
+# tmux forbids '.' and ':' in session names; spaces are just annoying. A leading
+# '-' is worse than either: tmux reads it as an option, so `new-session -s -x`
+# fails as a usage error and the session cannot be created at all.
+clean() {
+  local n="${1//[.: ]/_}"
+  while [ "${n#-}" != "$n" ]; do n="${n#-}"; done
+  printf '%s' "$n"
+}
+
+list() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
+
+ask_name() {
+  local n
+  while :; do
+    read -r -p "New session name: " n || exit 1
+    n=$(clean "$n")
+    [ -n "$n" ] && { printf '%s' "$n"; return 0; }
+    printf 'A name is required.\n' >&2
+  done
+}
+
+# True only when this shell really drives a tmux client. $TMUX alone does not
+# prove it: anything launched from a pane inherits it, so a terminal opened
+# inside tmux keeps $TMUX after the session is detached. Calling switch-client
+# from such a shell either fails ("no current client") or, worse, hijacks some
+# other terminal's client, because tmux then falls back to any client it finds.
+in_client() {
+  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 1
+  local n
+  n=$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached}' 2>/dev/null) || return 1
+  [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
+}
+
+go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
+  local name=$1
+  if ! tmux has-session -t "=$name" 2>/dev/null; then
+    tmux new-session -d -s "$name" || die "could not create session '$name'"
+  fi
+  if in_client; then
+    tmux switch-client -t "=$name"
+  else
+    tmux attach-session -t "=$name"
+  fi
+}
+
+kill_one() {  # also called by the fzf ctrl-x binding
+  local name=$1
+  [ "$name" = "$NEW_LABEL" ] && return 0
+  tmux kill-session -t "=$name" 2>/dev/null && printf 'killed: %s\n' "$name" >&2
+}
+
+# --- argument handling -------------------------------------------------------
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  -l|--list) list; exit 0 ;;
+  --kill-one) shift; kill_one "${1:-}"; exit 0 ;;
+  -k|--kill)
+    shift
+    if [ $# -gt 0 ]; then
+      for s in "$@"; do kill_one "$(clean "$s")"; done
+      exit 0
+    fi
+    mapfile -t sessions < <(list)
+    [ ${#sessions[@]} -eq 0 ] && die "No tmux sessions to kill."
+    # Declared before either picker runs. `select` leaves its variable unset on
+    # Ctrl-D, and under `set -u` the ${#doomed[@]} below then aborted the script
+    # mid-case -- printing "unbound variable" and falling through to the ATTACH
+    # picker, so cancelling a kill offered to attach instead.
+    doomed=()
+    if command -v fzf >/dev/null; then
+      mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
+        | fzf --multi --height=40% --reverse --prompt='kill> ' \
+              --header='Tab = mark several, Enter = kill, Esc = cancel')
+    else
+      printf 'Kill which session?\n' >&2
+      select s in "${sessions[@]}"; do doomed=("${s:-}"); break; done
+    fi
+    [ ${#doomed[@]} -eq 0 ] && exit 0
+    for s in "${doomed[@]}"; do [ -n "$s" ] && kill_one "$s"; done
+    exit 0 ;;
+  -*) die "unknown option: $1  (try: tm -h)" ;;
+esac
+
+# 1. Name given on the command line.
+if [ $# -gt 0 ] && [ -n "$1" ]; then
+  go "$(clean "$1")"
+  exit
+fi
+
+# 2. No name: what exists?
+mapfile -t sessions < <(list)
+
+# 3. Nothing exists: force a named session.
+if [ ${#sessions[@]} -eq 0 ]; then
+  printf 'No tmux sessions running.\n' >&2
+  go "$(ask_name)"
+  exit
+fi
+
+# 4. Pick one, create another, or ctrl-x to kill under the cursor.
+if command -v fzf >/dev/null; then
+  choice=$(printf '%s\n' "${sessions[@]}" "$NEW_LABEL" \
+    | fzf --height=40% --reverse --no-multi --disabled --prompt='tmux session> ' \
+          --header='Enter attach   k kill   / search   arrows move   Esc cancel' \
+          --bind "k:execute-silent('$SELF' --kill-one {})+reload('$SELF' -l; echo '$NEW_LABEL')" \
+          --bind "/:enable-search+unbind(k)+change-prompt(search> )+change-header(search mode: k now types   Enter attach   Esc cancel)") || exit 0
+else
+  printf 'Sessions:\n' >&2
+  select choice in "${sessions[@]}" "$NEW_LABEL"; do
+    [ -n "${choice:-}" ] && break
+  done
+fi
+
+[ -n "${choice:-}" ] || exit 0
+if [ "$choice" = "$NEW_LABEL" ]; then
+  go "$(ask_name)"
+else
+  go "$choice"
+fi

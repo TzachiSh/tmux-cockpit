@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# tmux-open-path — pick a path off the line you clicked, and open it.
+#   tmux-open-path <pane-id>                 picker for that pane's @click_line
+#   tmux-open-path --preview <path> [line]   render one preview pane
+#   tmux-open-path --dry-run <dir> <line>   what a click on <line> would open
+#
+# --dry-run touches no tmux and opens nothing: it prints one "path:line:col" per
+# candidate. Use it when a click did nothing and you want to see what the line
+# actually resolved to.
+#
+# Bound to M-MouseDown1Pane, which stashes the clicked line in the pane option
+# @click_line first. It reads the whole LINE, not the word under the cursor:
+# tmux's word-separators include / . : and -, so #{mouse_word} on
+# "src/foo-bar.ts:31" hands back "foo", which is not a file.
+#
+# Every click opens the PICKER, the same popup the branch segment gives you --
+# never a file straight to the editor. One candidate still gets the popup: the
+# point is to see what the line resolved to, with a preview of the spot, and
+# then decide. Opening on a single guess is how you end up in the wrong file.
+#
+# Editor: VS Code by default, jumping to the line. For a terminal editor instead:
+#   set -g @open-editor nvim      # opens in a new tmux window at +LINE
+set -uo pipefail
+
+# --- preview ------------------------------------------------------------------
+# Its own subcommand rather than a shell string inside --preview: the logic
+# below needs conditionals and git, and threading that through fzf's quoting
+# produced something nobody could read or test. fzf quotes the placeholders it
+# substitutes, so the path arrives here as one argument however odd it is.
+if [ "${1:-}" = --preview ]; then
+    f=${2:-}; l=${3:-}
+    # Anything that is not a plain line number is no line number. It reaches the
+    # arithmetic below otherwise, where bash reads a bare word as a variable name
+    # and `set -u` kills the preview with "abc: unbound variable".
+    case "$l" in *[!0-9]*|"") l="" ;; esac
+    case "$f" in "~") f=$HOME ;; "~/"*) f="$HOME/${f#\~/}" ;; esac
+    [ -n "$f" ] && [ -e "$f" ] || { printf 'gone: %s\n' "$f"; exit 0; }
+
+    # A directory has no contents to snippet, so show what is HAPPENING in it --
+    # which is nearly always why a directory is on the line you clicked.
+    if [ -d "$f" ]; then
+        if git -C "$f" rev-parse --git-dir >/dev/null 2>&1; then
+            git -C "$f" -c color.status=always status --short 2>/dev/null | head -40
+            git -C "$f" diff --color=always --stat 2>/dev/null | head -40
+        else
+            ls -la -- "$f" 2>/dev/null | head -60
+        fi
+        exit 0
+    fi
+
+    [ -r "$f" ] || { printf 'unreadable: %s\n' "$f"; exit 0; }
+
+    # An empty file has no lines for grep to match, so the binary test below
+    # calls it binary. Say what it actually is -- clicking a file you just
+    # created should not accuse it of being a blob.
+    [ -s "$f" ] || { printf 'empty file\n'; exit 0; }
+
+    # grep -I calls it binary on the same rule git does. Dumping one into a
+    # preview pane fills it with control codes and can leave the terminal in a
+    # strange state, so say what it is instead. The pattern is '' rather than
+    # '.': a file of nothing but blank lines has lines, but none with a
+    # character in, and '.' would call that binary too.
+    if ! grep -Iq '' -- "$f" 2>/dev/null; then
+        printf 'binary file\n\n'
+        file -b -- "$f" 2>/dev/null
+        wc -c < "$f" 2>/dev/null | { read -r n; printf '%s bytes\n' "$n"; }
+        exit 0
+    fi
+
+    # Window the snippet around the target line: enough above to see how you got
+    # there, more below because that is where you are going.
+    if [ -n "$l" ]; then first=$(( l > 10 ? l - 10 : 1 )); last=$(( l + 40 ))
+    else                first=1; last=200; fi
+
+    # bat gives syntax colour, line numbers, AND -- via the "changes" style -- the
+    # git gutter, so an edited line is marked +/~ right beside its content. That
+    # is both things you want from a snippet at once. Debian ships it as batcat.
+    bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
+    if [ -n "$bat" ]; then
+        "$bat" --style=numbers,changes --color=always --paging=never \
+               --line-range "$first:$last" ${l:+--highlight-line "$l"} \
+               -- "$f" 2>/dev/null && exit 0
+    fi
+
+    # No bat: line numbers, and the target line in reverse video so the eye lands
+    # on it without counting rows.
+    awk -v s="$first" -v e="$last" -v t="${l:-0}" '
+        NR > e { exit }
+        NR >= s { if (NR == t) printf "\033[7m%6d  %s\033[0m\n", NR, $0
+                  else         printf "%6d  %s\n", NR, $0 }
+    ' "$f" 2>/dev/null
+    exit 0
+fi
+
+PICK=0 DRY=0
+[ "${1:-}" = --pick ]    && { PICK=1; shift; }   # re-entry from the popup below
+[ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
+
+note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
+
+if [ "$DRY" -eq 1 ]; then
+    dir=${1:-$PWD}; line=${2:-}; pane=""; win=""
+else
+    pane=${1:-}
+    [ -n "$pane" ] || {
+        printf 'usage: tmux-open-path [--pick] <pane-id>\n' >&2
+        printf '       tmux-open-path --dry-run <dir> <line>\n' >&2
+        exit 2
+    }
+    # The binding rewrites @click_line on every click, so there is nothing stale
+    # to clear -- and leaving it set is what lets the popup re-derive this list.
+    line=$(tmux show-options -p -t "$pane" -qv @click_line)
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
+    win=$(tmux display-message -p -t "$pane" '#{window_id}')
+fi
+
+[ -n "$line" ] || { note "no line under the click"; exit 0; }
+
+# --- candidates ---------------------------------------------------------------
+# Every token on the line that resolves to something on disk, in the order they
+# appear. Existence is the filter: it is the only test that cannot be fooled by a
+# word that merely looks like a path.
+declare -a FILES=() LINES=() COLS=()
+declare -A seen=()
+
+consider() {  # consider <path> <line> <col> — record it if it exists
+    local p=$1 l=$2 c=$3 abs
+    [ -n "$p" ] || return 0
+    case "$p" in
+        "~") p="$HOME" ;;
+        "~/"*) p="$HOME/${p#\~/}" ;;
+    esac
+    case "$p" in
+        /*) abs=$p ;;
+        *)  abs=$dir/$p ;;
+    esac
+    [ -e "$abs" ] || return 1
+    abs=${abs//\/.\//\/}                    # "dir/./bin/x" reads badly in the message
+    [ -z "${seen[$abs]:-}" ] || return 0
+    seen[$abs]=1
+    FILES+=("$abs"); LINES+=("$l"); COLS+=("$c")
+    return 0
+}
+
+# Splitting $line uses the shell's own word rules, and those include PATHNAME
+# EXPANSION. A line that merely mentioned a wildcard -- "rm *", a compiler note
+# containing [ab]* -- was expanded against this process's cwd, inventing tokens
+# that the existence check below then accepted as real candidates. Under
+# run-shell that cwd is the tmux server's, which is very often the same tree the
+# pane is in, so the invented files existed and got opened. -f keeps the tokens
+# literal; nothing here wants a glob.
+set -f
+for tok in $line; do
+    # Terminals wrap paths in punctuation: "src/a.ts", (src/a.ts), 'src/a.ts',
+    # and prose ends them with , ; or a full stop. Strip both ends, not the
+    # middle -- a path may legitimately contain almost anything else.
+    # Leading strip is an explicit set, NOT [:punct:]: that class contains / ~ .
+    # and _, so it ate the first character of every absolute and ~ path.
+    while [ -n "$tok" ]; do
+        case "$tok" in
+            [\(\[\{\'\"\`\<]*) tok=${tok#?} ;;
+            *) break ;;
+        esac
+    done
+    while [ -n "$tok" ]; do
+        # Stop before eating the ")" of "file(12,3)" -- tsc and MSVC print that
+        # shape, and losing the bracket turns the location into unparseable text.
+        [[ $tok =~ \([0-9]+,[0-9]+\)$ ]] && break
+        case "$tok" in
+            *[\)\]\}\'\"\`,\;:.]) tok=${tok%?} ;;
+            *) break ;;
+        esac
+    done
+    [ -n "$tok" ] || continue
+
+    ln="" col=""
+    # file(12,3) — the shape tsc and MSVC print.
+    if [[ $tok =~ ^(.+)\(([0-9]+),([0-9]+)\)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && continue
+    fi
+    # file:12:3 and file:12 — grep, eslint, stack traces, every compiler.
+    if [[ $tok =~ ^(.+):([0-9]+):([0-9]+)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && continue
+    fi
+    if [[ $tok =~ ^(.+):([0-9]+)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "" && continue
+    fi
+    consider "$tok" "" "" && continue
+    # git diff headers name the same file twice, as a/path and b/path.
+    case "$tok" in
+        a/*|b/*) consider "${tok#?/}" "" "" && continue ;;
+    esac
+done
+set +f
+
+# --- open ---------------------------------------------------------------------
+# tmux runs these command strings through sh, so every path in one has to be
+# shell-quoted. Wrapping it in single quotes by hand breaks on the first path
+# containing a quote -- the quote closes early and the rest of the name is read
+# as syntax, which opens the wrong file or runs a word of it as a command.
+shq() { printf '%q' "$1"; }
+
+open_one() {
+    local file=$1 ln=$2 col=$3 editor
+    editor=$(tmux show-options -gqv @open-editor)
+    # VS Code stays the default, but only where it is actually installed.
+    # Otherwise fall back to the editor the user already told the shell about.
+    if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1; then
+        editor=${VISUAL:-${EDITOR:-}}
+    fi
+    if [ -n "$editor" ]; then
+        # A terminal editor gets a tmux window of its own, next to the output you
+        # clicked from. -t is not optional: without it the window is created in
+        # whichever session tmux considers current, which is the session with the
+        # most recent client -- not necessarily the one you clicked in. It takes a
+        # WINDOW, not a pane, so -a puts the new one right after the clicked one.
+        tmux new-window -t "$win" -a -c "$dir" -n "${file##*/}" \
+             "$editor ${ln:++$ln} $(shq "$file")"
+        return
+    fi
+    if command -v code >/dev/null 2>&1; then
+        # code returns immediately; --goto jumps to line:col.
+        code --goto "$file:${ln:-1}:${col:-1}" >/dev/null 2>&1 &
+        note "opened ${file/#$HOME/\~}${ln:+:$ln}"
+        return
+    fi
+    # Saying "opened" for a command that was never found is worse than doing
+    # nothing: it sends you looking for the bug anywhere but here.
+    note "no editor found -- set @open-editor, or \$VISUAL/\$EDITOR, or install code"
+}
+
+if [ "$DRY" -eq 1 ]; then
+    for i in "${!FILES[@]}"; do
+        printf '%s:%s:%s\n' "${FILES[$i]}" "${LINES[$i]:-}" "${COLS[$i]:-}"
+    done
+    exit 0
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    # A popup you have to dismiss is the wrong answer to "there was nothing
+    # there" -- the status line says it and gets out of the way.
+    note "no file on that line"
+    exit 0
+fi
+
+# Always ask, even for a single candidate. The click arrives via run-shell, which
+# has no terminal, so the picker needs a popup -- which re-enters this script
+# with --pick and rebuilds the same list.
+if [ "$PICK" -eq 0 ]; then
+    tmux display-popup -t "$pane" -E -w 80% -h 70% "$(shq "$0") --pick $(shq "$pane")"
+    exit 0
+fi
+
+# Field 2 is the display path, field 3 the line number (blank when the token
+# carried none). fzf quotes both when it substitutes them.
+if command -v fzf >/dev/null; then
+    pick=$(for i in "${!FILES[@]}"; do
+               printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$HOME/\~}" "${LINES[$i]}"
+           done | fzf --height=100% --reverse --delimiter=$'\t' \
+                      --with-nth=2 --info=inline \
+                      --cycle --scroll-off=3 \
+                      --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                      --prompt='open> ' \
+                      --header="↵ open   ^/ preview   ^U/^D scroll it   esc cancel
+${#FILES[@]} path$([ ${#FILES[@]} -eq 1 ] || printf s) on that line" \
+                      --preview="$(shq "$0") --preview {2} {3}" \
+                      --preview-window=down,70%,border-top)
+    [ -n "$pick" ] || exit 0
+    i=${pick%%$'\t'*}
+else
+    # No fzf: a numbered menu still beats no picker at all.
+    printf 'Open which path?\n'
+    select f in "${FILES[@]}"; do [ -n "${f:-}" ] && break; done
+    [ -n "${f:-}" ] || exit 0
+    i=0
+    for j in "${!FILES[@]}"; do [ "${FILES[$j]}" = "$f" ] && i=$j; done
+fi
+open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"

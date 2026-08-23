@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Right-hand status: where this pane actually is.
 #
-#   tmux-where path   <pane_pid> <pane_current_path>
-#   tmux-where branch <pane_pid> <pane_current_path>
+#   tmux-where path   <pane_pid> <pane_current_path> <pane_current_command>
+#   tmux-where branch <pane_pid> <pane_current_path> <pane_current_command>
 #
 # tmux only knows the LOCAL cwd. When a pane is sitting in ssh, pane_current_path
 # is still the local directory, so the stock modules show a path and a git branch
@@ -17,16 +17,54 @@ cmd="${4:-}"          # #{pane_current_command}, tmux's view of the foreground p
 
 
 # Branch, plus the worktree name when this path is a linked worktree.
-# ONE git call for both: rev-parse takes several flags and answers in order, so
-# asking separately would double the only real cost left in this script.
 #   normal repo   ->  " main"
 #   linked wt     ->  " main ⑂feat-x"
+#
+# Read .git directly rather than forking git. This runs once per pane on every
+# status redraw and the git call was the only fork left on that path; HEAD is a
+# one-line file, so the shell can answer without starting a process. git is
+# still asked for the two shapes a plain read cannot settle: a detached HEAD,
+# whose short-hash width git decides from the repo size, and anything whose
+# HEAD is not a simple symref.
+#
+# One deliberate difference from `git rev-parse`: this ignores safe.directory.
+# For a status bar that is the wanted behaviour -- it labels the directory you
+# are actually sitting in, rather than blanking out on a repo git declines to
+# touch on ownership grounds.
 git_label() {
-    local out br gd
-    out=$(git -C "$path" rev-parse --abbrev-ref HEAD --git-dir 2>/dev/null) || return 0
-    br=${out%%$'\n'*}
-    gd=${out#*$'\n'}
+    local d=$path gd head br
+
+    # Walk up for the .git of the containing repo. Terminates at / either way.
+    while [ -n "$d" ] && [ "$d" != / ]; do
+        [ -e "$d/.git" ] && break
+        d=${d%/*}
+    done
+    [ -n "$d" ] && [ "$d" != / ] && [ -e "$d/.git" ] || return 0
+
+    if [ -d "$d/.git" ]; then
+        gd=$d/.git
+    else
+        # A linked worktree and a submodule both point out with "gitdir: <path>",
+        # and that path may be relative to the worktree.
+        read -r _ gd < "$d/.git" 2>/dev/null || return 0
+        [ -n "$gd" ] || return 0
+        case "$gd" in /*) ;; *) gd=$d/$gd ;; esac
+    fi
+    [ -r "$gd/HEAD" ] || return 0
+    read -r head < "$gd/HEAD" 2>/dev/null || return 0
+
+    case "$head" in
+        'ref: refs/heads/'*) br=${head#ref: refs/heads/} ;;
+        'ref: '*)            br=${head#ref: } ;;
+        *)
+            # Detached: HEAD holds the object id itself. --abbrev-ref would print
+            # the literal word "HEAD" here, which reads as a branch of that name.
+            br=$(git -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0
+            [ -n "$br" ] || return 0
+            br="@$br" ;;
+    esac
     [ -n "$br" ] || return 0
+
     case "$gd" in
         */worktrees/*) printf ' %.20s ⑂%.14s' "$br" "${gd##*/worktrees/}" ;;
         *)             printf ' %.24s' "$br" ;;
@@ -38,7 +76,7 @@ git_label() {
 # case for every pane, almost always, on every redraw.
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
-        path)   printf ' %s' "${path/#$HOME/\~}" ;;
+        path)   printf ' %s' "${path/#${HOME:-/nonexistent}/\~}" ;;
         branch) git_label ;;
     esac
     exit 0
@@ -50,7 +88,7 @@ fi
 # dominated the cost of the whole status line.
 ssh_cmd() {
     [ -n "$pid" ] || return 1
-    local d c args kids next ppid
+    local d c kids next ppid line
     declare -A KIDS
     for d in /proc/[0-9]*; do
         c=${d#/proc/}
@@ -63,19 +101,32 @@ ssh_cmd() {
         ppid=$2
         KIDS[$ppid]="${KIDS[$ppid]:-} $c"
     done
+    # Walk to the bottom rather than a fixed depth: the parent->child map is
+    # already built, so extra levels are nearly free, and an ssh one level too
+    # deep produced exactly the confidently-wrong local path this script exists
+    # to prevent. seen[] guards against a cycle.
     kids="$pid"
-    for _ in 1 2 3 4; do
+    declare -A seen
+    while [ -n "${kids// /}" ]; do
         next=""
         for c in $kids; do
             [ -r "/proc/$c/cmdline" ] || continue
-            args=$(tr '\0' ' ' < "/proc/$c/cmdline" 2>/dev/null)
-            case "$args" in
-                ssh\ *|*/ssh\ *) printf '%s' "$args"; return 0 ;;
+            # NUL-delimited, NOT space-joined: an -o value may contain spaces
+            # ("-o ProxyCommand=ssh -W %h:%p jump"), and flattening turned that
+            # single argv element into five tokens, so the jump host was read as
+            # the destination.
+            mapfile -d '' -t ARGV < "/proc/$c/cmdline" 2>/dev/null || continue
+            [ ${#ARGV[@]} -gt 0 ] || continue
+            case "${ARGV[0]}" in
+                ssh|*/ssh) return 0 ;;
             esac
             next="$next ${KIDS[$c]:-}"
         done
-        kids="$next"
-        [ -n "${kids// /}" ] || break
+        kids=""
+        for c in $next; do
+            [ -n "${seen[$c]:-}" ] && continue
+            seen[$c]=1; kids="$kids $c"
+        done
     done
     return 1
 }
@@ -87,9 +138,9 @@ ssh_cmd() {
 # "-nNp 2222 host". Matching only "-x" treats -nNp as a bare flag and then reads
 # 2222 as the destination, so inspect the whole bundle rather than one letter.
 ssh_target() {
-    local args="$1" tok bundle rest c
-    local takes_value='bcDEeFIiJLlmOoPpQRSWw'
-    set -- $args
+    local tok bundle rest c
+    local takes_value='BbcDEeFIiJLlmOoPpQRSWw'   # -B bind_interface included
+    set -- "${ARGV[@]}"                     # real argv: values keep their spaces
     shift                                   # drop "ssh"
     while [ $# -gt 0 ]; do
         tok="$1"
@@ -116,9 +167,9 @@ ssh_target() {
     printf 'ssh'
 }
 
-if args=$(ssh_cmd); then
+if ssh_cmd; then
     case "$mode" in
-        path)   printf ' 󰢹 %s' "$(ssh_target "$args")" ;;
+        path)   printf ' 󰢹 %s' "$(ssh_target)" ;;
         branch) printf '' ;;                # local branch is meaningless here
     esac
     exit 0
@@ -126,7 +177,7 @@ fi
 
 case "$mode" in
     path)
-        printf ' %s' "${path/#$HOME/\~}"
+        printf ' %s' "${path/#${HOME:-/nonexistent}/\~}"
         ;;
     branch) git_label ;;
 esac

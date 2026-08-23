@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tmux-panestate test rig.  Run:  tests/run.sh
+# tmux-cockpit test rig.  Run:  tests/run.sh
 # Uses a throwaway state dir, so your live agent state is never touched.
 set -u
 
@@ -20,17 +20,30 @@ plain() { sed 's/#\[[^]]*\]//g'; }
 # them cleanly rather than failing: a red suite should mean broken code, not
 # "no tmux running".
 if tmux list-panes -a >/dev/null 2>&1; then HAVE_TMUX=1; else HAVE_TMUX=0; fi
-need_tmux() {
-    [ "$HAVE_TMUX" = 1 ] && return 1
-    skipped=$((skipped+1)); printf '  \033[33mSKIP\033[0m %s (no tmux server)\n' "$1"; return 0
-}
+# A skip is NOT a pass. Counting them as passes made a tmux-less run read
+# "26 passed, 0 failed" while ~30 state-machine assertions never executed.
+skip_() { skipped=$((skipped+1)); printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
+need_tmux() { [ "$HAVE_TMUX" = 1 ] && return 1; skip_ "$1 (no tmux server)"; return 0; }
 # Stub tmux: show-option returns empty (so icon DEFAULTS are used, making
 # expectations font/option independent) and list-panes returns nothing (so the
 # GC sweep is skipped and synthetic pane ids survive).
 STUB=$(mktemp -d); printf '#!/bin/sh\nexit 0\n' > "$STUB/tmux"; chmod +x "$STUB/tmux"
 st()    { "$DIR/scripts/agent-state" "$@"; }
-# state is a per-pane tmux option now, not a file
-PANE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1); PANE=${PANE:-%0}
+# Use a dedicated scratch pane, never a live one. It runs a process named
+# "claude" so the stale-state guard in the formats believes its @panestate --
+# a plain shell pane is correctly disbelieved and every colour assertion fails.
+#
+# Use a dedicated scratch pane, never a live one. The first live pane belongs to
+# a running agent whose own hooks fire concurrently and race the assertions --
+# that made the suite intermittently red for reasons unrelated to the code.
+SCRATCH_WIN=""
+if [ "$HAVE_TMUX" = 1 ]; then
+    SCRATCH_WIN=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-tests 'exec -a claude sleep 3600' 2>/dev/null)
+    PANE=$(tmux list-panes -t ":$SCRATCH_WIN" -F '#{pane_id}' 2>/dev/null | head -1)
+fi
+PANE=${PANE:-%0}
+cleanup() { [ -n "$SCRATCH_WIN" ] && tmux kill-window -t ":$SCRATCH_WIN" >/dev/null 2>&1; rm -rf "$STATE" "$STUB"; }
+trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
 
 A='\U000f06a9'   # robot   -- agent
@@ -40,13 +53,43 @@ D='\uf00c'       # check   -- done
 g() { printf "$1"; }
 
 echo "== syntax =="
-for f in "$DIR"/cockpit.tmux "$DIR"/scripts/*; do
+for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/*; do
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done
 
-echo "== native tmux rendering (no shell in the redraw path) =="
-tp=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
+echo "== the REPO's shipped config renders correctly =="
+# Load examples/tmux.conf into a throwaway server. Previously these assertions
+# queried the USER'S running server, so a regression in the repo's own formats
+# stayed green until someone reloaded the plugin.
+if need_tmux "repo config"; then :; else
+SOCK="cockpit-test-$$"
+tmux -L "$SOCK" new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    tmux -L "$SOCK" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
+done
+tmux -L "$SOCK" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+rp=$(tmux -L "$SOCK" list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
+rbs() { tmux -L "$SOCK" display-message -p -t "$rp" '#{E:#{pane-border-style}}' 2>/dev/null; }
+if [ -n "$rp" ]; then
+    tmux -L "$SOCK" set -p -t "$rp" @panestate running     >/dev/null 2>&1; is "repo config: running is yellow" "fg=#ffcc33" "$(rbs)"
+    tmux -L "$SOCK" set -p -t "$rp" @panestate needs-input >/dev/null 2>&1; is "repo config: blocked is red"    "fg=#ff6b6b" "$(rbs)"
+    tmux -L "$SOCK" set -p -t "$rp" @panestate error       >/dev/null 2>&1; is "repo config: error is orange"   "fg=#ff9838" "$(rbs)"
+    tmux -L "$SOCK" set -p -t "$rp" @panestate done        >/dev/null 2>&1; is "repo config: done is green"     "fg=#3dea7d" "$(rbs)"
+    tmux -L "$SOCK" set -pu -t "$rp" @panestate            >/dev/null 2>&1; is "repo config: idle is grey"      "fg=#5b6272" "$(rbs)"
+    # the shipped config must carry the stale-state guard, not just the live one
+    case "$(tmux -L "$SOCK" show-options -gv pane-border-style)" in
+        *pane_current_command*) ok "repo config guards against stale state" ;;
+        *) bad "repo config guards against stale state" "pane_current_command" "absent" ;;
+    esac
+else
+    for i in 1 2 3 4 5 6; do skip_ "repo config (no scratch server)"; done
+fi
+tmux -L "$SOCK" kill-server >/dev/null 2>&1
+fi
+
+echo "== live server rendering =="
+tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
     save=$(tmux show-option -pqv -t "$tp" @panestate 2>/dev/null)
     bs() { tmux display-message -p -t "$tp" '#{E:#{pane-border-style}}' 2>/dev/null; }
@@ -57,20 +100,20 @@ if [ -n "$tp" ]; then
     # the redraw path must contain no calls to our scripts
     allfmt=$(for o in status-left status-right window-status-format window-status-current-format pane-border-format pane-border-style; do tmux show-options -gv "$o" 2>/dev/null; done)
     case "$allfmt" in
-        *tmux-panestate/scripts/agent*) bad "no plugin script runs on redraw" "none" "found one" ;;
+        *tmux-cockpit/scripts/*) bad "no plugin script runs on redraw" "none" "found one" ;;
         *) ok "no plugin script runs on redraw" ;;
     esac
     [ -n "$save" ] && tmux set -p -t "$tp" @panestate "$save" >/dev/null 2>&1
 else
-    for i in 1 2 3 4 5; do ok "native rendering (skipped: no tmux server)"; done
+    for i in 1 2 3 4 5; do skip_ "native rendering"; done
 fi
 
 echo "== state transitions =="
 if need_tmux "state transitions"; then :; else
 st running "$PANE";      is "hook: running"  "running"     "$(sv)"
 st needs-input "$PANE";  is "hook: wait"     "needs-input" "$(sv)"
-st off "$PANE"                                  # reset: needs-input now blocks done
-st done "$PANE";         is "hook: done"     "done"        "$(sv)"
+# from needs-input, done is refused by design -- see the sticky rule below
+st done "$PANE";         is "hook: done blocked while blocked" "needs-input" "$(sv)"
 st off "$PANE";          is "hook: off"      ""            "$(sv)"
 
 fi
@@ -95,13 +138,26 @@ is "permission -> wait" "needs-input" "$(sv)"
 tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
 echo '{"message":"unrelated thing"}' | st notify "$PANE"
 is "unrelated ignored" "running" "$(sv)"
+# error is sticky too: an agent that failed and then went idle must keep its flag
+tmux set -p -t "$PANE" @panestate error >/dev/null 2>&1
+echo '{"message":"Claude is waiting for your input"}' | st notify "$PANE"
+is "idle KEEPS error" "error" "$(sv)"
+
+# tmux -t prefix-matches SESSION names, so a non-pane argument could resolve to
+# a real pane elsewhere and be written to.
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
+st error "notapane" 2>/dev/null
+is "a non-pane target writes nothing" "" "$(sv)"
+st error "$PANE"
+is "but a real pane id still works" "error" "$(sv)"
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 
 fi
 echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
 # the agent. The formats only believe it while the pane is actually running one.
-w=$(tmux new-window -d -P -F '#{window_index}' -n panestate-test 'bash' 2>/dev/null)
+w=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-test 'bash' 2>/dev/null)
 if [ -n "$w" ]; then
     sleep 0.6
     tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
@@ -110,8 +166,32 @@ if [ -n "$w" ]; then
     is "but a shell pane reads idle" "fg=#5b6272" "$(tmux display-message -p -t "$tp2" '#{E:#{pane-border-style}}' 2>/dev/null)"
     tmux kill-window -t ":$w" >/dev/null 2>&1
 else
-    ok "stale state (skipped: cannot open a window)"; ok "-"
+    skip_ "stale state: live pane kept"; skip_ "stale state: dead pane swept"
 fi
+fi
+
+echo "== the normal completion path =="
+if need_tmux "completion path"; then :; else
+# running -> done is how EVERY agent finishes. A ranking that blocked it meant
+# green could never appear; the bug hid behind a test that reset to off first.
+st running "$PANE"; is "agent starts working" "running" "$(sv)"
+st done "$PANE";    is "and finishing shows done" "done" "$(sv)"
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
+st done "$PANE";    is "done from idle also works" "done" "$(sv)"
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
+fi
+
+echo "== realistic hook sequences =="
+if need_tmux "hook sequences"; then :; else
+seq_() { tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1; for x in "$@"; do st "$x" "$PANE"; done; sv; }
+# A failed subagent used to finish GREEN: SubagentStop->running cleared the error,
+# then Stop wrote done. That hook is gone; error now survives to the end.
+is "a failed run ends red, not green" "error" "$(seq_ running running error done)"
+# Approving a permission fires no hook; PreToolUse now clears the red the moment
+# the tool starts, instead of after it finishes.
+is "approval clears red when the tool starts" "running" "$(seq_ needs-input running)"
+is "a clean run still ends green" "done" "$(seq_ running running done)"
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 fi
 
 echo "== state ranking: needs-input > error > running > done =="
@@ -162,60 +242,433 @@ if [ -n "$sw" ]; then
     is "and survives an index:name format" "$sw:my project " "$nm"
     tmux kill-window -t ":$sw" >/dev/null 2>&1
 else
-    ok "spaced names (skipped: cannot open a window)"; ok "-"
+    skip_ "spaced name keeps its space"; skip_ "spaced name survives a format"
 fi
 fi
 
 echo "== rejects bogus states =="
 if need_tmux "rejects bogus states"; then :; else
 tmux set -p -t "$PANE" @panestate done >/dev/null 2>&1
-for b in clear-done RUNNING banana 'running; rm -rf /'; do st "$b" %1 2>/dev/null; done
+for b in clear-done RUNNING banana 'running; rm -rf /'; do st "$b" "$PANE" 2>/dev/null; done
 is "unknown states never written" "done" "$(sv)"
 rm -f "$S"/*
 
 fi
 echo "== safety =="
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 ( unset TMUX_PANE; st running '' ) 2>/dev/null
-ok "no pane id and no TMUX_PANE is a no-op"
+is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # Per-pane options die with the pane, so stale state cannot outlive a pane and
 # there is no sweep that could delete a live one.
 is "state is a per-pane option, not a file" "" "$(ls "$S" 2>/dev/null)"
 
 echo "== worktree in the branch label =="
 wtroot=$(mktemp -d)
-if git -C "$HOME/Henosis" rev-parse --git-dir >/dev/null 2>&1; then
-    git -C "$HOME/Henosis" worktree add -q "$wtroot/wt" -b panestate-test-wt >/dev/null 2>&1
-    b=$("$DIR/scripts/tmux-where" branch 1 "$HOME/Henosis" claude 2>/dev/null | plain)
+# Build a throwaway repo instead of borrowing a real one. Pointing this at
+# "$HOME/Henosis" made the block skip on every machine without that path, and
+# on the one machine that had it the test created a branch and a worktree
+# inside live work. Everything here lives under $wtroot and dies with it.
+wtrepo="$wtroot/repo"
+if git init -q "$wtrepo" >/dev/null 2>&1 &&
+   git -C "$wtrepo" -c user.email=test@example.invalid -c user.name=cockpit \
+       commit -q --allow-empty -m init >/dev/null 2>&1 &&
+   git -C "$wtrepo" worktree add -q "$wtroot/wt" -b cockpit-test-wt >/dev/null 2>&1; then
+    b=$("$DIR/scripts/tmux-where" branch 1 "$wtrepo" claude 2>/dev/null | plain)
     case "$b" in *"⑂"*) bad "normal repo shows no worktree mark" "no mark" "$b" ;; *) ok "normal repo shows no worktree mark" ;; esac
     w=$("$DIR/scripts/tmux-where" branch 1 "$wtroot/wt" claude 2>/dev/null | plain)
     case "$w" in *"⑂wt"*) ok "linked worktree is named" ;; *) bad "linked worktree is named" "⑂wt" "$w" ;; esac
-    case "$w" in *panestate-test-wt*) ok "and its branch still shows" ;; *) bad "and its branch still shows" "panestate-test-wt" "$w" ;; esac
-    git -C "$HOME/Henosis" worktree remove "$wtroot/wt" --force >/dev/null 2>&1
-    git -C "$HOME/Henosis" branch -D panestate-test-wt >/dev/null 2>&1
+    case "$w" in *cockpit-test-wt*) ok "and its branch still shows" ;; *) bad "and its branch still shows" "cockpit-test-wt" "$w" ;; esac
 else
-    ok "worktree label (skipped: no git repo)"; ok "-"; ok "-"
+    skip_ "no worktree mark on a normal repo"; skip_ "linked worktree is named"; skip_ "worktree branch shows"
 fi
 is "non-repo path stays empty" "" "$("$DIR/scripts/tmux-where" branch 1 /tmp claude 2>/dev/null | plain)"
 rm -rf "$wtroot"
 
-echo "== tmux-where: ssh destination =="
-w() { local p; bash -c "exec -a \"$1\" sleep 8" & p=$!; sleep 0.35
-      printf '%s' "$("$DIR/scripts/tmux-where" path "$p" "$HOME" 2>&1 | plain | sed 's/^ *//;s/ *$//')"
-      kill "$p" 2>/dev/null; wait "$p" 2>/dev/null; } 2>/dev/null
-is "plain"          "󰢹 deploy@host"  "$(w 'ssh deploy@host')"
-is "-p value"       "󰢹 deploy@host"  "$(w 'ssh -p 2222 deploy@host')"
-is "bundle -nNp"    "󰢹 realhost"     "$(w 'ssh -nNp 2222 realhost')"
-is "bundle -tti"    "󰢹 box01"        "$(w 'ssh -tti /k box01')"
-is "attached -p"    "󰢹 attached"     "$(w 'ssh -p2222 attached')"
-is "-o Opt=val"     "󰢹 prod"         "$(w 'ssh -o BatchMode=yes prod')"
-is "-J jump"        "󰢹 final"        "$(w 'ssh -J j1,j2 final')"
-is "remote command" "󰢹 prod-box"     "$(w 'ssh prod-box uptime')"
-is "end of options" "󰢹 weird"        "$(w 'ssh -- weird')"
-is "-vvv"           "󰢹 web01"        "$(w 'ssh -vvv web01')"
-is "not ssh"        "~"              "$(w 'rsync -e ssh a b')"
-is "dead pid quiet" "/home/x"        "$("$DIR/scripts/tmux-where" path 999999 /home/x 2>&1 | plain | sed 's/^ *//')"
+echo "== ssh destination parsing =="
+# Drive ssh_target with a real argv ARRAY. The previous tests faked a process
+# with `exec -a "ssh -p 2222 host"`, which puts the WHOLE string in argv[0] --
+# not what a real ssh looks like. They therefore exercised a code path that no
+# longer exists, and would not have caught the -o-value-with-spaces bug.
+sed -n '/^ssh_target() {/,/^}/p' "$DIR/scripts/tmux-where" > "$STATE/st.sh"
+. "$STATE/st.sh"
+sshdest() { ARGV=("$@"); ssh_target; }
+is "plain"                 "deploy@host" "$(sshdest ssh deploy@host)"
+is "-p with a value"       "deploy@host" "$(sshdest ssh -p 2222 deploy@host)"
+is "bundle -nNp"           "realhost"    "$(sshdest ssh -nNp 2222 realhost)"
+is "bundle -tti"           "box01"       "$(sshdest ssh -tti /k box01)"
+is "attached -p2222"       "attached"    "$(sshdest ssh -p2222 attached)"
+is "-o Opt=val"            "prod"        "$(sshdest ssh -o BatchMode=yes prod)"
+is "-B bind interface"     "host6"       "$(sshdest ssh -B eth0 host6)"
+is "-J jump host"          "final"       "$(sshdest ssh -J j1,j2 final)"
+is "-W forward"            "wh"          "$(sshdest ssh -W h:22 wh)"
+is "-R remote forward"     "rhost"       "$(sshdest ssh -R 80:localhost:80 rhost)"
+is "remote command after"  "prod-box"    "$(sshdest ssh prod-box uptime)"
+is "end of options"        "weird"       "$(sshdest ssh -- weird)"
+is "-vvv"                  "web01"       "$(sshdest ssh -vvv web01)"
+# an -o value containing spaces is ONE argv element; flattening it split the
+# value into tokens and the jump host was read as the destination
+is "-o value with spaces"  "host12"      "$(sshdest ssh -o 'ProxyCommand=ssh -W %h:%p jump' host12)"
 
-rm -rf "$STATE" "$STUB"
-echo
+echo "== tmux-where: local rendering =="
+is "local path is ~-shortened" " ~"      "$("$DIR/scripts/tmux-where" path 1 "$HOME" bash | plain)"
+is "dead pid stays quiet"      " /tmp/x" "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
+is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
+
+
+echo "== tmux-open-path: which token on the line is a file =="
+# A scratch tree with the shapes real output prints. --dry-run resolves without
+# touching tmux and without opening anything.
+OP=$(mktemp -d); mkdir -p "$OP/src" "$OP/bin"
+: > "$OP/src/foo-bar.ts"; : > "$OP/README.md"; : > "$OP/bin/tm"
+op() { "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
+
+is "bare relative path"      "$OP/README.md::"        "$(op 'see README.md ok')"
+is "file:line:col"           "$OP/src/foo-bar.ts:31:5" "$(op 'src/foo-bar.ts:31:5 failed')"
+is "file:line"               "$OP/src/foo-bar.ts:31:"  "$(op 'at src/foo-bar.ts:31')"
+# The word under "src/foo-bar.ts:31" is "foo": word-separators include / . : and
+# -, which is why this reads the whole line instead of #{mouse_word}.
+is "hyphen does not split it" "$OP/src/foo-bar.ts::"   "$(op 'src/foo-bar.ts')"
+# tsc and MSVC print file(12,3). Stripping trailing punctuation ate the ")" and
+# the location became unparseable text.
+is "tsc file(12,3)"          "$OP/bin/tm:12:3"        "$(op 'bin/tm(12,3): error TS1005')"
+# [:punct:] contains / and ~, so a leading-punctuation strip using it removed the
+# first character of every absolute and ~ path.
+is "absolute path survives"  "$OP/README.md:5:2"      "$(op "absolute $OP/README.md:5:2 ok")"
+is "quoted path"             "$OP/README.md::"        "$(op '"README.md":')"
+is "bracketed path"          "$OP/bin/tm::"           "$(op '(bin/tm)')"
+is "git diff a/ prefix"      "$OP/README.md::"        "$(op '--- a/README.md')"
+is "./ is normalised away"   "$OP/bin/tm:1:1"         "$(op './bin/tm:1:1')"
+is "a word that is no file"  ""                       "$(op 'npm run build finished')"
+is "several files, in order" "$OP/README.md::
+$OP/bin/tm:5:"                                        "$(op 'changed README.md and bin/tm:5')"
+# Existence is the filter, so a plausible-looking miss is dropped, not opened.
+is "missing file is dropped" "$OP/src/foo-bar.ts::"   "$(op 'src/nope.ts and src/foo-bar.ts')"
+rm -rf "$OP"
+
+echo "== tmux-branch: local and remote branches =="
+# Plumbing, not `git commit`: no user config, no hooks, no signing prompt.
+BR=$(mktemp -d); RM=$(mktemp -d)
+(
+  cd "$BR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+  git branch feature/one; git branch remote-only
+  git init -q --bare "$RM"; git remote add origin "$RM"
+  git push -q origin main feature/one remote-only; git branch -q -D remote-only
+  git fetch -q origin
+) >/dev/null 2>&1
+brs() { git -C "$BR" for-each-ref --format='%(refname:short)' "$@"; }
+
+is "local branch with a slash exists" "feature/one" "$(brs refs/heads | grep feature/one)"
+# Routing on the slash sent LOCAL "feature/one" down the remote path and left a
+# stray "one" tracking branch behind.
+git -C "$BR" switch -q feature/one 2>/dev/null
+is "switching to it makes no stray" "" "$(brs refs/heads | grep -x one)"
+is "and it is checked out"          "feature/one" "$(git -C "$BR" branch --show-current)"
+git -C "$BR" switch -q main 2>/dev/null
+# A remote-only branch has to become a local tracking branch.
+git -C "$BR" switch -q --track origin/remote-only 2>/dev/null
+is "remote-only branch tracks"      "origin/remote-only" \
+   "$(git -C "$BR" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+# A branch held by another worktree cannot be checked out; git says which one.
+git -C "$BR" switch -q main 2>/dev/null
+WT=$(mktemp -d); rm -rf "$WT"
+git -C "$BR" worktree add -q "$WT" feature/one 2>/dev/null
+case "$(git -C "$BR" switch feature/one 2>&1)" in
+    *"already used by worktree"*) ok "worktree conflict names the worktree" ;;
+    *) bad "worktree conflict names the worktree" "already used by worktree" "$(git -C "$BR" switch feature/one 2>&1)" ;;
+esac
+git -C "$BR" worktree remove --force "$WT" >/dev/null 2>&1
+rm -rf "$BR" "$RM"
+
+
+echo "== tmux-open-path: the clicked line is never glob-expanded =="
+# "for tok in $line" splits with the shell's own rules, which include PATHNAME
+# EXPANSION. A line that merely mentioned a wildcard -- "rm *", a compiler note
+# with [ab]* in it -- was expanded against the pane's cwd, so alt-clicking it
+# opened files nobody named. Existence was supposed to be the filter; globbing
+# made the shell invent the candidates before the filter ever ran.
+GB=$(mktemp -d); : > "$GB/real.txt"; : > "$GB/other.txt"; : > "$GB/a"
+# Globbing expands against the PROCESS cwd, while candidates resolve against
+# the pane dir, so the bug only shows when they are the same directory -- the
+# common run-shell case, where the server was started inside the tree you work
+# in. cd into it or the test silently proves nothing.
+gb() { ( cd "$GB" && "$DIR/scripts/tmux-open-path" --dry-run "$GB" "$1" ); }
+is "a bare * expands to nothing"      "" "$(gb 'error in * somewhere')"
+is "a bare ? expands to nothing"      "" "$(gb 'huh ? really')"
+is "a glob class expands to nothing"  "" "$(gb 'see [ro]* please')"
+# ...while a real file on the same line is still found.
+is "a real file beside a glob opens"  "$GB/real.txt::" "$(gb 'rm * then real.txt')"
+rm -rf "$GB"
+
+echo "== tmux-open-path: the editor command survives odd filenames =="
+# open_one built a shell string by wrapping the path in single quotes. A path
+# containing a single quote closed that quote early and the rest of the name was
+# read as shell syntax, so the editor opened the wrong file -- or ran a word of
+# the filename as a command.
+EQ=$(mktemp -d); ETMUX=$(mktemp -d)
+: > "$EQ/it's.txt"
+cat > "$ETMUX/tmux" <<'STUB'
+#!/usr/bin/env bash
+# Just enough tmux for tmux-open-path: answer its queries from the environment
+# and record what it tried to run. No server, so this runs anywhere.
+case "$1" in
+  show-options)
+      case " $* " in
+          *@click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@open-editor*) printf '%s\n' "${OPEN_EDITOR:-}" ;;
+      esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
+          *window_id*)         printf '@0\n' ;;
+          *)                   printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+      esac ;;
+  new-window)    printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  display-popup) printf 'POPUP %s\n'  "${!#}" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$ETMUX/tmux"
+# env bash shebang: without bash on the stub PATH nothing runs at all and the
+# assertions below would pass for the wrong reason.
+ln -s "$(command -v bash)" "$ETMUX/bash"
+LOG="$ETMUX/log"
+
+: > "$LOG"
+env PATH="$ETMUX" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+    OPEN_EDITOR=nvim "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+cmd=$(sed -n 's/^NEWWIN //p' "$LOG")
+if eval "set -- $cmd" 2>/dev/null; then
+    is "a quote in the name reaches the editor intact" "$EQ/it's.txt" "${*: -1}"
+    is "and the line number becomes +12"               "+12"          "${2:-}"
+else
+    bad "a quote in the name reaches the editor intact" "parseable command" "$cmd"
+    bad "and the line number becomes +12" "+12" "$cmd"
+fi
+
+# With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
+# rather than reporting "opened" for a command that was never found.
+: > "$LOG"
+env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+    EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$LOG")" in
+    *NEWWIN*vi*) ok "no code(1): falls back to \$EDITOR" ;;
+    *) bad "no code(1): falls back to \$EDITOR" "a new window running vi" "$(cat "$LOG")" ;;
+esac
+
+# ...and with no editor at all it must say so, not claim success.
+: > "$LOG"
+env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$LOG")" in
+    *"no editor"*) ok "no editor at all: says so instead of claiming success" ;;
+    *) bad "no editor at all: says so instead of claiming success" "a 'no editor' message" "$(cat "$LOG")" ;;
+esac
+# One candidate must still reach the picker. This is the behaviour the whole
+# gesture exists for -- see what the line resolved to, then decide -- and the
+# easiest one to regress back into "just open it".
+: > "$LOG"
+env PATH="$ETMUX:$PATH" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+    "$DIR/scripts/tmux-open-path" %1 >/dev/null 2>&1
+case "$(cat "$LOG")" in
+    *POPUP*--pick*) ok "a single candidate still opens the picker" ;;
+    *) bad "a single candidate still opens the picker" "a display-popup ... --pick" "$(cat "$LOG")" ;;
+esac
+# ...and nothing is opened behind the popup's back.
+case "$(cat "$LOG")" in
+    *NEWWIN*) bad "and nothing opens behind the picker" "no new-window" "$(cat "$LOG")" ;;
+    *) ok "and nothing opens behind the picker" ;;
+esac
+# --preview is a documented subcommand, so it gets whatever a user types. A
+# non-numeric line reached the arithmetic and `set -u` killed the preview.
+PV=$(mktemp -d); printf 'one\ntwo\nthree\n' > "$PV/f.txt"
+for bad in abc -5 1.5 '' 2; do
+    out=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" "$bad" 2>&1)
+    case "$out" in
+        *"unbound variable"*|*"syntax error"*)
+            bad "preview survives line=[$bad]" "a rendered file" "$out" ;;
+        *one*) ok "preview survives line=[$bad]" ;;
+        *) bad "preview survives line=[$bad]" "the file contents" "$out" ;;
+    esac
+done
+is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-open-path" --preview "$PV/nope")"
+# An empty file has no lines, so the binary test matched nothing and accused it
+# of being a blob. A file of only blank lines has lines but no characters, which
+# a "." pattern rejects for the same reason.
+: > "$PV/empty.txt"; printf '\n\n\n' > "$PV/blanks.txt"
+is "an empty file is not called binary" "empty file" \
+   "$("$DIR/scripts/tmux-open-path" --preview "$PV/empty.txt")"
+case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blanks.txt")" in
+    *binary*) bad "blank lines are not called binary" "the blank lines" "binary file" ;;
+    *) ok "blank lines are not called binary" ;;
+esac
+# Explicit NUL bytes, not /dev/urandom: 200 random bytes are sometimes valid
+# text as far as grep is concerned, which made this assertion flaky.
+printf 'ELF\0\0\0binary\0payload\n' > "$PV/blob.dat"
+case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat")" in
+    *"binary file"*) ok "a real binary still is" ;;
+    *) bad "a real binary still is" "binary file" "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat" | head -1)" ;;
+esac
+rm -rf "$PV"
+
+rm -rf "$EQ" "$ETMUX"
+
+echo "== agent-state: notify must not hang on a silent stdin =="
+# The Notification hook piped JSON in and the script read it with cat, which
+# waits for EOF. A writer that holds the pipe open without sending -- and Claude
+# Code does keep the hook's stdin open -- wedged the hook, and a wedged hook
+# blocks the agent that fired it.
+FIFO="$STATE/notify.fifo"; mkfifo "$FIFO"
+( exec 9>"$FIFO"; sleep 8 ) & holder=$!
+timeout 6 "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1 < "$FIFO"
+rc=$?
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+is "notify gives up rather than wedging the hook" "0" "$rc"
+rm -f "$FIFO"
+
+# The bounded read joins the payload line by line, where `cat` handed over the
+# whole thing at once. Claude Code pretty-prints its hook JSON, so the marker
+# the classifier looks for arrives on its own line, several lines in -- exactly
+# the case a line-at-a-time reader can get wrong.
+if need_tmux "multi-line notify payload"; then :; else
+st notify "$PANE" <<'JSON'
+{
+  "session_id": "abc123",
+  "transcript_path": "/tmp/t.jsonl",
+  "message": "Claude needs your permission to use Bash",
+  "cwd": "/tmp"
+}
+JSON
+is "a pretty-printed payload is still classified" "needs-input" "$(sv)"
+st running "$PANE"
+st notify "$PANE" <<'JSON'
+{
+  "message": "Claude is waiting for your input"
+}
+JSON
+is "and so is a pretty-printed idle payload" "" "$(sv)"
+# No trailing newline: the last line only survives because the loop appends
+# whatever read left in $chunk after it failed.
+printf '%s' '{"message":"Claude needs your permission"}' | st notify "$PANE"
+is "a payload with no trailing newline is not lost" "needs-input" "$(sv)"
+st off "$PANE"
+fi
+
+echo "== tmux-branch: usable without column(1) =="
+# The branch list was piped through column -t. Where column is not installed the
+# pipe produced nothing and the script reported "no branches yet" -- a confident
+# lie about a repo that had several.
+CB=$(mktemp -d)
+(
+  cd "$CB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+  git branch feature/one
+) >/dev/null 2>&1
+NOCOL=$(mktemp -d)
+for c in git bash; do ln -s "$(command -v $c)" "$NOCOL/$c"; done
+out=$(env -u TMUX PATH="$NOCOL" "$DIR/scripts/tmux-branch" "$CB" </dev/null 2>&1)
+case "$out" in
+    *feature/one*) ok "column missing: the branches are still listed" ;;
+    *) bad "column missing: the branches are still listed" "a list naming feature/one" "$out" ;;
+esac
+rm -rf "$CB" "$NOCOL"
+
+echo "== tm: the kill picker and the name cleaner =="
+# Without fzf the picker is a `select`, and Ctrl-D leaves the choice variable
+# unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
+# script with "unbound variable" instead of exiting quietly.
+TMS=$(mktemp -d)
+for c in readlink bash; do ln -s "$(command -v $c)" "$TMS/$c"; done
+cat > "$TMS/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions) printf 'alpha\nbeta\n' ;;
+  kill-session)  printf 'KILL %s\n' "${*: -1}" >> "$TM_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$TMS/tmux"
+: > "$TMS/log"
+out=$(env -u TMUX PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" -k </dev/null 2>&1)
+case "$out" in
+    *"unbound variable"*) bad "kill picker survives an empty choice" "a quiet exit" "$out" ;;
+    # The prompt proves the picker really ran; without it an absent interpreter
+    # would satisfy the "no unbound variable" check on its own.
+    *"Kill which session"*) ok "kill picker survives an empty choice" ;;
+    *) bad "kill picker survives an empty choice" "the picker prompt" "$out" ;;
+esac
+is "and it killed nothing" "" "$(cat "$TMS/log")"
+
+# tmux reads a leading "-" as an option, so a session named from the prompt
+# could not be created at all -- new-session -s -x is a usage error.
+cat > "$TMS/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions)   exit 0 ;;
+  has-session)     exit 1 ;;
+  new-session)     printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
+  display-message) printf '0\n' ;;
+esac
+exit 0
+STUB
+: > "$TMS/log"
+printf -- '-weird name\n' | env -u TMUX PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
+is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name" "$(cat "$TMS/log")"
+rm -rf "$TMS"
+
+echo "== cockpit.tmux: every option carrying a token is interpolated =="
+# The README documents #{agent_where_path} as usable in status-left/status-right,
+# but the rewrite loop only ever visited two @catppuccin_* options, so anyone
+# following the README got the literal token printed in their status bar.
+if need_tmux "token interpolation"; then :; else
+SOCK2="cockpit-interp-$$"
+tmux -L "$SOCK2" new-session -d -s t >/dev/null 2>&1
+tmux -L "$SOCK2" set -g status-right "L #{agent_where_path} R"     >/dev/null 2>&1
+tmux -L "$SOCK2" set -g status-left  "#{agent_where_branch}"       >/dev/null 2>&1
+tmux -L "$SOCK2" set -g @catppuccin_gitmux_text "#{agent_where_branch}" >/dev/null 2>&1
+tmux -L "$SOCK2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+for o in status-right status-left @catppuccin_gitmux_text; do
+    v=$(tmux -L "$SOCK2" show-option -gqv "$o" 2>/dev/null)
+    case "$v" in
+        *'#{agent_'*) bad "$o is interpolated" "a #(...) shell call" "$v" ;;
+        *tmux-where*) ok  "$o is interpolated" ;;
+        *)            bad "$o is interpolated" "a #(...) shell call" "$v" ;;
+    esac
+done
+# An option with no token must be left exactly as it was.
+tmux -L "$SOCK2" set -g status-style "bg=red" >/dev/null 2>&1
+tmux -L "$SOCK2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "untouched options stay untouched" "bg=red" "$(tmux -L "$SOCK2" show-option -gqv status-style)"
+tmux -L "$SOCK2" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-where: detached HEAD and odd repos =="
+DH=$(mktemp -d)
+(
+  cd "$DH" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+) >/dev/null 2>&1
+sha=$(git -C "$DH" rev-parse HEAD)
+is "on a branch, the branch is shown" " main" \
+   "$("$DIR/scripts/tmux-where" branch 1 "$DH" claude 2>/dev/null | plain)"
+git -C "$DH" checkout -q --detach "$sha" 2>/dev/null
+# --abbrev-ref prints the literal word "HEAD" when detached, which reads as a
+# branch of that name; the label has to be the hash instead.
+d=$("$DIR/scripts/tmux-where" branch 1 "$DH" claude 2>/dev/null | plain)
+case "$d" in
+    *HEAD*) bad "detached HEAD shows a hash, not the word HEAD" "@${sha:0:7}" "$d" ;;
+    *"@${sha:0:7}"*) ok "detached HEAD shows a hash, not the word HEAD" ;;
+    *) bad "detached HEAD shows a hash, not the word HEAD" "@${sha:0:7}" "$d" ;;
+esac
+rm -rf "$DH"
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
