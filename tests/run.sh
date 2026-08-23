@@ -181,6 +181,23 @@ ok "no pane id and no TMUX_PANE is a no-op"
 # there is no sweep that could delete a live one.
 is "state is a per-pane option, not a file" "" "$(ls "$S" 2>/dev/null)"
 
+echo "== worktree in the branch label =="
+wtroot=$(mktemp -d)
+if git -C "$HOME/Henosis" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$HOME/Henosis" worktree add -q "$wtroot/wt" -b panestate-test-wt >/dev/null 2>&1
+    b=$("$DIR/scripts/tmux-where" branch 1 "$HOME/Henosis" claude 2>/dev/null | plain)
+    case "$b" in *"⑂"*) bad "normal repo shows no worktree mark" "no mark" "$b" ;; *) ok "normal repo shows no worktree mark" ;; esac
+    w=$("$DIR/scripts/tmux-where" branch 1 "$wtroot/wt" claude 2>/dev/null | plain)
+    case "$w" in *"⑂wt"*) ok "linked worktree is named" ;; *) bad "linked worktree is named" "⑂wt" "$w" ;; esac
+    case "$w" in *panestate-test-wt*) ok "and its branch still shows" ;; *) bad "and its branch still shows" "panestate-test-wt" "$w" ;; esac
+    git -C "$HOME/Henosis" worktree remove "$wtroot/wt" --force >/dev/null 2>&1
+    git -C "$HOME/Henosis" branch -D panestate-test-wt >/dev/null 2>&1
+else
+    ok "worktree label (skipped: no git repo)"; ok "-"; ok "-"
+fi
+is "non-repo path stays empty" "" "$("$DIR/scripts/tmux-where" branch 1 /tmp claude 2>/dev/null | plain)"
+rm -rf "$wtroot"
+
 echo "== tmux-where: ssh destination =="
 w() { local p; bash -c "exec -a \"$1\" sleep 8" & p=$!; sleep 0.35
       printf '%s' "$("$DIR/scripts/tmux-where" path "$p" "$HOME" 2>&1 | plain | sed 's/^ *//;s/ *$//')"

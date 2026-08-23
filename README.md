@@ -19,6 +19,19 @@ having to switch windows to find out.
 Shape carries the state as well as colour, so it survives a greyscale
 screenshot and a red/green colourblind reader.
 
+## Window labels
+
+For an agent pane the tab shows the **conversation topic**, not the window name.
+Claude Code writes it to `pane_title` (the same thing Ghostty shows in its tab),
+so with several agents running you see what each is working on instead of three
+tabs all reading `claude`:
+
+```text
+ Color scheme for code … ●     Openvpn setup with voi… ○     build ○
+```
+
+Non-agent panes fall back to the window name.
+
 ## Where it shows up
 
 - **Window tabs** — one marker per window. Worst state in the window wins, so a
@@ -93,13 +106,24 @@ sitting in ssh reports this machine's path and git branch. This prints the ssh
 destination instead, and blanks the branch. It exits early on
 `#{pane_current_command}` so the common case costs nothing.
 
+It also names a linked **git worktree**, since a branch alone is ambiguous when
+you run several agents across worktrees of one repo:
+
+```text
+ main                    a normal checkout
+ feat-api ⑂api-work      the same repo, linked worktree "api-work"
+```
+
+Branch and worktree come from a single `git rev-parse --abbrev-ref HEAD
+--git-dir` — asking separately would double the only real cost left here.
+
 ## Tests
 
 ```sh
 tests/run.sh
 ```
 
-50 cases. They skip rather than fail when no tmux server is running.
+54 cases. They skip rather than fail when no tmux server is running.
 
 ## Whole-pane tint
 

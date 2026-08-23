@@ -15,13 +15,31 @@ pid="${2:-}"
 path="${3:-}"
 cmd="${4:-}"          # #{pane_current_command}, tmux's view of the foreground proc
 
+
+# Branch, plus the worktree name when this path is a linked worktree.
+# ONE git call for both: rev-parse takes several flags and answers in order, so
+# asking separately would double the only real cost left in this script.
+#   normal repo   ->  " main"
+#   linked wt     ->  " main ⑂feat-x"
+git_label() {
+    local out br gd
+    out=$(git -C "$path" rev-parse --abbrev-ref HEAD --git-dir 2>/dev/null) || return 0
+    br=${out%%$'\n'*}
+    gd=${out#*$'\n'}
+    [ -n "$br" ] || return 0
+    case "$gd" in
+        */worktrees/*) printf ' %.20s ⑂%.14s' "$br" "${gd##*/worktrees/}" ;;
+        *)             printf ' %.24s' "$br" ;;
+    esac
+}
+
 # Fast path: tmux already knows the pane's foreground command. If it is not ssh,
 # there is nothing to find and we skip the /proc walk entirely -- which is the
 # case for every pane, almost always, on every redraw.
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
         path)   printf ' %s' "${path/#$HOME/\~}" ;;
-        branch) b=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null) && [ -n "$b" ] && printf ' %.24s' "$b" ;;
+        branch) git_label ;;
     esac
     exit 0
 fi
@@ -110,9 +128,6 @@ case "$mode" in
     path)
         printf ' %s' "${path/#$HOME/\~}"
         ;;
-    branch)
-        b=$(git -C "$path" rev-parse --abbrev-ref HEAD 2>/dev/null) || exit 0
-        [ -n "$b" ] && printf ' %.24s' "$b"
-        ;;
+    branch) git_label ;;
 esac
 exit 0
