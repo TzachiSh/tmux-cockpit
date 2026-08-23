@@ -1,2 +1,5 @@
 *.swp
 *~
+
+# Agent/orchestration scratch state, not part of the plugin.
+.omc/
