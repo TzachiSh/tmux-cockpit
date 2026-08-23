@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Record a tmux pane's agent state. Called from Claude Code hooks and tmux hooks.
+#   usage: agent-state <running|needs-input|error|done|off|notify> [pane-id]
+# The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
+# State lives in a tmpfs dir keyed by pane id, so it dies with the boot.
+set -u
+
+state="${1:-off}"
+pane="${2:-${TMUX_PANE:-}}"
+[ -n "$pane" ] || exit 0                   # not in tmux: nothing to show
+
+# State lives in a per-pane tmux option, not a file. tmux evaluates it directly
+# inside status/border formats, so a redraw costs zero shell spawns -- and the
+# option dies with the pane, so there is nothing to garbage collect.
+current=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null || true)
+
+case "$state" in
+notify)
+    # Pressing ESC to cancel fires NO Claude Code hook -- not Stop, not
+    # SessionEnd -- so a cancelled pane would sit on "running" forever. Claude
+    # does emit a Notification once it goes idle, which lets us recover.
+    payload=$(cat 2>/dev/null || true)
+    case "$payload" in
+        *'waiting for your input'*)
+            # Claude emits this while it is BLOCKED on a permission prompt too,
+            # so clearing here would wipe the alert precisely because you have
+            # not answered yet. Only a "running" pane is genuinely idle now.
+            # Both clear when work resumes: UserPromptSubmit / PostToolUse
+            # overwrite the state. Switching windows must NOT clear them --
+            # scanning the tabs is exactly when you need the flags to survive.
+            case "$current" in needs-input|done) exit 0 ;; esac
+            state=off ;;
+        *'needs your permission'*) state=needs-input ;;
+        *) exit 0 ;;                        # unrelated notification: ignore
+    esac
+    ;;
+esac
+
+# Reject anything that is not a real state. Without this an unknown argument --
+# a typo, or a mode removed from the config but still referenced somewhere --
+# gets written into the state file verbatim and every reader then sees garbage.
+case "$state" in
+    running|needs-input|error|done|off) ;;
+    *) exit 0 ;;
+esac
+
+# needs-input outranks done. A blocked turn still ends, so Stop fires while the
+# permission prompt is still on screen -- letting that write "done" turned a red
+# "answer me" into a green "finished" on a timer, which is the one failure this
+# whole thing exists to prevent. Only work actually resuming (running) or an
+# explicit off may clear it.
+# Ranking: needs-input > error > running > done. A lower rank may not overwrite
+# a higher one -- only work resuming (running) or an explicit off clears them.
+# This exists because Stop fires while a permission prompt is still on screen,
+# which silently demoted a red "answer me" into a green "finished".
+rank() { case "$1" in needs-input) echo 4 ;; error) echo 3 ;; running) echo 2 ;; done) echo 1 ;; *) echo 0 ;; esac; }
+if [ "$state" != off ] && [ "$state" != running ]; then
+    [ "$(rank "$state")" -lt "$(rank "$current")" ] && exit 0
+fi
+
+if [ "$state" = off ]; then
+    tmux set-option -pu -t "$pane" @panestate 2>/dev/null || true
+else
+    [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw
+    tmux set-option -p -t "$pane" @panestate "$state" 2>/dev/null || true
+fi
+
+# Repaint now instead of waiting up to status-interval seconds.
+tmux refresh-client -S 2>/dev/null || true
