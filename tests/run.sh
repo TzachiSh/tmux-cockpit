@@ -572,6 +572,17 @@ is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-op
 # of being a blob. A file of only blank lines has lines but no characters, which
 # a "." pattern rejects for the same reason.
 : > "$PV/empty.txt"; printf '\n\n\n' > "$PV/blanks.txt"
+# A minified bundle is one line of megabytes. bat --wrap=never declines to WRAP
+# but does not truncate, so the whole line was piped into the preview pane on
+# every cursor move -- 3.2MB for one 3MB line, per keystroke.
+awk 'BEGIN { s=""; for (i=0;i<20000;i++) s = s "var x=1;"; print s }' > "$PV/min.js"
+n=$("$DIR/scripts/tmux-open-path" --preview "$PV/min.js" 2>/dev/null | wc -c)
+if [ "$n" -lt 20000 ]; then ok "a minified one-liner is capped, not dumped"
+else bad "a minified one-liner is capped, not dumped" "<20000 bytes" "$n bytes"; fi
+# ...and a normal file is unaffected: still rendered, still in full.
+is "a normal file still renders every line" "3" \
+   "$(printf 'a\nb\nc\n' > "$PV/three.txt"; "$DIR/scripts/tmux-open-path" --preview "$PV/three.txt" | grep -c .)"
+
 is "an empty file is not called binary" "empty file" \
    "$("$DIR/scripts/tmux-open-path" --preview "$PV/empty.txt")"
 case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blanks.txt")" in

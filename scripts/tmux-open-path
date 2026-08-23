@@ -80,7 +80,17 @@ if [ "${1:-}" = --preview ]; then
     # bat gives syntax colour, line numbers, AND -- via the "changes" style -- the
     # git gutter, so an edited line is marked +/~ right beside its content. That
     # is both things you want from a snippet at once. Debian ships it as batcat.
-    bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
+    # A minified bundle is one line of megabytes. bat --wrap=never does not
+    # truncate, it declines to WRAP -- the whole line is still piped into the
+    # preview on every cursor move (measured: 3.2MB for one 3MB line). Fall
+    # through to the awk path, which caps each line, when the file looks like
+    # that. Only the first 200 lines are measured; that is all we render.
+    longest=$(awk 'NR > 200 { exit } { if (length($0) > m) m = length($0) } END { print m+0 }' \
+              "$f" 2>/dev/null)
+    bat=""
+    if [ "${longest:-0}" -le 1000 ]; then
+        bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
+    fi
     if [ -n "$bat" ]; then
         "$bat" --style=numbers,changes --color=always --paging=never \
                --terminal-width="${FZF_PREVIEW_COLUMNS:-80}" --wrap=never \
@@ -92,8 +102,9 @@ if [ "${1:-}" = --preview ]; then
     # on it without counting rows.
     awk -v s="$first" -v e="$last" -v t="${l:-0}" '
         NR > e { exit }
-        NR >= s { if (NR == t) printf "\033[7m%6d  %s\033[0m\n", NR, $0
-                  else         printf "%6d  %s\n", NR, $0 }
+        NR >= s { line = substr($0, 1, 1000)
+                  if (NR == t) printf "\033[7m%6d  %s\033[0m\n", NR, line
+                  else         printf "%6d  %s\n", NR, line }
     ' "$f" 2>/dev/null
     exit 0
 fi
