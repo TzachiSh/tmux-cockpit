@@ -15,7 +15,8 @@
 # Keys it binds (see the README for the status-right marker the click needs):
 #   MouseDown1Control1    branch picker, on whatever you marked range=control|1
 #   prefix + b            the same picker, without the mouse
-#   M-MouseDown1Pane      path picker for the alt-clicked line
+#   C-DoubleClick1Pane    path picker for the clicked line (also M-MouseDown1Pane
+#                         where the terminal forwards Alt+click)
 set -u
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,5 +88,23 @@ tmux bind-key b display-popup -E -w 70% -h 70% "$Q_BRANCH"
 # The three commands go in ONE quoted string. Passed as separate argv words,
 # "cmd \; cmd" does not separate: tmux keeps only the first command in the
 # binding and runs the rest once, at load time.
+#
+# TWO triggers, because no single one works everywhere:
+#
+#   Ctrl+double-click  the portable choice, and the only one that works under
+#                      Ghostty. Measured: Ghostty forwards plain, Ctrl, double
+#                      and Ctrl+double clicks to tmux, but strips Alt entirely
+#                      and keeps Shift for its own selection -- so an Alt-only
+#                      binding can never fire there. It is also the one of those
+#                      that tmux does not already own: plain Ctrl+click is
+#                      swap-pane, plain double-click is select-word-and-copy,
+#                      and taking either would cost a feature people use.
+#                      It pairs with the branch picker, which is Ctrl+click on
+#                      the status bar.
+#   Alt+click          kept for terminals that DO send it (xterm, kitty,
+#                      WezTerm, foot), where it is the lighter gesture. Binding
+#                      both costs nothing: whichever one your terminal delivers
+#                      is the one that fires.
 open_path="select-pane -t= ; set -pF @click_line \"#{mouse_line}\" ; run-shell -b \"$Q_OPEN #{pane_id}\""
-tmux bind-key -n M-MouseDown1Pane "$open_path"
+tmux bind-key -n C-DoubleClick1Pane "$open_path"
+tmux bind-key -n M-MouseDown1Pane   "$open_path"
