@@ -8,7 +8,11 @@
 # you also type by name, since a plugin directory is not on $PATH.
 set -uo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# -P so DIR is the RESOLVED path. The uninstall guard below compares it against
+# readlink -f of the link; with a logical path those never match when the plugin
+# is reached through a symlink (a dotfiles checkout linked into ~/.tmux/plugins
+# is the usual way), and --uninstall then removed nothing and said nothing.
+DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 COMMANDS=(tm tmux-branch tmux-open-path)
 
@@ -33,6 +37,13 @@ for c in "${COMMANDS[@]}"; do
 
     if [ -e "$link" ] && [ ! -L "$link" ]; then
         printf 'SKIP     %s already exists and is not a symlink\n' "$link" >&2
+        continue
+    fi
+    # A symlink of the same name that points somewhere else belongs to another
+    # tool -- "tm" is a name plenty of things want. Overwriting it silently is
+    # bad enough; --uninstall would then delete it too, leaving neither.
+    if [ -L "$link" ] && [ "$(readlink -f "$link")" != "$target" ]; then
+        printf 'SKIP     %s is a symlink to %s, not ours\n' "$link" "$(readlink -f "$link")" >&2
         continue
     fi
     ln -sfn "$target" "$link"

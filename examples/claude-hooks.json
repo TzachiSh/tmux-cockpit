@@ -13,7 +13,11 @@
     "                   running anyway, so the hook only destroyed information.",
     "  TaskCompleted -> fires mid-turn per task-list item, flashing green while",
     "                   the agent keeps working. Stop already covers turn ends.",
-    "  PreCompact, TeammateIdle -> no pane state to report."
+    "  PreCompact, TeammateIdle -> no pane state to report.",
+    "",
+    "PreToolUse fires BEFORE the permission decision, so it cannot clear a",
+    "needs-input flag raised by the prompt that follows it. PostToolUse is what",
+    "clears the red, once the approved tool has run."
   ],
   "hooks": {
     "SessionStart": [

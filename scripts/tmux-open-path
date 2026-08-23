@@ -22,6 +22,11 @@
 #   set -g @open-editor nvim      # opens in a new tmux window at +LINE
 set -uo pipefail
 
+# Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
+# run-shell from a stripped environment, or a systemd-launched tmux. tmux-where
+# already guards this; a "~/..." token on a clicked line used to kill this one.
+H=${HOME:-/nonexistent}
+
 # --- preview ------------------------------------------------------------------
 # Its own subcommand rather than a shell string inside --preview: the logic
 # below needs conditionals and git, and threading that through fzf's quoting
@@ -33,7 +38,7 @@ if [ "${1:-}" = --preview ]; then
     # arithmetic below otherwise, where bash reads a bare word as a variable name
     # and `set -u` kills the preview with "abc: unbound variable".
     case "$l" in *[!0-9]*|"") l="" ;; esac
-    case "$f" in "~") f=$HOME ;; "~/"*) f="$HOME/${f#\~/}" ;; esac
+    case "$f" in "~") f=$H ;; "~/"*) f="$H/${f#\~/}" ;; esac
     [ -n "$f" ] && [ -e "$f" ] || { printf 'gone: %s\n' "$f"; exit 0; }
 
     # A directory has no contents to snippet, so show what is HAPPENING in it --
@@ -127,8 +132,8 @@ consider() {  # consider <path> <line> <col> — record it if it exists
     local p=$1 l=$2 c=$3 abs
     [ -n "$p" ] || return 0
     case "$p" in
-        "~") p="$HOME" ;;
-        "~/"*) p="$HOME/${p#\~/}" ;;
+        "~") p="$H" ;;
+        "~/"*) p="$H/${p#\~/}" ;;
     esac
     case "$p" in
         /*) abs=$p ;;
@@ -221,7 +226,7 @@ open_one() {
     if command -v code >/dev/null 2>&1; then
         # code returns immediately; --goto jumps to line:col.
         code --goto "$file:${ln:-1}:${col:-1}" >/dev/null 2>&1 &
-        note "opened ${file/#$HOME/\~}${ln:+:$ln}"
+        note "opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
     # Saying "opened" for a command that was never found is worse than doing
@@ -255,7 +260,7 @@ fi
 # carried none). fzf quotes both when it substitutes them.
 if command -v fzf >/dev/null; then
     pick=$(for i in "${!FILES[@]}"; do
-               printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$HOME/\~}" "${LINES[$i]}"
+               printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}"
            done | fzf --height=100% --reverse --delimiter=$'\t' \
                       --with-nth=2 --info=inline \
                       --cycle --scroll-off=3 \

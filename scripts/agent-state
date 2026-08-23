@@ -30,9 +30,14 @@ notify)
     # hook blocks the agent that fired it. read -t gives up instead; the partial
     # line survives in $chunk, so a payload arriving without a trailing newline
     # is still seen.
-    payload="" chunk=""
-    while IFS= read -r -t 2 chunk; do payload="$payload$chunk"; done
-    payload="$payload$chunk"
+    # One deadline for the WHOLE read, not per line: a writer emitting a line
+    # every second would keep a per-line timeout alive forever, and the contract
+    # here is that a hook never blocks the agent that fired it.
+    payload="" chunk="" deadline=$(( SECONDS + 2 ))
+    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
+        IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
+        payload="$payload$chunk"; chunk=""
+    done
     case "$payload" in
         *'waiting for your input'*)
             # Claude emits this while it is BLOCKED on a permission prompt too,

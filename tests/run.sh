@@ -16,6 +16,11 @@ is()   { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
 
 plain() { sed 's/#\[[^]]*\]//g'; }
 
+# Scratch servers are registered here so an interrupted run does not leave them
+# behind. Each block still kills its own; this is the backstop.
+SOCKS=""
+kill_socks() { for s in $SOCKS; do tmux -L "$s" kill-server >/dev/null 2>&1; done; }
+
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
 # "no tmux running".
@@ -42,7 +47,7 @@ if [ "$HAVE_TMUX" = 1 ]; then
     PANE=$(tmux list-panes -t ":$SCRATCH_WIN" -F '#{pane_id}' 2>/dev/null | head -1)
 fi
 PANE=${PANE:-%0}
-cleanup() { [ -n "$SCRATCH_WIN" ] && tmux kill-window -t ":$SCRATCH_WIN" >/dev/null 2>&1; rm -rf "$STATE" "$STUB"; }
+cleanup() { [ -n "$SCRATCH_WIN" ] && tmux kill-window -t ":$SCRATCH_WIN" >/dev/null 2>&1; kill_socks; rm -rf "$STATE" "$STUB"; }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
 
@@ -63,8 +68,8 @@ echo "== the REPO's shipped config renders correctly =="
 # queried the USER'S running server, so a regression in the repo's own formats
 # stayed green until someone reloaded the plugin.
 if need_tmux "repo config"; then :; else
-SOCK="cockpit-test-$$"
-tmux -L "$SOCK" new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+SOCK="cockpit-test-$$"; SOCKS="$SOCKS $SOCK"
+tmux -L "$SOCK" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
     tmux -L "$SOCK" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
 done
@@ -86,6 +91,48 @@ else
     for i in 1 2 3 4 5 6; do skip_ "repo config (no scratch server)"; done
 fi
 tmux -L "$SOCK" kill-server >/dev/null 2>&1
+fi
+
+echo "== the shipped config is usable as shipped =="
+# The block above asserts colours, which pass whether or not the #{agent_*}
+# tokens were ever rewritten. They were not: run-shell blocks the command queue,
+# so loading cockpit.tmux at the TOP of the file made it read options that did
+# not exist yet and skip them, and everyone who copied the block verbatim got
+# the literal token printed in their status bar. Source the file the way a user
+# does and check the result, not the intent.
+if need_tmux "shipped config is usable"; then :; else
+SOCK4="cockpit-shipped-$$"; SOCKS="$SOCKS $SOCK4"
+tmux -L "$SOCK4" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$SOCK4" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+dt=$(tmux -L "$SOCK4" show-option -gqv @catppuccin_directory_text)
+case "$dt" in
+    *'#{agent_where_path}'*) bad "sourcing it interpolates the path token" "a #(...) call" "$dt" ;;
+    *tmux-where*)            ok  "sourcing it interpolates the path token" ;;
+    *)                       bad "sourcing it interpolates the path token" "a #(...) call" "$dt" ;;
+esac
+gt=$(tmux -L "$SOCK4" show-option -gqv @catppuccin_gitmux_text)
+case "$gt" in
+    *tmux-where*) ok  "and the branch token" ;;
+    *)            bad "and the branch token" "a #(...) call" "$gt" ;;
+esac
+# Reloading ~/.tmux.conf is routine; -a would stack a second clickable segment
+# on every reload, and a second interpolation on top of the first.
+tmux -L "$SOCK4" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+is "reloading does not stack the click range" "1" \
+   "$(tmux -L "$SOCK4" show-option -gqv status-right | grep -o 'range=control|1' | wc -l)"
+is "reloading does not re-interpolate" "1" \
+   "$(tmux -L "$SOCK4" show-option -gqv @catppuccin_directory_text | grep -o 'tmux-where' | wc -l)"
+# pane_title defaults to the HOSTNAME. Claude sets a title; aider, codex, gemini
+# and crush generally do not, so without a guard every one of those tabs reads
+# the same hostname instead of its window name.
+tmux -L "$SOCK4" new-window -d -n buildwin 'exec -a aider sleep 300' >/dev/null 2>&1
+wt=$(tmux -L "$SOCK4" display-message -p -t buildwin '#{E:@catppuccin_window_text}' 2>/dev/null | plain)
+case "$wt" in
+    *"$(hostname -s 2>/dev/null)"*) bad "an agent with no title shows its window name" "buildwin" "$wt" ;;
+    *buildwin*)                     ok  "an agent with no title shows its window name" ;;
+    *)                              bad "an agent with no title shows its window name" "buildwin" "$wt" ;;
+esac
+tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
 echo "== live server rendering =="
@@ -627,8 +674,8 @@ echo "== cockpit.tmux: every option carrying a token is interpolated =="
 # but the rewrite loop only ever visited two @catppuccin_* options, so anyone
 # following the README got the literal token printed in their status bar.
 if need_tmux "token interpolation"; then :; else
-SOCK2="cockpit-interp-$$"
-tmux -L "$SOCK2" new-session -d -s t >/dev/null 2>&1
+SOCK2="cockpit-interp-$$"; SOCKS="$SOCKS $SOCK2"
+tmux -L "$SOCK2" -f /dev/null new-session -d -s t >/dev/null 2>&1
 tmux -L "$SOCK2" set -g status-right "L #{agent_where_path} R"     >/dev/null 2>&1
 tmux -L "$SOCK2" set -g status-left  "#{agent_where_branch}"       >/dev/null 2>&1
 tmux -L "$SOCK2" set -g @catppuccin_gitmux_text "#{agent_where_branch}" >/dev/null 2>&1
@@ -670,5 +717,42 @@ case "$d" in
     *) bad "detached HEAD shows a hash, not the word HEAD" "@${sha:0:7}" "$d" ;;
 esac
 rm -rf "$DH"
+echo "== install.sh only ever touches its own links =="
+IB=$(mktemp -d); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
+XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
+is "installs through a symlinked plugin dir" "3" "$(ls "$IBIN" | wc -l)"
+# DIR came from a LOGICAL pwd while the guard compared readlink -f of the link,
+# so reaching the plugin through a symlink -- a dotfiles checkout linked into
+# ~/.tmux/plugins is the usual way -- made --uninstall remove nothing, silently.
+XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
+is "and uninstalls through one too" "0" "$(ls "$IBIN" | wc -l)"
+# A same-named symlink owned by another tool must be left alone: "tm" is a name
+# plenty of things want, and --uninstall would later have deleted it as well.
+XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+rm -f "$IBIN/tm"; ln -s /bin/echo "$IBIN/tm"
+XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+is "leaves another tool's link alone" "/bin/echo" "$(readlink "$IBIN/tm")"
+rm -rf "$IB"
+
+echo "== HOME unset must not kill the path picker =="
+# set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
+# outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
+HU=$(mktemp -d); : > "$HU/f.txt"
+is "a ~ token with HOME unset still resolves the real file" "$HU/f.txt::" \
+   "$(env -u HOME "$DIR/scripts/tmux-open-path" --dry-run "$HU" 'see f.txt and ~/nothing' 2>&1)"
+is "and the preview does not crash"     "empty file" \
+   "$(env -u HOME "$DIR/scripts/tmux-open-path" --preview "$HU/f.txt" 2>&1)"
+rm -rf "$HU"
+
+echo "== notify's deadline covers the whole read, not each line =="
+# A per-line timeout is not a bound: a writer emitting a line a second keeps the
+# hook alive forever, and the contract is that a hook never blocks its agent.
+start=$SECONDS
+( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i"; sleep 1; done ) \
+    | "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1
+took=$((SECONDS - start))
+if [ "$took" -le 4 ]; then ok "a slow drip does not hold the hook open"
+else bad "a slow drip does not hold the hook open" "<=4s" "${took}s"; fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
