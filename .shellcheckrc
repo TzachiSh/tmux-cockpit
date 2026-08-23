@@ -1,0 +1,12 @@
+# tmux-cockpit shellcheck settings.
+shell=bash
+
+# SC2086 - unquoted $var. Deliberate in the few places it appears: splitting a
+#          space-separated pid list, and expanding a token list where globbing
+#          is already disabled with `set -f`.
+disable=SC2086
+
+# SC1090/SC1091 - "cannot follow non-constant source". The test rig sources a
+#                 function it just extracted into a temp file; there is nothing
+#                 for shellcheck to follow at lint time.
+disable=SC1090,SC1091
