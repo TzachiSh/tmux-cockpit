@@ -980,5 +980,58 @@ sh -c "'$SPC/scripts/tmux-where' branch 1 '$DIR' claude" >/dev/null 2>&1
 is "a spaced plugin path still runs the status script" "0" "$?"
 rm -rf "$(dirname "$SPC")"
 
+echo "== the picker yields to an app that wants the mouse =="
+# Every tmux default that targets a pane checks this first. Ours did not, so
+# ctrl/alt-clicking inside vim, less or copy-mode was swallowed by cockpit and
+# the application never saw the event -- with no way for the user to tell why.
+if need_tmux "mouse guard"; then :; else
+GO="cockpit-go-$$"; GI="cockpit-gi-$$"; SOCKS="$SOCKS $GO $GI"
+"$TMUX_REAL" -L "$GI" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" set -g mouse on >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" split-window -t t >/dev/null 2>&1
+GP=$("$TMUX_REAL" -L "$GI" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$GI" send-keys -t "$GP" 'echo MARK README.md' Enter >/dev/null 2>&1
+sleep 0.4
+"$TMUX_REAL" -L "$GI" set-option -p -t "$GP" @click_line "" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" copy-mode -t "$GP" >/dev/null 2>&1     # sets pane_in_mode
+is "copy-mode really is active" "1" \
+   "$("$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{pane_in_mode}')"
+"$TMUX_REAL" -L "$GO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $GI attach -t t" >/dev/null 2>&1
+GOP=$("$TMUX_REAL" -L "$GO" list-panes -t o -F '#{pane_id}' | head -1)
+sleep 1.5
+GSEQ='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
+"$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 0.05
+"$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 1.5
+is "the picker does not fire in copy-mode" "" \
+   "$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @click_line)"
+"$TMUX_REAL" -L "$GO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" kill-server >/dev/null 2>&1
+fi
+
+echo "== the border keeps tmux's own buttons =="
+# Replacing pane-border-format wholesale silently deleted tmux's right-aligned
+# zoom (control|8) and kill (control|9) buttons from every pane border.
+if need_tmux "border buttons"; then :; else
+BB="cockpit-bb-$$"; SOCKS="$SOCKS $BB"
+"$TMUX_REAL" -L "$BB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    "$TMUX_REAL" -L "$BB" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$BB" set -g mouse on >/dev/null 2>&1
+"$TMUX_REAL" -L "$BB" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+BP=$("$TMUX_REAL" -L "$BB" list-panes -a -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$BB" set -p -t "$BP" @panestate needs-input >/dev/null 2>&1
+bb=$("$TMUX_REAL" -L "$BB" display-message -p -t "$BP" '#{E:pane-border-format}')
+case "$bb" in *'range=control|8'*) ok "the zoom button survives" ;; *) bad "the zoom button survives" "range=control|8" "$bb" ;; esac
+case "$bb" in *'range=control|9'*) ok "the kill button survives" ;; *) bad "the kill button survives" "range=control|9" "$bb" ;; esac
+case "$(printf '%s' "$bb" | plain)" in
+    *"NEEDS YOU"*) ok "and the alert still renders beside them" ;;
+    *) bad "and the alert still renders beside them" "NEEDS YOU" "$(printf '%s' "$bb" | plain)" ;;
+esac
+"$TMUX_REAL" -L "$BB" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

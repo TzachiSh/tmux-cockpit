@@ -91,12 +91,44 @@ done
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 
+# Version gate. Measured against real 3.4 and 3.7c binaries, not guessed:
+#
+#   3.4  per-pane pane-border-style with a format WORKS, #{m/r:} with an option
+#        as the pattern works, display-popup -T works. The README used to claim
+#        3.5 was the floor because the border "silently does nothing" on 3.4 --
+#        it does not; that claim was wrong.
+#   3.3  display-popup -T (the popup titles) first appears here. This is the
+#        real floor.
+#   3.7  MouseDown1Control1 and #[range=control|N] first appear. Below this,
+#        binding it fails with "unknown key" and the range marker is ignored,
+#        so Ctrl+clicking the branch segment cannot work. Everything else does.
+#
+# The message matters because tpm discards plugin stdout AND stderr, so a bare
+# "unknown key" line would vanish and the user would just have a dead segment.
+tmux_version=$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')
+version_at_least() {           # version_at_least <major> <minor>
+    local maj=${tmux_version%%.*} min=${tmux_version#*.}
+    [ -n "$maj" ] || return 0                     # unparseable: assume modern
+    case "$min" in ''|*[!0-9]*) min=0 ;; esac
+    [ "$maj" -gt "$1" ] || { [ "$maj" -eq "$1" ] && [ "$min" -ge "$2" ]; }
+}
+
+if ! version_at_least 3 3; then
+    tmux display-message "tmux-cockpit needs tmux 3.3 or newer (found ${tmux_version:-unknown})"
+fi
+
 # Branch picker. The click half needs the status bar to mark a range -- the
 # plugin cannot inject into a status-right it does not own. See the README.
 # Same geometry and title style as the path picker: the two popups are siblings
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
-tmux bind-key -n MouseDown1Control1 display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
+if version_at_least 3 7; then
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
+elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
+    # Their config marks a click range this tmux cannot deliver. Say so, or the
+    # segment is simply dead with no explanation.
+    tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
+fi
 tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
@@ -123,29 +155,44 @@ tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch b
 #                      WezTerm, foot), where it is the lighter gesture. Binding
 #                      both costs nothing: whichever one your terminal delivers
 #                      is the one that fires.
-open_path="select-pane -t= ; set -pF -t= @click_line \"#{mouse_line}\" ; run-shell -b \"$Q_OPEN #{pane_id}\""
-
-# tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
-# Ctrl+double-click. Swapping the panes moves the second click onto a different
-# pane, so tmux never accumulates a double-click and C-DoubleClick1Pane is never
-# emitted at all. Measured on a clean 3.7 server with synthetic SGR events:
+# The binding goes through a generated config file rather than bind-key argv.
+# It has to wrap the action in tmux's mouse guard, and the guard plus a
+# shell-quoted path is three levels of nesting -- tmux single quotes inside tmux
+# double quotes inside a shell string, with the path already carrying quotes of
+# its own. A config file supports {} blocks and needs none of that.
 #
-#   panes  swap-pane bound   picker fires
-#     1    yes              yes      (nothing to swap with, so nothing moves)
-#     2    yes              NO
-#     3    yes              NO
-#     2/3  rebound below    yes
-#
-# One pane is why this looked fine when I tested it. It is broken for anyone
-# with a split, which is most people running several agents.
-#
-# So Ctrl+click focuses the pane instead of swapping it. Losing swap-pane is the
-# price of the gesture; the two cannot coexist, because the conflict is the
-# first click of the double. Set @cockpit_keep_swap_pane to keep tmux's default
-# and give up the Ctrl+double-click picker (Alt+click still works where the
-# terminal sends it).
-if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
-    tmux bind-key -n C-MouseDown1Pane select-pane -t=
-    tmux bind-key -n C-DoubleClick1Pane "$open_path"
-fi
-tmux bind-key -n M-MouseDown1Pane "$open_path"
+# The guard is the one every tmux default that targets a pane already uses:
+# when the application has mouse reporting on (vim, less, htop) or the pane is
+# in copy-mode, forward the event with send-keys -M instead of eating it.
+# Without it, alt/ctrl-clicking inside vim silently did nothing and the editor
+# never saw the click.
+GUARD='#{||:#{pane_in_mode},#{mouse_any_flag}}'
+conf=$(mktemp) || exit 1
+{
+    # tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press
+    # of a Ctrl+double-click. Swapping moves the second click onto a different
+    # pane, so tmux never accumulates the double-click and C-DoubleClick1Pane is
+    # never emitted. Measured on a clean 3.7 server: fires with one pane, never
+    # with two or three. One pane is why this looked fine by hand.
+    #
+    # Ctrl+click therefore focuses the pane instead of swapping it. The two
+    # cannot coexist -- the conflict is the first click of the double. Set
+    # @cockpit_keep_swap_pane to keep tmux's default and lose the picker.
+    if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
+        printf 'bind-key -n C-MouseDown1Pane select-pane -t=\n'
+        printf 'bind-key -n C-DoubleClick1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
+        printf '    select-pane -t=\n'
+        printf '    set -pF -t= @click_line "#{mouse_line}"\n'
+        printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
+        printf '}\n'
+    fi
+    # Kept for terminals that do forward Alt+click (xterm, kitty, WezTerm,
+    # foot). Ghostty strips it, which is why Ctrl+double-click exists above.
+    printf 'bind-key -n M-MouseDown1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
+    printf '    select-pane -t=\n'
+    printf '    set -pF -t= @click_line "#{mouse_line}"\n'
+    printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
+    printf '}\n'
+} > "$conf"
+tmux source-file "$conf"
+rm -f "$conf"

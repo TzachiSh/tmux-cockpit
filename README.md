@@ -112,8 +112,20 @@ Wire the hooks in `~/.claude/settings.json`:
 
 ## Requirements
 
-- **tmux >= 3.5** — per-pane `pane-border-style` accepting a format. On 3.4 the
-  border colour silently does nothing; the window markers still work.
+- **tmux >= 3.3** for everything except one gesture. Measured against real 3.4
+  and 3.7c binaries:
+
+  | version | what you get |
+  |---------|--------------|
+  | 3.3 | the floor — `display-popup -T`, which both pickers use |
+  | 3.4 | per-pane border colours, the markers, both pickers, `prefix + b` |
+  | 3.7 | adds `Ctrl`+click on the branch segment (`#[range=control\|N]`) |
+
+  Below 3.7 the plugin says so once and skips that one binding; `prefix + b`
+  opens the same picker. Below 3.3 it says so and stops.
+
+  An earlier version of this file claimed 3.5 was the floor because per-pane
+  border colour "silently does nothing" on 3.4. That was wrong — it works.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 
