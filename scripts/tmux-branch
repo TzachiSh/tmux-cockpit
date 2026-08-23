@@ -141,26 +141,32 @@ if ! command -v fzf >/dev/null; then
     exit
 fi
 
-# --print-query puts whatever was typed on line 1, so ctrl-n can create a branch
-# named by a search that matched nothing. --expect reports the key on line 2;
+# --print-query puts whatever was typed on line 1, so the create key can name a
+# branch from a search that matched nothing. --expect reports the key on line 2;
 # fzf 0.44 has no print() action, and --expect works everywhere.
+#
+# alt-enter, NOT ctrl-n. ctrl-n is fzf's own move-down (verified: one ctrl-n in a
+# three-row list accepts the SECOND row), and an --expect key exits fzf the
+# moment it is pressed -- so binding create to it meant anyone navigating with
+# emacs keys created a branch named by their filter, or hit "type a name before
+# ^N", which closes the popup and loses their place. alt-enter is the fzf idiom
+# for "act on the literal query" and collides with nothing.
 out=$(printf '%s\n' "${rows[@]}" \
-    | fzf --print-query --expect=ctrl-n \
-          --height=100% --reverse --no-multi --info=inline \
-          --cycle --scroll-off=3 \
+    | fzf --print-query --expect=alt-enter \
+          --reverse --no-multi --info=inline --cycle --scroll-off=2 --color=16 \
           --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-          --prompt="branch> " \
-          --header="↵ switch   ^N new branch (type the name first)   ^/ preview   esc cancel
-on: ${current:-detached HEAD}   in: ${DIR/#$HOME/\~}" \
-          --preview='git log --color=always --oneline --graph -20 {1} 2>/dev/null' \
-          --preview-window=down,60%,border-top)
+          --prompt="switch> " \
+          --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
+on ${current:-detached HEAD} · ${DIR/#$HOME/\~}" \
+          --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
+          --preview-window='down,65%,border-top')
 
 query=$(sed -n 1p <<<"$out")
 key=$(sed -n 2p <<<"$out")
 pick=$(sed -n 3p <<<"$out")
 
-if [ "$key" = ctrl-n ]; then
-    [ -n "$query" ] || fail "type a name before ^N"
+if [ "$key" = alt-enter ]; then
+    [ -n "$query" ] || fail "type a name before alt-enter"
     create "$query"
     exit
 fi

@@ -88,8 +88,11 @@ Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 
 # Branch picker. The click half needs the status bar to mark a range -- the
 # plugin cannot inject into a status-right it does not own. See the README.
-tmux bind-key -n MouseDown1Control1 display-popup -E -w 70% -h 70% "$Q_BRANCH"
-tmux bind-key b display-popup -E -w 70% -h 70% "$Q_BRANCH"
+# Same geometry and title style as the path picker: the two popups are siblings
+# and should read as one tool. No -b/-S -- the border belongs to the user's
+# popup-border-style, and overriding it would fight their theme.
+tmux bind-key -n MouseDown1Control1 display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
+tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane

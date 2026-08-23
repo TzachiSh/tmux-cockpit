@@ -780,5 +780,46 @@ took=$((SECONDS - start))
 if [ "$took" -le 4 ]; then ok "a slow drip does not hold the hook open"
 else bad "a slow drip does not hold the hook open" "<=4s" "${took}s"; fi
 
+echo "== the branch picker must not hijack ctrl-n =="
+# ctrl-n is fzf's own move-down. As an --expect key it instead EXITS fzf, so
+# navigating with emacs keys created a branch named by the filter, or tripped
+# "type a name before ^N" and closed the popup. Driven through a real pty,
+# because this only misbehaves with a terminal attached.
+if need_tmux "ctrl-n in the branch picker"; then :; else
+if command -v fzf >/dev/null 2>&1; then
+KB=$(mktemp -d)
+(
+  cd "$KB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+  git branch second; git branch third
+) >/dev/null 2>&1
+SOCK5="cockpit-keys-$$"; SOCKS="$SOCKS $SOCK5"
+tmux -L "$SOCK5" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$KB" >/dev/null 2>&1
+KP=$(tmux -L "$SOCK5" list-panes -a -F '#{pane_id}' | head -1)
+tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
+sleep 2
+# Type a filter FIRST. With an empty query the old binding only errored, so a
+# bare ctrl-n proves nothing -- it is the typed query that used to become a
+# branch name. "zzz" matches no branch, exactly the case the create key exists
+# for and exactly what a user filtering the list would trip over.
+tmux -L "$SOCK5" send-keys -t "$KP" "zzz"
+sleep 1
+tmux -L "$SOCK5" send-keys -t "$KP" C-n      # emacs move-down, NOT create
+sleep 1
+tmux -L "$SOCK5" send-keys -t "$KP" Escape   # leave without switching
+sleep 1
+after=$(git -C "$KB" for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
+is "ctrl-n after typing creates no branch" "main second third " "$after"
+is "and the checkout is untouched" "main" "$(git -C "$KB" branch --show-current)"
+tmux -L "$SOCK5" kill-server >/dev/null 2>&1
+rm -rf "$KB"
+else
+  skip_ "ctrl-n creates no branch"; skip_ "and the checkout is untouched"
+fi
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

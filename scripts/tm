@@ -21,8 +21,8 @@ tm — tmux session launcher.
   tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
   tm -l            list sessions
   tm -h            this help
-In the picker: arrows move, Enter attaches, k kills the highlighted session,
-  / turns on type-to-search (k then types again), Esc cancels.
+In the picker: ↵ attach   k kill   / search   esc cancel
+  (after /, k types instead of killing)
 USAGE
 }
 
@@ -98,7 +98,7 @@ case "${1:-}" in
     if command -v fzf >/dev/null; then
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
         | fzf --multi --height=40% --reverse --prompt='kill> ' \
-              --header='Tab = mark several, Enter = kill, Esc = cancel')
+              --header='tab mark   ↵ kill   esc cancel')
     else
       printf 'Kill which session?\n' >&2
       select s in "${sessions[@]}"; do doomed=("${s:-}"); break; done
@@ -129,9 +129,9 @@ fi
 if command -v fzf >/dev/null; then
   choice=$(printf '%s\n' "${sessions[@]}" "$NEW_LABEL" \
     | fzf --height=40% --reverse --no-multi --disabled --prompt='tmux session> ' \
-          --header='Enter attach   k kill   / search   arrows move   Esc cancel' \
+          --header='↵ attach   k kill   / search   esc cancel' \
           --bind "k:execute-silent('$SELF' --kill-one {})+reload('$SELF' -l; echo '$NEW_LABEL')" \
-          --bind "/:enable-search+unbind(k)+change-prompt(search> )+change-header(search mode: k now types   Enter attach   Esc cancel)") || exit 0
+          --bind "/:enable-search+unbind(k)+change-prompt(search> )+change-header(search: k types now   ↵ attach   esc cancel)") || exit 0
 else
   printf 'Sessions:\n' >&2
   select choice in "${sessions[@]}" "$NEW_LABEL"; do

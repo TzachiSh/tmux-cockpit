@@ -83,6 +83,7 @@ if [ "${1:-}" = --preview ]; then
     bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
     if [ -n "$bat" ]; then
         "$bat" --style=numbers,changes --color=always --paging=never \
+               --terminal-width="${FZF_PREVIEW_COLUMNS:-80}" --wrap=never \
                --line-range "$first:$last" ${l:+--highlight-line "$l"} \
                -- "$f" 2>/dev/null && exit 0
     fi
@@ -252,7 +253,8 @@ fi
 # has no terminal, so the picker needs a popup -- which re-enters this script
 # with --pick and rebuilds the same list.
 if [ "$PICK" -eq 0 ]; then
-    tmux display-popup -t "$pane" -E -w 80% -h 70% "$(shq "$0") --pick $(shq "$pane")"
+    tmux display-popup -t "$pane" -E -w 80% -h 75% -T ' open path ' \
+        "$(shq "$0") --pick $(shq "$pane")"
     exit 0
 fi
 
@@ -261,15 +263,13 @@ fi
 if command -v fzf >/dev/null; then
     pick=$(for i in "${!FILES[@]}"; do
                printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}"
-           done | fzf --height=100% --reverse --delimiter=$'\t' \
-                      --with-nth=2 --info=inline \
-                      --cycle --scroll-off=3 \
+           done | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
+                      --delimiter=$'\t' --with-nth=2 \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --prompt='open> ' \
-                      --header="↵ open   ^/ preview   ^U/^D scroll it   esc cancel
-${#FILES[@]} path$([ ${#FILES[@]} -eq 1 ] || printf s) on that line" \
+                      --header='↵ open   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
-                      --preview-window=down,70%,border-top)
+                      --preview-window='down,65%,border-top')
     [ -n "$pick" ] || exit 0
     i=${pick%%$'\t'*}
 else
