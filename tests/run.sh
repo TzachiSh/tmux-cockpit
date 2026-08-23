@@ -16,6 +16,43 @@ is()   { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
 
 plain() { sed 's/#\[[^]]*\]//g'; }
 
+# The whole suite runs against a PRIVATE tmux server, never the user's.
+#
+# It used to put its scratch pane on the live session -- creating and killing
+# windows in the middle of someone's work, and reading global options that
+# belong to them. That was intrusive, and it was flaky: two runs at once fought
+# over the same window names and one went red for reasons unrelated to the code.
+# Reproduced by running the suite twice concurrently.
+#
+# A PATH shim redirects every bare `tmux`, including the calls inside the
+# scripts under test (agent-state talks to tmux itself), so nothing had to be
+# rewritten call by call. Blocks that already pass an explicit -L still work:
+# tmux takes the LAST -L, and theirs comes after the shim's.
+TMUX_REAL=$(command -v tmux) || TMUX_REAL=tmux
+SUITE_SOCK="cockpit-suite-$$"
+SHIM=$(mktemp -d)
+# Deferring when $TMUX is set is load-bearing: tmux exports it to everything it
+# runs, so cockpit.tmux launched by a run-shell inside one of the per-block
+# servers must talk to THAT server, not this one.
+cat > "$SHIM/tmux" <<SHIMEOF
+#!/bin/sh
+[ -n "\${TMUX:-}" ] && exec "$TMUX_REAL" "\$@"
+exec "$TMUX_REAL" -L "$SUITE_SOCK" "\$@"
+SHIMEOF
+chmod +x "$SHIM/tmux"
+# The suite itself runs inside the user's tmux, so its own $TMUX would send
+# every bare call straight back to the live server. Drop it.
+unset TMUX TMUX_PANE
+PATH="$SHIM:$PATH"; export PATH
+
+"$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
+    'exec -a claude sleep 3600' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    "$TMUX_REAL" -L "$SUITE_SOCK" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
+done
+# The repo's own config, so the rendering assertions below test what we ship.
+"$TMUX_REAL" -L "$SUITE_SOCK" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+
 # Scratch servers are registered here so an interrupted run does not leave them
 # behind. Each block still kills its own; this is the backstop.
 SOCKS=""
@@ -24,7 +61,7 @@ kill_socks() { for s in $SOCKS; do tmux -L "$s" kill-server >/dev/null 2>&1; don
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
 # "no tmux running".
-if tmux list-panes -a >/dev/null 2>&1; then HAVE_TMUX=1; else HAVE_TMUX=0; fi
+if "$TMUX_REAL" -V >/dev/null 2>&1; then HAVE_TMUX=1; else HAVE_TMUX=0; fi
 # A skip is NOT a pass. Counting them as passes made a tmux-less run read
 # "26 passed, 0 failed" while ~30 state-machine assertions never executed.
 skip_() { skipped=$((skipped+1)); printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
@@ -41,13 +78,13 @@ st()    { "$DIR/scripts/agent-state" "$@"; }
 # Use a dedicated scratch pane, never a live one. The first live pane belongs to
 # a running agent whose own hooks fire concurrently and race the assertions --
 # that made the suite intermittently red for reasons unrelated to the code.
-SCRATCH_WIN=""
-if [ "$HAVE_TMUX" = 1 ]; then
-    SCRATCH_WIN=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-tests 'exec -a claude sleep 3600' 2>/dev/null)
-    PANE=$(tmux list-panes -t ":$SCRATCH_WIN" -F '#{pane_id}' 2>/dev/null | head -1)
-fi
+PANE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
 PANE=${PANE:-%0}
-cleanup() { [ -n "$SCRATCH_WIN" ] && tmux kill-window -t ":$SCRATCH_WIN" >/dev/null 2>&1; kill_socks; rm -rf "$STATE" "$STUB"; }
+cleanup() {
+    kill_socks
+    "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+    rm -rf "$STATE" "$STUB" "$SHIM"
+}
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
 
@@ -135,7 +172,7 @@ esac
 tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
-echo "== live server rendering =="
+echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
     save=$(tmux show-option -pqv -t "$tp" @panestate 2>/dev/null)
