@@ -524,7 +524,7 @@ cat > "$ETMUX/tmux" <<'STUB'
 case "$1" in
   show-options)
       case " $* " in
-          *@click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
           *@open-editor*) printf '%s\n' "${OPEN_EDITOR:-}" ;;
       esac ;;
   display-message)
@@ -886,7 +886,7 @@ SOCKS="$SOCKS $OUTER $INNER"
 IP=$("$TMUX_REAL" -L "$INNER" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$INNER" send-keys -t "$IP" 'echo MARK README.md' Enter >/dev/null 2>&1
 sleep 0.4
-"$TMUX_REAL" -L "$INNER" set-option -p -t "$IP" @click_line "" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" set-option -p -t "$IP" @cockpit_click_line "" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
 OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
@@ -897,7 +897,7 @@ CDBL='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
 if "$TMUX_REAL" -L "$OUTER" list-panes -t o >/dev/null 2>&1; then
     "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 0.05
     "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 1.5
-    got=$("$TMUX_REAL" -L "$INNER" show-options -p -t "$IP" -qv @click_line)
+    got=$("$TMUX_REAL" -L "$INNER" show-options -p -t "$IP" -qv @cockpit_click_line)
     case "$got" in
         *README.md*) ok "ctrl+double-click reaches the picker with 2 panes" ;;
         *) bad "ctrl+double-click reaches the picker with 2 panes" "the clicked line" "$got" ;;
@@ -993,7 +993,7 @@ GO="cockpit-go-$$"; GI="cockpit-gi-$$"; SOCKS="$SOCKS $GO $GI"
 GP=$("$TMUX_REAL" -L "$GI" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$GI" send-keys -t "$GP" 'echo MARK README.md' Enter >/dev/null 2>&1
 sleep 0.4
-"$TMUX_REAL" -L "$GI" set-option -p -t "$GP" @click_line "" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GI" set-option -p -t "$GP" @cockpit_click_line "" >/dev/null 2>&1
 "$TMUX_REAL" -L "$GI" copy-mode -t "$GP" >/dev/null 2>&1     # sets pane_in_mode
 is "copy-mode really is active" "1" \
    "$("$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{pane_in_mode}')"
@@ -1005,7 +1005,7 @@ GSEQ='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
 "$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 0.05
 "$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 1.5
 is "the picker does not fire in copy-mode" "" \
-   "$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @click_line)"
+   "$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @cockpit_click_line)"
 "$TMUX_REAL" -L "$GO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$GI" kill-server >/dev/null 2>&1
 fi
@@ -1032,6 +1032,46 @@ case "$(printf '%s' "$bb" | plain)" in
 esac
 "$TMUX_REAL" -L "$BB" kill-server >/dev/null 2>&1
 fi
+
+echo "== @open-editor still works under its new name =="
+# Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
+# another plugin could reasonably claim it, but people have it in their configs,
+# so it keeps working for a release and says so.
+RN=$(mktemp -d); RT=$(mktemp -d); : > "$RN/f.txt"
+cat > "$RT/tmux" <<'RSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)
+      case " $* " in
+          *@cockpit_click_line*) printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@cockpit_editor*)     printf '%s\n' "${NEW_ED:-}" ;;
+          *@open-editor*)        printf '%s\n' "${OLD_ED:-}" ;;
+      esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
+          *window_id*)         printf '@0\n' ;;
+          *)                   printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+      esac ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+esac
+exit 0
+RSTUB
+chmod +x "$RT/tmux"; ln -s "$(command -v bash)" "$RT/bash"
+ed_run() { : > "$RT/log"
+    env PATH="$RT" TMUX_LOG="$RT/log" CLICK_DIR="$RN" CLICK_LINE="f.txt" "$@" \
+        "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+    cat "$RT/log"; }
+case "$(ed_run NEW_ED=nvim)" in
+    *"NEWWIN nvim"*) ok "@cockpit_editor is used" ;;
+    *) bad "@cockpit_editor is used" "a window running nvim" "$(ed_run NEW_ED=nvim)" ;;
+esac
+out=$(ed_run OLD_ED=vi)
+case "$out" in *"NEWWIN vi"*) ok "the old @open-editor still works" ;;
+               *) bad "the old @open-editor still works" "a window running vi" "$out" ;; esac
+case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
+               *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
+rm -rf "$RN" "$RT"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

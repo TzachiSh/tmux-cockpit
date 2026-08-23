@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tmux-open-path — pick a path off the line you clicked, and open it.
-#   tmux-open-path <pane-id>                 picker for that pane's @click_line
+#   tmux-open-path <pane-id>                 picker for that pane's @cockpit_click_line
 #   tmux-open-path --preview <path> [line]   render one preview pane
 #   tmux-open-path --dry-run <dir> <line>   what a click on <line> would open
 #
@@ -9,7 +9,7 @@
 # actually resolved to.
 #
 # Bound to M-MouseDown1Pane, which stashes the clicked line in the pane option
-# @click_line first. It reads the whole LINE, not the word under the cursor:
+# @cockpit_click_line first. It reads the whole LINE, not the word under the cursor:
 # tmux's word-separators include / . : and -, so #{mouse_word} on
 # "src/foo-bar.ts:31" hands back "foo", which is not a file.
 #
@@ -19,8 +19,17 @@
 # then decide. Opening on a single guess is how you end up in the wrong file.
 #
 # Editor: VS Code by default, jumping to the line. For a terminal editor instead:
-#   set -g @open-editor nvim      # opens in a new tmux window at +LINE
+#   set -g @cockpit_editor nvim   # opens in a new tmux window at +LINE
 set -uo pipefail
+
+# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
+# silent and wrong rather than loud: `declare -A` errors, then the same
+# assignment quietly creates an INDEXED array with an arithmetic subscript.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
+           "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
+    exit 1
+fi
 
 # Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
 # run-shell from a stripped environment, or a systemd-launched tmux. tmux-where
@@ -124,9 +133,9 @@ else
         printf '       tmux-open-path --dry-run <dir> <line>\n' >&2
         exit 2
     }
-    # The binding rewrites @click_line on every click, so there is nothing stale
+    # The binding rewrites @cockpit_click_line on every click, so there is nothing stale
     # to clear -- and leaving it set is what lets the popup re-derive this list.
-    line=$(tmux show-options -p -t "$pane" -qv @click_line)
+    line=$(tmux show-options -p -t "$pane" -qv @cockpit_click_line)
     dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
 fi
@@ -219,7 +228,14 @@ shq() { printf '%q' "$1"; }
 
 open_one() {
     local file=$1 ln=$2 col=$3 editor
-    editor=$(tmux show-options -gqv @open-editor)
+    editor=$(tmux show-options -gqv @cockpit_editor)
+    if [ -z "$editor" ]; then
+        # The old, unprefixed name. Kept working for one release; it is generic
+        # enough that another plugin could reasonably want it.
+        editor=$(tmux show-options -gqv @open-editor)
+        [ -n "$editor" ] && tmux display-message \
+            "tmux-cockpit: @open-editor has been renamed @cockpit_editor"
+    fi
     # VS Code stays the default, but only where it is actually installed.
     # Otherwise fall back to the editor the user already told the shell about.
     if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1; then
@@ -243,7 +259,7 @@ open_one() {
     fi
     # Saying "opened" for a command that was never found is worse than doing
     # nothing: it sends you looking for the bug anywhere but here.
-    note "no editor found -- set @open-editor, or \$VISUAL/\$EDITOR, or install code"
+    note "no editor found -- set @cockpit_editor, or \$VISUAL/\$EDITOR, or install code"
 }
 
 if [ "$DRY" -eq 1 ]; then

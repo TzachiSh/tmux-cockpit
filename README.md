@@ -93,7 +93,27 @@ run-shell "'~/my plugins/tmux-cockpit/cockpit.tmux'"
 ```
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
-file, and `--uninstall` removes only links that point back into the plugin.
+file or by another tool's link, reports anything it could not create, and
+`--uninstall` removes only links that point back into the plugin.
+
+### Or with tpm
+
+It is a normal tpm plugin — an executable `*.tmux` at the repo root — so:
+
+```tmux
+set -g @plugin 'catppuccin/tmux'          # if you use it: declare it FIRST
+set -g @plugin '<owner>/tmux-cockpit'
+run '~/.tmux/plugins/tpm/tpm'             # last
+```
+
+tpm is the better route, because it runs plugins from that last line — after
+every `set -g` in your config, which is exactly the ordering the `#{agent_*}`
+tokens need. The one failure mode of the `run-shell` line, loading it too early
+and getting the raw token printed in your status bar, cannot happen under tpm.
+
+Order matters against catppuccin specifically: cockpit rewrites
+`@catppuccin_directory_text` and `@catppuccin_gitmux_text`, so catppuccin has to
+be declared first or it resets them afterwards.
 
 Wire the hooks in `~/.claude/settings.json`:
 
@@ -227,10 +247,10 @@ tmux bind -n C-DoubleClick1Pane run-shell -b "echo fired >> /tmp/probe"
 Opens in VS Code at the line. For a terminal editor instead:
 
 ```tmux
-set -g @open-editor nvim    # new window next to the one you clicked, at +LINE
+set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
 
-Where neither `@open-editor` nor `code` is available it falls back to `$VISUAL`
+Where neither `@cockpit_editor` nor `code` is available it falls back to `$VISUAL`
 or `$EDITOR`, and says so plainly if there is no editor at all rather than
 reporting a success that never happened.
 

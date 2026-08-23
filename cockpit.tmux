@@ -182,7 +182,7 @@ conf=$(mktemp) || exit 1
         printf 'bind-key -n C-MouseDown1Pane select-pane -t=\n'
         printf 'bind-key -n C-DoubleClick1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
         printf '    select-pane -t=\n'
-        printf '    set -pF -t= @click_line "#{mouse_line}"\n'
+        printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
         printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
         printf '}\n'
     fi
@@ -190,7 +190,7 @@ conf=$(mktemp) || exit 1
     # foot). Ghostty strips it, which is why Ctrl+double-click exists above.
     printf 'bind-key -n M-MouseDown1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
     printf '    select-pane -t=\n'
-    printf '    set -pF -t= @click_line "#{mouse_line}"\n'
+    printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
     printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
     printf '}\n'
 } > "$conf"
