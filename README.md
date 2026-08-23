@@ -1,7 +1,10 @@
-# tmux-panestate
+# tmux-cockpit
 
 Shows what every AI coding agent in your tmux session is doing, without you
-having to switch windows to find out.
+having to switch windows to find out — then lets you act on what you see without
+leaving the pane. Ctrl+click the branch in the status bar to switch branch.
+Ctrl+double-click any line of output to pick a path off it and open that file,
+at the line it names.
 
 ```text
  claude-main ●    claude-2 ▲    coder ○
@@ -69,14 +72,28 @@ timer.
 ## Install
 
 ```sh
-git clone <this repo> ~/.tmux/plugins/tmux-panestate
+git clone <this repo> ~/.tmux/plugins/tmux-cockpit
+~/.tmux/plugins/tmux-cockpit/install.sh    # symlinks tm and the two tmux-* commands into ~/.local/bin
 ```
 
 Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block):
 
 ```tmux
-run-shell ~/.tmux/plugins/tmux-panestate/panestate.tmux
+run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
 ```
+
+That one line also binds the keys below — there is nothing else to add for them.
+It must come **after** every option using an `#{agent_*}` token, and before tpm.
+
+If the path contains a space, quote it for the shell *inside* the tmux string —
+tmux hands the line to `sh`, which would otherwise split it and fail with 127:
+
+```tmux
+run-shell "'~/my plugins/tmux-cockpit/cockpit.tmux'"
+```
+
+`install.sh` only ever creates symlinks, skips a name already taken by a real
+file, and `--uninstall` removes only links that point back into the plugin.
 
 Wire the hooks in `~/.claude/settings.json`:
 
@@ -87,8 +104,9 @@ Wire the hooks in `~/.claude/settings.json`:
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
-| `SubagentStart` / `SubagentStop` | `running` |
-| `TaskCompleted` / `Stop` | `done` |
+| `SubagentStart` | `running` |
+| `PreToolUse` | `running` — marks the pane busy as a tool begins |
+| `Stop` | `done` |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `SessionEnd` | `off` |
 
@@ -98,6 +116,120 @@ Wire the hooks in `~/.claude/settings.json`:
   border colour silently does nothing; the window markers still work.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
+
+## Click the branch to switch branch
+
+| key | does |
+|-----|------|
+| `Ctrl`+click the branch segment | branch picker |
+| `prefix + b` | the same picker, without the mouse |
+
+Most-recent branch first, `^N` creates a branch named by what you typed, and a
+remote-only branch becomes a local tracking branch. When git refuses — a dirty
+tree, or a branch already checked out in another worktree — you get git's own
+message, naming the files or the worktree, and the popup waits for a key.
+
+The plugin binds the key but **cannot mark the click target**: `status-right`
+belongs to your config, not to the plugin. Wrap whatever shows the branch:
+
+```tmux
+set -ag status-right "#[range=control|1]#{E:@catppuccin_status_gitmux}#[norange]"
+```
+
+`range=control|1` triggers `MouseDown1Control1`, a key of its own.
+`range=user|X` would have taken over `MouseDown1Status` — the key that selects a
+window when you click the window list.
+
+## Ctrl+double-click a line to pick a path off it
+
+**Ctrl+double-click** any line of pane output. Every whitespace-separated token
+on that line that resolves to a real file becomes a candidate, and a picker
+popup opens with the list and a preview of the spot — the same popup shape the
+branch picker uses. Enter opens the highlighted one, Esc cancels.
+
+The picker opens even when the line yields exactly **one** path. Seeing what the
+line resolved to, with the file and line in front of you, is the point of the
+gesture; opening on a single guess is how you end up in the wrong file. When the
+line yields nothing, the status line says so and no popup appears.
+
+It reads `file:12:3`, `file:12`, `file(12,3)` (tsc), `a/file` (git diff),
+`~/file` and absolute paths, and strips the quotes, brackets and trailing commas
+terminals wrap paths in. Existence on disk is the filter, so a word that merely
+looks like a path is dropped.
+
+### The snippet
+
+The preview pane is the reason to look before you leap, so it shows the thing
+you are actually deciding about:
+
+| what you picked | what you see |
+|-----------------|--------------|
+| a file, with a line number | the code around that line, the line highlighted |
+| a file, no line number | the file from the top |
+| a directory | `git status --short` and a diff stat for it, or `ls -la` outside a repo |
+| a binary | its type and size, never its bytes |
+
+With [`bat`](https://github.com/sharkdp/bat) installed (`batcat` on Debian) the
+snippet is syntax-highlighted and carries the **git gutter** — `+` and `~`
+beside every line you have changed but not committed — so you see the code and
+what moved in it at the same time. Without `bat` it falls back to numbered
+lines with the target in reverse video. Nothing else is required.
+
+`tmux-open-path --preview <path> [line]` renders exactly what the popup shows,
+which is the quickest way to see why a preview looks wrong.
+
+It reads the whole clicked **line**, not `#{mouse_word}`: tmux's
+`word-separators` include `/ . : -`, so the word under `src/foo-bar.ts:31` is
+`foo`.
+
+### Why Ctrl+double-click
+
+Because it is the gesture that actually arrives. Measured against Ghostty 1.3,
+tmux receives plain clicks, `Ctrl`+click, double-clicks and `Ctrl`+double-clicks
+— but **never** `Alt`+click, which the terminal strips to a plain click, and
+never `Shift`+click, which it keeps for its own selection. An `Alt`-only binding
+cannot fire there at all.
+
+Of the gestures that do arrive, `Ctrl`+double-click is the only one tmux does
+not already own: plain `Ctrl`+click is `swap-pane`, and plain double-click is
+select-word-and-copy. Taking either would cost a feature people use daily. It
+also pairs with the branch picker, which is `Ctrl`+click on the status bar.
+
+`M-MouseDown1Pane` stays bound as well, for terminals that *do* forward
+`Alt`+click (xterm, kitty, WezTerm, foot), where it is the lighter gesture.
+Binding both costs nothing — whichever one your terminal delivers is the one
+that fires.
+
+If neither gesture does anything, check what your terminal actually sends:
+
+```sh
+tmux bind -n C-DoubleClick1Pane run-shell -b "echo fired >> /tmp/probe"
+: > /tmp/probe   # then Ctrl+double-click a pane and look at /tmp/probe
+```
+
+Opens in VS Code at the line. For a terminal editor instead:
+
+```tmux
+set -g @open-editor nvim    # new window next to the one you clicked, at +LINE
+```
+
+Where neither `@open-editor` nor `code` is available it falls back to `$VISUAL`
+or `$EDITOR`, and says so plainly if there is no editor at all rather than
+reporting a success that never happened.
+
+## tm — session launcher
+
+```sh
+tm <name>     attach to <name>, creating it if missing
+tm            pick from a session list; if none exist, ask for a name
+tm -k [name]  kill sessions (no name = pick them, Tab selects several)
+```
+
+In the picker: Enter attaches, `k` kills the highlighted session, `/` switches to
+type-to-search. It uses `switch-client` inside tmux and `attach-session` outside,
+and checks `session_attached` rather than `$TMUX` to tell the difference —
+anything launched from a pane inherits `$TMUX`, so a terminal opened inside tmux
+still carries it after the session is detached.
 
 ## Also included
 
@@ -114,8 +246,16 @@ you run several agents across worktrees of one repo:
  feat-api ⑂api-work      the same repo, linked worktree "api-work"
 ```
 
-Branch and worktree come from a single `git rev-parse --abbrev-ref HEAD
---git-dir` — asking separately would double the only real cost left here.
+Branch and worktree come from reading `.git/HEAD` directly, with **no `git`
+process at all** — a repo's HEAD is a one-line file, and this runs once per pane
+on every status redraw. Measured on this repo, that took the branch segment from
+6.2 ms to 2.8 ms a call, which is bash's own startup cost and nothing else. git
+is still asked for one case it alone can answer: a detached HEAD, whose
+short-hash width git decides from the size of the repo.
+
+The one deliberate difference from `git rev-parse` is that this ignores
+`safe.directory` — for a status bar, labelling the directory you are sitting in
+is the wanted behaviour.
 
 ## Tests
 
@@ -123,13 +263,33 @@ Branch and worktree come from a single `git rev-parse --abbrev-ref HEAD
 tests/run.sh
 ```
 
-54 cases. They skip rather than fail when no tmux server is running.
+144 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
+
+The path-extraction cases drive `tmux-open-path --dry-run`, so they need neither
+tmux nor an editor. The branch cases build a scratch repo with `git commit-tree`
+rather than `git commit`: no user config, no hooks, no signing prompt.
 
 ## Whole-pane tint
 
 A **blocked** pane also gets a faint warm tint across its entire background
 (`window-style`, +2% luminance — noticeable, never harmful to readability).
 It is the only state loud enough to earn more than a border.
+
+## Which commands count as an agent
+
+One option, read by every format:
+
+```tmux
+set -g @cockpit_agents "^(claude|codex|aider|cursor|opencode|gemini|crush)$"
+```
+
+`cockpit.tmux` sets that default if you have not, so there is nothing to do
+unless you run a CLI it does not know — then set your own **before** the
+`run-shell` line and everything follows. It is an extended regular expression
+matched against `#{pane_current_command}`.
+
+Do not set it to the empty string. tmux treats an empty pattern as matching
+every command, which would paint every pane in the session as an agent.
 
 ## Stale state
 
@@ -143,6 +303,16 @@ actually running one:
 
 Other projects solve this by polling the process tree from a background daemon.
 tmux already knows the foreground command, so this costs nothing.
+
+## Deliberately unwired
+
+`SubagentStop`, `TaskCompleted`, `PreCompact`, `TeammateIdle`.
+
+`SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
+so a run that failed finished **green**. The next `PostToolUse` restores `running`
+anyway, so the hook only ever destroyed information. `TaskCompleted` fires
+mid-turn per task-list item and flashed green while the agent kept working;
+`Stop` already covers every turn end.
 
 ## Known limits
 
