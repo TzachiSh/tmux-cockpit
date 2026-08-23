@@ -19,7 +19,16 @@
 #                         where the terminal forwards Alt+click)
 set -u
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# -P so DIR is resolved, and a hard exit if it fails: with `set -u` and no -e a
+# failed cd left DIR empty and the plugin cheerfully installed bindings pointing
+# at /scripts/... and exported a bogus TMUX_COCKPIT_DIR, all with status 0.
+DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+
+# Shell-quote a path for the command strings tmux hands to sh. SINGLE quotes,
+# not printf %q: the bindings below embed their path inside a tmux
+# double-quoted string, where tmux processes backslash escapes and would eat
+# %q's before sh ever saw them. Single quotes mean nothing to tmux in there.
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 
 interpolate() {
     local s="$1"
@@ -27,8 +36,13 @@ interpolate() {
     # breaks: the replacement text contains "}" (from #{pane_pid}), and bash
     # ends the parameter expansion at that first "}", appending the remainder
     # as literal garbage.
-    local r_path="#($DIR/scripts/tmux-where path #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
-    local r_brch="#($DIR/scripts/tmux-where branch #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
+    # $DIR must be quoted here too: sq() fixed the key bindings but this pair
+    # kept a bare path, so a plugin directory containing a space made both
+    # status tokens run "sh: /home/my: not found" on every redraw -- rendering
+    # nothing, reporting nothing.
+    local w; w=$(sq "$DIR/scripts/tmux-where")
+    local r_path="#($w path #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
+    local r_brch="#($w branch #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
     s="${s//'#{agent_where_path}'/$r_path}"
     s="${s//'#{agent_where_branch}'/$r_brch}"
     printf '%s' "$s"
@@ -74,15 +88,6 @@ done
 # Paths go through $DIR: the scripts work whether or not install.sh symlinked
 # them into ~/.local/bin.
 
-# tmux hands these strings to sh, so a plugin directory containing a space has
-# to arrive shell-quoted or sh splits it and the binding dies with 127.
-#
-# SINGLE quotes, not printf %q. The open_path binding below embeds its path
-# inside a tmux double-quoted string, and tmux processes backslash escapes in
-# there -- so %q's backslashes are eaten before sh ever sees them, and the path
-# splits anyway. Single quotes mean nothing to tmux inside double quotes, so
-# they survive intact and sh does the right thing with them.
-sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # POSIX: close, escaped quote, reopen
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 
@@ -118,6 +123,29 @@ tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch b
 #                      WezTerm, foot), where it is the lighter gesture. Binding
 #                      both costs nothing: whichever one your terminal delivers
 #                      is the one that fires.
-open_path="select-pane -t= ; set -pF @click_line \"#{mouse_line}\" ; run-shell -b \"$Q_OPEN #{pane_id}\""
-tmux bind-key -n C-DoubleClick1Pane "$open_path"
-tmux bind-key -n M-MouseDown1Pane   "$open_path"
+open_path="select-pane -t= ; set -pF -t= @click_line \"#{mouse_line}\" ; run-shell -b \"$Q_OPEN #{pane_id}\""
+
+# tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
+# Ctrl+double-click. Swapping the panes moves the second click onto a different
+# pane, so tmux never accumulates a double-click and C-DoubleClick1Pane is never
+# emitted at all. Measured on a clean 3.7 server with synthetic SGR events:
+#
+#   panes  swap-pane bound   picker fires
+#     1    yes              yes      (nothing to swap with, so nothing moves)
+#     2    yes              NO
+#     3    yes              NO
+#     2/3  rebound below    yes
+#
+# One pane is why this looked fine when I tested it. It is broken for anyone
+# with a split, which is most people running several agents.
+#
+# So Ctrl+click focuses the pane instead of swapping it. Losing swap-pane is the
+# price of the gesture; the two cannot coexist, because the conflict is the
+# first click of the double. Set @cockpit_keep_swap_pane to keep tmux's default
+# and give up the Ctrl+double-click picker (Alt+click still works where the
+# terminal sends it).
+if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
+    tmux bind-key -n C-MouseDown1Pane select-pane -t=
+    tmux bind-key -n C-DoubleClick1Pane "$open_path"
+fi
+tmux bind-key -n M-MouseDown1Pane "$open_path"

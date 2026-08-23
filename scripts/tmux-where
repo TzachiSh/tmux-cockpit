@@ -32,7 +32,7 @@ cmd="${4:-}"          # #{pane_current_command}, tmux's view of the foreground p
 # are actually sitting in, rather than blanking out on a repo git declines to
 # touch on ownership grounds.
 git_label() {
-    local d=$path gd head br
+    local d=$path gd head br wt
 
     # Walk up for the .git of the containing repo. Terminates at / either way.
     while [ -n "$d" ] && [ "$d" != / ]; do
@@ -47,11 +47,15 @@ git_label() {
         # A linked worktree and a submodule both point out with "gitdir: <path>",
         # and that path may be relative to the worktree.
         read -r _ gd < "$d/.git" 2>/dev/null || return 0
+        gd=${gd%$'\r'}                       # a repo checked out on Windows
         [ -n "$gd" ] || return 0
         case "$gd" in /*) ;; *) gd=$d/$gd ;; esac
     fi
     [ -r "$gd/HEAD" ] || return 0
     read -r head < "$gd/HEAD" 2>/dev/null || return 0
+    # read strips spaces and tabs, never \r. A CRLF HEAD put a raw carriage
+    # return straight into the status line; the git call this replaced did not.
+    head=${head%$'\r'}
 
     case "$head" in
         'ref: refs/heads/'*) br=${head#ref: refs/heads/} ;;
@@ -66,8 +70,8 @@ git_label() {
     [ -n "$br" ] || return 0
 
     case "$gd" in
-        */worktrees/*) printf ' %.20s ⑂%.14s' "$br" "${gd##*/worktrees/}" ;;
-        *)             printf ' %.24s' "$br" ;;
+        */worktrees/*) wt=${gd##*/worktrees/}; printf ' %s ⑂%s' "${br:0:20}" "${wt:0:14}" ;;
+        *)             printf ' %s' "${br:0:24}" ;;
     esac
 }
 

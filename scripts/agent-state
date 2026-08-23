@@ -35,8 +35,13 @@ notify)
     # here is that a hook never blocks the agent that fired it.
     payload="" chunk="" deadline=$(( SECONDS + 2 ))
     while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
+        # Keep the newline read stripped. Without it the lines fuse, so a
+        # message wrapped across two lines ("Claude needs your" / "permission
+        # to use Bash") never matches the pattern and the alert is lost -- and
+        # two unrelated lines can fuse into a spurious match the other way.
         IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-        payload="$payload$chunk"; chunk=""
+        payload="$payload$chunk
+"; chunk=""
     done
     case "$payload" in
         *'waiting for your input'*)

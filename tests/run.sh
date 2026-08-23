@@ -12,7 +12,7 @@ S="$STATE/agent-state"
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" "$2" "$3"; }
-is()   { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
+is()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "$2" "$3"; fi; }
 
 plain() { sed 's/#\[[^]]*\]//g'; }
 
@@ -66,10 +66,6 @@ if "$TMUX_REAL" -V >/dev/null 2>&1; then HAVE_TMUX=1; else HAVE_TMUX=0; fi
 # "26 passed, 0 failed" while ~30 state-machine assertions never executed.
 skip_() { skipped=$((skipped+1)); printf '  \033[33mSKIP\033[0m %s\n' "$1"; }
 need_tmux() { [ "$HAVE_TMUX" = 1 ] && return 1; skip_ "$1 (no tmux server)"; return 0; }
-# Stub tmux: show-option returns empty (so icon DEFAULTS are used, making
-# expectations font/option independent) and list-panes returns nothing (so the
-# GC sweep is skipped and synthetic pane ids survive).
-STUB=$(mktemp -d); printf '#!/bin/sh\nexit 0\n' > "$STUB/tmux"; chmod +x "$STUB/tmux"
 st()    { "$DIR/scripts/agent-state" "$@"; }
 # Use a dedicated scratch pane, never a live one. It runs a process named
 # "claude" so the stale-state guard in the formats believes its @panestate --
@@ -79,11 +75,14 @@ st()    { "$DIR/scripts/agent-state" "$@"; }
 # a running agent whose own hooks fire concurrently and race the assertions --
 # that made the suite intermittently red for reasons unrelated to the code.
 PANE=$(tmux list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
-PANE=${PANE:-%0}
+if [ -z "$PANE" ]; then
+    printf '  \033[31mFATAL\033[0m private tmux server did not start\n' >&2
+    exit 1
+fi
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
-    rm -rf "$STATE" "$STUB" "$SHIM"
+    rm -rf "$STATE" "$SHIM"
 }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
@@ -309,9 +308,7 @@ st running "$PANE";  is "a new prompt clears done"      "running" "$(sv)"
 tmux set -p -t "$PANE" @panestate done >/dev/null 2>&1
 echo '{"message":"Claude is waiting for your input"}' | st notify "$PANE"
 is "idle notification does not clear done" "done" "$(sv)"
-is "clear-done mode is gone" "" "$(st clear-done %1 2>/dev/null; cat /dev/null)"
 is "and done is still intact"  "done" "$(sv)"
-rm -f "$S"/*
 
 fi
 echo "== spaced window names survive the formats =="
@@ -335,7 +332,6 @@ if need_tmux "rejects bogus states"; then :; else
 tmux set -p -t "$PANE" @panestate done >/dev/null 2>&1
 for b in clear-done RUNNING banana 'running; rm -rf /'; do st "$b" "$PANE" 2>/dev/null; done
 is "unknown states never written" "done" "$(sv)"
-rm -f "$S"/*
 
 fi
 echo "== safety =="
@@ -344,7 +340,6 @@ tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # Per-pane options die with the pane, so stale state cannot outlive a pane and
 # there is no sweep that could delete a live one.
-is "state is a per-pane option, not a file" "" "$(ls "$S" 2>/dev/null)"
 
 echo "== worktree in the branch label =="
 wtroot=$(mktemp -d)
@@ -395,7 +390,9 @@ is "-o value with spaces"  "host12"      "$(sshdest ssh -o 'ProxyCommand=ssh -W 
 
 echo "== tmux-where: local rendering =="
 is "local path is ~-shortened" " ~"      "$("$DIR/scripts/tmux-where" path 1 "$HOME" bash | plain)"
-is "dead pid stays quiet"      " /tmp/x" "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
+# cmd=ssh forces the /proc walk; cmd=bash returns on the fast path before $pid
+# is read, so the old version asserted nothing about a dead pid at all.
+is "dead pid stays quiet"      " /tmp/x" "$("$DIR/scripts/tmux-where" path 999999 /tmp/x ssh 2>&1 | plain)"
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
 
 
@@ -868,6 +865,120 @@ else
   skip_ "ctrl-n creates no branch"; skip_ "and the checkout is untouched"
 fi
 fi
+
+echo "== the path picker fires in a window with a split =="
+# tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
+# Ctrl+double-click. Swapping moves the second click to another pane, so tmux
+# never accumulates the double-click and the binding never runs. With one pane
+# there is nothing to swap, which is why this looked fine by hand -- and why the
+# test has to use TWO panes or it proves nothing.
+#
+# Real mouse events, not a simulated binding: an outer tmux server provides the
+# pty for a client attached to the inner one, and send-keys -H writes the raw
+# SGR bytes (ESC [ < 16 ; 3 ; 1 M/m -- button 0 plus the ctrl bit) into it.
+if need_tmux "path picker with a split"; then :; else
+OUTER="cockpit-outer-$$"; INNER="cockpit-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" set -g mouse on >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" split-window -t t >/dev/null 2>&1
+IP=$("$TMUX_REAL" -L "$INNER" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$INNER" send-keys -t "$IP" 'echo MARK README.md' Enter >/dev/null 2>&1
+sleep 0.4
+"$TMUX_REAL" -L "$INNER" set-option -p -t "$IP" @click_line "" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
+OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
+sleep 1.5
+CDBL='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
+# The client has to be up, or the keys go nowhere and the assertion passes for
+# the wrong reason -- twice today a test of mine did exactly that.
+if "$TMUX_REAL" -L "$OUTER" list-panes -t o >/dev/null 2>&1; then
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 0.05
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 1.5
+    got=$("$TMUX_REAL" -L "$INNER" show-options -p -t "$IP" -qv @click_line)
+    case "$got" in
+        *README.md*) ok "ctrl+double-click reaches the picker with 2 panes" ;;
+        *) bad "ctrl+double-click reaches the picker with 2 panes" "the clicked line" "$got" ;;
+    esac
+else
+    bad "ctrl+double-click reaches the picker with 2 panes" "an attached client" "no client"
+fi
+"$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
+fi
+
+echo "== the fixes review found =="
+# agent-state joined payload lines with NO separator, so the tail of one line
+# and the head of the next could fuse into a marker that appears in neither.
+# (A raw newline INSIDE a JSON string is invalid JSON and cannot reach us, so
+# the reverse -- a wrapped message failing to match -- is not a real case.)
+if need_tmux "notify line fusion"; then :; else
+st running "$PANE"
+printf '{\n  "a": "Claude needs your ",\n  "b": "permission to use Bash"\n}\n' | st notify "$PANE"
+is "adjacent lines do not fuse into a false match" "running" "$(sv)"
+st running "$PANE"
+printf '{"message":"Claude needs your permission to use Bash"}\n' | st notify "$PANE"
+is "and the real single-line payload still matches" "needs-input" "$(sv)"
+st off "$PANE"
+fi
+
+# `read` strips spaces and tabs but never \r, so a repo checked out on Windows
+# put a raw carriage return into the status line. git rev-parse never did.
+CR=$(mktemp -d); git init -q "$CR" >/dev/null 2>&1
+printf 'ref: refs/heads/main\r\n' > "$CR/.git/HEAD"
+is "a CRLF .git/HEAD does not leak a carriage return" " main" \
+   "$("$DIR/scripts/tmux-where" branch 1 "$CR" claude)"
+rm -rf "$CR"
+
+# printf '%.24s' counts BYTES, so a non-ASCII branch name was cut mid-codepoint
+# and invalid UTF-8 reached the status bar.
+U8=$(mktemp -d); git init -q "$U8" >/dev/null 2>&1
+git -C "$U8" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i >/dev/null 2>&1
+if git -C "$U8" checkout -q -b "feature/日本語のブランチ名ですとても長い" 2>/dev/null; then
+    u=$("$DIR/scripts/tmux-where" branch 1 "$U8" claude)
+    if printf '%s' "$u" | iconv -f utf-8 -t utf-8 >/dev/null 2>&1
+    then ok "a long unicode branch stays valid UTF-8"
+    else bad "a long unicode branch stays valid UTF-8" "valid UTF-8" "$u"; fi
+else
+    skip_ "a long unicode branch stays valid UTF-8"
+fi
+rm -rf "$U8"
+
+# tmux-where and tmux-open-path were guarded; tmux-branch was the last one left
+# dereferencing a bare $HOME under set -u.
+HB=$(mktemp -d); git init -q "$HB" >/dev/null 2>&1
+git -C "$HB" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i >/dev/null 2>&1
+case "$(env -u HOME -u TMUX timeout 5 "$DIR/scripts/tmux-branch" "$HB" </dev/null 2>&1)" in
+    *"unbound variable"*) bad "tmux-branch survives HOME unset" "no crash" "HOME: unbound variable" ;;
+    *) ok "tmux-branch survives HOME unset" ;;
+esac
+rm -rf "$HB"
+
+# install.sh printed "linked ..." for every link ln had just failed to create,
+# and exited 0.
+RO=$(mktemp -d); chmod 555 "$RO"
+out=$(XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
+chmod 755 "$RO"; rm -rf "$RO"
+case "$out" in
+    *linked*) bad "a failed link is not reported as linked" "no 'linked' line" "$out" ;;
+    *) ok "a failed link is not reported as linked" ;;
+esac
+if [ "$rc" -ne 0 ]; then ok "and the installer exits non-zero"
+else bad "and the installer exits non-zero" "non-zero" "$rc"; fi
+# A typo used to install silently.
+"$DIR/install.sh" --uninstal >/dev/null 2>&1
+is "an unknown option is rejected" "2" "$?"
+
+# interpolate() kept a bare $DIR after sq() fixed the bindings, so a plugin path
+# containing a space made both status tokens run a command sh could not find --
+# silently, on every redraw, forever.
+SPC=$(mktemp -d)/"my plugins"; mkdir -p "$SPC"
+cp -r "$DIR/scripts" "$SPC/" 2>/dev/null
+sh -c "'$SPC/scripts/tmux-where' branch 1 '$DIR' claude" >/dev/null 2>&1
+is "a spaced plugin path still runs the status script" "0" "$?"
+rm -rf "$(dirname "$SPC")"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

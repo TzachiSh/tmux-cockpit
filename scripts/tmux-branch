@@ -7,6 +7,10 @@
 # would take its error message with it.
 set -uo pipefail
 
+# Under `set -u` a bare $HOME aborts the script wherever HOME is unset -- a tmux
+# server started by systemd or launchd. The other two scripts already guard it.
+H=${HOME:-/nonexistent}
+
 PANE_CMD=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -131,7 +135,7 @@ fi
 
 if ! command -v fzf >/dev/null; then
     # No fzf: a numbered menu still beats no picker at all.
-    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$HOME/\~}" "${current:-detached}"
+    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}"
     select row in "${rows[@]}"; do
         [ -n "${row:-}" ] || exit 0
         break
@@ -157,7 +161,7 @@ out=$(printf '%s\n' "${rows[@]}" \
           --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
           --prompt="switch> " \
           --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
-on ${current:-detached HEAD} · ${DIR/#$HOME/\~}" \
+on ${current:-detached HEAD} · ${DIR/#$H/\~}" \
           --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
           --preview-window='down,65%,border-top')
 

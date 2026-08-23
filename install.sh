@@ -17,9 +17,23 @@ BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 COMMANDS=(tm tmux-branch tmux-open-path)
 
 uninstall=0
-[ "${1:-}" = --uninstall ] && uninstall=1
+case "${1:-}" in
+    "")           ;;
+    --uninstall)  uninstall=1 ;;
+    # A typo used to install silently. "./install.sh --uninstal" removing
+    # nothing while reporting nothing is the worst possible answer.
+    *) printf 'unknown option: %s\n\nusage: install.sh [--uninstall]\n' "$1" >&2; exit 2 ;;
+esac
 
-mkdir -p "$BIN"
+rc=0
+mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
+
+# BSD readlink had no -f until macOS 12.3, where it returns empty and prints
+# "illegal option". Empty then compares unequal to every target, so the guards
+# below would refuse to touch our OWN links and uninstall would remove nothing
+# -- silently, with status 0. Only one level of link is ever needed here: the
+# question is just "did we make this".
+link_target() { readlink "$1" 2>/dev/null; }
 
 for c in "${COMMANDS[@]}"; do
     link="$BIN/$c"
@@ -29,7 +43,7 @@ for c in "${COMMANDS[@]}"; do
         # Only ever remove a link that points back into this plugin. Deleting
         # whatever happens to sit at that name would take someone else's tool
         # with it.
-        if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$target" ]; then
+        if [ -L "$link" ] && [ "$(link_target "$link")" = "$target" ]; then
             rm -- "$link" && printf 'removed  %s\n' "$link"
         fi
         continue
@@ -42,23 +56,40 @@ for c in "${COMMANDS[@]}"; do
     # A symlink of the same name that points somewhere else belongs to another
     # tool -- "tm" is a name plenty of things want. Overwriting it silently is
     # bad enough; --uninstall would then delete it too, leaving neither.
-    if [ -L "$link" ] && [ "$(readlink -f "$link")" != "$target" ]; then
-        printf 'SKIP     %s is a symlink to %s, not ours\n' "$link" "$(readlink -f "$link")" >&2
+    if [ -L "$link" ] && [ "$(link_target "$link")" != "$target" ]; then
+        printf 'SKIP     %s is a symlink to %s, not ours\n' "$link" "$(link_target "$link")" >&2
         continue
     fi
-    ln -sfn "$target" "$link"
-    printf 'linked   %-24s -> %s\n' "$link" "$target"
+    # Reporting "linked" after ln failed is worse than failing: a read-only bin
+    # directory produced three permission errors and three success lines, and
+    # exited 0.
+    if ln -sfn "$target" "$link" 2>/dev/null; then
+        printf 'linked   %-24s -> %s\n' "$link" "$target"
+    else
+        printf 'FAILED   %s (cannot create the link)\n' "$link" >&2
+        rc=1
+    fi
 done
 
-[ "$uninstall" -eq 1 ] && exit 0
+[ "$uninstall" -eq 1 ] && exit "$rc"
 
 case ":$PATH:" in
     *":$BIN:"*) ;;
     *) printf '\nNOTE: %s is not on your $PATH.\n' "$BIN" >&2 ;;
 esac
 
-conf="$HOME/.tmux.conf"
-if [ -r "$conf" ] && ! grep -q 'cockpit\.tmux' "$conf"; then
-    printf '\nAdd this to %s, last line but one:\n  run-shell %s/cockpit.tmux\n' \
+# Both locations, and say it even when neither exists -- a user with no tmux
+# config got no instruction at all, which is exactly the user who needs one.
+conf=""
+for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+    [ -r "$c" ] && { conf="$c"; break; }
+done
+if [ -z "$conf" ]; then
+    printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
+           "$HOME/.tmux.conf" "$DIR" >&2
+elif ! grep -q 'cockpit\.tmux' "$conf"; then
+    printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
            "$conf" "$DIR" >&2
 fi
+
+exit "$rc"
