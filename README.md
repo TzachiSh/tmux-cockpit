@@ -124,8 +124,13 @@ Wire the hooks in `~/.claude/settings.json`:
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 
-Most-recent branch first, `^N` creates a branch named by what you typed, and a
-remote-only branch becomes a local tracking branch. When git refuses — a dirty
+Both pickers share their keys: `↵` acts, `esc` cancels, `^/` toggles the
+preview and `^U`/`^D` scroll it.
+
+Most-recent branch first, `alt-↵` creates a branch named by what you typed, and
+a remote-only branch becomes a local tracking branch. It is `alt-↵` and not
+`^N`, which is fzf's own move-down: as a create key it meant navigating with
+emacs keys left the picker, and any filter you had typed became a branch name. When git refuses — a dirty
 tree, or a branch already checked out in another worktree — you get git's own
 message, naming the files or the worktree, and the popup waits for a key.
 
