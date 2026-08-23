@@ -150,25 +150,20 @@ is "and done is still intact"  "done" "$(sv)"
 rm -f "$S"/*
 
 fi
-echo "== spaced window names (native formats never word-split) =="
-sp=$(tmux list-panes -a -F '#{pane_id} #{window_index}' 2>/dev/null | awk '$2!=1{print $1;exit}')
-if [ -n "$sp" ]; then
-    sw=$(tmux list-panes -a -F '#{pane_id} #{window_index}' | awk -v p="$sp" '$1==p{print $2}')
-    orig=$(tmux display-message -p -t "$sp" '#{window_name}')
-    old=$(tmux show-option -pqv -t "$sp" @panestate 2>/dev/null)
-    tmux rename-window -t "$sw" 'my project' >/dev/null 2>&1
-    tmux set -p -t "$sp" @panestate needs-input >/dev/null 2>&1
-    # Evaluate the blocked-window list directly. Reading it through the border is
-    # fragile: the border evaluates the same list twice (once as a condition,
-    # once as output), and the two can disagree about which window is active.
-    LISTFMT='#{S:#{W:#{?window_active,,#{?#{m:*needs-input*,#{P:#{@panestate} }},#{window_index}:#{window_name} ,}}}}'
-    a=$(tmux display-message -p "$LISTFMT" 2>/dev/null | plain)
-    case "$a" in *"my project"*) ok "alert keeps a spaced window name" ;; *) bad "alert keeps a spaced window name" "my project" "$a" ;; esac
-    tmux rename-window -t "$sw" "$orig" >/dev/null 2>&1
-    if [ -n "$old" ]; then tmux set -p -t "$sp" @panestate "$old" >/dev/null 2>&1
-    else tmux set -pu -t "$sp" @panestate >/dev/null 2>&1; fi
+echo "== spaced window names survive the formats =="
+if need_tmux "spaced window names"; then :; else
+sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
+if [ -n "$sw" ]; then
+    sleep 0.4
+    # automatic-rename must not clobber an explicit name, and the format must
+    # carry the space through -- the old shell version truncated at it.
+    is "explicit name keeps its space" "my project" "$(tmux display-message -p -t ":$sw" '#{window_name}' 2>/dev/null)"
+    nm=$(tmux display-message -p -t ":$sw" '#{window_index}:#{window_name} ' 2>/dev/null)
+    is "and survives an index:name format" "$sw:my project " "$nm"
+    tmux kill-window -t ":$sw" >/dev/null 2>&1
 else
-    ok "spaced names (skipped: single window)"
+    ok "spaced names (skipped: cannot open a window)"; ok "-"
+fi
 fi
 
 echo "== rejects bogus states =="

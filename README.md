@@ -99,7 +99,26 @@ destination instead, and blanks the branch. It exits early on
 tests/run.sh
 ```
 
-47 cases. They skip rather than fail when no tmux server is running.
+50 cases. They skip rather than fail when no tmux server is running.
+
+## Whole-pane tint
+
+A **blocked** pane also gets a faint warm tint across its entire background
+(`window-style`, +2% luminance — noticeable, never harmful to readability).
+It is the only state loud enough to earn more than a border.
+
+## Stale state
+
+Hooks cannot fire if an agent is killed or crashes, so `@panestate` can outlive
+the agent it describes. The formats therefore only believe it while the pane is
+actually running one:
+
+```tmux
+#{m/r:^(claude|codex|aider|cursor|opencode|gemini|crush)$,#{pane_current_command}}
+```
+
+Other projects solve this by polling the process tree from a background daemon.
+tmux already knows the foreground command, so this costs nothing.
 
 ## Known limits
 
