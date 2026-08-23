@@ -431,6 +431,32 @@ git -C "$BR" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$BR" "$RM"
 
 
+echo "== @cockpit_agents drives the formats =="
+# Proving the DEFAULT renders correctly is not enough: that passes just as well
+# if the option is ignored and the old literal regex is still baked into every
+# format. Change the option and the colour has to follow.
+if need_tmux "@cockpit_agents"; then :; else
+SOCK3="cockpit-agents-$$"; SOCKS="$SOCKS $SOCK3"
+tmux -L "$SOCK3" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    tmux -L "$SOCK3" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
+done
+tmux -L "$SOCK3" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+ap=$(tmux -L "$SOCK3" list-panes -a -F '#{pane_id}' 2>/dev/null | head -1)
+abs() { tmux -L "$SOCK3" display-message -p -t "$ap" '#{E:#{pane-border-style}}' 2>/dev/null; }
+tmux -L "$SOCK3" set -p -t "$ap" @panestate running >/dev/null 2>&1
+
+is "the plugin defaults it rather than leaving it empty" \
+   '^(claude|codex|aider|cursor|opencode|gemini|crush)$' \
+   "$(tmux -L "$SOCK3" show-option -gqv @cockpit_agents)"
+is "with the default, a claude pane is believed" "fg=#ffcc33" "$(abs)"
+tmux -L "$SOCK3" set -g @cockpit_agents '^(vim|emacs)$' >/dev/null 2>&1
+is "narrowing it disbelieves the pane"          "fg=#5b6272" "$(abs)"
+tmux -L "$SOCK3" set -g @cockpit_agents '^(claude|vim)$' >/dev/null 2>&1
+is "widening it believes the pane again"        "fg=#ffcc33" "$(abs)"
+tmux -L "$SOCK3" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-open-path: the clicked line is never glob-expanded =="
 # "for tok in $line" splits with the shell's own rules, which include PATHNAME
 # EXPANSION. A line that merely mentioned a wildcard -- "rm *", a compiler note

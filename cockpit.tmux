@@ -44,6 +44,16 @@ update_option() {
     esac
 }
 
+# The commands whose panes count as an agent, as ONE option every format reads,
+# rather than the same regex copied into two dozen of them. Only defaulted,
+# never overwritten: a user who set their own keeps it.
+#
+# Leaving it unset is not an option -- tmux treats an empty pattern as matching
+# EVERY command, so every pane in the session would be painted as an agent.
+if [ -z "$(tmux show-option -gqv @cockpit_agents)" ]; then
+    tmux set-option -gq @cockpit_agents '^(claude|codex|aider|cursor|opencode|gemini|crush)$'
+fi
+
 # Exported so the Claude Code hooks can find agent-state without a hardcoded path.
 tmux set-environment -g TMUX_COCKPIT_DIR "$DIR"
 tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null   # the pre-rename name
