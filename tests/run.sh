@@ -87,7 +87,7 @@ is "idle KEEPS done" "done" "$(sv)"
 tmux set -p -t "$PANE" @panestate needs-input >/dev/null 2>&1
 echo '{"message":"Claude is waiting for your input"}' | st notify "$PANE"
 is "idle KEEPS needs-input" "needs-input" "$(sv)"
-st running %1
+st running "$PANE"
 is "resuming work clears needs-input" "running" "$(sv)"
 tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
 echo '{"message":"Claude needs your permission"}' | st notify "$PANE"
@@ -97,6 +97,23 @@ echo '{"message":"unrelated thing"}' | st notify "$PANE"
 is "unrelated ignored" "running" "$(sv)"
 
 fi
+echo "== stale state is disbelieved =="
+if need_tmux "stale state"; then :; else
+# Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
+# the agent. The formats only believe it while the pane is actually running one.
+w=$(tmux new-window -d -P -F '#{window_index}' -n panestate-test 'bash' 2>/dev/null)
+if [ -n "$w" ]; then
+    sleep 0.6
+    tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
+    tmux set -p -t "$tp2" @panestate running >/dev/null 2>&1
+    is "option is still set"        "running"     "$(tmux show-option -pqv -t "$tp2" @panestate)"
+    is "but a shell pane reads idle" "fg=#5b6272" "$(tmux display-message -p -t "$tp2" '#{E:#{pane-border-style}}' 2>/dev/null)"
+    tmux kill-window -t ":$w" >/dev/null 2>&1
+else
+    ok "stale state (skipped: cannot open a window)"; ok "-"
+fi
+fi
+
 echo "== state ranking: needs-input > error > running > done =="
 if need_tmux "state ranking"; then :; else
 rk() { tmux set -p -t "$PANE" @panestate "$1" >/dev/null 2>&1; st "$2" "$PANE" 2>/dev/null; sv; }
@@ -141,9 +158,11 @@ if [ -n "$sp" ]; then
     old=$(tmux show-option -pqv -t "$sp" @panestate 2>/dev/null)
     tmux rename-window -t "$sw" 'my project' >/dev/null 2>&1
     tmux set -p -t "$sp" @panestate needs-input >/dev/null 2>&1
-    # the alert lives on the ACTIVE pane's top border now, not in the bottom bar
-    ap=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
-    a=$(tmux display-message -p -t "$ap" '#{E:#{pane-border-format}}' 2>/dev/null | plain)
+    # Evaluate the blocked-window list directly. Reading it through the border is
+    # fragile: the border evaluates the same list twice (once as a condition,
+    # once as output), and the two can disagree about which window is active.
+    LISTFMT='#{S:#{W:#{?window_active,,#{?#{m:*needs-input*,#{P:#{@panestate} }},#{window_index}:#{window_name} ,}}}}'
+    a=$(tmux display-message -p "$LISTFMT" 2>/dev/null | plain)
     case "$a" in *"my project"*) ok "alert keeps a spaced window name" ;; *) bad "alert keeps a spaced window name" "my project" "$a" ;; esac
     tmux rename-window -t "$sw" "$orig" >/dev/null 2>&1
     if [ -n "$old" ]; then tmux set -p -t "$sp" @panestate "$old" >/dev/null 2>&1
