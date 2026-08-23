@@ -40,7 +40,7 @@ D='\uf00c'       # check   -- done
 g() { printf "$1"; }
 
 echo "== syntax =="
-for f in "$DIR"/panestate.tmux "$DIR"/scripts/*; do
+for f in "$DIR"/cockpit.tmux "$DIR"/scripts/*; do
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done

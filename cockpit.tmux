@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# tmux-panestate -- ours, not a tpm plugin. Load with:
+# tmux-cockpit -- ours, not a tpm plugin. Load with:
 #
 # Agent state is a per-pane tmux option (@panestate), written by Claude Code
 # hooks via scripts/agent-state. The border colour, window dots and the
 # cross-window alert are all plain tmux formats in ~/.tmux.conf, so a redraw
 # costs no shell spawns. Only the ssh-aware path/branch still needs a script.
-#   run-shell ~/.tmux/plugins/tmux-panestate/panestate.tmux
+#   run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
 #
 # Tokens it expands in status-left / status-right:
 #   #{agent_where_path}   ~/path locally, ssh destination when remote
