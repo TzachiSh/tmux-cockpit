@@ -56,6 +56,38 @@ notify)
         *'needs your permission'*) state=needs-input ;;
         *) exit 0 ;;                        # unrelated notification: ignore
     esac
+    # The ask itself, for the border: knowing WHAT is asked separates a one-key
+    # approval from a decision, without switching panes. Parsed with bash
+    # parameter expansion, not jq or sed: the payload is small, the schema is
+    # one string field, and jq is not a dependency here -- and a subprocess
+    # per call is exactly what the perf gate below rules out.
+    #
+    # Written HERE, inside the notify arm, rather than beside the @panestate
+    # write below: a pane already stuck on needs-input can be asked something
+    # ELSE while still blocked, and the sticky-state guard below deliberately
+    # refuses to rewrite @panestate for that case (see its own comment) -- so
+    # if this write waited for that guard, the newer ask text would be
+    # silently dropped exactly when it matters most.
+    if [ "$state" = needs-input ]; then
+        # An escaped quote inside the message value truncates it early --
+        # this is not meant to be a JSON parser, just enough to pull one
+        # field out of Claude's own hook payload.
+        case "$payload" in
+            *'"message"'*)
+                msg=${payload#*\"message\"}
+                msg=${msg#*:}
+                msg=${msg#*\"}
+                msg=${msg%%\"*}
+                # A hook payload is not to be trusted blindly -- this reaches
+                # a tmux format string next -- so strip control chars and cap
+                # the length before it is ever written.
+                msg=${msg//[$'\001'-$'\037']/}
+                msg=${msg:0:120}
+                ;;
+            *) msg="" ;;
+        esac
+        [ -n "$msg" ] && tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+    fi
     ;;
 esac
 
@@ -90,6 +122,15 @@ else
     [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw
     tmux set-option -p -t "$pane" @panestate "$state" 2>/dev/null || true
 fi
+
+# Placed here, not in the notify arm above, so it also covers running/off
+# passed directly (agent-state running $PANE from a hook), which never goes
+# through the notify arm at all. Not cleared on done: the sticky guard above
+# already refuses to let done overwrite needs-input, and a done pane shows no
+# border alert to read the message on.
+case "$state" in
+    running|off) tmux set-option -pu -t "$pane" @panestate_msg 2>/dev/null ;;
+esac
 
 # No refresh-client here, deliberately. set-option already repaints everything
 # that reads the option -- measured: the border, the tab marker and even the

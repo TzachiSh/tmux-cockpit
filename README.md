@@ -11,6 +11,13 @@ at the line it names.
 ─ NEEDS YOU 2:claude-2 ────────────────────────────────────────
 ```
 
+A blocked pane's own border, visible in a split but not the one you are
+focused on, names the ask instead of just flagging one:
+
+```text
+─ NEEDS YOU Claude needs your permission to use Bash ───────────
+```
+
 | state | marker | colour | means |
 |-------|--------|--------|-------|
 | blocked | `▲` | red | waiting on **you** — a permission prompt |
@@ -40,7 +47,9 @@ Non-agent panes fall back to the window name.
 - **Window tabs** — one marker per window. Worst state in the window wins, so a
   blocked pane is never hidden behind a busy one.
 - **Pane border** — the whole top border takes the state colour. Colour is
-  pre-attentive: you see which pane needs you without reading anything.
+  pre-attentive: you see which pane needs you without reading anything. A
+  blocked pane's border also names what it is asking, so you can tell a
+  one-key approval from a decision without switching to it.
 - **Active pane's border** — names any *other* window that is blocked, since
   you cannot see its border from here.
 
@@ -58,6 +67,11 @@ tmux set-option -p -t "$TMUX_PANE" @panestate running
 Everything you see is then plain tmux format syntax in `~/.tmux.conf` reading
 that option. **A status redraw runs no shell at all.** The option dies with its
 pane, so there is no stale state and nothing to garbage collect.
+
+When a pane goes `needs-input`, a second option, `@panestate_msg`, carries the
+first 120 characters of the ask itself — Claude's `Notification` hook payload,
+not a guess. It clears whenever the pane resumes work or goes idle, and is
+left alone by `done` since a done pane has no border alert to read it on.
 
 ### State ranking
 

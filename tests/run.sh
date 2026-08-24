@@ -238,6 +238,18 @@ is "resuming work clears needs-input" "running" "$(sv)"
 tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
 echo '{"message":"Claude needs your permission"}' | st notify "$PANE"
 is "permission -> wait" "needs-input" "$(sv)"
+printf '{"message":"Claude needs your permission to use Bash"}' \
+    | "$DIR/scripts/agent-state" notify "$PANE"
+is "the ask text is stored beside the alert" \
+   "Claude needs your permission to use Bash" \
+   "$(tmux show-option -pqv -t "$PANE" @panestate_msg)"
+st running "$PANE"
+is "resuming work clears the stale ask" "" \
+   "$(tmux show-option -pqv -t "$PANE" @panestate_msg)"
+# A payload with no message field must not leave an empty-string option behind.
+st off "$PANE"; printf '{"foo":1,"message":""}' | "$DIR/scripts/agent-state" notify "$PANE"
+is "an empty message stores nothing" "" \
+   "$(tmux show-option -pqv -t "$PANE" @panestate_msg)"
 tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
 echo '{"message":"unrelated thing"}' | st notify "$PANE"
 is "unrelated ignored" "running" "$(sv)"
