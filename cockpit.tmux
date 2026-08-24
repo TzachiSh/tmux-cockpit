@@ -263,6 +263,17 @@ trap 'rm -f "$conf"' EXIT HUP INT TERM
         printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
         printf '}\n'
     fi
+    # Ctrl+RIGHT-click: the gesture no terminal link-handler claims. Claude
+    # Code wraps its paths in OSC 8 hyperlinks and Ghostty opens those on the
+    # first Ctrl+LEFT-click's release -- before forwarding the event -- so a
+    # Ctrl+double-click there opens the picker AND a GUI via xdg-open. Link
+    # opening is a left-button feature; the right button reaches only us.
+    # C-MouseDown3Pane is unbound in stock tmux, so nothing is displaced.
+    printf 'bind-key -n C-MouseDown3Pane {\n'
+    printf '    select-pane -t=\n'
+    printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
+    printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
+    printf '}\n'
     # Kept for terminals that do forward Alt+click (xterm, kitty, WezTerm,
     # foot). Ghostty strips it, which is why Ctrl+double-click exists above.
     printf 'bind-key -n M-MouseDown1Pane {\n'

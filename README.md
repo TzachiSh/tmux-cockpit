@@ -335,8 +335,12 @@ tracks them while **shift** is also held. In practice:
 
 | gesture, over an agent's `Write(path)` line | what happens |
 |---|---|
-| `Ctrl`+double-click | tmux gets it — the picker opens |
-| `Ctrl`+`Shift`+click | Ghostty gets it — `xdg-open`, a GUI window |
+| **`Ctrl`+right-click** | **only the picker** — link opening is a left-button feature, so nothing races |
+| `Ctrl`+double-click | the picker opens, **and** Ghostty opens the link's file in a GUI — the link fires on the first click's release, before the event is forwarded |
+| `Ctrl`+`Shift`+click | Ghostty only — `xdg-open`, a GUI window |
+
+`Ctrl`+right-click is the recommended gesture on lines that carry hyperlinks
+(everything an agent prints); the others still work everywhere else.
 
 So: no shift. If you want Ghostty to stop claiming those clicks entirely, one
 line in `~/.config/ghostty/config` does it —

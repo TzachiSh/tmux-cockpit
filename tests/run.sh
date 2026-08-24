@@ -1263,6 +1263,14 @@ if need_tmux "directory click"; then :; else
 DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"
 "$TMUX_REAL" -L "$DB" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
 "$TMUX_REAL" -L "$DB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+# Ctrl+RIGHT-click is the collision-free picker gesture: Ghostty opens OSC 8
+# links on the first Ctrl+LEFT-click and a GUI raced the popup; the right
+# button reaches only us. Unbound in stock tmux, so nothing is displaced.
+case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep C-MouseDown3Pane)" in
+    *cockpit_click_line*) ok "ctrl+right-click drives the picker" ;;
+    *) bad "ctrl+right-click drives the picker" "the click_line binding" \
+         "$("$TMUX_REAL" -L "$DB" list-keys -T root | grep C-MouseDown3Pane)" ;;
+esac
 case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep MouseDown1Control2)" in
     *--browse*) ok "control|2 is bound to the browser popup" ;;
     *) bad "control|2 is bound to the browser popup" "a display-popup running --browse" \
