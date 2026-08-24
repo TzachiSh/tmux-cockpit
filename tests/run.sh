@@ -2912,6 +2912,23 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
          "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
 esac
 
+# Plain enter is now the same pin action as alt-enter (alt-enter stays as an
+# alias). Type a second comment and pin it with plain enter this time.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" "plain enter comment" Enter
+for i in 1 2 3 4 5 6 7 8 9 10; do grep -q "plain enter comment" "$RVSTORE" 2>/dev/null && break; sleep 0.1; done
+case "$(cat "$RVSTORE" 2>/dev/null)" in
+    *"plain enter comment"*) ok "plain Enter pins the typed comment" ;;
+    *) bad "plain Enter pins the typed comment" "the comment in the store" "$(cat "$RVSTORE" 2>/dev/null)" ;; esac
+rvbefore=$(wc -c < "$RVSTORE")
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# Negative assertion ("nothing pinned") -- the one bounded fixed wait
+# allowed by the controller ruling, capped at 0.3s.
+sleep 0.3
+is "Enter with nothing typed pins nothing (no accept-all)" "$rvbefore" "$(wc -c < "$RVSTORE")"
+case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+    *"review>"*) ok "and the picker is still open" ;;
+    *) bad "and the picker is still open" "the review> prompt" "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;; esac
+
 # The only enforcement of WHAT-NOT-TO-DO rule 1 ("no accept-all"): plain
 # enter must neither leave the picker nor touch the store, on a row that
 # already has an unrelated pending comment pinned to it.

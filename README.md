@@ -490,22 +490,23 @@ comment, so the keys that would collide with typing it move elsewhere:
 
 | key | fleet queue | comment loop |
 |-----|-------------|--------------|
-| `↵` | review the selected pane | does nothing (see below) |
-| `alt-↵` | — | attach the typed comment to the row under the cursor |
+| `↵` | review the selected pane | pin the typed comment (empty: nothing) |
+| `alt-↵` | — | alias for `↵` |
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^S` | — | deliver the whole batch |
 | `esc` | cancel | discard the batch, store and all |
 
-Inside the review: `alt-↵` attaches whatever you typed as a comment on the
-diff line under the cursor. The list reloads in place and marks the row `●`,
-so five comments cost one popup, not five — the same
+Inside the review: `↵` pins whatever you typed as a comment on the diff line
+under the cursor — `alt-↵` does the same thing, kept as an alias for
+terminals where the plain chord doesn't land. The list reloads in place and
+marks the row `●`, so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch; `esc` discards it, store and all.
-**Plain `↵` does nothing.** There is no accept-all key on purpose: a review
-whose only exit is one Enter on the whole diff is the rubber stamp this
-replaces.
+**`↵` pins a comment — it never approves.** With nothing typed it does
+nothing: there is no accept-all key on purpose, a review whose only exit is
+one Enter on the whole diff is the rubber stamp this replaces.
 
 A comment lands as:
 

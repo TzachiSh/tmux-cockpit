@@ -66,8 +66,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
-In the picker: alt-↵ comment the row under the cursor   ^S deliver   esc discard
-(there is no accept-all: plain enter does nothing)
+In the picker: ↵ pin the typed comment on the row under the cursor   ^S deliver   esc discard
+(there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
 
@@ -408,12 +408,15 @@ attach() {
 # --- --loop ----------------------------------------------------------------
 # tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
 # keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
-# execute-silent(...)+reload(...) (tm:187) for alt-enter, which must NOT
-# leave it -- the list mutates in place, in the same fzf session, so
-# commenting five rows in a row costs one popup, not five. Plain enter is
-# rebound to a no-op: this loop has no accept-all, on purpose (a review whose
+# execute-silent(...)+reload(...) (tm:187) for enter, which must NOT leave
+# it -- the list mutates in place, in the same fzf session, so commenting
+# five rows in a row costs one popup, not five. Enter pins a comment; it
+# never approves -- there is still no accept-all, on purpose (a review whose
 # only exit is one Enter on everything is the rubber stamp this exists to
-# replace).
+# replace). With an empty query attach() itself is the no-op (it returns 0
+# without writing), so no separate dead-key binding is needed. alt-enter
+# stays bound to the same action, an alias for terminals that eat plain
+# enter's alt chord.
 run_loop() {
     local dir=$1 store=$2
     [ -n "$dir" ] || { usage; exit 2; }
@@ -461,13 +464,14 @@ run_loop() {
         | fzf --print-query --expect=ctrl-s --disabled \
               --delimiter=$'\t' --with-nth=4 \
               --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-              --bind 'enter:ignore' \
+              --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
               --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
               --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
               --preview "$preview_cmd" \
               --preview-window="down,$psz,border-top" \
               --prompt='review> ' \
-              --header='alt-↵ comment   ^/ preview   alt-u/alt-d scroll   ^S deliver   esc discard (enter does nothing)')
+              --header-first \
+              --header=$'↵ pin the typed comment   ^S deliver   esc discard (store and all)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
     rc=$?
 
     # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key fired,
@@ -486,8 +490,9 @@ run_loop() {
     if [ "$key" = ctrl-s ]; then
         exit 20
     fi
-    # No --expect key matched -- with plain enter ignored this should not
-    # happen, but an unmatched exit is a discard, never a silent deliver.
+    # No --expect key matched -- enter/alt-enter stay inside the picker via
+    # execute-silent, so this should not happen, but an unmatched exit is a
+    # discard, never a silent deliver.
     rm -f -- "$store"
     exit 0
 }
