@@ -127,6 +127,7 @@ Wire the hooks in `~/.claude/settings.json`:
 | `SubagentStart` | `running` |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `Stop` | `done` |
+| `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `SessionEnd` | `off` |
 
