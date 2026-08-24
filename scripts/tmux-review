@@ -35,6 +35,11 @@ OPENPATH="$(dirname "$SELF")/tmux-open-path"
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
 
+# lines_mode's own "diff too large" row (below) is not a real anchor -- no
+# file, no line -- so it shares this one string with attach(), which refuses
+# to comment on it. A row-shaped notice, not a special case in every reader.
+CAP_SENTINEL='(diff too large)'
+
 # `git -C <dir> diff` always emits paths relative to the repo ROOT, no matter
 # how deep <dir> sits inside the tree -- but <dir> is the pane's own cwd, so
 # from an agent working in a subdirectory those root-relative paths do not
@@ -120,7 +125,7 @@ lines_mode() {
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
         local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
-        printf '%s\t\t%s\t%s\n' '(diff too large)' "$big" "$big"
+        printf '%s\t\t%s\t%s\n' "$CAP_SENTINEL" "$big" "$big"
         return 0
     fi
 
@@ -326,6 +331,12 @@ attach() {
     # anchor to.
     [ -n "$path" ] || return 0
     [ -n "$comment" ] || return 0
+    # The cap's own "(diff too large)" row (lines_mode's cap branch) has no
+    # real file or line behind it -- alt-enter on it used to write "##
+    # (diff too large): (+)" to the store anyway, a comment anchored to
+    # nothing that delivered as a bogus instruction. Refuse it here, same as
+    # the no-row-under-cursor guard above.
+    [ "$path" != "$CAP_SENTINEL" ] || return 0
     local sign num bline
     case "$line" in
         -*) sign="-"; num=${line#-} ;;

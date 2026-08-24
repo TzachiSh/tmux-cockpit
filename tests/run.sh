@@ -2697,6 +2697,21 @@ else
 fi
 rm -f "$ATSTORE"
 
+echo "== tmux-review --attach: the cap's '(diff too large)' row stores nothing =="
+# C0: that row (lines_mode's giant-diff cap) has no real file or line behind
+# it -- alt-enter on it used to write "## (diff too large): (+)" to the
+# store anyway, a comment anchored to nothing that delivered as a bogus
+# instruction the agent could not act on.
+CAPSTORE=$(mktemp)
+"$DIR/scripts/tmux-review" --attach "$CAPSTORE" "(diff too large)" "" \
+    "diff too large to anchor line-by-line" "fix this somehow"
+if [ -s "$CAPSTORE" ]; then
+    bad "the cap sentinel row attaches nothing" "an empty store" "$(cat "$CAPSTORE")"
+else
+    ok "the cap sentinel row attaches nothing"
+fi
+rm -f "$CAPSTORE"
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
