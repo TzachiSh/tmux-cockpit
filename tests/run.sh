@@ -1848,5 +1848,73 @@ case "$rv1out" in
 esac
 rm -rf "$RV1"
 
+echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
+if need_tmux "tmux-review --loop"; then :; else
+RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
+RVDIR=$(mktmpd)
+(
+  cd "$RVDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go
+  git add -A; git commit -q -m init
+  # A pure addition -- exactly one hunk line -- so the row under the cursor is
+  # never ambiguous: with a changed line the diff shows a -old/+new pair and
+  # nothing here pins which one fzf highlights by default.
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+RVSTORE="$STATE/review-store-$$"
+
+"$TMUX_REAL" -L "$RVS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    'exec -a claude bash' >/dev/null 2>&1
+RVP=$("$TMUX_REAL" -L "$RVS" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" \
+    "'$DIR/scripts/tmux-review' --loop '$RVDIR' '$RVSTORE'" Enter
+
+rv2up=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+        *"review>"*) rv2up=1; break ;;
+    esac
+    sleep 0.5
+done
+if [ "$rv2up" != 1 ]; then
+    bad "the picker comes up" "a visible 'review>' prompt" \
+        "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")"
+else
+    ok "the picker comes up"
+fi
+
+# Type a comment and pin it to the highlighted row with alt-enter.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" "fix the new line"
+sleep 0.5
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" M-Enter
+sleep 1
+
+case "$(cat "$RVSTORE" 2>/dev/null)" in
+    *"## src.go:3 (+)"*"> CHANGED"*"fix the new line"*)
+        ok "alt-enter pins path:line, the quoted fragment and the comment" ;;
+    *) bad "alt-enter pins path:line, the quoted fragment and the comment" \
+         "## src.go:3 (+) / > CHANGED / fix the new line" "$(cat "$RVSTORE" 2>/dev/null)" ;;
+esac
+
+case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+    *"●"*) ok "the reloaded list marks the commented row" ;;
+    *) bad "the reloaded list marks the commented row" "a ● in the pane" \
+         "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
+esac
+
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
+sleep 1
+if [ -e "$RVSTORE" ]; then
+    bad "esc discards: the store is gone" "no such file" "$RVSTORE still exists"
+else
+    ok "esc discards: the store is gone"
+fi
+
+"$TMUX_REAL" -L "$RVS" kill-server >/dev/null 2>&1
+rm -rf "$RVDIR"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -22,6 +22,16 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     exit 1
 fi
 
+# Resolved once, not `$0`: a symlink from install.sh (or a PATH lookup) must
+# still find its sibling tmux-open-path and re-invoke itself for --rows/--attach
+# (fzf's reload/execute-silent binds run in a fresh subshell of their own).
+SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+OPENPATH="$(dirname "$SELF")/tmux-open-path"
+
+# tmux runs bind/preview strings through sh, so every path inside one has to be
+# shell-quoted -- the same reasoning as tmux-open-path's shq.
+shq() { printf '%q' "$1"; }
+
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
@@ -156,9 +166,143 @@ lines_mode() {
     done < <(printf '%s\n' "${others[@]}" | order_group)
 }
 
+# --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
+# --preview/--pick convention) --------------------------------------------
+# --lines rows, marked: a leading "●" on any row whose path:line already has
+# a comment block in the store, a space on every other row -- same column
+# width either way, so nothing shifts. This is the marker-column trick at
+# tmux-open-path:176-183, applied to a display FIELD instead of a preview
+# line: prepend, never repaint. Its own subcommand (not inline in run_loop)
+# because fzf's reload() re-execs a fresh command; there is nothing else to
+# call back into.
+rows_mode() {
+    local dir=$1 store=$2
+    [ -n "$dir" ] || return 0
+    local path line fragment display sign num marker
+    while IFS=$'\t' read -r path line fragment display; do
+        [ -n "$path" ] || continue
+        case "$line" in
+            -*) sign="-"; num=${line#-} ;;
+            *)  sign="+"; num=$line ;;
+        esac
+        marker=" "
+        if [ -n "$store" ] && [ -f "$store" ] \
+           && grep -qxF "## ${path}:${num} (${sign})" -- "$store" 2>/dev/null; then
+            marker="●"
+        fi
+        printf '%s\t%s\t%s\t%s%s\n' "$path" "$line" "$fragment" "$marker" "$display"
+    done < <(lines_mode "$dir")
+}
+
+# One block, appended -- never rewrite the store, only grow it, so a crash or
+# a killed popup mid-review loses at most the comment in flight, not the ones
+# already pinned. Grammar is revdiff's, verbatim: "## path:line (+|-)", a
+# quoted fragment, the note. A body line starting "## " gets a leading space
+# so the parser (compose is a plain cat, but any future reader) can't mistake
+# it for a header; "??" needs no handling at all, it passes straight through
+# -- the composed header is what tells the agent it is a question.
+attach() {
+    local store=$1 path=$2 line=$3 fragment=$4 comment=$5
+    [ -n "$comment" ] || return 0
+    local sign num bline
+    case "$line" in
+        -*) sign="-"; num=${line#-} ;;
+        *)  sign="+"; num=$line ;;
+    esac
+    {
+        printf '## %s:%s (%s)\n' "$path" "$num" "$sign"
+        printf '> %s\n' "$fragment"
+        while IFS= read -r bline; do
+            case "$bline" in
+                '## '*) printf ' %s\n' "$bline" ;;
+                *)      printf '%s\n' "$bline" ;;
+            esac
+        done <<<"$comment"
+        printf '\n'
+    } >> "$store"
+}
+
+# --- --loop ----------------------------------------------------------------
+# tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
+# keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
+# execute-silent(...)+reload(...) (tm:187) for alt-enter, which must NOT
+# leave it -- the list mutates in place, in the same fzf session, so
+# commenting five rows in a row costs one popup, not five. Plain enter is
+# rebound to a no-op: this loop has no accept-all, on purpose (a review whose
+# only exit is one Enter on everything is the rubber stamp this exists to
+# replace).
+run_loop() {
+    local dir=$1 store=$2
+    [ -n "$dir" ] || { usage; exit 2; }
+    command -v fzf >/dev/null 2>&1 || {
+        printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
+    }
+
+    local rows_cmd attach_cmd preview_cmd nrows avail lrows psz
+    rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
+    attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q}"
+    preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
+
+    # Preview sizing from the real row count, exactly tmux-branch:202-205:
+    # a fixed split either hid rows in a short popup or left a starved
+    # one-line preview in a tall one.
+    nrows=$(lines_mode "$dir" | wc -l)
+    avail=$(tput lines 2>/dev/null || echo 24)
+    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
+    psz=$(( avail - lrows - 5 ))
+    [ "$psz" -lt 5 ] && psz=5
+
+    # --disabled: the typed text here is a comment, not a filter. Without it
+    # fzf fuzzy-matches whatever you type against the displayed field, and a
+    # comment that does not happen to match its own row's text empties the
+    # match list -- at which point {1}/{2}/{3} have no row to resolve
+    # against and execute-silent gets three empty strings. Found by tracing
+    # exactly that: the row under the cursor vanished the moment the typed
+    # comment stopped being a substring of the diff line.
+    local out rc key
+    out=$(rows_mode "$dir" "$store" \
+        | fzf --print-query --expect=ctrl-s --disabled \
+              --delimiter=$'\t' --with-nth=4 \
+              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+              --bind 'enter:ignore' \
+              --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+              --preview "$preview_cmd" \
+              --preview-window="down,$psz,border-top" \
+              --prompt='review> ' \
+              --header='alt-↵ comment this row   ^S deliver   esc discard (no accept-all: enter does nothing)')
+    rc=$?
+
+    # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key fired,
+    # 1 = no match, 130 = esc/^C. Anything outside {0,1} is a cancel, and a
+    # cancel must discard -- a review a human bailed out of must not linger
+    # as a stale store some later run reuses.
+    case "$rc" in
+        0|1) ;;
+        *) rm -f -- "$store"; exit 0 ;;
+    esac
+
+    # Line 1 is the typed query (--print-query); unused here because --disabled
+    # already routed it into the comment via {q} inside the alt-enter bind --
+    # the outer loop only needs which --expect key fired.
+    key=$(sed -n 2p <<<"$out")
+    if [ "$key" = ctrl-s ]; then
+        exit 20
+    fi
+    # No --expect key matched -- with plain enter ignored this should not
+    # happen, but an unmatched exit is a discard, never a silent deliver.
+    rm -f -- "$store"
+    exit 0
+}
+
 case "${1:-}" in
     --lines)
         shift; lines_mode "${1:-}" ;;
+    --rows)
+        shift; rows_mode "${1:-}" "${2:-}" ;;
+    --attach)
+        shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+    --loop)
+        shift; run_loop "${1:-}" "${2:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")
