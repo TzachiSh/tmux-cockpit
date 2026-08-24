@@ -240,8 +240,9 @@ without it, or without Claude Code's settings.json at that path, merge the
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + R` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one — `@cockpit_review_key` rebinds, `off` disables |
 
-Both pickers share their keys: `↵` acts, `esc` cancels, `^/` toggles the
-preview and `^U`/`^D` scroll it.
+The branch picker and the path picker share their keys: `↵` acts, `esc`
+cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
+two pickers are their own case — see below.
 
 Most-recent branch first, `alt-↵` creates a branch named by what you typed, and
 a remote-only branch becomes a local tracking branch. The list marks the branch
@@ -469,6 +470,20 @@ directory's `git status`. Nothing else in this plugin answers "which of my
 agents needs my eyes"; the queue exists because visiting each pane in turn to
 find out does not scale past two or three of them.
 
+The review popup's two pickers do not share one key set — the fleet queue is
+a plain list, `↵` picks a pane; the comment loop's typed text *is* a
+comment, so the keys that would collide with typing it move elsewhere:
+
+| key | fleet queue | comment loop |
+|-----|-------------|--------------|
+| `↵` | review the selected pane | does nothing (see below) |
+| `alt-↵` | — | attach the typed comment to the row under the cursor |
+| `^/` | toggle the preview | toggle the preview |
+| `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
+| `alt-u` / `alt-d` | — | scroll the preview |
+| `^S` | — | deliver the whole batch |
+| `esc` | cancel | discard the batch, store and all |
+
 Inside the review: `alt-↵` attaches whatever you typed as a comment on the
 diff line under the cursor. The list reloads in place and marks the row `●`,
 so five comments cost one popup, not five — the same
@@ -583,7 +598,7 @@ is the wanted behaviour.
 tests/run.sh
 ```
 
-144 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
+309 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
 
 The path-extraction cases drive `tmux-open-path --dry-run`, so they need neither
 tmux nor an editor. The branch cases build a scratch repo with `git commit-tree`

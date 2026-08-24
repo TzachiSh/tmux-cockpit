@@ -34,6 +34,21 @@ OPENPATH="$(dirname "$SELF")/tmux-open-path"
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
 
+# `git -C <dir> diff` always emits paths relative to the repo ROOT, no matter
+# how deep <dir> sits inside the tree -- but <dir> is the pane's own cwd, so
+# from an agent working in a subdirectory those root-relative paths do not
+# resolve against <dir> itself. Resolve once, at each entry point, and thread
+# the root through everywhere a diff-row path gets turned back into a file:
+# lines_mode (for consistency, even though git already normalizes this), the
+# review-loop's preview `cd`, and the fleet queue's preview. Falls back to
+# the caller's own dir when it is not a git worktree at all, so the existing
+# "no diff" behavior for a non-repo pane is unchanged.
+git_root() {
+    local dir=$1 root
+    root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
+    printf '%s\n' "${root:-$dir}"
+}
+
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
@@ -87,31 +102,61 @@ lines_mode() {
     # keeps clobbering oldtok/newtok on any later token that starts with -
     # or + too -- "-> i32" matched and silently became the anchor.
     # Reproduced: a deletion at old line 5 was anchored to -3 instead.
+    #
+    # Header lines ("--- a/x", "+++ b/x", "@@ ...") exist only BETWEEN hunks,
+    # never inside one -- but a body line whose own text starts "-- " or
+    # "++ " becomes, once diff prepends its own -/+ marker, "--- ..." or
+    # "+++ ..." and a plain /^--- /-style match can't tell the two apart.
+    # "@@" needs no such guard: a body line can only ever start "@@" if diff
+    # gave it a bare literal first, which it never does. So --- / +++ are
+    # only trusted as headers while the hunk's own line budget (oldrem/newrem,
+    # from the "@@ -o,c +o,c @@" counts) is exhausted; while budget remains,
+    # every line is content, dispatched on its leading character alone, same
+    # as any other +/-/context row. Reproduced: an unstaged "-- a sql
+    # comment" deletion vanished and every anchor after it drifted; an added
+    # "++ ..." line reset the counters and threw every later anchor off too.
     local raw
     raw=$(printf '%s\n' "$diff" | awk '
-        /^--- / { if ($0 ~ /^--- a\//) oldfile = substr($0, 7); next }
-        /^\+\+\+ / {
-            if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
-            oldl = 0; newl = 0; next
+        function inhunk() { return (oldrem > 0 || newrem > 0) }
+        {
+            if (inhunk()) {
+                c = substr($0, 1, 1)
+                if (c == "+") {
+                    if (file != "") {
+                        printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
+                        newl++
+                    }
+                    newrem--
+                } else if (c == "-") {
+                    if (file != "") {
+                        printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
+                        oldl++
+                    }
+                    oldrem--
+                } else if (c == " ") {
+                    oldl++; newl++; oldrem--; newrem--
+                }
+                # anything else ("\ No newline at end of file") stays ignored
+                next
+            }
+            if ($0 ~ /^--- /) {
+                if ($0 ~ /^--- a\//) oldfile = substr($0, 7)
+                next
+            }
+            if ($0 ~ /^\+\+\+ /) {
+                if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
+                oldl = 0; newl = 0; next
+            }
+            if ($0 ~ /^@@/) {
+                split($0, parts, " ")
+                oldtok = parts[2]; newtok = parts[3]
+                sub(/^-/, "", oldtok); split(oldtok, oa, ","); oldl = oa[1] + 0
+                oldrem = (oa[2] == "" ? 1 : oa[2] + 0)
+                sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
+                newrem = (na[2] == "" ? 1 : na[2] + 0)
+                next
+            }
         }
-        /^@@/ {
-            split($0, parts, " ")
-            oldtok = parts[2]; newtok = parts[3]
-            sub(/^-/, "", oldtok); split(oldtok, oa, ","); oldl = oa[1] + 0
-            sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
-            next
-        }
-        /^\+/ {
-            if (file == "") next
-            printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
-            newl++; next
-        }
-        /^-/ {
-            if (file == "") next
-            printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
-            oldl++; next
-        }
-        /^ / { oldl++; newl++; next }
     ')
     [ -n "$raw" ] || return 0
 
@@ -214,6 +259,11 @@ rows_mode() {
 # -- the composed header is what tells the agent it is a question.
 attach() {
     local store=$1 path=$2 line=$3 fragment=$4 comment=$5
+    # No row under the cursor (an empty list, or the query cleared the match)
+    # hands {1} an empty string -- without this guard that still writes
+    # "## : (+)" to the store and it delivers, a comment with nothing to
+    # anchor to.
+    [ -n "$path" ] || return 0
     [ -n "$comment" ] || return 0
     local sign num bline
     case "$line" in
@@ -258,6 +308,11 @@ run_loop() {
     # a fixed split either hid rows in a short popup or left a starved
     # one-line preview in a tall one.
     nrows=$(lines_mode "$dir" | wc -l)
+    if [ "$nrows" -eq 0 ]; then
+        tmux display-message "tmux-review: no uncommitted changes" 2>/dev/null
+        rm -f -- "$store"
+        exit 0
+    fi
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
     psz=$(( avail - lrows - 5 ))
@@ -270,6 +325,10 @@ run_loop() {
     # against and execute-silent gets three empty strings. Found by tracing
     # exactly that: the row under the cursor vanished the moment the typed
     # comment stopped being a substring of the diff line.
+    # Not tmux-branch's own ^U/^D for preview scroll here: this list's typed
+    # text is a comment, and readline's own ^U/^D already mean something
+    # inside it (kill-line, delete-char) -- so scroll moves to alt-u/alt-d
+    # instead. ^/ still toggles the preview, same as everywhere else.
     local out rc key
     out=$(rows_mode "$dir" "$store" \
         | fzf --print-query --expect=ctrl-s --disabled \
@@ -277,10 +336,11 @@ run_loop() {
               --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
               --bind 'enter:ignore' \
               --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+              --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
               --preview "$preview_cmd" \
               --preview-window="down,$psz,border-top" \
               --prompt='review> ' \
-              --header='alt-↵ comment this row   ^S deliver   esc discard (no accept-all: enter does nothing)')
+              --header='alt-↵ comment   ^/ preview   alt-u/alt-d scroll   ^S deliver   esc discard (enter does nothing)')
     rc=$?
 
     # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key fired,
@@ -310,8 +370,13 @@ run_loop() {
 # is what tells the agent "??" means a question; the store itself needs no
 # reformatting because attach() already wrote it in the delivered shape.
 compose() {
-    local store=${1:-}
-    printf 'Code review of your uncommitted changes. Address each comment; a comment\ncontaining ?? is a question — answer it in chat, do not edit for it.\nComments are anchored as path:line with the original line quoted.\n\n'
+    local store=${1:-} root=${2:-}
+    printf 'Code review of your uncommitted changes. Address each comment; a comment\ncontaining ?? is a question — answer it in chat, do not edit for it.\nComments are anchored as path:line with the original line quoted.\n'
+    # root is the repo root a comment's path is relative to -- optional
+    # (omitted, --compose still reads standalone), named here because
+    # deliver() has it and the agent otherwise has no way to tell.
+    [ -n "$root" ] && printf 'Paths are relative to %s.\n' "$root"
+    printf '\n'
     [ -n "$store" ] && [ -f "$store" ] && cat -- "$store"
     return 0
 }
@@ -340,7 +405,7 @@ compose() {
 #      pane would EXECUTE review text instead of merely displaying it.
 #   3. store non-empty -- nothing pinned means nothing to deliver.
 deliver() {
-    local pane=$1 store=$2
+    local pane=$1 store=$2 root=$3
 
     case "$pane" in
         %[0-9]*) ;;
@@ -350,7 +415,7 @@ deliver() {
 
     local is_agent
     is_agent=$(tmux display-message -p -t "$pane" \
-        -F '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
+        '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' \
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
@@ -365,7 +430,7 @@ deliver() {
     }
 
     local payload bytes
-    payload=$("$SELF" --compose "$store")
+    payload=$("$SELF" --compose "$store" "$root")
     bytes=$(printf '%s' "$payload" | wc -c)
 
     # Over 2048 bytes: the review becomes a file the agent reads, not a wall
@@ -498,7 +563,11 @@ review_pane() {
     "$SELF" --loop "$dir" "$store"
     rc=$?
     if [ "$rc" -eq 20 ]; then
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store")"
+        # deliver() is a public subcommand the suite re-delivers the same
+        # store through, so it must not rm its own store arg -- the cleanup
+        # belongs to this caller, chained after delivery so the store still
+        # outlives the popup's own teardown (comment above).
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); rm -f -- $(shq "$store")"
     fi
 }
 
@@ -526,15 +595,21 @@ fleet_queue() {
     psz=$(( avail - lrows - 5 ))
     [ "$psz" -lt 5 ] && psz=5
 
-    preview_cmd="$(shq "$OPENPATH") --preview-diff \"\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null)\""
+    # Same root-vs-cwd seam as review_pane: the row only carries the pane's
+    # raw cwd, so resolve it to the repo root here too before handing it to
+    # --preview-diff, which expects a real, existing path.
+    preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
+    preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
+    preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
     out=$(printf '%s\n' "$rows" \
         | fzf --delimiter=$'\t' --with-nth=2,3 \
               --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+              --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --preview "$preview_cmd" \
               --preview-window="down,$psz,border-top" \
               --prompt='fleet> ' \
-              --header='which agent needs you   ↵ review it   esc cancel')
+              --header='which agent needs you   ↵ review it   ^/ preview   esc cancel')
     [ -n "$out" ] || return 0
 
     pane=$(cut -f1 <<<"$out")
@@ -544,7 +619,7 @@ fleet_queue() {
         tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
         return 0
     }
-    review_pane "$pane" "$dir"
+    review_pane "$pane" "$(git_root "$dir")"
 }
 
 # No args, bound to prefix R: ask tmux which pane the CLIENT is actually on --
@@ -561,11 +636,11 @@ main_entry() {
         printf 'tmux-review: no tmux client to resolve a pane from\n' >&2
         exit 1
     fi
-    is_agent=$(tmux display-message -p -t "$pane" -F \
+    is_agent=$(tmux display-message -p -t "$pane" \
         '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
     if [ "$is_agent" = 1 ]; then
         dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-        review_pane "$pane" "$dir"
+        review_pane "$pane" "$(git_root "$dir")"
     else
         fleet_queue
     fi
@@ -583,9 +658,9 @@ case "${1:-}" in
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --compose)
-        shift; compose "${1:-}" ;;
+        shift; compose "${1:-}" "${2:-}" ;;
     --deliver)
-        shift; deliver "${1:-}" "${2:-}" ;;
+        shift; deliver "${1:-}" "${2:-}" "${3:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")
