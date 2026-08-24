@@ -599,7 +599,7 @@ deliver() {
     tmux if-shell -F -t "$pane" \
         "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
         "paste-buffer -p -r -d -b $bufname -t $pane ; display-message 'review pasted into $pane — press Enter there to send'" \
-        "display-message 'tmux-review: $pane is no longer an agent — not delivered'"
+        "display-message 'tmux-review: $pane is not an idle agent — not delivered'"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
