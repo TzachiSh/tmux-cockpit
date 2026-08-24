@@ -379,7 +379,7 @@ rows_mode() {
 # it for a header; "??" needs no handling at all, it passes straight through
 # -- the composed header is what tells the agent it is a question.
 attach() {
-    local store=$1 path=$2 line=$3 fragment=$4 comment=$5
+    local store=$1 path=$2 line=$3 fragment=$4 comment=$5 dir=${6:-}
     # No row under the cursor (an empty list, or the query cleared the match)
     # hands {1} an empty string -- without this guard that still writes
     # "## : (+)" to the store and it delivers, a comment with nothing to
@@ -397,6 +397,21 @@ attach() {
         -*) sign="-"; num=${line#-} ;;
         *)  sign="+"; num=$line ;;
     esac
+    # The display fragment is cut at 160 bytes for the list; the STORE gets the
+    # whole line so the `>` quote matches something in the file -- a truncated
+    # quote defeats the anchoring it exists for. Read it back from the tree
+    # (+) or HEAD (-); fall back to the fragment on any miss.
+    local full=""
+    if [ -n "$dir" ]; then
+        case "$sign" in
+            +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
+            -) full=$(git -C "$dir" show "HEAD:$path" 2>/dev/null | sed -n "${num}p") ;;
+        esac
+        full=${full//[$'\001'-$'\037'$'\177']/}
+        full=${full:0:1000}
+        [ -n "$full" ] && [ "${full#"$fragment"}" != "$full" ] || full=""
+    fi
+    [ -n "$full" ] && fragment=$full
     {
         printf '## %s:%s (%s)\n' "$path" "$num" "$sign"
         printf '> %s\n' "$fragment"
@@ -431,7 +446,7 @@ run_loop() {
 
     local rows_cmd attach_cmd preview_cmd rows_out nrows avail lrows psz
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
-    attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q}"
+    attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
     preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
 
     # Build the initial list ONCE and take the row count from it, rather than
@@ -943,7 +958,7 @@ case "${1:-}" in
     --rows)
         shift; rows_mode "${1:-}" "${2:-}" ;;
     --attach)
-        shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+        shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --compose)

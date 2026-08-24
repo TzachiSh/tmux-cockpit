@@ -2860,6 +2860,23 @@ else
 fi
 rm -f "$CAPSTORE"
 
+echo "== tmux-review --attach: a long line is quoted whole, so the agent can find it =="
+RVLONG=$(mktmpd)
+LONGLINE=$(printf 'x%.0s' $(seq 1 220))
+(
+  cd "$RVLONG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f.txt; git add -A; git commit -q -m init
+  printf 'a\n%s\n' "$LONGLINE" > f.txt
+) >/dev/null 2>&1
+RVLS=$(mktmpf)
+frag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==2 {print $3}')
+is "the display fragment is still capped" "160" "${#frag}"
+"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 2 "$frag" "too long" "$RVLONG"
+is "the stored quote is the full line" "> $LONGLINE" "$(sed -n 2p "$RVLS")"
+rm -rf "$RVLONG" "$RVLS"
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
