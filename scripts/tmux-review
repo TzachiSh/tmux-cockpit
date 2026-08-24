@@ -465,7 +465,9 @@ run_loop() {
     fi
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    psz=$(( avail - lrows - 6 ))   # 6, not 5: the header is two lines now
+    # 6, not 5: this header has been two lines since plain Enter was bound
+    # alongside alt-Enter; reserve the second row.
+    psz=$(( avail - lrows - 6 ))
     [ "$psz" -lt 5 ] && psz=5
 
     # --disabled: the typed text here is a comment, not a filter. Without it
@@ -996,7 +998,11 @@ fleet_queue() {
     nrows=${#disp[@]}
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    psz=$(( avail - lrows - 5 ))
+    # 6, not 5: this header is two lines now -- one line of it is 95 columns
+    # and the popup is 70% of the terminal, so fzf truncated the key hints off
+    # the right edge on anything narrower than 136 columns. Reserve the second
+    # row rather than taking it out of the list.
+    psz=$(( avail - lrows - 6 ))
     [ "$psz" -lt 5 ] && psz=5
 
     # Same root-vs-cwd seam as review_pane: the row only carries the pane's
