@@ -1635,6 +1635,25 @@ esac
 "$TMUX_REAL" -L "$FR" kill-server >/dev/null 2>&1
 fi
 
+echo "== the example configs do not forward the agent title storm =="
+# set-titles on FORWARDS every agent OSC-2 title change to the outer terminal as
+# a distinct, UNCOALESCED title sequence (measured under a title storm: 609 title
+# OSCs, 27KB/3s; off = 0). Windows Terminal is documented-slow at high-frequency
+# title updates -- its read loop stalls, drains tmux slower, tmux's out-buffer
+# crosses the per-client TTY_BLOCK backpressure limit, and the client freezes.
+# The in-tmux tab reads #{pane_title} INTERNALLY, so turning the OUTER title off
+# costs nothing on the status bar. full.tmux.conf used to ship set-titles on.
+if need_tmux "set-titles"; then :; else
+ST="cockpit-st-$$"; SOCKS="$SOCKS $ST"
+"$TMUX_REAL" -L "$ST" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+# source-file continues past the later catppuccin/tpm lines that need a real
+# install; set-titles sits high in the file, before any of them.
+"$TMUX_REAL" -L "$ST" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+is "full.tmux.conf leaves the outer terminal title off" "off" \
+   "$("$TMUX_REAL" -L "$ST" show-option -gv set-titles)"
+"$TMUX_REAL" -L "$ST" kill-server >/dev/null 2>&1
+fi
+
 echo "== @cockpit_open_single skips the popup for machine output =="
 # Opt-in: a lone candidate that carried an explicit :line is a stack trace or
 # compiler error, not a guess. "line" opens those directly; "always" opens any
