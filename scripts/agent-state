@@ -142,6 +142,18 @@ if [ "$state" = off ]; then
 else
     [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw
     tmux set-option -p -t "$pane" @panestate "$state" 2>/dev/null || true
+    # A review pasted into this pane but never sent is a pane STATE (set by
+    # tmux-review --deliver, walked to by tmux-jump). The human pressing Enter
+    # to send it is what fires this hook with `running`, so the transition
+    # INTO running is exactly when the mark stops being true.
+    #
+    # Inside this arm on purpose, below the unchanged-state early exit above:
+    # `running` arrives on UserPromptSubmit AND on every PreToolUse/PostToolUse
+    # (examples/claude-hooks.json), so anything hoisted above that exit pays a
+    # tmux round-trip per tool call. Known gap that buys: a review delivered
+    # into a pane that is ALREADY running keeps its mark until the next real
+    # transition (done -> running), so prefix J can walk to it once more.
+    [ "$state" = running ] && { tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null || true; }
 fi
 
 # Placed here, not in the notify arm above, so it also covers running/off

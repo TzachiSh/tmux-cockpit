@@ -531,6 +531,15 @@ without a trailing newline on the payload. Over 2048 bytes it lands as a
 pointer to a `0600` file in `$XDG_RUNTIME_DIR` instead, so a long review is
 not a wall of text typed straight into the agent's own prompt.
 
+**A delivered review is a state, not a flash.** The notice naming the target
+window stays up until the next message rather than blinking away in 750 ms,
+and the pane itself is marked `@cockpit_review = sent` for as long as the
+review sits there unsent. `prefix J` walks to those panes after the ones
+whose agent is blocked on you, so a review you pasted and then forgot is
+still reachable by a keypress instead of by memory. The mark clears the
+moment the agent starts working again — pressing Enter is what fires the
+`running` hook — so it never outlives the thing it describes.
+
 Delivery can also be **refused** — the target is on a permission prompt, is
 not an agent pane, or is not a pane id at all. A refusal keeps the batch: the
 comment store is left on disk, and the message names it along with the

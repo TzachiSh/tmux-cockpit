@@ -713,9 +713,24 @@ deliver() {
     # then clearing) the buffer closes that gap: both refusal paths now share
     # one contract, and the buffer is gone either way before this function
     # returns, same as before.
+
+    # Where the review landed, named the way a human navigates: "work:2 api"
+    # beats a bare %7 when the pane is three windows away. Read once, HERE:
+    # the message below is a plain string in a tmux command LIST, not a
+    # format, so a #{...} left in it would arrive verbatim.
+    #
+    # Single quotes are stripped from it. $where is interpolated into a
+    # single-quoted argument of the if-shell command string, and a window
+    # named don't would close that quote early and hand tmux the remainder as
+    # commands. The window name is user data; nothing else in it can break out.
+    local where
+    where=$(tmux display-message -p -t "$pane" \
+        '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
+    where=${where//\'/}
+    [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
     tmux if-shell -F -t "$pane" \
         "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
-        "paste-buffer -p -r -d -b $bufname -t $pane ; display-message 'review pasted into $pane — press Enter there to send'" \
+        "set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
         "display-message 'tmux-review: $pane is not an idle agent — not delivered'"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then

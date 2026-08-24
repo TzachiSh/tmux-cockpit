@@ -3339,6 +3339,36 @@ promptcount=$(printf '%s\n' "$apafter" | grep -c '\$ *$' || true)
 is "the paste never executes (still one prompt, no fresh one after Enter)" \
    "0" "$promptcount"
 
+# A delivered review is a STATE, not a 750 ms flash. The pane carries
+# @cockpit_review=sent until the human actually sends it, so prefix J can walk
+# back to the review still sitting unsent in someone's prompt.
+is "a landed review marks the pane" "sent" \
+   "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
+# Driven from NP, a shell inside the session, so agent-state sees a real $TMUX
+# exactly as a Claude Code hook does. Poll the option, never a fixed sleep.
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
+    "$(shq_test "$DIR/scripts/agent-state") running $AP" Enter
+for i in $(seq 1 20); do
+    [ -z "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)" ] && break
+    sleep 0.1
+done
+is "the mark clears when the agent starts working" "" \
+   "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
+# And prefix J walks to it. @panestate is `running` here (agent-state just set
+# it), so the pane is NOT needs-input: the jump can only come from the review
+# mark, not from the blocked-pane path the earlier tmux-jump block covers.
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @cockpit_review sent >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP" "$(shq_test "$DIR/scripts/tmux-jump")" Enter
+for i in $(seq 1 20); do
+    [ "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')" = "$AP" ] && break
+    sleep 0.1
+done
+is "prefix J walks to a pane holding an unsent review" "$AP" \
+   "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')"
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
+
 echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
 "$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
 "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
