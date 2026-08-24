@@ -1572,5 +1572,48 @@ else
 fi
 fi
 
+echo "== prefix J jumps to the pane that needs you =="
+if need_tmux "tmux-jump"; then :; else
+JJ="cockpit-jj-$$"; SOCKS="$SOCKS $JJ"
+"$TMUX_REAL" -L "$JJ" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+# -t t: (not bare t): a detached window's default name is the literal "tmux"
+# until a client renames it, and new-window's colonless -t resolves as a
+# WINDOW target first -- "t" then prefix-matches "tmux" and tmux tries to
+# reuse window 0 instead of appending. The trailing colon pins the target to
+# the session, sidestepping that ambiguity.
+"$TMUX_REAL" -L "$JJ" new-window  -t t: 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" new-window  -t t: 'exec -a claude bash' >/dev/null 2>&1
+JP2=$("$TMUX_REAL" -L "$JJ" list-panes -t t:1 -F '#{pane_id}')
+JP3=$("$TMUX_REAL" -L "$JJ" list-panes -t t:2 -F '#{pane_id}')
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
+# Drive from inside the session so $TMUX/$TMUX_PANE are real, like a keypress.
+# sleep 2, not 1: tmux-jump forks a fresh nested tmux client per send-keys
+# invocation here, and under concurrent load (several suites' worth of tmux
+# servers on one box) that fork+connect can take noticeably longer than 1s.
+JP1=$("$TMUX_REAL" -L "$JJ" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+is "jump lands on the blocked window" "2" \
+   "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+# A second blocked pane: pressing again from the first cycles to the next.
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+is "a second press cycles to the next blocked pane" "1" \
+   "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+# Nothing blocked: the script must not move you, and must not error.
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JRC=\$?" Enter; sleep 2
+case "$("$TMUX_REAL" -L "$JJ" capture-pane -p -t "$JP1")" in
+    *JRC=0*) ok "no blocked pane exits 0 and stays put" ;;
+    *) bad "no blocked pane exits 0 and stays put" "JRC=0 in the pane" \
+         "$("$TMUX_REAL" -L "$JJ" capture-pane -p -t "$JP1" | tail -3)" ;;
+esac
+is "and the window did not change" "0" \
+   "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+"$TMUX_REAL" -L "$JJ" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Jump to the next pane whose agent is waiting on you, across every session.
+# Bound to prefix J by cockpit.tmux (@cockpit_jump_key overrides; "off" unbinds).
+# One-shot: runs only on the keypress, so a status redraw still costs no shell.
+set -u
+
+cur="${TMUX_PANE:-}"
+blocked=()
+# Sorted so the cycle order is stable between presses; @panestate only ever
+# exists on agent panes, so no agents-glob filter is needed here.
+while read -r id state; do
+    [ "$state" = needs-input ] && blocked+=("$id")
+done < <(tmux list-panes -a -F '#{pane_id} #{@panestate}' 2>/dev/null | sort -t% -k2 -n)
+
+if [ ${#blocked[@]} -eq 0 ]; then
+    tmux display-message "no agent needs you" 2>/dev/null
+    exit 0
+fi
+
+# Cycle: from a blocked pane, go to the NEXT one (wrapping); from anywhere
+# else, go to the first. Repeated presses therefore visit every blocked pane.
+next=${blocked[0]}
+for i in "${!blocked[@]}"; do
+    if [ "${blocked[$i]}" = "$cur" ]; then
+        next=${blocked[$(( (i + 1) % ${#blocked[@]} ))]}
+        break
+    fi
+done
+
+# switch-client needs a client and fails detached (tests, control mode); the
+# window/pane selection below still retargets the session, so it is not fatal.
+tmux switch-client -t "$next" 2>/dev/null || true
+tmux select-window -t "$next" 2>/dev/null
+tmux select-pane   -t "$next" 2>/dev/null
+exit 0
