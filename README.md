@@ -167,6 +167,7 @@ without it, or without Claude Code's settings.json at that path, merge the
 |-----|------|
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
+| `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 
 Both pickers share their keys: `↵` acts, `esc` cancels, `^/` toggles the
 preview and `^U`/`^D` scroll it.

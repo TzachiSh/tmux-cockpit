@@ -199,6 +199,14 @@ tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pan
 Q_TM=$(sq "$DIR/scripts/tm")
 tmux bind-key S display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
 
+# Jump to the pane that needs you; press again to cycle through all of them.
+JK=$(tmux show-option -gqv @cockpit_jump_key)
+case "$JK" in
+    off) ;;                          # explicitly disabled
+    "")  tmux bind-key J run-shell "'$DIR/scripts/tmux-jump'" ;;
+    *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump'" ;;
+esac
+
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane
 # option rather than on the command line because pane output is full of quotes,
