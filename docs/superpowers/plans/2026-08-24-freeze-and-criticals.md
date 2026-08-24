@@ -50,6 +50,20 @@
 
 ---
 
+### Task A5: set-titles OSC storm — the Windows Terminal freeze amplifier
+**Files:** Modify examples/tmux.conf, examples/full.tmux.conf, README; Test tests/run.sh
+`set -g set-titles on` forwards every agent OSC-2 title to the outer terminal UNCOALESCED (rig: 609
+title OSCs, 27KB/3s → 0 with off); Windows Terminal chokes on the storm and its drain-stall freezes the
+tmux client in all situations. The in-tmux tab topic reads #{pane_title} internally, independent of
+forwarding, so turning off the OUTER title loses nothing in-tmux.
+**Fix:** default `set -g set-titles off` in the example configs (the outer terminal title is redundant
+with the in-tmux tab that already shows the topic), with a documented one-liner to re-enable for users
+who want the outer title AND aren't on a title-storm-sensitive terminal. Update README's setup notes.
+- [ ] Test: assert the example configs do not enable set-titles on (or explicitly set off); a fixture
+  loading the config emits 0 title-OSC under a title storm (or, if a pure-config assertion is hard,
+  assert the config sets set-titles off). Document why in the repo voice (the 27KB→0 measurement).
+- [ ] `make check`; commit `fix: stop forwarding the agent title storm that freezes Windows Terminal`.
+
 ## WAVE B — correctness criticals (parallel-safe with C after A lands; both touch tmux-review so serialize B and C within the same lane)
 
 ### Task B1: C2 — review anchors to the wrong file on quoted paths (tmux-review lines_mode)

@@ -175,3 +175,23 @@ lockfile diff can NEVER wedge the popup. And get lines_mode off the popup-STARTU
 (lazy/background + spinner, esc stays live). Defense-in-depth: bind-key J via run-shell -b.
 CAVEAT: HH6 tty test was a Linux pty, not Windows Terminal/ConPTY. If a genuine ALL-CLIENTS hang
 exists it's terminal-side; set-titles off remains an untested-on-ConPTY ambient mitigation.
+
+## WINDOWS TERMINAL FREEZE (hunt-hardhang, part 2) — per-client TTY_BLOCK + set-titles OSC storm
+No server-wide deadlock on ANY path (tty-drain included): tmux uses per-client TTY_BLOCK backpressure
+(~sx*sy*8 bytes) — non-blocking, never a synchronous tty write, a 2nd client stays <7ms responsive
+while a throttled 10KB/s client saturates. So a single WT client freezing = its OWN buffer over
+TTY_BLOCK while WT can't drain, NOT a server hang. Diagnostic for the user: a 2nd SSH session to the
+same tmux stays responsive → confirms per-client drain-stall, not a hang.
+AMPLIFIER (the actionable finding): `set -g set-titles on` (full.tmux.conf:40-41) FORWARDS every
+active-pane title change to WT as a distinct OSC title seq, UNCOALESCED (unlike cell redraws). Rig:
+set-titles ON = 609 title changes → 609 OSC titles (27,295 title bytes, 38KB total/3s); OFF = 0 OSC
+titles (9.7KB total/3s). ~4x bytes, ~200 title-OSC/sec under storm. Claude Code updates pane_title
+frequently → real stream. WT is documented-slow at high-freq title updates → its read loop stalls →
+drains tmux slower → tmux out-buffer crosses TTY_BLOCK → WT client freezes in ALL situations.
+FIX (one line, immediately shippable): `set -g set-titles off`. Kills 100% of title-OSC forwarding;
+does NOT lose the in-tmux tab topic (catppuccin_window_text reads #{pane_title} INTERNALLY,
+full.tmux.conf:178-179 — independent of forwarding); only the outer WT window title stops updating.
+Redraw path (borders/tint/status) IS coalesced by tmux (156 B/s), so the banner/fleet fix cuts CPU +
+redraw FREQUENCY; the byte relief for WT comes mainly from set-titles off + fewer redraws. Ship both.
+Lower-priority WT-hostile: tint full-bg repaint (coalesced, bounded), allow-passthrough (needed),
+truecolor SGR bytes (minor).
