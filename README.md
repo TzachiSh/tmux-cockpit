@@ -52,6 +52,8 @@ Non-agent panes fall back to the window name.
   one-key approval from a decision without switching to it.
 - **Active pane's border** — names any *other* window that is blocked, since
   you cannot see its border from here.
+- **Status bar** — the `#{agent_fleet}` token counts blocked and errored agents
+  across *every* session, not only the one you are attached to.
 
 Nothing is drawn when nothing is happening.
 
@@ -82,6 +84,45 @@ A lower state may not overwrite a higher one. Only work actually resuming
 when a *blocked* turn ends — with the permission prompt still on screen — and
 letting that write `done` turned a red "answer me" into a green "finished" on a
 timer.
+
+### Status-bar tokens
+
+Three tokens, usable in the six options `cockpit.tmux` rewrites when it loads:
+`status-left`, `status-right`, `window-status-format`,
+`window-status-current-format`, `@catppuccin_directory_text` and
+`@catppuccin_gitmux_text`. Each must be set **before** the `run-shell` line.
+
+That list is exhaustive. A token in an option of your own is never rewritten —
+it reaches tmux as a name nothing defines and renders as nothing at all, and
+pulling your option in with `#{E:}` does not change that.
+
+| token | renders |
+| --- | --- |
+| `#{agent_where_path}` | `~/path` locally, the ssh destination when remote |
+| `#{agent_where_branch}` | the git branch locally, blank when remote |
+| `#{agent_fleet}` | `▲N` blocked and `✕N` errored agents, every session |
+
+`#{agent_fleet}` is the one alert that is not tied to what you can see: window
+dots and borders only speak for the session in front of you, so a *detached*
+session can sit blocked for an hour without a pixel changing. It looks at the
+whole server, and renders nothing at all while nothing is waiting.
+
+It counts **window slots**, not distinct panes. A session made with
+`tmux new-session -t` is a second *view* of one set of windows, and
+`link-window` puts a single window in two sessions; either way a shared blocked
+pane is counted once per view — three grouped views of one blocked agent read
+`▲3`. tmux's own `list-panes -a` reports those panes the same way, and a format
+has no means to de-duplicate them. So the count can read high on a grouped
+setup. It never reads low, which is the direction that would matter: a fleet
+rendering nothing is genuinely quiet.
+
+It is pure format syntax — a redraw runs no shell — but unlike the other two it
+is not free: tmux walks every pane of every session, twice, on each expansion.
+That costs about **1.7 ms per expansion on a 40-pane server** (1.2 ms measured
+on an idle machine with every pane blocked). Against a default
+`status-interval` of 15 s that is nothing, and it is small beside the 7.7 ms a
+six-window redraw already costs. Panes in neither state pay only their
+`@panestate` read; the dearer agent-glob test runs on the few that are.
 
 ## Install
 

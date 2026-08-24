@@ -1690,5 +1690,46 @@ is "and the window did not change" "0" \
 "$TMUX_REAL" -L "$JJ" kill-server >/dev/null 2>&1
 fi
 
+echo "== the fleet counter reads every session =="
+if need_tmux "agent_fleet"; then :; else
+FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
+"$TMUX_REAL" -L "$FC" -f /dev/null new-session -d -s a -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" new-session -d -s b 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" new-window  -t b 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set -g status-right '[#{agent_fleet}]' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+FCP1=$("$TMUX_REAL" -L "$FC" list-panes -t a:0 -F '#{pane_id}')
+FCP2=$("$TMUX_REAL" -L "$FC" list-panes -t b:0 -F '#{pane_id}')
+FCP3=$("$TMUX_REAL" -L "$FC" list-panes -t b:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate error       >/dev/null 2>&1
+fleet() { "$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
+            "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)" | plain; }
+is "two blocked and one errored, across sessions" "[▲2 ✕1 ]" "$(fleet)"
+# Read at render time, so a theme sourced after the plugin still wins -- and a
+# regression to a hard-coded colour shows up here rather than in someone's eyes.
+"$TMUX_REAL" -L "$FC" set -g @thm_red '#ff6b6b' >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
+          "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" in
+    *'#[fg=#ff6b6b,bold]▲2'*) ok "the count wears the theme's red" ;;
+    *) bad "the count wears the theme's red" "#[fg=#ff6b6b,bold]▲2" \
+         "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
+              "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" ;;
+esac
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate running >/dev/null 2>&1
+is "a quiet fleet renders nothing at all" "[]" "$(fleet)"
+# A pane whose agent has exited keeps its last @panestate forever. Unguarded,
+# the fleet count would include it and never come back down.
+"$TMUX_REAL" -L "$FC" new-window -t b 'sleep 300' >/dev/null 2>&1
+FCP4=$("$TMUX_REAL" -L "$FC" list-panes -t b:2 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP4" @panestate needs-input >/dev/null 2>&1
+is "a shell holding stale state is not counted" "[]" "$(fleet)"
+"$TMUX_REAL" -L "$FC" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
