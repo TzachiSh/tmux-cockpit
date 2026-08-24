@@ -41,6 +41,28 @@ H=${HOME:-/nonexistent}
 # below needs conditionals and git, and threading that through fzf's quoting
 # produced something nobody could read or test. fzf quotes the placeholders it
 # substitutes, so the path arrives here as one argument however odd it is.
+# What changed in this file, as an actual diff -- unstaged first, staged next,
+# and an honest sentence when there is nothing. Bound to ^G in the pickers.
+if [ "${1:-}" = --preview-diff ]; then
+    f=${2:-}
+    case "$f" in "~") f=${HOME:-/nonexistent} ;; "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;; esac
+    [ -n "$f" ] && [ -e "$f" ] || { printf 'gone: %s\n' "$f"; exit 0; }
+    if [ -d "$f" ]; then d=$f; else case "$f" in */*) d=${f%/*} ;; *) d=. ;; esac; fi
+    if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+        printf 'not in a git repository\n'; exit 0
+    fi
+    if [ -d "$f" ]; then
+        git -C "$f" -c color.status=always status --short 2>/dev/null | head -40
+        git -C "$f" diff --color=always 2>/dev/null | head -400
+        exit 0
+    fi
+    diff=$(git -C "$d" diff --color=always -- "$f" 2>/dev/null)
+    [ -n "$diff" ] || diff=$(git -C "$d" diff --color=always --cached -- "$f" 2>/dev/null)
+    if [ -n "$diff" ]; then printf '%s\n' "$diff" | head -400
+    else printf 'no uncommitted changes in %s\n' "${f##*/}"; fi
+    exit 0
+fi
+
 if [ "${1:-}" = --preview ]; then
     f=${2:-}; l=${3:-}
     # Anything that is not a plain line number is no line number. It reaches the
@@ -79,6 +101,18 @@ if [ "${1:-}" = --preview ]; then
         file -b -- "$f" 2>/dev/null
         wc -c < "$f" 2>/dev/null | { read -r n; printf '%s bytes\n' "$n"; }
         exit 0
+    fi
+
+    # No target line means nothing anchors the view -- and if the file has
+    # uncommitted changes, those are almost always why it is on the line you
+    # clicked. Lead with the diff; ^F flips to the plain content, ^G back.
+    # A line number wins over the diff: the jump target is the point then.
+    if [ -z "$l" ]; then
+        case "$f" in */*) _d=${f%/*} ;; *) _d=. ;; esac
+        if git -C "$_d" rev-parse --git-dir >/dev/null 2>&1; then
+            _diff=$(git -C "$_d" diff --color=always -- "$f" 2>/dev/null)
+            [ -n "$_diff" ] && { printf '%s\n' "$_diff" | head -400; exit 0; }
+        fi
     fi
 
     # Window the snippet around the target line: enough above to see how you got
@@ -308,8 +342,10 @@ browse() {
             | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
                   --expect=ctrl-o \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})" \
+                  --bind "ctrl-f:change-preview($(shq "$0") --preview {})" \
                   --prompt="${dir/#$H/\~}/ " \
-                  --header='↵ open / enter dir   ^O open as-is   ^/ preview   esc cancel' \
+                  --header='↵ open / enter dir   ^O open as-is   ^G diff   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
                   --preview-window='down,65%,border-top') || return 0
         key=${out%%$'\n'*}; sel=${out#*$'\n'}
@@ -340,8 +376,10 @@ if command -v fzf >/dev/null; then
            done | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
                       --delimiter=$'\t' --with-nth=2 --multi \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                      --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})" \
+                      --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})" \
                       --prompt='open> ' \
-                      --header='↵ open   tab mark several   ^/ preview   esc cancel' \
+                      --header='↵ open   tab mark several   ^G diff   ^F file   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-window="down,$pshare,border-top")
     [ -n "$picks" ] || exit 0

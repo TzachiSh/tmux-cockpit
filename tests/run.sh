@@ -1218,5 +1218,46 @@ else
 fi
 fi
 
+echo "== the preview shows what changed, not just that it changed =="
+# The bat rewrite kept the thin git gutter but lost the actual diff view. For a
+# modified file with no target line, the diff is nearly always why the file is
+# on the line you clicked -- lead with it. A target line wins: the jump is the
+# point then. ^G forces the diff anywhere, and a clean file says so instead of
+# showing an empty pane.
+DV=$(mktemp -d)
+(
+  cd "$DV" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'alpha\nbeta\ngamma\n' > f.txt; git add f.txt
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+  printf 'alpha\nCHANGED\ngamma\n' > f.txt
+) >/dev/null 2>&1
+pv() { "$DIR/scripts/tmux-open-path" "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
+case "$(pv --preview "$DV/f.txt")" in
+    *'+CHANGED'*) ok "a modified file with no line leads with its diff" ;;
+    *) bad "a modified file with no line leads with its diff" "+CHANGED" "$(pv --preview "$DV/f.txt" | head -3)" ;;
+esac
+case "$(pv --preview "$DV/f.txt" 2)" in
+    *'+CHANGED'*) bad "a target line beats the diff" "the content window" "a diff" ;;
+    *CHANGED*)    ok  "a target line beats the diff" ;;
+    *) bad "a target line beats the diff" "the line content" "$(pv --preview "$DV/f.txt" 2 | head -2)" ;;
+esac
+case "$(pv --preview-diff "$DV/f.txt")" in
+    *'+CHANGED'*) ok "^G shows the diff on demand" ;;
+    *) bad "^G shows the diff on demand" "+CHANGED" "$(pv --preview-diff "$DV/f.txt" | head -3)" ;;
+esac
+( cd "$DV" && git checkout -q f.txt ) 2>/dev/null
+is "a clean file says so rather than an empty pane" "no uncommitted changes in f.txt" \
+   "$(pv --preview-diff "$DV/f.txt")"
+case "$(pv --preview "$DV/f.txt")" in
+    *alpha*) ok "and its default preview is the content again" ;;
+    *) bad "and its default preview is the content again" "the file" "$(pv --preview "$DV/f.txt" | head -2)" ;;
+esac
+is "outside a repo, the diff view is honest too" "not in a git repository" \
+   "$("$DIR/scripts/tmux-open-path" --preview-diff /tmp 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' )"
+rm -rf "$DV"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

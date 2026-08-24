@@ -229,7 +229,8 @@ you are actually deciding about:
 | what you picked | what you see |
 |-----------------|--------------|
 | a file, with a line number | the code around that line, the line highlighted |
-| a file, no line number | the file from the top |
+| a file, no line number, **uncommitted changes** | its `git diff` — the changes are almost always why it's on that line |
+| a file, no line number, clean | the file from the top |
 | a directory | `git status --short` and a diff stat for it, or `ls -la` outside a repo |
 | a binary | its type and size, never its bytes |
 
@@ -239,8 +240,13 @@ beside every line you have changed but not committed — so you see the code and
 what moved in it at the same time. Without `bat` it falls back to numbered
 lines with the target in reverse video. Nothing else is required.
 
-`tmux-open-path --preview <path> [line]` renders exactly what the popup shows,
-which is the quickest way to see why a preview looks wrong.
+`^G` switches the preview to the diff for any entry — in the folder browser
+too — and `^F` back to the content. A clean file says "no uncommitted changes"
+rather than showing an empty pane.
+
+`tmux-open-path --preview <path> [line]` (or `--preview-diff <path>`) renders
+exactly what the popup shows, which is the quickest way to see why a preview
+looks wrong.
 
 It reads the whole clicked **line**, not `#{mouse_word}`: tmux's
 `word-separators` include `/ . : -`, so the word under `src/foo-bar.ts:31` is
