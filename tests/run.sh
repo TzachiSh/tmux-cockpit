@@ -1625,7 +1625,10 @@ esac
 # whatever colour the ACTIVE pane's state happens to give the border.
 "$TMUX_REAL" -L "$FR" new-window -d -n other 'exec -a claude sleep 300' >/dev/null 2>&1
 OP2=$("$TMUX_REAL" -L "$FR" list-panes -t other -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$FR" set -p -t "$OP2" @panestate needs-input >/dev/null 2>&1
+# Drive the block through agent-state, the production path: the banner now reads
+# a per-window option agent-state precomputes on a transition, not a live pane
+# walk, so a raw set-option would set @panestate but never light the banner.
+TMUX="$SOCKDIR/$FR,0,0" "$DIR/scripts/agent-state" needs-input "$OP2" >/dev/null 2>&1
 "$TMUX_REAL" -L "$FR" set -p -t "$FP" @panestate running >/dev/null 2>&1
 bf=$("$TMUX_REAL" -L "$FR" display-message -p -t "$FP" '#{E:pane-border-format}')
 case "$bf" in
@@ -1633,6 +1636,62 @@ case "$bf" in
     *) bad "the NEEDS YOU banner is red regardless of this pane's state" "a red bold banner" "$bf" ;;
 esac
 "$TMUX_REAL" -L "$FR" kill-server >/dev/null 2>&1
+fi
+
+echo "== the precomputed banner renders byte-for-byte and excludes your own window =="
+# A3 moved the cross-window NEEDS YOU walk out of pane-border-format (where a
+# redraw re-ran it for every visible pane) into a per-window option agent-state
+# writes on transitions. This pins the RENDER against the pre-A3 live walk: same
+# text, same colours, the same live window_index:window_name, and the same rule
+# that the window you are looking at is never listed -- its own blocked pane
+# already spells it out on its own border. The golden strings below were
+# captured from the pre-A3 code, so a match is byte-identical before/after.
+if need_tmux "banner byte-identical"; then :; else
+BX="cockpit-bx-$$"; SOCKS="$SOCKS $BX"
+"$TMUX_REAL" -L "$BX" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    "$TMUX_REAL" -L "$BX" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1; done
+"$TMUX_REAL" -L "$BX" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$BX" rename-window -t s:0 home >/dev/null 2>&1
+"$TMUX_REAL" -L "$BX" new-window -d -t s: -n build 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BX" new-window -d -t s: -n test  'exec -a claude sleep 300' >/dev/null 2>&1
+BXH=$("$TMUX_REAL" -L "$BX" list-panes -t s:home  -F '#{pane_id}' | head -1)
+BXB=$("$TMUX_REAL" -L "$BX" list-panes -t s:build -F '#{pane_id}' | head -1)
+BXT=$("$TMUX_REAL" -L "$BX" list-panes -t s:test  -F '#{pane_id}' | head -1)
+asBX() { TMUX="$SOCKDIR/$BX,0,0" "$DIR/scripts/agent-state" "$1" "$2" >/dev/null 2>&1; }
+asBX running "$BXH"; asBX needs-input "$BXB"; asBX needs-input "$BXT"
+is "the banner lists the other blocked windows, byte-for-byte" \
+   "#[fg=#ff6b6b]#[bold]─ NEEDS YOU 1:build 2:test #[default]#[align=right]#[range=control|9][x]#[norange]" \
+   "$("$TMUX_REAL" -L "$BX" display-message -p -t "$BXH" '#{E:pane-border-format}')"
+# The window you are on is excluded even when it, too, holds a blocked pane: the
+# split adds a second (unfocused) blocked pane to home, and the banner on the
+# active pane still names only build and test (home's own pane spells it out).
+"$TMUX_REAL" -L "$BX" split-window -d -t "$BXH" 'exec -a claude sleep 300' >/dev/null 2>&1
+BXH2=$("$TMUX_REAL" -L "$BX" list-panes -t s:home -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')
+asBX needs-input "$BXH2"
+is "the banner still excludes the window you are on, byte-for-byte" \
+   "#[fg=#ff6b6b]#[bold]─ NEEDS YOU 1:build 2:test #[default]#[align=right]#[range=control|8][z]#[norange]#[range=control|9][x]#[norange]" \
+   "$("$TMUX_REAL" -L "$BX" display-message -p -t "$BXH" '#{E:pane-border-format}')"
+"$TMUX_REAL" -L "$BX" kill-server >/dev/null 2>&1
+fi
+
+echo "== the example configs do not forward the agent title storm =="
+# set-titles on FORWARDS every agent OSC-2 title change to the outer terminal as
+# a distinct, UNCOALESCED title sequence (measured under a title storm: 609 title
+# OSCs, 27KB/3s; off = 0). Windows Terminal is documented-slow at high-frequency
+# title updates -- its read loop stalls, drains tmux slower, tmux's out-buffer
+# crosses the per-client TTY_BLOCK backpressure limit, and the client freezes.
+# The in-tmux tab reads #{pane_title} INTERNALLY, so turning the OUTER title off
+# costs nothing on the status bar. full.tmux.conf used to ship set-titles on.
+if need_tmux "set-titles"; then :; else
+ST="cockpit-st-$$"; SOCKS="$SOCKS $ST"
+"$TMUX_REAL" -L "$ST" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+# source-file continues past the later catppuccin/tpm lines that need a real
+# install; set-titles sits high in the file, before any of them.
+"$TMUX_REAL" -L "$ST" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+is "full.tmux.conf leaves the outer terminal title off" "off" \
+   "$("$TMUX_REAL" -L "$ST" show-option -gv set-titles)"
+"$TMUX_REAL" -L "$ST" kill-server >/dev/null 2>&1
 fi
 
 echo "== @cockpit_open_single skips the popup for machine output =="
@@ -2011,9 +2070,13 @@ FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
 FCP1=$("$TMUX_REAL" -L "$FC" list-panes -t a:0 -F '#{pane_id}')
 FCP2=$("$TMUX_REAL" -L "$FC" list-panes -t b:0 -F '#{pane_id}')
 FCP3=$("$TMUX_REAL" -L "$FC" list-panes -t b:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate error       >/dev/null 2>&1
+# Drive state through agent-state, the production path: the count is now a
+# precomputed @cockpit_fleet option agent-state writes on every transition, not
+# a live walk in status-right, so a raw set-option would never move the counter.
+asFC() { TMUX="$SOCKDIR/$FC,0,0" "$DIR/scripts/agent-state" "$1" "$2" >/dev/null 2>&1; }
+asFC needs-input "$FCP1"
+asFC needs-input "$FCP2"
+asFC error       "$FCP3"
 fleet() { "$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
             "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)" | plain; }
 is "two blocked and one errored, across sessions" "[▲2 ✕1 ]" "$(fleet)"
@@ -2027,15 +2090,17 @@ case "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
          "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
               "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" ;;
 esac
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate running >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate running >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate running >/dev/null 2>&1
+asFC running "$FCP1"
+asFC running "$FCP2"
+asFC running "$FCP3"
 is "a quiet fleet renders nothing at all" "[]" "$(fleet)"
 # A pane whose agent has exited keeps its last @panestate forever. Unguarded,
-# the fleet count would include it and never come back down.
+# the fleet count would include it and never come back down. agent-state writes
+# @panestate regardless, but the precompute counts through the same glob guard,
+# so a shell pane never reaches the counter.
 "$TMUX_REAL" -L "$FC" new-window -t b 'sleep 300' >/dev/null 2>&1
 FCP4=$("$TMUX_REAL" -L "$FC" list-panes -t b:2 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP4" @panestate needs-input >/dev/null 2>&1
+asFC needs-input "$FCP4"
 is "a shell holding stale state is not counted" "[]" "$(fleet)"
 "$TMUX_REAL" -L "$FC" kill-server >/dev/null 2>&1
 fi

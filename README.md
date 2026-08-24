@@ -32,15 +32,23 @@ screenshot and a red/green colourblind reader.
 ## Window labels
 
 For an agent pane the tab shows the **conversation topic**, not the window name.
-Claude Code writes it to `pane_title` (the same thing Ghostty shows in its tab),
-so with several agents running you see what each is working on instead of three
-tabs all reading `claude`:
+Claude Code writes it to `pane_title`, so with several agents running you see
+what each is working on instead of three tabs all reading `claude`:
 
 ```text
  Color scheme for code … ●     Openvpn setup with voi… ○     build ○
 ```
 
 Non-agent panes fall back to the window name.
+
+The tab reads `pane_title` **inside tmux**, so it works regardless of the outer
+terminal. `examples/full.tmux.conf` ships with `set-titles off`: an agent
+retitles constantly, and forwarding each change out as an OSC title sequence
+(they do not coalesce like cell redraws — measured 609 titles, 27KB/3s under a
+storm) stalls Windows Terminal's draw loop until its tmux client freezes. The
+in-tmux tab above is unaffected. To let the outer window title track the topic
+on a terminal that coalesces fine (Ghostty, kitty, iTerm2), uncomment the two
+`set-titles` lines in that file.
 
 ## Where it shows up
 
