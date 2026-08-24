@@ -43,8 +43,15 @@ interpolate() {
     # status tokens run "sh: /home/my: not found" on every redraw -- rendering
     # nothing, reporting nothing.
     local w; w=$(sq "$DIR/scripts/tmux-where")
-    local r_path="#($w path #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
-    local r_brch="#($w branch #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
+    # #{q:} is tmux's OWN shell-quoting (man tmux: "q: will escape sh(1)
+    # special characters"), applied while tmux still owns the string -- before
+    # sh ever sees it. The hand-written single quotes it replaces did not: a
+    # cwd containing a bare ' closed that quote early and whatever followed,
+    # including a $(...), ran as a command on every status redraw. #{q:} backslash-
+    # escapes rather than wrapping in quotes, so the result is used bare here,
+    # never re-wrapped in quotes of our own.
+    local r_path="#($w path #{pane_pid} #{q:pane_current_path} #{q:pane_current_command})"
+    local r_brch="#($w branch #{pane_pid} #{q:pane_current_path} #{q:pane_current_command})"
 
     # One x per blocked/errored agent pane, in ANY session, then #{n:} takes the
     # length of that string. The whole thing is format syntax: the counter costs

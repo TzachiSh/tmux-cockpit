@@ -879,6 +879,61 @@ is "untouched options stay untouched" "bg=red" "$(tmux -L "$SOCK2" show-option -
 tmux -L "$SOCK2" kill-server >/dev/null 2>&1
 fi
 
+echo "== a directory name can no longer run code through the status job =="
+# #{agent_where_path} used to embed pane_current_path inside the #() job with
+# hand-written single quotes -- tmux expands the token INSIDE the job before sh
+# ever sees it, so a bare ' in the cwd closed that quote early and a trailing
+# $(...) ran as a real command, on every status redraw, for anyone with the
+# token in status. An outer tmux server provides the pty for a client attached
+# to the inner one (the split-picker test above uses the same pattern) so the
+# #() job -- which only runs for an attached client -- actually fires.
+if need_tmux "RCE via directory name"; then :; else
+SP=$(mktmpd)
+MAL="$SP/x'\$(touch $SP/OWNED)'y"
+mkdir -p "$MAL"
+OUTER="cockpit-rce-outer-$$"; INNER="cockpit-rce-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+tmux -L "$INNER" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER" refresh-client >/dev/null 2>&1
+sleep 1
+if [ -e "$SP/OWNED" ]; then
+    bad "a hostile cwd's \$(...) never runs" "no OWNED file" "OWNED file created"
+else
+    ok "a hostile cwd's \$(...) never runs"
+fi
+tmux -L "$OUTER" kill-server >/dev/null 2>&1
+tmux -L "$INNER" kill-server >/dev/null 2>&1
+
+# A normal cwd must still render, not just fail to execute.
+D2=$(mktmpd)
+OUTER2="cockpit-rce-outer2-$$"; INNER2="cockpit-rce-inner2-$$"
+SOCKS="$SOCKS $OUTER2 $INNER2"
+tmux -L "$INNER2" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$D2" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER2" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER2" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER2" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER2 attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER2" refresh-client >/dev/null 2>&1
+sleep 1
+scr=$(tmux -L "$OUTER2" capture-pane -p -t o)
+case "$scr" in
+    *"$D2"*) ok "a normal cwd still renders its path" ;;
+    *) bad "a normal cwd still renders its path" "$D2 on the status line" "$scr" ;;
+esac
+tmux -L "$OUTER2" kill-server >/dev/null 2>&1
+tmux -L "$INNER2" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-where: detached HEAD and odd repos =="
 DH=$(mktmpd)
 (
