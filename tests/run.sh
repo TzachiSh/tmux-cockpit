@@ -2226,6 +2226,223 @@ case "$rv1out" in
 esac
 rm -rf "$RV1"
 
+echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
+# The review popup is modal and runs lines_mode at startup and on every reload.
+# A regenerated lockfile / vendored bundle is a single-file diff of tens of
+# thousands of rows; the per-row shell parse used to lock the one client for
+# minutes to hours (measured: 100k rows did not finish in 5 minutes, 8k rows
+# = 56s). numstat totals the exact row count at one cheap git call, so past
+# the 5000-row cap --lines emits a single "too large" notice and returns at
+# once. FAIL-first: on the pre-cap parser this same fixture takes ~30s (the
+# timeout below fires) and never emits the notice string at all.
+RVCAP=$(mktmpd)
+(
+  cd "$RVCAP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > lock.txt
+  git add -A; git commit -q -m init
+  # 12000 lines replacing the 1 seed line: 12000 added + 1 deleted = 12001
+  # rows, over the 5000 cap. On the old parser that is ~20s of shell (measured
+  # 6.2s at 6000 rows, 21.2s at 12000), so timeout below has teeth.
+  seq 1 12000 > lock.txt
+) >/dev/null 2>&1
+rvcaptotal=$(git -C "$RVCAP" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')
+is "the fixture's diff really exceeds the 5000-row cap" "12001" "$rvcaptotal"
+# timeout is the fail-first teeth: the fixed path returns in ~0.1s, the old
+# O(n) shell build of 12001 rows blows well past 10s and timeout kills it (124).
+rvcapout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVCAP"); rvcaprc=$?
+if [ "$rvcaprc" -eq 124 ]; then
+    bad "a 12001-row diff returns fast, not after a 10s+ parse" \
+        "output within 10s" "timed out (the pre-cap parser)"
+else
+    ok "a 12001-row diff returns fast, not after a 10s+ parse"
+fi
+case "$rvcapout" in
+    *"diff too large to anchor line-by-line (12001 changed lines)"*)
+        ok "the cap emits the too-large notice naming the row count" ;;
+    *) bad "the cap emits the too-large notice naming the row count" \
+         "a 'diff too large ... (12001 changed lines)' notice" "$rvcapout" ;;
+esac
+is "the capped output is exactly one row (the popup stays trivially small)" \
+   "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
+# A diff at or under the cap is untouched -- still fully parsed, row per line.
+RVUNDER=$(mktmpd)
+(
+  cd "$RVUNDER" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > small.txt
+  git add -A; git commit -q -m init
+  seq 1 100 > small.txt
+) >/dev/null 2>&1
+rvunderout=$("$DIR/scripts/tmux-review" --lines "$RVUNDER")
+case "$rvunderout" in
+    *"diff too large"*) bad "an under-cap diff is parsed normally, not capped" \
+         "real per-line rows, no notice" "$rvunderout" ;;
+    *"small.txt"$'\t'*) ok "an under-cap diff is parsed normally, not capped" ;;
+    *) bad "an under-cap diff is parsed normally, not capped" \
+         "small.txt rows" "$rvunderout" ;;
+esac
+rm -rf "$RVCAP" "$RVUNDER"
+
+echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
+# The row build used `disp=$(printf ...)` (a subshell fork per row) and
+# `group[path]+=<row>` into one associative-array element (bash rebuilds the
+# whole growing string on each append -> O(n^2) for a single file). Both are
+# gone: printf -v, and one indexed array with per-file [start,end] ranges.
+# Correctness: the output is locked to a golden that the pre-fix parser
+# produced byte-for-byte (verified out of band), so the refactor cannot shift
+# a byte -- ordering, the -N deletion line, the display column, all intact.
+RVGOLD=$(mktmpd)
+(
+  cd "$RVGOLD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p tests
+  printf 'a\nb\nc\n' > app.go
+  printf 'p\nq\n' > tests/unit_test.go
+  git add -A; git commit -q -m init
+  printf 'a\nZED\nc\nADDED\n' > app.go
+  printf 'p\nQQ\n' > tests/unit_test.go
+) >/dev/null 2>&1
+rvgoldwant=$(printf '%s\n' \
+  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
+  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
+  'app.go	-2	b	app.go:2 (-)  b' \
+  'app.go	2	ZED	app.go:2 (+)  ZED' \
+  'app.go	4	ADDED	app.go:4 (+)  ADDED')
+is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
+   "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
+rm -rf "$RVGOLD"
+
+# Perf: a 5000-row single-file diff (the largest that stays under the cap) is
+# ~0.2s now; the pre-fix O(n^2)+fork build was ~5s here and ~13s on the slower
+# hunt machine. timeout is the fail-first teeth -- on the old build this fires.
+RVPERF=$(mktmpd)
+(
+  cd "$RVPERF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > big.txt
+  git add -A; git commit -q -m init
+  seq 1 5000 > big.txt
+) >/dev/null 2>&1
+timeout 3 "$DIR/scripts/tmux-review" --lines "$RVPERF" >/dev/null; rvperfrc=$?
+if [ "$rvperfrc" -eq 124 ]; then
+    bad "a 5000-row under-cap diff parses in well under 3s" \
+        "output within 3s" "timed out (the O(n^2) build)"
+else
+    ok "a 5000-row under-cap diff parses in well under 3s"
+fi
+rvperfrows=$("$DIR/scripts/tmux-review" --lines "$RVPERF" | grep -c .)
+is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
+   "5000" "$rvperfrows"
+rm -rf "$RVPERF"
+
+echo "== tmux-review --rows: pinning a comment does not re-grep the store once per row =="
+# rows_mode used to fire `grep -qxF <header>` over the whole store for EVERY
+# diff row, and the picker reloads the whole marked list after each pinned
+# comment. The headers are now read once into a set and each row does an O(1)
+# lookup. Correctness first: the ● must land on exactly the commented row and
+# be sign-specific -- a (-) row at the same line number must stay blank.
+RVMARK=$(mktmpd)
+(
+  cd "$RVMARK" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\nc\n' > src.go
+  git add -A; git commit -q -m init
+  printf 'a\nZED\nc\nADDED\n' > src.go
+) >/dev/null 2>&1
+RVMSTORE=$(mktemp)
+# Pin a comment on the +2 (ZED) row -- the diff also has a -2 (b) row at the
+# same line number, so this proves the marker is keyed on path:line AND sign.
+"$DIR/scripts/tmux-review" --attach "$RVMSTORE" "src.go" "2" "ZED" "fix this line"
+rvmarkcol=$("$DIR/scripts/tmux-review" --rows "$RVMARK" "$RVMSTORE" | cut -f4)
+rvmarkwant=$(printf '%s\n' ' src.go:2 (-)  b' '●src.go:2 (+)  ZED' ' src.go:4 (+)  ADDED')
+is "the ● lands on exactly the commented row, sign-specific" "$rvmarkwant" "$rvmarkcol"
+rm -f "$RVMSTORE"; rm -rf "$RVMARK"
+
+# Perf: --rows on a 4000-row diff with a pinned comment. The old per-row grep
+# made this ~10.7s here; it is ~0.3s now. timeout is the fail-first teeth.
+RVMPERF=$(mktmpd)
+(
+  cd "$RVMPERF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > big.txt
+  git add -A; git commit -q -m init
+  seq 1 4000 > big.txt
+) >/dev/null 2>&1
+RVMPSTORE=$(mktemp)
+"$DIR/scripts/tmux-review" --attach "$RVMPSTORE" "big.txt" "100" "100" "a comment"
+timeout 5 "$DIR/scripts/tmux-review" --rows "$RVMPERF" "$RVMPSTORE" >/dev/null; rvmprc=$?
+if [ "$rvmprc" -eq 124 ]; then
+    bad "--rows re-marks a 4000-row diff in well under 5s" \
+        "output within 5s" "timed out (the per-row grep)"
+else
+    ok "--rows re-marks a 4000-row diff in well under 5s"
+fi
+rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
+
+echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
+# git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
+# the bare `a/`/`b/` header match could not read -- so café.txt's rows were
+# attributed to the file BEFORE it (or dropped when café was first). Diffing
+# with core.quotePath=false keeps the path literal. FAIL-first: on the old code
+# café's rows carry alpha.txt / zeta.txt and no row says café at all.
+RVQ=$(mktmpd)
+(
+  cd "$RVQ" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > alpha.txt
+  printf 'x\ny\n' > café.txt
+  git add -A; git commit -q -m init
+  printf 'a\nAA\n' > alpha.txt
+  printf 'x\nCC\n' > café.txt
+) >/dev/null 2>&1
+rvqout=$("$DIR/scripts/tmux-review" --lines "$RVQ")
+case "$rvqout" in
+    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "café's added row anchors to café.txt at café's own line 2" ;;
+    *) bad "café's added row anchors to café.txt at café's own line 2" \
+         "café.txt<TAB>2<TAB>CC" "$rvqout" ;;
+esac
+if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
+    bad "café's row is not smeared onto the previous file" \
+        "no alpha.txt row carrying café's CC" "$rvqout"
+else
+    ok "café's row is not smeared onto the previous file"
+fi
+rm -rf "$RVQ"
+
+# The first-file-in-diff variant: when the odd-named file leads the diff, the
+# old code had no previous file to fall back to and dropped its rows entirely.
+RVQ1=$(mktmpd)
+(
+  cd "$RVQ1" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'x\ny\n' > café.txt
+  printf 'a\nb\n' > zeta.txt
+  git add -A; git commit -q -m init
+  printf 'x\nCC\n' > café.txt
+  printf 'a\nAA\n' > zeta.txt
+) >/dev/null 2>&1
+rvq1out=$("$DIR/scripts/tmux-review" --lines "$RVQ1")
+case "$rvq1out" in
+    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "a leading non-ASCII file's rows are not dropped" ;;
+    *) bad "a leading non-ASCII file's rows are not dropped" \
+         "café.txt<TAB>2<TAB>CC" "$rvq1out" ;;
+esac
+case "$rvq1out" in
+    *'zeta.txt'$'\t''2'$'\t''AA'$'\t'*) ok "the following file still anchors to itself" ;;
+    *) bad "the following file still anchors to itself" \
+         "zeta.txt<TAB>2<TAB>AA" "$rvq1out" ;;
+esac
+rm -rf "$RVQ1"
+
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
 # under the cursor vanished) -- without a guard this still writes
@@ -2772,6 +2989,81 @@ esac
 rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
+# deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
+# re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill
+# the agent in that window (a `claude` foreground child exits, the pane's own
+# shell is back) and the old unconditional `paste-buffer` landed the review in
+# that shell (the hunt reproduced it 6/6): a live, one-Enter-from-running
+# command line the reviewer never targeted. The end-to-end transient is
+# timing-bound, so this checks the mechanism deterministically: the exact
+# load-buffer + atomic if-shell that deliver() now runs, once against the shell
+# that outlived the agent and once against a live agent.
+if need_tmux "tmux-review --deliver atomic gate"; then :; else
+RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
+"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
+sleep 0.3
+"$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "claude" { print $1 }')
+NPG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "bash" { print $1 }')
+gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
+
+# The hazard the old code carried: once its stale check had passed, deliver()
+# ran a plain `paste-buffer` -- and into a shell that lands.
+printf 'HAZARD-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-hz -
+"$TMUX_REAL" -L "$RG" paste-buffer -p -r -d -b rg-hz -t "$NPG"
+sleep 0.3
+case "$(gcap "$NPG")" in
+    *HAZARD-MARKER*) ok "an unconditional paste into the shell DOES land (the hazard is real)" ;;
+    *) bad "an unconditional paste into the shell DOES land (the hazard is real)" \
+         "HAZARD-MARKER in the shell" "$(gcap "$NPG")" ;;
+esac
+# Clear the shell's readline of the pasted-but-unsent hazard line before the
+# real assertion, so a later match cannot see it.
+"$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
+sleep 0.2
+
+# The fix, byte-for-byte as deliver() runs it: stage the buffer, then let tmux
+# re-check #{pane_current_command} in the SAME command-queue item as the paste.
+# The pane is a shell at paste time -> refused, and the staged buffer dropped.
+printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
+    "delete-buffer -b rg-gate ; display-message 'not delivered'"
+sleep 0.3
+case "$(gcap "$NPG")" in
+    *RACE-MARKER-CONTENT*) bad "the atomic gate refuses the paste into a shell at paste time" \
+         "no RACE-MARKER-CONTENT in the shell" "$(gcap "$NPG")" ;;
+    *) ok "the atomic gate refuses the paste into a shell at paste time" ;;
+esac
+if "$TMUX_REAL" -L "$RG" list-buffers 2>/dev/null | grep -q 'rg-gate'; then
+    bad "the refused delivery drops its staged buffer" "no rg-gate buffer" "rg-gate still present"
+else
+    ok "the refused delivery drops its staged buffer"
+fi
+
+# The same gated sequence, targeting a live agent, still delivers.
+printf 'DELIVERED-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ok -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-ok -t $APG ; display-message pasted" \
+    "delete-buffer -b rg-ok ; display-message 'not delivered'"
+sleep 0.3
+case "$(gcap "$APG")" in
+    *DELIVERED-MARKER*) ok "the gate still delivers into a pane that is a live agent" ;;
+    *) bad "the gate still delivers into a pane that is a live agent" \
+         "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
+esac
+
+"$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
 
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
