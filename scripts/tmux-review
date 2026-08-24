@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tmux-review — review an agent's uncommitted diff, one comment at a time, and
 # hand the finished review back to the agent's pane.
-#   tmux-review                            no args: review the CLIENT's active
-#                                          pane if it is an agent, else the
+#   tmux-review [-p pane_id]               no args: review the given pane, or
+#                                          (without -p) the CLIENT's active
+#                                          pane, if it is an agent, else the
 #                                          fleet queue (bound to prefix R)
 #   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
@@ -52,8 +53,9 @@ git_root() {
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
-  tmux-review                            review the client's active pane, or
-                                         the fleet queue when it is not an agent
+  tmux-review [-p pane_id]                review that pane (or, without -p,
+                                          the client's active pane), or the
+                                          fleet queue when it is not an agent
   tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
@@ -737,14 +739,22 @@ fleet_queue() {
 
 # No args, bound to prefix R: ask tmux which pane the CLIENT is actually on --
 # not $TMUX_PANE, which inside this popup names the popup's own pseudo-pane,
-# not the pane you pressed the key from (tmux-branch:34-40, live-verified: a
-# real attached client's `display-message -p` with no -t resolves through the
-# CLIENT here, exactly as it does for tmux-branch's DIR). A pane matching the
-# agents glob is reviewed directly; anything else (a shell, a build pane, the
-# status bar itself) opens the fleet queue instead.
+# not the pane you pressed the key from. Bare `display-message -p` (no -t)
+# has no client of its own to resolve from inside a popup -- it falls back to
+# whichever attached client was most recently active, which can be a
+# DIFFERENT session than the one the popup was opened from (reproduced with
+# two real attached clients: the busier one wins, not the opener). REVIEW_PANE_ID
+# -- this script's own -p, parsed below, mirroring tmux-branch's -p
+# (tmux-branch:38-53) -- pins the query to the actual pane the popup came
+# from when the caller has it; without it this falls back to the old
+# best-effort client-recency resolution.
 main_entry() {
     local pane is_agent dir
-    pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+    if [ -n "$REVIEW_PANE_ID" ]; then
+        pane=$REVIEW_PANE_ID
+    else
+        pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+    fi
     if [ -z "$pane" ]; then
         printf 'tmux-review: no tmux client to resolve a pane from\n' >&2
         exit 1
@@ -758,6 +768,17 @@ main_entry() {
         fleet_queue
     fi
 }
+
+# -p pane_id, parsed here so the dispatch below sees only the subcommand --
+# mirrors tmux-branch's own -c/-p loop (tmux-branch:25-33); tmux-review only
+# needs -p (main_entry's click-binding pin), not -c.
+REVIEW_PANE_ID=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p) REVIEW_PANE_ID="${2:-}"; shift 2 || break ;;
+        *)  break ;;
+    esac
+done
 
 case "${1:-}" in
     --fleet)

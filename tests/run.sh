@@ -3560,6 +3560,77 @@ is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 rm -rf "$FP_DIR"
 fi
 
+echo "== tmux-review: the popup resolves the pane it was opened from, not the busiest client =="
+# Same hazard as tmux-branch's popup resolution (tmux-branch:34-53, tested
+# above): inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
+# `display-message -p` (no -t) falls back to whichever attached client was
+# most recently active -- reproduced here with two real attached clients,
+# cliB attaching after cliA so cliB is the busier one. Only cliA is an agent
+# pane, so main_entry's two branches (review_pane vs fleet_queue) are
+# observably different picker sessions -- a stub fzf on PATH records which
+# --prompt it was invoked with ("review> " only from review_pane, "fleet> "
+# only from fleet_queue) and exits 1 (a harmless no-match/cancel) rather than
+# actually opening anything, so this needs no real interactive picker.
+if need_tmux "review popup pane resolution"; then :; else
+RDA=$(mktmpd); RDB=$(mktmpd)
+(
+    cd "$RDA" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .
+    printf 'a\n' > f
+    git add -A; git commit -q -m init
+    printf 'b\n' >> f   # dirty -- so review_pane's loop reaches the fzf call
+) >/dev/null 2>&1
+RINNER="cockpit-review-inner-$$"; ROUTERA="cockpit-review-outera-$$"; ROUTERB="cockpit-review-outerb-$$"
+SOCKS="$SOCKS $RINNER $ROUTERA $ROUTERB"
+tmux -L "$RINNER" -f /dev/null new-session -d -s cliA -c "$RDA" 'exec -a claude bash' >/dev/null 2>&1
+tmux -L "$RINNER" new-session -d -s cliB -c "$RDB" 'exec bash' >/dev/null 2>&1
+tmux -L "$RINNER" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+tmux -L "$ROUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RINNER attach -t cliA" >/dev/null 2>&1
+sleep 1
+tmux -L "$ROUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RINNER attach -t cliB" >/dev/null 2>&1
+sleep 1
+rpaneA=$(tmux -L "$RINNER" list-panes -t cliA -F '#{pane_id}')
+RSOCKPATH=$(tmux -L "$RINNER" display-message -p '#{socket_path}')
+
+RFZFSTUB=$(mktmpd)
+RMARKER="$STATE/review-fzf-marker"
+: > "$RMARKER"
+cat > "$RFZFSTUB/fzf" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RMARKER"
+exit 1
+EOF
+chmod +x "$RFZFSTUB/fzf"
+
+# Without -p: unpinned resolution lands on cliB (the busier client, attached
+# second) -- a plain shell, so main_entry falls to fleet_queue. The hazard is
+# real.
+: > "$RMARKER"
+env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
+case "$(cat "$RMARKER")" in
+    *'fleet>'*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
+    *) bad "unpinned resolution really does land on the busier client (the hazard is real)" \
+         "fleet> in the fzf invocation" "$(cat "$RMARKER")" ;;
+esac
+# With -p pane_id: pinned to the pane the popup actually opened from -- the
+# agent pane, so main_entry opens review_pane's loop, not the fleet queue.
+: > "$RMARKER"
+env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1
+case "$(cat "$RMARKER")" in
+    *'review>'*) ok "-p pane_id resolves the pane the popup was opened from" ;;
+    *) bad "-p pane_id resolves the pane the popup was opened from" \
+         "review> in the fzf invocation" "$(cat "$RMARKER")" ;;
+esac
+tmux -L "$ROUTERA" kill-server >/dev/null 2>&1
+tmux -L "$ROUTERB" kill-server >/dev/null 2>&1
+tmux -L "$RINNER" kill-server >/dev/null 2>&1
+rm -rf "$RDA" "$RDB" "$RFZFSTUB"
+fi
+
 echo "== prefix r reviews, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
