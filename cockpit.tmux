@@ -152,6 +152,7 @@ done <<'PALETTE'
 @thm_yellow #f9e2af
 @thm_green #a6e3a1
 @thm_overlay_0 #6c7086
+@cockpit_blocked_bg #52303a
 PALETTE
 
 # Both click gestures need the tmux mouse; without it they die silently, so

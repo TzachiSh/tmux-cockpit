@@ -563,7 +563,9 @@ case "$1" in
   show-options)
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
-          *@open-editor*) printf '%s\n' "${OPEN_EDITOR:-}" ;;
+          *@cockpit_open_single*) printf '%s\n' "${OPEN_SINGLE:-}" ;;
+          *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
+          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
   display-message)
       case " $* " in
@@ -698,6 +700,8 @@ case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat")" in
 esac
 rm -rf "$PV"
 
+# later blocks reuse this stub
+ETMUX_TEMPLATE=$(mktmpf); cp "$ETMUX/tmux" "$ETMUX_TEMPLATE"; chmod +x "$ETMUX_TEMPLATE"
 rm -rf "$EQ" "$ETMUX"
 
 echo "== agent-state: notify must not hang on a silent stdin =="
@@ -1170,7 +1174,8 @@ TP1=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk
 TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')
 "$TMUX_REAL" -L "$TS" set -p -t "$TP1" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$TS" set -p -t "$TP2" @panestate needs-input >/dev/null 2>&1
-is "a blocked pane you are NOT on still tints" "bg=#241a1e" \
+"$TMUX_REAL" -L "$TS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "a blocked pane you are NOT on still tints" "bg=#52303a" \
    "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP1" '#{E:window-style}')"
 is "the pane you are on never tints"           "bg=default" \
    "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP2" '#{E:window-active-style}')"
@@ -1381,6 +1386,76 @@ case "$bf" in
     *) bad "the NEEDS YOU banner is red regardless of this pane's state" "a red bold banner" "$bf" ;;
 esac
 "$TMUX_REAL" -L "$FR" kill-server >/dev/null 2>&1
+fi
+
+echo "== @cockpit_open_single skips the popup for machine output =="
+# Opt-in: a lone candidate that carried an explicit :line is a stack trace or
+# compiler error, not a guess. "line" opens those directly; "always" opens any
+# lone candidate; unset keeps the picker.
+OS=$(mktmpd); OST=$(mktmpd); : > "$OS/f.txt"
+cp "$ETMUX_TEMPLATE" "$OST/tmux" 2>/dev/null || true
+chmod +x "$OST/tmux" 2>/dev/null
+if [ ! -x "$OST/tmux" ]; then skip_ "open_single line opens directly"; skip_ "without a line it still asks"; skip_ "always opens any lone file"
+else
+ln -s "$(command -v bash)" "$OST/bash"
+os_run() { : > "$OST/log"
+    env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" \
+        OPEN_SINGLE="$1" CLICK_LINE="$2" OPEN_EDITOR=nvim \
+        bash "$DIR/scripts/tmux-open-path" %1 >/dev/null 2>&1
+    cat "$OST/log"; }
+case "$(os_run line 'f.txt:7')" in
+    *NEWWIN*) ok "open_single line opens directly" ;;
+    *) bad "open_single line opens directly" "the editor, no popup" "$(os_run line 'f.txt:7')" ;;
+esac
+case "$(os_run line 'f.txt')" in
+    *POPUP*) ok "without a line it still asks" ;;
+    *) bad "without a line it still asks" "the picker popup" "$(os_run line 'f.txt')" ;;
+esac
+case "$(os_run always 'f.txt')" in
+    *NEWWIN*) ok "always opens any lone file" ;;
+    *) bad "always opens any lone file" "the editor, no popup" "$(os_run always 'f.txt')" ;;
+esac
+fi
+
+echo "== tm: typing filters, ^X kills, the attached session survives =="
+# A bare "k" -- the first key of filtering to "kanban" -- used to kill the
+# highlighted session instantly, including the one you were attached to.
+if need_tmux "tm picker"; then :; else
+if command -v fzf >/dev/null 2>&1; then
+TK="cockpit-tk-$$"; TKO="cockpit-tko-$$"; SOCKS="$SOCKS $TK $TKO"
+"$TMUX_REAL" -L "$TK" -f /dev/null new-session -d -s alpha -x 90 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$TK" new-session -d -s beta >/dev/null 2>&1
+# session_attached needs a real CLIENT; a detached server has none, so the
+# attach comes through an outer pty server -- the same pattern as every other
+# picker test here.
+"$TMUX_REAL" -L "$TKO" -f /dev/null new-session -d -s o -x 90 -y 26 \
+    "$TMUX_REAL -L $TK attach -t alpha" >/dev/null 2>&1
+sleep 1.2
+KP2=$("$TMUX_REAL" -L "$TK" list-panes -t alpha -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "'$DIR/scripts/tm'" Enter
+sleep 2
+case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
+    *"(attached)"*) ok "the attached session is labelled" ;;
+    *) bad "the attached session is labelled" "alpha (attached)" \
+         "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -4)" ;;
+esac
+# typing must FILTER now, not execute: "bet" narrows to beta
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "bet"; sleep 0.8
+is "typing filters instead of killing" "2" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x; sleep 1.2
+is "^X kills the highlighted session" "alpha" "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
+# and ^X on the attached one is refused
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-u; sleep 0.4
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x; sleep 1.2
+is "the attached session refuses to die from the picker" "alpha" \
+   "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Escape; sleep 0.5
+"$TMUX_REAL" -L "$TKO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TK" kill-server >/dev/null 2>&1
+else
+  skip_ "the attached session is labelled"; skip_ "typing filters instead of killing"
+  skip_ "^X kills the highlighted session"; skip_ "the attached session refuses to die from the picker"
+fi
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

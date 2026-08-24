@@ -213,6 +213,19 @@ The list takes only the rows it needs — with one or two candidates the preview
 gets ~80% of the popup instead of leaving the top half empty around two
 filenames.
 
+### Instant open, if you want it
+
+By default every click shows the picker. A lone candidate that carried an
+explicit `:line` is machine output — a stack trace, a compiler error, a grep
+hit — and can skip the popup:
+
+```tmux
+set -g @cockpit_open_single line     # instant-open a lone candidate with a line number
+set -g @cockpit_open_single always   # instant-open any lone file candidate
+```
+
+Folders always go to the picker; unset keeps today's ask-first behaviour.
+
 ### Popup size
 
 One pair of options sizes both popups (default `70%` × `70%`). Set them
@@ -308,8 +321,12 @@ tm            pick from a session list; if none exist, ask for a name
 tm -k [name]  kill sessions (no name = pick them, Tab selects several)
 ```
 
-In the picker: Enter attaches, `k` kills the highlighted session, `/` switches to
-type-to-search. It uses `switch-client` inside tmux and `attach-session` outside,
+In the picker: typing **filters**, like every other picker here — it used to be
+a command mode where a bare `k` (the first key of filtering to "kanban") killed
+the highlighted session instantly. Kill is `^X` now, the attached session is
+labelled and refuses to die from the picker (`tm -k <name>` still kills
+anything, deliberately, by name), and the kill picker wears red. The
+new-session prompt cancels on empty instead of looping. It uses `switch-client` inside tmux and `attach-session` outside,
 and checks `session_attached` rather than `$TMUX` to tell the difference —
 anything launched from a pane inherits `$TMUX`, so a terminal opened inside tmux
 still carries it after the session is detached.
@@ -357,6 +374,11 @@ rather than `git commit`: no user config, no hooks, no signing prompt.
 A **blocked** pane also gets a faint warm tint across its entire background
 (`window-style`, +2% luminance — noticeable, never harmful to readability).
 It is the only state loud enough to earn more than a border.
+
+Its colour is `@cockpit_blocked_bg` (default `#52303a`). The previous
+hard-coded `#241a1e` measured 1.03:1 against Catppuccin Mocha — invisible on
+the very theme those variable names come from — and *darker* than most bases,
+reading as disabled rather than alarmed.
 
 The tint never fires at the pane you are **on**: `window-active-style` pins the
 focused pane to the terminal default. An alert that colours the thing you are

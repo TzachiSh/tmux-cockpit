@@ -44,6 +44,7 @@ USAGE
 # fails as a usage error and the session cannot be created at all.
 clean() {
   local n="${1//[.: ]/_}"
+  n=${n//[$'\001'-$'\037'$'\177']/}     # an Escape pressed at the prompt is a byte, not a cancel
   while [ "${n#-}" != "$n" ]; do n="${n#-}"; done
   printf '%s' "$n"
 }
@@ -51,13 +52,13 @@ clean() {
 list() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
 
 ask_name() {
+  # Empty is a cancel, not an error loop: the old prompt had no way out short
+  # of Ctrl-C, and Escape+Enter tried to create a session named ESC.
   local n
-  while :; do
-    read -r -p "New session name: " n || exit 1
-    n=$(clean "$n")
-    [ -n "$n" ] && { printf '%s' "$n"; return 0; }
-    printf 'A name is required.\n' >&2
-  done
+  read -r -p "New session name (empty cancels): " n || exit 0
+  n=$(clean "$n")
+  [ -n "$n" ] || exit 0
+  printf '%s' "$n"
 }
 
 # True only when this shell really drives a tmux client. $TMUX alone does not
@@ -94,7 +95,22 @@ kill_one() {  # also called by the fzf ctrl-x binding
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   -l|--list) list; exit 0 ;;
-  --kill-one) shift; kill_one "${1:-}"; exit 0 ;;
+  --rows)  # picker reload: names plus the (attached) label
+    tmux list-sessions -F '#{session_name}#{?session_attached, (attached),}' 2>/dev/null; exit 0 ;;
+  --kill-one)
+    shift; name="${1:-}"; name=${name%% (attached)*}
+    # Only the picker calls this, and in the picker the attached session is
+    # nearly always the one YOU are sitting in -- killing it takes the picker,
+    # the pane and every agent in the session with it, on one keystroke. It
+    # stays in the reloaded list, visibly not dead. `tm -k <name>` still kills
+    # anything, deliberately and by name.
+    # "=$name:" -- the trailing colon makes it a session:window target, which
+    # display-message resolves; a bare "=$name" comes back EMPTY, and empty
+    # failed the -gt guard, so the guard guarded nothing and the attached
+    # session died anyway. Found by tracing exactly that.
+    att=$(tmux display-message -p -t "=$name:" '#{session_attached}' 2>/dev/null)
+    [ "${att:-0}" -gt 0 ] 2>/dev/null && exit 0
+    kill_one "$name"; exit 0 ;;
   -k|--kill)
     shift
     if [ $# -gt 0 ]; then
@@ -109,9 +125,13 @@ case "${1:-}" in
     # picker, so cancelling a kill offered to attach instead.
     doomed=()
     if command -v fzf >/dev/null; then
+      # Red chrome on the destructive picker: it used to render in exactly the
+      # same colours as the benign attach list.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
-        | fzf --multi --height=40% --reverse --color=16 --info=inline-right --cycle --scroll-off=2 --prompt='kill> ' \
-              --header='tab mark   ↵ kill   esc cancel')
+        | fzf --multi --height=40% --reverse --info=inline-right --cycle --scroll-off=2 \
+              --color=16,prompt:red,pointer:red,marker:red --marker='✗' \
+              --prompt='kill session> ' \
+              --header='↵ kill   tab mark several   esc cancel')
     else
       printf 'Kill which session?\n' >&2
       select s in "${sessions[@]}"; do doomed=("${s:-}"); break; done
@@ -139,12 +159,22 @@ if [ ${#sessions[@]} -eq 0 ]; then
 fi
 
 # 4. Pick one, create another, or ctrl-x to kill under the cursor.
+# Typing FILTERS, like every other picker here. It used to be a command mode:
+# a bare "k" -- the first key of filtering to "kanban" -- killed the highlighted
+# session instantly, including the one you were attached to, taking the picker
+# and every agent in it along. Kill lives on ^X now, matching the ^-chord
+# vocabulary of the other pickers, and the attached session is labelled and
+# refuses to die from here (tm -k <name> still can, deliberately).
+list_rows() {
+  tmux list-sessions -F '#{session_name}#{?session_attached, (attached),}' 2>/dev/null
+}
 if command -v fzf >/dev/null; then
-  choice=$(printf '%s\n' "${sessions[@]}" "$NEW_LABEL" \
-    | fzf --height=40% --reverse --no-multi --disabled --color=16 --info=inline-right --cycle --scroll-off=2 --prompt='session> ' \
-          --header='↵ attach   k kill   / search   esc cancel' \
-          --bind "k:execute-silent('$SELF' --kill-one {})+reload('$SELF' -l; echo '$NEW_LABEL')" \
-          --bind "/:enable-search+unbind(k)+change-prompt(search> )+change-header(search: k types now   ↵ attach   esc cancel)") || exit 0
+  choice=$(list_rows | { cat; echo "$NEW_LABEL"; } \
+    | fzf --height=40% --reverse --no-multi --color=16 --info=inline-right --cycle --scroll-off=2 \
+          --prompt='session> ' \
+          --header='↵ attach   ^X kill   esc cancel' \
+          --bind "ctrl-x:execute-silent('$SELF' --kill-one {})+reload('$SELF' --rows; echo '$NEW_LABEL')") || exit 0
+  choice=${choice%% (attached)*}
 else
   printf 'Sessions:\n' >&2
   select choice in "${sessions[@]}" "$NEW_LABEL"; do

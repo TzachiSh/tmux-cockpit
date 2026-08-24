@@ -355,9 +355,22 @@ if [ ${#FILES[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Always ask, even for a single candidate. The click arrives via run-shell, which
-# has no terminal, so the picker needs a popup -- which re-enters this script
-# with --pick and rebuilds the same list.
+# Opt-in instant open. The default stays "always show the picker" -- seeing
+# what the line resolved to is the point -- but a lone candidate that carried
+# an explicit :line is machine output (a stack trace, a compiler error, a grep
+# hit), not a guess, and some people want those to just open.
+#   set -g @cockpit_open_single line     lone candidate WITH a line number
+#   set -g @cockpit_open_single always   any lone candidate
+if [ "$PICK" -eq 0 ] && [ ${#FILES[@]} -eq 1 ] && [ ! -d "${FILES[0]}" ]; then
+    case "$(tmux show-options -gqv @cockpit_open_single)" in
+        always) open_one "${FILES[0]}" "${LINES[0]}" "${COLS[0]}"; exit 0 ;;
+        line)   [ -n "${LINES[0]}" ] && { open_one "${FILES[0]}" "${LINES[0]}" "${COLS[0]}"; exit 0; } ;;
+    esac
+fi
+
+# Otherwise ask, even for a single candidate. The click arrives via run-shell,
+# which has no terminal, so the picker needs a popup -- which re-enters this
+# script with --pick and rebuilds the same list.
 if [ "$PICK" -eq 0 ]; then
     # Geometry comes from the same options the branch popup uses, read at click
     # time so changing them needs no reload.
