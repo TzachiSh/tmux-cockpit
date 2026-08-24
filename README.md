@@ -164,7 +164,8 @@ run-shell "'~/my plugins/tmux-cockpit/cockpit.tmux'"
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
-`--uninstall` removes only links that point back into the plugin.
+`--uninstall` removes only links that point back into the plugin (and reports
+anything it could not remove). `install.sh --help` prints usage and exits.
 
 ### Or with tpm
 

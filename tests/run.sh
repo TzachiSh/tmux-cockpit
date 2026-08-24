@@ -1755,6 +1755,31 @@ else
     ok "--uninstall --hooks touches no settings.json"
 fi
 rm -rf "$HK3"
+
+# I4: --uninstall on a read-only $BIN used to exit 0 and print nothing when
+# rm failed -- the mirror image of the install-side FAILED handling above.
+HK8=$(mktmpd); BIN8=$(mktmpd)
+XDG_BIN_HOME="$BIN8" HOME="$HK8" "$DIR/install.sh" >/dev/null 2>&1
+chmod 555 "$BIN8"
+out=$(XDG_BIN_HOME="$BIN8" HOME="$HK8" "$DIR/install.sh" --uninstall 2>&1)
+rc_uninstall=$?
+chmod 755 "$BIN8"
+is "a read-only BIN makes --uninstall exit 1" "1" "$rc_uninstall"
+case "$out" in *FAILED*) ok "and it reports FAILED, not silent success" ;;
+    *) bad "and it reports FAILED, not silent success" "FAILED in the output" "$out" ;; esac
+if [ -L "$BIN8/tm" ]; then
+    ok "and the links are still present"
+else
+    bad "and the links are still present" "tm symlink present" "missing"
+fi
+rm -rf "$HK8" "$BIN8"
+
+# M7: --help/-h must succeed, not be treated as an unknown option.
+out=$("$DIR/install.sh" --help 2>&1)
+is "--help exits 0" "0" "$?"
+case "$out" in *usage:*) ok "and it prints usage" ;;
+    *) bad "and it prints usage" "a usage: line" "$out" ;; esac
+
 rm -rf "$HK"
 echo "== prefix J jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else

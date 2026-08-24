@@ -13,12 +13,19 @@ set -uo pipefail
 # is reached through a symlink (a dotfiles checkout linked into ~/.tmux/plugins
 # is the usual way), and --uninstall then removed nothing and said nothing.
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+# ${HOME:-}, not a bare $HOME: under `set -u` an unset HOME aborted here with
+# a raw "HOME: unbound variable" instead of a message that says what's wrong.
+BIN="${XDG_BIN_HOME:-${HOME:-}/.local/bin}"
+if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
+    printf 'HOME is not set and XDG_BIN_HOME is not set; cannot pick an install directory\n' >&2
+    exit 1
+fi
 COMMANDS=(tm tmux-branch tmux-open-path)
 
 uninstall=0; hooks=0; dry=0
 for a in "$@"; do case "$a" in
     "") ;;
+    -h|--help) printf 'usage: install.sh [--uninstall] [--hooks [--dry-run]]\n'; exit 0 ;;
     --uninstall) uninstall=1 ;;
     --hooks)     hooks=1 ;;
     --dry-run)   dry=1 ;;
@@ -36,9 +43,9 @@ esac; done
 [ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 rc=0
-# Not on --dry-run: a preview must not create anything either -- see the
-# symlink step below, which this pairs with.
-if [ "$dry" -eq 0 ]; then
+# Not on --uninstall (nothing gets created there) and not on --dry-run (a
+# preview must not create anything either -- see the symlink step below).
+if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
     mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
 fi
 
@@ -63,7 +70,14 @@ for c in "${COMMANDS[@]}"; do
         # whatever happens to sit at that name would take someone else's tool
         # with it.
         if [ -L "$link" ] && [ "$(link_target "$link")" = "$target" ]; then
-            rm -- "$link" && printf 'removed  %s\n' "$link"
+            if rm -- "$link"; then
+                printf 'removed  %s\n' "$link"
+            else
+                # A read-only $BIN made rm fail silently before this: exit 0,
+                # nothing printed, the link still there.
+                printf 'FAILED   %s (cannot remove the link)\n' "$link" >&2
+                rc=1
+            fi
         fi
         continue
     fi
@@ -97,6 +111,9 @@ if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
     have_diff=1
     command -v diff >/dev/null 2>&1 || have_diff=0
+    # Claude Code's settings.json has no XDG override, unlike $BIN above --
+    # $HOME is required here, and must be checked before it is dereferenced.
+    [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
 
     if [ -e "$settings" ]; then
@@ -181,16 +198,23 @@ esac
 
 # Both locations, and say it even when neither exists -- a user with no tmux
 # config got no instruction at all, which is exactly the user who needs one.
-conf=""
-for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
-    [ -r "$c" ] && { conf="$c"; break; }
-done
-if [ -z "$conf" ]; then
-    printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
-           "$HOME/.tmux.conf" "$DIR" >&2
-elif ! grep -q 'cockpit\.tmux' "$conf"; then
-    printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
-           "$conf" "$DIR" >&2
+# HOME may legitimately be unset here (only XDG_BIN_HOME was needed for the
+# symlink step above), so this whole check degrades to the DIR-only message
+# instead of dereferencing an unset $HOME.
+if [ -z "${HOME:-}" ]; then
+    printf '\nHOME is not set; add this to your tmux config by hand:\n  run-shell %s/cockpit.tmux\n' "$DIR" >&2
+else
+    conf=""
+    for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+        [ -r "$c" ] && { conf="$c"; break; }
+    done
+    if [ -z "$conf" ]; then
+        printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
+               "$HOME/.tmux.conf" "$DIR" >&2
+    elif ! grep -q 'cockpit\.tmux' "$conf"; then
+        printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
+               "$conf" "$DIR" >&2
+    fi
 fi
 
 exit "$rc"
