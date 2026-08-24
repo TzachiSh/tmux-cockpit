@@ -95,8 +95,8 @@ kill_one() {  # also called by the fzf ctrl-x binding
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   -l|--list) list; exit 0 ;;
-  --rows)  # picker reload: names plus the (attached) label
-    tmux list-sessions -F '#{session_name}#{?session_attached, (attached),}' 2>/dev/null; exit 0 ;;
+  --rows)  # picker reload: fielded, name then display
+    tmux list-sessions -F '#{session_name}	#{session_name}#{?session_attached, (attached),}' 2>/dev/null; exit 0 ;;
   --kill-one)
     shift; name="${1:-}"; name=${name%% (attached)*}
     # Only the picker calls this, and in the picker the attached session is
@@ -128,7 +128,7 @@ case "${1:-}" in
       # Red chrome on the destructive picker: it used to render in exactly the
       # same colours as the benign attach list.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
-        | fzf --multi --height=40% --reverse --info=inline-right --cycle --scroll-off=2 \
+        | fzf --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
               --color=16,prompt:red,pointer:red,marker:red --marker='✗' \
               --prompt='kill session> ' \
               --header='↵ kill   tab mark several   esc cancel')
@@ -165,16 +165,27 @@ fi
 # and every agent in it along. Kill lives on ^X now, matching the ^-chord
 # vocabulary of the other pickers, and the attached session is labelled and
 # refuses to die from here (tm -k <name> still can, deliberately).
-list_rows() {
-  tmux list-sessions -F '#{session_name}#{?session_attached, (attached),}' 2>/dev/null
+list_rows() {  # field 1 = the bare name for the machine, field 2 = the display
+  tmux list-sessions -F '#{session_name}	#{session_name}#{?session_attached, (attached),}' 2>/dev/null
 }
+# 40% of the shell is right when tm runs inline; inside the cockpit's popup the
+# popup IS the frame, so the binding passes TM_HEIGHT=100%.
+HEIGHT=${TM_HEIGHT:-40%}
+# Each session previews as its windows, with the cockpit state beside every
+# agent pane -- the one view the status bar cannot give you is ACROSS sessions,
+# and "which of my agents needs me" is exactly a session-picker question.
+PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
-  choice=$(list_rows | { cat; echo "$NEW_LABEL"; } \
-    | fzf --height=40% --reverse --no-multi --color=16 --info=inline-right --cycle --scroll-off=2 \
+  choice=$(list_rows | { cat; printf '%s\t%s\n' "$NEW_LABEL" "$NEW_LABEL"; } \
+    | fzf --height="$HEIGHT" --reverse --no-multi --color=16 --info=inline-right --cycle --scroll-off=2 \
+          --delimiter=$'\t' --with-nth=2 \
           --prompt='session> ' \
           --header='↵ attach   ^X kill   esc cancel' \
-          --bind "ctrl-x:execute-silent('$SELF' --kill-one {})+reload('$SELF' --rows; echo '$NEW_LABEL')") || exit 0
-  choice=${choice%% (attached)*}
+          --preview="tmux list-windows -t \"=\$(echo {1}):\" -F '$PVFMT' 2>/dev/null" \
+          --preview-label=' windows ' --preview-label-pos=2 \
+          --preview-window='down,50%,border-top' \
+          --bind "ctrl-x:execute-silent('$SELF' --kill-one {1})+reload('$SELF' --rows; printf '%s\t%s\n' '$NEW_LABEL' '$NEW_LABEL')") || exit 0
+  choice=${choice%%$'\t'*}
 else
   printf 'Sessions:\n' >&2
   select choice in "${sessions[@]}" "$NEW_LABEL"; do

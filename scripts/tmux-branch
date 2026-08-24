@@ -59,6 +59,22 @@ redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
+# Last three path components; the leaf is what identifies the repo, and it was
+# the part the header's truncation threw away.
+tail3() {
+    local p=${1/#$H/\~} a b c r
+    r=$p; c=${r##*/}; r=${r%/*}
+    [ "$r" = "$p" ] && { printf '%s' "$p"; return; }
+    b=${r##*/}; r=${r%/*}
+    [ "$r/$b" = "$p" ] || [ -z "$r" ] && { printf '%s' "$p"; return; }
+    a=${r##*/}; r=${r%/*}
+    if [ -z "$r" ] || [ "$r" = "$p" ] || [ "$r" = "~" ]; then
+        printf '%s' "$p"
+    else
+        printf '…/%s/%s/%s' "$a" "$b" "$c"
+    fi
+}
+
 # --- switching ---------------------------------------------------------------
 # Checkout failures are the normal case, not the exception: a dirty tree, or a
 # branch already checked out in another worktree. git's own message names the
@@ -98,8 +114,11 @@ route() {
 
 create() {
     local name=$1 out
-    # git's own ref rules, not a hand-rolled character class.
-    git check-ref-format --branch "$name" >/dev/null 2>&1 || fail "invalid branch name: $name"
+    # git's own ref rules, not a hand-rolled character class. Pause-and-return
+    # rather than exit: the caller loops back into the picker.
+    if ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
+        printf 'invalid branch name: %s\n' "$name" >&2; pause; return 1
+    fi
     if out=$(git switch -c "$name" 2>&1); then
         printf '%s\n' "$out"; redraw; sleep 0.6; return 0
     fi
@@ -133,11 +152,25 @@ list_branches() {
 # display marks the branch you are ON with ● -- the header said it, the list
 # did not, and the current branch looked like a normal destination. No column
 # dependency: the display pads itself.
+# Which branches are checked out in a LINKED worktree: git refuses to switch to
+# those, and the picker used to let you walk into that error blind. One
+# git worktree list per open -- off the redraw path, so the cost is nothing.
+declare -A wt=()
+wtpath="" 
+while IFS= read -r wl; do
+    case "$wl" in
+        'worktree '*) wtpath=${wl#worktree } ;;
+        'branch refs/heads/'*)
+            [ "$wtpath" = "$(git rev-parse --show-toplevel 2>/dev/null)" ] || \
+                wt[${wl#branch refs/heads/}]="⑂${wtpath##*/}" ;;
+    esac
+done < <(git worktree list --porcelain 2>/dev/null)
+
 refs=(); disps=()
 while IFS=$'\t' read -r ref age; do
     if [ "$ref" = "$current" ]; then m='●'; else m=' '; fi
     refs+=("$ref")
-    disps+=("$(printf '%s %-32s %s' "$m" "$ref" "($age)")")
+    disps+=("$(printf '%s %-32s %-16s %s' "$m" "$ref" "($age)" "${wt[$ref]:-}")")
 done < <(list_branches)
 [ ${#refs[@]} -eq 0 ] && fail "no branches yet in $DIR"
 
@@ -171,26 +204,44 @@ lrows=${#refs[@]}; maxl=$(( avail / 3 )); [ "$lrows" -gt "$maxl" ] && lrows=$max
 psz=$(( avail - lrows - 5 ))
 [ "$psz" -lt 5 ] && psz=5
 
-out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
-    | fzf --print-query --expect=alt-enter \
-          --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16 \
-          --delimiter=$'\t' --with-nth=2 \
-          --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-          --prompt="switch> " \
-          --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
-on ${current:-detached HEAD} · ${DIR/#$H/\~}" \
-          --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
-          --preview-window="down,$psz,border-top")
+# A failed switch RETURNS here with the query preserved, instead of dying at
+# "[any key]" and making you reopen the picker and retype. The failure paths
+# are the normal case -- a dirty tree, a branch held by a worktree -- and each
+# already showed git's own message; now it costs a keypress, not the flow.
+query=""
+while :; do
+    out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
+        | fzf --print-query --expect=alt-enter --query="$query" \
+              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16 \
+              --delimiter=$'\t' --with-nth=2 \
+              --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+              --prompt="switch> " \
+              --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
+on ${current:-detached HEAD} · $(tail3 "$DIR")" \
+              --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
+              --preview-window="down,$psz,border-top")
+    rc=$?
+    # fzf's exit codes matter here: 0 = a row accepted, 1 = NO MATCH -- which is
+    # exactly the state alt-enter creates a branch from, since the new name
+    # matches nothing -- and 130 = esc/ctrl-c. Treating 1 as a cancel silently
+    # swallowed every create of a genuinely new name.
+    case "$rc" in
+        0|1) ;;
+        *)   exit 0 ;;
+    esac
 
-query=$(sed -n 1p <<<"$out")
-key=$(sed -n 2p <<<"$out")
-pick=$(sed -n 3p <<<"$out")
+    query=$(sed -n 1p <<<"$out")
+    key=$(sed -n 2p <<<"$out")
+    pick=$(sed -n 3p <<<"$out")
 
-if [ "$key" = alt-enter ]; then
-    [ -n "$query" ] || fail "type a name before alt-enter"
-    create "$query"
-    exit
-fi
+    if [ "$key" = alt-enter ]; then
+        if [ -z "$query" ]; then
+            printf 'type a name before alt-enter\n' >&2; pause; continue
+        fi
+        create "$query" && exit 0
+        continue
+    fi
 
-[ -n "$pick" ] || exit 0          # esc, or an empty selection
-route "${pick%%$'\t'*}"           # field 1 is the ref, exactly as git named it
+    [ -n "$pick" ] || exit 0          # esc, or an empty selection
+    route "${pick%%$'\t'*}" && exit 0 # field 1 is the ref, exactly as git named it
+done

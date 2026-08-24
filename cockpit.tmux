@@ -179,13 +179,19 @@ fi
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch ' "$Q_BRANCH"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch ' "$Q_BRANCH"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+
+# Session picker in the same popup chrome. prefix+S is unbound in stock tmux
+# (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup
+# is the frame and fzf's inline 40%% would leave the bottom half empty.
+Q_TM=$(sq "$DIR/scripts/tm")
+tmux bind-key S display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane

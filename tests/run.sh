@@ -670,6 +670,17 @@ for bad in abc -5 1.5 '' 2; do
     esac
 done
 is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-open-path" --preview "$PV/nope")"
+# The target line carries a real marker column: bat's own highlight band
+# measured 1.4:1 against dark themes -- found by counting rows, not looking.
+mk=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+case "$(printf '%s' "$mk" | sed -n 2p)" in
+    "▸"*) ok "the target line starts with the marker" ;;
+    *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
+esac
+case "$(printf '%s' "$mk" | sed -n 1p)" in
+    " "*) ok "and its neighbours keep alignment" ;;
+    *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
+esac
 # An empty file has no lines, so the binary test matched nothing and accused it
 # of being a blob. A file of only blank lines has lines but no characters, which
 # a "." pattern rejects for the same reason.
@@ -936,8 +947,47 @@ sleep 1
 after=$(git -C "$KB" for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
 is "ctrl-n after typing creates no branch" "main second third " "$after"
 is "and the checkout is untouched" "main" "$(git -C "$KB" branch --show-current)"
+# A branch held by a linked worktree is labelled, and a FAILED action returns
+# to the picker instead of dying at "[any key]". The failure driven here is the
+# deterministic one -- an invalid name via alt-enter -- because driving a git
+# refusal through a pty raced fzf's own startup and the test keyed the wrong
+# row. Waiting for the prompt before typing fixes the label half too.
+git -C "$KB" worktree add -q "$KB-wt" second 2>/dev/null
+tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
+picker_up=0
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
+        *"switch>"*) picker_up=1; break ;;
+    esac
+    sleep 0.5
+done
+case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
+    *"⑂"*) ok "a worktree-held branch is labelled" ;;
+    *) bad "a worktree-held branch is labelled" "a ⑂ mark" \
+         "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | sed -n 4,6p)" ;;
+esac
+if [ "$picker_up" = 1 ]; then
+    tmux -L "$SOCK5" send-keys -t "$KP" "bad..name"; sleep 0.6
+    tmux -L "$SOCK5" send-keys -t "$KP" M-Enter; sleep 1.2     # create fails, pauses
+    tmux -L "$SOCK5" send-keys -t "$KP" Space                  # [any key] ...
+    back=0
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 0.5
+        case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
+            *"switch>"*) back=1; break ;;
+        esac
+    done
+    if [ "$back" = 1 ]; then ok "a failed action returns to the picker"
+    else bad "a failed action returns to the picker" "the picker again" \
+             "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | head -3)"; fi
+    tmux -L "$SOCK5" send-keys -t "$KP" Escape; sleep 0.5
+else
+    bad "a failed action returns to the picker" "a visible picker" "never appeared"
+fi
+is "and the failure checked nothing out" "main" "$(git -C "$KB" branch --show-current)"
+git -C "$KB" worktree remove --force "$KB-wt" >/dev/null 2>&1
 tmux -L "$SOCK5" kill-server >/dev/null 2>&1
-rm -rf "$KB"
+rm -rf "$KB" "$KB-wt"
 else
   skip_ "ctrl-n creates no branch"; skip_ "and the checkout is untouched"
 fi
@@ -1166,6 +1216,19 @@ case "$out" in *"NEWWIN vi"*) ok "the old @open-editor still works" ;;
 case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
                *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
 rm -rf "$RN" "$RT"
+
+echo "== prefix S opens the session picker =="
+if need_tmux "prefix S"; then :; else
+PS="cockpit-ps-$$"; SOCKS="$SOCKS $PS"
+"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk '$4=="S"')" in
+    *sessions*) ok "prefix S is bound to the sessions popup" ;;
+    *) bad "prefix S is bound to the sessions popup" "a display-popup running tm" \
+         "$("$TMUX_REAL" -L "$PS" list-keys -T prefix | awk '$4=="S"')" ;;
+esac
+"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
 
 echo "== the tint never fires at the pane you are on =="
 # The blocked-pane tint is an alert. Painting it onto the pane the user is
@@ -1450,6 +1513,11 @@ case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
     *"(attached)"*) ok "the attached session is labelled" ;;
     *) bad "the attached session is labelled" "alpha (attached)" \
          "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -4)" ;;
+esac
+case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
+    *" windows "*) ok "sessions preview their windows" ;;
+    *) bad "sessions preview their windows" "the ' windows ' label" \
+         "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | grep -m1 '^─')" ;;
 esac
 # typing must FILTER now, not execute: "bet" narrows to beta
 "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "bet"; sleep 0.8
