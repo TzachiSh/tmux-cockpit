@@ -180,6 +180,12 @@ fi
 # popup-border-style, and overriding it would fight their theme.
 if version_at_least 3 7; then
     tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+    # Clicking the DIRECTORY segment browses the pane's working dir -- the same
+    # popup the path picker descends into, entered from the top. Wired to
+    # range=control|2 in status-right, the slot beside the branch's control|1.
+    tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
+        -T ' files · #{b:pane_current_path} ' \
+        "$Q_OPEN --browse '#{pane_current_path}'"
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.

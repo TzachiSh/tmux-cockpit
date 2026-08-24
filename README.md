@@ -179,6 +179,10 @@ belongs to your config, not to the plugin. Wrap whatever shows the branch:
 set -ag status-right "#[range=control|1]#{E:@catppuccin_status_gitmux}#[norange]"
 ```
 
+The **directory segment** works the same way: wrap it in `range=control|2` and
+clicking it opens the **folder browser** at the pane's working dir — the same
+popup the path picker descends into, entered from the top.
+
 `range=control|1` triggers `MouseDown1Control1`, a key of its own.
 `range=user|X` would have taken over `MouseDown1Status` — the key that selects a
 window when you click the window list.

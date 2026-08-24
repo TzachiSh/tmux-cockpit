@@ -200,13 +200,20 @@ if [ "${1:-}" = --preview ]; then
     exit 0
 fi
 
-PICK=0 DRY=0
+PICK=0 DRY=0 BROWSE=0
+# Clicking the DIRECTORY segment in the status bar lands here: no clicked line,
+# no candidates -- straight into the folder browser at the pane's working dir.
+# The binding runs this inside a display-popup, so a tty is already there.
+[ "${1:-}" = --browse ]  && { BROWSE=1; shift; }
 [ "${1:-}" = --pick ]    && { PICK=1; shift; }   # re-entry from the popup below
 [ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
 
 note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
 
-if [ "$DRY" -eq 1 ]; then
+if [ "$BROWSE" -eq 1 ]; then
+    dir=${1:-$PWD}; line=""; pane=""
+    win=$(tmux display-message -p '#{window_id}' 2>/dev/null)
+elif [ "$DRY" -eq 1 ]; then
     dir=${1:-$PWD}; line=${2:-}; pane=""; win=""
 else
     pane=${1:-}
@@ -222,7 +229,7 @@ else
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
 fi
 
-[ -n "$line" ] || { note "no line under the click"; exit 0; }
+[ "$BROWSE" -eq 1 ] || [ -n "$line" ] || { note "no line under the click"; exit 0; }
 
 # --- candidates ---------------------------------------------------------------
 # Every token on the line that resolves to something on disk, in the order they
@@ -362,7 +369,7 @@ if [ "$DRY" -eq 1 ]; then
     exit 0
 fi
 
-if [ ${#FILES[@]} -eq 0 ]; then
+if [ "$BROWSE" -eq 0 ] && [ ${#FILES[@]} -eq 0 ]; then
     # A popup you have to dismiss is the wrong answer to "there was nothing
     # there" -- the status line says it and gets out of the way.
     note "no file on that line"
@@ -375,7 +382,7 @@ fi
 # hit), not a guess, and some people want those to just open.
 #   set -g @cockpit_open_single line     lone candidate WITH a line number
 #   set -g @cockpit_open_single always   any lone candidate
-if [ "$PICK" -eq 0 ] && [ ${#FILES[@]} -eq 1 ] && [ ! -d "${FILES[0]}" ]; then
+if [ "$PICK" -eq 0 ] && [ "$BROWSE" -eq 0 ] && [ ${#FILES[@]} -eq 1 ] && [ ! -d "${FILES[0]}" ]; then
     case "$(tmux show-options -gqv @cockpit_open_single)" in
         always) open_one "${FILES[0]}" "${LINES[0]}" "${COLS[0]}"; exit 0 ;;
         line)   [ -n "${LINES[0]}" ] && { open_one "${FILES[0]}" "${LINES[0]}" "${COLS[0]}"; exit 0; } ;;
@@ -385,7 +392,7 @@ fi
 # Otherwise ask, even for a single candidate. The click arrives via run-shell,
 # which has no terminal, so the picker needs a popup -- which re-enters this
 # script with --pick and rebuilds the same list.
-if [ "$PICK" -eq 0 ]; then
+if [ "$PICK" -eq 0 ] && [ "$BROWSE" -eq 0 ]; then
     # Geometry comes from the same options the branch popup uses, read at click
     # time so changing them needs no reload.
     pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
@@ -453,6 +460,12 @@ browse() {
         esac
     done
 }
+
+if [ "$BROWSE" -eq 1 ]; then
+    command -v fzf >/dev/null || { note "the folder browser needs fzf"; exit 0; }
+    browse "$dir"
+    exit 0
+fi
 
 if command -v fzf >/dev/null; then
     # Size the split from the popup fzf actually lives in, not from a fixed

@@ -1234,6 +1234,36 @@ esac
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 
+echo "== clicking the directory segment browses the working dir =="
+# range=control|2 on the status bar's directory segment opens the folder
+# browser at the pane's cwd -- the same popup the path picker descends into,
+# entered from the top.
+if need_tmux "directory click"; then :; else
+DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"
+"$TMUX_REAL" -L "$DB" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
+"$TMUX_REAL" -L "$DB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep MouseDown1Control2)" in
+    *--browse*) ok "control|2 is bound to the browser popup" ;;
+    *) bad "control|2 is bound to the browser popup" "a display-popup running --browse" \
+         "$("$TMUX_REAL" -L "$DB" list-keys -T root | grep MouseDown1Control2)" ;;
+esac
+DBLOG=$(mktmpf); DBED=$(mktmpf)
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$DBLOG" > "$DBED"; chmod +x "$DBED"
+"$TMUX_REAL" -L "$DB" set -g @cockpit_editor "$DBED" >/dev/null 2>&1
+DP=$("$TMUX_REAL" -L "$DB" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "'$DIR/scripts/tmux-open-path' --browse '$DIR'" Enter
+sleep 2.2
+case "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP")" in
+    *"enter dir"*) ok "--browse opens the browser at the dir" ;;
+    *) bad "--browse opens the browser at the dir" "the browse header" \
+         "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP" | head -3)" ;;
+esac
+"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "LICENSE"; sleep 0.8
+"$TMUX_REAL" -L "$DB" send-keys -t "$DP" Enter; sleep 2
+is "and a file opens from it" "OPEN $DIR/LICENSE" "$(cat "$DBLOG")"
+"$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
+fi
+
 echo "== the tint never fires at the pane you are on =="
 # The blocked-pane tint is an alert. Painting it onto the pane the user is
 # focused on -- with the permission prompt already in front of them and the
