@@ -2054,6 +2054,38 @@ else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
 
+echo "== the statusline shim skips the write when context fill is unchanged =="
+# Claude Code calls statusLine every render. Every `tmux set-option`, even -p
+# on an unchanged value, forces a full server-wide redraw (measured: 5
+# identical writes to @panestate_ctx -> 5 redraws; the read that agent-state
+# already does for @panestate costs 0). Two calls with the SAME payload must
+# issue exactly one set-option, not two. A tmux shim ahead of the suite's own
+# on PATH logs every set-option call it sees while still forwarding to the
+# real binary, so the pane's state stays correct and the count is honest.
+if need_tmux "agent-context write guard"; then :; else
+CX2="cockpit-cx2-$$"; SOCKS="$SOCKS $CX2"
+"$TMUX_REAL" -L "$CX2" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
+CXP2=$("$TMUX_REAL" -L "$CX2" list-panes -t t -F '#{pane_id}')
+CXTMUX2="$SOCKDIR/$CX2,0,0"
+CXS=$(mktmpd)
+CXLOG="$CXS/setlog"; : > "$CXLOG"
+cat > "$CXS/tmux" <<SHIMEOF
+#!/bin/sh
+[ "\$1" = "set-option" ] && printf '%s\n' "\$*" >> "$CXLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+chmod +x "$CXS/tmux"
+PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
+    < "$DIR/tests/fixtures/statusline.json" >/dev/null
+is "the first call writes the new value" "1" "$(wc -l < "$CXLOG")"
+PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
+    < "$DIR/tests/fixtures/statusline.json" >/dev/null
+is "a second call with the same value writes nothing" "1" "$(wc -l < "$CXLOG")"
+is "the stored value is still correct" "4" \
+   "$("$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_ctx)"
+"$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --lines: the diff rows a review anchors to =="
 RV1=$(mktmpd)
 (
