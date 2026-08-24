@@ -158,7 +158,7 @@ lines_mode() {
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
         local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
-        printf '%s\t\t%s\t%s\n' "$CAP_SENTINEL" "$big" "$big"
+        printf '%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big"
         return 0
     fi
 
@@ -346,9 +346,16 @@ rows_mode() {
         done < "$store"
     fi
 
-    local path line fragment display sign num marker
-    while IFS=$'\t' read -r path line fragment display; do
-        [ -n "$path" ] || continue
+    # Tab is IFS whitespace, so `IFS=$'\t' read` COLLAPSES a run of tabs -- an
+    # empty fragment (a blank added line) shifted the display into field 3 and
+    # the marker became the whole row. Reproduced: 2 of 18 rows rendered blank.
+    # Split by hand instead; an empty field stays an empty field.
+    local row rest path line fragment display sign num marker
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        path=${row%%$'\t'*};     rest=${row#*$'\t'}
+        line=${rest%%$'\t'*};    rest=${rest#*$'\t'}
+        fragment=${rest%%$'\t'*}; display=${rest#*$'\t'}
         case "$line" in
             -*) sign="-"; num=${line#-} ;;
             *)  sign="+"; num=$line ;;

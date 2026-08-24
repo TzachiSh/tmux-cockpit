@@ -2749,6 +2749,28 @@ else
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
 
+echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
+RVBL=$(mktmpd)
+(
+  cd "$RVBL" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > f.md; git add -A; git commit -q -m init
+  printf 'a\n\nNEW\nb\n' > f.md
+) >/dev/null 2>&1
+RVBLS=$(mktmpf)
+rvbl=$("$DIR/scripts/tmux-review" --rows "$RVBL" "$RVBLS")
+rvblbad=""
+while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    rest=${row#*$'\t'}; rest=${rest#*$'\t'}; disp=${rest#*$'\t'}
+    case "$disp" in *"f.md:"*) ;; *) rvblbad="display lost its path: [$row]" ;; esac
+done <<<"$rvbl"
+is "every row's display names its file, blank fragment or not" "" "$rvblbad"
+rvblcount=$(printf '%s\n' "$rvbl" | grep -c .)
+is "the blank line is a row of its own" "2" "$rvblcount"
+rm -rf "$RVBL" "$RVBLS"
+
 echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
 # git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
 # the bare `a/`/`b/` header match could not read -- so café.txt's rows were
