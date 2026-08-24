@@ -200,9 +200,14 @@ diff names two files: mark both, `↵` opens them all. Tab means the same thing 
 `tm`'s kill picker.
 
 **A folder browses, it does not open.** `↵` on a directory descends into it —
-`..` climbs back up, `↵` on a file opens it, and `^O` is the deliberate "hand
-this whole folder to the editor". In a multi-selection, directories are skipped
-so marking three files and a folder opens the files.
+`..` climbs back up, `↵` on a file opens it. `^O` — in the picker and in the
+browser — opens the selection **as-is**: on a folder that means the whole
+folder lands in the editor (VS Code opens it as a workspace). In a
+multi-selection `↵` skips directories, so marking three files and a folder
+opens the files.
+
+Rows keep their line numbers — a clicked `src/app.ts:31` reads as
+`src/app.ts:31` in the list, not a bare filename.
 
 The list takes only the rows it needs — with one or two candidates the preview
 gets ~80% of the popup instead of leaving the top half empty around two

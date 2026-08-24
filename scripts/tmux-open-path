@@ -292,7 +292,13 @@ open_one() {
         # A plain `code ... &` therefore died before it could hand the file to
         # the running VS Code window, and nothing opened. Measured: a child
         # backgrounded in a popup never survives; one owned by the server does.
-        tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
+        if [ -d "$file" ]; then
+            # A folder is a workspace, not a file spec: --goto on a directory
+            # parses it as file:line and does not open the folder.
+            tmux run-shell -b "code $(shq "$file") >/dev/null 2>&1"
+        else
+            tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
+        fi
         note "opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
@@ -371,18 +377,38 @@ if command -v fzf >/dev/null; then
         3|4|5) pshare=75% ;;
         *)     pshare=65% ;;
     esac
-    picks=$(for i in "${!FILES[@]}"; do
-               printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}"
+    # Field 4 is display-only: the path WITH its line number, so a row reads
+    # "src/app.ts:31" the way the output did. Fields 2 and 3 stay clean for the
+    # preview commands.
+    out=$(for i in "${!FILES[@]}"; do
+               printf '%s\t%s\t%s\t%s%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}" \
+                      "${FILES[$i]/#$H/\~}" "${LINES[$i]:+:${LINES[$i]}}"
            done | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
-                      --delimiter=$'\t' --with-nth=2 --multi \
+                      --delimiter=$'\t' --with-nth=4 --multi \
+                      --expect=ctrl-o \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})" \
                       --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})" \
                       --prompt='open> ' \
-                      --header='↵ open   tab mark several   ^G diff   ^F file   esc cancel' \
+                      --header='↵ open (folder: browse)   ^O open as-is   tab mark   ^G diff   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-window="down,$pshare,border-top")
+    [ -n "$out" ] || exit 0
+    # --expect puts the pressed key on line 1, the selections after it.
+    key=${out%%$'\n'*}
+    picks=${out#*$'\n'}
+    [ "$picks" != "$out" ] || exit 0
     [ -n "$picks" ] || exit 0
+    if [ "$key" = ctrl-o ]; then
+        # Open exactly what is marked, as it is -- this is how a folder goes to
+        # the editor whole (VS Code opens it as a workspace) instead of being
+        # browsed into.
+        while IFS= read -r row; do
+            i=${row%%$'\t'*}
+            open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
+        done <<<"$picks"
+        exit 0
+    fi
     # --multi returns one row per marked file (or just the cursor row). A
     # compiler error naming a header and its source, a diff naming two files:
     # tab-mark both, open both. Tab means the same thing in tm's kill picker.

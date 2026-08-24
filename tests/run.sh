@@ -599,6 +599,16 @@ case "$(cat "$LOG")" in
     *) bad "code is launched by the server, not the dying popup" \
          "a run-shell -b carrying code --goto" "$(cat "$LOG")" ;;
 esac
+# A folder must open as a workspace, not a file spec: --goto on a directory
+# parses it as file:line and opens nothing.
+: > "$LOG"
+env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$DIR" CLICK_LINE="scripts" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$LOG")" in
+    *"--goto"*) bad "a folder opens whole, not as a --goto spec" "code <dir>" "$(cat "$LOG")" ;;
+    *"RUNSHELL run-shell -b"*scripts*) ok "a folder opens whole, not as a --goto spec" ;;
+    *) bad "a folder opens whole, not as a --goto spec" "a run-shell carrying the dir" "$(cat "$LOG")" ;;
+esac
 rm -f "$ETMUX/code"
 # One candidate must still reach the picker. This is the behaviour the whole
 # gesture exists for -- see what the line resolved to, then decide -- and the
@@ -1258,6 +1268,35 @@ esac
 is "outside a repo, the diff view is honest too" "not in a git repository" \
    "$("$DIR/scripts/tmux-open-path" --preview-diff /tmp 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' )"
 rm -rf "$DV"
+
+echo "== ^O opens a folder whole; the list names the line =="
+if need_tmux "^O folder open"; then :; else
+if command -v fzf >/dev/null 2>&1; then
+OO="cockpit-oo-$$"; SOCKS="$SOCKS $OO"
+OOLOG=$(mktemp); OOED=$(mktemp)
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OOLOG" > "$OOED"; chmod +x "$OOED"
+"$TMUX_REAL" -L "$OO" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OO" set -g @cockpit_editor "$OOED" >/dev/null 2>&1
+OP=$("$TMUX_REAL" -L "$OO" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$OO" set-option -p -t "$OP" @cockpit_click_line "scripts/tm:30 and scripts/" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OO" send-keys -t "$OP" "'$DIR/scripts/tmux-open-path' --pick '$OP'" Enter
+sleep 2.2
+# A clicked "file:31" must read as file:31 in the list, not as a bare filename
+# stripped of the very thing that anchored it.
+case "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP")" in
+    *"tm:30"*) ok "the row keeps its line number" ;;
+    *) bad "the row keeps its line number" "scripts/tm:30" \
+         "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP" | sed -n 3p)" ;;
+esac
+"$TMUX_REAL" -L "$OO" send-keys -t "$OP" Down; sleep 0.4
+"$TMUX_REAL" -L "$OO" send-keys -t "$OP" C-o; sleep 2
+is "^O hands the folder to the editor whole" "OPEN $DIR/scripts/" "$(cat "$OOLOG")"
+"$TMUX_REAL" -L "$OO" kill-server >/dev/null 2>&1
+rm -f "$OOLOG" "$OOED"
+else
+  skip_ "the row keeps its line number"; skip_ "^O hands the folder to the editor whole"
+fi
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
