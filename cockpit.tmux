@@ -56,43 +56,22 @@ interpolate() {
     local r_path="#($w path #{pane_pid} #{pane_id})"
     local r_brch="#($w branch #{pane_pid} #{pane_id})"
 
-    # One x per blocked/errored agent pane, in ANY session, then #{n:} takes the
-    # length of that string. The whole thing is format syntax: the counter costs
-    # a redraw, no shell, ever. #{S:} walks every session on the server, not just
-    # this client's, which is the entire point -- the window dots already cover
-    # the session you are looking at.
-    #
-    # The state is read through the same agent guard the borders use, and for the
-    # same reason: a pane that ran an agent, exited, and is now a shell keeps its
-    # last @panestate forever, so an unguarded count would never come back down.
-    #
-    # #{S:#{W:}} walks window SLOTS, so a session grouped onto another with
-    # `new-session -t`, or a window shared by link-window, has its panes counted
-    # once per view -- three views of one blocked agent read 3. Documented in the
-    # README rather than fixed: a format cannot de-duplicate pane ids, and the
-    # error only ever runs high, which never masks a fleet that needs you.
-    #
-    # No #{&&:} here, deliberately. The replacement text below goes through
-    # ${s//pat/rep}, where bash 5.2 expands a bare & to whatever the pattern
-    # matched -- "&&" silently became "#{agent_fleet}#{agent_fleet}", and the
-    # counter reported every agent pane as blocked AND errored at once.
-    #
-    # @panestate is tested FIRST and the glob only on the panes that match, not
-    # the other way round: the glob is by far the dearer of the two, and this
-    # order runs it on the handful of panes in the state rather than all of them.
-    # Measured over 200 expansions on a 40-pane server, that alone took the whole
-    # status-right from 1.477s to 0.899s against a 0.612s empty-token baseline.
-    cnt() { printf '#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},%s},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}' "$1"; }
-    local n_blocked n_error
-    n_blocked=$(cnt needs-input)
-    n_error=$(cnt error)
-    # Same glyphs and same palette entries as the window dots, so the two agree
-    # about what red means. Both are read at RENDER time, and the palette block
-    # below defaults them when no theme provides them -- an empty @thm_red would
-    # expand to "fg=" and tmux rejects the whole style.
-    local r_fleet
-    r_fleet="#{?#{e|>:$n_blocked,0},#[fg=#{@thm_red}#,bold]▲$n_blocked#[default] ,}"
-    r_fleet="$r_fleet#{?#{e|>:$n_error,0},#[fg=#{@thm_peach}]✕$n_error#[default] ,}"
+    # #{agent_fleet} now reads a precomputed option, not a live count. The inline
+    # form was #{n:#{S:#{W:#{P:}}}} -- one x per blocked/errored agent pane across
+    # every session -- and the format named each count TWICE (a ">0" test and the
+    # number), so status-right ran up to four whole-server pane walks per redraw.
+    # An agent emitting an OSC-2 title forces a status redraw on every keystroke,
+    # which made this the freeze rig's second-worst offender (gate: 360 pane
+    # visits per redraw with the fleet enabled). agent-state now recomputes the
+    # ▲N ✕N string on every state transition, off the redraw path, and stores it
+    # in @cockpit_fleet; #{E:} expands that here so the @thm_* colour tokens it
+    # carries resolve at render time -- a theme sourced after the plugin still
+    # wins, exactly as the inline walk did. Empty (nothing waiting) renders
+    # nothing. The whole-server count still runs high on a session grouped with
+    # new-session -t or a window shared by link-window (a format cannot
+    # de-duplicate pane ids); documented in the README, and it only ever reads
+    # high, which never masks a fleet that needs you.
+    local r_fleet="#{E:@cockpit_fleet}"
 
     s="${s//'#{agent_where_path}'/$r_path}"
     s="${s//'#{agent_where_branch}'/$r_brch}"

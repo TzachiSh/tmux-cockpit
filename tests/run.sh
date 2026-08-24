@@ -2070,9 +2070,13 @@ FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
 FCP1=$("$TMUX_REAL" -L "$FC" list-panes -t a:0 -F '#{pane_id}')
 FCP2=$("$TMUX_REAL" -L "$FC" list-panes -t b:0 -F '#{pane_id}')
 FCP3=$("$TMUX_REAL" -L "$FC" list-panes -t b:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate error       >/dev/null 2>&1
+# Drive state through agent-state, the production path: the count is now a
+# precomputed @cockpit_fleet option agent-state writes on every transition, not
+# a live walk in status-right, so a raw set-option would never move the counter.
+asFC() { TMUX="$SOCKDIR/$FC,0,0" "$DIR/scripts/agent-state" "$1" "$2" >/dev/null 2>&1; }
+asFC needs-input "$FCP1"
+asFC needs-input "$FCP2"
+asFC error       "$FCP3"
 fleet() { "$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
             "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)" | plain; }
 is "two blocked and one errored, across sessions" "[▲2 ✕1 ]" "$(fleet)"
@@ -2086,15 +2090,17 @@ case "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
          "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
               "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" ;;
 esac
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP1" @panestate running >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP2" @panestate running >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP3" @panestate running >/dev/null 2>&1
+asFC running "$FCP1"
+asFC running "$FCP2"
+asFC running "$FCP3"
 is "a quiet fleet renders nothing at all" "[]" "$(fleet)"
 # A pane whose agent has exited keeps its last @panestate forever. Unguarded,
-# the fleet count would include it and never come back down.
+# the fleet count would include it and never come back down. agent-state writes
+# @panestate regardless, but the precompute counts through the same glob guard,
+# so a shell pane never reaches the counter.
 "$TMUX_REAL" -L "$FC" new-window -t b 'sleep 300' >/dev/null 2>&1
 FCP4=$("$TMUX_REAL" -L "$FC" list-panes -t b:2 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FC" set-option -p -t "$FCP4" @panestate needs-input >/dev/null 2>&1
+asFC needs-input "$FCP4"
 is "a shell holding stale state is not counted" "[]" "$(fleet)"
 "$TMUX_REAL" -L "$FC" kill-server >/dev/null 2>&1
 fi

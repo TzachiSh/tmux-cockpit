@@ -188,6 +188,30 @@ else
     [ -z "$win_cur" ] || tmux set-option -wu -t "$pane" @cockpit_win_needs 2>/dev/null || true
 fi
 
+# --- fleet counter, the same precompute for the same reason -------------------
+# #{agent_fleet} in status-right counts blocked and errored agent panes across
+# every session. Each count is a whole-server #{S:#{W:#{P:}}} walk, and the
+# format named each count TWICE -- a ">0" test and the number itself -- so a
+# redraw ran up to four whole-server walks, the freeze rig's second-worst
+# offender (gate: 360 pane visits per redraw with it enabled). Counted here, the
+# format reads one option (#{E:@cockpit_fleet}) and walks nothing.
+#
+# The colours stay as TOKENS in the stored string, resolved by that #{E:} at
+# render time, so a theme sourced after the plugin still wins -- the exact
+# contract the live walk had. An empty string (nothing waiting) renders nothing.
+nb=$(tmux display-message -p -t "$pane" \
+    '#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}' \
+    2>/dev/null)
+ne=$(tmux display-message -p -t "$pane" \
+    '#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}' \
+    2>/dev/null)
+fleet=""
+case "$nb" in ''|0|*[!0-9]*) ;; *) fleet="#[fg=#{@thm_red}#,bold]▲$nb#[default] " ;; esac
+case "$ne" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_peach}]✕$ne#[default] " ;; esac
+if [ "$fleet" != "$(tmux show-option -gqv @cockpit_fleet 2>/dev/null)" ]; then
+    tmux set-option -gq @cockpit_fleet "$fleet" 2>/dev/null || true
+fi
+
 # No refresh-client here, deliberately. set-option already repaints everything
 # that reads the option -- measured: the border, the tab marker and even the
 # cross-window banner all update within 50ms of the set, with status-interval
