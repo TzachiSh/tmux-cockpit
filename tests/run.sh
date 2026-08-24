@@ -2723,7 +2723,7 @@ RVMSTORE=$(mktemp)
 # same line number, so this proves the marker is keyed on path:line AND sign.
 "$DIR/scripts/tmux-review" --attach "$RVMSTORE" "src.go" "2" "ZED" "fix this line"
 rvmarkcol=$("$DIR/scripts/tmux-review" --rows "$RVMARK" "$RVMSTORE" | cut -f4)
-rvmarkwant=$(printf '%s\n' ' src.go:2 (-)  b' '●src.go:2 (+)  ZED' ' src.go:4 (+)  ADDED')
+rvmarkwant=$(printf '%s\n' ' src.go:2 '$'\e[31m''(-)'$'\e[0m''  b' '●src.go:2 '$'\e[32m''(+)'$'\e[0m''  ZED' ' src.go:4 '$'\e[32m''(+)'$'\e[0m''  ADDED')
 is "the ● lands on exactly the commented row, sign-specific" "$rvmarkwant" "$rvmarkcol"
 rm -f "$RVMSTORE"; rm -rf "$RVMARK"
 
@@ -2769,6 +2769,10 @@ done <<<"$rvbl"
 is "every row's display names its file, blank fragment or not" "" "$rvblbad"
 rvblcount=$(printf '%s\n' "$rvbl" | grep -c .)
 is "the blank line is a row of its own" "2" "$rvblcount"
+case "$rvbl" in *$'\e[32m(+)'*) ok "an added row carries green SGR in --rows" ;;
+    *) bad "an added row carries green SGR in --rows" "ESC[32m(+) in a row" "$(printf '%s' "$rvbl" | cat -v)" ;; esac
+case "$("$DIR/scripts/tmux-review" --lines "$RVBL")" in *$'\e['*) bad "--lines stays plain" "no SGR" "sgr found" ;;
+    *) ok "--lines stays plain" ;; esac
 rm -rf "$RVBL" "$RVBLS"
 
 echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="

@@ -363,6 +363,10 @@ rows_mode() {
         esac
         marker=" "
         [ -n "${commented["## ${path}:${num} (${sign})"]:-}" ] && marker="●"
+        case "$sign" in
+            +) display=${display/ (+) / $'\e[32m'(+)$'\e[0m' } ;;
+            -) display=${display/ (-) / $'\e[31m'(-)$'\e[0m' } ;;
+        esac
         printf '%s\t%s\t%s\t%s%s\n' "$path" "$line" "$fragment" "$marker" "$display"
     done < <(lines_mode "$dir")
 }
@@ -466,7 +470,7 @@ run_loop() {
     local out rc key n choice
     while :; do
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s --disabled \
+            | fzf --print-query --expect=ctrl-s --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
