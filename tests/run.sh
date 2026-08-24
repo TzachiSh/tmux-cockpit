@@ -1678,6 +1678,27 @@ else
 fi
 rm -rf "$HK11"
 
+# and a VALID settings.json symlink (dotfiles tracked via chezmoi,
+# home-manager, or by hand) keeps being a symlink after the merge, at its
+# original mode -- the write lands at the resolved target, not at the link.
+HK14=$(mktmpd); mkdir -p "$HK14/.claude" "$HK14/dotfiles"
+printf '{"model":"opus"}' > "$HK14/dotfiles/settings.json"
+chmod 644 "$HK14/dotfiles/settings.json"
+ln -s "$HK14/dotfiles/settings.json" "$HK14/.claude/settings.json"
+HOME="$HK14" "$DIR/install.sh" --hooks >/dev/null 2>&1
+if [ -L "$HK14/.claude/settings.json" ]; then
+    ok "a valid settings.json symlink survives the merge"
+else
+    bad "a valid settings.json symlink survives the merge" "still a symlink" "replaced by a regular file"
+fi
+case "$(cat "$HK14/dotfiles/settings.json")" in
+    *tmux-cockpit*agent-state*) ok "and the merge landed at the resolved (dotfiles) target" ;;
+    *) bad "and the merge landed at the resolved (dotfiles) target" "an agent-state command" "$(head -c200 "$HK14/dotfiles/settings.json")" ;;
+esac
+mode=$(stat -c '%a' "$HK14/dotfiles/settings.json" 2>/dev/null || stat -f '%Lp' "$HK14/dotfiles/settings.json" 2>/dev/null)
+is "and the resolved target keeps its original mode" "644" "$mode"
+rm -rf "$HK14"
+
 # I2: a pre-existing settings.json.bak is the user's, not ours to overwrite.
 HK5=$(mktmpd); mkdir -p "$HK5/.claude"
 printf '{"sentinel":"user-backup"}' > "$HK5/.claude/settings.json.bak"
@@ -1713,6 +1734,25 @@ HOME="$HK9" "$DIR/install.sh" --hooks >/dev/null 2>&1
 leftover=$(find "$HK9/.claude" -maxdepth 1 -name 'settings.json.*' ! -name 'settings.json.bak' 2>/dev/null)
 is "no temp file is left behind after a successful merge" "" "$leftover"
 rm -rf "$HK9"
+
+# C1 (the actual regression pin): "no temp file after success" above also
+# passes against the unfixed, non-atomic install.sh -- printf > "$settings"
+# leaves no temp file either, because it never created one. Reproduce the
+# real failure mode instead: a file-size limit low enough that the write
+# itself dies mid-flight (SIGXFSZ), the same mechanism named in the PR's own
+# ulimit -f 1 repro. The subshell scopes the limit to this one process tree.
+HK15=$(mktmpd); mkdir -p "$HK15/.claude"
+printf '{"model":"opus"}' > "$HK15/.claude/settings.json"
+before=$(cat "$HK15/.claude/settings.json")
+(ulimit -f 1; HOME="$HK15" "$DIR/install.sh" --hooks) >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    bad "a write killed mid-flight (ulimit -f 1) does not exit 0" "a nonzero exit" "0"
+else
+    ok "a write killed mid-flight (ulimit -f 1) does not exit 0"
+fi
+is "and settings.json is left as the untouched original" "$before" "$(cat "$HK15/.claude/settings.json")"
+rm -rf "$HK15"
 
 # I3: index() must be jq's deep, order-insensitive equality -- a plain
 # reformat (jq -S, or Claude Code rewriting its own settings) must not make

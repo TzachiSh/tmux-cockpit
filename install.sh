@@ -116,8 +116,28 @@ if [ "$hooks" -eq 1 ]; then
     [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
 
+    # readlink -f is GNU-only (the same BSD caveat documented above for
+    # link_target), so resolve a symlink chain by hand, with the cd -P
+    # discipline DIR itself uses at the top of this script.
+    resolve_link() {
+        local p="$1" d b
+        while [ -L "$p" ]; do
+            d=$(dirname "$p"); b=$(readlink "$p")
+            case "$b" in /*) p="$b" ;; *) p="$d/$b" ;; esac
+        done
+        printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+    }
+
     if [ -e "$settings" ]; then
-        orig=$(cat "$settings") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+        # A valid symlink (settings.json tracked by chezmoi, home-manager, or
+        # by hand) must still be a symlink afterward -- writing AT the link
+        # itself, which is the atomic-rename idiom's usual behavior (and
+        # `sed -i`'s default, Debian #323850), would replace the tracked
+        # dotfiles source with a plain file; the next chezmoi/home-manager
+        # apply then restores the symlink and drops the merged hooks for
+        # good. Resolve the chain and write at $real instead.
+        real=$(resolve_link "$settings")
+        orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
     elif [ -L "$settings" ]; then
         # A dangling symlink passes neither "read what's there" (there's
         # nothing) nor "seed a fresh file" safely -- the seed write below
@@ -127,6 +147,7 @@ if [ "$hooks" -eq 1 ]; then
         exit 1
     else
         orig='{}'
+        real="$settings"
         # A preview must not create ~/.claude or seed settings.json either --
         # the diff below is computed against $orig directly, without a file.
         if [ "$dry" -eq 0 ]; then
@@ -176,15 +197,23 @@ if [ "$hooks" -eq 1 ]; then
         # a second modifying run -- replace the pristine original with
         # content that already has our hooks merged in.
         [ -e "$settings.bak" ] || cp -- "$settings" "$settings.bak" || exit 1
-        # `printf > "$settings"` truncates before it writes a single byte, so
-        # a SIGXFSZ or any other interrupted write (reproduced with
+        # `printf > "$real"` truncates before it writes a single byte, so a
+        # SIGXFSZ or any other interrupted write (reproduced with
         # ulimit -f 1) leaves a truncated, invalid settings.json -- and the
-        # rollback above never runs, because by then $settings has already
+        # rollback above never runs, because by then the file has already
         # been destroyed. Write to a sibling temp file instead and rename it
-        # over the original: rename() is atomic, so $settings is either the
-        # old content or the new content, never a half-written file between.
-        tmp=$(mktemp "$settings.XXXXXX") && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$settings" \
-            || { rm -f -- "$tmp"; printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        # over the resolved target: rename() is atomic, so $real is either
+        # the old content or the new content, never a half-written file
+        # between. The temp file is created AT $real (not at $settings), so
+        # a symlinked settings.json still resolves onto one filesystem and
+        # the rename stays atomic; cp -p carries the original's mode onto it
+        # first, since mktemp's own 0600 would otherwise silently tighten
+        # settings.json's permissions on every merge.
+        tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap 'rm -f -- "$tmp"' EXIT
+        cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
+            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap - EXIT
         printf 'merged    cockpit hooks into %s (backup: %s.bak)\n' "$settings" "$settings"
     fi
 fi
