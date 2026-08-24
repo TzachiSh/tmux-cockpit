@@ -2321,6 +2321,63 @@ else
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
 
+echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
+# git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
+# the bare `a/`/`b/` header match could not read -- so café.txt's rows were
+# attributed to the file BEFORE it (or dropped when café was first). Diffing
+# with core.quotePath=false keeps the path literal. FAIL-first: on the old code
+# café's rows carry alpha.txt / zeta.txt and no row says café at all.
+RVQ=$(mktmpd)
+(
+  cd "$RVQ" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > alpha.txt
+  printf 'x\ny\n' > café.txt
+  git add -A; git commit -q -m init
+  printf 'a\nAA\n' > alpha.txt
+  printf 'x\nCC\n' > café.txt
+) >/dev/null 2>&1
+rvqout=$("$DIR/scripts/tmux-review" --lines "$RVQ")
+case "$rvqout" in
+    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "café's added row anchors to café.txt at café's own line 2" ;;
+    *) bad "café's added row anchors to café.txt at café's own line 2" \
+         "café.txt<TAB>2<TAB>CC" "$rvqout" ;;
+esac
+if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
+    bad "café's row is not smeared onto the previous file" \
+        "no alpha.txt row carrying café's CC" "$rvqout"
+else
+    ok "café's row is not smeared onto the previous file"
+fi
+rm -rf "$RVQ"
+
+# The first-file-in-diff variant: when the odd-named file leads the diff, the
+# old code had no previous file to fall back to and dropped its rows entirely.
+RVQ1=$(mktmpd)
+(
+  cd "$RVQ1" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'x\ny\n' > café.txt
+  printf 'a\nb\n' > zeta.txt
+  git add -A; git commit -q -m init
+  printf 'x\nCC\n' > café.txt
+  printf 'a\nAA\n' > zeta.txt
+) >/dev/null 2>&1
+rvq1out=$("$DIR/scripts/tmux-review" --lines "$RVQ1")
+case "$rvq1out" in
+    *'café.txt'$'\t''2'$'\t''CC'$'\t'*) ok "a leading non-ASCII file's rows are not dropped" ;;
+    *) bad "a leading non-ASCII file's rows are not dropped" \
+         "café.txt<TAB>2<TAB>CC" "$rvq1out" ;;
+esac
+case "$rvq1out" in
+    *'zeta.txt'$'\t''2'$'\t''AA'$'\t'*) ok "the following file still anchors to itself" ;;
+    *) bad "the following file still anchors to itself" \
+         "zeta.txt<TAB>2<TAB>AA" "$rvq1out" ;;
+esac
+rm -rf "$RVQ1"
+
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
 # under the cursor vanished) -- without a guard this still writes

@@ -78,14 +78,24 @@ lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
 
+    # core.quotePath=false: with git's default (true) a path holding any
+    # non-ASCII byte comes out C-quoted and octal-escaped -- `--- "a/caf\303\251.txt"`
+    # -- and the header match below (/^--- a\//, /^\+\+\+ b\//) needs a bare
+    # `a/`/`b/`, so a quoted header matched neither. The file's every row was
+    # then attributed to the PREVIOUS file (or dropped, if it was first): the
+    # agent got told to edit café's lines in alpha.txt. Turning quoting off
+    # makes the path literal in both the diff headers and numstat, so the two
+    # stay keyed on the same name. (A path with a literal tab/quote is still
+    # git-quoted even here -- the residual narrow case; non-ASCII is the common
+    # one and is fixed.)
     local diff
-    diff=$(git -C "$dir" diff --no-color --no-ext-diff 2>/dev/null)
-    [ -n "$diff" ] || diff=$(git -C "$dir" diff --no-color --no-ext-diff --cached 2>/dev/null)
+    diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff 2>/dev/null)
+    [ -n "$diff" ] || diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached 2>/dev/null)
     [ -n "$diff" ] || return 0
 
     local numstat
-    numstat=$(git -C "$dir" diff --no-color --no-ext-diff --numstat 2>/dev/null)
-    [ -n "$numstat" ] || numstat=$(git -C "$dir" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+    numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --numstat 2>/dev/null)
+    [ -n "$numstat" ] || numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
