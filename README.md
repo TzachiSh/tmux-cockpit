@@ -238,6 +238,7 @@ without it, or without Claude Code's settings.json at that path, merge the
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
+| `prefix + R` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one — `@cockpit_review_key` rebinds, `off` disables |
 
 Both pickers share their keys: `↵` acts, `esc` cancels, `^/` toggles the
 preview and `^U`/`^D` scroll it.
@@ -453,6 +454,80 @@ set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 Where neither `@cockpit_editor` nor `code` is available it falls back to `$VISUAL`
 or `$EDITOR`, and says so plainly if there is no editor at all rather than
 reporting a success that never happened.
+
+## Review the agent's changes
+
+`prefix + R` opens a popup review of an agent's uncommitted diff. Comments
+attach to individual lines, and nothing reaches the agent until you say so —
+there is deliberately no key that approves the whole thing at once.
+
+From an **agent pane** it reviews that pane. From anywhere else — a shell, a
+build pane, wherever `prefix + R` finds you — it opens the **fleet queue**
+instead: every agent pane, on every session, whose tree is dirty, dirtiest
+first, previewed the same way the path picker's folder preview shows a
+directory's `git status`. Nothing else in this plugin answers "which of my
+agents needs my eyes"; the queue exists because visiting each pane in turn to
+find out does not scale past two or three of them.
+
+Inside the review: `alt-↵` attaches whatever you typed as a comment on the
+diff line under the cursor. The list reloads in place and marks the row `●`,
+so five comments cost one popup, not five — the same
+`execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
+`^S` delivers the whole batch; `esc` discards it, store and all.
+**Plain `↵` does nothing.** There is no accept-all key on purpose: a review
+whose only exit is one Enter on the whole diff is the rubber stamp this
+replaces.
+
+A comment lands as:
+
+```text
+## scripts/tm:43 (+)
+> the quoted fragment
+use errors.Is() instead of direct comparison
+```
+
+anchored to the line's own **quoted text**, not a bare number, so it still
+points at the right spot after the agent edits again — a bare line number
+would not survive that. A comment containing `??` is a **question**: the
+composed header tells the agent to answer it in chat, not to edit for it.
+
+**Delivery is two steps, never one.** The finished batch lands **typed but
+unsent** in the agent's pane — one bracketed paste, never an Enter — and a
+human presses Enter there to actually send it. Live-verified on tmux: the
+pane shows the pasted text sitting at the prompt, unexecuted, with and
+without a trailing newline on the payload. Over 2048 bytes it lands as a
+pointer to a `0600` file in `$XDG_RUNTIME_DIR` instead, so a long review is
+not a wall of text typed straight into the agent's own prompt.
+
+What this deliberately does **not** do, and why:
+
+- **No whole-diff, one-Enter approval.** The unit of review is the line or
+  the hunk, never "the changes" — whole-diff review launders a change as
+  reviewed without anyone actually reading it, and skimming has a measured
+  ceiling of around 400 lines past which defect detection collapses.
+- **Never sends Esc to the agent, never auto-submits.** Esc kills whatever
+  the agent is mid-tool on, destroying in-flight work; typed text plus a
+  human's own Enter lands at the next turn boundary instead
+  (claude-code issues #63190, #30492).
+- **No review daemon, server, or state that outlives the popup.** The
+  spillover file an oversized review lands in is the delivery vehicle, not a
+  store — the OS tmpdir is the only garbage collector it gets, the same as
+  everything else this plugin writes.
+- **Every comment carries `path:line` and the quoted source line**, never a
+  line number alone. A bare number goes stale the instant the agent edits
+  again — the same staleness that makes a GitHub review comment "outdated"
+  the moment the diff it anchored to moves.
+- **Delivery is a batch, never a comment at a time.** Nothing reaches the
+  agent's pane until `^S` — one paste per review, not a stream of small
+  interruptions while you are still deciding what you think.
+- **Never selects, creates, or focuses a pane as a side effect.** Delivery
+  targets `-t <pane>` and leaves focus alone; tmux focus-stealing has raced
+  and corrupted concurrent pane input before (claude-code issue #49184).
+- **Never `send-keys` for the review's own text.** The body goes through
+  `load-buffer`/`paste-buffer` only — `send-keys` is reserved for the Enter a
+  **human**, never this script, presses.
+- **Test files sort first, never last** in the diff-line list — a change to
+  the tests is read before the change it tests, not after.
 
 ## tm — session launcher
 

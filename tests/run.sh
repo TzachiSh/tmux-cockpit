@@ -2207,5 +2207,84 @@ rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --fleet: from a non-agent pane, the queue lists exactly the dirty agent panes =="
+if need_tmux "tmux-review --fleet"; then :; else
+FQ="cockpit-fq-$$"; SOCKS="$SOCKS $FQ"
+# Window 0's pane is the CONTROL pane -- a plain shell, the non-agent
+# vantage point this step drives the queue from.
+"$TMUX_REAL" -L "$FQ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+CTL=$("$TMUX_REAL" -L "$FQ" list-panes -t t:0 -F '#{pane_id}')
+
+mk_git_dir() {  # mk_git_dir <dir> <dirty:0|1>
+    (
+      cd "$1" || exit
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main .
+      printf 'a\n' > f
+      git add -A; git commit -q -m init
+      [ "$2" = 1 ] && printf 'b\n' >> f
+    ) >/dev/null 2>&1
+}
+FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
+FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- excluded
+FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
+
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
+DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_CLEAN" 'exec -a claude bash' >/dev/null 2>&1
+CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NONAGENT" 'exec bash' >/dev/null 2>&1
+NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
+sleep 0.3
+
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
+sleep 0.6
+fqout=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+
+case "$fqout" in
+    *"$DIRTY_PANE"*) ok "the dirty agent pane is in the queue" ;;
+    *) bad "the dirty agent pane is in the queue" "$DIRTY_PANE in the rows" "$fqout" ;;
+esac
+case "$fqout" in
+    *"$CLEAN_PANE"*) bad "a clean agent pane is not in the queue" \
+         "no $CLEAN_PANE in the rows" "$fqout" ;;
+    *) ok "a clean agent pane is not in the queue" ;;
+esac
+case "$fqout" in
+    *"$NONAGENT_PANE"*) bad "a dirty non-agent pane is not in the queue" \
+         "no $NONAGENT_PANE in the rows" "$fqout" ;;
+    *) ok "a dirty non-agent pane is not in the queue" ;;
+esac
+rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
+is "the queue lists exactly one row" "1" "$rowcount"
+
+"$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
+fi
+
+echo "== prefix R reviews an agent's diff; @cockpit_review_key off leaves it unbound =="
+if need_tmux "cockpit_review_key"; then :; else
+RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
+"$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
+    *tmux-review*) ok "prefix R is bound to the review popup by default" ;;
+    *) bad "prefix R is bound to the review popup by default" \
+         "a display-popup running tmux-review" \
+         "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="R"')" ;;
+esac
+"$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
+
+RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
+"$TMUX_REAL" -L "$RB2" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB2" set -g @cockpit_review_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+is "@cockpit_review_key off leaves R unbound" "" \
+   "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
+"$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

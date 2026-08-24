@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # tmux-review — review an agent's uncommitted diff, one comment at a time, and
 # hand the finished review back to the agent's pane.
+#   tmux-review                            no args: review the CLIENT's active
+#                                          pane if it is an agent, else the
+#                                          fleet queue (bound to prefix R)
+#   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
 #                                          ctrl-s exits 20 (deliver), esc/^C
@@ -8,9 +12,7 @@
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
-# --lines and --compose touch no tmux. Entry-point resolution (no dir given:
-# review this pane, or pick from the fleet) is follow-up work; this script is
-# the review and its delivery, not yet how you reach for it.
+# --lines and --compose touch no tmux.
 set -uo pipefail
 
 # bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
@@ -35,6 +37,9 @@ shq() { printf '%q' "$1"; }
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
+  tmux-review                            review the client's active pane, or
+                                         the fleet queue when it is not an agent
+  tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
   tmux-review --compose <store>          the composed review, ready to deliver
@@ -418,7 +423,157 @@ deliver() {
     fi
 }
 
+# --- --fleet / entry-point resolution --------------------------------------
+# Which of the fleet needs your eyes: every agent pane, every session, whose
+# tree is dirty -- landscape-gap #1, nothing else answers this. Rows are
+# pane\ttitle\t±stat, dirtiest (most churn) first. The is-agent test is
+# tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s guard, cockpit.tmux's
+# window formats) run once per pane inside list-panes, not a second shell per
+# pane to re-ask; the title falls back from pane_title to the window name the
+# same way @catppuccin_window_text already does (examples/tmux.conf:42) --
+# #{host_short} is what an UNSET pane_title reads as, not empty.
+fleet_rows() {
+    # One -F argument, built in a variable: continuation lines each starting
+    # a fresh quoted string are separate WORDS to tmux, not one concatenated
+    # format -- list-panes then sees four positional arguments and refuses
+    # them ("too many arguments"). Reproduced live before this fix.
+    local fmt raw
+    fmt='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'$'\t'
+    fmt="${fmt}"'#{pane_id}'$'\t'
+    fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
+    fmt="${fmt}"'#{pane_current_path}'
+    raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
+    [ -n "$raw" ] || return 0
+
+    local -a rows=()
+    local isagent id title path st numstat add del untracked line churn stat
+    while IFS=$'\t' read -r isagent id title path; do
+        [ "$isagent" = 1 ] || continue
+        [ -n "$path" ] || continue
+        st=$(git -C "$path" status --porcelain 2>/dev/null)
+        [ -n "$st" ] || continue
+
+        # Same unstaged-first, staged-fallback rule --lines uses: a fully
+        # staged change still gets a churn number instead of reading as 0.
+        numstat=$(git -C "$path" diff --no-color --no-ext-diff --numstat 2>/dev/null)
+        [ -n "$numstat" ] || numstat=$(git -C "$path" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+        add=0; del=0
+        local a d
+        while IFS=$'\t' read -r a d _f; do
+            [ -n "$a" ] || continue
+            case "$a" in *[!0-9]*) a=0 ;; esac
+            case "$d" in *[!0-9]*) d=0 ;; esac
+            add=$(( add + a )); del=$(( del + d ))
+        done <<<"$numstat"
+
+        # Untracked files carry no numstat line at all -- without counting
+        # them a pane holding only new files reads as 0 churn and sorts last,
+        # even though `git status` already called it dirty.
+        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+        stat="+$add -$del"
+        [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
+        churn=$(( add + del + untracked ))
+
+        rows+=("$churn"$'\t'"$id"$'\t'"$title"$'\t'"$stat"$'\t'"$path")
+    done <<<"$raw"
+    [ ${#rows[@]} -gt 0 ] || return 0
+
+    for line in "${rows[@]}"; do printf '%s\n' "$line"; done \
+        | sort -t "$(printf '\t')" -k1,1nr | cut -f2-4
+}
+
+# --- entry-point resolution -------------------------------------------------
+# Enter Task 2's loop against one pane: a fresh mktemp store, the interactive
+# --loop re-exec'd (not called as a function -- it ends in a script `exit`,
+# and this needs its own exit code back rather than the whole process dying),
+# ctrl-s (rc 20) handed to --deliver via `tmux run-shell -b` -- a popup kills
+# its own children the moment it closes (tmux-open-path:381-386), so delivery
+# has to outlive that teardown, not run inside it.
+review_pane() {
+    local pane=$1 dir=$2 store rc
+    store=$(mktemp) || {
+        tmux display-message "tmux-review: could not create a comment store" 2>/dev/null
+        return 1
+    }
+    "$SELF" --loop "$dir" "$store"
+    rc=$?
+    if [ "$rc" -eq 20 ]; then
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store")"
+    fi
+}
+
+# The fzf queue over fleet_rows(). Unlike the review loop this filters as you
+# type -- it is a pane list, not comment entry, so --disabled has no place
+# here. Rows carry only the three fields the brief names (pane, title, stat);
+# the preview re-asks tmux for the pane's cwd by id rather than smuggling a
+# fourth hidden field, so `--fleet`'s output stays exactly that interface.
+fleet_queue() {
+    command -v fzf >/dev/null 2>&1 || {
+        tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
+        return 1
+    }
+    local rows
+    rows=$(fleet_rows)
+    if [ -z "$rows" ]; then
+        tmux display-message "tmux-review: no agent pane has uncommitted changes" 2>/dev/null
+        return 0
+    fi
+
+    local nrows avail lrows psz preview_cmd out pane dir
+    nrows=$(printf '%s\n' "$rows" | wc -l)
+    avail=$(tput lines 2>/dev/null || echo 24)
+    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
+    psz=$(( avail - lrows - 5 ))
+    [ "$psz" -lt 5 ] && psz=5
+
+    preview_cmd="$(shq "$OPENPATH") --preview-diff \"\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null)\""
+
+    out=$(printf '%s\n' "$rows" \
+        | fzf --delimiter=$'\t' --with-nth=2,3 \
+              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+              --preview "$preview_cmd" \
+              --preview-window="down,$psz,border-top" \
+              --prompt='fleet> ' \
+              --header='which agent needs you   ↵ review it   esc cancel')
+    [ -n "$out" ] || return 0
+
+    pane=$(cut -f1 <<<"$out")
+    [ -n "$pane" ] || return 0
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$dir" ] || {
+        tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
+        return 0
+    }
+    review_pane "$pane" "$dir"
+}
+
+# No args, bound to prefix R: ask tmux which pane the CLIENT is actually on --
+# not $TMUX_PANE, which inside this popup names the popup's own pseudo-pane,
+# not the pane you pressed the key from (tmux-branch:34-40, live-verified: a
+# real attached client's `display-message -p` with no -t resolves through the
+# CLIENT here, exactly as it does for tmux-branch's DIR). A pane matching the
+# agents glob is reviewed directly; anything else (a shell, a build pane, the
+# status bar itself) opens the fleet queue instead.
+main_entry() {
+    local pane is_agent dir
+    pane=$(tmux display-message -p '#{pane_id}' 2>/dev/null)
+    if [ -z "$pane" ]; then
+        printf 'tmux-review: no tmux client to resolve a pane from\n' >&2
+        exit 1
+    fi
+    is_agent=$(tmux display-message -p -t "$pane" -F \
+        '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
+    if [ "$is_agent" = 1 ]; then
+        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+        review_pane "$pane" "$dir"
+    else
+        fleet_queue
+    fi
+}
+
 case "${1:-}" in
+    --fleet)
+        fleet_rows ;;
     --lines)
         shift; lines_mode "${1:-}" ;;
     --rows)
@@ -434,7 +589,7 @@ case "${1:-}" in
     -h|--help)
         usage; exit 0 ;;
     "")
-        usage; exit 2 ;;
+        main_entry ;;
     *)
         printf 'unknown option: %s (try: tmux-review -h)\n' "$1" >&2; exit 2 ;;
 esac
