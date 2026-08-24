@@ -2766,6 +2766,21 @@ else
 fi
 rm -f "$ATSTORE"
 
+echo "== tmux-review --attach: the cap's '(diff too large)' row stores nothing =="
+# C0: that row (lines_mode's giant-diff cap) has no real file or line behind
+# it -- alt-enter on it used to write "## (diff too large): (+)" to the
+# store anyway, a comment anchored to nothing that delivered as a bogus
+# instruction the agent could not act on.
+CAPSTORE=$(mktemp)
+"$DIR/scripts/tmux-review" --attach "$CAPSTORE" "(diff too large)" "" \
+    "diff too large to anchor line-by-line" "fix this somehow"
+if [ -s "$CAPSTORE" ]; then
+    bad "the cap sentinel row attaches nothing" "an empty store" "$(cat "$CAPSTORE")"
+else
+    ok "the cap sentinel row attaches nothing"
+fi
+rm -f "$CAPSTORE"
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
@@ -3373,6 +3388,61 @@ case "$(gcap "$APG")" in
          "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
 esac
 
+# B2: the `tmux if-shell` call above returns 0 (the queue accepted it)
+# whichever nested branch fired -- so a shell that only inspected THAT exit
+# code could not tell a race-refusal from a delivery, and deliver() used to
+# fall through with RC=0 either way, silently breaking the exit-1 refusal
+# contract every early guard in this same function already honors.
+# deliver() now checks the staged buffer's own survival afterward instead:
+# the buffer is loaded before the gate runs, and only the DELIVERED branch's
+# `paste-buffer -d` consumes it -- so a buffer still present after the call
+# returned IS the refusal, readable without re-testing the (already stale)
+# pane. rc_from_buffer() below is that check, copied verbatim from deliver().
+rc_from_buffer() {
+    if "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null \
+         | grep -qxF "$1"; then
+        "$TMUX_REAL" -L "$RG" delete-buffer -b "$1" 2>/dev/null
+        printf '1\n'; return
+    fi
+    printf '0\n'
+}
+
+# The OLD refused branch deleted the buffer INLINE (the shape deliver() sent
+# before this fix) -- by the time the CLI call returns there is nothing left
+# to distinguish "refused" from "delivered and consumed", so the RC check
+# above reads 0. The hazard is real: this is exactly why deliver() used to
+# report a race-refusal as success.
+printf 'OLD-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-old -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-old -t $NPG ; display-message pasted" \
+    "delete-buffer -b rg-old ; display-message 'not delivered'"
+is "the old inline delete on refusal hides the refusal from an RC check (the hazard is real)" \
+   "0" "$(rc_from_buffer rg-old)"
+
+# The fixed refused branch leaves the buffer for deliver()'s own post-check to
+# find and clean up -- the same RC=1 contract the early guards already use.
+printf 'NEW-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-new -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-new -t $NPG ; display-message pasted" \
+    "display-message 'tmux-review: $NPG is no longer an agent — not delivered'"
+is "the fixed refused branch's surviving buffer reports the same RC=1 the early guards use" \
+   "1" "$(rc_from_buffer rg-new)"
+if "$TMUX_REAL" -L "$RG" list-buffers 2>/dev/null | grep -q 'rg-new'; then
+    bad "the RC check also cleans up the buffer it found" "no rg-new buffer" "rg-new still present"
+else
+    ok "the RC check also cleans up the buffer it found"
+fi
+
+# A real delivery -- the buffer is consumed, so the same check reports RC=0.
+printf 'NEW-OK\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-newok -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-newok -t $APG ; display-message pasted" \
+    "display-message 'tmux-review: $APG is no longer an agent — not delivered'"
+is "a real delivery still reports RC=0" "0" "$(rc_from_buffer rg-newok)"
+
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
 
@@ -3566,6 +3636,138 @@ is "the queue lists exactly one row" "1" "$rowcount"
 
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
+fi
+
+echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
+# fleet_rows() used to run each pane's git status+numstat SERIALLY, one pane
+# after the next -- ~2 git calls/pane. On a cold filesystem (150ms/git,
+# measured) 100 panes blanked the popup for ~32s, on every prefix+r from a
+# non-agent pane. A fixed-latency git shim stands in for that cold filesystem
+# here: real git still runs behind it, so this measures the serial-vs-parallel
+# SHAPE, not a fabricated number. 50 panes x 2 calls x 100ms serial = ~10s;
+# verified against the pre-fix script directly (11.16s, unbounded). Bounded
+# parallel dispatch should land well under that.
+if need_tmux "tmux-review --fleet parallel git"; then :; else
+FP="cockpit-fp-$$"; SOCKS="$SOCKS $FP"
+FP_DIR=$(mktmpd)
+(
+  cd "$FP_DIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f
+  git add -A; git commit -q -m init
+  printf 'b\n' >> f   # dirty -- every pane below shares this one working tree
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FP" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FP" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+i=1
+while [ "$i" -le 50 ]; do
+    "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude bash' >/dev/null 2>&1
+    i=$((i + 1))
+done
+FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
+
+FP_SLOWGIT=$(mktmpd)
+FP_REALGIT=$(command -v git)
+cat > "$FP_SLOWGIT/git" <<SHIMEOF
+#!/bin/sh
+sleep 0.1
+exec "$FP_REALGIT" "\$@"
+SHIMEOF
+chmod +x "$FP_SLOWGIT/git"
+
+fp_t0=$(date +%s%N)
+timeout 15 env TMUX="$FP_SOCKPATH,0,0" PATH="$FP_SLOWGIT:$PATH" \
+    "$DIR/scripts/tmux-review" --fleet > "$STATE/fp-out" 2>&1
+fp_rc=$?
+fp_t1=$(date +%s%N)
+fp_ms=$(( (fp_t1 - fp_t0) / 1000000 ))
+
+if [ "$fp_rc" -ne 0 ]; then
+    bad "the fleet queue gathers 50 panes' git state" "exit 0" "exit $fp_rc"
+elif [ "$fp_ms" -lt 5000 ]; then
+    ok "the fleet queue gathers 50 panes' git state well under the old serial time ($fp_ms ms)"
+else
+    bad "the fleet queue gathers 50 panes' git state well under the old serial time" \
+        "< 5000 ms" "$fp_ms ms"
+fi
+fp_rows=$(grep -c . "$STATE/fp-out" || true)
+is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
+
+"$TMUX_REAL" -L "$FP" kill-server >/dev/null 2>&1
+rm -rf "$FP_DIR"
+fi
+
+echo "== tmux-review: the popup resolves the pane it was opened from, not the busiest client =="
+# Same hazard as tmux-branch's popup resolution (tmux-branch:34-53, tested
+# above): inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
+# `display-message -p` (no -t) falls back to whichever attached client was
+# most recently active -- reproduced here with two real attached clients,
+# cliB attaching after cliA so cliB is the busier one. Only cliA is an agent
+# pane, so main_entry's two branches (review_pane vs fleet_queue) are
+# observably different picker sessions -- a stub fzf on PATH records which
+# --prompt it was invoked with ("review> " only from review_pane, "fleet> "
+# only from fleet_queue) and exits 1 (a harmless no-match/cancel) rather than
+# actually opening anything, so this needs no real interactive picker.
+if need_tmux "review popup pane resolution"; then :; else
+RDA=$(mktmpd); RDB=$(mktmpd)
+(
+    cd "$RDA" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .
+    printf 'a\n' > f
+    git add -A; git commit -q -m init
+    printf 'b\n' >> f   # dirty -- so review_pane's loop reaches the fzf call
+) >/dev/null 2>&1
+RINNER="cockpit-review-inner-$$"; ROUTERA="cockpit-review-outera-$$"; ROUTERB="cockpit-review-outerb-$$"
+SOCKS="$SOCKS $RINNER $ROUTERA $ROUTERB"
+tmux -L "$RINNER" -f /dev/null new-session -d -s cliA -c "$RDA" 'exec -a claude bash' >/dev/null 2>&1
+tmux -L "$RINNER" new-session -d -s cliB -c "$RDB" 'exec bash' >/dev/null 2>&1
+tmux -L "$RINNER" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+tmux -L "$ROUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RINNER attach -t cliA" >/dev/null 2>&1
+sleep 1
+tmux -L "$ROUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RINNER attach -t cliB" >/dev/null 2>&1
+sleep 1
+rpaneA=$(tmux -L "$RINNER" list-panes -t cliA -F '#{pane_id}')
+RSOCKPATH=$(tmux -L "$RINNER" display-message -p '#{socket_path}')
+
+RFZFSTUB=$(mktmpd)
+RMARKER="$STATE/review-fzf-marker"
+: > "$RMARKER"
+cat > "$RFZFSTUB/fzf" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RMARKER"
+exit 1
+EOF
+chmod +x "$RFZFSTUB/fzf"
+
+# Without -p: unpinned resolution lands on cliB (the busier client, attached
+# second) -- a plain shell, so main_entry falls to fleet_queue. The hazard is
+# real.
+: > "$RMARKER"
+env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
+case "$(cat "$RMARKER")" in
+    *'fleet>'*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
+    *) bad "unpinned resolution really does land on the busier client (the hazard is real)" \
+         "fleet> in the fzf invocation" "$(cat "$RMARKER")" ;;
+esac
+# With -p pane_id: pinned to the pane the popup actually opened from -- the
+# agent pane, so main_entry opens review_pane's loop, not the fleet queue.
+: > "$RMARKER"
+env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1
+case "$(cat "$RMARKER")" in
+    *'review>'*) ok "-p pane_id resolves the pane the popup was opened from" ;;
+    *) bad "-p pane_id resolves the pane the popup was opened from" \
+         "review> in the fzf invocation" "$(cat "$RMARKER")" ;;
+esac
+tmux -L "$ROUTERA" kill-server >/dev/null 2>&1
+tmux -L "$ROUTERB" kill-server >/dev/null 2>&1
+tmux -L "$RINNER" kill-server >/dev/null 2>&1
+rm -rf "$RDA" "$RDB" "$RFZFSTUB"
 fi
 
 echo "== prefix r reviews, prefix R reloads; off unbinds each =="
