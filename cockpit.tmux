@@ -155,17 +155,22 @@ tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch b
 #                      WezTerm, foot), where it is the lighter gesture. Binding
 #                      both costs nothing: whichever one your terminal delivers
 #                      is the one that fires.
-# The binding goes through a generated config file rather than bind-key argv.
-# It has to wrap the action in tmux's mouse guard, and the guard plus a
-# shell-quoted path is three levels of nesting -- tmux single quotes inside tmux
-# double quotes inside a shell string, with the path already carrying quotes of
-# its own. A config file supports {} blocks and needs none of that.
+# NO mouse-mode guard on these two, and that is deliberate -- it was tried and
+# it broke the feature where it matters most. Claude Code (and most agent TUIs)
+# keep mouse reporting on, so a guard that yields whenever the application
+# wants the mouse forwarded the gesture into the agent and the picker never
+# fired in exactly the panes this plugin exists for. Verified live:
+# mouse_any_flag=1 on every claude pane.
 #
-# The guard is the one every tmux default that targets a pane already uses:
-# when the application has mouse reporting on (vim, less, htop) or the pane is
-# in copy-mode, forward the event with send-keys -M instead of eating it.
-# Without it, alt/ctrl-clicking inside vim silently did nothing and the editor
-# never saw the click.
+# The division that holds up instead: every PLAIN gesture -- clicks, wheel,
+# drag, double-click -- is untouched and reaches the application as before; we
+# never bind those. The two CHORDED gestures below are someone deliberately
+# invoking the picker, and the picker wins. (The cost is alt-click inside vim,
+# which plain M-MouseDown1Pane already cost before any guard existed.)
+#
+# Copy-mode is also deliberately not excluded: #{mouse_line} reads the
+# scrolled-back content there (verified: scrolled 15 up, got the line 15 back),
+# so you can scroll into old output and pick a path off it.
 GUARD='#{||:#{pane_in_mode},#{mouse_any_flag}}'
 conf=$(mktemp) || exit 1
 {
@@ -180,7 +185,7 @@ conf=$(mktemp) || exit 1
     # @cockpit_keep_swap_pane to keep tmux's default and lose the picker.
     if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
         printf 'bind-key -n C-MouseDown1Pane select-pane -t=\n'
-        printf 'bind-key -n C-DoubleClick1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
+        printf 'bind-key -n C-DoubleClick1Pane {\n'
         printf '    select-pane -t=\n'
         printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
         printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
@@ -188,7 +193,7 @@ conf=$(mktemp) || exit 1
     fi
     # Kept for terminals that do forward Alt+click (xterm, kitty, WezTerm,
     # foot). Ghostty strips it, which is why Ctrl+double-click exists above.
-    printf 'bind-key -n M-MouseDown1Pane if -F "%s" { send-keys -M } {\n' "$GUARD"
+    printf 'bind-key -n M-MouseDown1Pane {\n'
     printf '    select-pane -t=\n'
     printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
     printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"

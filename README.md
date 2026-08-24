@@ -238,6 +238,14 @@ also pairs with the branch picker, which is `Ctrl`+click on the status bar.
 Binding both costs nothing — whichever one your terminal delivers is the one
 that fires.
 
+The picker fires even when the application in the pane has mouse reporting on —
+which Claude Code and most agent TUIs always do. A guard that yielded to the
+app was tried, and it made the gesture dead in every agent pane: the primary
+target. Plain clicks, wheel and drag still reach the application untouched;
+only the two chorded gestures belong to the picker. It also works in copy-mode,
+where `#{mouse_line}` reads the scrolled-back content — scroll up and click a
+path in old output.
+
 If neither gesture does anything, check what your terminal actually sends:
 
 ```sh
