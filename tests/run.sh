@@ -934,6 +934,43 @@ tmux -L "$OUTER2" kill-server >/dev/null 2>&1
 tmux -L "$INNER2" kill-server >/dev/null 2>&1
 fi
 
+echo "== ...and neither can a NEWLINE or TAB, which #{q:} alone does not escape =="
+# #{q:} (man tmux: "q: will escape sh(1) special characters") looked like the
+# whole fix, but it backslash-escapes quotes/$()/backticks and passes NEWLINE
+# and TAB straight through -- verified: #{q:@x} on "a\nb\tc" comes back
+# "a\nb\tc" (0a and 09 both raw, no backslash). A newline is a command
+# separator to sh and a tab is a word separator, so a cwd built on either
+# still ran arbitrary commands, with arguments, through #{q:pane_current_path}
+# alone. The real fix stops passing pane_current_path/_command through the
+# #() job's command string at all -- only pane_pid and pane_id go in there now,
+# both closed forms that can never carry a shell metacharacter.
+if need_tmux "RCE via newline/tab in a directory name"; then :; else
+SP2=$(mktmpd)
+MAL2="$SP2/x
+touch	$SP2/marker
+y"
+mkdir -p "$MAL2"
+OUTER3="cockpit-rce-outer3-$$"; INNER3="cockpit-rce-inner3-$$"
+SOCKS="$SOCKS $OUTER3 $INNER3"
+tmux -L "$INNER3" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL2" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER3" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER3" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER3" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER3 attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER3" refresh-client >/dev/null 2>&1
+sleep 1
+if [ -e "$SP2/marker" ]; then
+    bad "a newline/tab cwd's command never runs" "no marker file" "marker file created"
+else
+    ok "a newline/tab cwd's command never runs"
+fi
+tmux -L "$OUTER3" kill-server >/dev/null 2>&1
+tmux -L "$INNER3" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-where: detached HEAD and odd repos =="
 DH=$(mktmpd)
 (
