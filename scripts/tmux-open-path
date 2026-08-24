@@ -351,7 +351,13 @@ try_token() {
 # pane is in, so the invented files existed and got opened. -f keeps the tokens
 # literal; nothing here wants a glob.
 set -f
+ntok=0
 for raw in $line; do
+    ntok=$((ntok + 1))
+    # 0.31ms/token, linear: a real clicked line has a handful of tokens, but a
+    # 112KB line (4000 path-shaped tokens) measured 1.59s in this loop alone.
+    # Capped like the preview guard above -- degrade, don't stall the click.
+    [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
     try_token "$tok" && continue

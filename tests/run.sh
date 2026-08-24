@@ -580,6 +580,22 @@ is "a glob class expands to nothing"  "" "$(gb 'see [ro]* please')"
 is "a real file beside a glob opens"  "$GB/real.txt::" "$(gb 'rm * then real.txt')"
 rm -rf "$GB"
 
+echo "== tmux-open-path: a pathologically long clicked line is bounded, not just slow =="
+# The per-token loop is linear (0.31ms/token measured), so a normal clicked
+# line -- a handful of tokens -- costs nothing. A 112KB line of 4000
+# path-shaped tokens (real output: a wrapped stack trace, an agent dumping a
+# wordlist) measured 1.59s in this loop alone, all before the picker even
+# opens. Capped at 500 tokens, same idea as the preview's render-window guard.
+BIGLINE=$(awk 'BEGIN{s="";for(i=1;i<=4000;i++) s = s "nope" i "xxxxxxxxxxxxxxxx ";print s}')
+timeout 0.6 "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE" >/dev/null 2>&1
+biglinerc=$?
+if [ "$biglinerc" -eq 124 ]; then
+    bad "a 4000-token clicked line is bounded, not just slow" \
+        "output within 0.6s" "timed out (the uncapped per-token loop)"
+else
+    ok "a 4000-token clicked line is bounded, not just slow"
+fi
+
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
