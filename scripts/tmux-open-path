@@ -257,6 +257,59 @@ consider() {  # consider <path> <line> <col> — record it if it exists
     return 0
 }
 
+# Terminals wrap paths in punctuation: "src/a.ts", (src/a.ts), 'src/a.ts',
+# and prose ends them with , ; or a full stop. Strip both ends, not the
+# middle -- a path may legitimately contain almost anything else.
+# Leading strip is an explicit set, NOT [:punct:]: that class contains / ~ .
+# and _, so it ate the first character of every absolute and ~ path.
+#
+# The answer lands in $TOK rather than on stdout: a command substitution is a
+# fork, and this runs once per token on the line, twice for a wrapped one.
+strip_ends() {
+    TOK=$1
+    while [ -n "$TOK" ]; do
+        case "$TOK" in
+            [\(\[\{\'\"\`\<]*) TOK=${TOK#?} ;;
+            *) break ;;
+        esac
+    done
+    while [ -n "$TOK" ]; do
+        # Stop before eating the ")" of "file(12,3)" -- tsc and MSVC print that
+        # shape, and losing the bracket turns the location into unparseable text.
+        [[ $TOK =~ \([0-9]+,[0-9]+\)$ ]] && break
+        # Same for the ")" of "Write(src/a.ts)": that bracket is what marks the
+        # token as a wrapper worth unwrapping below. Strip it and the token
+        # becomes "Write(src/a.ts", which is nothing at all.
+        [[ $TOK =~ ^[A-Za-z_][A-Za-z0-9_-]*\(.+\)$ ]] && break
+        case "$TOK" in
+            *[\)\]\}\'\"\`,\;:.]) TOK=${TOK%?} ;;
+            *) break ;;
+        esac
+    done
+}
+
+# One token, in the shapes tools print paths in. 0 when it recorded something.
+try_token() {
+    local tok=$1
+    # file(12,3) — the shape tsc and MSVC print.
+    if [[ $tok =~ ^(.+)\(([0-9]+),([0-9]+)\)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && return 0
+    fi
+    # file:12:3 and file:12 — grep, eslint, stack traces, every compiler.
+    if [[ $tok =~ ^(.+):([0-9]+):([0-9]+)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && return 0
+    fi
+    if [[ $tok =~ ^(.+):([0-9]+)$ ]]; then
+        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "" && return 0
+    fi
+    consider "$tok" "" "" && return 0
+    # git diff headers name the same file twice, as a/path and b/path.
+    case "$tok" in
+        a/*|b/*) consider "${tok#?/}" "" "" && return 0 ;;
+    esac
+    return 1
+}
+
 # Splitting $line uses the shell's own word rules, and those include PATHNAME
 # EXPANSION. A line that merely mentioned a wildcard -- "rm *", a compiler note
 # containing [ab]* -- was expanded against this process's cwd, inventing tokens
@@ -265,46 +318,30 @@ consider() {  # consider <path> <line> <col> — record it if it exists
 # pane is in, so the invented files existed and got opened. -f keeps the tokens
 # literal; nothing here wants a glob.
 set -f
-for tok in $line; do
-    # Terminals wrap paths in punctuation: "src/a.ts", (src/a.ts), 'src/a.ts',
-    # and prose ends them with , ; or a full stop. Strip both ends, not the
-    # middle -- a path may legitimately contain almost anything else.
-    # Leading strip is an explicit set, NOT [:punct:]: that class contains / ~ .
-    # and _, so it ate the first character of every absolute and ~ path.
-    while [ -n "$tok" ]; do
-        case "$tok" in
-            [\(\[\{\'\"\`\<]*) tok=${tok#?} ;;
-            *) break ;;
-        esac
-    done
-    while [ -n "$tok" ]; do
-        # Stop before eating the ")" of "file(12,3)" -- tsc and MSVC print that
-        # shape, and losing the bracket turns the location into unparseable text.
-        [[ $tok =~ \([0-9]+,[0-9]+\)$ ]] && break
-        case "$tok" in
-            *[\)\]\}\'\"\`,\;:.]) tok=${tok%?} ;;
-            *) break ;;
-        esac
-    done
+for raw in $line; do
+    strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
-
-    ln="" col=""
-    # file(12,3) — the shape tsc and MSVC print.
-    if [[ $tok =~ ^(.+)\(([0-9]+),([0-9]+)\)$ ]]; then
-        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && continue
+    try_token "$tok" && continue
+    # Claude Code prints its tool calls as Write(path), Read(path:12),
+    # Edit(path) -- the path is real, the Name( ) around it is not, and the
+    # whole token resolves to nothing. Unwrap and try the inside, itself
+    # stripped so a nested "(Write(a.ts))" still lands.
+    #
+    # The tsc shape file(12,3) is NOT this and must not be unwrapped: its
+    # inner is a line/column pair, try_token already resolved it above, and
+    # a bare "12,3" would then be looked up as a filename.
+    #
+    # The two tests are separate statements on purpose: written as one
+    # "[[ a ]] && [[ ${BASH_REMATCH[1]} ]]" chain, bash clears BASH_REMATCH
+    # before the second operand expands, and `set -u` kills the script with
+    # "BASH_REMATCH[1]: unbound variable" on the first Write(...) line.
+    if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
+        inner=${BASH_REMATCH[1]}
+        if ! [[ $inner =~ ^[0-9]+,[0-9]+$ ]]; then
+            strip_ends "$inner"
+            [ -n "$TOK" ] && try_token "$TOK" && continue
+        fi
     fi
-    # file:12:3 and file:12 — grep, eslint, stack traces, every compiler.
-    if [[ $tok =~ ^(.+):([0-9]+):([0-9]+)$ ]]; then
-        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" && continue
-    fi
-    if [[ $tok =~ ^(.+):([0-9]+)$ ]]; then
-        consider "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "" && continue
-    fi
-    consider "$tok" "" "" && continue
-    # git diff headers name the same file twice, as a/path and b/path.
-    case "$tok" in
-        a/*|b/*) consider "${tok#?/}" "" "" && continue ;;
-    esac
 done
 set +f
 

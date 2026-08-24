@@ -201,8 +201,11 @@ line yields nothing, the status line says so and no popup appears.
 
 It reads `file:12:3`, `file:12`, `file(12,3)` (tsc), `a/file` (git diff),
 `~/file` and absolute paths, and strips the quotes, brackets and trailing commas
-terminals wrap paths in. Existence on disk is the filter, so a word that merely
-looks like a path is dropped.
+terminals wrap paths in. It also unwraps the `Name(path)` shape agents print
+their tool calls in — `Write(docs/spec.md)`, `Read(src/app.ts:31)` — where the
+path is real but the token around it is not; `file(12,3)` stays a *location*,
+not a wrapper. Existence on disk is the filter, so a word that merely looks
+like a path is dropped.
 
 **Tab marks several** — a compiler error names a header and its source, a git
 diff names two files: mark both, `↵` opens them all. Tab means the same thing in
@@ -304,6 +307,49 @@ target. Plain clicks, wheel and drag still reach the application untouched;
 only the two chorded gestures belong to the picker. It also works in copy-mode,
 where `#{mouse_line}` reads the scrolled-back content — scroll up and click a
 path in old output.
+
+### When the terminal opens the file itself
+
+Claude Code wraps every path it prints — the one inside `Write(...)`,
+`Read(...)`, `Edit(...)` — in an **OSC 8 hyperlink** pointing at
+`file:///abs/path`. Ghostty (and any terminal that follows those) treats that
+as a link of its own, and a modified click on it is handed to `xdg-open`: a
+graphical editor or file dialog opens and the picker never runs.
+
+Read out of Ghostty 1.3.1's `Surface.zig`, this is not a race we can win from
+tmux — the link is handled *first* and the event is swallowed:
+
+```zig
+// Handle link clicking. We want to do this before we do mouse
+// reporting or any other mouse handling because a successfully
+// clicked link will swallow the event.
+```
+
+It fires on the **release of the first click**, with no click-count test, so it
+takes the opening half of a `Ctrl`+double-click too — tmux never accumulates
+the second and `C-DoubleClick1Pane` cannot fire at all.
+
+What decides whether Ghostty claims the click is whether it is tracking links
+at that moment, and with `set -g mouse on` tmux owns the mouse, so it only
+tracks them while **shift** is also held. In practice:
+
+| gesture, over an agent's `Write(path)` line | what happens |
+|---|---|
+| `Ctrl`+double-click | tmux gets it — the picker opens |
+| `Ctrl`+`Shift`+click | Ghostty gets it — `xdg-open`, a GUI window |
+
+So: no shift. If you want Ghostty to stop claiming those clicks entirely, one
+line in `~/.config/ghostty/config` does it —
+
+```
+mouse-shift-capture = always
+```
+
+— which sends shift-clicks to the application instead, at the cost of losing
+shift-click-to-extend-selection while a mouse-tracking program is running.
+`link-url = false` is *not* the option: it turns off Ghostty's regex URL
+matcher, and OSC 8 hyperlinks are checked before that matcher and are not
+affected by it. As of 1.3.1 nothing disables OSC 8 clicking on its own.
 
 If neither gesture does anything, check what your terminal actually sends:
 

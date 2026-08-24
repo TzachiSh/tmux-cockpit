@@ -430,6 +430,9 @@ echo "== tmux-open-path: which token on the line is a file =="
 # touching tmux and without opening anything.
 OP=$(mktmpd); mkdir -p "$OP/src" "$OP/bin"
 : > "$OP/src/foo-bar.ts"; : > "$OP/README.md"; : > "$OP/bin/tm"
+# A bare-word name at the top level: only such a token can even reach the
+# call-wrapper rule, so "tm(12,3)" is what proves tsc's shape is not one.
+: > "$OP/tm"
 op() { "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
 
 is "bare relative path"      "$OP/README.md::"        "$(op 'see README.md ok')"
@@ -453,6 +456,24 @@ is "several files, in order" "$OP/README.md::
 $OP/bin/tm:5:"                                        "$(op 'changed README.md and bin/tm:5')"
 # Existence is the filter, so a plausible-looking miss is dropped, not opened.
 is "missing file is dropped" "$OP/src/foo-bar.ts::"   "$(op 'src/nope.ts and src/foo-bar.ts')"
+
+# Claude Code prints its tool calls as Write(path) / Read(path) / Edit(path).
+# The path inside is real; the token as a whole resolves to nothing, so the
+# line read as "no file on that line" and no picker ever opened -- on exactly
+# the output this plugin exists to click.
+is "Write(path)"             "$OP/README.md::"        "$(op 'Write(README.md)')"
+is "Read(path:12)"           "$OP/src/foo-bar.ts:12:" "$(op 'Read(src/foo-bar.ts:12)')"
+is "Edit(path:12:5)"         "$OP/src/foo-bar.ts:12:5" "$(op 'Edit(src/foo-bar.ts:12:5)')"
+# The bullet Claude Code prefixes the line with is its own token; the wrapper
+# still has to be unwrapped behind it.
+is "bullet then Write(path)" "$OP/README.md::"        "$(op '⏺ Write(README.md) with 2 additions')"
+# Existence stays the filter inside the wrapper too.
+is "Write(missing) is dropped" ""                     "$(op 'Write(docs/nope.md)')"
+# A wrapper is unwrapped, not stripped: file(12,3) is a LOCATION, and reading
+# it as a wrapper would look up "12,3" as a filename and lose the line number.
+is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1005')"
+# Wrapped and bracketed at once -- the inner token gets the same strip.
+is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
 echo "== tmux-branch: local and remote branches =="
