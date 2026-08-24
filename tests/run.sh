@@ -810,6 +810,57 @@ case "$out" in
 esac
 rm -rf "$CB" "$NOCOL"
 
+echo "== tmux-branch: the popup resolves the pane it was opened from, not the busiest client =="
+# Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
+# `display-message -p` (no -t) cannot resolve "the current client" from
+# there and falls back to whichever attached client was most recently
+# active -- a DIFFERENT session than the one the popup was opened from, if
+# that session's client is busier. Reproduced with two real attached clients
+# on one server: cliB attaches after cliA, so cliB is the more recent one.
+if need_tmux "branch popup pane resolution"; then :; else
+DA=$(mktmpd); DB=$(mktmpd)
+mkrepo() {
+    cd "$1" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .; : > a; git add a
+    c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+    git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+}
+(mkrepo "$DA") >/dev/null 2>&1
+(mkrepo "$DB") >/dev/null 2>&1
+INNER="cockpit-branch-inner-$$"; OUTERA="cockpit-branch-outera-$$"; OUTERB="cockpit-branch-outerb-$$"
+SOCKS="$SOCKS $INNER $OUTERA $OUTERB"
+tmux -L "$INNER" -f /dev/null new-session -d -s cliA -c "$DA" >/dev/null 2>&1
+tmux -L "$INNER" new-session -d -s cliB -c "$DB" >/dev/null 2>&1
+tmux -L "$OUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t cliA" >/dev/null 2>&1
+sleep 1
+tmux -L "$OUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t cliB" >/dev/null 2>&1
+sleep 1
+paneA=$(tmux -L "$INNER" list-panes -t cliA -F '#{pane_id}')
+SOCKPATH=$(tmux -L "$INNER" display-message -p '#{socket_path}')
+NOCOLD=$(mktmpd)
+for c in git bash tmux; do ln -s "$(command -v $c)" "$NOCOLD/$c"; done
+# Without -p: the hazard is real -- it resolves into cliB, not the popup's
+# actual origin (cliA), because cliB is the busier client.
+bugout=$(env PATH="$NOCOLD" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" </dev/null 2>&1)
+case "$bugout" in
+    *"$DB"*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
+    *) bad "unpinned resolution really does land on the busier client (the hazard is real)" "$DB" "$bugout" ;;
+esac
+# With -p pane_id: pinned to the pane the popup actually opened from.
+fixout=$(env PATH="$NOCOLD" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" -p "$paneA" </dev/null 2>&1)
+case "$fixout" in
+    *"$DA"*) ok "-p pane_id resolves the pane the popup was opened from" ;;
+    *) bad "-p pane_id resolves the pane the popup was opened from" "$DA" "$fixout" ;;
+esac
+tmux -L "$OUTERA" kill-server >/dev/null 2>&1
+tmux -L "$OUTERB" kill-server >/dev/null 2>&1
+tmux -L "$INNER" kill-server >/dev/null 2>&1
+rm -rf "$DA" "$DB" "$NOCOLD"
+fi
+
 echo "== tm: the kill picker and the name cleaner =="
 # Without fzf the picker is a `select`, and Ctrl-D leaves the choice variable
 # unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
