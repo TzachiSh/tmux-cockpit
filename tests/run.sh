@@ -2038,8 +2038,12 @@ rundeliver() {
     sleep 0.6
 }
 shq_test() { printf '%q' "$1"; }
-apcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -t "$AP"; }
-npcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -t "$NP"; }
+# -J joins soft-wrapped terminal lines back into one logical line -- without
+# it, the long spillover-file path in the pointer sentence below wraps mid-
+# path at the pane's column width and an exact-substring match on the whole
+# sentence breaks on nothing but that cosmetic wrap.
+apcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$AP"; }
+npcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$NP"; }
 
 rundeliver "not-a-pane-id" "$RDSTORE"
 case "$(apcap)" in
@@ -2086,7 +2090,60 @@ promptcount=$(printf '%s\n' "$apafter" | grep -c '\$ *$' || true)
 is "the paste never executes (still one prompt, no fresh one after Enter)" \
    "0" "$promptcount"
 
+echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
+# A second agent pane and a second control pane -- driving both deliveries
+# from their OWN panes, fired back-to-back with no sleep between, is the
+# shape that raced under the old fixed `-b cockpit-review` buffer name (tmux
+# buffers are server-global): B's load-buffer could overwrite A's payload
+# before A's paste-buffer -d ran.
+AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claude bash')
+NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
+sleep 0.3
+
+ASTORE="$STATE/deliver-race-a-$$"
+BSTORE="$STATE/deliver-race-b-$$"
+printf '## a.go:1 (+)\n> a\nALPHA-MARKER-CONTENT\n\n' > "$ASTORE"
+printf '## b.go:2 (+)\n> b\nBETA-MARKER-CONTENT\n\n' > "$BSTORE"
+
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
+    "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$AP") $(shq_test "$ASTORE")" Enter
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP2" \
+    "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$AP2") $(shq_test "$BSTORE")" Enter
+sleep 0.8
+
+raceA=$("$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$AP")
+raceB=$("$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$AP2")
+
+case "$raceA" in
+    *"ALPHA-MARKER-CONTENT"*) ok "pane A gets its own review" ;;
+    *) bad "pane A gets its own review" "ALPHA-MARKER-CONTENT" "$raceA" ;;
+esac
+case "$raceA" in
+    *"BETA-MARKER-CONTENT"*) bad "pane A's review is not pane B's" \
+         "no BETA-MARKER-CONTENT in pane A" "$raceA" ;;
+    *) ok "pane A's review is not pane B's" ;;
+esac
+case "$raceB" in
+    *"BETA-MARKER-CONTENT"*) ok "pane B gets its own review" ;;
+    *) bad "pane B gets its own review" "BETA-MARKER-CONTENT" "$raceB" ;;
+esac
+case "$raceB" in
+    *"ALPHA-MARKER-CONTENT"*) bad "pane B's review is not pane A's" \
+         "no ALPHA-MARKER-CONTENT in pane B" "$raceB" ;;
+    *) ok "pane B's review is not pane A's" ;;
+esac
+
 echo "== tmux-review --deliver: an oversized review goes to a file, not the pane =="
+RUNDIR=${XDG_RUNTIME_DIR:-/tmp}
+OLDPATH="$RUNDIR/tmux-cockpit-review-${AP#%}.md"
+CANARY="$STATE/deliver-canary-$$"
+printf 'untouched canary\n' > "$CANARY"
+# A symlink planted at the OLD, predictable filename this delivery used to
+# write -- if delivery still wrote through a guessable name, this symlink
+# would let whoever planted it capture (or corrupt) whatever it points at.
+# mktemp's own randomized suffix should make this exact name irrelevant.
+ln -sf "$CANARY" "$OLDPATH"
+
 BIGSTORE="$STATE/deliver-big-$$"
 : > "$BIGSTORE"
 for i in $(seq 1 40); do
@@ -2100,13 +2157,34 @@ else
     ok "fixture actually exceeds the 2048-byte threshold ($bigbytes bytes)"
 fi
 rundeliver "$AP" "$BIGSTORE"
-RUNDIR=${XDG_RUNTIME_DIR:-/tmp}
-BIGFILE="$RUNDIR/tmux-cockpit-review-${AP#%}.md"
-if [ -f "$BIGFILE" ]; then
-    ok "the spillover file exists at the documented path"
+
+is "the planted symlink at the old predictable name is never followed" \
+   "untouched canary" "$(cat "$CANARY")"
+if [ -L "$OLDPATH" ]; then
+    ok "the old predictable path is still just the planted symlink"
 else
-    bad "the spillover file exists at the documented path" "$BIGFILE" "no such file"
+    bad "the old predictable path is still just the planted symlink" \
+        "a symlink, unchanged" "no longer a symlink"
 fi
+
+BIGFILE=""
+for f in "$RUNDIR"/tmux-cockpit-review-"${AP#%}"-*.md; do
+    [ -e "$f" ] && BIGFILE=$f
+done
+if [ -n "$BIGFILE" ]; then
+    ok "the spillover file exists, named with mktemp's own random suffix"
+else
+    bad "the spillover file exists, named with mktemp's own random suffix" \
+        "$RUNDIR/tmux-cockpit-review-${AP#%}-XXXXXX.md" "no such file"
+fi
+if [ -f "$BIGFILE" ] && [ ! -L "$BIGFILE" ]; then
+    ok "the spillover file is a real file, not a symlink"
+else
+    bad "the spillover file is a real file, not a symlink" \
+        "a regular file" "$([ -L "$BIGFILE" ] && echo symlink || echo missing)"
+fi
+bigowner=$(stat -c '%U' "$BIGFILE" 2>/dev/null || stat -f '%Su' "$BIGFILE" 2>/dev/null)
+is "the spillover file is owned by us" "$(id -un)" "$bigowner"
 bigperm=$(stat -c '%a' "$BIGFILE" 2>/dev/null || stat -f '%Lp' "$BIGFILE" 2>/dev/null)
 is "the spillover file is 0600" "600" "$bigperm"
 is "the spillover file holds the full composed review" \
@@ -2114,8 +2192,8 @@ is "the spillover file holds the full composed review" \
 bigpaneafter=$(apcap)
 case "$bigpaneafter" in
     *"Read and address every comment in $BIGFILE"*) \
-        ok "only the short pointer is pasted into the pane" ;;
-    *) bad "only the short pointer is pasted into the pane" \
+        ok "only the short pointer is pasted into the pane, naming the real path" ;;
+    *) bad "only the short pointer is pasted into the pane, naming the real path" \
          "Read and address every comment in $BIGFILE" "$bigpaneafter" ;;
 esac
 case "$bigpaneafter" in
@@ -2124,7 +2202,7 @@ case "$bigpaneafter" in
             "no comment body text in the pane" "$bigpaneafter" ;;
     *) ok "the full review text never reaches the pane itself" ;;
 esac
-rm -f "$BIGFILE"
+rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi

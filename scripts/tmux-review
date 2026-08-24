@@ -364,21 +364,53 @@ deliver() {
     bytes=$(printf '%s' "$payload" | wc -c)
 
     # Over 2048 bytes: the review becomes a file the agent reads, not a wall
-    # of text typed into its prompt. The agent deletes nothing -- the file
-    # outlives the pane on purpose; the OS tmpdir is the only GC.
+    # of text typed into its prompt. mktemp, not a predictable
+    # tmux-cockpit-review-<pane>.md name -- a fixed name under a shared
+    # tmpdir (the COMMON case on macOS, which has no XDG_RUNTIME_DIR) is a
+    # symlink-disclosure vector, and mktemp's own randomized suffix makes the
+    # name unguessable rather than merely unlinked-and-recreated. `umask 077`
+    # in the same subshell that runs mktemp means the file is BORN 0600 --
+    # no create-then-chmod window for a racing reader. The agent deletes
+    # nothing -- the file outlives the pane on purpose; the OS tmpdir is the
+    # only GC.
     if [ "$bytes" -gt 2048 ]; then
         local runtime file
         runtime=${XDG_RUNTIME_DIR:-/tmp}
-        file="$runtime/tmux-cockpit-review-${pane#%}.md"
+        file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX.md") || {
+            tmux display-message \
+                "tmux-review: could not create the review file, refusing to deliver" \
+                2>/dev/null
+            return 1
+        }
         printf '%s' "$payload" > "$file"
-        chmod 0600 "$file"
         payload="Read and address every comment in $file — review of your uncommitted changes; ?? comments are questions."
     fi
 
-    printf '%s' "$payload" | tmux load-buffer -b cockpit-review -
-    tmux paste-buffer -p -r -d -b cockpit-review -t "$pane"
-    tmux display-message "review pasted into $pane — press Enter there to send" \
-        2>/dev/null
+    # A per-invocation buffer name: tmux buffers are SERVER-GLOBAL, so a
+    # fixed name races under concurrent deliveries -- a second delivery's
+    # load-buffer can overwrite the first's payload before the first's
+    # paste-buffer -d has run, landing the wrong review in the wrong pane (or
+    # pasting nothing once the buffer was already deleted out from under
+    # it). pane + $$ gives every invocation its own buffer.
+    local bufname
+    bufname="cockpit-review-${pane#%}-$$"
+    if ! printf '%s' "$payload" | tmux load-buffer -b "$bufname" -; then
+        tmux display-message \
+            "tmux-review: could not stage the review, refusing to deliver" \
+            2>/dev/null
+        return 1
+    fi
+    # paste-buffer's own exit status decides the message -- printing success
+    # unconditionally meant a failed paste (dead pane, bad target) still told
+    # the reviewer it landed.
+    if tmux paste-buffer -p -r -d -b "$bufname" -t "$pane"; then
+        tmux display-message "review pasted into $pane — press Enter there to send" \
+            2>/dev/null
+    else
+        tmux delete-buffer -b "$bufname" 2>/dev/null
+        tmux display-message "tmux-review: the paste into $pane failed" 2>/dev/null
+        return 1
+    fi
 }
 
 case "${1:-}" in
