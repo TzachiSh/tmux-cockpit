@@ -1810,5 +1810,43 @@ else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --lines: the diff rows a review anchors to =="
+RV1=$(mktmpd)
+(
+  cd "$RV1" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p tests
+  printf 'a\nb\nc\n' > src.go
+  printf 'x\ny\nz\n' > tests/foo_test.sh
+  printf 'gone1\ngone2\n' > deleteme.txt
+  git add -A
+  git commit -q -m init
+  printf 'a\nCHANGED\nc\n' > src.go
+  printf 'x\nCHANGED\nz\n' > tests/foo_test.sh
+  rm deleteme.txt
+) >/dev/null 2>&1
+
+rv1out=$("$DIR/scripts/tmux-review" --lines "$RV1")
+is "test file's rows come first" "tests/foo_test.sh" "$(printf '%s\n' "$rv1out" | head -1 | cut -f1)"
+
+rv1bad=""
+while IFS=$'\t' read -r p l f _d; do
+    [ -n "$p" ] || continue
+    case "$l" in
+        -[0-9]*|[0-9]*) ;;
+        *) rv1bad="bad line field for $p: [$l]" ;;
+    esac
+    [ -n "$f" ] || rv1bad="empty fragment for $p:$l"
+done <<<"$rv1out"
+is "every row carries path, numeric line, non-empty fragment" "" "$rv1bad"
+
+case "$rv1out" in
+    *"deleteme.txt"$'\t'-[0-9]*$'\t'*) ok "a deletion row's line is the OLD number, prefixed -" ;;
+    *) bad "a deletion row's line is the OLD number, prefixed -" \
+         "a deleteme.txt row with a -N line field" "$rv1out" ;;
+esac
+rm -rf "$RV1"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

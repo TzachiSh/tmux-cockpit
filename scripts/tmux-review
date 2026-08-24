@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# tmux-review — review an agent's uncommitted diff, one comment at a time, and
+# hand the finished review back to the agent's pane.
+#   tmux-review --lines <dir>          the diff rows a review anchors to
+#   tmux-review --loop <dir> <store>   the interactive picker (needs fzf);
+#                                      ctrl-s exits 20 (deliver), esc/^C exit 0
+#                                      (discard, store deleted)
+#   tmux-review --compose <store>      the composed review, ready to deliver
+#
+# --lines and --compose touch no tmux. Entry-point resolution (no dir given:
+# review this pane, or pick from the fleet) and delivery into the agent's pane
+# are follow-up work; this script is the review itself, not yet how you reach
+# for it.
+set -uo pipefail
+
+# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
+# silent and wrong rather than loud: `declare -A` errors, then the same
+# assignment quietly creates an INDEXED array with an arithmetic subscript.
+if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
+    printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
+           "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
+    exit 1
+fi
+
+usage() {
+    cat >&2 <<'USAGE'
+tmux-review — review an agent's uncommitted diff, one comment at a time.
+  tmux-review --lines <dir>          the diff rows a review anchors to
+  tmux-review --loop <dir> <store>   the interactive picker (needs fzf)
+  tmux-review --compose <store>      the composed review, ready to deliver
+In the picker: alt-↵ comment the row under the cursor   ^S deliver   esc discard
+(there is no accept-all: plain enter does nothing)
+USAGE
+}
+
+# --- --lines -------------------------------------------------------------
+# Every +/- hunk line of the working tree's diff, one tab-separated row per
+# line: path, line, fragment, display. `line` anchors a `+` (or context-side)
+# row to the NEW file; a deletion has no line in the new file, so its row
+# carries the OLD line number instead, prefixed "-" -- the same (+)/(-) split
+# the compose grammar uses for its headers.
+#
+# Unstaged first, staged as the fallback: the same rule --preview-diff already
+# uses, so a fully-staged change still gets reviewed instead of showing
+# "nothing here" while the index holds every line.
+lines_mode() {
+    local dir=$1
+    [ -n "$dir" ] || return 0
+
+    local diff
+    diff=$(git -C "$dir" diff --no-color --no-ext-diff 2>/dev/null)
+    [ -n "$diff" ] || diff=$(git -C "$dir" diff --no-color --no-ext-diff --cached 2>/dev/null)
+    [ -n "$diff" ] || return 0
+
+    local numstat
+    numstat=$(git -C "$dir" diff --no-color --no-ext-diff --numstat 2>/dev/null)
+    [ -n "$numstat" ] || numstat=$(git -C "$dir" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+
+    # One pass: track the file a hunk belongs to (from the +++/--- header
+    # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
+    # come from the "--- a/" side instead), the hunk's starting old/new line
+    # from "@@ -o,c +o,c @@" split on spaces (not a capture-group regex --
+    # portable to non-GNU awk), and a running counter per side. Context lines
+    # advance both counters and emit nothing; a +/- line emits a row and
+    # advances its own side.
+    local raw
+    raw=$(printf '%s\n' "$diff" | awk '
+        /^--- / { if ($0 ~ /^--- a\//) oldfile = substr($0, 7); next }
+        /^\+\+\+ / {
+            if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
+            oldl = 0; newl = 0; next
+        }
+        /^@@/ {
+            n = split($0, parts, " ")
+            for (i = 1; i <= n; i++) {
+                if (substr(parts[i], 1, 1) == "-") oldtok = parts[i]
+                else if (substr(parts[i], 1, 1) == "+") newtok = parts[i]
+            }
+            sub(/^-/, "", oldtok); split(oldtok, oa, ","); oldl = oa[1] + 0
+            sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
+            next
+        }
+        /^\+/ {
+            if (file == "") next
+            printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
+            newl++; next
+        }
+        /^-/ {
+            if (file == "") next
+            printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
+            oldl++; next
+        }
+        /^ / { oldl++; newl++; next }
+    ')
+    [ -n "$raw" ] || return 0
+
+    # Churn per file (additions + deletions), the risk proxy that orders
+    # everything but the test-file partition. "-" for a binary file's counts
+    # under --numstat; not a number, so it does not add any weight.
+    local -A churn=()
+    local add del fpath
+    while IFS=$'\t' read -r add del fpath; do
+        [ -n "$fpath" ] || continue
+        case "$add" in *[!0-9]*) add=0 ;; esac
+        case "$del" in *[!0-9]*) del=0 ;; esac
+        churn["$fpath"]=$(( add + del ))
+    done <<<"$numstat"
+
+    # tests/*, *_test.*, *.test.* are all substrings of the plain *test*
+    # glob, so one pattern covers the whole family (a second, narrower
+    # pattern after *test* would just be dead code shellcheck refuses to
+    # accept as reachable).
+    is_test_file() {
+        case "$1" in
+            *test*) return 0 ;;
+            *) return 1 ;;
+        esac
+    }
+
+    # Group rows by file, in first-seen order, so a file's own hunks stay in
+    # their original (line-ascending) order once the file groups themselves
+    # are reordered below.
+    local -A seen=() group=()
+    local -a order=()
+    local path line sign rest frag mline disp
+    while IFS=$'\t' read -r path line sign rest; do
+        [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); }
+        # Control-char strip + cap, the agent-state:82-86 discipline: this
+        # text reaches an fzf display column and a comment-store header next.
+        frag=${rest//[$'\001'-$'\037'$'\177']/}
+        frag=${frag:0:160}
+        if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
+        disp=$(printf '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag")
+        group["$path"]+="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\n'
+    done <<<"$raw"
+
+    # Partition into test-first / rest, each ordered by churn descending; ties
+    # keep first-seen order via the index tiebreak (sort -k1,1n on ties of -k2).
+    local -a tests=() others=()
+    local idx=0
+    for path in "${order[@]}"; do
+        if is_test_file "$path"; then tests+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
+        else others+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
+        fi
+        idx=$((idx + 1))
+    done
+
+    order_group() { sort -t "$(printf '\t')" -k2,2nr -k1,1n | cut -f3; }
+
+    local f
+    while IFS= read -r f; do
+        [ -n "$f" ] && printf '%s' "${group[$f]}"
+    done < <(printf '%s\n' "${tests[@]}" | order_group)
+    while IFS= read -r f; do
+        [ -n "$f" ] && printf '%s' "${group[$f]}"
+    done < <(printf '%s\n' "${others[@]}" | order_group)
+}
+
+case "${1:-}" in
+    --lines)
+        shift; lines_mode "${1:-}" ;;
+    -h|--help)
+        usage; exit 0 ;;
+    "")
+        usage; exit 2 ;;
+    *)
+        printf 'unknown option: %s (try: tmux-review -h)\n' "$1" >&2; exit 2 ;;
+esac
