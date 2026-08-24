@@ -10,3 +10,31 @@ disable=SC2086
 #                 function it just extracted into a temp file; there is nothing
 #                 for shellcheck to follow at lint time.
 disable=SC1090,SC1091
+
+# SC1010 - literal `done` needs quoting. Every hit is `@panestate done`, an
+#          ARGUMENT to tmux set, not a loop keyword; quoting 14 of them adds
+#          noise for a parse that was never ambiguous.
+disable=SC1010
+
+# SC2030/SC2031 - "modified in a subshell, change might be lost". The test rig
+#                 sets GIT_AUTHOR_* inside (..) groups precisely SO the change
+#                 is lost: each block wants its own identity and no leakage.
+disable=SC2030,SC2031
+
+# SC2088 - "tilde does not expand in quotes". tmux-open-path matches a LITERAL
+#          leading ~ that came out of pane text and expands it itself; the
+#          non-expansion is the point.
+disable=SC2088
+
+# SC2015 - `A && B || C` where every A/B is a [ test ] that cannot succeed and
+#          then fail; used as a guard-or-die, not an if-then-else.
+disable=SC2015
+
+# SC2010/SC2012 - ls piped to grep/wc. These render human previews and count
+#                 entries in test dirs the suite itself created; filenames with
+#                 newlines are not in the threat model of a preview pane.
+disable=SC2010,SC2012
+
+# SC2016 - '$PATH' inside single quotes in a user-facing message that is meant
+#          to print the literal word $PATH.
+disable=SC2016

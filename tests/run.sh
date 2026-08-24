@@ -7,7 +7,6 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
-S="$STATE/agent-state"
 
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
@@ -113,12 +112,6 @@ cleanup() {
 }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
-
-A='\U000f06a9'   # robot   -- agent
-R='\uf013'       # gear    -- running
-W='\uf0f3'       # bell    -- needs input
-D='\uf00c'       # check   -- done
-g() { printf "$1"; }
 
 echo "== syntax =="
 for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/*; do
@@ -397,6 +390,7 @@ echo "== ssh destination parsing =="
 # longer exists, and would not have caught the -o-value-with-spaces bug.
 sed -n '/^ssh_target() {/,/^}/p' "$DIR/scripts/tmux-where" > "$STATE/st.sh"
 . "$STATE/st.sh"
+# shellcheck disable=SC2034  # ARGV is read by the ssh_target just sourced
 sshdest() { ARGV=("$@"); ssh_target; }
 is "plain"                 "deploy@host" "$(sshdest ssh deploy@host)"
 is "-p with a value"       "deploy@host" "$(sshdest ssh -p 2222 deploy@host)"
@@ -1154,6 +1148,16 @@ done
 "$TMUX_REAL" -L "$BB" set -g mouse on >/dev/null 2>&1
 "$TMUX_REAL" -L "$BB" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 BP=$("$TMUX_REAL" -L "$BB" list-panes -a -F '#{pane_id}' | head -1)
+# One pane: no [z] -- a lone pane already fills the window, so the zoom button
+# toggled nothing and read as broken. [x] stays: killing the last pane closes
+# the window, which is exactly what a close button should do there.
+solo=$("$TMUX_REAL" -L "$BB" display-message -p -t t '#{E:pane-border-format}')
+case "$solo" in
+    *'control|8'*) bad "no zoom button on a lone pane" "control|9 only" "$solo" ;;
+    *'control|9'*) ok "no zoom button on a lone pane" ;;
+    *) bad "no zoom button on a lone pane" "an x button at least" "$solo" ;;
+esac
+
 # Split: the ACTIVE pane suppresses its own words (the prompt and the red
 # border already say it -- same reasoning as the tint); a pane you are NOT on
 # still spells it out on its border.
@@ -1299,6 +1303,8 @@ sleep 2.2
 # assertion could pass without fzf ever running.
 case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
     *"open>"*) ok "the picker really came up" ;;
+    *) bad "the picker really came up" "an open> prompt" \
+         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | head -3)" ;;
 esac
 # The preview separator names the mode, so ^G/^F visibly do something even
 # when the two views look alike.
@@ -1306,8 +1312,6 @@ case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
     *"─ content "*) ok "the preview names its mode on the separator" ;;
     *) bad "the preview names its mode on the separator" "a ' content ' label" \
          "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | grep '^─' | head -1)" ;;
-    *) bad "the picker really came up" "an open> prompt" \
-         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | head -3)" ;;
 esac
 "$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4
 "$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4

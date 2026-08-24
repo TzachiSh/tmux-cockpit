@@ -233,7 +233,6 @@ tmux bind-key S display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=10
 # Copy-mode is also deliberately not excluded: #{mouse_line} reads the
 # scrolled-back content there (verified: scrolled 15 up, got the line 15 back),
 # so you can scroll into old output and pick a path off it.
-GUARD='#{||:#{pane_in_mode},#{mouse_any_flag}}'
 conf=$(mktemp) || exit 1
 # The plain `rm -f` after source-file covers every normal exit -- there is no
 # `set -e` here, so a failed source-file still reaches it. It does NOT cover a
