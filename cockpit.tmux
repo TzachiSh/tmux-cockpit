@@ -56,6 +56,12 @@ interpolate() {
     # same reason: a pane that ran an agent, exited, and is now a shell keeps its
     # last @panestate forever, so an unguarded count would never come back down.
     #
+    # #{S:#{W:}} walks window SLOTS, so a session grouped onto another with
+    # `new-session -t`, or a window shared by link-window, has its panes counted
+    # once per view -- three views of one blocked agent read 3. Documented in the
+    # README rather than fixed: a format cannot de-duplicate pane ids, and the
+    # error only ever runs high, which never masks a fleet that needs you.
+    #
     # No #{&&:} here, deliberately. The replacement text below goes through
     # ${s//pat/rep}, where bash 5.2 expands a bare & to whatever the pattern
     # matched -- "&&" silently became "#{agent_fleet}#{agent_fleet}", and the

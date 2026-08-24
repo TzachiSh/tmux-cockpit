@@ -73,9 +73,14 @@ timer.
 
 ### Status-bar tokens
 
-Three tokens can go in `status-left` / `status-right`, or in any option they
-read. `cockpit.tmux` rewrites them in place when it loads, so every option
-carrying one must be set **before** the `run-shell` line.
+Three tokens, usable in the six options `cockpit.tmux` rewrites when it loads:
+`status-left`, `status-right`, `window-status-format`,
+`window-status-current-format`, `@catppuccin_directory_text` and
+`@catppuccin_gitmux_text`. Each must be set **before** the `run-shell` line.
+
+That list is exhaustive. A token in an option of your own is never rewritten —
+it reaches tmux as a name nothing defines and renders as nothing at all, and
+pulling your option in with `#{E:}` does not change that.
 
 | token | renders |
 | --- | --- |
@@ -85,15 +90,24 @@ carrying one must be set **before** the `run-shell` line.
 
 `#{agent_fleet}` is the one alert that is not tied to what you can see: window
 dots and borders only speak for the session in front of you, so a *detached*
-session can sit blocked for an hour without a pixel changing. It counts panes on
-the whole server and renders nothing at all while nothing is waiting.
+session can sit blocked for an hour without a pixel changing. It looks at the
+whole server, and renders nothing at all while nothing is waiting.
+
+It counts **window slots**, not distinct panes. A session made with
+`tmux new-session -t` is a second *view* of one set of windows, and
+`link-window` puts a single window in two sessions; either way a shared blocked
+pane is counted once per view — three grouped views of one blocked agent read
+`▲3`. tmux's own `list-panes -a` reports those panes the same way, and a format
+has no means to de-duplicate them. So the count can read high on a grouped
+setup. It never reads low, which is the direction that would matter: a fleet
+rendering nothing is genuinely quiet.
 
 It is pure format syntax — a redraw runs no shell — but unlike the other two it
 is not free: tmux walks every pane of every session, twice, on each expansion.
-Measured over 200 expansions on a 40-pane server, adding it to an otherwise
-empty `status-right` took 1.089s to 1.424s: about 1.7 ms a redraw, which at the
-default `status-interval` of 15 s is nothing, and still small next to the 7.7 ms
-a six-window redraw already costs. Panes in neither state pay only their
+That costs about **1.7 ms per expansion on a 40-pane server** (1.2 ms measured
+on an idle machine with every pane blocked). Against a default
+`status-interval` of 15 s that is nothing, and it is small beside the 7.7 ms a
+six-window redraw already costs. Panes in neither state pay only their
 `@panestate` read; the dearer agent-glob test runs on the few that are.
 
 ## Install
