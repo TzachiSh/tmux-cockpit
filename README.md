@@ -531,6 +531,12 @@ without a trailing newline on the payload. Over 2048 bytes it lands as a
 pointer to a `0600` file in `$XDG_RUNTIME_DIR` instead, so a long review is
 not a wall of text typed straight into the agent's own prompt.
 
+Delivery can also be **refused** — the target is on a permission prompt, is
+not an agent pane, or is not a pane id at all. A refusal keeps the batch: the
+comment store is left on disk, and the message names it along with the
+`tmux-review --deliver <pane> <store>` that re-sends it. Only a delivery that
+actually landed deletes the store.
+
 What this deliberately does **not** do, and why:
 
 - **No whole-diff, one-Enter approval.** The unit of review is the line or

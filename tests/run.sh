@@ -3695,6 +3695,119 @@ fi
 rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
+echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
+# The mirror of the block above. review_pane() chains `rm -f -- <store>` after
+# --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
+# torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
+# a bogus pane id) used to throw the whole pinned batch away silently. The
+# store must outlive a refusal: it is the only copy of the review.
+if need_tmux "tmux-review refused-delivery store keep"; then :; else
+RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
+RKTMPDIR="$STATE/rk-tmp-$$"
+mkdir -p "$RKTMPDIR"
+"$TMUX_REAL" -L "$RK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RK" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RKCTL=$("$TMUX_REAL" -L "$RK" list-panes -t t:0 -F '#{pane_id}')
+# Same TMPDIR redirect as the block above: review_pane()'s mktemp store is
+# never named to us, so a private empty dir makes whatever appears there it.
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" \
+    "export TMPDIR=$(shq_test "$RKTMPDIR")" Enter
+sleep 0.2
+
+RK_DIRTY=$(mktmpd)
+(
+  cd "$RK_DIRTY" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go
+  git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+
+"$TMUX_REAL" -L "$RK" new-window -d -t t: -c "$RK_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
+RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
+# The target is sitting on a permission prompt -- deliver()'s guard 3, the
+# refusal a human is most likely to hit right after finishing a review.
+"$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
+sleep 0.3
+
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "'$DIR/scripts/tmux-review'" Enter
+rkup=0
+for i in $(seq 1 20); do
+    case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
+        *"fleet>"*) rkup=1; break ;;
+    esac
+    sleep 0.25
+done
+[ "$rkup" = 1 ] || bad "the fleet queue comes up (refused-delivery case)" \
+    "a visible 'fleet>' prompt" "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")"
+
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
+for i in $(seq 1 20); do
+    case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
+        *"review>"*) break ;;
+    esac
+    sleep 0.25
+done
+
+rkstore=""
+rksf=$(ls "$RKTMPDIR" 2>/dev/null | head -1)
+[ -n "$rksf" ] && rkstore="$RKTMPDIR/$rksf"
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "keep me"
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL" | grep -q "review> keep me" && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" M-Enter
+for i in $(seq 1 20); do
+    [ -n "$rkstore" ] && grep -q "keep me" "$rkstore" 2>/dev/null && break
+    sleep 0.1
+done
+if [ -n "$rkstore" ] && grep -q "keep me" "$rkstore" 2>/dev/null; then
+    ok "the comment is pinned before the delivery is attempted"
+else
+    bad "the comment is pinned before the delivery is attempted" \
+        "'keep me' in the store under $RKTMPDIR" "$(ls -la "$RKTMPDIR" 2>&1)"
+fi
+
+# ^S: the loop exits 20, review_pane fires --deliver through run-shell -b, and
+# deliver() refuses. Wait for the picker's own process to go away first, so
+# the run-shell chain has actually been reached.
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" C-s
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RKCTL" '#{pane_current_command}')" = fzf ] || break
+    sleep 0.1
+done
+# Bounded poll, not a fixed wait: the store must be there for the whole
+# window in which the (backgrounded) rm could have fired.
+rkkept=1
+for i in $(seq 1 20); do
+    [ -n "$rkstore" ] && [ -e "$rkstore" ] || { rkkept=0; break; }
+    sleep 0.1
+done
+if [ "$rkkept" = 1 ]; then
+    ok "a refused delivery keeps the comment store"
+else
+    bad "a refused delivery keeps the comment store" \
+        "$rkstore still on disk" "gone"
+fi
+case "$(cat "$rkstore" 2>/dev/null)" in
+    *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
+    *) bad "and the kept store still holds the pinned comment" \
+         "## src.go:3 (+) / keep me" "$(cat "$rkstore" 2>/dev/null)" ;;
+esac
+case "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" in
+    *"keep me"*) bad "and nothing was pasted into the needs-input pane" \
+         "no review text in the agent pane" \
+         "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" ;;
+    *) ok "and nothing was pasted into the needs-input pane" ;;
+esac
+
+"$TMUX_REAL" -L "$RK" kill-server >/dev/null 2>&1
+rm -rf "$RK_DIRTY" "$RKTMPDIR"
+fi
+
 echo "== tmux-review: a clean-tree direct pane says so instead of opening an empty picker =="
 if need_tmux "tmux-review clean-tree direct pane"; then :; else
 MT="cockpit-mt-$$"; SOCKS="$SOCKS $MT"

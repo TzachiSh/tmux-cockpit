@@ -566,12 +566,25 @@ compose() {
 #      prompt would take the paste into the dialog, where the Enter this
 #      script tells the human to press becomes a blind approval.
 #   4. store non-empty -- nothing pinned means nothing to deliver.
+#
+# Every refusal names the store. review_pane() deletes it only when delivery
+# SUCCEEDS, so after a refusal the pinned batch is still on disk -- and it is
+# the only copy of the review. A refusal that did not say so was
+# indistinguishable from one that ate it.
+keep_hint() {
+    local pane=$1 store=$2
+    [ -n "$store" ] && [ -s "$store" ] || return 0
+    printf '; comments kept at %s — deliver later with: tmux-review --deliver %s %s' \
+        "$store" "$pane" "$(shq "$store")"
+}
+
 deliver() {
     local pane=$1 store=$2 root=$3
 
     case "$pane" in
         %[0-9]*) ;;
-        *) tmux display-message "tmux-review: not a pane id, refusing to deliver" \
+        *) tmux display-message \
+               "tmux-review: not a pane id, refusing to deliver$(keep_hint "$pane" "$store")" \
                2>/dev/null; return 1 ;;
     esac
 
@@ -581,7 +594,7 @@ deliver() {
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
-            "tmux-review: $pane is not an agent pane, refusing to deliver" \
+            "tmux-review: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")" \
             2>/dev/null
         return 1
     }
@@ -594,7 +607,7 @@ deliver() {
     pstate=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null)
     if [ "$pstate" = needs-input ]; then
         tmux display-message \
-            "tmux-review: $pane is waiting on a permission prompt — answer it first" \
+            "tmux-review: $pane is waiting on a permission prompt — answer it first$(keep_hint "$pane" "$store")" \
             2>/dev/null
         return 1
     fi
@@ -628,7 +641,7 @@ deliver() {
         runtime=${XDG_RUNTIME_DIR:-/tmp}
         file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
             tmux display-message \
-                "tmux-review: could not create the review file, refusing to deliver" \
+                "tmux-review: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")" \
                 2>/dev/null
             return 1
         }
@@ -810,7 +823,14 @@ review_pane() {
         # store through, so it must not rm its own store arg -- the cleanup
         # belongs to this caller, chained after delivery so the store still
         # outlives the popup's own teardown (comment above).
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); rm -f -- $(shq "$store")"
+        #
+        # `&&`, not `;`: --deliver refuses (needs-input, a non-agent pane, a
+        # bogus id) AFTER the popup is gone, and an unconditional rm threw the
+        # whole pinned batch away on every one of those -- the store is the
+        # only copy of the review, and the human never even saw it happen. A
+        # refused store is left on disk on purpose; deliver()'s message names
+        # it and the command that re-delivers it.
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store")"
     fi
 }
 
