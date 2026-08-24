@@ -2807,8 +2807,15 @@ RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 "$TMUX_REAL" -L "$RB2" set -g @cockpit_review_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" set -g @cockpit_reload_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
-is "@cockpit_review_key off leaves r unbound" "" \
-   "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')"
+# "off" cannot make r EMPTY: stock tmux binds prefix r to refresh-client, and
+# not binding ours simply leaves the stock binding standing. Unbound-from-review
+# is the real contract.
+case "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
+    *tmux-review*) bad "@cockpit_review_key off leaves r to stock tmux" \
+         "no tmux-review in the binding" \
+         "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix | awk '$4=="r"')" ;;
+    *) ok "@cockpit_review_key off leaves r to stock tmux" ;;
+esac
 is "@cockpit_reload_key off leaves R unbound" "" \
    "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1

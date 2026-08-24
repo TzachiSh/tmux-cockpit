@@ -243,7 +243,7 @@ from `examples/claude-hooks.json` by hand:
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one — `@cockpit_review_key` rebinds, `off` disables |
+| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
