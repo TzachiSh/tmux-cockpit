@@ -130,8 +130,15 @@ esac
 # set the state but leave @cockpit_win_needs unset -- measured: the banner then
 # renders empty, SILENTLY hiding a real alert. Route all writes through here.
 if [ "$state" = off ]; then
-    [ -z "$current" ] && exit 0             # already clear: nothing to do
-    tmux set-option -pu -t "$pane" @panestate 2>/dev/null || true
+    # Unset @panestate only when it is actually set -- but do NOT exit early when
+    # it is already clear. A freshly started agent fires SessionStart -> `off`
+    # before it has any real state, and the window dot below must still light its
+    # idle ○ for that bare agent pane, exactly as the pre-precompute live walk
+    # drew it. Unsetting an already-unset option is free (0 redraws), the dot's
+    # own guard below skips the write once the ○ is present, and no high-frequency
+    # caller passes `off` (only SessionStart/SessionEnd, once each), so falling
+    # through costs one redraw the first time an idle agent appears, nothing after.
+    [ -n "$current" ] && { tmux set-option -pu -t "$pane" @panestate 2>/dev/null || true; }
 else
     [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw
     tmux set-option -p -t "$pane" @panestate "$state" 2>/dev/null || true
@@ -186,6 +193,43 @@ if [ "$win_needs" = 1 ]; then
     [ "$win_cur" = 1 ] || tmux set-option -w -t "$pane" @cockpit_win_needs 1 2>/dev/null || true
 else
     [ -z "$win_cur" ] || tmux set-option -wu -t "$pane" @cockpit_win_needs 2>/dev/null || true
+fi
+
+# --- catppuccin window-tab dot: the same precompute, same reason ---------------
+# full.tmux.conf draws a per-window marker (▲ blocked, ✕ error, ● running, ✓ done,
+# ○ idle) coloured by the WORST agent state among that window's panes. Read live
+# it was the catppuccin window-status-format's #{P:} walk, run once per window on
+# every status redraw, and up to five times per window before the ranked #{?}
+# chain short-circuited -- the freeze rig's residual after the banner and fleet
+# fixes landed (gate: 360 pane visits per redraw on full.tmux.conf, ~3 walks).
+#
+# So the ranking moves HERE, to transition time: this records ONE per-window
+# keyword @cockpit_win_state -- the worst state in this pane's window -- and the
+# window-status-format reads that keyword and maps it to the glyph+colour itself.
+# Reading an option walks no pane, so a redraw no longer walks the window; the
+# rendered marker is byte-for-byte unchanged (verified against the live walk over
+# every state combination and the idle/non-agent cases).
+#
+# The ranking is the format's own, reproduced exactly: needs-input > error >
+# running > done > idle (an agent pane whose state is none of those), and empty
+# when the window holds no agent at all. The state tests substring-match the same
+# space-joined #{P:} of every agent pane's @panestate; the idle case tests the
+# same "A" sentinel the format used, so a live agent with no state still dots ○.
+#
+# WINDOW-scoped (set -w), like @cockpit_win_needs: it dies with the window, so a
+# closed window leaves no stale dot -- tmux garbage-collects the option. Same
+# staleness bound as the banner: a window's dot refreshes on the next transition
+# in it (SessionEnd fires `agent-state off`; a closing window drops the option),
+# and the only residual is a still-active agent hard-killed inside a still-living
+# window with no hook. Guarded no-op skip so an unchanged dot costs no redraw.
+win_state=$(tmux display-message -p -t "$pane" \
+    '#{?#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},A,}}},idle,}}}}}' \
+    2>/dev/null)
+win_state_cur=$(tmux show-option -wqv -t "$pane" @cockpit_win_state 2>/dev/null)
+if [ -n "$win_state" ]; then
+    [ "$win_state_cur" = "$win_state" ] || tmux set-option -w -t "$pane" @cockpit_win_state "$win_state" 2>/dev/null || true
+else
+    [ -z "$win_state_cur" ] || tmux set-option -wu -t "$pane" @cockpit_win_state 2>/dev/null || true
 fi
 
 # --- fleet counter, the same precompute for the same reason -------------------

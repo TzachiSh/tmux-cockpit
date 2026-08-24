@@ -1675,6 +1675,62 @@ is "the banner still excludes the window you are on, byte-for-byte" \
 "$TMUX_REAL" -L "$BX" kill-server >/dev/null 2>&1
 fi
 
+echo "== the window-tab dot precomputes the worst state, byte-for-byte per state =="
+# A6 moved full.tmux.conf's per-window agent marker (▲ blocked, ✕ error,
+# ● running, ✓ done, ○ idle) out of the catppuccin window-status-format, where a
+# redraw re-ran its #{P:} pane walk for every window, into one keyword
+# @cockpit_win_state that scripts/agent-state writes on each transition -- the
+# WORST state among the window's panes, ranked needs-input > error > running >
+# done > idle. This drives every state through agent-state (the production path)
+# and pins BOTH the keyword recorded and the marker full.tmux.conf renders from
+# it. The golden renders were captured from the pre-A6 live walk, so a match is
+# byte-identical before/after; and pre-A6 the keyword is never written, so the
+# keyword rows fail-first if the precompute is reverted.
+if need_tmux "window dot precompute"; then :; else
+WD="cockpit-wd-$$"; SOCKS="$SOCKS $WD"
+"$TMUX_REAL" -L "$WD" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$WD" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+# Pin the glob to these fake claude panes. full.tmux.conf's own run-shell only
+# sets it when empty, so this non-empty value survives that async pass.
+"$TMUX_REAL" -L "$WD" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$WD" rename-window -t s:0 idlewin >/dev/null 2>&1
+for w in blkwin errwin runwin finwin; do
+    "$TMUX_REAL" -L "$WD" new-window -d -t s: -n "$w" 'exec -a claude sleep 300' >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$WD" new-window -d -t s: -n plainwin 'sleep 300' >/dev/null 2>&1
+# A lower state present alongside the winner must not change the marker: the
+# ranking is proved by the pane that should LOSE sitting next to the one that wins.
+"$TMUX_REAL" -L "$WD" split-window -d -t s:blkwin 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$WD" split-window -d -t s:errwin 'exec -a claude sleep 300' >/dev/null 2>&1
+asWD() { TMUX="$SOCKDIR/$WD,0,0" "$DIR/scripts/agent-state" "$1" "$2" >/dev/null 2>&1; }
+p1() { "$TMUX_REAL" -L "$WD" list-panes -t "s:$1" -F '#{pane_id}' | sed -n "${2:-1}p"; }
+# idlewin: a bare agent that only ever saw SessionStart -> off must still dot ○.
+asWD off "$(p1 idlewin)"
+asWD running "$(p1 blkwin 1)"; asWD needs-input "$(p1 blkwin 2)"   # needs-input > running
+asWD done "$(p1 errwin 1)";    asWD error       "$(p1 errwin 2)"   # error > done
+asWD running "$(p1 runwin)"
+asWD done "$(p1 finwin)"
+wdren() { "$TMUX_REAL" -L "$WD" display-message -p -t "s:$1" '#{E:@catppuccin_window_text}'; }
+wdst()  { "$TMUX_REAL" -L "$WD" show-option -wqv -t "s:$1" @cockpit_win_state; }
+# The keyword agent-state records -- never written by the pre-A6 code, so these
+# are the fail-first anchor.
+is "the dot keyword ranks needs-input over running" needs-input "$(wdst blkwin)"
+is "the dot keyword ranks error over done"          error       "$(wdst errwin)"
+is "the dot keyword records running"                running     "$(wdst runwin)"
+is "the dot keyword records done"                   done        "$(wdst finwin)"
+is "a bare agent's dot keyword is idle"             idle        "$(wdst idlewin)"
+is "a non-agent window records no dot keyword"      ""          "$(wdst plainwin)"
+# The marker full.tmux.conf renders from the keyword, byte-for-byte against the
+# pre-A6 live walk (goldens captured from it: same glyph, same colour, same text).
+is "the blocked window renders a red ▲, byte-for-byte"     " blkwin #[fg=#ff6b6b]▲"   "$(wdren blkwin)"
+is "the errored window renders a peach ✕, byte-for-byte"   " errwin #[fg=#ff9838]✕"   "$(wdren errwin)"
+is "the running window renders a yellow ●, byte-for-byte"  " runwin #[fg=#ffcc33]●"   "$(wdren runwin)"
+is "the done window renders a green ✓, byte-for-byte"      " finwin #[fg=#3dea7d]✓"   "$(wdren finwin)"
+is "the idle agent window renders a grey ○, byte-for-byte" " idlewin #[fg=#5b6272]○"  "$(wdren idlewin)"
+is "the non-agent window renders no marker, byte-for-byte" " plainwin "               "$(wdren plainwin)"
+"$TMUX_REAL" -L "$WD" kill-server >/dev/null 2>&1
+fi
+
 echo "== the example configs do not forward the agent title storm =="
 # set-titles on FORWARDS every agent OSC-2 title change to the outer terminal as
 # a distinct, UNCOALESCED title sequence (measured under a title storm: 609 title
