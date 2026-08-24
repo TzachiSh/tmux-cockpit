@@ -496,14 +496,16 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^S` | — | deliver the whole batch |
-| `esc` | cancel | discard the batch, store and all |
+| `esc` | cancel | discard the batch — asks first when comments are pinned |
 
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
 terminals where the plain chord doesn't land. The list reloads in place and
 marks the row `●`, so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
-`^S` delivers the whole batch; `esc` discards it, store and all.
+`^S` delivers the whole batch; `esc` discards it — and with comments
+pinned it asks first (`keep reviewing` / `discard N comment(s)`), because
+one reflexive escape should not throw away a twenty-comment review.
 **`↵` pins a comment — it never approves.** With nothing typed it does
 nothing: there is no accept-all key on purpose, a review whose only exit is
 one Enter on the whole diff is the rubber stamp this replaces.

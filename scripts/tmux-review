@@ -9,7 +9,8 @@
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
 #                                          ctrl-s exits 20 (deliver), esc/^C
-#                                          exit 0 (discard, store deleted)
+#                                          exit 0 (discard, store deleted --
+#                                          asked for first if any are pinned)
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
@@ -459,42 +460,68 @@ run_loop() {
     # text is a comment, and readline's own ^U/^D already mean something
     # inside it (kill-line, delete-char) -- so scroll moves to alt-u/alt-d
     # instead. ^/ still toggles the preview, same as everywhere else.
-    local out rc key
-    out=$(printf '%s\n' "$rows_out" \
-        | fzf --print-query --expect=ctrl-s --disabled \
-              --delimiter=$'\t' --with-nth=4 \
-              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-              --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
-              --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
-              --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
-              --preview "$preview_cmd" \
-              --preview-window="down,$psz,border-top" \
-              --prompt='review> ' \
-              --header-first \
-              --header=$'↵ pin the typed comment   ^S deliver   esc discard (store and all)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
-    rc=$?
+    # The picker runs in a LOOP now: a cancel with comments pinned asks first,
+    # and "keep reviewing" has to land back in the same list rather than in
+    # the caller.
+    local out rc key n choice
+    while :; do
+        out=$(printf '%s\n' "$rows_out" \
+            | fzf --print-query --expect=ctrl-s --disabled \
+                  --delimiter=$'\t' --with-nth=4 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+                  --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+                  --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
+                  --preview "$preview_cmd" \
+                  --preview-window="down,$psz,border-top" \
+                  --prompt='review> ' \
+                  --header-first \
+                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
+        rc=$?
 
-    # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key fired,
-    # 1 = no match, 130 = esc/^C. Anything outside {0,1} is a cancel, and a
-    # cancel must discard -- a review a human bailed out of must not linger
-    # as a stale store some later run reuses.
-    case "$rc" in
-        0|1) ;;
-        *) rm -f -- "$store"; exit 0 ;;
-    esac
+        # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
+        # fired, 1 = no match, 130 = esc/^C. Anything outside {0,1} is a
+        # cancel, and a cancel must not leave a stale store some later run
+        # reuses -- but it must not silently eat a pinned batch either.
+        case "$rc" in
+            0|1) ;;
+            *)
+                # A cancel with pinned comments asks; losing a twenty-comment
+                # review to a reflexive esc is the cliff revdiff avoids with a
+                # separate discard key. An empty store has nothing to protect,
+                # so it still exits straight out.
+                if [ -s "$store" ]; then
+                    n=$(grep -c '^## ' "$store")
+                    choice=$(printf 'keep reviewing\ndiscard %d comment(s)\n' "$n" \
+                        | fzf --reverse --no-info --prompt='discard? ' \
+                              --header="$n comment(s) are pinned and not delivered")
+                    case "$choice" in
+                        discard*) rm -f -- "$store"; exit 0 ;;
+                        *)  # Back to the list, store kept. Rebuild the rows:
+                            # the marks in $rows_out are from before the
+                            # comments were pinned, and fzf's own reload only
+                            # ever touched the list inside the session that
+                            # just exited.
+                            rows_out=$(rows_mode "$dir" "$store")
+                            continue ;;
+                    esac
+                fi
+                rm -f -- "$store"; exit 0 ;;
+        esac
 
-    # Line 1 is the typed query (--print-query); unused here because --disabled
-    # already routed it into the comment via {q} inside the alt-enter bind --
-    # the outer loop only needs which --expect key fired.
-    key=$(sed -n 2p <<<"$out")
-    if [ "$key" = ctrl-s ]; then
-        exit 20
-    fi
-    # No --expect key matched -- enter/alt-enter stay inside the picker via
-    # execute-silent, so this should not happen, but an unmatched exit is a
-    # discard, never a silent deliver.
-    rm -f -- "$store"
-    exit 0
+        # Line 1 is the typed query (--print-query); unused here because
+        # --disabled already routed it into the comment via {q} inside the
+        # alt-enter bind -- the outer loop only needs which --expect key fired.
+        key=$(sed -n 2p <<<"$out")
+        if [ "$key" = ctrl-s ]; then
+            exit 20
+        fi
+        # No --expect key matched -- enter/alt-enter stay inside the picker via
+        # execute-silent, so this should not happen, but an unmatched exit is a
+        # discard, never a silent deliver.
+        rm -f -- "$store"
+        exit 0
+    done
 }
 
 # --- --compose ---------------------------------------------------------------

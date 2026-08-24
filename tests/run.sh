@@ -2943,8 +2943,45 @@ esac
 is "plain enter does nothing: the store is unchanged" \
    "$storebefore" "$(cat "$RVSTORE" 2>/dev/null)"
 
+# esc on a non-empty batch ASKS instead of discarding outright -- the whole
+# point: one reflexive escape must not throw away a twenty-comment review.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
-sleep 1
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
+    sleep 0.1
+done
+case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+    *"discard 2 comment"*) ok "esc on a non-empty batch asks, naming the count" ;;
+    *) bad "esc on a non-empty batch asks, naming the count" \
+         "a 'discard 2 comment(s)' choice" \
+         "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
+esac
+
+# Row 1 -- keep reviewing. Back to the list, every pinned comment still there.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# fzf RESTORES the screen it covered when it exits, so the list's own text is
+# back on the pane before the second picker is actually up -- a content poll
+# cannot tell the restored screen from the live one. Sync on the pane's
+# foreground process instead: fzf gone, then fzf again.
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RVS" display-message -p -t "$RVP" '#{pane_current_command}')" = fzf ] || break
+    sleep 0.1
+done
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RVS" display-message -p -t "$RVP" '#{pane_current_command}')" = fzf ] && break
+    sleep 0.1
+done
+is "keep reviewing returns to the list with the store intact" \
+   "$rvbefore" "$(wc -c < "$RVSTORE" 2>/dev/null)"
+
+# Row 2 -- discard. Only this second, deliberate answer deletes the store.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
+for i in $(seq 1 20); do [ -e "$RVSTORE" ] || break; sleep 0.1; done
 if [ -e "$RVSTORE" ]; then
     bad "esc discards: the store is gone" "no such file" "$RVSTORE still exists"
 else
