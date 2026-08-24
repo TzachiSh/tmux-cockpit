@@ -5,6 +5,7 @@
 #   make check       lint + test, the pre-commit gate
 #   make install     symlink the commands into ~/.local/bin
 #   make uninstall   remove only the symlinks pointing back here
+#   make bootstrap   full setup from nothing: packages, plugins, config, hooks
 #
 # Everything here is shell; there is nothing to build.
 
@@ -12,14 +13,14 @@ SHELL := /bin/bash
 
 # Every executable shell file, whatever its extension. Listed once so a new
 # script cannot be added to the repo and quietly skipped by the linter.
-SOURCES := cockpit.tmux install.sh tests/run.sh $(wildcard scripts/*)
+SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh $(wildcard scripts/*)
 
-.PHONY: all check test lint fmt install uninstall help
+.PHONY: all check test lint fmt install uninstall bootstrap help
 
 all: help
 
 help:
-	@sed -n '2,9p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,10p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 test:
 	@tests/run.sh
@@ -41,3 +42,6 @@ install:
 
 uninstall:
 	@./install.sh --uninstall
+
+bootstrap:
+	@./bootstrap.sh
