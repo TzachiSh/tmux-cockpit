@@ -1947,5 +1947,66 @@ is "the composed review matches the golden text byte-for-byte" \
    "$rv3golden" "$("$DIR/scripts/tmux-review" --compose "$RV3STORE")"
 rm -f "$RV3STORE"
 
+echo "== tmux-review --lines: a hunk's funcname context does not corrupt the anchor line =="
+# git's default xfuncname heuristic appends the nearest preceding line that
+# looks like a declaration to the "@@" header -- for Rust that is routinely a
+# signature ending "-> T {", and a token scan that looks for "any field
+# starting with -" finds that arrow too and overwrites the real -o,c token
+# with it.
+RV4=$(mktmpd)
+(
+  cd "$RV4" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'fn compute() -> i32 {\n    let a = 1;\n    let b = 2;\n    let c = 3;\n    let d = 4;\n    let e = 5;\n    a + b\n}\n' > f.rs
+  git add -A; git commit -q -m init
+  sed -i '5d' f.rs   # removes "    let d = 4;", the old file's line 5
+) >/dev/null 2>&1
+# Confirm the fixture actually exercises the funcname-context shape before
+# trusting the assertion below -- git's heuristic is not this test's to own.
+rv4hunk=$(git -C "$RV4" diff --no-color --no-ext-diff | grep '^@@')
+case "$rv4hunk" in
+    *'-> i32 {'*) ;;
+    *) bad "the fixture's own hunk header carries funcname context" \
+         "an @@ line ending '-> i32 {'" "$rv4hunk" ;;
+esac
+rv4out=$("$DIR/scripts/tmux-review" --lines "$RV4")
+case "$rv4out" in
+    *'f.rs'$'\t''-5'$'\t'*) ok "the deletion is anchored to the real old line, 5" ;;
+    *) bad "the deletion is anchored to the real old line, 5" "f.rs<TAB>-5<TAB>..." "$rv4out" ;;
+esac
+rm -rf "$RV4"
+
+echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
+PD=$(mktmpd)
+(
+  cd "$PD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p scripts
+  printf 'echo one\n' > scripts/foo.sh
+  git add -A; git commit -q -m init
+  printf 'echo one\necho two\n' > scripts/foo.sh
+) >/dev/null 2>&1
+pdout=$(cd "$PD" && "$DIR/scripts/tmux-open-path" --preview-diff scripts/foo.sh)
+case "$pdout" in
+    *'echo two'*) ok "a nested file's diff shows, not 'no uncommitted changes'" ;;
+    *) bad "a nested file's diff shows, not 'no uncommitted changes'" \
+         "a diff containing echo two" "$pdout" ;;
+esac
+# The exact mechanism tmux-review's picker preview uses: cd into the review's
+# target dir, then hand tmux-open-path the row's own dir-relative path -- the
+# same path --lines already emits, not a hand-typed one.
+rv5path=$("$DIR/scripts/tmux-review" --lines "$PD" | head -1 | cut -f1)
+is "the --lines row path is dir-relative, exactly what --preview-diff expects" \
+   "scripts/foo.sh" "$rv5path"
+rv5preview=$(cd "$PD" && "$DIR/scripts/tmux-open-path" --preview-diff "$rv5path")
+case "$rv5preview" in
+    *'echo two'*) ok "the review-loop preview path shows the same diff" ;;
+    *) bad "the review-loop preview path shows the same diff" \
+         "a diff containing echo two" "$rv5preview" ;;
+esac
+rm -rf "$PD"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

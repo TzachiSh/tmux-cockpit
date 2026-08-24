@@ -69,10 +69,18 @@ lines_mode() {
     # One pass: track the file a hunk belongs to (from the +++/--- header
     # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
     # come from the "--- a/" side instead), the hunk's starting old/new line
-    # from "@@ -o,c +o,c @@" split on spaces (not a capture-group regex --
-    # portable to non-GNU awk), and a running counter per side. Context lines
-    # advance both counters and emit nothing; a +/- line emits a row and
-    # advances its own side.
+    # from "@@ -o,c +o,c @@" (not a capture-group regex -- portable to
+    # non-GNU awk), and a running counter per side. Context lines advance both
+    # counters and emit nothing; a +/- line emits a row and advances its own
+    # side.
+    #
+    # The -o,c and +o,c tokens are POSITIONAL -- always fields 2 and 3 of the
+    # header -- and have to be taken that way, not found by scanning every
+    # token for a leading -/+. git appends a funcname context after the
+    # closing "@@" ("@@ -2,7 +2,7 @@ fn compute() -> i32 {"), and a scan
+    # keeps clobbering oldtok/newtok on any later token that starts with -
+    # or + too -- "-> i32" matched and silently became the anchor.
+    # Reproduced: a deletion at old line 5 was anchored to -3 instead.
     local raw
     raw=$(printf '%s\n' "$diff" | awk '
         /^--- / { if ($0 ~ /^--- a\//) oldfile = substr($0, 7); next }
@@ -81,11 +89,8 @@ lines_mode() {
             oldl = 0; newl = 0; next
         }
         /^@@/ {
-            n = split($0, parts, " ")
-            for (i = 1; i <= n; i++) {
-                if (substr(parts[i], 1, 1) == "-") oldtok = parts[i]
-                else if (substr(parts[i], 1, 1) == "+") newtok = parts[i]
-            }
+            split($0, parts, " ")
+            oldtok = parts[2]; newtok = parts[3]
             sub(/^-/, "", oldtok); split(oldtok, oa, ","); oldl = oa[1] + 0
             sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
             next
