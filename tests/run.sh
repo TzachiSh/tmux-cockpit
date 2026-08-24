@@ -1916,5 +1916,36 @@ fi
 rm -rf "$RVDIR"
 fi
 
+echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
+RV3STORE=$(mktemp)
+cat > "$RV3STORE" <<'STORE'
+## scripts/tm:43 (+)
+> the quoted fragment
+use errors.Is() instead of direct comparison
+
+## scripts/tmux-branch:12 (-)
+> old validation line
+?? why was this check removed here
+
+STORE
+rv3golden=$(cat <<'GOLDEN'
+Code review of your uncommitted changes. Address each comment; a comment
+containing ?? is a question — answer it in chat, do not edit for it.
+Comments are anchored as path:line with the original line quoted.
+
+## scripts/tm:43 (+)
+> the quoted fragment
+use errors.Is() instead of direct comparison
+
+## scripts/tmux-branch:12 (-)
+> old validation line
+?? why was this check removed here
+
+GOLDEN
+)
+is "the composed review matches the golden text byte-for-byte" \
+   "$rv3golden" "$("$DIR/scripts/tmux-review" --compose "$RV3STORE")"
+rm -f "$RV3STORE"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

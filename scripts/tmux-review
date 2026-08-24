@@ -294,6 +294,17 @@ run_loop() {
     exit 0
 }
 
+# --- --compose ---------------------------------------------------------------
+# The fixed header, then the store verbatim -- cat, nothing clever. The header
+# is what tells the agent "??" means a question; the store itself needs no
+# reformatting because attach() already wrote it in the delivered shape.
+compose() {
+    local store=${1:-}
+    printf 'Code review of your uncommitted changes. Address each comment; a comment\ncontaining ?? is a question — answer it in chat, do not edit for it.\nComments are anchored as path:line with the original line quoted.\n\n'
+    [ -n "$store" ] && [ -f "$store" ] && cat -- "$store"
+    return 0
+}
+
 case "${1:-}" in
     --lines)
         shift; lines_mode "${1:-}" ;;
@@ -303,6 +314,8 @@ case "${1:-}" in
         shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
+    --compose)
+        shift; compose "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")
