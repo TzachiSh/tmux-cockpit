@@ -113,6 +113,27 @@ version_at_least() {           # version_at_least <major> <minor>
     [ "$maj" -gt "$1" ] || { [ "$maj" -eq "$1" ] && [ "$min" -ge "$2" ]; }
 }
 
+# The palette. These are catppuccin's variable names, and a catppuccin user
+# already has them -- but the example config reads them unconditionally, and a
+# user WITHOUT that theme got no colour at all: tmux rejects the resulting
+# "fg=" outright, so the border never coloured and nothing said why. Verified:
+# defaulted only when unset, so a theme's own values always win.
+while read -r n v; do
+    [ -n "$(tmux show-option -gqv "$n")" ] || tmux set-option -gq "$n" "$v"
+done <<'PALETTE'
+@thm_red #f38ba8
+@thm_peach #fab387
+@thm_yellow #f9e2af
+@thm_green #a6e3a1
+@thm_overlay_0 #6c7086
+PALETTE
+
+# Both click gestures need the tmux mouse; without it they die silently, so
+# say so once. prefix+b still works either way.
+if [ "$(tmux show-option -gqv mouse)" != on ]; then
+    tmux display-message "tmux-cockpit: the click gestures need 'set -g mouse on'; prefix+b still works"
+fi
+
 # Popup geometry, configurable the same way as @cockpit_agents: set your own
 # BEFORE the run-shell line. Percentages or absolute columns/rows, anything
 # display-popup accepts.

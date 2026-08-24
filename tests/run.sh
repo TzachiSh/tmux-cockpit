@@ -1298,5 +1298,46 @@ else
 fi
 fi
 
+echo "== first-run: no theme, no catppuccin, still works =="
+# The example config reads @thm_* unconditionally. A user without catppuccin
+# had them unset, the border style collapsed to "fg=" -- which tmux REJECTS --
+# and the headline feature silently never coloured anything. The suite itself
+# used to set the palette by hand before sourcing, compensating for exactly
+# the gap it should have caught; this block sources the config bare.
+if need_tmux "bare first run"; then :; else
+FR="cockpit-fr-$$"; SOCKS="$SOCKS $FR"
+"$TMUX_REAL" -L "$FR" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FR" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+FP=$("$TMUX_REAL" -L "$FR" list-panes -a -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$FR" set -p -t "$FP" @panestate needs-input >/dev/null 2>&1
+fb=$("$TMUX_REAL" -L "$FR" display-message -p -t "$FP" '#{E:#{pane-border-style}}')
+case "$fb" in
+    fg=) bad "the border colours without any theme installed" "a real colour" "the empty fg= tmux rejects" ;;
+    fg=#*) ok "the border colours without any theme installed" ;;
+    *) bad "the border colours without any theme installed" "fg=#......" "$fb" ;;
+esac
+# A window with no agent pane must carry NO marker -- ten windows with two
+# agents used to show ten circles, and the circle meant two different things.
+"$TMUX_REAL" -L "$FR" new-window -d -n plainwin 'sleep 300' >/dev/null 2>&1
+pw=$("$TMUX_REAL" -L "$FR" display-message -p -t plainwin '#{E:@catppuccin_window_text}' | plain)
+case "$pw" in
+    *○*|*▲*|*✓*|*●*|*✕*) bad "a non-agent window carries no marker" "just the name" "$pw" ;;
+    *plainwin*) ok "a non-agent window carries no marker" ;;
+    *) bad "a non-agent window carries no marker" "the window name" "$pw" ;;
+esac
+# The cross-window alert is red and bold on its own account, not painted in
+# whatever colour the ACTIVE pane's state happens to give the border.
+"$TMUX_REAL" -L "$FR" new-window -d -n other 'exec -a claude sleep 300' >/dev/null 2>&1
+OP2=$("$TMUX_REAL" -L "$FR" list-panes -t other -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$FR" set -p -t "$OP2" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FR" set -p -t "$FP" @panestate running >/dev/null 2>&1
+bf=$("$TMUX_REAL" -L "$FR" display-message -p -t "$FP" '#{E:pane-border-format}')
+case "$bf" in
+    *'#[fg=#f38ba8]#[bold]─ NEEDS YOU'*) ok "the NEEDS YOU banner is red regardless of this pane's state" ;;
+    *) bad "the NEEDS YOU banner is red regardless of this pane's state" "a red bold banner" "$bf" ;;
+esac
+"$TMUX_REAL" -L "$FR" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
