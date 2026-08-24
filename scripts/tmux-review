@@ -87,6 +87,31 @@ lines_mode() {
     numstat=$(git -C "$dir" diff --no-color --no-ext-diff --numstat 2>/dev/null)
     [ -n "$numstat" ] || numstat=$(git -C "$dir" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
 
+    # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
+    # minified asset -- would feed the per-row parse below tens of thousands of
+    # rows. The review popup is MODAL and runs lines_mode at startup and on
+    # every reload, so that parse locked the one client for minutes to hours
+    # (measured: a 100k-row single-file diff did not finish in 5 minutes, while
+    # the git diff and the awk themselves cost ~0.03s -- the shell row-build is
+    # the whole cost). numstat's own add+del columns already total the exact
+    # number of +/- rows this function emits, at the one cheap git call made
+    # just above -- so count first and, past a cap, emit a single notice
+    # instead of parsing at all. The popup then always appears at once and esc
+    # still cancels it. 5000 is well past any diff a human reads line-by-line
+    # yet far below where the parse is felt.
+    local cap=5000 total=0 nadd ndel nfile
+    while IFS=$'\t' read -r nadd ndel nfile; do
+        [ -n "$nfile" ] || continue
+        case "$nadd" in *[!0-9]*) nadd=0 ;; esac
+        case "$ndel" in *[!0-9]*) ndel=0 ;; esac
+        total=$(( total + nadd + ndel ))
+    done <<<"$numstat"
+    if [ "$total" -gt "$cap" ]; then
+        local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
+        printf '%s\t\t%s\t%s\n' '(diff too large)' "$big" "$big"
+        return 0
+    fi
+
     # One pass: track the file a hunk belongs to (from the +++/--- header
     # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
     # come from the "--- a/" side instead), the hunk's starting old/new line

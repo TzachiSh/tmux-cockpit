@@ -2161,6 +2161,66 @@ case "$rv1out" in
 esac
 rm -rf "$RV1"
 
+echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
+# The review popup is modal and runs lines_mode at startup and on every reload.
+# A regenerated lockfile / vendored bundle is a single-file diff of tens of
+# thousands of rows; the per-row shell parse used to lock the one client for
+# minutes to hours (measured: 100k rows did not finish in 5 minutes, 8k rows
+# = 56s). numstat totals the exact row count at one cheap git call, so past
+# the 5000-row cap --lines emits a single "too large" notice and returns at
+# once. FAIL-first: on the pre-cap parser this same fixture takes ~30s (the
+# timeout below fires) and never emits the notice string at all.
+RVCAP=$(mktmpd)
+(
+  cd "$RVCAP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > lock.txt
+  git add -A; git commit -q -m init
+  # 12000 lines replacing the 1 seed line: 12000 added + 1 deleted = 12001
+  # rows, over the 5000 cap. On the old parser that is ~20s of shell (measured
+  # 6.2s at 6000 rows, 21.2s at 12000), so timeout below has teeth.
+  seq 1 12000 > lock.txt
+) >/dev/null 2>&1
+rvcaptotal=$(git -C "$RVCAP" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')
+is "the fixture's diff really exceeds the 5000-row cap" "12001" "$rvcaptotal"
+# timeout is the fail-first teeth: the fixed path returns in ~0.1s, the old
+# O(n) shell build of 12001 rows blows well past 10s and timeout kills it (124).
+rvcapout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVCAP"); rvcaprc=$?
+if [ "$rvcaprc" -eq 124 ]; then
+    bad "a 12001-row diff returns fast, not after a 10s+ parse" \
+        "output within 10s" "timed out (the pre-cap parser)"
+else
+    ok "a 12001-row diff returns fast, not after a 10s+ parse"
+fi
+case "$rvcapout" in
+    *"diff too large to anchor line-by-line (12001 changed lines)"*)
+        ok "the cap emits the too-large notice naming the row count" ;;
+    *) bad "the cap emits the too-large notice naming the row count" \
+         "a 'diff too large ... (12001 changed lines)' notice" "$rvcapout" ;;
+esac
+is "the capped output is exactly one row (the popup stays trivially small)" \
+   "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
+# A diff at or under the cap is untouched -- still fully parsed, row per line.
+RVUNDER=$(mktmpd)
+(
+  cd "$RVUNDER" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > small.txt
+  git add -A; git commit -q -m init
+  seq 1 100 > small.txt
+) >/dev/null 2>&1
+rvunderout=$("$DIR/scripts/tmux-review" --lines "$RVUNDER")
+case "$rvunderout" in
+    *"diff too large"*) bad "an under-cap diff is parsed normally, not capped" \
+         "real per-line rows, no notice" "$rvunderout" ;;
+    *"small.txt"$'\t'*) ok "an under-cap diff is parsed normally, not capped" ;;
+    *) bad "an under-cap diff is parsed normally, not capped" \
+         "small.txt rows" "$rvunderout" ;;
+esac
+rm -rf "$RVCAP" "$RVUNDER"
+
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
 # under the cursor vanished) -- without a guard this still writes
