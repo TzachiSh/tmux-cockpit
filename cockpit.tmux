@@ -210,8 +210,14 @@ fi
 # Same geometry and title style as the path picker: the two popups are siblings
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
+#
+# -p '#{pane_id}': inside a popup, $TMUX_PANE is the popup's own pseudo-pane,
+# so tmux-branch asking the client "what pane am I on" resolves to whichever
+# CLIENT was most recently active, not the pane this binding actually fired
+# on. tmux expands #{pane_id} at bind time, on the pane the key/click landed
+# on, the same way #{pane_current_path} already does for the title above.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
     # popup the path picker descends into, entered from the top. Wired to
     # range=control|2 in status-right, the slot beside the branch's control|1.
@@ -223,7 +229,7 @@ elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
 
 # Session picker in the same popup chrome. prefix+S is unbound in stock tmux
 # (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup
@@ -252,18 +258,59 @@ esac
 
 # Reload on R, the shifted pair of the review key: you review all day and
 # reload only after editing the config, so the lowercase key goes to review.
-# The path comes from what tmux actually loaded, resolved once at bind time:
+# The paths come from what tmux actually loaded, resolved once at bind time:
 # a hardcoded ~/.tmux.conf misses XDG setups (~/.config/tmux/tmux.conf), and
 # a keypress must not spawn a shell to rediscover a path that cannot change
 # for the life of the server.
-CONF=$(tmux display-message -p '#{config_files}' 2>/dev/null | cut -d, -f1)
-[ -n "$CONF" ] || CONF="${HOME:-}/.tmux.conf"
-RLK=$(tmux show-option -gqv @cockpit_reload_key)
-case "$RLK" in
-    off) ;;                          # explicitly disabled
-    "")  tmux bind-key R source-file "$CONF" \; display-message "config reloaded" ;;
-    *)   tmux bind-key "$RLK" source-file "$CONF" \; display-message "config reloaded" ;;
-esac
+#
+# #{config_files} is EVERY file this run loaded, comma-separated, and on a
+# plain (non -f) start it is multi-entry: /etc/tmux.conf first (usually
+# absent), then the user's file(s). `cut -d, -f1` picked only that first,
+# almost-always-missing entry -- reload silently no-opped on a default
+# install. Split on every comma and source each one.
+#
+# The display-message confirmation has to be bound as PART of the same
+# command, and a keypress running `cmd1 \; cmd2` as separate shell/tmux-CLI
+# argv words does not do that: unescaped from bind-key's own top-level
+# parsing, `;` ends the bind-key command right there, so cmd2 becomes a
+# second, independent command that runs once, immediately, at plugin-load
+# time -- never on a keypress (this bit the mouse bindings below too; see
+# that comment for the reproduction). tmux's `{ ... }` command-grouping
+# syntax IS unambiguous, but only when it comes from real config-file text,
+# not scattered shell argv -- so build the binding as a small conf file and
+# source it, the same technique the mouse bindings below use.
+rlconf=$(mktemp) || exit 1
+trap 'rm -f "$rlconf"' EXIT HUP INT TERM
+{
+    old_ifs=$IFS
+    IFS=,
+    set -f
+    # shellcheck disable=SC2046 # splitting #{config_files} on comma is the point
+    set -- $(tmux display-message -p '#{config_files}' 2>/dev/null)
+    set +f
+    IFS=$old_ifs
+    [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
+    RLK=$(tmux show-option -gqv @cockpit_reload_key)
+    case "$RLK" in
+        off) ;;                      # explicitly disabled
+        "")  printf 'bind-key R {\n' ;;
+        *)   printf 'bind-key %s {\n' "$RLK" ;;
+    esac
+    if [ "$RLK" != off ]; then
+        for f in "$@"; do
+            # -q: #{config_files} lists every path tmux tried, not every path
+            # that existed (/etc/tmux.conf is almost always in the list and
+            # almost never on disk). Without -q, that one missing file's
+            # error aborts the whole chained command -- the user's own file
+            # right after it would never get sourced either.
+            printf '    source-file -q %s\n' "$(sq "$f")"
+        done
+        printf '    display-message "config reloaded"\n'
+        printf '}\n'
+    fi
+} > "$rlconf"
+tmux source-file "$rlconf"
+rm -f "$rlconf"
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane

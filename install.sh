@@ -210,6 +210,23 @@ if [ "$hooks" -eq 1 ]; then
     elif [ "$already_merged" -eq 1 ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
+        # $orig was read once, up front (before the jq merge and the .hooks
+        # diff above -- real wall time), and $merged was computed from that
+        # one read. Claude Code rewrites its own settings.json, unlocked, on
+        # every permission approval; measured window here is ~54ms, plenty
+        # for a live session's write to land while this script is still
+        # merging and then get silently overwritten by content computed from
+        # the stale $orig -- reported as a successful merge. Re-read right
+        # before touching anything and abort rather than clobber if it
+        # moved: the concurrent write is real data nobody asked us to
+        # discard, and it is never lost -- it is simply left as the current
+        # content of $real, and a second --hooks run re-reads it fresh and
+        # merges cleanly on top.
+        now=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+        if [ "$now" != "$orig" ]; then
+            printf '%s changed since this run started (a concurrent writer raced the merge); nothing written -- re-run --hooks to merge the current content\n' "$settings" >&2
+            exit 1
+        fi
         # Preserve the FIRST backup only. Overwriting it on every modifying
         # run would replace a user's pre-existing settings.json.bak, or -- on
         # a second modifying run -- replace the pristine original with

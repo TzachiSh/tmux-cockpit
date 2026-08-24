@@ -1604,6 +1604,28 @@ esac
 "$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
 fi
 
+echo "== branch popup passes the source pane id =="
+# Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
+# must be told which pane the key/click actually fired on rather than
+# resolving it itself. Both the prefix+b bind and the click gesture pass
+# -p '#{pane_id}', expanded by tmux at bind time on the originating pane.
+if need_tmux "branch popup pane id"; then :; else
+BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
+"$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
+    *"-p '#{pane_id}'"*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" "-p '#{pane_id}' in the bind" \
+         "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
+esac
+case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" in
+    *"-p '#{pane_id}'"*) ok "the branch click passes the source pane id" ;;
+    *) bad "the branch click passes the source pane id" "-p '#{pane_id}' in the bind" \
+         "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" ;;
+esac
+"$TMUX_REAL" -L "$BPI" kill-server >/dev/null 2>&1
+fi
+
 echo "== tab marks several files and opens them all =="
 # --multi: a compiler error naming a header and its source, a git diff naming
 # two files -- mark both, open both. Tab already means "mark several" in tm's
@@ -2204,6 +2226,53 @@ else
     ok "and no .bak is created on a failed merge"
 fi
 rm -rf "$HK10"
+
+# I2: --hooks reads settings.json once, merges (real jq wall time), then
+# writes -- an unlocked read-modify-write. Claude Code rewrites its own
+# settings.json on every permission approval, so a --hooks run racing a live
+# session can silently drop that write. A real race is ~54ms wide -- too
+# narrow to hit reliably from a test -- so a slow-jq PATH shim widens it: it
+# sleeps only when called with -s (the merge's own slurp call; the .hooks
+# diff calls just above use -S, a different flag, and stay fast), giving a
+# background writer time to land mid-merge.
+REALJQ=$(command -v jq)
+JQSHIM=$(mktmpd)
+cat > "$JQSHIM/jq" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+    [ "\$a" = "-s" ] && sleep 1
+done
+exec "$REALJQ" "\$@"
+EOF
+chmod +x "$JQSHIM/jq"
+
+HKR=$(mktmpd); mkdir -p "$HKR/.claude"
+printf '{"model":"opus"}' > "$HKR/.claude/settings.json"
+(PATH="$JQSHIM:$PATH" HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1) &
+instpid=$!
+sleep 0.3
+# The concurrent writer: a live Claude Code session rewriting settings.json
+# mid-merge, e.g. after a permission approval.
+printf '{"model":"opus","concurrent_marker":"added-by-race"}' > "$HKR/.claude/settings.json"
+wait "$instpid"
+instrc=$?
+is "a concurrent settings.json write survives a racing --hooks merge" "added-by-race" \
+   "$(jq -r '.concurrent_marker // empty' "$HKR/.claude/settings.json" 2>/dev/null)"
+if [ "$instrc" -eq 0 ]; then
+    bad "the raced run reports failure, not a false success" "a nonzero exit" "0"
+else
+    ok "the raced run reports failure, not a false success"
+fi
+# A second, non-racing run must then merge cleanly on top of the concurrent
+# writer's content -- the abort is a "re-run", not a dead end.
+HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "and a follow-up run merges the concurrent write and cockpit's hooks together" "added-by-race" \
+   "$(jq -r '.concurrent_marker // empty' "$HKR/.claude/settings.json" 2>/dev/null)"
+case "$(cat "$HKR/.claude/settings.json")" in
+    *agent-state*) ok "and cockpit's hooks are present too" ;;
+    *) bad "and cockpit's hooks are present too" "an agent-state command" "$(cat "$HKR/.claude/settings.json")" ;;
+esac
+rm -rf "$HKR" "$JQSHIM"
 else
     skip_ "hooks merge (jq not installed)"
 fi
@@ -3541,6 +3610,77 @@ esac
 is "@cockpit_reload_key off leaves R unbound" "" \
    "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix R sources every config file tmux loaded, not just the first =="
+# -f /dev/null above is single-entry #{config_files} -- it never exercised the
+# bug. A start with no -f is multi-entry (tmux tries /etc/tmux.conf, ~/.tmux.conf
+# and the XDG path in turn) and, on a fresh HOME, actually sources more than
+# one of them -- exactly the shape a default install has.
+if need_tmux "cockpit_reload_key multi-config"; then :; else
+RC="cockpit-rc-$$"; RCO="cockpit-rco-$$"; SOCKS="$SOCKS $RC $RCO"
+RCHOME=$(mktemp -d)
+mkdir -p "$RCHOME/.config/tmux"
+printf 'set -g @reload_marker_home v1\n' > "$RCHOME/.tmux.conf"
+printf 'set -g @reload_marker_xdg v1\n' > "$RCHOME/.config/tmux/tmux.conf"
+HOME="$RCHOME" "$TMUX_REAL" -L "$RC" new-session -d -s t -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
+
+# Sanity: the fixture really did produce a multi-entry #{config_files}, so a
+# green result below is not just an artifact of a single-entry fixture.
+cfgfiles=$("$TMUX_REAL" -L "$RC" display-message -p '#{config_files}' 2>/dev/null)
+case "$cfgfiles" in
+    *,*) ok "fixture really has a multi-entry #{config_files}" ;;
+    *) bad "fixture really has a multi-entry #{config_files}" "comma-separated paths" "$cfgfiles" ;;
+esac
+
+HOME="$RCHOME" "$TMUX_REAL" -L "$RC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+
+rbind=$("$TMUX_REAL" -L "$RC" list-keys -T prefix 2>/dev/null | awk '$4=="R"')
+case "$rbind" in
+    *"$RCHOME/.tmux.conf"*) ok "reload binding sources the user's ~/.tmux.conf, not just /etc/tmux.conf" ;;
+    *) bad "reload binding sources the user's ~/.tmux.conf, not just /etc/tmux.conf" \
+         "$RCHOME/.tmux.conf in the binding" "$rbind" ;;
+esac
+case "$rbind" in
+    *"$RCHOME/.config/tmux/tmux.conf"*) ok "reload binding also sources the second config file, not just the first" ;;
+    *) bad "reload binding also sources the second config file, not just the first" \
+         "$RCHOME/.config/tmux/tmux.conf in the binding" "$rbind" ;;
+esac
+
+# Functional check, not just text in the binding: edit both files on disk,
+# fire the bound key FOR REAL, confirm BOTH get re-sourced. This is also the
+# check that the display-message half is actually PART of the binding rather
+# than running once at plugin-load time (the argv-split trap) -- if it only
+# ran at load, list-keys above could still show the right source-file text
+# while the key itself did nothing.
+#
+# plain `send-keys -t <pane>` writes bytes into the PANE's input, which is
+# not how a prefix keypress reaches tmux -- prefix lookup happens in the
+# attached CLIENT reading its own pty, before anything is sent to a pane. So,
+# same technique as the ctrl+double-click test above: an outer tmux provides
+# a real pty for a client attached to the inner one, and send-keys -H writes
+# the raw bytes (02 = C-b, the default prefix; 52 = 'R') into that pty.
+printf 'set -g @reload_marker_home v2\n' > "$RCHOME/.tmux.conf"
+printf 'set -g @reload_marker_xdg v2\n' > "$RCHOME/.config/tmux/tmux.conf"
+"$TMUX_REAL" -L "$RCO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RC attach -t t" >/dev/null 2>&1
+ROP=$("$TMUX_REAL" -L "$RCO" list-panes -t o -F '#{pane_id}' | head -1)
+sleep 1
+if "$TMUX_REAL" -L "$RCO" list-panes -t o >/dev/null 2>&1; then
+    "$TMUX_REAL" -L "$RCO" send-keys -t "$ROP" -H 02 52 >/dev/null 2>&1
+    sleep 0.5
+    is "prefix R actually reloads the home conf" "v2" \
+       "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home)"
+    is "prefix R actually reloads the second (xdg) conf too" "v2" \
+       "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_xdg)"
+else
+    bad "prefix R actually reloads the home conf" "an attached client" "no client"
+    bad "prefix R actually reloads the second (xdg) conf too" "an attached client" "no client"
+fi
+"$TMUX_REAL" -L "$RCO" kill-server >/dev/null 2>&1
+
+"$TMUX_REAL" -L "$RC" kill-server >/dev/null 2>&1
+rm -rf "$RCHOME"
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
