@@ -155,3 +155,23 @@ FIX (converges with freeze-research): move the nested banner walk OUT of pane-bo
 precomputed global option that agent-state writes on transitions; guard agent-context's unconditional
 write; collapse agent_fleet's double-walk. All three are the "precompute into an option" pattern
 (nicm tmux#2774/#3352; catppuccin PR#328).
+
+## HARD-HANG RESOLVED (hunt-hardhang) — it's the modal review popup, not a server deadlock
+tmux 3.7c robust against ALL six server-hang mechanisms (HH1 run-shell, HH2 modal, HH3 #() jobs,
+HH4 hook storm, HH5 fd/EMFILE, HH6 frozen-tty) — every one reproduced as a NON-hang, server never
+worse than ~5ms, recovers. Longest server-unresponsive window across all rigs: ~0.
+
+THE ACTUAL "truly locked, needs kill" = SINGLE-CLIENT modal freeze from prefix+r. Chain:
+bind-key r → display-popup -E (modal to the ONE client) → tmux-review lines_mode at popup STARTUP
+(:310 wc -l) AND every fzf reload (:250) → the S1 O(n²) parser. Measured single-file: 4k rows 3.8s,
+10k 11.5s, 20k 29s; ~100k ≈ minutes, ~500k-1M ≈ the 1.8h figure. Modal the whole time → blank frozen
+popup, only kill recovers. A single-client user CANNOT distinguish this from a server hang. Real
+trigger under agent load: agent regenerates a big single file (lockfile / vendored bundle / minified
+JS / CSV), user hits prefix+r → multi-minute-to-hour lock. Conflated with the 82%-CPU molasses =
+"totally locked".
+=> The S1/S2 O(n²) fixes (Wave C) ARE the hard-lock fix, not just "blank popup for 10s". PLUS a new
+cheap guardrail: CAP --lines above N rows with "diff too large to anchor line-by-line" so a giant
+lockfile diff can NEVER wedge the popup. And get lines_mode off the popup-STARTUP critical path
+(lazy/background + spinner, esc stays live). Defense-in-depth: bind-key J via run-shell -b.
+CAVEAT: HH6 tty test was a Linux pty, not Windows Terminal/ConPTY. If a genuine ALL-CLIENTS hang
+exists it's terminal-side; set-titles off remains an untested-on-ConPTY ambient mitigation.

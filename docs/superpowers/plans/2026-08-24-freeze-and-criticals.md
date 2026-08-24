@@ -68,6 +68,19 @@
 
 ## WAVE C — scale criticals (same lane as B; the O(n²) shapes)
 
+### Task C0 [ELEVATED — this is the HARD-LOCK] row cap + lazy startup, so a giant diff can't wedge the modal popup
+**Files:** Modify scripts/tmux-review; Test tests/run.sh
+The prefix+r popup is modal; lines_mode runs at popup STARTUP and every reload; on a lockfile-sized
+single-file diff the O(n²) parse locks the client for minutes-to-hours (hunt-hardhang). Before/besides
+the O(n²) fix, add a HARD CAP: if the diff exceeds N rows (e.g. 5000), --lines emits a single
+"diff too large to anchor line-by-line (N rows) — review it directly" row (or a bounded head) instead
+of parsing all of it, so the popup ALWAYS appears and stays esc-cancelable. Also move the startup
+`nrows=$(lines_mode|wc -l)` off the critical path (the cap makes it bounded regardless).
+- [ ] Failing test: `--lines` on a 50k-row single-file diff returns within a small bound (<1s) with the
+  "too large" row, not after 30s+. FAIL-first (current: 30s+).
+- [ ] Implement cap; keep normal diffs (< N rows) fully functional and byte-identical.
+- [ ] `make check`; commit `fix: a giant diff can no longer wedge the review popup — it caps and stays cancelable`.
+
 ### Task C1: S1 — tmux-review --lines O(n²) + fork per row (:199-200)
 **Fix:** `printf -v disp ...` (no command substitution); accumulate rows into an indexed array or a temp file, never `+=` into one associative-array element.
 - [ ] Failing/perf test: `--lines` on an 8000-row single-file diff completes under a threshold (current: 55.9s). Assert linear-ish scaling (e.g. 8000 rows < K seconds, K set from the rig's warm baseline). FAIL-first.
