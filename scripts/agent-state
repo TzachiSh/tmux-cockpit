@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Record a tmux pane's agent state. Called from Claude Code hooks and tmux hooks.
 #   usage: agent-state <running|needs-input|error|done|off|notify> [pane-id]
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
@@ -84,11 +84,16 @@ case "$current" in
 esac
 
 if [ "$state" = off ]; then
+    [ -z "$current" ] && exit 0             # already clear: nothing to do
     tmux set-option -pu -t "$pane" @panestate 2>/dev/null || true
 else
     [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw
     tmux set-option -p -t "$pane" @panestate "$state" 2>/dev/null || true
 fi
 
-# Repaint now instead of waiting up to status-interval seconds.
-tmux refresh-client -S 2>/dev/null || true
+# No refresh-client here, deliberately. set-option already repaints everything
+# that reads the option -- measured: the border, the tab marker and even the
+# cross-window banner all update within 50ms of the set, with status-interval
+# parked at an hour. refresh-client -S added 19.6ms per transition and, unlike
+# the set's own repaint, re-ran the two #() status jobs -- two extra shells per
+# state change for nothing.

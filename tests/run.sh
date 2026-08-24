@@ -56,7 +56,17 @@ done
 # Scratch servers are registered here so an interrupted run does not leave them
 # behind. Each block still kills its own; this is the backstop.
 SOCKS=""
-kill_socks() { for s in $SOCKS; do tmux -L "$s" kill-server >/dev/null 2>&1; done; }
+# kill-server does NOT unlink the socket file -- tmux never removes one, by any
+# exit path (measured: kill-server, last kill-session and a natural exit all
+# leave it). A suite that mints 17 unique -L names per run therefore left 17
+# dead socket inodes in the tmux socket dir every time; ~850 had piled up.
+SOCKDIR="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)"
+kill_socks() {
+    for s in $SOCKS; do
+        tmux -L "$s" kill-server >/dev/null 2>&1
+        rm -f "$SOCKDIR/$s"
+    done
+}
 
 # Several checks need a live tmux server to set per-pane options against. Skip
 # them cleanly rather than failing: a red suite should mean broken code, not
@@ -79,10 +89,27 @@ if [ -z "$PANE" ]; then
     printf '  \033[31mFATAL\033[0m private tmux server did not start\n' >&2
     exit 1
 fi
+# Every mktemp in the suite goes through these, so an interrupted run cleans up
+# after itself. The per-block `rm -rf` calls stay -- they keep the footprint
+# small DURING the run; this is the backstop for the blocks still in flight.
+# Measured before: a SIGINT mid-run stranded ~3 dirs, and ~10 had accumulated.
+# The registry is a FILE, not a variable. Every call site is `X=$(mktmpd)`, and
+# a command substitution runs in a subshell -- a variable appended there is gone
+# the moment it returns, so the first version of this registered nothing at all.
+TMPS=$(mktemp)
+mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
+mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
+    rm -f "$SOCKDIR/$SUITE_SOCK"
     rm -rf "$STATE" "$SHIM"
+    while read -r t; do
+        [ -n "$t" ] || continue
+        chmod -R u+w "$t" 2>/dev/null      # the read-only-dir test leaves one at 555
+        rm -rf "$t"
+    done < "$TMPS"
+    rm -f "$TMPS"
 }
 trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
@@ -342,7 +369,7 @@ is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # there is no sweep that could delete a live one.
 
 echo "== worktree in the branch label =="
-wtroot=$(mktemp -d)
+wtroot=$(mktmpd)
 # Build a throwaway repo instead of borrowing a real one. Pointing this at
 # "$HOME/Henosis" made the block skip on every machine without that path, and
 # on the one machine that had it the test created a branch and a worktree
@@ -407,7 +434,7 @@ is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where
 echo "== tmux-open-path: which token on the line is a file =="
 # A scratch tree with the shapes real output prints. --dry-run resolves without
 # touching tmux and without opening anything.
-OP=$(mktemp -d); mkdir -p "$OP/src" "$OP/bin"
+OP=$(mktmpd); mkdir -p "$OP/src" "$OP/bin"
 : > "$OP/src/foo-bar.ts"; : > "$OP/README.md"; : > "$OP/bin/tm"
 op() { "$DIR/scripts/tmux-open-path" --dry-run "$OP" "$1"; }
 
@@ -436,7 +463,7 @@ rm -rf "$OP"
 
 echo "== tmux-branch: local and remote branches =="
 # Plumbing, not `git commit`: no user config, no hooks, no signing prompt.
-BR=$(mktemp -d); RM=$(mktemp -d)
+BR=$(mktmpd); RM=$(mktmpd)
 (
   cd "$BR" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -463,7 +490,7 @@ is "remote-only branch tracks"      "origin/remote-only" \
    "$(git -C "$BR" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
 # A branch held by another worktree cannot be checked out; git says which one.
 git -C "$BR" switch -q main 2>/dev/null
-WT=$(mktemp -d); rm -rf "$WT"
+WT=$(mktmpd); rm -rf "$WT"
 git -C "$BR" worktree add -q "$WT" feature/one 2>/dev/null
 case "$(git -C "$BR" switch feature/one 2>&1)" in
     *"already used by worktree"*) ok "worktree conflict names the worktree" ;;
@@ -505,7 +532,7 @@ echo "== tmux-open-path: the clicked line is never glob-expanded =="
 # with [ab]* in it -- was expanded against the pane's cwd, so alt-clicking it
 # opened files nobody named. Existence was supposed to be the filter; globbing
 # made the shell invent the candidates before the filter ever ran.
-GB=$(mktemp -d); : > "$GB/real.txt"; : > "$GB/other.txt"; : > "$GB/a"
+GB=$(mktmpd); : > "$GB/real.txt"; : > "$GB/other.txt"; : > "$GB/a"
 # Globbing expands against the PROCESS cwd, while candidates resolve against
 # the pane dir, so the bug only shows when they are the same directory -- the
 # common run-shell case, where the server was started inside the tree you work
@@ -523,7 +550,7 @@ echo "== tmux-open-path: the editor command survives odd filenames =="
 # containing a single quote closed that quote early and the rest of the name was
 # read as shell syntax, so the editor opened the wrong file -- or ran a word of
 # the filename as a command.
-EQ=$(mktemp -d); ETMUX=$(mktemp -d)
+EQ=$(mktmpd); ETMUX=$(mktmpd)
 : > "$EQ/it's.txt"
 cat > "$ETMUX/tmux" <<'STUB'
 #!/usr/bin/env bash
@@ -627,7 +654,7 @@ case "$(cat "$LOG")" in
 esac
 # --preview is a documented subcommand, so it gets whatever a user types. A
 # non-numeric line reached the arithmetic and `set -u` killed the preview.
-PV=$(mktemp -d); printf 'one\ntwo\nthree\n' > "$PV/f.txt"
+PV=$(mktmpd); printf 'one\ntwo\nthree\n' > "$PV/f.txt"
 for bad in abc -5 1.5 '' 2; do
     out=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" "$bad" 2>&1)
     case "$out" in
@@ -715,7 +742,7 @@ echo "== tmux-branch: usable without column(1) =="
 # The branch list was piped through column -t. Where column is not installed the
 # pipe produced nothing and the script reported "no branches yet" -- a confident
 # lie about a repo that had several.
-CB=$(mktemp -d)
+CB=$(mktmpd)
 (
   cd "$CB" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -724,7 +751,7 @@ CB=$(mktemp -d)
   git symbolic-ref HEAD refs/heads/main; git reset -q --hard
   git branch feature/one
 ) >/dev/null 2>&1
-NOCOL=$(mktemp -d)
+NOCOL=$(mktmpd)
 for c in git bash; do ln -s "$(command -v $c)" "$NOCOL/$c"; done
 out=$(env -u TMUX PATH="$NOCOL" "$DIR/scripts/tmux-branch" "$CB" </dev/null 2>&1)
 case "$out" in
@@ -737,7 +764,7 @@ echo "== tm: the kill picker and the name cleaner =="
 # Without fzf the picker is a `select`, and Ctrl-D leaves the choice variable
 # unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
 # script with "unbound variable" instead of exiting quietly.
-TMS=$(mktemp -d)
+TMS=$(mktmpd)
 for c in readlink bash; do ln -s "$(command -v $c)" "$TMS/$c"; done
 cat > "$TMS/tmux" <<'STUB'
 #!/usr/bin/env bash
@@ -803,7 +830,7 @@ tmux -L "$SOCK2" kill-server >/dev/null 2>&1
 fi
 
 echo "== tmux-where: detached HEAD and odd repos =="
-DH=$(mktemp -d)
+DH=$(mktmpd)
 (
   cd "$DH" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -825,7 +852,7 @@ case "$d" in
 esac
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
-IB=$(mktemp -d); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
+IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
 XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
 is "installs through a symlinked plugin dir" "3" "$(ls "$IBIN" | wc -l)"
 # DIR came from a LOGICAL pwd while the guard compared readlink -f of the link,
@@ -844,7 +871,7 @@ rm -rf "$IB"
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.
-HU=$(mktemp -d); : > "$HU/f.txt"
+HU=$(mktmpd); : > "$HU/f.txt"
 is "a ~ token with HOME unset still resolves the real file" "$HU/f.txt::" \
    "$(env -u HOME "$DIR/scripts/tmux-open-path" --dry-run "$HU" 'see f.txt and ~/nothing' 2>&1)"
 is "and the preview does not crash"     "empty file" \
@@ -868,7 +895,7 @@ echo "== the branch picker must not hijack ctrl-n =="
 # because this only misbehaves with a terminal attached.
 if need_tmux "ctrl-n in the branch picker"; then :; else
 if command -v fzf >/dev/null 2>&1; then
-KB=$(mktemp -d)
+KB=$(mktmpd)
 (
   cd "$KB" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -969,7 +996,7 @@ fi
 
 # `read` strips spaces and tabs but never \r, so a repo checked out on Windows
 # put a raw carriage return into the status line. git rev-parse never did.
-CR=$(mktemp -d); git init -q "$CR" >/dev/null 2>&1
+CR=$(mktmpd); git init -q "$CR" >/dev/null 2>&1
 printf 'ref: refs/heads/main\r\n' > "$CR/.git/HEAD"
 is "a CRLF .git/HEAD does not leak a carriage return" " main" \
    "$("$DIR/scripts/tmux-where" branch 1 "$CR" claude)"
@@ -977,7 +1004,7 @@ rm -rf "$CR"
 
 # printf '%.24s' counts BYTES, so a non-ASCII branch name was cut mid-codepoint
 # and invalid UTF-8 reached the status bar.
-U8=$(mktemp -d); git init -q "$U8" >/dev/null 2>&1
+U8=$(mktmpd); git init -q "$U8" >/dev/null 2>&1
 git -C "$U8" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i >/dev/null 2>&1
 if git -C "$U8" checkout -q -b "feature/日本語のブランチ名ですとても長い" 2>/dev/null; then
     u=$("$DIR/scripts/tmux-where" branch 1 "$U8" claude)
@@ -991,7 +1018,7 @@ rm -rf "$U8"
 
 # tmux-where and tmux-open-path were guarded; tmux-branch was the last one left
 # dereferencing a bare $HOME under set -u.
-HB=$(mktemp -d); git init -q "$HB" >/dev/null 2>&1
+HB=$(mktmpd); git init -q "$HB" >/dev/null 2>&1
 git -C "$HB" -c user.email=t@e -c user.name=t commit -q --allow-empty -m i >/dev/null 2>&1
 case "$(env -u HOME -u TMUX timeout 5 "$DIR/scripts/tmux-branch" "$HB" </dev/null 2>&1)" in
     *"unbound variable"*) bad "tmux-branch survives HOME unset" "no crash" "HOME: unbound variable" ;;
@@ -1001,7 +1028,7 @@ rm -rf "$HB"
 
 # install.sh printed "linked ..." for every link ln had just failed to create,
 # and exited 0.
-RO=$(mktemp -d); chmod 555 "$RO"
+RO=$(mktmpd); chmod 555 "$RO"
 out=$(XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
 chmod 755 "$RO"; rm -rf "$RO"
 case "$out" in
@@ -1017,7 +1044,7 @@ is "an unknown option is rejected" "2" "$?"
 # interpolate() kept a bare $DIR after sq() fixed the bindings, so a plugin path
 # containing a space made both status tokens run a command sh could not find --
 # silently, on every redraw, forever.
-SPC=$(mktemp -d)/"my plugins"; mkdir -p "$SPC"
+SPC=$(mktmpd)/"my plugins"; mkdir -p "$SPC"
 cp -r "$DIR/scripts" "$SPC/" 2>/dev/null
 sh -c "'$SPC/scripts/tmux-where' branch 1 '$DIR' claude" >/dev/null 2>&1
 is "a spaced plugin path still runs the status script" "0" "$?"
@@ -1085,7 +1112,7 @@ echo "== @open-editor still works under its new name =="
 # Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
 # another plugin could reasonably claim it, but people have it in their configs,
 # so it keeps working for a release and says so.
-RN=$(mktemp -d); RT=$(mktemp -d); : > "$RN/f.txt"
+RN=$(mktmpd); RT=$(mktmpd); : > "$RN/f.txt"
 cat > "$RT/tmux" <<'RSTUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -1176,7 +1203,7 @@ echo "== tab marks several files and opens them all =="
 if need_tmux "multi-open"; then :; else
 if command -v fzf >/dev/null 2>&1; then
 MO="cockpit-mo-$$"; SOCKS="$SOCKS $MO"
-MOLOG=$(mktemp); MOED=$(mktemp)
+MOLOG=$(mktmpf); MOED=$(mktmpf)
 printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MOLOG" > "$MOED"; chmod +x "$MOED"
 "$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MO" set -g @cockpit_editor "$MOED" >/dev/null 2>&1
@@ -1217,7 +1244,7 @@ echo "== picking a folder browses into it =="
 if need_tmux "folder browse"; then :; else
 if command -v fzf >/dev/null 2>&1; then
 BR="cockpit-br-$$"; SOCKS="$SOCKS $BR"
-BRLOG=$(mktemp); BRED=$(mktemp)
+BRLOG=$(mktmpf); BRED=$(mktmpf)
 printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$BRLOG" > "$BRED"; chmod +x "$BRED"
 "$TMUX_REAL" -L "$BR" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
 "$TMUX_REAL" -L "$BR" set -g @cockpit_editor "$BRED" >/dev/null 2>&1
@@ -1248,7 +1275,7 @@ echo "== the preview shows what changed, not just that it changed =="
 # on the line you clicked -- lead with it. A target line wins: the jump is the
 # point then. ^G forces the diff anywhere, and a clean file says so instead of
 # showing an empty pane.
-DV=$(mktemp -d)
+DV=$(mktmpd)
 (
   cd "$DV" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -1287,7 +1314,7 @@ echo "== ^O opens a folder whole; the list names the line =="
 if need_tmux "^O folder open"; then :; else
 if command -v fzf >/dev/null 2>&1; then
 OO="cockpit-oo-$$"; SOCKS="$SOCKS $OO"
-OOLOG=$(mktemp); OOED=$(mktemp)
+OOLOG=$(mktmpf); OOED=$(mktmpf)
 printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OOLOG" > "$OOED"; chmod +x "$OOED"
 "$TMUX_REAL" -L "$OO" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OO" set -g @cockpit_editor "$OOED" >/dev/null 2>&1

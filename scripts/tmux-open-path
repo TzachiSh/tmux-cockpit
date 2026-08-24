@@ -160,8 +160,12 @@ if [ "${1:-}" = --preview ]; then
     # that. Only the first 200 lines are measured; that is all we render.
     longest=$(awk 'NR > 200 { exit } { if (length($0) > m) m = length($0) } END { print m+0 }' \
               "$f" 2>/dev/null)
+    # ...and cap the TARGET line too: bat highlights sequentially from line 1,
+    # so its cost is linear in the line number -- measured 15s at line 50000
+    # and unbounded beyond, re-run on every cursor move. A deep stack-trace
+    # line (bundle.js:48213) made the picker hang. The awk path is flat.
     bat=""
-    if [ "${longest:-0}" -le 1000 ]; then
+    if [ "${longest:-0}" -le 1000 ] && [ "${last:-0}" -le 2000 ]; then
         bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
     fi
     if [ -n "$bat" ]; then
