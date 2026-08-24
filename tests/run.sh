@@ -2008,5 +2008,126 @@ case "$rv5preview" in
 esac
 rm -rf "$PD"
 
+echo "== tmux-review --deliver: guards refuse before anything is pasted =="
+if need_tmux "tmux-review --deliver"; then :; else
+RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
+"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
+sleep 0.3
+# The suite's private socket has no cockpit.tmux run-shell to default this --
+# set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
+"$TMUX_REAL" -L "$RDS" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+
+AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "claude" { print $1 }')
+NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "bash" { print $1 }')
+
+RDSTORE="$STATE/deliver-store-$$"
+printf '## src.go:1 (+)\n> foo\nfix this\n\n' > "$RDSTORE"
+
+# Driven from NP, a plain shell pane already inside the session -- exactly the
+# way a real popup's `tmux run-shell -b` lands inside the session it targets,
+# so a bare `tmux` call in the script resolves $TMUX to this socket with no
+# -L threaded through by hand.
+rundeliver() {
+    "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
+        "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$1") $(shq_test "$2"); echo RC=\$?" Enter
+    sleep 0.6
+}
+shq_test() { printf '%q' "$1"; }
+apcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -t "$AP"; }
+npcap() { "$TMUX_REAL" -L "$RDS" capture-pane -p -t "$NP"; }
+
+rundeliver "not-a-pane-id" "$RDSTORE"
+case "$(apcap)" in
+    *"fix this"*) bad "a bogus pane id is refused, nothing pastes anywhere" \
+         "no review text in the agent pane" "$(apcap)" ;;
+    *) ok "a bogus pane id is refused, nothing pastes anywhere" ;;
+esac
+
+rundeliver "$NP" "$RDSTORE"
+case "$(npcap)" in
+    *"fix this"*) bad "a non-agent pane is refused (would EXECUTE as shell input)" \
+         "no review text in the shell pane" "$(npcap)" ;;
+    *) ok "a non-agent pane is refused (would EXECUTE as shell input)" ;;
+esac
+
+EMPTYSTORE="$STATE/deliver-empty-$$"
+: > "$EMPTYSTORE"
+rundeliver "$AP" "$EMPTYSTORE"
+case "$(apcap)" in
+    *"Code review of your uncommitted changes"*) \
+        bad "an empty store is refused, nothing to deliver" \
+            "no composed header in the agent pane" "$(apcap)" ;;
+    *) ok "an empty store is refused, nothing to deliver" ;;
+esac
+
+echo "== tmux-review --deliver: the composed review lands typed-but-unsent =="
+rundeliver "$AP" "$RDSTORE"
+apafter=$(apcap)
+case "$apafter" in
+    *"## src.go:1 (+)"*"> foo"*"fix this"*) \
+        ok "the composed review appears verbatim in the agent pane" ;;
+    *) bad "the composed review appears verbatim in the agent pane" \
+         "## src.go:1 (+) / > foo / fix this" "$apafter" ;;
+esac
+# Unexecuted: bash echoes a bracketed paste back as literal text and stays on
+# the SAME prompt line it started from -- no "not found" errors, no second
+# fresh prompt below the pasted block.
+case "$apafter" in
+    *'not found'*) bad "the paste never executes (no command errors)" \
+         "no 'not found' anywhere" "$apafter" ;;
+    *) ok "the paste never executes (no command errors)" ;;
+esac
+promptcount=$(printf '%s\n' "$apafter" | grep -c '\$ *$' || true)
+is "the paste never executes (still one prompt, no fresh one after Enter)" \
+   "0" "$promptcount"
+
+echo "== tmux-review --deliver: an oversized review goes to a file, not the pane =="
+BIGSTORE="$STATE/deliver-big-$$"
+: > "$BIGSTORE"
+for i in $(seq 1 40); do
+    printf '## src.go:%d (+)\n> line %d\nthis comment pads the payload past 2048 bytes on purpose\n\n' \
+        "$i" "$i" >> "$BIGSTORE"
+done
+bigbytes=$("$DIR/scripts/tmux-review" --compose "$BIGSTORE" | wc -c)
+if [ "$bigbytes" -le 2048 ]; then
+    bad "fixture actually exceeds the 2048-byte threshold" "> 2048 bytes" "$bigbytes bytes"
+else
+    ok "fixture actually exceeds the 2048-byte threshold ($bigbytes bytes)"
+fi
+rundeliver "$AP" "$BIGSTORE"
+RUNDIR=${XDG_RUNTIME_DIR:-/tmp}
+BIGFILE="$RUNDIR/tmux-cockpit-review-${AP#%}.md"
+if [ -f "$BIGFILE" ]; then
+    ok "the spillover file exists at the documented path"
+else
+    bad "the spillover file exists at the documented path" "$BIGFILE" "no such file"
+fi
+bigperm=$(stat -c '%a' "$BIGFILE" 2>/dev/null || stat -f '%Lp' "$BIGFILE" 2>/dev/null)
+is "the spillover file is 0600" "600" "$bigperm"
+is "the spillover file holds the full composed review" \
+   "$("$DIR/scripts/tmux-review" --compose "$BIGSTORE")" "$(cat "$BIGFILE")"
+bigpaneafter=$(apcap)
+case "$bigpaneafter" in
+    *"Read and address every comment in $BIGFILE"*) \
+        ok "only the short pointer is pasted into the pane" ;;
+    *) bad "only the short pointer is pasted into the pane" \
+         "Read and address every comment in $BIGFILE" "$bigpaneafter" ;;
+esac
+case "$bigpaneafter" in
+    *"this comment pads the payload"*) \
+        bad "the full review text never reaches the pane itself" \
+            "no comment body text in the pane" "$bigpaneafter" ;;
+    *) ok "the full review text never reaches the pane itself" ;;
+esac
+rm -f "$BIGFILE"
+
+"$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
