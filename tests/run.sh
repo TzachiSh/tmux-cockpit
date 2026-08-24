@@ -3711,9 +3711,16 @@ mkdir -p "$RKTMPDIR"
 RKCTL=$("$TMUX_REAL" -L "$RK" list-panes -t t:0 -F '#{pane_id}')
 # Same TMPDIR redirect as the block above: review_pane()'s mktemp store is
 # never named to us, so a private empty dir makes whatever appears there it.
+# The echoed marker is the poll's condition -- `export` is a builtin, so the
+# pane's own process never changes and there is nothing else to watch for.
+# The typed line carries the literal "RKTMP=%s", not the expanded path, so a
+# match on the path is the shell's OUTPUT, not the command echo.
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" \
-    "export TMPDIR=$(shq_test "$RKTMPDIR")" Enter
-sleep 0.2
+    "export TMPDIR=$(shq_test "$RKTMPDIR"); printf 'RKTMP=%s\\n' \"\$TMPDIR\"" Enter
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RKCTL" | grep -qF "RKTMP=$RKTMPDIR" && break
+    sleep 0.1
+done
 
 RK_DIRTY=$(mktmpd)
 (
@@ -3730,7 +3737,15 @@ RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
 # The target is sitting on a permission prompt -- deliver()'s guard 3, the
 # refusal a human is most likely to hit right after finishing a review.
 "$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
-sleep 0.3
+# Both preconditions, polled rather than slept for: the fleet queue filters on
+# pane_current_command, so the agent pane's own shell has to be up before
+# --fleet runs (it would otherwise report no dirty agent pane at all), and
+# deliver()'s guard 3 reads @panestate back off the pane.
+for i in $(seq 1 20); do
+    [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RK_AGENT" '#{pane_current_command}')" = claude ] &&
+    [ "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @panestate)" = needs-input ] && break
+    sleep 0.1
+done
 
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "'$DIR/scripts/tmux-review'" Enter
 rkup=0
