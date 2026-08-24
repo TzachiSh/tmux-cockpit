@@ -3304,6 +3304,61 @@ case "$(gcap "$APG")" in
          "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
 esac
 
+# B2: the `tmux if-shell` call above returns 0 (the queue accepted it)
+# whichever nested branch fired -- so a shell that only inspected THAT exit
+# code could not tell a race-refusal from a delivery, and deliver() used to
+# fall through with RC=0 either way, silently breaking the exit-1 refusal
+# contract every early guard in this same function already honors.
+# deliver() now checks the staged buffer's own survival afterward instead:
+# the buffer is loaded before the gate runs, and only the DELIVERED branch's
+# `paste-buffer -d` consumes it -- so a buffer still present after the call
+# returned IS the refusal, readable without re-testing the (already stale)
+# pane. rc_from_buffer() below is that check, copied verbatim from deliver().
+rc_from_buffer() {
+    if "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null \
+         | grep -qxF "$1"; then
+        "$TMUX_REAL" -L "$RG" delete-buffer -b "$1" 2>/dev/null
+        printf '1\n'; return
+    fi
+    printf '0\n'
+}
+
+# The OLD refused branch deleted the buffer INLINE (the shape deliver() sent
+# before this fix) -- by the time the CLI call returns there is nothing left
+# to distinguish "refused" from "delivered and consumed", so the RC check
+# above reads 0. The hazard is real: this is exactly why deliver() used to
+# report a race-refusal as success.
+printf 'OLD-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-old -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-old -t $NPG ; display-message pasted" \
+    "delete-buffer -b rg-old ; display-message 'not delivered'"
+is "the old inline delete on refusal hides the refusal from an RC check (the hazard is real)" \
+   "0" "$(rc_from_buffer rg-old)"
+
+# The fixed refused branch leaves the buffer for deliver()'s own post-check to
+# find and clean up -- the same RC=1 contract the early guards already use.
+printf 'NEW-RACE\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-new -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-new -t $NPG ; display-message pasted" \
+    "display-message 'tmux-review: $NPG is no longer an agent — not delivered'"
+is "the fixed refused branch's surviving buffer reports the same RC=1 the early guards use" \
+   "1" "$(rc_from_buffer rg-new)"
+if "$TMUX_REAL" -L "$RG" list-buffers 2>/dev/null | grep -q 'rg-new'; then
+    bad "the RC check also cleans up the buffer it found" "no rg-new buffer" "rg-new still present"
+else
+    ok "the RC check also cleans up the buffer it found"
+fi
+
+# A real delivery -- the buffer is consumed, so the same check reports RC=0.
+printf 'NEW-OK\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-newok -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-newok -t $APG ; display-message pasted" \
+    "display-message 'tmux-review: $APG is no longer an agent — not delivered'"
+is "a real delivery still reports RC=0" "0" "$(rc_from_buffer rg-newok)"
+
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
 

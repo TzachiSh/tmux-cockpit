@@ -550,17 +550,32 @@ deliver() {
     # never targeted). So the check is redone HERE, by tmux itself, in the same
     # command-queue item as the paste: `if-shell -F -t <pane>` re-evaluates the
     # SAME #{m:...} test against the pane at paste time and only pastes if it is
-    # still an agent, else drops the staged buffer and says so. The window is
-    # closed -- there is no shell round-trip left between the test and the
-    # paste. if-shell returns 0 either way (the queue accepted it), so each
-    # branch carries its own message rather than the shell inspecting a result
-    # it can no longer trust. The early check up top stays as the cheap
-    # fast-fail (and the exit-1 refusal contract) for a pane that is already
-    # not an agent.
+    # still an agent. The window is closed -- there is no shell round-trip left
+    # between the test and the paste. The early check up top stays as the
+    # cheap fast-fail for a pane that is already not an agent.
+    #
+    # The refused branch deliberately does NOT delete $bufname (only the
+    # delivered branch's `paste-buffer -d` does) -- if-shell's nested command
+    # has already run by the time this CLI call returns (same command-queue
+    # item, no -b job behind it), so the buffer's survival IS the atomic
+    # gate's own true/false outcome, readable here without a second stale
+    # re-test of the pane. Before this, a race-refusal here fell through with
+    # whatever `tmux if-shell` itself returns ("the queue accepted it", always
+    # 0) even though nothing was delivered -- silently breaking the exit-1
+    # refusal contract every early guard above already honors. Checking (and
+    # then clearing) the buffer closes that gap: both refusal paths now share
+    # one contract, and the buffer is gone either way before this function
+    # returns, same as before.
     tmux if-shell -F -t "$pane" \
         "#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}" \
         "paste-buffer -p -r -d -b $bufname -t $pane ; display-message 'review pasted into $pane — press Enter there to send'" \
-        "delete-buffer -b $bufname ; display-message 'tmux-review: $pane is no longer an agent — not delivered'"
+        "display-message 'tmux-review: $pane is no longer an agent — not delivered'"
+
+    if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
+        tmux delete-buffer -b "$bufname" 2>/dev/null
+        return 1
+    fi
+    return 0
 }
 
 # --- --fleet / entry-point resolution --------------------------------------
