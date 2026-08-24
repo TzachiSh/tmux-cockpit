@@ -879,6 +879,98 @@ is "untouched options stay untouched" "bg=red" "$(tmux -L "$SOCK2" show-option -
 tmux -L "$SOCK2" kill-server >/dev/null 2>&1
 fi
 
+echo "== a directory name can no longer run code through the status job =="
+# #{agent_where_path} used to embed pane_current_path inside the #() job with
+# hand-written single quotes -- tmux expands the token INSIDE the job before sh
+# ever sees it, so a bare ' in the cwd closed that quote early and a trailing
+# $(...) ran as a real command, on every status redraw, for anyone with the
+# token in status. An outer tmux server provides the pty for a client attached
+# to the inner one (the split-picker test above uses the same pattern) so the
+# #() job -- which only runs for an attached client -- actually fires.
+if need_tmux "RCE via directory name"; then :; else
+SP=$(mktmpd)
+MAL="$SP/x'\$(touch $SP/OWNED)'y"
+mkdir -p "$MAL"
+OUTER="cockpit-rce-outer-$$"; INNER="cockpit-rce-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+tmux -L "$INNER" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER" refresh-client >/dev/null 2>&1
+sleep 1
+if [ -e "$SP/OWNED" ]; then
+    bad "a hostile cwd's \$(...) never runs" "no OWNED file" "OWNED file created"
+else
+    ok "a hostile cwd's \$(...) never runs"
+fi
+tmux -L "$OUTER" kill-server >/dev/null 2>&1
+tmux -L "$INNER" kill-server >/dev/null 2>&1
+
+# A normal cwd must still render, not just fail to execute.
+D2=$(mktmpd)
+OUTER2="cockpit-rce-outer2-$$"; INNER2="cockpit-rce-inner2-$$"
+SOCKS="$SOCKS $OUTER2 $INNER2"
+tmux -L "$INNER2" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$D2" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER2" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER2" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER2" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER2 attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER2" refresh-client >/dev/null 2>&1
+sleep 1
+scr=$(tmux -L "$OUTER2" capture-pane -p -t o)
+case "$scr" in
+    *"$D2"*) ok "a normal cwd still renders its path" ;;
+    *) bad "a normal cwd still renders its path" "$D2 on the status line" "$scr" ;;
+esac
+tmux -L "$OUTER2" kill-server >/dev/null 2>&1
+tmux -L "$INNER2" kill-server >/dev/null 2>&1
+fi
+
+echo "== ...and neither can a NEWLINE or TAB, which #{q:} alone does not escape =="
+# #{q:} (man tmux: "q: will escape sh(1) special characters") looked like the
+# whole fix, but it backslash-escapes quotes/$()/backticks and passes NEWLINE
+# and TAB straight through -- verified: #{q:@x} on "a\nb\tc" comes back
+# "a\nb\tc" (0a and 09 both raw, no backslash). A newline is a command
+# separator to sh and a tab is a word separator, so a cwd built on either
+# still ran arbitrary commands, with arguments, through #{q:pane_current_path}
+# alone. The real fix stops passing pane_current_path/_command through the
+# #() job's command string at all -- only pane_pid and pane_id go in there now,
+# both closed forms that can never carry a shell metacharacter.
+if need_tmux "RCE via newline/tab in a directory name"; then :; else
+SP2=$(mktmpd)
+MAL2="$SP2/x
+touch	$SP2/marker
+y"
+mkdir -p "$MAL2"
+OUTER3="cockpit-rce-outer3-$$"; INNER3="cockpit-rce-inner3-$$"
+SOCKS="$SOCKS $OUTER3 $INNER3"
+tmux -L "$INNER3" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL2" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$INNER3" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER3" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$INNER3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$OUTER3" -f /dev/null new-session -d -s o -x 100 -y 24 \
+    "$TMUX_REAL -L $INNER3 attach -t s" >/dev/null 2>&1
+sleep 2
+tmux -L "$INNER3" refresh-client >/dev/null 2>&1
+sleep 1
+if [ -e "$SP2/marker" ]; then
+    bad "a newline/tab cwd's command never runs" "no marker file" "marker file created"
+else
+    ok "a newline/tab cwd's command never runs"
+fi
+tmux -L "$OUTER3" kill-server >/dev/null 2>&1
+tmux -L "$INNER3" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-where: detached HEAD and odd repos =="
 DH=$(mktmpd)
 (
@@ -1997,6 +2089,38 @@ rm -f "$CXFIFO"
 if [ "$took" -le 3 ]; then ok "a stalling writer is abandoned in time"
 else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
+fi
+
+echo "== the statusline shim skips the write when context fill is unchanged =="
+# Claude Code calls statusLine every render. Every `tmux set-option`, even -p
+# on an unchanged value, forces a full server-wide redraw (measured: 5
+# identical writes to @panestate_ctx -> 5 redraws; the read that agent-state
+# already does for @panestate costs 0). Two calls with the SAME payload must
+# issue exactly one set-option, not two. A tmux shim ahead of the suite's own
+# on PATH logs every set-option call it sees while still forwarding to the
+# real binary, so the pane's state stays correct and the count is honest.
+if need_tmux "agent-context write guard"; then :; else
+CX2="cockpit-cx2-$$"; SOCKS="$SOCKS $CX2"
+"$TMUX_REAL" -L "$CX2" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
+CXP2=$("$TMUX_REAL" -L "$CX2" list-panes -t t -F '#{pane_id}')
+CXTMUX2="$SOCKDIR/$CX2,0,0"
+CXS=$(mktmpd)
+CXLOG="$CXS/setlog"; : > "$CXLOG"
+cat > "$CXS/tmux" <<SHIMEOF
+#!/bin/sh
+[ "\$1" = "set-option" ] && printf '%s\n' "\$*" >> "$CXLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+chmod +x "$CXS/tmux"
+PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
+    < "$DIR/tests/fixtures/statusline.json" >/dev/null
+is "the first call writes the new value" "1" "$(wc -l < "$CXLOG")"
+PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
+    < "$DIR/tests/fixtures/statusline.json" >/dev/null
+is "a second call with the same value writes nothing" "1" "$(wc -l < "$CXLOG")"
+is "the stored value is still correct" "4" \
+   "$("$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_ctx)"
+"$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
 fi
 
 echo "== tmux-review --lines: the diff rows a review anchors to =="

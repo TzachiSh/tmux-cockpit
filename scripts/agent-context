@@ -37,7 +37,15 @@ model=$(jq -r '.model.display_name // empty' 2>/dev/null <<<"$payload")
 
 case "$pct" in
     ''|*[!0-9]*) exit 0 ;;
-    *) tmux set-option -p -t "$pane" @panestate_ctx "$pct" 2>/dev/null ;;
+    *)
+        # Claude Code calls this every render, most of the time with an
+        # unchanged pct. A `set-option`, even -p on an unchanged value, forces
+        # a full server-wide redraw regardless -- measured: 5 identical writes,
+        # 5 redraws. The read is free (0 redraws), so check first and skip the
+        # write entirely when nothing changed. Same guard as agent-state:130.
+        cur=$(tmux show-option -pqv -t "$pane" @panestate_ctx 2>/dev/null)
+        [ "$cur" = "$pct" ] || tmux set-option -p -t "$pane" @panestate_ctx "$pct" 2>/dev/null
+        ;;
 esac
 printf '%s · ctx %s%%\n' "${model:-claude}" "$pct"
 exit 0

@@ -43,8 +43,18 @@ interpolate() {
     # status tokens run "sh: /home/my: not found" on every redraw -- rendering
     # nothing, reporting nothing.
     local w; w=$(sq "$DIR/scripts/tmux-where")
-    local r_path="#($w path #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
-    local r_brch="#($w branch #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
+    # Only #{pane_pid} and #{pane_id} go into this command string -- both are
+    # closed forms (digits, or a % plus digits) that can never carry a shell
+    # metacharacter, so tmux-where can fetch pane_current_path/_command itself
+    # from pane_id, as DATA off a second tmux call, never as text sh re-parses.
+    # #{q:} looked like the fix (man tmux: "q: will escape sh(1) special
+    # characters") and was tried first, but it escapes quotes/$()/backticks
+    # and passes NEWLINE and TAB straight through -- a command separator and a
+    # word separator to sh -- so a cwd built on either still ran arbitrary
+    # commands on every status redraw with #{q:} in place. Verified: #{q:@x}
+    # on "a\nb\tc" comes back "a\nb\tc" (0a and 09 both raw, no backslash).
+    local r_path="#($w path #{pane_pid} #{pane_id})"
+    local r_brch="#($w branch #{pane_pid} #{pane_id})"
 
     # One x per blocked/errored agent pane, in ANY session, then #{n:} takes the
     # length of that string. The whole thing is format syntax: the counter costs
