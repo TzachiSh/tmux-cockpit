@@ -1647,7 +1647,22 @@ out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
 case "$out" in *agent-state*) ok "dry-run previews the change" ;;
     *) bad "dry-run previews the change" "a diff naming agent-state" "$out" ;; esac
 is "dry-run wrote nothing" "{}" "$(cat "$HK2/.claude/settings.json")"
+# the diff header must name the real settings.json path, not the process
+# substitution's /dev/fd/NN plumbing.
+case "$out" in *"$HK2/.claude/settings.json"*) ok "and the diff header names the real file" ;;
+    *) bad "and the diff header names the real file" "$HK2/.claude/settings.json in the header" "$out" ;; esac
 rm -rf "$HK2"
+
+# and dry-run predicts "already merged" exactly like the real run would --
+# not an empty diff plus "nothing written" for a file that has nothing left
+# to preview.
+HK16=$(mktmpd); mkdir -p "$HK16/.claude"
+printf '{"model":"opus"}' > "$HK16/.claude/settings.json"
+HOME="$HK16" "$DIR/install.sh" --hooks >/dev/null 2>&1
+out=$(HOME="$HK16" "$DIR/install.sh" --hooks --dry-run 2>&1)
+case "$out" in *"already merged, nothing to do"*) ok "dry-run on an already-merged file predicts the real outcome" ;;
+    *) bad "dry-run on an already-merged file predicts the real outcome" "already merged, nothing to do" "$out" ;; esac
+rm -rf "$HK16"
 
 # I1: --dry-run used to run the symlink loop, mkdir ~/.claude, and seed
 # settings.json before ever reaching the dry gate -- a preview on a totally
@@ -1703,10 +1718,16 @@ rm -rf "$HK14"
 HK5=$(mktmpd); mkdir -p "$HK5/.claude"
 printf '{"sentinel":"user-backup"}' > "$HK5/.claude/settings.json.bak"
 printf '{"model":"opus"}' > "$HK5/.claude/settings.json"
-HOME="$HK5" "$DIR/install.sh" --hooks >/dev/null 2>&1
+out=$(HOME="$HK5" "$DIR/install.sh" --hooks 2>&1)
 case "$(cat "$HK5/.claude/settings.json.bak")" in
     *user-backup*) ok "a pre-existing .bak is never overwritten" ;;
     *) bad "a pre-existing .bak is never overwritten" "user-backup still present" "$(cat "$HK5/.claude/settings.json.bak")" ;;
+esac
+# and the success message must not claim a fresh backup it never wrote --
+# pointing at a rollback that is actually the user's unrelated .bak content.
+case "$out" in *"(backup:"*) bad "and it does not claim a fresh backup" "no (backup: ...) claim" "$out" ;;
+    *"existing backup kept"*) ok "and it says the existing backup was kept, not overwritten" ;;
+    *) bad "and it says the existing backup was kept, not overwritten" "existing backup kept" "$out" ;;
 esac
 rm -rf "$HK5"
 

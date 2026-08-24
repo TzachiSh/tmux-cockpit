@@ -173,9 +173,25 @@ if [ "$hooks" -eq 1 ]; then
           ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
         || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
 
+    # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
+    # comparing the whole file as text rewrote (and I2-clobbered) the backup
+    # on every formatting-only difference, even when cockpit's hooks were
+    # already fully present. Computed once, up front: a dry-run must predict
+    # the same "already merged" outcome the real run would report, not just
+    # an empty diff plus "nothing written".
+    if [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(printf '%s' "$orig" | jq -S -c '.hooks // {}')" ]; then
+        already_merged=1
+    else
+        already_merged=0
+    fi
+
     if [ "$dry" -eq 1 ]; then
-        if [ "$have_diff" -eq 1 ]; then
-            diff -u <(printf '%s\n' "$orig") <(printf '%s\n' "$merged")
+        if [ "$already_merged" -eq 1 ]; then
+            printf 'hooks     already merged, nothing to do\n'
+        elif [ "$have_diff" -eq 1 ]; then
+            # -L names both sides with the real path instead of the process
+            # substitution's /dev/fd/NN, which a plain diff -u would print.
+            diff -u -L "$settings" -L "$settings (merged)" <(printf '%s\n' "$orig") <(printf '%s\n' "$merged")
             rc_diff=$?
             # 1 just means "they differ", which is the expected case here.
             # Anything higher is a real diff failure and must not silently
@@ -185,18 +201,21 @@ if [ "$hooks" -eq 1 ]; then
             printf 'diff not found; merged result would be:\n%s\n' "$merged"
         fi
         printf 'dry-run: nothing written\n'
-    # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
-    # comparing the whole file as text rewrote (and I2-clobbered) the backup
-    # on every formatting-only difference, even when cockpit's hooks were
-    # already fully present.
-    elif [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(printf '%s' "$orig" | jq -S -c '.hooks // {}')" ]; then
+    elif [ "$already_merged" -eq 1 ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
         # Preserve the FIRST backup only. Overwriting it on every modifying
         # run would replace a user's pre-existing settings.json.bak, or -- on
         # a second modifying run -- replace the pristine original with
-        # content that already has our hooks merged in.
-        [ -e "$settings.bak" ] || cp -- "$settings" "$settings.bak" || exit 1
+        # content that already has our hooks merged in. And say so plainly:
+        # reporting "(backup: ...)" when an existing .bak was kept, not
+        # written, would point at a rollback that isn't actually one.
+        if [ -e "$settings.bak" ]; then
+            bak_note=' (existing backup kept, not overwritten)'
+        else
+            cp -- "$settings" "$settings.bak" || exit 1
+            bak_note=" (backup: $settings.bak)"
+        fi
         # `printf > "$real"` truncates before it writes a single byte, so a
         # SIGXFSZ or any other interrupted write (reproduced with
         # ulimit -f 1) leaves a truncated, invalid settings.json -- and the
@@ -214,7 +233,7 @@ if [ "$hooks" -eq 1 ]; then
         cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
             || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
         trap - EXIT
-        printf 'merged    cockpit hooks into %s (backup: %s.bak)\n' "$settings" "$settings"
+        printf 'merged    cockpit hooks into %s%s\n' "$settings" "$bak_note"
     fi
 fi
 
