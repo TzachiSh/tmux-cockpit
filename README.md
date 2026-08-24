@@ -313,6 +313,13 @@ A **blocked** pane also gets a faint warm tint across its entire background
 (`window-style`, +2% luminance — noticeable, never harmful to readability).
 It is the only state loud enough to earn more than a border.
 
+The tint never fires at the pane you are **on**: `window-active-style` pins the
+focused pane to the terminal default. An alert that colours the thing you are
+already looking at — prompt on screen, border already red — is noise, not
+signal. So the tint marks a blocked pane in a split you are *not* focused on,
+and nothing else. The explicit `bg=default` is load-bearing; left unset, the
+active pane inherits `window-style` and the tint comes back.
+
 ## Which commands count as an agent
 
 One option, read by every format:

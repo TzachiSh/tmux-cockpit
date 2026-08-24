@@ -1081,5 +1081,35 @@ case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
                *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
 rm -rf "$RN" "$RT"
 
+echo "== the tint never fires at the pane you are on =="
+# The blocked-pane tint is an alert. Painting it onto the pane the user is
+# focused on -- with the permission prompt already in front of them and the
+# border already red -- is noise, and was reported as exactly that. The
+# explicit bg=default on window-active-style is load-bearing: left unset, the
+# active pane INHERITS window-style and the tint comes back (verified: 6 tinted
+# rows unset, 4 with the explicit default).
+if need_tmux "focused-pane tint"; then :; else
+TS="cockpit-tint-$$"; SOCKS="$SOCKS $TS"
+"$TMUX_REAL" -L "$TS" -f /dev/null new-session -d -s t -x 60 -y 14 'exec -a claude sleep 300' >/dev/null 2>&1
+for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
+    "$TMUX_REAL" -L "$TS" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$TS" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TS" split-window -t t 'exec -a claude sleep 300' >/dev/null 2>&1
+TP1=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')
+TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')
+"$TMUX_REAL" -L "$TS" set -p -t "$TP1" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$TS" set -p -t "$TP2" @panestate needs-input >/dev/null 2>&1
+is "a blocked pane you are NOT on still tints" "bg=#241a1e" \
+   "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP1" '#{E:window-style}')"
+is "the pane you are on never tints"           "bg=default" \
+   "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP2" '#{E:window-active-style}')"
+case "$("$TMUX_REAL" -L "$TS" show-option -gv window-active-style)" in
+    *@panestate*) bad "window-active-style carries no state format" "bg=default" "a @panestate conditional" ;;
+    *) ok "window-active-style carries no state format" ;;
+esac
+"$TMUX_REAL" -L "$TS" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
