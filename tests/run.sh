@@ -2221,6 +2221,60 @@ case "$rvunderout" in
 esac
 rm -rf "$RVCAP" "$RVUNDER"
 
+echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
+# The row build used `disp=$(printf ...)` (a subshell fork per row) and
+# `group[path]+=<row>` into one associative-array element (bash rebuilds the
+# whole growing string on each append -> O(n^2) for a single file). Both are
+# gone: printf -v, and one indexed array with per-file [start,end] ranges.
+# Correctness: the output is locked to a golden that the pre-fix parser
+# produced byte-for-byte (verified out of band), so the refactor cannot shift
+# a byte -- ordering, the -N deletion line, the display column, all intact.
+RVGOLD=$(mktmpd)
+(
+  cd "$RVGOLD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p tests
+  printf 'a\nb\nc\n' > app.go
+  printf 'p\nq\n' > tests/unit_test.go
+  git add -A; git commit -q -m init
+  printf 'a\nZED\nc\nADDED\n' > app.go
+  printf 'p\nQQ\n' > tests/unit_test.go
+) >/dev/null 2>&1
+rvgoldwant=$(printf '%s\n' \
+  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
+  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
+  'app.go	-2	b	app.go:2 (-)  b' \
+  'app.go	2	ZED	app.go:2 (+)  ZED' \
+  'app.go	4	ADDED	app.go:4 (+)  ADDED')
+is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
+   "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
+rm -rf "$RVGOLD"
+
+# Perf: a 5000-row single-file diff (the largest that stays under the cap) is
+# ~0.2s now; the pre-fix O(n^2)+fork build was ~5s here and ~13s on the slower
+# hunt machine. timeout is the fail-first teeth -- on the old build this fires.
+RVPERF=$(mktmpd)
+(
+  cd "$RVPERF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > big.txt
+  git add -A; git commit -q -m init
+  seq 1 5000 > big.txt
+) >/dev/null 2>&1
+timeout 3 "$DIR/scripts/tmux-review" --lines "$RVPERF" >/dev/null; rvperfrc=$?
+if [ "$rvperfrc" -eq 124 ]; then
+    bad "a 5000-row under-cap diff parses in well under 3s" \
+        "output within 3s" "timed out (the O(n^2) build)"
+else
+    ok "a 5000-row under-cap diff parses in well under 3s"
+fi
+rvperfrows=$("$DIR/scripts/tmux-review" --lines "$RVPERF" | grep -c .)
+is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
+   "5000" "$rvperfrows"
+rm -rf "$RVPERF"
+
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
 # under the cursor vanished) -- without a guard this still writes

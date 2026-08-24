@@ -210,19 +210,28 @@ lines_mode() {
 
     # Group rows by file, in first-seen order, so a file's own hunks stay in
     # their original (line-ascending) order once the file groups themselves
-    # are reordered below.
-    local -A seen=() group=()
-    local -a order=()
-    local path line sign rest frag mline disp
+    # are reordered below. Rows land in ONE indexed array with each file's
+    # contiguous [start,end] index range recorded -- git diff never interleaves
+    # two files, so a file's rows are always a single run. The earlier shape
+    # here was `group[path]+=<row>` into one associative-array element, which
+    # bash rebuilds the whole growing string on every append: O(n^2) for a
+    # single-file diff (measured 2000 rows 4.77s, 8000 rows 55.9s). The append
+    # to an indexed array is amortised O(1). And `disp` is built with `printf
+    # -v` rather than `disp=$(printf ...)`, which forked a subshell PER ROW.
+    local -A seen=() gstart=() gend=()
+    local -a order=() allrows=()
+    local path line sign rest frag mline disp ri=0
     while IFS=$'\t' read -r path line sign rest; do
-        [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); }
+        [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); gstart["$path"]=$ri; }
         # Control-char strip + cap, the agent-state:82-86 discipline: this
         # text reaches an fzf display column and a comment-store header next.
         frag=${rest//[$'\001'-$'\037'$'\177']/}
         frag=${frag:0:160}
         if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
-        disp=$(printf '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag")
-        group["$path"]+="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\n'
+        printf -v disp '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag"
+        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"
+        gend["$path"]=$ri
+        ri=$((ri + 1))
     done <<<"$raw"
 
     # Partition into test-first / rest, each ordered by churn descending; ties
@@ -238,12 +247,14 @@ lines_mode() {
 
     order_group() { sort -t "$(printf '\t')" -k2,2nr -k1,1n | cut -f3; }
 
-    local f
+    local f j
     while IFS= read -r f; do
-        [ -n "$f" ] && printf '%s' "${group[$f]}"
+        [ -n "$f" ] || continue
+        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
     done < <(printf '%s\n' "${tests[@]}" | order_group)
     while IFS= read -r f; do
-        [ -n "$f" ] && printf '%s' "${group[$f]}"
+        [ -n "$f" ] || continue
+        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
     done < <(printf '%s\n' "${others[@]}" | order_group)
 }
 
