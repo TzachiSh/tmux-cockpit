@@ -245,15 +245,18 @@ case "$JK" in
     *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump'" ;;
 esac
 
-# Review an agent's diff. No arg: the script itself resolves the target --
-# the pane the popup was opened from if it is an agent, else the fleet queue
-# of every dirty one. Same popup chrome and off-disables convention as the
-# jump key.
+# Review an agent's diff. The popup passes -p '#{pane_id}' so the script sees
+# the pane the popup was opened FROM: inside a popup $TMUX_PANE is the popup's
+# own pseudo-pane, and a bare display-message resolves the most-recently-active
+# client instead -- with two clients that landed the review on the wrong one.
+# tmux expands #{pane_id} at bind time in the originating pane. With the id the
+# script resolves the target -- that pane if it is an agent, else the fleet
+# queue of every dirty one. Same popup chrome and off-disables as the jump key.
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key r display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
-    *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
+    "")  tmux bind-key r display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
+    *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and
