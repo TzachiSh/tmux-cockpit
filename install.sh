@@ -29,6 +29,11 @@ esac; done
 # --dry-run only means something as a preview of --hooks; alone it previews
 # nothing and silently doing so would look like a no-op success.
 [ "$dry" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--dry-run needs --hooks\n' >&2; exit 2; }
+# --uninstall does NOT touch hooks (see the usage comment up top). Letting
+# --hooks ride along and silently merging anyway would be exactly the
+# silent-wrong-answer this script refuses everywhere else -- a hard error is
+# the honest answer here, not a quiet no-op.
+[ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 rc=0
 mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }

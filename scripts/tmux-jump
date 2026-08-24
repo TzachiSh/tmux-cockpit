@@ -6,11 +6,14 @@ set -u
 
 cur="${TMUX_PANE:-}"
 blocked=()
-# Sorted so the cycle order is stable between presses; @panestate only ever
-# exists on agent panes, so no agents-glob filter is needed here.
+# Sorted so the cycle order is stable between presses. @panestate can outlive
+# the agent that set it -- a hand-set option, or a shell reused after the
+# agent exited -- so the format guards it with the same glob-on-current-command
+# check #{agent_fleet} and the borders use; a shell holding stale state must
+# never be jumped to.
 while read -r id state; do
     [ "$state" = needs-input ] && blocked+=("$id")
-done < <(tmux list-panes -a -F '#{pane_id} #{@panestate}' 2>/dev/null | sort -t% -k2 -n)
+done < <(tmux list-panes -a -F '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},}' 2>/dev/null | sort -t% -k2 -n)
 
 if [ ${#blocked[@]} -eq 0 ]; then
     tmux display-message "no agent needs you" 2>/dev/null

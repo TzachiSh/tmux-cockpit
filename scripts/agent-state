@@ -86,7 +86,14 @@ notify)
                 ;;
             *) msg="" ;;
         esac
-        [ -n "$msg" ] && tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+        # An empty extraction must still clear, not skip: skipping left the
+        # PREVIOUS pane's ask standing on the border, so a brand-new blocked
+        # pane with no text of its own displayed someone else's old question.
+        if [ -n "$msg" ]; then
+            tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+        else
+            tmux set-option -pu -t "$pane" @panestate_msg 2>/dev/null
+        fi
     fi
     ;;
 esac
