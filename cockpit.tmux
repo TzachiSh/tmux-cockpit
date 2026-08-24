@@ -210,8 +210,14 @@ fi
 # Same geometry and title style as the path picker: the two popups are siblings
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
+#
+# -p '#{pane_id}': inside a popup, $TMUX_PANE is the popup's own pseudo-pane,
+# so tmux-branch asking the client "what pane am I on" resolves to whichever
+# CLIENT was most recently active, not the pane this binding actually fired
+# on. tmux expands #{pane_id} at bind time, on the pane the key/click landed
+# on, the same way #{pane_current_path} already does for the title above.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
     # popup the path picker descends into, entered from the top. Wired to
     # range=control|2 in status-right, the slot beside the branch's control|1.
@@ -223,7 +229,7 @@ elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
 
 # Session picker in the same popup chrome. prefix+S is unbound in stock tmux
 # (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup

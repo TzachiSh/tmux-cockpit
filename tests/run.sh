@@ -1450,6 +1450,28 @@ esac
 "$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
 fi
 
+echo "== branch popup passes the source pane id =="
+# Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
+# must be told which pane the key/click actually fired on rather than
+# resolving it itself. Both the prefix+b bind and the click gesture pass
+# -p '#{pane_id}', expanded by tmux at bind time on the originating pane.
+if need_tmux "branch popup pane id"; then :; else
+BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
+"$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
+    *"-p '#{pane_id}'"*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" "-p '#{pane_id}' in the bind" \
+         "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
+esac
+case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" in
+    *"-p '#{pane_id}'"*) ok "the branch click passes the source pane id" ;;
+    *) bad "the branch click passes the source pane id" "-p '#{pane_id}' in the bind" \
+         "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" ;;
+esac
+"$TMUX_REAL" -L "$BPI" kill-server >/dev/null 2>&1
+fi
+
 echo "== tab marks several files and opens them all =="
 # --multi: a compiler error naming a header and its source, a git diff naming
 # two files -- mark both, open both. Tab already means "mark several" in tm's
