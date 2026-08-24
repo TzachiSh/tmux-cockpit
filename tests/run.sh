@@ -2926,6 +2926,81 @@ rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
+# deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
+# re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill
+# the agent in that window (a `claude` foreground child exits, the pane's own
+# shell is back) and the old unconditional `paste-buffer` landed the review in
+# that shell (the hunt reproduced it 6/6): a live, one-Enter-from-running
+# command line the reviewer never targeted. The end-to-end transient is
+# timing-bound, so this checks the mechanism deterministically: the exact
+# load-buffer + atomic if-shell that deliver() now runs, once against the shell
+# that outlived the agent and once against a live agent.
+if need_tmux "tmux-review --deliver atomic gate"; then :; else
+RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
+"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
+sleep 0.3
+"$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "claude" { print $1 }')
+NPG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
+     | awk '$2 == "bash" { print $1 }')
+gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
+
+# The hazard the old code carried: once its stale check had passed, deliver()
+# ran a plain `paste-buffer` -- and into a shell that lands.
+printf 'HAZARD-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-hz -
+"$TMUX_REAL" -L "$RG" paste-buffer -p -r -d -b rg-hz -t "$NPG"
+sleep 0.3
+case "$(gcap "$NPG")" in
+    *HAZARD-MARKER*) ok "an unconditional paste into the shell DOES land (the hazard is real)" ;;
+    *) bad "an unconditional paste into the shell DOES land (the hazard is real)" \
+         "HAZARD-MARKER in the shell" "$(gcap "$NPG")" ;;
+esac
+# Clear the shell's readline of the pasted-but-unsent hazard line before the
+# real assertion, so a later match cannot see it.
+"$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
+sleep 0.2
+
+# The fix, byte-for-byte as deliver() runs it: stage the buffer, then let tmux
+# re-check #{pane_current_command} in the SAME command-queue item as the paste.
+# The pane is a shell at paste time -> refused, and the staged buffer dropped.
+printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
+    "delete-buffer -b rg-gate ; display-message 'not delivered'"
+sleep 0.3
+case "$(gcap "$NPG")" in
+    *RACE-MARKER-CONTENT*) bad "the atomic gate refuses the paste into a shell at paste time" \
+         "no RACE-MARKER-CONTENT in the shell" "$(gcap "$NPG")" ;;
+    *) ok "the atomic gate refuses the paste into a shell at paste time" ;;
+esac
+if "$TMUX_REAL" -L "$RG" list-buffers 2>/dev/null | grep -q 'rg-gate'; then
+    bad "the refused delivery drops its staged buffer" "no rg-gate buffer" "rg-gate still present"
+else
+    ok "the refused delivery drops its staged buffer"
+fi
+
+# The same gated sequence, targeting a live agent, still delivers.
+printf 'DELIVERED-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ok -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "paste-buffer -p -r -d -b rg-ok -t $APG ; display-message pasted" \
+    "delete-buffer -b rg-ok ; display-message 'not delivered'"
+sleep 0.3
+case "$(gcap "$APG")" in
+    *DELIVERED-MARKER*) ok "the gate still delivers into a pane that is a live agent" ;;
+    *) bad "the gate still delivers into a pane that is a live agent" \
+         "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
+esac
+
+"$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
 # review_pane()'s own mktemp store -- unlike --deliver's spillover file, this
 # one is never named to us. Redirect TMPDIR to a private, otherwise-empty

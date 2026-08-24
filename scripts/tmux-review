@@ -539,17 +539,26 @@ deliver() {
             2>/dev/null
         return 1
     fi
-    # paste-buffer's own exit status decides the message -- printing success
-    # unconditionally meant a failed paste (dead pane, bad target) still told
-    # the reviewer it landed.
-    if tmux paste-buffer -p -r -d -b "$bufname" -t "$pane"; then
-        tmux display-message "review pasted into $pane — press Enter there to send" \
-            2>/dev/null
-    else
-        tmux delete-buffer -b "$bufname" 2>/dev/null
-        tmux display-message "tmux-review: the paste into $pane failed" 2>/dev/null
-        return 1
-    fi
+    # The is-agent test the shell ran up top is a ~50ms-stale snapshot: a
+    # compose re-exec, a wc, an mktemp and this load-buffer all sit between it
+    # and the paste. Kill the agent in that window -- a `claude` foreground
+    # child exits and the pane's own shell is back -- and the old unconditional
+    # `paste-buffer` landed the review in that shell (the hunt reproduced it
+    # 6/6, pasting a live, one-Enter-from-running command line the reviewer
+    # never targeted). So the check is redone HERE, by tmux itself, in the same
+    # command-queue item as the paste: `if-shell -F -t <pane>` re-evaluates the
+    # SAME #{m:...} test against the pane at paste time and only pastes if it is
+    # still an agent, else drops the staged buffer and says so. The window is
+    # closed -- there is no shell round-trip left between the test and the
+    # paste. if-shell returns 0 either way (the queue accepted it), so each
+    # branch carries its own message rather than the shell inspecting a result
+    # it can no longer trust. The early check up top stays as the cheap
+    # fast-fail (and the exit-1 refusal contract) for a pane that is already
+    # not an agent.
+    tmux if-shell -F -t "$pane" \
+        "#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}" \
+        "paste-buffer -p -r -d -b $bufname -t $pane ; display-message 'review pasted into $pane — press Enter there to send'" \
+        "delete-buffer -b $bufname ; display-message 'tmux-review: $pane is no longer an agent — not delivered'"
 }
 
 # --- --fleet / entry-point resolution --------------------------------------
