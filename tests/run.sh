@@ -2574,10 +2574,19 @@ RVNEW=$(mktmpd)
   git init -q -b main .
   printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
   printf 'first\nsecond\n' > new.txt
+  printf 'NEW-LINE\n' > 'café-new.txt'
 ) >/dev/null 2>&1
 rvnew=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
 case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok "untracked lines are + rows with their own numbers" ;;
     *) bad "untracked lines are + rows with their own numbers" "new.txt:1 first, new.txt:2 second" "$rvnew" ;; esac
+# ls-files C-quotes a non-ASCII path the same way diff headers do ("caf\303\251-new.txt"),
+# and a quoted name is not a file that exists: [ -f ] failed and the file was
+# dropped from the list WITHOUT a word -- while --preview-diff, which asks with
+# core.quotePath=false, rendered it. The same list-vs-preview disagreement this
+# whole block exists to end. FAIL-first: no café-new.txt row at all.
+case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
+    *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
+         "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
 rm -rf "$RVNEW"
 
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="

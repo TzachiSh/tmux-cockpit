@@ -121,8 +121,15 @@ lines_mode() {
     # worth reviewing, was invisible. Synthesise their numstat here (every line
     # an addition) so the size cap below counts them too, and their rows after
     # the awk. Binary and unreadable files are skipped (grep -Iq fails on both).
+    #
+    # core.quotePath=false here for the same reason it is on the diff above, and
+    # it bites harder: ls-files C-quotes a non-ASCII name ("caf\303\251-new.txt"),
+    # and a quoted name is not a path that exists, so [ -f ] failed and the file
+    # was dropped from the list without a word -- while --preview-diff, which
+    # asks with the flag set, rendered it. List and preview disagreed again.
+    # One call, both loops below read it.
     local untracked u ulines
-    untracked=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null)
+    untracked=$(git -C "$dir" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)
     while IFS= read -r u; do
         [ -n "$u" ] && [ -f "$dir/$u" ] && grep -Iq . -- "$dir/$u" 2>/dev/null || continue
         ulines=$(wc -l < "$dir/$u")
