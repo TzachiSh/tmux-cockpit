@@ -18,7 +18,7 @@ that is waiting."
   (wrapping), `switch-client` + `select-window` + `select-pane`.
 - No blocked pane → `display-message "no agent needs you"`, exit 0.
 - Bound by cockpit.tmux to `prefix J`, key overridable via `@cockpit_jump_key`
-  (empty disables), same pattern as existing bindings.
+  (literal `off` disables), same pattern as existing bindings.
 - One-shot script: only runs on keypress, so the no-shell-redraw invariant is
   untouched.
 

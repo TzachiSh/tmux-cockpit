@@ -1,0 +1,11 @@
+date: 2026-08-24T10:32:14+03:00  host: Tzachi-lep  head: d7e2a31
+== pane-option write x200 (hook-cost proxy) ==
+
+real	0m0.790s
+user	0m0.253s
+sys	0m0.481s
+== status-right expansion x200 ==
+
+real	0m1.514s
+user	0m0.477s
+sys	0m0.916s
