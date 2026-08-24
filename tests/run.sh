@@ -3189,6 +3189,24 @@ promptcount=$(printf '%s\n' "$apafter" | grep -c '\$ *$' || true)
 is "the paste never executes (still one prompt, no fresh one after Enter)" \
    "0" "$promptcount"
 
+echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
+"$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
+printf '## src.go:1 (+)\n> foo\nNI-MARKER fix\n\n' > "$RDSTORE"
+rundeliver "$AP" "$RDSTORE"
+is "delivery into needs-input exits 1" "RC=1" "$(lastrc)"
+case "$(apcap)" in
+    *"NI-MARKER"*) bad "nothing is pasted into a needs-input pane" "no NI-MARKER on the agent pane" "$(apcap)" ;;
+    *) ok "nothing is pasted into a needs-input pane" ;;
+esac
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate done >/dev/null 2>&1
+rundeliver "$AP" "$RDSTORE"
+case "$(apcap)" in
+    *"NI-MARKER"*) ok "the same review lands once the pane is done" ;;
+    *) bad "the same review lands once the pane is done" "NI-MARKER on the agent pane" "$(apcap)" ;;
+esac
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
+
 echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
 # A second agent pane and a second control pane -- driving both deliveries
 # from their OWN panes, fired back-to-back with no sleep between, is the
