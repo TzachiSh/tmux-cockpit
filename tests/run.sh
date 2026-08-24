@@ -2563,12 +2563,14 @@ case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
          "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
 # Controller ruling: the directory branch of --preview-diff used to render an
 # unstaged-only `git diff --stat`, disagreeing with the list (which shows
-# staged+unstaged+untracked as one set since the fix above). FAIL-first: a
-# directory preview of RVMIX, where staged.txt is staged-only, has no
-# staged.txt line at all.
+# staged+unstaged+untracked as one set since the fix above): staged.txt is
+# already reported by `git status --short` in the same output, so a mere
+# substring check for its name does not discriminate the bug -- the STAT
+# SUMMARY's file count does. FAIL-first: `git diff --stat` (unstaged only)
+# counts one file here, `git diff --stat HEAD` (staged+unstaged) counts two.
 case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" in
-    *"staged.txt"*) ok "the directory preview agrees with the list about the staged file" ;;
-    *) bad "the directory preview agrees with the list about the staged file" "staged.txt in the preview" \
+    *"2 files changed"*) ok "the directory preview's stat counts the staged file too" ;;
+    *) bad "the directory preview's stat counts the staged file too" "2 files changed in the preview" \
          "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" ;; esac
 rm -rf "$RVMIX"
 
