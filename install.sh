@@ -13,12 +13,19 @@ set -uo pipefail
 # is reached through a symlink (a dotfiles checkout linked into ~/.tmux/plugins
 # is the usual way), and --uninstall then removed nothing and said nothing.
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+# ${HOME:-}, not a bare $HOME: under `set -u` an unset HOME aborted here with
+# a raw "HOME: unbound variable" instead of a message that says what's wrong.
+BIN="${XDG_BIN_HOME:-${HOME:-}/.local/bin}"
+if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
+    printf 'HOME is not set and XDG_BIN_HOME is not set; cannot pick an install directory\n' >&2
+    exit 1
+fi
 COMMANDS=(tm tmux-branch tmux-open-path)
 
 uninstall=0; hooks=0; dry=0
 for a in "$@"; do case "$a" in
     "") ;;
+    -h|--help) printf 'usage: install.sh [--uninstall] [--hooks [--dry-run]]\n'; exit 0 ;;
     --uninstall) uninstall=1 ;;
     --hooks)     hooks=1 ;;
     --dry-run)   dry=1 ;;
@@ -36,7 +43,11 @@ esac; done
 [ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 rc=0
-mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
+# Not on --uninstall (nothing gets created there) and not on --dry-run (a
+# preview must not create anything either -- see the symlink step below).
+if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
+    mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
+fi
 
 # BSD readlink had no -f until macOS 12.3, where it returns empty and prints
 # "illegal option". Empty then compares unequal to every target, so the guards
@@ -45,6 +56,11 @@ mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
 # question is just "did we make this".
 link_target() { readlink "$1" 2>/dev/null; }
 
+# --dry-run only ever previews --hooks (enforced above); it must not touch the
+# symlinks at all. This used to run unconditionally, so "--hooks --dry-run" on
+# a fresh $HOME still created three links and then reported "dry-run: nothing
+# written" underneath them.
+if [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do
     link="$BIN/$c"
     target="$DIR/scripts/$c"
@@ -54,7 +70,14 @@ for c in "${COMMANDS[@]}"; do
         # whatever happens to sit at that name would take someone else's tool
         # with it.
         if [ -L "$link" ] && [ "$(link_target "$link")" = "$target" ]; then
-            rm -- "$link" && printf 'removed  %s\n' "$link"
+            if rm -- "$link"; then
+                printf 'removed  %s\n' "$link"
+            else
+                # A read-only $BIN made rm fail silently before this: exit 0,
+                # nothing printed, the link still there.
+                printf 'FAILED   %s (cannot remove the link)\n' "$link" >&2
+                rc=1
+            fi
         fi
         continue
     fi
@@ -80,15 +103,64 @@ for c in "${COMMANDS[@]}"; do
         rc=1
     fi
 done
+else
+    printf 'dry-run: skipping the symlink step\n'
+fi
 
 if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
+    have_diff=1
+    command -v diff >/dev/null 2>&1 || have_diff=0
+    # Claude Code's settings.json has no XDG override, unlike $BIN above --
+    # $HOME is required here, and must be checked before it is dereferenced.
+    [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
-    mkdir -p "${settings%/*}" || exit 1
-    [ -f "$settings" ] || printf '{}\n' > "$settings"
+
+    # readlink -f is GNU-only (the same BSD caveat documented above for
+    # link_target), so resolve a symlink chain by hand, with the cd -P
+    # discipline DIR itself uses at the top of this script.
+    resolve_link() {
+        local p="$1" d b
+        while [ -L "$p" ]; do
+            d=$(dirname "$p"); b=$(readlink "$p")
+            case "$b" in /*) p="$b" ;; *) p="$d/$b" ;; esac
+        done
+        printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+    }
+
+    if [ -e "$settings" ]; then
+        # A valid symlink (settings.json tracked by chezmoi, home-manager, or
+        # by hand) must still be a symlink afterward -- writing AT the link
+        # itself, which is the atomic-rename idiom's usual behavior (and
+        # `sed -i`'s default, Debian #323850), would replace the tracked
+        # dotfiles source with a plain file; the next chezmoi/home-manager
+        # apply then restores the symlink and drops the merged hooks for
+        # good. Resolve the chain and write at $real instead.
+        real=$(resolve_link "$settings")
+        orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+    elif [ -L "$settings" ]; then
+        # A dangling symlink passes neither "read what's there" (there's
+        # nothing) nor "seed a fresh file" safely -- the seed write below
+        # follows a symlink, so it would land wherever the link points,
+        # outside ~/.claude entirely.
+        printf 'refusing to follow the dangling symlink %s\n' "$settings" >&2
+        exit 1
+    else
+        orig='{}'
+        real="$settings"
+        # A preview must not create ~/.claude or seed settings.json either --
+        # the diff below is computed against $orig directly, without a file.
+        if [ "$dry" -eq 0 ]; then
+            mkdir -p "${settings%/*}" || exit 1
+            printf '%s\n' "$orig" > "$settings"
+        fi
+    fi
+
     # Additive, never destructive: their hooks stay; ours are appended per
-    # event, skipping any entry already present (string-identical), so the
-    # merge is idempotent and a re-run after an upgrade only adds what is new.
+    # event, skipping any entry already present. index() does jq's generic
+    # (order-insensitive, deep) equality, so reformatting the file -- jq -S,
+    # or Claude Code rewriting its own settings -- no longer makes every
+    # cockpit hook look new and get appended a second time.
     merged=$(jq -s '
         .[0].hooks as $mine | .[1] as $theirs
         | $theirs + { hooks: (
@@ -96,18 +168,72 @@ if [ "$hooks" -eq 1 ]; then
             | $h + ($mine | with_entries(
                 .key as $k
                 | .value = (($h[$k] // []) + [ .value[]
-                    | select(. as $e | (($h[$k] // []) | map(tojson) | index($e|tojson)) == null) ])
+                    | select(. as $e | (($h[$k] // []) | index($e)) == null) ])
               ))
-          ) }' "$DIR/examples/claude-hooks.json" "$settings") || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
+          ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
+        || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
+
+    # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
+    # comparing the whole file as text rewrote (and I2-clobbered) the backup
+    # on every formatting-only difference, even when cockpit's hooks were
+    # already fully present. Computed once, up front: a dry-run must predict
+    # the same "already merged" outcome the real run would report, not just
+    # an empty diff plus "nothing written".
+    if [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(printf '%s' "$orig" | jq -S -c '.hooks // {}')" ]; then
+        already_merged=1
+    else
+        already_merged=0
+    fi
+
     if [ "$dry" -eq 1 ]; then
-        diff -u "$settings" <(printf '%s\n' "$merged") || true
+        if [ "$already_merged" -eq 1 ]; then
+            printf 'hooks     already merged, nothing to do\n'
+        elif [ "$have_diff" -eq 1 ]; then
+            # -L names both sides with the real path instead of the process
+            # substitution's /dev/fd/NN, which a plain diff -u would print.
+            diff -u -L "$settings" -L "$settings (merged)" <(printf '%s\n' "$orig") <(printf '%s\n' "$merged")
+            rc_diff=$?
+            # 1 just means "they differ", which is the expected case here.
+            # Anything higher is a real diff failure and must not silently
+            # look like a clean preview.
+            [ "$rc_diff" -le 1 ] || printf 'diff failed; merged result would be:\n%s\n' "$merged"
+        else
+            printf 'diff not found; merged result would be:\n%s\n' "$merged"
+        fi
         printf 'dry-run: nothing written\n'
-    elif [ "$merged" = "$(cat "$settings")" ]; then
+    elif [ "$already_merged" -eq 1 ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
-        cp -- "$settings" "$settings.bak" || exit 1
-        printf '%s\n' "$merged" > "$settings" || { cp -- "$settings.bak" "$settings"; exit 1; }
-        printf 'merged    cockpit hooks into %s (backup: %s.bak)\n' "$settings" "$settings"
+        # Preserve the FIRST backup only. Overwriting it on every modifying
+        # run would replace a user's pre-existing settings.json.bak, or -- on
+        # a second modifying run -- replace the pristine original with
+        # content that already has our hooks merged in. And say so plainly:
+        # reporting "(backup: ...)" when an existing .bak was kept, not
+        # written, would point at a rollback that isn't actually one.
+        if [ -e "$settings.bak" ]; then
+            bak_note=' (existing backup kept, not overwritten)'
+        else
+            cp -- "$settings" "$settings.bak" || exit 1
+            bak_note=" (backup: $settings.bak)"
+        fi
+        # `printf > "$real"` truncates before it writes a single byte, so a
+        # SIGXFSZ or any other interrupted write (reproduced with
+        # ulimit -f 1) leaves a truncated, invalid settings.json -- and the
+        # rollback above never runs, because by then the file has already
+        # been destroyed. Write to a sibling temp file instead and rename it
+        # over the resolved target: rename() is atomic, so $real is either
+        # the old content or the new content, never a half-written file
+        # between. The temp file is created AT $real (not at $settings), so
+        # a symlinked settings.json still resolves onto one filesystem and
+        # the rename stays atomic; cp -p carries the original's mode onto it
+        # first, since mktemp's own 0600 would otherwise silently tighten
+        # settings.json's permissions on every merge.
+        tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap 'rm -f -- "$tmp"' EXIT
+        cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
+            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap - EXIT
+        printf 'merged    cockpit hooks into %s%s\n' "$settings" "$bak_note"
     fi
 fi
 
@@ -120,16 +246,23 @@ esac
 
 # Both locations, and say it even when neither exists -- a user with no tmux
 # config got no instruction at all, which is exactly the user who needs one.
-conf=""
-for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
-    [ -r "$c" ] && { conf="$c"; break; }
-done
-if [ -z "$conf" ]; then
-    printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
-           "$HOME/.tmux.conf" "$DIR" >&2
-elif ! grep -q 'cockpit\.tmux' "$conf"; then
-    printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
-           "$conf" "$DIR" >&2
+# HOME may legitimately be unset here (only XDG_BIN_HOME was needed for the
+# symlink step above), so this whole check degrades to the DIR-only message
+# instead of dereferencing an unset $HOME.
+if [ -z "${HOME:-}" ]; then
+    printf '\nHOME is not set; add this to your tmux config by hand:\n  run-shell %s/cockpit.tmux\n' "$DIR" >&2
+else
+    conf=""
+    for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+        [ -r "$c" ] && { conf="$c"; break; }
+    done
+    if [ -z "$conf" ]; then
+        printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
+               "$HOME/.tmux.conf" "$DIR" >&2
+    elif ! grep -q 'cockpit\.tmux' "$conf"; then
+        printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
+               "$conf" "$DIR" >&2
+    fi
 fi
 
 exit "$rc"

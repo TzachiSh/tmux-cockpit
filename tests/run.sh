@@ -1647,7 +1647,160 @@ out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
 case "$out" in *agent-state*) ok "dry-run previews the change" ;;
     *) bad "dry-run previews the change" "a diff naming agent-state" "$out" ;; esac
 is "dry-run wrote nothing" "{}" "$(cat "$HK2/.claude/settings.json")"
+# the diff header must name the real settings.json path, not the process
+# substitution's /dev/fd/NN plumbing.
+case "$out" in *"$HK2/.claude/settings.json"*) ok "and the diff header names the real file" ;;
+    *) bad "and the diff header names the real file" "$HK2/.claude/settings.json in the header" "$out" ;; esac
 rm -rf "$HK2"
+
+# and dry-run predicts "already merged" exactly like the real run would --
+# not an empty diff plus "nothing written" for a file that has nothing left
+# to preview.
+HK16=$(mktmpd); mkdir -p "$HK16/.claude"
+printf '{"model":"opus"}' > "$HK16/.claude/settings.json"
+HOME="$HK16" "$DIR/install.sh" --hooks >/dev/null 2>&1
+out=$(HOME="$HK16" "$DIR/install.sh" --hooks --dry-run 2>&1)
+case "$out" in *"already merged, nothing to do"*) ok "dry-run on an already-merged file predicts the real outcome" ;;
+    *) bad "dry-run on an already-merged file predicts the real outcome" "already merged, nothing to do" "$out" ;; esac
+rm -rf "$HK16"
+
+# I1: --dry-run used to run the symlink loop, mkdir ~/.claude, and seed
+# settings.json before ever reaching the dry gate -- a preview on a totally
+# fresh HOME created three links and a config dir, then printed "dry-run:
+# nothing written" underneath them.
+HK4=$(mktmpd); BIN4=$(mktmpd)
+out=$(XDG_BIN_HOME="$BIN4" HOME="$HK4" "$DIR/install.sh" --hooks --dry-run 2>&1)
+case "$out" in *agent-state*) ok "dry-run on a fresh home still previews the change" ;;
+    *) bad "dry-run on a fresh home still previews the change" "a diff naming agent-state" "$out" ;; esac
+is "and it creates no symlinks" "" "$(ls -A "$BIN4" 2>/dev/null)"
+if [ -e "$HK4/.claude" ]; then
+    bad "and it creates no ~/.claude" "no .claude directory" "one was created"
+else
+    ok "and it creates no ~/.claude"
+fi
+rm -rf "$HK4" "$BIN4"
+
+# M5: a dangling settings.json symlink used to pass the file-exists guard,
+# and the seed write followed it -- writing outside ~/.claude entirely, at
+# whatever the link happened to point to.
+HK11=$(mktmpd); mkdir -p "$HK11/.claude"
+ln -s "$HK11/nowhere.json" "$HK11/.claude/settings.json"
+HOME="$HK11" "$DIR/install.sh" --hooks >/dev/null 2>&1
+if [ -e "$HK11/nowhere.json" ]; then
+    bad "a dangling settings.json symlink is never written through" "no file at the link target" "one was created"
+else
+    ok "a dangling settings.json symlink is never written through"
+fi
+rm -rf "$HK11"
+
+# and a VALID settings.json symlink (dotfiles tracked via chezmoi,
+# home-manager, or by hand) keeps being a symlink after the merge, at its
+# original mode -- the write lands at the resolved target, not at the link.
+HK14=$(mktmpd); mkdir -p "$HK14/.claude" "$HK14/dotfiles"
+printf '{"model":"opus"}' > "$HK14/dotfiles/settings.json"
+chmod 644 "$HK14/dotfiles/settings.json"
+ln -s "$HK14/dotfiles/settings.json" "$HK14/.claude/settings.json"
+HOME="$HK14" "$DIR/install.sh" --hooks >/dev/null 2>&1
+if [ -L "$HK14/.claude/settings.json" ]; then
+    ok "a valid settings.json symlink survives the merge"
+else
+    bad "a valid settings.json symlink survives the merge" "still a symlink" "replaced by a regular file"
+fi
+case "$(cat "$HK14/dotfiles/settings.json")" in
+    *tmux-cockpit*agent-state*) ok "and the merge landed at the resolved (dotfiles) target" ;;
+    *) bad "and the merge landed at the resolved (dotfiles) target" "an agent-state command" "$(head -c200 "$HK14/dotfiles/settings.json")" ;;
+esac
+mode=$(stat -c '%a' "$HK14/dotfiles/settings.json" 2>/dev/null || stat -f '%Lp' "$HK14/dotfiles/settings.json" 2>/dev/null)
+is "and the resolved target keeps its original mode" "644" "$mode"
+rm -rf "$HK14"
+
+# I2: a pre-existing settings.json.bak is the user's, not ours to overwrite.
+HK5=$(mktmpd); mkdir -p "$HK5/.claude"
+printf '{"sentinel":"user-backup"}' > "$HK5/.claude/settings.json.bak"
+printf '{"model":"opus"}' > "$HK5/.claude/settings.json"
+out=$(HOME="$HK5" "$DIR/install.sh" --hooks 2>&1)
+case "$(cat "$HK5/.claude/settings.json.bak")" in
+    *user-backup*) ok "a pre-existing .bak is never overwritten" ;;
+    *) bad "a pre-existing .bak is never overwritten" "user-backup still present" "$(cat "$HK5/.claude/settings.json.bak")" ;;
+esac
+# and the success message must not claim a fresh backup it never wrote --
+# pointing at a rollback that is actually the user's unrelated .bak content.
+case "$out" in *"(backup:"*) bad "and it does not claim a fresh backup" "no (backup: ...) claim" "$out" ;;
+    *"existing backup kept"*) ok "and it says the existing backup was kept, not overwritten" ;;
+    *) bad "and it says the existing backup was kept, not overwritten" "existing backup kept" "$out" ;;
+esac
+rm -rf "$HK5"
+
+# I2 (cont.): and once WE'VE written a .bak, a later genuinely-modifying run
+# must not replace the pristine original in it with already-merged content.
+HK6=$(mktmpd); mkdir -p "$HK6/.claude"
+printf '{"model":"opus"}' > "$HK6/.claude/settings.json"
+HOME="$HK6" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "the first .bak holds the pristine original" '{"model":"opus"}' "$(cat "$HK6/.claude/settings.json.bak")"
+# Drop one cockpit hook so the second run is genuinely modifying, not a
+# no-op: a reformat alone (jq -S) would still compare string-identical here
+# and never reach the write branch this test is aimed at.
+jq 'del(.hooks.Stop)' "$HK6/.claude/settings.json" > "$HK6/.claude/trimmed.json" && mv "$HK6/.claude/trimmed.json" "$HK6/.claude/settings.json"
+HOME="$HK6" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "and a second MODIFYING run still leaves the original in .bak" '{"model":"opus"}' "$(cat "$HK6/.claude/settings.json.bak")"
+rm -rf "$HK6"
+
+# C1: the write must be atomic (mktemp + rename), never a truncate-in-place --
+# a SIGXFSZ mid-write (reproduced with ulimit -f 1) used to leave a truncated,
+# invalid settings.json with rollback never running, because by then the
+# original was already gone.
+HK9=$(mktmpd); mkdir -p "$HK9/.claude"
+printf '{"model":"opus"}' > "$HK9/.claude/settings.json"
+HOME="$HK9" "$DIR/install.sh" --hooks >/dev/null 2>&1
+leftover=$(find "$HK9/.claude" -maxdepth 1 -name 'settings.json.*' ! -name 'settings.json.bak' 2>/dev/null)
+is "no temp file is left behind after a successful merge" "" "$leftover"
+rm -rf "$HK9"
+
+# C1 (the actual regression pin): "no temp file after success" above also
+# passes against the unfixed, non-atomic install.sh -- printf > "$settings"
+# leaves no temp file either, because it never created one. Reproduce the
+# real failure mode instead: a file-size limit low enough that the write
+# itself dies mid-flight (SIGXFSZ), the same mechanism named in the PR's own
+# ulimit -f 1 repro. The subshell scopes the limit to this one process tree.
+HK15=$(mktmpd); mkdir -p "$HK15/.claude"
+printf '{"model":"opus"}' > "$HK15/.claude/settings.json"
+before=$(cat "$HK15/.claude/settings.json")
+(ulimit -f 1; HOME="$HK15" "$DIR/install.sh" --hooks) >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ]; then
+    bad "a write killed mid-flight (ulimit -f 1) does not exit 0" "a nonzero exit" "0"
+else
+    ok "a write killed mid-flight (ulimit -f 1) does not exit 0"
+fi
+is "and settings.json is left as the untouched original" "$before" "$(cat "$HK15/.claude/settings.json")"
+rm -rf "$HK15"
+
+# I3: index() must be jq's deep, order-insensitive equality -- a plain
+# reformat (jq -S, or Claude Code rewriting its own settings) must not make
+# every cockpit hook look new and get appended a second time.
+HK7=$(mktmpd); mkdir -p "$HK7/.claude"
+printf '{"model":"opus"}' > "$HK7/.claude/settings.json"
+HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
+jq -S . "$HK7/.claude/settings.json" > "$HK7/.claude/reformatted.json" && mv "$HK7/.claude/reformatted.json" "$HK7/.claude/settings.json"
+HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
+dupes=$(jq '[.hooks[] | length] | map(select(. > 1)) | length' "$HK7/.claude/settings.json")
+is "a reformat-then-merge leaves exactly one cockpit entry per event" "0" "$dupes"
+rm -rf "$HK7"
+
+# C1 (fail-closed pin): a malformed settings.json must abort byte-identical,
+# never partially merged or silently reseeded.
+HK10=$(mktmpd); mkdir -p "$HK10/.claude"
+printf '{not valid json' > "$HK10/.claude/settings.json"
+before=$(cat "$HK10/.claude/settings.json")
+HOME="$HK10" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a malformed settings.json aborts with exit 1" "1" "$?"
+is "and it is left byte-identical" "$before" "$(cat "$HK10/.claude/settings.json")"
+if [ -e "$HK10/.claude/settings.json.bak" ]; then
+    bad "and no .bak is created on a failed merge" "no .bak" "one was created"
+else
+    ok "and no .bak is created on a failed merge"
+fi
+rm -rf "$HK10"
 else
     skip_ "hooks merge (jq not installed)"
 fi
@@ -1663,6 +1816,31 @@ else
     ok "--uninstall --hooks touches no settings.json"
 fi
 rm -rf "$HK3"
+
+# I4: --uninstall on a read-only $BIN used to exit 0 and print nothing when
+# rm failed -- the mirror image of the install-side FAILED handling above.
+HK8=$(mktmpd); BIN8=$(mktmpd)
+XDG_BIN_HOME="$BIN8" HOME="$HK8" "$DIR/install.sh" >/dev/null 2>&1
+chmod 555 "$BIN8"
+out=$(XDG_BIN_HOME="$BIN8" HOME="$HK8" "$DIR/install.sh" --uninstall 2>&1)
+rc_uninstall=$?
+chmod 755 "$BIN8"
+is "a read-only BIN makes --uninstall exit 1" "1" "$rc_uninstall"
+case "$out" in *FAILED*) ok "and it reports FAILED, not silent success" ;;
+    *) bad "and it reports FAILED, not silent success" "FAILED in the output" "$out" ;; esac
+if [ -L "$BIN8/tm" ]; then
+    ok "and the links are still present"
+else
+    bad "and the links are still present" "tm symlink present" "missing"
+fi
+rm -rf "$HK8" "$BIN8"
+
+# M7: --help/-h must succeed, not be treated as an unknown option.
+out=$("$DIR/install.sh" --help 2>&1)
+is "--help exits 0" "0" "$?"
+case "$out" in *usage:*) ok "and it prints usage" ;;
+    *) bad "and it prints usage" "a usage: line" "$out" ;; esac
+
 rm -rf "$HK"
 echo "== prefix J jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else

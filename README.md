@@ -164,7 +164,8 @@ run-shell "'~/my plugins/tmux-cockpit/cockpit.tmux'"
 
 `install.sh` only ever creates symlinks, skips a name already taken by a real
 file or by another tool's link, reports anything it could not create, and
-`--uninstall` removes only links that point back into the plugin.
+`--uninstall` removes only links that point back into the plugin (and reports
+anything it could not remove). `install.sh --help` prints usage and exits.
 
 ### Or with tpm
 
@@ -194,9 +195,13 @@ Wire the hooks into `~/.claude/settings.json`:
 
 It merges additively — your own hooks are never touched, cockpit's are appended
 per event only where missing, and re-running after an upgrade only adds what's
-new. A `settings.json.bak` is written before the first change. Requires `jq`;
-without it, or without Claude Code's settings.json at that path, merge the
-`hooks` object from `examples/claude-hooks.json` by hand:
+new (a reformatted settings.json, e.g. from `jq -S` or Claude Code rewriting
+its own file, is still recognized and never re-appended). A `settings.json.bak`
+is written before the first change (an existing `.bak` is never overwritten).
+`--hooks --dry-run` previews the merge without writing or creating anything,
+even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
+without Claude Code's settings.json at that path, merge the `hooks` object
+from `examples/claude-hooks.json` by hand:
 
 | hook | state |
 |------|-------|
