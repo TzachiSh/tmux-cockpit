@@ -810,6 +810,70 @@ case "$out" in
 esac
 rm -rf "$CB" "$NOCOL"
 
+echo "== tmux-branch: builds each row without a fork per branch =="
+# The disps loop ran `$(printf ...)` inside a command substitution -- a fork
+# per branch. 5000 branches measured 16.9s (for-each-ref itself is 0.12s; 99%
+# was the loop). printf -v does the identical formatting inside the running
+# shell instead. timeout is the fail-first teeth: it fires on the fork build.
+BP=$(mktmpd)
+(
+  cd "$BP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+  {
+    printf '# pack-refs with: peeled fully-peeled sorted\n'
+    for i in $(seq 1 5000); do printf '%s refs/heads/br%d\n' "$c" "$i"; done
+  } > .git/packed-refs
+) >/dev/null 2>&1
+# A stub fzf: drains the piped rows (so the real row-build cost is still paid
+# in full) and exits 130 (esc), the same code a real esc keypress produces --
+# the fastest path back out once fzf would have taken over the terminal.
+FZFSTUB=$(mktmpd)
+cat > "$FZFSTUB/fzf" <<'EOS'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 130
+EOS
+chmod +x "$FZFSTUB/fzf"
+for c in git bash tput; do
+    p=$(command -v "$c" 2>/dev/null) && ln -s "$p" "$FZFSTUB/$c"
+done
+timeout 2 env -u TMUX PATH="$FZFSTUB" "$DIR/scripts/tmux-branch" "$BP" </dev/null >/dev/null 2>&1
+brc=$?
+if [ "$brc" -eq 124 ]; then
+    bad "5000 branches build their rows well under 2s" \
+        "exit within 2s" "timed out (the fork-per-branch build)"
+else
+    ok "5000 branches build their rows well under 2s"
+fi
+rm -rf "$BP" "$FZFSTUB"
+
+echo "== tmux-branch: row format is unchanged by the fork removal =="
+# Same fixture, small enough to read by hand: proves printf -v produced the
+# exact same padded columns as the old $(printf ...) subshell, not just that
+# it runs fast. Forced through the no-fzf numbered menu, which prints each
+# disps row verbatim to stderr -- the same string a real fzf list would show.
+BF=$(mktmpd)
+(
+  cd "$BF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; : > a; git add a
+  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
+  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
+) >/dev/null 2>&1
+age=$(git -C "$BF" for-each-ref --format='%(committerdate:relative)' refs/heads/main)
+want_row=$(printf '%s %-32s %-16s %s' '●' 'main' "($age)" '')
+NOCOLB=$(mktmpd)
+for c in git bash; do ln -s "$(command -v $c)" "$NOCOLB/$c"; done
+out=$(env -u TMUX PATH="$NOCOLB" "$DIR/scripts/tmux-branch" "$BF" </dev/null 2>&1)
+case "$out" in
+    *"$want_row"*) ok "the row's field widths are byte-identical to the old build" ;;
+    *) bad "the row's field widths are byte-identical to the old build" "$want_row" "$out" ;;
+esac
+rm -rf "$BF" "$NOCOLB"
+
 echo "== tmux-branch: the popup resolves the pane it was opened from, not the busiest client =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
 # `display-message -p` (no -t) cannot resolve "the current client" from
