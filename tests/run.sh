@@ -2275,6 +2275,52 @@ is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
    "5000" "$rvperfrows"
 rm -rf "$RVPERF"
 
+echo "== tmux-review --rows: pinning a comment does not re-grep the store once per row =="
+# rows_mode used to fire `grep -qxF <header>` over the whole store for EVERY
+# diff row, and the picker reloads the whole marked list after each pinned
+# comment. The headers are now read once into a set and each row does an O(1)
+# lookup. Correctness first: the ● must land on exactly the commented row and
+# be sign-specific -- a (-) row at the same line number must stay blank.
+RVMARK=$(mktmpd)
+(
+  cd "$RVMARK" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\nc\n' > src.go
+  git add -A; git commit -q -m init
+  printf 'a\nZED\nc\nADDED\n' > src.go
+) >/dev/null 2>&1
+RVMSTORE=$(mktemp)
+# Pin a comment on the +2 (ZED) row -- the diff also has a -2 (b) row at the
+# same line number, so this proves the marker is keyed on path:line AND sign.
+"$DIR/scripts/tmux-review" --attach "$RVMSTORE" "src.go" "2" "ZED" "fix this line"
+rvmarkcol=$("$DIR/scripts/tmux-review" --rows "$RVMARK" "$RVMSTORE" | cut -f4)
+rvmarkwant=$(printf '%s\n' ' src.go:2 (-)  b' '●src.go:2 (+)  ZED' ' src.go:4 (+)  ADDED')
+is "the ● lands on exactly the commented row, sign-specific" "$rvmarkwant" "$rvmarkcol"
+rm -f "$RVMSTORE"; rm -rf "$RVMARK"
+
+# Perf: --rows on a 4000-row diff with a pinned comment. The old per-row grep
+# made this ~10.7s here; it is ~0.3s now. timeout is the fail-first teeth.
+RVMPERF=$(mktmpd)
+(
+  cd "$RVMPERF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > big.txt
+  git add -A; git commit -q -m init
+  seq 1 4000 > big.txt
+) >/dev/null 2>&1
+RVMPSTORE=$(mktemp)
+"$DIR/scripts/tmux-review" --attach "$RVMPSTORE" "big.txt" "100" "100" "a comment"
+timeout 5 "$DIR/scripts/tmux-review" --rows "$RVMPERF" "$RVMPSTORE" >/dev/null; rvmprc=$?
+if [ "$rvmprc" -eq 124 ]; then
+    bad "--rows re-marks a 4000-row diff in well under 5s" \
+        "output within 5s" "timed out (the per-row grep)"
+else
+    ok "--rows re-marks a 4000-row diff in well under 5s"
+fi
+rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
+
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
 # under the cursor vanished) -- without a guard this still writes
