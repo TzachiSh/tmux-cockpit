@@ -161,14 +161,20 @@ if [ "$hooks" -eq 1 ]; then
     # (order-insensitive, deep) equality, so reformatting the file -- jq -S,
     # or Claude Code rewriting its own settings -- no longer makes every
     # cockpit hook look new and get appended a second time.
+    # norm papers over the one difference deep equality is too honest about:
+    # "matcher" is optional and "" when absent, so a live entry carrying
+    # matcher:"" and a shipped one without it are the same hook. Measured:
+    # exactly that shape mismatch on the Stop event made every --hooks run
+    # append one more duplicate, forever, while the other ten events held.
     merged=$(jq -s '
+        def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         .[0].hooks as $mine | .[1] as $theirs
         | $theirs + { hooks: (
             ($theirs.hooks // {}) as $h
             | $h + ($mine | with_entries(
                 .key as $k
                 | .value = (($h[$k] // []) + [ .value[]
-                    | select(. as $e | (($h[$k] // []) | index($e)) == null) ])
+                    | select(. as $e | (($h[$k] // []) | map(norm) | index($e | norm)) == null) ])
               ))
           ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
         || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }

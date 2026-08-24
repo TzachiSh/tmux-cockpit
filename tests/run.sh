@@ -1641,6 +1641,17 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
+# The same hook with and without an explicit matcher:"" is the SAME hook:
+# a live Stop entry carrying the key while the shipped one lacked it made
+# every --hooks run append one more duplicate, forever. Seed the matcher-less
+# shape and assert the merge recognizes it rather than stacking a twin.
+HKN=$(mktmpd); mkdir -p "$HKN/.claude"
+jq '.hooks.Stop[0] |= del(.matcher)' "$DIR/examples/claude-hooks.json" \
+    | jq '{hooks: {Stop: .hooks.Stop}}' > "$HKN/.claude/settings.json"
+HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a matcher-less twin does not duplicate" "1" \
+   "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
+rm -rf "$HKN"
 # dry-run: shows the diff, writes nothing
 HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
 out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
