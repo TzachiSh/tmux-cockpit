@@ -48,17 +48,29 @@ if [ "${1:-}" = --preview-diff ]; then
     case "$f" in "~") f=${HOME:-/nonexistent} ;; "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;; esac
     [ -n "$f" ] && [ -e "$f" ] || { printf 'gone: %s\n' "$f"; exit 0; }
     if [ -d "$f" ]; then d=$f; else case "$f" in */*) d=${f%/*} ;; *) d=. ;; esac; fi
+    # Resolve d, or a RELATIVE path answers about the wrong directory: for
+    # "scripts/tmux-open-path", d=scripts and git -C scripts looks for
+    # scripts/scripts/... -- matching nothing and reporting "no uncommitted
+    # changes" about a file that is modified. A confident wrong answer.
+    d=$(cd "$d" 2>/dev/null && pwd) || d=.
     if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
         printf 'not in a git repository\n'; exit 0
     fi
     if [ -d "$f" ]; then
-        git -C "$f" -c color.status=always status --short 2>/dev/null | head -40
-        git -C "$f" diff --color=always 2>/dev/null | head -400
+        st=$(git -C "$f" -c color.status=always status --short 2>/dev/null | head -40)
+        dd=$(git -C "$f" diff --color=always --stat 2>/dev/null | head -40)
+        if [ -n "$st$dd" ]; then printf '%s\n%s\n' "$st" "$dd"
+        else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
     fi
     diff=$(git -C "$d" diff --color=always -- "$f" 2>/dev/null)
     [ -n "$diff" ] || diff=$(git -C "$d" diff --color=always --cached -- "$f" 2>/dev/null)
-    if [ -n "$diff" ]; then printf '%s\n' "$diff" | head -400
+    if [ -n "$diff" ]; then
+        # One stat line instead of four rows of diff --git/index/---/+++ that
+        # restate the filename already on the picker row. At seven preview rows
+        # the boilerplate was most of the pane; the first hunk lands on row 2.
+        git -C "$d" diff --stat -- "$f" 2>/dev/null | head -1
+        printf '%s\n' "$diff" | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
     else printf 'no uncommitted changes in %s\n' "${f##*/}"; fi
     exit 0
 fi
@@ -72,15 +84,15 @@ if [ "${1:-}" = --preview ]; then
     case "$f" in "~") f=$H ;; "~/"*) f="$H/${f#\~/}" ;; esac
     [ -n "$f" ] && [ -e "$f" ] || { printf 'gone: %s\n' "$f"; exit 0; }
 
-    # A directory has no contents to snippet, so show what is HAPPENING in it --
-    # which is nearly always why a directory is on the line you clicked.
+    # A directory: what is happening in it, then what is in it. The status
+    # block alone rendered a CLEAN repo's directory as zero bytes -- a blank
+    # pane in the normal state of a repo, which read as broken. The listing is
+    # -A: the dotfiles this audience most wants to reach (.claude/, .gitignore)
+    # were invisible, with .git/ alone filtered as noise.
     if [ -d "$f" ]; then
-        if git -C "$f" rev-parse --git-dir >/dev/null 2>&1; then
-            git -C "$f" -c color.status=always status --short 2>/dev/null | head -40
-            git -C "$f" diff --color=always --stat 2>/dev/null | head -40
-        else
-            ls -la -- "$f" 2>/dev/null | head -60
-        fi
+        st=$(git -C "$f" -c color.status=always status --short 2>/dev/null | head -40)
+        [ -n "$st" ] && printf '%s\n\n' "$st"
+        ls -1Ap -- "$f" 2>/dev/null | grep -vx '\.git/' | head -60
         exit 0
     fi
 
@@ -115,9 +127,27 @@ if [ "${1:-}" = --preview ]; then
         fi
     fi
 
-    # Window the snippet around the target line: enough above to see how you got
-    # there, more below because that is where you are going.
-    if [ -n "$l" ]; then first=$(( l > 10 ? l - 10 : 1 )); last=$(( l + 40 ))
+    # Markdown renders as markdown -- headings, bold, tables -- when nothing
+    # more specific applies. A target line still wins (rich cannot anchor to a
+    # line and the jump is the point), and so does an uncommitted diff, which
+    # already returned above. rich ships with this machine's python3; the
+    # import probe costs ~25ms and only runs for .md files.
+    case "$f" in
+        *.md|*.markdown|*.mdown|*.mkd)
+            if [ -z "$l" ] && python3 -c 'import rich' 2>/dev/null; then
+                head -400 -- "$f" | python3 -m rich.markdown \
+                    -c -w "${FZF_PREVIEW_COLUMNS:-80}" -t ansi_dark - 2>/dev/null && exit 0
+            fi ;;
+    esac
+
+    # Window the snippet around the target line: enough above to see how you
+    # got there, more below because that is where you are going. The lead-in
+    # scales to the preview fzf actually gave us -- a fixed 10 lines pushed the
+    # TARGET off the bottom of a 7-row preview, and the one thing this pane
+    # exists to show was structurally never on screen at small sizes.
+    if [ -n "$l" ]; then
+        above=$(( ${FZF_PREVIEW_LINES:-40} / 3 )); [ "$above" -gt 10 ] && above=10
+        first=$(( l > above ? l - above : 1 )); last=$(( l + 40 ))
     else                first=1; last=200; fi
 
     # bat gives syntax colour, line numbers, AND -- via the "changes" style -- the
@@ -344,15 +374,22 @@ browse() {
     local dir=$1 out key sel
     dir=$(cd "$dir" 2>/dev/null && pwd) || return 0
     while :; do
-        out=$( cd "$dir" && { printf '../\n'; ls -1p 2>/dev/null; } \
-            | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
+        # -A: the dotfiles this audience most wants (.claude/, .gitignore)
+        # were unreachable; .git/ alone is filtered as noise. load:down starts
+        # the cursor on the first real entry instead of ../, where a second
+        # Enter just climbed straight back out.
+        out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
+            | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --expect=ctrl-o \
+                  --bind 'load:down' \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-                  --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})" \
-                  --bind "ctrl-f:change-preview($(shq "$0") --preview {})" \
+                  --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})+change-preview-label( diff )" \
+                  --bind "ctrl-f:change-preview($(shq "$0") --preview {})+change-preview-label( content )" \
                   --prompt="${dir/#$H/\~}/ " \
-                  --header='↵ open / enter dir   ^O open as-is   ^G diff   esc cancel' \
+                  --header='↵ open / enter dir   ^O as-is
+^G diff   ^F content   ^/ preview   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
+                  --preview-label=' content ' --preview-label-pos=2 \
                   --preview-window='down,65%,border-top') || return 0
         key=${out%%$'\n'*}; sel=${out#*$'\n'}
         [ -n "$sel" ] && [ "$sel" != "$key" ] || sel=""
@@ -369,29 +406,36 @@ browse() {
 }
 
 if command -v fzf >/dev/null; then
-    # The list is 1-5 rows nearly always; the preview is the payload. Give it
-    # the space the list is not using, instead of a fixed split that left the
-    # top half of the popup empty around two filenames.
-    case ${#FILES[@]} in
-        1|2)   pshare=85% ;;
-        3|4|5) pshare=75% ;;
-        *)     pshare=65% ;;
-    esac
-    # Field 4 is display-only: the path WITH its line number, so a row reads
-    # "src/app.ts:31" the way the output did. Fields 2 and 3 stay clean for the
-    # preview commands.
+    # Size the split from the popup fzf actually lives in, not from a fixed
+    # percentage: 85% was right at 40 rows and starved the list to ONE row at
+    # 17. The list gets the rows it has (capped), the preview gets the rest.
+    avail=$(tput lines 2>/dev/null || echo 24)
+    lrows=${#FILES[@]}; [ "$lrows" -gt 8 ] && lrows=8
+    pshare=$(( avail - lrows - 5 ))          # prompt + 2-line header + border
+    [ "$pshare" -lt 5 ] && pshare=5
+    # Field 4 is display-only: relative to the pane's own directory when the
+    # candidate is under it -- which is how the token read in the output --
+    # with the line number kept. The absolute path stays in field 2 for the
+    # preview commands. --keep-right protects the basename:line end when a
+    # long row still truncates.
     out=$(for i in "${!FILES[@]}"; do
+               case "${FILES[$i]}" in
+                   "$dir"/*) disp=${FILES[$i]#"$dir"/} ;;
+                   *)        disp=${FILES[$i]/#$H/\~} ;;
+               esac
                printf '%s\t%s\t%s\t%s%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}" \
-                      "${FILES[$i]/#$H/\~}" "${LINES[$i]:+:${LINES[$i]}}"
-           done | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
-                      --delimiter=$'\t' --with-nth=4 --multi \
+                      "$disp" "${LINES[$i]:+:${LINES[$i]}}"
+           done | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                      --delimiter=$'\t' --with-nth=4 --multi --keep-right \
                       --expect=ctrl-o \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-                      --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})" \
-                      --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})" \
+                      --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})+change-preview-label( diff )" \
+                      --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})+change-preview-label( content )" \
                       --prompt='open> ' \
-                      --header='↵ open (folder: browse)   ^O open as-is   tab mark   ^G diff   esc cancel' \
+                      --header='↵ open (folder: browse)   tab mark   ^O as-is
+^G diff   ^F content   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
+                      --preview-label=' content ' --preview-label-pos=2 \
                       --preview-window="down,$pshare,border-top")
     [ -n "$out" ] || exit 0
     # --expect puts the pressed key on line 1, the selections after it.

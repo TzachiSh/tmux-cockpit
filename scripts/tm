@@ -110,7 +110,7 @@ case "${1:-}" in
     doomed=()
     if command -v fzf >/dev/null; then
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
-        | fzf --multi --height=40% --reverse --prompt='kill> ' \
+        | fzf --multi --height=40% --reverse --color=16 --info=inline-right --cycle --scroll-off=2 --prompt='kill> ' \
               --header='tab mark   ↵ kill   esc cancel')
     else
       printf 'Kill which session?\n' >&2
@@ -141,7 +141,7 @@ fi
 # 4. Pick one, create another, or ctrl-x to kill under the cursor.
 if command -v fzf >/dev/null; then
   choice=$(printf '%s\n' "${sessions[@]}" "$NEW_LABEL" \
-    | fzf --height=40% --reverse --no-multi --disabled --prompt='tmux session> ' \
+    | fzf --height=40% --reverse --no-multi --disabled --color=16 --info=inline-right --cycle --scroll-off=2 --prompt='session> ' \
           --header='↵ attach   k kill   / search   esc cancel' \
           --bind "k:execute-silent('$SELF' --kill-one {})+reload('$SELF' -l; echo '$NEW_LABEL')" \
           --bind "/:enable-search+unbind(k)+change-prompt(search> )+change-header(search: k types now   ↵ attach   esc cancel)") || exit 0

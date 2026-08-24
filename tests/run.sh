@@ -882,6 +882,13 @@ tmux -L "$SOCK5" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$KB" >/dev/nul
 KP=$(tmux -L "$SOCK5" list-panes -a -F '#{pane_id}' | head -1)
 tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
 sleep 2
+# The list marks the branch you are ON; the header alone said it before, and
+# the current branch looked like a normal destination.
+case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
+    *"● main"*) ok "the current branch is marked in the list" ;;
+    *) bad "the current branch is marked in the list" "● main" \
+         "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | sed -n 4p)" ;;
+esac
 # Type a filter FIRST. With an empty query the old binding only errored, so a
 # bare ctrl-n proves nothing -- it is the typed query that used to become a
 # branch name. "zzz" matches no branch, exactly the case the create key exists
@@ -1182,6 +1189,13 @@ sleep 2.2
 # assertion could pass without fzf ever running.
 case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
     *"open>"*) ok "the picker really came up" ;;
+esac
+# The preview separator names the mode, so ^G/^F visibly do something even
+# when the two views look alike.
+case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
+    *"─ content "*) ok "the preview names its mode on the separator" ;;
+    *) bad "the preview names its mode on the separator" "a ' content ' label" \
+         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | grep '^─' | head -1)" ;;
     *) bad "the picker really came up" "an open> prompt" \
          "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | head -3)" ;;
 esac
