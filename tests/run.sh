@@ -3302,5 +3302,76 @@ is "@cockpit_reload_key off leaves R unbound" "" \
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
 fi
 
+echo "== prefix R sources every config file tmux loaded, not just the first =="
+# -f /dev/null above is single-entry #{config_files} -- it never exercised the
+# bug. A start with no -f is multi-entry (tmux tries /etc/tmux.conf, ~/.tmux.conf
+# and the XDG path in turn) and, on a fresh HOME, actually sources more than
+# one of them -- exactly the shape a default install has.
+if need_tmux "cockpit_reload_key multi-config"; then :; else
+RC="cockpit-rc-$$"; RCO="cockpit-rco-$$"; SOCKS="$SOCKS $RC $RCO"
+RCHOME=$(mktemp -d)
+mkdir -p "$RCHOME/.config/tmux"
+printf 'set -g @reload_marker_home v1\n' > "$RCHOME/.tmux.conf"
+printf 'set -g @reload_marker_xdg v1\n' > "$RCHOME/.config/tmux/tmux.conf"
+HOME="$RCHOME" "$TMUX_REAL" -L "$RC" new-session -d -s t -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
+
+# Sanity: the fixture really did produce a multi-entry #{config_files}, so a
+# green result below is not just an artifact of a single-entry fixture.
+cfgfiles=$("$TMUX_REAL" -L "$RC" display-message -p '#{config_files}' 2>/dev/null)
+case "$cfgfiles" in
+    *,*) ok "fixture really has a multi-entry #{config_files}" ;;
+    *) bad "fixture really has a multi-entry #{config_files}" "comma-separated paths" "$cfgfiles" ;;
+esac
+
+HOME="$RCHOME" "$TMUX_REAL" -L "$RC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+
+rbind=$("$TMUX_REAL" -L "$RC" list-keys -T prefix 2>/dev/null | awk '$4=="R"')
+case "$rbind" in
+    *"$RCHOME/.tmux.conf"*) ok "reload binding sources the user's ~/.tmux.conf, not just /etc/tmux.conf" ;;
+    *) bad "reload binding sources the user's ~/.tmux.conf, not just /etc/tmux.conf" \
+         "$RCHOME/.tmux.conf in the binding" "$rbind" ;;
+esac
+case "$rbind" in
+    *"$RCHOME/.config/tmux/tmux.conf"*) ok "reload binding also sources the second config file, not just the first" ;;
+    *) bad "reload binding also sources the second config file, not just the first" \
+         "$RCHOME/.config/tmux/tmux.conf in the binding" "$rbind" ;;
+esac
+
+# Functional check, not just text in the binding: edit both files on disk,
+# fire the bound key FOR REAL, confirm BOTH get re-sourced. This is also the
+# check that the display-message half is actually PART of the binding rather
+# than running once at plugin-load time (the argv-split trap) -- if it only
+# ran at load, list-keys above could still show the right source-file text
+# while the key itself did nothing.
+#
+# plain `send-keys -t <pane>` writes bytes into the PANE's input, which is
+# not how a prefix keypress reaches tmux -- prefix lookup happens in the
+# attached CLIENT reading its own pty, before anything is sent to a pane. So,
+# same technique as the ctrl+double-click test above: an outer tmux provides
+# a real pty for a client attached to the inner one, and send-keys -H writes
+# the raw bytes (02 = C-b, the default prefix; 52 = 'R') into that pty.
+printf 'set -g @reload_marker_home v2\n' > "$RCHOME/.tmux.conf"
+printf 'set -g @reload_marker_xdg v2\n' > "$RCHOME/.config/tmux/tmux.conf"
+"$TMUX_REAL" -L "$RCO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $RC attach -t t" >/dev/null 2>&1
+ROP=$("$TMUX_REAL" -L "$RCO" list-panes -t o -F '#{pane_id}' | head -1)
+sleep 1
+if "$TMUX_REAL" -L "$RCO" list-panes -t o >/dev/null 2>&1; then
+    "$TMUX_REAL" -L "$RCO" send-keys -t "$ROP" -H 02 52 >/dev/null 2>&1
+    sleep 0.5
+    is "prefix R actually reloads the home conf" "v2" \
+       "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home)"
+    is "prefix R actually reloads the second (xdg) conf too" "v2" \
+       "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_xdg)"
+else
+    bad "prefix R actually reloads the home conf" "an attached client" "no client"
+    bad "prefix R actually reloads the second (xdg) conf too" "an attached client" "no client"
+fi
+"$TMUX_REAL" -L "$RCO" kill-server >/dev/null 2>&1
+
+"$TMUX_REAL" -L "$RC" kill-server >/dev/null 2>&1
+rm -rf "$RCHOME"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
