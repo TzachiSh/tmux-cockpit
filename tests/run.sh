@@ -1589,6 +1589,14 @@ case "$ctx" in
     [0-9]|[0-9][0-9]|100) ok "a real payload yields a percent" ;;
     *) bad "a real payload yields a percent" "an integer 0-100" "$ctx" ;;
 esac
+# The fallback branch sums cache tokens that can legitimately exceed
+# context_window_size (1900/1000 here) -- the write must still clamp to the
+# promised 0-100, not the raw ratio.
+"$TMUX_REAL" -L "$CX" set-option -pu -t "$CXP" @panestate_ctx >/dev/null 2>&1
+TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
+    < "$DIR/tests/fixtures/statusline-overshoot.json" >/dev/null
+is "an overshooting fallback ratio clamps to 100" "100" \
+   "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)"
 # Garbage must write nothing and still exit 0 -- a statusline that errors
 # would spam the agent's own UI.
 "$TMUX_REAL" -L "$CX" set-option -pu -t "$CXP" @panestate_ctx >/dev/null 2>&1

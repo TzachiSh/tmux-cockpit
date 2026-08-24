@@ -27,7 +27,12 @@ pct=$(jq -r '
                 + (.context_window.current_usage.output_tokens // 0))
                / .context_window.context_window_size * 100)
          else empty end)
-     // empty) | floor' 2>/dev/null <<<"$payload") || exit 0
+     // empty) | floor
+     # Clamp to the promised 0-100: the recompute branch sums cache tokens
+     # that can legitimately overshoot context_window_size, and a future CC
+     # version could send used_percentage > 100 outright. Nothing downstream
+     # -- the tmux tab suffix included -- expects more than two digits.
+     | if . > 100 then 100 else . end' 2>/dev/null <<<"$payload") || exit 0
 model=$(jq -r '.model.display_name // empty' 2>/dev/null <<<"$payload")
 
 case "$pct" in
