@@ -252,8 +252,13 @@ open_one() {
         return
     fi
     if command -v code >/dev/null 2>&1; then
-        # code returns immediately; --goto jumps to line:col.
-        code --goto "$file:${ln:-1}:${col:-1}" >/dev/null 2>&1 &
+        # Launched by the tmux SERVER, not by this script. This runs inside the
+        # picker popup, and a popup kills its whole process group the moment it
+        # closes -- which is immediately, since the script exits right after.
+        # A plain `code ... &` therefore died before it could hand the file to
+        # the running VS Code window, and nothing opened. Measured: a child
+        # backgrounded in a popup never survives; one owned by the server does.
+        tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
         note "opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
@@ -291,14 +296,44 @@ fi
 
 # Field 2 is the display path, field 3 the line number (blank when the token
 # carried none). fzf quotes both when it substitutes them.
+# Browse INTO a directory instead of throwing it at the editor: Enter descends,
+# ".." climbs, a file opens, ^O opens the highlighted entry as-is (which is how
+# you deliberately hand a whole folder to VS Code). Runs in the same popup, so
+# it costs nothing new; each level is one fzf round in a loop.
+browse() {
+    local dir=$1 out key sel
+    dir=$(cd "$dir" 2>/dev/null && pwd) || return 0
+    while :; do
+        out=$( cd "$dir" && { printf '../\n'; ls -1p 2>/dev/null; } \
+            | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
+                  --expect=ctrl-o \
+                  --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --prompt="${dir/#$H/\~}/ " \
+                  --header='↵ open / enter dir   ^O open as-is   ^/ preview   esc cancel' \
+                  --preview="$(shq "$0") --preview {}" \
+                  --preview-window='down,65%,border-top') || return 0
+        key=${out%%$'\n'*}; sel=${out#*$'\n'}
+        [ -n "$sel" ] && [ "$sel" != "$key" ] || sel=""
+        [ -n "$sel" ] || return 0
+        if [ "$key" = ctrl-o ]; then
+            open_one "$dir/${sel%/}" "" ""; return 0
+        fi
+        case "$sel" in
+            ../) dir=$(cd "$dir/.." && pwd) || return 0 ;;
+            */)  dir=$(cd "$dir/${sel%/}" && pwd) || return 0 ;;
+            *)   open_one "$dir/$sel" "" ""; return 0 ;;
+        esac
+    done
+}
+
 if command -v fzf >/dev/null; then
     # The list is 1-5 rows nearly always; the preview is the payload. Give it
     # the space the list is not using, instead of a fixed split that left the
     # top half of the popup empty around two filenames.
     case ${#FILES[@]} in
-        1|2)   pshare=80% ;;
-        3|4|5) pshare=70% ;;
-        *)     pshare=60% ;;
+        1|2)   pshare=85% ;;
+        3|4|5) pshare=75% ;;
+        *)     pshare=65% ;;
     esac
     picks=$(for i in "${!FILES[@]}"; do
                printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}"
@@ -313,8 +348,19 @@ if command -v fzf >/dev/null; then
     # --multi returns one row per marked file (or just the cursor row). A
     # compiler error naming a header and its source, a diff naming two files:
     # tab-mark both, open both. Tab means the same thing in tm's kill picker.
+    #
+    # A directory is a place, not a file: picking one alone BROWSES it -- Enter
+    # descends, .. climbs, ^O in the browser is the deliberate "hand this whole
+    # folder to the editor". In a multi-selection directories are skipped, so
+    # marking three files and a folder opens the files rather than surprising
+    # you with an editor window per directory.
+    n=$(printf '%s\n' "$picks" | grep -c .)
     while IFS= read -r row; do
         i=${row%%$'\t'*}
+        if [ -d "${FILES[$i]}" ]; then
+            [ "$n" -eq 1 ] && browse "${FILES[$i]}"
+            continue
+        fi
         open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
     done <<<"$picks"
 else

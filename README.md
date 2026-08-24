@@ -199,6 +199,11 @@ looks like a path is dropped.
 diff names two files: mark both, `↵` opens them all. Tab means the same thing in
 `tm`'s kill picker.
 
+**A folder browses, it does not open.** `↵` on a directory descends into it —
+`..` climbs back up, `↵` on a file opens it, and `^O` is the deliberate "hand
+this whole folder to the editor". In a multi-selection, directories are skipped
+so marking three files and a folder opens the files.
+
 The list takes only the rows it needs — with one or two candidates the preview
 gets ~80% of the popup instead of leaving the top half empty around two
 filenames.

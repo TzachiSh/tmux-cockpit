@@ -543,6 +543,7 @@ case "$1" in
       esac ;;
   new-window)    printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
   display-popup) printf 'POPUP %s\n'  "${!#}" >> "$TMUX_LOG" ;;
+  run-shell)     printf 'RUNSHELL %s\n' "$*" >> "$TMUX_LOG" ;;
 esac
 exit 0
 STUB
@@ -582,6 +583,23 @@ case "$(cat "$LOG")" in
     *"no editor"*) ok "no editor at all: says so instead of claiming success" ;;
     *) bad "no editor at all: says so instead of claiming success" "a 'no editor' message" "$(cat "$LOG")" ;;
 esac
+
+# VS Code is launched BY THE SERVER, never by this script. The picker runs
+# inside a popup, and a popup kills its process group the instant it closes --
+# which is immediately, the script exits right after fzf returns. A plain
+# `code ... &` died before it could hand the file to the running window, and
+# nothing opened. Proven both ways against a real popup with a real client:
+# the & child never survives, the run-shell -b one always does.
+printf '#!/bin/sh\nexit 0\n' > "$ETMUX/code"; chmod +x "$ETMUX/code"
+: > "$LOG"
+env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$LOG")" in
+    *"RUNSHELL run-shell -b"*"--goto"*) ok "code is launched by the server, not the dying popup" ;;
+    *) bad "code is launched by the server, not the dying popup" \
+         "a run-shell -b carrying code --goto" "$(cat "$LOG")" ;;
+esac
+rm -f "$ETMUX/code"
 # One candidate must still reach the picker. This is the behaviour the whole
 # gesture exists for -- see what the line resolved to, then decide -- and the
 # easiest one to regress back into "just open it".
@@ -1165,6 +1183,38 @@ is "two marked files both open" "2" "$(grep -c OPEN "$MOLOG")"
 rm -f "$MOLOG" "$MOED"
 else
   skip_ "the picker really came up"; skip_ "two marked files both open"
+fi
+fi
+
+echo "== picking a folder browses into it =="
+# A directory is a place, not a file. Enter used to hand it straight to the
+# editor; now it descends -- .. climbs, a file opens, ^O is the deliberate
+# "open this folder in the editor". Driven end to end through a real pty.
+if need_tmux "folder browse"; then :; else
+if command -v fzf >/dev/null 2>&1; then
+BR="cockpit-br-$$"; SOCKS="$SOCKS $BR"
+BRLOG=$(mktemp); BRED=$(mktemp)
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$BRLOG" > "$BRED"; chmod +x "$BRED"
+"$TMUX_REAL" -L "$BR" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
+"$TMUX_REAL" -L "$BR" set -g @cockpit_editor "$BRED" >/dev/null 2>&1
+BP=$("$TMUX_REAL" -L "$BR" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$BR" set-option -p -t "$BP" @cockpit_click_line "look in scripts/ now" >/dev/null 2>&1
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "'$DIR/scripts/tmux-open-path' --pick '$BP'" Enter
+sleep 2.2
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter          # the one candidate is a dir
+sleep 2
+case "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP")" in
+    *"enter dir"*) ok "enter on a folder opens the browser, not the editor" ;;
+    *) bad "enter on a folder opens the browser, not the editor" "the browse header" \
+         "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP" | head -3)" ;;
+esac
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "tmux-where"; sleep 0.8
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter; sleep 2
+is "and a file inside it opens" "OPEN $DIR/scripts/tmux-where" "$(cat "$BRLOG")"
+"$TMUX_REAL" -L "$BR" kill-server >/dev/null 2>&1
+rm -f "$BRLOG" "$BRED"
+else
+  skip_ "enter on a folder opens the browser, not the editor"; skip_ "and a file inside it opens"
 fi
 fi
 
