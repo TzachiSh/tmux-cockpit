@@ -122,6 +122,13 @@ case "$current" in
         case "$state" in running|off|needs-input) ;; *) exit 0 ;; esac ;;
 esac
 
+# @panestate is written ONLY here, and that is load-bearing for the banner. The
+# cross-window banner reads a per-window @cockpit_win_needs that the block below
+# derives from @panestate on each transition; the "never reads low" safety
+# rests on every state change flowing through this script so that derivation
+# runs. A raw `tmux set-option -p @panestate needs-input` somewhere else would
+# set the state but leave @cockpit_win_needs unset -- measured: the banner then
+# renders empty, SILENTLY hiding a real alert. Route all writes through here.
 if [ "$state" = off ]; then
     [ -z "$current" ] && exit 0             # already clear: nothing to do
     tmux set-option -pu -t "$pane" @panestate 2>/dev/null || true
@@ -138,6 +145,48 @@ fi
 case "$state" in
     running|off) tmux set-option -pu -t "$pane" @panestate_msg 2>/dev/null ;;
 esac
+
+# --- cross-window NEEDS YOU banner, precomputed here, off the redraw path ------
+# The active pane's border names any OTHER window that has a blocked agent. Read
+# live, that is a whole-server #{S:#{W:#{P:}}} pane walk re-run for every visible
+# pane on every status redraw -- and an agent emitting an OSC-2 title forces a
+# status redraw on every keystroke, so under load it walks every pane on the
+# server continuously. Measured on the freeze rig it was the dominant per-redraw
+# cost (nicm's own guidance, tmux#2774/#3352: precompute into an option).
+#
+# So the walk moves HERE, to transition time: this records ONE per-window boolean
+# @cockpit_win_needs -- does THIS pane's window hold a blocked agent -- and the
+# border format walks WINDOWS (not panes), reads the boolean, and renders the
+# live window_index:window_name itself. A window loop reads no pane, so a redraw
+# no longer walks the server; the rendered banner is byte-for-byte unchanged.
+#
+# display-message evaluates a format WITHOUT forcing a redraw, so this read is
+# free; only the guarded set-option below costs one, and only when the window's
+# blocked-status actually flips. #{P:} here is scoped to this pane's window by
+# the -t target, the same guarded glob+state test the border and fleet use. The
+# option is WINDOW-scoped (set -w), like @panestate is pane-scoped: it dies with
+# the window, so destroying a window (kill-window, last pane closed) leaves no
+# stale banner entry for free -- tmux garbage-collects it.
+#
+# STALENESS BOUND (accepted, documented): a window's entry refreshes only when a
+# pane IN that window transitions through this script. The common exits are all
+# covered: examples/claude-hooks.json wires SessionEnd (and SessionStart) to
+# `agent-state off`, so a normally-ending agent fires a transition that clears
+# its window's entry, and a whole window closing drops the option with it. The
+# ONLY residual is a still-blocked agent hard-killed inside a still-living window
+# with no hook (kill -9, tmux kill-pane) -- that window stays listed until the
+# next transition in it. The live walk had zero staleness; this is the narrow,
+# bounded trade the freeze fix makes, and it only ever reads HIGH, never low, so
+# a banner that needs you is never hidden -- only a cleared one can linger.
+win_needs=$(tmux display-message -p -t "$pane" \
+    '#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }}' \
+    2>/dev/null)
+win_cur=$(tmux show-option -wqv -t "$pane" @cockpit_win_needs 2>/dev/null)
+if [ "$win_needs" = 1 ]; then
+    [ "$win_cur" = 1 ] || tmux set-option -w -t "$pane" @cockpit_win_needs 1 2>/dev/null || true
+else
+    [ -z "$win_cur" ] || tmux set-option -wu -t "$pane" @cockpit_win_needs 2>/dev/null || true
+fi
 
 # No refresh-client here, deliberately. set-option already repaints everything
 # that reads the option -- measured: the border, the tab marker and even the
