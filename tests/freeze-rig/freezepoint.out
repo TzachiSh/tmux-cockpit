@@ -1,0 +1,17 @@
+### FREEZE POINT: 400 panes, high OSC-title pressure
+
+VAR  PANES  AGENTS  OSC/s  p50    p95    >1s   cpu%
+V0   400    12      960    9      15     0     31
+V7   400    12      960    153    225    0     82
+V0   400    30      2400   13     18     0     59
+V7   400    30      2400   178    265    0     82
+
+### REGRESSION GATE SELF-TEST (current code, expected FAIL)
+
+CONFIG                       ms CPU per status redraw (120 panes, 4 visible)
+control (no cockpit)         0.5
+full cockpit config          7.8
+
+delta over control: 7.3 ms   budget: 6.0 ms
+FAIL
+exit=1

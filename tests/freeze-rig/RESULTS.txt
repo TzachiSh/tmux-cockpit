@@ -1,0 +1,107 @@
+tmux-cockpit freeze rig -- raw results. tmux 3.7c, 12-core Linux, 2026-08-24T17:55:03+03:00
+
+=== A. server CPU per forced status redraw (idle server, 4 visible panes) ===
+
+VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
+V0   control (no cockpit formats) 1x6x2     12     2    0.8       1.0
+V1   pane-border-style only     1x6x2     12     2    1.5       1.7
+V2   pane-border-format, banner REMOVED 1x6x2     12     2    1.0       1.2
+V3   pane-border-format WITH banner 1x6x2     12     2    1.5       1.8
+V4   window tabs (5x #{P:} walks) 1x6x2     12     2    1.5       2.5
+V5   status-right #{agent_fleet} 1x6x2     12     2    1.5       1.7
+V6   window-style tint          1x6x2     12     2    0.8       1.2
+V7   FULL shipped config        1x6x2     12     2    4.3       4.3
+V0   control (no cockpit formats) 3x10x4    120    4    1.3       2.2
+V1   pane-border-style only     3x10x4    120    4    2.5       3.2
+V2   pane-border-format, banner REMOVED 3x10x4    120    4    1.8       2.0
+V3   pane-border-format WITH banner 3x10x4    120    4    5.7       6.7
+V4   window tabs (5x #{P:} walks) 3x10x4    120    4    3.5       4.7
+V5   status-right #{agent_fleet} 3x10x4    120    4    3.2       4.0
+V6   window-style tint          3x10x4    120    4    1.0       1.7
+V7   FULL shipped config        3x10x4    120    4    11.8      13.5
+V0   control (no cockpit formats) 5x20x4    400    4    2.7       2.7
+V1   pane-border-style only     5x20x4    400    4    3.3       4.2
+V2   pane-border-format, banner REMOVED 5x20x4    400    4    2.8       3.0
+V3   pane-border-format WITH banner 5x20x4    400    4    17.7      18.7
+V4   window tabs (5x #{P:} walks) 5x20x4    400    4    7.2       7.2
+V5   status-right #{agent_fleet} 5x20x4    400    4    10.8      10.2
+V6   window-style tint          5x20x4    400    4    2.2       2.8
+V7   FULL shipped config        5x20x4    400    4    26.3      24.7
+
+VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
+V0   control (no cockpit formats) 1x4x4     16     4    0.8       1.2
+V3   pane-border-format WITH banner 1x4x4     16     4    1.5       1.7
+V0   control (no cockpit formats) 1x12x4    48     4    0.8       1.2
+V3   pane-border-format WITH banner 1x12x4    48     4    2.7       2.7
+V0   control (no cockpit formats) 2x12x4    96     4    1.2       1.7
+V3   pane-border-format WITH banner 2x12x4    96     4    5.2       5.3
+V0   control (no cockpit formats) 3x15x4    180    4    1.8       2.8
+V3   pane-border-format WITH banner 3x15x4    180    4    10.5      11.7
+V0   control (no cockpit formats) 4x20x4    320    4    1.8       2.3
+V3   pane-border-format WITH banner 4x20x4    320    4    16.0      29.2
+V0   control (no cockpit formats) 5x20x4    400    4    2.0       2.8
+V3   pane-border-format WITH banner 5x20x4    400    4    14.3      15.7
+V0   control (no cockpit formats) 6x25x4    600    4    2.8       3.2
+V3   pane-border-format WITH banner 6x25x4    600    4    20.7      22.7
+
+VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
+V0   control (no cockpit formats) 3x40x2    240    2    2.7       2.8
+V3   pane-border-format WITH banner 3x40x2    240    2    12.3      12.3
+V0   control (no cockpit formats) 3x20x4    240    4    1.7       2.0
+V3   pane-border-format WITH banner 3x20x4    240    4    9.8       11.0
+V0   control (no cockpit formats) 3x13x6    234    6    1.3       2.2
+V3   pane-border-format WITH banner 3x13x6    234    6    10.0      10.8
+V0   control (no cockpit formats) 3x10x8    240    8    1.0       2.7
+V3   pane-border-format WITH banner 3x10x8    240    8    9.5       10.5
+V0   control (no cockpit formats) 3x6x13    234    13   5.0       8.8
+V3   pane-border-format WITH banner 3x6x13    234    13   23.0      20.7
+V0   control (no cockpit formats) 3x5x16    240    16   6.2       11.0
+V3   pane-border-format WITH banner 3x5x16    240    16   32.7      25.5
+
+=== B. end-to-end round-trip latency under load ===
+### BIG SHAPE, 4 agent panes
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 5x20x4   400   4    agent  4   8 11 20 0 13
+V2   pane-border-format, banner REMOVED 5x20x4   400   4    agent  4   8 14 19 0 18
+V3   pane-border-format WITH banner 5x20x4   400   4    agent  4   47 104 193 0 69
+V4   window tabs (5x #{P:} walks) 5x20x4   400   4    agent  4   10 23 42 0 36
+V5   status-right #{agent_fleet} 5x20x4   400   4    agent  4   11 25 85 0 49
+V6   window-style tint          5x20x4   400   4    agent  4   7 13 21 0 14
+V7   FULL shipped config        5x20x4   400   4    agent  4   113 143 150 0 82
+
+### BIG SHAPE, 12 agent panes
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 5x20x4   400   4    agent  12  9 14 24 0 29
+V3   pane-border-format WITH banner 5x20x4   400   4    agent  12  83 101 107 0 78
+V7   FULL shipped config        5x20x4   400   4    agent  12  137 154 164 0 83
+
+### TITLE-ONLY vs LINES-ONLY (120 panes)
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 3x10x4   120   4    spam   4   5 7 11 0 3
+V7   FULL shipped config        3x10x4   120   4    spam   4   5 7 10 0 3
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 3x10x4   120   4    title  4   5 7 10 0 7
+V7   FULL shipped config        3x10x4   120   4    title  4   6 26 52 0 33
+
+=== C. freeze point + regression gate ===
+### FREEZE POINT: 400 panes, high OSC-title pressure
+
+VAR  PANES  AGENTS  OSC/s  p50    p95    >1s   cpu%
+V0   400    12      960    9      15     0     31
+V7   400    12      960    153    225    0     82
+V0   400    30      2400   13     18     0     59
+V7   400    30      2400   178    265    0     82
+
+### REGRESSION GATE SELF-TEST (current code, expected FAIL)
+
+CONFIG                       ms CPU per status redraw (120 panes, 4 visible)
+control (no cockpit)         0.5
+full cockpit config          7.8
+
+delta over control: 7.3 ms   budget: 6.0 ms
+FAIL
+exit=1

@@ -1,0 +1,27 @@
+### BIG SHAPE, 4 agent panes
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 5x20x4   400   4    agent  4   8 11 20 0 13
+V2   pane-border-format, banner REMOVED 5x20x4   400   4    agent  4   8 14 19 0 18
+V3   pane-border-format WITH banner 5x20x4   400   4    agent  4   47 104 193 0 69
+V4   window tabs (5x #{P:} walks) 5x20x4   400   4    agent  4   10 23 42 0 36
+V5   status-right #{agent_fleet} 5x20x4   400   4    agent  4   11 25 85 0 49
+V6   window-style tint          5x20x4   400   4    agent  4   7 13 21 0 14
+V7   FULL shipped config        5x20x4   400   4    agent  4   113 143 150 0 82
+
+### BIG SHAPE, 12 agent panes
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 5x20x4   400   4    agent  12  9 14 24 0 29
+V3   pane-border-format WITH banner 5x20x4   400   4    agent  12  83 101 107 0 78
+V7   FULL shipped config        5x20x4   400   4    agent  12  137 154 164 0 83
+
+### TITLE-ONLY vs LINES-ONLY (120 panes)
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 3x10x4   120   4    spam   4   5 7 11 0 3
+V7   FULL shipped config        3x10x4   120   4    spam   4   5 7 10 0 3
+
+VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max   >1s  cpu%
+V0   control (no cockpit formats) 3x10x4   120   4    title  4   5 7 10 0 7
+V7   FULL shipped config        3x10x4   120   4    title  4   6 26 52 0 33
