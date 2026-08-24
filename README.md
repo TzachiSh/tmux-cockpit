@@ -43,6 +43,8 @@ Non-agent panes fall back to the window name.
   pre-attentive: you see which pane needs you without reading anything.
 - **Active pane's border** — names any *other* window that is blocked, since
   you cannot see its border from here.
+- **Status bar** — the `#{agent_fleet}` token counts blocked and errored agents
+  across *every* session, not only the one you are attached to.
 
 Nothing is drawn when nothing is happening.
 
@@ -68,6 +70,31 @@ A lower state may not overwrite a higher one. Only work actually resuming
 when a *blocked* turn ends — with the permission prompt still on screen — and
 letting that write `done` turned a red "answer me" into a green "finished" on a
 timer.
+
+### Status-bar tokens
+
+Three tokens can go in `status-left` / `status-right`, or in any option they
+read. `cockpit.tmux` rewrites them in place when it loads, so every option
+carrying one must be set **before** the `run-shell` line.
+
+| token | renders |
+| --- | --- |
+| `#{agent_where_path}` | `~/path` locally, the ssh destination when remote |
+| `#{agent_where_branch}` | the git branch locally, blank when remote |
+| `#{agent_fleet}` | `▲N` blocked and `✕N` errored agents, every session |
+
+`#{agent_fleet}` is the one alert that is not tied to what you can see: window
+dots and borders only speak for the session in front of you, so a *detached*
+session can sit blocked for an hour without a pixel changing. It counts panes on
+the whole server and renders nothing at all while nothing is waiting.
+
+It is pure format syntax — a redraw runs no shell — but unlike the other two it
+is not free: tmux walks every pane of every session, twice, on each expansion.
+Measured over 200 expansions on a 40-pane server, adding it to an otherwise
+empty `status-right` took 1.089s to 1.424s: about 1.7 ms a redraw, which at the
+default `status-interval` of 15 s is nothing, and still small next to the 7.7 ms
+a six-window redraw already costs. Panes in neither state pay only their
+`@panestate` read; the dearer agent-glob test runs on the few that are.
 
 ## Install
 

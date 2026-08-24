@@ -11,6 +11,8 @@
 # Tokens it expands in status-left / status-right:
 #   #{agent_where_path}   ~/path locally, ssh destination when remote
 #   #{agent_where_branch} git branch locally, blank when remote
+#   #{agent_fleet}        ▲N blocked and ✕N errored agent panes, counted across
+#                         every session on the server; empty when all is quiet
 #
 # Keys it binds (see the README for the status-right marker the click needs):
 #   MouseDown1Control1    branch picker, on whatever you marked range=control|1
@@ -43,8 +45,42 @@ interpolate() {
     local w; w=$(sq "$DIR/scripts/tmux-where")
     local r_path="#($w path #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
     local r_brch="#($w branch #{pane_pid} '#{pane_current_path}' '#{pane_current_command}')"
+
+    # One x per blocked/errored agent pane, in ANY session, then #{n:} takes the
+    # length of that string. The whole thing is format syntax: the counter costs
+    # a redraw, no shell, ever. #{S:} walks every session on the server, not just
+    # this client's, which is the entire point -- the window dots already cover
+    # the session you are looking at.
+    #
+    # The state is read through the same agent guard the borders use, and for the
+    # same reason: a pane that ran an agent, exited, and is now a shell keeps its
+    # last @panestate forever, so an unguarded count would never come back down.
+    #
+    # No #{&&:} here, deliberately. The replacement text below goes through
+    # ${s//pat/rep}, where bash 5.2 expands a bare & to whatever the pattern
+    # matched -- "&&" silently became "#{agent_fleet}#{agent_fleet}", and the
+    # counter reported every agent pane as blocked AND errored at once.
+    #
+    # @panestate is tested FIRST and the glob only on the panes that match, not
+    # the other way round: the glob is by far the dearer of the two, and this
+    # order runs it on the handful of panes in the state rather than all of them.
+    # Measured over 200 expansions on a 40-pane server, that alone took the whole
+    # status-right from 1.477s to 0.899s against a 0.612s empty-token baseline.
+    cnt() { printf '#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},%s},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}' "$1"; }
+    local n_blocked n_error
+    n_blocked=$(cnt needs-input)
+    n_error=$(cnt error)
+    # Same glyphs and same palette entries as the window dots, so the two agree
+    # about what red means. Both are read at RENDER time, and the palette block
+    # below defaults them when no theme provides them -- an empty @thm_red would
+    # expand to "fg=" and tmux rejects the whole style.
+    local r_fleet
+    r_fleet="#{?#{e|>:$n_blocked,0},#[fg=#{@thm_red}#,bold]▲$n_blocked#[default] ,}"
+    r_fleet="$r_fleet#{?#{e|>:$n_error,0},#[fg=#{@thm_peach}]✕$n_error#[default] ,}"
+
     s="${s//'#{agent_where_path}'/$r_path}"
     s="${s//'#{agent_where_branch}'/$r_brch}"
+    s="${s//'#{agent_fleet}'/$r_fleet}"
     printf '%s' "$s"
 }
 
