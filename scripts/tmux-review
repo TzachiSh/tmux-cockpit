@@ -583,41 +583,81 @@ fleet_rows() {
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
     [ -n "$raw" ] || return 0
 
-    local -a rows=()
-    local isagent id title path st numstat add del untracked line churn stat
+    # Every pane's git status+numstat used to run SERIALLY, one pane fully
+    # finished before the next started -- ~2 git calls/pane. On a cold
+    # filesystem (150ms/git, the hunt's measured figure) 100 panes blanked the
+    # popup for ~32s, on every prefix+r from a non-agent pane. The panes are
+    # independent of each other, so run their git work concurrently instead,
+    # each pane's row computed in its own background subshell and written to
+    # its own file (rows are re-sorted by churn below anyway, so completion
+    # order never matters). Capped at $cap in flight at once -- unbounded
+    # would fork hundreds of git processes at once on a big fleet, trading one
+    # kind of slowness for another.
+    local tmpdir
+    tmpdir=$(mktemp -d) || return 0
+
+    local isagent id title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local -a pids=()
     while IFS=$'\t' read -r isagent id title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
-        st=$(git -C "$path" status --porcelain 2>/dev/null)
-        [ -n "$st" ] || continue
-
-        # Same unstaged-first, staged-fallback rule --lines uses: a fully
-        # staged change still gets a churn number instead of reading as 0.
-        numstat=$(git -C "$path" diff --no-color --no-ext-diff --numstat 2>/dev/null)
-        [ -n "$numstat" ] || numstat=$(git -C "$path" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
-        add=0; del=0
-        local a d
-        while IFS=$'\t' read -r a d _f; do
-            [ -n "$a" ] || continue
-            case "$a" in *[!0-9]*) a=0 ;; esac
-            case "$d" in *[!0-9]*) d=0 ;; esac
-            add=$(( add + a )); del=$(( del + d ))
-        done <<<"$numstat"
-
-        # Untracked files carry no numstat line at all -- without counting
-        # them a pane holding only new files reads as 0 churn and sorts last,
-        # even though `git status` already called it dirty.
-        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
-        stat="+$add -$del"
-        [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
-        churn=$(( add + del + untracked ))
-
-        rows+=("$churn"$'\t'"$id"$'\t'"$title"$'\t'"$stat"$'\t'"$path")
+        n=$((n + 1))
+        fleet_row_one "$id" "$title" "$path" > "$tmpdir/$n" &
+        pids+=("$!")
+        if [ ${#pids[@]} -ge "$cap" ]; then
+            wait "${pids[0]}" 2>/dev/null
+            pids=("${pids[@]:1}")
+        fi
     done <<<"$raw"
+    wait 2>/dev/null
+
+    local -a rows=()
+    local f
+    for f in "$tmpdir"/*; do
+        [ -s "$f" ] || continue
+        rows+=("$(cat "$f")")
+    done
+    # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
+    # a killed popup takes its children with it, but not necessarily this rm.
+    rm -rf "$tmpdir"
     [ ${#rows[@]} -gt 0 ] || return 0
 
     for line in "${rows[@]}"; do printf '%s\n' "$line"; done \
         | sort -t "$(printf '\t')" -k1,1nr | cut -f2-4
+}
+
+# One pane's fleet row -- factored out of fleet_rows() so it can run in its
+# own background subshell (see the parallel dispatch above). Same
+# unstaged-first, staged-fallback rule --lines uses: a fully staged change
+# still gets a churn number instead of reading as 0. Prints nothing (and the
+# caller's file stays empty) for a pane git status calls clean, so an empty
+# output file is indistinguishable from "not dirty" on the reading side.
+fleet_row_one() {
+    local id=$1 title=$2 path=$3
+    local st numstat add del untracked churn stat a d
+
+    st=$(git -C "$path" status --porcelain 2>/dev/null)
+    [ -n "$st" ] || return 0
+
+    numstat=$(git -C "$path" diff --no-color --no-ext-diff --numstat 2>/dev/null)
+    [ -n "$numstat" ] || numstat=$(git -C "$path" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+    add=0; del=0
+    while IFS=$'\t' read -r a d _f; do
+        [ -n "$a" ] || continue
+        case "$a" in *[!0-9]*) a=0 ;; esac
+        case "$d" in *[!0-9]*) d=0 ;; esac
+        add=$(( add + a )); del=$(( del + d ))
+    done <<<"$numstat"
+
+    # Untracked files carry no numstat line at all -- without counting them a
+    # pane holding only new files reads as 0 churn and sorts last, even
+    # though `git status` already called it dirty.
+    untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+    stat="+$add -$del"
+    [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
+    churn=$(( add + del + untracked ))
+
+    printf '%s\t%s\t%s\t%s\t%s\n' "$churn" "$id" "$title" "$stat" "$path"
 }
 
 # --- entry-point resolution -------------------------------------------------

@@ -3499,6 +3499,67 @@ is "the queue lists exactly one row" "1" "$rowcount"
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
 fi
 
+echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
+# fleet_rows() used to run each pane's git status+numstat SERIALLY, one pane
+# after the next -- ~2 git calls/pane. On a cold filesystem (150ms/git,
+# measured) 100 panes blanked the popup for ~32s, on every prefix+r from a
+# non-agent pane. A fixed-latency git shim stands in for that cold filesystem
+# here: real git still runs behind it, so this measures the serial-vs-parallel
+# SHAPE, not a fabricated number. 50 panes x 2 calls x 100ms serial = ~10s;
+# verified against the pre-fix script directly (11.16s, unbounded). Bounded
+# parallel dispatch should land well under that.
+if need_tmux "tmux-review --fleet parallel git"; then :; else
+FP="cockpit-fp-$$"; SOCKS="$SOCKS $FP"
+FP_DIR=$(mktmpd)
+(
+  cd "$FP_DIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f
+  git add -A; git commit -q -m init
+  printf 'b\n' >> f   # dirty -- every pane below shares this one working tree
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FP" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FP" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+i=1
+while [ "$i" -le 50 ]; do
+    "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude bash' >/dev/null 2>&1
+    i=$((i + 1))
+done
+FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
+
+FP_SLOWGIT=$(mktmpd)
+FP_REALGIT=$(command -v git)
+cat > "$FP_SLOWGIT/git" <<SHIMEOF
+#!/bin/sh
+sleep 0.1
+exec "$FP_REALGIT" "\$@"
+SHIMEOF
+chmod +x "$FP_SLOWGIT/git"
+
+fp_t0=$(date +%s%N)
+timeout 15 env TMUX="$FP_SOCKPATH,0,0" PATH="$FP_SLOWGIT:$PATH" \
+    "$DIR/scripts/tmux-review" --fleet > "$STATE/fp-out" 2>&1
+fp_rc=$?
+fp_t1=$(date +%s%N)
+fp_ms=$(( (fp_t1 - fp_t0) / 1000000 ))
+
+if [ "$fp_rc" -ne 0 ]; then
+    bad "the fleet queue gathers 50 panes' git state" "exit 0" "exit $fp_rc"
+elif [ "$fp_ms" -lt 5000 ]; then
+    ok "the fleet queue gathers 50 panes' git state well under the old serial time ($fp_ms ms)"
+else
+    bad "the fleet queue gathers 50 panes' git state well under the old serial time" \
+        "< 5000 ms" "$fp_ms ms"
+fi
+fp_rows=$(grep -c . "$STATE/fp-out" || true)
+is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
+
+"$TMUX_REAL" -L "$FP" kill-server >/dev/null 2>&1
+rm -rf "$FP_DIR"
+fi
+
 echo "== prefix r reviews, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
