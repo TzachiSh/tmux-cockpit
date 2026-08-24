@@ -123,6 +123,21 @@ on an idle machine with every pane blocked). Against a default
 `status-interval` of 15 s that is nothing, and it is small beside the 7.7 ms a
 six-window redraw already costs. Panes in neither state pay only their
 `@panestate` read; the dearer agent-glob test runs on the few that are.
+### Context fill, optional
+
+`scripts/agent-context` is a Claude Code `statusLine` shim: fed the statusline
+JSON on stdin, it records the pane's context-window fill as a percent in
+`@panestate_ctx` and prints a minimal `<model> · ctx NN%` line. It never blocks
+or errors at the agent — an unparseable payload, a missing `jq`, or a writer
+that stalls is a silent no-op within a bounded read, the same contract
+`agent-state` holds for hooks.
+
+A `statusLine` fully replaces any other one you have configured, so it is not
+wired by default — see the commented `_statusline_comment` stanza in
+`examples/claude-hooks.json` for the setting to add. Once wired,
+`examples/tmux.conf` shows a `◔NN%` warning on a window's tab once its active
+pane crosses 80% fill, ahead of the compaction that would otherwise land
+unannounced.
 
 ## Install
 

@@ -19,6 +19,23 @@
     "needs-input flag raised by the prompt that follows it. PostToolUse is what",
     "clears the red, once the approved tool has run."
   ],
+  "_statusline_comment": [
+    "Optional, and NOT part of the 'hooks' merge above: a statusLine that",
+    "reports context fill so scripts/agent-context can record it in",
+    "@panestate_ctx, for the tab-suffix example in examples/tmux.conf.",
+    "",
+    "A statusLine REPLACES whatever statusLine you already have configured --",
+    "there is only ever one -- so this is commented out rather than wired in.",
+    "To use it, add a top-level 'statusLine' key to ~/.claude/settings.json:",
+    "",
+    "  \"statusLine\": {",
+    "    \"type\": \"command\",",
+    "    \"command\": \"\\\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\\\"/scripts/agent-context\"",
+    "  }",
+    "",
+    "Requires jq. Silently prints '<model> · ctx NN%' and does nothing to the",
+    "pane on any input it cannot parse -- see scripts/agent-context."
+  ],
   "hooks": {
     "SessionStart": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }
