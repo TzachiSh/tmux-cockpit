@@ -370,13 +370,18 @@ deliver() {
     # symlink-disclosure vector, and mktemp's own randomized suffix makes the
     # name unguessable rather than merely unlinked-and-recreated. `umask 077`
     # in the same subshell that runs mktemp means the file is BORN 0600 --
-    # no create-then-chmod window for a racing reader. The agent deletes
-    # nothing -- the file outlives the pane on purpose; the OS tmpdir is the
-    # only GC.
+    # no create-then-chmod window for a racing reader. Template ends in the
+    # X run with no trailing .md: BSD/macOS mktemp requires the X's to be
+    # the LAST characters of the template and errors ("too few X's") on
+    # anything after them, unlike GNU's more permissive "keep a literal
+    # suffix after the trailing X run" -- the pointer sentence below already
+    # names the exact path, so the extension carried no weight anyway. The
+    # agent deletes nothing -- the file outlives the pane on purpose; the OS
+    # tmpdir is the only GC.
     if [ "$bytes" -gt 2048 ]; then
         local runtime file
         runtime=${XDG_RUNTIME_DIR:-/tmp}
-        file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX.md") || {
+        file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
             tmux display-message \
                 "tmux-review: could not create the review file, refusing to deliver" \
                 2>/dev/null

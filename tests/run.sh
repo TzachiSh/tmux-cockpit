@@ -2168,14 +2168,14 @@ else
 fi
 
 BIGFILE=""
-for f in "$RUNDIR"/tmux-cockpit-review-"${AP#%}"-*.md; do
+for f in "$RUNDIR"/tmux-cockpit-review-"${AP#%}"-*; do
     [ -e "$f" ] && BIGFILE=$f
 done
 if [ -n "$BIGFILE" ]; then
     ok "the spillover file exists, named with mktemp's own random suffix"
 else
     bad "the spillover file exists, named with mktemp's own random suffix" \
-        "$RUNDIR/tmux-cockpit-review-${AP#%}-XXXXXX.md" "no such file"
+        "$RUNDIR/tmux-cockpit-review-${AP#%}-XXXXXX" "no such file"
 fi
 if [ -f "$BIGFILE" ] && [ ! -L "$BIGFILE" ]; then
     ok "the spillover file is a real file, not a symlink"
