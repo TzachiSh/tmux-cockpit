@@ -1104,13 +1104,25 @@ done
 "$TMUX_REAL" -L "$BB" set -g mouse on >/dev/null 2>&1
 "$TMUX_REAL" -L "$BB" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 BP=$("$TMUX_REAL" -L "$BB" list-panes -a -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$BB" set -p -t "$BP" @panestate needs-input >/dev/null 2>&1
-bb=$("$TMUX_REAL" -L "$BB" display-message -p -t "$BP" '#{E:pane-border-format}')
+# Split: the ACTIVE pane suppresses its own words (the prompt and the red
+# border already say it -- same reasoning as the tint); a pane you are NOT on
+# still spells it out on its border.
+"$TMUX_REAL" -L "$BB" split-window -t t 'exec -a claude sleep 300' >/dev/null 2>&1
+BP2=$("$TMUX_REAL" -L "$BB" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')
+BP1=$("$TMUX_REAL" -L "$BB" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')
+"$TMUX_REAL" -L "$BB" set -p -t "$BP1" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$BB" set -p -t "$BP2" @panestate needs-input >/dev/null 2>&1
+bb=$("$TMUX_REAL" -L "$BB" display-message -p -t "$BP2" '#{E:pane-border-format}')
 case "$bb" in *'range=control|8'*) ok "the zoom button survives" ;; *) bad "the zoom button survives" "range=control|8" "$bb" ;; esac
 case "$bb" in *'range=control|9'*) ok "the kill button survives" ;; *) bad "the kill button survives" "range=control|9" "$bb" ;; esac
 case "$(printf '%s' "$bb" | plain)" in
-    *"NEEDS YOU"*) ok "and the alert still renders beside them" ;;
-    *) bad "and the alert still renders beside them" "NEEDS YOU" "$(printf '%s' "$bb" | plain)" ;;
+    *"NEEDS YOU"*) bad "the focused pane spells nothing out" "buttons only" "$(printf '%s' "$bb" | plain)" ;;
+    *) ok "the focused pane spells nothing out" ;;
+esac
+nb=$("$TMUX_REAL" -L "$BB" display-message -p -t "$BP1" '#{E:pane-border-format}' | plain)
+case "$nb" in
+    *"NEEDS YOU"*) ok "an unfocused blocked pane still spells it out" ;;
+    *) bad "an unfocused blocked pane still spells it out" "NEEDS YOU" "$nb" ;;
 esac
 "$TMUX_REAL" -L "$BB" kill-server >/dev/null 2>&1
 fi
