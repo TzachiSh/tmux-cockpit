@@ -3514,6 +3514,96 @@ rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --deliver: a window name cannot inject tmux format syntax into the notice =="
+# display-message's argument is a tmux FORMAT, not a plain string, and the
+# delivery notice interpolates the target's WINDOW NAME -- which is user data.
+# Measured on tmux 3.7c, with a client attached:
+#   display-message -p 'x=[#{@probe}]'          -> the option's VALUE (expanded)
+#   display-message    'x #(touch F) y'         -> F is NOT created (no job runs)
+#   set -g status-right '#(touch F)'            -> F IS created
+# So the reachable vector is #{...} substitution, not #(); a window named
+# w#{@anything} leaks that option's value into the notice, and the same
+# substitution is how a format reaches things the reviewer never asked for.
+# Doubling every # to ## is the tmux format literal and covers the #() arm too,
+# whatever a future tmux decides to run from a message.
+#
+# Its own server, not $RDS: the notice only lands on a status line if a CLIENT
+# is there to draw it, so an OUTER tmux provides the pty for a client attached
+# to the INNER one and capture-pane on the outer pane reads the drawn line back
+# (the same outer/inner pattern as the RCE-via-directory-name block above).
+if need_tmux "tmux-review --deliver format injection"; then :; else
+FI_IN="cockpit-fi-in-$$"; FI_OUT="cockpit-fi-out-$$"
+SOCKS="$SOCKS $FI_IN $FI_OUT"
+FISP=$(mktmpd)
+"$TMUX_REAL" -L "$FI_IN" -f /dev/null new-session -d -s t -x 250 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN" set -g @cockpit_secret LEAKED-SECRET >/dev/null 2>&1
+# rename-window EXPANDS its own argument, so the hostile name has to be written
+# escaped to be STORED literally; it also turns automatic-rename off for the
+# window, so the name sticks for the whole delivery. Verified stored raw:
+# display-message -p '#{window_name}' reads back w#{@cockpit_secret}#(...)z --
+# a substituted value is not re-expanded, so the READ is safe and only the
+# notice that re-interpolates it is not.
+"$TMUX_REAL" -L "$FI_IN" rename-window -t t:0 \
+    "w##{@cockpit_secret}##(touch $FISP/OWNED)z" >/dev/null 2>&1
+FIP=$("$TMUX_REAL" -L "$FI_IN" list-panes -t t: -F '#{pane_id}')
+is "the hostile window name is stored verbatim, not expanded at rename time" \
+   "w#{@cockpit_secret}#(touch $FISP/OWNED)z" \
+   "$("$TMUX_REAL" -L "$FI_IN" display-message -p -t t:0 '#{window_name}')"
+"$TMUX_REAL" -L "$FI_OUT" -f /dev/null new-session -d -s o -x 250 -y 24 \
+    "$TMUX_REAL -L $FI_IN attach -t t" >/dev/null 2>&1
+for i in $(seq 1 30); do
+    [ -n "$("$TMUX_REAL" -L "$FI_IN" list-clients -t t: 2>/dev/null)" ] && break
+    sleep 0.1
+done
+FISTORE="$STATE/deliver-fi-$$"
+printf '## src.go:1 (+)\n> foo\nFI-MARKER fix\n\n' > "$FISTORE"
+TMUX="$SOCKDIR/$FI_IN,0,0" "$DIR/scripts/tmux-review" --deliver "$FIP" "$FISTORE" \
+    >/dev/null 2>&1
+for i in $(seq 1 30); do
+    "$TMUX_REAL" -L "$FI_OUT" capture-pane -p -t o: | grep -q 'review pasted into' && break
+    sleep 0.1
+done
+finotice=$("$TMUX_REAL" -L "$FI_OUT" capture-pane -p -t o: | grep 'review pasted into')
+# Asserted FIRST: an empty notice would make every check below pass vacuously
+# (no notice, therefore no leaked value in it), which is exactly how a broken
+# delivery would read as a green security test.
+case "$finotice" in
+    '') bad "the delivery notice reaches the attached client's status line" \
+         "a 'review pasted into ...' line" "nothing drawn on the status line" ;;
+    *)  ok "the delivery notice reaches the attached client's status line" ;;
+esac
+case "$finotice" in
+    *LEAKED-SECRET*) bad "a window name's #{...} is never expanded in the notice" \
+         "the literal name, not the option's value" "$finotice" ;;
+    *) ok "a window name's #{...} is never expanded in the notice" ;;
+esac
+case "$finotice" in
+    *'w#{@cockpit_secret}'*) ok "the notice shows the window name verbatim" ;;
+    *) bad "the notice shows the window name verbatim" \
+         "w#{@cockpit_secret} in the notice" "$finotice" ;;
+esac
+# Fixed wait, not a poll: this is the negative half -- there is no event to
+# wait for, only the absence of one. Capped at 0.3s per the no-new-sleeps rule.
+# tmux 3.7c runs no #() job from a display-message at all (probe above), so
+# this is a regression tooth rather than a failure this fix turned green.
+sleep 0.3
+if [ -e "$FISP/OWNED" ]; then
+    bad "a window name's #(...) never runs" "no OWNED file" "OWNED file created"
+else
+    ok "a window name's #(...) never runs"
+fi
+# Escaping the name must not cost the delivery itself.
+case "$("$TMUX_REAL" -L "$FI_IN" capture-pane -p -J -t "$FIP")" in
+    *"FI-MARKER fix"*) ok "the review still lands in a hostilely named window" ;;
+    *) bad "the review still lands in a hostilely named window" "FI-MARKER fix in the pane" \
+         "$("$TMUX_REAL" -L "$FI_IN" capture-pane -p -J -t "$FIP")" ;;
+esac
+"$TMUX_REAL" -L "$FI_OUT" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN"  kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
 # deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
 # re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill

@@ -715,18 +715,35 @@ deliver() {
     # returns, same as before.
 
     # Where the review landed, named the way a human navigates: "work:2 api"
-    # beats a bare %7 when the pane is three windows away. Read once, HERE:
-    # the message below is a plain string in a tmux command LIST, not a
-    # format, so a #{...} left in it would arrive verbatim.
+    # beats a bare %7 when the pane is three windows away. Read once, HERE,
+    # against the TARGET pane: the notice's own display-message carries no -t
+    # (it must not steal focus or fail when the pane is gone by then), so a
+    # #{window_name} left in the message would resolve against whatever pane
+    # the reader happens to be sitting in -- the wrong window's name.
     #
-    # Single quotes are stripped from it. $where is interpolated into a
-    # single-quoted argument of the if-shell command string, and a window
-    # named don't would close that quote early and hand tmux the remainder as
-    # commands. The window name is user data; nothing else in it can break out.
+    # The window name is USER DATA and gets two escapes, because it crosses two
+    # parsers on its way into the notice:
+    #
+    #   1. tmux's command-string parser. $where is interpolated into a
+    #      single-quoted argument of the if-shell command string, so a window
+    #      named don't closes that quote early and hands tmux the remainder as
+    #      commands. Single quotes are stripped; nothing else breaks out.
+    #   2. tmux's FORMAT parser. display-message expands its message as a
+    #      format, so a window named w#{@some_option} renders that option's
+    #      VALUE, not the name -- measured on 3.7c: a window renamed
+    #      w##{@cockpit_secret} made the notice read "wLEAKED-SECRETz". ## is
+    #      the format literal for #, so doubling every # is the whole fix, and
+    #      it works on the 3.3 floor. (3.7c runs no #(shell-command) job from a
+    #      display-message -- only status formats do -- but doubling covers
+    #      that arm too, whatever a later tmux decides to run.)
+    #
+    # The READ above is safe on its own: a value substituted by #{window_name}
+    # is not re-expanded, so only this second interpolation needs the escape.
     local where
     where=$(tmux display-message -p -t "$pane" \
         '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
     where=${where//\'/}
+    where=${where//#/##}
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
     tmux if-shell -F -t "$pane" \
         "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
