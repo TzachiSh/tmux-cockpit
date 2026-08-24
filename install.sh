@@ -105,8 +105,20 @@ if [ "$hooks" -eq 1 ]; then
     elif [ "$merged" = "$(cat "$settings")" ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
-        cp -- "$settings" "$settings.bak" || exit 1
-        printf '%s\n' "$merged" > "$settings" || { cp -- "$settings.bak" "$settings"; exit 1; }
+        # Preserve the FIRST backup only. Overwriting it on every modifying
+        # run would replace a user's pre-existing settings.json.bak, or -- on
+        # a second modifying run -- replace the pristine original with
+        # content that already has our hooks merged in.
+        [ -e "$settings.bak" ] || cp -- "$settings" "$settings.bak" || exit 1
+        # `printf > "$settings"` truncates before it writes a single byte, so
+        # a SIGXFSZ or any other interrupted write (reproduced with
+        # ulimit -f 1) leaves a truncated, invalid settings.json -- and the
+        # rollback above never runs, because by then $settings has already
+        # been destroyed. Write to a sibling temp file instead and rename it
+        # over the original: rename() is atomic, so $settings is either the
+        # old content or the new content, never a half-written file between.
+        tmp=$(mktemp "$settings.XXXXXX") && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$settings" \
+            || { rm -f -- "$tmp"; printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
         printf 'merged    cockpit hooks into %s (backup: %s.bak)\n' "$settings" "$settings"
     fi
 fi

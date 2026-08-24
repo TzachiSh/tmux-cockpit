@@ -1648,6 +1648,57 @@ case "$out" in *agent-state*) ok "dry-run previews the change" ;;
     *) bad "dry-run previews the change" "a diff naming agent-state" "$out" ;; esac
 is "dry-run wrote nothing" "{}" "$(cat "$HK2/.claude/settings.json")"
 rm -rf "$HK2"
+
+# I2: a pre-existing settings.json.bak is the user's, not ours to overwrite.
+HK5=$(mktmpd); mkdir -p "$HK5/.claude"
+printf '{"sentinel":"user-backup"}' > "$HK5/.claude/settings.json.bak"
+printf '{"model":"opus"}' > "$HK5/.claude/settings.json"
+HOME="$HK5" "$DIR/install.sh" --hooks >/dev/null 2>&1
+case "$(cat "$HK5/.claude/settings.json.bak")" in
+    *user-backup*) ok "a pre-existing .bak is never overwritten" ;;
+    *) bad "a pre-existing .bak is never overwritten" "user-backup still present" "$(cat "$HK5/.claude/settings.json.bak")" ;;
+esac
+rm -rf "$HK5"
+
+# I2 (cont.): and once WE'VE written a .bak, a later genuinely-modifying run
+# must not replace the pristine original in it with already-merged content.
+HK6=$(mktmpd); mkdir -p "$HK6/.claude"
+printf '{"model":"opus"}' > "$HK6/.claude/settings.json"
+HOME="$HK6" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "the first .bak holds the pristine original" '{"model":"opus"}' "$(cat "$HK6/.claude/settings.json.bak")"
+# Drop one cockpit hook so the second run is genuinely modifying, not a
+# no-op: a reformat alone (jq -S) would still compare string-identical here
+# and never reach the write branch this test is aimed at.
+jq 'del(.hooks.Stop)' "$HK6/.claude/settings.json" > "$HK6/.claude/trimmed.json" && mv "$HK6/.claude/trimmed.json" "$HK6/.claude/settings.json"
+HOME="$HK6" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "and a second MODIFYING run still leaves the original in .bak" '{"model":"opus"}' "$(cat "$HK6/.claude/settings.json.bak")"
+rm -rf "$HK6"
+
+# C1: the write must be atomic (mktemp + rename), never a truncate-in-place --
+# a SIGXFSZ mid-write (reproduced with ulimit -f 1) used to leave a truncated,
+# invalid settings.json with rollback never running, because by then the
+# original was already gone.
+HK9=$(mktmpd); mkdir -p "$HK9/.claude"
+printf '{"model":"opus"}' > "$HK9/.claude/settings.json"
+HOME="$HK9" "$DIR/install.sh" --hooks >/dev/null 2>&1
+leftover=$(find "$HK9/.claude" -maxdepth 1 -name 'settings.json.*' ! -name 'settings.json.bak' 2>/dev/null)
+is "no temp file is left behind after a successful merge" "" "$leftover"
+rm -rf "$HK9"
+
+# C1 (fail-closed pin): a malformed settings.json must abort byte-identical,
+# never partially merged or silently reseeded.
+HK10=$(mktmpd); mkdir -p "$HK10/.claude"
+printf '{not valid json' > "$HK10/.claude/settings.json"
+before=$(cat "$HK10/.claude/settings.json")
+HOME="$HK10" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a malformed settings.json aborts with exit 1" "1" "$?"
+is "and it is left byte-identical" "$before" "$(cat "$HK10/.claude/settings.json")"
+if [ -e "$HK10/.claude/settings.json.bak" ]; then
+    bad "and no .bak is created on a failed merge" "no .bak" "one was created"
+else
+    ok "and no .bak is created on a failed merge"
+fi
+rm -rf "$HK10"
 else
     skip_ "hooks merge (jq not installed)"
 fi
