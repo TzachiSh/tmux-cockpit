@@ -1572,5 +1572,40 @@ else
 fi
 fi
 
+echo "== install.sh --hooks merges additively =="
+HK=$(mktmpd); mkdir -p "$HK/.claude"
+cat > "$HK/.claude/settings.json" <<'EOF'
+{ "model": "opus", "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "my-own-tool" } ] } ] } }
+EOF
+if command -v jq >/dev/null 2>&1; then
+HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "the installer exits clean" "0" "$?"
+case "$(cat "$HK/.claude/settings.json")" in
+    *my-own-tool*) ok "a foreign hook survives the merge" ;;
+    *) bad "a foreign hook survives the merge" "my-own-tool still present" "$(head -c200 "$HK/.claude/settings.json")" ;;
+esac
+case "$(cat "$HK/.claude/settings.json")" in
+    *tmux-cockpit*agent-state*) ok "cockpit's hooks arrived" ;;
+    *) bad "cockpit's hooks arrived" "an agent-state command" "$(head -c200 "$HK/.claude/settings.json")" ;;
+esac
+is "the user's other settings are untouched" "opus" \
+   "$(jq -r .model "$HK/.claude/settings.json")"
+[ -f "$HK/.claude/settings.json.bak" ] && ok "a backup was written" \
+    || bad "a backup was written" "settings.json.bak" "missing"
+before=$(cat "$HK/.claude/settings.json")
+HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
+# dry-run: shows the diff, writes nothing
+HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
+out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
+case "$out" in *agent-state*) ok "dry-run previews the change" ;;
+    *) bad "dry-run previews the change" "a diff naming agent-state" "$out" ;; esac
+is "dry-run wrote nothing" "{}" "$(cat "$HK2/.claude/settings.json")"
+rm -rf "$HK2"
+else
+    skip_ "hooks merge (jq not installed)"
+fi
+rm -rf "$HK"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
