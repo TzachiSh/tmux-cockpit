@@ -743,6 +743,29 @@ case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat")" in
 esac
 rm -rf "$PV"
 
+# The long-line guard used to measure "longest" over a fixed lines 1-200,
+# but bat renders whatever RENDER WINDOW the target line puts it in (up to
+# 2000). A giant line sitting past line 200 but inside that window sailed
+# past the guard and got dumped whole into the preview on every cursor move
+# -- the exact failure the guard exists to prevent. Now "longest" is measured
+# over the same [first,last] window bat is about to draw.
+GL=$(mktmpd)
+{
+    for i in $(seq 1 499); do printf 'line %d\n' "$i"; done
+    head -c 3000000 /dev/zero | tr '\0' 'x'; printf '\n'
+    for i in $(seq 501 700); do printf 'line %d\n' "$i"; done
+} > "$GL/big.txt"
+# line 495 -> above=min(40/3,10)=10 -> window [485,535], which contains the
+# 3,000,000-char line at 500.
+glout=$("$DIR/scripts/tmux-open-path" --preview "$GL/big.txt" 495 2>/dev/null | wc -c)
+if [ "$glout" -lt 50000 ]; then
+    ok "a huge line inside the render window (not lines 1-200) is still guarded"
+else
+    bad "a huge line inside the render window (not lines 1-200) is still guarded" \
+        "<50000 bytes" "$glout bytes"
+fi
+rm -rf "$GL"
+
 # later blocks reuse this stub
 ETMUX_TEMPLATE=$(mktmpf); cp "$ETMUX/tmux" "$ETMUX_TEMPLATE"; chmod +x "$ETMUX_TEMPLATE"
 rm -rf "$EQ" "$ETMUX"
@@ -1564,6 +1587,37 @@ esac
 is "outside a repo, the diff view is honest too" "not in a git repository" \
    "$("$DIR/scripts/tmux-open-path" --preview-diff /tmp 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' )"
 rm -rf "$DV"
+
+# --preview-diff used to capture the WHOLE coloured diff into a shell variable
+# and run git diff a second time for --stat, both before ever checking the
+# result was non-empty. Measured here: a 22.9MB/400000-line single-file diff
+# was 3.32s + 191MB RSS on the pre-fix build, 0.76s + 76MB RSS after streaming
+# the diff and deriving the stat from --numstat instead. timeout is the
+# fail-first teeth -- the pre-fix build reliably misses a 2s budget here.
+GD=$(mktmpd)
+(
+  cd "$GD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  awk 'BEGIN{for(i=1;i<=200000;i++) print "line " i " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > big.txt
+  git add -A; git commit -q -m init
+  awk 'BEGIN{for(i=1;i<=200000;i++) print "line " i " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' > big.txt
+) >/dev/null 2>&1
+gdout=$(mktmpf)
+timeout 2 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt" >"$gdout" 2>/dev/null
+gdrc=$?
+if [ "$gdrc" -eq 124 ]; then
+    bad "a 400000-line single-file diff renders well under a 2s budget" \
+        "output within 2s" "timed out (the pre-fix capture-and-rediff)"
+else
+    ok "a 400000-line single-file diff renders well under a 2s budget"
+fi
+case "$(head -1 "$gdout")" in
+    *'insertion(s)'*) ok "and still leads with a real stat summary" ;;
+    *) bad "and still leads with a real stat summary" \
+        "N insertion(s), M deletion(s)" "$(head -1 "$gdout")" ;;
+esac
+rm -rf "$GD"
 
 echo "== ^O opens a folder whole; the list names the line =="
 if need_tmux "^O folder open"; then :; else
