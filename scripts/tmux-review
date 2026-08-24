@@ -71,6 +71,24 @@ In the picker: alt-↵ comment the row under the cursor   ^S deliver   esc disca
 USAGE
 }
 
+# --- the base every uncommitted view diffs against --------------------------
+# Everything uncommitted is ONE set: `git diff HEAD` is staged + unstaged in a
+# single call. The old "unstaged, else staged" fallback dropped the whole
+# index the moment one unstaged edit existed -- reproduced: a staged file was
+# invisible to the list while the preview showed it. An unborn HEAD (no
+# commits yet) has no HEAD to diff against, so that case keeps the fallback.
+tree_diff() {
+    local dir=$1; shift
+    if git -C "$dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
+    else
+        local out
+        out=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
+        [ -n "$out" ] || out=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        printf '%s\n' "$out"
+    fi
+}
+
 # --- --lines -------------------------------------------------------------
 # Every +/- hunk line of the working tree's diff, one tab-separated row per
 # line: path, line, fragment, display. `line` anchors a `+` (or context-side)
@@ -78,9 +96,9 @@ USAGE
 # carries the OLD line number instead, prefixed "-" -- the same (+)/(-) split
 # the compose grammar uses for its headers.
 #
-# Unstaged first, staged as the fallback: the same rule --preview-diff already
-# uses, so a fully-staged change still gets reviewed instead of showing
-# "nothing here" while the index holds every line.
+# Everything uncommitted is ONE set -- staged, unstaged and brand-new files --
+# because that is what "review what I have not committed" means. See tree_diff
+# below for the base, and the untracked synthesis inside for the new files.
 lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
@@ -95,14 +113,22 @@ lines_mode() {
     # stay keyed on the same name. (A path with a literal tab/quote is still
     # git-quoted even here -- the residual narrow case; non-ASCII is the common
     # one and is fixed.)
-    local diff
-    diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff 2>/dev/null)
-    [ -n "$diff" ] || diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached 2>/dev/null)
-    [ -n "$diff" ] || return 0
+    local diff numstat
+    diff=$(tree_diff "$dir")
+    numstat=$(tree_diff "$dir" --numstat)
 
-    local numstat
-    numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --numstat 2>/dev/null)
-    [ -n "$numstat" ] || numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+    # Untracked files carry no diff at all -- so the newest code, the code most
+    # worth reviewing, was invisible. Synthesise their numstat here (every line
+    # an addition) so the size cap below counts them too, and their rows after
+    # the awk. Binary and unreadable files are skipped (grep -Iq fails on both).
+    local untracked u ulines
+    untracked=$(git -C "$dir" ls-files --others --exclude-standard 2>/dev/null)
+    while IFS= read -r u; do
+        [ -n "$u" ] && [ -f "$dir/$u" ] && grep -Iq . -- "$dir/$u" 2>/dev/null || continue
+        ulines=$(wc -l < "$dir/$u")
+        numstat="${numstat:+$numstat$'\n'}$ulines"$'\t'"0"$'\t'"$u"
+    done <<<"$untracked"
+    [ -n "$diff$untracked" ] || return 0
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -200,6 +226,16 @@ lines_mode() {
             }
         }
     ')
+
+    # The untracked files' rows: no diff to parse, so every line of the file is
+    # its own + row at its own number -- the same shape the awk emits.
+    while IFS= read -r u; do
+        [ -n "$u" ] && [ -f "$dir/$u" ] && grep -Iq . -- "$dir/$u" 2>/dev/null || continue
+        # The file arrives on stdin, not as an operand: mawk rejects a `--`
+        # before a filename ("cannot open --"), and without one a name holding
+        # an `=` would be read as an awk variable assignment instead of a file.
+        raw="${raw:+$raw$'\n'}$(awk -v f="$u" '{ printf "%s\t%d\t+\t%s\n", f, NR, $0 }' < "$dir/$u")"
+    done <<<"$untracked"
     [ -n "$raw" ] || return 0
 
     # Churn per file (additions + deletions), the risk proxy that orders
@@ -674,9 +710,9 @@ fleet_rows() {
 }
 
 # One pane's fleet row -- factored out of fleet_rows() so it can run in its
-# own background subshell (see the parallel dispatch above). Same
-# unstaged-first, staged-fallback rule --lines uses: a fully staged change
-# still gets a churn number instead of reading as 0. Prints nothing (and the
+# own background subshell (see the parallel dispatch above). Churn comes from
+# tree_diff, the one base --lines reviews from, so a fully staged change still
+# gets a real churn number instead of reading as 0. Prints nothing (and the
 # caller's file stays empty) for a pane git status calls clean, so an empty
 # output file is indistinguishable from "not dirty" on the reading side.
 fleet_row_one() {
@@ -686,8 +722,9 @@ fleet_row_one() {
     st=$(git -C "$path" status --porcelain 2>/dev/null)
     [ -n "$st" ] || return 0
 
-    numstat=$(git -C "$path" diff --no-color --no-ext-diff --numstat 2>/dev/null)
-    [ -n "$numstat" ] || numstat=$(git -C "$path" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+    # The same one base --lines reviews from: staged + unstaged together, so a
+    # fully staged change gets its real churn instead of reading as 0.
+    numstat=$(tree_diff "$path" --numstat)
     add=0; del=0
     while IFS=$'\t' read -r a d _f; do
         [ -n "$a" ] || continue

@@ -2536,6 +2536,50 @@ case "$rv1out" in
 esac
 rm -rf "$RV1"
 
+echo "== tmux-review --lines: staged and unstaged changes are one review, not either/or =="
+# `git diff` alone answers about the WORKING TREE only, so the moment one
+# unstaged edit existed the whole index went missing from the list -- while
+# --preview-diff, which falls back to --cached, still showed the staged file.
+# The list and the preview disagreed about the same file. `git diff HEAD` is
+# both halves in one call. FAIL-first: on the old code no staged.txt row exists.
+RVMIX=$(mktmpd)
+(
+  cd "$RVMIX" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > staged.txt; printf 'a\n' > unstaged.txt
+  git add -A; git commit -q -m init
+  printf 'a\nSTAGED-CHANGE\n' > staged.txt; git add staged.txt
+  printf 'a\nUNSTAGED-CHANGE\n' > unstaged.txt
+) >/dev/null 2>&1
+rvmix=$("$DIR/scripts/tmux-review" --lines "$RVMIX")
+case "$rvmix" in *"staged.txt"$'\t'2$'\t'"STAGED-CHANGE"*) ok "the staged half is reviewable" ;;
+    *) bad "the staged half is reviewable" "a staged.txt:2 STAGED-CHANGE row" "$rvmix" ;; esac
+case "$rvmix" in *"unstaged.txt"$'\t'2$'\t'"UNSTAGED-CHANGE"*) ok "and so is the unstaged half" ;;
+    *) bad "and so is the unstaged half" "an unstaged.txt:2 row" "$rvmix" ;; esac
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
+    *STAGED-CHANGE*) ok "the preview agrees with the list about the staged file" ;;
+    *) bad "the preview agrees with the list about the staged file" "STAGED-CHANGE in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
+rm -rf "$RVMIX"
+
+echo "== tmux-review --lines: a brand-new file is reviewable, line by line =="
+# An untracked file carries no diff at all, so the whole new-code case -- the
+# code most worth reviewing -- was invisible to the reviewer. Its rows are
+# synthesised from the file itself, every line a + row at its own number.
+RVNEW=$(mktmpd)
+(
+  cd "$RVNEW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  printf 'first\nsecond\n' > new.txt
+) >/dev/null 2>&1
+rvnew=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
+case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok "untracked lines are + rows with their own numbers" ;;
+    *) bad "untracked lines are + rows with their own numbers" "new.txt:1 first, new.txt:2 second" "$rvnew" ;; esac
+rm -rf "$RVNEW"
+
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of

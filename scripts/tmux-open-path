@@ -41,8 +41,9 @@ H=${HOME:-/nonexistent}
 # below needs conditionals and git, and threading that through fzf's quoting
 # produced something nobody could read or test. fzf quotes the placeholders it
 # substitutes, so the path arrives here as one argument however odd it is.
-# What changed in this file, as an actual diff -- unstaged first, staged next,
-# and an honest sentence when there is nothing. Bound to ^G in the pickers.
+# What changed in this file, as an actual diff -- everything uncommitted from
+# one base (staged, unstaged, and brand-new files alike), and an honest sentence
+# when there is nothing. Bound to ^G in the pickers.
 if [ "${1:-}" = --preview-diff ]; then
     f=${2:-}
     case "$f" in "~") f=${HOME:-/nonexistent} ;; "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;; esac
@@ -78,11 +79,35 @@ if [ "${1:-}" = --preview-diff ]; then
     # arrow key. --numstat is the cheap presence check AND the stat source (one
     # small counted line, not the diff text); the diff itself now streams
     # straight through awk to head, never held in a bash variable.
-    numstat=$(git -C "$d" diff --numstat -- "$base" 2>/dev/null)
-    cached=0
-    if [ -z "$numstat" ]; then
-        numstat=$(git -C "$d" diff --cached --numstat -- "$base" 2>/dev/null)
-        cached=1
+    #
+    # The base is `git diff HEAD` -- staged AND unstaged in one call, the same
+    # base tmux-review --lines reviews from. The old "unstaged, else --cached"
+    # rule made the two disagree in opposite directions: --lines dropped the
+    # whole index the moment one unstaged edit existed, while this preview kept
+    # showing the staged file it had just been told did not change. Same helper
+    # body as tmux-review's tree_diff(), inlined -- these are one-shot scripts
+    # and neither sources the other. An unborn HEAD has no HEAD to diff
+    # against, so that one case keeps the old fallback.
+    headok=0; untracked=0; cached=0
+    git -C "$d" rev-parse -q --verify HEAD >/dev/null 2>&1 && headok=1
+    if [ "$headok" -eq 1 ]; then
+        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
+    else
+        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
+        if [ -z "$numstat" ]; then
+            numstat=$(git -C "$d" -c core.quotePath=false diff --cached --numstat -- "$base" 2>/dev/null)
+            cached=1
+        fi
+    fi
+    # A brand-new file has no diff against any base -- it is in no tree and no
+    # index -- so every preview of one used to read "no uncommitted changes"
+    # about a file the picker had just listed. --no-index against /dev/null is
+    # its whole content as one added hunk, rendered in the same shape as a
+    # tracked file's: one stat line, then the diff from its first @@.
+    if [ -z "$numstat" ] && \
+       [ -n "$(git -C "$d" -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
+        untracked=1
+        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat --no-index -- /dev/null "$f" 2>/dev/null)
     fi
     if [ -z "$numstat" ]; then
         printf 'no uncommitted changes in %s\n' "${f##*/}"
@@ -93,11 +118,17 @@ if [ "${1:-}" = --preview-diff ]; then
         ''|*[!0-9]*) printf '%s (binary)\n' "$base" ;;
         *)           printf '%s | %s insertion(s), %s deletion(s)\n' "$base" "$add" "$del" ;;
     esac
-    if [ "$cached" -eq 1 ]; then
-        git -C "$d" diff --color=always --cached -- "$base" 2>/dev/null \
+    if [ "$untracked" -eq 1 ]; then
+        git -C "$d" -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
+            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+    elif [ "$headok" -eq 1 ]; then
+        git -C "$d" -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
+            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+    elif [ "$cached" -eq 1 ]; then
+        git -C "$d" -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \
             | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
     else
-        git -C "$d" diff --color=always -- "$base" 2>/dev/null \
+        git -C "$d" -c core.quotePath=false diff --color=always -- "$base" 2>/dev/null \
             | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
     fi
     exit 0
