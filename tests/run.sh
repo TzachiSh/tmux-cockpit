@@ -1649,6 +1649,35 @@ case "$out" in *agent-state*) ok "dry-run previews the change" ;;
 is "dry-run wrote nothing" "{}" "$(cat "$HK2/.claude/settings.json")"
 rm -rf "$HK2"
 
+# I1: --dry-run used to run the symlink loop, mkdir ~/.claude, and seed
+# settings.json before ever reaching the dry gate -- a preview on a totally
+# fresh HOME created three links and a config dir, then printed "dry-run:
+# nothing written" underneath them.
+HK4=$(mktmpd); BIN4=$(mktmpd)
+out=$(XDG_BIN_HOME="$BIN4" HOME="$HK4" "$DIR/install.sh" --hooks --dry-run 2>&1)
+case "$out" in *agent-state*) ok "dry-run on a fresh home still previews the change" ;;
+    *) bad "dry-run on a fresh home still previews the change" "a diff naming agent-state" "$out" ;; esac
+is "and it creates no symlinks" "" "$(ls -A "$BIN4" 2>/dev/null)"
+if [ -e "$HK4/.claude" ]; then
+    bad "and it creates no ~/.claude" "no .claude directory" "one was created"
+else
+    ok "and it creates no ~/.claude"
+fi
+rm -rf "$HK4" "$BIN4"
+
+# M5: a dangling settings.json symlink used to pass the file-exists guard,
+# and the seed write followed it -- writing outside ~/.claude entirely, at
+# whatever the link happened to point to.
+HK11=$(mktmpd); mkdir -p "$HK11/.claude"
+ln -s "$HK11/nowhere.json" "$HK11/.claude/settings.json"
+HOME="$HK11" "$DIR/install.sh" --hooks >/dev/null 2>&1
+if [ -e "$HK11/nowhere.json" ]; then
+    bad "a dangling settings.json symlink is never written through" "no file at the link target" "one was created"
+else
+    ok "a dangling settings.json symlink is never written through"
+fi
+rm -rf "$HK11"
+
 # I2: a pre-existing settings.json.bak is the user's, not ours to overwrite.
 HK5=$(mktmpd); mkdir -p "$HK5/.claude"
 printf '{"sentinel":"user-backup"}' > "$HK5/.claude/settings.json.bak"

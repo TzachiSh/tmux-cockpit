@@ -36,7 +36,11 @@ esac; done
 [ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 rc=0
-mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
+# Not on --dry-run: a preview must not create anything either -- see the
+# symlink step below, which this pairs with.
+if [ "$dry" -eq 0 ]; then
+    mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
+fi
 
 # BSD readlink had no -f until macOS 12.3, where it returns empty and prints
 # "illegal option". Empty then compares unequal to every target, so the guards
@@ -45,6 +49,11 @@ mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
 # question is just "did we make this".
 link_target() { readlink "$1" 2>/dev/null; }
 
+# --dry-run only ever previews --hooks (enforced above); it must not touch the
+# symlinks at all. This used to run unconditionally, so "--hooks --dry-run" on
+# a fresh $HOME still created three links and then reported "dry-run: nothing
+# written" underneath them.
+if [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do
     link="$BIN/$c"
     target="$DIR/scripts/$c"
@@ -80,12 +89,35 @@ for c in "${COMMANDS[@]}"; do
         rc=1
     fi
 done
+else
+    printf 'dry-run: skipping the symlink step\n'
+fi
 
 if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
+    have_diff=1
+    command -v diff >/dev/null 2>&1 || have_diff=0
     settings="$HOME/.claude/settings.json"
-    mkdir -p "${settings%/*}" || exit 1
-    [ -f "$settings" ] || printf '{}\n' > "$settings"
+
+    if [ -e "$settings" ]; then
+        orig=$(cat "$settings") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+    elif [ -L "$settings" ]; then
+        # A dangling symlink passes neither "read what's there" (there's
+        # nothing) nor "seed a fresh file" safely -- the seed write below
+        # follows a symlink, so it would land wherever the link points,
+        # outside ~/.claude entirely.
+        printf 'refusing to follow the dangling symlink %s\n' "$settings" >&2
+        exit 1
+    else
+        orig='{}'
+        # A preview must not create ~/.claude or seed settings.json either --
+        # the diff below is computed against $orig directly, without a file.
+        if [ "$dry" -eq 0 ]; then
+            mkdir -p "${settings%/*}" || exit 1
+            printf '%s\n' "$orig" > "$settings"
+        fi
+    fi
+
     # Additive, never destructive: their hooks stay; ours are appended per
     # event, skipping any entry already present. index() does jq's generic
     # (order-insensitive, deep) equality, so reformatting the file -- jq -S,
@@ -100,15 +132,26 @@ if [ "$hooks" -eq 1 ]; then
                 | .value = (($h[$k] // []) + [ .value[]
                     | select(. as $e | (($h[$k] // []) | index($e)) == null) ])
               ))
-          ) }' "$DIR/examples/claude-hooks.json" "$settings") || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
+          ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
+        || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
+
     if [ "$dry" -eq 1 ]; then
-        diff -u "$settings" <(printf '%s\n' "$merged") || true
+        if [ "$have_diff" -eq 1 ]; then
+            diff -u <(printf '%s\n' "$orig") <(printf '%s\n' "$merged")
+            rc_diff=$?
+            # 1 just means "they differ", which is the expected case here.
+            # Anything higher is a real diff failure and must not silently
+            # look like a clean preview.
+            [ "$rc_diff" -le 1 ] || printf 'diff failed; merged result would be:\n%s\n' "$merged"
+        else
+            printf 'diff not found; merged result would be:\n%s\n' "$merged"
+        fi
         printf 'dry-run: nothing written\n'
     # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
     # comparing the whole file as text rewrote (and I2-clobbered) the backup
     # on every formatting-only difference, even when cockpit's hooks were
     # already fully present.
-    elif [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(jq -S -c '.hooks // {}' "$settings")" ]; then
+    elif [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(printf '%s' "$orig" | jq -S -c '.hooks // {}')" ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
         # Preserve the FIRST backup only. Overwriting it on every modifying
