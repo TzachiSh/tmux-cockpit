@@ -63,12 +63,21 @@ if [ "${1:-}" = --preview-diff ]; then
     # because root-level fixtures have a basename identical to their whole
     # relative path, so the doubling never showed up in them.
     base=${f##*/}
-    if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
+    if ! git -C "$d" -c core.quotePath=false rev-parse --git-dir >/dev/null 2>&1; then
         printf 'not in a git repository\n'; exit 0
     fi
     if [ -d "$f" ]; then
-        st=$(git -C "$f" -c color.status=always status --short 2>/dev/null | head -40)
-        dd=$(git -C "$f" diff --color=always --stat 2>/dev/null | head -40)
+        st=$(git -C "$f" -c core.quotePath=false -c color.status=always status --short 2>/dev/null | head -40)
+        # Same headok test the file branch below inlines: a plain `diff --stat`
+        # answers about the WORKING TREE only, so a staged-only file (in the
+        # index, not yet touched again) had no line here at all, disagreeing
+        # with the list -- which has shown staged+unstaged+untracked as one set
+        # since the fix above. `diff --stat HEAD` is both halves in one call.
+        if git -C "$f" -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat HEAD 2>/dev/null | head -40)
+        else
+            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat 2>/dev/null | head -40)
+        fi
         if [ -n "$st$dd" ]; then printf '%s\n%s\n' "$st" "$dd"
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
@@ -89,7 +98,7 @@ if [ "${1:-}" = --preview-diff ]; then
     # and neither sources the other. An unborn HEAD has no HEAD to diff
     # against, so that one case keeps the old fallback.
     headok=0; untracked=0; cached=0
-    git -C "$d" rev-parse -q --verify HEAD >/dev/null 2>&1 && headok=1
+    git -C "$d" -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1 && headok=1
     if [ "$headok" -eq 1 ]; then
         numstat=$(git -C "$d" -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
     else

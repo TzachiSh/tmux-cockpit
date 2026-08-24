@@ -2561,6 +2561,15 @@ case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
     *STAGED-CHANGE*) ok "the preview agrees with the list about the staged file" ;;
     *) bad "the preview agrees with the list about the staged file" "STAGED-CHANGE in the preview" \
          "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
+# Controller ruling: the directory branch of --preview-diff used to render an
+# unstaged-only `git diff --stat`, disagreeing with the list (which shows
+# staged+unstaged+untracked as one set since the fix above). FAIL-first: a
+# directory preview of RVMIX, where staged.txt is staged-only, has no
+# staged.txt line at all.
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" in
+    *"staged.txt"*) ok "the directory preview agrees with the list about the staged file" ;;
+    *) bad "the directory preview agrees with the list about the staged file" "staged.txt in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" ;; esac
 rm -rf "$RVMIX"
 
 echo "== tmux-review --lines: a brand-new file is reviewable, line by line =="
@@ -2804,6 +2813,14 @@ if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
 else
     ok "café's row is not smeared onto the previous file"
 fi
+# git C-quotes non-ASCII paths in `status --short` too, so a directory preview
+# (the git status --short / git diff --stat branch) used to render
+# "caf\303\251.txt" instead of the real name. FAIL-first: the octal escape
+# shows up in the directory preview's output.
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" in
+    *'\303'*) bad "the directory preview prints the name, not octal" "café in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" ;;
+    *) ok "the directory preview prints the name, not octal" ;; esac
 rm -rf "$RVQ"
 
 # The first-file-in-diff variant: when the odd-named file leads the diff, the
