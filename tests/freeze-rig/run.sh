@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # tmux-cockpit freeze rig -- entry point.
 #
-#   bash run.sh regress            PASS/FAIL gate for a candidate fix
+#   bash run.sh gate [conf]        PASS/FAIL gate for a candidate fix (USE THIS IN CI)
+#   bash run.sh visits             pane visits per redraw, per config element
+#   bash run.sh regress            timing-based gate (informational only)
 #   bash run.sh elements           CPU per redraw, per config element, per shape
 #   bash run.sh e2e                round-trip latency + CPU under an agent load
 #   bash run.sh scale              scaling law: cost vs total panes
@@ -26,7 +28,11 @@ set -u
 cd "$(dirname "$0")" || exit 1
 D=$(pwd)
 
-case "${1:-regress}" in
+case "${1:-gate}" in
+# THE ONE TO USE IN CI. Deterministic pane-visit count, machine- and
+# load-independent. Exit 0 pass, 1 fail, 2 could not measure.
+gate)     shift; exec bash "$D/gate.sh" "$@" ;;
+visits)   exec bash "$D/countvisits.sh" ;;
 elements) exec bash "$D/redraw_cost.sh" elements ;;
 scale)    exec bash "$D/redraw_cost.sh" scale ;;
 visible)  exec bash "$D/redraw_cost.sh" visible ;;

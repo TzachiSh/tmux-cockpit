@@ -1,6 +1,16 @@
-tmux-cockpit freeze rig -- raw results. tmux 3.7c, 12-core Linux, 2026-08-24T17:55:03+03:00
+tmux-cockpit freeze rig -- raw results. tmux 3.7c, 12-core Linux.
 
-=== A. server CPU per forced status redraw (idle server, 4 visible panes) ===
+=== THE CI METRIC: pane visits per status redraw (deterministic) ===
+element                      12 panes  48 panes  120 panes
+control                             0         0          0
+border-format, banner removed       0         0          0
+border-format WITH banner          20        84        216
+window tabs                        28        72        120
+status-right agent_fleet           36       144        360
+FULL shipped config                84       300        696
+(additive at every shape: 20+28+36=84, 84+72+144=300, 216+120+360=696)
+
+=== A. server CPU per forced status redraw (idle, 4 visible) ===
 
 VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
 V0   control (no cockpit formats) 1x6x2     12     2    0.8       1.0
@@ -87,7 +97,7 @@ VAR  ELEMENT                    SxWxP    PANES VIS  LOAD   N   p50   p95   max  
 V0   control (no cockpit formats) 3x10x4   120   4    title  4   5 7 10 0 7
 V7   FULL shipped config        3x10x4   120   4    title  4   6 26 52 0 33
 
-=== C. freeze point + regression gate ===
+=== C. freeze point + timing gate ===
 ### FREEZE POINT: 400 panes, high OSC-title pressure
 
 VAR  PANES  AGENTS  OSC/s  p50    p95    >1s   cpu%
