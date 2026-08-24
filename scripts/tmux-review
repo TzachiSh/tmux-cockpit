@@ -465,7 +465,7 @@ run_loop() {
     fi
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    psz=$(( avail - lrows - 5 ))
+    psz=$(( avail - lrows - 6 ))   # 6, not 5: the header is two lines now
     [ "$psz" -lt 5 ] && psz=5
 
     # --disabled: the typed text here is a comment, not a filter. Without it
@@ -758,14 +758,25 @@ deliver() {
 }
 
 # --- --fleet / entry-point resolution --------------------------------------
-# Which of the fleet needs your eyes: every agent pane, every session, whose
-# tree is dirty -- landscape-gap #1, nothing else answers this. Rows are
-# pane\ttitle\t±stat, dirtiest (most churn) first. The is-agent test is
-# tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s guard, cockpit.tmux's
-# window formats) run once per pane inside list-panes, not a second shell per
-# pane to re-ask; the title falls back from pane_title to the window name the
-# same way @catppuccin_window_text already does (examples/tmux.conf:42) --
-# #{host_short} is what an UNSET pane_title reads as, not empty.
+# Which of the fleet needs your eyes: every agent pane, every session, that is
+# either blocked or dirty -- landscape-gap #1, nothing else answers this. Rows
+# are pane\tstate\ttitle\trepo⑂branch\t±stat.
+#
+# The order is the whole point, and it is NOT churn. A pane parked on a
+# permission prompt is the one that actually needs a human, and it usually has
+# nothing at all to diff -- churn-first ordering listed it last, or (with a
+# clean tree) not at all, and answered "who typed most" instead of "who needs
+# me". So @panestate ranks first -- needs-input, done, error, running, then
+# unset -- and churn only breaks ties inside a rank. A needs-input pane is
+# listed even with a clean tree; its ± column reads —, not "+0 -0", because
+# there is nothing to review there, only someone to unblock.
+#
+# The is-agent test is tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s
+# guard, cockpit.tmux's window formats) run once per pane inside list-panes,
+# not a second shell per pane to re-ask; the title falls back from pane_title
+# to the window name the same way @catppuccin_window_text already does
+# (examples/tmux.conf:42) -- #{host_short} is what an UNSET pane_title reads
+# as, not empty.
 fleet_rows() {
     # One -F argument, built in a variable: continuation lines each starting
     # a fresh quoted string are separate WORDS to tmux, not one concatenated
@@ -774,6 +785,15 @@ fleet_rows() {
     local fmt raw
     fmt='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'$'\t'
     fmt="${fmt}"'#{pane_id}'$'\t'
+    # NOT a bare #{@panestate}: tab is an IFS *whitespace* character, so
+    # `read` with IFS=$'\t' collapses a RUN of tabs into one delimiter -- an
+    # unset @panestate emitted \t\t, the field vanished, and every field after
+    # it shifted left (path came out empty and the pane was dropped from the
+    # queue entirely). Measured against a pane with no state set. The same
+    # trap, with spaces, is why tmux-jump:21 places its own guard. A sentinel
+    # keeps the field non-empty on the wire; it is turned back into "unset"
+    # the moment it has been read.
+    fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
     fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
     fmt="${fmt}"'#{pane_current_path}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
@@ -785,20 +805,21 @@ fleet_rows() {
     # popup for ~32s, on every prefix+r from a non-agent pane. The panes are
     # independent of each other, so run their git work concurrently instead,
     # each pane's row computed in its own background subshell and written to
-    # its own file (rows are re-sorted by churn below anyway, so completion
-    # order never matters). Capped at $cap in flight at once -- unbounded
-    # would fork hundreds of git processes at once on a big fleet, trading one
-    # kind of slowness for another.
+    # its own file (rows are re-sorted by rank and churn below anyway, so
+    # completion order never matters). Capped at $cap in flight at once --
+    # unbounded would fork hundreds of git processes at once on a big fleet,
+    # trading one kind of slowness for another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
 
-    local isagent id title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
     local -a pids=()
-    while IFS=$'\t' read -r isagent id title path; do
+    while IFS=$'\t' read -r isagent id state title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
+        [ "$state" = - ] && state=   # the wire sentinel above, back to unset
         n=$((n + 1))
-        fleet_row_one "$id" "$title" "$path" > "$tmpdir/$n" &
+        fleet_row_one "$id" "$state" "$title" "$path" > "$tmpdir/$n" &
         pids+=("$!")
         if [ ${#pids[@]} -ge "$cap" ]; then
             wait "${pids[0]}" 2>/dev/null
@@ -818,43 +839,71 @@ fleet_rows() {
     rm -rf "$tmpdir"
     [ ${#rows[@]} -gt 0 ] || return 0
 
+    # Rank ascending, then churn descending inside the rank: who needs me
+    # first, and among equals the one with the most to look at.
     for line in "${rows[@]}"; do printf '%s\n' "$line"; done \
-        | sort -t "$(printf '\t')" -k1,1nr | cut -f2-4
+        | sort -t "$(printf '\t')" -k1,1n -k2,2nr | cut -f3-
 }
 
 # One pane's fleet row -- factored out of fleet_rows() so it can run in its
 # own background subshell (see the parallel dispatch above). Churn comes from
 # tree_diff, the one base --lines reviews from, so a fully staged change still
 # gets a real churn number instead of reading as 0. Prints nothing (and the
-# caller's file stays empty) for a pane git status calls clean, so an empty
-# output file is indistinguishable from "not dirty" on the reading side.
+# caller's file stays empty) for a pane that is neither dirty nor blocked, so
+# an empty output file is indistinguishable from "nothing to show" on the
+# reading side.
 fleet_row_one() {
-    local id=$1 title=$2 path=$3
-    local st numstat add del untracked churn stat a d
+    local id=$1 state=$2 title=$3 path=$4
+    local st numstat add del untracked churn stat a d rank repo branch
 
-    st=$(git -C "$path" status --porcelain 2>/dev/null)
-    [ -n "$st" ] || return 0
+    # --no-optional-locks on every read here: this is a read on someone else's
+    # live worktree, and plain `git status` writes the index back to refresh
+    # stat info. Taking index.lock under an agent that is mid-commit is a race
+    # the reader has no business starting.
+    st=$(git -C "$path" --no-optional-locks status --porcelain 2>/dev/null)
+    # A blocked pane earns its row on state alone -- that is the case a
+    # dirty-only filter dropped, and it is the most urgent one there is.
+    [ -n "$st" ] || [ "$state" = needs-input ] || return 0
 
-    # The same one base --lines reviews from: staged + unstaged together, so a
-    # fully staged change gets its real churn instead of reading as 0.
-    numstat=$(tree_diff "$path" --numstat)
-    add=0; del=0
-    while IFS=$'\t' read -r a d _f; do
-        [ -n "$a" ] || continue
-        case "$a" in *[!0-9]*) a=0 ;; esac
-        case "$d" in *[!0-9]*) d=0 ;; esac
-        add=$(( add + a )); del=$(( del + d ))
-    done <<<"$numstat"
+    case "$state" in
+        needs-input) rank=0 ;;
+        done)        rank=1 ;;
+        error)       rank=2 ;;
+        running)     rank=3 ;;
+        *)           rank=4 ;;
+    esac
+    # Two agents on two worktrees of the same repo are indistinguishable from
+    # "s:w claude" alone; the row has to say WHICH tree it is.
+    repo=$(git -C "$path" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); repo=${repo##*/}
+    branch=$(git -C "$path" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-    # Untracked files carry no numstat line at all -- without counting them a
-    # pane holding only new files reads as 0 churn and sorts last, even
-    # though `git status` already called it dirty.
-    untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
-    stat="+$add -$del"
-    [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
-    churn=$(( add + del + untracked ))
+    if [ -n "$st" ]; then
+        # The same one base --lines reviews from: staged + unstaged together,
+        # so a fully staged change gets its real churn instead of reading as 0.
+        numstat=$(tree_diff "$path" --numstat)
+        add=0; del=0
+        while IFS=$'\t' read -r a d _f; do
+            [ -n "$a" ] || continue
+            case "$a" in *[!0-9]*) a=0 ;; esac
+            case "$d" in *[!0-9]*) d=0 ;; esac
+            add=$(( add + a )); del=$(( del + d ))
+        done <<<"$numstat"
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$churn" "$id" "$title" "$stat" "$path"
+        # Untracked files carry no numstat line at all -- without counting
+        # them a pane holding only new files reads as 0 churn and sorts last,
+        # even though `git status` already called it dirty.
+        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+        stat="+$add -$del"
+        [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
+        churn=$(( add + del + untracked ))
+    else
+        # Nothing to review, only someone to unblock. "+0 -0" would read as a
+        # measurement; — reads as "not applicable", which it is.
+        stat='—'; churn=0
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat"
 }
 
 # --- entry-point resolution -------------------------------------------------
@@ -888,11 +937,26 @@ review_pane() {
     fi
 }
 
+# Pad one field to a fixed COLUMN width. bash's printf pads %-*s by BYTES,
+# while ${#s} counts characters -- so a field holding ⑂ or — (3 bytes each)
+# came out short and dragged every column to its right with it. Measuring the
+# characters first, then widening the printf field by the byte overhead, makes
+# printf's own padding land where the eye expects it.
+pad_field() {                 # <width> <string>
+    local w=$1 c=${#2}
+    local LC_ALL=C            # from here ${#2} is bytes, which is what printf counts
+    printf '%-*s' "$(( w + ${#2} - c ))" "$2"
+}
+
 # The fzf queue over fleet_rows(). Unlike the review loop this filters as you
 # type -- it is a pane list, not comment entry, so --disabled has no place
-# here. Rows carry only the three fields the brief names (pane, title, stat);
-# the preview re-asks tmux for the pane's cwd by id rather than smuggling a
-# fourth hidden field, so `--fleet`'s output stays exactly that interface.
+# here. Rows carry pane, state, title, repo⑂branch and stat; the preview
+# re-asks tmux for the pane's cwd by id rather than smuggling a sixth hidden
+# field, so `--fleet`'s output stays exactly that interface.
+#
+# The four visible fields are padded to their own column widths before fzf
+# sees them: ragged single-space columns made the ± numbers impossible to
+# compare down the list, which is most of what this list is FOR.
 fleet_queue() {
     command -v fzf >/dev/null 2>&1 || {
         tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
@@ -901,12 +965,35 @@ fleet_queue() {
     local rows
     rows=$(fleet_rows)
     if [ -z "$rows" ]; then
-        tmux display-message "tmux-review: no agent pane has uncommitted changes" 2>/dev/null
+        tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
         return 0
     fi
 
+    # Column widths, capped: one 200-character pane title should not push
+    # repo⑂branch and the ± count off the right edge for every other row.
+    # A field over its cap simply overflows its column instead of being
+    # truncated -- losing the end of a title is worse than one ragged row.
+    local f_pane f_state f_title f_loc f_stat
+    local w_state=0 w_title=0 w_loc=0
+    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+        [ -n "$f_pane" ] || continue
+        [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
+        [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
+        [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
+    done <<<"$rows"
+    [ "$w_state" -gt 12 ] && w_state=12
+    [ "$w_title" -gt 40 ] && w_title=40
+    [ "$w_loc"   -gt 32 ] && w_loc=32
+
+    local -a disp=()
+    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+        [ -n "$f_pane" ] || continue
+        disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
+    done <<<"$rows"
+    [ ${#disp[@]} -gt 0 ] || return 0
+
     local nrows avail lrows psz preview_cmd out pane dir
-    nrows=$(printf '%s\n' "$rows" | wc -l)
+    nrows=${#disp[@]}
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
     psz=$(( avail - lrows - 5 ))
@@ -919,14 +1006,25 @@ fleet_queue() {
     preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
     preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
-    out=$(printf '%s\n' "$rows" \
-        | fzf --delimiter=$'\t' --with-nth=2,3 \
+    # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
+    # been written by the owner's own tmux.conf, so `eval`ing it is eval of
+    # their config, not of anything an agent pane can reach. It is confined to
+    # this navigation picker on purpose: in the review loop ↵ has a contract
+    # (pin a comment, never approve) and ^S is the consent gesture, and one
+    # stray --bind from a config would quietly break either of them.
+    local -a extra=()
+    local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
+    [ -n "$opt" ] && eval "extra=($opt)"
+
+    out=$(printf '%s\n' "${disp[@]}" \
+        | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
               --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --preview "$preview_cmd" \
               --preview-window="down,$psz,border-top" \
               --prompt='fleet> ' \
-              --header='which agent needs you   ↵ review it   ^/ preview   esc cancel')
+              --header=$'which agent needs you   state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+              ${extra[@]+"${extra[@]}"})
     [ -n "$out" ] || return 0
 
     pane=$(cut -f1 <<<"$out")

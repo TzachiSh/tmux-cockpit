@@ -251,7 +251,7 @@ from `examples/claude-hooks.json` by hand:
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
+| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue, blocked agents first, then dirty ones (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -478,11 +478,46 @@ there is deliberately no key that approves the whole thing at once.
 
 From an **agent pane** it reviews that pane. From anywhere else — a shell, a
 build pane, wherever `prefix + r` finds you — it opens the **fleet queue**
-instead: every agent pane, on every session, whose tree is dirty, dirtiest
-first, previewed the same way the path picker's folder preview shows a
+instead: every agent pane, on every session, that is blocked or has a dirty
+tree, previewed the same way the path picker's folder preview shows a
 directory's `git status`. Nothing else in this plugin answers "which of my
 agents needs my eyes"; the queue exists because visiting each pane in turn to
 find out does not scale past two or three of them.
+
+The order is that question's answer, and it is deliberately **not** churn.
+Agent state ranks first — `needs-input`, then `done`, `error`, `running`, then
+panes with no state at all — and churn only breaks ties inside a rank. An
+agent parked on a permission prompt is the one actually waiting on you, and it
+usually has nothing at all to diff; sorting by churn listed it last, or (with a
+clean tree) left it out entirely, and answered "who typed most" instead. A
+blocked pane is listed even with a clean tree, and its `±` column reads `—`
+rather than `+0 -0`, because there is nothing to review there — only someone to
+unblock.
+
+Each row is `state · title · repo⑂branch · ±`, in aligned columns. The
+`repo⑂branch` field is what tells two worktrees of the same repo apart, which
+`s:w claude` alone cannot:
+
+```text
+needs-input   main:2 claude    cockpit⑂feat/review-p0     —
+running       side:0 codex     cockpit⑂main               +142 -30  ?2 new
+—             main:4 claude    api⑂fix/token-refresh      +8 -8
+```
+
+`tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
+to drive the same list from a script.
+
+The fleet queue — and only it — takes extra fzf options from a global tmux
+option, so you can bend the picker to your own taste without patching the
+script:
+
+```sh
+set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▶'"
+```
+
+It is confined to this picker on purpose. In the comment loop `↵` has a
+contract (it pins a comment, it never approves) and `^S` is the consent
+gesture; one stray `--bind` from a config file would quietly break either one.
 
 The review popup's two pickers do not share one key set — the fleet queue is
 a plain list, `↵` picks a pane; the comment loop's typed text *is* a

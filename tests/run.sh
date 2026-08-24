@@ -4050,6 +4050,35 @@ esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
 is "the queue lists exactly one row" "1" "$rowcount"
 
+# The queue is a triage list, not a churn leaderboard. A pane parked on a
+# permission prompt is exactly the one that needs a human -- and it typically
+# has NOTHING to diff, so churn-only ordering buried it under whoever happened
+# to type the most. State ranks first; churn only breaks ties inside a rank.
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+# Polled, not slept for: the row we are waiting on is the blocked pane's, and
+# its absence is also the RED failure -- so the loop bounds the wait rather
+# than deciding the outcome.
+fqout2=""
+for i in $(seq 1 20); do
+    fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout2" in *"$CLEAN_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
+is "its state is in the row" "needs-input" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f2)"
+is "and a clean tree shows no churn instead of +0 -0" "—" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f5)"
+is "the dirty running agent sorts below it" "$DIRTY_PANE" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | sed -n 2p | cut -f1)"
+case "$(printf '%s\n' "$fqout2" | grep "^$DIRTY_PANE")" in
+    *"$(basename "$FQ_DIRTY")⑂main"*) ok "the row names the repo and branch" ;;
+    *) bad "the row names the repo and branch" "$(basename "$FQ_DIRTY")⑂main" "$fqout2" ;;
+esac
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
 fi
