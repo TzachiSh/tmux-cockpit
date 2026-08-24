@@ -375,11 +375,21 @@ set -g @cockpit_agents "^(claude|codex|aider|cursor|opencode|gemini|crush)$"
 
 `cockpit.tmux` sets that default if you have not, so there is nothing to do
 unless you run a CLI it does not know — then set your own **before** the
-`run-shell` line and everything follows. It is an extended regular expression
-matched against `#{pane_current_command}`.
+`run-shell` line and everything follows.
 
-Do not set it to the empty string. tmux treats an empty pattern as matching
-every command, which would paint every pane in the session as an agent.
+Under the hood the formats match a derived **glob list**
+(`@cockpit_agents_glob`, `|claude|codex|…|`), not the regex: tmux recompiles a
+`#{m/r:}` regex on every evaluation — measured at 32–36 µs per test, 25 tests
+per config — and switching to glob matching cut the whole status redraw by
+2–3×, with byte-identical rendering. A simple `^(a|b|c)$` value converts
+automatically; anything fancier gets a message asking you to set
+`@cockpit_agents_glob` yourself rather than being silently ignored. The one
+semantic difference: a `pane_current_command` containing a literal `*` would
+false-match under glob — no real process name does.
+
+Do not set either option to the empty string. tmux treats an empty pattern as
+matching every command, which would paint every pane in the session as an
+agent.
 
 ## Stale state
 

@@ -518,10 +518,13 @@ tmux -L "$SOCK3" set -p -t "$ap" @panestate running >/dev/null 2>&1
 is "the plugin defaults it rather than leaving it empty" \
    '^(claude|codex|aider|cursor|opencode|gemini|crush)$' \
    "$(tmux -L "$SOCK3" show-option -gqv @cockpit_agents)"
+is "and derives the glob list the formats read" \
+   '|claude|codex|aider|cursor|opencode|gemini|crush|' \
+   "$(tmux -L "$SOCK3" show-option -gqv @cockpit_agents_glob)"
 is "with the default, a claude pane is believed" "fg=#ffcc33" "$(abs)"
-tmux -L "$SOCK3" set -g @cockpit_agents '^(vim|emacs)$' >/dev/null 2>&1
+tmux -L "$SOCK3" set -g @cockpit_agents_glob '|vim|emacs|' >/dev/null 2>&1
 is "narrowing it disbelieves the pane"          "fg=#5b6272" "$(abs)"
-tmux -L "$SOCK3" set -g @cockpit_agents '^(claude|vim)$' >/dev/null 2>&1
+tmux -L "$SOCK3" set -g @cockpit_agents_glob '|claude|vim|' >/dev/null 2>&1
 is "widening it believes the pane again"        "fg=#ffcc33" "$(abs)"
 tmux -L "$SOCK3" kill-server >/dev/null 2>&1
 fi
