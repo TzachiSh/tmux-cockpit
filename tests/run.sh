@@ -246,9 +246,14 @@ is "the ask text is stored beside the alert" \
 st running "$PANE"
 is "resuming work clears the stale ask" "" \
    "$(tmux show-option -pqv -t "$PANE" @panestate_msg)"
-# A payload with no message field must not leave an empty-string option behind.
-st off "$PANE"; printf '{"foo":1,"message":""}' | "$DIR/scripts/agent-state" notify "$PANE"
-is "an empty message stores nothing" "" \
+# "needs your permission" can appear WITHOUT a usable message value (missing,
+# or an explicit empty string) -- this payload reaches extraction, unlike the
+# unrelated-notification arm above, and must CLEAR a stale ask rather than
+# leaving a PREVIOUS pane's question standing beside a brand-new alert.
+tmux set -p -t "$PANE" @panestate_msg "stale ask from a different pane" >/dev/null 2>&1
+printf '{"reason":"Claude needs your permission","message":""}' \
+    | "$DIR/scripts/agent-state" notify "$PANE"
+is "an empty message clears the stale ask" "" \
    "$(tmux show-option -pqv -t "$PANE" @panestate_msg)"
 tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
 echo '{"message":"unrelated thing"}' | st notify "$PANE"
@@ -1646,11 +1651,24 @@ rm -rf "$HK2"
 else
     skip_ "hooks merge (jq not installed)"
 fi
+# --uninstall does NOT touch hooks -- the combination must be a hard usage
+# error, not a silent skip of --hooks. This is a pure argument-parsing exit,
+# so it needs no jq and must never create or touch settings.json.
+HK3=$(mktmpd)
+HOME="$HK3" "$DIR/install.sh" --uninstall --hooks >/dev/null 2>&1
+is "--uninstall --hooks is a usage error" "2" "$?"
+if [ -e "$HK3/.claude/settings.json" ]; then
+    bad "--uninstall --hooks touches no settings.json" "no settings.json" "one was created"
+else
+    ok "--uninstall --hooks touches no settings.json"
+fi
+rm -rf "$HK3"
 rm -rf "$HK"
 echo "== prefix J jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
 JJ="cockpit-jj-$$"; SOCKS="$SOCKS $JJ"
 "$TMUX_REAL" -L "$JJ" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 # -t t: (not bare t): a detached window's default name is the literal "tmux"
 # until a client renames it, and new-window's colonless -t resolves as a
 # WINDOW target first -- "t" then prefix-matches "tmux" and tmux tries to
@@ -1674,6 +1692,16 @@ is "jump lands on the blocked window" "2" \
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
 is "a second press cycles to the next blocked pane" "1" \
+   "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+# A shell pane holding stale (or hand-set) @panestate must never be treated as
+# blocked -- the same glob guard that keeps it out of #{agent_fleet}. Pressing
+# from the LAST agent pane in cycle order (JP3) proves it: if the stale pane
+# were counted, cycling would land on IT (the highest pane id, sorted last);
+# with the fix it wraps back to the first real agent pane instead.
+JP4=$("$TMUX_REAL" -L "$JJ" new-window -t t: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP4" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+is "a shell holding stale state is never jumped to" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # Nothing blocked: the script must not move you, and must not error.
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
