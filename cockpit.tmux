@@ -158,6 +158,7 @@ done
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
+Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
 
 # Version gate. Measured against real 3.4 and 3.7c binaries, not guessed:
 #
@@ -247,6 +248,17 @@ case "$JK" in
     off) ;;                          # explicitly disabled
     "")  tmux bind-key J run-shell "'$DIR/scripts/tmux-jump'" ;;
     *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump'" ;;
+esac
+
+# Review an agent's diff. No arg: the script itself resolves the target --
+# the pane the popup was opened from if it is an agent, else the fleet queue
+# of every dirty one. Same popup chrome and off-disables convention as the
+# jump key.
+RK=$(tmux show-option -gqv @cockpit_review_key)
+case "$RK" in
+    off) ;;                          # explicitly disabled
+    "")  tmux bind-key R display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
+    *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
 esac
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it

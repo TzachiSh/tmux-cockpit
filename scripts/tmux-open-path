@@ -53,6 +53,15 @@ if [ "${1:-}" = --preview-diff ]; then
     # scripts/scripts/... -- matching nothing and reporting "no uncommitted
     # changes" about a file that is modified. A confident wrong answer.
     d=$(cd "$d" 2>/dev/null && pwd) || d=.
+    # d is now the file's OWN directory -- so the pathspec handed to git must
+    # be the basename, not $f with its directory prefix still attached, or the
+    # exact doubling this comment already warned about comes back one level
+    # later: "-C .../scripts" diffing "scripts/foo.sh" looks for
+    # "scripts/scripts/foo.sh". Reproduced: every nested file's preview read
+    # "no uncommitted changes" regardless of its real state, masked until now
+    # because root-level fixtures have a basename identical to their whole
+    # relative path, so the doubling never showed up in them.
+    base=${f##*/}
     if ! git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then
         printf 'not in a git repository\n'; exit 0
     fi
@@ -63,13 +72,13 @@ if [ "${1:-}" = --preview-diff ]; then
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
     fi
-    diff=$(git -C "$d" diff --color=always -- "$f" 2>/dev/null)
-    [ -n "$diff" ] || diff=$(git -C "$d" diff --color=always --cached -- "$f" 2>/dev/null)
+    diff=$(git -C "$d" diff --color=always -- "$base" 2>/dev/null)
+    [ -n "$diff" ] || diff=$(git -C "$d" diff --color=always --cached -- "$base" 2>/dev/null)
     if [ -n "$diff" ]; then
         # One stat line instead of four rows of diff --git/index/---/+++ that
         # restate the filename already on the picker row. At seven preview rows
         # the boilerplate was most of the pane; the first hunk lands on row 2.
-        git -C "$d" diff --stat -- "$f" 2>/dev/null | head -1
+        git -C "$d" diff --stat -- "$base" 2>/dev/null | head -1
         printf '%s\n' "$diff" | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
     else printf 'no uncommitted changes in %s\n' "${f##*/}"; fi
     exit 0
