@@ -72,15 +72,34 @@ if [ "${1:-}" = --preview-diff ]; then
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
     fi
-    diff=$(git -C "$d" diff --color=always -- "$base" 2>/dev/null)
-    [ -n "$diff" ] || diff=$(git -C "$d" diff --color=always --cached -- "$base" 2>/dev/null)
-    if [ -n "$diff" ]; then
-        # One stat line instead of four rows of diff --git/index/---/+++ that
-        # restate the filename already on the picker row. At seven preview rows
-        # the boilerplate was most of the pane; the first hunk lands on row 2.
-        git -C "$d" diff --stat -- "$base" 2>/dev/null | head -1
-        printf '%s\n' "$diff" | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
-    else printf 'no uncommitted changes in %s\n' "${f##*/}"; fi
+    # This used to capture the WHOLE coloured diff into a shell variable, then
+    # run git diff a second time (--stat) just for one summary line -- a
+    # 21MB/400k-line diff measured 2.06s + 177MB RSS per render, rerun on every
+    # arrow key. --numstat is the cheap presence check AND the stat source (one
+    # small counted line, not the diff text); the diff itself now streams
+    # straight through awk to head, never held in a bash variable.
+    numstat=$(git -C "$d" diff --numstat -- "$base" 2>/dev/null)
+    cached=0
+    if [ -z "$numstat" ]; then
+        numstat=$(git -C "$d" diff --cached --numstat -- "$base" 2>/dev/null)
+        cached=1
+    fi
+    if [ -z "$numstat" ]; then
+        printf 'no uncommitted changes in %s\n' "${f##*/}"
+        exit 0
+    fi
+    add=${numstat%%$'\t'*}; rest=${numstat#*$'\t'}; del=${rest%%$'\t'*}
+    case "$add" in
+        ''|*[!0-9]*) printf '%s (binary)\n' "$base" ;;
+        *)           printf '%s | %s insertion(s), %s deletion(s)\n' "$base" "$add" "$del" ;;
+    esac
+    if [ "$cached" -eq 1 ]; then
+        git -C "$d" diff --color=always --cached -- "$base" 2>/dev/null \
+            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+    else
+        git -C "$d" diff --color=always -- "$base" 2>/dev/null \
+            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+    fi
     exit 0
 fi
 
@@ -166,8 +185,13 @@ if [ "${1:-}" = --preview ]; then
     # truncate, it declines to WRAP -- the whole line is still piped into the
     # preview on every cursor move (measured: 3.2MB for one 3MB line). Fall
     # through to the awk path, which caps each line, when the file looks like
-    # that. Only the first 200 lines are measured; that is all we render.
-    longest=$(awk 'NR > 200 { exit } { if (length($0) > m) m = length($0) } END { print m+0 }' \
+    # that. Measured over [first,last] -- the actual RENDER WINDOW bat is about
+    # to draw -- not a fixed 1-200: a 3MB line at line 500 sailed past a
+    # 1-200-only guard (bat still renders any target line up to 2000) and
+    # dumped 3MB into fzf per cursor move, the exact failure this guard exists
+    # to prevent.
+    longest=$(awk -v s="$first" -v e="$last" \
+              'NR < s { next } NR > e { exit } { if (length($0) > m) m = length($0) } END { print m+0 }' \
               "$f" 2>/dev/null)
     # ...and cap the TARGET line too: bat highlights sequentially from line 1,
     # so its cost is linear in the line number -- measured 15s at line 50000
@@ -327,7 +351,13 @@ try_token() {
 # pane is in, so the invented files existed and got opened. -f keeps the tokens
 # literal; nothing here wants a glob.
 set -f
+ntok=0
 for raw in $line; do
+    ntok=$((ntok + 1))
+    # 0.31ms/token, linear: a real clicked line has a handful of tokens, but a
+    # 112KB line (4000 path-shaped tokens) measured 1.59s in this loop alone.
+    # Capped like the preview guard above -- degrade, don't stall the click.
+    [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
     try_token "$tok" && continue
