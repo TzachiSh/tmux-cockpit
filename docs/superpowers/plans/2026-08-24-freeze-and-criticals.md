@@ -127,6 +127,15 @@ of parsing all of it, so the popup ALWAYS appears and stays esc-cancelable. Also
 
 ---
 
+## Follow-ups surfaced during execution (not yet tasked)
+- **A6** (freeze completeness): full.tmux.conf's catppuccin window-dot tabs (window-status-format's
+  #{P:} walks) leave a residual 360 visits (3 walks) at 120 panes — LINEAR/bounded (scale hunt certified
+  it), not the freeze, but precomputing the per-window worst-state into a window option (agent-state
+  writes it, same pattern as A3) would take full.tmux.conf under budget too. The shipped tmux.conf
+  copy-block is already 0. Do if full.tmux.conf users still feel CPU under title storms.
+- agent-state per-transition batching: the precompute adds up to 3 format evals + 2 guarded set-options
+  per transition (off the redraw path). Batch into one tmux call if hook latency is ever measured high.
+
 ## Sequencing
 - Wave A first (security + freeze — what the user feels), each task its own review + fix loop; ship the wave when its gate is green.
 - Waves B and C share scripts/tmux-review → ONE lane, sequential (B1,B2,C1,C2 on tmux-review; C3 on tmux-where can parallelize).
