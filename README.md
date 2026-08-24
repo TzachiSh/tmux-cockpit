@@ -195,6 +195,27 @@ It reads `file:12:3`, `file:12`, `file(12,3)` (tsc), `a/file` (git diff),
 terminals wrap paths in. Existence on disk is the filter, so a word that merely
 looks like a path is dropped.
 
+**Tab marks several** — a compiler error names a header and its source, a git
+diff names two files: mark both, `↵` opens them all. Tab means the same thing in
+`tm`'s kill picker.
+
+The list takes only the rows it needs — with one or two candidates the preview
+gets ~80% of the popup instead of leaving the top half empty around two
+filenames.
+
+### Popup size
+
+One pair of options sizes both popups (default `70%` × `70%`). Set them
+**before** the `run-shell` line, like `@cockpit_agents`:
+
+```tmux
+set -g @cockpit_popup_width  60%
+set -g @cockpit_popup_height 50%
+```
+
+Anything `display-popup` accepts works, absolute columns/rows included. The
+path picker re-reads them on every click, so changing them needs no reload.
+
 ### The snippet
 
 The preview pane is the reason to look before you leap, so it shows the thing

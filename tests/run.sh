@@ -1116,5 +1116,57 @@ esac
 "$TMUX_REAL" -L "$TS" kill-server >/dev/null 2>&1
 fi
 
+echo "== popup geometry is configurable =="
+# One pair of options sizes both popups; set before the run-shell line, same
+# pattern as @cockpit_agents. The path picker re-reads them at click time.
+if need_tmux "popup geometry"; then :; else
+PG="cockpit-geom-$$"; SOCKS="$SOCKS $PG"
+"$TMUX_REAL" -L "$PG" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PG" set -g @cockpit_popup_width 55% >/dev/null 2>&1
+"$TMUX_REAL" -L "$PG" set -g @cockpit_popup_height 45% >/dev/null 2>&1
+"$TMUX_REAL" -L "$PG" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$PG" list-keys -T root | grep MouseDown1Control1)" in
+    *'-h "45%" -w "55%"'*) ok "a custom size reaches the binding" ;;
+    *) bad "a custom size reaches the binding" '-h 45% -w 55%' \
+         "$("$TMUX_REAL" -L "$PG" list-keys -T root | grep MouseDown1Control1)" ;;
+esac
+"$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
+fi
+
+echo "== tab marks several files and opens them all =="
+# --multi: a compiler error naming a header and its source, a git diff naming
+# two files -- mark both, open both. Tab already means "mark several" in tm's
+# kill picker, so the gesture is one thing suite-wide. Driven through a real
+# pty because fzf needs one.
+if need_tmux "multi-open"; then :; else
+if command -v fzf >/dev/null 2>&1; then
+MO="cockpit-mo-$$"; SOCKS="$SOCKS $MO"
+MOLOG=$(mktemp); MOED=$(mktemp)
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MOLOG" > "$MOED"; chmod +x "$MOED"
+"$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MO" set -g @cockpit_editor "$MOED" >/dev/null 2>&1
+MP=$("$TMUX_REAL" -L "$MO" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$MO" set-option -p -t "$MP" @cockpit_click_line \
+    "see README.md and LICENSE and Makefile" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MO" send-keys -t "$MP" "'$DIR/scripts/tmux-open-path' --pick '$MP'" Enter
+sleep 2.2
+# The prompt must be visible first, or the keys land in a bare shell and the
+# assertion could pass without fzf ever running.
+case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
+    *"open>"*) ok "the picker really came up" ;;
+    *) bad "the picker really came up" "an open> prompt" \
+         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | head -3)" ;;
+esac
+"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4
+"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4
+"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Enter; sleep 2.5
+is "two marked files both open" "2" "$(grep -c OPEN "$MOLOG")"
+"$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1
+rm -f "$MOLOG" "$MOED"
+else
+  skip_ "the picker really came up"; skip_ "two marked files both open"
+fi
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

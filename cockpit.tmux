@@ -113,6 +113,14 @@ version_at_least() {           # version_at_least <major> <minor>
     [ "$maj" -gt "$1" ] || { [ "$maj" -eq "$1" ] && [ "$min" -ge "$2" ]; }
 }
 
+# Popup geometry, configurable the same way as @cockpit_agents: set your own
+# BEFORE the run-shell line. Percentages or absolute columns/rows, anything
+# display-popup accepts.
+#   set -g @cockpit_popup_width  60%
+#   set -g @cockpit_popup_height 50%
+PW=$(tmux show-option -gqv @cockpit_popup_width);  PW=${PW:-70%}
+PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
+
 if ! version_at_least 3 3; then
     tmux display-message "tmux-cockpit needs tmux 3.3 or newer (found ${tmux_version:-unknown})"
 fi
@@ -123,13 +131,13 @@ fi
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch ' "$Q_BRANCH"
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
-tmux bind-key b                     display-popup -E -w 80% -h 75% -T ' switch branch ' "$Q_BRANCH"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch ' "$Q_BRANCH"
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane

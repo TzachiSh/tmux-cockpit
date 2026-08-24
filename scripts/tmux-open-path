@@ -280,7 +280,11 @@ fi
 # has no terminal, so the picker needs a popup -- which re-enters this script
 # with --pick and rebuilds the same list.
 if [ "$PICK" -eq 0 ]; then
-    tmux display-popup -t "$pane" -E -w 80% -h 75% -T ' open path ' \
+    # Geometry comes from the same options the branch popup uses, read at click
+    # time so changing them needs no reload.
+    pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
+    ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
+    tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" -T ' open path ' \
         "$(shq "$0") --pick $(shq "$pane")"
     exit 0
 fi
@@ -288,17 +292,31 @@ fi
 # Field 2 is the display path, field 3 the line number (blank when the token
 # carried none). fzf quotes both when it substitutes them.
 if command -v fzf >/dev/null; then
-    pick=$(for i in "${!FILES[@]}"; do
+    # The list is 1-5 rows nearly always; the preview is the payload. Give it
+    # the space the list is not using, instead of a fixed split that left the
+    # top half of the popup empty around two filenames.
+    case ${#FILES[@]} in
+        1|2)   pshare=80% ;;
+        3|4|5) pshare=70% ;;
+        *)     pshare=60% ;;
+    esac
+    picks=$(for i in "${!FILES[@]}"; do
                printf '%s\t%s\t%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}"
            done | fzf --reverse --info=inline --cycle --scroll-off=2 --color=16 \
-                      --delimiter=$'\t' --with-nth=2 \
+                      --delimiter=$'\t' --with-nth=2 --multi \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --prompt='open> ' \
-                      --header='↵ open   ^/ preview   esc cancel' \
+                      --header='↵ open   tab mark several   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
-                      --preview-window='down,65%,border-top')
-    [ -n "$pick" ] || exit 0
-    i=${pick%%$'\t'*}
+                      --preview-window="down,$pshare,border-top")
+    [ -n "$picks" ] || exit 0
+    # --multi returns one row per marked file (or just the cursor row). A
+    # compiler error naming a header and its source, a diff naming two files:
+    # tab-mark both, open both. Tab means the same thing in tm's kill picker.
+    while IFS= read -r row; do
+        i=${row%%$'\t'*}
+        open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
+    done <<<"$picks"
 else
     # No fzf: a numbered menu still beats no picker at all.
     printf 'Open which path?\n'
@@ -306,5 +324,5 @@ else
     [ -n "${f:-}" ] || exit 0
     i=0
     for j in "${!FILES[@]}"; do [ "${FILES[$j]}" = "$f" ] && i=$j; done
+    open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
 fi
-open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
