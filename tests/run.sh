@@ -1572,5 +1572,48 @@ else
 fi
 fi
 
+echo "== the statusline shim records context health =="
+if need_tmux "agent-context"; then :; else
+CX="cockpit-cx-$$"; SOCKS="$SOCKS $CX"
+"$TMUX_REAL" -L "$CX" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
+CXP=$("$TMUX_REAL" -L "$CX" list-panes -t t -F '#{pane_id}')
+# agent-context calls plain `tmux`, which the suite's PATH shim sends to
+# SUITE_SOCK whenever $TMUX is unset -- a different server than this test's
+# own private CX socket. A real hook always runs with $TMUX set (tmux exports
+# it into every pane), so set it here too: that is what points the shimmed
+# `tmux` at this pane's actual server, exactly as it would be in a real pane.
+CXTMUX="$SOCKDIR/$CX,0,0"
+TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" < "$DIR/tests/fixtures/statusline.json" >/dev/null
+ctx=$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)
+case "$ctx" in
+    [0-9]|[0-9][0-9]|100) ok "a real payload yields a percent" ;;
+    *) bad "a real payload yields a percent" "an integer 0-100" "$ctx" ;;
+esac
+# Garbage must write nothing and still exit 0 -- a statusline that errors
+# would spam the agent's own UI.
+"$TMUX_REAL" -L "$CX" set-option -pu -t "$CXP" @panestate_ctx >/dev/null 2>&1
+printf 'not json at all' | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null; cxrc=$?
+is "garbage exits 0" "0" "$cxrc"
+is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)"
+# A writer that stalls must not wedge the statusline: whole-read deadline.
+# A plain `{ stall } | script` pipe is not a reliable way to prove this: on
+# this shell/kernel a foreground writer inside the SAME pipeline delays the
+# reader's own read -t SIGALRM until the writer actually exits, regardless of
+# the timeout -- confirmed with no script involved at all. agent-state's own
+# "must not hang on silent stdin" test sidesteps exactly this by holding the
+# writer open on a FIFO from a BACKGROUNDED process instead; that reliably
+# lets the deadline fire on schedule, so this test does the same.
+CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
+( exec 9>"$CXFIFO"; sleep 8 ) & holder=$!
+start=$SECONDS
+TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
+took=$(( SECONDS - start ))
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+rm -f "$CXFIFO"
+if [ "$took" -le 3 ]; then ok "a stalling writer is abandoned in time"
+else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
+"$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

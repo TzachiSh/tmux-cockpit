@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Claude Code statusLine shim: records the pane's context fill so the tmux
+# side can warn before compaction, then prints a minimal statusline.
+# Contract: NEVER block or error at the agent -- bad input is a silent no-op.
+set -u
+pane="${TMUX_PANE:-}"
+case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac   # same guard as agent-state
+
+# Bounded whole-read, the agent-state pattern: a hook must never hang its agent.
+payload="" chunk="" deadline=$(( SECONDS + 2 ))
+while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
+    IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
+    payload="$payload$chunk"; chunk=""
+done
+
+command -v jq >/dev/null 2>&1 || exit 0
+# .context_window.used_percentage is the field a live run actually sends
+# (captured in tests/fixtures/statusline.json); the fallback recomputes the
+# same ratio from the raw token counts in case a future CC version drops the
+# precomputed percentage but keeps the counts.
+pct=$(jq -r '
+    (.context_window.used_percentage
+     // (if (.context_window.context_window_size? and .context_window.current_usage?)
+         then ((.context_window.current_usage.input_tokens
+                + (.context_window.current_usage.cache_creation_input_tokens // 0)
+                + (.context_window.current_usage.cache_read_input_tokens // 0)
+                + (.context_window.current_usage.output_tokens // 0))
+               / .context_window.context_window_size * 100)
+         else empty end)
+     // empty) | floor' 2>/dev/null <<<"$payload") || exit 0
+model=$(jq -r '.model.display_name // empty' 2>/dev/null <<<"$payload")
+
+case "$pct" in
+    ''|*[!0-9]*) exit 0 ;;
+    *) tmux set-option -p -t "$pane" @panestate_ctx "$pct" 2>/dev/null ;;
+esac
+printf '%s · ctx %s%%\n' "${model:-claude}" "$pct"
+exit 0

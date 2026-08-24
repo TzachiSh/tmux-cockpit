@@ -69,6 +69,22 @@ when a *blocked* turn ends — with the permission prompt still on screen — an
 letting that write `done` turned a red "answer me" into a green "finished" on a
 timer.
 
+### Context fill, optional
+
+`scripts/agent-context` is a Claude Code `statusLine` shim: fed the statusline
+JSON on stdin, it records the pane's context-window fill as a percent in
+`@panestate_ctx` and prints a minimal `<model> · ctx NN%` line. It never blocks
+or errors at the agent — an unparseable payload, a missing `jq`, or a writer
+that stalls is a silent no-op within a bounded read, the same contract
+`agent-state` holds for hooks.
+
+A `statusLine` fully replaces any other one you have configured, so it is not
+wired by default — see the commented `_statusline_comment` stanza in
+`examples/claude-hooks.json` for the setting to add. Once wired,
+`examples/tmux.conf` shows a `◔NN%` warning on a window's tab once its active
+pane crosses 80% fill, ahead of the compaction that would otherwise land
+unannounced.
+
 ## Install
 
 ```sh
