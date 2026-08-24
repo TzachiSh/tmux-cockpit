@@ -1963,6 +1963,53 @@ else
     ok "and no .bak is created on a failed merge"
 fi
 rm -rf "$HK10"
+
+# I2: --hooks reads settings.json once, merges (real jq wall time), then
+# writes -- an unlocked read-modify-write. Claude Code rewrites its own
+# settings.json on every permission approval, so a --hooks run racing a live
+# session can silently drop that write. A real race is ~54ms wide -- too
+# narrow to hit reliably from a test -- so a slow-jq PATH shim widens it: it
+# sleeps only when called with -s (the merge's own slurp call; the .hooks
+# diff calls just above use -S, a different flag, and stay fast), giving a
+# background writer time to land mid-merge.
+REALJQ=$(command -v jq)
+JQSHIM=$(mktmpd)
+cat > "$JQSHIM/jq" <<EOF
+#!/bin/sh
+for a in "\$@"; do
+    [ "\$a" = "-s" ] && sleep 1
+done
+exec "$REALJQ" "\$@"
+EOF
+chmod +x "$JQSHIM/jq"
+
+HKR=$(mktmpd); mkdir -p "$HKR/.claude"
+printf '{"model":"opus"}' > "$HKR/.claude/settings.json"
+(PATH="$JQSHIM:$PATH" HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1) &
+instpid=$!
+sleep 0.3
+# The concurrent writer: a live Claude Code session rewriting settings.json
+# mid-merge, e.g. after a permission approval.
+printf '{"model":"opus","concurrent_marker":"added-by-race"}' > "$HKR/.claude/settings.json"
+wait "$instpid"
+instrc=$?
+is "a concurrent settings.json write survives a racing --hooks merge" "added-by-race" \
+   "$(jq -r '.concurrent_marker // empty' "$HKR/.claude/settings.json" 2>/dev/null)"
+if [ "$instrc" -eq 0 ]; then
+    bad "the raced run reports failure, not a false success" "a nonzero exit" "0"
+else
+    ok "the raced run reports failure, not a false success"
+fi
+# A second, non-racing run must then merge cleanly on top of the concurrent
+# writer's content -- the abort is a "re-run", not a dead end.
+HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "and a follow-up run merges the concurrent write and cockpit's hooks together" "added-by-race" \
+   "$(jq -r '.concurrent_marker // empty' "$HKR/.claude/settings.json" 2>/dev/null)"
+case "$(cat "$HKR/.claude/settings.json")" in
+    *agent-state*) ok "and cockpit's hooks are present too" ;;
+    *) bad "and cockpit's hooks are present too" "an agent-state command" "$(cat "$HKR/.claude/settings.json")" ;;
+esac
+rm -rf "$HKR" "$JQSHIM"
 else
     skip_ "hooks merge (jq not installed)"
 fi
