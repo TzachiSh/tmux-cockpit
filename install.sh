@@ -16,14 +16,19 @@ DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 COMMANDS=(tm tmux-branch tmux-open-path)
 
-uninstall=0
-case "${1:-}" in
-    "")           ;;
-    --uninstall)  uninstall=1 ;;
+uninstall=0; hooks=0; dry=0
+for a in "$@"; do case "$a" in
+    "") ;;
+    --uninstall) uninstall=1 ;;
+    --hooks)     hooks=1 ;;
+    --dry-run)   dry=1 ;;
     # A typo used to install silently. "./install.sh --uninstal" removing
     # nothing while reporting nothing is the worst possible answer.
-    *) printf 'unknown option: %s\n\nusage: install.sh [--uninstall]\n' "$1" >&2; exit 2 ;;
-esac
+    *) printf 'unknown option: %s\n\nusage: install.sh [--uninstall] [--hooks [--dry-run]]\n' "$a" >&2; exit 2 ;;
+esac; done
+# --dry-run only means something as a preview of --hooks; alone it previews
+# nothing and silently doing so would look like a no-op success.
+[ "$dry" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--dry-run needs --hooks\n' >&2; exit 2; }
 
 rc=0
 mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
@@ -70,6 +75,36 @@ for c in "${COMMANDS[@]}"; do
         rc=1
     fi
 done
+
+if [ "$hooks" -eq 1 ]; then
+    command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
+    settings="$HOME/.claude/settings.json"
+    mkdir -p "${settings%/*}" || exit 1
+    [ -f "$settings" ] || printf '{}\n' > "$settings"
+    # Additive, never destructive: their hooks stay; ours are appended per
+    # event, skipping any entry already present (string-identical), so the
+    # merge is idempotent and a re-run after an upgrade only adds what is new.
+    merged=$(jq -s '
+        .[0].hooks as $mine | .[1] as $theirs
+        | $theirs + { hooks: (
+            ($theirs.hooks // {}) as $h
+            | $h + ($mine | with_entries(
+                .key as $k
+                | .value = (($h[$k] // []) + [ .value[]
+                    | select(. as $e | (($h[$k] // []) | map(tojson) | index($e|tojson)) == null) ])
+              ))
+          ) }' "$DIR/examples/claude-hooks.json" "$settings") || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
+    if [ "$dry" -eq 1 ]; then
+        diff -u "$settings" <(printf '%s\n' "$merged") || true
+        printf 'dry-run: nothing written\n'
+    elif [ "$merged" = "$(cat "$settings")" ]; then
+        printf 'hooks     already merged, nothing to do\n'
+    else
+        cp -- "$settings" "$settings.bak" || exit 1
+        printf '%s\n' "$merged" > "$settings" || { cp -- "$settings.bak" "$settings"; exit 1; }
+        printf 'merged    cockpit hooks into %s (backup: %s.bak)\n' "$settings" "$settings"
+    fi
+fi
 
 [ "$uninstall" -eq 1 ] && exit "$rc"
 

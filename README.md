@@ -115,7 +115,18 @@ Order matters against catppuccin specifically: cockpit rewrites
 `@catppuccin_directory_text` and `@catppuccin_gitmux_text`, so catppuccin has to
 be declared first or it resets them afterwards.
 
-Wire the hooks in `~/.claude/settings.json`:
+Wire the hooks into `~/.claude/settings.json`:
+
+```sh
+~/.tmux/plugins/tmux-cockpit/install.sh --hooks             # merge them in
+~/.tmux/plugins/tmux-cockpit/install.sh --hooks --dry-run   # preview the diff first
+```
+
+It merges additively — your own hooks are never touched, cockpit's are appended
+per event only where missing, and re-running after an upgrade only adds what's
+new. A `settings.json.bak` is written before the first change. Requires `jq`;
+without it, or without Claude Code's settings.json at that path, merge the
+`hooks` object from `examples/claude-hooks.json` by hand:
 
 | hook | state |
 |------|-------|
