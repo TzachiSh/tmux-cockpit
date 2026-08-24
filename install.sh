@@ -87,8 +87,10 @@ if [ "$hooks" -eq 1 ]; then
     mkdir -p "${settings%/*}" || exit 1
     [ -f "$settings" ] || printf '{}\n' > "$settings"
     # Additive, never destructive: their hooks stay; ours are appended per
-    # event, skipping any entry already present (string-identical), so the
-    # merge is idempotent and a re-run after an upgrade only adds what is new.
+    # event, skipping any entry already present. index() does jq's generic
+    # (order-insensitive, deep) equality, so reformatting the file -- jq -S,
+    # or Claude Code rewriting its own settings -- no longer makes every
+    # cockpit hook look new and get appended a second time.
     merged=$(jq -s '
         .[0].hooks as $mine | .[1] as $theirs
         | $theirs + { hooks: (
@@ -96,13 +98,17 @@ if [ "$hooks" -eq 1 ]; then
             | $h + ($mine | with_entries(
                 .key as $k
                 | .value = (($h[$k] // []) + [ .value[]
-                    | select(. as $e | (($h[$k] // []) | map(tojson) | index($e|tojson)) == null) ])
+                    | select(. as $e | (($h[$k] // []) | index($e)) == null) ])
               ))
           ) }' "$DIR/examples/claude-hooks.json" "$settings") || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
     if [ "$dry" -eq 1 ]; then
         diff -u "$settings" <(printf '%s\n' "$merged") || true
         printf 'dry-run: nothing written\n'
-    elif [ "$merged" = "$(cat "$settings")" ]; then
+    # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
+    # comparing the whole file as text rewrote (and I2-clobbered) the backup
+    # on every formatting-only difference, even when cockpit's hooks were
+    # already fully present.
+    elif [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(jq -S -c '.hooks // {}' "$settings")" ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
         # Preserve the FIRST backup only. Overwriting it on every modifying

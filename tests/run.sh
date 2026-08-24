@@ -1685,6 +1685,18 @@ leftover=$(find "$HK9/.claude" -maxdepth 1 -name 'settings.json.*' ! -name 'sett
 is "no temp file is left behind after a successful merge" "" "$leftover"
 rm -rf "$HK9"
 
+# I3: index() must be jq's deep, order-insensitive equality -- a plain
+# reformat (jq -S, or Claude Code rewriting its own settings) must not make
+# every cockpit hook look new and get appended a second time.
+HK7=$(mktmpd); mkdir -p "$HK7/.claude"
+printf '{"model":"opus"}' > "$HK7/.claude/settings.json"
+HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
+jq -S . "$HK7/.claude/settings.json" > "$HK7/.claude/reformatted.json" && mv "$HK7/.claude/reformatted.json" "$HK7/.claude/settings.json"
+HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
+dupes=$(jq '[.hooks[] | length] | map(select(. > 1)) | length' "$HK7/.claude/settings.json")
+is "a reformat-then-merge leaves exactly one cockpit entry per event" "0" "$dupes"
+rm -rf "$HK7"
+
 # C1 (fail-closed pin): a malformed settings.json must abort byte-identical,
 # never partially merged or silently reseeded.
 HK10=$(mktmpd); mkdir -p "$HK10/.claude"
