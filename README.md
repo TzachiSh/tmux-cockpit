@@ -243,7 +243,8 @@ from `examples/claude-hooks.json` by hand:
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + R` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one — `@cockpit_review_key` rebinds, `off` disables |
+| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one — `@cockpit_review_key` rebinds, `off` disables |
+| `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
 cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
@@ -463,12 +464,12 @@ reporting a success that never happened.
 
 ## Review the agent's changes
 
-`prefix + R` opens a popup review of an agent's uncommitted diff. Comments
+`prefix + r` opens a popup review of an agent's uncommitted diff. Comments
 attach to individual lines, and nothing reaches the agent until you say so —
 there is deliberately no key that approves the whole thing at once.
 
 From an **agent pane** it reviews that pane. From anywhere else — a shell, a
-build pane, wherever `prefix + R` finds you — it opens the **fleet queue**
+build pane, wherever `prefix + r` finds you — it opens the **fleet queue**
 instead: every agent pane, on every session, whose tree is dirty, dirtiest
 first, previewed the same way the path picker's folder preview shows a
 directory's `git status`. Nothing else in this plugin answers "which of my

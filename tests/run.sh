@@ -2777,15 +2777,27 @@ is "the queue lists exactly one row" "1" "$rowcount"
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
 fi
 
-echo "== prefix R reviews an agent's diff; @cockpit_review_key off leaves it unbound =="
+echo "== prefix r reviews, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
-case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
-    *tmux-review*) ok "prefix R is bound to the review popup by default" ;;
-    *) bad "prefix R is bound to the review popup by default" \
+case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
+    *tmux-review*) ok "prefix r is bound to the review popup by default" ;;
+    *) bad "prefix r is bound to the review popup by default" \
          "a display-popup running tmux-review" \
+         "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="r"')" ;;
+esac
+case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
+    *source-file*) ok "prefix R reloads the config by default" ;;
+    *) bad "prefix R reloads the config by default" "a source-file binding" \
+         "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="R"')" ;;
+esac
+# The reload must source what THIS server loaded (-f /dev/null here), not a
+# hardcoded ~/.tmux.conf.
+case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
+    */dev/null*) ok "and it sources the file tmux actually loaded" ;;
+    *) bad "and it sources the file tmux actually loaded" "/dev/null in the binding" \
          "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="R"')" ;;
 esac
 "$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
@@ -2793,8 +2805,11 @@ esac
 RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 "$TMUX_REAL" -L "$RB2" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" set -g @cockpit_review_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB2" set -g @cockpit_reload_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
-is "@cockpit_review_key off leaves R unbound" "" \
+is "@cockpit_review_key off leaves r unbound" "" \
+   "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')"
+is "@cockpit_reload_key off leaves R unbound" "" \
    "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
 fi

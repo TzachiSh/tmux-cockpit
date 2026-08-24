@@ -257,8 +257,23 @@ esac
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key R display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
+    "")  tmux bind-key r display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
     *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW" ;;
+esac
+
+# Reload on R, the shifted pair of the review key: you review all day and
+# reload only after editing the config, so the lowercase key goes to review.
+# The path comes from what tmux actually loaded, resolved once at bind time:
+# a hardcoded ~/.tmux.conf misses XDG setups (~/.config/tmux/tmux.conf), and
+# a keypress must not spawn a shell to rediscover a path that cannot change
+# for the life of the server.
+CONF=$(tmux display-message -p '#{config_files}' 2>/dev/null | cut -d, -f1)
+[ -n "$CONF" ] || CONF="${HOME:-}/.tmux.conf"
+RLK=$(tmux show-option -gqv @cockpit_reload_key)
+case "$RLK" in
+    off) ;;                          # explicitly disabled
+    "")  tmux bind-key R source-file "$CONF" \; display-message "config reloaded" ;;
+    *)   tmux bind-key "$RLK" source-file "$CONF" \; display-message "config reloaded" ;;
 esac
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it
