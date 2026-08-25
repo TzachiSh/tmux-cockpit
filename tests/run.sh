@@ -4718,10 +4718,10 @@ is "a real delivery still reports RC=0" "0" "$(rc_from_buffer rg-newok)"
 fi
 
 echo "== tmux-review: a delivered review's comment store does not outlive the popup that made it =="
-# review_pane()'s own mktemp store -- unlike --deliver's spillover file, this
-# one is never named to us. Redirect TMPDIR to a private, otherwise-empty
-# directory for the pane driving this, so whatever mktemp creates there is
-# unambiguously it.
+# review_pane()'s own store -- unlike --deliver's spillover file, this one is
+# never named to us. Redirect XDG_STATE_HOME to a private, otherwise-empty
+# directory for the pane driving this, so whatever session_dir() creates
+# there is unambiguously it.
 if need_tmux "tmux-review fleet-to-deliver store cleanup"; then :; else
 FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
 FDTMPDIR="$STATE/fd-tmp-$$"
@@ -4731,7 +4731,7 @@ mkdir -p "$FDTMPDIR"
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 CTL2=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" \
-    "export TMPDIR=$(shq_test "$FDTMPDIR")" Enter
+    "export XDG_STATE_HOME=$(shq_test "$FDTMPDIR")" Enter
 sleep 0.2
 
 FD_DIRTY=$(mktmpd)
@@ -4787,8 +4787,8 @@ else
 fi
 
 storefile=""
-sf=$(ls "$FDTMPDIR" 2>/dev/null | head -1)
-[ -n "$sf" ] && storefile="$FDTMPDIR/$sf"
+sf=$(ls -d "$FDTMPDIR"/tmux-cockpit/review/*/comments.md 2>/dev/null | head -1)
+[ -n "$sf" ] && storefile="$sf"
 if [ -n "$storefile" ] && [ -e "$storefile" ]; then
     ok "the review's comment store exists while the popup is open"
 else
@@ -4835,14 +4835,14 @@ mkdir -p "$RKTMPDIR"
 "$TMUX_REAL" -L "$RK" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 RKCTL=$("$TMUX_REAL" -L "$RK" list-panes -t t:0 -F '#{pane_id}')
-# Same TMPDIR redirect as the block above: review_pane()'s mktemp store is
-# never named to us, so a private empty dir makes whatever appears there it.
-# The echoed marker is the poll's condition -- `export` is a builtin, so the
-# pane's own process never changes and there is nothing else to watch for.
-# The typed line carries the literal "RKTMP=%s", not the expanded path, so a
-# match on the path is the shell's OUTPUT, not the command echo.
+# Same XDG_STATE_HOME redirect as the block above: review_pane()'s session
+# dir lands under it. The echoed marker is the poll's condition -- `export`
+# is a builtin, so the pane's own process never changes and there is nothing
+# else to watch for. The typed line carries the literal "RKTMP=%s", not the
+# expanded path, so a match on the path is the shell's OUTPUT, not the
+# command echo.
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" \
-    "export TMPDIR=$(shq_test "$RKTMPDIR"); printf 'RKTMP=%s\\n' \"\$TMPDIR\"" Enter
+    "export XDG_STATE_HOME=$(shq_test "$RKTMPDIR"); printf 'RKTMP=%s\\n' \"\$XDG_STATE_HOME\"" Enter
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RKCTL" | grep -qF "RKTMP=$RKTMPDIR" && break
     sleep 0.1
@@ -4893,11 +4893,10 @@ for i in $(seq 1 20); do
 done
 
 rkstore=""
-# head -1, not a glob: the popup's private TMPDIR now holds the store AND the
-# row snapshot beside it, and "tmp.XXXX" sorts before "tmp.XXXX.rows" (a
-# prefix is shorter), so the first entry is still the store itself.
-rksf=$(ls "$RKTMPDIR" 2>/dev/null | head -1)
-[ -n "$rksf" ] && rkstore="$RKTMPDIR/$rksf"
+# The glob names comments.md itself, not its ".rows" snapshot beside it, so
+# head -1 is just belt-and-suspenders against a second session dir.
+rksf=$(ls -d "$RKTMPDIR"/tmux-cockpit/review/*/comments.md 2>/dev/null | head -1)
+[ -n "$rksf" ] && rkstore="$rksf"
 if [ -n "$rkstore" ] && [ -s "$rkstore.rows" ]; then
     ok "the row snapshot is on disk while the popup is open"
 else
@@ -4981,6 +4980,7 @@ fi
 echo "== tmux-review: a clean-tree direct pane says so instead of opening an empty picker =="
 if need_tmux "tmux-review clean-tree direct pane"; then :; else
 MT="cockpit-mt-$$"; SOCKS="$SOCKS $MT"
+MTSTATE=$(mktmpd)
 MT_DIR=$(mktmpd)
 (
   cd "$MT_DIR" || exit
@@ -4995,7 +4995,7 @@ MT_DIR=$(mktmpd)
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 MTP=$("$TMUX_REAL" -L "$MT" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$MT" send-keys -t "$MTP" \
-    "'$DIR/scripts/tmux-review'; echo MTDONE=\$?" Enter
+    "XDG_STATE_HOME=$(shq_test "$MTSTATE") '$DIR/scripts/tmux-review'; echo MTDONE=\$?" Enter
 # The typed command line itself contains "MTDONE=$?" -- match only a marker
 # followed by a digit, the one a finished command actually printed.
 until_cap "$MT" "$MTP" '*MTDONE=[0-9]*'
@@ -5450,6 +5450,70 @@ fi
 
 "$TMUX_REAL" -L "$RC" kill-server >/dev/null 2>&1
 rm -rf "$RCHOME"
+fi
+
+echo "== tmux-review: a review survives the client that opened it =="
+# review_pane() used to keep the only copy of a review in a mktemp file
+# whose name nothing recorded: a dropped SSH client tears down a
+# client-owned popup and took the review with it. Now one review is one
+# 0700 directory keyed on pane + repo root, so reopening the same pane
+# finds its own comments; discarding removes the directory.
+if need_tmux "review session dir"; then :; else
+SD="cockpit-sd-$$"; SOCKS="$SOCKS $SD"
+SDDIR=$(mktmpd); SDSTATE=$(mktmpd)
+(
+  cd "$SDDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$SD" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$SDDIR" \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SD" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+SDAP=$("$TMUX_REAL" -L "$SD" list-panes -t t: -F '#{pane_id}')
+sd_shell() {                  # a control pane, ready to take a command
+    local p i
+    p=$("$TMUX_REAL" -L "$SD" split-window -t t -P -F '#{pane_id}' 'exec bash')
+    for i in $(seq 1 40); do
+        [ "$("$TMUX_REAL" -L "$SD" display-message -p -t "$p" '#{pane_current_command}')" = bash ] && break
+        sleep 0.1
+    done
+    printf '%s' "$p"
+}
+SDCTL=$(sd_shell)
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL" \
+    "XDG_STATE_HOME=$(printf '%q' "$SDSTATE") '$DIR/scripts/tmux-review' -p $SDAP" Enter
+if until_cap "$SD" "$SDCTL" '*review>*'; then ok "the picker comes up for -p <agent pane>"
+else bad "the picker comes up for -p <agent pane>" "review>" "$("$TMUX_REAL" -L "$SD" capture-pane -p -t "$SDCTL")"; fi
+SDROOT=$(git -C "$SDDIR" rev-parse --show-toplevel)
+SDSESS="$SDSTATE/tmux-cockpit/review/${SDAP#%}-$(printf '%s' "$SDROOT" | cksum | cut -d' ' -f1)"
+sdmode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo none; }
+is "the session dir is keyed on pane + root and born 0700" "700" "$(sdmode "$SDSESS")"
+is "and its parents are private too" "700" "$(sdmode "$SDSTATE/tmux-cockpit")"
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL" "keep me"
+until_cap "$SD" "$SDCTL" '*keep me*'
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL" Enter
+if until_file "$SDSESS/comments.md" '*keep me*'; then ok "a pinned comment lands in <session>/comments.md"
+else bad "a pinned comment lands in <session>/comments.md" "keep me" "$(cat "$SDSESS/comments.md" 2>/dev/null)"; fi
+is "the store is 0600" "600" "$(sdmode "$SDSESS/comments.md")"
+is "the snapshot sits beside it" "yes" "$([ -s "$SDSESS/comments.md.rows" ] && echo yes || echo no)"
+# The client drops: the pane running the picker dies with it.
+"$TMUX_REAL" -L "$SD" kill-pane -t "$SDCTL"
+is "the review outlives the client" "1" "$(grep -c '^## src.go:3 (+)' "$SDSESS/comments.md" 2>/dev/null)"
+SDCTL2=$(sd_shell)
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" \
+    "XDG_STATE_HOME=$(printf '%q' "$SDSTATE") '$DIR/scripts/tmux-review' -p $SDAP" Enter
+if until_cap "$SD" "$SDCTL2" '*●src.go:3 (+)*'; then ok "reopening the same pane resumes its comments, marked"
+else bad "reopening the same pane resumes its comments, marked" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$SD" capture-pane -p -t "$SDCTL2")"; fi
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Escape
+until_cap "$SD" "$SDCTL2" '*discard 1 comment*'
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Down Enter
+for i in $(seq 1 40); do [ -e "$SDSESS" ] || break; sleep 0.1; done
+is "discarding removes the session dir, not just the store" "gone" "$([ -e "$SDSESS" ] && echo present || echo gone)"
+unset -f sd_shell sdmode
+"$TMUX_REAL" -L "$SD" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

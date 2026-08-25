@@ -596,10 +596,15 @@ What this deliberately does **not** do, and why:
   the agent is mid-tool on, destroying in-flight work; typed text plus a
   human's own Enter lands at the next turn boundary instead
   (claude-code issues #63190, #30492).
-- **No review daemon, server, or state that outlives the popup.** The
-  spillover file an oversized review lands in is the delivery vehicle, not a
-  store — the OS tmpdir is the only garbage collector it gets, the same as
-  everything else this plugin writes.
+- **No review daemon, server, or port.** What *does* outlive the popup is
+  one directory per review under
+  `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
+  created `0700`, holding `comments.md` and its row snapshot. It exists so a
+  dropped SSH client — which tears down a client-owned popup — cannot take a
+  twenty-comment review with it: `prefix + r` on the same pane resumes it,
+  marks and all. It is removed when the review is discarded or delivered and
+  kept, and named in the message, when delivery is refused. There is no
+  garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
 - **Every comment carries `path:line` and the quoted source line**, never a
   line number alone. A bare number goes stale the instant the agent edits
   again — the same staleness that makes a GitHub review comment "outdated"
