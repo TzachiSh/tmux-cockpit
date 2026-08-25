@@ -2730,6 +2730,92 @@ case "$rvunderout" in
 esac
 rm -rf "$RVCAP" "$RVUNDER"
 
+# Counting is cheap; CAPTURING is what costs. The cap above only helped once
+# `diff=$(tree_diff "$dir")` had already run, so a tree the cap was built to
+# refuse was still read whole into a bash variable first. Measured here on the
+# fixture below (30 regenerated lockfiles, 200k rows each, 38 MB on disk):
+# 3.25s and 222 MB peak RSS to produce one notice row, of which `git diff
+# --numstat` -- everything the cap decision actually needs -- is 0.75s and
+# 32 MB. So numstat comes first, the cap decides, and the full capture happens
+# only for a diff that is going to be parsed.
+#
+# 30 moderate files rather than the one 51 MB lockfile the plan measured: a
+# single file that large makes git's OWN diff the bottleneck (365 MB RSS in
+# numstat alone), which no ordering can fix, and hides the thing being removed.
+# Spread over 30 files git's peak stays at one file's worth and the 222 MB is
+# the shell's captured copy -- exactly what the reorder deletes.
+# FAIL-first: before the reorder this returns in 3.25s and timeout 1.5 kills it.
+RVLOCK=$(mktmpd)
+(
+  cd "$RVLOCK" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  for i in $(seq 1 30); do printf 'seed\n' > "lock$i.json"; done
+  git add -A; git commit -q -m init
+  for i in $(seq 1 30); do seq 1 200000 > "lock$i.json"; done
+) >/dev/null 2>&1
+if timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVLOCK" > "$STATE/rvlock.out" 2>/dev/null; then
+    ok "a 6,000,030-row tree answers in under 1.5s (3.25s before the cap moved ahead of the capture)"
+else
+    bad "a 6,000,030-row tree answers in under 1.5s" \
+        "the notice within 1.5s" "timed out -- the diff is still captured before the cap"
+fi
+case "$(cat "$STATE/rvlock.out")" in
+    *"diff too large to anchor line-by-line (6000030 changed lines)"*)
+        ok "the uncaptured cap still names the exact row count numstat totalled" ;;
+    *) bad "the uncaptured cap still names the exact row count numstat totalled" \
+         "a '(6000030 changed lines)' notice" "$(head -c 200 "$STATE/rvlock.out")" ;;
+esac
+rm -rf "$RVLOCK"
+
+# Rows are not the only way a diff gets too big to hand a reviewer: 4000 rows
+# is comfortably under the 5000-row cap, but at 1.5 KB a row that is 5.7 MB of
+# text -- captured, parsed into 4001 shell rows, and rendered into an fzf list
+# whose every entry is a 1500-column line. So the cap counts BYTES too, 4 MB
+# across the changed files (`wc -c` on the worktree copy, the HEAD blob's size
+# for a deletion), and says which limit it hit.
+RVWIDE=$(mktmpd)
+(
+  cd "$RVWIDE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > wide.txt
+  git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<4000;i++) print s }' > wide.txt
+) >/dev/null 2>&1
+is "the wide fixture is UNDER the row cap, so only bytes can trip it" "4001" \
+   "$(git -C "$RVWIDE" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')"
+rvwideout=$("$DIR/scripts/tmux-review" --lines "$RVWIDE")
+case "$rvwideout" in
+    *"diff too large"*" MB)"*)
+        ok "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" ;;
+    *) bad "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" \
+         "a too-large notice naming MB" "$(head -c 200 <<<"$rvwideout")" ;;
+esac
+is "the byte cap's notice is one row, same shape as the row cap's" \
+   "1" "$(printf '%s\n' "$rvwideout" | grep -c .)"
+is "the byte cap's notice carries the offset field too, so no row is short" \
+   "5" "$(printf '%s' "$rvwideout" | awk -F'\t' '{print NF}')"
+# A wide file that stays UNDER 4 MB is still parsed row by row -- the byte cap
+# must not swallow an ordinary diff that merely has long lines.
+RVNARROW=$(mktmpd)
+(
+  cd "$RVNARROW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > narrow.txt
+  git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<100;i++) print s }' > narrow.txt
+) >/dev/null 2>&1
+case "$("$DIR/scripts/tmux-review" --lines "$RVNARROW")" in
+    *"diff too large"*) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
+         "real per-line rows, no notice" "capped" ;;
+    *"narrow.txt"$'\t'*) ok "a 150 KB wide-line diff is under the byte cap and parsed normally" ;;
+    *) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
+         "narrow.txt rows" "no rows at all" ;;
+esac
+rm -rf "$RVWIDE" "$RVNARROW"
+
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the

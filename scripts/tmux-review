@@ -136,8 +136,15 @@ lines_mode() {
     # stay keyed on the same name. (A path with a literal tab/quote is still
     # git-quoted even here -- the residual narrow case; non-ASCII is the common
     # one and is fixed.)
+    #
+    # numstat FIRST and the full diff only after the cap below has let it
+    # through: COUNTING is cheap, CAPTURING is what costs. `git diff
+    # --numstat` carries every number the cap needs, and on a tree the cap
+    # exists to refuse (30 regenerated lockfiles, 6,000,030 changed rows,
+    # 38 MB on disk) it is 0.75s and 32 MB against the full capture's 3.25s
+    # and 222 MB -- which this used to pay first, to fill a variable it then
+    # threw away for a one-row notice.
     local diff numstat
-    diff=$(tree_diff "$dir")
     numstat=$(tree_diff "$dir" --numstat)
 
     # Untracked files carry no diff at all -- so the newest code, the code most
@@ -176,7 +183,6 @@ lines_mode() {
             { c[FILENAME] = FNR }
             END { for (f in c) printf "%d\t0\t%s\n", c[f], substr(f, 3) }')"
     fi
-    [ -n "$diff$ulist" ] || return 0
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -190,20 +196,74 @@ lines_mode() {
     # instead of parsing at all. The popup then always appears at once and esc
     # still cancels it. 5000 is well past any diff a human reads line-by-line
     # yet far below where the parse is felt.
-    local cap=5000 total=0 nadd ndel nfile
+    #
+    # Rows are not the only way a diff gets too big to hand a reviewer. 4000
+    # rows of a 1500-column minified line sit comfortably under the row cap
+    # and are still 5.7 MB to capture, parse into shell rows, and render as an
+    # fzf list of 1500-column entries. So the same pass totals BYTES across
+    # the changed files -- 4 MB, from the worktree copy (`wc -c`) or, for a
+    # file the diff deletes, from its HEAD blob's size, since a deletion still
+    # costs the diff every one of its bytes.
+    #
+    # Both sizings are BATCHED -- one `wc` pipeline and one `cat-file
+    # --batch-check` -- not a fork per file: this loop also walks the
+    # untracked list, which is hundreds of files on an unignored vendor tree,
+    # and a fork each would hand back the 0.008s the batched walk above just
+    # bought. Neither runs at all once the row cap has already tripped. A path
+    # that answers to neither weighs 0, which errs toward showing the diff
+    # rather than hiding it.
+    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0 sized=
+    local nadd ndel nfile reason=
+    local -a here=() gone=()
     while IFS=$'\t' read -r nadd ndel nfile; do
         [ -n "$nfile" ] || continue
+        # A binary file's numstat counts are "-\t-": not numbers, so it adds no
+        # rows -- but its bytes below still count, which is the only way a
+        # huge binary trips the cap at all.
         case "$nadd" in *[!0-9]*) nadd=0 ;; esac
         case "$ndel" in *[!0-9]*) ndel=0 ;; esac
         total=$(( total + nadd + ndel ))
+        if [ -f "$dir/$nfile" ]; then here+=("$nfile"); else gone+=("$nfile"); fi
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
-        local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
+        reason="$total changed lines"
+    else
+        # "./" in front for the same reason awk_over needs it: without it a
+        # path starting with "-" is an option to wc. It also keeps wc's own
+        # "total" line (xargs can split into several batches, each ending in
+        # one) distinguishable from a file that happens to be named "total".
+        if [ ${#here[@]} -gt 0 ]; then
+            sized=$(printf './%s\0' "${here[@]}" \
+                    | (cd "$dir" 2>/dev/null && xargs -0 wc -c 2>/dev/null) \
+                    | awk '$2 != "total" { s += $1 } END { printf "%d\n", s + 0 }')
+            bytes=$(( bytes + ${sized:-0} ))
+        fi
+        if [ ${#gone[@]} -gt 0 ]; then
+            # "<sha> <type> <size>" per line, or "<name> missing" for a path
+            # HEAD never had -- the /^[0-9]+$/ guard takes the sizes only.
+            sized=$(printf 'HEAD:%s\n' "${gone[@]}" \
+                    | git -C "$dir" --no-optional-locks cat-file --batch-check 2>/dev/null \
+                    | awk '$3 ~ /^[0-9]+$/ { s += $3 } END { printf "%d\n", s + 0 }')
+            bytes=$(( bytes + ${sized:-0} ))
+        fi
+        if [ "$bytes" -gt "$bytecap" ]; then
+            # One decimal, integer-only: 6004000 bytes reads "5.7 MB", not the
+            # "6 MB" a rounded whole number would claim.
+            printf -v reason '%d.%d MB' \
+                   $(( bytes / 1048576 )) $(( bytes % 1048576 * 10 / 1048576 ))
+        fi
+    fi
+    if [ -n "$reason" ]; then
+        local big="diff too large to anchor line-by-line ($reason) — review it directly"
         # Offset 1 (the preview's first line) so the 5-field split in rows_mode
         # never meets a short row -- this notice has no file to scroll anyway.
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
     fi
+
+    # Past the cap: now, and only now, the diff itself.
+    diff=$(tree_diff "$dir")
+    [ -n "$diff$ulist" ] || return 0
 
     # One pass: track the file a hunk belongs to (from the +++/--- header
     # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
