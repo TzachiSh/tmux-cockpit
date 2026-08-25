@@ -3575,6 +3575,109 @@ case "$rv5preview" in
 esac
 rm -rf "$PD"
 
+echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
+# Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
+# block makes, so the memoised cache lives and dies with the test.
+RTD=$(mktmpd)
+PV=$(mktmpd); ( cd "$PV" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; seq 1 2000 > big.txt; git add -A; git commit -q -m init; sed -i '1000s/.*/CHANGED/' big.txt ) >/dev/null 2>&1
+XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv1"
+if XDG_RUNTIME_DIR="$RTD" timeout 0.05 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render returns in under 50ms"
+else bad "a repeat render returns in under 50ms" "cache hit" "timeout"; fi
+is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
+sed -i '1001s/.*/ALSO/' "$PV/big.txt"
+case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
+    *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
+rm -rf "$PV"
+
+echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
+# The key used to be path+HEAD+mtime+size, with "path" whatever the caller
+# passed -- and every caller cd's into the review target first and hands a
+# DIR-RELATIVE path (the same one --lines emits). Two worktrees of the same
+# repo, checked out to the same commit, have identical relative paths and can
+# land the same mtime+size on an edit of the same shape -- reproduced: one
+# worktree's preview served the other's cached diff. $d/$base (the file's own
+# resolved directory, already computed above) is absolute and worktree-
+# specific, so it now anchors the key.
+WTBASE=$(mktmpd)
+(
+  cd "$WTBASE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p sub; printf 'x\n' > sub/f.txt
+  git add -A; git commit -q -m init
+) >/dev/null 2>&1
+wtsha=$(git -C "$WTBASE" rev-parse main)
+WTA=$(mktmpd); rm -rf "$WTA"
+WTB=$(mktmpd); rm -rf "$WTB"
+git -C "$WTBASE" worktree add -q --detach "$WTA" "$wtsha" >/dev/null 2>&1
+git -C "$WTBASE" worktree add -q --detach "$WTB" "$wtsha" >/dev/null 2>&1
+# Same-second, same-size edits in each -- the axis the old key could not see
+# past even before this fix (both are 9 bytes).
+sed -i '1s/.*/ONLY_IN_A/' "$WTA/sub/f.txt"
+sed -i '1s/.*/ONLY_IN_B/' "$WTB/sub/f.txt"
+RTDW=$(mktmpd)
+wta_out=$(cd "$WTA" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
+wtb_out=$(cd "$WTB" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
+case "$wta_out" in *ONLY_IN_A*) ok "worktree A's preview shows its own edit" ;;
+    *) bad "worktree A's preview shows its own edit" "ONLY_IN_A" "$wta_out" ;; esac
+case "$wtb_out" in *ONLY_IN_B*) ok "worktree B's preview shows its own edit, not a cache hit from A" ;;
+    *) bad "worktree B's preview shows its own edit, not a cache hit from A" "ONLY_IN_B" "$wtb_out" ;; esac
+case "$wtb_out" in *ONLY_IN_A*) bad "worktree B's cache never leaks worktree A's content" "no ONLY_IN_A" "$wtb_out" ;;
+    *) ok "worktree B's cache never leaks worktree A's content" ;; esac
+git -C "$WTBASE" worktree remove -f "$WTA" >/dev/null 2>&1
+git -C "$WTBASE" worktree remove -f "$WTB" >/dev/null 2>&1
+rm -rf "$WTBASE"
+
+echo "== tmux-open-path --preview-diff: staging alone (no edit) is not served a stale render =="
+# An unborn-HEAD repo's --numstat is computed against two different bases
+# depending on index state: unstaged (index vs worktree) when the working
+# tree still differs from the index, --cached (index vs the implicit empty
+# tree) once it doesn't -- two genuinely different renders of the SAME file
+# bytes at the SAME mtime, since `git add` never touches the file itself.
+# The old key (no index component) could not tell these apart.
+UB=$(mktmpd)
+(
+  cd "$UB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f.txt; git add f.txt
+  printf 'a\nb\n' > f.txt
+) >/dev/null 2>&1
+RTDU=$(mktmpd)
+ub_pre=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
+case "$ub_pre" in *'1 insertion(s)'*) ok "before staging, only the unstaged line is the diff" ;;
+    *) bad "before staging, only the unstaged line is the diff" "1 insertion(s)" "$ub_pre" ;; esac
+( cd "$UB" && git add f.txt ) >/dev/null 2>&1
+ub_post=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
+case "$ub_post" in *'2 insertion(s)'*) ok "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" ;;
+    *) bad "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" "2 insertion(s)" "$ub_post" ;; esac
+rm -rf "$UB"
+
+echo "== tmux-open-path --preview-diff: a hostile cache dir is never read from or written into =="
+# XDG_RUNTIME_DIR falling back to /tmp means the cache dir's own path can
+# already be claimed: as a symlink elsewhere, or as a pre-existing dir this
+# uid does not own or that is wider than 700. Both must still render
+# correctly (uncached) and touch nothing at either path.
+HC=$(mktmpd); ( cd "$HC" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'one\n' > h.txt; git add -A; git commit -q -m init; printf 'one\nTWO\n' > h.txt ) >/dev/null 2>&1
+
+RTD4=$(mktmpd); EVILTARGET=$(mktmpd)
+ln -s "$EVILTARGET" "$RTD4/tmux-cockpit-preview-$(id -u)"
+symout=$(XDG_RUNTIME_DIR="$RTD4" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
+case "$symout" in *TWO*) ok "a symlinked cache dir still renders the real diff" ;;
+    *) bad "a symlinked cache dir still renders the real diff" "TWO" "$symout" ;; esac
+is "and nothing is written through the symlink into its target" "0" \
+   "$(find "$EVILTARGET" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
+
+RTD5=$(mktmpd); mkdir -m 777 "$RTD5/tmux-cockpit-preview-$(id -u)"
+wideout=$(XDG_RUNTIME_DIR="$RTD5" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
+case "$wideout" in *TWO*) ok "a world-writable pre-existing cache dir still renders the real diff" ;;
+    *) bad "a world-writable pre-existing cache dir still renders the real diff" "TWO" "$wideout" ;; esac
+is "and nothing is written into it either" "0" \
+   "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$HC"
+
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
 RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
