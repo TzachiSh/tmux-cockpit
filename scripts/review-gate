@@ -1,0 +1,121 @@
+#!/bin/bash
+# review-gate -- the second Stop hook (examples/claude-hooks.json), beside
+# `agent-state done`. Two jobs at the one moment the plugin knows an agent has
+# reached a turn boundary:
+#
+#   1. hand over a review that was queued while the agent was busy. tmux-review
+#      --deliver arms @cockpit_review_spool with the composed review's path when
+#      the pane is running or on a prompt; here the file's text is printed as
+#      hookSpecificOutput.additionalContext on stdout and the hook exits 0 --
+#      which keeps the turn going and lands in the transcript as "Stop hook
+#      feedback", with no hook-error line (hooks reference; CHANGELOG v2.1.163).
+#      `exit 2` + the same text on stderr is the documented fallback and routes
+#      the same way ("a hook that blocks by exiting 2 routes the same way as
+#      reason"), so nothing here depends on which one the harness prefers.
+#      Output over 10,000 characters is auto-saved by the harness with a preview
+#      and a path, so an oversized review needs no pointer logic of its own.
+#      Zero keystrokes, no paste, no Enter, no focus change, and the turn
+#      boundary is by construction: this hook IS the boundary.
+#   2. flag the pane ◆ (@cockpit_review pending) when its diff against the
+#      review base is non-empty, so the fleet says "finished, unreviewed"
+#      instead of only "finished" -- and stash the conversation title and the
+#      session id the payload carries, for the tab and for prefix i.
+#
+# agent-state's discipline, verbatim: pane id shape guard, bounded stdin read
+# with one deadline, one JSON field pulled by parameter expansion (no jq),
+# silent no-op on anything unparseable, fail-open everywhere. A hook must never
+# block the agent that fired it; the hooks entry carries "timeout": 5 as the
+# outer bound and this script is built to finish in well under one second.
+set -u
+pane=${TMUX_PANE:-}
+case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
+here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# --- 1. the drain -------------------------------------------------------------
+spool=$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)
+if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
+    # Disarm BEFORE speaking. A Stop hook that re-emits its own reason on the
+    # Stop it caused is a rewake loop (codex-plugin-cc#248); Claude Code also
+    # caps consecutive blocks, but the cap is not the design. A crash past this
+    # line loses one review; it never repeats one.
+    tmux set-option -pu -t "$pane" @cockpit_review_spool 2>/dev/null
+    # The sibling hook wrote `done` for this same Stop; additionalContext means
+    # the agent works again now, so say so -- the border would otherwise read
+    # green while the pane grinds through the review (the next PreToolUse
+    # corrects it too; this only closes the gap). Muted: stdout is a protocol
+    # channel from here on, and one stray byte would not be JSON any more.
+    "$here/agent-state" running "$pane" >/dev/null 2>&1
+    # JSON string body by parameter expansion, no jq (not a dependency here, and
+    # a fork on the agent's turn boundary is exactly what this script avoids).
+    # The three whitespace controls become their escapes FIRST, so the strip of
+    # everything else cannot eat them.
+    json() {                            # <text> -> the JSON string body
+        local s=$1
+        s=${s//\\/\\\\}
+        s=${s//\"/\\\"}
+        s=${s//$'\n'/\\n}
+        s=${s//$'\r'/\\r}
+        s=${s//$'\t'/\\t}
+        printf '%s' "${s//[$'\001'-$'\037']/}"
+    }
+    printf '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"%s"}}\n' \
+        "$(json "$(cat -- "$spool")")"
+    rm -f -- "$spool"
+    rmdir -- "${spool%/*}" 2>/dev/null
+    exit 0
+fi
+
+# --- 2. the flag, and the two payload fields worth keeping --------------------
+# Bounded exactly as agent-state's notify arm: one deadline for the whole read,
+# read -t so a writer that holds the pipe open without sending cannot wedge
+# the hook, the partial line kept.
+payload="" chunk="" deadline=$(( SECONDS + 2 ))
+while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
+    IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
+    payload="$payload$chunk"; chunk=""
+done
+# "name":"value" -> value, control chars stripped, length capped. Not a JSON
+# parser: an escaped quote inside the value truncates it, which is fine for
+# a path and a UUID and merely shortens a title.
+field() {
+    local v
+    case "$payload" in
+        *"\"$1\""*) v=${payload#*\""$1"\"}; v=${v#*:}; v=${v#*\"}; v=${v%%\"*} ;;
+        *) v="" ;;
+    esac
+    v=${v//[$'\001'-$'\037']/}
+    printf '%s' "${v:0:200}"
+}
+tx=$(field transcript_path)
+sid=$(field session_id)
+title=""
+if [ -n "$tx" ] && [ -f "$tx" ]; then
+    # The newest ai-title record wins; read from the end (9 ms on a 64 MB
+    # project dir, measured). tac is GNU, tail -r is BSD; neither means no title.
+    rec=$( { tac -- "$tx" 2>/dev/null || tail -r -- "$tx" 2>/dev/null; } | grep -m1 '"ai-title"')
+    case "$rec" in
+        *'"aiTitle"'*) title=${rec#*\"aiTitle\"}; title=${title#*:}; title=${title#*\"}; title=${title%%\"*} ;;
+    esac
+    title=${title//[$'\001'-$'\037']/}
+    title=${title:0:120}
+fi
+
+# One read for everything this decides against; one write per value that
+# actually changed -- every set-option is a redraw.
+sep=$'\037'
+cur=$(tmux display-message -p -t "$pane" \
+    '#{@cockpit_review}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_session}' 2>/dev/null)
+review=${cur%%"$sep"*};  cur=${cur#*"$sep"}
+title_cur=${cur%%"$sep"*}; sid_cur=${cur#*"$sep"}
+
+if "$here/tmux-review" --delta "$pane" >/dev/null 2>&1; then want=pending; else want=""; fi
+if [ "$review" != "$want" ]; then
+    if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
+    else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi
+    "$here/agent-state" recount "$pane"
+fi
+# Untrusted strings each get a call of their own (agent-state's rule: a bare
+# `;` argument splits a tmux command list).
+[ -n "$title" ] && [ "$title" != "$title_cur" ] && tmux set-option -p -t "$pane" @cockpit_title "$title" 2>/dev/null
+[ -n "$sid" ]   && [ "$sid"   != "$sid_cur"   ] && tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
+exit 0

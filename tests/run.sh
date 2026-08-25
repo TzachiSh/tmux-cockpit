@@ -508,6 +508,77 @@ case "$(tmux show-option -gqv @cockpit_fleet)" in
 esac
 fi
 
+echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
+if need_tmux "review-gate"; then :; else
+RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"; RGSTATE=$(mktmpd); RGDIR=$(mktmpd)
+(
+  cd "$RGDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RGDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RGAP=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id}')
+RGCTL=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash')
+until_cap "$RG" "$RGCTL" '*$*'
+rg_n() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -c 'GRC=[0-9]'; }
+rg_wait() {                   # <count-before>  until one more finished GRC= marker is on screen (rundeliver's shape)
+    local i; for i in $(seq 1 60); do [ "$(rg_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1
+}
+rg_run() {                    # <stdin-file>  runs the hook inside the session as the pane's own hook would, RC on the control pane
+    local n0; n0=$(rg_n)
+    "$TMUX_REAL" -L "$RG" send-keys -t "$RGCTL" \
+        "TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
+    rg_wait "$n0"
+}
+rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1; }
+RGPAY=$(mktmpf); printf '{"session_id":"sid-123","transcript_path":"%s/tx.jsonl","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RGSTATE" "$RGDIR" > "$RGPAY"
+printf '{"type":"ai-title","aiTitle":"First topic"}\n{"type":"user"}\n{"type":"ai-title","aiTitle":"Fix the parser"}\n{"type":"assistant"}\n' > "$RGSTATE/tx.jsonl"
+# Clean tree: nothing to flag; the payload's fields are stashed.
+rg_run "$RGPAY"; is "a clean tree exits 0" "GRC=0" "$(rg_rc)"
+is "no review is pending on a clean tree" "" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+is "the newest ai-title becomes the pane's title" "Fix the parser" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_title)"
+is "the session id is stashed for prefix i" "sid-123" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
+# Dirty tree: ◆.
+printf 'a\nb\n' > "$RGDIR/f"
+rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
+is "and flags the pane pending" "pending" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+case "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" in *'◆1'*) ok "the fleet string says ◆1" ;; *) bad "the fleet string says ◆1" "◆1" "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" ;; esac
+# A queued review: handed over as Stop hook feedback on stdout, exit 0, exactly once.
+printf 'Code review from the human\n\n## f:2 (+)\n> b\nDRAIN-MARKER\n\n' > "$RGSTATE/spool.md"
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review_spool "$RGSTATE/spool.md" >/dev/null 2>&1
+rg_run "$RGPAY"; is "a queued review makes the hook exit 0" "GRC=0" "$(rg_rc)"
+case "$(cat "$RGSTATE/out")" in
+    *'"hookSpecificOutput"'*'"hookEventName":"Stop"'*'"additionalContext":"'*DRAIN-MARKER*)
+        ok "and the review rides additionalContext on stdout, where Claude reads it as Stop hook feedback" ;;
+    *) bad "and the review rides additionalContext on stdout, where Claude reads it as Stop hook feedback" "DRAIN-MARKER" "$(cat "$RGSTATE/out")" ;;
+esac
+is "the review's newlines are escaped, not raw, inside the JSON" "1" "$(wc -l < "$RGSTATE/out")"
+is "and stderr stays empty on a handover" "" "$(cat "$RGSTATE/err")"
+is "the spool option is cleared before speaking" "" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_spool)"
+is "the spool file is consumed" "absent" "$([ -e "$RGSTATE/spool.md" ] && echo present || echo absent)"
+is "the pane reads running again (the agent is about to work)" "running" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @panestate)"
+rg_run "$RGPAY"; is "the same Stop fired again delivers nothing (no rewake loop)" "GRC=0" "$(rg_rc)"
+is "and stdout is empty the second time" "" "$(cat "$RGSTATE/out")"
+is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
+# Never blocks: a writer that holds stdin open without sending is the hang.
+# Held open by a background writer on a FIFO, the same shape agent-state's own
+# guard uses above -- `sleep N | review-gate` would measure bash waiting for the
+# whole PIPELINE, not the hook's read deadline. %999999 is no pane on any
+# server, so the hook fails open and only its stdin read is under test.
+RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
+( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!    # a stdin holder, not a wait
+rg_t0=$SECONDS
+TMUX_PANE=%999999 timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
+rg_grc=$?
+kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+is "a silent stdin does not hang the hook" "0" "$rg_grc"
+[ $(( SECONDS - rg_t0 )) -le 4 ] && ok "and it gives up inside its own deadline ($(( SECONDS - rg_t0 ))s)" || bad "and it gives up inside its own deadline" "under 4s" "$(( SECONDS - rg_t0 ))s"
+rm -f "$RGF"
+unset -f rg_n rg_wait rg_run rg_rc
+"$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
+fi
+
 echo "== worktree in the branch label =="
 wtroot=$(mktmpd)
 # Build a throwaway repo instead of borrowing a real one. Pointing this at
@@ -2191,6 +2262,11 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
+is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once" "3 1 1" \
+   "$(jq -r '[(.hooks.Stop | length),
+             ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
+             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | length)] | join(" ")' \
+       "$HK/.claude/settings.json")"
 # The same hook with and without an explicit matcher:"" is the SAME hook:
 # a live Stop entry carrying the key while the shipped one lacked it made
 # every --hooks run append one more duplicate, forever. Seed the matcher-less
@@ -2199,7 +2275,7 @@ HKN=$(mktmpd); mkdir -p "$HKN/.claude"
 jq '.hooks.Stop[0] |= del(.matcher)' "$DIR/examples/claude-hooks.json" \
     | jq '{hooks: {Stop: .hooks.Stop}}' > "$HKN/.claude/settings.json"
 HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
-is "a matcher-less twin does not duplicate" "1" \
+is "a matcher-less twin does not duplicate" "2" \
    "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
 rm -rf "$HKN"
 # dry-run: shows the diff, writes nothing
@@ -2344,7 +2420,10 @@ printf '{"model":"opus"}' > "$HK7/.claude/settings.json"
 HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
 jq -S . "$HK7/.claude/settings.json" > "$HK7/.claude/reformatted.json" && mv "$HK7/.claude/reformatted.json" "$HK7/.claude/settings.json"
 HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
-dupes=$(jq '[.hooks[] | length] | map(select(. > 1)) | length' "$HK7/.claude/settings.json")
+# Counted as duplicates WITHIN an event, not as "more than one group": Stop
+# ships two distinct groups (agent-state done, review-gate), and a length test
+# would call that legitimate pair a duplication.
+dupes=$(jq '[.hooks[] | length - (unique | length)] | add' "$HK7/.claude/settings.json")
 is "a reformat-then-merge leaves exactly one cockpit entry per event" "0" "$dupes"
 rm -rf "$HK7"
 

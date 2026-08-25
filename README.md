@@ -221,9 +221,14 @@ from `examples/claude-hooks.json` by hand:
 | `SubagentStart` | `running` |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `Stop` | `done` |
+| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `SessionEnd` | `off` |
+
+A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
+interrupted agent lands at the next turn end, or `prefix r` pastes it now that
+the pane is idle.
 
 ## Requirements
 
