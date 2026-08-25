@@ -25,7 +25,8 @@
 # with one deadline, one JSON field pulled by parameter expansion (no jq),
 # silent no-op on anything unparseable, fail-open everywhere. A hook must never
 # block the agent that fired it; the hooks entry carries "timeout": 5 as the
-# outer bound and this script is built to finish in well under one second.
+# outer bound, the read stops at the two fields it wants rather than at EOF,
+# and this script is built to finish in well under one second.
 set -u
 pane=${TMUX_PANE:-}
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
@@ -68,11 +69,21 @@ fi
 # --- 2. the flag, and the two payload fields worth keeping --------------------
 # Bounded exactly as agent-state's notify arm: one deadline for the whole read,
 # read -t so a writer that holds the pipe open without sending cannot wedge
-# the hook, the partial line kept.
+# the hook, the partial line kept, and the newline the read strips put back so
+# two lines cannot fuse into a field name that was never sent.
+#
+# The deadline is the BACKSTOP, not the exit: Claude Code keeps a hook's stdin
+# open after the payload (the wedge the notify arm documents), so waiting for
+# EOF would spend the full two seconds on every single Stop. Both fields in
+# hand is everything this needs, so that is where the loop stops.
 payload="" chunk="" deadline=$(( SECONDS + 2 ))
 while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
     IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-    payload="$payload$chunk"; chunk=""
+    payload="$payload$chunk
+"; chunk=""
+    case $payload in
+        *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*) break ;;
+    esac
 done
 # "name":"value" -> value, control chars stripped, length capped. Not a JSON
 # parser: an escaped quote inside the value truncates it, which is fine for

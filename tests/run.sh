@@ -545,7 +545,7 @@ rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
 is "and flags the pane pending" "pending" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
 case "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" in *'◆1'*) ok "the fleet string says ◆1" ;; *) bad "the fleet string says ◆1" "◆1" "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" ;; esac
 # A queued review: handed over as Stop hook feedback on stdout, exit 0, exactly once.
-printf 'Code review from the human\n\n## f:2 (+)\n> b\nDRAIN-MARKER\n\n' > "$RGSTATE/spool.md"
+printf 'Code review from the human\n\n## f:2 (+)\n> b\nDRAIN-MARKER\na "quoted" \\ back\\slash\ttabbed\n\n' > "$RGSTATE/spool.md"
 "$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review_spool "$RGSTATE/spool.md" >/dev/null 2>&1
 rg_run "$RGPAY"; is "a queued review makes the hook exit 0" "GRC=0" "$(rg_rc)"
 case "$(cat "$RGSTATE/out")" in
@@ -554,6 +554,18 @@ case "$(cat "$RGSTATE/out")" in
     *) bad "and the review rides additionalContext on stdout, where Claude reads it as Stop hook feedback" "DRAIN-MARKER" "$(cat "$RGSTATE/out")" ;;
 esac
 is "the review's newlines are escaped, not raw, inside the JSON" "1" "$(wc -l < "$RGSTATE/out")"
+# The escaper's ORDER is what this pins: a backslash escaped after the quotes
+# would double the ones the quote pass just wrote, and a control-char strip run
+# before the whitespace passes would swallow the tab instead of escaping it.
+rg_esc=""
+case "$(cat "$RGSTATE/out")" in *'\"quoted\"'*)  rg_esc="quote" ;;             *) rg_esc="RAW-QUOTE" ;; esac
+case "$(cat "$RGSTATE/out")" in *'back\\slash'*) rg_esc="$rg_esc backslash" ;; *) rg_esc="$rg_esc RAW-BACKSLASH" ;; esac
+case "$(cat "$RGSTATE/out")" in
+    *$'\t'*)           rg_esc="$rg_esc RAW-TAB" ;;
+    *'slash\ttabbed'*) rg_esc="$rg_esc tab" ;;
+    *)                 rg_esc="$rg_esc LOST-TAB" ;;
+esac
+is 'and the quote, the backslash and the tab are escaped, not raw' "quote backslash tab" "$rg_esc"
 is "and stderr stays empty on a handover" "" "$(cat "$RGSTATE/err")"
 is "the spool option is cleared before speaking" "" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_spool)"
 is "the spool file is consumed" "absent" "$([ -e "$RGSTATE/spool.md" ] && echo present || echo absent)"
@@ -561,15 +573,29 @@ is "the pane reads running again (the agent is about to work)" "running" "$("$TM
 rg_run "$RGPAY"; is "the same Stop fired again delivers nothing (no rewake loop)" "GRC=0" "$(rg_rc)"
 is "and stdout is empty the second time" "" "$(cat "$RGSTATE/out")"
 is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
-# Never blocks: a writer that holds stdin open without sending is the hang.
-# Held open by a background writer on a FIFO, the same shape agent-state's own
-# guard uses above -- `sleep N | review-gate` would measure bash waiting for the
-# whole PIPELINE, not the hook's read deadline. %999999 is no pane on any
-# server, so the hook fails open and only its stdin read is under test.
+# The two stdin cases, both driven by a background writer on a FIFO. A pipeline
+# (`sleep N | review-gate`) would measure bash waiting for the WHOLE pipeline,
+# not the hook's read; agent-state's own hang guard above uses this same holder
+# shape. %999999 is no pane on any server and TMUX_TMPDIR points at an empty
+# dir, so every bare tmux call finds nothing, the hook fails open, and its stdin
+# read is the only thing under test -- never the developer's live server.
 RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
-( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!    # a stdin holder, not a wait
+# 1. The payload arrives and the writer then keeps the pipe open, which is what
+#    Claude Code actually does. Waiting for EOF here would burn the full
+#    deadline on every Stop; the read stops at the fields it wants instead.
+( exec 9>"$RGF"; cat "$RGPAY" >&9; sleep 8 ) & rg_holder=$!   # a holder, not a wait
 rg_t0=$SECONDS
-TMUX_PANE=%999999 timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
+TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
+    timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
+rg_grc=$?
+kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
+[ $(( SECONDS - rg_t0 )) -lt 2 ] && ok "and the read returns as soon as it has both fields ($(( SECONDS - rg_t0 ))s)" || bad "and the read returns as soon as it has both fields" "under the 2s deadline" "$(( SECONDS - rg_t0 ))s"
+# 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
+( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
+rg_t0=$SECONDS
+TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
+    timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
 rg_grc=$?
 kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
 is "a silent stdin does not hang the hook" "0" "$rg_grc"
@@ -2262,10 +2288,10 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
-is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once" "3 1 1" \
+is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 5 s" "3 1 5" \
    "$(jq -r '[(.hooks.Stop | length),
              ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
-             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | length)] | join(" ")' \
+             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add)] | join(" ")' \
        "$HK/.claude/settings.json")"
 # The same hook with and without an explicit matcher:"" is the SAME hook:
 # a live Stop entry carrying the key while the shipped one lacked it made
