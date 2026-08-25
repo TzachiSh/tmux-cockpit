@@ -73,7 +73,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
-In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^S deliver   esc discard
+  tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
+In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^S deliver   esc discard
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
@@ -110,8 +111,10 @@ tree_diff() {
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
     if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        local base
+        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}"); base=${base%%$'\t'*}
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
+            diff --no-color --no-ext-diff "$base" "$@" 2>/dev/null
     else
         local out
         out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
@@ -119,6 +122,68 @@ tree_diff() {
         printf '%s\n' "$out"
     fi
     rm -f -- "$idx"
+}
+
+# --- which base ---------------------------------------------------------------
+# Four cases, the first that holds (when-how lens §2.3; revdiff's auto-detect):
+#   since-review  refs/cockpit/reviewed/<branch> exists (^A wrote it)  -> only what moved since
+#   branch        merge-base of the upstream (else origin/HEAD, else main/master) and HEAD,
+#                 when that is not HEAD itself                          -> the branch + uncommitted
+#   uncommitted   HEAD                                                  -> today's view
+# MODE forces one; a forced mode that does not hold falls through to the next,
+# so the printed mode is the one that HELD -- next_base relies on that.
+# Prints "<rev>\t<label>\t<mode>". Never called on an unborn HEAD.
+review_base() {               # <dir> [auto|since-review|branch|uncommitted]
+    local dir=$1 mode=${2:-auto} br ref up mb head
+    br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    ref="refs/cockpit/reviewed/${br:-HEAD}"
+    case "$mode" in auto|since-review)
+        if git -C "$dir" --no-optional-locks rev-parse -q --verify "$ref" >/dev/null 2>&1; then
+            printf '%s\tsince last review\tsince-review\n' "$ref"; return 0
+        fi ;;
+    esac
+    case "$mode" in auto|since-review|branch)
+        up=$(git -C "$dir" --no-optional-locks rev-parse -q --verify --abbrev-ref '@{u}' 2>/dev/null) \
+        || up=$(git -C "$dir" --no-optional-locks symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) \
+        || { for up in main master; do
+                 git -C "$dir" --no-optional-locks rev-parse -q --verify "$up" >/dev/null 2>&1 && break
+                 up=
+             done; }
+        if [ -n "$up" ]; then
+            mb=$(git -C "$dir" --no-optional-locks merge-base "$up" HEAD 2>/dev/null)
+            head=$(git -C "$dir" --no-optional-locks rev-parse HEAD 2>/dev/null)
+            if [ -n "$mb" ] && [ "$mb" != "$head" ]; then
+                printf '%s\tvs %s\tbranch\n' "$mb" "$up"; return 0
+            fi
+        fi ;;
+    esac
+    printf 'HEAD\tuncommitted\tuncommitted\n'
+}
+
+# The mode after CUR among those that hold, wrapping -- ^B's cycle.
+next_base() {                 # <dir> <current-mode>
+    local dir=$1 cur=$2 m first="" prev="" out
+    for m in since-review branch uncommitted; do
+        out=$(review_base "$dir" "$m"); [ "${out##*$'\t'}" = "$m" ] || continue
+        [ -n "$first" ] || first=$m
+        [ -n "$prev" ] && [ "$prev" = "$cur" ] && { printf '%s\n' "$m"; return 0; }
+        prev=$m
+    done
+    printf '%s\n' "$first"
+}
+
+# Exit 0 when PANE's tree differs from its review base -- the one question the
+# Stop hook asks. Reads the mode the pane's own review chose with ^B, if any.
+delta_mode() {                # <pane>
+    local pane=$1 dir root sess mode
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$dir" ] || return 1
+    root=$(git_root "$dir")
+    git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    sess=$(session_dir "$pane" "$root")
+    mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
+    export COCKPIT_REVIEW_BASE=${mode:-auto}
+    [ -n "$(tree_diff "$root" --numstat)" ]
 }
 
 # --- --lines -------------------------------------------------------------
@@ -783,6 +848,21 @@ run_loop() {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
 
+    # The base this review diffs against: ^B's choice, remembered beside the
+    # store so a resumed review keeps it; exported because --rows and --resnap
+    # re-exec through fzf and inherit this environment.
+    local base_line label mode
+    COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
+    set_base_line() {
+        if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            base_line=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}")
+            label=$(cut -f2 <<<"$base_line"); mode=$(cut -f3 <<<"$base_line")
+        else
+            label=uncommitted; mode=uncommitted
+        fi
+    }
+    set_base_line
+
     local rows_cmd attach_cmd preview_cmd resnap_cmd list_cmd detach_cmd edit_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
     attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
@@ -832,7 +912,7 @@ run_loop() {
     local out rc key n choice crc
     while :; do
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s --disabled --ansi \
+            | fzf --print-query --expect=ctrl-s,ctrl-b --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
@@ -846,7 +926,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^/ preview  alt-u/alt-d scroll')
+                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -908,6 +988,17 @@ run_loop() {
         # --disabled already routed it into the comment via {q} inside the
         # alt-enter bind -- the outer loop only needs which --expect key fired.
         key=$(sed -n 2p <<<"$out")
+        if [ "$key" = ctrl-b ]; then
+            mode=$(next_base "$dir" "$mode")
+            printf '%s\n' "$mode" > "$store.base"
+            COCKPIT_REVIEW_BASE=$mode; export COCKPIT_REVIEW_BASE
+            set_base_line
+            snapshot "$dir" "$store"
+            rows_out=$(rows_mode "$dir" "$store")
+            [ "$(printf '%s\n' "$rows_out" | grep -c .)" -gt 0 ] || \
+                tmux display-message "tmux-review: nothing to review against $label" 2>/dev/null
+            continue
+        fi
         if [ "$key" = ctrl-s ]; then
             exit 20
         fi
@@ -1361,11 +1452,9 @@ fleet_scan_root() {
     # stat info. Taking index.lock under an agent that is mid-commit is a race
     # the reader has no business starting.
     st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
-    if [ -n "$st" ]; then
+    numstat=$(tree_diff "$root" --numstat)
+    if [ -n "$numstat" ]; then
         dirty=1
-        # The same one base --lines reviews from: staged + unstaged together,
-        # so a fully staged change gets its real churn instead of reading as 0.
-        numstat=$(tree_diff "$root" --numstat)
         add=0; del=0
         while IFS=$'\t' read -r a d _f; do
             [ -n "$a" ] || continue
@@ -1632,6 +1721,8 @@ case "${1:-}" in
         shift; compose "${1:-}" "${2:-}" ;;
     --deliver)
         shift; deliver "${1:-}" "${2:-}" "${3:-}" ;;
+    --delta)
+        shift; delta_mode "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

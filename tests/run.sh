@@ -4048,6 +4048,56 @@ is "no intent-to-add entry leaked into the real index" "" \
 unset -f ri_stamp
 rm -rf "$RI"
 
+echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
+# revdiff's auto-detect, one function: a checkpoint ref wins, then the
+# merge-base with the upstream/default branch when it is not HEAD itself,
+# then HEAD (today's view). ^B cycles the modes that hold. Exercised through
+# --delta and --lines so the tests see what a reviewer sees.
+RB=$(mktmpd)
+(
+  cd "$RB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f; git add -A; git commit -q -m init
+  git checkout -q -b feat
+  printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am feat
+) >/dev/null 2>&1
+is "a clean feature branch reviews its commits against main" "1" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT')"
+printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\n' > "$RB/f"
+is "branch + uncommitted are one set" "2" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
+   "$(COCKPIT_REVIEW_BASE=uncommitted "$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+# A checkpoint: the tree as it stands now, under the ref ^A will write.
+(
+  cd "$RB" || exit
+  I=$(mktemp); cp -p .git/index "$I"; GIT_INDEX_FILE=$I git add -A
+  git update-ref refs/cockpit/reviewed/feat "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
+) >/dev/null 2>&1
+is "with a checkpoint at the current tree there is nothing to review" "" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB")"
+printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\nSINCE\n' > "$RB/f"
+is "and after one more edit only that edit is a row" "SINCE" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | cut -f3)"
+is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3" \
+   "$(COCKPIT_REVIEW_BASE=branch "$DIR/scripts/tmux-review" --lines "$RB" | grep -c .)"
+
+if need_tmux "review base ^B"; then :; else
+RBS="cockpit-rbs-$$"; SOCKS="$SOCKS $RBS"; RBSTATE=$(mktmpd)
+"$TMUX_REAL" -L "$RBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RB" 'exec bash' >/dev/null 2>&1
+RBP=$("$TMUX_REAL" -L "$RBS" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" \
+    "XDG_STATE_HOME=$(printf '%q' "$RBSTATE") '$DIR/scripts/tmux-review' --loop $(printf '%q' "$RB") $(printf '%q' "$RBSTATE/c.md")" Enter
+until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the base" || bad "the header names the base" "base: since last review" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
+until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" Escape
+"$TMUX_REAL" -L "$RBS" kill-server >/dev/null 2>&1
+fi
+rm -rf "$RB"
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
@@ -5177,8 +5227,33 @@ is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?"
 is "and its ± column reads —, not an empty field" "—" \
    "$(printf '%s\n' "$nrrow" | cut -f5)"
 
+# An agent that committed on its branch: `git status --porcelain` is clean
+# (nothing uncommitted), but the branch itself is ahead of main -- and that
+# is still a review worth queuing. Window/pane index is the next FREE one
+# (t:6): t:0-t:5 are already CTL/DIRTY/CLEAN/NONAGENT/DIRTY2/NOREPO above.
+FQ_AHEAD=$(mktmpd)                                   # agent, clean tree, commits ahead of main -- wanted
+(
+  cd "$FQ_AHEAD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+  git checkout -q -b feat; printf 'b\n' >> f; git commit -q -am feat
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_AHEAD" 'exec -a claude bash' >/dev/null 2>&1
+AHEAD_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:6 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+fqout4=""
+for i in $(seq 1 20); do
+    fqout4=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout4" in *"$AHEAD_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+case "$fqout4" in
+    *"$AHEAD_PANE"*"+1 -0"*) ok "an agent that committed on its branch is still in the queue, with its branch churn" ;;
+    *) bad "an agent that committed on its branch is still in the queue, with its branch churn" "$AHEAD_PANE with +1 -0" "$fqout4" ;;
+esac
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
