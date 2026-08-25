@@ -159,7 +159,9 @@ lines_mode() {
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
         local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
-        printf '%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big"
+        # Offset 1 (the preview's first line) so the 5-field split in rows_mode
+        # never meets a short row -- this notice has no file to scroll anyway.
+        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
     fi
 
@@ -196,16 +198,23 @@ lines_mode() {
         function inhunk() { return (oldrem > 0 || newrem > 0) }
         {
             if (inhunk()) {
+                # poff is where the row lands in the PREVIEW, not in the
+                # file: --preview-diff prints one stat line and then this same
+                # diff from the first @@ of that file. So every line inside a
+                # hunk -- context, +, -, and the "\ No newline" note alike --
+                # occupies one preview line and is counted before it is
+                # dispatched, and the +1 at the emit is that stat line.
+                poff++
                 c = substr($0, 1, 1)
                 if (c == "+") {
                     if (file != "") {
-                        printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
+                        printf "%s\t%d\t+\t%d\t%s\n", file, newl, poff + 1, substr($0, 2)
                         newl++
                     }
                     newrem--
                 } else if (c == "-") {
                     if (file != "") {
-                        printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
+                        printf "%s\t%d\t-\t%d\t%s\n", file, oldl, poff + 1, substr($0, 2)
                         oldl++
                     }
                     oldrem--
@@ -221,7 +230,8 @@ lines_mode() {
             }
             if ($0 ~ /^\+\+\+ /) {
                 if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
-                oldl = 0; newl = 0; next
+                # A new file is a new preview, so its offset restarts too.
+                oldl = 0; newl = 0; poff = 0; next
             }
             if ($0 ~ /^@@/) {
                 split($0, parts, " ")
@@ -230,6 +240,9 @@ lines_mode() {
                 oldrem = (oa[2] == "" ? 1 : oa[2] + 0)
                 sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
                 newrem = (na[2] == "" ? 1 : na[2] + 0)
+                # The @@ line is where --preview-diff starts printing, so it is
+                # preview line 1 of the diff -- count it like any other.
+                poff++
                 next
             }
         }
@@ -242,7 +255,14 @@ lines_mode() {
         # The file arrives on stdin, not as an operand: mawk rejects a `--`
         # before a filename ("cannot open --"), and without one a name holding
         # an `=` would be read as an awk variable assignment instead of a file.
-        raw="${raw:+$raw$'\n'}$(awk -v f="$u" '{ printf "%s\t%d\t+\t%s\n", f, NR, $0 }' < "$dir/$u")"
+        #
+        # NR + 2, not NR + 1: an untracked preview is the same two prefixes a
+        # tracked one has -- the stat line AND the single "@@ -0,0 +1,N @@" of
+        # its --no-index diff, which is where --preview-diff starts printing.
+        # Counting only the stat line put every untracked row one line high,
+        # landing the whole file on its hunk header. Measured against the
+        # preview itself: line 1 of a new file renders at preview line 3.
+        raw="${raw:+$raw$'\n'}$(awk -v f="$u" '{ printf "%s\t%d\t+\t%d\t%s\n", f, NR, NR + 2, $0 }' < "$dir/$u")"
     done <<<"$untracked"
     [ -n "$raw" ] || return 0
 
@@ -281,8 +301,8 @@ lines_mode() {
     # -v` rather than `disp=$(printf ...)`, which forked a subshell PER ROW.
     local -A seen=() gstart=() gend=()
     local -a order=() allrows=()
-    local path line sign rest frag mline disp ri=0
-    while IFS=$'\t' read -r path line sign rest; do
+    local path line sign off rest frag mline disp ri=0
+    while IFS=$'\t' read -r path line sign off rest; do
         [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); gstart["$path"]=$ri; }
         # Control-char strip + cap, the agent-state:82-86 discipline: this
         # text reaches an fzf display column and a comment-store header next.
@@ -290,7 +310,7 @@ lines_mode() {
         frag=${frag:0:160}
         if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
         printf -v disp '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag"
-        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"
+        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\t'"$off"
         gend["$path"]=$ri
         ri=$((ri + 1))
     done <<<"$raw"
@@ -351,12 +371,13 @@ rows_mode() {
     # empty fragment (a blank added line) shifted the display into field 3 and
     # the marker became the whole row. Reproduced: 2 of 18 rows rendered blank.
     # Split by hand instead; an empty field stays an empty field.
-    local row rest path line fragment display sign num marker
+    local row rest path line fragment display off sign num marker
     while IFS= read -r row; do
         [ -n "$row" ] || continue
-        path=${row%%$'\t'*};     rest=${row#*$'\t'}
-        line=${rest%%$'\t'*};    rest=${rest#*$'\t'}
-        fragment=${rest%%$'\t'*}; display=${rest#*$'\t'}
+        path=${row%%$'\t'*};      rest=${row#*$'\t'}
+        line=${rest%%$'\t'*};     rest=${rest#*$'\t'}
+        fragment=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+        display=${rest%%$'\t'*};  off=${rest#*$'\t'}
         case "$line" in
             -*) sign="-"; num=${line#-} ;;
             *)  sign="+"; num=$line ;;
@@ -367,7 +388,7 @@ rows_mode() {
             +) display=${display/ (+) / $'\e[32m'(+)$'\e[0m' } ;;
             -) display=${display/ (-) / $'\e[31m'(-)$'\e[0m' } ;;
         esac
-        printf '%s\t%s\t%s\t%s%s\n' "$path" "$line" "$fragment" "$marker" "$display"
+        printf '%s\t%s\t%s\t%s%s\t%s\n' "$path" "$line" "$fragment" "$marker" "$display" "$off"
     done < <(lines_mode "$dir")
 }
 
@@ -444,7 +465,7 @@ run_loop() {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
 
-    local rows_cmd attach_cmd preview_cmd rows_out nrows avail lrows psz
+    local rows_cmd attach_cmd preview_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
     attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
     preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
@@ -453,9 +474,9 @@ run_loop() {
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
     # + the whole row build) used to run twice on every popup open. At startup
     # the store is empty, so rows_mode's marks are all blank and its count is
-    # exactly what lines_mode would report. Preview sizing then follows
-    # tmux-branch:202-205 -- a fixed split either hid rows in a short popup or
-    # starved the preview in a tall one.
+    # exactly what lines_mode would report. The count is only a presence test
+    # now -- the split below is a percentage, so nothing here has to measure
+    # the terminal.
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
@@ -463,12 +484,6 @@ run_loop() {
         rm -f -- "$store"
         exit 0
     fi
-    avail=$(tput lines 2>/dev/null || echo 24)
-    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    # 6, not 5: this header has been two lines since plain Enter was bound
-    # alongside alt-Enter; reserve the second row.
-    psz=$(( avail - lrows - 6 ))
-    [ "$psz" -lt 5 ] && psz=5
 
     # --disabled: the typed text here is a comment, not a filter. Without it
     # fzf fuzzy-matches whatever you type against the displayed field, and a
@@ -494,7 +509,7 @@ run_loop() {
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --preview "$preview_cmd" \
-                  --preview-window="down,$psz,border-top" \
+                  --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
                   --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')

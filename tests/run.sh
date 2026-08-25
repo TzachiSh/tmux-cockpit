@@ -2600,6 +2600,42 @@ case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a n
          "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
 rm -rf "$RVNEW"
 
+echo "== tmux-review --lines: every row knows where it sits in its file's preview =="
+# The preview opened every file at its top, so reviewing a change 900 lines down
+# meant scrolling by hand for every row. Each row now carries a 5th field: its
+# own 1-based line inside `tmux-open-path --preview-diff <file>` (one stat line,
+# then the diff from that file's first @@), which the loop hands to fzf as the
+# preview scroll offset. FAIL-first: rows have four fields, so $5 is empty.
+RVOFF=$(mktmpd)
+(
+  cd "$RVOFF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  seq 1 40 > f.txt; git add -A; git commit -q -m init
+  sed -i '3s/.*/THREE/; 30s/.*/THIRTY/' f.txt
+) >/dev/null 2>&1
+rvoff=$("$DIR/scripts/tmux-review" --lines "$RVOFF" | awk -F'\t' '$3=="THIRTY" {print $5}')
+want=$(( 1 + $(git -C "$RVOFF" diff HEAD -- f.txt | awk '/^@@/{h=1} h' | grep -n '^+THIRTY' | cut -d: -f1) ))
+is "the second hunk's row offset matches the preview's line" "$want" "$rvoff"
+rm -rf "$RVOFF"
+
+# An untracked file's preview has the same two prefixes as a tracked one -- the
+# stat line AND the hunk header of its --no-index diff -- so its rows sit two
+# lines below their own file line, not one.
+RVOFFN=$(mktmpd)
+(
+  cd "$RVOFFN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  printf 'first\nsecond\nthird\n' > new.txt
+) >/dev/null 2>&1
+rvoffn=$("$DIR/scripts/tmux-review" --lines "$RVOFFN" | awk -F'\t' '$1=="new.txt" && $3=="second" {print $5}')
+rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.txt) \
+    | awk '{ gsub(/\033\[[0-9;]*m/, ""); print }' | grep -n '^+second' | cut -d: -f1)
+is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
+rm -rf "$RVOFFN"
+
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -2640,6 +2676,10 @@ case "$rvcapout" in
 esac
 is "the capped output is exactly one row (the popup stays trivially small)" \
    "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
+# The notice is a row like any other and reaches the same 5-field split in
+# rows_mode, so it carries an offset too rather than arriving one field short.
+is "the cap notice carries the offset field too, so no row is short" \
+   "5" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
 # A diff at or under the cap is untouched -- still fully parsed, row per line.
 RVUNDER=$(mktmpd)
 (
@@ -2680,12 +2720,16 @@ RVGOLD=$(mktmpd)
   printf 'a\nZED\nc\nADDED\n' > app.go
   printf 'p\nQQ\n' > tests/unit_test.go
 ) >/dev/null 2>&1
+# The trailing column is the row's line in `--preview-diff <file>` output
+# (one stat line, then the diff from that file's first @@). Hand-derived and
+# cross-checked against the preview itself: app.go renders -b at line 4, +ZED
+# at 5, +ADDED at 7; unit_test.go renders -q at 4 and +QQ at 5.
 rvgoldwant=$(printf '%s\n' \
-  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
-  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
-  'app.go	-2	b	app.go:2 (-)  b' \
-  'app.go	2	ZED	app.go:2 (+)  ZED' \
-  'app.go	4	ADDED	app.go:4 (+)  ADDED')
+  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q	4' \
+  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ	5' \
+  'app.go	-2	b	app.go:2 (-)  b	4' \
+  'app.go	2	ZED	app.go:2 (+)  ZED	5' \
+  'app.go	4	ADDED	app.go:4 (+)  ADDED	7')
 is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
    "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
 rm -rf "$RVGOLD"
