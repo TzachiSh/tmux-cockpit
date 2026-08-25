@@ -79,7 +79,7 @@ USAGE
 # invisible to the list while the preview showed it. An unborn HEAD (no
 # commits yet) has no HEAD to diff against, so that case keeps the fallback.
 #
-# --no-optional-locks on every call, the same discipline fleet_row_one() already
+# --no-optional-locks on every call, the same discipline fleet_scan_root() already
 # uses: `git diff` refreshes the index and takes index.lock to do it, and this
 # runs against a repo an AGENT is working in. A read that fights the agent's own
 # git for the lock is a read that can make its command fail.
@@ -1156,22 +1156,30 @@ fleet_rows() {
     # filesystem (150ms/git, the hunt's measured figure) 100 panes blanked the
     # popup for ~32s, on every prefix+r from a non-agent pane. The panes are
     # independent of each other, so run their git work concurrently instead,
-    # each pane's row computed in its own background subshell and written to
-    # its own file (rows are re-sorted by rank and churn below anyway, so
-    # completion order never matters). Capped at $cap in flight at once --
-    # unbounded would fork hundreds of git processes at once on a big fleet,
-    # trading one kind of slowness for another.
+    # capped at $cap in flight at once -- unbounded would fork hundreds of git
+    # processes at once on a big fleet, trading one kind of slowness for
+    # another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
 
+    # --- Phase 1: one pane list, one root each -------------------------------
+    # Two agent panes cd'd into the same worktree (a subdirectory, or the
+    # exact same path) are still two rows, but they have no business costing
+    # two status+numstat scans -- so the repo root is resolved for every pane
+    # FIRST, in its own background rev-parse (parallel, same cap as the scan
+    # below), before any status call runs. rev-parse --show-toplevel takes no
+    # lock; it is the status/diff calls after it that do, and those are what
+    # phase 2 below dedups.
     local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
-    local -a pids=()
+    local -a pids=() pane_id=() pane_state=() pane_title=() pane_root=()
     while IFS=$'\t' read -r isagent id state title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
         [ "$state" = - ] && state=   # the wire sentinel above, back to unset
         n=$((n + 1))
-        fleet_row_one "$id" "$state" "$title" "$path" > "$tmpdir/$n" &
+        pane_id[n]=$id; pane_state[n]=$state; pane_title[n]=$title
+        git -C "$path" --no-optional-locks rev-parse --show-toplevel \
+            > "$tmpdir/root-$n" 2>/dev/null &
         pids+=("$!")
         if [ ${#pids[@]} -ge "$cap" ]; then
             wait "${pids[0]}" 2>/dev/null
@@ -1179,12 +1187,61 @@ fleet_rows() {
         fi
     done <<<"$raw"
     wait 2>/dev/null
+    [ "$n" -gt 0 ] || { rm -rf "$tmpdir"; return 0; }
 
+    # Group panes by their resolved root. A pane whose cwd was not inside a
+    # git repo at all resolves to an empty root; every such pane's git calls
+    # fail the exact same way regardless of WHICH non-repo path it sits in
+    # (nothing to diff against), so they all share one sentinel group instead
+    # of each earning its own doomed scan.
+    local -A root_idx=()
+    local -a uniq_roots=()
+    local i root key ri=0
+    for ((i = 1; i <= n; i++)); do
+        root=$(cat "$tmpdir/root-$i" 2>/dev/null)
+        pane_root[i]=$root
+        key=${root:-@@none@@}
+        if [ -z "${root_idx[$key]+x}" ]; then
+            ri=$((ri + 1))
+            root_idx[$key]=$ri
+            uniq_roots[ri]=$root
+        fi
+    done
+
+    # --- Phase 2: one status+numstat scan per UNIQUE root --------------------
+    pids=()
+    for ((i = 1; i <= ri; i++)); do
+        fleet_scan_root "${uniq_roots[i]}" > "$tmpdir/scan-$i" &
+        pids+=("$!")
+        if [ ${#pids[@]} -ge "$cap" ]; then
+            wait "${pids[0]}" 2>/dev/null
+            pids=("${pids[@]:1}")
+        fi
+    done
+    wait 2>/dev/null
+
+    # --- Phase 3: fan each pane's row back out of its group's scan -----------
+    # No git call left here -- just the per-pane state/title/rank the shared
+    # scan does not know, joined against the one result its group produced.
     local -a rows=()
-    local f
-    for f in "$tmpdir"/*; do
-        [ -s "$f" ] || continue
-        rows+=("$(cat "$f")")
+    local dirty repo branch stat churn rank line
+    for ((i = 1; i <= n; i++)); do
+        id=${pane_id[i]}; state=${pane_state[i]}; title=${pane_title[i]}
+        key=${pane_root[i]:-@@none@@}
+        IFS=$'\t' read -r dirty repo branch stat churn < "$tmpdir/scan-${root_idx[$key]}"
+        # A blocked pane earns its row on state alone -- that is the case a
+        # dirty-only filter dropped, and it is the most urgent one there is.
+        [ "$dirty" = 1 ] || [ "$state" = needs-input ] || continue
+
+        case "$state" in
+            needs-input) rank=0 ;;
+            done)        rank=1 ;;
+            error)       rank=2 ;;
+            running)     rank=3 ;;
+            *)           rank=4 ;;
+        esac
+        rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+            "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
     done
     # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
     # a killed popup takes its children with it, but not necessarily this rm.
@@ -1197,42 +1254,39 @@ fleet_rows() {
         | sort -t "$(printf '\t')" -k1,1n -k2,2nr | cut -f3-
 }
 
-# One pane's fleet row -- factored out of fleet_rows() so it can run in its
-# own background subshell (see the parallel dispatch above). Churn comes from
-# tree_diff, the one base --lines reviews from, so a fully staged change still
-# gets a real churn number instead of reading as 0. Prints nothing (and the
-# caller's file stays empty) for a pane that is neither dirty nor blocked, so
-# an empty output file is indistinguishable from "nothing to show" on the
-# reading side.
-fleet_row_one() {
-    local id=$1 state=$2 title=$3 path=$4
-    local st numstat add del untracked churn stat a d rank repo branch
+# One repo root's git state -- factored out of fleet_rows() so it can run in
+# its own background subshell, ONCE per unique root (see the parallel phase-2
+# dispatch above), not once per pane. Churn comes from tree_diff, the one base
+# --lines reviews from, so a fully staged change still gets a real churn
+# number instead of reading as 0. Prints dirty\trepo\tbranch\tstat\tchurn; an
+# empty root (no pane in this group sits inside a git repo) short-circuits
+# with no git call at all -- the result is path-independent already, so there
+# is nothing to look up.
+fleet_scan_root() {
+    local root=$1
+    local st numstat add del untracked churn stat dirty=0 repo branch a d line
+
+    if [ -z "$root" ]; then
+        printf '0\t\t\t—\t0\n'
+        return 0
+    fi
+    # Two agents on two worktrees of the same repo are indistinguishable from
+    # "s:w claude" alone; the row has to say WHICH tree it is. $root IS the
+    # rev-parse --show-toplevel result already (fleet_rows resolved it to do
+    # the grouping), so naming the repo costs no second call.
+    repo=${root##*/}
+    branch=$(git -C "$root" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
     # --no-optional-locks on every read here: this is a read on someone else's
     # live worktree, and plain `git status` writes the index back to refresh
     # stat info. Taking index.lock under an agent that is mid-commit is a race
     # the reader has no business starting.
-    st=$(git -C "$path" --no-optional-locks status --porcelain 2>/dev/null)
-    # A blocked pane earns its row on state alone -- that is the case a
-    # dirty-only filter dropped, and it is the most urgent one there is.
-    [ -n "$st" ] || [ "$state" = needs-input ] || return 0
-
-    case "$state" in
-        needs-input) rank=0 ;;
-        done)        rank=1 ;;
-        error)       rank=2 ;;
-        running)     rank=3 ;;
-        *)           rank=4 ;;
-    esac
-    # Two agents on two worktrees of the same repo are indistinguishable from
-    # "s:w claude" alone; the row has to say WHICH tree it is.
-    repo=$(git -C "$path" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); repo=${repo##*/}
-    branch=$(git -C "$path" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
-
+    st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
     if [ -n "$st" ]; then
+        dirty=1
         # The same one base --lines reviews from: staged + unstaged together,
         # so a fully staged change gets its real churn instead of reading as 0.
-        numstat=$(tree_diff "$path" --numstat)
+        numstat=$(tree_diff "$root" --numstat)
         add=0; del=0
         while IFS=$'\t' read -r a d _f; do
             [ -n "$a" ] || continue
@@ -1243,8 +1297,13 @@ fleet_row_one() {
 
         # Untracked files carry no numstat line at all -- without counting
         # them a pane holding only new files reads as 0 churn and sorts last,
-        # even though `git status` already called it dirty.
-        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+        # even though `git status` already called it dirty. Counted straight
+        # off $st in bash (a byte-for-byte compare against the two-char
+        # prefix) instead of forking `grep -c '^??'` per repo.
+        untracked=0
+        while IFS= read -r line; do
+            case "$line" in "??"*) untracked=$((untracked + 1)) ;; esac
+        done <<<"$st"
         stat="+$add -$del"
         [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
         churn=$(( add + del + untracked ))
@@ -1254,8 +1313,7 @@ fleet_row_one() {
         stat='—'; churn=0
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$dirty" "${repo:-?}" "${branch:-?}" "$stat" "$churn"
 }
 
 # --- entry-point resolution -------------------------------------------------

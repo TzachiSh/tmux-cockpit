@@ -4887,6 +4887,86 @@ is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 rm -rf "$FP_DIR"
 fi
 
+echo "== tmux-review --fleet: dedups panes sharing a repo root and scans 20 panes under a second =="
+# fleet_rows() used to cost one status+numstat scan PER PANE even when two
+# panes were cd'd into the exact same worktree -- resolving the repo root now
+# happens first (fleet_rows:~1180), panes are grouped on it, and
+# fleet_scan_root() runs once per UNIQUE root, not once per pane. 20 windows,
+# 19 fixture repos -- pane 20 reuses pane 1's directory -- so 20 rows still
+# come out, but only 19 `git status` calls should ever run. `timeout 1` is the
+# hard timing gate (real git on tiny fixture repos, no shim latency): the
+# pre-fix bounded-parallel dispatcher (cap 8) already clears this easily, so
+# it is the status-call COUNT below, not this timing, that is expected to go
+# red against the pre-fix script.
+if need_tmux "tmux-review --fleet dedup + 20-pane timing"; then :; else
+FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
+"$TMUX_REAL" -L "$FD" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FD" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+CTL=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
+
+# mk_git_dir is the fleet queue block's own fixture helper (tests/run.sh
+# above, "gathers exactly the dirty agent panes"), reused here as-is.
+declare -a FD_DIRS=()
+i=1
+while [ "$i" -le 19 ]; do
+    d=$(mktmpd); mk_git_dir "$d" 1
+    FD_DIRS+=("$d")
+    i=$((i + 1))
+done
+
+i=1
+while [ "$i" -le 20 ]; do
+    if [ "$i" -eq 20 ]; then
+        wd="${FD_DIRS[0]}"           # the dup: shares pane 1's repo root
+    else
+        wd="${FD_DIRS[$((i - 1))]}"
+    fi
+    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude bash' >/dev/null 2>&1
+    i=$((i + 1))
+done
+
+# Counts `git status` invocations specifically -- a PATH shim that logs argv
+# and still execs the real binary, the same trick the round-trip-count block
+# uses (tests/run.sh:389-405) and the fixed-latency shim above stands on.
+FD_SHIM=$(mktmpd)
+FD_REALGIT=$(command -v git)
+FD_LOG="$STATE/fd-git-calls"
+: > "$FD_LOG"
+cat > "$FD_SHIM/git" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$FD_LOG"
+exec "$FD_REALGIT" "\$@"
+SHIMEOF
+chmod +x "$FD_SHIM/git"
+
+"$TMUX_REAL" -L "$FD" send-keys -t "$CTL" \
+    "PATH='$FD_SHIM:'\"\$PATH\" timeout 1 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
+fd_out=""
+for i in $(seq 1 50); do
+    fd_out=$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$CTL")
+    # The typed-but-not-yet-run command line already contains the literal
+    # text "echo RC=$?" the instant send-keys lands it -- a bare *RC=* match
+    # breaks on that unevaluated line before the command has even started.
+    # Only a REAL exit code prints digits after the "=", so require one.
+    case "$fd_out" in *RC=[0-9]*) break ;; esac
+    sleep 0.1
+done
+
+is "20 panes scan in under 1s" "RC=0" \
+   "$(printf '%s\n' "$fd_out" | grep -o 'RC=[0-9-]*' | tail -1)"
+
+fd_rows=$(grep -c . "$STATE/fd-out" || true)
+is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
+
+fd_status_calls=$(grep -c ' status ' "$FD_LOG" || true)
+is "the shared repo is scanned once -- 19 status calls for 19 unique roots" \
+    "19" "$fd_status_calls"
+
+"$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
+for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
+fi
+
 echo "== tmux-review: the popup resolves the pane it was opened from, not the busiest client =="
 # Same hazard as tmux-branch's popup resolution (tmux-branch:34-53, tested
 # above): inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
