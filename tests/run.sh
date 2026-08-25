@@ -5056,9 +5056,18 @@ mk_git_dir() {  # mk_git_dir <dir> <dirty:0|1>
     ) >/dev/null 2>&1
 }
 FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
-printf 'x\ny\nz\n' > "$FQ_DIRTY/new.txt"             # + an untracked file
+printf 'x\n' > "$FQ_DIRTY/new1.txt"                  # + three one-line untracked files
+printf 'y\n' > "$FQ_DIRTY/new2.txt"
+printf 'z\n' > "$FQ_DIRTY/new3.txt"
 FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- excluded
 FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
+# Same rank as FQ_DIRTY (neither has @panestate set, below) but its 5 changed
+# lines are all TRACKED, none untracked -- against FQ_DIRTY's 1 tracked + 3
+# untracked. The double-count bug inflated FQ_DIRTY's churn to 7 (4 real + the
+# untracked FILE count charged again), sorting it above this one; the fix's
+# real 4 sorts it below.
+FQ_DIRTY2=$(mktmpd);   mk_git_dir "$FQ_DIRTY2" 0
+printf 'b\nc\nd\ne\nf\n' >> "$FQ_DIRTY2/f"
 
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
@@ -5066,6 +5075,8 @@ DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
 CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NONAGENT" 'exec bash' >/dev/null 2>&1
 NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY2" 'exec -a claude bash' >/dev/null 2>&1
+DIRTY2_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
 # a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 
@@ -5088,17 +5099,29 @@ case "$fqout" in
     *) ok "a dirty non-agent pane is not in the queue" ;;
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly one row" "1" "$rowcount"
+is "the queue lists exactly two rows" "2" "$rowcount"
 
-# Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (new.txt),
-# folded into the same numstat by tree_diff's intent-to-add copy, so the ??
-# walk below must count new.txt only toward the "?1 new" file-count suffix,
-# not toward churn too (that double-counted it as +4 -0 +1 = 5 before the fix).
+# Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
+# one-line files), folded into the same numstat by tree_diff's intent-to-add
+# copy, so the ?? walk below must count the untracked files only toward the
+# "?3 new" file-count suffix, not toward churn too (that double-counted it as
+# +4 -0 +3 = 7 before the fix).
 case "$fqout" in
-    *"$DIRTY_PANE"*"+4 -0  ?1 new"*) ok "the dirty row's stat is +4 -0  ?1 new, not double-counted" ;;
-    *) bad "the dirty row's stat is +4 -0  ?1 new, not double-counted" \
-         "$DIRTY_PANE ... +4 -0  ?1 new" "$fqout" ;;
+    *"$DIRTY_PANE"*"+4 -0  ?3 new"*) ok "the dirty row's stat is +4 -0  ?3 new, not double-counted" ;;
+    *) bad "the dirty row's stat is +4 -0  ?3 new, not double-counted" \
+         "$DIRTY_PANE ... +4 -0  ?3 new" "$fqout" ;;
 esac
+
+# The bite: FQ_DIRTY and FQ_DIRTY2 are the SAME rank here (neither has
+# @panestate set) so ordering between them falls straight to churn, real
+# churn under the fix (4 vs 5, DIRTY2 wins) or double-counted churn under the
+# bug (7 vs 5, DIRTY wins instead). This is the only assertion in the suite
+# that can tell the two arithmetics apart -- the stat pin above and every
+# other assertion in this block read the same either way, because $stat's
+# TEXT was never wrong; only the hidden sort key was.
+fq_first=$(printf '%s\n' "$fqout" | grep -n "^$DIRTY2_PANE\|^$DIRTY_PANE" | head -1 | cut -d: -f2 | cut -f1)
+is "same-rank rows sort by real churn: +5 tracked outranks +1 tracked + 3 untracked files" \
+   "$DIRTY2_PANE" "$fq_first"
 
 # The queue is a triage list, not a churn leaderboard. A pane parked on a
 # permission prompt is exactly the one that needs a human -- and it typically
@@ -5138,7 +5161,7 @@ esac
 # at fleet_rows' #{@panestate} sentinel. Sentinels on the wire, not empties.
 FQ_NOREPO=$(mktmpd)
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NOREPO" 'exec -a claude bash' >/dev/null 2>&1
-NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
+NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:5 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
 # Polled on the row we assert about, same reason as the loop above.
@@ -5155,7 +5178,7 @@ is "and its ± column reads —, not an empty field" "—" \
    "$(printf '%s\n' "$nrrow" | cut -f5)"
 
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_NOREPO"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
