@@ -4093,7 +4093,31 @@ until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the 
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
 until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"
+# The preview is a separate tmux-open-path subprocess, memoised by its own
+# content cache -- COCKPIT_REVIEW_BASE_REV has to be in that cache's key, or
+# this would keep serving the since-review render (just SINCE, no committed
+# line) after ^B switched the base. COMMITTED-ON-FEAT is only in the diff
+# against main, never against the since-review checkpoint.
+until_cap "$RBS" "$RBP" '*COMMITTED-ON-FEAT*' \
+    && ok "the preview re-renders against the new base, not a cache hit from the old one" \
+    || bad "the preview re-renders against the new base, not a cache hit from the old one" \
+        "COMMITTED-ON-FEAT in the preview" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" Escape
+# Polled, not slept for: esc on an empty store discards straight away
+# (run_loop's own drop_store), which now has to shed ".base" beside the store
+# too -- left behind, it would make the NEXT review of this same store resume
+# a discarded review's base instead of starting at auto.
+rbbasegone=0
+for i in $(seq 1 20); do
+    [ -e "$RBSTATE/c.md.base" ] || { rbbasegone=1; break; }
+    sleep 0.1
+done
+if [ "$rbbasegone" = 1 ]; then
+    ok "a discard sheds the base file beside the store, not just the store"
+else
+    bad "a discard sheds the base file beside the store, not just the store" \
+        "$RBSTATE/c.md.base gone" "still present"
+fi
 "$TMUX_REAL" -L "$RBS" kill-server >/dev/null 2>&1
 fi
 rm -rf "$RB"
@@ -5251,6 +5275,16 @@ case "$fqout4" in
     *"$AHEAD_PANE"*"+1 -0"*) ok "an agent that committed on its branch is still in the queue, with its branch churn" ;;
     *) bad "an agent that committed on its branch is still in the queue, with its branch churn" "$AHEAD_PANE with +1 -0" "$fqout4" ;;
 esac
+
+# --delta answers the Stop hook's one question: does this pane's tree still
+# differ from its review base? Run through `run-shell` on THIS block's own
+# server -- delta_mode's internal `tmux` calls need to land on $FQ, not
+# whatever server a bare tmux-review invocation from the suite's own shell
+# would resolve against.
+is "--delta: a branch ahead of main has something to review" "D=0" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $AHEAD_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+is "--delta: a clean agent on an unadvanced branch has nothing to review" "D=1" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $CLEAN_PANE; echo D=\$?" 2>/dev/null | tail -1)"
 
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD"

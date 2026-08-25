@@ -826,7 +826,7 @@ drop_rows() {
 
 drop_store() {
     [ -n "${1:-}" ] || return 0
-    rm -f -- "$1" "$1.rows"
+    rm -f -- "$1" "$1.rows" "$1.base"
 }
 
 # --- --loop ----------------------------------------------------------------
@@ -850,16 +850,22 @@ run_loop() {
 
     # The base this review diffs against: ^B's choice, remembered beside the
     # store so a resumed review keeps it; exported because --rows and --resnap
-    # re-exec through fzf and inherit this environment.
+    # re-exec through fzf and inherit this environment. COCKPIT_REVIEW_BASE_REV
+    # (review_base's field 1 -- the actual rev, not the mode word) rides along
+    # so the preview subprocess (a separate tmux-open-path invocation, below)
+    # diffs against the same base this review does, instead of always HEAD.
     local base_line label mode
     COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
     set_base_line() {
         if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
             base_line=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}")
             label=$(cut -f2 <<<"$base_line"); mode=$(cut -f3 <<<"$base_line")
+            COCKPIT_REVIEW_BASE_REV=${base_line%%$'\t'*}
         else
             label=uncommitted; mode=uncommitted
+            COCKPIT_REVIEW_BASE_REV=HEAD
         fi
+        export COCKPIT_REVIEW_BASE_REV
     }
     set_base_line
 
@@ -993,6 +999,13 @@ run_loop() {
             printf '%s\n' "$mode" > "$store.base"
             COCKPIT_REVIEW_BASE=$mode; export COCKPIT_REVIEW_BASE
             set_base_line
+            # snapshot(), not resnap(): the base just changed, so EVERY row is
+            # a fresh anchor against the new diff, not a re-mark of stale ones
+            # -- and resnap()'s `read -n 1` would block here, inside the loop,
+            # waiting on a key nothing prompted for. Any pinned comment that
+            # no longer anchors still shows as stale the next time this store
+            # is opened (run_loop's own "resumed" message), same as any other
+            # base switch would leave it.
             snapshot "$dir" "$store"
             rows_out=$(rows_mode "$dir" "$store")
             [ "$(printf '%s\n' "$rows_out" | grep -c .)" -gt 0 ] || \
@@ -1451,10 +1464,13 @@ fleet_scan_root() {
     # live worktree, and plain `git status` writes the index back to refresh
     # stat info. Taking index.lock under an agent that is mid-commit is a race
     # the reader has no business starting.
-    st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
     numstat=$(tree_diff "$root" --numstat)
     if [ -n "$numstat" ]; then
         dirty=1
+        # Only read inside this arm now: the untracked-file-count walk below
+        # is the sole remaining use of $st (dirty itself now comes from the
+        # numstat above, which also catches a clean-tree branch ahead of its base).
+        st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
         add=0; del=0
         while IFS=$'\t' read -r a d _f; do
             [ -n "$a" ] || continue
@@ -1544,7 +1560,7 @@ review_pane() {
         # and tested with a plain `if`; the `\$` keep both out of the reach of
         # the bash expansion that is building the string. Every path is still
         # shq-quoted.
-        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store"); rmdir -- $(shq "$sess") 2>/dev/null; fi"
+        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store") $(shq "$store.base"); rmdir -- $(shq "$sess") 2>/dev/null; fi"
         tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
     else
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
