@@ -5686,6 +5686,111 @@ until_cap "$RR" "$RRP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RR" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review: moving between projects leaves every review where it was =="
+# Three moves the owner makes all day: prefix r on one agent, then on another
+# in a different repo; one agent whose cwd moves to another repo (tmux cannot
+# change a pane's cwd from outside, so the pane is respawned in the new dir --
+# same pane id, which is what the session key is made of); and from a plain
+# terminal window through the fleet queue back to a review. Every session dir
+# is keyed on pane + root, so none of these can read another's comments.
+if need_tmux "review across projects"; then :; else
+PM="cockpit-pm-$$"; SOCKS="$SOCKS $PM"
+PMSTATE=$(mktmpd); PMBASE=$(mktmpd)
+ALPHA="$PMBASE/alpha"; BRAVO="$PMBASE/bravo"
+for r in "$ALPHA" "$BRAVO"; do
+  f=$(basename "$r").go
+  ( mkdir -p "$r" && cd "$r" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .; printf 'a\nb\n' > "$f"; git add -A; git commit -q -m init
+    printf 'a\nb\nCHANGED\n' > "$f" ) >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$ALPHA" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+PMA=$("$TMUX_REAL" -L "$PM" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$PM" new-window -d -t t: -c "$BRAVO" 'exec -a claude bash' >/dev/null 2>&1
+PMB=$("$TMUX_REAL" -L "$PM" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$PM" new-window -d -t t: -c "$PMBASE" 'exec bash' >/dev/null 2>&1   # the terminal window
+pm_shell() {                  # a fresh control pane in the terminal window, ready for a command
+    local p i
+    p=$("$TMUX_REAL" -L "$PM" split-window -t t:2 -P -F '#{pane_id}' 'exec bash')
+    for i in $(seq 1 40); do
+        [ "$("$TMUX_REAL" -L "$PM" display-message -p -t "$p" '#{pane_current_command}')" = bash ] && break
+        sleep 0.1
+    done
+    printf '%s' "$p"
+}
+pm_review() {                 # <control-pane> <agent-pane>   opens that agent's review from the control pane
+    "$TMUX_REAL" -L "$PM" send-keys -t "$1" \
+        "XDG_STATE_HOME=$(printf '%q' "$PMSTATE") '$DIR/scripts/tmux-review' -p $2" Enter
+    until_cap "$PM" "$1" '*review>*'
+}
+pm_sess() {                   # <agent-pane> <root>   the session dir the script will use
+    printf '%s/tmux-cockpit/review/%s-%s' "$PMSTATE" "${1#%}" \
+        "$(printf '%s' "$(git -C "$2" rev-parse --show-toplevel)" | cksum | cut -d' ' -f1)"
+}
+pm_cap() { "$TMUX_REAL" -L "$PM" capture-pane -p -t "$1"; }
+
+# (a) two agents, two repos
+C=$(pm_shell); pm_review "$C" "$PMA" || bad "A's review comes up" "review>" "$(pm_cap "$C")"
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "for alpha"; until_cap "$PM" "$C" '*for alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+until_file "$(pm_sess "$PMA" "$ALPHA")/comments.md" '*for alpha*' && ok "a comment pinned on A lands in A's session" \
+    || bad "a comment pinned on A lands in A's session" "for alpha" "$(cat "$(pm_sess "$PMA" "$ALPHA")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"                                   # the client drops; A's review stays
+C=$(pm_shell); pm_review "$C" "$PMB" || bad "B's review comes up" "review>" "$(pm_cap "$C")"
+if until_cap "$PM" "$C" '*bravo.go:3 (+)*'; then ok "prefix r on B shows B's repo"; else bad "prefix r on B shows B's repo" "bravo.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "and none of A's marks" "no ●" "$(pm_cap "$C")" ;; *) ok "and none of A's marks" ;; esac
+is "B's session is its own, empty" "0" "$(grep -c '^## ' "$(pm_sess "$PMB" "$BRAVO")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+C=$(pm_shell); pm_review "$C" "$PMA"
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "back on A, A's comment is resumed"; else bad "back on A, A's comment is resumed" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+is "two agents in two repos: two session dirs" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+
+# (b) one agent whose cwd moves to the other repo (respawned in place: same pane id)
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$ALPHA" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*alpha.go:3 (+)*'; then ok "an agent that moved to alpha reviews alpha"; else bad "an agent that moved to alpha reviews alpha" "alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "with none of A's marks: same root, another pane, another session" "no ●" "$(pm_cap "$C")" ;; *) ok "with none of A's marks: same root, another pane, another session" ;; esac
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "B in alpha"; until_cap "$PM" "$C" '*B in alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+until_file "$(pm_sess "$PMB" "$ALPHA")/comments.md" '*B in alpha*' || bad "B's alpha comment lands in B's alpha session" "B in alpha" "$(cat "$(pm_sess "$PMB" "$ALPHA")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$BRAVO" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*bravo.go:3 (+)*'; then ok "moved back to bravo, it reviews bravo"; else bad "moved back to bravo, it reviews bravo" "bravo.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "and the alpha comment does not follow it" "no ●" "$(pm_cap "$C")" ;; *) ok "and the alpha comment does not follow it" ;; esac
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$ALPHA" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "back in alpha, its own alpha comment is resumed"; else bad "back in alpha, its own alpha comment is resumed" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$BRAVO" 'exec -a claude bash'
+is "one agent, two roots: one more session dir, none shared" "3" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+
+# (c) from the terminal window, through the fleet queue, back to A's review
+# -p, like every other call here: the shipped binding is
+# `tmux-review -p '#{pane_id}'` (cockpit.tmux:258), so prefix r ALWAYS names
+# the pane it was pressed from. Bare, main_entry falls back to best-effort
+# client recency, and this server has no attached client to be recent -- tmux
+# then answers with the current window's active pane (the agent in t:0), not
+# the pane the command runs in. That fallback is not what prefix r does.
+C=$(pm_shell)
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "XDG_STATE_HOME=$(printf '%q' "$PMSTATE") '$DIR/scripts/tmux-review' -p $C" Enter
+if until_cap "$PM" "$C" '*fleet>*'; then ok "prefix r from the terminal window is the fleet queue"; else bad "prefix r from the terminal window is the fleet queue" "fleet>" "$(pm_cap "$C")"; fi
+if until_cap "$PM" "$C" '*alpha⑂main*bravo⑂main*'; then ok "both projects' agents are listed"; else bad "both projects' agents are listed" "alpha⑂main and bravo⑂main" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "alpha"; until_cap "$PM" "$C" '*fleet> alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "picking A in the queue resumes A's review, marks and all"; else bad "picking A in the queue resumes A's review, marks and all" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Escape
+until_cap "$PM" "$C" '*discard 1 comment*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Enter
+for i in $(seq 1 40); do [ -e "$(pm_sess "$PMA" "$ALPHA")" ] || break; sleep 0.1; done
+is "discarding A from the queue path removes only A's dir" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+unset -f pm_shell pm_review pm_sess pm_cap
+"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review: a review survives the client that opened it =="
 # review_pane() used to keep the only copy of a review in a mktemp file
 # whose name nothing recorded: a dropped SSH client tears down a

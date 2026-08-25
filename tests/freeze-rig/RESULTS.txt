@@ -10,6 +10,33 @@ status-right agent_fleet           36       144        360
 FULL shipped config                84       300        696
 (additive at every shape: 20+28+36=84, 84+72+144=300, 216+120+360=696)
 
+=== 2026-08-25: WHAT A MOVE COSTS (gate.sh, same rule, same budget) ===
+Moving between projects is a status redraw the owner triggers by hand all day,
+so it is priced against the same budget: a move may walk the server at most
+once. 3x10x4 = 120 agent panes, half in one repo and half in another, plus one
+plain terminal window (no agent) -- which is a 121st pane, so the move numbers
+are taken on a server one pane larger than the status-redraw baseline above.
+Two runs of `bash tests/freeze-rig/run.sh gate`, identical to the visit:
+
+                                        run 1   run 2
+status redraw (120 panes, baseline)       696     696
+project window -> project window          706     706
+agent window -> terminal window           712     712
+pane -> pane inside a window              706     706
+plain redraw on the SAME 121-pane server  706     706   <- the yardstick
+
+READ IT AGAINST THE YARDSTICK, NOT AGAINST 696. A redraw on the 121-pane
+server costs 706, and project->project and pane->pane cost 706 exactly: a move
+costs a redraw, to the visit. agent->terminal window costs 712 (+6, 0.85%) --
+one window's worth of extra border work for the window being left, not a
+second walk. Phase 2 added no option and no format, and these are master's
+numbers.
+
+VERDICT: FAIL, unchanged from master and for master's reason -- 696/120 = 5.8
+full server walks per redraw, the pre-existing tmux.conf marker walk (project
+memory `freeze-precompute-pattern`), not anything a move introduced. No move
+exceeds a redraw on the same server.
+
 === A. server CPU per forced status redraw (idle, 4 visible) ===
 
 VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
