@@ -79,7 +79,7 @@ USAGE
 # invisible to the list while the preview showed it. An unborn HEAD (no
 # commits yet) has no HEAD to diff against, so that case keeps the fallback.
 #
-# --no-optional-locks on every call, the same discipline fleet_row_one() already
+# --no-optional-locks on every call, the same discipline fleet_scan_root() already
 # uses: `git diff` refreshes the index and takes index.lock to do it, and this
 # runs against a repo an AGENT is working in. A read that fights the agent's own
 # git for the lock is a read that can make its command fail.
@@ -113,14 +113,43 @@ tree_diff() {
 # -- "./" in front is what makes an arbitrary path an operand awk cannot
 # mistake for an assignment. The programs strip it back off with
 # substr(FILENAME, 3).
+#
+# A path holding a literal TAB is dropped here, before it can become an
+# operand. `ls-files -z` does NOT C-quote -- the -z form emits raw bytes,
+# core.quotePath or not -- so such a path arrived intact and then split ITSELF
+# across the tab-separated wire every consumer below reads with awk -F'\t':
+# "has<TAB>tab.txt" became path=has, line=tab.txt, fragment=the file's first
+# line, offset=+, and attach() (which guards only "path non-empty" and "not
+# the cap sentinel") would pin and deliver that as an instruction about a file
+# that does not exist at a line that is not a number. The wire format is
+# tab-separated and cannot carry the name, so the file is dropped, exactly as
+# a binary or an unreadable file already is. Filtered on the LIST rather than
+# in each program so both callers -- the numstat walk and the row walk -- and
+# the byte estimator that reads their output all agree on the same set.
+# The list, turned into NUL-separated "./path" operands. Factored out of
+# awk_over() because the byte cap below sizes the very same files with `wc -c`
+# and MUST see the same set: a path this drops has no rows, so charging the
+# cap for it would refuse a review over a file it was never going to show.
+ulist_operands() {
+    printf '%s\n' "$1" \
+        | awk 'index($0, "\t") == 0 { print "./" $0 }' \
+        | tr '\n' '\0'
+}
+
 awk_over() {
     local dir=$1 list=$2 prog=$3
     [ -n "$list" ] || return 0
-    printf '%s\n' "$list" \
-        | awk '{ print "./" $0 }' \
-        | tr '\n' '\0' \
+    ulist_operands "$list" \
         | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
 }
+
+# ${#s} counts CHARACTERS in a UTF-8 locale and BYTES in C. The cap below is a
+# byte cap and `head -c` is a byte bound, so the length that decides it has to
+# be measured in C. In a UTF-8 locale a non-ASCII diff measures up to 4x short,
+# and that does not merely miss the cap: it reads a capture that WAS truncated
+# at the budget as one that fit, and hands the truncated diff to the parse.
+# Same idiom as pad_field() at the bottom of this file.
+bytelen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
 
 lines_mode() {
     local dir=$1
@@ -136,8 +165,15 @@ lines_mode() {
     # stay keyed on the same name. (A path with a literal tab/quote is still
     # git-quoted even here -- the residual narrow case; non-ASCII is the common
     # one and is fixed.)
+    #
+    # numstat FIRST and the full diff only after the cap below has let it
+    # through: COUNTING is cheap, CAPTURING is what costs. `git diff
+    # --numstat` carries every number the cap needs, and on a tree the cap
+    # exists to refuse (30 regenerated lockfiles, 6,000,030 changed rows,
+    # 38 MB on disk) it is 0.75s and 32 MB against the full capture's 3.25s
+    # and 222 MB -- which this used to pay first, to fill a variable it then
+    # threw away for a one-row notice.
     local diff numstat
-    diff=$(tree_diff "$dir")
     numstat=$(tree_diff "$dir" --numstat)
 
     # Untracked files carry no diff at all -- so the newest code, the code most
@@ -176,7 +212,6 @@ lines_mode() {
             { c[FILENAME] = FNR }
             END { for (f in c) printf "%d\t0\t%s\n", c[f], substr(f, 3) }')"
     fi
-    [ -n "$diff$ulist" ] || return 0
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -190,20 +225,111 @@ lines_mode() {
     # instead of parsing at all. The popup then always appears at once and esc
     # still cancels it. 5000 is well past any diff a human reads line-by-line
     # yet far below where the parse is felt.
-    local cap=5000 total=0 nadd ndel nfile
+    #
+    # Rows are not the only way a diff gets too big to hand a reviewer. 4000
+    # rows of a 1500-column minified line sit comfortably under the row cap
+    # and are still 5.7 MB to capture, parse into shell rows, and render as an
+    # fzf list of 1500-column entries. So the same pass caps on BYTES too --
+    # 4 MB -- and it MEASURES those bytes rather than estimating them.
+    #
+    # Two estimators were tried here first and both broke, in opposite
+    # directions. `size * (add+del) / lines`, a per-file average, is dominated
+    # by the short lines while the diff is dominated by the long one: 100,000
+    # one-byte lines beside one 5 MB line estimated 103 bytes and captured
+    # 10 MB (0.91s, 82 MB RSS, in the modal popup, for a two-row review).
+    # Flooring it with `maxlen * (add+del)` catches that and inverts the
+    # error: it charges the widest line in a file to EVERY changed row of it,
+    # whatever the change was, and since the cap is a per-review TOTAL one
+    # such file takes every other file down with it -- a 744-byte, 26-row
+    # review refused as "(6.8 MB)", an unrelated one-line Go change lost along
+    # with it. That estimate also needed `wc -L`, and on a wc without it the
+    # sized map came back empty and the byte cap vanished in silence (4000
+    # rows parsed, 1.02s, where the cap had fired before).
+    #
+    # There is no estimate that is both safe and fair, because the thing being
+    # guessed at -- how many bytes these particular rows are -- is exactly
+    # what a diff already knows. So take the real number, and BOUND the taking
+    # of it: capture once through `head -c cap+1` and let git die on SIGPIPE
+    # past that. A 400 MB diff then costs the 4 MB read that proves it too
+    # big, not the 2.06s/177MB a full capture measured -- and when it fits,
+    # what came back IS the diff the parse below reads, so nothing is diffed
+    # twice and the "capture only after the cap decides" property is kept.
+    #
+    # numstat still runs first, for the ROW cap: rows can exceed 5000 while
+    # the bytes stay under 4 MB (12001 rows of "1\n" is 24 KB), and counting
+    # them is the cheap call already made above.
+    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0
+    local nadd ndel nfile reason=
     while IFS=$'\t' read -r nadd ndel nfile; do
         [ -n "$nfile" ] || continue
+        # A binary file's numstat counts are "-\t-". It contributes no +/- rows
+        # to the parse below -- without --binary git prints one "Binary files
+        # a/x and b/x differ" line and nothing else, whatever the file weighs
+        # -- so it adds nothing to the row total, and its one line is already
+        # in the capture like every other byte. This is what keeps a two-line
+        # code change beside a rebuilt 5 MB asset reviewable.
+        [ "$nadd" = "-" ] && continue
         case "$nadd" in *[!0-9]*) nadd=0 ;; esac
         case "$ndel" in *[!0-9]*) ndel=0 ;; esac
         total=$(( total + nadd + ndel ))
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
-        local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
+        reason="$total changed lines"
+    else
+        # Untracked files are charged first and exactly. They have no diff to
+        # bound -- every byte of them is an added row -- so their size IS
+        # their contribution, and one batched `wc -c` over the SAME operand
+        # list the row walk uses gets all of it (`wc -c` stats a regular file,
+        # it does not read it). Charging them before the capture is also what
+        # makes a huge unignored untracked tree cap without capturing at all.
+        if [ -n "$ulist" ]; then
+            bytes=$(ulist_operands "$ulist" \
+                    | (cd "$dir" 2>/dev/null && xargs -0 wc -c 2>/dev/null) \
+                    | awk '
+                        # "<bytes> ./<path>", picked apart by hand because a
+                        # path may hold spaces. Anything not "./"-prefixed is
+                        # wc own total line, one per xargs batch.
+                        { w = $0; sub(/^[ \t]+/, "", w)
+                          i = index(w, " "); if (i == 0) next
+                          n = substr(w, 1, i - 1) + 0
+                          if (substr(w, i + 1) !~ /^\.\//) next
+                          s += n }
+                        END { printf "%d\n", s + 0 }')
+            bytes=${bytes:-0}
+        fi
+        if [ "$bytes" -gt "$bytecap" ]; then
+            reason='> 4 MB'
+        else
+            # One byte past what is left of the budget: enough to prove the cap
+            # is exceeded, never more than the budget itself in memory.
+            #
+            # The trailing X is what makes the length EXACT. Command
+            # substitution strips trailing newlines, so without it a capture
+            # that happens to end on one reads a byte short of the budget --
+            # and a diff truncated at the budget would then be parsed as a
+            # complete one, silently dropping everything past 4 MB and
+            # mangling the row it was cut in half on.
+            diff=$(tree_diff "$dir" | head -c $(( bytecap - bytes + 1 )); printf X)
+            diff=${diff%X}
+            if [ "$(bytelen "$diff")" -gt $(( bytecap - bytes )) ]; then
+                reason='> 4 MB'
+                diff=
+            else
+                # Back to the shape the old `diff=$(tree_diff ...)` produced,
+                # so the parse below sees exactly what it always did.
+                diff=${diff%$'\n'}
+            fi
+        fi
+    fi
+    if [ -n "$reason" ]; then
+        local big="diff too large to anchor line-by-line ($reason) — review it directly"
         # Offset 1 (the preview's first line) so the 5-field split in rows_mode
         # never meets a short row -- this notice has no file to scroll anyway.
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
     fi
+
+    [ -n "$diff$ulist" ] || return 0
 
     # One pass: track the file a hunk belongs to (from the +++/--- header
     # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
@@ -265,11 +391,24 @@ lines_mode() {
                 next
             }
             if ($0 ~ /^--- /) {
-                if ($0 ~ /^--- a\//) oldfile = substr($0, 7)
+                # git TERMINATES a header path with a tab when the path holds a
+                # space ("--- a/has space.txt<TAB>"), and substr keeps it. That
+                # tab then rode into every row the file emitted, where -F"\t"
+                # read it as an extra empty field: the line number came out
+                # blank, the preview offset was glued to the front of the
+                # fragment, and the sign column landed in the offset -- so a
+                # DELETION on such a path was emitted as an addition. It was
+                # invisible while the rows were built by a tab-IFS `read`,
+                # which treats tab as IFS whitespace and collapses the doubled
+                # one; awk -F"\t" does not. A header path can never
+                # legitimately end in a raw tab (git C-quotes those), so
+                # stripping one is unambiguous, and doing it here fixes both
+                # sides at the source instead of in every consumer.
+                if ($0 ~ /^--- a\//) { oldfile = substr($0, 7); sub(/\t$/, "", oldfile) }
                 next
             }
             if ($0 ~ /^\+\+\+ /) {
-                if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
+                if ($0 ~ /^\+\+\+ b\//) { file = substr($0, 7); sub(/\t$/, "", file) } else file = oldfile
                 # A new file is a new preview, so its offset restarts too.
                 oldl = 0; newl = 0; poff = 0; next
             }
@@ -304,77 +443,97 @@ lines_mode() {
     fi
     [ -n "$raw" ] || return 0
 
-    # Churn per file (additions + deletions), the risk proxy that orders
-    # everything but the test-file partition. "-" for a binary file's counts
-    # under --numstat; not a number, so it does not add any weight.
-    local -A churn=()
-    local add del fpath
-    while IFS=$'\t' read -r add del fpath; do
-        [ -n "$fpath" ] || continue
-        case "$add" in *[!0-9]*) add=0 ;; esac
-        case "$del" in *[!0-9]*) del=0 ;; esac
-        churn["$fpath"]=$(( add + del ))
-    done <<<"$numstat"
-
-    # tests/*, *_test.*, *.test.* are all substrings of the plain *test*
-    # glob, so one pattern covers the whole family (a second, narrower
-    # pattern after *test* would just be dead code shellcheck refuses to
-    # accept as reachable).
-    is_test_file() {
-        case "$1" in
-            *test*) return 0 ;;
-            *) return 1 ;;
-        esac
-    }
-
-    # Group rows by file, in first-seen order, so a file's own hunks stay in
-    # their original (line-ascending) order once the file groups themselves
-    # are reordered below. Rows land in ONE indexed array with each file's
-    # contiguous [start,end] index range recorded -- git diff never interleaves
-    # two files, so a file's rows are always a single run. The earlier shape
-    # here was `group[path]+=<row>` into one associative-array element, which
-    # bash rebuilds the whole growing string on every append: O(n^2) for a
-    # single-file diff (measured 2000 rows 4.77s, 8000 rows 55.9s). The append
-    # to an indexed array is amortised O(1). And `disp` is built with `printf
-    # -v` rather than `disp=$(printf ...)`, which forked a subshell PER ROW.
-    local -A seen=() gstart=() gend=()
-    local -a order=() allrows=()
-    local path line sign off rest frag mline disp ri=0
-    while IFS=$'\t' read -r path line sign off rest; do
-        [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); gstart["$path"]=$ri; }
-        # Control-char strip + cap, the agent-state:82-86 discipline: this
-        # text reaches an fzf display column and a comment-store header next.
-        frag=${rest//[$'\001'-$'\037'$'\177']/}
-        frag=${frag:0:160}
-        if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
-        printf -v disp '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag"
-        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\t'"$off"
-        gend["$path"]=$ri
-        ri=$((ri + 1))
-    done <<<"$raw"
-
-    # Partition into test-first / rest, each ordered by churn descending; ties
-    # keep first-seen order via the index tiebreak (sort -k1,1n on ties of -k2).
-    local -a tests=() others=()
-    local idx=0
-    for path in "${order[@]}"; do
-        if is_test_file "$path"; then tests+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
-        else others+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
-        fi
-        idx=$((idx + 1))
-    done
-
-    order_group() { sort -t "$(printf '\t')" -k2,2nr -k1,1n | cut -f3; }
-
-    local f j
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
-    done < <(printf '%s\n' "${tests[@]}" | order_group)
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
-    done < <(printf '%s\n' "${others[@]}" | order_group)
+    # Churn, the rows, the test-first partition and the ordering: ONE awk over
+    # the two streams this function already has, then `sort | cut`. What stood
+    # here was four bash passes over the same data -- a `read` loop building a
+    # churn map, a second `read` loop building the rows, a loop partitioning
+    # the paths, and two emit loops indexing back into a rows array by each
+    # file's recorded [start,end] range -- and bash pays an interpreter step
+    # per row for every one of them. Measured on a 4900-row single-file diff
+    # (the largest shape that stays under the cap), ten runs each: the whole
+    # function cost 195-227ms, of which the git diff and the parsing awk --
+    # everything up to `raw` -- are 43-52ms. The bash row build alone was the
+    # other ~165ms. The same rows out of awk cost ~19ms, 59-69ms end to end.
+    # The row build was never the parse; it was bash.
+    #
+    # Stream 1 is numstat (add, del, path) -- churn is additions + deletions,
+    # the risk proxy that orders everything but the test partition. A binary
+    # file's counts are "-\t-", not numbers, so they weigh nothing; a path
+    # numstat never mentions weighs nothing either (awk reads an unset element
+    # as 0, exactly what `${churn[$path]:-0}` did).
+    #
+    # Stream 2 is the raw rows. `NR == FNR` is safe as the stream test here
+    # only because `printf '%s\n' "$numstat"` always emits at least one line,
+    # so FNR restarts at 1 for stream 2 while NR does not -- the empty-first-
+    # stream trap the estimate awk above has to sidestep with ARGV[1].
+    #
+    # The text is taken as "everything past the fourth tab", not as $5: a
+    # fragment may itself contain a tab and $5 would drop everything after it,
+    # where the bash `read -r ... rest` this replaces kept it. (Both then lose
+    # it to the control-char strip -- which is the point: the two agree.)
+    #
+    # LC_ALL=C on the awk, not just on the sort: the 160 cut is a BYTE cut, and
+    # `substr` counts bytes in mawk but CHARACTERS in gawk under a UTF-8
+    # locale -- the same diff cut at 160 characters on one box and 160 bytes on
+    # the next, and `length($1)`-style field arithmetic drifted with it. C
+    # makes every awk here byte-oriented, which is also what the shell it
+    # replaces counted once the fragment reached printf.
+    #
+    # Ordering is done by `sort`, not in awk (no `asorti` in POSIX awk, and an
+    # in-awk insertion sort is the O(n^2) this is here to delete). Three
+    # prepended key columns and one ascending sort do it: the partition (0 for
+    # a test file, 1 otherwise), then `999999999 - churn` so ONE ascending
+    # sort reads as churn-DESCENDING, then NR to break ties. NR ascending is
+    # first-seen order, and git diff never interleaves two files, so every row
+    # of a file shares its file's two leading keys and its NRs are contiguous
+    # -- the file's group stays whole and internally line-ascending. LC_ALL=C
+    # for a byte order that does not move with the locale; `cut` drops the
+    # three keys again.
+    LC_ALL=C awk -F'\t' '
+        NR == FNR {
+            if ($1 ~ /^[0-9]+$/) a = $1; else a = 0
+            if ($2 ~ /^[0-9]+$/) d = $2; else d = 0
+            churn[$3] = a + d
+            next
+        }
+        {
+            p = $1
+            # tests/*, *_test.*, *.test.* are all substrings of plain "test",
+            # so one test covers the whole family -- the *test* glob the shell
+            # partition used, ported exactly.
+            if (!(p in part)) part[p] = (index(p, "test") > 0 ? 0 : 1)
+            # Control-char strip + 160 cap, the agent-state:82-86 discipline:
+            # this text reaches an fzf display column and a comment-store
+            # header next.
+            frag = substr($0, length($1) + length($2) + length($3) + length($4) + 5)
+            gsub(/[\001-\037\177]/, "", frag)
+            # 160 BYTES, backed off to a character boundary. A blind byte cut
+            # ends a fragment mid-sequence -- 200 "e-acute" after one ASCII
+            # byte put a lead byte C3 at 160 and its continuation at 161, so
+            # the fzf column and the comment-store quote header got an
+            # undecodable trailing byte. The byte AFTER the cut says whether
+            # the cut split anything: only a continuation byte there means it
+            # landed inside a sequence, and then the whole partial sequence at
+            # the end goes. A cut that already fell on a boundary is left
+            # alone -- trimming it would drop a whole valid character (200
+            # "e-acute" with no prefix is exactly 80 characters at 160 bytes).
+            # Invalid input cannot loop or corrupt further: with no lead byte
+            # to match, the sub does nothing and the 160-byte cut stands.
+            if (length(frag) > 160) {
+                tail = substr(frag, 161, 1)
+                frag = substr(frag, 1, 160)
+                if (tail ~ /^[\200-\277]$/) sub(/[\300-\367][\200-\277]*$/, "", frag)
+            }
+            # A deletion has no line in the new file, so its row carries the
+            # OLD number prefixed "-".
+            ml = ($3 == "-" ? "-" $2 : $2)
+            printf "%d\t%09d\t%09d\t%s\t%s\t%s\t%s:%s (%s)  %s\t%s\n", \
+                   part[p], 999999999 - churn[p], NR, \
+                   p, ml, frag, p, $2, $3, frag, $4
+        }
+    ' <(printf '%s\n' "$numstat") <(printf '%s\n' "$raw") \
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 -k3,3 \
+        | cut -f4-
 }
 
 # --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
@@ -390,44 +549,83 @@ rows_mode() {
     local dir=$1 store=$2
     [ -n "$dir" ] || return 0
 
-    # The store's "## path:line (sign)" headers, read ONCE into a set, so the
-    # per-row marker test is an associative-array lookup instead of a fresh
-    # `grep -qxF` over the whole store PER ROW. On a 2000-row diff that grep
-    # fired 2000 times per reload, and the picker reloads after every pinned
-    # comment -- the whole list re-marked from scratch each time. A header line
-    # is the store's own grammar (attach() writes exactly "## ..."), so an
-    # exact-string key matches what grep -qxF matched.
-    local -A commented=()
-    if [ -n "$store" ] && [ -f "$store" ]; then
-        local hdr
-        while IFS= read -r hdr; do
-            case "$hdr" in '## '*) commented["$hdr"]=1 ;; esac
-        done < "$store"
+    # The rows the popup shows are a SNAPSHOT, not a live read. run_loop
+    # writes lines_mode's output to "<store>.rows" once when the popup opens
+    # and every reload re-marks that file instead of asking git again: the
+    # picker is modal, so the tree cannot move under it, and pinning a comment
+    # changes only which rows carry a marker. Without the snapshot every
+    # pinned comment re-ran the whole git diff + row build -- measured on a
+    # 4900-row diff with 500 comments pinned, 306ms per reload against 15ms
+    # now, and the list visibly stalled between comments.
+    #
+    # This is also the phase-0 "review the live tree" mitigation: the rows the
+    # reviewer comments on stay the rows the reviewer SAW, even if the agent
+    # writes to the tree mid-review. It is not a diff cache -- there is no
+    # invalidation and no staleness window past the popup, because the file
+    # dies with the store that names it.
+    #
+    # No snapshot (a bare --rows call, or a run whose store was never opened
+    # through the loop) still derives the rows from the tree, and the two
+    # produce the same bytes for the same tree.
+    #
+    # `! -L` beside the `-s`: the write above refuses to follow a planted
+    # symlink, and the read refuses to trust one independently of it. Without
+    # this, someone who wins the sliver of a race between the failed write and
+    # its `rm -f` gets to choose the rows the picker shows -- and every comment
+    # the human then pins is anchored to a path THEY named.
+    local hdr=/dev/null
+    [ -n "$store" ] && [ -f "$store" ] && hdr=$store
+    if [ -n "$store" ] && [ ! -L "$store.rows" ] && [ -s "$store.rows" ]; then
+        mark_rows "$hdr" "$store.rows"
+    else
+        mark_rows "$hdr" <(lines_mode "$dir")
     fi
+}
 
-    # Tab is IFS whitespace, so `IFS=$'\t' read` COLLAPSES a run of tabs -- an
-    # empty fragment (a blank added line) shifted the display into field 3 and
-    # the marker became the whole row. Reproduced: 2 of 18 rows rendered blank.
-    # Split by hand instead; an empty field stays an empty field.
-    local row rest path line fragment display off sign num marker
-    while IFS= read -r row; do
-        [ -n "$row" ] || continue
-        path=${row%%$'\t'*};      rest=${row#*$'\t'}
-        line=${rest%%$'\t'*};     rest=${rest#*$'\t'}
-        fragment=${rest%%$'\t'*}; rest=${rest#*$'\t'}
-        display=${rest%%$'\t'*};  off=${rest#*$'\t'}
-        case "$line" in
-            -*) sign="-"; num=${line#-} ;;
-            *)  sign="+"; num=$line ;;
-        esac
-        marker=" "
-        [ -n "${commented["## ${path}:${num} (${sign})"]:-}" ] && marker="●"
-        case "$sign" in
-            +) display=${display/ (+) / $'\e[32m'(+)$'\e[0m' } ;;
-            -) display=${display/ (-) / $'\e[31m'(-)$'\e[0m' } ;;
-        esac
-        printf '%s\t%s\t%s\t%s%s\t%s\n' "$path" "$line" "$fragment" "$marker" "$display" "$off"
-    done < <(lines_mode "$dir")
+# The marking itself: ONE awk over the store and the rows, no shell per row.
+# What stood here read the store's headers into an associative array and then
+# ran a bash loop over every row -- a by-hand tab split, an array lookup, two
+# ${var/from/to} substitutions and a printf, an interpreter step apiece. On
+# the 4900-row/500-comment shape that loop was ~240ms of the 306ms; the same
+# work in awk is ~4ms (68ms end to end against lines_mode's own 64ms floor).
+# The bash marking was never the store lookup; it was bash, the same finding
+# the row build in lines_mode already made.
+#
+# Streams are told apart by FILENAME == ARGV[1], not by `NR == FNR`: the store
+# is EMPTY the first time the popup opens (mktemp just made it), and with an
+# empty first file `NR == FNR` is true for the SECOND file's first record too
+# -- every row would have been read as a store header and the list would have
+# come out blank. Same trap, same sidestep, as the estimate awk in lines_mode.
+#
+# LC_ALL=C for the same reason lines_mode sets it: every substr/length here is
+# meant to be bytes, and gawk under a UTF-8 locale counts characters instead.
+#
+# Two properties the bash loop had to work for, kept here for free. -F"\t"
+# does NOT collapse a run of tabs the way `IFS=$'\t' read` does, so an empty
+# fragment (a blank added line) stays an empty field instead of shifting the
+# display one column left -- reproduced once as 2 of 18 rows rendering blank.
+# And a marker key is an exact string, matching what the `grep -qxF` before it
+# matched: "## " is the store's own grammar, written by attach() and nothing
+# else, so a substr test on the first three bytes cannot pick up a body line.
+mark_rows() {                 # <store-or-/dev/null> <rows-file>
+    LC_ALL=C awk -F'\t' -v OFS='\t' '
+        FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0] = 1; next }
+        NF == 0 { next }
+        {
+            # A deletion carries the OLD line number prefixed "-", so the
+            # marker key has to split the sign back off -- a (+) and a (-) row
+            # at the same line number are two different anchors.
+            sign = (substr($2, 1, 1) == "-") ? "-" : "+"
+            num = $2; sub(/^-/, "", num)
+            m = (("## " $1 ":" num " (" sign ")") in c) ? "●" : " "
+            # Prepend, never repaint: "●" and " " are both one column, so a
+            # marked row does not shift against an unmarked one.
+            disp = $4
+            if (sign == "+") sub(/ \(\+\) /, " \033[32m(+)\033[0m ", disp)
+            else             sub(/ \(-\) /,  " \033[31m(-)\033[0m ", disp)
+            print $1, $2, $3, m disp, $5
+        }
+    ' "$1" "$2"
 }
 
 # One block, appended -- never rewrite the store, only grow it, so a crash or
@@ -500,6 +698,28 @@ attach() {
     } >> "$store"
 }
 
+# The store and the row snapshot beside it go together: the snapshot is scratch
+# that belongs to ONE popup, and the popup's mktemp directory must not
+# accumulate a 4900-row file per review. So the invariant is simply that NO
+# snapshot outlives the popup that wrote it: every path that drops the store
+# drops both, and the two paths that deliberately KEEP a store -- a refused
+# delivery (review_pane, below) and the "could not ask about the pinned
+# comments" exit -- still shed the snapshot on its own. A kept store is a
+# review someone can re-deliver; a kept snapshot is a diff-sized file nothing
+# downstream will ever read again, because --deliver does not know it exists.
+#
+# Empty store: nothing to remove. `rm -f -- "" ".rows"` would otherwise reach
+# for a file actually named ".rows" in the current directory.
+drop_rows() {
+    [ -n "${1:-}" ] || return 0
+    rm -f -- "$1.rows"
+}
+
+drop_store() {
+    [ -n "${1:-}" ] || return 0
+    rm -f -- "$1" "$1.rows"
+}
+
 # --- --loop ----------------------------------------------------------------
 # tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
 # keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
@@ -531,11 +751,49 @@ run_loop() {
     # exactly what lines_mode would report. The count is only a presence test
     # now -- the split below is a percentage, so nothing here has to measure
     # the terminal.
+    #
+    # And on any tree with something to review, that ONE parse is the only one
+    # this popup pays: it lands in "<store>.rows" and every rows_mode below --
+    # fzf's own reload() after each pinned comment, and the two rebuilds on the
+    # keep-reviewing paths -- reads it back and only re-marks it. (A clean tree
+    # writes an empty snapshot, which rows_mode declines, so that one case
+    # still parses twice before the "no uncommitted changes" exit below. It has
+    # nothing to parse.) The snapshot is deliberately NOT refreshed afterwards:
+    # the rows a reviewer comments on must stay the rows the reviewer SAW, even
+    # if the agent writes to the tree while the popup is up. (That is the
+    # phase-0 mitigation for reviewing a live tree; it is not a diff cache that
+    # outlives anything -- it dies with the store below.)
+    #
+    # Guarded on a non-empty store because "$store.rows" with no store is
+    # ".rows", a real path in whatever directory this was run from.
+    #
+    # `umask 077` + `set -C` in the same subshell that does the writing, the
+    # discipline deliver() already uses for the oversized-review file
+    # (:985) -- and this file needs it MORE, because its name is DERIVABLE.
+    # The store comes from mktemp, but "<store>.rows" is one suffix away from
+    # a name anyone watching a shared /tmp can predict, and the file holds the
+    # entire uncommitted diff. A plain `>` was wrong twice over: it created
+    # the snapshot at the caller's umask (0664 here -- the whole diff
+    # world-readable, while the store beside it is 0600), and it FOLLOWED a
+    # symlink already sitting at that name, so the diff could be written into
+    # a file of someone else's choosing and their file truncated to make room.
+    # noclobber makes the open O_CREAT|O_EXCL, which refuses an existing path
+    # -- a symlink included, dangling or not -- and umask makes what it does
+    # create born 0600, with no create-then-chmod window.
+    #
+    # A refused write is not an error worth stopping for: the `rm -f` unlinks
+    # whatever was squatting the name (unlink never follows a symlink, so the
+    # victim is untouched) and leaves no snapshot, and rows_mode simply
+    # derives the rows from the tree instead. Slower, correct, no popup lost.
+    if [ -n "$store" ]; then
+        (umask 077; set -C; lines_mode "$dir" > "$store.rows") 2>/dev/null \
+            || rm -f -- "$store.rows"
+    fi
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
         tmux display-message "tmux-review: no uncommitted changes" 2>/dev/null
-        rm -f -- "$store"
+        drop_store "$store"
         exit 0
     fi
 
@@ -598,24 +856,30 @@ run_loop() {
                     # keep the store, say where it is, exit 0.
                     case "$crc" in
                         0) ;;              # a row was chosen; $choice decides
-                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;
-                        *)  tmux display-message \
+                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;   # same snapshot, re-marked
+                        *)  # The popup is over, so its snapshot is scratch --
+                            # but the store is a review nobody has seen the
+                            # end of, so it stays and gets named.
+                            drop_rows "$store"
+                            tmux display-message \
                                 "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
                                 2>/dev/null
                             exit 0 ;;
                     esac
                     case "$choice" in
-                        discard*) rm -f -- "$store"; exit 0 ;;
-                        *)  # Back to the list, store kept. Rebuild the rows:
+                        discard*) drop_store "$store"; exit 0 ;;
+                        *)  # Back to the list, store kept. Re-mark the rows:
                             # the marks in $rows_out are from before the
                             # comments were pinned, and fzf's own reload only
                             # ever touched the list inside the session that
-                            # just exited.
+                            # just exited. This re-marks the SNAPSHOT taken at
+                            # open, not the tree -- "keep reviewing" is the
+                            # same review, so it has to be the same rows.
                             rows_out=$(rows_mode "$dir" "$store")
                             continue ;;
                     esac
                 fi
-                rm -f -- "$store"; exit 0 ;;
+                drop_store "$store"; exit 0 ;;
         esac
 
         # Line 1 is the typed query (--print-query); unused here because
@@ -628,7 +892,7 @@ run_loop() {
         # No --expect key matched -- enter/alt-enter stay inside the picker via
         # execute-silent, so this should not happen, but an unmatched exit is a
         # discard, never a silent deliver.
-        rm -f -- "$store"
+        drop_store "$store"
         exit 0
     done
 }
@@ -899,22 +1163,30 @@ fleet_rows() {
     # filesystem (150ms/git, the hunt's measured figure) 100 panes blanked the
     # popup for ~32s, on every prefix+r from a non-agent pane. The panes are
     # independent of each other, so run their git work concurrently instead,
-    # each pane's row computed in its own background subshell and written to
-    # its own file (rows are re-sorted by rank and churn below anyway, so
-    # completion order never matters). Capped at $cap in flight at once --
-    # unbounded would fork hundreds of git processes at once on a big fleet,
-    # trading one kind of slowness for another.
+    # capped at $cap in flight at once -- unbounded would fork hundreds of git
+    # processes at once on a big fleet, trading one kind of slowness for
+    # another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
 
+    # --- Phase 1: one pane list, one root each -------------------------------
+    # Two agent panes cd'd into the same worktree (a subdirectory, or the
+    # exact same path) are still two rows, but they have no business costing
+    # two status+numstat scans -- so the repo root is resolved for every pane
+    # FIRST, in its own background rev-parse (parallel, same cap as the scan
+    # below), before any status call runs. rev-parse --show-toplevel takes no
+    # lock; it is the status/diff calls after it that do, and those are what
+    # phase 2 below dedups.
     local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
-    local -a pids=()
+    local -a pids=() pane_id=() pane_state=() pane_title=() pane_root=()
     while IFS=$'\t' read -r isagent id state title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
         [ "$state" = - ] && state=   # the wire sentinel above, back to unset
         n=$((n + 1))
-        fleet_row_one "$id" "$state" "$title" "$path" > "$tmpdir/$n" &
+        pane_id[n]=$id; pane_state[n]=$state; pane_title[n]=$title
+        git -C "$path" --no-optional-locks rev-parse --show-toplevel \
+            > "$tmpdir/root-$n" 2>/dev/null &
         pids+=("$!")
         if [ ${#pids[@]} -ge "$cap" ]; then
             wait "${pids[0]}" 2>/dev/null
@@ -922,12 +1194,61 @@ fleet_rows() {
         fi
     done <<<"$raw"
     wait 2>/dev/null
+    [ "$n" -gt 0 ] || { rm -rf "$tmpdir"; return 0; }
 
+    # Group panes by their resolved root. A pane whose cwd was not inside a
+    # git repo at all resolves to an empty root; every such pane's git calls
+    # fail the exact same way regardless of WHICH non-repo path it sits in
+    # (nothing to diff against), so they all share one sentinel group instead
+    # of each earning its own doomed scan.
+    local -A root_idx=()
+    local -a uniq_roots=()
+    local i root key ri=0
+    for ((i = 1; i <= n; i++)); do
+        root=$(cat "$tmpdir/root-$i" 2>/dev/null)
+        pane_root[i]=$root
+        key=${root:-@@none@@}
+        if [ -z "${root_idx[$key]+x}" ]; then
+            ri=$((ri + 1))
+            root_idx[$key]=$ri
+            uniq_roots[ri]=$root
+        fi
+    done
+
+    # --- Phase 2: one status+numstat scan per UNIQUE root --------------------
+    pids=()
+    for ((i = 1; i <= ri; i++)); do
+        fleet_scan_root "${uniq_roots[i]}" > "$tmpdir/scan-$i" &
+        pids+=("$!")
+        if [ ${#pids[@]} -ge "$cap" ]; then
+            wait "${pids[0]}" 2>/dev/null
+            pids=("${pids[@]:1}")
+        fi
+    done
+    wait 2>/dev/null
+
+    # --- Phase 3: fan each pane's row back out of its group's scan -----------
+    # No git call left here -- just the per-pane state/title/rank the shared
+    # scan does not know, joined against the one result its group produced.
     local -a rows=()
-    local f
-    for f in "$tmpdir"/*; do
-        [ -s "$f" ] || continue
-        rows+=("$(cat "$f")")
+    local dirty repo branch stat churn rank line
+    for ((i = 1; i <= n; i++)); do
+        id=${pane_id[i]}; state=${pane_state[i]}; title=${pane_title[i]}
+        key=${pane_root[i]:-@@none@@}
+        IFS=$'\t' read -r dirty repo branch stat churn < "$tmpdir/scan-${root_idx[$key]}"
+        # A blocked pane earns its row on state alone -- that is the case a
+        # dirty-only filter dropped, and it is the most urgent one there is.
+        [ "$dirty" = 1 ] || [ "$state" = needs-input ] || continue
+
+        case "$state" in
+            needs-input) rank=0 ;;
+            done)        rank=1 ;;
+            error)       rank=2 ;;
+            running)     rank=3 ;;
+            *)           rank=4 ;;
+        esac
+        rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+            "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
     done
     # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
     # a killed popup takes its children with it, but not necessarily this rm.
@@ -940,42 +1261,46 @@ fleet_rows() {
         | sort -t "$(printf '\t')" -k1,1n -k2,2nr | cut -f3-
 }
 
-# One pane's fleet row -- factored out of fleet_rows() so it can run in its
-# own background subshell (see the parallel dispatch above). Churn comes from
-# tree_diff, the one base --lines reviews from, so a fully staged change still
-# gets a real churn number instead of reading as 0. Prints nothing (and the
-# caller's file stays empty) for a pane that is neither dirty nor blocked, so
-# an empty output file is indistinguishable from "nothing to show" on the
-# reading side.
-fleet_row_one() {
-    local id=$1 state=$2 title=$3 path=$4
-    local st numstat add del untracked churn stat a d rank repo branch
+# One repo root's git state -- factored out of fleet_rows() so it can run in
+# its own background subshell, ONCE per unique root (see the parallel phase-2
+# dispatch above), not once per pane. Churn comes from tree_diff, the one base
+# --lines reviews from, so a fully staged change still gets a real churn
+# number instead of reading as 0. Prints dirty\trepo\tbranch\tstat\tchurn; an
+# empty root (no pane in this group sits inside a git repo) short-circuits
+# with no git call at all -- the result is path-independent already, so there
+# is nothing to look up.
+fleet_scan_root() {
+    local root=$1
+    local st numstat add del untracked churn stat dirty=0 repo branch a d line
+
+    if [ -z "$root" ]; then
+        # "?" on the wire, never an empty field: phase 3 joins this row back
+        # with `IFS=$'\t' read`, tab is an IFS *whitespace* character, and a
+        # RUN of tabs collapses into one delimiter there. Emitting repo and
+        # branch empty shifted every field left, so a blocked agent outside a
+        # repo rendered "—⑂" + churn with a blank ± column instead of "?⑂?"
+        # and "—". Same trap, same sentinel, as the #{@panestate} guard in
+        # fleet_rows' pane format above.
+        printf '0\t?\t?\t—\t0\n'
+        return 0
+    fi
+    # Two agents on two worktrees of the same repo are indistinguishable from
+    # "s:w claude" alone; the row has to say WHICH tree it is. $root IS the
+    # rev-parse --show-toplevel result already (fleet_rows resolved it to do
+    # the grouping), so naming the repo costs no second call.
+    repo=${root##*/}
+    branch=$(git -C "$root" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
     # --no-optional-locks on every read here: this is a read on someone else's
     # live worktree, and plain `git status` writes the index back to refresh
     # stat info. Taking index.lock under an agent that is mid-commit is a race
     # the reader has no business starting.
-    st=$(git -C "$path" --no-optional-locks status --porcelain 2>/dev/null)
-    # A blocked pane earns its row on state alone -- that is the case a
-    # dirty-only filter dropped, and it is the most urgent one there is.
-    [ -n "$st" ] || [ "$state" = needs-input ] || return 0
-
-    case "$state" in
-        needs-input) rank=0 ;;
-        done)        rank=1 ;;
-        error)       rank=2 ;;
-        running)     rank=3 ;;
-        *)           rank=4 ;;
-    esac
-    # Two agents on two worktrees of the same repo are indistinguishable from
-    # "s:w claude" alone; the row has to say WHICH tree it is.
-    repo=$(git -C "$path" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); repo=${repo##*/}
-    branch=$(git -C "$path" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
-
+    st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
     if [ -n "$st" ]; then
+        dirty=1
         # The same one base --lines reviews from: staged + unstaged together,
         # so a fully staged change gets its real churn instead of reading as 0.
-        numstat=$(tree_diff "$path" --numstat)
+        numstat=$(tree_diff "$root" --numstat)
         add=0; del=0
         while IFS=$'\t' read -r a d _f; do
             [ -n "$a" ] || continue
@@ -986,8 +1311,13 @@ fleet_row_one() {
 
         # Untracked files carry no numstat line at all -- without counting
         # them a pane holding only new files reads as 0 churn and sorts last,
-        # even though `git status` already called it dirty.
-        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+        # even though `git status` already called it dirty. Counted straight
+        # off $st in bash (a byte-for-byte compare against the two-char
+        # prefix) instead of forking `grep -c '^??'` per repo.
+        untracked=0
+        while IFS= read -r line; do
+            case "$line" in "??"*) untracked=$((untracked + 1)) ;; esac
+        done <<<"$st"
         stat="+$add -$del"
         [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
         churn=$(( add + del + untracked ))
@@ -997,8 +1327,7 @@ fleet_row_one() {
         stat='—'; churn=0
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$dirty" "${repo:-?}" "${branch:-?}" "$stat" "$churn"
 }
 
 # --- entry-point resolution -------------------------------------------------
@@ -1022,13 +1351,26 @@ review_pane() {
         # belongs to this caller, chained after delivery so the store still
         # outlives the popup's own teardown (comment above).
         #
-        # `&&`, not `;`: --deliver refuses (needs-input, a non-agent pane, a
-        # bogus id) AFTER the popup is gone, and an unconditional rm threw the
-        # whole pinned batch away on every one of those -- the store is the
-        # only copy of the review, and the human never even saw it happen. A
-        # refused store is left on disk on purpose; deliver()'s message names
-        # it and the command that re-delivers it.
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store")"
+        # The STORE is removed only on success: --deliver refuses (needs-input,
+        # a non-agent pane, a bogus id) AFTER the popup is gone, and an
+        # unconditional rm threw the whole pinned batch away on every one of
+        # those -- the store is the only copy of the review, and the human
+        # never even saw it happen. A refused store is left on disk on purpose;
+        # deliver()'s message names it and the command that re-delivers it.
+        #
+        # The row SNAPSHOT is removed either way. It served the popup, and the
+        # popup is already gone: nothing downstream reads "<store>.rows" -- not
+        # deliver(), not the --deliver a human re-runs from the refusal message
+        # -- so keeping it beside a refused store only leaves a diff-sized file
+        # in the popup's TMPDIR that nothing will ever collect.
+        #
+        # run-shell hands this to `sh -c`, so the exit code is stashed in $rc
+        # and tested with a plain `if`; the `\$` keep both out of the reach of
+        # the bash expansion that is building the string. Every path is still
+        # shq-quoted.
+        local cleanup
+        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store"); fi"
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
     fi
 }
 

@@ -1,0 +1,5 @@
+café.txt	-2	y	café.txt:2 (-)  y	4
+café.txt	2		café.txt:2 (+)  	5
+café.txt	3	CC	café.txt:3 (+)  CC	6
+alpha.txt	-2	b	alpha.txt:2 (-)  b	4
+alpha.txt	2	AA	alpha.txt:2 (+)  AA	5

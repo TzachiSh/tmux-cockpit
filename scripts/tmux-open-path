@@ -44,6 +44,15 @@ H=${HOME:-/nonexistent}
 # What changed in this file, as an actual diff -- everything uncommitted from
 # one base (staged, unstaged, and brand-new files alike), and an honest sentence
 # when there is nothing. Bound to ^G in the pickers.
+# --no-optional-locks on every git call below, without exception. This block
+# is the hottest git path in the plugin: fzf re-runs it on every arrow key of
+# the review picker, against a worktree an agent is actively working in, and a
+# plain `git status`/`git diff` refreshes the index and takes index.lock to do
+# it. A read that fights the agent's own git for the lock is a read that can
+# make its command fail -- the same rule tmux-review's tree_diff() states and
+# fleet_scan_root() follows. The --no-index calls do not need the flag; they
+# carry it anyway, because "every git call here" is the only version of this
+# rule that survives the next edit.
 if [ "${1:-}" = --preview-diff ]; then
     f=${2:-}
     case "$f" in "~") f=${HOME:-/nonexistent} ;; "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;; esac
@@ -63,20 +72,20 @@ if [ "${1:-}" = --preview-diff ]; then
     # because root-level fixtures have a basename identical to their whole
     # relative path, so the doubling never showed up in them.
     base=${f##*/}
-    if ! git -C "$d" -c core.quotePath=false rev-parse --git-dir >/dev/null 2>&1; then
+    if ! git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse --git-dir >/dev/null 2>&1; then
         printf 'not in a git repository\n'; exit 0
     fi
     if [ -d "$f" ]; then
-        st=$(git -C "$f" -c core.quotePath=false -c color.status=always status --short 2>/dev/null | head -40)
+        st=$(git -C "$f" --no-optional-locks -c core.quotePath=false -c color.status=always status --short 2>/dev/null | head -40)
         # Same headok test the file branch below inlines: a plain `diff --stat`
         # answers about the WORKING TREE only, so a staged-only file (in the
         # index, not yet touched again) had no line here at all, disagreeing
         # with the list -- which has shown staged+unstaged+untracked as one set
         # since the fix above. `diff --stat HEAD` is both halves in one call.
-        if git -C "$f" -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1; then
-            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat HEAD 2>/dev/null | head -40)
+        if git -C "$f" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            dd=$(git -C "$f" --no-optional-locks -c core.quotePath=false diff --color=always --stat HEAD 2>/dev/null | head -40)
         else
-            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat 2>/dev/null | head -40)
+            dd=$(git -C "$f" --no-optional-locks -c core.quotePath=false diff --color=always --stat 2>/dev/null | head -40)
         fi
         if [ -n "$st$dd" ]; then printf '%s\n%s\n' "$st" "$dd"
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
@@ -97,48 +106,123 @@ if [ "${1:-}" = --preview-diff ]; then
     # body as tmux-review's tree_diff(), inlined -- these are one-shot scripts
     # and neither sources the other. An unborn HEAD has no HEAD to diff
     # against, so that one case keeps the old fallback.
-    headok=0; untracked=0; cached=0
-    git -C "$d" -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1 && headok=1
-    if [ "$headok" -eq 1 ]; then
-        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
-    else
-        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
-        if [ -z "$numstat" ]; then
-            numstat=$(git -C "$d" -c core.quotePath=false diff --cached --numstat -- "$base" 2>/dev/null)
-            cached=1
+    #
+    # fzf re-invokes this preview on every arrow key across the picker, even
+    # though the candidate under the cursor did not change since the last time
+    # it was drawn -- rendering the same file's diff from scratch per key
+    # press. Memoise the whole rendered output (stat line + body) under a key
+    # built from everything that can make it stale: the file's own resolved
+    # ABSOLUTE path (two worktrees of the same repo, at the same HEAD, with
+    # the same relative path, are NOT the same file -- reproduced, since $d is
+    # already the file's real directory, $d/$base is already absolute here);
+    # the tree it is diffed against (HEAD); its index entry (git ls-files -s
+    # -- covers staged vs unstaged, including the staged/unstaged aliasing an
+    # unborn HEAD used to hide, since that also had no key component before);
+    # and a content hash. Deliberately no mtime anywhere in the key: whole-
+    # second mtime+size collided on two edits inside the same wall-clock
+    # second that happened to leave the file the same byte size (reproduced,
+    # 3/3) -- content is the only thing that can never lie about whether the
+    # file actually changed. A hash of a file this size is milliseconds; a
+    # cache hit is still that hash plus one `cat`, no diffing at all.
+    ckey=""
+    chd=$(git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
+    apath="$d/$base"
+    idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
+    csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
+    if [ -n "$csum" ]; then
+        cksum=$(printf '%s\n%s\n%s\n%s\n' "$apath" "$chd" "$idx" "$csum" \
+                | { sha1sum 2>/dev/null || shasum 2>/dev/null; })
+        ckey=${cksum%% *}
+    fi
+
+    # ${XDG_RUNTIME_DIR:-/tmp} can fall through to a shared, world-writable
+    # /tmp: never trust a cache dir that already existed under another uid,
+    # as a symlink, or with any mode wider than owner-only. On any mismatch
+    # the cache is unusable for this render -- refuse to read from it OR
+    # write into it, not just one or the other.
+    cdir="${XDG_RUNTIME_DIR:-/tmp}/tmux-cockpit-preview-$(id -u)"
+    cache_ok=0
+    if [ -n "$ckey" ]; then
+        ( umask 077; mkdir -p "$cdir" ) 2>/dev/null
+        if [ ! -L "$cdir" ] && [ -d "$cdir" ]; then
+            dstat=$(stat -c '%u %a' "$cdir" 2>/dev/null || stat -f '%u %Lp' "$cdir" 2>/dev/null)
+            [ "$dstat" = "$(id -u) 700" ] && cache_ok=1
         fi
     fi
-    # A brand-new file has no diff against any base -- it is in no tree and no
-    # index -- so every preview of one used to read "no uncommitted changes"
-    # about a file the picker had just listed. --no-index against /dev/null is
-    # its whole content as one added hunk, rendered in the same shape as a
-    # tracked file's: one stat line, then the diff from its first @@.
-    if [ -z "$numstat" ] && \
-       [ -n "$(git -C "$d" -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
-        untracked=1
-        numstat=$(git -C "$d" -c core.quotePath=false diff --numstat --no-index -- /dev/null "$f" 2>/dev/null)
-    fi
-    if [ -z "$numstat" ]; then
-        printf 'no uncommitted changes in %s\n' "${f##*/}"
+
+    if [ "$cache_ok" -eq 1 ] && [ -f "$cdir/$ckey" ] && [ ! -L "$cdir/$ckey" ]; then
+        cat "$cdir/$ckey"
         exit 0
     fi
-    add=${numstat%%$'\t'*}; rest=${numstat#*$'\t'}; del=${rest%%$'\t'*}
-    case "$add" in
-        ''|*[!0-9]*) printf '%s (binary)\n' "$base" ;;
-        *)           printf '%s | %s insertion(s), %s deletion(s)\n' "$base" "$add" "$del" ;;
-    esac
-    if [ "$untracked" -eq 1 ]; then
-        git -C "$d" -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
-            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
-    elif [ "$headok" -eq 1 ]; then
-        git -C "$d" -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
-            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
-    elif [ "$cached" -eq 1 ]; then
-        git -C "$d" -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \
-            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
-    else
-        git -C "$d" -c core.quotePath=false diff --color=always -- "$base" 2>/dev/null \
-            | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+
+    headok=0; untracked=0; cached=0
+    [ -n "$chd" ] && headok=1
+    render_preview_diff() {
+        if [ "$headok" -eq 1 ]; then
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
+        else
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
+            if [ -z "$numstat" ]; then
+                numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --cached --numstat -- "$base" 2>/dev/null)
+                cached=1
+            fi
+        fi
+        # A brand-new file has no diff against any base -- it is in no tree and
+        # no index -- so every preview of one used to read "no uncommitted
+        # changes" about a file the picker had just listed. --no-index against
+        # /dev/null is its whole content as one added hunk, rendered in the
+        # same shape as a tracked file's: one stat line, then the diff from
+        # its first @@.
+        if [ -z "$numstat" ] && \
+           [ -n "$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
+            untracked=1
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat --no-index -- /dev/null "$f" 2>/dev/null)
+        fi
+        if [ -z "$numstat" ]; then
+            printf 'no uncommitted changes in %s\n' "${f##*/}"
+            return 0
+        fi
+        add=${numstat%%$'\t'*}; rest=${numstat#*$'\t'}; del=${rest%%$'\t'*}
+        case "$add" in
+            ''|*[!0-9]*) printf '%s (binary)\n' "$base" ;;
+            *)           printf '%s | %s insertion(s), %s deletion(s)\n' "$base" "$add" "$del" ;;
+        esac
+        if [ "$untracked" -eq 1 ]; then
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
+                | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+        elif [ "$headok" -eq 1 ]; then
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
+                | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+        elif [ "$cached" -eq 1 ]; then
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \
+                | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+        else
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always -- "$base" 2>/dev/null \
+                | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
+        fi
+    }
+
+    if [ "$cache_ok" -ne 1 ]; then
+        # No stable key (e.g. the file vanished between the existence check
+        # above and here, or it was unreadable) -- or the cache dir itself
+        # failed the ownership/mode/symlink check -- render uncached rather
+        # than read from or write into something that cannot be trusted.
+        render_preview_diff
+        exit 0
+    fi
+
+    ctmp="$cdir/$ckey.tmp.$$"
+    ( umask 077; render_preview_diff > "$ctmp" 2>/dev/null )
+    cat "$ctmp" 2>/dev/null
+    mv -f "$ctmp" "$cdir/$ckey" 2>/dev/null
+    # Cap the cache at 200 files -- delete the oldest on write so a long
+    # session's preview cache does not grow without bound.
+    cfiles=$(ls -1t "$cdir" 2>/dev/null | grep -v '\.tmp\.')
+    n=$(printf '%s\n' "$cfiles" | grep -c .)
+    if [ "$n" -gt 200 ]; then
+        printf '%s\n' "$cfiles" | tail -n "$((n - 200))" | while IFS= read -r old; do
+            [ -n "$old" ] && rm -f "$cdir/$old"
+        done
     fi
     exit 0
 fi
@@ -158,7 +242,7 @@ if [ "${1:-}" = --preview ]; then
     # -A: the dotfiles this audience most wants to reach (.claude/, .gitignore)
     # were invisible, with .git/ alone filtered as noise.
     if [ -d "$f" ]; then
-        st=$(git -C "$f" -c color.status=always status --short 2>/dev/null | head -40)
+        st=$(git -C "$f" --no-optional-locks -c color.status=always status --short 2>/dev/null | head -40)
         [ -n "$st" ] && printf '%s\n\n' "$st"
         ls -1Ap -- "$f" 2>/dev/null | grep -vx '\.git/' | head -60
         exit 0
@@ -189,8 +273,11 @@ if [ "${1:-}" = --preview ]; then
     # A line number wins over the diff: the jump target is the point then.
     if [ -z "$l" ]; then
         case "$f" in */*) _d=${f%/*} ;; *) _d=. ;; esac
-        if git -C "$_d" rev-parse --git-dir >/dev/null 2>&1; then
-            _diff=$(git -C "$_d" diff --color=always -- "$f" 2>/dev/null)
+        # --no-optional-locks here too: --preview is the DEFAULT preview, so
+        # it is redrawn on every arrow key of the picker, and `git diff` on a
+        # live worktree refreshes the index and takes index.lock to do it.
+        if git -C "$_d" --no-optional-locks rev-parse --git-dir >/dev/null 2>&1; then
+            _diff=$(git -C "$_d" --no-optional-locks diff --color=always -- "$f" 2>/dev/null)
             [ -n "$_diff" ] && { printf '%s\n' "$_diff" | head -400; exit 0; }
         fi
     fi

@@ -378,6 +378,79 @@ is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # Per-pane options die with the pane, so stale state cannot outlive a pane and
 # there is no sweep that could delete a live one.
 
+echo "== agent-state: a hook transition costs at most four tmux round-trips =="
+# `running` fires on UserPromptSubmit and on EVERY PreToolUse/PostToolUse
+# (examples/claude-hooks.json), and the hook has to return before the tool call
+# proceeds -- so every extra `tmux` here is a fork plus a server round-trip on
+# the agent's critical path. Measured before the batching: 12 invocations for
+# `running`, 10 for `done`, 12 for `needs-input` (one read, one write per
+# option, then six more for the three precomputed counters).
+#
+# Counted with a PATH shim ahead of the suite's own that logs one line per call
+# and still execs the real binary, so the pane's state stays correct and the
+# count is honest. (`strace -f -e execve` is not portable; the shim is the same
+# trick the branch-row and statusline-write blocks use.)
+if need_tmux "agent-state round-trips"; then :; else
+RT="cockpit-rt-$$"; SOCKS="$SOCKS $RT"
+"$TMUX_REAL" -L "$RT" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RTP=$("$TMUX_REAL" -L "$RT" list-panes -t t -F '#{pane_id}')
+RTS=$(mktmpd); RTLOG="$RTS/calls"
+cat > "$RTS/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RTLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+chmod +x "$RTS/tmux"
+# TMUX points agent-state's bare \`tmux\` at this private server, the production
+# path the fleet block drives too.
+rtcall() { : > "$RTLOG"
+    PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$RTP" >/dev/null 2>&1
+    wc -l < "$RTLOG" | tr -d ' '; }
+rtrun=$(rtcall running)
+rtdone=$(rtcall done)
+if [ "${rtrun:-99}" -le 4 ]; then ok "running costs at most 4 tmux invocations"
+else bad "running costs at most 4 tmux invocations" "<=4" "$rtrun"; fi
+if [ "${rtdone:-99}" -le 4 ]; then ok "done costs at most 4 tmux invocations"
+else bad "done costs at most 4 tmux invocations" "<=4" "$rtdone"; fi
+# Batching must not buy the count with correctness: every option the unbatched
+# version wrote is still written, with the same value.
+is "the pane state still lands" "done" \
+   "$("$TMUX_REAL" -L "$RT" show-option -pqv -t "$RTP" @panestate)"
+is "the window dot still ranks it" "done" \
+   "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_state)"
+rtneeds=$(rtcall needs-input)
+if [ "${rtneeds:-99}" -le 4 ]; then ok "needs-input costs at most 4 tmux invocations"
+else bad "needs-input costs at most 4 tmux invocations" "<=4" "$rtneeds"; fi
+is "the banner boolean still flips" "1" \
+   "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_needs)"
+is "the fleet counter still counts" '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+   "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
+# An unchanged state still costs exactly one round-trip: the read that decides
+# nothing changed, and no writes at all.
+rtsame=$(rtcall needs-input)
+is "an unchanged state costs one read and no writes" "1" "$rtsame"
+# The fleet string is now read back through the same batched format rather than
+# through show-option, and it carries #{...} colour tokens. If the format
+# re-expanded them the compare-then-set guard would never match and every
+# transition on the server would rewrite the global -- a server-wide redraw
+# apiece. A second agent pane whose transition leaves the count at 1 must write
+# nothing to @cockpit_fleet.
+"$TMUX_REAL" -L "$RT" new-window -t t: 'exec -a claude bash' >/dev/null 2>&1
+RTP2=$("$TMUX_REAL" -L "$RT" list-panes -t t:1 -F '#{pane_id}')
+: > "$RTLOG"
+PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
+    running "$RTP2" >/dev/null 2>&1
+is "an unchanged fleet count is never rewritten" "0" \
+   "$(grep -c '@cockpit_fleet ' "$RTLOG")"
+is "and the stored count still carries its colour tokens" \
+   '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+   "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
+"$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
+fi
+
 echo "== worktree in the branch label =="
 wtroot=$(mktmpd)
 # Build a throwaway repo instead of borrowing a real one. Pointing this at
@@ -2598,6 +2671,29 @@ case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok 
 case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
     *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
          "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
+# A literal TAB in an untracked path. `ls-files -z` does NOT C-quote -- the -z
+# form emits raw bytes, quotePath or not -- so the tab reached the row list as
+# a real field separator and every downstream `awk -F'\t'` mis-split the row:
+# path=has, line=tab.txt, fragment=the file's first line, offset=+. attach()
+# guards only "path non-empty" and "not the cap sentinel", so that row pinned
+# and composed into an instruction about a file that does not exist at a line
+# that is not a number, and --preview-window=+{5}-/2 got "+" for an offset.
+# The wire format is tab-separated: a path carrying a tab cannot go on it, so
+# it is dropped -- the same thing already done for binaries and unreadable
+# files. (The old `IFS=$'\t' read` row loop collapsed the doubled tab and
+# dropped the file silently; the awk rewrite turned it into a plausible,
+# DELIVERABLE row, which is worse.)
+# FAIL-first: a "has<TAB>tab.txt<TAB>3body line" row is emitted.
+printf 'body line\n' > "$RVNEW/has$(printf '\t')tab.txt"
+rvtab=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
+is "an untracked path holding a literal TAB is dropped, not split into a row" \
+   "0" "$(printf '%s\n' "$rvtab" | awk -F'\t' '$1 == "has"' | grep -c .)"
+is "...and no row anywhere carries a piece of its name" \
+   "0" "$(printf '%s\n' "$rvtab" | grep -c 'tab\.txt')"
+case "$rvtab" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*)
+        ok "the untracked file beside it still gets both its rows" ;;
+    *) bad "the untracked file beside it still gets both its rows" \
+         "new.txt:1 first, new.txt:2 second" "$rvtab" ;; esac
 rm -rf "$RVNEW"
 
 echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
@@ -2730,6 +2826,319 @@ case "$rvunderout" in
 esac
 rm -rf "$RVCAP" "$RVUNDER"
 
+# Counting is cheap; CAPTURING is what costs. The cap above only helped once
+# `diff=$(tree_diff "$dir")` had already run, so a tree the cap was built to
+# refuse was still read whole into a bash variable first. Measured here on the
+# fixture below (30 regenerated lockfiles, 200k rows each, 38 MB on disk):
+# 3.25s and 222 MB peak RSS to produce one notice row, of which `git diff
+# --numstat` -- everything the cap decision actually needs -- is 0.75s and
+# 32 MB. So numstat comes first, the cap decides, and the full capture happens
+# only for a diff that is going to be parsed.
+#
+# 30 moderate files rather than the one 51 MB lockfile the plan measured: a
+# single file that large makes git's OWN diff the bottleneck (365 MB RSS in
+# numstat alone), which no ordering can fix, and hides the thing being removed.
+# Spread over 30 files git's peak stays at one file's worth and the 222 MB is
+# the shell's captured copy -- exactly what the reorder deletes.
+# FAIL-first: before the reorder this returns in 3.25s and timeout 1.5 kills it.
+RVLOCK=$(mktmpd)
+(
+  cd "$RVLOCK" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  for i in $(seq 1 30); do printf 'seed\n' > "lock$i.json"; done
+  git add -A; git commit -q -m init
+  for i in $(seq 1 30); do seq 1 200000 > "lock$i.json"; done
+) >/dev/null 2>&1
+if timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVLOCK" > "$STATE/rvlock.out" 2>/dev/null; then
+    ok "a 6,000,030-row tree answers in under 1.5s (3.25s before the cap moved ahead of the capture)"
+else
+    bad "a 6,000,030-row tree answers in under 1.5s" \
+        "the notice within 1.5s" "timed out -- the diff is still captured before the cap"
+fi
+case "$(cat "$STATE/rvlock.out")" in
+    *"diff too large to anchor line-by-line (6000030 changed lines)"*)
+        ok "the uncaptured cap still names the exact row count numstat totalled" ;;
+    *) bad "the uncaptured cap still names the exact row count numstat totalled" \
+         "a '(6000030 changed lines)' notice" "$(head -c 200 "$STATE/rvlock.out")" ;;
+esac
+rm -rf "$RVLOCK"
+
+# Rows are not the only way a diff gets too big to hand a reviewer: 4000 rows
+# is comfortably under the 5000-row cap, but at 1.5 KB a row that is 5.7 MB of
+# text -- captured, parsed into 4001 shell rows, and rendered into an fzf list
+# whose every entry is a 1500-column line. So the cap counts BYTES too, 4 MB
+# across the changed files (`wc -c` on the worktree copy, the HEAD blob's size
+# for a deletion), and says which limit it hit.
+RVWIDE=$(mktmpd)
+(
+  cd "$RVWIDE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > wide.txt
+  git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<4000;i++) print s }' > wide.txt
+) >/dev/null 2>&1
+is "the wide fixture is UNDER the row cap, so only bytes can trip it" "4001" \
+   "$(git -C "$RVWIDE" diff --numstat | awk -F'\t' '{a+=$1; d+=$2} END{print a+d}')"
+rvwideout=$("$DIR/scripts/tmux-review" --lines "$RVWIDE")
+case "$rvwideout" in
+    *"diff too large"*" MB)"*)
+        ok "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" ;;
+    *) bad "4000 rows of 1.5 KB each cap on bytes, and the notice says MB not lines" \
+         "a too-large notice naming MB" "$(head -c 200 <<<"$rvwideout")" ;;
+esac
+is "the byte cap's notice is one row, same shape as the row cap's" \
+   "1" "$(printf '%s\n' "$rvwideout" | grep -c .)"
+is "the byte cap's notice carries the offset field too, so no row is short" \
+   "5" "$(printf '%s' "$rvwideout" | awk -F'\t' '{print NF}')"
+# A wide file that stays UNDER 4 MB is still parsed row by row -- the byte cap
+# must not swallow an ordinary diff that merely has long lines.
+RVNARROW=$(mktmpd)
+(
+  cd "$RVNARROW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > narrow.txt
+  git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"w",s); for(i=0;i<100;i++) print s }' > narrow.txt
+) >/dev/null 2>&1
+case "$("$DIR/scripts/tmux-review" --lines "$RVNARROW")" in
+    *"diff too large"*) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
+         "real per-line rows, no notice" "capped" ;;
+    *"narrow.txt"$'\t'*) ok "a 150 KB wide-line diff is under the byte cap and parsed normally" ;;
+    *) bad "a 150 KB wide-line diff is under the byte cap and parsed normally" \
+         "narrow.txt rows" "no rows at all" ;;
+esac
+rm -rf "$RVWIDE" "$RVNARROW"
+
+# ...and the byte cap has to measure the DIFF, not the FILE. A whole-file
+# `wc -c` refused a one-line version bump in a big lockfile: 4.6 MB of file,
+# two changed rows, a diff of about 70 bytes -- nothing expensive about it,
+# and the popup answered "review it directly" for a change a reviewer could
+# read at a glance. So each changed file contributes
+# `size * (add + del) / max(lines, 1)`: the wide fixture above still estimates
+# 5.7 MB and caps, this one estimates ~74 bytes and does not.
+# FAIL-first: on the whole-file cap this returns "(4.5 MB)" and no rows.
+RVBUMP=$(mktmpd)
+(
+  cd "$RVBUMP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  # 130k fixed-width lines: 4,810,000 bytes, well over the 4 MB cap as a file.
+  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", i }' > package-lock.json
+  git add -A; git commit -q -m init
+  # One line rewritten at the SAME width, so the file's size is unchanged and
+  # only the estimate can tell the two fixtures apart.
+  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", (i == 5 ? 42 : i) }' > package-lock.json
+) >/dev/null 2>&1
+is "the bump fixture is over the 4 MB cap when measured as a whole file" \
+   "4810000" "$(wc -c < "$RVBUMP/package-lock.json")"
+is "...while its diff is two rows" "2" \
+   "$(git -C "$RVBUMP" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+rvbumpout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVBUMP")
+case "$rvbumpout" in
+    *"diff too large"*)
+        bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
+            "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
+    *"package-lock.json"$'\t'*)
+        ok "a one-line bump in a 4.6 MB lockfile is still reviewable" ;;
+    *) bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
+         "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
+esac
+is "the bump is exactly its two rows, nothing else" "2" \
+   "$(printf '%s\n' "$rvbumpout" | grep -c .)"
+rm -rf "$RVBUMP"
+
+# ...and the byte cap has to MEASURE the diff, not estimate it. Two estimators
+# were tried here and both broke, in opposite directions:
+#
+#   size * (add+del) / lines   -- a per-file AVERAGE. On the fixture below
+#     (100,000 one-byte lines plus one 5 MB line, only the long line changed)
+#     it answers 103 bytes and lets a 10 MB capture through: measured 0.91s,
+#     82,148 kB RSS, two 5 MB rows, in the MODAL popup, for a two-row review.
+#
+#   max(that, maxlen * (add+del))  -- the average, floored by the widest line.
+#     It catches the fixture below, but it charges that width to EVERY changed
+#     row of any file that merely CONTAINS a long line, and the cap is a
+#     per-review TOTAL: a 744-byte, 26-row review was refused as "(6.8 MB)"
+#     with an unrelated one-line Go change lost along with it (the block after
+#     this one). It also needs `wc -L`, and on a wc without it the whole sized
+#     map came back empty and the byte cap disappeared in silence -- measured,
+#     4000 rows parsed in 1.02s where the cap had fired before.
+#
+# So the diff is measured EXACTLY, and bounded so that measuring cannot itself
+# be the expensive thing: capture once through `head -c cap+1`, let git die on
+# SIGPIPE past that, and what comes back either fits -- and then IS the diff,
+# with no second git call -- or proves the cap is exceeded without ever having
+# held more than 4 MB. Untracked files have no diff to bound, so their exact
+# `wc -c` size is summed and charged first.
+# FAIL-first against the max() estimate: BOTH cases below -- it refuses the
+# short-line edit that this must show, and the block after it.
+RVSKEW=$(mktmpd)
+(
+  cd "$RVSKEW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  # tr, not awk's sprintf: mawk's sprintf buffer is 8192 bytes and dies on a
+  # 5 MB %*s ("program limit exceeded").
+  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
+    head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > mix.txt
+  git add -A; git commit -q -m init
+  # Only the long line changes, at the same width: the file's size and line
+  # count are identical, so only the estimator can tell the two apart.
+  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
+    head -c 5000000 /dev/zero | tr '\0' 'M'; printf '\n'; } > mix.txt
+) >/dev/null 2>&1
+is "the mixed fixture is two numstat rows, so the ROW cap cannot be what fires" \
+   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+is "...and its per-file AVERAGE estimate is 103 bytes, far under the 4 MB cap" \
+   "103" "$(wc -lc < "$RVSKEW/mix.txt" | awk '{printf "%d\n", $2 * 2 / $1}')"
+rvskewout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+case "$rvskewout" in
+    *"diff too large"*" MB)"*)
+        ok "one 5 MB line among 100k short ones caps on bytes, not on the average" ;;
+    *) bad "one 5 MB line among 100k short ones caps on bytes, not on the average" \
+         "a too-large notice naming MB" "$(head -c 120 <<<"$rvskewout")" ;;
+esac
+is "the skewed notice is one row, not two 5 MB ones" \
+   "1" "$(printf '%s\n' "$rvskewout" | grep -c .)"
+# The other half of the same fixture, and the half an estimate cannot get
+# right: the SHORT line changed instead. The diff is a couple of hundred
+# bytes and belongs on screen -- but `maxlen * (add+del)` reads the 5 MB line
+# it did not touch and refuses the review anyway. Exactly the same file, the
+# only difference is which line moved.
+{ awk 'BEGIN { for (i = 0; i < 100000; i++) print (i == 5 ? "y" : "x") }'
+  head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > "$RVSKEW/mix.txt"
+is "...and with only a SHORT line changed it is two numstat rows too" \
+   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+rvskewshort=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+case "$rvskewshort" in
+    *"diff too large"*) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
+         "two anchored mix.txt rows" "$(head -c 120 <<<"$rvskewshort")" ;;
+    *"mix.txt"$'\t'*) ok "a SHORT-line edit in the same skewed file is shown, not refused" ;;
+    *) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
+         "two anchored mix.txt rows" "no rows at all" ;;
+esac
+is "and it is exactly its two rows" "2" \
+   "$(printf '%s\n' "$rvskewshort" | grep -c .)"
+rm -rf "$RVSKEW"
+
+# The over-refusal in its realistic shape, and the reason it is Important
+# rather than cosmetic: the cap is a per-review TOTAL, so one skewed file
+# takes every OTHER file's rows down with it. A JS file of 500 short lines
+# plus one 300 KB data-URI line, 12 short lines edited, beside a one-line Go
+# change in a file that has nothing to do with it.
+#
+#   real diff : 26 rows, 744 bytes
+#   max()     : 1 row -- "(diff too large) … (6.8 MB) — review it directly"
+#   exact     : 26 rows, both main.go rows among them
+#
+# FAIL-first: the notice, and no main.go rows at all.
+RVCROSS=$(mktmpd)
+(
+  cd "$RVCROSS" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  { awk 'BEGIN { for (i = 1; i <= 500; i++) printf "const v%d = %d;\n", i, i }'
+    printf 'const IMG = "data:image/png;base64,'
+    head -c 300000 /dev/zero | tr '\0' 'A'; printf '";\n'; } > assets.js
+  printf 'package main\n\nfunc main() { println("one") }\n' > main.go
+  git add -A; git commit -q -m init
+  awk '{ if (NR <= 12 && /^const v/) sub(/= [0-9]+;/, "= 999;"); print }' assets.js > .t
+  mv .t assets.js
+  printf 'package main\n\nfunc main() { println("two") }\n' > main.go
+) >/dev/null 2>&1
+is "the cross-file fixture is 26 changed rows, well under the row cap" "26" \
+   "$(git -C "$RVCROSS" diff --numstat | awk -F'\t' '{a += $1 + $2} END {print a}')"
+is "...and its whole real diff is well under 4 MB" "1" \
+   "$(git -C "$RVCROSS" diff | wc -c | awk '{print ($1 < 4194304) ? 1 : 0}')"
+rvcrossout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVCROSS" 2>/dev/null)
+case "$rvcrossout" in
+    *"diff too large"*) bad "a 744-byte review is not refused for containing one long line" \
+         "26 anchored rows" "$(head -c 120 <<<"$rvcrossout")" ;;
+    *) ok "a 744-byte review is not refused for containing one long line" ;;
+esac
+is "every row is there, both files" "26" "$(printf '%s\n' "$rvcrossout" | grep -c .)"
+is "and the unrelated Go file is not lost with the skewed one" "2" \
+   "$(printf '%s\n' "$rvcrossout" | awk -F'\t' '$1 == "main.go"' | grep -c .)"
+rm -rf "$RVCROSS"
+
+# The untracked half of the same measure. An untracked file has no diff to
+# bound -- every byte of it is an added row -- so it is sized exactly, with
+# one batched `wc -c` over the same operand list the row walk uses, and
+# charged BEFORE the capture: an unignored 6 MB text file drop must cap on
+# its own, without a capture happening at all. Nothing else in the suite
+# exercises that sum (the 800-untracked-file block above is one line each).
+RVUBIG=$(mktmpd)
+(
+  cd "$RVUBIG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"u",s); for(i=0;i<4000;i++) print s }' > huge.txt
+) >/dev/null 2>&1
+is "the untracked fixture is 6 MB on disk, and tracked-clean" "6004000" \
+   "$(wc -c < "$RVUBIG/huge.txt")"
+rvubigout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVUBIG" 2>/dev/null)
+case "$rvubigout" in
+    *"diff too large"*) ok "a 6 MB untracked file caps on its own exact size" ;;
+    *) bad "a 6 MB untracked file caps on its own exact size" \
+         "a too-large notice" "$(head -c 120 <<<"$rvubigout")" ;;
+esac
+is "and that notice is one row, not 4000 untracked ones" "1" \
+   "$(printf '%s\n' "$rvubigout" | grep -c .)"
+rm -rf "$RVUBIG"
+
+# A tracked BINARY is one LINE of diff, not its size. Without --binary git
+# prints "Binary files a/x and b/x differ" and nothing else, whatever the file
+# weighs: the fixture below is a rebuilt 5 MB asset beside a one-line code
+# change and its whole diff is 240 bytes. Charging the cap the asset's size
+# blanked the review of the code change sitting next to it -- the one thing
+# there was to review. A "-\t-" row costs the width of that one line, 80
+# bytes, and is sized no further.
+RVBIN=$(mktmpd)
+(
+  cd "$RVBIN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  head -c 5000000 /dev/urandom > asset.bin
+  printf 'alpha\nbeta\ngamma\n' > app.go
+  git add -A; git commit -q -m init
+  head -c 5000000 /dev/urandom > asset.bin
+  printf 'alpha\nBETA\ngamma\n' > app.go
+) >/dev/null 2>&1
+is "the asset really is binary to git, so its numstat row is the '-' one" \
+   "-	-	asset.bin" "$(git -C "$RVBIN" diff --numstat HEAD -- asset.bin)"
+is "...and the whole diff, 5 MB asset included, is nowhere near the 4 MB cap" \
+   "small" "$( [ "$(git -C "$RVBIN" diff --no-color HEAD | wc -c)" -lt 4194304 ] \
+              && echo small || echo large )"
+rvbinout=$("$DIR/scripts/tmux-review" --lines "$RVBIN")
+case "$rvbinout" in
+    *"diff too large"*)
+        bad "a rebuilt 5 MB asset does not blank the code change beside it" \
+            "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
+    *"app.go"$'\t'*)
+        ok "a rebuilt 5 MB asset does not blank the code change beside it" ;;
+    *) bad "a rebuilt 5 MB asset does not blank the code change beside it" \
+         "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
+esac
+is "the binary itself contributes no rows, so the output is app.go's two" \
+   "2" "$(printf '%s\n' "$rvbinout" | grep -c .)"
+# A DELETED binary is the same "-\t-" row with no worktree copy, so it used to
+# be charged its whole HEAD blob by the deletion path instead -- the same hole,
+# one branch over.
+rm -f "$RVBIN/asset.bin"
+case "$("$DIR/scripts/tmux-review" --lines "$RVBIN")" in
+    *"diff too large"*)
+        bad "a DELETED 5 MB asset does not blank it either" \
+            "app.go's two anchored rows" "capped" ;;
+    *"app.go"$'\t'*) ok "a DELETED 5 MB asset does not blank it either" ;;
+    *) bad "a DELETED 5 MB asset does not blank it either" \
+         "app.go's two anchored rows" "no rows at all" ;;
+esac
+rm -rf "$RVBIN"
+
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the
@@ -2788,6 +3197,44 @@ is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
    "5000" "$rvperfrows"
 rm -rf "$RVPERF"
 
+# Perf: the rows themselves come out of awk, not a bash `read` loop. The row
+# build was four bash passes over the same data (a churn map, the row build,
+# the test partition, two emit loops) and bash pays an interpreter step per
+# row for every one of them, so the whole function cost 4x its own diff
+# parse. Measured here on this 4900-row single-file diff, ten runs each:
+# 195-227ms with the bash build, 59-74ms with the awk one -- of which the
+# git diff and the parsing awk, both of which were always there, are 44ms.
+# So the row build fell from ~165ms to ~19ms.
+#
+# The tooth is 0.2 -- the rig's convention, ~3x the expected time -- not the
+# 0.4 the plan wrote: 0.4 is where the bash build sat on the plan's machine
+# (427ms) and this box runs it in ~210ms, so 0.4 passed the very code this
+# test exists to reject. Know what 0.2 does and does not catch: probed
+# against the bash build it failed 2 runs in 3 and passed the third, so it
+# rejects that build most of the time but is not a proof. 0.15 was probed
+# too (0/5 on bash, 5/5 on awk) and rejected as the tooth: it bites harder,
+# but the awk build needs only a 2.2x slowdown to cross it, and a false
+# failure on a loaded gate box costs more than the third bash run it would
+# have caught.
+RV49=$(mktmpd)
+(
+  cd "$RV49" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > f
+  git add -A; git commit -q -m init
+  seq 1 4900 > f
+) >/dev/null 2>&1
+if timeout 0.2 "$DIR/scripts/tmux-review" --lines "$RV49" >/dev/null 2>&1; then
+    ok "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)"
+else
+    bad "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)" \
+        "rows within 0.2s" "timed out (the bash row build)"
+fi
+is "and all 4900 rows are there" "4900" \
+   "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
+rm -rf "$RV49"
+
 echo "== tmux-review --rows: pinning a comment does not re-grep the store once per row =="
 # rows_mode used to fire `grep -qxF <header>` over the whole store for EVERY
 # diff row, and the picker reloads the whole marked list after each pinned
@@ -2833,6 +3280,91 @@ else
     ok "--rows re-marks a 4000-row diff in well under 5s"
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
+
+echo "== tmux-review --rows: re-marking after a comment reads the cache, not git =="
+# The picker reloads the WHOLE marked list after every pinned comment, and
+# rows_mode re-derived that list from `git diff` + the full row build every
+# single time. The rows themselves cannot change while the popup is open, so
+# run_loop snapshots --lines into "$store.rows" once at open and each reload
+# only re-marks that snapshot. Measured on a 4900-row diff with 500 comments
+# pinned: 306ms per reload before, 15ms after. The snapshot must also be
+# INVISIBLE -- same bytes as re-deriving the rows from the tree.
+RV49=$(mktmpd); ( cd "$RV49" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'seed\n' > f; git add -A; git commit -q -m init; seq 1 4900 > f ) >/dev/null 2>&1
+RV49S=$(mktmpf); "$DIR/scripts/tmux-review" --lines "$RV49" > "$RV49S.rows"
+for i in $(seq 1 500); do printf '## f:%d (+)\n> %d\nc\n\n' "$i" "$i"; done > "$RV49S"
+if timeout 0.15 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null; then
+    ok "a 500-comment re-mark over 4900 rows takes under 0.15s (measured 306ms before, 15ms after)"
+else bad "a 500-comment re-mark over 4900 rows takes under 0.15s" "exit within 0.15s" "timeout"; fi
+# The timing tooth alone does not prove the snapshot is READ. A version that
+# writes it and still re-derives every row passes it, now that the uncached
+# path is 68ms rather than the 306ms it was -- 0.15s no longer separates
+# cached from uncached, only awk marking from bash marking. A row that exists
+# ONLY in the snapshot does separate them: there is no way for it to reach the
+# output except by being read back out of the file.
+printf 'SENTINEL\t1\tx\tSENTINEL:1 (+)  x\t1\n' >> "$RV49S.rows"
+if "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" | grep -q '^SENTINEL'; then
+    ok "a row that exists only in the snapshot is served from it"
+else
+    bad "a row that exists only in the snapshot is served from it" \
+        "a row starting SENTINEL" "no SENTINEL row -- the rows were re-derived"
+fi
+rm -f "$RV49S.rows"; "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
+is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
+is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
+rm -rf "$RV49" "$RV49S"
+
+echo "== tmux-review --loop: the row snapshot is born 0600 and never follows a planted symlink =="
+# "<store>.rows" holds the WHOLE uncommitted diff and its name is DERIVABLE --
+# one fixed suffix on a store path anyone watching a shared /tmp can see. A
+# plain `>` was wrong twice: it created the file at the caller's umask (0664
+# here, the diff world-readable while the 0600 store sits right beside it),
+# and it FOLLOWED a symlink already planted at that name, writing the diff
+# into someone else's file and truncating what was there. The write is
+# `umask 077` + `set -C` now: O_CREAT|O_EXCL refuses any existing path, a
+# symlink included, and what it does create is born 0600.
+#
+# No tmux and no real fzf here: run_loop only needs SOMETHING named fzf on
+# PATH, and the snapshot is deleted on the way out -- so the stand-in picker
+# is what looks at it, from inside the "popup", and then escs.
+# Two directories on purpose: the stand-in picker and its logs must NOT live
+# inside the tree being reviewed, or they show up as untracked rows and the
+# row counts below start measuring the fixture instead of the diff.
+RVSN=$(mktmpd); RVSNW=$(mktmpd); mkdir -p "$RVSNW/bin"
+(
+  cd "$RVSN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\nc\n' > f
+) >/dev/null 2>&1
+cat > "$RVSNW/bin/fzf" <<'RVSNFZF'
+#!/bin/sh
+{ stat -c '%a' "$RVSNSTORE.rows" 2>/dev/null ||
+  stat -f '%Lp' "$RVSNSTORE.rows" 2>/dev/null || echo none; } > "$RVSNLOG"
+wc -l | tr -d ' ' > "$RVSNLOG.n"      # the rows the picker was actually handed
+exit 130
+RVSNFZF
+chmod +x "$RVSNW/bin/fzf"
+
+RVSNST=$(mktmpf)
+RVSNSTORE="$RVSNST" RVSNLOG="$RVSNW/mode1" PATH="$RVSNW/bin:$PATH" \
+    "$DIR/scripts/tmux-review" --loop "$RVSN" "$RVSNST" </dev/null >/dev/null 2>&1
+is "the row snapshot is born 0600, not at the caller's umask" "600" "$(cat "$RVSNW/mode1" 2>/dev/null)"
+
+# The plant: a symlink of the derivable name, pointing at a file the popup has
+# no business touching.
+RVSNV=$(mktmpf); printf 'victim contents\n' > "$RVSNV"
+RVSNST2=$(mktmpf); ln -s "$RVSNV" "$RVSNST2.rows"
+RVSNSTORE="$RVSNST2" RVSNLOG="$RVSNW/mode2" PATH="$RVSNW/bin:$PATH" \
+    "$DIR/scripts/tmux-review" --loop "$RVSN" "$RVSNST2" </dev/null >/dev/null 2>&1
+is "a planted symlink is not written through" "victim contents" "$(cat "$RVSNV" 2>/dev/null)"
+is "the plant is unlinked, not left to be read back as rows" "none" "$(cat "$RVSNW/mode2" 2>/dev/null)"
+# Refusing the cache is not refusing the review: rows_mode falls back to the
+# tree, so the picker was still handed the same rows it gets uncached. A
+# hardening that quietly emptied the list would pass every assertion above.
+rvsnwant=$("$DIR/scripts/tmux-review" --lines "$RVSN" | grep -c .)
+is "and the review still opened, with every row, uncached" "$rvsnwant" "$(cat "$RVSNW/mode2.n" 2>/dev/null)"
+is "the unplanted run got the same rows from its snapshot" "$rvsnwant" "$(cat "$RVSNW/mode1.n" 2>/dev/null)"
+rm -f "$RVSNV" "$RVSNST" "$RVSNST2"; rm -rf "$RVSN" "$RVSNW"
 
 echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
 RVBL=$(mktmpd)
@@ -2924,6 +3456,49 @@ case "$rvq1out" in
          "zeta.txt<TAB>2<TAB>AA" "$rvq1out" ;;
 esac
 rm -rf "$RVQ1"
+
+# The 160 cut is 160 BYTES on every awk, and never lands inside a UTF-8
+# sequence. Two seams meet here. First, the row-build awk runs under LC_ALL=C
+# so `substr` counts bytes in gawk (which counts CHARACTERS in a UTF-8 locale)
+# as well as in mawk (which always counted bytes) -- otherwise the same diff
+# produced a 160-character fragment on one box and a 160-byte one on the next.
+# Second, a byte cut splits multi-byte characters: FAIL-first, line 3 below
+# (an ASCII byte then 200 'é') put é #80's lead byte C3 at byte 160 and its
+# continuation byte at 161, so the fragment ended in a dangling C3 -- invalid
+# UTF-8 handed to an fzf display column and written into the comment store as
+# a quote header. Line 2 (200 'é', no prefix) is the aligned case the back-off
+# must NOT touch: 80 whole characters, exactly 160 bytes, nothing to trim.
+RVU=$(mktmpd)
+(
+  cd "$RVU" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > wide.txt
+  git add -A; git commit -q -m init
+  eacc=$(printf 'é%.0s' $(seq 1 200))
+  printf 'seed\n%s\nx%s\n' "$eacc" "$eacc" > wide.txt
+) >/dev/null 2>&1
+rvuout=$("$DIR/scripts/tmux-review" --lines "$RVU")
+for rvuln in 2 3; do
+    rvufrag=$(printf '%s\n' "$rvuout" | awk -F'\t' -v n="$rvuln" '$2 == n { print $3 }')
+    rvubytes=$(printf '%s' "$rvufrag" | wc -c)
+    if printf '%s' "$rvufrag" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        ok "the line $rvuln fragment is valid UTF-8, not a split character"
+    else
+        bad "the line $rvuln fragment is valid UTF-8, not a split character" \
+            "a decodable fragment" "$rvubytes bytes ending mid-sequence"
+    fi
+    if [ "$rvubytes" -le 160 ] && [ "$rvubytes" -gt 0 ]; then
+        ok "the line $rvuln fragment is at most 160 bytes ($rvubytes)"
+    else
+        bad "the line $rvuln fragment is at most 160 bytes" "1..160" "$rvubytes"
+    fi
+done
+# The aligned case loses nothing: 200 'é' cut at 160 bytes is 80 whole
+# characters, so a back-off that fired here would be trimming valid output.
+is "the aligned fragment keeps all 160 of its bytes" "160" \
+   "$(printf '%s\n' "$rvuout" | awk -F'\t' '$2 == 2 { print $3 }' | tr -d '\n' | wc -c)"
+rm -rf "$RVU"
 
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
@@ -3363,6 +3938,14 @@ case "$rv8rootpreview" in
 esac
 rm -rf "$RV8"
 
+echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
+for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
+    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
+    if "$DIR/scripts/tmux-review" --lines "$GD" | cmp -s - "$DIR/tests/fixtures/review/$gf.tsv"; then ok "golden $gf"
+    else bad "golden $gf" "byte-identical" "$("$DIR/scripts/tmux-review" --lines "$GD" | diff - "$DIR/tests/fixtures/review/$gf.tsv" | head -5)"; fi
+    rm -rf "$GD"
+done
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
@@ -3393,6 +3976,124 @@ case "$rv5preview" in
          "a diff containing echo two" "$rv5preview" ;;
 esac
 rm -rf "$PD"
+
+echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
+# Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
+# block makes, so the memoised cache lives and dies with the test.
+RTD=$(mktmpd)
+PV=$(mktmpd); ( cd "$PV" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; seq 1 2000 > big.txt; git add -A; git commit -q -m init; sed -i '1000s/.*/CHANGED/' big.txt ) >/dev/null 2>&1
+XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv1"
+if XDG_RUNTIME_DIR="$RTD" timeout 0.05 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render returns in under 50ms"
+else bad "a repeat render returns in under 50ms" "cache hit" "timeout"; fi
+is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
+# The 50ms tooth alone does not prove the cache is READ. On this fixture a
+# HIT costs 24-29ms and a MISS 39-43ms, so 50ms separates neither: a mutant
+# copy of the script whose cache read is dead passes all three assertions
+# above unchanged. Only a row that could not have come from anywhere else
+# proves the memo was used. Plant one -- the hermetic dir holds exactly the
+# single entry the first render wrote -- and demand the next render hand it
+# back verbatim. Same trick as the SENTINEL row in the row-snapshot block.
+pvcdir="$RTD/tmux-cockpit-preview-$(id -u)"
+is "the hermetic cache dir holds exactly the one entry the first render wrote" \
+   "1" "$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+pventry=$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | head -1)
+printf 'PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS\n' > "$pventry"
+is "and a repeat render is served FROM that entry, not re-rendered" \
+   "PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS" \
+   "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")"
+sed -i '1001s/.*/ALSO/' "$PV/big.txt"
+case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
+    *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
+rm -rf "$PV"
+
+echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
+# The key used to be path+HEAD+mtime+size, with "path" whatever the caller
+# passed -- and every caller cd's into the review target first and hands a
+# DIR-RELATIVE path (the same one --lines emits). Two worktrees of the same
+# repo, checked out to the same commit, have identical relative paths and can
+# land the same mtime+size on an edit of the same shape -- reproduced: one
+# worktree's preview served the other's cached diff. $d/$base (the file's own
+# resolved directory, already computed above) is absolute and worktree-
+# specific, so it now anchors the key.
+WTBASE=$(mktmpd)
+(
+  cd "$WTBASE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p sub; printf 'x\n' > sub/f.txt
+  git add -A; git commit -q -m init
+) >/dev/null 2>&1
+wtsha=$(git -C "$WTBASE" rev-parse main)
+WTA=$(mktmpd); rm -rf "$WTA"
+WTB=$(mktmpd); rm -rf "$WTB"
+git -C "$WTBASE" worktree add -q --detach "$WTA" "$wtsha" >/dev/null 2>&1
+git -C "$WTBASE" worktree add -q --detach "$WTB" "$wtsha" >/dev/null 2>&1
+# Same-second, same-size edits in each -- the axis the old key could not see
+# past even before this fix (both are 9 bytes).
+sed -i '1s/.*/ONLY_IN_A/' "$WTA/sub/f.txt"
+sed -i '1s/.*/ONLY_IN_B/' "$WTB/sub/f.txt"
+RTDW=$(mktmpd)
+wta_out=$(cd "$WTA" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
+wtb_out=$(cd "$WTB" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
+case "$wta_out" in *ONLY_IN_A*) ok "worktree A's preview shows its own edit" ;;
+    *) bad "worktree A's preview shows its own edit" "ONLY_IN_A" "$wta_out" ;; esac
+case "$wtb_out" in *ONLY_IN_B*) ok "worktree B's preview shows its own edit, not a cache hit from A" ;;
+    *) bad "worktree B's preview shows its own edit, not a cache hit from A" "ONLY_IN_B" "$wtb_out" ;; esac
+case "$wtb_out" in *ONLY_IN_A*) bad "worktree B's cache never leaks worktree A's content" "no ONLY_IN_A" "$wtb_out" ;;
+    *) ok "worktree B's cache never leaks worktree A's content" ;; esac
+git -C "$WTBASE" worktree remove -f "$WTA" >/dev/null 2>&1
+git -C "$WTBASE" worktree remove -f "$WTB" >/dev/null 2>&1
+rm -rf "$WTBASE"
+
+echo "== tmux-open-path --preview-diff: staging alone (no edit) is not served a stale render =="
+# An unborn-HEAD repo's --numstat is computed against two different bases
+# depending on index state: unstaged (index vs worktree) when the working
+# tree still differs from the index, --cached (index vs the implicit empty
+# tree) once it doesn't -- two genuinely different renders of the SAME file
+# bytes at the SAME mtime, since `git add` never touches the file itself.
+# The old key (no index component) could not tell these apart.
+UB=$(mktmpd)
+(
+  cd "$UB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f.txt; git add f.txt
+  printf 'a\nb\n' > f.txt
+) >/dev/null 2>&1
+RTDU=$(mktmpd)
+ub_pre=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
+case "$ub_pre" in *'1 insertion(s)'*) ok "before staging, only the unstaged line is the diff" ;;
+    *) bad "before staging, only the unstaged line is the diff" "1 insertion(s)" "$ub_pre" ;; esac
+( cd "$UB" && git add f.txt ) >/dev/null 2>&1
+ub_post=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
+case "$ub_post" in *'2 insertion(s)'*) ok "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" ;;
+    *) bad "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" "2 insertion(s)" "$ub_post" ;; esac
+rm -rf "$UB"
+
+echo "== tmux-open-path --preview-diff: a hostile cache dir is never read from or written into =="
+# XDG_RUNTIME_DIR falling back to /tmp means the cache dir's own path can
+# already be claimed: as a symlink elsewhere, or as a pre-existing dir this
+# uid does not own or that is wider than 700. Both must still render
+# correctly (uncached) and touch nothing at either path.
+HC=$(mktmpd); ( cd "$HC" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'one\n' > h.txt; git add -A; git commit -q -m init; printf 'one\nTWO\n' > h.txt ) >/dev/null 2>&1
+
+RTD4=$(mktmpd); EVILTARGET=$(mktmpd)
+ln -s "$EVILTARGET" "$RTD4/tmux-cockpit-preview-$(id -u)"
+symout=$(XDG_RUNTIME_DIR="$RTD4" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
+case "$symout" in *TWO*) ok "a symlinked cache dir still renders the real diff" ;;
+    *) bad "a symlinked cache dir still renders the real diff" "TWO" "$symout" ;; esac
+is "and nothing is written through the symlink into its target" "0" \
+   "$(find "$EVILTARGET" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
+
+RTD5=$(mktmpd); mkdir -m 777 "$RTD5/tmux-cockpit-preview-$(id -u)"
+wideout=$(XDG_RUNTIME_DIR="$RTD5" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
+case "$wideout" in *TWO*) ok "a world-writable pre-existing cache dir still renders the real diff" ;;
+    *) bad "a world-writable pre-existing cache dir still renders the real diff" "TWO" "$wideout" ;; esac
+is "and nothing is written into it either" "0" \
+   "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
+rm -rf "$HC"
 
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
@@ -4027,11 +4728,12 @@ rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
 echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
-# The mirror of the block above. review_pane() chains `rm -f -- <store>` after
+# The mirror of the block above. review_pane() chains the store cleanup after
 # --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
 # torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
 # a bogus pane id) used to throw the whole pinned batch away silently. The
-# store must outlive a refusal: it is the only copy of the review.
+# store must outlive a refusal: it is the only copy of the review. Its row
+# snapshot must NOT: the popup that needed it is gone.
 if need_tmux "tmux-review refused-delivery store keep"; then :; else
 RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
 RKTMPDIR="$STATE/rk-tmp-$$"
@@ -4098,8 +4800,17 @@ for i in $(seq 1 20); do
 done
 
 rkstore=""
+# head -1, not a glob: the popup's private TMPDIR now holds the store AND the
+# row snapshot beside it, and "tmp.XXXX" sorts before "tmp.XXXX.rows" (a
+# prefix is shorter), so the first entry is still the store itself.
 rksf=$(ls "$RKTMPDIR" 2>/dev/null | head -1)
 [ -n "$rksf" ] && rkstore="$RKTMPDIR/$rksf"
+if [ -n "$rkstore" ] && [ -s "$rkstore.rows" ]; then
+    ok "the row snapshot is on disk while the popup is open"
+else
+    bad "the row snapshot is on disk while the popup is open" \
+        "$rkstore.rows non-empty" "$(ls -la "$RKTMPDIR" 2>&1)"
+fi
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "keep me"
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL" | grep -q "review> keep me" && break
@@ -4137,6 +4848,26 @@ if [ "$rkkept" = 1 ]; then
 else
     bad "a refused delivery keeps the comment store" \
         "$rkstore still on disk" "gone"
+fi
+# ...and sheds the snapshot beside it. The two have different lifetimes: the
+# store is the only copy of the review and outlives a refusal on purpose,
+# while "<store>.rows" served the popup, which is already gone. Nothing
+# downstream reads it -- not deliver(), not the --deliver the refusal message
+# tells the human to re-run -- so keeping it would leave a diff-sized file in
+# the popup's TMPDIR that nothing will ever collect. Polled, not slept for:
+# the rm rides the same backgrounded `run-shell -b` as the delivery.
+rkrowsgone=0
+if [ -n "$rkstore" ]; then
+    for i in $(seq 1 20); do
+        [ -e "$rkstore.rows" ] || { rkrowsgone=1; break; }
+        sleep 0.1
+    done
+fi
+if [ "$rkrowsgone" = 1 ]; then
+    ok "and sheds the row snapshot beside it"
+else
+    bad "and sheds the row snapshot beside it" \
+        "$rkstore.rows removed" "$(ls -la "$RKTMPDIR" 2>&1)"
 fi
 case "$(cat "$rkstore" 2>/dev/null)" in
     *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
@@ -4269,8 +5000,33 @@ case "$(printf '%s\n' "$fqout2" | grep "^$DIRTY_PANE")" in
     *) bad "the row names the repo and branch" "$(basename "$FQ_DIRTY")⑂main" "$fqout2" ;;
 esac
 
+# A blocked agent whose cwd is not a git repo at all. fleet_scan_root()
+# short-circuits that group with no git call -- but it emitted its unknown
+# fields EMPTY, `0\t\t\t—\t0`, and tab is an IFS *whitespace* character: the
+# run of three tabs collapsed into one under phase 3's `IFS=$'\t' read`, so
+# the row came back shifted (repo=—, branch=0, stat empty) and rendered
+# "—⑂0" with a blank ± column. The same trap the pane format guards against
+# at fleet_rows' #{@panestate} sentinel. Sentinels on the wire, not empties.
+FQ_NOREPO=$(mktmpd)
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NOREPO" 'exec -a claude bash' >/dev/null 2>&1
+NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+# Polled on the row we assert about, same reason as the loop above.
+fqout3=""
+for i in $(seq 1 20); do
+    fqout3=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout3" in *"$NOREPO_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+nrrow=$(printf '%s\n' "$fqout3" | awk -F'\t' -v p="$NOREPO_PANE" '$1 == p { print; exit }')
+is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?" \
+   "$(printf '%s\n' "$nrrow" | cut -f4)"
+is "and its ± column reads —, not an empty field" "—" \
+   "$(printf '%s\n' "$nrrow" | cut -f5)"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_NOREPO"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
@@ -4332,6 +5088,86 @@ is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 
 "$TMUX_REAL" -L "$FP" kill-server >/dev/null 2>&1
 rm -rf "$FP_DIR"
+fi
+
+echo "== tmux-review --fleet: dedups panes sharing a repo root and scans 20 panes under a second =="
+# fleet_rows() used to cost one status+numstat scan PER PANE even when two
+# panes were cd'd into the exact same worktree -- resolving the repo root now
+# happens first (fleet_rows:~1180), panes are grouped on it, and
+# fleet_scan_root() runs once per UNIQUE root, not once per pane. 20 windows,
+# 19 fixture repos -- pane 20 reuses pane 1's directory -- so 20 rows still
+# come out, but only 19 `git status` calls should ever run. `timeout 1` is the
+# hard timing gate (real git on tiny fixture repos, no shim latency): the
+# pre-fix bounded-parallel dispatcher (cap 8) already clears this easily, so
+# it is the status-call COUNT below, not this timing, that is expected to go
+# red against the pre-fix script.
+if need_tmux "tmux-review --fleet dedup + 20-pane timing"; then :; else
+FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
+"$TMUX_REAL" -L "$FD" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FD" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+CTL=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
+
+# mk_git_dir is the fleet queue block's own fixture helper (tests/run.sh
+# above, "gathers exactly the dirty agent panes"), reused here as-is.
+declare -a FD_DIRS=()
+i=1
+while [ "$i" -le 19 ]; do
+    d=$(mktmpd); mk_git_dir "$d" 1
+    FD_DIRS+=("$d")
+    i=$((i + 1))
+done
+
+i=1
+while [ "$i" -le 20 ]; do
+    if [ "$i" -eq 20 ]; then
+        wd="${FD_DIRS[0]}"           # the dup: shares pane 1's repo root
+    else
+        wd="${FD_DIRS[$((i - 1))]}"
+    fi
+    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude bash' >/dev/null 2>&1
+    i=$((i + 1))
+done
+
+# Counts `git status` invocations specifically -- a PATH shim that logs argv
+# and still execs the real binary, the same trick the round-trip-count block
+# uses (tests/run.sh:389-405) and the fixed-latency shim above stands on.
+FD_SHIM=$(mktmpd)
+FD_REALGIT=$(command -v git)
+FD_LOG="$STATE/fd-git-calls"
+: > "$FD_LOG"
+cat > "$FD_SHIM/git" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$FD_LOG"
+exec "$FD_REALGIT" "\$@"
+SHIMEOF
+chmod +x "$FD_SHIM/git"
+
+"$TMUX_REAL" -L "$FD" send-keys -t "$CTL" \
+    "PATH='$FD_SHIM:'\"\$PATH\" timeout 1 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
+fd_out=""
+for i in $(seq 1 50); do
+    fd_out=$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$CTL")
+    # The typed-but-not-yet-run command line already contains the literal
+    # text "echo RC=$?" the instant send-keys lands it -- a bare *RC=* match
+    # breaks on that unevaluated line before the command has even started.
+    # Only a REAL exit code prints digits after the "=", so require one.
+    case "$fd_out" in *RC=[0-9]*) break ;; esac
+    sleep 0.1
+done
+
+is "20 panes scan in under 1s" "RC=0" \
+   "$(printf '%s\n' "$fd_out" | grep -o 'RC=[0-9-]*' | tail -1)"
+
+fd_rows=$(grep -c . "$STATE/fd-out" || true)
+is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
+
+fd_status_calls=$(grep -c ' status ' "$FD_LOG" || true)
+is "the shared repo is scanned once -- 19 status calls for 19 unique roots" \
+    "19" "$fd_status_calls"
+
+"$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
+for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
 fi
 
 echo "== tmux-review: the popup resolves the pane it was opened from, not the busiest client =="
