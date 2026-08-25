@@ -762,7 +762,6 @@ git commit -m "feat: ^X deletes the comments under the cursor through the store 
 
 **Files:**
 - Modify: `scripts/tmux-review` — new `edit_comment()` after `detach()`; bind + header in `run_loop()`; dispatcher `--edit`; `usage()`.
-- Modify: `cockpit.tmux` — the review `bind-key` (both arms of the `case "$RK"`).
 - Modify: `tests/run.sh` — one new block.
 - Modify: `README.md` — keys table, one sentence.
 
@@ -778,8 +777,6 @@ Append before Task 4's block:
 echo "== tmux-review --loop: ^E hands the comment to \$EDITOR and pins what comes back =="
 # The fzf query line is a one-line box; a thorough comment cost more than a
 # shallow one. ^E opens $EDITOR on what was typed so far and pins the file.
-# The popup's children get the SERVER's environment, so cockpit.tmux passes
-# EDITOR/VISUAL through display-popup -e -- the second half of this block.
 if need_tmux "tmux-review ^E"; then :; else
 RE="cockpit-re-$$"; SOCKS="$SOCKS $RE"
 REDIR=$(mktmpd)
@@ -814,27 +811,13 @@ is "no editor temp file is left behind, and none went beside the store" "" "$(ls
 until_cap "$RE" "$REP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
 "$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
-# cockpit.tmux passes the editor the config was loaded with into the popup.
-REC="cockpit-rec-$$"; SOCKS="$SOCKS $REC"
-EDITOR=/usr/bin/false VISUAL= "$TMUX_REAL" -L "$REC" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$REC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-rebind=$("$TMUX_REAL" -L "$REC" list-keys -T prefix r 2>/dev/null)
-case "$rebind" in
-    *"EDITOR=/usr/bin/false"*) ok "the review popup carries EDITOR into its environment" ;;
-    *) bad "the review popup carries EDITOR into its environment" "-e EDITOR=/usr/bin/false" "$rebind" ;;
-esac
-case "$rebind" in
-    *"VISUAL="*) bad "an unset VISUAL is not passed as an empty one" "no VISUAL" "$rebind" ;;
-    *) ok "an unset VISUAL is not passed as an empty one" ;;
-esac
-"$TMUX_REAL" -L "$REC" kill-server >/dev/null 2>&1
 fi
 ```
 
 - [ ] **Step 2: Run it to see it fail**
 
 Run: `make test-only PAT='hands the comment to'`
-Expected: "^E pre-fills" FAILs (`got []`); "carries EDITOR" FAILs.
+Expected: "^E pre-fills" FAILs (`got []`).
 
 - [ ] **Step 3: Implement**
 
@@ -882,26 +865,7 @@ Dispatcher, after `--detach)`:
 
 `usage()` picker line gains `^E editor` after `↵ pin ...`.
 
-In `cockpit.tmux`, above `RK=$(tmux show-option -gqv @cockpit_review_key)`:
-
-```bash
-# The popup's children inherit the SERVER's environment, not the client's:
-# the $EDITOR set in your shell is not in there, so ^E in the review would
-# land in vi. Pass the one this config was loaded with -- only when set, an
-# empty VISUAL= would win over a good EDITOR inside the script.
-PE=()
-[ -n "${VISUAL:-}" ] && PE+=(-e "VISUAL=$VISUAL")
-[ -n "${EDITOR:-}" ] && PE+=(-e "EDITOR=$EDITOR")
-```
-
-and in both `bind-key` arms insert `"${PE[@]}"` after `-E`:
-
-```bash
-    "")  tmux bind-key r display-popup -E "${PE[@]}" -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$RK" display-popup -E "${PE[@]}" -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
-```
-
-(`"${PE[@]}"` on an empty array expands to nothing under bash 4.4+; on 4.0–4.3 with `set -u` it errors — `cockpit.tmux` does not `set -u`; verify with `grep -n 'set -' cockpit.tmux` and, if it does, write `${PE[@]+"${PE[@]}"}` instead.)
+`cockpit.tmux`: **nothing.** (The plan first had a `display-popup -e EDITOR=… -e VISUAL=…` pass-through here, on the ux lens's claim that popup children see only a server-era environment. Review of the shipped code measured it on tmux 3.7c: under every documented load path `cockpit.tmux` is itself a `run-shell` child of the same server, so the popup child already inherits the same `EDITOR`, and a baked `-e` froze the load-time value over a later `tmux set-environment -g EDITOR`. Deleted. The README names the two real knobs.)
 
 - [ ] **Step 4: Run the group**
 
@@ -910,16 +874,16 @@ Expected: all `PASS`, `0 failed`.
 
 - [ ] **Step 5: README**
 
-Keys table, after `^L`: `| `^E` | — | open \`$EDITOR\` on the typed text; the file is the comment (multi-line) |`. In the `Inside the review:` paragraph, after the `alt-↵` sentence add: `\`^E\` hands what you have typed to \`$EDITOR\` and pins the file that comes back, so a comment that needs three lines costs no more than one — the popup gets your \`EDITOR\`/\`VISUAL\` passed in, because a popup's children otherwise see only the server's environment.`
+Keys table, after `^L`: `| `^E` | — | open \`$EDITOR\` on the typed text; the file is the comment (multi-line) |`. In the `Inside the review:` paragraph, after the `alt-↵` sentence add: `\`^E\` hands what you have typed to \`$EDITOR\` and pins the file that comes back, so a comment that needs three lines costs no more than one. The popup's children see the tmux *server's* environment: export \`EDITOR\` before the server starts, or \`tmux set-environment -g EDITOR nvim\` for a running one.`
 
 - [ ] **Step 6: Lint and commit**
 
-Run: `bash -n scripts/tmux-review cockpit.tmux && shellcheck -x scripts/tmux-review cockpit.tmux tests/run.sh`
+Run: `bash -n scripts/tmux-review && shellcheck -x scripts/tmux-review tests/run.sh`
 Expected: clean.
 
 ```bash
-git add scripts/tmux-review cockpit.tmux tests/run.sh README.md
-git commit -m "feat: ^E writes the comment in \$EDITOR, which the review popup now carries into its environment"
+git add scripts/tmux-review tests/run.sh README.md
+git commit -m "feat: ^E writes the comment in \$EDITOR"
 ```
 
 ---
