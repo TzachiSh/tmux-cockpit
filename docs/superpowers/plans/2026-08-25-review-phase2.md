@@ -887,6 +887,187 @@ git commit -m "feat: ^E writes the comment in \$EDITOR"
 
 ---
 
+### Task 7: Project-to-project moves — two agents, one agent that cd's, the terminal window, and the rig
+
+Added 2026-08-25 at the owner's request after the final review: moving between projects must leave every review where it was and cost the status line nothing extra.
+
+**Files:**
+- Modify: `tests/run.sh` — one new block, appended before the Task 2 block.
+- Modify: `tests/freeze-rig/gate.sh` — a second measurement after the status-redraw one; `tests/freeze-rig/RESULTS.txt` gets the numbers.
+- Modify: this plan's Task 6 (the any-cwd gate step, below).
+
+**Interfaces:**
+- Consumes: `session_dir <pane> <root>` (Task 2), `until_cap`/`until_file` (Task 1), the fleet queue (`tmux-review` from a non-agent pane; typing filters on `repo⑂branch`; `↵` opens `review_pane` for the row).
+- Produces: nothing new in the scripts — this task is tests and a rig number. If any section fails, the fix goes to `scripts/tmux-review` and is reported, not worked around in the test.
+
+- [ ] **Step 1: The suite block**
+
+Append before the `== tmux-review: a review survives the client that opened it ==` block:
+
+```bash
+echo "== tmux-review: moving between projects leaves every review where it was =="
+# Three moves the owner makes all day: prefix r on one agent, then on another
+# in a different repo; one agent whose cwd moves to another repo (tmux cannot
+# change a pane's cwd from outside, so the pane is respawned in the new dir --
+# same pane id, which is what the session key is made of); and from a plain
+# terminal window through the fleet queue back to a review. Every session dir
+# is keyed on pane + root, so none of these can read another's comments.
+if need_tmux "review across projects"; then :; else
+PM="cockpit-pm-$$"; SOCKS="$SOCKS $PM"
+PMSTATE=$(mktmpd); PMBASE=$(mktmpd)
+ALPHA="$PMBASE/alpha"; BRAVO="$PMBASE/bravo"
+for r in "$ALPHA" "$BRAVO"; do
+  f=$(basename "$r").go
+  ( mkdir -p "$r" && cd "$r" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .; printf 'a\nb\n' > "$f"; git add -A; git commit -q -m init
+    printf 'a\nb\nCHANGED\n' > "$f" ) >/dev/null 2>&1
+done
+"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$ALPHA" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+PMA=$("$TMUX_REAL" -L "$PM" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$PM" new-window -d -t t: -c "$BRAVO" 'exec -a claude bash' >/dev/null 2>&1
+PMB=$("$TMUX_REAL" -L "$PM" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$PM" new-window -d -t t: -c "$PMBASE" 'exec bash' >/dev/null 2>&1   # the terminal window
+pm_shell() {                  # a fresh control pane in the terminal window, ready for a command
+    local p i
+    p=$("$TMUX_REAL" -L "$PM" split-window -t t:2 -P -F '#{pane_id}' 'exec bash')
+    for i in $(seq 1 40); do
+        [ "$("$TMUX_REAL" -L "$PM" display-message -p -t "$p" '#{pane_current_command}')" = bash ] && break
+        sleep 0.1
+    done
+    printf '%s' "$p"
+}
+pm_review() {                 # <control-pane> <agent-pane>   opens that agent's review from the control pane
+    "$TMUX_REAL" -L "$PM" send-keys -t "$1" \
+        "XDG_STATE_HOME=$(printf '%q' "$PMSTATE") '$DIR/scripts/tmux-review' -p $2" Enter
+    until_cap "$PM" "$1" '*review>*'
+}
+pm_sess() {                   # <agent-pane> <root>   the session dir the script will use
+    printf '%s/tmux-cockpit/review/%s-%s' "$PMSTATE" "${1#%}" \
+        "$(printf '%s' "$(git -C "$2" rev-parse --show-toplevel)" | cksum | cut -d' ' -f1)"
+}
+pm_cap() { "$TMUX_REAL" -L "$PM" capture-pane -p -t "$1"; }
+
+# (a) two agents, two repos
+C=$(pm_shell); pm_review "$C" "$PMA" || bad "A's review comes up" "review>" "$(pm_cap "$C")"
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "for alpha"; until_cap "$PM" "$C" '*for alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+until_file "$(pm_sess "$PMA" "$ALPHA")/comments.md" '*for alpha*' && ok "a comment pinned on A lands in A's session" \
+    || bad "a comment pinned on A lands in A's session" "for alpha" "$(cat "$(pm_sess "$PMA" "$ALPHA")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"                                   # the client drops; A's review stays
+C=$(pm_shell); pm_review "$C" "$PMB" || bad "B's review comes up" "review>" "$(pm_cap "$C")"
+if until_cap "$PM" "$C" '*bravo.go:3 (+)*'; then ok "prefix r on B shows B's repo"; else bad "prefix r on B shows B's repo" "bravo.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "and none of A's marks" "no ●" "$(pm_cap "$C")" ;; *) ok "and none of A's marks" ;; esac
+is "B's session is its own, empty" "0" "$(grep -c '^## ' "$(pm_sess "$PMB" "$BRAVO")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+C=$(pm_shell); pm_review "$C" "$PMA"
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "back on A, A's comment is resumed"; else bad "back on A, A's comment is resumed" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+is "two agents in two repos: two session dirs" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+
+# (b) one agent whose cwd moves to the other repo (respawned in place: same pane id)
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$ALPHA" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*alpha.go:3 (+)*'; then ok "an agent that moved to alpha reviews alpha"; else bad "an agent that moved to alpha reviews alpha" "alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "with none of A's marks: same root, another pane, another session" "no ●" "$(pm_cap "$C")" ;; *) ok "with none of A's marks: same root, another pane, another session" ;; esac
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "B in alpha"; until_cap "$PM" "$C" '*B in alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+until_file "$(pm_sess "$PMB" "$ALPHA")/comments.md" '*B in alpha*' || bad "B's alpha comment lands in B's alpha session" "B in alpha" "$(cat "$(pm_sess "$PMB" "$ALPHA")/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$BRAVO" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*bravo.go:3 (+)*'; then ok "moved back to bravo, it reviews bravo"; else bad "moved back to bravo, it reviews bravo" "bravo.go:3 (+)" "$(pm_cap "$C")"; fi
+case "$(pm_cap "$C")" in *●*) bad "and the alpha comment does not follow it" "no ●" "$(pm_cap "$C")" ;; *) ok "and the alpha comment does not follow it" ;; esac
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$ALPHA" 'exec -a claude bash'
+C=$(pm_shell); pm_review "$C" "$PMB"
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "back in alpha, its own alpha comment is resumed"; else bad "back in alpha, its own alpha comment is resumed" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" kill-pane -t "$C"
+"$TMUX_REAL" -L "$PM" respawn-pane -k -t "$PMB" -c "$BRAVO" 'exec -a claude bash'
+is "one agent, two roots: one more session dir, none shared" "3" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+
+# (c) from the terminal window, through the fleet queue, back to A's review
+C=$(pm_shell)
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "XDG_STATE_HOME=$(printf '%q' "$PMSTATE") '$DIR/scripts/tmux-review'" Enter
+if until_cap "$PM" "$C" '*fleet>*'; then ok "prefix r from the terminal window is the fleet queue"; else bad "prefix r from the terminal window is the fleet queue" "fleet>" "$(pm_cap "$C")"; fi
+if until_cap "$PM" "$C" '*alpha⑂main*bravo⑂main*'; then ok "both projects' agents are listed"; else bad "both projects' agents are listed" "alpha⑂main and bravo⑂main" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" "alpha"; until_cap "$PM" "$C" '*fleet> alpha*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Enter
+if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "picking A in the queue resumes A's review, marks and all"; else bad "picking A in the queue resumes A's review, marks and all" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Escape
+until_cap "$PM" "$C" '*discard 1 comment*'
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Enter
+for i in $(seq 1 40); do [ -e "$(pm_sess "$PMA" "$ALPHA")" ] || break; sleep 0.1; done
+is "discarding A from the queue path removes only A's dir" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
+unset -f pm_shell pm_review pm_sess pm_cap
+"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
+fi
+```
+
+- [ ] **Step 2: Run it**
+
+Run: `make test-only PAT='moving between projects'`
+Expected: every line `PASS`. This block is not fail-first by design — it pins behaviour Tasks 2–5 already built; a red line here is a bug in `scripts/tmux-review` (report it, fix it there, re-run), never a test to weaken.
+
+- [ ] **Step 3: The rig — what a move costs**
+
+In `tests/freeze-rig/gate.sh`, after the status-redraw loop's `min` is known and before the `budget=` line, add a second measurement with the same rule (a move may walk the server at most once):
+
+```bash
+# A MOVE — window to window across projects, agent window to a plain terminal
+# window, pane to pane — is a status redraw the owner triggers by hand all
+# day. Same rule, same budget: at most one server walk per move. Half the
+# windows' panes sit in one repo and half in another so the move really
+# crosses projects; window W+1 is a plain terminal (no agent).
+srv new-window -d -t s1: -n term -c "$LOGDIR" 'bash --norc' 2>/dev/null
+w=0
+while read -r pid; do
+    case $((w % 2)) in 0) d="$LOGDIR/alpha" ;; *) d="$LOGDIR/bravo" ;; esac
+    mkdir -p "$d"; srv respawn-pane -k -c "$d" -t "$pid" "$AGENT" 2>/dev/null
+    w=$((w + 1))
+done < <(srv list-panes -t s1:1 -F '#{pane_id}'; srv list-panes -t s1:2 -F '#{pane_id}')
+sleep 1
+move_cost() {                 # <tmux move command...>  -> min pane visits over REPS
+    local i before after n m=""
+    for ((i=0; i<REPS; i++)); do
+        srv select-window -t s1:0 2>/dev/null; sleep "$SETTLE"
+        before=$(grep -c 'pane loop: %' "$LF" 2>/dev/null); before=${before:-0}
+        srv "$@" 2>/dev/null; sleep "$SETTLE"
+        after=$(grep -c 'pane loop: %' "$LF" 2>/dev/null); after=${after:-0}
+        n=$((after - before)); if [ -z "$m" ] || [ "$n" -lt "$m" ]; then m=$n; fi
+    done
+    printf '%s' "$m"
+}
+mv_proj=$(move_cost select-window -t s1:2)          # alpha window -> bravo window
+mv_term=$(move_cost select-window -t s1:term)       # agent window -> terminal window
+mv_pane=$(move_cost select-pane -t s1:0.1)          # pane -> pane inside a window
+```
+
+and extend the report + verdict at the bottom:
+
+```bash
+printf 'pane visits per move: project→project %s   agent→terminal window %s   pane→pane %s\n' \
+    "$mv_proj" "$mv_term" "$mv_pane"
+worst=$min; for n in "$mv_proj" "$mv_term" "$mv_pane"; do [ "$n" -gt "$worst" ] && worst=$n; done
+if [ "$worst" -le "$budget" ]; then echo "PASS"; exit 0; fi
+awk -v m="$worst" -v p="$total" 'BEGIN{printf "FAIL: %.1f full server walks per redraw or move\n", m/p}'
+exit 1
+```
+
+(replacing the existing `if [ "$min" -le "$budget" ] … exit 1` tail). Run `bash tests/freeze-rig/run.sh gate` twice; record all four numbers in `tests/freeze-rig/RESULTS.txt` under a dated heading, next to the status-redraw baseline. The rig's status-redraw rule already fails on master (696 visits / 5.8 walks — the pre-existing `tmux.conf` marker walk, project memory `freeze-precompute-pattern`); the phase-2 check is that every number is the same as master's — phase 2 changed no format, so a move must cost exactly what it cost before. If a move number exceeds the redraw number, that is a finding for the owner, not a failure to hide.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add tests/run.sh tests/freeze-rig/gate.sh tests/freeze-rig/RESULTS.txt
+git commit -m "test: moving between projects leaves every review where it was; the rig prices a window, terminal and pane move like a redraw"
+```
+
+**Task 6 addendum — the suite is green from any cwd:** the gate runs once more from outside the repo — `(cd / && make -C ~/.cache/cockpit-wt/phase2-store check)`, unpiped, last line read by hand — so a `make check` typed from another project's directory is the same gate.
+
+---
+
 ### Task 6: Gate and merge
 
 **Files:** none new.
