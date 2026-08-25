@@ -3034,6 +3034,41 @@ is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
    "5000" "$rvperfrows"
 rm -rf "$RVPERF"
 
+# Perf: the rows themselves come out of awk, not a bash `read` loop. The row
+# build was four bash passes over the same data (a churn map, the row build,
+# the test partition, two emit loops) and bash pays an interpreter step per
+# row for every one of them, so the whole function cost 4x its own diff
+# parse. Measured here on this 4900-row single-file diff, ten runs each:
+# 195-227ms with the bash build, 59-74ms with the awk one -- of which the
+# git diff and the parsing awk, both of which were always there, are 44ms.
+# So the row build fell from ~165ms to ~19ms.
+#
+# The tooth is 0.15, not the 0.4 the plan wrote nor the 0.2 it fell back to.
+# 0.4 is where the bash build sat on the plan's machine (427ms); this box
+# runs it in ~210ms, so 0.4 passed the very code this test exists to reject.
+# 0.2 is worse than useless: the bash build straddles it (probed 1 of 3 runs
+# under 0.2), so the tooth would have been a coin flip rather than a test.
+# 0.15 is below the bash build's fastest run and above twice the awk build's
+# slowest: probed 0/5 passing on bash, 5/5 on awk.
+RV49=$(mktmpd)
+(
+  cd "$RV49" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  : > f
+  git add -A; git commit -q -m init
+  seq 1 4900 > f
+) >/dev/null 2>&1
+if timeout 0.15 "$DIR/scripts/tmux-review" --lines "$RV49" >/dev/null 2>&1; then
+    ok "4900 rows build in under 0.15s (measured 210ms bash, 65ms awk)"
+else
+    bad "4900 rows build in under 0.15s (measured 210ms bash, 65ms awk)" \
+        "rows within 0.15s" "timed out (the bash row build)"
+fi
+is "and all 4900 rows are there" "4900" \
+   "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
+rm -rf "$RV49"
+
 echo "== tmux-review --rows: pinning a comment does not re-grep the store once per row =="
 # rows_mode used to fire `grep -qxF <header>` over the whole store for EVERY
 # diff row, and the picker reloads the whole marked list after each pinned

@@ -423,77 +423,74 @@ lines_mode() {
     fi
     [ -n "$raw" ] || return 0
 
-    # Churn per file (additions + deletions), the risk proxy that orders
-    # everything but the test-file partition. "-" for a binary file's counts
-    # under --numstat; not a number, so it does not add any weight.
-    local -A churn=()
-    local add del fpath
-    while IFS=$'\t' read -r add del fpath; do
-        [ -n "$fpath" ] || continue
-        case "$add" in *[!0-9]*) add=0 ;; esac
-        case "$del" in *[!0-9]*) del=0 ;; esac
-        churn["$fpath"]=$(( add + del ))
-    done <<<"$numstat"
-
-    # tests/*, *_test.*, *.test.* are all substrings of the plain *test*
-    # glob, so one pattern covers the whole family (a second, narrower
-    # pattern after *test* would just be dead code shellcheck refuses to
-    # accept as reachable).
-    is_test_file() {
-        case "$1" in
-            *test*) return 0 ;;
-            *) return 1 ;;
-        esac
-    }
-
-    # Group rows by file, in first-seen order, so a file's own hunks stay in
-    # their original (line-ascending) order once the file groups themselves
-    # are reordered below. Rows land in ONE indexed array with each file's
-    # contiguous [start,end] index range recorded -- git diff never interleaves
-    # two files, so a file's rows are always a single run. The earlier shape
-    # here was `group[path]+=<row>` into one associative-array element, which
-    # bash rebuilds the whole growing string on every append: O(n^2) for a
-    # single-file diff (measured 2000 rows 4.77s, 8000 rows 55.9s). The append
-    # to an indexed array is amortised O(1). And `disp` is built with `printf
-    # -v` rather than `disp=$(printf ...)`, which forked a subshell PER ROW.
-    local -A seen=() gstart=() gend=()
-    local -a order=() allrows=()
-    local path line sign off rest frag mline disp ri=0
-    while IFS=$'\t' read -r path line sign off rest; do
-        [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); gstart["$path"]=$ri; }
-        # Control-char strip + cap, the agent-state:82-86 discipline: this
-        # text reaches an fzf display column and a comment-store header next.
-        frag=${rest//[$'\001'-$'\037'$'\177']/}
-        frag=${frag:0:160}
-        if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
-        printf -v disp '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag"
-        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\t'"$off"
-        gend["$path"]=$ri
-        ri=$((ri + 1))
-    done <<<"$raw"
-
-    # Partition into test-first / rest, each ordered by churn descending; ties
-    # keep first-seen order via the index tiebreak (sort -k1,1n on ties of -k2).
-    local -a tests=() others=()
-    local idx=0
-    for path in "${order[@]}"; do
-        if is_test_file "$path"; then tests+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
-        else others+=("$idx"$'\t'"${churn[$path]:-0}"$'\t'"$path")
-        fi
-        idx=$((idx + 1))
-    done
-
-    order_group() { sort -t "$(printf '\t')" -k2,2nr -k1,1n | cut -f3; }
-
-    local f j
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
-    done < <(printf '%s\n' "${tests[@]}" | order_group)
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        for (( j=${gstart[$f]}; j<=${gend[$f]}; j++ )); do printf '%s\n' "${allrows[j]}"; done
-    done < <(printf '%s\n' "${others[@]}" | order_group)
+    # Churn, the rows, the test-first partition and the ordering: ONE awk over
+    # the two streams this function already has, then `sort | cut`. What stood
+    # here was four bash passes over the same data -- a `read` loop building a
+    # churn map, a second `read` loop building the rows, a loop partitioning
+    # the paths, and two emit loops indexing back into a rows array by each
+    # file's recorded [start,end] range -- and bash pays an interpreter step
+    # per row for every one of them. Measured on a 4900-row single-file diff
+    # (the largest shape that stays under the cap), ten runs each: the whole
+    # function cost 195-227ms, of which the git diff and the parsing awk --
+    # everything up to `raw` -- are 43-52ms. The bash row build alone was the
+    # other ~165ms. The same rows out of awk cost ~19ms, 59-69ms end to end.
+    # The row build was never the parse; it was bash.
+    #
+    # Stream 1 is numstat (add, del, path) -- churn is additions + deletions,
+    # the risk proxy that orders everything but the test partition. A binary
+    # file's counts are "-\t-", not numbers, so they weigh nothing; a path
+    # numstat never mentions weighs nothing either (awk reads an unset element
+    # as 0, exactly what `${churn[$path]:-0}` did).
+    #
+    # Stream 2 is the raw rows. `NR == FNR` is safe as the stream test here
+    # only because `printf '%s\n' "$numstat"` always emits at least one line,
+    # so FNR restarts at 1 for stream 2 while NR does not -- the empty-first-
+    # stream trap the estimate awk above has to sidestep with ARGV[1].
+    #
+    # The text is taken as "everything past the fourth tab", not as $5: a
+    # fragment may itself contain a tab and $5 would drop everything after it,
+    # where the bash `read -r ... rest` this replaces kept it. (Both then lose
+    # it to the control-char strip -- which is the point: the two agree.)
+    #
+    # Ordering is done by `sort`, not in awk (no `asorti` in POSIX awk, and an
+    # in-awk insertion sort is the O(n^2) this is here to delete). Three
+    # prepended key columns and one ascending sort do it: the partition (0 for
+    # a test file, 1 otherwise), then `999999999 - churn` so ONE ascending
+    # sort reads as churn-DESCENDING, then NR to break ties. NR ascending is
+    # first-seen order, and git diff never interleaves two files, so every row
+    # of a file shares its file's two leading keys and its NRs are contiguous
+    # -- the file's group stays whole and internally line-ascending. LC_ALL=C
+    # for a byte order that does not move with the locale; `cut` drops the
+    # three keys again.
+    awk -F'\t' '
+        NR == FNR {
+            if ($1 ~ /^[0-9]+$/) a = $1; else a = 0
+            if ($2 ~ /^[0-9]+$/) d = $2; else d = 0
+            churn[$3] = a + d
+            next
+        }
+        {
+            p = $1
+            # tests/*, *_test.*, *.test.* are all substrings of plain "test",
+            # so one test covers the whole family -- the *test* glob the shell
+            # partition used, ported exactly.
+            if (!(p in part)) part[p] = (index(p, "test") > 0 ? 0 : 1)
+            # Control-char strip + 160 cap, the agent-state:82-86 discipline:
+            # this text reaches an fzf display column and a comment-store
+            # header next.
+            frag = substr($0, length($1) + length($2) + length($3) + length($4) + 5)
+            gsub(/[\001-\037\177]/, "", frag)
+            frag = substr(frag, 1, 160)
+            # A deletion has no line in the new file, so its row carries the
+            # OLD number prefixed "-".
+            ml = ($3 == "-" ? "-" $2 : $2)
+            printf "%d\t%09d\t%09d\t%s\t%s\t%s\t%s:%s (%s)  %s\t%s\n", \
+                   part[p], 999999999 - churn[p], NR, \
+                   p, ml, frag, p, $2, $3, frag, $4
+        }
+    ' <(printf '%s\n' "$numstat") <(printf '%s\n' "$raw") \
+        | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 -k3,3 \
+        | cut -f4-
 }
 
 # --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
