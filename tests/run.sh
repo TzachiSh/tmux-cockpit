@@ -3363,6 +3363,14 @@ case "$rv8rootpreview" in
 esac
 rm -rf "$RV8"
 
+echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
+for gf in basic mixed untracked blank nonascii funcname; do
+    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
+    if "$DIR/scripts/tmux-review" --lines "$GD" | cmp -s - "$DIR/tests/fixtures/review/$gf.tsv"; then ok "golden $gf"
+    else bad "golden $gf" "byte-identical" "$("$DIR/scripts/tmux-review" --lines "$GD" | diff - "$DIR/tests/fixtures/review/$gf.tsv" | head -5)"; fi
+    rm -rf "$GD"
+done
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
