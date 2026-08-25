@@ -4669,23 +4669,37 @@ is "prefix J walks to a pane holding an unsent review" "$AP" \
 "$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
 
 # group: deliver
-echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
+echo "== tmux-review --deliver: a busy pane gets the review queued for its next turn boundary =="
 "$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
-"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
-printf '## src.go:1 (+)\n> foo\nNI-MARKER fix\n\n' > "$RDSTORE"
-rundeliver "$AP" "$RDSTORE"
-is "delivery into needs-input exits 1" "RC=1" "$(lastrc)"
-case "$(apcap)" in
-    *"NI-MARKER"*) bad "nothing is pasted into a needs-input pane" "no NI-MARKER on the agent pane" "$(apcap)" ;;
-    *) ok "nothing is pasted into a needs-input pane" ;;
-esac
+for busy in needs-input running; do
+    "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate "$busy" >/dev/null 2>&1
+    printf '## src.go:1 (+)\n> foo\nQUEUE-MARKER-%s fix\n\n' "$busy" > "$RDSTORE"
+    rundeliver "$AP" "$RDSTORE"
+    is "delivery into a $busy pane exits 0 (queued, not refused)" "RC=0" "$(lastrc)"
+    case "$(apcap)" in
+        *"QUEUE-MARKER-$busy"*) bad "nothing is pasted into a $busy pane" "no marker on the agent pane" "$(apcap)" ;;
+        *) ok "nothing is pasted into a $busy pane" ;;
+    esac
+    is "the spool is armed on the pane" "$RDSTORE.deliver" \
+       "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
+    case "$(cat "$RDSTORE.deliver" 2>/dev/null)" in
+        "Code review of your uncommitted changes"*"QUEUE-MARKER-$busy"*) ok "and the spool holds the composed review" ;;
+        *) bad "and the spool holds the composed review" "composed header + marker" "$(cat "$RDSTORE.deliver" 2>/dev/null)" ;;
+    esac
+    is "the spool is born 0600" "600" "$(stat -c '%a' "$RDSTORE.deliver" 2>/dev/null || stat -f '%Lp' "$RDSTORE.deliver")"
+    is "no buffer is left behind" "" "$("$TMUX_REAL" -L "$RDS" list-buffers -F '#{buffer_name}' 2>/dev/null | grep 'cockpit-review')"
+    "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review_spool >/dev/null 2>&1
+    rm -f "$RDSTORE.deliver"
+done
 "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate done >/dev/null 2>&1
 rundeliver "$AP" "$RDSTORE"
 case "$(apcap)" in
-    *"NI-MARKER"*) ok "the same review lands once the pane is done" ;;
-    *) bad "the same review lands once the pane is done" "NI-MARKER on the agent pane" "$(apcap)" ;;
+    *"QUEUE-MARKER-running"*) ok "the same review lands as a paste once the pane is done" ;;
+    *) bad "the same review lands as a paste once the pane is done" "marker on the agent pane" "$(apcap)" ;;
 esac
+is "an idle delivery leaves no spool armed" "" "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 
 # group: deliver
 echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
@@ -5197,14 +5211,17 @@ esac
 rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
-echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
-# The mirror of the block above. review_pane() chains the store cleanup after
-# --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
-# torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
-# a bogus pane id) used to throw the whole pinned batch away silently. The
-# store must outlive a refusal: it is the only copy of the review. Its row
-# snapshot must NOT: the popup that needed it is gone.
-if need_tmux "tmux-review refused-delivery store keep"; then :; else
+echo "== tmux-review: a delivery into a busy pane is queued — the store is archived, the spool holds the review, nothing is pasted =="
+# The mirror of the block above, now for a busy target. review_pane() chains
+# the store cleanup after --deliver inside `tmux run-shell -b`, and --deliver
+# runs AFTER the popup is torn down -- but deliver() no longer refuses a busy
+# pane (needs-input, running): it spools the composed review beside the store
+# and arms @cockpit_review_spool, and review-gate drains that spool at the
+# agent's next Stop. Because deliver() now reports success (rc=0) even though
+# nothing was pasted, review_pane()'s chain still runs --done: the store is
+# archived into delivered.md like any other successful delivery, and only the
+# spool -- not the store -- carries the review onward from here.
+if need_tmux "tmux-review busy-delivery queue"; then :; else
 RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
 RKTMPDIR="$STATE/rk-tmp-$$"
 mkdir -p "$RKTMPDIR"
@@ -5237,13 +5254,14 @@ RK_DIRTY=$(mktmpd)
 
 "$TMUX_REAL" -L "$RK" new-window -d -t t: -c "$RK_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
-# The target is sitting on a permission prompt -- deliver()'s guard 3, the
-# refusal a human is most likely to hit right after finishing a review.
+# The target is sitting on a permission prompt -- deliver()'s busy path, the
+# state a human is most likely to leave a pane in right after finishing a
+# review.
 "$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
 # Both preconditions, polled rather than slept for: the fleet queue filters on
 # pane_current_command, so the agent pane's own shell has to be up before
 # --fleet runs (it would otherwise report no dirty agent pane at all), and
-# deliver()'s guard 3 reads @panestate back off the pane.
+# deliver()'s if-shell reads @panestate back off the pane at paste time.
 for i in $(seq 1 20); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RK_AGENT" '#{pane_current_command}')" = claude ] &&
     [ "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @panestate)" = needs-input ] && break
@@ -5258,7 +5276,7 @@ for i in $(seq 1 20); do
     esac
     sleep 0.25
 done
-[ "$rkup" = 1 ] || bad "the fleet queue comes up (refused-delivery case)" \
+[ "$rkup" = 1 ] || bad "the fleet queue comes up (queued-delivery case)" \
     "a visible 'fleet>' prompt" "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")"
 
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
@@ -5298,33 +5316,27 @@ else
 fi
 
 # ^S: the loop exits 20, review_pane fires --deliver through run-shell -b, and
-# deliver() refuses. Wait for the picker's own process to go away first, so
-# the run-shell chain has actually been reached.
+# deliver() queues instead of pasting. Wait for the picker's own process to go
+# away first, so the run-shell chain has actually been reached.
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" C-s
 for i in $(seq 1 30); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RKCTL" '#{pane_current_command}')" = fzf ] || break
     sleep 0.1
 done
-# Bounded poll, not a fixed wait: the store must be there for the whole
-# window in which the (backgrounded) rm could have fired.
-rkkept=1
-for i in $(seq 1 20); do
-    [ -n "$rkstore" ] && [ -e "$rkstore" ] || { rkkept=0; break; }
-    sleep 0.1
-done
-if [ "$rkkept" = 1 ]; then
-    ok "a refused delivery keeps the comment store"
+# Bounded poll, not a fixed wait: unlike a real refusal, a queued delivery
+# still reports success (rc=0), so review_pane()'s chain still archives the
+# store -- its removal rides the same backgrounded run-shell -b as the
+# delivery itself.
+for i in $(seq 1 40); do [ -n "$rkstore" ] && [ -e "$rkstore" ] || break; sleep 0.1; done
+if [ -n "$rkstore" ] && [ -e "$rkstore" ]; then
+    bad "a queued delivery still archives the comment store" \
+        "$rkstore gone" "$rkstore still exists"
 else
-    bad "a refused delivery keeps the comment store" \
-        "$rkstore still on disk" "gone"
+    ok "a queued delivery still archives the comment store"
 fi
-# ...and sheds the snapshot beside it. The two have different lifetimes: the
-# store is the only copy of the review and outlives a refusal on purpose,
-# while "<store>.rows" served the popup, which is already gone. Nothing
-# downstream reads it -- not deliver(), not the --deliver the refusal message
-# tells the human to re-run -- so keeping it would leave a diff-sized file in
-# the popup's TMPDIR that nothing will ever collect. Polled, not slept for:
-# the rm rides the same backgrounded `run-shell -b` as the delivery.
+# ...and sheds the snapshot beside it, exactly as a pasted delivery does:
+# "<store>.rows" served the popup, which is already gone. Polled, not slept
+# for: the rm rides the same backgrounded `run-shell -b` as the delivery.
 rkrowsgone=0
 if [ -n "$rkstore" ]; then
     for i in $(seq 1 20); do
@@ -5338,11 +5350,27 @@ else
     bad "and sheds the row snapshot beside it" \
         "$rkstore.rows removed" "$(ls -la "$RKTMPDIR" 2>&1)"
 fi
-case "$(cat "$rkstore" 2>/dev/null)" in
-    *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
-    *) bad "and the kept store still holds the pinned comment" \
-         "## src.go:3 (+) / keep me" "$(cat "$rkstore" 2>/dev/null)" ;;
+rksess="${rkstore%/*}"
+for i in $(seq 1 20); do [ -s "$rksess/delivered.md" ] && break; sleep 0.1; done
+case "$(cat "$rksess/delivered.md" 2>/dev/null)" in
+    *"## src.go:3 (+)"*"keep me"*) ok "and the archived batch holds the pinned comment" ;;
+    *) bad "and the archived batch holds the pinned comment" \
+         "## src.go:3 (+) / keep me" "$(cat "$rksess/delivered.md" 2>/dev/null)" ;;
 esac
+# The spool: deliver()'s own queue, the only copy of the review that survives
+# --done archiving the store out from under it. review-gate drains it at
+# RK_AGENT's next Stop.
+rkspool="$rkstore.deliver"
+case "$(cat "$rkspool" 2>/dev/null)" in
+    "Code review of your uncommitted changes"*"keep me"*) \
+        ok "and the spool holds the composed review with the pinned comment" ;;
+    *) bad "and the spool holds the composed review with the pinned comment" \
+         "composed header + keep me" "$(cat "$rkspool" 2>/dev/null)" ;;
+esac
+is "the spool is born 0600" "600" \
+   "$(stat -c '%a' "$rkspool" 2>/dev/null || stat -f '%Lp' "$rkspool")"
+is "review-gate's handle is armed on the busy pane" "$rkspool" \
+   "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @cockpit_review_spool)"
 case "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" in
     *"keep me"*) bad "and nothing was pasted into the needs-input pane" \
          "no review text in the agent pane" \

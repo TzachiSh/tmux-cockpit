@@ -72,7 +72,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
   tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
-  tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
+  tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
 In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver   esc discard
@@ -1207,9 +1207,10 @@ compose() {
 #   2. pane_current_command against @cockpit_agents_glob (cockpit.tmux's own
 #      #{m:*|cmd|*,glob} shape, reused verbatim from tmux-jump/tm) -- a shell
 #      pane would EXECUTE review text instead of merely displaying it.
-#   3. @panestate is not needs-input -- a pane sitting on a permission
-#      prompt would take the paste into the dialog, where the Enter this
-#      script tells the human to press becomes a blind approval.
+#   3. (no longer a refusal) a pane that is running or on a permission
+#      prompt gets the review QUEUED: the composed text is spooled beside
+#      the store and @cockpit_review_spool names it; review-gate hands it
+#      over at the agent's next Stop. Nothing is ever pasted into a dialog.
 #   4. store non-empty -- nothing pinned means nothing to deliver.
 #
 # Every refusal names the store. review_pane() deletes it only when delivery
@@ -1252,19 +1253,6 @@ deliver() {
         return 1
     }
 
-    # Guard 3: a pane sitting on a permission prompt. The paste would land in
-    # the dialog and the human's Enter -- the one this script tells them to
-    # press -- becomes a blind approval of whatever tool was being asked about.
-    # @panestate is written only by agent-state, so this is the cheap read.
-    local pstate
-    pstate=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null)
-    if [ "$pstate" = needs-input ]; then
-        tmux display-message \
-            "tmux-review: $pane is waiting on a permission prompt — answer it first$(keep_hint "$pane" "$store")" \
-            2>/dev/null
-        return 1
-    fi
-
     [ -n "$store" ] && [ -s "$store" ] || {
         tmux display-message "tmux-review: nothing to deliver" 2>/dev/null
         return 1
@@ -1272,6 +1260,21 @@ deliver() {
 
     local payload bytes
     payload=$("$SELF" --compose "$store" "$root")
+
+    # The spool: the composed review as a file, born 0600 beside the store. On
+    # the paste path it is the Stop hook's copy if the pane turns out busy at
+    # paste time; on the hook path it is the whole delivery (review-gate hands the
+    # file's text to the agent as Stop hook feedback, and the harness saves any
+    # output past 10,000 characters to a file with a preview and the path, so the
+    # 2048-byte pointer below is paste-only).
+    local spool="$store.deliver"
+    if ! (umask 077; [ ! -L "$spool" ] && printf '%s' "$payload" > "$spool"); then
+        tmux display-message \
+            "tmux-review: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")" \
+            2>/dev/null
+        return 1
+    fi
+
     bytes=$(printf '%s' "$payload" | wc -c)
 
     # Over 2048 bytes: the review becomes a file the agent reads, not a wall
@@ -1317,33 +1320,30 @@ deliver() {
         return 1
     fi
     # The is-agent test the shell ran up top is a ~50ms-stale snapshot: a
-    # compose re-exec, a wc, an mktemp and this load-buffer all sit between it
-    # and the paste. Kill the agent in that window -- a `claude` foreground
-    # child exits and the pane's own shell is back -- and the old unconditional
-    # `paste-buffer` landed the review in that shell (the hunt reproduced it
-    # 6/6, pasting a live, one-Enter-from-running command line the reviewer
-    # never targeted). So the check is redone HERE, by tmux itself, in the same
-    # command-queue item as the paste: `if-shell -F -t <pane>` re-evaluates the
-    # SAME #{m:...} test -- AND guard 3's #{!=:#{@panestate},needs-input}, which
-    # has the identical staleness window: a permission prompt can come up in it
-    # -- against the pane at paste time and only pastes if it is still an idle
-    # agent. The window is closed -- there is no shell round-trip left
-    # between the test and the paste. The early check up top stays as the
-    # cheap fast-fail for a pane that is already not an agent, or already
-    # sitting on a permission prompt.
+    # compose re-exec, a wc, an mktemp, a spool write and this load-buffer all
+    # sit between it and the paste. Kill the agent in that window -- a `claude`
+    # foreground child exits and the pane's own shell is back -- and the old
+    # unconditional `paste-buffer` landed the review in that shell (the hunt
+    # reproduced it 6/6, pasting a live, one-Enter-from-running command line
+    # the reviewer never targeted). So the check is redone HERE, by tmux
+    # itself, in the same command-queue item as the paste: `if-shell -F -t
+    # <pane>` re-evaluates the SAME #{m:...} test -- AND whether @panestate is
+    # running or needs-input, which has the identical staleness window: a
+    # permission prompt (or a tool starting to run) can come up in it -- against
+    # the pane at paste time, and only pastes if it is still an idle agent;
+    # otherwise it takes the queued branch below instead of the paste. The
+    # window is closed -- there is no shell round-trip left between the test
+    # and the paste. The early check up top stays as the cheap fast-fail for a
+    # pane that is already not an agent.
     #
-    # The refused branch deliberately does NOT delete $bufname (only the
-    # delivered branch's `paste-buffer -d` does) -- if-shell's nested command
-    # has already run by the time this CLI call returns (same command-queue
-    # item, no -b job behind it), so the buffer's survival IS the atomic
-    # gate's own true/false outcome, readable here without a second stale
-    # re-test of the pane. Before this, a race-refusal here fell through with
-    # whatever `tmux if-shell` itself returns ("the queue accepted it", always
-    # 0) even though nothing was delivered -- silently breaking the exit-1
-    # refusal contract every early guard above already honors. Checking (and
-    # then clearing) the buffer closes that gap: both refusal paths now share
-    # one contract, and the buffer is gone either way before this function
-    # returns, same as before.
+    # Both arms consume $bufname themselves -- the idle arm's `paste-buffer -d`,
+    # the busy arm's `delete-buffer` -- because if-shell's nested command has
+    # already run by the time this CLI call returns (same command-queue item,
+    # no -b job behind it), so the buffer's survival is only possible if tmux
+    # never ran either arm at all (the pane vanished between load-buffer and
+    # if-shell). The post-if-shell check below exists for that gap, not to
+    # distinguish paste from queue -- both arms are exit-0 successes and both
+    # report themselves via their own display-message.
 
     # Where the review landed, named the way a human navigates: "work:2 api"
     # beats a bare %7 when the pane is three windows away. Read once, HERE,
@@ -1376,10 +1376,19 @@ deliver() {
     where=${where//\'/}
     where=${where//#/##}
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
+
+    # Armed FIRST, disarmed by the idle arm below: the busy/idle choice is made
+    # by tmux inside one command-queue item, and arming ahead of it means the
+    # spool is never armed on a pane that just took the paste, and never
+    # missing on one that did not. A pane that stopped being an agent inside
+    # the ~50ms window keeps a harmless armed option that dies with it --
+    # review-gate only ever runs from an agent's own hook.
+    tmux set-option -p -t "$pane" @cockpit_review_spool "$spool" 2>/dev/null
+
     tmux if-shell -F -t "$pane" \
-        "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
-        "set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
-        "display-message 'tmux-review: $pane is not an idle agent — not delivered'"
+        "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
+        "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
+        "delete-buffer -b $bufname ; display-message -d 0 'review queued for $where ($pane) — it lands when the agent next stops'"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
