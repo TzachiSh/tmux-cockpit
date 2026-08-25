@@ -530,13 +530,23 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
+| `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
+| `^X` | — | delete the comment(s) on the row under the cursor |
+| `^L` | — | show every pinned comment in the terminal |
+| `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
 | `^S` | — | deliver the whole batch |
 | `esc` | cancel | discard the batch — asks first when comments are pinned |
 
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
-terminals where the plain chord doesn't land. The list reloads in place and
-marks the row `●`, so five comments cost one popup, not five — the same
+terminals where the plain chord doesn't land. `^E` hands what you have typed
+to `$EDITOR` and pins the file that comes back, so a comment that needs three
+lines costs no more than one — an empty file pins nothing, so deleting
+everything and saving is the cancel. The popup's children see the tmux
+*server's* environment: export `EDITOR` before the server starts, or
+`tmux set-environment -g EDITOR nvim` for a running one. The list reloads
+in place and marks the row `●` (the digit instead, when more than one
+comment sits there), so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch; `esc` discards it — and with comments
 pinned it asks first (`keep reviewing` / `discard N comment(s)`), because
@@ -544,6 +554,13 @@ one reflexive escape should not throw away a twenty-comment review.
 **`↵` pins a comment — it never approves.** With nothing typed it does
 nothing: there is no accept-all key on purpose, a review whose only exit is
 one Enter on the whole diff is the rubber stamp this replaces.
+
+The rows are a **snapshot** taken when the popup opens, so an agent that
+keeps editing cannot move a `●` onto a line you never touched. When you do
+want its newest lines, `^R` takes a fresh snapshot on purpose and names the
+comments that no longer sit on a changed line — they still deliver, because
+the quoted fragment is what the agent finds them by. A resumed review says the
+same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
 
 A comment lands as:
 
@@ -596,10 +613,18 @@ What this deliberately does **not** do, and why:
   the agent is mid-tool on, destroying in-flight work; typed text plus a
   human's own Enter lands at the next turn boundary instead
   (claude-code issues #63190, #30492).
-- **No review daemon, server, or state that outlives the popup.** The
-  spillover file an oversized review lands in is the delivery vehicle, not a
-  store — the OS tmpdir is the only garbage collector it gets, the same as
-  everything else this plugin writes.
+- **No review daemon, server, or port.** What *does* outlive the popup is
+  one directory per review under
+  `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
+  created `0700`, holding `comments.md` and its row snapshot. It exists so a
+  dropped SSH client — which tears down a client-owned popup — cannot take a
+  twenty-comment review with it: `prefix + r` on the same pane resumes it,
+  marks and all. It is removed when the review is discarded or delivered and
+  kept, and named in the message, when delivery is refused. There is no
+  garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
+  The spillover file an oversized review lands in is the delivery vehicle,
+  not a store — the OS tmpdir is the only garbage collector it gets, the
+  same as everything else this plugin writes.
 - **Every comment carries `path:line` and the quoted source line**, never a
   line number alone. A bare number goes stale the instant the agent edits
   again — the same staleness that makes a GitHub review comment "outdated"

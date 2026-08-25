@@ -10,6 +10,44 @@ status-right agent_fleet           36       144        360
 FULL shipped config                84       300        696
 (additive at every shape: 20+28+36=84, 84+72+144=300, 216+120+360=696)
 
+=== 2026-08-25: WHAT A MOVE COSTS (gate.sh, same rule, same ratio) ===
+Moving between projects is a status redraw the owner triggers by hand all day,
+so it is priced against the same rule: at most one full server walk per move.
+3x10x4 = 120 agent panes -- window s1:1 all in repo alpha, s1:2 all in repo
+bravo -- plus one plain terminal window (no agent).
+
+TWO PANE COUNTS, ON PURPOSE. The terminal window is a 121st pane, so every
+move number below is measured on a 121-pane server while the status-redraw
+baseline is the historic 120-pane one (comparable with every row above). Each
+is judged against its own budget: 120 and 121 at BUDGET_RATIO 1.0.
+
+                                          panes  run 1   run 2
+status redraw (the historic baseline)       120    696     696
+project window -> project window            121    706     706
+agent window -> terminal window             121    712     712
+pane -> pane inside a window                121    706     706
+plain redraw on the SAME server             121    706     706   <- the yardstick
+
+5.8 AND 5.9 ARE THE SAME WALK. 696/120 = 5.80, 706/121 = 5.83, and the gate's
+"worst move 5.9" is the agent->terminal number: 712/121 = 5.88; the ratios
+differ in the second decimal, not in kind. The extra ~10 visits are the 121st
+pane being walked 5.8 times, not a move being dearer than a redraw -- which is
+exactly what the yardstick row says: a plain forced redraw on the 121-pane
+server also costs 706, and project->project and pane->pane cost 706 to the
+visit. agent->terminal window costs 712 (+6, 0.85%): one window's worth of
+extra border work for the window being left, not a second walk.
+
+The repo split (alpha vs bravo) is scene-setting that keeps the label honest,
+not a variable the number depends on: the formats key on
+#{pane_current_command} and @panestate, never on the pane's path. Measured --
+the project move was s1:0 -> s1:2 before and s1:1 -> s1:2 after, same 706.
+
+VERDICT: FAIL, unchanged from master and for master's reason -- 5.8 full
+server walks per redraw, the pre-existing tmux.conf marker walk (project
+memory `freeze-precompute-pattern`). Nothing a move introduced, and phase 2
+added no option and no format. No move exceeds a redraw on the same server.
+Both runs identical to the visit.
+
 === A. server CPU per forced status redraw (idle, 4 visible) ===
 
 VAR  ELEMENT                    SxWxP     PANES  VIS  ms/status ms/full-redraw
