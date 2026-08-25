@@ -28,7 +28,8 @@ agent window -> terminal window             121    712     712
 pane -> pane inside a window                121    706     706
 plain redraw on the SAME server             121    706     706   <- the yardstick
 
-5.8 AND 5.9 ARE THE SAME WALK. 696/120 = 5.80 and 706/121 = 5.83; the ratios
+5.8 AND 5.9 ARE THE SAME WALK. 696/120 = 5.80, 706/121 = 5.83, and the gate's
+"worst move 5.9" is the agent->terminal number: 712/121 = 5.88; the ratios
 differ in the second decimal, not in kind. The extra ~10 visits are the 121st
 pane being walked 5.8 times, not a move being dearer than a redraw -- which is
 exactly what the yardstick row says: a plain forced redraw on the 121-pane
