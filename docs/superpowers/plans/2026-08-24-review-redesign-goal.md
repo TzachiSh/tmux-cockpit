@@ -57,6 +57,14 @@ https://claude.ai/code/artifact/8682a108-927b-4fa3-aeb2-a2f6e100a84c
   **current** `master` (it moved during this research: `abed845` is the tip as of writing;
   rebase before opening a lane). Never edit the main checkout — another session shares it
   (project memory `concurrent-sessions-shared-worktree`).
+- **Ponytail governs the build** (the `ponytail` skill, level full, added 2026-08-25): the
+  ladder runs *after* the reading, never instead of it — trace the whole flow, then ship the
+  shortest diff that works. No rename for its own sake, no abstraction with one caller, no
+  file split with one consumer, no column without a reader; deletion over addition; a
+  deliberate ceiling gets a `# ponytail:` comment naming the upgrade path. Each phase plan
+  carries a **ponytail audit** table saying what the lens's scope lost to it and why — phase
+  2's is the first (`2026-08-25-review-phase2.md`); the lens reports stay the research, the
+  audit is the build.
 
 ---
 
@@ -66,7 +74,7 @@ https://claude.ai/code/artifact/8682a108-927b-4fa3-aeb2-a2f6e100a84c
 |---|---|---|---|
 | **0 — bugs** | `@panestate` delivery guard · `git diff HEAD` union + untracked rows · non-collapsing row parse (`\x1f`-safe) · `↵` attaches · esc confirms · colour + two-line header · full-line fragment in the store · persistent `REVIEW ↵` state + `prefix J` cycles it · fleet rows with state/repo/branch, state-first sort, blocked-but-clean panes listed · `core.quotePath=false` in the preview · preview follows the cursor | 11 fail-first tests green; `make check` green twice; leak sweep clean | `2026-08-24-review-phase0-1.md` Tasks 1–11 |
 | **1 — perf** | numstat-first byte+row cap · awk-only row emission (byte-identical goldens) · cached rows + awk re-mark on reload · memoised preview · `xargs -P` fleet with `--no-optional-locks` · batched `agent-state` tmux calls · truncate-before-strip | timing gates with `timeout` teeth: 4900-row open < 200 ms, one alt-Enter < 60 ms, lockfile "too large" < 1.5 s, 50-pane fleet < 500 ms; goldens byte-identical | same file, Tasks 12–18 |
-| **2 — artifact** | session dir + `diff.tsv` snapshot · `lib/review-store.sh` with `parse` = inverse of `format`, full grammar (ranges, file-level, `source` field) · `lib/review-diff.awk` · noun-verb subcommands with `--flag` aliases · `^R` re-snapshot with stale report · `^X` delete, `@` list, `●N` · `^E` editor · golden `.tsv` fixtures · replace 25 fixed sleeps with polls | round-trip property test over adversarial bodies; mid-review-mutation test (the anchor-drift repro, fail-first); boundary test `grep -L 'tmux\|git' scripts/lib/*` lists both libs | to write after §8 #1 |
+| **2 — artifact** | session dir under `$XDG_STATE_HOME/tmux-cockpit/review/<pane>-<root>/` (0700; resume on reopen; gone on discard/delivery, kept on refusal) · `lib/review-store.sh` with `parse` = inverse of `format`, full grammar (ranges, file-level) — **landed** · `snapshot()` owns the `<store>.rows` artifact · `^R` re-snapshot with stale report (and the same report on resume) · `^X` delete under cursor via the parser · one-column count marker · `^L` store-in-preview · `^E` `$EDITOR` with `display-popup -e` pass-through · `make test-only` · 9 event-waits polled — *ponytail-audited: no noun-verb rename, no awk split, no `diff.tsv`/`meta`, no `@` picker (a printable key in a comment box), 12 negative/settle sleeps kept* | round-trip property test (landed); `^R` mutation test fail-first; a review survives `kill-pane` of its client; `--detach` through a symlinked install; boundary test lists the one lib; `make check` green twice unpiped; freeze rig unchanged | `2026-08-25-review-phase2.md` |
 | **3 — the loop** | `scripts/review-gate` on `Stop` → `@cockpit_review pending` + precomputed `◆N` · Stop-hook drain delivery, paste when idle · rewritten compose header + close-out line · base resolution + `^B` · `^A` approve → checkpoint · re-review delta `↺` · `prefix r` always the queue, loops back after delivery · `@cockpit_review_window` · `/cockpit-review` skill + `--request` (exit 10) · SKILL.md · `transcript_path`/`session_id` in pane options, `ai-title` labels · confirm-before-deliver `[y/N/e]` · `prefix i` info popup · plan-mode review (intercept `ExitPlanMode`) if §8 #6 says yes | hook never blocks (5 s timeout, `read -t`); rewake-loop test (hook fires twice, delivers once); pane-visits-per-redraw gate unchanged (freeze rig); every new option precomputed | to write after §8 #1–#3, #6 |
 | **4 — delegate** | `@cockpit_reviewer = fzf\|revdiff\|hunk\|tuicr` — revdiff first, stdout → `parse` → `deliver` unchanged · hunk as opt-in with poller + reaper · `--seed` agent comments (`◆`) · opt-in `PreToolUse Bash(git commit *)` gate · opt-in AI first pass, five-nit cap, never blocks the popup · `delta`/`difftastic` in the preview · hunk-level rows with line drill-in | backend contract test: a fake reviewer binary that prints a fixed grammar and exits 10 lands in `deliver` byte-identically; hunk test asserts port 47657 is free after the popup closes | to write after §8 #4 and the coexistence report |
 | **5 — gate** | nothing — a decision: fund a first-party Go TUI? | — | the HN check (§6c) says no; revisit only with new evidence |
@@ -170,7 +178,7 @@ next task.
    batched `agent-state` calls.
 5. Merge phase 1. Measure again with the perf lens's `bench.sh` and record the numbers in
    the commit messages.
-6. Owner answers §8. Lead writes the phase 2 plan (the dev lens's §5 is the spec), then 3, then 4.
+6. Owner answers §8 — **done 2026-08-25, all seven on the memo's recommendations.** Phase 2's plan is `2026-08-25-review-phase2.md` (dev lens §5 as spec, ponytail-audited); 3 and 4 follow the same shape.
 
 ## 6. Measures of done
 
