@@ -3118,6 +3118,26 @@ else
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
 
+echo "== tmux-review --rows: re-marking after a comment reads the cache, not git =="
+# The picker reloads the WHOLE marked list after every pinned comment, and
+# rows_mode re-derived that list from `git diff` + the full row build every
+# single time. The rows themselves cannot change while the popup is open, so
+# run_loop snapshots --lines into "$store.rows" once at open and each reload
+# only re-marks that snapshot. Measured on a 4900-row diff with 500 comments
+# pinned: 306ms per reload before, 15ms after. The snapshot must also be
+# INVISIBLE -- same bytes as re-deriving the rows from the tree.
+RV49=$(mktmpd); ( cd "$RV49" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'seed\n' > f; git add -A; git commit -q -m init; seq 1 4900 > f ) >/dev/null 2>&1
+RV49S=$(mktmpf); "$DIR/scripts/tmux-review" --lines "$RV49" > "$RV49S.rows"
+for i in $(seq 1 500); do printf '## f:%d (+)\n> %d\nc\n\n' "$i" "$i"; done > "$RV49S"
+if timeout 0.15 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null; then
+    ok "a 500-comment re-mark over 4900 rows takes under 0.15s (measured 306ms before, 15ms after)"
+else bad "a 500-comment re-mark over 4900 rows takes under 0.15s" "exit within 0.15s" "timeout"; fi
+rm -f "$RV49S.rows"; "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
+is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
+is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
+rm -rf "$RV49" "$RV49S"
+
 echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
 RVBL=$(mktmpd)
 (

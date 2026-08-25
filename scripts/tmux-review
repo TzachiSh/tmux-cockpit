@@ -542,44 +542,77 @@ rows_mode() {
     local dir=$1 store=$2
     [ -n "$dir" ] || return 0
 
-    # The store's "## path:line (sign)" headers, read ONCE into a set, so the
-    # per-row marker test is an associative-array lookup instead of a fresh
-    # `grep -qxF` over the whole store PER ROW. On a 2000-row diff that grep
-    # fired 2000 times per reload, and the picker reloads after every pinned
-    # comment -- the whole list re-marked from scratch each time. A header line
-    # is the store's own grammar (attach() writes exactly "## ..."), so an
-    # exact-string key matches what grep -qxF matched.
-    local -A commented=()
-    if [ -n "$store" ] && [ -f "$store" ]; then
-        local hdr
-        while IFS= read -r hdr; do
-            case "$hdr" in '## '*) commented["$hdr"]=1 ;; esac
-        done < "$store"
+    # The rows the popup shows are a SNAPSHOT, not a live read. run_loop
+    # writes lines_mode's output to "<store>.rows" once when the popup opens
+    # and every reload re-marks that file instead of asking git again: the
+    # picker is modal, so the tree cannot move under it, and pinning a comment
+    # changes only which rows carry a marker. Without the snapshot every
+    # pinned comment re-ran the whole git diff + row build -- measured on a
+    # 4900-row diff with 500 comments pinned, 306ms per reload against 15ms
+    # now, and the list visibly stalled between comments.
+    #
+    # This is also the phase-0 "review the live tree" mitigation: the rows the
+    # reviewer comments on stay the rows the reviewer SAW, even if the agent
+    # writes to the tree mid-review. It is not a diff cache -- there is no
+    # invalidation and no staleness window past the popup, because the file
+    # dies with the store that names it.
+    #
+    # No snapshot (a bare --rows call, or a run whose store was never opened
+    # through the loop) still derives the rows from the tree, and the two
+    # produce the same bytes for the same tree.
+    local hdr=/dev/null
+    [ -n "$store" ] && [ -f "$store" ] && hdr=$store
+    if [ -n "$store" ] && [ -s "$store.rows" ]; then
+        mark_rows "$hdr" "$store.rows"
+    else
+        mark_rows "$hdr" <(lines_mode "$dir")
     fi
+}
 
-    # Tab is IFS whitespace, so `IFS=$'\t' read` COLLAPSES a run of tabs -- an
-    # empty fragment (a blank added line) shifted the display into field 3 and
-    # the marker became the whole row. Reproduced: 2 of 18 rows rendered blank.
-    # Split by hand instead; an empty field stays an empty field.
-    local row rest path line fragment display off sign num marker
-    while IFS= read -r row; do
-        [ -n "$row" ] || continue
-        path=${row%%$'\t'*};      rest=${row#*$'\t'}
-        line=${rest%%$'\t'*};     rest=${rest#*$'\t'}
-        fragment=${rest%%$'\t'*}; rest=${rest#*$'\t'}
-        display=${rest%%$'\t'*};  off=${rest#*$'\t'}
-        case "$line" in
-            -*) sign="-"; num=${line#-} ;;
-            *)  sign="+"; num=$line ;;
-        esac
-        marker=" "
-        [ -n "${commented["## ${path}:${num} (${sign})"]:-}" ] && marker="●"
-        case "$sign" in
-            +) display=${display/ (+) / $'\e[32m'(+)$'\e[0m' } ;;
-            -) display=${display/ (-) / $'\e[31m'(-)$'\e[0m' } ;;
-        esac
-        printf '%s\t%s\t%s\t%s%s\t%s\n' "$path" "$line" "$fragment" "$marker" "$display" "$off"
-    done < <(lines_mode "$dir")
+# The marking itself: ONE awk over the store and the rows, no shell per row.
+# What stood here read the store's headers into an associative array and then
+# ran a bash loop over every row -- a by-hand tab split, an array lookup, two
+# ${var/from/to} substitutions and a printf, an interpreter step apiece. On
+# the 4900-row/500-comment shape that loop was ~240ms of the 306ms; the same
+# work in awk is ~4ms (68ms end to end against lines_mode's own 64ms floor).
+# The bash marking was never the store lookup; it was bash, the same finding
+# the row build in lines_mode already made.
+#
+# Streams are told apart by FILENAME == ARGV[1], not by `NR == FNR`: the store
+# is EMPTY the first time the popup opens (mktemp just made it), and with an
+# empty first file `NR == FNR` is true for the SECOND file's first record too
+# -- every row would have been read as a store header and the list would have
+# come out blank. Same trap, same sidestep, as the estimate awk in lines_mode.
+#
+# LC_ALL=C for the same reason lines_mode sets it: every substr/length here is
+# meant to be bytes, and gawk under a UTF-8 locale counts characters instead.
+#
+# Two properties the bash loop had to work for, kept here for free. -F"\t"
+# does NOT collapse a run of tabs the way `IFS=$'\t' read` does, so an empty
+# fragment (a blank added line) stays an empty field instead of shifting the
+# display one column left -- reproduced once as 2 of 18 rows rendering blank.
+# And a marker key is an exact string, matching what the `grep -qxF` before it
+# matched: "## " is the store's own grammar, written by attach() and nothing
+# else, so a substr test on the first three bytes cannot pick up a body line.
+mark_rows() {                 # <store-or-/dev/null> <rows-file>
+    LC_ALL=C awk -F'\t' -v OFS='\t' '
+        FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0] = 1; next }
+        NF == 0 { next }
+        {
+            # A deletion carries the OLD line number prefixed "-", so the
+            # marker key has to split the sign back off -- a (+) and a (-) row
+            # at the same line number are two different anchors.
+            sign = (substr($2, 1, 1) == "-") ? "-" : "+"
+            num = $2; sub(/^-/, "", num)
+            m = (("## " $1 ":" num " (" sign ")") in c) ? "●" : " "
+            # Prepend, never repaint: "●" and " " are both one column, so a
+            # marked row does not shift against an unmarked one.
+            disp = $4
+            if (sign == "+") sub(/ \(\+\) /, " \033[32m(+)\033[0m ", disp)
+            else             sub(/ \(-\) /,  " \033[31m(-)\033[0m ", disp)
+            print $1, $2, $3, m disp, $5
+        }
+    ' "$1" "$2"
 }
 
 # One block, appended -- never rewrite the store, only grow it, so a crash or
@@ -652,6 +685,20 @@ attach() {
     } >> "$store"
 }
 
+# The store and the row snapshot beside it go together: the snapshot is scratch
+# that belongs to ONE popup, and the popup's mktemp directory must not
+# accumulate a 4900-row file per review. Every path that drops the store drops
+# both; the paths that deliberately KEEP a store (a refused delivery, an fzf
+# that could not ask about the pinned comments) keep both, because that store
+# is still a review someone can re-deliver.
+#
+# Empty store: nothing to remove. `rm -f -- "" ".rows"` would otherwise reach
+# for a file actually named ".rows" in the current directory.
+drop_store() {
+    [ -n "${1:-}" ] || return 0
+    rm -f -- "$1" "$1.rows"
+}
+
 # --- --loop ----------------------------------------------------------------
 # tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
 # keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
@@ -683,11 +730,24 @@ run_loop() {
     # exactly what lines_mode would report. The count is only a presence test
     # now -- the split below is a percentage, so nothing here has to measure
     # the terminal.
+    #
+    # And that ONE parse is the only one this popup ever pays: it lands in
+    # "<store>.rows" and every rows_mode below -- fzf's own reload() after each
+    # pinned comment, and the two rebuilds on the keep-reviewing paths -- reads
+    # it back and only re-marks it. The snapshot is deliberately NOT refreshed
+    # afterwards: the rows a reviewer comments on must stay the rows the
+    # reviewer SAW, even if the agent writes to the tree while the popup is up.
+    # (That is the phase-0 mitigation for reviewing a live tree; it is not a
+    # diff cache that outlives anything -- it dies with the store below.)
+    #
+    # Guarded on a non-empty store because "$store.rows" with no store is
+    # ".rows", a real path in whatever directory this was run from.
+    [ -n "$store" ] && lines_mode "$dir" > "$store.rows"
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
         tmux display-message "tmux-review: no uncommitted changes" 2>/dev/null
-        rm -f -- "$store"
+        drop_store "$store"
         exit 0
     fi
 
@@ -750,24 +810,26 @@ run_loop() {
                     # keep the store, say where it is, exit 0.
                     case "$crc" in
                         0) ;;              # a row was chosen; $choice decides
-                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;
+                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;   # same snapshot, re-marked
                         *)  tmux display-message \
                                 "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
                                 2>/dev/null
                             exit 0 ;;
                     esac
                     case "$choice" in
-                        discard*) rm -f -- "$store"; exit 0 ;;
-                        *)  # Back to the list, store kept. Rebuild the rows:
+                        discard*) drop_store "$store"; exit 0 ;;
+                        *)  # Back to the list, store kept. Re-mark the rows:
                             # the marks in $rows_out are from before the
                             # comments were pinned, and fzf's own reload only
                             # ever touched the list inside the session that
-                            # just exited.
+                            # just exited. This re-marks the SNAPSHOT taken at
+                            # open, not the tree -- "keep reviewing" is the
+                            # same review, so it has to be the same rows.
                             rows_out=$(rows_mode "$dir" "$store")
                             continue ;;
                     esac
                 fi
-                rm -f -- "$store"; exit 0 ;;
+                drop_store "$store"; exit 0 ;;
         esac
 
         # Line 1 is the typed query (--print-query); unused here because
@@ -780,7 +842,7 @@ run_loop() {
         # No --expect key matched -- enter/alt-enter stay inside the picker via
         # execute-silent, so this should not happen, but an unmatched exit is a
         # discard, never a silent deliver.
-        rm -f -- "$store"
+        drop_store "$store"
         exit 0
     done
 }
@@ -1180,7 +1242,7 @@ review_pane() {
         # only copy of the review, and the human never even saw it happen. A
         # refused store is left on disk on purpose; deliver()'s message names
         # it and the command that re-delivers it.
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store")"
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store") $(shq "$store.rows")"
     fi
 }
 
