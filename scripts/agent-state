@@ -1,6 +1,6 @@
 #!/bin/bash
 # Record a tmux pane's agent state. Called from Claude Code hooks and tmux hooks.
-#   usage: agent-state <running|needs-input|error|done|off|notify> [pane-id]
+#   usage: agent-state <running|needs-input|error|done|off|notify|recount> [pane-id]
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # State is a per-pane tmux option, so it dies with the pane.
 set -u
@@ -149,8 +149,11 @@ esac
 # Reject anything that is not a real state. Without this an unknown argument --
 # a typo, or a mode removed from the config but still referenced somewhere --
 # is written to the option verbatim and every reader then sees garbage.
+# recount writes no state -- it re-derives the counters below from what the
+# options already say (review-gate and tmux-review call it after touching
+# @cockpit_review).
 case "$state" in
-    running|needs-input|error|done|off) ;;
+    running|needs-input|error|done|off|recount) ;;
     *) exit 0 ;;
 esac
 
@@ -165,9 +168,9 @@ esac
 # permission prompt still on screen is the thing actually blocking you.
 case "$current" in
     needs-input)
-        case "$state" in running|off) ;; *) exit 0 ;; esac ;;
+        case "$state" in running|off|recount) ;; *) exit 0 ;; esac ;;
     error)
-        case "$state" in running|off|needs-input) ;; *) exit 0 ;; esac ;;
+        case "$state" in running|off|needs-input|recount) ;; *) exit 0 ;; esac ;;
 esac
 
 # @panestate is written ONLY here, and that is load-bearing for the banner. The
@@ -187,6 +190,12 @@ if [ "$state" = off ]; then
     # caller passes `off` (only SessionStart/SessionEnd, once each), so falling
     # through costs one redraw the first time an idle agent appears, nothing after.
     [ -n "$current" ] && tq set-option -pu -t "$pane" @panestate
+    # A session that ends takes its review attention with it: a pending mark
+    # or a queued spool on a pane whose agent is gone would count forever.
+    tq set-option -pu -t "$pane" @cockpit_review
+    tq set-option -pu -t "$pane" @cockpit_review_spool
+elif [ "$state" = recount ]; then
+    :                                       # nothing to write; derive below
 else
     [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw (and
                                             # nothing is queued yet, so there is
@@ -292,6 +301,12 @@ fmt_state='#{?#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpi
 fmt_nb='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
 fmt_ne='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
 
+# ◆N: agent panes whose review-gate flagged a finished, unreviewed diff
+# (@cockpit_review = pending). Same walk, same guard, same batch -- one more
+# #{n:} in the read below, one more glyph in the string. Ranked last: an agent
+# waiting on you (▲) or dead (✕) outranks one waiting to be read.
+fmt_nr='#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
+
 # --- all three derivations, and the three values they are compared against, in
 # --- ONE round-trip, queued behind the writes above ---------------------------
 # This was six separate `tmux` processes: three display-message walks (the
@@ -315,7 +330,7 @@ fmt_ne='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?#{m:*|#{pane_current_com
 # colour tokens survive the read and still compare equal to what was stored.
 sep=$'\037'
 tq display-message -p -t "$pane" \
-    "$fmt_needs$sep"'#{@cockpit_win_needs}'"$sep$fmt_state$sep"'#{@cockpit_win_state}'"$sep$fmt_nb$sep$fmt_ne$sep"'#{@cockpit_fleet}'
+    "$fmt_needs$sep"'#{@cockpit_win_needs}'"$sep$fmt_state$sep"'#{@cockpit_win_state}'"$sep$fmt_nb$sep$fmt_ne$sep$fmt_nr$sep"'#{@cockpit_fleet}'
 # Not tflush: this one hands its output back. Same fail-open -- a dead server
 # yields an empty string, every field then reads empty, and empty fields ask for
 # no writes at all, which is what the separate reads did when they failed too.
@@ -326,6 +341,7 @@ win_state=${pre%%"$sep"*};     pre=${pre#*"$sep"}
 win_state_cur=${pre%%"$sep"*}; pre=${pre#*"$sep"}
 nb=${pre%%"$sep"*};            pre=${pre#*"$sep"}
 ne=${pre%%"$sep"*};            pre=${pre#*"$sep"}
+nr=${pre%%"$sep"*};            pre=${pre#*"$sep"}
 fleet_cur=$pre
 
 # The compare-then-set guards, unchanged in substance: a counter that did not
@@ -345,6 +361,7 @@ fi
 fleet=""
 case "$nb" in ''|0|*[!0-9]*) ;; *) fleet="#[fg=#{@thm_red}#,bold]▲$nb#[default] " ;; esac
 case "$ne" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_peach}]✕$ne#[default] " ;; esac
+case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_yellow}]◆$nr#[default] " ;; esac
 [ "$fleet" = "$fleet_cur" ] || tq set-option -gq @cockpit_fleet "$fleet"
 tflush
 

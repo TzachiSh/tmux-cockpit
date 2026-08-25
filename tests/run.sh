@@ -477,6 +477,37 @@ is "and the stored count still carries its colour tokens" \
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
+if need_tmux "agent-state recount"; then :; else
+tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆1'*) ok "recount adds ◆1 to the fleet string" ;;
+    *) bad "recount adds ◆1 to the fleet string" "…◆1…" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+esac
+tmux set-option -p -t "$PANE" @cockpit_review sent >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆'*) bad "a sent review is not a pending one" "no ◆" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+    *) ok "a sent review is not a pending one" ;;
+esac
+tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
+tmux set-option -p -t "$PANE" @cockpit_review_spool /nonexistent >/dev/null 2>&1
+tmux set-option -p -t "$PANE" @panestate needs-input >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'▲'*'◆1'*) ok "recount runs under a sticky needs-input too, ▲ before ◆" ;;
+    *) bad "recount runs under a sticky needs-input too, ▲ before ◆" "▲N … ◆1" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+esac
+st off "$PANE"
+is "off clears the review state" "" "$(tmux show-option -pqv -t "$PANE" @cockpit_review)"
+is "off clears a queued spool" "" "$(tmux show-option -pqv -t "$PANE" @cockpit_review_spool)"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆'*) bad "and the ◆ is gone" "no ◆" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+    *) ok "and the ◆ is gone" ;;
+esac
+fi
+
 echo "== worktree in the branch label =="
 wtroot=$(mktmpd)
 # Build a throwaway repo instead of borrowing a real one. Pointing this at
