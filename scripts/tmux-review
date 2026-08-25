@@ -786,6 +786,12 @@ detach() {                    # <store> <path> <line-with-sign>
     . "$LIBDIR/review-store.sh"
     declare -A STORE=() OUT=(); STORE_N=0
     parse_store "$store"
+    # A store that fails to parse is moved aside to .bak and STORE_N comes
+    # back 0 -- the [ -s "$store" ] guard above already sent a genuinely
+    # empty file home, so 0 here can only mean the parse was rejected.
+    # Falling through would format_store 0 records over the ORIGINAL path,
+    # silently erasing it a second time (past the .bak) under execute-silent.
+    [ "$STORE_N" -gt 0 ] || return 0
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] && continue
@@ -883,6 +889,22 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
+    #
+    # ^L's own bind resets the window to +1: --preview-window's +{5}-/2 is the
+    # DIFF row's scroll offset, and left in force it scrolls the store listing
+    # (a handful of lines) to wherever that row sits in the diff -- past the
+    # end of the store for any row more than a screen in. `preview(...)` is
+    # one-shot (measured: the CONTENT reverts to $preview_cmd on the very next
+    # cursor move, no rebind needed here), but the window offset is not -- it
+    # stays at +1 until something sets it again, so `focus` (fired on every
+    # selection change) reapplies the dynamic +{5}-/2. Measured limitation:
+    # fzf 0.44.1 gets the offset itself right away when the list doesn't have
+    # to scroll, but when it does, the first focus event after ^L still
+    # settles at +1 -- correct content, wrong scroll position -- and it is
+    # the SECOND move that lands on +{5}-/2; a `--preview-window` respec (this
+    # bind), a bare `change-preview-window()` (fzf's own "back to default"),
+    # and two chained calls in one bind all show the same one-move lag, so it
+    # is fzf's, not this bind's, only reproduced when the list itself scrolls.
     local out rc key n choice crc
     while :; do
         out=$(printf '%s\n' "$rows_out" \
@@ -893,7 +915,8 @@ run_loop() {
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-r:execute(${resnap_cmd})+reload(${rows_cmd})" \
                   --bind "ctrl-x:execute-silent(${detach_cmd})+reload(${rows_cmd})" \
-                  --bind "ctrl-l:show-preview+preview(cat -- $(shq "$store") 2>/dev/null)" \
+                  --bind "ctrl-l:show-preview+change-preview-window(down,55%,border-top,+1)+preview(cat -- $(shq "$store") 2>/dev/null)" \
+                  --bind "focus:change-preview-window(down,55%,border-top,+{5}-/2)" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --preview "$preview_cmd" \
                   --preview-window="down,55%,border-top,+{5}-/2" \

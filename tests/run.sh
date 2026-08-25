@@ -5471,7 +5471,13 @@ RXDIR=$(mktmpd)
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git init -q -b main .
   printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
-  printf 'a\nb\nCHANGED\n' > src.go
+  # 40 added lines, not one: ^L's own bind used to leave --preview-window's
+  # +{5}-/2 (the DIFF row's scroll offset) in force over the store listing,
+  # so a row more than a screen into the diff showed the LAST line of the
+  # store and nothing else -- and a fixture that changes one line can never
+  # reach that offset, so the round trip below pins the row it comments on
+  # to the LAST added line (src.go:42, offset in the 40s) on purpose.
+  { printf 'a\nb\n'; seq -f 'line%g' 1 40; } > src.go
 ) >/dev/null 2>&1
 RXSTORE="$STATE/review-detach-$$"
 # --detach on its own, through a symlink the way install.sh puts it on PATH:
@@ -5485,27 +5491,68 @@ is "--detach removes every record on that anchor and keeps the rest byte-for-byt
 is "a deletion's anchor is matched with its sign" "0" "$(grep -c '^## ' "$RXSTORE")"
 "$RXBIN/tmux-review" --detach "$RXSTORE" "" ""; rxrc=$?
 is "an empty anchor is a no-op, exit 0" "0" "$rxrc"
+# parse_store's OWN reaction to a broken grammar is to move the file to
+# .bak and hand back STORE_N=0 -- detach() used to trust that as "nothing to
+# remove" and format_store the (now-blank) state straight back over the
+# original path: a store that fails to parse got .bak'd AND replaced with an
+# empty file, silently, under execute-silent. The unescaped "## " body line
+# below is what breaks the grammar (parse_store reads it as a new header).
+RXBAD="$STATE/review-detach-bad-$$"
+printf '## src.go:1 (+)\n> a\nfirst body line\n## this line breaks the grammar\n\n' > "$RXBAD"
+RXBADORIG=$(cat "$RXBAD")
+"$RXBIN/tmux-review" --detach "$RXBAD" src.go 1; rxbadrc=$?
+is "--detach still exits 0 when the store fails to parse" "0" "$rxbadrc"
+is "and does not recreate the original path with an empty store" \
+   "gone" "$([ -e "$RXBAD" ] && echo present || echo gone)"
+is "the original content survives untouched in .bak" "$RXBADORIG" "$(cat "$RXBAD.bak" 2>/dev/null)"
 : > "$RXSTORE"
 "$TMUX_REAL" -L "$RX" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 RXP=$("$TMUX_REAL" -L "$RX" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "'$DIR/scripts/tmux-review' --loop '$RXDIR' '$RXSTORE'" Enter
 until_cap "$RX" "$RXP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
+# The row under the cursor at open is the FIRST added line (src.go:3); walk
+# down to the LAST one (src.go:42) before pinning, so the row commented on
+# below is the one whose diff-preview offset is deep enough (~44) to have
+# been the vacuous-pass case (offset ~4) in the first version of this test.
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" -N 39 Down
+until_cap "$RX" "$RXP" '*src.go:42 (+)*' || bad "walked down to the last added line" "src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "one"; until_cap "$RX" "$RXP" '*review> one*'
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Enter; until_file "$RXSTORE" '*one*'
-if until_cap "$RX" "$RXP" '*●src.go:3 (+)*'; then ok "one comment: the dot"
-else bad "one comment: the dot" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+if until_cap "$RX" "$RXP" '*●src.go:42 (+)*'; then ok "one comment: the dot"
+else bad "one comment: the dot" "●src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "two"; until_cap "$RX" "$RXP" '*review> two*'
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Enter; until_file "$RXSTORE" '*two*'
-if until_cap "$RX" "$RXP" '*2src.go:3 (+)*'; then ok "two comments on one row: the count, one column wide"
-else bad "two comments on one row: the count, one column wide" "2src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+if until_cap "$RX" "$RXP" '*2src.go:42 (+)*'; then ok "two comments on one row: the count, one column wide"
+else bad "two comments on one row: the count, one column wide" "2src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-l
-if until_cap "$RX" "$RXP" '*## src.go:3 (+)*one*## src.go:3 (+)*two*'; then ok "^L shows the store in the preview"
-else bad "^L shows the store in the preview" "both records" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+if until_cap "$RX" "$RXP" '*## src.go:42 (+)*one*## src.go:42 (+)*two*'; then ok "^L shows the store in the preview, from the top, on a row deep in the diff"
+else bad "^L shows the store in the preview, from the top, on a row deep in the diff" "both records" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+# ^L is a one-off view, not a mode: the next cursor move has to bring the
+# diff preview back on its own, with no second ^L needed to dismiss it.
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Up
+rxcap=""
+for i in $(seq 1 40); do
+    rxcap="$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
+    case "$rxcap" in *'+line'*) break ;; esac
+    sleep 0.1
+done
+case "$rxcap" in
+    *'+line'*)
+        case "$rxcap" in
+            *'## src.go'*) bad "the diff preview comes back after ^L, on the next cursor move" "no ## src.go header" "$rxcap" ;;
+            *) ok "the diff preview comes back after ^L, on the next cursor move" ;;
+        esac ;;
+    *) bad "the diff preview comes back after ^L, on the next cursor move" "a +line row" "$rxcap" ;;
+esac
+# Back onto the commented row (Up then Down over adjacent rows, no wrap) so
+# ^X below still targets the anchor the two comments were pinned to.
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Down
+until_cap "$RX" "$RXP" '*2src.go:42 (+)*' || bad "back on the commented row before ^X" "2src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-x
 for i in $(seq 1 40); do grep -q '^## ' "$RXSTORE" 2>/dev/null || break; sleep 0.1; done
 is "^X removes every comment under the cursor" "0" "$(grep -c '^## ' "$RXSTORE")"
-if until_cap "$RX" "$RXP" '* src.go:3 (+)*'; then ok "and the row is unmarked again"
-else bad "and the row is unmarked again" " src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+if until_cap "$RX" "$RXP" '* src.go:42 (+)*'; then ok "and the row is unmarked again"
+else bad "and the row is unmarked again" " src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Escape
 for i in $(seq 1 40); do [ -e "$RXSTORE" ] || break; sleep 0.1; done
 is "esc with nothing pinned exits without asking and drops the empty store" "gone" "$([ -e "$RXSTORE" ] && echo present || echo gone)"
