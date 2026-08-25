@@ -5457,6 +5457,61 @@ fi
 rm -rf "$RCHOME"
 fi
 
+echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
+# The store had a writer and no reader: three comments on one line showed
+# one dot, and nothing could take one back short of discarding the batch.
+# parse_store (lib/review-store.sh) is the reader; --detach is its first
+# caller. ^L shows the store where the preview is -- no nested picker, and
+# no printable key: in this loop every printable key is comment text.
+if need_tmux "tmux-review ^X"; then :; else
+RX="cockpit-rx-$$"; SOCKS="$SOCKS $RX"
+RXDIR=$(mktmpd)
+(
+  cd "$RXDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+RXSTORE="$STATE/review-detach-$$"
+# --detach on its own, through a symlink the way install.sh puts it on PATH:
+# the lib has to be found beside the SCRIPT, not beside the link.
+RXBIN=$(mktmpd); ln -s "$DIR/scripts/tmux-review" "$RXBIN/tmux-review"
+printf '## src.go:3 (+)\n> CHANGED\nfirst\n\n## src.go:3 (+)\n> CHANGED\nsecond\n\n## other.go:9 (-)\n> gone\nkeep me\n\n' > "$RXSTORE"
+"$RXBIN/tmux-review" --detach "$RXSTORE" src.go 3
+is "--detach removes every record on that anchor and keeps the rest byte-for-byte" \
+   $'## other.go:9 (-)\n> gone\nkeep me' "$(cat "$RXSTORE")"
+"$RXBIN/tmux-review" --detach "$RXSTORE" other.go -9
+is "a deletion's anchor is matched with its sign" "0" "$(grep -c '^## ' "$RXSTORE")"
+"$RXBIN/tmux-review" --detach "$RXSTORE" "" ""; rxrc=$?
+is "an empty anchor is a no-op, exit 0" "0" "$rxrc"
+: > "$RXSTORE"
+"$TMUX_REAL" -L "$RX" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+RXP=$("$TMUX_REAL" -L "$RX" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "'$DIR/scripts/tmux-review' --loop '$RXDIR' '$RXSTORE'" Enter
+until_cap "$RX" "$RXP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "one"; until_cap "$RX" "$RXP" '*review> one*'
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Enter; until_file "$RXSTORE" '*one*'
+if until_cap "$RX" "$RXP" '*●src.go:3 (+)*'; then ok "one comment: the dot"
+else bad "one comment: the dot" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" "two"; until_cap "$RX" "$RXP" '*review> two*'
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Enter; until_file "$RXSTORE" '*two*'
+if until_cap "$RX" "$RXP" '*2src.go:3 (+)*'; then ok "two comments on one row: the count, one column wide"
+else bad "two comments on one row: the count, one column wide" "2src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-l
+if until_cap "$RX" "$RXP" '*## src.go:3 (+)*one*## src.go:3 (+)*two*'; then ok "^L shows the store in the preview"
+else bad "^L shows the store in the preview" "both records" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-x
+for i in $(seq 1 40); do grep -q '^## ' "$RXSTORE" 2>/dev/null || break; sleep 0.1; done
+is "^X removes every comment under the cursor" "0" "$(grep -c '^## ' "$RXSTORE")"
+if until_cap "$RX" "$RXP" '* src.go:3 (+)*'; then ok "and the row is unmarked again"
+else bad "and the row is unmarked again" " src.go:3 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Escape
+for i in $(seq 1 40); do [ -e "$RXSTORE" ] || break; sleep 0.1; done
+is "esc with nothing pinned exits without asking and drops the empty store" "gone" "$([ -e "$RXSTORE" ] && echo present || echo gone)"
+"$TMUX_REAL" -L "$RX" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: ^R re-snapshots and names the comments the agent moved =="
 # The rows are a snapshot (phase 1), so an agent writing mid-review cannot
 # move a ● onto a line you never touched -- but it also means the list goes

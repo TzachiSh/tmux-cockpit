@@ -531,13 +531,16 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
+| `^X` | — | delete the comment(s) on the row under the cursor |
+| `^L` | — | show every pinned comment where the preview is |
 | `^S` | — | deliver the whole batch |
 | `esc` | cancel | discard the batch — asks first when comments are pinned |
 
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
 terminals where the plain chord doesn't land. The list reloads in place and
-marks the row `●`, so five comments cost one popup, not five — the same
+marks the row `●` (the digit instead, when more than one comment sits there),
+so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch; `esc` discards it — and with comments
 pinned it asks first (`keep reviewing` / `discard N comment(s)`), because

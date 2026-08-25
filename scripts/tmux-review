@@ -31,6 +31,10 @@ fi
 # (fzf's reload/execute-silent binds run in a fresh subshell of their own).
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 OPENPATH="$(dirname "$SELF")/tmux-open-path"
+# The lib sits beside the SCRIPT. install.sh links each script into ~/bin by
+# its absolute path, so one readlink hop is the whole resolution; a plain
+# run (no link) has nothing to read and keeps $SELF's own directory.
+LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$SELF")")/lib"
 
 # tmux runs bind/preview strings through sh, so every path inside one has to be
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
@@ -68,7 +72,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
-In the picker: ↵ pin the typed comment on the row under the cursor   ^R refresh   ^S deliver   esc discard
+In the picker: ↵ pin the typed comment on the row under the cursor   ^X delete its comments   ^L list   ^R refresh   ^S deliver   esc discard
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
@@ -678,7 +682,7 @@ rows_mode() {
 # else, so a substr test on the first three bytes cannot pick up a body line.
 mark_rows() {                 # <store-or-/dev/null> <rows-file>
     LC_ALL=C awk -F'\t' -v OFS='\t' '
-        FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0] = 1; next }
+        FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
         NF == 0 { next }
         {
             # A deletion carries the OLD line number prefixed "-", so the
@@ -686,7 +690,10 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             # at the same line number are two different anchors.
             sign = (substr($2, 1, 1) == "-") ? "-" : "+"
             num = $2; sub(/^-/, "", num)
-            m = (("## " $1 ":" num " (" sign ")") in c) ? "●" : " "
+            # One column wide whatever the count: ● for one, the digit past
+            # that, 9 for anything more -- so a marked row never shifts.
+            n = c["## " $1 ":" num " (" sign ")"] + 0
+            m = (n == 0) ? " " : (n == 1) ? "●" : (n > 9) ? "9" : n ""
             # Prepend, never repaint: "●" and " " are both one column, so a
             # marked row does not shift against an unmarked one.
             disp = $4
@@ -767,6 +774,30 @@ attach() {
     } >> "$store"
 }
 
+# The inverse of attach() for one anchor: every record at path:line (sign)
+# goes, the rest are written back byte-identical (parse is the declared
+# inverse of format -- the round-trip test in tests/run.sh pins it). This
+# and nothing else in the script rewrites the store; attach() appends.
+detach() {                    # <store> <path> <line-with-sign>
+    local store=$1 path=$2 line=$3 sign=+ num i j=0 k
+    [ -n "$path" ] && [ -n "$line" ] && [ -s "$store" ] || return 0
+    case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
+    # shellcheck source=lib/review-store.sh
+    . "$LIBDIR/review-store.sh"
+    declare -A STORE=() OUT=(); STORE_N=0
+    parse_store "$store"
+    for ((i = 0; i < STORE_N; i++)); do
+        [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
+            && [ "${STORE[$i.side]}" = "$sign" ] && continue
+        for k in path line end side frag body; do
+            [ -n "${STORE[$i.$k]+x}" ] && OUT[$j.$k]=${STORE[$i.$k]}
+        done
+        j=$((j + 1))
+    done
+    STORE=(); for k in "${!OUT[@]}"; do STORE[$k]=${OUT[$k]}; done; STORE_N=$j
+    format_store "$store"
+}
+
 # The store and the row snapshot beside it go together: the snapshot is scratch
 # that belongs to ONE popup, and the popup's mktemp directory must not
 # accumulate a 4900-row file per review. So the invariant is simply that NO
@@ -808,11 +839,12 @@ run_loop() {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
 
-    local rows_cmd attach_cmd preview_cmd resnap_cmd rows_out nrows
+    local rows_cmd attach_cmd preview_cmd resnap_cmd detach_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
     attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
     preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
     resnap_cmd="$(shq "$SELF") --resnap $(shq "$dir") $(shq "$store")"
+    detach_cmd="$(shq "$SELF") --detach $(shq "$store") {1} {2}"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -860,12 +892,14 @@ run_loop() {
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-r:execute(${resnap_cmd})+reload(${rows_cmd})" \
+                  --bind "ctrl-x:execute-silent(${detach_cmd})+reload(${rows_cmd})" \
+                  --bind "ctrl-l:show-preview+preview(cat -- $(shq "$store") 2>/dev/null)" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --preview "$preview_cmd" \
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^R refresh the diff   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
+                  --header=$'↵ pin the typed comment   ^X delete   ^L list   ^R refresh   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1620,6 +1654,8 @@ case "${1:-}" in
         shift; rows_mode "${1:-}" "${2:-}" ;;
     --attach)
         shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+    --detach)
+        shift; detach "${1:-}" "${2:-}" "${3:-}" ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --resnap)
