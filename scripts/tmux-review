@@ -598,9 +598,15 @@ stale_keys() {                # <store> <rows-file>  -> stale headers, one per l
 # refs/cockpit/reviewed/<branch> = the tree the human just looked at, untracked
 # files included (a real add -A into a temp index, then write-tree; content IS
 # hashed here, once per approve). A ref to a tree object is what makes the
-# since-review base a plain `git diff <ref>`; git update-ref accepts it and
-# `git branch -D` / `worktree remove` are its GC. The pane's state is the
-# caller's to clear -- this function knows the repo, not the pane.
+# since-review base a plain `git diff <ref>`; git update-ref accepts it.
+# It does NOT die with the branch -- `git branch -D` and `worktree remove`
+# leave it standing (reproduced), so a deleted-and-recreated branch of the
+# same name inherits a stale checkpoint, and a name that collides on the
+# refs/ hierarchy (a branch "feat" after a checkpoint at "feat/x") blocks a
+# later approve outright. Purge by hand:
+#   git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
+# The pane's state is the caller's to clear -- this function knows the repo,
+# not the pane.
 approve() {                   # <dir>
     local dir=$1 idx gd br tree
     idx=$(mktemp) || return 1
@@ -619,7 +625,13 @@ approve() {                   # <dir>
 # by-hand re-delivery keep_hint() prints can finish the same way.
 done_store() {                # <store>
     local st=$1 d=${1%/*}
-    [ -f "$st" ] && [ ! -L "$st" ] && [ -s "$st" ] && cat -- "$st" >> "$d/delivered.md"
+    [ "$d" = "$1" ] && d=.
+    # The store is removed only once its content is actually IN delivered.md --
+    # an append that fails (a full disk, a permissions slip) must not lose the
+    # only copy of the review.
+    if [ -f "$st" ] && [ ! -L "$st" ] && [ -s "$st" ]; then
+        cat -- "$st" >> "$d/delivered.md" || return 1
+    fi
     rm -f -- "$st" "$st.rows" "$st.base"
     rmdir -- "$d" 2>/dev/null
     return 0
@@ -953,10 +965,10 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    local out rc key n choice crc ndlv
+    local out rc key n choice crc ndlv abr
     while :; do
         ndlv=""
-        [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
+        [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
         out=$(printf '%s\n' "$rows_out" \
             | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
@@ -1054,12 +1066,23 @@ run_loop() {
         fi
         if [ "$key" = ctrl-a ]; then
             if [ -s "$store" ]; then
+                # Not dead work: fzf's own reload() (enter/alt-enter, inside
+                # THIS session) marks its internal list live but never touches
+                # $rows_out -- a comment pinned since the last computation
+                # needs this refresh or the next fzf launch shows a stale,
+                # unmarked list. The other two exits below genuinely change
+                # nothing about the rows, so they skip it.
                 tmux display-message "tmux-review: deliver or discard the $(grep -c '^## ' "$store") pinned comment(s) first" 2>/dev/null
                 rows_out=$(rows_mode "$dir" "$store"); continue
             fi
+            if ! git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+                tmux display-message "tmux-review: nothing to approve against before the first commit" 2>/dev/null
+                continue
+            fi
             if approve "$dir"; then exit 21; fi
-            tmux display-message "tmux-review: could not write the checkpoint ref" 2>/dev/null
-            rows_out=$(rows_mode "$dir" "$store"); continue
+            abr=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null); abr=${abr:-HEAD}
+            tmux display-message "tmux-review: could not write refs/cockpit/reviewed/$abr — a stale ref may block it: git update-ref -d refs/cockpit/reviewed/$abr" 2>/dev/null
+            continue
         fi
         if [ "$key" = ctrl-s ]; then
             exit 20

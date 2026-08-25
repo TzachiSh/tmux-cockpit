@@ -4158,6 +4158,10 @@ until_cap "$RA" "$RACTL" '*review>*'
 # the picker stays open and the pinned comment is still there, marked.
 until_cap "$RA" "$RACTL" '*●src.go:3 (+)*' && ok "^A with a pinned comment refuses -- the picker stays open, the comment survives" || bad "^A with a pinned comment refuses -- the picker stays open, the comment survives" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
 is "and nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# The picker is genuinely back in its own prompt (not fzf mid-relaunch) before
+# the next key goes in -- closes a race where C-s lands while fzf is still
+# tearing down and re-drawing from the refusal.
+until_cap "$RA" "$RACTL" '*review>*'
 # Deliver it (the pane is idle: a paste), then re-open and approve.
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-s
 # Task 8 adds the ^S confirm popup and re-inserts the wait+Enter here; until then ^S delivers straight away.
@@ -4168,9 +4172,13 @@ RACTL2=$(ra_shell)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
 until_cap "$RA" "$RACTL2" '*↺src.go:3 (+)*' && ok "on re-open the delivered comment's row reads ↺" || bad "on re-open the delivered comment's row reads ↺" "↺src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
 until_cap "$RA" "$RACTL2" '*1 delivered earlier*' && ok "and the header counts it" || bad "and the header counts it" "↺ 1 delivered earlier" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
+# approve() works on a cp -p COPY of the index (tree_diff's own discipline) --
+# the agent's real index must read back byte-unchanged mtime-wise.
+RAIDXBEFORE=$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" C-a
 for i in $(seq 1 40); do [ -e "$RASESS" ] || break; sleep 0.1; done
 is "^A removes the session dir" "gone" "$([ -e "$RASESS" ] && echo present || echo gone)"
+is "approve never writes the real index" "$RAIDXBEFORE" "$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)"
 is "^A clears the pane's review state" "" "$("$TMUX_REAL" -L "$RA" show-option -pqv -t "$RAAP" @cockpit_review)"
 RAREF=$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)
 is "^A wrote the checkpoint ref to a tree" "tree" "$(git -C "$RADIR" cat-file -t "$RAREF" 2>/dev/null)"
@@ -4180,6 +4188,51 @@ is "nothing is left to review" "" "$("$DIR/scripts/tmux-review" --lines "$RADIR"
 is "--delta says so (exit 1)" "D=1" "$("$TMUX_REAL" -L "$RA" run-shell "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' --delta $RAAP; echo D=\$?" 2>/dev/null | tail -1)"
 printf 'brand new\nEDITED\n' > "$RADIR/new.txt"
 is "an edit to the approved untracked file is the only row" "EDITED" "$("$DIR/scripts/tmux-review" --lines "$RADIR" | cut -f3)"
+# --done as a public subcommand: keep_hint()'s own re-delivery command chains
+# into it, so a by-hand delivery has to finish the same way as review_pane()'s
+# own cleanup does.
+DNDIR=$(mktmpd)
+printf '## d.go:1 (+)\n> x\nnote\n\n' > "$DNDIR/comments.md"
+: > "$DNDIR/comments.md.base"
+"$DIR/scripts/tmux-review" --done "$DNDIR/comments.md"
+case "$(cat "$DNDIR/delivered.md" 2>/dev/null)" in
+    *note*) ok "--done, called directly, archives the batch" ;;
+    *) bad "--done, called directly, archives the batch" "note in delivered.md" "$(cat "$DNDIR/delivered.md" 2>/dev/null)" ;;
+esac
+is "and drops the store" "absent" "$([ -e "$DNDIR/comments.md" ] && echo present || echo absent)"
+is "and the base file beside it" "absent" "$([ -e "$DNDIR/comments.md.base" ] && echo present || echo absent)"
+# `git branch -D` / `worktree remove` do NOT GC refs/cockpit/reviewed/* (they
+# are plain refs, not branch-scoped) -- a ref left at "feat/x" D/F-blocks a
+# later `update-ref refs/cockpit/reviewed/feat`. ^A must refuse, not crash or
+# silently overwrite; this session has no attached client (as above), so the
+# refusal is asserted by its effect, not its display-message wording.
+SRDIR=$(mktmpd)
+(
+  cd "$SRDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b feat .; printf 'x\n' > f; git add -A; git commit -q -m init
+  git update-ref refs/cockpit/reviewed/feat/x "$(git rev-parse "HEAD^{tree}")"
+  printf 'x\nCHANGED\n' > f
+) >/dev/null 2>&1
+SRAP=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -c "$SRDIR" -P -F '#{pane_id}' 'exec -a claude bash')
+SRSESS="$RASTATE/tmux-cockpit/review/${SRAP#%}-$(printf '%s' "$SRDIR" | cksum | cut -d' ' -f1)"
+SRCTL=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$SRCTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $SRAP" Enter
+until_cap "$RA" "$SRCTL" '*review>*'
+"$TMUX_REAL" -L "$RA" send-keys -t "$SRCTL" C-a
+# Nothing to poll FOR -- a refusal leaves the same file on disk a success
+# would remove. Poll for the disappearance instead, up to the same 2s budget
+# every other settle in this block uses: a slow but correct approve() still
+# reads as present here, a wrongly-succeeding one is caught the moment it
+# fires rather than only at a fixed deadline.
+srgone=0
+for i in $(seq 1 20); do
+    [ -e "$SRSESS" ] || { srgone=1; break; }
+    sleep 0.1
+done
+is "a D/F-blocked ref refuses the approve -- the session dir survives" "0" "$srgone"
+is "and refs/cockpit/reviewed/feat was never written" "" \
+   "$(git -C "$SRDIR" rev-parse -q --verify refs/cockpit/reviewed/feat 2>/dev/null)"
 unset -f ra_shell
 "$TMUX_REAL" -L "$RA" kill-server >/dev/null 2>&1
 fi
