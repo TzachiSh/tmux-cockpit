@@ -3133,10 +3133,75 @@ for i in $(seq 1 500); do printf '## f:%d (+)\n> %d\nc\n\n' "$i" "$i"; done > "$
 if timeout 0.15 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null; then
     ok "a 500-comment re-mark over 4900 rows takes under 0.15s (measured 306ms before, 15ms after)"
 else bad "a 500-comment re-mark over 4900 rows takes under 0.15s" "exit within 0.15s" "timeout"; fi
+# The timing tooth alone does not prove the snapshot is READ. A version that
+# writes it and still re-derives every row passes it, now that the uncached
+# path is 68ms rather than the 306ms it was -- 0.15s no longer separates
+# cached from uncached, only awk marking from bash marking. A row that exists
+# ONLY in the snapshot does separate them: there is no way for it to reach the
+# output except by being read back out of the file.
+printf 'SENTINEL\t1\tx\tSENTINEL:1 (+)  x\t1\n' >> "$RV49S.rows"
+if "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" | grep -q '^SENTINEL'; then
+    ok "a row that exists only in the snapshot is served from it"
+else
+    bad "a row that exists only in the snapshot is served from it" \
+        "a row starting SENTINEL" "no SENTINEL row -- the rows were re-derived"
+fi
 rm -f "$RV49S.rows"; "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
 is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
 is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
 rm -rf "$RV49" "$RV49S"
+
+echo "== tmux-review --loop: the row snapshot is born 0600 and never follows a planted symlink =="
+# "<store>.rows" holds the WHOLE uncommitted diff and its name is DERIVABLE --
+# one fixed suffix on a store path anyone watching a shared /tmp can see. A
+# plain `>` was wrong twice: it created the file at the caller's umask (0664
+# here, the diff world-readable while the 0600 store sits right beside it),
+# and it FOLLOWED a symlink already planted at that name, writing the diff
+# into someone else's file and truncating what was there. The write is
+# `umask 077` + `set -C` now: O_CREAT|O_EXCL refuses any existing path, a
+# symlink included, and what it does create is born 0600.
+#
+# No tmux and no real fzf here: run_loop only needs SOMETHING named fzf on
+# PATH, and the snapshot is deleted on the way out -- so the stand-in picker
+# is what looks at it, from inside the "popup", and then escs.
+# Two directories on purpose: the stand-in picker and its logs must NOT live
+# inside the tree being reviewed, or they show up as untracked rows and the
+# row counts below start measuring the fixture instead of the diff.
+RVSN=$(mktmpd); RVSNW=$(mktmpd); mkdir -p "$RVSNW/bin"
+(
+  cd "$RVSN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\nc\n' > f
+) >/dev/null 2>&1
+cat > "$RVSNW/bin/fzf" <<'RVSNFZF'
+#!/bin/sh
+{ stat -c '%a' "$RVSNSTORE.rows" 2>/dev/null ||
+  stat -f '%Lp' "$RVSNSTORE.rows" 2>/dev/null || echo none; } > "$RVSNLOG"
+wc -l | tr -d ' ' > "$RVSNLOG.n"      # the rows the picker was actually handed
+exit 130
+RVSNFZF
+chmod +x "$RVSNW/bin/fzf"
+
+RVSNST=$(mktmpf)
+RVSNSTORE="$RVSNST" RVSNLOG="$RVSNW/mode1" PATH="$RVSNW/bin:$PATH" \
+    "$DIR/scripts/tmux-review" --loop "$RVSN" "$RVSNST" </dev/null >/dev/null 2>&1
+is "the row snapshot is born 0600, not at the caller's umask" "600" "$(cat "$RVSNW/mode1" 2>/dev/null)"
+
+# The plant: a symlink of the derivable name, pointing at a file the popup has
+# no business touching.
+RVSNV=$(mktmpf); printf 'victim contents\n' > "$RVSNV"
+RVSNST2=$(mktmpf); ln -s "$RVSNV" "$RVSNST2.rows"
+RVSNSTORE="$RVSNST2" RVSNLOG="$RVSNW/mode2" PATH="$RVSNW/bin:$PATH" \
+    "$DIR/scripts/tmux-review" --loop "$RVSN" "$RVSNST2" </dev/null >/dev/null 2>&1
+is "a planted symlink is not written through" "victim contents" "$(cat "$RVSNV" 2>/dev/null)"
+is "the plant is unlinked, not left to be read back as rows" "none" "$(cat "$RVSNW/mode2" 2>/dev/null)"
+# Refusing the cache is not refusing the review: rows_mode falls back to the
+# tree, so the picker was still handed the same rows it gets uncached. A
+# hardening that quietly emptied the list would pass every assertion above.
+rvsnwant=$("$DIR/scripts/tmux-review" --lines "$RVSN" | grep -c .)
+is "and the review still opened, with every row, uncached" "$rvsnwant" "$(cat "$RVSNW/mode2.n" 2>/dev/null)"
+is "the unplanted run got the same rows from its snapshot" "$rvsnwant" "$(cat "$RVSNW/mode1.n" 2>/dev/null)"
+rm -f "$RVSNV" "$RVSNST" "$RVSNST2"; rm -rf "$RVSN" "$RVSNW"
 
 echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
 RVBL=$(mktmpd)

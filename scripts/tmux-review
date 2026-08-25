@@ -560,9 +560,15 @@ rows_mode() {
     # No snapshot (a bare --rows call, or a run whose store was never opened
     # through the loop) still derives the rows from the tree, and the two
     # produce the same bytes for the same tree.
+    #
+    # `! -L` beside the `-s`: the write above refuses to follow a planted
+    # symlink, and the read refuses to trust one independently of it. Without
+    # this, someone who wins the sliver of a race between the failed write and
+    # its `rm -f` gets to choose the rows the picker shows -- and every comment
+    # the human then pins is anchored to a path THEY named.
     local hdr=/dev/null
     [ -n "$store" ] && [ -f "$store" ] && hdr=$store
-    if [ -n "$store" ] && [ -s "$store.rows" ]; then
+    if [ -n "$store" ] && [ ! -L "$store.rows" ] && [ -s "$store.rows" ]; then
         mark_rows "$hdr" "$store.rows"
     else
         mark_rows "$hdr" <(lines_mode "$dir")
@@ -739,18 +745,43 @@ run_loop() {
     # now -- the split below is a percentage, so nothing here has to measure
     # the terminal.
     #
-    # And that ONE parse is the only one this popup ever pays: it lands in
-    # "<store>.rows" and every rows_mode below -- fzf's own reload() after each
-    # pinned comment, and the two rebuilds on the keep-reviewing paths -- reads
-    # it back and only re-marks it. The snapshot is deliberately NOT refreshed
-    # afterwards: the rows a reviewer comments on must stay the rows the
-    # reviewer SAW, even if the agent writes to the tree while the popup is up.
-    # (That is the phase-0 mitigation for reviewing a live tree; it is not a
-    # diff cache that outlives anything -- it dies with the store below.)
+    # And on any tree with something to review, that ONE parse is the only one
+    # this popup pays: it lands in "<store>.rows" and every rows_mode below --
+    # fzf's own reload() after each pinned comment, and the two rebuilds on the
+    # keep-reviewing paths -- reads it back and only re-marks it. (A clean tree
+    # writes an empty snapshot, which rows_mode declines, so that one case
+    # still parses twice before the "no uncommitted changes" exit below. It has
+    # nothing to parse.) The snapshot is deliberately NOT refreshed afterwards:
+    # the rows a reviewer comments on must stay the rows the reviewer SAW, even
+    # if the agent writes to the tree while the popup is up. (That is the
+    # phase-0 mitigation for reviewing a live tree; it is not a diff cache that
+    # outlives anything -- it dies with the store below.)
     #
     # Guarded on a non-empty store because "$store.rows" with no store is
     # ".rows", a real path in whatever directory this was run from.
-    [ -n "$store" ] && lines_mode "$dir" > "$store.rows"
+    #
+    # `umask 077` + `set -C` in the same subshell that does the writing, the
+    # discipline deliver() already uses for the oversized-review file
+    # (:985) -- and this file needs it MORE, because its name is DERIVABLE.
+    # The store comes from mktemp, but "<store>.rows" is one suffix away from
+    # a name anyone watching a shared /tmp can predict, and the file holds the
+    # entire uncommitted diff. A plain `>` was wrong twice over: it created
+    # the snapshot at the caller's umask (0664 here -- the whole diff
+    # world-readable, while the store beside it is 0600), and it FOLLOWED a
+    # symlink already sitting at that name, so the diff could be written into
+    # a file of someone else's choosing and their file truncated to make room.
+    # noclobber makes the open O_CREAT|O_EXCL, which refuses an existing path
+    # -- a symlink included, dangling or not -- and umask makes what it does
+    # create born 0600, with no create-then-chmod window.
+    #
+    # A refused write is not an error worth stopping for: the `rm -f` unlinks
+    # whatever was squatting the name (unlink never follows a symlink, so the
+    # victim is untouched) and leaves no snapshot, and rows_mode simply
+    # derives the rows from the tree instead. Slower, correct, no popup lost.
+    if [ -n "$store" ]; then
+        (umask 077; set -C; lines_mode "$dir" > "$store.rows") 2>/dev/null \
+            || rm -f -- "$store.rows"
+    fi
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
