@@ -4068,8 +4068,12 @@ RB=$(mktmpd)
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git init -q -b main .
   printf 'a\n' > f; git add -A; git commit -q -m init
-  git checkout -q -b feat
-  printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am feat
+  # "topic", not "feat": it has to sort AFTER main and master, because
+  # review_base reads its refs from one for-each-ref whose rows come back
+  # sorted by name -- a fallback seen before the branch's own row must not be
+  # lost to it (it was, once).
+  git checkout -q -b topic
+  printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am topic
 ) >/dev/null 2>&1
 is "a clean feature branch reviews its commits against main" "1" \
    "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT')"
@@ -4082,7 +4086,7 @@ is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
 (
   cd "$RB" || exit
   I=$(mktemp); cp -p .git/index "$I"; GIT_INDEX_FILE=$I git add -A
-  git update-ref refs/cockpit/reviewed/feat "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
+  git update-ref refs/cockpit/reviewed/topic "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
 ) >/dev/null 2>&1
 is "with a checkpoint at the current tree there is nothing to review" "" \
    "$("$DIR/scripts/tmux-review" --lines "$RB")"
@@ -5566,9 +5570,17 @@ is "20 panes scan in under 1s" "RC=0" \
 fd_rows=$(grep -c . "$STATE/fd-out" || true)
 is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
 
-fd_status_calls=$(grep -c ' status ' "$FD_LOG" || true)
-is "the shared repo is scanned once -- 19 status calls for 19 unique roots" \
-    "19" "$fd_status_calls"
+fd_diff_calls=$(grep -c ' diff ' "$FD_LOG" || true)
+is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
+    "19" "$fd_diff_calls"
+# The budget above is forks: 19 roots in 1 s is ~50 ms each and one git is
+# 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
+# blew it. Pinned as a count -- one rev-parse per pane to find its root, four
+# per unique root (rev-parse, add -N, for-each-ref, diff) -- so the next
+# helper that costs a fork per root fails here on any box, not only a busy one.
+fd_git_calls=$(grep -c . "$FD_LOG" || true)
+is "one fork per pane and four per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 4)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done

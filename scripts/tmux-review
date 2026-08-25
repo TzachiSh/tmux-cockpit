@@ -106,14 +106,25 @@ USAGE
 # AGENT is working in.
 tree_diff() {
     local dir=$1; shift
-    local idx gd
-    idx=$(mktemp) || return 1
-    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; return 1; }
+    local idx gd head br rp
+    # One rev-parse for the three facts every diff needs -- the git dir (whose
+    # index to copy), HEAD, and the branch review_base keys on. rev-parse
+    # carries on past an argument it cannot resolve, so an unborn HEAD leaves
+    # two lines (git dir, "HEAD") and a born one three. This and review_base
+    # were 10 forks per root; the 20-pane fleet gate (timeout 1) caught it.
+    mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
+    gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
+    [ -n "$gd" ] || return 1
+    # A caller that scans many roots at once (fleet_rows) lends the one temp
+    # dir it already owns, and the copy is named by PID and dies with that
+    # dir: mktemp + rm per root were 40 of the fleet's forks.
+    if [ -n "${TREE_DIFF_TMP:-}" ]; then idx=$TREE_DIFF_TMP/idx.$BASHPID
+    else idx=$(mktemp) || return 1; fi
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
-    if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    if [ -n "$br" ]; then
         local base
-        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}"); base=${base%%$'\t'*}
+        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
             diff --no-color --no-ext-diff "$base" "$@" 2>/dev/null
     else
@@ -122,7 +133,7 @@ tree_diff() {
         [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
         printf '%s\n' "$out"
     fi
-    rm -f -- "$idx"
+    [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
 }
 
 # --- which base ---------------------------------------------------------------
@@ -134,26 +145,46 @@ tree_diff() {
 # MODE forces one; a forced mode that does not hold falls through to the next,
 # so the printed mode is the one that HELD -- next_base relies on that.
 # Prints "<rev>\t<label>\t<mode>". Never called on an unborn HEAD.
-review_base() {               # <dir> [auto|since-review|branch|uncommitted]
-    local dir=$1 mode=${2:-auto} br ref up mb head
-    br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+review_base() {               # <dir> [auto|since-review|branch|uncommitted] [branch] [head-sha]
+    local dir=$1 mode=${2:-auto} br=${3:-} head=${4:-} ref up mb
+    local name sha ups track sym ckpt="" bups="" btrack="" ohead="" osha="" mainsha="" mastersha="" upsha=""
+    [ -n "$br" ] || br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
     ref="refs/cockpit/reviewed/${br:-HEAD}"
+    # Every ref the cases below ask about, from ONE for-each-ref rather than a
+    # rev-parse per candidate (seven, before): the checkpoint; the branch's
+    # upstream, whose :track is "[gone]" exactly when `--verify @{u}` would
+    # refuse it and "" when it sits at HEAD; origin/HEAD's target; main;
+    # master. Rows come back sorted by name, not by our preference, so they
+    # are collected first and chosen after. A pattern also matches refs BELOW
+    # it (refs/heads/main/x when no main exists), hence the exact names.
+    while IFS=$'\t' read -r name sha ups track sym; do
+        case "$name" in
+            "$ref")                   ckpt=$sha ;;
+            "refs/heads/$br")         [ -n "$head" ] || head=$sha; bups=$ups; btrack=$track ;;
+            refs/remotes/origin/HEAD) ohead=$sym; osha=$sha ;;
+            refs/heads/main)          mainsha=$sha ;;
+            refs/heads/master)        mastersha=$sha ;;
+        esac
+    done < <(git -C "$dir" --no-optional-locks for-each-ref \
+        --format='%(refname)%09%(objectname)%09%(upstream:short)%09%(upstream:track)%09%(symref:short)' \
+        -- "$ref" "refs/heads/$br" refs/remotes/origin/HEAD refs/heads/main refs/heads/master 2>/dev/null)
     case "$mode" in auto|since-review)
-        if git -C "$dir" --no-optional-locks rev-parse -q --verify "$ref" >/dev/null 2>&1; then
-            printf '%s\tsince last review\tsince-review\n' \
-                "$(git -C "$dir" --no-optional-locks rev-parse "$ref")"; return 0
-        fi ;;
+        [ -z "$ckpt" ] || { printf '%s\tsince last review\tsince-review\n' "$ckpt"; return 0; } ;;
     esac
     case "$mode" in auto|since-review|branch)
-        up=$(git -C "$dir" --no-optional-locks rev-parse -q --verify --abbrev-ref '@{u}' 2>/dev/null) \
-        || up=$(git -C "$dir" --no-optional-locks symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) \
-        || { for up in main master; do
-                 git -C "$dir" --no-optional-locks rev-parse -q --verify "$up" >/dev/null 2>&1 && break
-                 up=
-             done; }
-        if [ -n "$up" ]; then
+        # The upstream, else origin/HEAD, else main, else master -- and, where
+        # the rows already say the merge-base IS HEAD, no merge-base fork: an
+        # upstream that is not ahead of us, or a fallback whose sha is HEAD's.
+        if [ -n "$bups" ] && [ "$btrack" != '[gone]' ]; then
+            up=$bups; case "$btrack" in *ahead*) upsha="" ;; *) upsha=$head ;; esac
+        elif [ -n "$ohead" ];     then up=$ohead;  upsha=$osha
+        elif [ -n "$mainsha" ];   then up=main;    upsha=$mainsha
+        elif [ -n "$mastersha" ]; then up=master;  upsha=$mastersha
+        else up=""
+        fi
+        if [ -n "$up" ] && { [ -z "$head" ] || [ "$upsha" != "$head" ]; }; then
             mb=$(git -C "$dir" --no-optional-locks merge-base "$up" HEAD 2>/dev/null)
-            head=$(git -C "$dir" --no-optional-locks rev-parse HEAD 2>/dev/null)
+            [ -n "$head" ] || head=$(git -C "$dir" --no-optional-locks rev-parse HEAD 2>/dev/null)
             if [ -n "$mb" ] && [ "$mb" != "$head" ]; then
                 printf '%s\tvs %s\tbranch\n' "$mb" "$up"; return 0
             fi
@@ -1409,6 +1440,7 @@ fleet_rows() {
     # another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
+    local TREE_DIFF_TMP=$tmpdir      # tree_diff's index copies live here too
 
     # --- Phase 1: one pane list, one root each -------------------------------
     # Two agent panes cd'd into the same worktree (a subdirectory, or the
@@ -1512,7 +1544,7 @@ fleet_rows() {
 # is nothing to look up.
 fleet_scan_root() {
     local root=$1
-    local st numstat add del untracked churn stat dirty=0 repo branch a d line
+    local numstat add del untracked churn stat dirty=0 repo branch a d gd
 
     if [ -z "$root" ]; then
         # "?" on the wire, never an empty field: phase 3 joins this row back
@@ -1530,37 +1562,36 @@ fleet_scan_root() {
     # rev-parse --show-toplevel result already (fleet_rows resolved it to do
     # the grouping), so naming the repo costs no second call.
     repo=${root##*/}
-    branch=$(git -C "$root" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    # The branch straight off the HEAD ref file, the way `git branch
+    # --show-current` reads it, instead of a rev-parse fork per root: "ref:
+    # refs/heads/<name>", or a bare sha when detached. A linked worktree's
+    # .git is a file naming the dir that holds its own HEAD.
+    gd=$root/.git
+    if [ ! -d "$gd" ]; then
+        read -r gd < "$gd" 2>/dev/null || gd=
+        gd=${gd#gitdir: }; case "$gd" in ''|/*) ;; *) gd=$root/$gd ;; esac
+    fi
+    read -r branch < "$gd/HEAD" 2>/dev/null || branch=
+    case "$branch" in 'ref: refs/heads/'*) branch=${branch#ref: refs/heads/} ;; *) branch=HEAD ;; esac
 
-    # --no-optional-locks on every read here: this is a read on someone else's
-    # live worktree, and plain `git status` writes the index back to refresh
-    # stat info. Taking index.lock under an agent that is mid-commit is a race
-    # the reader has no business starting.
-    numstat=$(tree_diff "$root" --numstat)
+    # One diff per root, and that is every git this row needs beyond the
+    # copy: `git status` here was a second walk of the tree for the "?N new"
+    # count alone, and its `??` was the wrong count anyway once the base can
+    # be a checkpoint -- a file untracked at ^A and untouched since is not
+    # new to this review. --summary's "create mode" lines are the files new
+    # AGAINST THE BASE, which is what the rest of the stat already measures.
+    # tree_diff's --no-optional-locks is why reading a live worktree is safe.
+    numstat=$(tree_diff "$root" --numstat --summary)
     if [ -n "$numstat" ]; then
         dirty=1
-        # Only read inside this arm now: the untracked-file-count walk below
-        # is the sole remaining use of $st (dirty itself now comes from the
-        # numstat above, which also catches a clean-tree branch ahead of its base).
-        st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
-        add=0; del=0
+        add=0; del=0; untracked=0
         while IFS=$'\t' read -r a d _f; do
+            case "$a" in ' create mode '*) untracked=$((untracked + 1)); continue ;; esac
             [ -n "$a" ] || continue
             case "$a" in *[!0-9]*) a=0 ;; esac
             case "$d" in *[!0-9]*) d=0 ;; esac
             add=$(( add + a )); del=$(( del + d ))
         done <<<"$numstat"
-
-        # An untracked file's lines are already in $add -- tree_diff's copy
-        # runs `add -N` before diffing, so numstat above already counts them.
-        # This walk is only for the "?N new" suffix, the number of NEW FILES,
-        # a count numstat doesn't carry. Counted straight off $st in bash (a
-        # byte-for-byte compare against the two-char prefix) instead of
-        # forking `grep -c '^??'` per repo.
-        untracked=0
-        while IFS= read -r line; do
-            case "$line" in "??"*) untracked=$((untracked + 1)) ;; esac
-        done <<<"$st"
         stat="+$add -$del"
         [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
         churn=$(( add + del ))
