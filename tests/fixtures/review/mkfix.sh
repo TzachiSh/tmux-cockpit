@@ -5,7 +5,7 @@
 # `--lines` block (deterministic author env, `git init -q -b main`), so the
 # fixture and the golden it produced stay reproducible byte for byte.
 #
-# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname> <dir>
+# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks> <dir>
 # <dir> must already exist and be empty; it becomes the fixture's repo root.
 
 set -euo pipefail
@@ -73,6 +73,30 @@ funcname)
     git add -A
     git commit -q -m init
     sed -i '5d' f.rs
+    ;;
+hunks)
+    git init -q -b main .
+    mkdir -p tests
+    : > nums.txt
+    for i in $(seq 1 40); do printf 'line%d\n' "$i" >> nums.txt; done
+    printf 'seed\n' > tests/t.txt
+    git add -A
+    git commit -q -m init
+    # Three edits spaced far enough apart (3, 20, 35) that diff's default
+    # 3-line context keeps them as separate hunks -- the case no other
+    # golden covers: the 5th-field preview offset must keep counting
+    # correctly across a hunk boundary, not reset per hunk.
+    #
+    # Line 35's replacement is a 220-byte fragment with a literal \x01 (SOH)
+    # at its centre -- the parser's control-char-strip-then-160-byte-cap
+    # case (scripts/tmux-review:348). Do this edit BEFORE deleting line 20,
+    # so "line 35" still names the pre-deletion row; the line-3 change is
+    # addressing-safe either way since it's above both.
+    long220=$(printf 'A%.0s' $(seq 1 109))$(printf '\001')$(printf 'B%.0s' $(seq 1 110))
+    awk -v ln35="$long220" 'NR==35{print ln35; next} NR==20{next} {print}' nums.txt > nums.txt.new
+    mv nums.txt.new nums.txt
+    sed -i '3s/.*/line3-CHANGED/' nums.txt
+    printf 'CHANGED\n' > tests/t.txt
     ;;
 *)
     echo "mkfix.sh: unknown fixture '$name'" >&2

@@ -3364,7 +3364,7 @@ esac
 rm -rf "$RV8"
 
 echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
-for gf in basic mixed untracked blank nonascii funcname; do
+for gf in basic mixed untracked blank nonascii funcname hunks; do
     GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
     if "$DIR/scripts/tmux-review" --lines "$GD" | cmp -s - "$DIR/tests/fixtures/review/$gf.tsv"; then ok "golden $gf"
     else bad "golden $gf" "byte-identical" "$("$DIR/scripts/tmux-review" --lines "$GD" | diff - "$DIR/tests/fixtures/review/$gf.tsv" | head -5)"; fi
