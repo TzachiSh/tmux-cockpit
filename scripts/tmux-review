@@ -200,18 +200,34 @@ lines_mode() {
     # Rows are not the only way a diff gets too big to hand a reviewer. 4000
     # rows of a 1500-column minified line sit comfortably under the row cap
     # and are still 5.7 MB to capture, parse into shell rows, and render as an
-    # fzf list of 1500-column entries. So the same pass totals BYTES across
-    # the changed files -- 4 MB, from the worktree copy (`wc -c`) or, for a
-    # file the diff deletes, from its HEAD blob's size, since a deletion still
-    # costs the diff every one of its bytes.
+    # fzf list of 1500-column entries. So the same pass caps on BYTES too --
+    # 4 MB.
     #
-    # Both sizings are BATCHED -- one `wc` pipeline and one `cat-file
-    # --batch-check` -- not a fork per file: this loop also walks the
-    # untracked list, which is hundreds of files on an unignored vendor tree,
-    # and a fork each would hand back the 0.008s the batched walk above just
-    # bought. Neither runs at all once the row cap has already tripped. A path
-    # that answers to neither weighs 0, which errs toward showing the diff
-    # rather than hiding it.
+    # Bytes of the DIFF, estimated, not bytes of the FILE. Sizing whole files
+    # refused a one-line version bump in a 4.6 MB lockfile: two changed rows,
+    # a diff of about 70 bytes, and the popup answered "review it directly"
+    # for a change a reviewer reads at a glance. The diff's own byte count is
+    # not knowable without capturing it -- the very thing being avoided -- but
+    # numstat's rows and the file's own average line width bound it well:
+    # each changed file contributes `size * (add + del) / max(lines, 1)`. The
+    # lockfile bump estimates ~74 bytes, the wide fixture 5.7 MB, and a full
+    # rewrite estimates about twice its size, which is right -- the diff
+    # carries both sides.
+    #
+    # Two exceptions, both counting the whole size: a BINARY file, whose
+    # numstat row is "-\t-" and so has no rows to scale by (a huge binary has
+    # to cap on something); and a file with no worktree copy, which is either
+    # deleted -- every one of its lines is a row, so the formula reduces to
+    # its whole HEAD blob anyway -- or a path that does not resolve against
+    # <dir>, where the HEAD blob is the only measure there is.
+    #
+    # Both sizings are BATCHED -- one `wc -lc` pipeline for lines AND bytes
+    # together, one `cat-file --batch-check` -- not a fork per file: this loop
+    # also walks the untracked list, which is hundreds of files on an
+    # unignored vendor tree, and a fork each would hand back the 0.008s the
+    # batched walk above just bought. Neither runs at all once the row cap has
+    # already tripped. A path that answers to neither weighs 0, which errs
+    # toward showing the diff rather than hiding it.
     local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0 sized=
     local nadd ndel nfile reason=
     local -a here=() gone=()
@@ -228,22 +244,54 @@ lines_mode() {
     if [ "$total" -gt "$cap" ]; then
         reason="$total changed lines"
     else
-        # "./" in front for the same reason awk_over needs it: without it a
-        # path starting with "-" is an option to wc. It also keeps wc's own
-        # "total" line (xargs can split into several batches, each ending in
-        # one) distinguishable from a file that happens to be named "total".
-        if [ ${#here[@]} -gt 0 ]; then
-            sized=$(printf './%s\0' "${here[@]}" \
-                    | (cd "$dir" 2>/dev/null && xargs -0 wc -c 2>/dev/null) \
-                    | awk '$2 != "total" { s += $1 } END { printf "%d\n", s + 0 }')
-            bytes=$(( bytes + ${sized:-0} ))
-        fi
         if [ ${#gone[@]} -gt 0 ]; then
             # "<sha> <type> <size>" per line, or "<name> missing" for a path
             # HEAD never had -- the /^[0-9]+$/ guard takes the sizes only.
             sized=$(printf 'HEAD:%s\n' "${gone[@]}" \
                     | git -C "$dir" --no-optional-locks cat-file --batch-check 2>/dev/null \
                     | awk '$3 ~ /^[0-9]+$/ { s += $3 } END { printf "%d\n", s + 0 }')
+            bytes=$(( bytes + ${sized:-0} ))
+        fi
+        if [ ${#here[@]} -gt 0 ]; then
+            # "./" in front for the same reason awk_over needs it: without it
+            # a path starting with "-" is an option to wc. It also keeps wc's
+            # own "total" line (xargs can split into several batches, each
+            # ending in one) apart from a file actually named "total".
+            local wcout
+            wcout=$(printf './%s\0' "${here[@]}" \
+                    | (cd "$dir" 2>/dev/null && xargs -0 wc -lc 2>/dev/null))
+            # Two streams into one awk, told apart by ARGV[1] rather than
+            # `NR == FNR` -- an empty first stream makes that test true for
+            # the SECOND file's records too, and wc producing nothing is
+            # exactly the case where every file would then be misread as a
+            # width.
+            sized=$(awk '
+                BEGIN { FS = "\t" }
+                FILENAME == ARGV[1] {
+                    # "<lines> <bytes> ./<path>", picked apart by hand: FS is
+                    # a tab for the numstat stream, and a path may hold
+                    # spaces in either stream.
+                    w = $0; sub(/^[ \t]+/, "", w)
+                    i = index(w, " "); if (i == 0) next
+                    wl = substr(w, 1, i - 1) + 0
+                    w = substr(w, i + 1); sub(/^[ \t]+/, "", w)
+                    i = index(w, " "); if (i == 0) next
+                    wb = substr(w, 1, i - 1) + 0
+                    w = substr(w, i + 1)
+                    if (w !~ /^\.\//) next          # wc'"'"'s own "total" line
+                    w = substr(w, 3)
+                    lines[w] = wl; size[w] = wb
+                    next
+                }
+                NF >= 3 {
+                    f = $3
+                    if (!(f in size)) next          # sized from HEAD above
+                    if ($1 == "-") { est += size[f]; next }   # binary
+                    n = (lines[f] > 0 ? lines[f] : 1)
+                    est += size[f] * ($1 + $2) / n
+                }
+                END { printf "%d\n", est + 0 }
+            ' <(printf '%s\n' "$wcout") <(printf '%s\n' "$numstat"))
             bytes=$(( bytes + ${sized:-0} ))
         fi
         if [ "$bytes" -gt "$bytecap" ]; then

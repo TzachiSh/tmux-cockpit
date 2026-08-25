@@ -2816,6 +2816,44 @@ case "$("$DIR/scripts/tmux-review" --lines "$RVNARROW")" in
 esac
 rm -rf "$RVWIDE" "$RVNARROW"
 
+# ...and the byte cap has to measure the DIFF, not the FILE. A whole-file
+# `wc -c` refused a one-line version bump in a big lockfile: 4.6 MB of file,
+# two changed rows, a diff of about 70 bytes -- nothing expensive about it,
+# and the popup answered "review it directly" for a change a reviewer could
+# read at a glance. So each changed file contributes
+# `size * (add + del) / max(lines, 1)`: the wide fixture above still estimates
+# 5.7 MB and caps, this one estimates ~74 bytes and does not.
+# FAIL-first: on the whole-file cap this returns "(4.5 MB)" and no rows.
+RVBUMP=$(mktmpd)
+(
+  cd "$RVBUMP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  # 130k fixed-width lines: 4,810,000 bytes, well over the 4 MB cap as a file.
+  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", i }' > package-lock.json
+  git add -A; git commit -q -m init
+  # One line rewritten at the SAME width, so the file's size is unchanged and
+  # only the estimate can tell the two fixtures apart.
+  awk 'BEGIN { for (i = 1; i <= 130000; i++) printf "%036d\n", (i == 5 ? 42 : i) }' > package-lock.json
+) >/dev/null 2>&1
+is "the bump fixture is over the 4 MB cap when measured as a whole file" \
+   "4810000" "$(wc -c < "$RVBUMP/package-lock.json")"
+is "...while its diff is two rows" "2" \
+   "$(git -C "$RVBUMP" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+rvbumpout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVBUMP")
+case "$rvbumpout" in
+    *"diff too large"*)
+        bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
+            "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
+    *"package-lock.json"$'\t'*)
+        ok "a one-line bump in a 4.6 MB lockfile is still reviewable" ;;
+    *) bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
+         "two anchored package-lock.json rows" "$(head -c 120 <<<"$rvbumpout")" ;;
+esac
+is "the bump is exactly its two rows, nothing else" "2" \
+   "$(printf '%s\n' "$rvbumpout" | grep -c .)"
+rm -rf "$RVBUMP"
+
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the
