@@ -687,6 +687,9 @@ detach() {                    # <store> <path> <line-with-sign>
     . "$LIBDIR/review-store.sh"
     declare -A STORE=() OUT=(); STORE_N=0
     parse_store "$store"
+    # A non-empty store that parses to 0 records was set aside as .bak by
+    # parse_store: never write 0 records back over it.
+    [ "$STORE_N" -gt 0 ] || return 0
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] && continue
@@ -710,8 +713,11 @@ Add two binds after the `ctrl-r` bind:
 
 ```bash
                   --bind "ctrl-x:execute-silent(${detach_cmd})+reload(${rows_cmd})" \
-                  --bind "ctrl-l:show-preview+preview(cat -- $(shq "$store") 2>/dev/null)" \
+                  --bind "ctrl-l:show-preview+change-preview-window(down,55%,border-top,+1)+preview(cat -- $(shq "$store") 2>/dev/null)" \
+                  --bind "focus:change-preview-window(down,55%,border-top,+{5}-/2)" \
 ```
+
+(`^L` resets the preview window's scroll to the top — the diff preview's `+{5}-/2` offset would otherwise scroll a store listing past its own end for any row deep in the diff — and the `focus` bind puts the diff's offset back on the next cursor move. `preview(...)` itself is one-shot: the `--preview` command returns on the next move. Measured on fzf 0.44.1: the window's scroll position lags one move behind when the list also scrolls; the content is right on the first move.)
 
 Header first line becomes: `↵ pin the typed comment   ^X delete   ^L list   ^R refresh   ^S deliver   esc discard (asks first)`.
 
