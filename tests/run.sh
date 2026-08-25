@@ -3790,12 +3790,21 @@ esac
 "$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
 sleep 0.2
 
+# The gate deliver() actually ships, in one string so this block cannot drift
+# from it again: the #{m:...} command test AND #{!=:#{@panestate},needs-input},
+# joined with #{&&:...} so tmux evaluates BOTH inside the same command-queue
+# item as the paste. This block used to hand-build the single-condition form
+# under the "byte-for-byte" comment below, which stopped being true the moment
+# guard 3 was folded into the format -- and a typo inside the compound would
+# evaluate false and silently never deliver, with nothing here to catch it.
+RGGATE='#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}'
+
 # The fix, byte-for-byte as deliver() runs it: stage the buffer, then let tmux
 # re-check #{pane_current_command} in the SAME command-queue item as the paste.
 # The pane is a shell at paste time -> refused, and the staged buffer dropped.
 printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "$RGGATE" \
     "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
     "delete-buffer -b rg-gate ; display-message 'not delivered'"
 sleep 0.3
@@ -3813,7 +3822,7 @@ fi
 # The same gated sequence, targeting a live agent, still delivers.
 printf 'DELIVERED-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ok -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "$RGGATE" \
     "paste-buffer -p -r -d -b rg-ok -t $APG ; display-message pasted" \
     "delete-buffer -b rg-ok ; display-message 'not delivered'"
 sleep 0.3
@@ -3822,6 +3831,40 @@ case "$(gcap "$APG")" in
     *) bad "the gate still delivers into a pane that is a live agent" \
          "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
 esac
+
+# The compound's OTHER arm, which had no coverage anywhere: the pane is still a
+# live agent, but it reached needs-input in the same ~50ms window -- guard 3
+# passed against a snapshot that is already stale. The paste must not land: a
+# permission prompt takes the text into the dialog, where the Enter this script
+# tells the human to press becomes a blind approval of whatever the agent asked
+# for. @panestate is set on the pane BETWEEN the guard and the gate here, which
+# is exactly the race, made deterministic.
+"$TMUX_REAL" -L "$RG" set-option -p -t "$APG" @panestate needs-input
+printf 'NEEDS-INPUT-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ni -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    "$RGGATE" \
+    "paste-buffer -p -r -d -b rg-ni -t $APG ; display-message pasted" \
+    "delete-buffer -b rg-ni ; display-message 'not delivered'"
+# Both arms consume the buffer (paste-buffer -d, or delete-buffer), so its
+# disappearance says the queue item RAN without saying which way it went --
+# a bounded poll, not a blind wait, and the two assertions below then read a
+# settled pane.
+for i in $(seq 1 30); do
+    "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null \
+        | grep -qxF rg-ni || break
+    sleep 0.1
+done
+case "$(gcap "$APG")" in
+    *NEEDS-INPUT-MARKER*) bad "the gate refuses a live agent that reached needs-input" \
+         "no NEEDS-INPUT-MARKER in the agent pane" "$(gcap "$APG")" ;;
+    *) ok "the gate refuses a live agent that reached needs-input" ;;
+esac
+if "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF rg-ni; then
+    bad "the needs-input refusal drops its staged buffer too" "no rg-ni buffer" "rg-ni still present"
+else
+    ok "the needs-input refusal drops its staged buffer too"
+fi
+"$TMUX_REAL" -L "$RG" set-option -p -u -t "$APG" @panestate
 
 # B2: the `tmux if-shell` call above returns 0 (the queue accepted it)
 # whichever nested branch fired -- so a shell that only inspected THAT exit
