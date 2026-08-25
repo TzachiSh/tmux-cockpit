@@ -15,6 +15,9 @@ trap 'rm -f -- "$OUT"' EXIT
 awk -v pat="$1" '
     /^echo "== / && !seen_block { seen_block = 1 }
     !seen_block { print; next }                       # the prelude, verbatim
+    # ponytail: brace depth counts every { and } in the line, strings included;
+    # a helper whose body prints a lone brace would end early -- none does today.
+    # Upgrade: skip quoted regions, or mark helper ends with a "# }" sentinel.
     /^[A-Za-z_][A-Za-z_0-9]*\(\) *\{/ { infn = 1; depth = 0 }   # a top-level function
     infn {                                            # runs until its braces balance
         print; o = $0; c = $0
