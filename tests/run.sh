@@ -2600,6 +2600,36 @@ case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a n
          "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
 rm -rf "$RVNEW"
 
+echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
+# Task 2's untracked synthesis walked every file FOUR times over -- [ -f ],
+# grep -Iq, wc -l and awk -- and did it twice, once in the numstat loop that
+# feeds the cap and once in the row loop. rows_mode calls lines_mode, so the
+# review popup re-paid the whole cost after every pinned comment. Measured with
+# 800 one-line untracked files: the whole `--lines` run took 6.885s before and
+# takes 0.134s now (the walk itself 7.9s -> 0.008s in the review's own
+# measurement; master, which ignored untracked files entirely, was 0.018s), off
+# the single batched `ls-files -z | xargs grep -Il .` list both loops now share.
+# timeout is the fail-first teeth -- on the per-file walk this fires.
+RVMANY=$(mktmpd)
+(
+  cd "$RVMANY" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  mkdir -p vendor
+  i=1; while [ "$i" -le 800 ]; do printf 'line\n' > "vendor/f$i.txt"; i=$((i+1)); done
+) >/dev/null 2>&1
+timeout 1 "$DIR/scripts/tmux-review" --lines "$RVMANY" >/dev/null; rvmanyrc=$?
+if [ "$rvmanyrc" -eq 124 ]; then
+    bad "800 untracked files list in well under 1s" \
+        "output within 1s" "timed out (the per-file fork walk)"
+else
+    ok "800 untracked files list in well under 1s"
+fi
+is "each untracked file still contributes its one + row" \
+   "800" "$("$DIR/scripts/tmux-review" --lines "$RVMANY" | grep -c .)"
+rm -rf "$RVMANY"
+
 echo "== tmux-review --lines: every row knows where it sits in its file's preview =="
 # The preview opened every file at its top, so reviewing a change 900 lines down
 # meant scrolling by hand for every row. Each row now carries a 5th field: its

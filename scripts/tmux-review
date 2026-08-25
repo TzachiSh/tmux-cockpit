@@ -100,6 +100,23 @@ tree_diff() {
 # Everything uncommitted is ONE set -- staged, unstaged and brand-new files --
 # because that is what "review what I have not committed" means. See tree_diff
 # below for the base, and the untracked synthesis inside for the new files.
+# Run one awk program over every path in a newline-separated list of paths
+# relative to $dir, batched through xargs so a huge untracked tree cannot blow
+# ARG_MAX. Every path is passed "./"-prefixed: awk reads a bare `name=value`
+# operand as a variable assignment, and mawk rejects a `--` before the first
+# filename ("cannot open --"), so there is no option-terminator to hide behind
+# -- "./" in front is what makes an arbitrary path an operand awk cannot
+# mistake for an assignment. The programs strip it back off with
+# substr(FILENAME, 3).
+awk_over() {
+    local dir=$1 list=$2 prog=$3
+    [ -n "$list" ] || return 0
+    printf '%s\n' "$list" \
+        | awk '{ print "./" $0 }' \
+        | tr '\n' '\0' \
+        | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
+}
+
 lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
@@ -121,22 +138,40 @@ lines_mode() {
     # Untracked files carry no diff at all -- so the newest code, the code most
     # worth reviewing, was invisible. Synthesise their numstat here (every line
     # an addition) so the size cap below counts them too, and their rows after
-    # the awk. Binary and unreadable files are skipped (grep -Iq fails on both).
+    # the awk. Binary and unreadable files are skipped (grep -I fails on both).
+    #
+    # ONE batched walk, not four forks per file. The first shape here ran
+    # [ -f ] + grep -Iq + wc -l per untracked file for the numstat, and then
+    # [ -f ] + grep -Iq + awk per file AGAIN for the rows -- and rows_mode
+    # calls lines_mode, so the popup re-paid the whole thing on open and after
+    # every pinned comment. Measured on an unignored 800-file vendor tree:
+    # 7.928s per open (master, which ignored untracked files entirely, took
+    # 0.018s). `ls-files -z | xargs grep -Il .` answers "which of these are
+    # readable text" for the whole tree in one pipeline -- grep -I still skips
+    # binaries, and a file it cannot read simply is not listed, the same two
+    # exclusions as before -- and the two awks below take that list as
+    # operands instead of re-walking it: 0.008s.
+    #
+    # The line count comes from the awk that already reads every file (FNR at
+    # EOF), not from a per-file `wc -l`; that also counts a final line with no
+    # trailing newline, which `wc -l` dropped while the row loop emitted it.
     #
     # core.quotePath=false here for the same reason it is on the diff above, and
     # it bites harder: ls-files C-quotes a non-ASCII name ("caf\303\251-new.txt"),
     # and a quoted name is not a path that exists, so [ -f ] failed and the file
     # was dropped from the list without a word -- while --preview-diff, which
     # asks with the flag set, rendered it. List and preview disagreed again.
-    # One call, both loops below read it.
-    local untracked u ulines
-    untracked=$(git -C "$dir" -c core.quotePath=false ls-files --others --exclude-standard 2>/dev/null)
-    while IFS= read -r u; do
-        [ -n "$u" ] && [ -f "$dir/$u" ] && grep -Iq . -- "$dir/$u" 2>/dev/null || continue
-        ulines=$(wc -l < "$dir/$u")
-        numstat="${numstat:+$numstat$'\n'}$ulines"$'\t'"0"$'\t'"$u"
-    done <<<"$untracked"
-    [ -n "$diff$untracked" ] || return 0
+    # One call, both awks below read it.
+    local ulist
+    ulist=$(cd "$dir" 2>/dev/null && git -c core.quotePath=false \
+                ls-files -z --others --exclude-standard 2>/dev/null \
+            | xargs -0 grep -Il . -- 2>/dev/null)
+    if [ -n "$ulist" ]; then
+        numstat="${numstat:+$numstat$'\n'}$(awk_over "$dir" "$ulist" '
+            { c[FILENAME] = FNR }
+            END { for (f in c) printf "%d\t0\t%s\n", c[f], substr(f, 3) }')"
+    fi
+    [ -n "$diff$ulist" ] || return 0
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -249,21 +284,19 @@ lines_mode() {
     ')
 
     # The untracked files' rows: no diff to parse, so every line of the file is
-    # its own + row at its own number -- the same shape the awk emits.
-    while IFS= read -r u; do
-        [ -n "$u" ] && [ -f "$dir/$u" ] && grep -Iq . -- "$dir/$u" 2>/dev/null || continue
-        # The file arrives on stdin, not as an operand: mawk rejects a `--`
-        # before a filename ("cannot open --"), and without one a name holding
-        # an `=` would be read as an awk variable assignment instead of a file.
-        #
-        # NR + 2, not NR + 1: an untracked preview is the same two prefixes a
-        # tracked one has -- the stat line AND the single "@@ -0,0 +1,N @@" of
-        # its --no-index diff, which is where --preview-diff starts printing.
-        # Counting only the stat line put every untracked row one line high,
-        # landing the whole file on its hunk header. Measured against the
-        # preview itself: line 1 of a new file renders at preview line 3.
-        raw="${raw:+$raw$'\n'}$(awk -v f="$u" '{ printf "%s\t%d\t+\t%d\t%s\n", f, NR, NR + 2, $0 }' < "$dir/$u")"
-    done <<<"$untracked"
+    # its own + row at its own number -- the same shape the awk emits. One awk
+    # over the whole readable-text list, so FNR (per file), not NR.
+    #
+    # NR + 2, not NR + 1: an untracked preview is the same two prefixes a
+    # tracked one has -- the stat line AND the single "@@ -0,0 +1,N @@" of
+    # its --no-index diff, which is where --preview-diff starts printing.
+    # Counting only the stat line put every untracked row one line high,
+    # landing the whole file on its hunk header. Measured against the
+    # preview itself: line 1 of a new file renders at preview line 3.
+    if [ -n "$ulist" ]; then
+        raw="${raw:+$raw$'\n'}$(awk_over "$dir" "$ulist" '
+            { printf "%s\t%d\t+\t%d\t%s\n", substr(FILENAME, 3), FNR, FNR + 2, $0 }')"
+    fi
     [ -n "$raw" ] || return 0
 
     # Churn per file (additions + deletions), the risk proxy that orders
