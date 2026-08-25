@@ -4122,6 +4122,68 @@ fi
 fi
 rm -rf "$RB"
 
+echo "== tmux-review --loop: ^A approves — the ref is the tree, the dir is gone, the next review is the delta =="
+if need_tmux "review ^A"; then :; else
+RA="cockpit-ra-$$"; SOCKS="$SOCKS $RA"; RASTATE=$(mktmpd); RADIR=$(mktmpd)
+(
+  cd "$RADIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go; printf 'brand new\n' > new.txt
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RADIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RAAP=$("$TMUX_REAL" -L "$RA" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RA" set-option -p -t "$RAAP" @cockpit_review pending >/dev/null 2>&1
+# new-window, not split-window: a split pane in a 30-row window shrinks to a
+# handful of rows once RACTL2 joins it too, and fzf silently drops header
+# lines (the base/↺ line first) once the picker does not fit -- reproduced.
+# Each control shell gets its own full-height window instead; -p still
+# targets RAAP explicitly, so which window the picker runs from is moot.
+ra_shell() { local p i; p=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -P -F '#{pane_id}' 'exec bash'); for i in $(seq 1 40); do [ "$("$TMUX_REAL" -L "$RA" display-message -p -t "$p" '#{pane_current_command}')" = bash ] && break; sleep 0.1; done; printf '%s' "$p"; }
+RACTL=$(ra_shell)
+RASESS="$RASTATE/tmux-cockpit/review/${RAAP#%}-$(printf '%s' "$RADIR" | cksum | cut -d' ' -f1)"
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
+until_cap "$RA" "$RACTL" '*review>*'
+# One pinned comment: ^A must refuse -- approve means "nothing more to say".
+# Down first: new.txt sorts before src.go (lines_mode's own order), and the
+# comment has to land on src.go for the ↺ assertions below to mean anything.
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Down
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" "not yet"; until_cap "$RA" "$RACTL" '*not yet*'
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Enter; until_file "$RASESS/comments.md" '*not yet*'
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-a
+# This session has no attached client (new-session -d), so the refusal's own
+# tmux display-message has nothing to render to -- confirmed a genuine no-op
+# without one, not a bug to chase here. Assert the refusal's EFFECT instead:
+# the picker stays open and the pinned comment is still there, marked.
+until_cap "$RA" "$RACTL" '*●src.go:3 (+)*' && ok "^A with a pinned comment refuses -- the picker stays open, the comment survives" || bad "^A with a pinned comment refuses -- the picker stays open, the comment survives" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
+is "and nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# Deliver it (the pane is idle: a paste), then re-open and approve.
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-s
+# Task 8 adds the ^S confirm popup and re-inserts the wait+Enter here; until then ^S delivers straight away.
+until_cap "$RA" "$RAAP" '*not yet*' && ok "the batch lands in the agent pane" || bad "the batch lands in the agent pane" "not yet" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RAAP")"
+until_file "$RASESS/delivered.md" '*not yet*' && ok "a delivered batch is archived as delivered.md" || bad "a delivered batch is archived as delivered.md" "not yet in delivered.md" "$(ls "$RASESS" 2>/dev/null)"
+is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo present || echo absent)"
+RACTL2=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
+until_cap "$RA" "$RACTL2" '*↺src.go:3 (+)*' && ok "on re-open the delivered comment's row reads ↺" || bad "on re-open the delivered comment's row reads ↺" "↺src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
+until_cap "$RA" "$RACTL2" '*1 delivered earlier*' && ok "and the header counts it" || bad "and the header counts it" "↺ 1 delivered earlier" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" C-a
+for i in $(seq 1 40); do [ -e "$RASESS" ] || break; sleep 0.1; done
+is "^A removes the session dir" "gone" "$([ -e "$RASESS" ] && echo present || echo gone)"
+is "^A clears the pane's review state" "" "$("$TMUX_REAL" -L "$RA" show-option -pqv -t "$RAAP" @cockpit_review)"
+RAREF=$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)
+is "^A wrote the checkpoint ref to a tree" "tree" "$(git -C "$RADIR" cat-file -t "$RAREF" 2>/dev/null)"
+is "the tree holds the untracked file too" "1" "$(git -C "$RADIR" ls-tree -r "$RAREF" --name-only 2>/dev/null | grep -c '^new.txt$')"
+is "nothing is left to review" "" "$("$DIR/scripts/tmux-review" --lines "$RADIR")"
+# --delta asks tmux about the pane, so it runs on THIS server (run-shell), not the suite's.
+is "--delta says so (exit 1)" "D=1" "$("$TMUX_REAL" -L "$RA" run-shell "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' --delta $RAAP; echo D=\$?" 2>/dev/null | tail -1)"
+printf 'brand new\nEDITED\n' > "$RADIR/new.txt"
+is "an edit to the approved untracked file is the only row" "EDITED" "$("$DIR/scripts/tmux-review" --lines "$RADIR" | cut -f3)"
+unset -f ra_shell
+"$TMUX_REAL" -L "$RA" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
@@ -4909,8 +4971,18 @@ if [ -n "$storefile" ] && [ -e "$storefile" ]; then
 else
     ok "the comment store does not outlive the delivered review"
 fi
-for i in $(seq 1 40); do [ -n "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)" ] || break; sleep 0.1; done
-is "a delivered review's session dir is removed too" "" "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)"
+sessdir="${storefile%/*}"
+for i in $(seq 1 40); do [ -s "$sessdir/delivered.md" ] && break; sleep 0.1; done
+if [ -d "$sessdir" ]; then
+    ok "a delivered review's session dir stays -- the batch is archived, not the dir"
+else
+    bad "a delivered review's session dir stays -- the batch is archived, not the dir" \
+        "$sessdir present" "$sessdir gone"
+fi
+case "$(cat "$sessdir/delivered.md" 2>/dev/null)" in
+    *"fix this"*) ok "and delivered.md holds the delivered comment" ;;
+    *) bad "and delivered.md holds the delivered comment" "fix this in delivered.md" "$(cat "$sessdir/delivered.md" 2>/dev/null)" ;;
+esac
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 rm -rf "$FD_DIRTY" "$FDTMPDIR"

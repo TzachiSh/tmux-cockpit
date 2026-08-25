@@ -73,8 +73,9 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
+  tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
-In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^S deliver   esc discard
+In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver   esc discard
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
@@ -139,7 +140,8 @@ review_base() {               # <dir> [auto|since-review|branch|uncommitted]
     ref="refs/cockpit/reviewed/${br:-HEAD}"
     case "$mode" in auto|since-review)
         if git -C "$dir" --no-optional-locks rev-parse -q --verify "$ref" >/dev/null 2>&1; then
-            printf '%s\tsince last review\tsince-review\n' "$ref"; return 0
+            printf '%s\tsince last review\tsince-review\n' \
+                "$(git -C "$dir" --no-optional-locks rev-parse "$ref")"; return 0
         fi ;;
     esac
     case "$mode" in auto|since-review|branch)
@@ -592,6 +594,37 @@ stale_keys() {                # <store> <rows-file>  -> stale headers, one per l
     ' "$st" "$rows"
 }
 
+# --- approve -------------------------------------------------------------------
+# refs/cockpit/reviewed/<branch> = the tree the human just looked at, untracked
+# files included (a real add -A into a temp index, then write-tree; content IS
+# hashed here, once per approve). A ref to a tree object is what makes the
+# since-review base a plain `git diff <ref>`; git update-ref accepts it and
+# `git branch -D` / `worktree remove` are its GC. The pane's state is the
+# caller's to clear -- this function knows the repo, not the pane.
+approve() {                   # <dir>
+    local dir=$1 idx gd br tree
+    idx=$(mktemp) || return 1
+    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; return 1; }
+    cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
+    br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A 2>/dev/null \
+           && GIT_INDEX_FILE=$idx git -C "$dir" write-tree 2>/dev/null)
+    rm -f -- "$idx"
+    [ -n "$tree" ] && git -C "$dir" update-ref "refs/cockpit/reviewed/${br:-HEAD}" "$tree" 2>/dev/null
+}
+
+# After a delivery: the batch joins delivered.md beside the store (the ↺ marks
+# of the next round read it), the store and its snapshot go, the dir stays
+# while anything is in it -- ^A is what removes it. Public as --done so the
+# by-hand re-delivery keep_hint() prints can finish the same way.
+done_store() {                # <store>
+    local st=$1 d=${1%/*}
+    [ -f "$st" ] && [ ! -L "$st" ] && [ -s "$st" ] && cat -- "$st" >> "$d/delivered.md"
+    rm -f -- "$st" "$st.rows" "$st.base"
+    rmdir -- "$d" 2>/dev/null
+    return 0
+}
+
 # --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
 # --preview/--pick convention) --------------------------------------------
 # --lines rows, marked: a leading "●" on any row whose path:line already has
@@ -629,12 +662,13 @@ rows_mode() {
     # this, someone who wins the sliver of a race between the failed write and
     # its `rm -f` gets to choose the rows the picker shows -- and every comment
     # the human then pins is anchored to a path THEY named.
-    local hdr=/dev/null
+    local hdr=/dev/null dlv=/dev/null
     [ -n "$store" ] && [ -f "$store" ] && hdr=$store
+    [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && dlv=${store%/*}/delivered.md
     if [ -n "$store" ] && [ ! -L "$store.rows" ] && [ -s "$store.rows" ]; then
-        mark_rows "$hdr" "$store.rows"
+        mark_rows "$hdr" "$dlv" "$store.rows"
     else
-        mark_rows "$hdr" <(lines_mode "$dir")
+        mark_rows "$hdr" "$dlv" <(lines_mode "$dir")
     fi
 }
 
@@ -664,9 +698,10 @@ rows_mode() {
 # And a marker key is an exact string, matching what the `grep -qxF` before it
 # matched: "## " is the store's own grammar, written by attach() and nothing
 # else, so a substr test on the first three bytes cannot pick up a body line.
-mark_rows() {                 # <store-or-/dev/null> <rows-file>
+mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <rows-file>
     LC_ALL=C awk -F'\t' -v OFS='\t' '
         FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
+        FILENAME == ARGV[2] { if (substr($0, 1, 3) == "## ") d[$0]++; next }
         NF == 0 { next }
         {
             # A deletion carries the OLD line number prefixed "-", so the
@@ -675,9 +710,12 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             sign = (substr($2, 1, 1) == "-") ? "-" : "+"
             num = $2; sub(/^-/, "", num)
             # One column wide whatever the count: ● for one, the digit past
-            # that, + for anything more -- a wrong digit lies, "+" does not.
-            n = c["## " $1 ":" num " (" sign ")"] + 0
-            m = (n == 0) ? " " : (n == 1) ? "●" : (n > 9) ? "+" : n ""
+            # that, + for anything more, ↺ for a row commented in an EARLIER
+            # round (delivered, nothing pinned on it now) -- "you said this
+            # last time, it is still here". A wrong digit lies, "+" does not.
+            key = "## " $1 ":" num " (" sign ")"
+            n = c[key] + 0
+            m = (n == 0) ? ((key in d) ? "↺" : " ") : (n == 1) ? "●" : (n > 9) ? "+" : n ""
             # Prepend, never repaint: "●" and " " are both one column, so a
             # marked row does not shift against an unmarked one.
             disp = $4
@@ -685,7 +723,7 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             else             sub(/ \(-\) /,  " \033[31m(-)\033[0m ", disp)
             print $1, $2, $3, m disp, $5
         }
-    ' "$1" "$2"
+    ' "$1" "$2" "$3"
 }
 
 # One block, appended -- never rewrite the store, only grow it, so a crash or
@@ -915,10 +953,12 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    local out rc key n choice crc
+    local out rc key n choice crc ndlv
     while :; do
+        ndlv=""
+        [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s,ctrl-b --disabled --ansi \
+            | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
@@ -932,7 +972,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label")
+                  --header=$'↵ pin the typed comment   ^S deliver   ^A approve   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1011,6 +1051,15 @@ run_loop() {
             [ "$(printf '%s\n' "$rows_out" | grep -c .)" -gt 0 ] || \
                 tmux display-message "tmux-review: nothing to review against $label" 2>/dev/null
             continue
+        fi
+        if [ "$key" = ctrl-a ]; then
+            if [ -s "$store" ]; then
+                tmux display-message "tmux-review: deliver or discard the $(grep -c '^## ' "$store") pinned comment(s) first" 2>/dev/null
+                rows_out=$(rows_mode "$dir" "$store"); continue
+            fi
+            if approve "$dir"; then exit 21; fi
+            tmux display-message "tmux-review: could not write the checkpoint ref" 2>/dev/null
+            rows_out=$(rows_mode "$dir" "$store"); continue
         fi
         if [ "$key" = ctrl-s ]; then
             exit 20
@@ -1124,8 +1173,8 @@ keep_hint() {
     # $SELF, not a bare "tmux-review": the name is only on $PATH after
     # install.sh symlinks it, and from a plugin-only install the suggested
     # command has to be copy-pasteable as printed.
-    printf '; comments kept at %s — deliver later with: %s --deliver %s %s' \
-        "$store" "$(shq "$SELF")" "$pane" "$(shq "$store")"
+    printf '; comments kept at %s — deliver later with: %s --deliver %s %s && %s --done %s' \
+        "$store" "$(shq "$SELF")" "$pane" "$(shq "$store")" "$(shq "$SELF")" "$(shq "$store")"
 }
 
 deliver() {
@@ -1560,8 +1609,15 @@ review_pane() {
         # and tested with a plain `if`; the `\$` keep both out of the reach of
         # the bash expansion that is building the string. Every path is still
         # shq-quoted.
-        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store") $(shq "$store.base"); rmdir -- $(shq "$sess") 2>/dev/null; fi"
+        cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store"); else rm -f -- $(shq "$store.rows"); fi"
         tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
+    elif [ "$rc" -eq 21 ]; then
+        # Approved: the ref is written (run_loop did it, in the popup); the
+        # pane's attention state and the review dir end here.
+        tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
+        "$(dirname "$SELF")/agent-state" recount "$pane"
+        [ -d "$sess" ] && [ ! -L "$sess" ] && rm -rf -- "$sess"
+        tmux display-message "review approved — the next one shows only what changes from here" 2>/dev/null
     else
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
     fi
@@ -1737,6 +1793,8 @@ case "${1:-}" in
         shift; compose "${1:-}" "${2:-}" ;;
     --deliver)
         shift; deliver "${1:-}" "${2:-}" "${3:-}" ;;
+    --done)
+        shift; done_store "${1:-}" ;;
     --delta)
         shift; delta_mode "${1:-}" ;;
     -h|--help)
