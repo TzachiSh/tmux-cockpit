@@ -578,8 +578,13 @@ moment the agent starts working again — pressing Enter is what fires the
 Delivery can also be **refused** — the target is on a permission prompt, is
 not an agent pane, or is not a pane id at all. A refusal keeps the batch: the
 comment store is left on disk, and the message names it along with the
-`tmux-review --deliver <pane> <store>` that re-sends it. Only a delivery that
-actually landed deletes the store.
+`--deliver <pane> <store>` that re-sends it — spelled with the script's own
+resolved path, not a bare `tmux-review`, so it pastes back even from a
+plugin-only install where nothing is on `$PATH` yet. Every refusal you can see
+keeps the store. One window does not: the paste is gated a second time inside
+tmux, and if the pane stops being an idle agent between the shell guard and
+that gate, nothing is pasted but the store is still deleted. It is a few
+milliseconds wide and closes when the delete moves inside the gate itself.
 
 What this deliberately does **not** do, and why:
 
