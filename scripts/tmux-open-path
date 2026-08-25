@@ -102,32 +102,46 @@ if [ "${1:-}" = --preview-diff ]; then
     # though the candidate under the cursor did not change since the last time
     # it was drawn -- rendering the same file's diff from scratch per key
     # press. Memoise the whole rendered output (stat line + body) under a key
-    # built from everything that can make it stale: the path, the tree it is
-    # diffed against (HEAD), and the file's own (mtime, size). Edit the file,
-    # or move HEAD, and the key changes -- a stale hit is impossible by
-    # construction, not by a TTL. A cache hit is a single `cat`, no git at all.
+    # built from everything that can make it stale: the file's own resolved
+    # ABSOLUTE path (two worktrees of the same repo, at the same HEAD, with
+    # the same relative path, are NOT the same file -- reproduced, since $d is
+    # already the file's real directory, $d/$base is already absolute here);
+    # the tree it is diffed against (HEAD); its index entry (git ls-files -s
+    # -- covers staged vs unstaged, including the staged/unstaged aliasing an
+    # unborn HEAD used to hide, since that also had no key component before);
+    # and a content hash. Deliberately no mtime anywhere in the key: whole-
+    # second mtime+size collided on two edits inside the same wall-clock
+    # second that happened to leave the file the same byte size (reproduced,
+    # 3/3) -- content is the only thing that can never lie about whether the
+    # file actually changed. A hash of a file this size is milliseconds; a
+    # cache hit is still that hash plus one `cat`, no diffing at all.
     ckey=""
     chd=$(git -C "$d" -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
-    # Whole-second mtime (stat -c '%Y', BSD's stat -f '%m') is too coarse: two
-    # edits inside the same second that happen to leave the file the same
-    # byte size collide on the same key and the second edit reads stale. GNU
-    # `date -r` reaches the same stat() but can format it to nanoseconds, so
-    # prefer that; BSD/no -%N support falls back to the coarser pair (a real
-    # gap, accepted the way the brief's own stat fallback already is).
-    cns=$(date -r "$f" +%s.%N 2>/dev/null)
-    case "$cns" in *[!0-9.]*|'') cns="" ;; esac
-    if [ -n "$cns" ]; then
-        cst="$cns $(stat -c '%s' "$f" 2>/dev/null || stat -f '%z' "$f" 2>/dev/null)"
-    else
-        cst=$(stat -c '%Y %s' "$f" 2>/dev/null || stat -f '%m %z' "$f" 2>/dev/null)
-    fi
-    if [ -n "$cst" ]; then
-        cksum=$(printf '%s\n%s\n%s\n' "$f" "$chd" "$cst" \
+    apath="$d/$base"
+    idx=$(git -C "$d" -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
+    csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
+    if [ -n "$csum" ]; then
+        cksum=$(printf '%s\n%s\n%s\n%s\n' "$apath" "$chd" "$idx" "$csum" \
                 | { sha1sum 2>/dev/null || shasum 2>/dev/null; })
         ckey=${cksum%% *}
     fi
+
+    # ${XDG_RUNTIME_DIR:-/tmp} can fall through to a shared, world-writable
+    # /tmp: never trust a cache dir that already existed under another uid,
+    # as a symlink, or with any mode wider than owner-only. On any mismatch
+    # the cache is unusable for this render -- refuse to read from it OR
+    # write into it, not just one or the other.
     cdir="${XDG_RUNTIME_DIR:-/tmp}/tmux-cockpit-preview-$(id -u)"
-    if [ -n "$ckey" ] && [ -f "$cdir/$ckey" ]; then
+    cache_ok=0
+    if [ -n "$ckey" ]; then
+        ( umask 077; mkdir -p "$cdir" ) 2>/dev/null
+        if [ ! -L "$cdir" ] && [ -d "$cdir" ]; then
+            dstat=$(stat -c '%u %a' "$cdir" 2>/dev/null || stat -f '%u %Lp' "$cdir" 2>/dev/null)
+            [ "$dstat" = "$(id -u) 700" ] && cache_ok=1
+        fi
+    fi
+
+    if [ "$cache_ok" -eq 1 ] && [ -f "$cdir/$ckey" ] && [ ! -L "$cdir/$ckey" ]; then
         cat "$cdir/$ckey"
         exit 0
     fi
@@ -179,15 +193,15 @@ if [ "${1:-}" = --preview-diff ]; then
         fi
     }
 
-    if [ -z "$ckey" ]; then
+    if [ "$cache_ok" -ne 1 ]; then
         # No stable key (e.g. the file vanished between the existence check
-        # above and here) -- render uncached rather than risk caching under a
-        # key that cannot pin the state it was rendered from.
+        # above and here, or it was unreadable) -- or the cache dir itself
+        # failed the ownership/mode/symlink check -- render uncached rather
+        # than read from or write into something that cannot be trusted.
         render_preview_diff
         exit 0
     fi
 
-    ( umask 077; mkdir -p "$cdir" ) 2>/dev/null
     ctmp="$cdir/$ckey.tmp.$$"
     ( umask 077; render_preview_diff > "$ctmp" 2>/dev/null )
     cat "$ctmp" 2>/dev/null
