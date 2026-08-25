@@ -252,19 +252,11 @@ esac
 # tmux expands #{pane_id} at bind time in the originating pane. With the id the
 # script resolves the target -- that pane if it is an agent, else the fleet
 # queue of every dirty one. Same popup chrome and off-disables as the jump key.
-# The popup's children inherit the SERVER's environment, not the client's:
-# the $EDITOR set in your shell is not in there, so ^E in the review would
-# land in vi. Pass the one this config was loaded with -- only when set, an
-# empty VISUAL= would win over a good EDITOR inside the script.
-PE=()
-[ -n "${VISUAL:-}" ] && PE+=(-e "VISUAL=$VISUAL")
-[ -n "${EDITOR:-}" ] && PE+=(-e "EDITOR=$EDITOR")
-
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key r display-popup -E "${PE[@]+"${PE[@]}"}" -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$RK" display-popup -E "${PE[@]+"${PE[@]}"}" -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
+    "")  tmux bind-key r display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
+    *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and

@@ -541,11 +541,11 @@ Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
 terminals where the plain chord doesn't land. `^E` hands what you have typed
 to `$EDITOR` and pins the file that comes back, so a comment that needs three
-lines costs no more than one — the popup gets your `EDITOR`/`VISUAL` passed
-in, because a popup's children otherwise see only the server's environment.
-The list reloads in place and
-marks the row `●` (the digit instead, when more than one comment sits there),
-so five comments cost one popup, not five — the same
+lines costs no more than one — the popup's children see the tmux *server's*
+environment: export `EDITOR` before the server starts, or
+`tmux set-environment -g EDITOR nvim` for a running one. The list reloads
+in place and marks the row `●` (the digit instead, when more than one
+comment sits there), so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch; `esc` discards it — and with comments
 pinned it asks first (`keep reviewing` / `discard N comment(s)`), because

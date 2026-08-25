@@ -5460,8 +5460,6 @@ fi
 echo "== tmux-review --loop: ^E hands the comment to \$EDITOR and pins what comes back =="
 # The fzf query line is a one-line box; a thorough comment cost more than a
 # shallow one. ^E opens $EDITOR on what was typed so far and pins the file.
-# The popup's children get the SERVER's environment, so cockpit.tmux passes
-# EDITOR/VISUAL through display-popup -e -- the second half of this block.
 if need_tmux "tmux-review ^E"; then :; else
 RE="cockpit-re-$$"; SOCKS="$SOCKS $RE"
 REDIR=$(mktmpd)
@@ -5496,24 +5494,6 @@ is "no editor temp file is left behind, and none went beside the store" "" "$(ls
 until_cap "$RE" "$REP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
 "$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
-# cockpit.tmux passes the editor the config was loaded with into the popup.
-REC="cockpit-rec-$$"; SOCKS="$SOCKS $REC"
-# shellcheck disable=SC1007  # VISUAL= is deliberate: an unset-but-empty VISUAL for this command only
-EDITOR=/usr/bin/false VISUAL= "$TMUX_REAL" -L "$REC" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$REC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-# this tmux build's list-keys ignores the trailing [key] filter (empty
-# output for every key, not just "r"), so grep the "r" line out of the
-# full prefix table instead of relying on that filter.
-rebind=$("$TMUX_REAL" -L "$REC" list-keys -T prefix 2>/dev/null | grep -E '^\S+[[:space:]]+-T prefix r[[:space:]]')
-case "$rebind" in
-    *"EDITOR=/usr/bin/false"*) ok "the review popup carries EDITOR into its environment" ;;
-    *) bad "the review popup carries EDITOR into its environment" "-e EDITOR=/usr/bin/false" "$rebind" ;;
-esac
-case "$rebind" in
-    *"VISUAL="*) bad "an unset VISUAL is not passed as an empty one" "no VISUAL" "$rebind" ;;
-    *) ok "an unset VISUAL is not passed as an empty one" ;;
-esac
-"$TMUX_REAL" -L "$REC" kill-server >/dev/null 2>&1
 fi
 
 echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
