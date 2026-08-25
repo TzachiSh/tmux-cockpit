@@ -452,6 +452,13 @@ lines_mode() {
     # where the bash `read -r ... rest` this replaces kept it. (Both then lose
     # it to the control-char strip -- which is the point: the two agree.)
     #
+    # LC_ALL=C on the awk, not just on the sort: the 160 cut is a BYTE cut, and
+    # `substr` counts bytes in mawk but CHARACTERS in gawk under a UTF-8
+    # locale -- the same diff cut at 160 characters on one box and 160 bytes on
+    # the next, and `length($1)`-style field arithmetic drifted with it. C
+    # makes every awk here byte-oriented, which is also what the shell it
+    # replaces counted once the fragment reached printf.
+    #
     # Ordering is done by `sort`, not in awk (no `asorti` in POSIX awk, and an
     # in-awk insertion sort is the O(n^2) this is here to delete). Three
     # prepended key columns and one ascending sort do it: the partition (0 for
@@ -462,7 +469,7 @@ lines_mode() {
     # -- the file's group stays whole and internally line-ascending. LC_ALL=C
     # for a byte order that does not move with the locale; `cut` drops the
     # three keys again.
-    awk -F'\t' '
+    LC_ALL=C awk -F'\t' '
         NR == FNR {
             if ($1 ~ /^[0-9]+$/) a = $1; else a = 0
             if ($2 ~ /^[0-9]+$/) d = $2; else d = 0
@@ -480,7 +487,23 @@ lines_mode() {
             # header next.
             frag = substr($0, length($1) + length($2) + length($3) + length($4) + 5)
             gsub(/[\001-\037\177]/, "", frag)
-            frag = substr(frag, 1, 160)
+            # 160 BYTES, backed off to a character boundary. A blind byte cut
+            # ends a fragment mid-sequence -- 200 "e-acute" after one ASCII
+            # byte put a lead byte C3 at 160 and its continuation at 161, so
+            # the fzf column and the comment-store quote header got an
+            # undecodable trailing byte. The byte AFTER the cut says whether
+            # the cut split anything: only a continuation byte there means it
+            # landed inside a sequence, and then the whole partial sequence at
+            # the end goes. A cut that already fell on a boundary is left
+            # alone -- trimming it would drop a whole valid character (200
+            # "e-acute" with no prefix is exactly 80 characters at 160 bytes).
+            # Invalid input cannot loop or corrupt further: with no lead byte
+            # to match, the sub does nothing and the 160-byte cut stands.
+            if (length(frag) > 160) {
+                tail = substr(frag, 161, 1)
+                frag = substr(frag, 1, 160)
+                if (tail ~ /^[\200-\277]$/) sub(/[\300-\367][\200-\277]*$/, "", frag)
+            }
             # A deletion has no line in the new file, so its row carries the
             # OLD number prefixed "-".
             ml = ($3 == "-" ? "-" $2 : $2)

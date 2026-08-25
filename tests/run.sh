@@ -3043,13 +3043,16 @@ rm -rf "$RVPERF"
 # git diff and the parsing awk, both of which were always there, are 44ms.
 # So the row build fell from ~165ms to ~19ms.
 #
-# The tooth is 0.15, not the 0.4 the plan wrote nor the 0.2 it fell back to.
-# 0.4 is where the bash build sat on the plan's machine (427ms); this box
-# runs it in ~210ms, so 0.4 passed the very code this test exists to reject.
-# 0.2 is worse than useless: the bash build straddles it (probed 1 of 3 runs
-# under 0.2), so the tooth would have been a coin flip rather than a test.
-# 0.15 is below the bash build's fastest run and above twice the awk build's
-# slowest: probed 0/5 passing on bash, 5/5 on awk.
+# The tooth is 0.2 -- the rig's convention, ~3x the expected time -- not the
+# 0.4 the plan wrote: 0.4 is where the bash build sat on the plan's machine
+# (427ms) and this box runs it in ~210ms, so 0.4 passed the very code this
+# test exists to reject. Know what 0.2 does and does not catch: probed
+# against the bash build it failed 2 runs in 3 and passed the third, so it
+# rejects that build most of the time but is not a proof. 0.15 was probed
+# too (0/5 on bash, 5/5 on awk) and rejected as the tooth: it bites harder,
+# but the awk build needs only a 2.2x slowdown to cross it, and a false
+# failure on a loaded gate box costs more than the third bash run it would
+# have caught.
 RV49=$(mktmpd)
 (
   cd "$RV49" || exit
@@ -3059,11 +3062,11 @@ RV49=$(mktmpd)
   git add -A; git commit -q -m init
   seq 1 4900 > f
 ) >/dev/null 2>&1
-if timeout 0.15 "$DIR/scripts/tmux-review" --lines "$RV49" >/dev/null 2>&1; then
-    ok "4900 rows build in under 0.15s (measured 210ms bash, 65ms awk)"
+if timeout 0.2 "$DIR/scripts/tmux-review" --lines "$RV49" >/dev/null 2>&1; then
+    ok "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)"
 else
-    bad "4900 rows build in under 0.15s (measured 210ms bash, 65ms awk)" \
-        "rows within 0.15s" "timed out (the bash row build)"
+    bad "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)" \
+        "rows within 0.2s" "timed out (the bash row build)"
 fi
 is "and all 4900 rows are there" "4900" \
    "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
@@ -3205,6 +3208,49 @@ case "$rvq1out" in
          "zeta.txt<TAB>2<TAB>AA" "$rvq1out" ;;
 esac
 rm -rf "$RVQ1"
+
+# The 160 cut is 160 BYTES on every awk, and never lands inside a UTF-8
+# sequence. Two seams meet here. First, the row-build awk runs under LC_ALL=C
+# so `substr` counts bytes in gawk (which counts CHARACTERS in a UTF-8 locale)
+# as well as in mawk (which always counted bytes) -- otherwise the same diff
+# produced a 160-character fragment on one box and a 160-byte one on the next.
+# Second, a byte cut splits multi-byte characters: FAIL-first, line 3 below
+# (an ASCII byte then 200 'é') put é #80's lead byte C3 at byte 160 and its
+# continuation byte at 161, so the fragment ended in a dangling C3 -- invalid
+# UTF-8 handed to an fzf display column and written into the comment store as
+# a quote header. Line 2 (200 'é', no prefix) is the aligned case the back-off
+# must NOT touch: 80 whole characters, exactly 160 bytes, nothing to trim.
+RVU=$(mktmpd)
+(
+  cd "$RVU" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > wide.txt
+  git add -A; git commit -q -m init
+  eacc=$(printf 'é%.0s' $(seq 1 200))
+  printf 'seed\n%s\nx%s\n' "$eacc" "$eacc" > wide.txt
+) >/dev/null 2>&1
+rvuout=$("$DIR/scripts/tmux-review" --lines "$RVU")
+for rvuln in 2 3; do
+    rvufrag=$(printf '%s\n' "$rvuout" | awk -F'\t' -v n="$rvuln" '$2 == n { print $3 }')
+    rvubytes=$(printf '%s' "$rvufrag" | wc -c)
+    if printf '%s' "$rvufrag" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        ok "the line $rvuln fragment is valid UTF-8, not a split character"
+    else
+        bad "the line $rvuln fragment is valid UTF-8, not a split character" \
+            "a decodable fragment" "$rvubytes bytes ending mid-sequence"
+    fi
+    if [ "$rvubytes" -le 160 ] && [ "$rvubytes" -gt 0 ]; then
+        ok "the line $rvuln fragment is at most 160 bytes ($rvubytes)"
+    else
+        bad "the line $rvuln fragment is at most 160 bytes" "1..160" "$rvubytes"
+    fi
+done
+# The aligned case loses nothing: 200 'é' cut at 160 bytes is 80 whole
+# characters, so a back-off that fired here would be trimming valid output.
+is "the aligned fragment keeps all 160 of its bytes" "160" \
+   "$(printf '%s\n' "$rvuout" | awk -F'\t' '$2 == 2 { print $3 }' | tr -d '\n' | wc -c)"
+rm -rf "$RVU"
 
 echo "== tmux-review --attach: no row under the cursor stores nothing =="
 # {1} resolves to an empty string when the list has no row (or the match
