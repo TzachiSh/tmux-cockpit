@@ -327,6 +327,8 @@ sf=$(ls -d "$FDTMPDIR"/tmux-cockpit/review/*/comments.md 2>/dev/null | head -1)
 
 and update the block's comment that says the store is a mktemp under `TMPDIR` to say it is `<session>/comments.md` under `XDG_STATE_HOME`. Any later `ls "$FDTMPDIR"` assertion in that block ("nothing left behind") becomes `ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null` — an empty listing is the pass, because a delivered review's directory is removed.
 
+Block `tmux-review: a clean-tree direct pane says so instead of opening an empty picker`: its control pane runs `tmux-review` bare — once the session dir exists that would create a directory under the developer's real `~/.local/state`. Prefix the command it sends with `XDG_STATE_HOME=$(shq_test "$(mktmpd)")` (a `MTSTATE=$(mktmpd)` variable declared beside `MT=`), so the suite never writes outside its own temp dirs.
+
 Block `tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them`: same substitution for `RKTMPDIR` — `export XDG_STATE_HOME=...; printf 'RKTMP=%s\n' "$XDG_STATE_HOME"`, and wherever it lists `$RKTMPDIR` for the kept store, list `"$RKTMPDIR"/tmux-cockpit/review/*/comments.md`. Its comment ("Same TMPDIR redirect as the block above: review_pane()'s mktemp store is …") becomes "Same XDG_STATE_HOME redirect as the block above: review_pane()'s session dir lands under it".
 
 - [ ] **Step 5: Run the three blocks**
@@ -606,7 +608,7 @@ RXBIN=$(mktmpd); ln -s "$DIR/scripts/tmux-review" "$RXBIN/tmux-review"
 printf '## src.go:3 (+)\n> CHANGED\nfirst\n\n## src.go:3 (+)\n> CHANGED\nsecond\n\n## other.go:9 (-)\n> gone\nkeep me\n\n' > "$RXSTORE"
 "$RXBIN/tmux-review" --detach "$RXSTORE" src.go 3
 is "--detach removes every record on that anchor and keeps the rest byte-for-byte" \
-   $'## other.go:9 (-)\n> gone\nkeep me\n' "$(cat "$RXSTORE")"
+   $'## other.go:9 (-)\n> gone\nkeep me' "$(cat "$RXSTORE")"
 "$RXBIN/tmux-review" --detach "$RXSTORE" other.go -9
 is "a deletion's anchor is matched with its sign" "0" "$(grep -c '^## ' "$RXSTORE")"
 "$RXBIN/tmux-review" --detach "$RXSTORE" "" ""; rxrc=$?
