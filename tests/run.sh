@@ -378,6 +378,79 @@ is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # Per-pane options die with the pane, so stale state cannot outlive a pane and
 # there is no sweep that could delete a live one.
 
+echo "== agent-state: a hook transition costs at most four tmux round-trips =="
+# `running` fires on UserPromptSubmit and on EVERY PreToolUse/PostToolUse
+# (examples/claude-hooks.json), and the hook has to return before the tool call
+# proceeds -- so every extra `tmux` here is a fork plus a server round-trip on
+# the agent's critical path. Measured before the batching: 12 invocations for
+# `running`, 10 for `done`, 12 for `needs-input` (one read, one write per
+# option, then six more for the three precomputed counters).
+#
+# Counted with a PATH shim ahead of the suite's own that logs one line per call
+# and still execs the real binary, so the pane's state stays correct and the
+# count is honest. (`strace -f -e execve` is not portable; the shim is the same
+# trick the branch-row and statusline-write blocks use.)
+if need_tmux "agent-state round-trips"; then :; else
+RT="cockpit-rt-$$"; SOCKS="$SOCKS $RT"
+"$TMUX_REAL" -L "$RT" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RTP=$("$TMUX_REAL" -L "$RT" list-panes -t t -F '#{pane_id}')
+RTS=$(mktmpd); RTLOG="$RTS/calls"
+cat > "$RTS/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RTLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+chmod +x "$RTS/tmux"
+# TMUX points agent-state's bare \`tmux\` at this private server, the production
+# path the fleet block drives too.
+rtcall() { : > "$RTLOG"
+    PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$RTP" >/dev/null 2>&1
+    wc -l < "$RTLOG" | tr -d ' '; }
+rtrun=$(rtcall running)
+rtdone=$(rtcall done)
+if [ "${rtrun:-99}" -le 4 ]; then ok "running costs at most 4 tmux invocations"
+else bad "running costs at most 4 tmux invocations" "<=4" "$rtrun"; fi
+if [ "${rtdone:-99}" -le 4 ]; then ok "done costs at most 4 tmux invocations"
+else bad "done costs at most 4 tmux invocations" "<=4" "$rtdone"; fi
+# Batching must not buy the count with correctness: every option the unbatched
+# version wrote is still written, with the same value.
+is "the pane state still lands" "done" \
+   "$("$TMUX_REAL" -L "$RT" show-option -pqv -t "$RTP" @panestate)"
+is "the window dot still ranks it" "done" \
+   "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_state)"
+rtneeds=$(rtcall needs-input)
+if [ "${rtneeds:-99}" -le 4 ]; then ok "needs-input costs at most 4 tmux invocations"
+else bad "needs-input costs at most 4 tmux invocations" "<=4" "$rtneeds"; fi
+is "the banner boolean still flips" "1" \
+   "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_needs)"
+is "the fleet counter still counts" '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+   "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
+# An unchanged state still costs exactly one round-trip: the read that decides
+# nothing changed, and no writes at all.
+rtsame=$(rtcall needs-input)
+is "an unchanged state costs one read and no writes" "1" "$rtsame"
+# The fleet string is now read back through the same batched format rather than
+# through show-option, and it carries #{...} colour tokens. If the format
+# re-expanded them the compare-then-set guard would never match and every
+# transition on the server would rewrite the global -- a server-wide redraw
+# apiece. A second agent pane whose transition leaves the count at 1 must write
+# nothing to @cockpit_fleet.
+"$TMUX_REAL" -L "$RT" new-window -t t: 'exec -a claude bash' >/dev/null 2>&1
+RTP2=$("$TMUX_REAL" -L "$RT" list-panes -t t:1 -F '#{pane_id}')
+: > "$RTLOG"
+PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
+    running "$RTP2" >/dev/null 2>&1
+is "an unchanged fleet count is never rewritten" "0" \
+   "$(grep -c '@cockpit_fleet ' "$RTLOG")"
+is "and the stored count still carries its colour tokens" \
+   '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+   "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
+"$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
+fi
+
 echo "== worktree in the branch label =="
 wtroot=$(mktmpd)
 # Build a throwaway repo instead of borrowing a real one. Pointing this at
