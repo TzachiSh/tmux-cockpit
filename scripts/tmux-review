@@ -1374,18 +1374,19 @@ fleet_scan_root() {
             add=$(( add + a )); del=$(( del + d ))
         done <<<"$numstat"
 
-        # Untracked files carry no numstat line at all -- without counting
-        # them a pane holding only new files reads as 0 churn and sorts last,
-        # even though `git status` already called it dirty. Counted straight
-        # off $st in bash (a byte-for-byte compare against the two-char
-        # prefix) instead of forking `grep -c '^??'` per repo.
+        # An untracked file's lines are already in $add -- tree_diff's copy
+        # runs `add -N` before diffing, so numstat above already counts them.
+        # This walk is only for the "?N new" suffix, the number of NEW FILES,
+        # a count numstat doesn't carry. Counted straight off $st in bash (a
+        # byte-for-byte compare against the two-char prefix) instead of
+        # forking `grep -c '^??'` per repo.
         untracked=0
         while IFS= read -r line; do
             case "$line" in "??"*) untracked=$((untracked + 1)) ;; esac
         done <<<"$st"
         stat="+$add -$del"
         [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
-        churn=$(( add + del + untracked ))
+        churn=$(( add + del ))
     else
         # Nothing to review, only someone to unblock. "+0 -0" would read as a
         # measurement; — reads as "not applicable", which it is.

@@ -5056,6 +5056,7 @@ mk_git_dir() {  # mk_git_dir <dir> <dirty:0|1>
     ) >/dev/null 2>&1
 }
 FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
+printf 'x\ny\nz\n' > "$FQ_DIRTY/new.txt"             # + an untracked file
 FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- excluded
 FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
 
@@ -5088,6 +5089,16 @@ case "$fqout" in
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
 is "the queue lists exactly one row" "1" "$rowcount"
+
+# Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (new.txt),
+# folded into the same numstat by tree_diff's intent-to-add copy, so the ??
+# walk below must count new.txt only toward the "?1 new" file-count suffix,
+# not toward churn too (that double-counted it as +4 -0 +1 = 5 before the fix).
+case "$fqout" in
+    *"$DIRTY_PANE"*"+4 -0  ?1 new"*) ok "the dirty row's stat is +4 -0  ?1 new, not double-counted" ;;
+    *) bad "the dirty row's stat is +4 -0  ?1 new, not double-counted" \
+         "$DIRTY_PANE ... +4 -0  ?1 new" "$fqout" ;;
+esac
 
 # The queue is a triage list, not a churn leaderboard. A pane parked on a
 # permission prompt is exactly the one that needs a human -- and it typically
