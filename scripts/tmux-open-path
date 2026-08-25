@@ -44,6 +44,15 @@ H=${HOME:-/nonexistent}
 # What changed in this file, as an actual diff -- everything uncommitted from
 # one base (staged, unstaged, and brand-new files alike), and an honest sentence
 # when there is nothing. Bound to ^G in the pickers.
+# --no-optional-locks on every git call below, without exception. This block
+# is the hottest git path in the plugin: fzf re-runs it on every arrow key of
+# the review picker, against a worktree an agent is actively working in, and a
+# plain `git status`/`git diff` refreshes the index and takes index.lock to do
+# it. A read that fights the agent's own git for the lock is a read that can
+# make its command fail -- the same rule tmux-review's tree_diff() states and
+# fleet_scan_root() follows. The --no-index calls do not need the flag; they
+# carry it anyway, because "every git call here" is the only version of this
+# rule that survives the next edit.
 if [ "${1:-}" = --preview-diff ]; then
     f=${2:-}
     case "$f" in "~") f=${HOME:-/nonexistent} ;; "~/"*) f="${HOME:-/nonexistent}/${f#\~/}" ;; esac
@@ -63,20 +72,20 @@ if [ "${1:-}" = --preview-diff ]; then
     # because root-level fixtures have a basename identical to their whole
     # relative path, so the doubling never showed up in them.
     base=${f##*/}
-    if ! git -C "$d" -c core.quotePath=false rev-parse --git-dir >/dev/null 2>&1; then
+    if ! git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse --git-dir >/dev/null 2>&1; then
         printf 'not in a git repository\n'; exit 0
     fi
     if [ -d "$f" ]; then
-        st=$(git -C "$f" -c core.quotePath=false -c color.status=always status --short 2>/dev/null | head -40)
+        st=$(git -C "$f" --no-optional-locks -c core.quotePath=false -c color.status=always status --short 2>/dev/null | head -40)
         # Same headok test the file branch below inlines: a plain `diff --stat`
         # answers about the WORKING TREE only, so a staged-only file (in the
         # index, not yet touched again) had no line here at all, disagreeing
         # with the list -- which has shown staged+unstaged+untracked as one set
         # since the fix above. `diff --stat HEAD` is both halves in one call.
-        if git -C "$f" -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1; then
-            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat HEAD 2>/dev/null | head -40)
+        if git -C "$f" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            dd=$(git -C "$f" --no-optional-locks -c core.quotePath=false diff --color=always --stat HEAD 2>/dev/null | head -40)
         else
-            dd=$(git -C "$f" -c core.quotePath=false diff --color=always --stat 2>/dev/null | head -40)
+            dd=$(git -C "$f" --no-optional-locks -c core.quotePath=false diff --color=always --stat 2>/dev/null | head -40)
         fi
         if [ -n "$st$dd" ]; then printf '%s\n%s\n' "$st" "$dd"
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
@@ -116,9 +125,9 @@ if [ "${1:-}" = --preview-diff ]; then
     # file actually changed. A hash of a file this size is milliseconds; a
     # cache hit is still that hash plus one `cat`, no diffing at all.
     ckey=""
-    chd=$(git -C "$d" -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
+    chd=$(git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
     apath="$d/$base"
-    idx=$(git -C "$d" -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
+    idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
     csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
     if [ -n "$csum" ]; then
         cksum=$(printf '%s\n%s\n%s\n%s\n' "$apath" "$chd" "$idx" "$csum" \
@@ -150,11 +159,11 @@ if [ "${1:-}" = --preview-diff ]; then
     [ -n "$chd" ] && headok=1
     render_preview_diff() {
         if [ "$headok" -eq 1 ]; then
-            numstat=$(git -C "$d" -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
         else
-            numstat=$(git -C "$d" -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
             if [ -z "$numstat" ]; then
-                numstat=$(git -C "$d" -c core.quotePath=false diff --cached --numstat -- "$base" 2>/dev/null)
+                numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --cached --numstat -- "$base" 2>/dev/null)
                 cached=1
             fi
         fi
@@ -165,9 +174,9 @@ if [ "${1:-}" = --preview-diff ]; then
         # same shape as a tracked file's: one stat line, then the diff from
         # its first @@.
         if [ -z "$numstat" ] && \
-           [ -n "$(git -C "$d" -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
+           [ -n "$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
             untracked=1
-            numstat=$(git -C "$d" -c core.quotePath=false diff --numstat --no-index -- /dev/null "$f" 2>/dev/null)
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat --no-index -- /dev/null "$f" 2>/dev/null)
         fi
         if [ -z "$numstat" ]; then
             printf 'no uncommitted changes in %s\n' "${f##*/}"
@@ -179,16 +188,16 @@ if [ "${1:-}" = --preview-diff ]; then
             *)           printf '%s | %s insertion(s), %s deletion(s)\n' "$base" "$add" "$del" ;;
         esac
         if [ "$untracked" -eq 1 ]; then
-            git -C "$d" -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         elif [ "$headok" -eq 1 ]; then
-            git -C "$d" -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         elif [ "$cached" -eq 1 ]; then
-            git -C "$d" -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         else
-            git -C "$d" -c core.quotePath=false diff --color=always -- "$base" 2>/dev/null \
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always -- "$base" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         fi
     }
