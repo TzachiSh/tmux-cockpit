@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Builds one of six deterministic git fixtures whose `tmux-review --lines`
+# Builds one of eight deterministic git fixtures whose `tmux-review --lines`
 # output is frozen in the sibling *.tsv goldens. Each case's body is the
 # exact fixture-building subshell from the corresponding tests/run.sh
 # `--lines` block (deterministic author env, `git init -q -b main`), so the
 # fixture and the golden it produced stay reproducible byte for byte.
 #
-# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks> <dir>
+# Usage: mkfix.sh <basic|mixed|untracked|blank|nonascii|funcname|hunks|spaces> <dir>
 # <dir> must already exist and be empty; it becomes the fixture's repo root.
 
 set -euo pipefail
@@ -97,6 +97,21 @@ hunks)
     mv nums.txt.new nums.txt
     sed -i '3s/.*/line3-CHANGED/' nums.txt
     printf 'CHANGED\n' > tests/t.txt
+    ;;
+spaces)
+    # git terminates a header path with a TAB when the path holds a space
+    # ("--- a/has space.txt<TAB>"), which the parser used to carry into every
+    # row of that file. Both sides are covered: a TRACKED path with a space,
+    # which goes through the diff headers (one changed line and one deleted
+    # line, so the deletion rows -- the ones that read as additions when the
+    # tab rode along -- are pinned), and an UNTRACKED one, which has no diff
+    # header at all and is walked straight off the filesystem.
+    git init -q -b main .
+    printf 'alpha\nbravo\ncharlie\n' > 'has space.txt'
+    git add -A
+    git commit -q -m init
+    printf 'alpha\nBRAVO-CHANGED\n' > 'has space.txt'
+    printf 'brand new\n' > 'new file.txt'
     ;;
 *)
     echo "mkfix.sh: unknown fixture '$name'" >&2

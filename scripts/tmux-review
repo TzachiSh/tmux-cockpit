@@ -384,11 +384,24 @@ lines_mode() {
                 next
             }
             if ($0 ~ /^--- /) {
-                if ($0 ~ /^--- a\//) oldfile = substr($0, 7)
+                # git TERMINATES a header path with a tab when the path holds a
+                # space ("--- a/has space.txt<TAB>"), and substr keeps it. That
+                # tab then rode into every row the file emitted, where -F"\t"
+                # read it as an extra empty field: the line number came out
+                # blank, the preview offset was glued to the front of the
+                # fragment, and the sign column landed in the offset -- so a
+                # DELETION on such a path was emitted as an addition. It was
+                # invisible while the rows were built by a tab-IFS `read`,
+                # which treats tab as IFS whitespace and collapses the doubled
+                # one; awk -F"\t" does not. A header path can never
+                # legitimately end in a raw tab (git C-quotes those), so
+                # stripping one is unambiguous, and doing it here fixes both
+                # sides at the source instead of in every consumer.
+                if ($0 ~ /^--- a\//) { oldfile = substr($0, 7); sub(/\t$/, "", oldfile) }
                 next
             }
             if ($0 ~ /^\+\+\+ /) {
-                if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
+                if ($0 ~ /^\+\+\+ b\//) { file = substr($0, 7); sub(/\t$/, "", file) } else file = oldfile
                 # A new file is a new preview, so its offset restarts too.
                 oldl = 0; newl = 0; poff = 0; next
             }
