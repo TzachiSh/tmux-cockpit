@@ -4795,7 +4795,7 @@ if [ -n "$storefile" ] && [ -e "$storefile" ]; then
     ok "the review's comment store exists while the popup is open"
 else
     bad "the review's comment store exists while the popup is open" \
-        "one file under $FDTMPDIR" "none"
+        "one */comments.md under $FDTMPDIR/tmux-cockpit/review" "none"
 fi
 
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" "fix this"

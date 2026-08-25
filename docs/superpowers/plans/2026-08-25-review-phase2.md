@@ -762,7 +762,7 @@ git commit -m "feat: ^X deletes the comments under the cursor through the store 
 
 **Interfaces:**
 - Consumes: `attach <store> <path> <line> <fragment> <comment> <dir>` (unchanged); `until_cap`/`until_file`.
-- Produces: `tmux-review --edit <store> <path> <line> <fragment> <query> <dir>` — opens `${VISUAL:-${EDITOR:-vi}}` on a 0600 temp file pre-filled with `<query>`, then attaches the file's contents (an empty file attaches nothing).
+- Produces: `tmux-review --edit <store> <path> <line> <fragment> <query> <dir>` — opens `${VISUAL:-${EDITOR:-vi}}` on a 0600 temp file under `${TMPDIR:-/tmp}` (never beside the store: a crashed editor's leftover must not block the session dir's `rmdir`) pre-filled with `<query>`, then attaches the file's contents (an empty file attaches nothing).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -784,12 +784,12 @@ REDIR=$(mktmpd)
   printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
   printf 'a\nb\nCHANGED\n' > src.go
 ) >/dev/null 2>&1
-RESTORE="$STATE/review-edit-$$"
+RESTORE="$STATE/review-edit-$$"; RETMP=$(mktmpd)
 REED=$(mktmpf); printf '#!/bin/sh\nprintf "from the editor\\nsecond line\\n" >> "$1"\n' > "$REED"; chmod +x "$REED"
 "$TMUX_REAL" -L "$RE" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 REP=$("$TMUX_REAL" -L "$RE" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" \
-    "VISUAL= EDITOR=$(printf '%q' "$REED") '$DIR/scripts/tmux-review' --loop '$REDIR' '$RESTORE'" Enter
+    "TMPDIR=$(printf '%q' "$RETMP") VISUAL= EDITOR=$(printf '%q' "$REED") '$DIR/scripts/tmux-review' --loop '$REDIR' '$RESTORE'" Enter
 until_cap "$RE" "$REP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RE" capture-pane -p -t "$REP")"
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" "typed first"; until_cap "$RE" "$REP" '*typed first*'
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" C-e
@@ -803,7 +803,7 @@ case "$("$TMUX_REAL" -L "$RE" capture-pane -p -t "$REP")" in
     *"review> typed first"*) bad "the query is cleared after ^E" "review> " "still typed first" ;;
     *) ok "the query is cleared after ^E" ;;
 esac
-is "no editor temp file is left beside the store" "" "$(ls "$RESTORE".edit.* 2>/dev/null)"
+is "no editor temp file is left behind, and none went beside the store" "" "$(ls "$RETMP" "$RESTORE".edit.* 2>/dev/null)"
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Escape
 until_cap "$RE" "$REP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
@@ -838,11 +838,13 @@ After `detach()`:
 # Runs inside fzf's execute(): the terminal is the editor's until it exits.
 # The file starts as whatever was typed so far, so ^E continues a comment
 # rather than restarting it; an editor that leaves it empty pins nothing
-# (attach's own rule). Word-splitting on purpose: EDITOR="code --wait".
+# (attach's own rule). Under $TMPDIR, not beside the store: a killed popup
+# leaves the editor's file behind, and a leftover inside the session dir
+# would block its rmdir for good. Word-splitting on purpose: EDITOR="code --wait".
 edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     local store=$1 path=$2 line=$3 fragment=$4 query=$5 dir=$6 tmp
     [ -n "$path" ] && [ -n "$store" ] || return 0
-    tmp=$(umask 077; mktemp "$store.edit.XXXXXX") || return 0
+    tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/cockpit-review-edit.XXXXXX") || return 0
     [ -n "$query" ] && printf '%s\n' "$query" > "$tmp"
     # shellcheck disable=SC2086
     ${VISUAL:-${EDITOR:-vi}} "$tmp"
