@@ -4822,8 +4822,33 @@ case "$(printf '%s\n' "$fqout2" | grep "^$DIRTY_PANE")" in
     *) bad "the row names the repo and branch" "$(basename "$FQ_DIRTY")⑂main" "$fqout2" ;;
 esac
 
+# A blocked agent whose cwd is not a git repo at all. fleet_scan_root()
+# short-circuits that group with no git call -- but it emitted its unknown
+# fields EMPTY, `0\t\t\t—\t0`, and tab is an IFS *whitespace* character: the
+# run of three tabs collapsed into one under phase 3's `IFS=$'\t' read`, so
+# the row came back shifted (repo=—, branch=0, stat empty) and rendered
+# "—⑂0" with a blank ± column. The same trap the pane format guards against
+# at fleet_rows' #{@panestate} sentinel. Sentinels on the wire, not empties.
+FQ_NOREPO=$(mktmpd)
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NOREPO" 'exec -a claude bash' >/dev/null 2>&1
+NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+# Polled on the row we assert about, same reason as the loop above.
+fqout3=""
+for i in $(seq 1 20); do
+    fqout3=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout3" in *"$NOREPO_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+nrrow=$(printf '%s\n' "$fqout3" | awk -F'\t' -v p="$NOREPO_PANE" '$1 == p { print; exit }')
+is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?" \
+   "$(printf '%s\n' "$nrrow" | cut -f4)"
+is "and its ± column reads —, not an empty field" "—" \
+   "$(printf '%s\n' "$nrrow" | cut -f5)"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_NOREPO"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="

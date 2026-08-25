@@ -1267,7 +1267,14 @@ fleet_scan_root() {
     local st numstat add del untracked churn stat dirty=0 repo branch a d line
 
     if [ -z "$root" ]; then
-        printf '0\t\t\t—\t0\n'
+        # "?" on the wire, never an empty field: phase 3 joins this row back
+        # with `IFS=$'\t' read`, tab is an IFS *whitespace* character, and a
+        # RUN of tabs collapses into one delimiter there. Emitting repo and
+        # branch empty shifted every field left, so a blocked agent outside a
+        # repo rendered "—⑂" + churn with a blank ± column instead of "?⑂?"
+        # and "—". Same trap, same sentinel, as the #{@panestate} guard in
+        # fleet_rows' pane format above.
+        printf '0\t?\t?\t—\t0\n'
         return 0
     fi
     # Two agents on two worktrees of the same repo are indistinguishable from
