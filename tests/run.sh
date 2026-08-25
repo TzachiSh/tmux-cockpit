@@ -114,7 +114,7 @@ trap cleanup EXIT
 sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
 
 echo "== syntax =="
-for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/*; do
+for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/lib/*; do
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done
@@ -3736,6 +3736,62 @@ fi
 is "the pinned comments are kept, not shredded, on that exit" \
    "$rvspinwant" "$(cat "$RVSPINSTORE" 2>/dev/null)"
 rm -rf "$RVSPIN" "$RVSPINSTORE"
+
+echo "== review-store: parse is the inverse of format over the full grammar =="
+# The one module that knows what "## path:line (+)" means. Sourced, pure:
+# no tmux, no git (the boundary test below). A record is a header, an
+# optional "> fragment" line, body lines, and a blank separator.
+RS_LIB="$DIR/scripts/lib/review-store.sh"
+# shellcheck disable=SC1090
+if [ -f "$RS_LIB" ] && . "$RS_LIB"; then ok "the library sources"; else bad "the library sources" "scripts/lib/review-store.sh" "missing or errored"; fi
+RSD=$(mktmpd); RSF="$RSD/comments.md"
+# A corpus that exercises every rule: a range, a deletion, file-level, an
+# empty body, a multi-line body, a body line that starts with "## " (the
+# one escape), a body line starting with "> ", a path with spaces, ':' and
+# non-ASCII, a fragment holding a tab, and a record with no fragment line
+# (revdiff writes none).
+declare -gA STORE=(); STORE_N=0
+store_set() { local i=$1; shift; STORE_N=$((i+1)); while [ $# -ge 2 ]; do STORE[$i.$1]=$2; shift 2; done; }
+store_set 0 path src.go line 3 side + frag 'x := 1' body 'tighten this'
+store_set 1 path src.go line 10 end 12 side + frag 'for {' body $'unroll?\n\n## not a header\n> not a fragment'
+store_set 2 path 'old name.txt' line 4 side - frag $'a\tb' body ''
+store_set 3 path 'café:v2/x.py' side file-level body 'rename the module'
+store_set 4 path lib.sh line 7 side + body 'no fragment line at all'
+format_store "$RSF"; rs1=$(cat "$RSF")
+case "$rs1" in *$'## src.go:10-12 (+)\n> for {\nunroll?\n\n ## not a header\n> not a fragment\n\n'*) ok "a range, an escaped ## body line and a > body line format as the grammar says" ;;
+    *) bad "a range, an escaped ## body line and a > body line format as the grammar says" "the record verbatim" "$rs1" ;; esac
+case "$rs1" in *$'## café:v2/x.py (file-level)\nrename the module\n'*) ok "file-level has no line and no fragment" ;;
+    *) bad "file-level has no line and no fragment" "## café:v2/x.py (file-level)" "$rs1" ;; esac
+case "$rs1" in *$'## old name.txt:4 (-)\n> a\tb\n\n'*) ok "an empty body is header, fragment, separator" ;;
+    *) bad "an empty body is header, fragment, separator" "## old name.txt:4 (-) / > a<TAB>b / blank" "$(printf '%s' "$rs1" | cat -A | head -20)" ;; esac
+store_dump() { local k; for k in "${!STORE[@]}"; do printf '%s=%q\n' "$k" "${STORE[$k]}"; done | sort; }
+snap=$(store_dump); STORE=(); STORE_N=0
+parse_store "$RSF"
+is "parse reads back every record" "5" "$STORE_N"
+is "parse reads back every field" "$snap" "$(store_dump)"
+format_store "$RSF.2"
+is "format(parse(format(x))) is byte-identical" "" "$(cmp "$RSF" "$RSF.2" 2>&1)"
+# revdiff's own output has no fragment line; ranges, file-level, ?? intact.
+printf '## README.md:2 (+)\nrevdiff note ?? why changed\n\n## a.go:5-9 (-)\nold block\n\n## b.go (file-level)\nsplit it\n' > "$RSF.rd"
+parse_store "$RSF.rd"
+is "revdiff's records parse: count" "3" "$STORE_N"
+is "revdiff's records parse: range end" "9" "${STORE[1.end]:-}"
+is "revdiff's records parse: no fragment key when there was no fragment line" "unset" "${STORE[0.frag]-unset}"
+# Corruption is fail-open: blank state, the file set aside, never a crash.
+printf 'garbage before any header\n## src.go:3 (+)\nfine\n' > "$RSF.bad"
+parse_store "$RSF.bad" 2>/dev/null; rsrc=$?
+is "a corrupted store parses to a blank state and returns 0" "0/0" "$rsrc/$STORE_N"
+is "and the corrupted file is set aside as .bak" "garbage before any header" "$(head -1 "$RSF.bad.bak" 2>/dev/null)"
+is "and the original path is gone" "gone" "$([ -e "$RSF.bad" ] && echo present || echo gone)"
+printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
+is "a header with a non-numeric line is corruption" "0" "$STORE_N"
+parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
+# Today's writer (attach) produces records this parser reads.
+RSATT="$RSD/att"; "$DIR/scripts/tmux-review" --attach "$RSATT" src.go 3 'x := 1' 'from attach' >/dev/null 2>&1
+parse_store "$RSATT"; is "attach()'s store parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
+# The boundary: nothing but comments may say tmux or git in the pure module.
+is "the library touches neither tmux nor git" "0" "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -c 'tmux\|git')"
+unset -f store_set store_dump; unset STORE STORE_N
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
