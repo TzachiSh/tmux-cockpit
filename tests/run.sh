@@ -214,6 +214,7 @@ esac
 tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
+# tests: examples/tmux.conf cockpit.tmux
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
@@ -296,6 +297,7 @@ is "but a real pane id still works" "error" "$(sv)"
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 
 fi
+# tests: cockpit.tmux
 echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
@@ -371,6 +373,7 @@ is "idle notification does not clear done" "done" "$(sv)"
 is "and done is still intact"  "done" "$(sv)"
 
 fi
+# tests: cockpit.tmux
 echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
 sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
@@ -589,6 +592,7 @@ is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
+# tests: scripts/tmux-branch
 echo "== tmux-branch: local and remote branches =="
 # Plumbing, not `git commit`: no user config, no hooks, no signing prompt.
 BR=$(mktmpd); RM=$(mktmpd)
@@ -692,6 +696,7 @@ else
     ok "a 4000-token clicked line is bounded, not just slow"
 fi
 
+# group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
@@ -2056,6 +2061,7 @@ is "full.tmux.conf leaves the outer terminal title off" "off" \
 "$TMUX_REAL" -L "$ST" kill-server >/dev/null 2>&1
 fi
 
+# group: etmux
 echo "== @cockpit_open_single skips the popup for machine output =="
 # Opt-in: a lone candidate that carried an explicit :line is a stack trace or
 # compiler error, not a guess. "line" opens those directly; "always" opens any
@@ -2788,6 +2794,7 @@ rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.
 is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
 rm -rf "$RVOFFN"
 
+# group: serial
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -3166,6 +3173,7 @@ case "$("$DIR/scripts/tmux-review" --lines "$RVBIN")" in
 esac
 rm -rf "$RVBIN"
 
+# group: serial
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the
@@ -3308,6 +3316,7 @@ else
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
 
+# group: serial
 echo "== tmux-review --rows: re-marking after a comment reads the cache, not git =="
 # The picker reloads the WHOLE marked list after every pinned comment, and
 # rows_mode re-derived that list from `git diff` + the full row build every
@@ -4268,6 +4277,7 @@ case "$rv5preview" in
 esac
 rm -rf "$PD"
 
+# group: serial
 echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
 # Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
 # block makes, so the memoised cache lives and dies with the test.
@@ -4386,6 +4396,7 @@ is "and nothing is written into it either" "0" \
    "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
 rm -rf "$HC"
 
+# group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
 RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
@@ -4465,6 +4476,7 @@ case "$(apcap)" in
 esac
 is "an empty store is refused (exit 1)" "RC=1" "$(lastrc)"
 
+# group: deliver
 echo "== tmux-review --deliver: the composed review lands typed-but-unsent =="
 rundeliver "$AP" "$RDSTORE"
 apafter=$(apcap)
@@ -4516,6 +4528,7 @@ is "prefix J walks to a pane holding an unsent review" "$AP" \
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
 
+# group: deliver
 echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
 "$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
 "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
@@ -4534,6 +4547,7 @@ case "$(apcap)" in
 esac
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
 
+# group: deliver
 echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
 # A second agent pane and a second control pane -- driving both deliveries
 # from their OWN panes, fired back-to-back with no sleep between, is the
@@ -4577,6 +4591,7 @@ case "$raceB" in
     *) ok "pane B's review is not pane A's" ;;
 esac
 
+# group: deliver
 echo "== tmux-review --deliver: an oversized review goes to a file, not the pane =="
 # Both the old-name symlink target and the spillover glob below are keyed
 # only on the PANE ID ("${AP#%}") -- which tmux hands out per-socket
@@ -4751,6 +4766,7 @@ esac
 "$TMUX_REAL" -L "$FI_IN"  kill-server >/dev/null 2>&1
 fi
 
+# tests: scripts/tmux-review
 echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
 # deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
 # re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill
@@ -5234,6 +5250,7 @@ esac
 rm -rf "$MT_DIR"
 fi
 
+# group: serial
 echo "== tmux-review --fleet: from a non-agent pane, the queue lists exactly the dirty agent panes =="
 if need_tmux "tmux-review --fleet"; then :; else
 FQ="cockpit-fq-$$"; SOCKS="$SOCKS $FQ"
@@ -5476,6 +5493,7 @@ is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 rm -rf "$FP_DIR"
 fi
 
+# group: serial
 echo "== tmux-review --fleet: dedups panes sharing a repo root and scans 20 panes under a second =="
 # fleet_rows() used to cost one status+numstat scan PER PANE even when two
 # panes were cd'd into the exact same worktree -- resolving the repo root now
@@ -6139,6 +6157,64 @@ is "discarding removes the session dir, not just the store" "gone" "$([ -e "$SDS
 unset -f sd_shell sdmode
 "$TMUX_REAL" -L "$SD" kill-server >/dev/null 2>&1
 fi
+
+echo "== tests/par.sh: every block runs exactly once across the shards, and a red shard reddens the run =="
+# A sandboxed copy, never the live tests/run.sh: par.sh derives DIR from its
+# own BASH_SOURCE, so it has to sit under tests/ of a fake repo root, not be
+# pointed at the file this suite is itself running from (that would recurse).
+PARROOT=$(mktmpd)
+mkdir -p "$PARROOT/tests"
+cp "$DIR/tests/par.sh" "$PARROOT/tests/par.sh"
+# The real prelude verbatim (everything above the first block -- ok/bad/is,
+# mktmpd, the private-server setup), then four small fixture blocks: a solo
+# pass, two sharing a group (one shard), and one that fails on purpose. Built
+# with $Q rather than a literal `echo "== `, so this suite's own block-scanning
+# tools never mistake the fixture text below for real blocks in THIS file --
+# they match that exact substring at column 0, heredoc or not.
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PARROOT/tests/run.sh"
+Q='"'
+{
+    printf 'echo %s== fake1: solo ==%s\n' "$Q" "$Q"
+    printf 'is "fake1" 1 1\n\n'
+    printf '# group: g\n'
+    printf 'echo %s== fake2a: grouped ==%s\n' "$Q" "$Q"
+    printf 'is "fake2a" 1 1\n\n'
+    printf '# group: g\n'
+    printf 'echo %s== fake2b: grouped ==%s\n' "$Q" "$Q"
+    printf 'is "fake2b" 1 1\n\n'
+    printf 'echo %s== fake3: the injected failure ==%s\n' "$Q" "$Q"
+    printf 'bad "deliberately red" want got\n'
+} >> "$PARROOT/tests/run.sh"
+
+EXPECT_BLOCKS=$(grep -c '^echo "== ' "$PARROOT/tests/run.sh")
+PAROUT=$(J=3 "$PARROOT/tests/par.sh" 2>&1); PARRC=$?
+is "a red shard makes par.sh exit non-zero" "1" "$PARRC"
+SUMMARY=$(printf '%s\n' "$PAROUT" | grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' | tail -1)
+COUNTED=$(printf '%s\n' "$SUMMARY" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+is "every fixture block is counted exactly once (faithfulness: extracted == grep -c)" "$EXPECT_BLOCKS" "$COUNTED"
+is "the injected bad is the one failure, the rest still pass" "3 passed, 1 failed, 0 skipped" "$SUMMARY"
+
+echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
+GROOT=$(mktmpd)
+mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
+cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
+for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
+    printf 'a\n' > "$GROOT/$f"
+done
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "no stamp yet: check misses" "1" "$?"
+(cd "$GROOT" && bash tests/green.sh stamp) >/dev/null 2>&1
+is "stamp records green" "0" "$?"
+case "$(cat "$GROOT/tests/.cache/green" 2>/dev/null)" in
+    *"tool "*tmux*) ok "tool versions are recorded in the stamp" ;;
+    *) bad "tool versions are recorded in the stamp" "a 'tool ...tmux...' line" "$(cat "$GROOT/tests/.cache/green" 2>/dev/null)" ;;
+esac
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "unchanged content: check hits" "0" "$?"
+printf 'a\nb\n' > "$GROOT/scripts/foo"
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "one changed byte: check misses" "1" "$?"
+is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

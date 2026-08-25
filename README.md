@@ -701,6 +701,21 @@ The path-extraction cases drive `tmux-open-path --dry-run`, so they need neither
 tmux nor an editor. The branch cases build a scratch repo with `git commit-tree`
 rather than `git commit`: no user config, no hooks, no signing prompt.
 
+Four faster ways to run them, each for a different point in the loop:
+
+```sh
+tests/only.sh PATTERN   # one block group by title, while iterating: seconds
+make test-changed       # only the blocks a dirty file could have broken: sub-second to ~20s
+make -j2 check-par      # lint beside a 12-way sharded suite, before a commit: ~40s
+make gate               # check-par, skipped via a content-keyed stamp if nothing changed: 0.03s green, else ~40s
+```
+
+`make test` and `make check` are unchanged and stay the merge gate — one
+process, source order. The six blocks that assert a wall-clock budget (a giant
+diff under `timeout 1.5`, a 20-pane fleet scan under `timeout 1`, …) run in
+their own serial shard, alone, before the rest: they measure the box's spare
+CPU as much as the code, and shard them apart and they flake under contention.
+
 ## Whole-pane tint
 
 A **blocked** pane also gets a faint warm tint across its entire background

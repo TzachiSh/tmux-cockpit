@@ -1,5 +1,13 @@
 tmux-cockpit freeze rig -- raw results. tmux 3.7c, 12-core Linux.
 
+=== 2026-08-26: gate.sh defaults dropped to REPS=3 SETTLE=0.5 (task 3b) ===
+Same numbers as the "WHAT A MOVE COSTS" heading below, at the new defaults:
+redraw 696, project->project 706, agent->terminal 712, pane->pane 706 --
+identical both runs. Wall clock 34.6s / 35.3s (vs ~69.6s at the old REPS=5
+SETTLE=1.0 defaults); higher than the report's 30.0s baseline because this
+box was under concurrent load from other agents in this session, same as
+every other measurement in this task's report.
+
 === THE CI METRIC: pane visits per status redraw (deterministic) ===
 element                      12 panes  48 panes  120 panes
 control                             0         0          0

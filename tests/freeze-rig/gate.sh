@@ -38,8 +38,13 @@ LOGDIR=$(mktemp -d) || exit 2
 # 3 sessions x 10 windows x 4 panes = 120 panes: big enough that a whole-server
 # walk is unmistakable, small enough to build in a few seconds.
 S=${S:-3} W=${W:-10} P=${P:-4}
-REPS=${REPS:-5}
-SETTLE=${SETTLE:-1.0}     # seconds to let a forced redraw finish before counting
+# REPS takes the minimum over reps, so more reps only catches undercounts --
+# it does not make the number less reliable. Measured identical visit counts
+# (696/706/712) at REPS=3 SETTLE=0.5 across nine runs, 69.6s -> 30.0s; the one
+# anomaly seen anywhere in that sweep was at the OLD defaults (5/1.0), not a
+# reduced one. docs/superpowers/research/2026-08-25-suite-speed/suite-speed-report.md §4.
+REPS=${REPS:-3}
+SETTLE=${SETTLE:-0.5}     # seconds to let a forced redraw finish before counting
 BUDGET_RATIO=${BUDGET_RATIO:-1.0}       # server walks allowed per status redraw
 
 cleanup() {
