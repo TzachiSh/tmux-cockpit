@@ -6,7 +6,7 @@
 
 **Architecture:** `review_pane()` swaps `mktemp` for a deterministic dir under `$XDG_STATE_HOME/tmux-cockpit/review/<pane>-<cksum root>/` (owner decision §8 #1, answered yes 2026-08-25). The snapshot that phase 1 already writes (`<store>.rows`) becomes the immutable artifact; `snapshot()` is the one function that writes it and `stale_keys()` the one that joins comments against it. `scripts/lib/review-store.sh` (landed on this branch: `parse_store` = inverse of `format_store`, round-trip tested) is sourced only by the two subcommands that rewrite the store. `attach()`, `compose()`, `deliver()` are untouched.
 
-**Tech Stack:** bash 4+, tmux ≥ 3.3 (`display-popup -e`), fzf 0.44.1 (`execute`, `preview(...)`, `show-preview`), git, POSIX awk (mawk here), `cksum` (POSIX, everywhere). No new dependency.
+**Tech Stack:** bash 4+, tmux ≥ 3.3 (popups), fzf 0.44.1 (`execute`), git, POSIX awk (mawk here), `cksum` (POSIX, everywhere). No new dependency.
 
 **Spec:** `docs/superpowers/plans/2026-08-24-review-redesign-goal.md` §1 phase 2 row, §2 rig, §3; `docs/superpowers/research/2026-08-24-review-lenses/dev.md` §5 (the decomposition) and §2.2 (the drift repro); `docs/superpowers/research/2026-08-24-review-lenses/ux.md` lines 184–199 (the keys); `docs/superpowers/plans/2026-08-25-review-section8-decisions.md` (the answers). The ponytail audit below records where this plan deliberately ships less than dev.md §5 asked for.
 
@@ -36,7 +36,7 @@
 | `diff.tsv` with `id file hunk side line blob text` + `meta` | **skip** | the snapshot already exists since phase 1 as `<store>.rows` (5 fields); `hunk`/`blob` have no reader in this phase; `meta` has no reader at all (the refusal message names root, pane and store). The session dir holds `comments.md` and `comments.md.rows`. |
 | reimplement `attach`/`compose` on the parsed model | **skip** | `>>` append is the crash-safety property; `cat` is the formatter and compose's test pins its bytes. `parse_store` is used where a rewrite is needed (`^X`) and where a join is needed (`^R`, resume). |
 | `@` nested fzf over the store | **replace** with `^L` | in the comment loop every printable key is comment text (`--disabled` routes typing to the query) — `@` would eat a character. `^L` = `show-preview+preview(cat store)`: one bind, zero code. |
-| `●N` | **keep, one column** | `●` for one, the digit for 2–9, `9` beyond — the marker column stays one cell wide (`mark_rows`'s "prepend, never repaint" rule). |
+| `●N` | **keep, one column** | `●` for one, the digit for 2–9, `+` beyond (an honest "more", not a wrong number) — the marker column stays one cell wide (`mark_rows`'s "prepend, never repaint" rule). |
 | 25 fixed sleeps → polls | **9 of 21** | the nine that wait for an event a poll can see (typed text, a store write, an `RC=` marker, a paste landing) convert; the twelve that are negative assertions ("nothing pinned", "the gate refused") or pane-spawn settles stay — a poll on "nothing happened" is a sleep with extra steps. Each kept one already says so in a comment or gets one. |
 | `^X` = discard the batch with confirm (when-how lens) | **defer to phase 3** | esc's existing confirm already offers `discard N comment(s)`; a second discard key in this phase is two ways to do one thing. Phase 3 revisits when esc's meaning changes to "keep the spool". |
 | `tests/only.sh` (landed) | **keep, mark** | 33 lines of awk that make the TDD cycle 3 s instead of 133 s; its brace-depth count is a known ceiling — Task 0 adds the `# ponytail:` line. |
@@ -713,11 +713,10 @@ Add two binds after the `ctrl-r` bind:
 
 ```bash
                   --bind "ctrl-x:execute-silent(${detach_cmd})+reload(${rows_cmd})" \
-                  --bind "ctrl-l:show-preview+change-preview-window(down,55%,border-top,+1)+preview(cat -- $(shq "$store") 2>/dev/null)" \
-                  --bind "focus:change-preview-window(down,55%,border-top,+{5}-/2)" \
+                  --bind "ctrl-l:execute(${list_cmd})" \
 ```
 
-(`^L` resets the preview window's scroll to the top — the diff preview's `+{5}-/2` offset would otherwise scroll a store listing past its own end for any row deep in the diff — and the `focus` bind puts the diff's offset back on the next cursor move. `preview(...)` itself is one-shot: the `--preview` command returns on the next move. Measured on fzf 0.44.1: the window's scroll position lags one move behind when the list also scrolls; the content is right on the first move.)
+with `list_cmd="$(shq "$SELF") --list $(shq "$store")"` and a `list_store()` subcommand shaped like `resnap()` (inside fzf's `execute()` stdout is fzf's own pipe, so it `exec >/dev/tty` when stdin is a tty, `cat`s the store, prints `(press any key)` and reads one key). The plan first had `show-preview+preview(cat …)`, then `change-preview-window(+1)` plus a `focus` bind restoring the diff offset — the final whole-branch review measured that the `focus` bind un-hides the preview after `^/`, so the preview window is not used for `^L` at all. (The preview test for `^L` therefore asserts the store text in the terminal, then a key returns to the list; a fail-first test pins that `^/` stays hidden across a cursor move.)
 
 Header first line becomes: `↵ pin the typed comment   ^X delete   ^L list   ^R refresh   ^S deliver   esc discard (asks first)`.
 
@@ -854,7 +853,7 @@ and add, after the `ctrl-l` bind:
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
 ```
 
-Header first line becomes: `↵ pin the typed comment   ^E editor   ^X delete   ^L list   ^R refresh   ^S deliver   esc discard (asks first)`.
+Header becomes two lines that both fit an 82-column popup (70% of 120): `↵ pin the typed comment   ^S deliver   esc discard (asks first)` / `^E editor  ^X delete  ^L list  ^R refresh  ^/ preview  alt-u/alt-d scroll` (the whole-branch review measured the one-line form at 110 columns, cutting `^S deliver` and `esc discard` at the default width).
 
 Dispatcher, after `--detach)`:
 
