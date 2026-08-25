@@ -3872,6 +3872,21 @@ XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt
 if XDG_RUNTIME_DIR="$RTD" timeout 0.05 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render returns in under 50ms"
 else bad "a repeat render returns in under 50ms" "cache hit" "timeout"; fi
 is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
+# The 50ms tooth alone does not prove the cache is READ. On this fixture a
+# HIT costs 24-29ms and a MISS 39-43ms, so 50ms separates neither: a mutant
+# copy of the script whose cache read is dead passes all three assertions
+# above unchanged. Only a row that could not have come from anywhere else
+# proves the memo was used. Plant one -- the hermetic dir holds exactly the
+# single entry the first render wrote -- and demand the next render hand it
+# back verbatim. Same trick as the SENTINEL row in the row-snapshot block.
+pvcdir="$RTD/tmux-cockpit-preview-$(id -u)"
+is "the hermetic cache dir holds exactly the one entry the first render wrote" \
+   "1" "$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
+pventry=$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | head -1)
+printf 'PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS\n' > "$pventry"
+is "and a repeat render is served FROM that entry, not re-rendered" \
+   "PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS" \
+   "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")"
 sed -i '1001s/.*/ALSO/' "$PV/big.txt"
 case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
     *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
