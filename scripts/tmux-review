@@ -78,14 +78,19 @@ USAGE
 # index the moment one unstaged edit existed -- reproduced: a staged file was
 # invisible to the list while the preview showed it. An unborn HEAD (no
 # commits yet) has no HEAD to diff against, so that case keeps the fallback.
+#
+# --no-optional-locks on every call, the same discipline fleet_row_one() already
+# uses: `git diff` refreshes the index and takes index.lock to do it, and this
+# runs against a repo an AGENT is working in. A read that fights the agent's own
+# git for the lock is a read that can make its command fail.
 tree_diff() {
     local dir=$1; shift
-    if git -C "$dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
-        git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
+    if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
     else
         local out
-        out=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
-        [ -n "$out" ] || out=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
+        [ -n "$out" ] || out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
         printf '%s\n' "$out"
     fi
 }
