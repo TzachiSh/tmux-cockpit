@@ -242,7 +242,7 @@ if [ "${1:-}" = --preview ]; then
     # -A: the dotfiles this audience most wants to reach (.claude/, .gitignore)
     # were invisible, with .git/ alone filtered as noise.
     if [ -d "$f" ]; then
-        st=$(git -C "$f" -c color.status=always status --short 2>/dev/null | head -40)
+        st=$(git -C "$f" --no-optional-locks -c color.status=always status --short 2>/dev/null | head -40)
         [ -n "$st" ] && printf '%s\n\n' "$st"
         ls -1Ap -- "$f" 2>/dev/null | grep -vx '\.git/' | head -60
         exit 0
@@ -273,8 +273,11 @@ if [ "${1:-}" = --preview ]; then
     # A line number wins over the diff: the jump target is the point then.
     if [ -z "$l" ]; then
         case "$f" in */*) _d=${f%/*} ;; *) _d=. ;; esac
-        if git -C "$_d" rev-parse --git-dir >/dev/null 2>&1; then
-            _diff=$(git -C "$_d" diff --color=always -- "$f" 2>/dev/null)
+        # --no-optional-locks here too: --preview is the DEFAULT preview, so
+        # it is redrawn on every arrow key of the picker, and `git diff` on a
+        # live worktree refreshes the index and takes index.lock to do it.
+        if git -C "$_d" --no-optional-locks rev-parse --git-dir >/dev/null 2>&1; then
+            _diff=$(git -C "$_d" --no-optional-locks diff --color=always -- "$f" 2>/dev/null)
             [ -n "$_diff" ] && { printf '%s\n' "$_diff" | head -400; exit 0; }
         fi
     fi
