@@ -249,3 +249,116 @@ Two genuine gaps, not filled by docs, worth a live smoke-test rather than more s
 - Whether `--output-format json` includes a final `result` text field.
 - Exact behavior of Esc pressed by the human while your Stop hook is mid-poll-hold (spinner customizable
   via `statusMessage`, but cancel-during-hook-execution semantics are undocumented).
+
+## D. Build-vs-buy (2026-08-25)
+
+**D11 — Agent Teams — [E] throughout, agent-teams.md fetched fresh today (doc marked "as of v2.1.178",
+current on 2.1.245).**
+- Experimental, off by default: *"Agent teams are experimental and disabled by default. Enable them by
+  setting `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`... Without that variable, no team is set up at session
+  start... and Claude does not spawn or propose teammates."*
+- `teammateMode` values/default — **[E]**: *"The default is `\"in-process\"`. Before v2.1.179 the default
+  was `\"auto\"`, so upgraded sessions that previously opened split panes now stay in one terminal unless
+  you set the mode explicitly."* Values: `"in-process"` (all teammates in the main terminal, arrow-key
+  panel), `"auto"` (split panes when already inside tmux or iTerm2-with-`it2`, else in-process), `"tmux"`
+  (forces split-pane, auto-picks tmux or iTerm2), `"iterm2"` (since v2.1.186, forces iTerm2 native panes).
+  So your read was right on the flip point (v2.1.179) and the pre-flip value (was `"auto"`) — the
+  post-flip default name is `"in-process"`, not blank.
+- What a teammate is — **[E]**: *"Teammates work independently, each in its own context window, and
+  communicate directly with each other."* / *"Each teammate is a full, independent Claude Code session."*
+  / *"Each teammate has its own context window. When spawned, a teammate loads the same project context as
+  a regular session: CLAUDE.md, MCP servers, and skills. It also receives the spawn prompt from the lead.
+  The lead's conversation history does not carry over."* Own transcript: viewable via the panel (*"Enter:
+  open the selected teammate's transcript and message it directly"*) — so yes to all three: full session,
+  own context, own transcript.
+- Who can spawn one — **[E]**: *"Claude launches a teammate when it calls the [Agent tool] with a `name`
+  while agent teams are enabled, and Claude Code doesn't ask you to confirm."* Only the **lead's own Agent
+  tool call** creates a teammate; there is no documented CLI flag or slash command for a human to create a
+  teammate directly from outside the lead's turn — a human's only lever is asking the lead in natural
+  language to spawn one, which necessarily runs *through* the lead's own tool use. Also: *"Spawning
+  teammates also requires an interactive session. In non-interactive mode with the `-p` flag... Claude
+  doesn't spawn teammates."* And: *"No nested teams: teammates cannot spawn their own teammates. Only the
+  lead can manage the team."*
+- Does the lead's turn continue while a teammate works, or does it wait — **[I], inferred, not an explicit
+  primary sentence** (the Agent-tool-reference fetch cut off before stating block-vs-return semantics
+  explicitly). Indirect but consistent evidence points to asynchronous, non-blocking dispatch: *"Automatic
+  message delivery: when teammates send messages, they're delivered automatically to recipients. The lead
+  doesn't need to poll for updates."* / *"Idle notifications: when a teammate finishes and stops, it
+  automatically notifies the lead. The notification doesn't carry the teammate's output; a teammate shares
+  results by messaging the lead or updating the shared task list."* A notification-on-completion pattern
+  only makes sense if the lead's own turn isn't simply blocked-then-resumed-with-the-result the way an
+  ordinary subagent Task call is (compare sub-agents.md: subagent "results return to the caller" — no
+  separate "notification" language needed there because the call *is* the return). Best-supported reading:
+  spawning a teammate is more "fire off a concurrent session and get pinged later" than "call and wait" —
+  but flag this as inferred, not quoted outright.
+- Scoping — **[E]**: a teammate can be spawned from a named subagent definition and *"honors that
+  definition's `tools` allowlist and `model`"* — this is the only documented way to fence a teammate's
+  tools/paths at spawn time. Ad hoc permission-mode scoping is explicitly **not** available per-teammate at
+  spawn: *"Teammates start with the lead's permission settings... After spawning, you can change individual
+  teammate modes, but you can't set per-teammate modes at spawn time."*
+- File-conflict guidance — **[E]**, directly answers half of D13 too: *"Avoid file conflicts: Two teammates
+  editing the same file leads to overwrites. Break the work so each teammate owns a different set of
+  files."* No contention-holding mechanism offered — partitioning is the documented answer.
+- **Verdict: Agent Teams does NOT cover your design.** Your design is a **human**, from outside the main
+  agent's turn, spawning an orthogonal helper with the main agent **never interrupted, not even to issue a
+  spawn call**. Agent Teams requires the spawn to originate from the **lead's own Agent tool call** —
+  there's no human-external, lead-uninvolved creation path, and it needs an interactive session (not a
+  headless side pane). Even granting the async-dispatch reading above, "never interrupted" in your design
+  means the main agent's turn never even *executes a spawn* — Agent Teams has no such path; every teammate
+  exists because the lead chose to create it. What it DOES give, if you ever want the reverse shape (main
+  agent itself proactively spawning a concurrent fixer as part of its own turn): a real separate-session,
+  separate-context worker with messaging and a shared task list — just not human-triggered and not
+  bypassing the main agent.
+
+**D12 — `TeammateIdle` / `TaskCompleted` — [E], hooks.md fetched fresh, agent-teams.md corroborates.**
+- `TeammateIdle`: lifecycle table — *"When an agent team teammate is about to go idle."* Exit code 2:
+  *"Prevents the teammate from going idle, so it continues working."* No matcher support. agent-teams.md,
+  same wording: *"`TeammateIdle`: runs when a teammate is about to go idle. Exit with code 2 to send
+  feedback and keep the teammate working."*
+- `TaskCompleted`: lifecycle table — *"When a task is being marked as completed."* Exit code 2: *"Prevents
+  the task from being marked as completed."* No matcher support. (`TaskCreated` is the sibling event, exit
+  2 *"prevents creation and sends feedback"* — not asked for but adjacent and same family.)
+- Scope — **[E]**: both events are defined only in terms of Agent-Teams objects (a "teammate", a "task" on
+  the shared task list). Tasks and teammates don't exist without `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`
+  and an actual spawned team (per D11, agent-teams.md: *"no team is set up at session start... without that
+  variable"*). Nothing in hooks.md suggests either event fires for an ordinary session, subagent, or
+  headless `claude -p` process outside a team context.
+- **Verdict: teams-only, not usable as a generic hold/handover lever for your non-team side-fixer design.**
+  Your design's `Stop`-hook hold (documented in section A/B above) is the correct, team-independent
+  mechanism — `TeammateIdle`/`TaskCompleted` are a different family gated behind a feature flag and an
+  actual team, not a general-purpose "pause this agent for a sibling process" primitive.
+
+**D13 — Contention-holding prior art — [E] for the two concrete data points, [I] for the search coverage
+claim, consistent with D11's file-conflict quote above.**
+- The field's own docs are explicit that partitioning, not holding, is the answer: agent-teams.md,
+  Best-practices, **[E]**: *"Avoid file conflicts: Two teammates editing the same file leads to overwrites.
+  Break the work so each teammate owns a different set of files."* No hold/lock/wait primitive is offered
+  for the case where two agents *must* touch the same resource — the documented mitigation is "don't do
+  that; partition instead." This matches vibe-kanban/claude-squad-style worktree isolation named in your
+  brief: the field's consistent answer to multi-agent contention is spatial separation (files, worktrees,
+  task ownership), not a temporal hold-one-while-the-other-runs pattern.
+- claude-review-loop's `task → addressing` Stop-hook state machine (already cited, section D given/#38
+  above) remains the one concrete example of an agent being held at a boundary for a sibling to act — and
+  even that isn't a single-invocation poll-hold, it's block-repeatedly-across-Stop-cycles.
+- New finding this pass, directly relevant to the "does the model route around a deny" half of D13 —
+  hooks-guide.md **[E]**, fetched fresh: *"`PreToolUse`: the tool call is denied; by default the turn ends
+  and the deny `reason` appears in the chat as a warning line. Set `continueOnBlock: true` on the hook to
+  instead return the `reason` to Claude as the tool error, so it can adjust and continue. Before v2.1.210,
+  the deny `reason` was returned to Claude as the tool error and the turn continued."* This means the
+  **primary defense against a model routing around a `PreToolUse` deny is architectural, not wording**: as
+  of v2.1.210+ the default behavior is the turn simply **ends** on a deny (no further tool calls happen in
+  that turn at all, `continueOnBlock` defaults off) — so unless you opt in to `continueOnBlock: true`, there
+  is no in-turn opportunity for the model to try an alternate command. No documented guidance on phrasing
+  `permissionDecisionReason` psychologically (to discourage retries) was found in hooks.md or
+  hooks-guide.md — the doc's own examples are terse and factual, not persuasive: `"Use rg instead of grep
+  for better performance"`, `"Destructive command blocked by hook"`. A targeted WebSearch for GitHub issues
+  about agents "working around"/"routing around" hook denies returned no primary hits (search results were
+  third-party summary blogs, not GitHub issues) — treat "no such issue found" as absence of evidence from a
+  narrow search, not a confirmed negative; flag as a gap if the team wants a deeper GitHub-issue-tracker
+  search.
+- **Verdict: field is not silent — it's consistent.** Every prior-art source that discusses multi-agent
+  contention (Anthropic's own agent-teams guidance, vibe-kanban/claude-squad-style tools) answers it with
+  **partitioning by files/worktrees/task-ownership**, not contention-holding. claude-review-loop is the
+  only found example of holding-at-a-boundary, and it's cycle-based, not a single poll-hold. Your design's
+  single-invocation `Stop`-hold is genuinely novel relative to what's documented/found — not contradicted
+  by anything here, just not precedented either.

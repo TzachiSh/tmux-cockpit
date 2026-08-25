@@ -59,24 +59,37 @@ Answer each, with a URL + quote, marked `[E]`/`[I]`:
 9. `claude -p` headless invocation: how to pass a prompt, set the working dir, and restrict tools (deny-list writes outside the fixer's scope).
 10. **Confirm the negative:** there is no hook output field that spawns a subagent. If research finds one, stop and report — it changes the design.
 
-**D. Prior art (short — don't rabbit-hole)**
-11. Does any existing tool hold an agent at a boundary while a sibling process works? (claude-review-loop's Stop state machine is the closest known shape.) Note anything reusable; note plainly if the field is silent.
+**D. Build-vs-buy — answer this before writing any spawn code**
+11. **Agent Teams already spawns teammates into tmux panes** (`teammateMode`; default became `"in-process"` in v2.1.179, was `"auto"` before). Does it cover our spawn path outright? What does it *not* give us — specifically, can the human spawn an ad-hoc teammate mid-run without the lead's involvement, and does the lead's turn continue uninterrupted while it works?
+12. `TeammateIdle` and `TaskCompleted` hooks (exit 2 → feedback, keep working / prevent completion). Are these usable as our hold/handover lever, or are they teams-only?
+13. Does any existing tool hold an agent at a boundary while a sibling repairs a shared resource? Known: claude-review-loop's Stop state machine; blocking-loop patterns in the wild that cap wake-ups (e.g. `MAX_BLOCKS_PER_CYCLE`). **Note plainly that the field appears silent on contention-holding** — the community's answer to concurrent agents is file-ownership partitioning, not locking. If that holds, say so; it argues for the minimal design below.
 
 **Write findings to `scratchpad/hook-facts.md`. If A1 comes back negative, report before implementing — the payload changes, not the architecture.**
 
 ---
 
-## Phase 1 — Flag protocol
+## Phase 1 — Liveness + handover (keep this minimal)
 
-The lock is a file, not a daemon. Per main-agent pane:
+**There is no lock file.** tmux already tracks liveness: the fixer's pane exists exactly as long as the fixer process runs, and dies with it — including on crash. So:
 
-- `<state-dir>/<pane-id>/fixer.lock` — JSON: fixer pane id, PID, what it's touching, start time, human-readable reason.
-- `<state-dir>/<pane-id>/handover` — one line the fixer writes on success. This is the *only* thing that reaches the main agent.
+```sh
+# arm: record the pane id at spawn
+tmux split-window -d -P -F '#{pane_id}' "claude -p '...'" > "$dir/fixer_pane"
+
+# gate: is it still alive?
+tmux list-panes -a -F '#{pane_id}' | grep -qx "$(cat "$dir/fixer_pane")"
+```
+
+No PID, no JSON, no EXIT trap, no stale-file cleanup — a dead process cannot leave a live pane. Do not reintroduce a lock file unless something concrete forces it.
+
+Two real pieces of state:
+- `<state-dir>/<pane-id>/fixer_pane` — the pane id, written at spawn.
+- `<state-dir>/<pane-id>/handover` — one line the fixer writes on success. The *only* thing that reaches the main agent.
 
 Rules:
-- The fixer owns the lock; it creates on spawn and removes on exit (trap on EXIT so a crash still clears it).
-- **Fail open, always.** Stale PID, expired deadline, malformed JSON, missing file → proceed as if unlocked. A dead fixer must never wedge the main agent.
-- Hard deadline in the lock (default 5 min, well under the hook timeout). On expiry the hook proceeds and injects: *"a side task was running and did not finish; earlier results may be stale."*
+- **Fail open, always.** Missing file, unparseable id, dead pane → proceed as unlocked. A dead fixer must never wedge the main agent.
+- **Deadline anyway** (default 5 min, well under the hook timeout) — a *stuck* fixer still has a live pane, and the hook timeout is a worse way to discover that. On expiry, proceed and inject: *"a side task was running and did not finish; earlier results may be stale."*
+- **Caveat:** if `remain-on-exit` is set so the human can read the fixer's output, the pane outlives the process and pane-liveness breaks. In that case the presence of `handover` becomes the completion signal instead. Decide which, and write it down.
 
 ---
 
@@ -93,9 +106,17 @@ The handover line the fixer writes should carry: what changed, the observable de
 
 ---
 
-## Phase 3 — Stop hook hold
+## Phase 3a — PreToolUse gate (the safety-critical half)
 
-On the main agent's Stop:
+Stop-boundary-only leaves a hole: the main agent can fire the suite *during* the fixer's edits and act on garbage results. Gate the one unsafe action, not everything:
+
+- **PreToolUse on Bash**, matching the test/suite command, while the fixer is alive → deny with a reason: *"the test suite is being repaired right now; skip this run, results would be invalid — continue with your task."*
+- Everything else runs untouched. The main agent keeps writing API code the whole time; blocking it wholesale would waste a turn's worth of valid work whenever its remaining steps never touch the tests.
+- **Word the reason so the agent defers, not routes around it.** A badly worded deny invites it to rewrite the invocation, stub the tests, or conclude they're broken. Test this wording explicitly.
+
+## Phase 3b — Stop hook hold
+
+Backstop for the handover. On the main agent's Stop:
 
 1. No lock → return immediately. **Zero added latency in the common case.**
 2. Lock present → poll (~1s) until it clears or the deadline passes. Log to stderr so the human sees *why* the pane is paused.
@@ -126,7 +147,9 @@ Interaction with the existing review queue: both deliver at the same boundary. D
 - Main agent working, no fixer → Stop boundary latency unchanged.
 - Fixer spawned mid-turn → main agent finishes its turn uninterrupted, then pauses at Stop with a visible reason.
 - Fixer completes → main agent resumes on the same turn, context grew by one line.
-- Fixer killed (`kill -9`) → main agent resumes within the deadline, with the stale warning.
+- Fixer alive, main agent attempts the test suite → denied with a reason it *defers* to (does not stub, rewrite, or route around).
+- Fixer killed (`kill -9`) → pane dies, gate opens immediately, main agent resumes.
+- Fixer stuck but alive → main agent resumes at the deadline with the stale warning.
 - Two spawn attempts on one pane → second refuses.
 - Long fixer (> deadline) → main agent proceeds, warned, not wedged.
 - `scratchpad/hook-facts.md` exists and every hook field used in the code traces to an `[E]` claim in it.
