@@ -115,6 +115,7 @@ sv()    { tmux show-option -pqv -t "$PANE" @panestate 2>/dev/null; }
 
 echo "== syntax =="
 for f in "$DIR"/cockpit.tmux "$DIR"/install.sh "$DIR"/scripts/* "$DIR"/scripts/lib/*; do
+    [ -f "$f" ] || continue   # scripts/lib is a directory
     if bash -n "$f" 2>/dev/null; then ok "syntax $(basename "$f")"
     else bad "syntax $(basename "$f")" "clean" "parse error"; fi
 done
@@ -971,6 +972,9 @@ BF=$(mktmpd)
 (
   cd "$BF" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  # A fixed commit date: the row is read twice below and %(committerdate:relative)
+  # flipped "0 seconds ago" -> "1 second ago" across the boundary (1 run in 8).
+  export GIT_AUTHOR_DATE=2000-01-01T00:00:00Z GIT_COMMITTER_DATE=2000-01-01T00:00:00Z
   git init -q -b main .; : > a; git add a
   c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
   git symbolic-ref HEAD refs/heads/main; git reset -q --hard
