@@ -4811,12 +4811,15 @@ case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
          "the comment in the agent pane" \
          "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" ;;
 esac
+for i in $(seq 1 40); do [ -n "$storefile" ] && [ -e "$storefile" ] || break; sleep 0.1; done
 if [ -n "$storefile" ] && [ -e "$storefile" ]; then
     bad "the comment store does not outlive the delivered review" \
         "$storefile gone" "$storefile still exists"
 else
     ok "the comment store does not outlive the delivered review"
 fi
+for i in $(seq 1 40); do [ -n "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)" ] || break; sleep 0.1; done
+is "a delivered review's session dir is removed too" "" "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 rm -rf "$FD_DIRTY" "$FDTMPDIR"
