@@ -548,7 +548,7 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    local out rc key n choice
+    local out rc key n choice crc
     while :; do
         out=$(printf '%s\n' "$rows_out" \
             | fzf --print-query --expect=ctrl-s --disabled --ansi \
@@ -580,6 +580,25 @@ run_loop() {
                     choice=$(printf 'keep reviewing\ndiscard %d comment(s)\n' "$n" \
                         | fzf --reverse --no-info --prompt='discard? ' \
                               --header="$n comment(s) are pinned and not delivered")
+                    crc=$?
+                    # The confirm picker's OWN exit code decides, not just what
+                    # it printed. An fzf that cannot start (no tty -- the popup
+                    # torn down under us, a --loop run whose terminal went away)
+                    # prints nothing and exits 2, and reading only $choice sent
+                    # that through the `*)` arm below, back into `while :`, to
+                    # fail again: measured rc=124 under `timeout 5` and 172
+                    # "inappropriate ioctl for device" lines in five seconds,
+                    # one fork per turn. There is no human here to ask, so the
+                    # safe answer is the one every refusal already gives --
+                    # keep the store, say where it is, exit 0.
+                    case "$crc" in
+                        0) ;;              # a row was chosen; $choice decides
+                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;
+                        *)  tmux display-message \
+                                "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
+                                2>/dev/null
+                            exit 0 ;;
+                    esac
                     case "$choice" in
                         discard*) rm -f -- "$store"; exit 0 ;;
                         *)  # Back to the list, store kept. Rebuild the rows:
@@ -659,6 +678,11 @@ compose() {
 keep_hint() {
     local pane=$1 store=$2
     [ -n "$store" ] && [ -s "$store" ] || return 0
+    # run_loop giving up has no pane in hand -- it was handed a dir and a store
+    # and nothing else -- so the id becomes a visible placeholder rather than a
+    # silently missing argument in a command the reader would paste as-is.
+    [ -n "$pane" ] || pane='<pane>'
+
     # $SELF, not a bare "tmux-review": the name is only on $PATH after
     # install.sh symlinks it, and from a plugin-only install the suggested
     # command has to be copy-pasteable as printed.

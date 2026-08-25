@@ -3124,6 +3124,42 @@ fi
 rm -rf "$RVDIR"
 fi
 
+echo "== tmux-review --loop: an fzf that cannot start exits instead of spinning forever =="
+# `while :` re-entered the picker on every fzf exit outside {0,1}. With a
+# non-empty store that path runs the discard-confirm picker first -- and when
+# fzf cannot start at all (no tty), THAT one fails too, leaving $choice empty,
+# which fell to `*) continue` and re-entered the loop to fail again. Measured
+# before the fix: rc=124 (never exits) and 172 lines of "inappropriate ioctl
+# for device" in 5 seconds, burning a fork per iteration. --loop is a
+# documented public subcommand, so any invocation whose tty goes away with
+# comments pinned busy-loops. setsid + </dev/null is the no-tty condition
+# deterministically; the confirm picker's own exit code now decides, and
+# anything that is neither a choice (0) nor esc (130) keeps the store and
+# exits 0.
+RVSPIN=$(mktmpd)
+(
+  cd "$RVSPIN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > f.txt; git add -A; git commit -q -m init
+  printf 'a\nZED\n' > f.txt
+) >/dev/null 2>&1
+RVSPINSTORE=$(mktmpf)
+printf '## f.txt:2 (+)\n> ZED\nlook again\n\n' > "$RVSPINSTORE"
+rvspinwant=$(cat "$RVSPINSTORE")
+timeout 5 setsid "$DIR/scripts/tmux-review" --loop "$RVSPIN" "$RVSPINSTORE" \
+    </dev/null >/dev/null 2>&1
+rvspinrc=$?
+if [ "$rvspinrc" -eq 124 ]; then
+    bad "--loop gives up when fzf cannot start, instead of spinning" \
+        "an exit within 5s" "timed out (the while : busy-loop)"
+else
+    ok "--loop gives up when fzf cannot start, instead of spinning"
+fi
+is "the pinned comments are kept, not shredded, on that exit" \
+   "$rvspinwant" "$(cat "$RVSPINSTORE" 2>/dev/null)"
+rm -rf "$RVSPIN" "$RVSPINSTORE"
+
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
 cat > "$RV3STORE" <<'STORE'
