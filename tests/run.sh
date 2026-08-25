@@ -2968,6 +2968,24 @@ frag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==2 {print $
 is "the display fragment is still capped" "160" "${#frag}"
 "$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 2 "$frag" "too long" "$RVLONG"
 is "the stored quote is the full line" "> $LONGLINE" "$(sed -n 2p "$RVLS")"
+
+# fzf STRIPS leading whitespace from a {n} field replacement, so the fragment
+# attach() is actually handed for an indented row is the DE-INDENTED one -- and
+# the stale-fragment guard, a plain prefix test against the untrimmed file line,
+# then rejected every indented line and fell back to the trimmed, 160-byte
+# display fragment. Every line inside a function body is indented, so Task 7 was
+# inert for essentially all real code; the block above only passed because its
+# fixture line starts at column 1. Measured through a real fzf 0.44.1 before the
+# fix: a 224-char indented line stored a 156-char quote with the indentation
+# gone. The fragment here is passed TRIMMED, exactly as fzf hands it over.
+INDENTED="    $LONGLINE"
+printf 'a\n%s\n%s\n' "$LONGLINE" "$INDENTED" > "$RVLONG/f.txt"
+ifrag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==3 {print $3}')
+ifrag=${ifrag#"${ifrag%%[![:space:]]*}"}
+is "fzf's trimmed fragment is the de-indented 156-byte tail" "156" "${#ifrag}"
+"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 3 "$ifrag" "indented" "$RVLONG"
+is "an indented line is stored whole, indentation and all" \
+   "> $INDENTED" "$(sed -n 6p "$RVLS")"
 rm -rf "$RVLONG" "$RVLS"
 
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="

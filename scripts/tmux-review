@@ -455,7 +455,7 @@ attach() {
     # whole line so the `>` quote matches something in the file -- a truncated
     # quote defeats the anchoring it exists for. Read it back from the tree
     # (+) or HEAD (-); fall back to the fragment on any miss.
-    local full=""
+    local full="" ft gt
     if [ -n "$dir" ]; then
         case "$sign" in
             +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
@@ -463,7 +463,23 @@ attach() {
         esac
         full=${full//[$'\001'-$'\037'$'\177']/}
         full=${full:0:1000}
-        [ -n "$full" ] && [ "${full#"$fragment"}" != "$full" ] || full=""
+        # The guard: the line read back from the tree must still START with the
+        # fragment fzf had under the cursor, or the file moved under the review
+        # and the quote would anchor to the wrong text.
+        #
+        # Both sides are compared with their LEADING WHITESPACE STRIPPED, because
+        # fzf strips it from a {n} field replacement before it ever reaches this
+        # script: for `    return 42` the guard used to compare the indented file
+        # line against the de-indented fragment, the prefix test failed, full was
+        # cleared, and the store fell back to the trimmed 160-byte display
+        # fragment. Every line inside a function body is indented, so the whole
+        # whole-line quote was inert for real code -- measured: a 224-char
+        # indented line stored a 156-char quote with its indentation gone.
+        # $full itself stays UNTRIMMED: the indentation is part of the line the
+        # agent has to find.
+        ft=${full#"${full%%[![:space:]]*}"}
+        gt=${fragment#"${fragment%%[![:space:]]*}"}
+        [ -n "$full" ] && [ "${ft#"$gt"}" != "$ft" ] || full=""
     fi
     [ -n "$full" ] && fragment=$full
     {
