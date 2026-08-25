@@ -605,6 +605,9 @@ What this deliberately does **not** do, and why:
   marks and all. It is removed when the review is discarded or delivered and
   kept, and named in the message, when delivery is refused. There is no
   garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
+  The spillover file an oversized review lands in is the delivery vehicle,
+  not a store — the OS tmpdir is the only garbage collector it gets, the
+  same as everything else this plugin writes.
 - **Every comment carries `path:line` and the quoted source line**, never a
   line number alone. A bare number goes stale the instant the agent edits
   again — the same staleness that makes a GitHub review comment "outdated"

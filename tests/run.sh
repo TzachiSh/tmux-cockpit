@@ -100,7 +100,8 @@ mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; p
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
-# 4 s. PATTERN is a case-pattern: until_cap "$S" "$P" '*"review>"*'
+# 4 s. PATTERN is a case-pattern with NO embedded quotes -- a quote in an
+# expanded pattern is a literal character: until_cap "$S" "$P" '*review>*'
 until_cap() {                 # <socket> <pane> <pattern>
     local i
     for i in $(seq 1 40); do
@@ -3629,9 +3630,9 @@ fi
 
 # Type a comment and pin it to the highlighted row with alt-enter.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" "fix the new line"
-until_cap "$RVS" "$RVP" '*"fix the new line"*'
+until_cap "$RVS" "$RVP" '*fix the new line*'
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" M-Enter
-until_file "$RVSTORE" '*"fix the new line"*'
+until_file "$RVSTORE" '*fix the new line*'
 
 case "$(cat "$RVSTORE" 2>/dev/null)" in
     *"## src.go:3 (+)"*"> CHANGED"*"fix the new line"*)
@@ -3640,6 +3641,7 @@ case "$(cat "$RVSTORE" 2>/dev/null)" in
          "## src.go:3 (+) / > CHANGED / fix the new line" "$(cat "$RVSTORE" 2>/dev/null)" ;;
 esac
 
+until_cap "$RVS" "$RVP" '*●*'
 case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
     *"●"*) ok "the reloaded list marks the commented row" ;;
     *) bad "the reloaded list marks the commented row" "a ● in the pane" \
@@ -4797,11 +4799,11 @@ else
 fi
 
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" "fix this"
-until_cap "$FD" "$CTL2" '*"fix this"*'
+until_cap "$FD" "$CTL2" '*fix this*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" M-Enter
 until_cap "$FD" "$CTL2" '*●*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" C-s
-until_cap "$FD" "$FD_AGENT" '*"fix this"*'
+until_cap "$FD" "$FD_AGENT" '*fix this*'
 
 case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
     *"fix this"*) ok "the review still gets delivered through the fleet path" ;;
