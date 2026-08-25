@@ -3817,7 +3817,7 @@ parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$S
 RSATT="$RSD/att"; "$DIR/scripts/tmux-review" --attach "$RSATT" src.go 3 'x := 1' 'from attach' >/dev/null 2>&1
 parse_store "$RSATT"; is "attach()'s store parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
 # The boundary: nothing but comments may say tmux or git in the pure module.
-is "the library touches neither tmux nor git" "0" "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -c 'tmux\|git')"
+is "the library touches neither tmux nor git" "0" "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
 unset -f store_set store_dump; unset STORE STORE_N
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
@@ -5500,8 +5500,10 @@ echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marke
 # The store had a writer and no reader: three comments on one line showed
 # one dot, and nothing could take one back short of discarding the batch.
 # parse_store (lib/review-store.sh) is the reader; --detach is its first
-# caller. ^L shows the store where the preview is -- no nested picker, and
-# no printable key: in this loop every printable key is comment text.
+# caller. ^L cats the store to the terminal, not the preview window -- a
+# `focus` bind reapplying the preview's offset on every selection change
+# turned out to silently un-hide the preview after ^/ (I1). No printable
+# key to dismiss it either: in this loop every printable key is comment text.
 if need_tmux "tmux-review ^X"; then :; else
 RX="cockpit-rx-$$"; SOCKS="$SOCKS $RX"
 RXDIR=$(mktmpd)
@@ -5564,28 +5566,40 @@ else bad "one comment: the dot" "●src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capt
 if until_cap "$RX" "$RXP" '*2src.go:42 (+)*'; then ok "two comments on one row: the count, one column wide"
 else bad "two comments on one row: the count, one column wide" "2src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-l
-if until_cap "$RX" "$RXP" '*## src.go:42 (+)*one*## src.go:42 (+)*two*'; then ok "^L shows the store in the preview, from the top, on a row deep in the diff"
-else bad "^L shows the store in the preview, from the top, on a row deep in the diff" "both records" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
-# ^L is a one-off view, not a mode: the next cursor move has to bring the
-# diff preview back on its own, with no second ^L needed to dismiss it.
-"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Up
+if until_cap "$RX" "$RXP" '*## src.go:42 (+)*one*## src.go:42 (+)*two*(press any key)*'; then ok "^L lists the store in the terminal, from the top, on a row deep in the diff"
+else bad "^L lists the store in the terminal, from the top, on a row deep in the diff" "both records, (press any key)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Space
+if until_cap "$RX" "$RXP" '*review>*2src.go:42 (+)*'; then ok "and the list is back, the marked row visible"
+else bad "and the list is back, the marked row visible" "review> ... 2src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"; fi
+# I1 regression, fail-first: the deleted `focus` bind fired on every
+# selection change and reapplied the preview window, which is what silently
+# un-hid the preview right after ^/ turned it off (measured on fzf 0.44.1).
+# "@@" is the diff preview's own hunk header -- neither the row list nor
+# ^L's terminal listing ever prints one, so it is the preview-only marker.
+"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-_   # tmux's own encoding of ctrl-/
 rxcap=""
 for i in $(seq 1 40); do
     rxcap="$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
-    case "$rxcap" in *'+line'*) break ;; esac
-    sleep 0.1
+    case "$rxcap" in *'@@'*) sleep 0.1 ;; *) break ;; esac
 done
 case "$rxcap" in
-    *'+line'*)
-        case "$rxcap" in
-            *'## src.go'*) bad "the diff preview comes back after ^L, on the next cursor move" "no ## src.go header" "$rxcap" ;;
-            *) ok "the diff preview comes back after ^L, on the next cursor move" ;;
+    *'@@'*) bad "^/ hides the preview and a cursor move does not bring it back" "no @@ hunk header right after ^/" "$rxcap" ;;
+    *)
+        "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Up
+        "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Down
+        rxstill=""
+        for i in $(seq 1 10); do
+            rxstill="$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
+            case "$rxstill" in *'@@'*) break ;; esac
+            sleep 0.1
+        done
+        case "$rxstill" in
+            *'@@'*) bad "^/ hides the preview and a cursor move does not bring it back" "still no @@ after Up/Down" "$rxstill" ;;
+            *) ok "^/ hides the preview and a cursor move does not bring it back" ;;
         esac ;;
-    *) bad "the diff preview comes back after ^L, on the next cursor move" "a +line row" "$rxcap" ;;
 esac
-# Back onto the commented row (Up then Down over adjacent rows, no wrap) so
-# ^X below still targets the anchor the two comments were pinned to.
-"$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Down
+# Up then Down over adjacent rows (no wrap) lands back on the commented row,
+# so ^X below still targets the anchor the two comments were pinned to.
 until_cap "$RX" "$RXP" '*2src.go:42 (+)*' || bad "back on the commented row before ^X" "2src.go:42 (+)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-x
 for i in $(seq 1 40); do grep -q '^## ' "$RXSTORE" 2>/dev/null || break; sleep 0.1; done

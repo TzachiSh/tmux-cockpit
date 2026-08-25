@@ -70,6 +70,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
+  tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
 In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^S deliver   esc discard
@@ -560,10 +561,12 @@ lines_mode() {
 #
 # `umask 077` + `set -C` in the same subshell that does the writing, the
 # discipline deliver() already uses for the oversized-review file -- and
-# this file needs it MORE, because its name is DERIVABLE. The store comes
-# from mktemp, but "<store>.rows" is one suffix away from a name anyone
-# watching a shared /tmp can predict, and the file holds the entire
-# uncommitted diff. A plain `>` was wrong twice over: it created the
+# this file needs it MORE, because its name is DERIVABLE. session_dir()
+# builds the store's path from the pane id and the repo root's cksum, and
+# "<store>.rows" is one suffix away from that -- inside a 0700 dir under
+# $HOME, but O_EXCL still earns its keep against a link planted by anyone
+# who can write there. The file holds the entire uncommitted diff. A plain
+# `>` was wrong twice over: it created the
 # snapshot at the caller's umask (0664 here -- the whole diff
 # world-readable, while the store beside it is 0600), and it FOLLOWED a
 # symlink already sitting at that name, so the diff could be written into
@@ -594,6 +597,8 @@ snapshot() {                  # <dir> <store>
 # on -- so this only NAMES them. Streams told apart by FILENAME, as in
 # mark_rows: an empty store makes NR == FNR lie.
 stale_keys() {                # <store> <rows-file>  -> stale headers, one per line
+    # A refused snapshot write means "unknown", not "everything moved".
+    [ -s "${2:-}" ] || return 0
     local st=${1:-/dev/null} rows=${2:-/dev/null}
     [ -f "$st" ] || st=/dev/null
     [ -f "$rows" ] || rows=/dev/null
@@ -665,8 +670,9 @@ rows_mode() {
 # the row build in lines_mode already made.
 #
 # Streams are told apart by FILENAME == ARGV[1], not by `NR == FNR`: the store
-# is EMPTY the first time the popup opens (mktemp just made it), and with an
-# empty first file `NR == FNR` is true for the SECOND file's first record too
+# can be EMPTY (the first time the popup opens) or non-empty (a resumed
+# session), and with an empty first file `NR == FNR` is true for the SECOND
+# file's first record too
 # -- every row would have been read as a store header and the list would have
 # come out blank. Same trap, same sidestep, as the estimate awk in lines_mode.
 #
@@ -691,9 +697,9 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             sign = (substr($2, 1, 1) == "-") ? "-" : "+"
             num = $2; sub(/^-/, "", num)
             # One column wide whatever the count: ● for one, the digit past
-            # that, 9 for anything more -- so a marked row never shifts.
+            # that, + for anything more -- a wrong digit lies, "+" does not.
             n = c["## " $1 ":" num " (" sign ")"] + 0
-            m = (n == 0) ? " " : (n == 1) ? "●" : (n > 9) ? "9" : n ""
+            m = (n == 0) ? " " : (n == 1) ? "●" : (n > 9) ? "+" : n ""
             # Prepend, never repaint: "●" and " " are both one column, so a
             # marked row does not shift against an unmarked one.
             disp = $4
@@ -783,7 +789,7 @@ detach() {                    # <store> <path> <line-with-sign>
     [ -n "$path" ] && [ -n "$line" ] && [ -s "$store" ] || return 0
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     # shellcheck source=lib/review-store.sh
-    . "$LIBDIR/review-store.sh"
+    . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
     declare -A STORE=() OUT=(); STORE_N=0
     parse_store "$store"
     # A store that fails to parse is moved aside to .bak and STORE_N comes
@@ -813,6 +819,8 @@ detach() {                    # <store> <path> <line-with-sign>
 edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     local store=$1 path=$2 line=$3 fragment=$4 query=$5 dir=$6 tmp
     [ -n "$path" ] && [ -n "$store" ] || return 0
+    # ^E on the cap row would otherwise open the editor and then discard the paragraph.
+    [ "$path" != "$CAP_SENTINEL" ] || return 0
     tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/cockpit-review-edit.XXXXXX") || return 0
     [ -n "$query" ] && printf '%s\n' "$query" > "$tmp"
     # shellcheck disable=SC2086
@@ -822,8 +830,8 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
 }
 
 # The store and the row snapshot beside it go together: the snapshot is scratch
-# that belongs to ONE popup, and the popup's mktemp directory must not
-# accumulate a 4900-row file per review. So the invariant is simply that NO
+# that belongs to ONE popup, and the session dir must not accumulate a
+# 4900-row file per review. So the invariant is simply that NO
 # snapshot outlives the popup that wrote it: every path that drops the store
 # drops both, and the two paths that deliberately KEEP a store -- a refused
 # delivery (review_pane, below) and the "could not ask about the pinned
@@ -862,11 +870,12 @@ run_loop() {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
 
-    local rows_cmd attach_cmd preview_cmd resnap_cmd detach_cmd edit_cmd rows_out nrows
+    local rows_cmd attach_cmd preview_cmd resnap_cmd list_cmd detach_cmd edit_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
     attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
     preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
     resnap_cmd="$(shq "$SELF") --resnap $(shq "$dir") $(shq "$store")"
+    list_cmd="$(shq "$SELF") --list $(shq "$store")"
     detach_cmd="$(shq "$SELF") --detach $(shq "$store") {1} {2}"
     edit_cmd="$(shq "$SELF") --edit $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
 
@@ -907,22 +916,6 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    #
-    # ^L's own bind resets the window to +1: --preview-window's +{5}-/2 is the
-    # DIFF row's scroll offset, and left in force it scrolls the store listing
-    # (a handful of lines) to wherever that row sits in the diff -- past the
-    # end of the store for any row more than a screen in. `preview(...)` is
-    # one-shot (measured: the CONTENT reverts to $preview_cmd on the very next
-    # cursor move, no rebind needed here), but the window offset is not -- it
-    # stays at +1 until something sets it again, so `focus` (fired on every
-    # selection change) reapplies the dynamic +{5}-/2. Measured limitation:
-    # fzf 0.44.1 gets the offset itself right away when the list doesn't have
-    # to scroll, but when it does, the first focus event after ^L still
-    # settles at +1 -- correct content, wrong scroll position -- and it is
-    # the SECOND move that lands on +{5}-/2; a `--preview-window` respec (this
-    # bind), a bare `change-preview-window()` (fzf's own "back to default"),
-    # and two chained calls in one bind all show the same one-move lag, so it
-    # is fzf's, not this bind's, only reproduced when the list itself scrolls.
     local out rc key n choice crc
     while :; do
         out=$(printf '%s\n' "$rows_out" \
@@ -933,15 +926,14 @@ run_loop() {
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-r:execute(${resnap_cmd})+reload(${rows_cmd})" \
                   --bind "ctrl-x:execute-silent(${detach_cmd})+reload(${rows_cmd})" \
-                  --bind "ctrl-l:show-preview+change-preview-window(down,55%,border-top,+1)+preview(cat -- $(shq "$store") 2>/dev/null)" \
-                  --bind "focus:change-preview-window(down,55%,border-top,+{5}-/2)" \
+                  --bind "ctrl-l:execute(${list_cmd})" \
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --preview "$preview_cmd" \
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^E editor   ^X delete   ^L list   ^R refresh   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
+                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^/ preview  alt-u/alt-d scroll')
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1040,6 +1032,19 @@ resnap() {                    # <dir> <store>
     else
         printf 'refreshed — %d comment(s) no longer anchor to a changed line (they still deliver, quoted):\n%s\n\npress any key\n' "$n" "$stale"
     fi
+    read -r -n 1 -s
+    return 0
+}
+
+# --- --list ------------------------------------------------------------------
+# Every pinned comment, in the terminal, until a key: the store IS the list.
+# Not the preview window -- a preview(...) bind needs the window's scroll
+# offset reset and put back, and the focus bind that put it back un-hid the
+# preview after ^/ (measured on fzf 0.44.1). Same tty rule as resnap().
+list_store() {                # <store>
+    [ -t 0 ] && exec >/dev/tty
+    cat -- "$1" 2>/dev/null
+    printf '\n(press any key)\n'
     read -r -n 1 -s
     return 0
 }
@@ -1505,7 +1510,10 @@ review_pane() {
     sess=$(session_dir "$pane" "$dir"); store="$sess/comments.md"
     # umask in the subshell: mkdir -p creates the parents at the caller's
     # umask otherwise, and the store is born 0600 the same way.
-    (umask 077; mkdir -p -- "$sess" && : >> "$store") || {
+    # [ ! -L ]: the same discipline snapshot() uses on "$2.rows" -- a store
+    # path is derivable (session_dir() is a pane id and a root's cksum), so a
+    # planted symlink must be refused here too, not just followed.
+    (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
         tmux display-message "tmux-review: could not create $sess" 2>/dev/null
         return 1
     }
@@ -1704,6 +1712,8 @@ case "${1:-}" in
         shift; run_loop "${1:-}" "${2:-}" ;;
     --resnap)
         shift; resnap "${1:-}" "${2:-}" ;;
+    --list)
+        shift; list_store "${1:-}" ;;
     --compose)
         shift; compose "${1:-}" "${2:-}" ;;
     --deliver)
