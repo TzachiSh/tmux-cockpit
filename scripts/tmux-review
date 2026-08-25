@@ -267,8 +267,12 @@ lines_mode() {
             # own "total" line (xargs can split into several batches, each
             # ending in one) apart from a file actually named "total".
             local wcout
+            # -L (longest line) as well as -l and -c: the estimate below is
+            # otherwise a per-file AVERAGE, which one long line among short
+            # ones defeats outright. Both GNU and BSD wc have -L; the column
+            # order is lines, bytes, maxlen, path.
             wcout=$(printf './%s\0' "${here[@]}" \
-                    | (cd "$dir" 2>/dev/null && xargs -0 wc -lc 2>/dev/null))
+                    | (cd "$dir" 2>/dev/null && xargs -0 wc -lcL 2>/dev/null))
             # Two streams into one awk, told apart by ARGV[1] rather than
             # `NR == FNR` -- an empty first stream makes that test true for
             # the SECOND file's records too, and wc producing nothing is
@@ -277,19 +281,22 @@ lines_mode() {
             sized=$(awk '
                 BEGIN { FS = "\t" }
                 FILENAME == ARGV[1] {
-                    # "<lines> <bytes> ./<path>", picked apart by hand: FS is
-                    # a tab for the numstat stream, and a path may hold
-                    # spaces in either stream.
+                    # "<lines> <bytes> <maxlen> ./<path>", picked apart by
+                    # hand: FS is a tab for the numstat stream, and a path may
+                    # hold spaces in either stream.
                     w = $0; sub(/^[ \t]+/, "", w)
                     i = index(w, " "); if (i == 0) next
                     wl = substr(w, 1, i - 1) + 0
                     w = substr(w, i + 1); sub(/^[ \t]+/, "", w)
                     i = index(w, " "); if (i == 0) next
                     wb = substr(w, 1, i - 1) + 0
+                    w = substr(w, i + 1); sub(/^[ \t]+/, "", w)
+                    i = index(w, " "); if (i == 0) next
+                    wm = substr(w, 1, i - 1) + 0
                     w = substr(w, i + 1)
                     if (w !~ /^\.\//) next          # wc'"'"'s own "total" line
                     w = substr(w, 3)
-                    lines[w] = wl; size[w] = wb
+                    lines[w] = wl; size[w] = wb; wide[w] = wm
                     next
                 }
                 NF >= 3 {
@@ -299,7 +306,20 @@ lines_mode() {
                     # "not sized" here means "sized from HEAD above".
                     if (!(f in size)) next
                     n = (lines[f] > 0 ? lines[f] : 1)
-                    est += size[f] * ($1 + $2) / n
+                    # The WORSE of two readings, not the average alone. The
+                    # average, size/lines, is dominated by the short lines
+                    # while the diff is dominated by the long one: 100,000
+                    # one-byte lines beside one 5 MB line estimated 103 bytes
+                    # and captured 10 MB (measured: 0.91s, 82 MB RSS, in the
+                    # modal popup, for a two-row review). The widest line in
+                    # the file is the ceiling a changed row can actually cost,
+                    # so charge that too and take whichever is larger. A file
+                    # of uniform width is unaffected -- maxlen ~= size/lines
+                    # there, so a one-line lockfile bump still weighs ~74
+                    # bytes and is still reviewed row by row.
+                    avg = size[f] * ($1 + $2) / n
+                    wid = wide[f] * ($1 + $2)
+                    est += (wid > avg ? wid : avg)
                 }
                 END { printf "%d\n", est + 0 }
             ' <(printf '%s\n' "$wcout") <(printf '%s\n' "$numstat"))

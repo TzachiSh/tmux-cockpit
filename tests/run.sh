@@ -2927,6 +2927,54 @@ is "the bump is exactly its two rows, nothing else" "2" \
    "$(printf '%s\n' "$rvbumpout" | grep -c .)"
 rm -rf "$RVBUMP"
 
+# ...and the estimate cannot be a per-file AVERAGE. `size * (add+del) / lines`
+# is dominated by the SHORT lines while the diff is dominated by the long one,
+# so any file with skewed line widths -- a bundle with an inline source map, a
+# JSON blob with one embedded base64 literal, a generated file with one giant
+# string -- walked straight past the cap. Measured on the fixture below
+# (100,000 one-byte lines plus one 5 MB line, only the long line changed):
+#
+#   numstat: 1  1  mix.txt
+#   estimate = 5200001 * 2 / 100001 = 103 bytes   (cap 4194304)  -> passed
+#   actual:  wall 0.91s, maxRSS 82,148 kB, 2 rows captured and parsed
+#
+# 103 bytes estimated against a 10 MB capture, in the MODAL popup, for a
+# two-row review. So each file is charged the WORSE of the two readings,
+# `max(size * (add+del) / lines, maxlen * (add+del))`: on this fixture the
+# second reads 5,000,000 * 2 = 10 MB and the cap fires. Uniform files are
+# untouched, because maxlen ~= size/lines there -- the lockfile bump above
+# still estimates 74 bytes and still gets its two rows.
+# FAIL-first: on the average-only estimate this prints two 5 MB rows, no notice.
+RVSKEW=$(mktmpd)
+(
+  cd "$RVSKEW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  # tr, not awk's sprintf: mawk's sprintf buffer is 8192 bytes and dies on a
+  # 5 MB %*s ("program limit exceeded").
+  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
+    head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > mix.txt
+  git add -A; git commit -q -m init
+  # Only the long line changes, at the same width: the file's size and line
+  # count are identical, so only the estimator can tell the two apart.
+  { awk 'BEGIN { for (i = 0; i < 100000; i++) print "x" }'
+    head -c 5000000 /dev/zero | tr '\0' 'M'; printf '\n'; } > mix.txt
+) >/dev/null 2>&1
+is "the mixed fixture is two numstat rows, so the ROW cap cannot be what fires" \
+   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+is "...and its per-file AVERAGE estimate is 103 bytes, far under the 4 MB cap" \
+   "103" "$(wc -lc < "$RVSKEW/mix.txt" | awk '{printf "%d\n", $2 * 2 / $1}')"
+rvskewout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+case "$rvskewout" in
+    *"diff too large"*" MB)"*)
+        ok "one 5 MB line among 100k short ones caps on bytes, not on the average" ;;
+    *) bad "one 5 MB line among 100k short ones caps on bytes, not on the average" \
+         "a too-large notice naming MB" "$(head -c 120 <<<"$rvskewout")" ;;
+esac
+is "the skewed notice is one row, not two 5 MB ones" \
+   "1" "$(printf '%s\n' "$rvskewout" | grep -c .)"
+rm -rf "$RVSKEW"
+
 # A tracked BINARY is one LINE of diff, not its size. Without --binary git
 # prints "Binary files a/x and b/x differ" and nothing else, whatever the file
 # weighs: the fixture below is a rebuilt 5 MB asset beside a one-line code
