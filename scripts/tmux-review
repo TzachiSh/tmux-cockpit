@@ -126,14 +126,30 @@ tree_diff() {
 # a binary or an unreadable file already is. Filtered on the LIST rather than
 # in each program so both callers -- the numstat walk and the row walk -- and
 # the byte estimator that reads their output all agree on the same set.
+# The list, turned into NUL-separated "./path" operands. Factored out of
+# awk_over() because the byte cap below sizes the very same files with `wc -c`
+# and MUST see the same set: a path this drops has no rows, so charging the
+# cap for it would refuse a review over a file it was never going to show.
+ulist_operands() {
+    printf '%s\n' "$1" \
+        | awk 'index($0, "\t") == 0 { print "./" $0 }' \
+        | tr '\n' '\0'
+}
+
 awk_over() {
     local dir=$1 list=$2 prog=$3
     [ -n "$list" ] || return 0
-    printf '%s\n' "$list" \
-        | awk 'index($0, "\t") == 0 { print "./" $0 }' \
-        | tr '\n' '\0' \
+    ulist_operands "$list" \
         | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
 }
+
+# ${#s} counts CHARACTERS in a UTF-8 locale and BYTES in C. The cap below is a
+# byte cap and `head -c` is a byte bound, so the length that decides it has to
+# be measured in C. In a UTF-8 locale a non-ASCII diff measures up to 4x short,
+# and that does not merely miss the cap: it reads a capture that WAS truncated
+# at the budget as one that fit, and hands the truncated diff to the parse.
+# Same idiom as pad_field() at the bottom of this file.
+bytelen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
 
 lines_mode() {
     local dir=$1
@@ -214,135 +230,95 @@ lines_mode() {
     # rows of a 1500-column minified line sit comfortably under the row cap
     # and are still 5.7 MB to capture, parse into shell rows, and render as an
     # fzf list of 1500-column entries. So the same pass caps on BYTES too --
-    # 4 MB.
+    # 4 MB -- and it MEASURES those bytes rather than estimating them.
     #
-    # Bytes of the DIFF, estimated, not bytes of the FILE. Sizing whole files
-    # refused a one-line version bump in a 4.6 MB lockfile: two changed rows,
-    # a diff of about 70 bytes, and the popup answered "review it directly"
-    # for a change a reviewer reads at a glance. The diff's own byte count is
-    # not knowable without capturing it -- the very thing being avoided -- but
-    # numstat's rows and the file's own average line width bound it well:
-    # each changed file contributes `size * (add + del) / max(lines, 1)`. The
-    # lockfile bump estimates ~74 bytes, the wide fixture 5.7 MB, and a full
-    # rewrite estimates about twice its size, which is right -- the diff
-    # carries both sides.
+    # Two estimators were tried here first and both broke, in opposite
+    # directions. `size * (add+del) / lines`, a per-file average, is dominated
+    # by the short lines while the diff is dominated by the long one: 100,000
+    # one-byte lines beside one 5 MB line estimated 103 bytes and captured
+    # 10 MB (0.91s, 82 MB RSS, in the modal popup, for a two-row review).
+    # Flooring it with `maxlen * (add+del)` catches that and inverts the
+    # error: it charges the widest line in a file to EVERY changed row of it,
+    # whatever the change was, and since the cap is a per-review TOTAL one
+    # such file takes every other file down with it -- a 744-byte, 26-row
+    # review refused as "(6.8 MB)", an unrelated one-line Go change lost along
+    # with it. That estimate also needed `wc -L`, and on a wc without it the
+    # sized map came back empty and the byte cap vanished in silence (4000
+    # rows parsed, 1.02s, where the cap had fired before).
     #
-    # One exception, counting the whole size: a file with no worktree copy,
-    # which is either deleted -- every one of its lines is a row, so the
-    # formula reduces to its whole HEAD blob anyway -- or a path that does not
-    # resolve against <dir>, where the HEAD blob is the only measure there is.
+    # There is no estimate that is both safe and fair, because the thing being
+    # guessed at -- how many bytes these particular rows are -- is exactly
+    # what a diff already knows. So take the real number, and BOUND the taking
+    # of it: capture once through `head -c cap+1` and let git die on SIGPIPE
+    # past that. A 400 MB diff then costs the 4 MB read that proves it too
+    # big, not the 2.06s/177MB a full capture measured -- and when it fits,
+    # what came back IS the diff the parse below reads, so nothing is diffed
+    # twice and the "capture only after the cap decides" property is kept.
     #
-    # Both sizings are BATCHED -- one `wc -lc` pipeline for lines AND bytes
-    # together, one `cat-file --batch-check` -- not a fork per file: this loop
-    # also walks the untracked list, which is hundreds of files on an
-    # unignored vendor tree, and a fork each would hand back the 0.008s the
-    # batched walk above just bought. Neither runs at all once the row cap has
-    # already tripped. A path that answers to neither weighs 0, which errs
-    # toward showing the diff rather than hiding it.
-    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0 sized=
+    # numstat still runs first, for the ROW cap: rows can exceed 5000 while
+    # the bytes stay under 4 MB (12001 rows of "1\n" is 24 KB), and counting
+    # them is the cheap call already made above.
+    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0
     local nadd ndel nfile reason=
-    local -a here=() gone=()
     while IFS=$'\t' read -r nadd ndel nfile; do
         [ -n "$nfile" ] || continue
-        # A binary file's numstat counts are "-\t-", and a binary is one LINE
-        # of diff, not its size: without --binary git prints "Binary files
-        # a/x and b/x differ" and nothing else, whatever the file weighs.
-        # Charging the cap its size blanked a review whose real change was two
-        # lines of code beside a rebuilt 5 MB asset -- the whole diff of that
-        # was 240 bytes. So it costs the width of that one line and is sized
-        # no further: not by the `wc` pipeline below, and not by the HEAD
-        # lookup either, which for a DELETED binary (same "-\t-" row, no
-        # worktree copy) would otherwise have charged the whole blob.
-        #
-        # Charged here rather than inside the estimate awk because that awk
-        # runs only when some file HAS a worktree copy -- a change that is
-        # nothing but a deleted binary would have skipped it entirely.
-        if [ "$nadd" = "-" ]; then bytes=$(( bytes + 80 )); continue; fi
+        # A binary file's numstat counts are "-\t-". It contributes no +/- rows
+        # to the parse below -- without --binary git prints one "Binary files
+        # a/x and b/x differ" line and nothing else, whatever the file weighs
+        # -- so it adds nothing to the row total, and its one line is already
+        # in the capture like every other byte. This is what keeps a two-line
+        # code change beside a rebuilt 5 MB asset reviewable.
+        [ "$nadd" = "-" ] && continue
         case "$nadd" in *[!0-9]*) nadd=0 ;; esac
         case "$ndel" in *[!0-9]*) ndel=0 ;; esac
         total=$(( total + nadd + ndel ))
-        if [ -f "$dir/$nfile" ]; then here+=("$nfile"); else gone+=("$nfile"); fi
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
         reason="$total changed lines"
     else
-        if [ ${#gone[@]} -gt 0 ]; then
-            # "<sha> <type> <size>" per line, or "<name> missing" for a path
-            # HEAD never had -- the /^[0-9]+$/ guard takes the sizes only.
-            sized=$(printf 'HEAD:%s\n' "${gone[@]}" \
-                    | git -C "$dir" --no-optional-locks cat-file --batch-check 2>/dev/null \
-                    | awk '$3 ~ /^[0-9]+$/ { s += $3 } END { printf "%d\n", s + 0 }')
-            bytes=$(( bytes + ${sized:-0} ))
-        fi
-        if [ ${#here[@]} -gt 0 ]; then
-            # "./" in front for the same reason awk_over needs it: without it
-            # a path starting with "-" is an option to wc. It also keeps wc's
-            # own "total" line (xargs can split into several batches, each
-            # ending in one) apart from a file actually named "total".
-            local wcout
-            # -L (longest line) as well as -l and -c: the estimate below is
-            # otherwise a per-file AVERAGE, which one long line among short
-            # ones defeats outright. Both GNU and BSD wc have -L; the column
-            # order is lines, bytes, maxlen, path.
-            wcout=$(printf './%s\0' "${here[@]}" \
-                    | (cd "$dir" 2>/dev/null && xargs -0 wc -lcL 2>/dev/null))
-            # Two streams into one awk, told apart by ARGV[1] rather than
-            # `NR == FNR` -- an empty first stream makes that test true for
-            # the SECOND file's records too, and wc producing nothing is
-            # exactly the case where every file would then be misread as a
-            # width.
-            sized=$(awk '
-                BEGIN { FS = "\t" }
-                FILENAME == ARGV[1] {
-                    # "<lines> <bytes> <maxlen> ./<path>", picked apart by
-                    # hand: FS is a tab for the numstat stream, and a path may
-                    # hold spaces in either stream.
-                    w = $0; sub(/^[ \t]+/, "", w)
-                    i = index(w, " "); if (i == 0) next
-                    wl = substr(w, 1, i - 1) + 0
-                    w = substr(w, i + 1); sub(/^[ \t]+/, "", w)
-                    i = index(w, " "); if (i == 0) next
-                    wb = substr(w, 1, i - 1) + 0
-                    w = substr(w, i + 1); sub(/^[ \t]+/, "", w)
-                    i = index(w, " "); if (i == 0) next
-                    wm = substr(w, 1, i - 1) + 0
-                    w = substr(w, i + 1)
-                    if (w !~ /^\.\//) next          # wc'"'"'s own "total" line
-                    w = substr(w, 3)
-                    lines[w] = wl; size[w] = wb; wide[w] = wm
-                    next
-                }
-                NF >= 3 {
-                    f = $3
-                    # A binary never reaches this map (it is charged its one
-                    # line in the shell loop and added to neither list), so
-                    # "not sized" here means "sized from HEAD above".
-                    if (!(f in size)) next
-                    n = (lines[f] > 0 ? lines[f] : 1)
-                    # The WORSE of two readings, not the average alone. The
-                    # average, size/lines, is dominated by the short lines
-                    # while the diff is dominated by the long one: 100,000
-                    # one-byte lines beside one 5 MB line estimated 103 bytes
-                    # and captured 10 MB (measured: 0.91s, 82 MB RSS, in the
-                    # modal popup, for a two-row review). The widest line in
-                    # the file is the ceiling a changed row can actually cost,
-                    # so charge that too and take whichever is larger. A file
-                    # of uniform width is unaffected -- maxlen ~= size/lines
-                    # there, so a one-line lockfile bump still weighs ~74
-                    # bytes and is still reviewed row by row.
-                    avg = size[f] * ($1 + $2) / n
-                    wid = wide[f] * ($1 + $2)
-                    est += (wid > avg ? wid : avg)
-                }
-                END { printf "%d\n", est + 0 }
-            ' <(printf '%s\n' "$wcout") <(printf '%s\n' "$numstat"))
-            bytes=$(( bytes + ${sized:-0} ))
+        # Untracked files are charged first and exactly. They have no diff to
+        # bound -- every byte of them is an added row -- so their size IS
+        # their contribution, and one batched `wc -c` over the SAME operand
+        # list the row walk uses gets all of it (`wc -c` stats a regular file,
+        # it does not read it). Charging them before the capture is also what
+        # makes a huge unignored untracked tree cap without capturing at all.
+        if [ -n "$ulist" ]; then
+            bytes=$(ulist_operands "$ulist" \
+                    | (cd "$dir" 2>/dev/null && xargs -0 wc -c 2>/dev/null) \
+                    | awk '
+                        # "<bytes> ./<path>", picked apart by hand because a
+                        # path may hold spaces. Anything not "./"-prefixed is
+                        # wc own total line, one per xargs batch.
+                        { w = $0; sub(/^[ \t]+/, "", w)
+                          i = index(w, " "); if (i == 0) next
+                          n = substr(w, 1, i - 1) + 0
+                          if (substr(w, i + 1) !~ /^\.\//) next
+                          s += n }
+                        END { printf "%d\n", s + 0 }')
+            bytes=${bytes:-0}
         fi
         if [ "$bytes" -gt "$bytecap" ]; then
-            # One decimal, integer-only: 6004000 bytes reads "5.7 MB", not the
-            # "6 MB" a rounded whole number would claim.
-            printf -v reason '%d.%d MB' \
-                   $(( bytes / 1048576 )) $(( bytes % 1048576 * 10 / 1048576 ))
+            reason='> 4 MB'
+        else
+            # One byte past what is left of the budget: enough to prove the cap
+            # is exceeded, never more than the budget itself in memory.
+            #
+            # The trailing X is what makes the length EXACT. Command
+            # substitution strips trailing newlines, so without it a capture
+            # that happens to end on one reads a byte short of the budget --
+            # and a diff truncated at the budget would then be parsed as a
+            # complete one, silently dropping everything past 4 MB and
+            # mangling the row it was cut in half on.
+            diff=$(tree_diff "$dir" | head -c $(( bytecap - bytes + 1 )); printf X)
+            diff=${diff%X}
+            if [ "$(bytelen "$diff")" -gt $(( bytecap - bytes )) ]; then
+                reason='> 4 MB'
+                diff=
+            else
+                # Back to the shape the old `diff=$(tree_diff ...)` produced,
+                # so the parse below sees exactly what it always did.
+                diff=${diff%$'\n'}
+            fi
         fi
     fi
     if [ -n "$reason" ]; then
@@ -353,8 +329,6 @@ lines_mode() {
         return 0
     fi
 
-    # Past the cap: now, and only now, the diff itself.
-    diff=$(tree_diff "$dir")
     [ -n "$diff$ulist" ] || return 0
 
     # One pass: track the file a hunk belongs to (from the +++/--- header

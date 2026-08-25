@@ -2950,24 +2950,31 @@ is "the bump is exactly its two rows, nothing else" "2" \
    "$(printf '%s\n' "$rvbumpout" | grep -c .)"
 rm -rf "$RVBUMP"
 
-# ...and the estimate cannot be a per-file AVERAGE. `size * (add+del) / lines`
-# is dominated by the SHORT lines while the diff is dominated by the long one,
-# so any file with skewed line widths -- a bundle with an inline source map, a
-# JSON blob with one embedded base64 literal, a generated file with one giant
-# string -- walked straight past the cap. Measured on the fixture below
-# (100,000 one-byte lines plus one 5 MB line, only the long line changed):
+# ...and the byte cap has to MEASURE the diff, not estimate it. Two estimators
+# were tried here and both broke, in opposite directions:
 #
-#   numstat: 1  1  mix.txt
-#   estimate = 5200001 * 2 / 100001 = 103 bytes   (cap 4194304)  -> passed
-#   actual:  wall 0.91s, maxRSS 82,148 kB, 2 rows captured and parsed
+#   size * (add+del) / lines   -- a per-file AVERAGE. On the fixture below
+#     (100,000 one-byte lines plus one 5 MB line, only the long line changed)
+#     it answers 103 bytes and lets a 10 MB capture through: measured 0.91s,
+#     82,148 kB RSS, two 5 MB rows, in the MODAL popup, for a two-row review.
 #
-# 103 bytes estimated against a 10 MB capture, in the MODAL popup, for a
-# two-row review. So each file is charged the WORSE of the two readings,
-# `max(size * (add+del) / lines, maxlen * (add+del))`: on this fixture the
-# second reads 5,000,000 * 2 = 10 MB and the cap fires. Uniform files are
-# untouched, because maxlen ~= size/lines there -- the lockfile bump above
-# still estimates 74 bytes and still gets its two rows.
-# FAIL-first: on the average-only estimate this prints two 5 MB rows, no notice.
+#   max(that, maxlen * (add+del))  -- the average, floored by the widest line.
+#     It catches the fixture below, but it charges that width to EVERY changed
+#     row of any file that merely CONTAINS a long line, and the cap is a
+#     per-review TOTAL: a 744-byte, 26-row review was refused as "(6.8 MB)"
+#     with an unrelated one-line Go change lost along with it (the block after
+#     this one). It also needs `wc -L`, and on a wc without it the whole sized
+#     map came back empty and the byte cap disappeared in silence -- measured,
+#     4000 rows parsed in 1.02s where the cap had fired before.
+#
+# So the diff is measured EXACTLY, and bounded so that measuring cannot itself
+# be the expensive thing: capture once through `head -c cap+1`, let git die on
+# SIGPIPE past that, and what comes back either fits -- and then IS the diff,
+# with no second git call -- or proves the cap is exceeded without ever having
+# held more than 4 MB. Untracked files have no diff to bound, so their exact
+# `wc -c` size is summed and charged first.
+# FAIL-first against the max() estimate: BOTH cases below -- it refuses the
+# short-line edit that this must show, and the block after it.
 RVSKEW=$(mktmpd)
 (
   cd "$RVSKEW" || exit
@@ -2996,7 +3003,92 @@ case "$rvskewout" in
 esac
 is "the skewed notice is one row, not two 5 MB ones" \
    "1" "$(printf '%s\n' "$rvskewout" | grep -c .)"
+# The other half of the same fixture, and the half an estimate cannot get
+# right: the SHORT line changed instead. The diff is a couple of hundred
+# bytes and belongs on screen -- but `maxlen * (add+del)` reads the 5 MB line
+# it did not touch and refuses the review anyway. Exactly the same file, the
+# only difference is which line moved.
+{ awk 'BEGIN { for (i = 0; i < 100000; i++) print (i == 5 ? "y" : "x") }'
+  head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > "$RVSKEW/mix.txt"
+is "...and with only a SHORT line changed it is two numstat rows too" \
+   "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
+rvskewshort=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+case "$rvskewshort" in
+    *"diff too large"*) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
+         "two anchored mix.txt rows" "$(head -c 120 <<<"$rvskewshort")" ;;
+    *"mix.txt"$'\t'*) ok "a SHORT-line edit in the same skewed file is shown, not refused" ;;
+    *) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
+         "two anchored mix.txt rows" "no rows at all" ;;
+esac
+is "and it is exactly its two rows" "2" \
+   "$(printf '%s\n' "$rvskewshort" | grep -c .)"
 rm -rf "$RVSKEW"
+
+# The over-refusal in its realistic shape, and the reason it is Important
+# rather than cosmetic: the cap is a per-review TOTAL, so one skewed file
+# takes every OTHER file's rows down with it. A JS file of 500 short lines
+# plus one 300 KB data-URI line, 12 short lines edited, beside a one-line Go
+# change in a file that has nothing to do with it.
+#
+#   real diff : 26 rows, 744 bytes
+#   max()     : 1 row -- "(diff too large) … (6.8 MB) — review it directly"
+#   exact     : 26 rows, both main.go rows among them
+#
+# FAIL-first: the notice, and no main.go rows at all.
+RVCROSS=$(mktmpd)
+(
+  cd "$RVCROSS" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  { awk 'BEGIN { for (i = 1; i <= 500; i++) printf "const v%d = %d;\n", i, i }'
+    printf 'const IMG = "data:image/png;base64,'
+    head -c 300000 /dev/zero | tr '\0' 'A'; printf '";\n'; } > assets.js
+  printf 'package main\n\nfunc main() { println("one") }\n' > main.go
+  git add -A; git commit -q -m init
+  awk '{ if (NR <= 12 && /^const v/) sub(/= [0-9]+;/, "= 999;"); print }' assets.js > .t
+  mv .t assets.js
+  printf 'package main\n\nfunc main() { println("two") }\n' > main.go
+) >/dev/null 2>&1
+is "the cross-file fixture is 26 changed rows, well under the row cap" "26" \
+   "$(git -C "$RVCROSS" diff --numstat | awk -F'\t' '{a += $1 + $2} END {print a}')"
+is "...and its whole real diff is well under 4 MB" "1" \
+   "$(git -C "$RVCROSS" diff | wc -c | awk '{print ($1 < 4194304) ? 1 : 0}')"
+rvcrossout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVCROSS" 2>/dev/null)
+case "$rvcrossout" in
+    *"diff too large"*) bad "a 744-byte review is not refused for containing one long line" \
+         "26 anchored rows" "$(head -c 120 <<<"$rvcrossout")" ;;
+    *) ok "a 744-byte review is not refused for containing one long line" ;;
+esac
+is "every row is there, both files" "26" "$(printf '%s\n' "$rvcrossout" | grep -c .)"
+is "and the unrelated Go file is not lost with the skewed one" "2" \
+   "$(printf '%s\n' "$rvcrossout" | awk -F'\t' '$1 == "main.go"' | grep -c .)"
+rm -rf "$RVCROSS"
+
+# The untracked half of the same measure. An untracked file has no diff to
+# bound -- every byte of it is an added row -- so it is sized exactly, with
+# one batched `wc -c` over the same operand list the row walk uses, and
+# charged BEFORE the capture: an unignored 6 MB text file drop must cap on
+# its own, without a capture happening at all. Nothing else in the suite
+# exercises that sum (the 800-untracked-file block above is one line each).
+RVUBIG=$(mktmpd)
+(
+  cd "$RVUBIG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  awk 'BEGIN{ s=sprintf("%1500s",""); gsub(/ /,"u",s); for(i=0;i<4000;i++) print s }' > huge.txt
+) >/dev/null 2>&1
+is "the untracked fixture is 6 MB on disk, and tracked-clean" "6004000" \
+   "$(wc -c < "$RVUBIG/huge.txt")"
+rvubigout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVUBIG" 2>/dev/null)
+case "$rvubigout" in
+    *"diff too large"*) ok "a 6 MB untracked file caps on its own exact size" ;;
+    *) bad "a 6 MB untracked file caps on its own exact size" \
+         "a too-large notice" "$(head -c 120 <<<"$rvubigout")" ;;
+esac
+is "and that notice is one row, not 4000 untracked ones" "1" \
+   "$(printf '%s\n' "$rvubigout" | grep -c .)"
+rm -rf "$RVUBIG"
 
 # A tracked BINARY is one LINE of diff, not its size. Without --binary git
 # prints "Binary files a/x and b/x differ" and nothing else, whatever the file
