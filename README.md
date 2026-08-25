@@ -530,6 +530,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
+| `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
 | `^S` | — | deliver the whole batch |
 | `esc` | cancel | discard the batch — asks first when comments are pinned |
 
@@ -544,6 +545,13 @@ one reflexive escape should not throw away a twenty-comment review.
 **`↵` pins a comment — it never approves.** With nothing typed it does
 nothing: there is no accept-all key on purpose, a review whose only exit is
 one Enter on the whole diff is the rubber stamp this replaces.
+
+The rows are a **snapshot** taken when the popup opens, so an agent that
+keeps editing cannot move a `●` onto a line you never touched. When you do
+want its newest lines, `^R` takes a fresh snapshot on purpose and names the
+comments that no longer sit on a changed line — they still deliver, because
+the quoted fragment is what the agent finds them by. A resumed review says the
+same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
 
 A comment lands as:
 

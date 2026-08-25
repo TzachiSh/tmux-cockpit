@@ -5457,6 +5457,61 @@ fi
 rm -rf "$RCHOME"
 fi
 
+echo "== tmux-review --loop: ^R re-snapshots and names the comments the agent moved =="
+# The rows are a snapshot (phase 1), so an agent writing mid-review cannot
+# move a ● onto a line you never touched -- but it also means the list goes
+# stale. ^R takes a new snapshot on purpose and says which comments no
+# longer anchor to a changed line (they still deliver: the quoted fragment
+# is what the agent finds them by). dev.md §2.2 is the repro.
+if need_tmux "tmux-review ^R"; then :; else
+RR="cockpit-rr-$$"; SOCKS="$SOCKS $RR"
+RRDIR=$(mktmpd)
+(
+  cd "$RRDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+RRSTORE="$STATE/review-resnap-$$"
+"$TMUX_REAL" -L "$RR" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+RRP=$("$TMUX_REAL" -L "$RR" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" "'$DIR/scripts/tmux-review' --loop '$RRDIR' '$RRSTORE'" Enter
+until_cap "$RR" "$RRP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" "hold this"
+until_cap "$RR" "$RRP" '*hold this*'
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Enter
+until_file "$RRSTORE" '*hold this*'
+is "--resnap with nothing stale prints nothing and does not wait" "" \
+   "$(timeout 5 "$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1)"
+# The agent inserts a line at the top: the pinned +CHANGED at 3 is now at 4.
+printf 'TOP\na\nb\nCHANGED\n' > "$RRDIR/src.go"
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" "still here"
+until_cap "$RR" "$RRP" '*still here*'
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" C-u    # readline: clear the typed text again
+case "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" in
+    *"●src.go:3 (+)"*) ok "until ^R the list is the snapshot: the mark stays where it was pinned" ;;
+    *) bad "until ^R the list is the snapshot: the mark stays where it was pinned" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" ;;
+esac
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" C-r
+if until_cap "$RR" "$RRP" '*no longer anchor*## src.go:3 (+)*'; then ok "^R names the comment the agent moved"
+else bad "^R names the comment the agent moved" "no longer anchor ... ## src.go:3 (+)" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"; fi
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Space
+if until_cap "$RR" "$RRP" '*src.go:4 (+)*'; then ok "and the list shows the agent's new rows"
+else bad "and the list shows the agent's new rows" "src.go:4 (+)" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"; fi
+case "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" in
+    *"●"*) bad "a moved comment marks no row" "no ●" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" ;;
+    *)     ok "a moved comment marks no row" ;;
+esac
+is "the moved comment is kept in the store, not dropped" "1" "$(grep -c '^## src.go:3 (+)' "$RRSTORE")"
+is "--resnap names exactly the stale headers" "## src.go:3 (+)" \
+   "$("$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1 | grep '^## ')"
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Escape
+until_cap "$RR" "$RRP" '*discard 1 comment*'
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Down Enter
+"$TMUX_REAL" -L "$RR" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review: a review survives the client that opened it =="
 # review_pane() used to keep the only copy of a review in a mktemp file
 # whose name nothing recorded: a dropped SSH client tears down a
