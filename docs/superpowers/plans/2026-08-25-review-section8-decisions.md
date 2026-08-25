@@ -8,6 +8,8 @@
 
 ## Answered 2026-08-25
 
+**Phase 2 merged 2026-08-25 as `9d93f11`** (27 commits, `feat/phase2-store`): `make check` on the merged tree 614 passed / 0 failed, unpiped; freeze rig unchanged at master's baseline (696 visits / 5.8 walks) with the new move numbers recorded in `tests/freeze-rig/RESULTS.txt`. The plan's rulings, deferred minors and the three inputs for phase 3 (the refused-delivery dir that resumes, no GC for the session dir, the pane-id + root key) are in the phase 2 plan and its merge commit.
+
 All seven on the recommendations below: **#1 yes, both** · **#2 popup default, `@cockpit_review_window` opt-in** · **#3 yes, always the queue** · **#4 confirmed** · **#5 no** · **#6 yes, gated on `revdiff-planning` detection** · **#7 the pieces, not the fork.** Phase 2's plan: `2026-08-25-review-phase2.md` (branch `feat/phase2-store`, where the store lib had already landed as the decision-free part). One addition the owner made the same day: the ponytail skill governs every phase's build — the goal plan's Global Constraints carry it, and each phase plan opens with an audit of what the lens scope lost to it.
 
 ## What phases 0–1 delivered (measured on this box)
