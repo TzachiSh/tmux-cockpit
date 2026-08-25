@@ -687,13 +687,21 @@ attach() {
 
 # The store and the row snapshot beside it go together: the snapshot is scratch
 # that belongs to ONE popup, and the popup's mktemp directory must not
-# accumulate a 4900-row file per review. Every path that drops the store drops
-# both; the paths that deliberately KEEP a store (a refused delivery, an fzf
-# that could not ask about the pinned comments) keep both, because that store
-# is still a review someone can re-deliver.
+# accumulate a 4900-row file per review. So the invariant is simply that NO
+# snapshot outlives the popup that wrote it: every path that drops the store
+# drops both, and the two paths that deliberately KEEP a store -- a refused
+# delivery (review_pane, below) and the "could not ask about the pinned
+# comments" exit -- still shed the snapshot on its own. A kept store is a
+# review someone can re-deliver; a kept snapshot is a diff-sized file nothing
+# downstream will ever read again, because --deliver does not know it exists.
 #
 # Empty store: nothing to remove. `rm -f -- "" ".rows"` would otherwise reach
 # for a file actually named ".rows" in the current directory.
+drop_rows() {
+    [ -n "${1:-}" ] || return 0
+    rm -f -- "$1.rows"
+}
+
 drop_store() {
     [ -n "${1:-}" ] || return 0
     rm -f -- "$1" "$1.rows"
@@ -811,7 +819,11 @@ run_loop() {
                     case "$crc" in
                         0) ;;              # a row was chosen; $choice decides
                         130) rows_out=$(rows_mode "$dir" "$store"); continue ;;   # same snapshot, re-marked
-                        *)  tmux display-message \
+                        *)  # The popup is over, so its snapshot is scratch --
+                            # but the store is a review nobody has seen the
+                            # end of, so it stays and gets named.
+                            drop_rows "$store"
+                            tmux display-message \
                                 "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
                                 2>/dev/null
                             exit 0 ;;
@@ -1236,13 +1248,26 @@ review_pane() {
         # belongs to this caller, chained after delivery so the store still
         # outlives the popup's own teardown (comment above).
         #
-        # `&&`, not `;`: --deliver refuses (needs-input, a non-agent pane, a
-        # bogus id) AFTER the popup is gone, and an unconditional rm threw the
-        # whole pinned batch away on every one of those -- the store is the
-        # only copy of the review, and the human never even saw it happen. A
-        # refused store is left on disk on purpose; deliver()'s message names
-        # it and the command that re-delivers it.
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store") $(shq "$store.rows")"
+        # The STORE is removed only on success: --deliver refuses (needs-input,
+        # a non-agent pane, a bogus id) AFTER the popup is gone, and an
+        # unconditional rm threw the whole pinned batch away on every one of
+        # those -- the store is the only copy of the review, and the human
+        # never even saw it happen. A refused store is left on disk on purpose;
+        # deliver()'s message names it and the command that re-delivers it.
+        #
+        # The row SNAPSHOT is removed either way. It served the popup, and the
+        # popup is already gone: nothing downstream reads "<store>.rows" -- not
+        # deliver(), not the --deliver a human re-runs from the refusal message
+        # -- so keeping it beside a refused store only leaves a diff-sized file
+        # in the popup's TMPDIR that nothing will ever collect.
+        #
+        # run-shell hands this to `sh -c`, so the exit code is stashed in $rc
+        # and tested with a plain `if`; the `\$` keep both out of the reach of
+        # the bash expansion that is building the string. Every path is still
+        # shq-quoted.
+        local cleanup
+        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store"); fi"
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
     fi
 }
 

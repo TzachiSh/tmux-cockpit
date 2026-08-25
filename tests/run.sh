@@ -4485,11 +4485,12 @@ rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
 echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
-# The mirror of the block above. review_pane() chains `rm -f -- <store>` after
+# The mirror of the block above. review_pane() chains the store cleanup after
 # --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
 # torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
 # a bogus pane id) used to throw the whole pinned batch away silently. The
-# store must outlive a refusal: it is the only copy of the review.
+# store must outlive a refusal: it is the only copy of the review. Its row
+# snapshot must NOT: the popup that needed it is gone.
 if need_tmux "tmux-review refused-delivery store keep"; then :; else
 RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
 RKTMPDIR="$STATE/rk-tmp-$$"
@@ -4556,8 +4557,17 @@ for i in $(seq 1 20); do
 done
 
 rkstore=""
+# head -1, not a glob: the popup's private TMPDIR now holds the store AND the
+# row snapshot beside it, and "tmp.XXXX" sorts before "tmp.XXXX.rows" (a
+# prefix is shorter), so the first entry is still the store itself.
 rksf=$(ls "$RKTMPDIR" 2>/dev/null | head -1)
 [ -n "$rksf" ] && rkstore="$RKTMPDIR/$rksf"
+if [ -n "$rkstore" ] && [ -s "$rkstore.rows" ]; then
+    ok "the row snapshot is on disk while the popup is open"
+else
+    bad "the row snapshot is on disk while the popup is open" \
+        "$rkstore.rows non-empty" "$(ls -la "$RKTMPDIR" 2>&1)"
+fi
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "keep me"
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL" | grep -q "review> keep me" && break
@@ -4595,6 +4605,26 @@ if [ "$rkkept" = 1 ]; then
 else
     bad "a refused delivery keeps the comment store" \
         "$rkstore still on disk" "gone"
+fi
+# ...and sheds the snapshot beside it. The two have different lifetimes: the
+# store is the only copy of the review and outlives a refusal on purpose,
+# while "<store>.rows" served the popup, which is already gone. Nothing
+# downstream reads it -- not deliver(), not the --deliver the refusal message
+# tells the human to re-run -- so keeping it would leave a diff-sized file in
+# the popup's TMPDIR that nothing will ever collect. Polled, not slept for:
+# the rm rides the same backgrounded `run-shell -b` as the delivery.
+rkrowsgone=0
+if [ -n "$rkstore" ]; then
+    for i in $(seq 1 20); do
+        [ -e "$rkstore.rows" ] || { rkrowsgone=1; break; }
+        sleep 0.1
+    done
+fi
+if [ "$rkrowsgone" = 1 ]; then
+    ok "and sheds the row snapshot beside it"
+else
+    bad "and sheds the row snapshot beside it" \
+        "$rkstore.rows removed" "$(ls -la "$RKTMPDIR" 2>&1)"
 fi
 case "$(cat "$rkstore" 2>/dev/null)" in
     *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
