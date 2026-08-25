@@ -214,12 +214,10 @@ lines_mode() {
     # rewrite estimates about twice its size, which is right -- the diff
     # carries both sides.
     #
-    # Two exceptions, both counting the whole size: a BINARY file, whose
-    # numstat row is "-\t-" and so has no rows to scale by (a huge binary has
-    # to cap on something); and a file with no worktree copy, which is either
-    # deleted -- every one of its lines is a row, so the formula reduces to
-    # its whole HEAD blob anyway -- or a path that does not resolve against
-    # <dir>, where the HEAD blob is the only measure there is.
+    # One exception, counting the whole size: a file with no worktree copy,
+    # which is either deleted -- every one of its lines is a row, so the
+    # formula reduces to its whole HEAD blob anyway -- or a path that does not
+    # resolve against <dir>, where the HEAD blob is the only measure there is.
     #
     # Both sizings are BATCHED -- one `wc -lc` pipeline for lines AND bytes
     # together, one `cat-file --batch-check` -- not a fork per file: this loop
@@ -233,9 +231,20 @@ lines_mode() {
     local -a here=() gone=()
     while IFS=$'\t' read -r nadd ndel nfile; do
         [ -n "$nfile" ] || continue
-        # A binary file's numstat counts are "-\t-": not numbers, so it adds no
-        # rows -- but its bytes below still count, which is the only way a
-        # huge binary trips the cap at all.
+        # A binary file's numstat counts are "-\t-", and a binary is one LINE
+        # of diff, not its size: without --binary git prints "Binary files
+        # a/x and b/x differ" and nothing else, whatever the file weighs.
+        # Charging the cap its size blanked a review whose real change was two
+        # lines of code beside a rebuilt 5 MB asset -- the whole diff of that
+        # was 240 bytes. So it costs the width of that one line and is sized
+        # no further: not by the `wc` pipeline below, and not by the HEAD
+        # lookup either, which for a DELETED binary (same "-\t-" row, no
+        # worktree copy) would otherwise have charged the whole blob.
+        #
+        # Charged here rather than inside the estimate awk because that awk
+        # runs only when some file HAS a worktree copy -- a change that is
+        # nothing but a deleted binary would have skipped it entirely.
+        if [ "$nadd" = "-" ]; then bytes=$(( bytes + 80 )); continue; fi
         case "$nadd" in *[!0-9]*) nadd=0 ;; esac
         case "$ndel" in *[!0-9]*) ndel=0 ;; esac
         total=$(( total + nadd + ndel ))
@@ -285,8 +294,10 @@ lines_mode() {
                 }
                 NF >= 3 {
                     f = $3
-                    if (!(f in size)) next          # sized from HEAD above
-                    if ($1 == "-") { est += size[f]; next }   # binary
+                    # A binary never reaches this map (it is charged its one
+                    # line in the shell loop and added to neither list), so
+                    # "not sized" here means "sized from HEAD above".
+                    if (!(f in size)) next
                     n = (lines[f] > 0 ? lines[f] : 1)
                     est += size[f] * ($1 + $2) / n
                 }

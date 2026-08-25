@@ -2854,6 +2854,55 @@ is "the bump is exactly its two rows, nothing else" "2" \
    "$(printf '%s\n' "$rvbumpout" | grep -c .)"
 rm -rf "$RVBUMP"
 
+# A tracked BINARY is one LINE of diff, not its size. Without --binary git
+# prints "Binary files a/x and b/x differ" and nothing else, whatever the file
+# weighs: the fixture below is a rebuilt 5 MB asset beside a one-line code
+# change and its whole diff is 240 bytes. Charging the cap the asset's size
+# blanked the review of the code change sitting next to it -- the one thing
+# there was to review. A "-\t-" row costs the width of that one line, 80
+# bytes, and is sized no further.
+RVBIN=$(mktmpd)
+(
+  cd "$RVBIN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  head -c 5000000 /dev/urandom > asset.bin
+  printf 'alpha\nbeta\ngamma\n' > app.go
+  git add -A; git commit -q -m init
+  head -c 5000000 /dev/urandom > asset.bin
+  printf 'alpha\nBETA\ngamma\n' > app.go
+) >/dev/null 2>&1
+is "the asset really is binary to git, so its numstat row is the '-' one" \
+   "-	-	asset.bin" "$(git -C "$RVBIN" diff --numstat HEAD -- asset.bin)"
+is "...and the whole diff, 5 MB asset included, is nowhere near the 4 MB cap" \
+   "small" "$( [ "$(git -C "$RVBIN" diff --no-color HEAD | wc -c)" -lt 4194304 ] \
+              && echo small || echo large )"
+rvbinout=$("$DIR/scripts/tmux-review" --lines "$RVBIN")
+case "$rvbinout" in
+    *"diff too large"*)
+        bad "a rebuilt 5 MB asset does not blank the code change beside it" \
+            "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
+    *"app.go"$'\t'*)
+        ok "a rebuilt 5 MB asset does not blank the code change beside it" ;;
+    *) bad "a rebuilt 5 MB asset does not blank the code change beside it" \
+         "app.go's two anchored rows" "$(head -c 120 <<<"$rvbinout")" ;;
+esac
+is "the binary itself contributes no rows, so the output is app.go's two" \
+   "2" "$(printf '%s\n' "$rvbinout" | grep -c .)"
+# A DELETED binary is the same "-\t-" row with no worktree copy, so it used to
+# be charged its whole HEAD blob by the deletion path instead -- the same hole,
+# one branch over.
+rm -f "$RVBIN/asset.bin"
+case "$("$DIR/scripts/tmux-review" --lines "$RVBIN")" in
+    *"diff too large"*)
+        bad "a DELETED 5 MB asset does not blank it either" \
+            "app.go's two anchored rows" "capped" ;;
+    *"app.go"$'\t'*) ok "a DELETED 5 MB asset does not blank it either" ;;
+    *) bad "a DELETED 5 MB asset does not blank it either" \
+         "app.go's two anchored rows" "no rows at all" ;;
+esac
+rm -rf "$RVBIN"
+
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the
