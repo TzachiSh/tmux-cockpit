@@ -3394,6 +3394,21 @@ case "$rv5preview" in
 esac
 rm -rf "$PD"
 
+echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
+# Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
+# block makes, so the memoised cache lives and dies with the test.
+RTD=$(mktmpd)
+PV=$(mktmpd); ( cd "$PV" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; seq 1 2000 > big.txt; git add -A; git commit -q -m init; sed -i '1000s/.*/CHANGED/' big.txt ) >/dev/null 2>&1
+XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv1"
+if XDG_RUNTIME_DIR="$RTD" timeout 0.05 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render returns in under 50ms"
+else bad "a repeat render returns in under 50ms" "cache hit" "timeout"; fi
+is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
+sed -i '1001s/.*/ALSO/' "$PV/big.txt"
+case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
+    *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
+rm -rf "$PV"
+
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
 RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
