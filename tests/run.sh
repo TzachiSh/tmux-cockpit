@@ -5482,8 +5482,18 @@ until_cap "$RR" "$RRP" '*review>*' || bad "the picker comes up" "review>" "$("$T
 until_cap "$RR" "$RRP" '*hold this*'
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Enter
 until_file "$RRSTORE" '*hold this*'
-is "--resnap with nothing stale prints nothing and does not wait" "" \
-   "$(timeout 5 "$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1)"
+is "--resnap with nothing stale prints nothing and does not wait" "rc=0" \
+   "$(timeout 5 "$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1; echo "rc=$?")"
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" C-r
+if until_cap "$RR" "$RRP" '*●src.go:3 (+)*'; then
+    case "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" in
+        *"no longer anchor"*|*"press any key"*)
+            bad "^R with nothing stale returns to the list without a report" "no report text" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" ;;
+        *) ok "^R with nothing stale returns to the list without a report" ;;
+    esac
+else
+    bad "^R with nothing stale returns to the list without a report" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"
+fi
 # The agent inserts a line at the top: the pinned +CHANGED at 3 is now at 4.
 printf 'TOP\na\nb\nCHANGED\n' > "$RRDIR/src.go"
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" "still here"

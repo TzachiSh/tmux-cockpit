@@ -538,11 +538,6 @@ lines_mode() {
 }
 
 # The snapshot: lines_mode's rows, written ONCE per popup, re-marked after.
-# `umask 077` + `set -C` in the writing subshell, the discipline deliver()
-# uses for the oversized-review file: born 0600, O_EXCL refuses a path that
-# already exists -- a planted symlink included -- and the `rm -f` first is
-# for the resumed session whose previous snapshot would otherwise be refused
-# too. A refused write leaves no file, and rows_mode derives from the tree.
 #
 # And on any tree with something to review, that ONE parse is the only one
 # this popup pays: it lands in "<store>.rows" and every rows_mode below --
@@ -560,18 +555,24 @@ lines_mode() {
 # ".rows", a real path in whatever directory this was run from.
 #
 # `umask 077` + `set -C` in the same subshell that does the writing, the
-# discipline deliver() already uses for the oversized-review file
-# (:985) -- and this file needs it MORE, because its name is DERIVABLE.
-# The store comes from mktemp, but "<store>.rows" is one suffix away from
-# a name anyone watching a shared /tmp can predict, and the file holds the
-# entire uncommitted diff. A plain `>` was wrong twice over: it created
-# the snapshot at the caller's umask (0664 here -- the whole diff
+# discipline deliver() already uses for the oversized-review file -- and
+# this file needs it MORE, because its name is DERIVABLE. The store comes
+# from mktemp, but "<store>.rows" is one suffix away from a name anyone
+# watching a shared /tmp can predict, and the file holds the entire
+# uncommitted diff. A plain `>` was wrong twice over: it created the
+# snapshot at the caller's umask (0664 here -- the whole diff
 # world-readable, while the store beside it is 0600), and it FOLLOWED a
 # symlink already sitting at that name, so the diff could be written into
 # a file of someone else's choosing and their file truncated to make room.
 # noclobber makes the open O_CREAT|O_EXCL, which refuses an existing path
 # -- a symlink included, dangling or not -- and umask makes what it does
 # create born 0600, with no create-then-chmod window.
+#
+# The `rm -f` first is for a resumed session's stale snapshot, which set -C
+# would otherwise refuse to replace -- but it is guarded, not unconditional:
+# cleared only when "$2.rows" is a plain file, so a planted symlink is left
+# standing here and still hits the noclobber refusal below, which sweeps it
+# up (unlinked, never followed) the same as always.
 #
 # A refused write is not an error worth stopping for: the `rm -f` unlinks
 # whatever was squatting the name (unlink never follows a symlink, so the
