@@ -2634,7 +2634,7 @@ case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
     *STAGED-CHANGE*) ok "the preview agrees with the list about the staged file" ;;
     *) bad "the preview agrees with the list about the staged file" "STAGED-CHANGE in the preview" \
          "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
-# Controller ruling: the directory branch of --preview-diff used to render an
+# The directory branch of --preview-diff used to render an
 # unstaged-only `git diff --stat`, disagreeing with the list (which shows
 # staged+unstaged+untracked as one set since the fix above): staged.txt is
 # already reported by `git status --short` in the same output, so a mere
@@ -2697,7 +2697,7 @@ case "$rvtab" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*)
 rm -rf "$RVNEW"
 
 echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
-# Task 2's untracked synthesis walked every file FOUR times over -- [ -f ],
+# The untracked synthesis walked every file FOUR times over -- [ -f ],
 # grep -Iq, wc -l and awk -- and did it twice, once in the numstat loop that
 # feeds the cap and once in the row loop. rows_mode calls lines_mode, so the
 # review popup re-paid the whole cost after every pinned comment. Measured with
@@ -2916,9 +2916,10 @@ rm -rf "$RVWIDE" "$RVNARROW"
 # `wc -c` refused a one-line version bump in a big lockfile: 4.6 MB of file,
 # two changed rows, a diff of about 70 bytes -- nothing expensive about it,
 # and the popup answered "review it directly" for a change a reviewer could
-# read at a glance. So each changed file contributes
-# `size * (add + del) / max(lines, 1)`: the wide fixture above still estimates
-# 5.7 MB and caps, this one estimates ~74 bytes and does not.
+# read at a glance. A per-file average -- `size * (add + del) / max(lines, 1)`
+# -- was tried next: the wide fixture above still estimated 5.7 MB and capped,
+# this one estimated ~74 bytes and did not (that estimator's own failure mode
+# is covered below).
 # FAIL-first: on the whole-file cap this returns "(4.5 MB)" and no rows.
 RVBUMP=$(mktmpd)
 (
@@ -3548,11 +3549,12 @@ is "the stored quote is the full line" "> $LONGLINE" "$(sed -n 2p "$RVLS")"
 # attach() is actually handed for an indented row is the DE-INDENTED one -- and
 # the stale-fragment guard, a plain prefix test against the untrimmed file line,
 # then rejected every indented line and fell back to the trimmed, 160-byte
-# display fragment. Every line inside a function body is indented, so Task 7 was
-# inert for essentially all real code; the block above only passed because its
-# fixture line starts at column 1. Measured through a real fzf 0.44.1 before the
-# fix: a 224-char indented line stored a 156-char quote with the indentation
-# gone. The fragment here is passed TRIMMED, exactly as fzf hands it over.
+# display fragment. Every line inside a function body is indented, so the
+# guard was inert for essentially all real code; the block above only passed
+# because its fixture line starts at column 1. Measured through a real fzf
+# 0.44.1 before the fix: a 224-char indented line stored a 156-char quote with
+# the indentation gone. The fragment here is passed TRIMMED, exactly as fzf
+# hands it over.
 INDENTED="    $LONGLINE"
 printf 'a\n%s\n%s\n' "$LONGLINE" "$INDENTED" > "$RVLONG/f.txt"
 ifrag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==3 {print $3}')
@@ -3628,8 +3630,8 @@ case "$(cat "$RVSTORE" 2>/dev/null)" in
     *) bad "plain Enter pins the typed comment" "the comment in the store" "$(cat "$RVSTORE" 2>/dev/null)" ;; esac
 rvbefore=$(wc -c < "$RVSTORE")
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
-# Negative assertion ("nothing pinned") -- the one bounded fixed wait
-# allowed by the controller ruling, capped at 0.3s.
+# Negative assertion ("nothing pinned") -- there is no event to poll for, so
+# this is a bounded fixed wait, capped at 0.3s, not a blind sleep.
 sleep 0.3
 is "Enter with nothing typed pins nothing (no accept-all)" "$rvbefore" "$(wc -c < "$RVSTORE")"
 case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
@@ -4433,7 +4435,7 @@ case "$finotice" in
          "w#{@cockpit_secret} in the notice" "$finotice" ;;
 esac
 # Fixed wait, not a poll: this is the negative half -- there is no event to
-# wait for, only the absence of one. Capped at 0.3s per the no-new-sleeps rule.
+# wait for, only the absence of one. Capped at 0.3s to keep it bounded.
 # tmux 3.7c runs no #() job from a display-message at all (probe above), so
 # this is a regression tooth rather than a failure this fix turned green.
 sleep 0.3
