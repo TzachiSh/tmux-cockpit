@@ -14,7 +14,7 @@
 | one pinned comment re-marks | ~1 s | **18 ms** (< 60 ms) |
 | regenerated lockfile says "too large" | 5.7 s / 254 MB | **100 ms / 58 MB** (< 1.5 s / < 110 MB) |
 | 50-pane fleet queue | 2.5 s, dirty-only, churn-sorted | **350 ms**, blocked-but-clean first, repo⑂branch on the row |
-| the fourteen §3 defects | — | all fixed fail-first; `make check` 533 passed / 0 failed, three consecutive runs |
+| the fourteen §3 defects | — | all fixed fail-first; `make check` 544 passed / 0 failed on the merged tree, three consecutive runs |
 
 Every step went through a per-task review plus a whole-branch review; every controller ruling is in
 the SDD ledger (`.superpowers/sdd/2026-08-24-review-phase0-1/progress.md`, worktree-local) and in
@@ -66,7 +66,7 @@ outlives its TUI and drops comments (opt-in with the #527 guard, reaped by binar
 ### 5. Fund phase 5 (a first-party Go TUI) at all?
 
 **Recommendation: no — and phase 1 removed the last argument for it.** Every §6 perf target is met
-with ~3× margin on bash+awk (goldens byte-identical under mawk, gawk and busybox awk). What remains
+with ~3× margin on bash+awk (goldens byte-identical under mawk and busybox awk on this box; a Task 14 reviewer also ran them under gawk 5.2.1 extracted from a `.deb` into a PATH shim — gawk is not installed here, so re-check with `which gawk` before relying on it). What remains
 is product, not speed, and the practitioners who built this year's reviewers say the terminal's
 ceiling is volume, not rendering. Revisit only with new evidence.
 
