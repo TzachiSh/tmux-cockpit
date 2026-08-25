@@ -4031,6 +4031,23 @@ for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
     rm -rf "$GD"
 done
 
+echo "== tmux-review --lines: the diff never writes the agent's index =="
+# Every diff now runs against a COPY of the index (git add -N -A on the copy
+# folds untracked files into the same diff). The copy is the whole point:
+# an `add -N` against the real index would rewrite the agent's own index
+# under it mid-commit. Pinned by the index file's mtime and size.
+RI=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" untracked "$RI" >/dev/null 2>&1
+ri_stamp() { stat -c '%Y %s' "$RI/.git/index" 2>/dev/null || stat -f '%m %z' "$RI/.git/index"; }
+touch -d '2020-01-01 00:00:00' "$RI/.git/index" 2>/dev/null || touch -t 202001010000 "$RI/.git/index"
+ri_before=$(ri_stamp)
+is "untracked rows still come out of one diff" "2" \
+   "$("$DIR/scripts/tmux-review" --lines "$RI" | grep -c $'^new.txt\t')"
+is "and the real index is byte- and mtime-identical afterwards" "$ri_before" "$(ri_stamp)"
+is "no intent-to-add entry leaked into the real index" "" \
+   "$(git -C "$RI" ls-files -s -- new.txt)"
+unset -f ri_stamp
+rm -rf "$RI"
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
