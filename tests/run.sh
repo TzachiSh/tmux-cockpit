@@ -2671,6 +2671,29 @@ case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok 
 case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
     *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
          "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
+# A literal TAB in an untracked path. `ls-files -z` does NOT C-quote -- the -z
+# form emits raw bytes, quotePath or not -- so the tab reached the row list as
+# a real field separator and every downstream `awk -F'\t'` mis-split the row:
+# path=has, line=tab.txt, fragment=the file's first line, offset=+. attach()
+# guards only "path non-empty" and "not the cap sentinel", so that row pinned
+# and composed into an instruction about a file that does not exist at a line
+# that is not a number, and --preview-window=+{5}-/2 got "+" for an offset.
+# The wire format is tab-separated: a path carrying a tab cannot go on it, so
+# it is dropped -- the same thing already done for binaries and unreadable
+# files. (The old `IFS=$'\t' read` row loop collapsed the doubled tab and
+# dropped the file silently; the awk rewrite turned it into a plausible,
+# DELIVERABLE row, which is worse.)
+# FAIL-first: a "has<TAB>tab.txt<TAB>3body line" row is emitted.
+printf 'body line\n' > "$RVNEW/has$(printf '\t')tab.txt"
+rvtab=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
+is "an untracked path holding a literal TAB is dropped, not split into a row" \
+   "0" "$(printf '%s\n' "$rvtab" | awk -F'\t' '$1 == "has"' | grep -c .)"
+is "...and no row anywhere carries a piece of its name" \
+   "0" "$(printf '%s\n' "$rvtab" | grep -c 'tab\.txt')"
+case "$rvtab" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*)
+        ok "the untracked file beside it still gets both its rows" ;;
+    *) bad "the untracked file beside it still gets both its rows" \
+         "new.txt:1 first, new.txt:2 second" "$rvtab" ;; esac
 rm -rf "$RVNEW"
 
 echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="

@@ -113,11 +113,24 @@ tree_diff() {
 # -- "./" in front is what makes an arbitrary path an operand awk cannot
 # mistake for an assignment. The programs strip it back off with
 # substr(FILENAME, 3).
+#
+# A path holding a literal TAB is dropped here, before it can become an
+# operand. `ls-files -z` does NOT C-quote -- the -z form emits raw bytes,
+# core.quotePath or not -- so such a path arrived intact and then split ITSELF
+# across the tab-separated wire every consumer below reads with awk -F'\t':
+# "has<TAB>tab.txt" became path=has, line=tab.txt, fragment=the file's first
+# line, offset=+, and attach() (which guards only "path non-empty" and "not
+# the cap sentinel") would pin and deliver that as an instruction about a file
+# that does not exist at a line that is not a number. The wire format is
+# tab-separated and cannot carry the name, so the file is dropped, exactly as
+# a binary or an unreadable file already is. Filtered on the LIST rather than
+# in each program so both callers -- the numstat walk and the row walk -- and
+# the byte estimator that reads their output all agree on the same set.
 awk_over() {
     local dir=$1 list=$2 prog=$3
     [ -n "$list" ] || return 0
     printf '%s\n' "$list" \
-        | awk '{ print "./" $0 }' \
+        | awk 'index($0, "\t") == 0 { print "./" $0 }' \
         | tr '\n' '\0' \
         | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
 }
