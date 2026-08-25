@@ -126,18 +126,32 @@ done
 
 # A MOVE -- window to window across projects, agent window to a plain terminal
 # window, pane to pane -- is a status redraw the owner triggers by hand all
-# day. Same rule, same budget: at most one server walk per move. Half the
-# windows' panes sit in one repo and half in another so the move really
-# crosses projects; the last window is a plain terminal (no agent).
+# day. Same rule, same ratio: at most one server walk per move.
+#
+# s1:1 is all alpha and s1:2 all bravo, and project->project moves between
+# exactly those two, so the label is true. It is scene-setting, not a variable
+# the number depends on: the formats key on #{pane_current_command} and
+# @panestate, never on the pane's path -- what a move costs is pane COUNT.
+# The last window is a plain terminal, no agent, which is the other move the
+# owner makes all day.
 srv new-window -d -t s1: -n term -c "$LOGDIR" 'bash --norc' 2>/dev/null
-w=0
-while read -r pid; do
-    case $((w % 2)) in 0) d="$LOGDIR/alpha" ;; *) d="$LOGDIR/bravo" ;; esac
-    mkdir -p "$d"; srv respawn-pane -k -c "$d" -t "$pid" "$AGENT" 2>/dev/null
-    w=$((w + 1))
-done < <(srv list-panes -t s1:1 -F '#{pane_id}'; srv list-panes -t s1:2 -F '#{pane_id}')
+mkdir -p "$LOGDIR/alpha" "$LOGDIR/bravo"
+while read -r pid; do srv respawn-pane -k -c "$LOGDIR/alpha" -t "$pid" "$AGENT" 2>/dev/null
+done < <(srv list-panes -t s1:1 -F '#{pane_id}')
+while read -r pid; do srv respawn-pane -k -c "$LOGDIR/bravo" -t "$pid" "$AGENT" 2>/dev/null
+done < <(srv list-panes -t s1:2 -F '#{pane_id}')
 sleep 1
-move_cost() {                 # <tmux move command...>  -> min pane visits over REPS
+
+# The term window is a 121st pane, so a move is measured on a BIGGER server
+# than $min was. Judging a 121-pane number against a 120-pane budget is a
+# gate that can never go green: count the server the moves actually run on and
+# give them their own budget at the same ratio. $min, $total and the historic
+# 696 stay exactly comparable with every earlier row in RESULTS.txt.
+mtotal=$(srv list-panes -a -F x | wc -l)
+mbudget=$(awk -v p="$mtotal" -v r="$BUDGET_RATIO" 'BEGIN{printf "%d", p*r}')
+
+move_cost() {                 # <from-window> <tmux move command...>  -> min pane visits over REPS
+    local from=$1; shift
     local i before after n m=""
     for ((i=0; i<REPS; i++)); do
         # The reset names the PANE too, not just the window: select-window
@@ -145,8 +159,9 @@ move_cost() {                 # <tmux move command...>  -> min pane visits over 
         # put it, so every rep after the first re-selected the pane already
         # selected -- a no-op tmux answers with zero visits. The reset is
         # outside the counted interval (the sleep below it), so its own cost
-        # is not in the number.
-        srv select-window -t s1:0 2>/dev/null; srv select-pane -t s1:0.0 2>/dev/null; sleep "$SETTLE"
+        # is not in the number. It also names where the move STARTS, which is
+        # what makes "project->project" an alpha window leaving for a bravo one.
+        srv select-window -t "$from" 2>/dev/null; srv select-pane -t "$from.0" 2>/dev/null; sleep "$SETTLE"
         before=$(grep -c 'pane loop: %' "$LF" 2>/dev/null); before=${before:-0}
         srv "$@" 2>/dev/null; sleep "$SETTLE"
         after=$(grep -c 'pane loop: %' "$LF" 2>/dev/null); after=${after:-0}
@@ -154,22 +169,38 @@ move_cost() {                 # <tmux move command...>  -> min pane visits over 
     done
     printf '%s' "$m"
 }
-mv_proj=$(move_cost select-window -t s1:2)          # alpha window -> bravo window
-mv_term=$(move_cost select-window -t s1:term)       # agent window -> terminal window
-mv_pane=$(move_cost select-pane -t s1:0.1)          # pane -> pane inside a window
-# The yardstick, re-measured on the server the moves actually ran on. The
-# term window above adds a 121st pane, and $min was taken at 120 -- so a raw
-# move number sits about one pane's worth of walks above $min for a reason
-# that has nothing to do with moving. Same forced redraw, same reps, same
-# shape: this is what a move number should be read against.
-mv_ctl=$(move_cost refresh-client)
+mv_proj=$(move_cost s1:1 select-window -t s1:2)      # alpha window -> bravo window
+mv_term=$(move_cost s1:0 select-window -t s1:term)   # agent window -> terminal window
+mv_pane=$(move_cost s1:0 select-pane -t s1:0.1)      # pane -> pane inside a window
+# The yardstick: the same forced redraw, on the same server, same reps. It is
+# what says whether a move costs a redraw or more than one.
+mv_ctl=$(move_cost s1:0 refresh-client)
+
+# A 0 is never "free" -- it means the target never resolved (a renamed window,
+# a pane id that moved) and nothing was measured, which must not read as a
+# pass. The guard lives out here, not before move_cost's printf: an `exit`
+# inside `$( )` ends the SUBSHELL and the gate would carry on with the message
+# as the number.
+for nv in "project->project:$mv_proj" "agent->terminal:$mv_term" \
+          "pane->pane:$mv_pane" "redraw control:$mv_ctl"; do
+    [ "${nv##*:}" -gt 0 ] || {
+        echo "gate: ${nv%%:*} measured 0 pane visits -- its target did not resolve"; exit 2; }
+done
 
 budget=$(awk -v p="$total" -v r="$BUDGET_RATIO" 'BEGIN{printf "%d", p*r}')
 printf 'pane visits per status redraw: %s   (%s panes on the server, budget %s = %sx a full walk)\n' \
     "$min" "$total" "$budget" "$BUDGET_RATIO"
 printf 'pane visits per move: project→project %s   agent→terminal window %s   pane→pane %s   (a plain redraw on the same server: %s)\n' \
     "$mv_proj" "$mv_term" "$mv_pane" "$mv_ctl"
-worst=$min; for n in "$mv_proj" "$mv_term" "$mv_pane"; do [ "$n" -gt "$worst" ] && worst=$n; done
-if [ "$worst" -le "$budget" ]; then echo "PASS"; exit 0; fi
-awk -v m="$worst" -v p="$total" 'BEGIN{printf "FAIL: %.1f full server walks per redraw or move\n", m/p}'
+printf '   (%s panes on the server once the terminal window exists, budget %s = %sx a full walk)\n' \
+    "$mtotal" "$mbudget" "$BUDGET_RATIO"
+mworst=$mv_proj
+for n in "$mv_term" "$mv_pane"; do [ "$n" -gt "$mworst" ] && mworst=$n; done
+if [ "$min" -le "$budget" ] && [ "$mworst" -le "$mbudget" ]; then echo "PASS"; exit 0; fi
+which=""
+[ "$min" -gt "$budget" ] && which="redraw"
+[ "$mworst" -gt "$mbudget" ] && which="${which:+$which and }move"
+awk -v w="$which" -v r="$min" -v rp="$total" -v m="$mworst" -v mp="$mtotal" 'BEGIN{
+    printf "FAIL (%s over budget): redraw %.1f full server walks on %d panes, worst move %.1f on %d panes\n", \
+        w, r/rp, rp, m/mp, mp }'
 exit 1
