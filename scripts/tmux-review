@@ -1331,12 +1331,13 @@ fleet_scan_root() {
 }
 
 # --- entry-point resolution -------------------------------------------------
-# Enter Task 2's loop against one pane: a fresh mktemp store, the interactive
-# --loop re-exec'd (not called as a function -- it ends in a script `exit`,
-# and this needs its own exit code back rather than the whole process dying),
-# ctrl-s (rc 20) handed to --deliver via `tmux run-shell -b` -- a popup kills
-# its own children the moment it closes (tmux-open-path:381-386), so delivery
-# has to outlive that teardown, not run inside it.
+# review_pane() drives the interactive loop against one pane: a fresh mktemp
+# store, the interactive --loop re-exec'd (not called as a function -- it
+# ends in a script `exit`, and this needs its own exit code back rather than
+# the whole process dying), ctrl-s (rc 20) handed to --deliver via
+# `tmux run-shell -b` -- a popup kills its own children the moment it closes
+# (tmux-open-path:381-386), so delivery has to outlive that teardown, not run
+# inside it.
 review_pane() {
     local pane=$1 dir=$2 store rc
     store=$(mktemp) || {

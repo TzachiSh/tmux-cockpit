@@ -62,9 +62,9 @@ nonascii)
     git add -A
     git commit -q -m init
     printf 'a\nAA\n' > alpha.txt
-    # Controller ruling: this fixture also exercises a blank added line, not
-    # just a non-ASCII filename, so café.txt's own line 2 goes blank and CC
-    # lands as a new line 3 -- one row proving both seams at once.
+    # This fixture also exercises a blank added line, not just a non-ASCII
+    # filename, so café.txt's own line 2 goes blank and CC lands as a new
+    # line 3 -- one row proving both seams at once.
     printf 'x\n\nCC\n' > café.txt
     ;;
 funcname)
