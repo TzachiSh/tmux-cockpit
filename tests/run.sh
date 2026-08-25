@@ -5574,27 +5574,36 @@ else bad "and the list is back, the marked row visible" "review> ... 2src.go:42 
 # I1 regression, fail-first: the deleted `focus` bind fired on every
 # selection change and reapplied the preview window, which is what silently
 # un-hid the preview right after ^/ turned it off (measured on fzf 0.44.1).
-# "@@" is the diff preview's own hunk header -- neither the row list nor
-# ^L's terminal listing ever prints one, so it is the preview-only marker.
+# "+line" (the diff preview's own added-line prefix) is the preview-only
+# marker, not "@@" the hunk header: the cursor sits on src.go:42 here, and
+# --preview-window's +{5}-/2 follow scrolls the hunk header itself off
+# screen even while the preview is fully visible, at ANY scroll offset --
+# "+line" stays on screen because the hunk runs 40 lines. Neither the row
+# list ("line40", no leading +) nor ^L's terminal listing ("> line40")
+# ever prints that substring, so it stays preview-only. Gated on the
+# positive first: a preview that never rendered must fail loudly, not
+# pass by never showing the marker either way.
+until_cap "$RX" "$RXP" '*+line*' \
+    || bad "^/ hides the preview and a cursor move does not bring it back" "+line visible (a rendered preview to hide)" "$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
 "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" C-_   # tmux's own encoding of ctrl-/
 rxcap=""
 for i in $(seq 1 40); do
     rxcap="$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
-    case "$rxcap" in *'@@'*) sleep 0.1 ;; *) break ;; esac
+    case "$rxcap" in *'+line'*) sleep 0.1 ;; *) break ;; esac
 done
 case "$rxcap" in
-    *'@@'*) bad "^/ hides the preview and a cursor move does not bring it back" "no @@ hunk header right after ^/" "$rxcap" ;;
+    *'+line'*) bad "^/ hides the preview and a cursor move does not bring it back" "no +line right after ^/" "$rxcap" ;;
     *)
         "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Up
         "$TMUX_REAL" -L "$RX" send-keys -t "$RXP" Down
         rxstill=""
         for i in $(seq 1 10); do
             rxstill="$("$TMUX_REAL" -L "$RX" capture-pane -p -t "$RXP")"
-            case "$rxstill" in *'@@'*) break ;; esac
+            case "$rxstill" in *'+line'*) break ;; esac
             sleep 0.1
         done
         case "$rxstill" in
-            *'@@'*) bad "^/ hides the preview and a cursor move does not bring it back" "still no @@ after Up/Down" "$rxstill" ;;
+            *'+line'*) bad "^/ hides the preview and a cursor move does not bring it back" "still no +line after Up/Down" "$rxstill" ;;
             *) ok "^/ hides the preview and a cursor move does not bring it back" ;;
         esac ;;
 esac
