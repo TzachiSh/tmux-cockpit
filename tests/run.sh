@@ -5457,6 +5457,65 @@ fi
 rm -rf "$RCHOME"
 fi
 
+echo "== tmux-review --loop: ^E hands the comment to \$EDITOR and pins what comes back =="
+# The fzf query line is a one-line box; a thorough comment cost more than a
+# shallow one. ^E opens $EDITOR on what was typed so far and pins the file.
+# The popup's children get the SERVER's environment, so cockpit.tmux passes
+# EDITOR/VISUAL through display-popup -e -- the second half of this block.
+if need_tmux "tmux-review ^E"; then :; else
+RE="cockpit-re-$$"; SOCKS="$SOCKS $RE"
+REDIR=$(mktmpd)
+(
+  cd "$REDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+RESTORE="$STATE/review-edit-$$"; RETMP=$(mktmpd)
+REED=$(mktmpf); printf '#!/bin/sh\nprintf "from the editor\\nsecond line\\n" >> "$1"\n' > "$REED"; chmod +x "$REED"
+"$TMUX_REAL" -L "$RE" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+REP=$("$TMUX_REAL" -L "$RE" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" \
+    "TMPDIR=$(printf '%q' "$RETMP") VISUAL= EDITOR=$(printf '%q' "$REED") '$DIR/scripts/tmux-review' --loop '$REDIR' '$RESTORE'" Enter
+until_cap "$RE" "$REP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RE" capture-pane -p -t "$REP")"
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" "typed first"; until_cap "$RE" "$REP" '*typed first*'
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" C-e
+if until_file "$RESTORE" '*## src.go:3 (+)*> CHANGED*typed first*from the editor*second line*'; then
+    ok "^E pre-fills the typed text, the editor's file is the comment, multi-line"
+else bad "^E pre-fills the typed text, the editor's file is the comment, multi-line" \
+     "typed first / from the editor / second line" "$(cat "$RESTORE" 2>/dev/null)"; fi
+until_cap "$RE" "$REP" '*●src.go:3 (+)*' && ok "and the row is marked, query cleared" \
+    || bad "and the row is marked, query cleared" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RE" capture-pane -p -t "$REP")"
+case "$("$TMUX_REAL" -L "$RE" capture-pane -p -t "$REP")" in
+    *"review> typed first"*) bad "the query is cleared after ^E" "review> " "still typed first" ;;
+    *) ok "the query is cleared after ^E" ;;
+esac
+is "no editor temp file is left behind, and none went beside the store" "" "$(ls "$RETMP"/* "$RESTORE".edit.* 2>/dev/null)"
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Escape
+until_cap "$RE" "$REP" '*discard 1 comment*'
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
+"$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
+# cockpit.tmux passes the editor the config was loaded with into the popup.
+REC="cockpit-rec-$$"; SOCKS="$SOCKS $REC"
+# shellcheck disable=SC1007  # VISUAL= is deliberate: an unset-but-empty VISUAL for this command only
+EDITOR=/usr/bin/false VISUAL= "$TMUX_REAL" -L "$REC" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$REC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+# this tmux build's list-keys ignores the trailing [key] filter (empty
+# output for every key, not just "r"), so grep the "r" line out of the
+# full prefix table instead of relying on that filter.
+rebind=$("$TMUX_REAL" -L "$REC" list-keys -T prefix 2>/dev/null | grep -E '^\S+[[:space:]]+-T prefix r[[:space:]]')
+case "$rebind" in
+    *"EDITOR=/usr/bin/false"*) ok "the review popup carries EDITOR into its environment" ;;
+    *) bad "the review popup carries EDITOR into its environment" "-e EDITOR=/usr/bin/false" "$rebind" ;;
+esac
+case "$rebind" in
+    *"VISUAL="*) bad "an unset VISUAL is not passed as an empty one" "no VISUAL" "$rebind" ;;
+    *) ok "an unset VISUAL is not passed as an empty one" ;;
+esac
+"$TMUX_REAL" -L "$REC" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
 # The store had a writer and no reader: three comments on one line showed
 # one dot, and nothing could take one back short of discarding the batch.
