@@ -2536,6 +2536,136 @@ case "$rv1out" in
 esac
 rm -rf "$RV1"
 
+echo "== tmux-review --lines: staged and unstaged changes are one review, not either/or =="
+# `git diff` alone answers about the WORKING TREE only, so the moment one
+# unstaged edit existed the whole index went missing from the list -- while
+# --preview-diff, which falls back to --cached, still showed the staged file.
+# The list and the preview disagreed about the same file. `git diff HEAD` is
+# both halves in one call. FAIL-first: on the old code no staged.txt row exists.
+RVMIX=$(mktmpd)
+(
+  cd "$RVMIX" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > staged.txt; printf 'a\n' > unstaged.txt
+  git add -A; git commit -q -m init
+  printf 'a\nSTAGED-CHANGE\n' > staged.txt; git add staged.txt
+  printf 'a\nUNSTAGED-CHANGE\n' > unstaged.txt
+) >/dev/null 2>&1
+rvmix=$("$DIR/scripts/tmux-review" --lines "$RVMIX")
+case "$rvmix" in *"staged.txt"$'\t'2$'\t'"STAGED-CHANGE"*) ok "the staged half is reviewable" ;;
+    *) bad "the staged half is reviewable" "a staged.txt:2 STAGED-CHANGE row" "$rvmix" ;; esac
+case "$rvmix" in *"unstaged.txt"$'\t'2$'\t'"UNSTAGED-CHANGE"*) ok "and so is the unstaged half" ;;
+    *) bad "and so is the unstaged half" "an unstaged.txt:2 row" "$rvmix" ;; esac
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
+    *STAGED-CHANGE*) ok "the preview agrees with the list about the staged file" ;;
+    *) bad "the preview agrees with the list about the staged file" "STAGED-CHANGE in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
+# Controller ruling: the directory branch of --preview-diff used to render an
+# unstaged-only `git diff --stat`, disagreeing with the list (which shows
+# staged+unstaged+untracked as one set since the fix above): staged.txt is
+# already reported by `git status --short` in the same output, so a mere
+# substring check for its name does not discriminate the bug -- the STAT
+# SUMMARY's file count does. FAIL-first: `git diff --stat` (unstaged only)
+# counts one file here, `git diff --stat HEAD` (staged+unstaged) counts two.
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" in
+    *"2 files changed"*) ok "the directory preview's stat counts the staged file too" ;;
+    *) bad "the directory preview's stat counts the staged file too" "2 files changed in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" ;; esac
+rm -rf "$RVMIX"
+
+echo "== tmux-review --lines: a brand-new file is reviewable, line by line =="
+# An untracked file carries no diff at all, so the whole new-code case -- the
+# code most worth reviewing -- was invisible to the reviewer. Its rows are
+# synthesised from the file itself, every line a + row at its own number.
+RVNEW=$(mktmpd)
+(
+  cd "$RVNEW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  printf 'first\nsecond\n' > new.txt
+  printf 'NEW-LINE\n' > 'café-new.txt'
+) >/dev/null 2>&1
+rvnew=$("$DIR/scripts/tmux-review" --lines "$RVNEW")
+case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok "untracked lines are + rows with their own numbers" ;;
+    *) bad "untracked lines are + rows with their own numbers" "new.txt:1 first, new.txt:2 second" "$rvnew" ;; esac
+# ls-files C-quotes a non-ASCII path the same way diff headers do ("caf\303\251-new.txt"),
+# and a quoted name is not a file that exists: [ -f ] failed and the file was
+# dropped from the list WITHOUT a word -- while --preview-diff, which asks with
+# core.quotePath=false, rendered it. The same list-vs-preview disagreement this
+# whole block exists to end. FAIL-first: no café-new.txt row at all.
+case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
+    *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
+         "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
+rm -rf "$RVNEW"
+
+echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
+# Task 2's untracked synthesis walked every file FOUR times over -- [ -f ],
+# grep -Iq, wc -l and awk -- and did it twice, once in the numstat loop that
+# feeds the cap and once in the row loop. rows_mode calls lines_mode, so the
+# review popup re-paid the whole cost after every pinned comment. Measured with
+# 800 one-line untracked files: the whole `--lines` run took 6.885s before and
+# takes 0.134s now (the walk itself 7.9s -> 0.008s in the review's own
+# measurement; master, which ignored untracked files entirely, was 0.018s), off
+# the single batched `ls-files -z | xargs grep -Il .` list both loops now share.
+# timeout is the fail-first teeth -- on the per-file walk this fires.
+RVMANY=$(mktmpd)
+(
+  cd "$RVMANY" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  mkdir -p vendor
+  i=1; while [ "$i" -le 800 ]; do printf 'line\n' > "vendor/f$i.txt"; i=$((i+1)); done
+) >/dev/null 2>&1
+timeout 1 "$DIR/scripts/tmux-review" --lines "$RVMANY" >/dev/null; rvmanyrc=$?
+if [ "$rvmanyrc" -eq 124 ]; then
+    bad "800 untracked files list in well under 1s" \
+        "output within 1s" "timed out (the per-file fork walk)"
+else
+    ok "800 untracked files list in well under 1s"
+fi
+is "each untracked file still contributes its one + row" \
+   "800" "$("$DIR/scripts/tmux-review" --lines "$RVMANY" | grep -c .)"
+rm -rf "$RVMANY"
+
+echo "== tmux-review --lines: every row knows where it sits in its file's preview =="
+# The preview opened every file at its top, so reviewing a change 900 lines down
+# meant scrolling by hand for every row. Each row now carries a 5th field: its
+# own 1-based line inside `tmux-open-path --preview-diff <file>` (one stat line,
+# then the diff from that file's first @@), which the loop hands to fzf as the
+# preview scroll offset. FAIL-first: rows have four fields, so $5 is empty.
+RVOFF=$(mktmpd)
+(
+  cd "$RVOFF" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  seq 1 40 > f.txt; git add -A; git commit -q -m init
+  sed -i '3s/.*/THREE/; 30s/.*/THIRTY/' f.txt
+) >/dev/null 2>&1
+rvoff=$("$DIR/scripts/tmux-review" --lines "$RVOFF" | awk -F'\t' '$3=="THIRTY" {print $5}')
+want=$(( 1 + $(git -C "$RVOFF" diff HEAD -- f.txt | awk '/^@@/{h=1} h' | grep -n '^+THIRTY' | cut -d: -f1) ))
+is "the second hunk's row offset matches the preview's line" "$want" "$rvoff"
+rm -rf "$RVOFF"
+
+# An untracked file's preview has the same two prefixes as a tracked one -- the
+# stat line AND the hunk header of its --no-index diff -- so its rows sit two
+# lines below their own file line, not one.
+RVOFFN=$(mktmpd)
+(
+  cd "$RVOFFN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
+  printf 'first\nsecond\nthird\n' > new.txt
+) >/dev/null 2>&1
+rvoffn=$("$DIR/scripts/tmux-review" --lines "$RVOFFN" | awk -F'\t' '$1=="new.txt" && $3=="second" {print $5}')
+rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.txt) \
+    | awk '{ gsub(/\033\[[0-9;]*m/, ""); print }' | grep -n '^+second' | cut -d: -f1)
+is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
+rm -rf "$RVOFFN"
+
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -2576,6 +2706,10 @@ case "$rvcapout" in
 esac
 is "the capped output is exactly one row (the popup stays trivially small)" \
    "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
+# The notice is a row like any other and reaches the same 5-field split in
+# rows_mode, so it carries an offset too rather than arriving one field short.
+is "the cap notice carries the offset field too, so no row is short" \
+   "5" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
 # A diff at or under the cap is untouched -- still fully parsed, row per line.
 RVUNDER=$(mktmpd)
 (
@@ -2616,12 +2750,16 @@ RVGOLD=$(mktmpd)
   printf 'a\nZED\nc\nADDED\n' > app.go
   printf 'p\nQQ\n' > tests/unit_test.go
 ) >/dev/null 2>&1
+# The trailing column is the row's line in `--preview-diff <file>` output
+# (one stat line, then the diff from that file's first @@). Hand-derived and
+# cross-checked against the preview itself: app.go renders -b at line 4, +ZED
+# at 5, +ADDED at 7; unit_test.go renders -q at 4 and +QQ at 5.
 rvgoldwant=$(printf '%s\n' \
-  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
-  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
-  'app.go	-2	b	app.go:2 (-)  b' \
-  'app.go	2	ZED	app.go:2 (+)  ZED' \
-  'app.go	4	ADDED	app.go:4 (+)  ADDED')
+  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q	4' \
+  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ	5' \
+  'app.go	-2	b	app.go:2 (-)  b	4' \
+  'app.go	2	ZED	app.go:2 (+)  ZED	5' \
+  'app.go	4	ADDED	app.go:4 (+)  ADDED	7')
 is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
    "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
 rm -rf "$RVGOLD"
@@ -2670,7 +2808,7 @@ RVMSTORE=$(mktemp)
 # same line number, so this proves the marker is keyed on path:line AND sign.
 "$DIR/scripts/tmux-review" --attach "$RVMSTORE" "src.go" "2" "ZED" "fix this line"
 rvmarkcol=$("$DIR/scripts/tmux-review" --rows "$RVMARK" "$RVMSTORE" | cut -f4)
-rvmarkwant=$(printf '%s\n' ' src.go:2 (-)  b' '●src.go:2 (+)  ZED' ' src.go:4 (+)  ADDED')
+rvmarkwant=$(printf '%s\n' ' src.go:2 '$'\e[31m''(-)'$'\e[0m''  b' '●src.go:2 '$'\e[32m''(+)'$'\e[0m''  ZED' ' src.go:4 '$'\e[32m''(+)'$'\e[0m''  ADDED')
 is "the ● lands on exactly the commented row, sign-specific" "$rvmarkwant" "$rvmarkcol"
 rm -f "$RVMSTORE"; rm -rf "$RVMARK"
 
@@ -2695,6 +2833,32 @@ else
     ok "--rows re-marks a 4000-row diff in well under 5s"
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
+
+echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
+RVBL=$(mktmpd)
+(
+  cd "$RVBL" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > f.md; git add -A; git commit -q -m init
+  printf 'a\n\nNEW\nb\n' > f.md
+) >/dev/null 2>&1
+RVBLS=$(mktmpf)
+rvbl=$("$DIR/scripts/tmux-review" --rows "$RVBL" "$RVBLS")
+rvblbad=""
+while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    rest=${row#*$'\t'}; rest=${rest#*$'\t'}; disp=${rest#*$'\t'}
+    case "$disp" in *"f.md:"*) ;; *) rvblbad="display lost its path: [$row]" ;; esac
+done <<<"$rvbl"
+is "every row's display names its file, blank fragment or not" "" "$rvblbad"
+rvblcount=$(printf '%s\n' "$rvbl" | grep -c .)
+is "the blank line is a row of its own" "2" "$rvblcount"
+case "$rvbl" in *$'\e[32m(+)'*) ok "an added row carries green SGR in --rows" ;;
+    *) bad "an added row carries green SGR in --rows" "ESC[32m(+) in a row" "$(printf '%s' "$rvbl" | cat -v)" ;; esac
+case "$("$DIR/scripts/tmux-review" --lines "$RVBL")" in *$'\e['*) bad "--lines stays plain" "no SGR" "sgr found" ;;
+    *) ok "--lines stays plain" ;; esac
+rm -rf "$RVBL" "$RVBLS"
 
 echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
 # git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
@@ -2725,6 +2889,14 @@ if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
 else
     ok "café's row is not smeared onto the previous file"
 fi
+# git C-quotes non-ASCII paths in `status --short` too, so a directory preview
+# (the git status --short / git diff --stat branch) used to render
+# "caf\303\251.txt" instead of the real name. FAIL-first: the octal escape
+# shows up in the directory preview's output.
+case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" in
+    *'\303'*) bad "the directory preview prints the name, not octal" "café in the preview" \
+         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" ;;
+    *) ok "the directory preview prints the name, not octal" ;; esac
 rm -rf "$RVQ"
 
 # The first-file-in-diff variant: when the odd-named file leads the diff, the
@@ -2780,6 +2952,41 @@ else
     ok "the cap sentinel row attaches nothing"
 fi
 rm -f "$CAPSTORE"
+
+echo "== tmux-review --attach: a long line is quoted whole, so the agent can find it =="
+RVLONG=$(mktmpd)
+LONGLINE=$(printf 'x%.0s' $(seq 1 220))
+(
+  cd "$RVLONG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f.txt; git add -A; git commit -q -m init
+  printf 'a\n%s\n' "$LONGLINE" > f.txt
+) >/dev/null 2>&1
+RVLS=$(mktmpf)
+frag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==2 {print $3}')
+is "the display fragment is still capped" "160" "${#frag}"
+"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 2 "$frag" "too long" "$RVLONG"
+is "the stored quote is the full line" "> $LONGLINE" "$(sed -n 2p "$RVLS")"
+
+# fzf STRIPS leading whitespace from a {n} field replacement, so the fragment
+# attach() is actually handed for an indented row is the DE-INDENTED one -- and
+# the stale-fragment guard, a plain prefix test against the untrimmed file line,
+# then rejected every indented line and fell back to the trimmed, 160-byte
+# display fragment. Every line inside a function body is indented, so Task 7 was
+# inert for essentially all real code; the block above only passed because its
+# fixture line starts at column 1. Measured through a real fzf 0.44.1 before the
+# fix: a 224-char indented line stored a 156-char quote with the indentation
+# gone. The fragment here is passed TRIMMED, exactly as fzf hands it over.
+INDENTED="    $LONGLINE"
+printf 'a\n%s\n%s\n' "$LONGLINE" "$INDENTED" > "$RVLONG/f.txt"
+ifrag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==3 {print $3}')
+ifrag=${ifrag#"${ifrag%%[![:space:]]*}"}
+is "fzf's trimmed fragment is the de-indented 156-byte tail" "156" "${#ifrag}"
+"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 3 "$ifrag" "indented" "$RVLONG"
+is "an indented line is stored whole, indentation and all" \
+   "> $INDENTED" "$(sed -n 6p "$RVLS")"
+rm -rf "$RVLONG" "$RVLS"
 
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
@@ -2837,6 +3044,23 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
          "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
 esac
 
+# Plain enter is now the same pin action as alt-enter (alt-enter stays as an
+# alias). Type a second comment and pin it with plain enter this time.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" "plain enter comment" Enter
+for i in 1 2 3 4 5 6 7 8 9 10; do grep -q "plain enter comment" "$RVSTORE" 2>/dev/null && break; sleep 0.1; done
+case "$(cat "$RVSTORE" 2>/dev/null)" in
+    *"plain enter comment"*) ok "plain Enter pins the typed comment" ;;
+    *) bad "plain Enter pins the typed comment" "the comment in the store" "$(cat "$RVSTORE" 2>/dev/null)" ;; esac
+rvbefore=$(wc -c < "$RVSTORE")
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# Negative assertion ("nothing pinned") -- the one bounded fixed wait
+# allowed by the controller ruling, capped at 0.3s.
+sleep 0.3
+is "Enter with nothing typed pins nothing (no accept-all)" "$rvbefore" "$(wc -c < "$RVSTORE")"
+case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+    *"review>"*) ok "and the picker is still open" ;;
+    *) bad "and the picker is still open" "the review> prompt" "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;; esac
+
 # The only enforcement of WHAT-NOT-TO-DO rule 1 ("no accept-all"): plain
 # enter must neither leave the picker nor touch the store, on a row that
 # already has an unrelated pending comment pinned to it.
@@ -2851,8 +3075,45 @@ esac
 is "plain enter does nothing: the store is unchanged" \
    "$storebefore" "$(cat "$RVSTORE" 2>/dev/null)"
 
+# esc on a non-empty batch ASKS instead of discarding outright -- the whole
+# point: one reflexive escape must not throw away a twenty-comment review.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
-sleep 1
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
+    sleep 0.1
+done
+case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
+    *"discard 2 comment"*) ok "esc on a non-empty batch asks, naming the count" ;;
+    *) bad "esc on a non-empty batch asks, naming the count" \
+         "a 'discard 2 comment(s)' choice" \
+         "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
+esac
+
+# Row 1 -- keep reviewing. Back to the list, every pinned comment still there.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# fzf RESTORES the screen it covered when it exits, so the list's own text is
+# back on the pane before the second picker is actually up -- a content poll
+# cannot tell the restored screen from the live one. Sync on the pane's
+# foreground process instead: fzf gone, then fzf again.
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RVS" display-message -p -t "$RVP" '#{pane_current_command}')" = fzf ] || break
+    sleep 0.1
+done
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RVS" display-message -p -t "$RVP" '#{pane_current_command}')" = fzf ] && break
+    sleep 0.1
+done
+is "keep reviewing returns to the list with the store intact" \
+   "$rvbefore" "$(wc -c < "$RVSTORE" 2>/dev/null)"
+
+# Row 2 -- discard. Only this second, deliberate answer deletes the store.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
+for i in $(seq 1 20); do [ -e "$RVSTORE" ] || break; sleep 0.1; done
 if [ -e "$RVSTORE" ]; then
     bad "esc discards: the store is gone" "no such file" "$RVSTORE still exists"
 else
@@ -2862,6 +3123,42 @@ fi
 "$TMUX_REAL" -L "$RVS" kill-server >/dev/null 2>&1
 rm -rf "$RVDIR"
 fi
+
+echo "== tmux-review --loop: an fzf that cannot start exits instead of spinning forever =="
+# `while :` re-entered the picker on every fzf exit outside {0,1}. With a
+# non-empty store that path runs the discard-confirm picker first -- and when
+# fzf cannot start at all (no tty), THAT one fails too, leaving $choice empty,
+# which fell to `*) continue` and re-entered the loop to fail again. Measured
+# before the fix: rc=124 (never exits) and 172 lines of "inappropriate ioctl
+# for device" in 5 seconds, burning a fork per iteration. --loop is a
+# documented public subcommand, so any invocation whose tty goes away with
+# comments pinned busy-loops. setsid + </dev/null is the no-tty condition
+# deterministically; the confirm picker's own exit code now decides, and
+# anything that is neither a choice (0) nor esc (130) keeps the store and
+# exits 0.
+RVSPIN=$(mktmpd)
+(
+  cd "$RVSPIN" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > f.txt; git add -A; git commit -q -m init
+  printf 'a\nZED\n' > f.txt
+) >/dev/null 2>&1
+RVSPINSTORE=$(mktmpf)
+printf '## f.txt:2 (+)\n> ZED\nlook again\n\n' > "$RVSPINSTORE"
+rvspinwant=$(cat "$RVSPINSTORE")
+timeout 5 setsid "$DIR/scripts/tmux-review" --loop "$RVSPIN" "$RVSPINSTORE" \
+    </dev/null >/dev/null 2>&1
+rvspinrc=$?
+if [ "$rvspinrc" -eq 124 ]; then
+    bad "--loop gives up when fzf cannot start, instead of spinning" \
+        "an exit within 5s" "timed out (the while : busy-loop)"
+else
+    ok "--loop gives up when fzf cannot start, instead of spinning"
+fi
+is "the pinned comments are kept, not shredded, on that exit" \
+   "$rvspinwant" "$(cat "$RVSPINSTORE" 2>/dev/null)"
+rm -rf "$RVSPIN" "$RVSPINSTORE"
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
@@ -3189,6 +3486,54 @@ promptcount=$(printf '%s\n' "$apafter" | grep -c '\$ *$' || true)
 is "the paste never executes (still one prompt, no fresh one after Enter)" \
    "0" "$promptcount"
 
+# A delivered review is a STATE, not a 750 ms flash. The pane carries
+# @cockpit_review=sent until the human actually sends it, so prefix J can walk
+# back to the review still sitting unsent in someone's prompt.
+is "a landed review marks the pane" "sent" \
+   "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
+# Driven from NP, a shell inside the session, so agent-state sees a real $TMUX
+# exactly as a Claude Code hook does. Poll the option, never a fixed sleep.
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
+    "$(shq_test "$DIR/scripts/agent-state") running $AP" Enter
+for i in $(seq 1 20); do
+    [ -z "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)" ] && break
+    sleep 0.1
+done
+is "the mark clears when the agent starts working" "" \
+   "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
+# And prefix J walks to it. @panestate is `running` here (agent-state just set
+# it), so the pane is NOT needs-input: the jump can only come from the review
+# mark, not from the blocked-pane path the earlier tmux-jump block covers.
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @cockpit_review sent >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" send-keys -t "$NP" "$(shq_test "$DIR/scripts/tmux-jump")" Enter
+for i in $(seq 1 20); do
+    [ "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')" = "$AP" ] && break
+    sleep 0.1
+done
+is "prefix J walks to a pane holding an unsent review" "$AP" \
+   "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')"
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
+
+echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
+"$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
+printf '## src.go:1 (+)\n> foo\nNI-MARKER fix\n\n' > "$RDSTORE"
+rundeliver "$AP" "$RDSTORE"
+is "delivery into needs-input exits 1" "RC=1" "$(lastrc)"
+case "$(apcap)" in
+    *"NI-MARKER"*) bad "nothing is pasted into a needs-input pane" "no NI-MARKER on the agent pane" "$(apcap)" ;;
+    *) ok "nothing is pasted into a needs-input pane" ;;
+esac
+"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate done >/dev/null 2>&1
+rundeliver "$AP" "$RDSTORE"
+case "$(apcap)" in
+    *"NI-MARKER"*) ok "the same review lands once the pane is done" ;;
+    *) bad "the same review lands once the pane is done" "NI-MARKER on the agent pane" "$(apcap)" ;;
+esac
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
+
 echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
 # A second agent pane and a second control pane -- driving both deliveries
 # from their OWN panes, fired back-to-back with no sleep between, is the
@@ -3316,6 +3661,96 @@ rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --deliver: a window name cannot inject tmux format syntax into the notice =="
+# display-message's argument is a tmux FORMAT, not a plain string, and the
+# delivery notice interpolates the target's WINDOW NAME -- which is user data.
+# Measured on tmux 3.7c, with a client attached:
+#   display-message -p 'x=[#{@probe}]'          -> the option's VALUE (expanded)
+#   display-message    'x #(touch F) y'         -> F is NOT created (no job runs)
+#   set -g status-right '#(touch F)'            -> F IS created
+# So the reachable vector is #{...} substitution, not #(); a window named
+# w#{@anything} leaks that option's value into the notice, and the same
+# substitution is how a format reaches things the reviewer never asked for.
+# Doubling every # to ## is the tmux format literal and covers the #() arm too,
+# whatever a future tmux decides to run from a message.
+#
+# Its own server, not $RDS: the notice only lands on a status line if a CLIENT
+# is there to draw it, so an OUTER tmux provides the pty for a client attached
+# to the INNER one and capture-pane on the outer pane reads the drawn line back
+# (the same outer/inner pattern as the RCE-via-directory-name block above).
+if need_tmux "tmux-review --deliver format injection"; then :; else
+FI_IN="cockpit-fi-in-$$"; FI_OUT="cockpit-fi-out-$$"
+SOCKS="$SOCKS $FI_IN $FI_OUT"
+FISP=$(mktmpd)
+"$TMUX_REAL" -L "$FI_IN" -f /dev/null new-session -d -s t -x 250 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN" set -g @cockpit_secret LEAKED-SECRET >/dev/null 2>&1
+# rename-window EXPANDS its own argument, so the hostile name has to be written
+# escaped to be STORED literally; it also turns automatic-rename off for the
+# window, so the name sticks for the whole delivery. Verified stored raw:
+# display-message -p '#{window_name}' reads back w#{@cockpit_secret}#(...)z --
+# a substituted value is not re-expanded, so the READ is safe and only the
+# notice that re-interpolates it is not.
+"$TMUX_REAL" -L "$FI_IN" rename-window -t t:0 \
+    "w##{@cockpit_secret}##(touch $FISP/OWNED)z" >/dev/null 2>&1
+FIP=$("$TMUX_REAL" -L "$FI_IN" list-panes -t t: -F '#{pane_id}')
+is "the hostile window name is stored verbatim, not expanded at rename time" \
+   "w#{@cockpit_secret}#(touch $FISP/OWNED)z" \
+   "$("$TMUX_REAL" -L "$FI_IN" display-message -p -t t:0 '#{window_name}')"
+"$TMUX_REAL" -L "$FI_OUT" -f /dev/null new-session -d -s o -x 250 -y 24 \
+    "$TMUX_REAL -L $FI_IN attach -t t" >/dev/null 2>&1
+for i in $(seq 1 30); do
+    [ -n "$("$TMUX_REAL" -L "$FI_IN" list-clients -t t: 2>/dev/null)" ] && break
+    sleep 0.1
+done
+FISTORE="$STATE/deliver-fi-$$"
+printf '## src.go:1 (+)\n> foo\nFI-MARKER fix\n\n' > "$FISTORE"
+TMUX="$SOCKDIR/$FI_IN,0,0" "$DIR/scripts/tmux-review" --deliver "$FIP" "$FISTORE" \
+    >/dev/null 2>&1
+for i in $(seq 1 30); do
+    "$TMUX_REAL" -L "$FI_OUT" capture-pane -p -t o: | grep -q 'review pasted into' && break
+    sleep 0.1
+done
+finotice=$("$TMUX_REAL" -L "$FI_OUT" capture-pane -p -t o: | grep 'review pasted into')
+# Asserted FIRST: an empty notice would make every check below pass vacuously
+# (no notice, therefore no leaked value in it), which is exactly how a broken
+# delivery would read as a green security test.
+case "$finotice" in
+    '') bad "the delivery notice reaches the attached client's status line" \
+         "a 'review pasted into ...' line" "nothing drawn on the status line" ;;
+    *)  ok "the delivery notice reaches the attached client's status line" ;;
+esac
+case "$finotice" in
+    *LEAKED-SECRET*) bad "a window name's #{...} is never expanded in the notice" \
+         "the literal name, not the option's value" "$finotice" ;;
+    *) ok "a window name's #{...} is never expanded in the notice" ;;
+esac
+case "$finotice" in
+    *'w#{@cockpit_secret}'*) ok "the notice shows the window name verbatim" ;;
+    *) bad "the notice shows the window name verbatim" \
+         "w#{@cockpit_secret} in the notice" "$finotice" ;;
+esac
+# Fixed wait, not a poll: this is the negative half -- there is no event to
+# wait for, only the absence of one. Capped at 0.3s per the no-new-sleeps rule.
+# tmux 3.7c runs no #() job from a display-message at all (probe above), so
+# this is a regression tooth rather than a failure this fix turned green.
+sleep 0.3
+if [ -e "$FISP/OWNED" ]; then
+    bad "a window name's #(...) never runs" "no OWNED file" "OWNED file created"
+else
+    ok "a window name's #(...) never runs"
+fi
+# Escaping the name must not cost the delivery itself.
+case "$("$TMUX_REAL" -L "$FI_IN" capture-pane -p -J -t "$FIP")" in
+    *"FI-MARKER fix"*) ok "the review still lands in a hostilely named window" ;;
+    *) bad "the review still lands in a hostilely named window" "FI-MARKER fix in the pane" \
+         "$("$TMUX_REAL" -L "$FI_IN" capture-pane -p -J -t "$FIP")" ;;
+esac
+"$TMUX_REAL" -L "$FI_OUT" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI_IN"  kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
 # deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
 # re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill
@@ -3355,12 +3790,21 @@ esac
 "$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
 sleep 0.2
 
+# The gate deliver() actually ships, in one string so this block cannot drift
+# from it again: the #{m:...} command test AND #{!=:#{@panestate},needs-input},
+# joined with #{&&:...} so tmux evaluates BOTH inside the same command-queue
+# item as the paste. This block used to hand-build the single-condition form
+# under the "byte-for-byte" comment below, which stopped being true the moment
+# guard 3 was folded into the format -- and a typo inside the compound would
+# evaluate false and silently never deliver, with nothing here to catch it.
+RGGATE='#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}'
+
 # The fix, byte-for-byte as deliver() runs it: stage the buffer, then let tmux
 # re-check #{pane_current_command} in the SAME command-queue item as the paste.
 # The pane is a shell at paste time -> refused, and the staged buffer dropped.
 printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$NPG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "$RGGATE" \
     "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
     "delete-buffer -b rg-gate ; display-message 'not delivered'"
 sleep 0.3
@@ -3378,7 +3822,7 @@ fi
 # The same gated sequence, targeting a live agent, still delivers.
 printf 'DELIVERED-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ok -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
-    '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
+    "$RGGATE" \
     "paste-buffer -p -r -d -b rg-ok -t $APG ; display-message pasted" \
     "delete-buffer -b rg-ok ; display-message 'not delivered'"
 sleep 0.3
@@ -3387,6 +3831,40 @@ case "$(gcap "$APG")" in
     *) bad "the gate still delivers into a pane that is a live agent" \
          "DELIVERED-MARKER in the agent pane" "$(gcap "$APG")" ;;
 esac
+
+# The compound's OTHER arm, which had no coverage anywhere: the pane is still a
+# live agent, but it reached needs-input in the same ~50ms window -- guard 3
+# passed against a snapshot that is already stale. The paste must not land: a
+# permission prompt takes the text into the dialog, where the Enter this script
+# tells the human to press becomes a blind approval of whatever the agent asked
+# for. @panestate is set on the pane BETWEEN the guard and the gate here, which
+# is exactly the race, made deterministic.
+"$TMUX_REAL" -L "$RG" set-option -p -t "$APG" @panestate needs-input
+printf 'NEEDS-INPUT-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ni -
+"$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
+    "$RGGATE" \
+    "paste-buffer -p -r -d -b rg-ni -t $APG ; display-message pasted" \
+    "delete-buffer -b rg-ni ; display-message 'not delivered'"
+# Both arms consume the buffer (paste-buffer -d, or delete-buffer), so its
+# disappearance says the queue item RAN without saying which way it went --
+# a bounded poll, not a blind wait, and the two assertions below then read a
+# settled pane.
+for i in $(seq 1 30); do
+    "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null \
+        | grep -qxF rg-ni || break
+    sleep 0.1
+done
+case "$(gcap "$APG")" in
+    *NEEDS-INPUT-MARKER*) bad "the gate refuses a live agent that reached needs-input" \
+         "no NEEDS-INPUT-MARKER in the agent pane" "$(gcap "$APG")" ;;
+    *) ok "the gate refuses a live agent that reached needs-input" ;;
+esac
+if "$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF rg-ni; then
+    bad "the needs-input refusal drops its staged buffer too" "no rg-ni buffer" "rg-ni still present"
+else
+    ok "the needs-input refusal drops its staged buffer too"
+fi
+"$TMUX_REAL" -L "$RG" set-option -p -u -t "$APG" @panestate
 
 # B2: the `tmux if-shell` call above returns 0 (the queue accepted it)
 # whichever nested branch fired -- so a shell that only inspected THAT exit
@@ -3548,6 +4026,134 @@ fi
 rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
+echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
+# The mirror of the block above. review_pane() chains `rm -f -- <store>` after
+# --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
+# torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
+# a bogus pane id) used to throw the whole pinned batch away silently. The
+# store must outlive a refusal: it is the only copy of the review.
+if need_tmux "tmux-review refused-delivery store keep"; then :; else
+RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
+RKTMPDIR="$STATE/rk-tmp-$$"
+mkdir -p "$RKTMPDIR"
+"$TMUX_REAL" -L "$RK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RK" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RKCTL=$("$TMUX_REAL" -L "$RK" list-panes -t t:0 -F '#{pane_id}')
+# Same TMPDIR redirect as the block above: review_pane()'s mktemp store is
+# never named to us, so a private empty dir makes whatever appears there it.
+# The echoed marker is the poll's condition -- `export` is a builtin, so the
+# pane's own process never changes and there is nothing else to watch for.
+# The typed line carries the literal "RKTMP=%s", not the expanded path, so a
+# match on the path is the shell's OUTPUT, not the command echo.
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" \
+    "export TMPDIR=$(shq_test "$RKTMPDIR"); printf 'RKTMP=%s\\n' \"\$TMPDIR\"" Enter
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RKCTL" | grep -qF "RKTMP=$RKTMPDIR" && break
+    sleep 0.1
+done
+
+RK_DIRTY=$(mktmpd)
+(
+  cd "$RK_DIRTY" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\nb\n' > src.go
+  git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+
+"$TMUX_REAL" -L "$RK" new-window -d -t t: -c "$RK_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
+RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
+# The target is sitting on a permission prompt -- deliver()'s guard 3, the
+# refusal a human is most likely to hit right after finishing a review.
+"$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
+# Both preconditions, polled rather than slept for: the fleet queue filters on
+# pane_current_command, so the agent pane's own shell has to be up before
+# --fleet runs (it would otherwise report no dirty agent pane at all), and
+# deliver()'s guard 3 reads @panestate back off the pane.
+for i in $(seq 1 20); do
+    [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RK_AGENT" '#{pane_current_command}')" = claude ] &&
+    [ "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @panestate)" = needs-input ] && break
+    sleep 0.1
+done
+
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "'$DIR/scripts/tmux-review'" Enter
+rkup=0
+for i in $(seq 1 20); do
+    case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
+        *"fleet>"*) rkup=1; break ;;
+    esac
+    sleep 0.25
+done
+[ "$rkup" = 1 ] || bad "the fleet queue comes up (refused-delivery case)" \
+    "a visible 'fleet>' prompt" "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")"
+
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
+for i in $(seq 1 20); do
+    case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
+        *"review>"*) break ;;
+    esac
+    sleep 0.25
+done
+
+rkstore=""
+rksf=$(ls "$RKTMPDIR" 2>/dev/null | head -1)
+[ -n "$rksf" ] && rkstore="$RKTMPDIR/$rksf"
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "keep me"
+for i in $(seq 1 20); do
+    "$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL" | grep -q "review> keep me" && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" M-Enter
+for i in $(seq 1 20); do
+    [ -n "$rkstore" ] && grep -q "keep me" "$rkstore" 2>/dev/null && break
+    sleep 0.1
+done
+if [ -n "$rkstore" ] && grep -q "keep me" "$rkstore" 2>/dev/null; then
+    ok "the comment is pinned before the delivery is attempted"
+else
+    bad "the comment is pinned before the delivery is attempted" \
+        "'keep me' in the store under $RKTMPDIR" "$(ls -la "$RKTMPDIR" 2>&1)"
+fi
+
+# ^S: the loop exits 20, review_pane fires --deliver through run-shell -b, and
+# deliver() refuses. Wait for the picker's own process to go away first, so
+# the run-shell chain has actually been reached.
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" C-s
+for i in $(seq 1 30); do
+    [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RKCTL" '#{pane_current_command}')" = fzf ] || break
+    sleep 0.1
+done
+# Bounded poll, not a fixed wait: the store must be there for the whole
+# window in which the (backgrounded) rm could have fired.
+rkkept=1
+for i in $(seq 1 20); do
+    [ -n "$rkstore" ] && [ -e "$rkstore" ] || { rkkept=0; break; }
+    sleep 0.1
+done
+if [ "$rkkept" = 1 ]; then
+    ok "a refused delivery keeps the comment store"
+else
+    bad "a refused delivery keeps the comment store" \
+        "$rkstore still on disk" "gone"
+fi
+case "$(cat "$rkstore" 2>/dev/null)" in
+    *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
+    *) bad "and the kept store still holds the pinned comment" \
+         "## src.go:3 (+) / keep me" "$(cat "$rkstore" 2>/dev/null)" ;;
+esac
+case "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" in
+    *"keep me"*) bad "and nothing was pasted into the needs-input pane" \
+         "no review text in the agent pane" \
+         "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" ;;
+    *) ok "and nothing was pasted into the needs-input pane" ;;
+esac
+
+"$TMUX_REAL" -L "$RK" kill-server >/dev/null 2>&1
+rm -rf "$RK_DIRTY" "$RKTMPDIR"
+fi
+
 echo "== tmux-review: a clean-tree direct pane says so instead of opening an empty picker =="
 if need_tmux "tmux-review clean-tree direct pane"; then :; else
 MT="cockpit-mt-$$"; SOCKS="$SOCKS $MT"
@@ -3633,6 +4239,35 @@ case "$fqout" in
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
 is "the queue lists exactly one row" "1" "$rowcount"
+
+# The queue is a triage list, not a churn leaderboard. A pane parked on a
+# permission prompt is exactly the one that needs a human -- and it typically
+# has NOTHING to diff, so churn-only ordering buried it under whoever happened
+# to type the most. State ranks first; churn only breaks ties inside a rank.
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+# Polled, not slept for: the row we are waiting on is the blocked pane's, and
+# its absence is also the RED failure -- so the loop bounds the wait rather
+# than deciding the outcome.
+fqout2=""
+for i in $(seq 1 20); do
+    fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout2" in *"$CLEAN_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
+is "its state is in the row" "needs-input" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f2)"
+is "and a clean tree shows no churn instead of +0 -0" "—" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f5)"
+is "the dirty running agent sorts below it" "$DIRTY_PANE" \
+   "$(printf '%s\n' "$fqout2" | grep '^%' | sed -n 2p | cut -f1)"
+case "$(printf '%s\n' "$fqout2" | grep "^$DIRTY_PANE")" in
+    *"$(basename "$FQ_DIRTY")⑂main"*) ok "the row names the repo and branch" ;;
+    *) bad "the row names the repo and branch" "$(basename "$FQ_DIRTY")⑂main" "$fqout2" ;;
+esac
 
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT"

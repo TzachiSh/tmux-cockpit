@@ -9,7 +9,8 @@
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
 #                                          ctrl-s exits 20 (deliver), esc/^C
-#                                          exit 0 (discard, store deleted)
+#                                          exit 0 (discard, store deleted --
+#                                          asked for first if any are pinned)
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
@@ -66,9 +67,32 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
-In the picker: alt-↵ comment the row under the cursor   ^S deliver   esc discard
-(there is no accept-all: plain enter does nothing)
+In the picker: ↵ pin the typed comment on the row under the cursor   ^S deliver   esc discard
+(there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
+}
+
+# --- the base every uncommitted view diffs against --------------------------
+# Everything uncommitted is ONE set: `git diff HEAD` is staged + unstaged in a
+# single call. The old "unstaged, else staged" fallback dropped the whole
+# index the moment one unstaged edit existed -- reproduced: a staged file was
+# invisible to the list while the preview showed it. An unborn HEAD (no
+# commits yet) has no HEAD to diff against, so that case keeps the fallback.
+#
+# --no-optional-locks on every call, the same discipline fleet_row_one() already
+# uses: `git diff` refreshes the index and takes index.lock to do it, and this
+# runs against a repo an AGENT is working in. A read that fights the agent's own
+# git for the lock is a read that can make its command fail.
+tree_diff() {
+    local dir=$1; shift
+    if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
+    else
+        local out
+        out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
+        [ -n "$out" ] || out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        printf '%s\n' "$out"
+    fi
 }
 
 # --- --lines -------------------------------------------------------------
@@ -78,9 +102,26 @@ USAGE
 # carries the OLD line number instead, prefixed "-" -- the same (+)/(-) split
 # the compose grammar uses for its headers.
 #
-# Unstaged first, staged as the fallback: the same rule --preview-diff already
-# uses, so a fully-staged change still gets reviewed instead of showing
-# "nothing here" while the index holds every line.
+# Everything uncommitted is ONE set -- staged, unstaged and brand-new files --
+# because that is what "review what I have not committed" means. See tree_diff
+# below for the base, and the untracked synthesis inside for the new files.
+# Run one awk program over every path in a newline-separated list of paths
+# relative to $dir, batched through xargs so a huge untracked tree cannot blow
+# ARG_MAX. Every path is passed "./"-prefixed: awk reads a bare `name=value`
+# operand as a variable assignment, and mawk rejects a `--` before the first
+# filename ("cannot open --"), so there is no option-terminator to hide behind
+# -- "./" in front is what makes an arbitrary path an operand awk cannot
+# mistake for an assignment. The programs strip it back off with
+# substr(FILENAME, 3).
+awk_over() {
+    local dir=$1 list=$2 prog=$3
+    [ -n "$list" ] || return 0
+    printf '%s\n' "$list" \
+        | awk '{ print "./" $0 }' \
+        | tr '\n' '\0' \
+        | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
+}
+
 lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
@@ -95,14 +136,47 @@ lines_mode() {
     # stay keyed on the same name. (A path with a literal tab/quote is still
     # git-quoted even here -- the residual narrow case; non-ASCII is the common
     # one and is fixed.)
-    local diff
-    diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff 2>/dev/null)
-    [ -n "$diff" ] || diff=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached 2>/dev/null)
-    [ -n "$diff" ] || return 0
+    local diff numstat
+    diff=$(tree_diff "$dir")
+    numstat=$(tree_diff "$dir" --numstat)
 
-    local numstat
-    numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --numstat 2>/dev/null)
-    [ -n "$numstat" ] || numstat=$(git -C "$dir" -c core.quotePath=false diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
+    # Untracked files carry no diff at all -- so the newest code, the code most
+    # worth reviewing, was invisible. Synthesise their numstat here (every line
+    # an addition) so the size cap below counts them too, and their rows after
+    # the awk. Binary and unreadable files are skipped (grep -I fails on both).
+    #
+    # ONE batched walk, not four forks per file. The first shape here ran
+    # [ -f ] + grep -Iq + wc -l per untracked file for the numstat, and then
+    # [ -f ] + grep -Iq + awk per file AGAIN for the rows -- and rows_mode
+    # calls lines_mode, so the popup re-paid the whole thing on open and after
+    # every pinned comment. Measured on an unignored 800-file vendor tree:
+    # 7.928s per open (master, which ignored untracked files entirely, took
+    # 0.018s). `ls-files -z | xargs grep -Il .` answers "which of these are
+    # readable text" for the whole tree in one pipeline -- grep -I still skips
+    # binaries, and a file it cannot read simply is not listed, the same two
+    # exclusions as before -- and the two awks below take that list as
+    # operands instead of re-walking it: 0.008s.
+    #
+    # The line count comes from the awk that already reads every file (FNR at
+    # EOF), not from a per-file `wc -l`; that also counts a final line with no
+    # trailing newline, which `wc -l` dropped while the row loop emitted it.
+    #
+    # core.quotePath=false here for the same reason it is on the diff above, and
+    # it bites harder: ls-files C-quotes a non-ASCII name ("caf\303\251-new.txt"),
+    # and a quoted name is not a path that exists, so [ -f ] failed and the file
+    # was dropped from the list without a word -- while --preview-diff, which
+    # asks with the flag set, rendered it. List and preview disagreed again.
+    # One call, both awks below read it.
+    local ulist
+    ulist=$(cd "$dir" 2>/dev/null && git -c core.quotePath=false \
+                ls-files -z --others --exclude-standard 2>/dev/null \
+            | xargs -0 grep -Il . -- 2>/dev/null)
+    if [ -n "$ulist" ]; then
+        numstat="${numstat:+$numstat$'\n'}$(awk_over "$dir" "$ulist" '
+            { c[FILENAME] = FNR }
+            END { for (f in c) printf "%d\t0\t%s\n", c[f], substr(f, 3) }')"
+    fi
+    [ -n "$diff$ulist" ] || return 0
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -125,7 +199,9 @@ lines_mode() {
     done <<<"$numstat"
     if [ "$total" -gt "$cap" ]; then
         local big="diff too large to anchor line-by-line ($total changed lines) — review it directly"
-        printf '%s\t\t%s\t%s\n' "$CAP_SENTINEL" "$big" "$big"
+        # Offset 1 (the preview's first line) so the 5-field split in rows_mode
+        # never meets a short row -- this notice has no file to scroll anyway.
+        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
     fi
 
@@ -162,16 +238,23 @@ lines_mode() {
         function inhunk() { return (oldrem > 0 || newrem > 0) }
         {
             if (inhunk()) {
+                # poff is where the row lands in the PREVIEW, not in the
+                # file: --preview-diff prints one stat line and then this same
+                # diff from the first @@ of that file. So every line inside a
+                # hunk -- context, +, -, and the "\ No newline" note alike --
+                # occupies one preview line and is counted before it is
+                # dispatched, and the +1 at the emit is that stat line.
+                poff++
                 c = substr($0, 1, 1)
                 if (c == "+") {
                     if (file != "") {
-                        printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
+                        printf "%s\t%d\t+\t%d\t%s\n", file, newl, poff + 1, substr($0, 2)
                         newl++
                     }
                     newrem--
                 } else if (c == "-") {
                     if (file != "") {
-                        printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
+                        printf "%s\t%d\t-\t%d\t%s\n", file, oldl, poff + 1, substr($0, 2)
                         oldl++
                     }
                     oldrem--
@@ -187,7 +270,8 @@ lines_mode() {
             }
             if ($0 ~ /^\+\+\+ /) {
                 if ($0 ~ /^\+\+\+ b\//) file = substr($0, 7); else file = oldfile
-                oldl = 0; newl = 0; next
+                # A new file is a new preview, so its offset restarts too.
+                oldl = 0; newl = 0; poff = 0; next
             }
             if ($0 ~ /^@@/) {
                 split($0, parts, " ")
@@ -196,10 +280,28 @@ lines_mode() {
                 oldrem = (oa[2] == "" ? 1 : oa[2] + 0)
                 sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
                 newrem = (na[2] == "" ? 1 : na[2] + 0)
+                # The @@ line is where --preview-diff starts printing, so it is
+                # preview line 1 of the diff -- count it like any other.
+                poff++
                 next
             }
         }
     ')
+
+    # The untracked files' rows: no diff to parse, so every line of the file is
+    # its own + row at its own number -- the same shape the awk emits. One awk
+    # over the whole readable-text list, so FNR (per file), not NR.
+    #
+    # NR + 2, not NR + 1: an untracked preview is the same two prefixes a
+    # tracked one has -- the stat line AND the single "@@ -0,0 +1,N @@" of
+    # its --no-index diff, which is where --preview-diff starts printing.
+    # Counting only the stat line put every untracked row one line high,
+    # landing the whole file on its hunk header. Measured against the
+    # preview itself: line 1 of a new file renders at preview line 3.
+    if [ -n "$ulist" ]; then
+        raw="${raw:+$raw$'\n'}$(awk_over "$dir" "$ulist" '
+            { printf "%s\t%d\t+\t%d\t%s\n", substr(FILENAME, 3), FNR, FNR + 2, $0 }')"
+    fi
     [ -n "$raw" ] || return 0
 
     # Churn per file (additions + deletions), the risk proxy that orders
@@ -237,8 +339,8 @@ lines_mode() {
     # -v` rather than `disp=$(printf ...)`, which forked a subshell PER ROW.
     local -A seen=() gstart=() gend=()
     local -a order=() allrows=()
-    local path line sign rest frag mline disp ri=0
-    while IFS=$'\t' read -r path line sign rest; do
+    local path line sign off rest frag mline disp ri=0
+    while IFS=$'\t' read -r path line sign off rest; do
         [ -n "${seen[$path]:-}" ] || { seen[$path]=1; order+=("$path"); gstart["$path"]=$ri; }
         # Control-char strip + cap, the agent-state:82-86 discipline: this
         # text reaches an fzf display column and a comment-store header next.
@@ -246,7 +348,7 @@ lines_mode() {
         frag=${frag:0:160}
         if [ "$sign" = "-" ]; then mline="-$line"; else mline="$line"; fi
         printf -v disp '%s:%s (%s)  %s' "$path" "$line" "$sign" "$frag"
-        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"
+        allrows[ri]="$path"$'\t'"$mline"$'\t'"$frag"$'\t'"$disp"$'\t'"$off"
         gend["$path"]=$ri
         ri=$((ri + 1))
     done <<<"$raw"
@@ -303,16 +405,28 @@ rows_mode() {
         done < "$store"
     fi
 
-    local path line fragment display sign num marker
-    while IFS=$'\t' read -r path line fragment display; do
-        [ -n "$path" ] || continue
+    # Tab is IFS whitespace, so `IFS=$'\t' read` COLLAPSES a run of tabs -- an
+    # empty fragment (a blank added line) shifted the display into field 3 and
+    # the marker became the whole row. Reproduced: 2 of 18 rows rendered blank.
+    # Split by hand instead; an empty field stays an empty field.
+    local row rest path line fragment display off sign num marker
+    while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        path=${row%%$'\t'*};      rest=${row#*$'\t'}
+        line=${rest%%$'\t'*};     rest=${rest#*$'\t'}
+        fragment=${rest%%$'\t'*}; rest=${rest#*$'\t'}
+        display=${rest%%$'\t'*};  off=${rest#*$'\t'}
         case "$line" in
             -*) sign="-"; num=${line#-} ;;
             *)  sign="+"; num=$line ;;
         esac
         marker=" "
         [ -n "${commented["## ${path}:${num} (${sign})"]:-}" ] && marker="●"
-        printf '%s\t%s\t%s\t%s%s\n' "$path" "$line" "$fragment" "$marker" "$display"
+        case "$sign" in
+            +) display=${display/ (+) / $'\e[32m'(+)$'\e[0m' } ;;
+            -) display=${display/ (-) / $'\e[31m'(-)$'\e[0m' } ;;
+        esac
+        printf '%s\t%s\t%s\t%s%s\t%s\n' "$path" "$line" "$fragment" "$marker" "$display" "$off"
     done < <(lines_mode "$dir")
 }
 
@@ -324,7 +438,7 @@ rows_mode() {
 # it for a header; "??" needs no handling at all, it passes straight through
 # -- the composed header is what tells the agent it is a question.
 attach() {
-    local store=$1 path=$2 line=$3 fragment=$4 comment=$5
+    local store=$1 path=$2 line=$3 fragment=$4 comment=$5 dir=${6:-}
     # No row under the cursor (an empty list, or the query cleared the match)
     # hands {1} an empty string -- without this guard that still writes
     # "## : (+)" to the store and it delivers, a comment with nothing to
@@ -342,6 +456,37 @@ attach() {
         -*) sign="-"; num=${line#-} ;;
         *)  sign="+"; num=$line ;;
     esac
+    # The display fragment is cut at 160 bytes for the list; the STORE gets the
+    # whole line so the `>` quote matches something in the file -- a truncated
+    # quote defeats the anchoring it exists for. Read it back from the tree
+    # (+) or HEAD (-); fall back to the fragment on any miss.
+    local full="" ft gt
+    if [ -n "$dir" ]; then
+        case "$sign" in
+            +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
+            -) full=$(git -C "$dir" show "HEAD:$path" 2>/dev/null | sed -n "${num}p") ;;
+        esac
+        full=${full//[$'\001'-$'\037'$'\177']/}
+        full=${full:0:1000}
+        # The guard: the line read back from the tree must still START with the
+        # fragment fzf had under the cursor, or the file moved under the review
+        # and the quote would anchor to the wrong text.
+        #
+        # Both sides are compared with their LEADING WHITESPACE STRIPPED, because
+        # fzf strips it from a {n} field replacement before it ever reaches this
+        # script: for `    return 42` the guard used to compare the indented file
+        # line against the de-indented fragment, the prefix test failed, full was
+        # cleared, and the store fell back to the trimmed 160-byte display
+        # fragment. Every line inside a function body is indented, so the whole
+        # whole-line quote was inert for real code -- measured: a 224-char
+        # indented line stored a 156-char quote with its indentation gone.
+        # $full itself stays UNTRIMMED: the indentation is part of the line the
+        # agent has to find.
+        ft=${full#"${full%%[![:space:]]*}"}
+        gt=${fragment#"${fragment%%[![:space:]]*}"}
+        [ -n "$full" ] && [ "${ft#"$gt"}" != "$ft" ] || full=""
+    fi
+    [ -n "$full" ] && fragment=$full
     {
         printf '## %s:%s (%s)\n' "$path" "$num" "$sign"
         printf '> %s\n' "$fragment"
@@ -358,12 +503,15 @@ attach() {
 # --- --loop ----------------------------------------------------------------
 # tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
 # keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
-# execute-silent(...)+reload(...) (tm:187) for alt-enter, which must NOT
-# leave it -- the list mutates in place, in the same fzf session, so
-# commenting five rows in a row costs one popup, not five. Plain enter is
-# rebound to a no-op: this loop has no accept-all, on purpose (a review whose
+# execute-silent(...)+reload(...) (tm:187) for enter, which must NOT leave
+# it -- the list mutates in place, in the same fzf session, so commenting
+# five rows in a row costs one popup, not five. Enter pins a comment; it
+# never approves -- there is still no accept-all, on purpose (a review whose
 # only exit is one Enter on everything is the rubber stamp this exists to
-# replace).
+# replace). With an empty query attach() itself is the no-op (it returns 0
+# without writing), so no separate dead-key binding is needed. alt-enter
+# stays bound to the same action, an alias for terminals that eat plain
+# enter's alt chord.
 run_loop() {
     local dir=$1 store=$2
     [ -n "$dir" ] || { usage; exit 2; }
@@ -371,18 +519,18 @@ run_loop() {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
 
-    local rows_cmd attach_cmd preview_cmd rows_out nrows avail lrows psz
+    local rows_cmd attach_cmd preview_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
-    attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q}"
+    attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
     preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
     # + the whole row build) used to run twice on every popup open. At startup
     # the store is empty, so rows_mode's marks are all blank and its count is
-    # exactly what lines_mode would report. Preview sizing then follows
-    # tmux-branch:202-205 -- a fixed split either hid rows in a short popup or
-    # starved the preview in a tall one.
+    # exactly what lines_mode would report. The count is only a presence test
+    # now -- the split below is a percentage, so nothing here has to measure
+    # the terminal.
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
@@ -390,10 +538,6 @@ run_loop() {
         rm -f -- "$store"
         exit 0
     fi
-    avail=$(tput lines 2>/dev/null || echo 24)
-    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    psz=$(( avail - lrows - 5 ))
-    [ "$psz" -lt 5 ] && psz=5
 
     # --disabled: the typed text here is a comment, not a filter. Without it
     # fzf fuzzy-matches whatever you type against the displayed field, and a
@@ -406,40 +550,87 @@ run_loop() {
     # text is a comment, and readline's own ^U/^D already mean something
     # inside it (kill-line, delete-char) -- so scroll moves to alt-u/alt-d
     # instead. ^/ still toggles the preview, same as everywhere else.
-    local out rc key
-    out=$(printf '%s\n' "$rows_out" \
-        | fzf --print-query --expect=ctrl-s --disabled \
-              --delimiter=$'\t' --with-nth=4 \
-              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-              --bind 'enter:ignore' \
-              --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
-              --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
-              --preview "$preview_cmd" \
-              --preview-window="down,$psz,border-top" \
-              --prompt='review> ' \
-              --header='alt-↵ comment   ^/ preview   alt-u/alt-d scroll   ^S deliver   esc discard (enter does nothing)')
-    rc=$?
+    # The picker runs in a LOOP now: a cancel with comments pinned asks first,
+    # and "keep reviewing" has to land back in the same list rather than in
+    # the caller.
+    local out rc key n choice crc
+    while :; do
+        out=$(printf '%s\n' "$rows_out" \
+            | fzf --print-query --expect=ctrl-s --disabled --ansi \
+                  --delimiter=$'\t' --with-nth=4 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+                  --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
+                  --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
+                  --preview "$preview_cmd" \
+                  --preview-window="down,55%,border-top,+{5}-/2" \
+                  --prompt='review> ' \
+                  --header-first \
+                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^/ preview   alt-u/alt-d scroll   ↵ with nothing typed does nothing')
+        rc=$?
 
-    # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key fired,
-    # 1 = no match, 130 = esc/^C. Anything outside {0,1} is a cancel, and a
-    # cancel must discard -- a review a human bailed out of must not linger
-    # as a stale store some later run reuses.
-    case "$rc" in
-        0|1) ;;
-        *) rm -f -- "$store"; exit 0 ;;
-    esac
+        # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
+        # fired, 1 = no match, 130 = esc/^C. Anything outside {0,1} is a
+        # cancel, and a cancel must not leave a stale store some later run
+        # reuses -- but it must not silently eat a pinned batch either.
+        case "$rc" in
+            0|1) ;;
+            *)
+                # A cancel with pinned comments asks; losing a twenty-comment
+                # review to a reflexive esc is the cliff revdiff avoids with a
+                # separate discard key. An empty store has nothing to protect,
+                # so it still exits straight out.
+                if [ -s "$store" ]; then
+                    n=$(grep -c '^## ' "$store")
+                    choice=$(printf 'keep reviewing\ndiscard %d comment(s)\n' "$n" \
+                        | fzf --reverse --no-info --prompt='discard? ' \
+                              --header="$n comment(s) are pinned and not delivered")
+                    crc=$?
+                    # The confirm picker's OWN exit code decides, not just what
+                    # it printed. An fzf that cannot start (no tty -- the popup
+                    # torn down under us, a --loop run whose terminal went away)
+                    # prints nothing and exits 2, and reading only $choice sent
+                    # that through the `*)` arm below, back into `while :`, to
+                    # fail again: measured rc=124 under `timeout 5` and 172
+                    # "inappropriate ioctl for device" lines in five seconds,
+                    # one fork per turn. There is no human here to ask, so the
+                    # safe answer is the one every refusal already gives --
+                    # keep the store, say where it is, exit 0.
+                    case "$crc" in
+                        0) ;;              # a row was chosen; $choice decides
+                        130) rows_out=$(rows_mode "$dir" "$store"); continue ;;
+                        *)  tmux display-message \
+                                "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
+                                2>/dev/null
+                            exit 0 ;;
+                    esac
+                    case "$choice" in
+                        discard*) rm -f -- "$store"; exit 0 ;;
+                        *)  # Back to the list, store kept. Rebuild the rows:
+                            # the marks in $rows_out are from before the
+                            # comments were pinned, and fzf's own reload only
+                            # ever touched the list inside the session that
+                            # just exited.
+                            rows_out=$(rows_mode "$dir" "$store")
+                            continue ;;
+                    esac
+                fi
+                rm -f -- "$store"; exit 0 ;;
+        esac
 
-    # Line 1 is the typed query (--print-query); unused here because --disabled
-    # already routed it into the comment via {q} inside the alt-enter bind --
-    # the outer loop only needs which --expect key fired.
-    key=$(sed -n 2p <<<"$out")
-    if [ "$key" = ctrl-s ]; then
-        exit 20
-    fi
-    # No --expect key matched -- with plain enter ignored this should not
-    # happen, but an unmatched exit is a discard, never a silent deliver.
-    rm -f -- "$store"
-    exit 0
+        # Line 1 is the typed query (--print-query); unused here because
+        # --disabled already routed it into the comment via {q} inside the
+        # alt-enter bind -- the outer loop only needs which --expect key fired.
+        key=$(sed -n 2p <<<"$out")
+        if [ "$key" = ctrl-s ]; then
+            exit 20
+        fi
+        # No --expect key matched -- enter/alt-enter stay inside the picker via
+        # execute-silent, so this should not happen, but an unmatched exit is a
+        # discard, never a silent deliver.
+        rm -f -- "$store"
+        exit 0
+    done
 }
 
 # --- --compose ---------------------------------------------------------------
@@ -480,13 +671,37 @@ compose() {
 #   2. pane_current_command against @cockpit_agents_glob (cockpit.tmux's own
 #      #{m:*|cmd|*,glob} shape, reused verbatim from tmux-jump/tm) -- a shell
 #      pane would EXECUTE review text instead of merely displaying it.
-#   3. store non-empty -- nothing pinned means nothing to deliver.
+#   3. @panestate is not needs-input -- a pane sitting on a permission
+#      prompt would take the paste into the dialog, where the Enter this
+#      script tells the human to press becomes a blind approval.
+#   4. store non-empty -- nothing pinned means nothing to deliver.
+#
+# Every refusal names the store. review_pane() deletes it only when delivery
+# SUCCEEDS, so after a refusal the pinned batch is still on disk -- and it is
+# the only copy of the review. A refusal that did not say so was
+# indistinguishable from one that ate it.
+keep_hint() {
+    local pane=$1 store=$2
+    [ -n "$store" ] && [ -s "$store" ] || return 0
+    # run_loop giving up has no pane in hand -- it was handed a dir and a store
+    # and nothing else -- so the id becomes a visible placeholder rather than a
+    # silently missing argument in a command the reader would paste as-is.
+    [ -n "$pane" ] || pane='<pane>'
+
+    # $SELF, not a bare "tmux-review": the name is only on $PATH after
+    # install.sh symlinks it, and from a plugin-only install the suggested
+    # command has to be copy-pasteable as printed.
+    printf '; comments kept at %s — deliver later with: %s --deliver %s %s' \
+        "$store" "$(shq "$SELF")" "$pane" "$(shq "$store")"
+}
+
 deliver() {
     local pane=$1 store=$2 root=$3
 
     case "$pane" in
         %[0-9]*) ;;
-        *) tmux display-message "tmux-review: not a pane id, refusing to deliver" \
+        *) tmux display-message \
+               "tmux-review: not a pane id, refusing to deliver$(keep_hint "$pane" "$store")" \
                2>/dev/null; return 1 ;;
     esac
 
@@ -496,10 +711,23 @@ deliver() {
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
-            "tmux-review: $pane is not an agent pane, refusing to deliver" \
+            "tmux-review: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")" \
             2>/dev/null
         return 1
     }
+
+    # Guard 3: a pane sitting on a permission prompt. The paste would land in
+    # the dialog and the human's Enter -- the one this script tells them to
+    # press -- becomes a blind approval of whatever tool was being asked about.
+    # @panestate is written only by agent-state, so this is the cheap read.
+    local pstate
+    pstate=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null)
+    if [ "$pstate" = needs-input ]; then
+        tmux display-message \
+            "tmux-review: $pane is waiting on a permission prompt — answer it first$(keep_hint "$pane" "$store")" \
+            2>/dev/null
+        return 1
+    fi
 
     [ -n "$store" ] && [ -s "$store" ] || {
         tmux display-message "tmux-review: nothing to deliver" 2>/dev/null
@@ -530,7 +758,7 @@ deliver() {
         runtime=${XDG_RUNTIME_DIR:-/tmp}
         file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
             tmux display-message \
-                "tmux-review: could not create the review file, refusing to deliver" \
+                "tmux-review: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")" \
                 2>/dev/null
             return 1
         }
@@ -560,10 +788,13 @@ deliver() {
     # 6/6, pasting a live, one-Enter-from-running command line the reviewer
     # never targeted). So the check is redone HERE, by tmux itself, in the same
     # command-queue item as the paste: `if-shell -F -t <pane>` re-evaluates the
-    # SAME #{m:...} test against the pane at paste time and only pastes if it is
-    # still an agent. The window is closed -- there is no shell round-trip left
+    # SAME #{m:...} test -- AND guard 3's #{!=:#{@panestate},needs-input}, which
+    # has the identical staleness window: a permission prompt can come up in it
+    # -- against the pane at paste time and only pastes if it is still an idle
+    # agent. The window is closed -- there is no shell round-trip left
     # between the test and the paste. The early check up top stays as the
-    # cheap fast-fail for a pane that is already not an agent.
+    # cheap fast-fail for a pane that is already not an agent, or already
+    # sitting on a permission prompt.
     #
     # The refused branch deliberately does NOT delete $bufname (only the
     # delivered branch's `paste-buffer -d` does) -- if-shell's nested command
@@ -577,10 +808,42 @@ deliver() {
     # then clearing) the buffer closes that gap: both refusal paths now share
     # one contract, and the buffer is gone either way before this function
     # returns, same as before.
+
+    # Where the review landed, named the way a human navigates: "work:2 api"
+    # beats a bare %7 when the pane is three windows away. Read once, HERE,
+    # against the TARGET pane: the notice's own display-message carries no -t
+    # (it must not steal focus or fail when the pane is gone by then), so a
+    # #{window_name} left in the message would resolve against whatever pane
+    # the reader happens to be sitting in -- the wrong window's name.
+    #
+    # The window name is USER DATA and gets two escapes, because it crosses two
+    # parsers on its way into the notice:
+    #
+    #   1. tmux's command-string parser. $where is interpolated into a
+    #      single-quoted argument of the if-shell command string, so a window
+    #      named don't closes that quote early and hands tmux the remainder as
+    #      commands. Single quotes are stripped; nothing else breaks out.
+    #   2. tmux's FORMAT parser. display-message expands its message as a
+    #      format, so a window named w#{@some_option} renders that option's
+    #      VALUE, not the name -- measured on 3.7c: a window renamed
+    #      w##{@cockpit_secret} made the notice read "wLEAKED-SECRETz". ## is
+    #      the format literal for #, so doubling every # is the whole fix, and
+    #      it works on the 3.3 floor. (3.7c runs no #(shell-command) job from a
+    #      display-message -- only status formats do -- but doubling covers
+    #      that arm too, whatever a later tmux decides to run.)
+    #
+    # The READ above is safe on its own: a value substituted by #{window_name}
+    # is not re-expanded, so only this second interpolation needs the escape.
+    local where
+    where=$(tmux display-message -p -t "$pane" \
+        '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
+    where=${where//\'/}
+    where=${where//#/##}
+    [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
     tmux if-shell -F -t "$pane" \
-        "#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}" \
-        "paste-buffer -p -r -d -b $bufname -t $pane ; display-message 'review pasted into $pane — press Enter there to send'" \
-        "display-message 'tmux-review: $pane is no longer an agent — not delivered'"
+        "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
+        "set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
+        "display-message 'tmux-review: $pane is not an idle agent — not delivered'"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
@@ -590,14 +853,25 @@ deliver() {
 }
 
 # --- --fleet / entry-point resolution --------------------------------------
-# Which of the fleet needs your eyes: every agent pane, every session, whose
-# tree is dirty -- landscape-gap #1, nothing else answers this. Rows are
-# pane\ttitle\t±stat, dirtiest (most churn) first. The is-agent test is
-# tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s guard, cockpit.tmux's
-# window formats) run once per pane inside list-panes, not a second shell per
-# pane to re-ask; the title falls back from pane_title to the window name the
-# same way @catppuccin_window_text already does (examples/tmux.conf:42) --
-# #{host_short} is what an UNSET pane_title reads as, not empty.
+# Which of the fleet needs your eyes: every agent pane, every session, that is
+# either blocked or dirty -- landscape-gap #1, nothing else answers this. Rows
+# are pane\tstate\ttitle\trepo⑂branch\t±stat.
+#
+# The order is the whole point, and it is NOT churn. A pane parked on a
+# permission prompt is the one that actually needs a human, and it usually has
+# nothing at all to diff -- churn-first ordering listed it last, or (with a
+# clean tree) not at all, and answered "who typed most" instead of "who needs
+# me". So @panestate ranks first -- needs-input, done, error, running, then
+# unset -- and churn only breaks ties inside a rank. A needs-input pane is
+# listed even with a clean tree; its ± column reads —, not "+0 -0", because
+# there is nothing to review there, only someone to unblock.
+#
+# The is-agent test is tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s
+# guard, cockpit.tmux's window formats) run once per pane inside list-panes,
+# not a second shell per pane to re-ask; the title falls back from pane_title
+# to the window name the same way @catppuccin_window_text already does
+# (examples/tmux.conf:42) -- #{host_short} is what an UNSET pane_title reads
+# as, not empty.
 fleet_rows() {
     # One -F argument, built in a variable: continuation lines each starting
     # a fresh quoted string are separate WORDS to tmux, not one concatenated
@@ -606,6 +880,15 @@ fleet_rows() {
     local fmt raw
     fmt='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'$'\t'
     fmt="${fmt}"'#{pane_id}'$'\t'
+    # NOT a bare #{@panestate}: tab is an IFS *whitespace* character, so
+    # `read` with IFS=$'\t' collapses a RUN of tabs into one delimiter -- an
+    # unset @panestate emitted \t\t, the field vanished, and every field after
+    # it shifted left (path came out empty and the pane was dropped from the
+    # queue entirely). Measured against a pane with no state set. The same
+    # trap, with spaces, is why tmux-jump:21 places its own guard. A sentinel
+    # keeps the field non-empty on the wire; it is turned back into "unset"
+    # the moment it has been read.
+    fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
     fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
     fmt="${fmt}"'#{pane_current_path}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
@@ -617,20 +900,21 @@ fleet_rows() {
     # popup for ~32s, on every prefix+r from a non-agent pane. The panes are
     # independent of each other, so run their git work concurrently instead,
     # each pane's row computed in its own background subshell and written to
-    # its own file (rows are re-sorted by churn below anyway, so completion
-    # order never matters). Capped at $cap in flight at once -- unbounded
-    # would fork hundreds of git processes at once on a big fleet, trading one
-    # kind of slowness for another.
+    # its own file (rows are re-sorted by rank and churn below anyway, so
+    # completion order never matters). Capped at $cap in flight at once --
+    # unbounded would fork hundreds of git processes at once on a big fleet,
+    # trading one kind of slowness for another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
 
-    local isagent id title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
     local -a pids=()
-    while IFS=$'\t' read -r isagent id title path; do
+    while IFS=$'\t' read -r isagent id state title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
+        [ "$state" = - ] && state=   # the wire sentinel above, back to unset
         n=$((n + 1))
-        fleet_row_one "$id" "$title" "$path" > "$tmpdir/$n" &
+        fleet_row_one "$id" "$state" "$title" "$path" > "$tmpdir/$n" &
         pids+=("$!")
         if [ ${#pids[@]} -ge "$cap" ]; then
             wait "${pids[0]}" 2>/dev/null
@@ -650,42 +934,71 @@ fleet_rows() {
     rm -rf "$tmpdir"
     [ ${#rows[@]} -gt 0 ] || return 0
 
+    # Rank ascending, then churn descending inside the rank: who needs me
+    # first, and among equals the one with the most to look at.
     for line in "${rows[@]}"; do printf '%s\n' "$line"; done \
-        | sort -t "$(printf '\t')" -k1,1nr | cut -f2-4
+        | sort -t "$(printf '\t')" -k1,1n -k2,2nr | cut -f3-
 }
 
 # One pane's fleet row -- factored out of fleet_rows() so it can run in its
-# own background subshell (see the parallel dispatch above). Same
-# unstaged-first, staged-fallback rule --lines uses: a fully staged change
-# still gets a churn number instead of reading as 0. Prints nothing (and the
-# caller's file stays empty) for a pane git status calls clean, so an empty
-# output file is indistinguishable from "not dirty" on the reading side.
+# own background subshell (see the parallel dispatch above). Churn comes from
+# tree_diff, the one base --lines reviews from, so a fully staged change still
+# gets a real churn number instead of reading as 0. Prints nothing (and the
+# caller's file stays empty) for a pane that is neither dirty nor blocked, so
+# an empty output file is indistinguishable from "nothing to show" on the
+# reading side.
 fleet_row_one() {
-    local id=$1 title=$2 path=$3
-    local st numstat add del untracked churn stat a d
+    local id=$1 state=$2 title=$3 path=$4
+    local st numstat add del untracked churn stat a d rank repo branch
 
-    st=$(git -C "$path" status --porcelain 2>/dev/null)
-    [ -n "$st" ] || return 0
+    # --no-optional-locks on every read here: this is a read on someone else's
+    # live worktree, and plain `git status` writes the index back to refresh
+    # stat info. Taking index.lock under an agent that is mid-commit is a race
+    # the reader has no business starting.
+    st=$(git -C "$path" --no-optional-locks status --porcelain 2>/dev/null)
+    # A blocked pane earns its row on state alone -- that is the case a
+    # dirty-only filter dropped, and it is the most urgent one there is.
+    [ -n "$st" ] || [ "$state" = needs-input ] || return 0
 
-    numstat=$(git -C "$path" diff --no-color --no-ext-diff --numstat 2>/dev/null)
-    [ -n "$numstat" ] || numstat=$(git -C "$path" diff --no-color --no-ext-diff --cached --numstat 2>/dev/null)
-    add=0; del=0
-    while IFS=$'\t' read -r a d _f; do
-        [ -n "$a" ] || continue
-        case "$a" in *[!0-9]*) a=0 ;; esac
-        case "$d" in *[!0-9]*) d=0 ;; esac
-        add=$(( add + a )); del=$(( del + d ))
-    done <<<"$numstat"
+    case "$state" in
+        needs-input) rank=0 ;;
+        done)        rank=1 ;;
+        error)       rank=2 ;;
+        running)     rank=3 ;;
+        *)           rank=4 ;;
+    esac
+    # Two agents on two worktrees of the same repo are indistinguishable from
+    # "s:w claude" alone; the row has to say WHICH tree it is.
+    repo=$(git -C "$path" --no-optional-locks rev-parse --show-toplevel 2>/dev/null); repo=${repo##*/}
+    branch=$(git -C "$path" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
 
-    # Untracked files carry no numstat line at all -- without counting them a
-    # pane holding only new files reads as 0 churn and sorts last, even
-    # though `git status` already called it dirty.
-    untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
-    stat="+$add -$del"
-    [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
-    churn=$(( add + del + untracked ))
+    if [ -n "$st" ]; then
+        # The same one base --lines reviews from: staged + unstaged together,
+        # so a fully staged change gets its real churn instead of reading as 0.
+        numstat=$(tree_diff "$path" --numstat)
+        add=0; del=0
+        while IFS=$'\t' read -r a d _f; do
+            [ -n "$a" ] || continue
+            case "$a" in *[!0-9]*) a=0 ;; esac
+            case "$d" in *[!0-9]*) d=0 ;; esac
+            add=$(( add + a )); del=$(( del + d ))
+        done <<<"$numstat"
 
-    printf '%s\t%s\t%s\t%s\t%s\n' "$churn" "$id" "$title" "$stat" "$path"
+        # Untracked files carry no numstat line at all -- without counting
+        # them a pane holding only new files reads as 0 churn and sorts last,
+        # even though `git status` already called it dirty.
+        untracked=$(printf '%s\n' "$st" | grep -c '^??' || true)
+        stat="+$add -$del"
+        [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
+        churn=$(( add + del + untracked ))
+    else
+        # Nothing to review, only someone to unblock. "+0 -0" would read as a
+        # measurement; — reads as "not applicable", which it is.
+        stat='—'; churn=0
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat"
 }
 
 # --- entry-point resolution -------------------------------------------------
@@ -708,15 +1021,37 @@ review_pane() {
         # store through, so it must not rm its own store arg -- the cleanup
         # belongs to this caller, chained after delivery so the store still
         # outlives the popup's own teardown (comment above).
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); rm -f -- $(shq "$store")"
+        #
+        # `&&`, not `;`: --deliver refuses (needs-input, a non-agent pane, a
+        # bogus id) AFTER the popup is gone, and an unconditional rm threw the
+        # whole pinned batch away on every one of those -- the store is the
+        # only copy of the review, and the human never even saw it happen. A
+        # refused store is left on disk on purpose; deliver()'s message names
+        # it and the command that re-delivers it.
+        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir") && rm -f -- $(shq "$store")"
     fi
+}
+
+# Pad one field to a fixed COLUMN width. bash's printf pads %-*s by BYTES,
+# while ${#s} counts characters -- so a field holding ⑂ or — (3 bytes each)
+# came out short and dragged every column to its right with it. Measuring the
+# characters first, then widening the printf field by the byte overhead, makes
+# printf's own padding land where the eye expects it.
+pad_field() {                 # <width> <string>
+    local w=$1 c=${#2}
+    local LC_ALL=C            # from here ${#2} is bytes, which is what printf counts
+    printf '%-*s' "$(( w + ${#2} - c ))" "$2"
 }
 
 # The fzf queue over fleet_rows(). Unlike the review loop this filters as you
 # type -- it is a pane list, not comment entry, so --disabled has no place
-# here. Rows carry only the three fields the brief names (pane, title, stat);
-# the preview re-asks tmux for the pane's cwd by id rather than smuggling a
-# fourth hidden field, so `--fleet`'s output stays exactly that interface.
+# here. Rows carry pane, state, title, repo⑂branch and stat; the preview
+# re-asks tmux for the pane's cwd by id rather than smuggling a sixth hidden
+# field, so `--fleet`'s output stays exactly that interface.
+#
+# The four visible fields are padded to their own column widths before fzf
+# sees them: ragged single-space columns made the ± numbers impossible to
+# compare down the list, which is most of what this list is FOR.
 fleet_queue() {
     command -v fzf >/dev/null 2>&1 || {
         tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
@@ -725,15 +1060,42 @@ fleet_queue() {
     local rows
     rows=$(fleet_rows)
     if [ -z "$rows" ]; then
-        tmux display-message "tmux-review: no agent pane has uncommitted changes" 2>/dev/null
+        tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
         return 0
     fi
 
+    # Column widths, capped: one 200-character pane title should not push
+    # repo⑂branch and the ± count off the right edge for every other row.
+    # A field over its cap simply overflows its column instead of being
+    # truncated -- losing the end of a title is worse than one ragged row.
+    local f_pane f_state f_title f_loc f_stat
+    local w_state=0 w_title=0 w_loc=0
+    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+        [ -n "$f_pane" ] || continue
+        [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
+        [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
+        [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
+    done <<<"$rows"
+    [ "$w_state" -gt 12 ] && w_state=12
+    [ "$w_title" -gt 40 ] && w_title=40
+    [ "$w_loc"   -gt 32 ] && w_loc=32
+
+    local -a disp=()
+    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+        [ -n "$f_pane" ] || continue
+        disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
+    done <<<"$rows"
+    [ ${#disp[@]} -gt 0 ] || return 0
+
     local nrows avail lrows psz preview_cmd out pane dir
-    nrows=$(printf '%s\n' "$rows" | wc -l)
+    nrows=${#disp[@]}
     avail=$(tput lines 2>/dev/null || echo 24)
     lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    psz=$(( avail - lrows - 5 ))
+    # 6, not 5: this header is two lines now -- one line of it is 95 columns
+    # and the popup is 70% of the terminal, so fzf truncated the key hints off
+    # the right edge on anything narrower than 136 columns. Reserve the second
+    # row rather than taking it out of the list.
+    psz=$(( avail - lrows - 6 ))
     [ "$psz" -lt 5 ] && psz=5
 
     # Same root-vs-cwd seam as review_pane: the row only carries the pane's
@@ -743,14 +1105,25 @@ fleet_queue() {
     preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
     preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
-    out=$(printf '%s\n' "$rows" \
-        | fzf --delimiter=$'\t' --with-nth=2,3 \
+    # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
+    # been written by the owner's own tmux.conf, so `eval`ing it is eval of
+    # their config, not of anything an agent pane can reach. It is confined to
+    # this navigation picker on purpose: in the review loop ↵ has a contract
+    # (pin a comment, never approve) and ^S is the consent gesture, and one
+    # stray --bind from a config would quietly break either of them.
+    local -a extra=()
+    local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
+    [ -n "$opt" ] && eval "extra=($opt)"
+
+    out=$(printf '%s\n' "${disp[@]}" \
+        | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
               --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --preview "$preview_cmd" \
               --preview-window="down,$psz,border-top" \
               --prompt='fleet> ' \
-              --header='which agent needs you   ↵ review it   ^/ preview   esc cancel')
+              --header=$'which agent needs you   state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+              ${extra[@]+"${extra[@]}"})
     [ -n "$out" ] || return 0
 
     pane=$(cut -f1 <<<"$out")
@@ -814,7 +1187,7 @@ case "${1:-}" in
     --rows)
         shift; rows_mode "${1:-}" "${2:-}" ;;
     --attach)
-        shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" ;;
+        shift; attach "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --compose)

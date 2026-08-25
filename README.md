@@ -251,7 +251,7 @@ from `examples/claude-hooks.json` by hand:
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue of every dirty one (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
+| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue, blocked agents first, then dirty ones (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -478,11 +478,46 @@ there is deliberately no key that approves the whole thing at once.
 
 From an **agent pane** it reviews that pane. From anywhere else — a shell, a
 build pane, wherever `prefix + r` finds you — it opens the **fleet queue**
-instead: every agent pane, on every session, whose tree is dirty, dirtiest
-first, previewed the same way the path picker's folder preview shows a
+instead: every agent pane, on every session, that is blocked or has a dirty
+tree, previewed the same way the path picker's folder preview shows a
 directory's `git status`. Nothing else in this plugin answers "which of my
 agents needs my eyes"; the queue exists because visiting each pane in turn to
 find out does not scale past two or three of them.
+
+The order is that question's answer, and it is deliberately **not** churn.
+Agent state ranks first — `needs-input`, then `done`, `error`, `running`, then
+panes with no state at all — and churn only breaks ties inside a rank. An
+agent parked on a permission prompt is the one actually waiting on you, and it
+usually has nothing at all to diff; sorting by churn listed it last, or (with a
+clean tree) left it out entirely, and answered "who typed most" instead. A
+blocked pane is listed even with a clean tree, and its `±` column reads `—`
+rather than `+0 -0`, because there is nothing to review there — only someone to
+unblock.
+
+Each row is `state · title · repo⑂branch · ±`, in aligned columns. The
+`repo⑂branch` field is what tells two worktrees of the same repo apart, which
+`s:w claude` alone cannot:
+
+```text
+needs-input   main:2 claude    cockpit⑂feat/review-p0     —
+running       side:0 codex     cockpit⑂main               +142 -30  ?2 new
+—             main:4 claude    api⑂fix/token-refresh      +8 -8
+```
+
+`tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
+to drive the same list from a script.
+
+The fleet queue — and only it — takes extra fzf options from a global tmux
+option, so you can bend the picker to your own taste without patching the
+script:
+
+```sh
+set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▶'"
+```
+
+It is confined to this picker on purpose. In the comment loop `↵` has a
+contract (it pins a comment, it never approves) and `^S` is the consent
+gesture; one stray `--bind` from a config file would quietly break either one.
 
 The review popup's two pickers do not share one key set — the fleet queue is
 a plain list, `↵` picks a pane; the comment loop's typed text *is* a
@@ -490,22 +525,25 @@ comment, so the keys that would collide with typing it move elsewhere:
 
 | key | fleet queue | comment loop |
 |-----|-------------|--------------|
-| `↵` | review the selected pane | does nothing (see below) |
-| `alt-↵` | — | attach the typed comment to the row under the cursor |
+| `↵` | review the selected pane | pin the typed comment (empty: nothing) |
+| `alt-↵` | — | alias for `↵` |
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^S` | — | deliver the whole batch |
-| `esc` | cancel | discard the batch, store and all |
+| `esc` | cancel | discard the batch — asks first when comments are pinned |
 
-Inside the review: `alt-↵` attaches whatever you typed as a comment on the
-diff line under the cursor. The list reloads in place and marks the row `●`,
-so five comments cost one popup, not five — the same
+Inside the review: `↵` pins whatever you typed as a comment on the diff line
+under the cursor — `alt-↵` does the same thing, kept as an alias for
+terminals where the plain chord doesn't land. The list reloads in place and
+marks the row `●`, so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
-`^S` delivers the whole batch; `esc` discards it, store and all.
-**Plain `↵` does nothing.** There is no accept-all key on purpose: a review
-whose only exit is one Enter on the whole diff is the rubber stamp this
-replaces.
+`^S` delivers the whole batch; `esc` discards it — and with comments
+pinned it asks first (`keep reviewing` / `discard N comment(s)`), because
+one reflexive escape should not throw away a twenty-comment review.
+**`↵` pins a comment — it never approves.** With nothing typed it does
+nothing: there is no accept-all key on purpose, a review whose only exit is
+one Enter on the whole diff is the rubber stamp this replaces.
 
 A comment lands as:
 
@@ -527,6 +565,26 @@ pane shows the pasted text sitting at the prompt, unexecuted, with and
 without a trailing newline on the payload. Over 2048 bytes it lands as a
 pointer to a `0600` file in `$XDG_RUNTIME_DIR` instead, so a long review is
 not a wall of text typed straight into the agent's own prompt.
+
+**A delivered review is a state, not a flash.** The notice naming the target
+window stays up until the next message rather than blinking away in 750 ms,
+and the pane itself is marked `@cockpit_review = sent` for as long as the
+review sits there unsent. `prefix J` walks to those panes after the ones
+whose agent is blocked on you, so a review you pasted and then forgot is
+still reachable by a keypress instead of by memory. The mark clears the
+moment the agent starts working again — pressing Enter is what fires the
+`running` hook — so it never outlives the thing it describes.
+
+Delivery can also be **refused** — the target is on a permission prompt, is
+not an agent pane, or is not a pane id at all. A refusal keeps the batch: the
+comment store is left on disk, and the message names it along with the
+`--deliver <pane> <store>` that re-sends it — spelled with the script's own
+resolved path, not a bare `tmux-review`, so it pastes back even from a
+plugin-only install where nothing is on `$PATH` yet. Every refusal you can see
+keeps the store. One window does not: the paste is gated a second time inside
+tmux, and if the pane stops being an idle agent between the shell guard and
+that gate, nothing is pasted but the store is still deleted. It is a few
+milliseconds wide and closes when the delete moves inside the gate itself.
 
 What this deliberately does **not** do, and why:
 
