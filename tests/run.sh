@@ -98,6 +98,27 @@ fi
 TMPS=$(mktemp)
 mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; printf '%s' "$d"; }
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
+# Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
+# land; these wait for the thing the next assertion reads and give up after
+# 4 s. PATTERN is a case-pattern: until_cap "$S" "$P" '*"review>"*'
+until_cap() {                 # <socket> <pane> <pattern>
+    local i
+    for i in $(seq 1 40); do
+        # shellcheck disable=SC2254  # $3 is meant as a glob, not a literal
+        case "$("$TMUX_REAL" -L "$1" capture-pane -p -J -t "$2" 2>/dev/null)" in $3) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+until_file() {                # <file> <pattern>
+    local i
+    for i in $(seq 1 40); do
+        # shellcheck disable=SC2254  # $2 is meant as a glob, not a literal
+        case "$(cat -- "$1" 2>/dev/null)" in $2) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
@@ -3608,9 +3629,9 @@ fi
 
 # Type a comment and pin it to the highlighted row with alt-enter.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" "fix the new line"
-sleep 0.5
+until_cap "$RVS" "$RVP" '*"fix the new line"*'
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" M-Enter
-sleep 1
+until_file "$RVSTORE" '*"fix the new line"*'
 
 case "$(cat "$RVSTORE" 2>/dev/null)" in
     *"## src.go:3 (+)"*"> CHANGED"*"fix the new line"*)
@@ -4163,6 +4184,7 @@ RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
 "$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
+# a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 # The suite's private socket has no cockpit.tmux run-shell to default this --
 # set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
@@ -4182,9 +4204,16 @@ printf '## src.go:1 (+)\n> foo\nfix this\n\n' > "$RDSTORE"
 # so a bare `tmux` call in the script resolves $TMUX to this socket with no
 # -L threaded through by hand.
 rundeliver() {
+    # The typed command line itself contains "RC=$?", so count only markers
+    # followed by a digit or "-" -- the ones a finished command printed.
+    local n0 i; n0=$(npcap | grep -c 'RC=[0-9-]')
     "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
         "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$1") $(shq_test "$2"); echo RC=\$?" Enter
-    sleep 0.6
+    for i in $(seq 1 40); do
+        [ "$(npcap | grep -c 'RC=[0-9-]')" -gt "$n0" ] && return 0
+        sleep 0.1
+    done
+    return 1
 }
 shq_test() { printf '%q' "$1"; }
 # -J joins soft-wrapped terminal lines back into one logical line -- without
@@ -4529,6 +4558,7 @@ RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
 "$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
+# a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
@@ -4542,7 +4572,7 @@ gcap() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$1"; }
 # ran a plain `paste-buffer` -- and into a shell that lands.
 printf 'HAZARD-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-hz -
 "$TMUX_REAL" -L "$RG" paste-buffer -p -r -d -b rg-hz -t "$NPG"
-sleep 0.3
+until_cap "$RG" "$NPG" '*HAZARD-MARKER*'
 case "$(gcap "$NPG")" in
     *HAZARD-MARKER*) ok "an unconditional paste into the shell DOES land (the hazard is real)" ;;
     *) bad "an unconditional paste into the shell DOES land (the hazard is real)" \
@@ -4588,7 +4618,7 @@ printf 'DELIVERED-MARKER\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-ok -
     "$RGGATE" \
     "paste-buffer -p -r -d -b rg-ok -t $APG ; display-message pasted" \
     "delete-buffer -b rg-ok ; display-message 'not delivered'"
-sleep 0.3
+until_cap "$RG" "$APG" '*DELIVERED-MARKER*'
 case "$(gcap "$APG")" in
     *DELIVERED-MARKER*) ok "the gate still delivers into a pane that is a live agent" ;;
     *) bad "the gate still delivers into a pane that is a live agent" \
@@ -4721,6 +4751,7 @@ FD_DIRTY=$(mktmpd)
 # fleet queue this test means to exercise.
 "$TMUX_REAL" -L "$FD" new-window -d -t t: -c "$FD_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 FD_AGENT=$("$TMUX_REAL" -L "$FD" list-panes -t t:1 -F '#{pane_id}')
+# a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 
 # The fleet queue, from the non-agent control pane -- main_entry()'s own
@@ -4766,11 +4797,11 @@ else
 fi
 
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" "fix this"
-sleep 0.3
+until_cap "$FD" "$CTL2" '*"fix this"*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" M-Enter
-sleep 0.5
+until_cap "$FD" "$CTL2" '*●*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" C-s
-sleep 1
+until_cap "$FD" "$FD_AGENT" '*"fix this"*'
 
 case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
     *"fix this"*) ok "the review still gets delivered through the fleet path" ;;
@@ -4965,7 +4996,9 @@ MT_DIR=$(mktmpd)
 MTP=$("$TMUX_REAL" -L "$MT" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$MT" send-keys -t "$MTP" \
     "'$DIR/scripts/tmux-review'; echo MTDONE=\$?" Enter
-sleep 1
+# The typed command line itself contains "MTDONE=$?" -- match only a marker
+# followed by a digit, the one a finished command actually printed.
+until_cap "$MT" "$MTP" '*MTDONE=[0-9]*'
 mtout=$("$TMUX_REAL" -L "$MT" capture-pane -p -t "$MTP")
 case "$mtout" in
     *"review>"*) bad "a clean-tree direct pane never opens an empty picker" \
@@ -5010,6 +5043,7 @@ DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
 CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NONAGENT" 'exec bash' >/dev/null 2>&1
 NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
+# a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
