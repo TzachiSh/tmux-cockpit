@@ -4130,6 +4130,25 @@ is "--copy-lines reads the real lines: tab and 200-byte tail kept, HEAD's line f
    $'\t'"$CL"$'\na' "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" t f 1 -1)"
 is "and the cap row copies nothing there either" "" "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" '(diff too large)' 1 | head -c 1)"
 
+echo "== tmux-review --loop: the legend fits an 80-column popup (#22 item 3) =="
+# fzf cuts a header line at the popup's inner width: 80 columns leave 78 inside
+# the popup border and 76 past fzf's pointer margin. The first key line was 77
+# cells and lost the tail of "^R refresh"; the dynamic fourth line put the
+# "↺ N delivered earlier" count last, where a long root path pushed it off.
+RLH=$(grep -o "^ *--header=\$'[^']*'" "$DIR/scripts/tmux-review" | head -1 | sed "s/^ *--header=\$'//; s/'\$//; s/\\\\n/\\n/g")
+i=0
+while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    i=$((i+1)); w=$(printf '%s' "$l" | wc -m)
+    if [ "$w" -le 76 ]; then ok "legend line $i fits 76 cells ($w)"; else bad "legend line $i fits 76 cells" "<= 76" "$w: $l"; fi
+done <<<"$(printf '%b' "$RLH")"
+is "three key lines" "3" "$i"
+rlh4=$(grep -o 'root: \${dir.*\$ndlv.*")' "$DIR/scripts/tmux-review" | head -1)
+case "$rlh4" in
+    *'$ndlv'*'● pinned'*) ok "the delivered count comes before the glyph legend on the fourth line" ;;
+    *) bad "the delivered count comes before the glyph legend on the fourth line" '...$ndlv... ● pinned ...' "$rlh4" ;;
+esac
+
 echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their text, one line per row =="
 if need_tmux "tmux-review alt-c"; then :; else
 MC="cockpit-mc-$$"; SOCKS="$SOCKS $MC"; MCDIR=$(mktmpd); MCSTORE="$STATE/review-multicopy-$$"
