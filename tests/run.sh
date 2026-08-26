@@ -1711,6 +1711,7 @@ is "and so is every other skills/* dir" "$DIR/skills/unslop" "$(readlink "$IB/.c
 HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
 is "and uninstalls through one too" "0" "$(ls "$IBIN" | wc -l)"
 is "and unlinked on --uninstall" "absent" "$([ -e "$IB/.claude/skills/cockpit-review" ] && echo present || echo absent)"
+is "every skill link, not just the first" "absent" "$([ -e "$IB/.claude/skills/unslop" ] && echo present || echo absent)"
 # A same-named symlink owned by another tool must be left alone: "tm" is a name
 # plenty of things want, and --uninstall would later have deleted it as well.
 HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
@@ -2753,6 +2754,12 @@ case "$(cat "$HK/.claude/settings.json")" in
 esac
 is "the unslop skill is injected on SessionStart" "1" \
    "$(jq '[.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))] | length' "$HK/.claude/settings.json")"
+is "beside agent-state off, not instead of it" "2" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
+# Run the shipped command itself: the string landing in settings.json says
+# nothing about the JSON it emits, and a jq typo would otherwise ship green.
+is "and the shipped command emits a SessionStart context" "SessionStart 1" \
+   "$(TMUX_COCKPIT_DIR="$DIR" bash -c "$(jq -r '.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))' "$HK/.claude/settings.json")" \
+      | jq -r '[.hookSpecificOutput.hookEventName, (.hookSpecificOutput.additionalContext | test("Unslop") | if . then 1 else 0 end)] | join(" ")')"
 is "the user's other settings are untouched" "opus" \
    "$(jq -r .model "$HK/.claude/settings.json")"
 [ -f "$HK/.claude/settings.json.bak" ] && ok "a backup was written" \

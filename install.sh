@@ -114,7 +114,8 @@ for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
 # (~/.claude exists), so a plain shell box gets no stray dir.
 if [ -d "${HOME:-}/.claude" ]; then
     [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
-    for s in "$DIR"/skills/*/; do
+    for s in "$DIR"/skills/*/; do    # [ -d ]: an empty skills/ leaves the glob unexpanded
+        [ -d "$s" ] || continue
         s=${s%/}; link_one "${HOME}/.claude/skills/${s##*/}" "$s"
     done
 fi
