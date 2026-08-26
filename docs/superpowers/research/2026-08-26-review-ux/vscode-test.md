@@ -35,8 +35,7 @@ not exist. The remote leg below is verified against a mocked
     cli=$(ls -t "$HOME"/.vscode-server/cli/servers/*/server/bin/remote-cli/code \
                  "$HOME"/.vscode-server/bin/*/bin/remote-cli/code 2>/dev/null | head -1)
     if [ -x "$cli" ]; then
-        for s in $(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/vscode-ipc-*.sock \
-                         "${TMPDIR:-/tmp}"/vscode-ipc-*.sock 2>/dev/null); do
+        for s in $(ls -t "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"/vscode-ipc-*.sock 2>/dev/null); do
             nc -zU "$s" 2>/dev/null || socat -u OPEN:/dev/null "UNIX-CONNECT:$s" 2>/dev/null || continue
             VSCODE_IPC_HOOK_CLI=$s exec "$cli" --wait "$@"
         done

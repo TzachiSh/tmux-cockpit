@@ -590,15 +590,16 @@ opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`, else
 `tmux set-environment -g VISUAL 'code --wait'`. The popup's children see the
 tmux *server's* environment, so a shell `export` made after the server started
 is not seen. Over VS Code Remote-SSH the tmux server has no live
-`VSCODE_IPC_HOOK_CLI`; point `VISUAL` at the wrapper below, which finds the
-newest listening `vscode-ipc-*.sock` and falls back to a terminal editor. From
-a plain ssh session nothing can reach the laptop's VS Code. The list reloads
-in place and marks the row `●` (the digit instead, when more than one
-comment sits there), so five comments cost one popup, not five — the same
+`VSCODE_IPC_HOOK_CLI`; point `VISUAL` at the wrapper under *VS Code over
+Remote-SSH*, which finds the newest listening `vscode-ipc-*.sock` and falls
+back to a terminal editor. From a plain ssh session nothing can reach the
+laptop's VS Code. The list reloads in place and marks the row `●` (the digit
+instead, when more than one comment sits there), so five comments cost one
+popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch, and asks first: it names the count and the
 target pane by its title, and offers the batch to your editor as text before it
-goes (`deliver N comment(s) to ✳ fix the parser (%7)` /
+goes (`deliver N comment(s) to fix the parser (%7)` /
 `edit the batch in nano first` /
 `keep reviewing`). `esc` asks the same way once anything is pinned
 (`leave — N comment(s) stay pinned` / `keep reviewing` / `discard N
@@ -620,7 +621,10 @@ To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
 copy mode, so the terminal's own selection is the one that works there. `^Y`
 copies the whole file plus its diff, `alt-y` every file's diff, for pasting
 into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
-row, when what you want is a handful of lines rather than a file.
+row, when what you want is a handful of lines rather than a file. All three
+reach the system clipboard through OSC 52, which needs
+`set -g set-clipboard on` in `tmux.conf`; the default `external` only passes
+applications' own OSC 52 through.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
@@ -787,8 +791,7 @@ Point `VISUAL` at it:
 cli=$(ls -t "$HOME"/.vscode-server/cli/servers/*/server/bin/remote-cli/code \
              "$HOME"/.vscode-server/bin/*/bin/remote-cli/code 2>/dev/null | head -1)
 if [ -x "$cli" ]; then
-    for s in $(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/vscode-ipc-*.sock \
-                     "${TMPDIR:-/tmp}"/vscode-ipc-*.sock 2>/dev/null); do
+    for s in $(ls -t "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"/vscode-ipc-*.sock 2>/dev/null); do
         nc -zU "$s" 2>/dev/null || socat -u OPEN:/dev/null "UNIX-CONNECT:$s" 2>/dev/null || continue
         VSCODE_IPC_HOOK_CLI=$s exec "$cli" --wait "$@"
     done
@@ -796,11 +799,15 @@ fi
 exec "${FALLBACK_EDITOR:-vi}" "$@"
 ```
 
+`/tmp` is only the fallback for a workspace with no `$XDG_RUNTIME_DIR` (a Coder
+container); on a shared host with `$XDG_RUNTIME_DIR` set the wrapper never
+looks in `/tmp`, where another user could plant a listening socket.
+
 It needs `nc` (OpenBSD netcat, for `-U`) or `socat` to probe a socket. With
 neither, every socket is skipped and it falls back to the terminal editor.
-Both server layouts and both socket directories are covered. The local leg was
-tested against a real VS Code; the Remote-SSH leg was verified against a mock
-socket, because the test box has no SSH keys. A closed window's socket can
+Both server layouts are covered. The local leg was tested against a real VS
+Code; the Remote-SSH leg was verified against a mock socket, because the test
+box has no SSH keys. A closed window's socket can
 keep listening through the server's reconnection grace, so "newest listening"
 is not proof of a live window, and `--wait` can then hang until you kill the
 popup.
@@ -810,11 +817,12 @@ the laptop's editor. Use a terminal editor there.
 
 ### Coder
 
-A Coder workspace opened from VS Code is Remote-SSH underneath, so the
-snippet above applies with two changes: the IPC sockets are in
-`${XDG_RUNTIME_DIR:-/tmp}` (a workspace usually has no `/run/user/$UID`), and
-the shim lives at `~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`.
-Put the wrapper in `$HOME`, which persists; `/tmp` does not survive a restart.
+A Coder workspace opened from VS Code is Remote-SSH underneath, and the
+snippet above already covers it: the IPC sockets are in
+`${XDG_RUNTIME_DIR:-/tmp}` (a workspace usually has no `/run/user/$UID`), which
+is what the wrapper probes, and the shim it picks up lives at
+`~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`. Put the wrapper in
+`$HOME`, which persists; `/tmp` does not survive a restart.
 
 ### Security
 
