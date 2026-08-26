@@ -906,6 +906,14 @@ editor_cmd() {
     printf '%s\n' "${ed:-${VISUAL:-${EDITOR:-vi}}}"
 }
 
+# A pane id means nothing to the person reading the confirm; the agent's own
+# title (claude sets it) or the window name does, with the id kept for prefix i.
+pane_label() {                # <pane-id>
+    local t
+    t=$(tmux display-message -p -t "$1" '#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}' 2>/dev/null)
+    printf '%s\n' "${t:+$t }($1)"
+}
+
 edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     local store=$1 path=$2 line=$3 fragment=$4 query=$5 dir=$6 tmp ed
     [ -n "$path" ] && [ -n "$store" ] || return 0
@@ -1159,12 +1167,16 @@ run_loop() {
             # is forgiving, compose is cat).
             n=$(grep -c '^## ' "$store")
             [ "$n" -gt 0 ] || { tmux display-message "tmux-review: nothing pinned" 2>/dev/null; continue; }
-            choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in $EDITOR first\nkeep reviewing\n' "$n" "${REVIEW_PANE_ID:-the agent}" \
+            local to ed e
+            to="the agent"; [ -n "$REVIEW_PANE_ID" ] && to=$(pane_label "$REVIEW_PANE_ID")
+            ed=$(editor_cmd); e=${ed%% *}; e=${e##*/}
+            choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in %s first\nkeep reviewing\n' "$n" "$to" "$e" \
                 | fzf --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
             case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
             case "$choice" in
                 deliver*) exit 20 ;;
-                edit*)    ${VISUAL:-${EDITOR:-vi}} "$store" </dev/tty >/dev/tty 2>&1
+                edit*)    # shellcheck disable=SC2086
+                          $ed "$store" </dev/tty >/dev/tty 2>&1
                           rows_out=$(rows_mode "$dir" "$store"); continue ;;
                 *)        rows_out=$(rows_mode "$dir" "$store"); continue ;;
             esac
