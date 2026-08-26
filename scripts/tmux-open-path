@@ -174,7 +174,7 @@ if [ "${1:-}" = --preview-diff ]; then
         # and without this a render cached under the old base would be served
         # right back for the new one -- same file, same index, same content,
         # different diff.
-        cksum=$(printf '%s\n%s\n%s\n%s\n%s\ngutter1\n' "$apath" "$chd" "$idx" "$csum" "$rbase" \
+        cksum=$(printf '%s\n%s\n%s\n%s\n%s\ngutter2\n' "$apath" "$chd" "$idx" "$csum" "$rbase" \
                 | { sha1sum 2>/dev/null || shasum 2>/dev/null; })
         ckey=${cksum%% *}
     fi

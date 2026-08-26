@@ -876,6 +876,7 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
 # The line as the tree (+) or HEAD (-) has it, sign-prefixed line as the rows
 # carry it. attach() quotes it; alt-c copies it.
 read_line() {                 # <dir> <path> <line-with-sign>
+    case "${3#-}" in ''|*[!0-9]*) return 0 ;; esac   # anything else is a sed script
     case "$3" in
         -*) git -C "$1" show "HEAD:$2" 2>/dev/null | sed -n "${3#-}p" ;;
         *)  sed -n "${3}p" -- "$1/$2" 2>/dev/null ;;
@@ -946,6 +947,15 @@ attach() {
 # goes, the rest are written back byte-identical (parse is the declared
 # inverse of format -- the round-trip test in tests/run.sh pins it). This
 # and nothing else in the script rewrites the store; attach() appends.
+# parse_store sets a store that does not parse aside as .bak and says so on
+# stderr only; ^X and ^E run under execute-silent, which eats stderr, so the
+# marks vanished without a word (#22). The lib stays tmux-free; this says it.
+load_store() {                # <store>
+    parse_store "$1"
+    [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
+        || tmux display-message "tmux-review: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
+}
+
 detach() {                    # <store> <path> <line-with-sign>
     local store=$1 path=$2 line=$3 sign=+ num i j=0 k
     [ -n "$path" ] && [ -n "$line" ] || return 0
@@ -954,7 +964,7 @@ detach() {                    # <store> <path> <line-with-sign>
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
     declare -A STORE=() OUT=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     # A store that fails to parse is moved aside to .bak and STORE_N comes
     # back 0 -- the [ -s "$store" ] guard above already sent a genuinely
     # empty file home, so 0 here can only mean the parse was rejected.
@@ -1026,7 +1036,7 @@ seed_comment() {              # <store> <path> <line-with-sign> [body|frag]
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || return 0
     declare -A STORE=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] || continue
