@@ -236,6 +236,10 @@ elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
+# tmux keeps its drag flag set when a popup or menu eats the release, then
+# rewrites the NEXT press anywhere into MouseDragEnd1<where> (#21, 3.7c): a
+# tab click was silently lost. Stock leaves this key unbound.
+tmux bind-key -n MouseDragEnd1Status switch-client -t =
 tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
 # Every key below is lowercase (#43): tmux binds the character the terminal

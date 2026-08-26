@@ -337,3 +337,81 @@ Everything else above was measured today.
    tmux, but not their exact geometry.
 4. Ghostty's internal mouse encoding path. Its config here is six unrelated
    lines; no Ghostty source read, no other terminals tested.
+
+## Outcome (2026-08-26, evening): a lost click, not a menu
+
+This section supersedes "Best current explanation", the ranked "Fix" and the
+"Not doing" bullets about `MouseDown1Status` and upstream. Everything here was
+measured.
+
+The owner ran the experiment with loggers on every status-line button-1 key,
+eleven trials. Every trial reads the same:
+
+```
+20:03:23 MouseDragEnd1Status range=window x=66
+20:03:23 MouseUp1Status      range=window x=66
+20:03:23 MouseDown1Status    range=window x=66    <- the second click, a second later
+20:03:23 MouseUp1Status      range=window x=66
+```
+
+The first press never arrives as `MouseDown1Status`; it arrives as
+`MouseDragEnd1Status`, the window does not switch, and the retry works. Zero
+`MouseDown3*` lines, so H1 (button 3) is dead. The symptom is a lost click.
+
+Mechanism, from tmux 3.7c `server-client.c` and reproduced on a private
+`-f /dev/null` server with `-vv`:
+
+- `server_client_check_mouse` rewrites any non-drag, non-wheel event into
+  `MouseDragEnd1<where>` while `c->tty.mouse_drag_flag` is set ("Stop dragging
+  if needed"), and that block is the only place the flag is cleared.
+- `server_client_handle_key` hands keys to an open overlay (popup or menu)
+  BEFORE `check_mouse` runs, so a release eaten by an overlay never clears the
+  flag.
+- A press whose binding opens a popup or menu, followed by a one-cell pointer
+  twitch in the same tty read: the twitch is decoded as a drag start (flag set)
+  while the press's command is still queued, the overlay opens, the release
+  goes to the overlay, the flag stays set. The next press anywhere on the
+  client becomes a DragEnd and is lost. A popup that appears mid-drag
+  (`tmux-review --request` from an agent) gets there without the twitch.
+
+Lab log of the lost click, `(1)` being the stale flag:
+
+```
+mouse 00 at 14,23 (last 2,23) (1)
+down at 14,23
+mouse key is MouseDragEnd1Status
+mouse 03 at 14,23 (last 14,23) (0)
+up at 14,23
+mouse key is MouseUp1Status
+```
+
+Same click without the twitch: `mouse key is MouseDown1Status`, window
+switched. Repro by hand, stock tmux, no plugin:
+
+```sh
+tmux -L x -f /dev/null new -d -s t 'sleep 300'; tmux -L x neww -d -t t
+tmux -L x bind -n MouseDown1StatusLeft display-popup -E 'sleep 300'
+tmux -L o -f /dev/null new -d -s o -x 80 -y 24 'tmux -L x attach -t t'
+P=$(tmux -L o list-panes -F '#{pane_id}' | head -1)
+tmux -L o send-keys -t $P -H $(printf '\033[<0;2;24M\033[<32;3;24M' | od -An -tx1)   # press + twitch, one write
+tmux -L o send-keys -t $P -H $(printf '\033[<0;3;24m' | od -An -tx1)                  # release, into the popup
+tmux -L x display-popup -C -c $(tmux -L x list-clients -F '#{client_name}')
+tmux -L o send-keys -t $P -H $(printf '\033[<0;15;24M\033[<0;15;24m' | od -An -tx1)  # click the second tab
+tmux -L x display -p -t t '#{window_index}'   # 0: the click was lost (1 without the twitch line)
+```
+
+Fix, verified in the same harness: stock 3.7c leaves `MouseDragEnd1Status`
+unbound, so the plugin claims it with no cost to anyone:
+
+```
+bind -n MouseDragEnd1Status switch-client -t =
+```
+
+The lost press then selects the tab. A genuine drag released on a tab selects
+that tab, which is the natural reading of the gesture. The bug proper is
+upstream (the flag should reset when an overlay swallows the release); the
+eight lines above are the report, filing it is the owner's call.
+
+Not explained by the log: a box drawn during the lost click. The owner's
+original wording said a menu flashed; nothing in eleven trials drew one. Open
+until the owner says whether anything is still visible with the fix in.

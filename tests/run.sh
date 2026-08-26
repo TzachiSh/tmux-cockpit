@@ -1921,6 +1921,103 @@ fi
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
 fi
 
+# tests: examples/tmux.conf cockpit.tmux
+echo "== a left click on a window tab selects it and draws nothing (#21) =="
+# Issue #21 saw a menu flash on a plain left click in the status line. Stock
+# MouseDown1Status is switch-client -t = and draws nothing; the menus that do
+# close on release are all button 3. Pinned with a real click: the SGR press
+# is written into an attached client and the screen is read while the button
+# is still held, which is the only moment a release-closed menu is visible.
+if need_tmux "status-line left click"; then :; else
+OUTER="cockpit-clk-outer-$$"; INNER="cockpit-clk-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+# Both windows run a silent sleep under the same border format, so the pane
+# area renders the same in either: anything that differs while the button is
+# held is an overlay, whatever its text.
+"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 -n zero \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+# The shipped config loads the INSTALLED plugin; this tree's bindings only
+# get on the server through an explicit run-shell, and the check proves it.
+"$TMUX_REAL" -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$INNER" list-keys -T root)" in
+    *"$DIR/scripts/tmux-branch"*) ok "this tree's cockpit.tmux is the one bound" ;;
+    *) bad "this tree's cockpit.tmux is the one bound" "$DIR/scripts/tmux-branch in root keys" "absent" ;;
+esac
+"$TMUX_REAL" -L "$INNER" new-window -d -t t -n TARGET 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
+OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
+# Wait for the tab AND the [x] border button: the baseline below covers the
+# border row, so it must be painted before the snapshot or the compare races.
+if until_cap "$OUTER" "$OP" '*TARGET*' && until_cap "$OUTER" "$OP" '*\[x]*'; then
+    # The tab's cell: the inner status line is the last line of the outer pane.
+    # Column counting assumes the default ASCII window-status-format; the
+    # status row itself is excluded from the compare (its highlight moves), so
+    # a flash confined to that row is not covered here.
+    scr=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")
+    row=$(printf '%s\n' "$scr" | grep -n TARGET | tail -1 | cut -d: -f1)
+    line=$(printf '%s\n' "$scr" | sed -n "${row}p"); pre=${line%%TARGET*}; col=$((${#pre}+1))
+    before=$(printf '%s\n' "$scr" | head -n "$((row-1))")
+    press=$(printf '\033[<0;%s;%sM' "$col" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    release=$(printf '\033[<0;%s;%sm' "$col" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    # shellcheck disable=SC2086  # the hex bytes are meant to split
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $press >/dev/null 2>&1
+    for i in $(seq 1 40); do
+        [ "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')" = 1 ] && break
+        sleep 0.1
+    done
+    is "the click selects the window" "1" \
+       "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')"
+    held=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP" | head -n "$((row-1))")
+    if [ "$held" = "$before" ]; then ok "and draws nothing while the button is held"
+    else bad "and draws nothing while the button is held" "the pane area unchanged" \
+             "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$held") | grep '^> *[^ ]' | head -3)"; fi
+    # shellcheck disable=SC2086
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $release >/dev/null 2>&1
+    # #21's real shape: a press that opens a popup, with a one-cell pointer
+    # twitch in the same read, sets tmux's drag flag before the popup exists;
+    # the popup eats the release, and the NEXT press anywhere arrives as
+    # MouseDragEnd1Status. The plugin binds that key to the same switch-client,
+    # so the lost press still selects the tab. Armed here on the session name.
+    "$TMUX_REAL" -L "$INNER" bind -n MouseDown1StatusLeft display-popup -E 'exec sleep 300' >/dev/null 2>&1
+    twitch=$(printf '\033[<0;2;%sM\033[<32;3;%sM' "$row" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    drop=$(printf '\033[<0;3;%sm' "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    # shellcheck disable=SC2086
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $twitch >/dev/null 2>&1
+    if until_cap "$OUTER" "$OP" '*│*'; then      # the popup is up: its border is the only box drawn
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $drop >/dev/null 2>&1
+        ic=$("$TMUX_REAL" -L "$INNER" list-clients -F '#{client_name}' | head -1)
+        "$TMUX_REAL" -L "$INNER" display-popup -C -c "$ic" >/dev/null 2>&1
+        for i in $(seq 1 40); do
+            case "$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")" in *│*) sleep 0.1 ;; *) break ;; esac
+        done
+        pre=${line%%zero*}; zcol=$((${#pre}+1))
+        zpress=$(printf '\033[<0;%s;%sM' "$zcol" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+        zrelease=$(printf '\033[<0;%s;%sm' "$zcol" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $zpress >/dev/null 2>&1
+        for i in $(seq 1 40); do
+            [ "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')" = 0 ] && break
+            sleep 0.1
+        done
+        is "a click after a popup ate a release still selects the window" "0" \
+           "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')"
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $zrelease >/dev/null 2>&1
+    else
+        bad "a click after a popup ate a release still selects the window" "a popup on the client" "none drawn"
+    fi
+else
+    bad "the click selects the window" "an attached client" "no client"
+    bad "and draws nothing while the button is held" "an attached client" "no client"
+    bad "a click after a popup ate a release still selects the window" "an attached client" "no client"
+fi
+"$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
+fi
+
 echo "== the fixes review found =="
 # agent-state joined payload lines with NO separator, so the tail of one line
 # and the head of the next could fuse into a marker that appears in neither.
