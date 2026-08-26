@@ -72,6 +72,32 @@ Plus BEL on the pane's tty so the terminal tab flags it. No focus change, no pop
 
 Raised by `run-shell -b` from the hook so the hook returns; `read -t 10` closes it; `↵` runs `tmux-jump` to that pane. It takes the keyboard from whatever the human was typing into, which is why it is opt-in and why a permission prompt should not raise it while the human is mid-word in another agent's composer. The review-flow rule ("never steal focus") was written for text going into agents; it applies to the human's own typing just as much.
 
+### `prefix f`, the side agent, with the main agent's steps
+
+```
+ side fix · %14 ─────────────────────────────────────────────
+ main is on   Bash: run the full suite and the rig   4m12s
+ side fix (one line, ↵ alone cancels): fix the flaky fleet timing test
+ hold off commands matching (ERE, ↵ for none): make (check|test)
+```
+
+Same two lines as today plus the `main is on` line above them, so the human splitting off a task sees what they are splitting from. The side agent's prompt then opens with:
+
+```
+What the other agent has been doing (newest last):
+USER 18:27: do it review it test rig and implaments
+AGENT: Setting up the fix worktree and reading the exact sites…
+TOOL Bash: Create fix worktree and read the pane-path call sites
+TOOL Bash: Read the fleet test block, only.sh usage, Makefile targets
+AGENT: While the suite and rig run: shellcheck on the two scripts…
+TOOL Bash: run the full suite and the rig
+
+Your job: fix the flaky fleet timing test
+You are a SIDE TASK … (the existing fence and HANDOVER rules)
+```
+
+The flow: main agent is on a bug, its suite is taking minutes, the human presses `prefix f`, reads the `main is on` line, types the job, Enter, Enter. The side agent starts knowing the branch, the files in play and what was just tried, without the human explaining any of it. When it finishes, the main agent gets the HANDOVER line at its next Stop, as today.
+
 ### `prefix ?`, the observer ask (optional, owner decision 5)
 
 ```
@@ -95,6 +121,7 @@ know more  prefix i: state · since · doing · said · asked (new rows)
            prefix r: the doing line per row (new column)
 ask it     in the pane: /btw (documented, new)
            from anywhere: prefix ? observer (optional)
+split it   prefix f: side agent, now told what main just did (new)
 go there   prefix u, or ↵ in the popup / fleet row
 answer it  in the pane, as today
 ```
