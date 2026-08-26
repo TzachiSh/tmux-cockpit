@@ -824,6 +824,36 @@ What this deliberately does **not** do, and why:
   fallback handover line is still written first, so the main agent is never
   left holding forever on a fixer that crashed.
 
+Measured by hand against a real Claude Code (2.1.246, Haiku 4.5 in the main
+pane) on a scratch repo and a private tmux server:
+
+- A fixer spawned 3 s into a busy turn (`bash slow.sh`, 40 s) did not interrupt
+  it; the agent answered, then held 55 s at its `Stop`, with `@cockpit_hold`
+  carrying the job text and `prefix + i` reading `hold` and `side fix … pane %3
+  (alive) deadline in 255s guard //`. The handover arrived on that same turn as
+  Stop hook feedback, and the record and the marker were gone after it.
+- `Esc` pressed 3 s into a hold ended the turn (`Interrupted · What should
+  Claude do instead?`) and left `@cockpit_hold` set for the next 212 s; the
+  fixer pane ran on to completion and wrote its handover. The next turn's
+  `Stop` cleared the leaked option and delivered the line.
+- With the guard `bash tests.sh` set, the agent's `bash tests.sh` was denied
+  and the deny reason reached it verbatim (`the side fix "…" is repairing this
+  right now (pane %5); this run would give invalid results …`); the turn ended
+  on the deny with no second attempt and no `sh tests.sh`, the `Stop` that
+  followed held 92 s, and the agent resumed with `HANDOVER: c-scenario waited
+  for the suite`.
+- A real job ("make tests.sh finish instantly without changing its output") ran
+  in its own pane and closed it 25 s after the spawn, writing ``HANDOVER:
+  removed `sleep 2` from tests.sh; still prints `ok` exit 0, runtime 2.0s ->
+  0.003s, exec bit intact, nothing committed.``; `tests.sh` measured 2.00 s
+  before and 0.00 s after, and the line landed at the idle pane's next `Stop`.
+  A spawn on the same pane with `tests.sh` modified passed `--disallowedTools
+  Edit(./tests.sh) Edit(./.omc/)` plus the nine `Bash(git … *)` denials — 11
+  deny arguments read off the running `claude -p`.
+- Twice, a fixer whose `claude` ended its run without a `HANDOVER:` line (it
+  backgrounded the command it had been asked to wait for) left the wrapper's
+  fallback line, and the main agent resumed on that instead.
+
 ## tm — session launcher
 
 `prefix + S` opens it in the same popup chrome as the other pickers. Each
