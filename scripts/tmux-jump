@@ -4,7 +4,8 @@
 # One-shot: runs only on the keypress, so a status redraw still costs no shell.
 set -u
 
-cur="${TMUX_PANE:-}"
+# The bind passes the pane: run-shell sets no $TMUX_PANE (#45).
+cur="${1:-${TMUX_PANE:-}}"
 blocked=()
 pending=()
 review_pending=()
