@@ -1077,7 +1077,8 @@ run_loop() {
     # alt-c has no variable here: its {+3} -- field 3 of every ⇥-marked row, or
     # of the cursor row when none is marked -- is an fzf placeholder, and must
     # reach fzf literally out of the double-quoted bind below, unexpanded.
-    # ponytail: a row's fragment is cut at 160 bytes like the list; read the file per row if a longer line ever matters.
+    # ponytail: a row's fragment is the list's -- cut at 160 bytes AND stripped of
+    # control chars, so tab indentation is lost; read the file per row if either matters.
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
