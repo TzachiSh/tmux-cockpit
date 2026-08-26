@@ -47,3 +47,33 @@ DO NOT:
 - 9 crates for one binary, with a five-line comment explaining why a vendored fork is `exclude`d.
 
 Verdict: reference only; steal ~35 lines (the ZERO-poll probe, the failure budget with `is_transient_io`, and their comments) into phase 0 before the first popup run.
+
+## zeroclaw (zeroclaw-labs/zeroclaw)
+
+A self-hosted agent runtime: one Rust binary, ~20 LLM providers, 30+ chat channels, tools from shell to GPIO to WASM. Not a tmux tool (zero hits for tmux, pty, capture-pane). 32,661 stars, MIT OR Apache-2.0, created 2026-02, commit 2026-08-27; 868,644 lines in a 26-crate workspace, MSRV 1.96, release profile `opt-level="z", lto="fat", codegen-units=1, strip, panic="abort"`. The relevant part is `apps/zerocode`, a Ratatui config/chat TUI: 58,986 lines in ONE crate with 41 flat modules (`chat.rs` 13,251 lines), ratatui 0.30, crossterm 0.29 (caret), tokio, unicode-width/segmentation, inkjet with 30 tree-sitter grammars, fluent, pulldown-cmark, clap, anyhow, chrono, ~22 direct deps.
+
+DO:
+- `apps/zerocode/src/terminal_backend.rs:1-193`, `WideCellCleanupBackend`: a Backend wrapper fixing a documented ratatui 0.30 bug (`:1-36`): the Crossterm backend emits an absolute `MoveTo` only when the next cell is not `prev.x + 1`, and that contiguity assumption breaks after a wide grapheme. Two modes handled: a CJK glyph whose continuation cell would be printed over its second half (suppressed, `:137-142`), and a VS16 emoji sequence whose trailing cell must start a fresh batch so a `MoveTo` is emitted (`:111-126`). Fabricates nothing. Our previews are arbitrary agent panes, so CJK and emoji will arrive. ~110 lines plus three byte-level tests (`:269-384`) asserting exact escape bytes; copy the test style. Wire `cell_width_u16` (`:62`) to the width function we already have.
+- `apps/zerocode/src/color_depth.rs:34-69`, `detect_from_env`: a pure function of five env strings, no terminal query. Its tests (`:207-264`, `unconfigured_ssh_tmux_emits_truecolor`) claim the opposite of our fallback: 256-indexed escapes are the ones a screen/tmux terminfo collapses onto 16 slots, while truecolor passes verbatim, so they default to truecolor under `TERM=screen`. Rule 27 (ask tmux for `#{client_termfeatures}`) is the safer source, but measure once on the owner's terminal before shipping the 256 column. Also `rgb_to_xterm256` (`:103-145`): considers both the 6×6×6 cube and the 24-step grey ramp, so neutral `@thm_*` greys land on 232–255; 40 lines, one test. Take whole.
+- `install.sh:326-364`: fetch `SHA256SUMS` BEFORE the tarball; the manifest lists every asset, so a missing entry means "no binary for this platform", not a download failure; a missing checksum tool falls back, only a mismatch is fatal. Reorder our `.tmux` fetch to match.
+- `.github/workflows/ci.yml:440-460`: the MSRV job reads `rust-version` out of `Cargo.toml` (they had hardcoded pins drift). Have the `.tmux` rustc gate and CI both read the floor from `Cargo.toml`.
+- `clippy.toml`: `disallowed-methods` entries each with a `reason` naming the replacement; with `-D warnings` a ban is a compile error, no false hits in comments. Use it for the crossterm queries and `disallowed-types` for `ratatui::widgets::Wrap`; keep the greps as a belt. They needed `#![allow(clippy::disallowed_methods)]` in two files (`main.rs:7`, `lib.rs:8`), so plan one escape hatch.
+- `apps/zerocode/src/main.rs:59-61, 189-205, 425-432, 440-460`: one `static TERMINAL_ACTIVE: AtomicBool`, one `force_restore_terminal()` shared by the panic hook and the signal path, the app wrapped so a SIGTERM returns normally and the ordinary restore runs. They pair `panic = "abort"` with a hook and no Drop guard, confirming DO NOT 9 is about Drop, not hooks. Map to one `cleanup()` that unpublishes the pid.
+- `apps/zerocode/src/doctor.rs:1052-1062`, an 11-line `render_buffer_to_string`, and `todo_tracker.rs:426-441` keeping a `render_to_buffer` variant so a test can assert per-cell colour, which the phase-1 gate "a needs-input tile is red" needs.
+- `apps/zerocode/src/zerocode_pane.rs:229-250` `truncate_to_width`: measure first, reserve the ellipsis, advance by grapheme cluster accumulating width.
+- `apps/zerocode/src/test_support.rs:9-33`: a process-global `env_test_lock()` plus an `EnvVarGuard` that removes the var on Drop; our `COCKPIT_READONLY/_GLYPHS/_TMUX` tests run on cargo's thread pool in one process.
+- `tests/architecture/*.rs` (the idea, not the 2,687 lines): plain `#[test]`s that read repo files and fail on a forbidden pattern, so the grep gates run under `cargo test`. One `tests/gates.rs`, ~20 lines.
+
+DO NOT:
+- `config_manager.rs:64-69` calls `supports_keyboard_enhancement()` at init, a `CSI ? u` query with a blocking read (crossterm #1104); `window_size()` exposed at `terminal_backend.rs:182`.
+- `app.rs:58` `TICK = 200 ms`, loop `:471`, `term.draw` at `:494` with no dirty flag: five frames a second forever; they throttled the fetch (`dashboard.rs:230-237`) and not the draw.
+- Blocking `event::poll(TICK)` inside an `async fn` on a multi-thread tokio runtime (`app.rs:692`), parking a worker up to 200 ms.
+- `crossterm = "0.29"` caret range.
+- Four incompatible truncation helpers in one crate (`widgets.rs:272` chars, `zerocode_pane.rs:229` graphemes, `dashboard.rs:2685` chars, `input_bar.rs:629` cells) despite their own AGENTS.md "single source of truth" rule.
+- 43 `Wrap {` sites (ratatui #2679 exposures).
+- `EnableMouseCapture` unconditionally at init (`config_manager.rs:56-62`) and the 241-line `mouse.rs` plus a drag-coalescing ring buffer it forced (`app.rs:73-94`).
+- 22 direct deps for a config TUI (30 tree-sitter grammars, fluent with 2,624 lines of translations).
+- Raw OSC 52 written to stdout mid-session (`mouse.rs:143-155`); in a popup that reaches tmux, not the terminal.
+- README advertises `curl … | sh` while its install.sh does verify; `#![allow(dead_code)]` crate-wide in `theme.rs:4` against its own AGENTS.md.
+
+Verdict: reference only, plus two files and ~90 lines: `terminal_backend.rs` (the wide-glyph fix, with its byte-level tests), `color_depth.rs`'s `rgb_to_xterm256` and pure `detect_from_env`, and the helpers in DO g/h/i; read `install.sh:326-364` and `ci.yml:440-460` before writing the `.tmux` fetch. One measurement it forces: 256-indexed vs truecolor passthrough on the owner's terminal.
