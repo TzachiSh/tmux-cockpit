@@ -4,7 +4,7 @@
 
 **Goal:** a review that stays fast with a 1 GB `core` file in the tree, a click-to-open and a `^E` that reach VS Code inside a Remote-SSH/Coder session without a user-installed wrapper, and a copy key in the path picker.
 
-**Architecture:** three root-cause fixes, each where the cause lives. (1) `tree_diff` excludes any untracked or stat-modified file over 4 MiB by `:(exclude,literal)` pathspec before git hashes it (git reads a changed file in full to diff it: 26 s per `git diff` for 1 GB, measured; listing + `stat` is 0.00 s), and `lines_mode` names the skipped files on the existing `(diff too large)` sentinel row; `--preview-diff` refuses a file over the same cap before its sha1. Every caller of `tree_diff` (rows, fleet scan, `--copy`, and the `review-gate` Stop hook via `--delta`) is covered by the one change. (2) A shared `scripts/lib/vscode.sh` finds VS Code's remote `code` shim (`~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`, old `bin/*/…` layout too) and runs it against each `vscode-ipc-*.sock` newest-first; the shim IS the probe (dead socket: rc 1 in 144 ms; live: `--goto` returns 0 in 157 ms, measured on the Coder workspace), so no `socat`/`nc`. `open_one` uses it when `code` is not on `PATH`; `editor_cmd` uses it (with `--wait`) when no editor is configured, before falling to `vi`. (3) The path picker gets `alt-c` (copy the marked paths) in both its list and its browser.
+**Architecture:** three root-cause fixes, each where the cause lives. (1) `tree_diff` excludes any untracked or stat-modified file over 32 MiB (a cost knee: ~100 ms per diff at 32 MiB, 26 s at 1 GiB; originally planned as 4 MiB, see Task 1's ruling) by `:(exclude,literal)` pathspec before git hashes it (git reads a changed file in full to diff it: 26 s per `git diff` for 1 GB, measured; listing + `stat` is 0.00 s), and `lines_mode` names the skipped files on the existing `(diff too large)` sentinel row; `--preview-diff` refuses a file over the same cap before its sha1. Every caller of `tree_diff` (rows, fleet scan, `--copy`, and the `review-gate` Stop hook via `--delta`) is covered by the one change. (2) A shared `scripts/lib/vscode.sh` finds VS Code's remote `code` shim (`~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`, old `bin/*/…` layout too) and runs it against each `vscode-ipc-*.sock` newest-first; the shim IS the probe (dead socket: rc 1 in 144 ms; live: `--goto` returns 0 in 157 ms, measured on the Coder workspace), so no `socat`/`nc`. `open_one` uses it when `code` is not on `PATH`; `editor_cmd` uses it (with `--wait`) when no editor is configured, before falling to `vi`. (3) The path picker gets `alt-c` (copy the marked paths) in both its list and its browser.
 
 **Tech Stack:** bash 4+, tmux ≥ 3.3, fzf 0.44.1, git (`ls-files -o/-m`, pathspec magic `exclude`,`literal`: git ≥ 2.x), POSIX awk. No new dependency. Community precedent for the cap: difftastic `--byte-limit` (1 MB, prints "too large"), GitHub renders no diff over 1 MB, GitLab `diff_max_patch_bytes`.
 
@@ -33,7 +33,7 @@
 | asked for / considered | verdict | why |
 |---|---|---|
 | `core.bigFileThreshold` | **skip** | measured: 26 s with it set to 1m; git still hashes the worktree file to diff it |
-| a tmux option for the cap (`@cockpit_review_max_file`) | **skip** | 4 MiB is the review's existing byte cap; one number, one `# ponytail:` line; add the option when someone reviews a 5 MB fixture on purpose |
+| a tmux option for the cap (`@cockpit_review_max_file`) | **skip** | one number (32 MiB, the cost knee), one `# ponytail:` line; add the option when someone reviews a bigger fixture on purpose |
 | a probe via `socat`/`nc`/python | **replace** | the shim fails in 144 ms on a dead socket and succeeds in 157 ms on a live one; the CLI is the probe, zero dependencies |
 | keep the README wrapper | **replace** | the plugin does it now; the README keeps one line on `VISUAL` for a GUI editor on the local desktop |
 | `--wait` hang on a socket whose window closed (8 h grace) | **accept, noted** | `# ponytail:` line; the popup's esc kills it |
@@ -55,6 +55,8 @@ Measured baseline (keep for the commit messages): 1 GB untracked `core`: `--line
 ---
 
 ### Task 1: `tree_diff` skips files over 4 MiB before git reads them; the list names them
+
+> **Ruling during execution (2026-08-26):** the cap is **32 MiB**, not 4: the suite's 4.6 MB lockfile bump must stay reviewable and the cost curve is 5 MiB 28 ms, 16 MiB 56 ms, 64 MiB 185 ms, 256 MiB 680 ms, 1 GiB 25.7 s. Read every "4 MB"/"4 MiB" below as 32. The fleet fork tripwire is re-pinned to 5 per root (one `ls-files` per root is the fix). Excludes are exclude-only pathspecs (no `-- .`, which truncated subdirectory panes); `ls-files` takes `':(top)'`; one `xargs -0 stat`, not one per file.
 
 **Files:**
 - Modify: `scripts/tmux-review` — new `big_files()` above `tree_diff()`; `tree_diff()` (the `GIT_INDEX_FILE=$idx git ... diff` calls); `lines_mode()` (emit the notice row before the sorted rows).
@@ -168,25 +170,25 @@ git commit -m "fix: files over 4 MB are kept away from git diff (it hashed a 1 G
 rb_t0=$(date +%s%N)
 rbpv=$( (cd "$RB" && "$DIR/scripts/tmux-open-path" --preview-diff core) )
 rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
-is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 4 MB)" "$rbpv"
+is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
 [ "$rb_ms" -lt 500 ] && ok "and it answers without hashing the file (${rb_ms} ms)" || bad "and it answers without hashing the file" "< 500 ms" "${rb_ms} ms"
 ```
 - [ ] **Step 2: Run, expect FAIL** (today: `core (binary)` after several seconds)
 - [ ] **Step 3: Implement** — in `tmux-open-path`, after `base=${f##*/}` and the git-dir check, before the cache-key block:
 ```bash
-    # Over the review's cap git would hash the whole file (26 s per GB,
+    # Over the review's 32 MiB cap git would hash the whole file (26 s per GB,
     # measured); tmux-review already skips it, so this says why, at once.
     sz=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null)
-    if [ "${sz:-0}" -gt $(( 4 * 1024 * 1024 )) ]; then
-        printf '%s (%d MB, not diffed: over 4 MB)\n' "$base" $(( sz / 1048576 )); exit 0
+    if [ "${sz:-0}" -gt $(( 32 * 1024 * 1024 )) ]; then
+        printf '%s (%d MB, not diffed: over 32 MB)\n' "$base" $(( sz / 1048576 )); exit 0
     fi
 ```
-(The directory branch returns earlier; `-f` files only reach here.) The number 4 MiB is written twice across two scripts; a `# see BIGCAP in tmux-review` comment ties them.
+(The directory branch returns earlier; `-f` files only reach here.) The number 32 MiB is written twice across two scripts; a `# see BIGCAP in tmux-review` comment ties them.
 - [ ] **Step 4: Run the block and `make test-only PAT='preview'`, `make lint`; expect PASS**
 - [ ] **Step 5: Commit**
 ```bash
 git add scripts/tmux-open-path tests/run.sh
-git commit -m "fix: the diff preview of a file over 4 MB is a one-line notice, not a 55 s hash"
+git commit -m "fix: the diff preview of a file over 32 MB is a one-line notice, not a 55 s hash"
 ```
 
 ---
@@ -327,9 +329,9 @@ git commit -m "feat: alt-c in the path picker and the folder browser copies the 
 
 ### Task 5: README, gate
 
-**Files:** `README.md` — the "Ctrl+double-click" section (tab/alt-c/shift+drag lines), the "Opens in VS Code at the line" paragraph (Remote-SSH now automatic), the review section's `### VS Code over Remote-SSH` (replace the wrapper with two sentences: the plugin finds the shim itself; `VISUAL='code --wait'` only for a GUI on the local desktop), `### Coder` (one sentence: same, sockets in `/tmp`, nothing to install), keep `### Security` but drop the wrapper sentence; a "big files" paragraph in the review section: files over 4 MB are skipped and named; add `core` to `.gitignore`.
+**Files:** `README.md` — the "Ctrl+double-click" section (tab/alt-c/shift+drag lines), the "Opens in VS Code at the line" paragraph (Remote-SSH now automatic), the review section's `### VS Code over Remote-SSH` (replace the wrapper with two sentences: the plugin finds the shim itself; `VISUAL='code --wait'` only for a GUI on the local desktop), `### Coder` (one sentence: same, sockets in `/tmp`, nothing to install), keep `### Security` but drop the wrapper sentence; a "big files" paragraph in the review section: files over 32 MB are skipped and named (the cap is a cost knee: about 100 ms per diff at 32 MB, 26 s at 1 GB); add `core` to `.gitignore`.
 
-- [ ] **Step 1: README edits** (plain words, no em dashes, sentence case). Commit `docs: the review skips files over 4 MB and says which; click-to-open and ^E find VS Code's remote shim on their own; alt-c in the picker; shift+drag in any popup`.
+- [ ] **Step 1: README edits** (plain words, no em dashes, sentence case). Commit `docs: the review skips files over 32 MB and says which; click-to-open and ^E find VS Code's remote shim on their own; alt-c in the picker; shift+drag in any popup`.
 - [ ] **Step 2: Gate** — `make lint`; `make check` twice, unpiped; `bash tests/freeze-rig/run.sh` (expect 696/712 on 121 = master). Rebase onto master if it moved; re-run once after.
 - [ ] **Step 3:** do not merge; the owner decides (PR).
 
