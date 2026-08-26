@@ -674,6 +674,22 @@ done_store() {                # <store>
     return 0
 }
 
+# What ^A ends: the session dir's own files, by name. Not `rm -rf` -- the dir
+# may also hold comments.md.deliver, a review already handed to a busy pane
+# with @cockpit_review_spool armed at it, and that one belongs to the agent's
+# next Stop, not to this approval. rmdir therefore succeeds on an approval with
+# nothing in flight and fails (harmlessly) on one with a spool still waiting;
+# review-gate rmdirs the leftover after it drains. Two callers, ^A in the
+# picker and ^A in --request, and the list must not drift between them.
+clear_sess() {                # <sess dir>
+    local s=$1
+    [ -d "$s" ] && [ ! -L "$s" ] || return 0
+    rm -f -- "$s/comments.md" "$s/comments.md.rows" "$s/comments.md.base" \
+             "$s/delivered.md" "$s/rc"
+    rmdir -- "$s" 2>/dev/null
+    return 0
+}
+
 # --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
 # --preview/--pick convention) --------------------------------------------
 # --lines rows, marked: a leading "●" on any row whose path:line already has
@@ -1415,6 +1431,13 @@ deliver() {
         "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
         "delete-buffer -b $bufname ; display-message -d 0 'review queued for $where ($pane) — it lands when the agent next stops'"
 
+    # The idle arm disarms the option as it pastes, so an empty option here
+    # means the paste happened and nobody will ever read this spool -- the
+    # queued arm is the only one that leaves it armed. Without this every
+    # pasted review left a .deliver file behind in the session dir, and
+    # done_store's rmdir then found the dir non-empty and left that too.
+    [ -n "$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)" ] || rm -f -- "$spool"
+
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
         return 1
@@ -1708,10 +1731,17 @@ review_pane() {
         tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
     elif [ "$rc" -eq 21 ]; then
         # Approved: the ref is written (run_loop did it, in the popup); the
-        # pane's attention state and the review dir end here.
+        # pane's attention state and the review dir end here -- by NAME, not
+        # rm -rf. A review already delivered to a busy pane is in flight in
+        # comments.md.deliver with @cockpit_review_spool armed at it, and ^A is
+        # allowed then (the pinned-comments guard sees an empty store), so the
+        # recursive remove took the queued review, dangled the option at a path
+        # that no longer existed, and took delivered.md with it. An armed spool
+        # keeps the dir standing; review-gate's own rmdir finishes it after the
+        # drain.
         tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
         "$(dirname "$SELF")/agent-state" recount "$pane"
-        [ -d "$sess" ] && [ ! -L "$sess" ] && rm -rf -- "$sess"
+        clear_sess "$sess"
         tmux display-message "review approved — the next one shows only what changes from here" 2>/dev/null
     else
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
@@ -1761,10 +1791,11 @@ request() {                   # <pane>
             # pane carries the same "sent" the paste path sets on delivery.
             tmux set-option -p -t "$pane" @cockpit_review sent 2>/dev/null
             compose "$store" "$root"; done_store "$store"; exit 10 ;;
-        21) # ^A: same clean-up review_pane does — the ref is written by the loop
+        21) # ^A: same clean-up review_pane does — the ref is written by the loop,
+            # and clear_sess leaves an in-flight comments.md.deliver alone.
             tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
             "$(dirname "$SELF")/agent-state" recount "$pane"
-            [ -d "$sess" ] && [ ! -L "$sess" ] && rm -rf -- "$sess"
+            clear_sess "$sess"
             exit 0 ;;
         *)  # leave / discard / a dropped popup: the store stays as the loop
             # left it. The rmdir is review_pane's own -- it takes the dir a

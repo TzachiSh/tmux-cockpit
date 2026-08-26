@@ -4478,6 +4478,43 @@ done
 is "a D/F-blocked ref refuses the approve -- the session dir survives" "0" "$srgone"
 is "and refs/cockpit/reviewed/feat was never written" "" \
    "$(git -C "$SRDIR" rev-parse -q --verify refs/cockpit/reviewed/feat 2>/dev/null)"
+# ^A must not take a review that is already IN FLIGHT. A delivery into a busy
+# pane lives in comments.md.deliver with @cockpit_review_spool armed at it, and
+# ^A is allowed then (the guard only refuses PINNED comments, and the store is
+# empty once the batch went out) -- so the old `rm -rf` on the session dir threw
+# the queued review away, left the option pointing at a path that no longer
+# existed, and took delivered.md with it. Named files only now; the dir stands
+# while the spool is in it and review-gate rmdirs it after the drain.
+QSDIR=$(mktmpd)
+(
+  cd "$QSDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'q\n' > f; git add -A; git commit -q -m init
+  printf 'q\nCHANGED\n' > f
+) >/dev/null 2>&1
+QSAP=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -c "$QSDIR" -P -F '#{pane_id}' 'exec -a claude bash')
+QSSESS="$RASTATE/tmux-cockpit/review/${QSAP#%}-$(printf '%s' "$QSDIR" | cksum | cut -d' ' -f1)"
+QSCTL=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$QSCTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $QSAP" Enter
+review_enter "$RA" "$QSCTL"
+# The picker is up, so review_pane has made the dir: drop into it exactly what a
+# queued delivery leaves behind, then approve.
+printf 'IN-FLIGHT REVIEW\n' > "$QSSESS/comments.md.deliver"
+printf 'an earlier batch\n' > "$QSSESS/delivered.md"
+"$TMUX_REAL" -L "$RA" set-option -p -t "$QSAP" @cockpit_review_spool "$QSSESS/comments.md.deliver" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" send-keys -t "$QSCTL" C-a
+for i in $(seq 1 40); do [ -e "$QSSESS/delivered.md" ] || break; sleep 0.1; done
+is "^A leaves a queued review's spool alone" "IN-FLIGHT REVIEW" "$(cat "$QSSESS/comments.md.deliver" 2>/dev/null)"
+is "and the pane's spool option still points at it" "$QSSESS/comments.md.deliver" \
+   "$("$TMUX_REAL" -L "$RA" show-option -pqv -t "$QSAP" @cockpit_review_spool)"
+is "the session dir stands while the spool is in it" "present" "$([ -d "$QSSESS" ] && echo present || echo gone)"
+is "but ^A took the store and delivered.md" "gone gone" \
+   "$([ -e "$QSSESS/comments.md" ] && echo present || echo gone) $([ -e "$QSSESS/delivered.md" ] && echo present || echo gone)"
+is "and it still wrote the checkpoint ref" "tree" \
+   "$(git -C "$QSDIR" cat-file -t "$(git -C "$QSDIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)" 2>/dev/null)"
+# review-gate's own rmdir is what finishes the dir off after the drain.
+rm -f "$QSSESS/comments.md.deliver"; rmdir "$QSSESS" 2>/dev/null
+is "and the dir goes once the spool is drained" "gone" "$([ -d "$QSSESS" ] && echo present || echo gone)"
 unset -f ra_shell
 "$TMUX_REAL" -L "$RA" kill-server >/dev/null 2>&1
 fi
@@ -4848,6 +4885,10 @@ case "$(apcap)" in
     *) bad "the same review lands as a paste once the pane is done" "marker on the agent pane" "$(apcap)" ;;
 esac
 is "an idle delivery leaves no spool armed" "" "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
+# The spool is written BEFORE the busy/idle choice tmux makes, so the paste
+# path writes one too and nobody will ever read it. Left behind, it also kept
+# done_store's rmdir from ever emptying the session dir.
+is "and no .deliver file behind" "absent" "$([ -e "$RDSTORE.deliver" ] && echo present || echo absent)"
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 
