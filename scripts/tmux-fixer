@@ -102,7 +102,7 @@ spawn_fixer() {               # <main-pane>
     else IFS= read -r job; IFS= read -r guard; fi
     job=${job//[$'\001'-$'\037']/}; guard=${guard//[$'\001'-$'\037']/}
     [ -n "$job" ] || exit 0
-    root=$(git -C "$(tmux display-message -p -t "$pane" '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null) || {
+    root=$(git -C "$("$REVIEW" --dir "$pane")" rev-parse --show-toplevel 2>/dev/null) || {
         tmux display-message "tmux-fixer: $pane is not in a git repo" 2>/dev/null; exit 1; }
     dl=$(tmux show-option -gqv @cockpit_fixer_deadline); case "$dl" in ''|*[!0-9]*) dl=300 ;; esac
     rm -rf -- "$f" "$sess/handover"            # a stale record and its unconsumed handover
