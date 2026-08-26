@@ -1724,12 +1724,24 @@ SOCKS="$SOCKS $OUTER $INNER"
 "$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 -n zero \
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+# The shipped config loads the INSTALLED plugin; this tree's bindings only
+# get on the server through an explicit run-shell, and the check proves it.
+"$TMUX_REAL" -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$INNER" list-keys -T root)" in
+    *"$DIR/scripts/tmux-branch"*) ok "this tree's cockpit.tmux is the one bound" ;;
+    *) bad "this tree's cockpit.tmux is the one bound" "$DIR/scripts/tmux-branch in root keys" "absent" ;;
+esac
 "$TMUX_REAL" -L "$INNER" new-window -d -t t -n TARGET 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
 OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
-if until_cap "$OUTER" "$OP" '*TARGET*'; then
+# Wait for the tab AND the [x] border button: the baseline below covers the
+# border row, so it must be painted before the snapshot or the compare races.
+if until_cap "$OUTER" "$OP" '*TARGET*' && until_cap "$OUTER" "$OP" '*\[x]*'; then
     # The tab's cell: the inner status line is the last line of the outer pane.
+    # Column counting assumes the default ASCII window-status-format; the
+    # status row itself is excluded from the compare (its highlight moves), so
+    # a flash confined to that row is not covered here.
     scr=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")
     row=$(printf '%s\n' "$scr" | grep -n TARGET | tail -1 | cut -d: -f1)
     line=$(printf '%s\n' "$scr" | sed -n "${row}p"); pre=${line%%TARGET*}; col=$((${#pre}+1))
