@@ -4149,7 +4149,7 @@ case "$rlh4" in
     *) bad "the delivered count comes before the glyph legend on the fourth line" '...$ndlv... ● pinned ...' "$rlh4" ;;
 esac
 
-echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their text, one line per row =="
+echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their lines, one per row =="
 if need_tmux "tmux-review alt-c"; then :; else
 MC="cockpit-mc-$$"; SOCKS="$SOCKS $MC"; MCDIR=$(mktmpd); MCSTORE="$STATE/review-multicopy-$$"
 (

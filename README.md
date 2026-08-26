@@ -570,7 +570,7 @@ option, so you can bend the picker to your own taste without patching the
 script:
 
 ```sh
-set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▶'"
+set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▸'"
 ```
 
 It is confined to this picker on purpose. In the comment loop `↵` has a
@@ -595,7 +595,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `⇥` | — | mark the row (any number) |
 | `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
 | `alt-y` | — | copy the whole review's diff |
-| `alt-c` | — | copy the marked rows' lines as the file has them, tabs and all (or the row under the cursor), to the tmux buffer and the clipboard |
+| `alt-c` | — | copy the marked rows' lines as the file has them, tabs and all (a `-` row: HEAD's line; or the row under the cursor), to the tmux buffer and the clipboard |
 | `^B` | — | cycle the base the diff is taken against |
 | `^A` | — | approve what you just read (only with nothing pinned) |
 | `^S` | — | deliver the whole batch; asks first |

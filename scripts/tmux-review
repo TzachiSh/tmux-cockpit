@@ -950,7 +950,7 @@ attach() {
 # parse_store sets a store that does not parse aside as .bak and says so on
 # stderr only; ^X and ^E run under execute-silent, which eats stderr, so the
 # marks vanished without a word (#22). The lib stays tmux-free; this says it.
-load_store() {                # <store>
+load_store() {                # <store>; callers guard [ -s ] first, or a stale .bak beside an empty store would fire this
     parse_store "$1"
     [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
         || tmux display-message "tmux-review: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
@@ -1118,7 +1118,8 @@ copy_mode() {                 # <dir> [path]
 # The list row's fragment is cut at 160 bytes and stripped of control
 # characters (tabs included); the file has the real line.
 copy_lines() {                # <dir> <path>... <line-with-sign>...
-    local dir=$1 n i; shift
+    local dir=${1:-} n i; shift
+    [ -n "$dir" ] && [ $(( $# % 2 )) -eq 0 ] || return 0
     n=$(( $# / 2 ))
     for ((i = 1; i <= n; i++)); do
         [ "${!i}" != "$CAP_SENTINEL" ] || continue
@@ -1184,7 +1185,8 @@ run_loop() {
     copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
     # {+1} {+2}: the path and line of every ⇥-marked row, or of the cursor row
-    # when none is marked. Same output gate as ^Y: the cap row yields nothing.
+    # when none is marked. fzf placeholders: they must reach --bind literally,
+    # unexpanded. Same output gate as ^Y: the cap row yields nothing.
     copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than

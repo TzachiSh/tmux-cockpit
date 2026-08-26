@@ -85,8 +85,8 @@
 
 **Files:** `scripts/tmux-review`, `tests/run.sh`, `README.md` (if the legend is quoted there).
 
-- [ ] Fail-first: a static block extracts the three key lines of the `--header=$'...'` literal and asserts each ≤ 80 cells (`wc -m` on the ANSI-free text); master's first line is 88.
-- [ ] Reflow: drop the words that only restate the key (`pin the typed comment` → `pin`, `copy file+diff` → `copy file`), keep every key; the fourth (dynamic) line is untouched.
+- [ ] Fail-first: a static block extracts the three key lines of the `--header=$'...'` literal and asserts each ≤ 76 cells (`wc -m` on the text; an 80-column popup keeps 76 after the popup border and fzf's pointer margin); master's first line is 77. A second assertion pins `$ndlv` ahead of `● pinned` on the fourth line.
+- [ ] Reflow: `^R refresh` moves from line 1 to line 2 (64/66/64 cells), every key and its wording kept; on the dynamic fourth line the `↺ N delivered earlier` count moves ahead of the glyph legend so a long root cuts the legend, not the count.
 - [ ] Green, lint, commit `fix: the review legend fits 80 columns`.
 - [ ] Review; fix findings.
 

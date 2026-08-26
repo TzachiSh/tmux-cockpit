@@ -15,8 +15,8 @@ linked inline; anything marked `[repo]` was read from this checkout.
 |---|------|----------|------------------|
 | 1 | alt-c copies a stripped, cut fragment | task | every tool copies the real line; ours is the only one that copies a display proxy |
 | 2 | a saved ^E merges several comments into one | skip | the consumer is one agent reading paragraphs under one anchor; only the `●2` glyph changes |
-| 3 | legend truncates below ~90 columns | one-line fix | reflow to 80 cells; the full map already lives in `--help` |
-| 4 | a corrupt store is set aside silently | one-line fix | the `.bak` note moves from stderr to `tmux display-message`, in `parse_store` where every caller passes |
+| 3 | legend truncates below ~90 columns | one-line fix | reflow to 76 cells (an 80-column popup after its border and fzf's pointer margin); the full map already lives in `--help` |
+| 4 | a corrupt store is set aside silently | one-line fix | the `.bak` note reaches `tmux display-message` from a `load_store` wrapper `^X` and `^E` both use; the lib stays tmux-free |
 | 5 | alt-c on the cap row copies the notice | folded into 1 | the new copy path refuses `CAP_SENTINEL` like `attach` and `^Y` |
 | 6 | the fleet picker's border is black | one-line fix | the same `border:8,scrollbar:8` token in the four other pickers; all five draw a `border-top` preview |
 | 7 | `▶` overwrites a digit past 9999; ambiguous width | task | `%6` gutter and a neutral-width glyph; six pinned test strings move with it |
@@ -270,10 +270,6 @@ border, and the one fzf paints black is the preview separator inside the
 popup, which tmux cannot see. One shared `FZF_COLOR` would need an
 environment contract between `cockpit.tmux` and five scripts for one token;
 not worth it.
-
-## 7. `▶` overwrites a digit past 9999 lines; `▶` is ambiguous-width
-
-PENDING
 
 ## Not in scope
 
