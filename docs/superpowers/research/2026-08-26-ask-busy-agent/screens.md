@@ -1,6 +1,6 @@
 # The five #54 screens, designed
 
-Design lane, 2026-08-26, read-only. Refines the drafts in [ux.md](ux.md) §2 with a shared grid, colour roles, glyph tiers, truncation rules and 80/120-column mockups. The fzf notes target 0.74.4 (latest) with a plain tier; see the #58 audit ([pickers.md](../2026-08-26-ui-audit/pickers.md)) for the shared theme.
+Design lane, 2026-08-26, read-only. Refines the drafts in [ux.md](ux.md) §2 with a shared grid, colour roles, glyph tiers, truncation rules and 80/120-column mockups. The fzf notes target 0.74.3 (latest) with a plain tier; see the #58 audit ([pickers.md](../2026-08-26-ui-audit/pickers.md)) for the shared theme.
 
 ## 0. Shared style guide
 
