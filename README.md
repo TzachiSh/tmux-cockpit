@@ -214,6 +214,7 @@ from `examples/claude-hooks.json` by hand:
 | hook | state |
 |------|-------|
 | `SessionStart` | `off` — a resumed pane must not inherit old state |
+| `SessionStart` (2nd) | injects `skills/unslop/SKILL.md` as context: the writing rules every agent on the box follows, with no per-machine paste |
 | `UserPromptSubmit` | `running` |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
@@ -812,8 +813,9 @@ What this deliberately does **not** do, and why:
 - **Test files sort first, never last** in the diff-line list — a change to
   the tests is read before the change it tests, not after.
 
-**The agent can ask.** `install.sh` links `skills/cockpit-review` into
-`~/.claude/skills`, so `/cockpit-review` (or "get this reviewed") runs
+**The agent can ask.** `install.sh` links every `skills/*` dir into
+`~/.claude/skills` (`cockpit-review`, and `unslop`, the writing rules the
+`SessionStart` hook injects), so `/cockpit-review` (or "get this reviewed") runs
 `tmux-review --request` from the agent's own pane: one popup, the same
 loop, and the batch comes back as the tool's result (exit 10) instead of a
 paste — revdiff's contract. `^A` there approves as anywhere else.

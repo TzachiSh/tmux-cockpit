@@ -1704,6 +1704,7 @@ mkdir -p "$IB/.claude"
 HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
 is "installs through a symlinked plugin dir" "3" "$(ls "$IBIN" | wc -l)"
 is "the skill is linked into ~/.claude/skills" "$DIR/skills/cockpit-review" "$(readlink "$IB/.claude/skills/cockpit-review")"
+is "and so is every other skills/* dir" "$DIR/skills/unslop" "$(readlink "$IB/.claude/skills/unslop")"
 # DIR came from a LOGICAL pwd while the guard compared readlink -f of the link,
 # so reaching the plugin through a symlink -- a dotfiles checkout linked into
 # ~/.tmux/plugins is the usual way -- made --uninstall remove nothing, silently.
@@ -2750,6 +2751,8 @@ case "$(cat "$HK/.claude/settings.json")" in
     *tmux-cockpit*agent-state*) ok "cockpit's hooks arrived" ;;
     *) bad "cockpit's hooks arrived" "an agent-state command" "$(head -c200 "$HK/.claude/settings.json")" ;;
 esac
+is "the unslop skill is injected on SessionStart" "1" \
+   "$(jq '[.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))] | length' "$HK/.claude/settings.json")"
 is "the user's other settings are untouched" "opus" \
    "$(jq -r .model "$HK/.claude/settings.json")"
 [ -f "$HK/.claude/settings.json.bak" ] && ok "a backup was written" \
