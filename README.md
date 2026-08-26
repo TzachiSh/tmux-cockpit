@@ -225,6 +225,7 @@ from `examples/claude-hooks.json` by hand:
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
+| `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>`, so the session's cwd is the tree it works in and every cockpit read describes that tree; not with `--worktree --tmux` together, which skips the hook |
 | `SessionEnd` | `off` |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
@@ -258,7 +259,7 @@ over earlier, `prefix r` included.
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
-| `prefix + i` | one screen for the pane you are on: state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
+| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -515,6 +516,13 @@ other agents waiting on you stay on screen instead of being replaced by it.
 Finishing a review returns to the queue, on the pane you just left, so
 reviewing four agents is four `↵` rather than four `prefix + r`; `esc` on the
 list is the way out.
+
+The review diffs the **git root of the pane's cwd**, and the header names it
+(`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
+by absolute path from a main-checkout pane is reviewed on the wrong tree, and
+that line is how you notice. The fix is workflow, not the plugin: an agent that
+works on a branch lives in that worktree, which is what the `WorktreeCreate`
+hook above arranges for `claude --worktree` and `EnterWorktree`.
 
 The review opens in a popup. `set -g @cockpit_review_window on` opens it as a
 real window (`new-window -n review`) instead, if you would rather keep the

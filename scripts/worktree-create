@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# WorktreeCreate hook: put claude's worktree under ~/.cache/cockpit-wt/<name>
+# on a branch of that name, so the pane's cwd IS the tree the agent works in
+# and every cockpit read (prefix r, ◆, fleet, status line) describes it.
+# claude takes the LAST stdout line as the path; git's chatter goes to stderr.
+# An existing branch is checked out, an existing worktree reused. Never
+# removes anything: the tree outlives the session on purpose (resumable).
+set -u
+payload=$(cat)
+name=""
+case "$payload" in
+    *'"name"'*) name=${payload#*'"name"'}; name=${name#*:}; name=${name#*'"'}; name=${name%%'"'*} ;;
+esac
+name=${name//[$'\001'-$'\037']/}
+case "$name" in
+    ''|-*|*/-*|..|../*|*/..|*/../*|*'\'*|*' '*) printf 'worktree-create: refusing name "%s"\n' "$name" >&2; exit 1 ;;
+esac
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/cockpit-wt/$name"
+if [ ! -d "$dir" ]; then
+    mkdir -p -- "${dir%/*}" || exit 1
+    if git rev-parse -q --verify "refs/heads/$name" >/dev/null 2>&1; then
+        git worktree add -- "$dir" "$name" >&2 || exit 1
+    else
+        git worktree add -b "$name" -- "$dir" >&2 || exit 1
+    fi
+fi
+printf '%s\n' "$dir"

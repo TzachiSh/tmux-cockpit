@@ -521,6 +521,27 @@ case "$(tmux show-option -gqv @cockpit_fleet)" in
 esac
 fi
 
+echo "== worktree-create: EnterWorktree lands under ~/.cache/cockpit-wt/<name>, on a branch of that name =="
+# issue #3: an agent that works on a branch has to LIVE in that worktree, or
+# every cockpit read (review, ◆, fleet, status line) describes the wrong tree.
+# The WorktreeCreate hook replaces claude's own .claude/worktrees/ placement;
+# claude reads the last stdout line as the path, so anything else goes to stderr.
+WCREPO=$(mktmpd); WCCACHE=$(mktmpd)
+( cd "$WCREPO" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; git branch old ) >/dev/null 2>&1
+wc_run() { ( cd "$WCREPO" && printf '%s' "$1" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-create" 2>"$WCCACHE/err" ); }
+is "a new name gets a worktree under cockpit-wt and prints its path" "$WCCACHE/cockpit-wt/feat-x" \
+   "$(wc_run '{"session_id":"s","cwd":"'"$WCREPO"'","hook_event_name":"WorktreeCreate","name":"feat-x"}' | tail -n1)"
+is "and that worktree is on a branch of the same name" "feat-x" "$(git -C "$WCCACHE/cockpit-wt/feat-x" branch --show-current 2>/dev/null)"
+is "an existing branch is checked out, not recreated" "old" \
+   "$(wc_run '{"name": "old", "cwd": "'"$WCREPO"'"}' >/dev/null; git -C "$WCCACHE/cockpit-wt/old" branch --show-current 2>/dev/null)"
+is "an existing worktree is reused (claude --worktree <name> reopens it)" "$WCCACHE/cockpit-wt/old" "$(wc_run '{"name":"old"}' | tail -n1)"
+is "only the path reaches stdout" "1" "$(wc_run '{"name":"feat-y"}' | grep -c .)"
+wc_run '{"name":"../escape"}' >/dev/null; is "a name with .. is refused" "1" "$?"
+[ -e "$WCCACHE/escape" ] && bad "a name with .. is refused" "nothing created" "$WCCACHE/escape exists"
+wc_run '{"cwd":"x"}' >/dev/null; is "no name is refused" "1" "$?"
+git -C "$WCREPO" worktree prune >/dev/null 2>&1
+
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
 if need_tmux "review-gate"; then :; else
 RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"; RGSTATE=$(mktmpd); RGDIR=$(mktmpd)
@@ -4624,6 +4645,9 @@ RBP=$("$TMUX_REAL" -L "$RBS" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" \
     "XDG_STATE_HOME=$(printf '%q' "$RBSTATE") '$DIR/scripts/tmux-review' --loop $(printf '%q' "$RB") $(printf '%q' "$RBSTATE/c.md")" Enter
 until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the base" || bad "the header names the base" "base: since last review" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+# issue #3: the header says which tree this review diffs, so a session that
+# reached into another worktree by absolute path is caught by eye.
+until_cap "$RBS" "$RBP" "*root: ${RB/#$HOME/\~}*" && ok "the header names the root" || bad "the header names the root" "root: ${RB/#$HOME/\~}" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
 until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"
@@ -6408,8 +6432,18 @@ INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
 INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
 mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
 inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
-for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+for want in "pane      $INAP" "cwd       $INDIR" "root      $INDIR" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
     case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
+done
+# The root is what the review diffs, and it is not the cwd: a pane parked in
+# a subdirectory (or, issue #3, a session that edits another tree by absolute
+# path) has to see the tree the popup will actually show.
+mkdir -p "$INDIR/sub"
+"$TMUX_REAL" -L "$IN" new-window -d -t t: -c "$INDIR/sub" 'exec -a claude bash' >/dev/null 2>&1
+INSUB=$("$TMUX_REAL" -L "$IN" list-panes -t t:1 -F '#{pane_id}')
+insub=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INSUB --info" 2>&1)
+for want in "cwd       $INDIR/sub" "root      $INDIR"; do
+    case "$insub" in *"$want"*) ok "info from a subdirectory shows: $want" ;; *) bad "info from a subdirectory shows: $want" "$want" "$insub" ;; esac
 done
 # display-message exits 0 on a pane id that does not exist, expanding every
 # format to "" -- so a screen built on the exit code described the CALLER's own
