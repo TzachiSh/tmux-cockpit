@@ -128,7 +128,7 @@ answer it  in the pane, as today
 
 No step sends keys into an agent. No step needs the human to leave what they were doing to find out whether they must.
 
-## 4. TUI: what the community uses, and what fits here
+## 4. TUI: what the community uses, and what fits here (the full research with two measured spikes is in [tui.md](tui.md))
 
 | stack | who | what it buys | what it costs |
 |---|---|---|---|
