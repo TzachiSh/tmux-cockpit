@@ -98,6 +98,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
+  tmux-review --sess <pane>             the review session dir for <pane> (tmux-fixer, review-gate)
 In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-c copy lines   alt-y copy all   ^/ preview   alt-↑↓ scroll   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
@@ -153,7 +154,7 @@ tree_diff() {
     # index to copy), HEAD, and the branch review_base keys on. rev-parse
     # carries on past an argument it cannot resolve, so an unborn HEAD leaves
     # two lines (git dir, "HEAD") and a born one three. This and review_base
-    # were 10 forks per root; the 20-pane fleet gate (timeout 1) caught it.
+    # were 10 forks per root; the 20-pane fleet fork count caught it.
     mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
     gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
     [ -n "$gd" ] || return 1
@@ -873,6 +874,16 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
 # so the parser (compose is a plain cat, but any future reader) can't mistake
 # it for a header; "??" needs no handling at all, it passes straight through
 # -- the composed header is what tells the agent it is a question.
+# The line as the tree (+) or HEAD (-) has it, sign-prefixed line as the rows
+# carry it. attach() quotes it; alt-c copies it.
+read_line() {                 # <dir> <path> <line-with-sign>
+    case "${3#-}" in ''|*[!0-9]*) return 0 ;; esac   # anything else is a sed script
+    case "$3" in
+        -*) git -C "$1" show "HEAD:$2" 2>/dev/null | sed -n "${3#-}p" ;;
+        *)  sed -n "${3}p" -- "$1/$2" 2>/dev/null ;;
+    esac
+}
+
 attach() {
     local store=$1 path=$2 line=$3 fragment=$4 comment=$5 dir=${6:-}
     # No row under the cursor (an empty list, or the query cleared the match)
@@ -898,10 +909,7 @@ attach() {
     # (+) or HEAD (-); fall back to the fragment on any miss.
     local full="" ft gt
     if [ -n "$dir" ]; then
-        case "$sign" in
-            +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
-            -) full=$(git -C "$dir" show "HEAD:$path" 2>/dev/null | sed -n "${num}p") ;;
-        esac
+        full=$(read_line "$dir" "$path" "$line")
         full=${full//[$'\001'-$'\037'$'\177']/}
         full=${full:0:1000}
         # The guard: the line read back from the tree must still START with the
@@ -940,6 +948,15 @@ attach() {
 # goes, the rest are written back byte-identical (parse is the declared
 # inverse of format -- the round-trip test in tests/run.sh pins it). This
 # and nothing else in the script rewrites the store; attach() appends.
+# parse_store sets a store that does not parse aside as .bak and says so on
+# stderr only; ^X and ^E run under execute-silent, which eats stderr, so the
+# marks vanished without a word (#22). The lib stays tmux-free; this says it.
+load_store() {                # <store>; callers guard [ -s ] first, or a stale .bak beside an empty store would fire this
+    parse_store "$1"
+    [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
+        || tmux display-message "tmux-review: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
+}
+
 detach() {                    # <store> <path> <line-with-sign>
     local store=$1 path=$2 line=$3 sign=+ num i j=0 k
     [ -n "$path" ] && [ -n "$line" ] || return 0
@@ -948,7 +965,7 @@ detach() {                    # <store> <path> <line-with-sign>
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
     declare -A STORE=() OUT=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     # A store that fails to parse is moved aside to .bak and STORE_N comes
     # back 0 -- the [ -s "$store" ] guard above already sent a genuinely
     # empty file home, so 0 here can only mean the parse was rejected.
@@ -1011,19 +1028,21 @@ pane_label() {                # <pane-id>
 }
 
 # Every body pinned on one anchor, so ^E can open what is there. Several
-# comments on one row come back as one, blank-line separated.
-seed_comment() {              # <store> <path> <line-with-sign>
-    local store=$1 path=$2 line=$3 sign=+ num i sep=""
+# comments on one row come back as one, blank-line separated. With `frag`,
+# the first record's > quote instead: the snapshot the edit must keep.
+seed_comment() {              # <store> <path> <line-with-sign> [body|frag]
+    local store=$1 path=$2 line=$3 key=${4:-body} sign=+ num i sep=""
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     [ -s "$store" ] || return 0
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || return 0
     declare -A STORE=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] || continue
-        printf '%s%s\n' "$sep" "${STORE[$i.body]}"; sep=$'\n'
+        printf '%s%s\n' "$sep" "${STORE[$i.$key]:-}"; sep=$'\n'
+        [ "$key" = body ] || break
     done
 }
 
@@ -1049,7 +1068,13 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     # only looked at would merge them into a single record, ●2 down to ●.
     [ "$inplace" -eq 1 ] && [ "$(cat -- "$tmp")" = "$seed" ] && { rm -f -- "$tmp"; return 0; }
     # Edit in place = the old blocks go, the file comes back as one; an emptied file deletes.
-    [ "$inplace" -eq 1 ] && detach "$store" "$path" "$line"
+    # The stored quote, not the row's fragment: attach re-reads the live line
+    # only while it still starts with what is passed here, so a line the agent
+    # moved since the snapshot keeps its old quote instead of taking the new text.
+    if [ "$inplace" -eq 1 ]; then
+        seed=$(seed_comment "$store" "$path" "$line" frag); [ -n "$seed" ] && fragment=$seed
+        detach "$store" "$path" "$line"
+    fi
     attach "$store" "$path" "$line" "$fragment" "$(cat -- "$tmp")" "$dir"
     rm -f -- "$tmp"
 }
@@ -1087,6 +1112,20 @@ copy_mode() {                 # <dir> [path]
         printf '### %s\n' "$path"; cat -- "$dir/$path"; printf '\n### diff %s\n' "$path"
     fi
     tree_diff "$dir" -- "$path"
+}
+
+# alt-c: fzf hands {+1} then {+2}, every marked row's path then every line, so
+# the first half of the arguments are paths and the second half their lines.
+# The list row's fragment is cut at 160 bytes and stripped of control
+# characters (tabs included); the file has the real line.
+copy_lines() {                # <dir> <path>... <line-with-sign>...
+    local dir=${1:-} n i; shift
+    [ -n "$dir" ] && [ $(( $# % 2 )) -eq 0 ] || return 0
+    n=$(( $# / 2 ))
+    for ((i = 1; i <= n; i++)); do
+        [ "${!i}" != "$CAP_SENTINEL" ] || continue
+        read_line "$dir" "${!i}" "${@:i+n:1}"
+    done
 }
 
 # --- --loop ----------------------------------------------------------------
@@ -1146,11 +1185,10 @@ run_loop() {
     # whatever was already there. Gate the load and the message on real output.
     copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
-    # alt-c has no variable here: its {+3} -- field 3 of every ⇥-marked row, or
-    # of the cursor row when none is marked -- is an fzf placeholder, and must
-    # reach fzf literally out of the double-quoted bind below, unexpanded.
-    # ponytail: a row's fragment is the list's -- cut at 160 bytes AND stripped of
-    # control chars, so tab indentation is lost; read the file per row if either matters.
+    # {+1} {+2}: the path and line of every ⇥-marked row, or of the cursor row
+    # when none is marked. fzf placeholders: they must reach --bind literally,
+    # unexpanded. Same output gate as ^Y: the cap row yields nothing.
+    copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -1204,7 +1242,7 @@ run_loop() {
                   --bind "ctrl-l:execute(${list_cmd})" \
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-y:execute-silent(${copy_cmd})" \
-                  --bind "alt-c:execute-silent(printf '%s\n' {+3} | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied')" \
+                  --bind "alt-c:execute-silent(${copy_lines_cmd})" \
                   --bind "alt-y:execute-silent(${copy_all_cmd})" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --bind 'alt-up:preview-up,alt-down:preview-down' \
@@ -1212,7 +1250,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^R refresh\n^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
+                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list\n^Y copy file+diff   alt-c copy lines   alt-y copy all   ^R refresh\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}$ndlv   ● pinned   ↺ last round")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1871,6 +1909,13 @@ session_dir() {               # <pane-id> <root>
         "${1#%}" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
 }
 
+sess_mode() {                 # <pane> -> the review session dir for the pane's repo root, created 0700
+    local pane=$1 dir root sess
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null); [ -n "$dir" ] || return 1
+    root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root")
+    (umask 077; mkdir -p -- "$sess") && printf '%s\n' "$sess"
+}
+
 review_pane() {
     local pane=$1 dir=$2 store rc
     local sess cleanup
@@ -1944,7 +1989,7 @@ review_pane() {
 # timed out) leaves the popup, the store and the rc file alone; running it
 # again resumes the pinned comments, so the recovery is "run it again".
 request() {                   # <pane>
-    local pane=$1 dir root sess store pw ph rc
+    local pane=$1 dir root sess store pw ph rc t
     case "$pane" in %[0-9]*) ;; *) usage; exit 2 ;; esac
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
         printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
@@ -1963,7 +2008,9 @@ request() {                   # <pane>
     rm -f -- "$sess/rc"
     # -E: this returns when the loop exits. display-popup runs the string
     # through sh, so the escaped \$? is the LOOP's code, not tmux's.
-    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T ' review · requested ' \
+    # -T is a tmux format: a # in the path would be expanded, so double it.
+    t=${root/#"$HOME/"/\~/}; t=${t//\#/\#\#}
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T " review · requested · $t " \
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
@@ -1988,13 +2035,14 @@ request() {                   # <pane>
 
 # --- --info: one screen for prefix i -------------------------------------------
 # What the plugin knows about one pane, in the order you ask it: who, what it
-# waits on, the review state, the base, the session, the review dir. Read in
-# ONE display-message, split on a US byte (agent-state's idiom -- tab would
-# collapse the empty fields that mean "unset").
+# waits on, the review state, whether a side fix holds it, the base, the
+# session, the review dir. Read in ONE display-message, split on a US byte
+# (agent-state's idiom -- tab would collapse the empty fields that mean
+# "unset").
 info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f id where cmd path state msg review spool sid title root sess b n1 n2
+    local pane=$1 sep=$'\037' f id where cmd path state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}' 2>/dev/null)
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}' 2>/dev/null)
     id=${f%%"$sep"*};     f=${f#*"$sep"}
     # display-message does NOT fail on a pane id that does not exist -- it
     # expands every format to the empty string and exits 0 (measured on 3.7c),
@@ -2009,12 +2057,19 @@ info_mode() {                 # <pane>
     msg=${f%%"$sep"*};    f=${f#*"$sep"}
     review=${f%%"$sep"*}; f=${f#*"$sep"}
     spool=${f%%"$sep"*};  f=${f#*"$sep"}
-    sid=${f%%"$sep"*};    title=${f#*"$sep"}
+    sid=${f%%"$sep"*};    f=${f#*"$sep"}
+    title=${f%%"$sep"*};  hold=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
+    # The root is the tree prefix r diffs. It is derived from the cwd, so an
+    # agent that edits another worktree by absolute path (issue #3) shows the
+    # wrong tree here -- and this line is how the human notices.
+    root=$(git_root "$path")
+    printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
-    root=$(git_root "$path"); sess=$(session_dir "$id" "$root")
+    printf 'hold      %s\n' "${hold:-—}"
+    sess=$(session_dir "$id" "$root")
     if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
         # The mode ^B chose for THIS review, as run_loop reads it -- passed as
         # the argument review_base actually keys on, not exported (nothing this
@@ -2024,6 +2079,23 @@ info_mode() {                 # <pane>
     fi
     printf 'session   %s\n' "${sid:-—}"
     printf 'title     %s\n' "${title:-—}"
+    if [ -d "$sess/fixer" ]; then
+        # tmux-fixer/review-gate's own record, read the same way they read it
+        # -- no fixer_alive() call here, this reports the raw facts (reason,
+        # pane, deadline, guard) rather than the pass/fail liveness verdict.
+        local freason fpane fdl fguard falive fleft
+        freason=$(cat -- "$sess/fixer/reason" 2>/dev/null)
+        fpane=$(cat -- "$sess/fixer/pane" 2>/dev/null)
+        fdl=$(cat -- "$sess/fixer/deadline" 2>/dev/null)
+        fguard=$(cat -- "$sess/fixer/guard" 2>/dev/null)
+        if [ "$fpane" = pending ] || tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$fpane"; then
+            falive=alive
+        else
+            falive=gone
+        fi
+        case "$fdl" in ''|*[!0-9]*) fleft=0 ;; *) fleft=$(( fdl - $(date +%s) )); [ "$fleft" -lt 0 ] && fleft=0 ;; esac
+        printf 'side fix  %s  pane %s (%s)  deadline in %ss  guard /%s/\n' "$freason" "$fpane" "$falive" "$fleft" "$fguard"
+    fi
     if [ -d "$sess" ]; then
         n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
         printf 'review dir %s\n           %s pinned · %s delivered · ^A removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
@@ -2154,7 +2226,7 @@ fleet_queue() {               # [preselect-pane]
 
         out=$(printf '%s\n' "${disp[@]}" \
             | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --expect=ctrl-x \
                   --preview "$preview_cmd" \
@@ -2242,6 +2314,8 @@ case "${1:-}" in
         shift; detach "${1:-}" "${2:-}" "${3:-}" ;;
     --copy)
         shift; copy_mode "${1:-}" "${2:-}" ;;
+    --copy-lines)
+        shift; copy_lines "$@" ;;
     --edit)
         shift; edit_comment "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     --vscode)
@@ -2275,6 +2349,8 @@ case "${1:-}" in
         shift; request "${1:-}" ;;
     --info)
         info_mode "${REVIEW_PANE_ID:-}" ;;
+    --sess)
+        shift; sess_mode "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

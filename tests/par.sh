@@ -99,8 +99,8 @@ run_shards() {                       # <parallelism> <shard file>...
     ' _ {}
 }
 
-# `# group: serial` blocks assert a WALL-CLOCK budget (timeout 1.5 on a
-# 6-million-row diff, timeout 1 on a 20-pane fleet scan), so they measure the
+# `# group: serial` blocks run against a clock or a 50 MB fixture (5 s on a
+# 50-pane fleet scan, 3 s on a 5000-row --lines build, ...), so they measure the
 # box's spare CPU as much as the code. Measured: green at J=4, red at J=8 and
 # J=12. They run first, alone, while nothing competes; the other ~106 blocks
 # then take the machine. Costs about 6 s and is why `make test-par` is green.

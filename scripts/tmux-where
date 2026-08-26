@@ -15,8 +15,8 @@
 #
 # The THIRD arg tells the two forms apart: %[0-9]* is the only shape #{pane_id}
 # ever expands to, and no real path starts with it. cockpit.tmux's #() job uses
-# the pane_id form ONLY -- pane_current_path/pane_current_command are fetched
-# below via a second tmux call keyed on pane_id, as DATA, never again as text
+# the pane_id form ONLY -- pane_current_path/pane_current_command are read below
+# from /proc via pane_pid (one tmux call as the fallback), as DATA, never again as text
 # embedded in the job's command string. tmux expands #{...} tokens INSIDE that
 # string before sh ever parses it, so a value containing a shell metacharacter
 # used to run as a command on every redraw; #{q:} escapes quotes/$()/backticks
@@ -57,8 +57,43 @@ path=""
 cmd=""                # #{pane_current_command}, tmux's view of the foreground proc
 case "$arg3" in
     %[0-9]*)
-        path=$(tmux display-message -p -t "$arg3" '#{pane_current_path}' 2>/dev/null)
-        cmd=$(tmux display-message -p -t "$arg3" '#{pane_current_command}' 2>/dev/null)
+        # Read both from /proc the way tmux computes them (osdep-linux.c:
+        # tcgetpgrp of the pty, then /proc/<pgrp>/cwd and cmdline); tpgid is
+        # the 6th field after the ")" in /proc/<pane_pid>/stat. No command
+        # client: the two display-message calls this replaces ran on every
+        # status tick and filled the 1000-entry message log in minutes, so
+        # show-messages could not diagnose anything on a live server (#24).
+        if [ -n "$pid" ] && read -r line 2>/dev/null < "/proc/$pid/stat"; then
+            # After the ")": state ppid pgrp session tty tpgid. The positional
+            # params are free, $1-$4 are already in mode/pid/arg3/arg4.
+            # shellcheck disable=SC2086
+            set -- ${line##*) }; sess=${4:-}; tp=${6:-}
+            # The chdir is deliberate and is not undone: everything below
+            # takes an absolute path. cd -P through the magic link SUCCEEDS
+            # on a deleted directory and leaves PWD as the link itself, so
+            # that shape is rejected and falls through to tmux, which says
+            # "... (deleted)". tmux retries with the tty's session leader when
+            # the pgrp's cwd is unreadable (a pane parked in sudo); same here.
+            for d in "$tp" "$sess"; do
+                cd -P "/proc/$d/cwd" 2>/dev/null || continue   # unreadable: try the leader
+                [ "$PWD" != "/proc/$d/cwd" ] && path=$PWD      # deleted: leave it to tmux
+                break                                          # not the leader's cwd
+            done
+            if [ -n "$path" ]; then
+                IFS= read -r -d '' cmd 2>/dev/null < "/proc/$tp/cmdline"
+                # tmux's parse_window_name() without its "exec " strip and
+                # trailing-char trim, which no live argv[0] carries: drop
+                # leading "-"/spaces, first word, basename if absolute.
+                cmd=${cmd#"${cmd%%[! -]*}"}; cmd=${cmd%% *}
+                case "$cmd" in /*) cmd=${cmd##*/} ;; esac
+            fi
+        fi
+        # No /proc (macOS, BSD) or a pane whose process is gone: ask tmux,
+        # both values in ONE call.
+        if [ -z "$path" ] || [ -z "$cmd" ]; then
+            out=$(tmux display-message -p -t "$arg3" $'#{pane_current_path}\037#{pane_current_command}' 2>/dev/null)
+            path=${out%%$'\037'*}; cmd=${out#*$'\037'}
+        fi
         ;;
     *)
         path="$arg3"

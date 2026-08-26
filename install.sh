@@ -110,11 +110,14 @@ link_one() {                  # <link> <target>
 
 if [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
-# The cockpit-review skill, for Claude Code -- only where Claude Code is
-# installed (~/.claude exists), so a plain shell box gets no stray dir.
+# Every skills/* dir, for Claude Code -- only where Claude Code is installed
+# (~/.claude exists), so a plain shell box gets no stray dir.
 if [ -d "${HOME:-}/.claude" ]; then
     [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
-    link_one "${HOME}/.claude/skills/cockpit-review" "$DIR/skills/cockpit-review"
+    for s in "$DIR"/skills/*/; do    # [ -d ]: an empty skills/ leaves the glob unexpanded
+        [ -d "$s" ] || continue
+        s=${s%/}; link_one "${HOME}/.claude/skills/${s##*/}" "$s"
+    done
 fi
 else
     printf 'dry-run: skipping the symlink step\n'
@@ -179,12 +182,21 @@ if [ "$hooks" -eq 1 ]; then
     # matcher:"" and a shipped one without it are the same hook. Measured:
     # exactly that shape mismatch on the Stop event made every --hooks run
     # append one more duplicate, forever, while the other ten events held.
+    # review-gate's own Stop entry changes shape across versions (timeout 5 ->
+    # 330, the hold added) -- additive alone would keep the old one forever
+    # beside the new. Drop any of THEIRS whose command ENDS in
+    # /scripts/review-gate or /scripts/review-gate --pretool first (anchored
+    # -- an unanchored substring test would also delete a foreign hook that
+    # merely logs to a path containing that text), so an upgrade replaces
+    # cockpit's own entries instead of piling a second one on.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         .[0].hooks as $mine | .[1] as $theirs
+        | ($theirs.hooks // {} | with_entries(.value |=
+            (map(.hooks |= map(select(((.command // "") | test("/scripts/review-gate( --pretool)?\"?$")) | not)))
+             | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
-            ($theirs.hooks // {}) as $h
-            | $h + ($mine | with_entries(
+            $h + ($mine | with_entries(
                 .key as $k
                 | .value = (($h[$k] // []) + [ .value[]
                     | select(. as $e | (($h[$k] // []) | map(norm) | index($e | norm)) == null) ])
