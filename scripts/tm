@@ -74,9 +74,12 @@ in_client() {
 }
 
 go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
-  local name=$1
+  local name=$1 dir=""
   if ! tmux has-session -t "=$name" 2>/dev/null; then
-    tmux new-session -d -s "$name" || die "could not create session '$name'"
+    # In the popup $PWD is the OLD session's start dir; the session's active
+    # pane ($TMUX ends in the session id) is where the human is (#41).
+    [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
+    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "could not create session '$name'"
   fi
   if in_client; then
     tmux switch-client -t "=$name"

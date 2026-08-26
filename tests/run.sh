@@ -917,6 +917,24 @@ is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))'
 rm -rf "$OP"
 
 # tests: scripts/tmux-branch
+echo "== tm: a session created from the picker starts in the pane's directory (#41) =="
+# tm runs in a popup, whose cwd is the CURRENT session's start directory, and
+# new-session without -c takes the command client's cwd: a session made for
+# project B while sitting in A started in A and wore A's branch.
+if need_tmux "tm start dir"; then :; else
+TC="cockpit-tmcwd-$$"; SOCKS="$SOCKS $TC"; TCD=$(mktmpd); mkdir -p "$TCD/a" "$TCD/b"
+"$TMUX_REAL" -L "$TC" -f /dev/null new-session -d -s here -c "$TCD/a" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TC" new-window -a -t here -c "$TCD/b" 'exec sleep 300' >/dev/null 2>&1
+tcsid=$("$TMUX_REAL" -L "$TC" display-message -p -t here '#{session_id}')
+# The popup shape: $TMUX names the server and session, $TMUX_PANE is unset,
+# cwd is the session's start dir. attach-session fails without a tty; the
+# session is already made by then.
+( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
+is "the new session starts where the pane was, not where the old session began" "$TCD/b" \
+   "$("$TMUX_REAL" -L "$TC" display-message -p -t made: '#{session_path}' 2>/dev/null)"
+"$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-branch: local and remote branches =="
 # Plumbing, not `git commit`: no user config, no hooks, no signing prompt.
 BR=$(mktmpd); RM=$(mktmpd)
@@ -1575,7 +1593,7 @@ exit 0
 STUB
 : > "$TMS/log"
 printf -- '-weird name\n' | env -u TMUX PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
-is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name" "$(cat "$TMS/log")"
+is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="
