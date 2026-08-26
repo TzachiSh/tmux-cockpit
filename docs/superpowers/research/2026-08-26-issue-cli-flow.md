@@ -6,9 +6,12 @@ from tmux instead of the browser. What the CLIs give us, what flow to build,
 what not to do, what already exists, and a plan for later.
 
 Verified locally on this machine unless marked `[docs]`. gh 2.98.0, fzf 0.44.1,
-bat 0.24.0, jq, tmux 3.7c. `glab` is not installed (`command -v glab` returns
-nothing), so every glab line is docs-only. Researched by an Opus agent, checked
-and filed by the session lead.
+bat 0.24.0, jq, tmux 3.7c. `glab` is not installed system-wide; the first pass
+below (sections 1 to 8) read glab from docs only. Revised the same day after the
+owner said GitLab repos are in scope: section 9 verifies glab 1.115.0 against a
+real binary in a scratch dir, and sections 2, 3, 7 are patched to match. Where
+the first pass said "skip GitLab", section 9 wins. Researched by two Opus
+agents, checked and filed by the session lead.
 
 ## 1. What the CLIs give us today
 
@@ -40,26 +43,47 @@ Exact commands run here, with output:
 
 ## 2. Provider detection
 
-Lazy verdict first: do not detect anything. `git remote -v` here is
-`https://github.com/TzachiSh/tmux-cockpit.git` and every repo the owner touches
-is GitHub. `gh` already prints a clear error on a non-GitHub remote, so a
-detection branch would only duplicate gh's own message.
-
-If it is ever needed, the whole thing is one line, no abstraction layer:
+Revised. The owner has repos on GitHub and GitLab (gitlab.com and possibly
+self-hosted), so the script picks its CLI from the one fact that is free,
+local and already true: the origin remote.
 
 ```sh
-case "$(git -C "$dir" remote get-url origin 2>/dev/null)" in *gitlab*) exec glab_path ;; esac
+# github.com goes to gh, everything else to glab, and glab's own "not a known
+# GitLab host" error is the message for anything that is neither.
+issue_cli() {
+    case "$(git -C "${1:-.}" remote get-url origin 2>/dev/null)" in
+        *github.com[:/]*) printf 'gh\n' ;;
+        '') printf 'tmux-issue: no origin remote in %s\n' "${1:-.}" >&2; return 1 ;;
+        *)  printf 'glab\n' ;;
+    esac
+}
 ```
 
-Nothing in the repo parses remotes today. `grep -rn 'remote get-url\|github.com'
-scripts/ cockpit.tmux` finds only `scripts/tmux-branch:107 switch_remote()`
-(origin/foo to a local branch) and tmux-review's `origin/HEAD` base resolution.
-Greenfield, and it should stay empty. Self-hosted GitLab needs a host guess as
-well, and glab's own `GITLAB_HOST` is buggy, so the abstraction would be wrong
-on arrival.
+Verified on real repos: `git@gitlab.com:group/sub/repo.git`,
+`https://gitlab.com/group/repo.git`, `https://git.corp.example/group/repo.git`
+and `ssh://git@git.corp:2222/x/y.git` go to glab; `git@github.com:o/r.git` and
+`ssh://git@github.com/o/r.git` go to gh. The `[:/]` class covers scp-style,
+https and `ssh://` with one arm. A GitHub Enterprise host would land on glab
+and get a named refusal; when one exists the fix is one more `case` arm.
 
-Verdict: GitHub only. One `command -v gh` guard, the same shape as
-`command -v fzf` at `scripts/tmux-review:950` and `:1897`.
+Self-hosted GitLab cannot be told from a hostname, so nothing tries. glab
+refuses with `None of the git remotes configured for this repository point to
+a known GitLab host ... Configured remotes: git.corp.example.` and gh with
+`none of the git remotes configured for this repository point to a known
+GitHub host`. Both exit 1. Nothing we could write is better.
+
+Rejected: a `@cockpit_issue_cli` tmux option (config for a value the remote
+already knows), `glab auth status --hostname H` (a `GET /api/v4/user` on every
+popup open), and parsing `~/.config/glab-cli/config.yml` (glab writes a
+`hosts: gitlab.com:` block on first run with no token, so presence means
+nothing, and it is YAML).
+
+Missing CLI: `command -v "$CLI" >/dev/null 2>&1 || { printf 'tmux-issue: this
+repo needs %s\n' "$CLI" >&2; exit 1; }`, one guard for both, same shape as the
+`command -v fzf` guard at `scripts/tmux-review:950`.
+
+Nothing in the repo parses remotes today (`scripts/tmux-branch:107
+switch_remote()` and tmux-review's `origin/HEAD` base are the only touches).
 
 ## 3. The user flow, good
 
@@ -80,8 +104,8 @@ hang a pane on an editor prompt.
 `prefix g` opens a popup in the existing chrome, `-w "$PW" -h "$PH" -T ' issues
 · <repo> '`, same as `prefix b` at `cockpit.tmux:235`.
 
-Inside is one fzf list, filtered as you type, with `gh issue view {1}
---comments` as the preview, the exact shape of the fleet queue at
+Inside is one fzf list, filtered as you type, with `$CLI issue view {1}
+--comments` as the preview (same flags on gh and glab), the exact shape of the fleet queue at
 `scripts/tmux-review:1975`:
 
 ```
@@ -91,10 +115,10 @@ issues>  4  Review popup: ^E writes to fzf's pipe...
 ```
 
 - `↵` hands the issue to the pane the popup was opened from, through the existing `deliver()` bracketed paste. That is the one thing a browser cannot do.
-- `^N` reads one line in the popup's own tty (`read -r`), then `gh issue comment N --body-file -`. This is the findings-go-on-the-issue rule, one keypress.
-- `^X` asks y/N, then `gh issue close N`, same confirm shape as `kill_window` at `scripts/tmux-review:1877`.
-- `^O` runs `gh issue view N -w`. Escape hatch, never the default.
-- `^W` is the worktree tie-in: `gh issue develop N -n <branch>` then `git worktree add ~/.cache/cockpit-wt/<branch> <branch>`, then `tmux new-window -c` there. This is the owner's existing rule made into a key.
+- `^N` reads one line in the popup's own tty (`read -r`), then `gh issue comment N --body-file -` or `glab issue note N -m "$msg"` (glab notes take `-m` only, no stdin). This is the findings-go-on-the-issue rule, one keypress.
+- `^X` asks y/N, then `$CLI issue close N`, same confirm shape as `kill_window` at `scripts/tmux-review:1877`.
+- `^O` runs `$CLI issue view N -w`. Escape hatch, never the default.
+- `^W` is the worktree tie-in: `git worktree add -b issue-N-<slug> ~/.cache/cockpit-wt/issue-N-<slug> origin/HEAD`, then `tmux new-window -c` there. No server-side link on either provider (section 9.5). This is the owner's existing rule made into a key.
 - `^R` reloads the list, because nothing is cached.
 
 Every key has a caller. Nothing here needs a second screen, a form, or a state file.
@@ -110,7 +134,7 @@ Every key has a caller. Nothing here needs a second screen, a form, or a state f
 7. No invented labels. Ten labels exist today and neither open issue uses one. Adding `perf-popup-fzf-render` per issue makes the label filter noise.
 8. Never `--web` by default. The whole point is not opening a browser. `-w` behind a key, on purpose.
 9. Never put a token in a script or an env line in `cockpit.tmux`. gh reads `~/.config/gh/hosts.yml` itself. Nothing in the repo should ever see `GH_TOKEN`.
-10. Never run a non-interactive `create`/`comment` without `--body` or `--body-file`. gh refuses rather than hangs, verified, but glab has a live bug here (#1121) so the rule has to survive a future glab arm.
+10. Never run a non-interactive `create`/`comment` without `--body` or `--body-file`. Both refuse rather than hang, verified on gh 2.98.0 and glab 1.115.0 (section 9.6).
 11. Do not run `gh` outside a tty and then try to prompt. `display-popup -E` gives a real tty, so `read -r` works, but a `run-shell` binding does not. Every interactive key belongs in the popup.
 12. No secrets or absolute home paths in bodies. `~/.cache/cockpit-wt/<branch>` is fine, `/home/<user>/...` in a public repo is noise.
 13. Do not cache the issue list to disk. It goes stale, it needs invalidation, and `gh issue list` takes well under a second. `^R` is the cache.
@@ -159,10 +183,13 @@ nothing. The "issue before fix" rule lives only in the owner's memory file.
 | Comment from tmux | keep | One `read -r` plus `gh issue comment N --body-file -`. Ten lines |
 | Close from tmux | keep | Two lines behind a y/N |
 | Open in browser | keep | `gh issue view N -w`, one line, escape hatch |
-| Start a worktree from an issue | keep | `gh issue develop` plus `git worktree add`, ties the existing `~/.cache/cockpit-wt` rule to a key |
+| Start a worktree from an issue | keep | `git worktree add -b` alone, identical on both providers, ties the existing `~/.cache/cockpit-wt` rule to a key. `gh issue develop` skipped (section 9.5) |
 | Send an issue to an agent pane | keep | The only capability a browser does not have. Reuses `deliver()` |
-| GitLab support | skip | glab is not installed, no GitLab remote exists, and glab has two open bugs in exactly the flags a script needs |
-| Provider abstraction layer | skip | One implementation, one host. Section 2 |
+| GitLab support | keep | The owner has GitLab repos. Two small `case $CLI` blocks (row feed, ^N) and a `$CLI` variable everywhere else; verified on glab 1.115.0 (section 9) |
+| Provider abstraction layer | replace | One 6-line `issue_cli()` `case` on the remote, no config, no probe. Section 2 |
+| `@cockpit_issue_cli` override | skip | Config for a value the remote already knows |
+| `glab auth status` probe | skip | A network call to learn what the remote string already says |
+| Self-hosted host detection | skip | Cannot be told from a hostname; glab's own refusal names the host it saw |
 | Issue count in the status bar | skip | Network call on the redraw path. README.md:79 |
 | Caching the issue list | skip | `^R` is the cache |
 | New labels | replace | Ship with the ten that exist; add `research` only when the filter has something to filter |
@@ -174,30 +201,155 @@ Each task lands with one failing check first, in `tests/run.sh` as a new
 `echo "== ... =="` block unless noted. Suggested branch `feat/issue-flow`, in a
 worktree under `~/.cache/cockpit-wt/issue-flow`, never in the main checkout.
 
-1. **Issue template.** Add `.github/ISSUE_TEMPLATE/bug.md` with the Symptom / Cause / To decide / Scope headings from #3 and #4.
-   Fail-first: `test -f .github/ISSUE_TEMPLATE/bug.md && grep -q '## Symptom' .github/ISSUE_TEMPLATE/bug.md`.
-2. **The agent rule.** One paragraph in README (and a repo `CLAUDE.md` if the owner wants one): search first, body from a file, `--body-file`, never `--body "$(...)"`, fixed labels, findings as comments.
-   Fail-first: `grep -q 'body-file' README.md`.
-3. **`scripts/tmux-issue` rows.** `tmux-issue --rows` prints `number \t labels \t title` from `gh issue list --json ... --jq '@tsv'`. No tmux, no fzf, testable with a stubbed `gh` on PATH.
-   Fail-first: a block that puts a fake `gh` in PATH printing two TSV rows and asserts `tmux-issue --rows` reproduces both, tab-delimited.
+1. **Issue templates.** Add `.github/ISSUE_TEMPLATE/bug.md` and `.gitlab/issue_templates/bug.md` with the Symptom / Cause / To decide / Scope headings from #3 and #4.
+   Fail-first: both files exist and each has `## Symptom`.
+2. **The agent rule.** One paragraph in README (and a repo `CLAUDE.md` if the owner wants one): search first (`gh issue list --state all --search T` / `glab issue list --all --search T`), body from a file, `--body-file` on GitHub or `--description-file` on GitLab, never `--body "$(...)"`, fixed labels, findings as comments.
+   Fail-first: `grep -q 'body-file' README.md && grep -q 'description-file' README.md`.
+2a. **`issue_cli()` and its stub test.** The function from section 2. Fail-first: a block that creates five throwaway repos with the five remote strings above and asserts the gh/glab mapping, plus the no-remote refusal. No network, no CLI.
+2b. **Missing-CLI guard.** `command -v "$CLI"` after detection, one message for both. Fail-first: an empty PATH dir yields `tmux-issue: this repo needs glab`.
+3. **`scripts/tmux-issue` rows.** `tmux-issue --rows` prints `number \t labels \t title`, a two-arm `case`: `gh issue list --state all --json number,title,labels --jq '.[]|[.number,(.labels|map(.name)|join(",")),.title]|@tsv'` or `glab issue list --all --output json --jq '.[]|[.iid,(.labels|join(",")),.title]|@tsv'`. No tmux, no fzf.
+   Fail-first: stub both `gh` and `glab` on PATH (the `FZFSTUB`/`NOCOL` shape in `tests/run.sh`) and assert the same TSV comes out either way.
 4. **The picker.** `tmux-issue [-p pane]` runs fzf over those rows with `--delimiter=$'\t' --with-nth=1,2,3`, a `gh issue view {1} --comments` preview, and a two-line header. Copy the sizing and `--expect` handling from `fleet_queue`.
    Fail-first: `command -v fzf` guard message when fzf is absent, asserted the same way `scripts/tmux-review:950` is tested.
-5. **`^N` comment.** `read -r` in the popup tty, then `gh issue comment N --body-file -`. An empty line is a no-op, not an empty comment.
-   Fail-first: stub `gh`, feed an empty line, assert nothing is invoked; feed text, assert the stub saw `comment N --body-file -`.
-6. **`^X` close.** y/N, then `gh issue close N`. Anything but `y`/`Y` does nothing.
+5. **`^N` comment.** `read -r` in the popup tty, then a two-arm `case`: `gh issue comment N --body-file -` or `glab issue note N -m "$msg"`. An empty line is a no-op, not an empty comment.
+   Fail-first: stub both, feed an empty line, assert nothing is invoked; feed text, assert gh saw `comment N --body-file -` and glab saw `note N -m`.
+6. **`^X` close.** y/N, then `$CLI issue close N`. Anything but `y`/`Y` does nothing.
    Fail-first: stub `gh`, answer `n`, assert no `close` call.
-7. **`^O` browser and `^R` refresh.** `gh issue view N -w`; refresh re-runs `--rows`.
+7. **`^O` browser and `^R` refresh.** `$CLI issue view N -w`; refresh re-runs `--rows`.
    Fail-first: stub `gh`, assert `view N -w` reaches the stub.
 8. **`↵` send to pane.** Reuse `deliver()`'s guard and paste: refuse a non-agent pane, `load-buffer` plus `paste-buffer -p -r -d`, unsent.
    Fail-first: a non-agent pane gets the refusal message, matching the existing `deliver()` block.
-9. **`^W` worktree.** `gh issue develop N -n issue-N-<slug>`, then `git worktree add ~/.cache/cockpit-wt/<branch> <branch>`, then `tmux new-window -c` there. Refuse if the path already exists rather than clobbering it.
+9. **`^W` worktree.** `git worktree add -b issue-N-<slug> ~/.cache/cockpit-wt/issue-N-<slug> origin/HEAD`, then `tmux new-window -c` there. No provider branch. Refuse if the path already exists rather than clobbering it.
    Fail-first: existing directory produces a named refusal and no `git worktree add`.
 10. **Binding and install.** `prefix g` in `cockpit.tmux` with `@cockpit_issue_key` and `off`, copying the `@cockpit_review_key` block at `:267`; add `tmux-issue` to `COMMANDS` in `install.sh:23`.
     Fail-first: the shipped-config render block asserts `bind-key g` appears; `install.sh --dry` lists the new link. `prefix g` is unbound in stock tmux and free here (taken: `b i J r R S`).
-11. **README and gate.** Key table row, the anti-patterns paragraph, `make check-par` green, `shellcheck` clean (`SOURCES` in the Makefile picks up `scripts/*` automatically).
+11. **README and gate.** Key table row, which CLI is picked and the one-time `glab auth login --hostname H` for a self-hosted instance, the anti-patterns paragraph, `make check-par` green, `shellcheck` clean (`SOURCES` in the Makefile picks up `scripts/*` automatically).
 
 ### Not in the MVP
 
-No GitLab, no provider detection, no issue creation from the popup, no label
-editing, no assignees or milestones, no PR support, no status-bar count, no
-cache, no multi-repo view, no new labels, no offline mode, no `gh` extension.
+No issue creation from the popup, no label editing, no assignees or
+milestones, no PR/MR support, no server-side branch link (`gh issue develop`,
+`glab mr create --related-issue`), no GitHub Enterprise arm until a host
+exists, no `@cockpit_issue_cli` override, no status-bar count, no cache, no
+multi-repo view, no new labels, no offline mode, no `gh` extension.
+
+## 9. glab verified (same day revision)
+
+Verified against glab 1.115.0 downloaded from the GitLab package registry into
+a scratch dir, never installed. Read paths against public projects worked
+without a token, so several `[docs]` items in section 1 are now verified.
+Anything needing a token is marked `[docs]`. Running glab once wrote
+`~/.config/glab-cli/config.yml`; it was deleted afterwards.
+
+### 9.1 Flags, from the real `--help`
+
+`glab issue` has: board, close, create, delete, list, note, reopen, subscribe,
+unsubscribe, update, view.
+
+| Flow step | glab 1.115.0 | gh 2.98.0 | Branch needed |
+|---|---|---|---|
+| create | `-t --title`, `-d --description`, `--description-file` (`-` = stdin), `-l --label`, `--template` (from `.gitlab/issue_templates/`), `--no-editor`, `-y --yes`, `--web`, `-a`, `-m`, `-c --confidential` | `-t`, `-b`, `-F --body-file`, `-l`, `-T --template`, `-e --editor`, `-w` | yes (agent side only) |
+| list | `-A --all`, `-c --closed`, `-l --label`, `--search`, `--in title,description`, `--output json` (short `-O`), `--jq`, `-P --per-page` (30), `-p --page`, `--order`, `-s --sort` | `-s open\|closed\|all`, `-l`, `-S`, `-L`, `--json f1,f2`, `--jq` | yes |
+| view | `-c --comments`, `--output json` (short `-F`), `--jq`, `-w --web`, `-P --per-page`, `-s --system-logs` | `-c`, `--json`, `-w` | no |
+| note | `-m --message` only | `gh issue comment -b`, `-F` (`-` = stdin), `-e`, `--edit-last` | yes |
+| close | id or URL, no other flags | `-c COMMENT`, `-r REASON` | no |
+| update | `-l`, `-u --unlabel`, `-t`, `-d`, `--description-file`, `-a`, `-m`, `--lock-discussion` | `gh issue edit --add-label --remove-label` | out of scope |
+| branch from issue | none; nearest `glab mr create -i --related-issue N --create-source-branch` | `gh issue develop N -n NAME -b BASE` | dropped, 9.5 |
+| api | `glab api EP -X -f -F -H --input --paginate --output json\|ndjson --hostname` | `gh api` | out of scope |
+
+Flag traps a shared script must respect:
+
+- `-e` on `glab issue create` is `--time-estimate`; on gh it is the editor. Never pass a bare `-e` from shared code.
+- `--output` is safe on both subcommands but the short letters differ (`-O` on list, `-F` on view), and `-F` on `list` is `--output-format details|ids|urls`, which silently prints the human table. Verified: `glab issue list -F json` printed `Showing 1 open issue...`. Always write `--output json`.
+- glab `state` is `opened`/`closed`; gh's `--json state` is `OPEN`/`CLOSED`.
+- glab `list` has no `--state`. Default is open, `-A` is open plus closed, `-c` closed only. Verified on a public project: `-A` returned both, default only `opened`.
+- Both print an error and exit 1 on a wrong host, fine for a `|| { printf ...; exit 1; }` guard.
+- glab posts telemetry (`telemetry: true` in config.yml). Not the script's business; the owner may want it off.
+
+### 9.2 Row feed parity
+
+Both CLIs have a built-in `--jq`, so the jq binary is not needed for either arm.
+
+```sh
+gh   issue list --state all --json number,title,labels --jq '.[]|[.number,(.labels|map(.name)|join(",")),.title]|@tsv'
+glab issue list --all --output json            --jq '.[]|[.iid,(.labels|join(",")),.title]|@tsv'
+```
+
+Verified live against `gitlab-org/cli` with no token; two TSV rows came back.
+`glab issue list --output json` is the raw REST array: the number is `iid`
+(`id` is the global row id, useless in a URL), `labels` is an array of plain
+strings, and `web_url`, `state`, `updated_at` are there. `glab issue view
+--output json` returns the same single object.
+
+### 9.3 Per key, side by side
+
+`CLI` is the string from `issue_cli()`, `n` is field 1 of the selected row.
+
+| Key | gh | glab | Shared? |
+|---|---|---|---|
+| rows | `gh issue list --state all --json ... --jq ...` | `glab issue list --all --output json --jq ...` | branch 1 |
+| preview | `gh issue view {1} --comments` | `glab issue view {1} --comments` | `$CLI issue view {1} --comments` |
+| ^N comment | `gh issue comment "$n" --body-file -` | `glab issue note "$n" -m "$msg"` | branch 2 |
+| ^X close | `gh issue close "$n"` | `glab issue close "$n"` | shared |
+| ^O browser | `gh issue view "$n" -w` | `glab issue view "$n" -w` | shared |
+| ^W worktree | `git worktree add -b ...` | same | shared |
+| ↵ send to pane | no CLI call, `deliver()` gets number and title from the row | same | shared |
+| ^R refresh | re-runs rows | same | shared |
+
+Two `case $CLI` blocks, a couple of lines each. That is the whole cost of the
+second provider.
+
+### 9.4 Detection
+
+See section 2. Also verified: `GITLAB_HOST` does not override repo resolution.
+In a repo whose origin is `https://git.corp.example/group/repo.git`,
+`GITLAB_HOST=gitlab.com glab issue list` still refused with `None of the git
+remotes ... point to a known GitLab host`. The old note that `glab auth status`
+ignores `GITLAB_HOST` (gitlab-org/cli#8065) is stale: closed 2025-12-03.
+
+### 9.5 The ^W worktree gap
+
+`gh issue develop N -n branch` creates a branch on the server and links it to
+the issue. glab's nearest thing is `glab mr create --related-issue N
+--create-source-branch`, which also opens a merge request. A draft MR every
+time a human presses a key to start looking at something is the wrong
+operation. Verdict: drop the server-side link on both sides.
+
+```sh
+git worktree add -b "issue-$n-$slug" "$HOME/.cache/cockpit-wt/issue-$n-$slug" origin/HEAD
+```
+
+One command, branch and worktree together, identical on both providers, no
+network, no provider branch, matches the owner's rule. The branch name carries
+the issue number anyway. Add `gh issue develop` back only if the owner wants
+GitHub's "linked branches" panel populated; that is a one-arm branch, not a
+redesign.
+
+### 9.6 Agent-side create on GitLab
+
+Verified fully non-interactive with a real tty and `.gitlab/issue_templates/bug.md` present:
+
+```sh
+glab issue create -t "one line title" --description-file docs/.../notes.md -l bug -y
+```
+
+No template prompt, no description prompt. `-t` with no description refuses
+with `'--Title' and '--description' (or '--template') required for
+non-interactive mode` and creates nothing, the same anti-hang guarantee gh
+gives. `--description-file -` reads stdin. `--no-editor` is not needed once a
+description is supplied; keep `-y` as cheap insurance for older builds.
+
+gitlab-org/cli#1121 is still open (2022-11-25) but now labelled
+`documentation`, `UI text`, `type::maintenance`. It is a wording problem, not a
+functional one; 1.115.0 behaved correctly in every probe. The section 1 verdict
+"glab create is not reliably non-interactive" is stale.
+
+### 9.7 Self-hosted
+
+Once per host, by the owner, by hand: `glab auth login --hostname
+git.corp.example`. Token goes to the OS keyring, or to
+`~/.config/glab-cli/config.yml` under `hosts: <host>:` with
+`--insecure-storage` (`api_protocol`, `api_host`, `subfolder`, `ssh_host`,
+`token`). An instance whose API is on another host or port takes `--api-host
+host:port --api-protocol https`. The script does nothing: no `GITLAB_HOST`, no
+token, no host list, the same way the repo never sees `GH_TOKEN`.
