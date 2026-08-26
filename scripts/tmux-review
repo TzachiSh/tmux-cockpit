@@ -1023,7 +1023,10 @@ run_loop() {
     list_cmd="$(shq "$SELF") --list $(shq "$store")"
     detach_cmd="$(shq "$SELF") --detach $(shq "$store") {1} {2}"
     edit_cmd="$(shq "$SELF") --edit $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
-    copy_cmd="$(shq "$SELF") --copy $(shq "$dir") {1} | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
+    # The cap row copies nothing, and `printf '' | tmux load-buffer -w -` exits 0
+    # while LEAVING the old buffer -- so an ungated bind flashes "copied" over
+    # whatever was already there. Gate the load and the message on real output.
+    copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than
