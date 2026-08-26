@@ -152,6 +152,10 @@ done
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
+# The pane a popup came from: $TMUX ends in the session id, whose active pane
+# is where the key fired. display-popup expands formats only in -T and -d; a
+# '#{pane_id}' here was literal text and scripts fell back to $PWD (#38).
+SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
 
 # Version gate. Measured against real 3.4 and 3.7c binaries, not guessed:
 #
@@ -215,19 +219,18 @@ fi
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
 #
-# -p '#{pane_id}': inside a popup, $TMUX_PANE is the popup's own pseudo-pane,
-# so tmux-branch asking the client "what pane am I on" resolves to whichever
-# CLIENT was most recently active, not the pane this binding actually fired
-# on. tmux expands #{pane_id} at bind time, on the pane the key/click landed
-# on, the same way #{pane_current_path} already does for the title above.
+# -p $SRC_PANE: inside a popup $TMUX_PANE is the popup's own pseudo-pane, so
+# the script cannot ask "what pane am I on" itself.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
     # popup the path picker descends into, entered from the top. Wired to
     # range=control|2 in status-right, the slot beside the branch's control|1.
+    # -d is a format (the shell-command is not, see SRC_PANE): the popup
+    # starts in the pane's directory and --browse takes its $PWD.
     tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
-        -T ' files · #{b:pane_current_path} ' \
-        "$Q_OPEN --browse '#{pane_current_path}'"
+        -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
+        "$Q_OPEN --browse"
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
@@ -237,7 +240,7 @@ fi
 # rewrites the NEXT press anywhere into MouseDragEnd1<where> (#21, 3.7c): a
 # tab click was silently lost. Stock leaves this key unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
 # Session picker in the same popup chrome. prefix+S is unbound in stock tmux
 # (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup
@@ -249,31 +252,38 @@ tmux bind-key S display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=10
 JK=$(tmux show-option -gqv @cockpit_jump_key)
 case "$JK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key J run-shell "'$DIR/scripts/tmux-jump'" ;;
-    *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump'" ;;
+    # run-shell expands #{pane_id} but sets no $TMUX_PANE, so the pane goes
+    # in as an argument: without it the cycle never knew where it stood (#45).
+    "")  tmux bind-key J run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'" ;;
+    *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'" ;;
 esac
 
-# Review an agent's diff. The popup passes -p '#{pane_id}' so the script sees
+# Review an agent's diff. The popup passes -p $SRC_PANE so the script sees
 # the pane the popup was opened FROM: inside a popup $TMUX_PANE is the popup's
 # own pseudo-pane, and a bare display-message resolves the most-recently-active
 # client instead -- with two clients that landed the review on the wrong one.
-# tmux expands #{pane_id} at bind time in the originating pane. With the id the
+# The popup's own sh resolves the pane (SRC_PANE above). With the id the
 # script opens the fleet queue with that pane preselected. Same popup chrome
 # and off-disables as the jump key.
 #
 # @cockpit_review_window on: a real window instead of the modal popup, so the
 # fleet's borders and tabs stay visible while you read (§8 #2: popup default,
 # window opt-in, decided again after this phase). Same script, same -p.
+# The window form cannot use SRC_PANE: new-window activates the new window
+# before its command runs, so the session's active pane is the review
+# window's own. run-shell expands #{pane_id} on the source pane instead (#45).
 if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-    R_OPEN=(new-window -n review)
+    R_OPEN=(run-shell)
+    R_CMD="tmux new-window -n review $(sq "$Q_REVIEW -p '#{pane_id}'")"
 else
     R_OPEN=(display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ')
+    R_CMD="$Q_REVIEW -p $SRC_PANE"
 fi
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key r "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
+    "")  tmux bind-key r "${R_OPEN[@]}" "$R_CMD" ;;
+    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$R_CMD" ;;
 esac
 
 # prefix i: what this pane is, waits on, and holds -- state, review, base,
@@ -283,8 +293,8 @@ esac
 IK=$(tmux show-option -gqv @cockpit_info_key)
 case "$IK" in
     off) ;;
-    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
-    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
+    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
+    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
 esac
 
 # prefix f: a side fix beside a busy agent -- two lines, a fenced claude -p in
@@ -294,8 +304,8 @@ Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 FK=$(tmux show-option -gqv @cockpit_fixer_key)
 case "$FK" in
     off) ;;
-    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
+    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
+    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and
@@ -392,7 +402,8 @@ if [ "$MK" != off ]; then
         printf 'bind-key %s {\n' "$(sq "$mk")"
         cat <<'EOF'
     set -gF @cockpit_move_src "#{window_id}"
-    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
+    set -gF @cockpit_move_cwd "#{pane_current_path}"
+    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
     } > "$mvconf"

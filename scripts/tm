@@ -67,16 +67,20 @@ ask_name() {
 # from such a shell either fails ("no current client") or, worse, hijacks some
 # other terminal's client, because tmux then falls back to any client it finds.
 in_client() {
-  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 1
+  [ -n "${TMUX:-}" ] || return 1
   local n
-  n=$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached}' 2>/dev/null) || return 1
+  # A popup has $TMUX but no $TMUX_PANE; its session id is $TMUX's last field (#45).
+  n=$(tmux display-message -p -t "${TMUX_PANE:-\$${TMUX##*,}}" '#{session_attached}' 2>/dev/null) || return 1
   [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
 }
 
 go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
-  local name=$1
+  local name=$1 dir=""
   if ! tmux has-session -t "=$name" 2>/dev/null; then
-    tmux new-session -d -s "$name" || die "could not create session '$name'"
+    # In the popup $PWD is the OLD session's start dir; the session's active
+    # pane ($TMUX ends in the session id) is where the human is (#41).
+    [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
+    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "could not create session '$name'"
   fi
   if in_client; then
     tmux switch-client -t "=$name"
