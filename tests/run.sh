@@ -889,8 +889,14 @@ fi
 
 # With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
 # rather than reporting "opened" for a command that was never found.
+# HOME is the fixture dir, not the real one. The VS Code shim now sits between
+# code(1) and $EDITOR and is looked up under $HOME, so a real home makes what
+# these two measure depend on whether the developer happens to have Remote-SSH
+# installed. (Today $ETMUX carries no ls/grep/head, so the probe cannot run at
+# all and the answer is the same either way -- that is an accident of the stub
+# PATH, not something to rest an assertion on.)
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
     EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *NEWWIN*vi*) ok "no code(1): falls back to \$EDITOR" ;;
@@ -899,7 +905,7 @@ esac
 
 # ...and with no editor at all it must say so, not claim success.
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
     bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *"no editor"*) ok "no editor at all: says so instead of claiming success" ;;
@@ -1027,6 +1033,143 @@ rm -rf "$GL"
 # later blocks reuse this stub
 ETMUX_TEMPLATE=$(mktmpf); cp "$ETMUX/tmux" "$ETMUX_TEMPLATE"; chmod +x "$ETMUX_TEMPLATE"
 rm -rf "$EQ" "$ETMUX"
+
+echo "== tmux-open-path: with no code on PATH, a click opens through VS Code's remote shim on the live socket =="
+# Remote-SSH and Coder put no code(1) on tmux's PATH: the CLI is a shim under
+# ~/.vscode-server that only reaches a window through VSCODE_IPC_HOOK_CLI, and
+# only when that socket is LIVE. The shim is its own probe -- a dead socket
+# fails in ~150 ms, a live one answers --goto in ~150 ms -- so the fake below
+# exits 1 on every socket but live.sock, and the NEWEST socket is the dead one.
+VTMUX=$(mktmpd); VQ=$(mktmpd); VH=$(mktmpd)
+VSK="$VH/run"; VLOG="$VH/log"; VSHIM="$VH/.vscode-server/cli/servers/Stable-abc/server/bin/remote-cli"
+: > "$VQ/it's.txt"
+# Self-contained by design: make test-only extracts a block on its own, so this
+# one builds its own tmux stub instead of borrowing another block's.
+cat > "$VTMUX/tmux" <<'VSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)
+      case " $* " in
+          *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@cockpit_open_single*) printf '%s\n' "${OPEN_SINGLE:-}" ;;
+          *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
+          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
+      esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
+          *window_id*)         printf '@0\n' ;;
+          *)                   printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+      esac ;;
+  new-window)    printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  display-popup) printf 'POPUP %s\n'  "${!#}" >> "$TMUX_LOG" ;;
+  run-shell)     printf 'RUNSHELL %s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+VSTUB
+chmod +x "$VTMUX/tmux"
+# env -i below leaves only this dir on PATH, so everything the script and the
+# lib run has to be in it: bash for the shebang, ls/head/grep for the probe.
+for t in bash ls head grep sort readlink; do ln -sf "$(command -v $t)" "$VTMUX/$t"; done
+VOUT="$VTMUX/log"
+mkdir -p "$VSHIM" "$VSK"
+# /bin/sh is dash here, so no ${@: -1}: the last argument comes off a loop.
+cat > "$VSHIM/code" <<'VSHIMEOF'
+#!/bin/sh
+# The real CLI reads its stdin. If the probe loop leaves the socket list on
+# fd 0, this eats the rest of it and the walk stops after one socket.
+head -c 200 >/dev/null
+printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
+case "$VSCODE_IPC_HOOK_CLI" in
+    *live.sock) case " $* " in
+                    *' --wait '*) for a in "$@"; do last=$a; done
+                                  printf 'FROM-VSCODE\n' >> "$last" ;;
+                esac
+                exit 0 ;;
+    *) exit 1 ;;
+esac
+VSHIMEOF
+chmod +x "$VSHIM/code"
+: > "$VSK/vscode-ipc-live.sock"; touch -t 202001010000 "$VSK/vscode-ipc-live.sock"
+: > "$VSK/vscode-ipc-dead.sock"
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+vcmd=$(sed -n 's/^RUNSHELL run-shell -b //p' "$VOUT" | head -1)
+# The quote in the name is shell-quoted for run-shell (it\'s.txt), so a glob
+# for the plain name stops at the escape. The shim's own log below is where the
+# path is checked whole -- after sh has put it back together.
+case "$vcmd" in
+    *"--vscode --goto"*"s.txt:12:1"*) ok "the click hands the file to the shim through run-shell" ;;
+    *) bad "the click hands the file to the shim through run-shell" \
+         "--vscode --goto .../it's.txt:12:1" "$(cat "$VOUT")" ;;
+esac
+: > "$VLOG"
+# </dev/null, or the mock shim's stdin drain blocks on the suite's own terminal.
+# The probe's fd-0 bug survives this redirect: the buggy loop rebinds fd 0 to
+# the socket list for the whole `while`, /dev/null and all.
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" bash -c "$vcmd" </dev/null
+case "$(cat "$VLOG")" in
+    *"SOCK=$VSK/vscode-ipc-dead.sock"*"SOCK=$VSK/vscode-ipc-live.sock ARGS=--goto $VQ/it's.txt:12:1"*)
+        ok "the newer dead socket is tried first and skipped, the live one takes the file" ;;
+    *) bad "the newer dead socket is tried first and skipped, the live one takes the file" \
+         "dead then live" "$(cat "$VLOG")" ;;
+esac
+# The shim sits BETWEEN code(1) and $VISUAL/$EDITOR, so the two things it must
+# never displace are the ones above it: an explicit @cockpit_editor, and a real
+# code(1) on a host that has one.
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt" OPEN_EDITOR=nvim \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$VOUT")" in
+    *NEWWIN*nvim*) ok "@cockpit_editor still wins over the shim" ;;
+    *) bad "@cockpit_editor still wins over the shim" "a new window running nvim" "$(cat "$VOUT")" ;;
+esac
+printf '#!/bin/sh\nexit 0\n' > "$VTMUX/code"; chmod +x "$VTMUX/code"
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$VOUT")" in
+    *"--vscode"*) bad "code(1) on PATH still beats the shim" "code --goto" "$(cat "$VOUT")" ;;
+    *"RUNSHELL run-shell -b code --goto"*) ok "code(1) on PATH still beats the shim" ;;
+    *) bad "code(1) on PATH still beats the shim" "a run-shell carrying code --goto" "$(cat "$VOUT")" ;;
+esac
+rm -f "$VTMUX/code"
+
+echo "== tmux-open-path: alt-c copies the marked paths to the tmux buffer =="
+if need_tmux "tmux-open-path alt-c"; then :; else
+# Under $HOME on purpose, not mktmpd's /tmp: field 2 of the list is the
+# ~-abbreviated path, so only a fixture below $HOME makes the picker's own
+# un-abbreviation the thing under test. Removed at the end of the block.
+PC="cockpit-pc-$$"; SOCKS="$SOCKS $PC"; PCD="$HOME/.cache/cockpit-test-$$"
+mkdir -p "$PCD"; : > "$PCD/a.txt"; : > "$PCD/b.txt"; : > "$PCD/c.txt"
+PCS=$(mktmpd); cat > "$PCS/tmux" <<'STUB'
+case "$1" in
+  show-options) printf '%s\n' "${CLICK_LINE:-}" ;;   # every option query answers the clicked line; only @cockpit_click_line is read here
+  display-message) case " $* " in *pane_current_path*) printf '%s\n' "$CLICK_DIR" ;; *window_id*) printf '@0\n' ;; *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
+  load-buffer) printf 'LOADBUF %s\n' "$*" >> "$TMUX_LOG"; cat > "$TMUX_LOG.buf" ;;
+  *) printf '%s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+# sh too: fzf runs an execute-silent() body through `sh -c`, and env -i leaves
+# only this dir on PATH -- without it alt-c dies as `exec: "sh": not found`.
+chmod +x "$PCS/tmux"; for t in bash sh fzf ls head grep sort sed awk cat tput; do ln -sf "$(command -v $t)" "$PCS/$t"; done
+"$TMUX_REAL" -L "$PC" -f /dev/null new-session -d -s t -x 100 -y 30 "env -i PATH=$(printf '%q' "$PCS") HOME=$(printf '%q' "$HOME") TMUX_LOG=$(printf '%q' "$PCS/log") CLICK_DIR=$(printf '%q' "$PCD") CLICK_LINE='a.txt b.txt c.txt' TERM=xterm bash $(printf '%q' "$DIR/scripts/tmux-open-path") --pick %1; sleep 30" >/dev/null 2>&1
+PCP=$("$TMUX_REAL" -L "$PC" list-panes -t t: -F '#{pane_id}')
+until_cap "$PC" "$PCP" '*open>*' || bad "the picker comes up" "open>" "$("$TMUX_REAL" -L "$PC" capture-pane -p -t "$PCP")"
+"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" Tab Tab; until_cap "$PC" "$PCP" '*(2)*'
+"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" M-c
+until_file "$PCS/log.buf" '*a.txt*'
+# Read raw: un-abbreviating HERE would pass whether the bind copies ~/… or the
+# absolute path, which is the one thing this block exists to tell apart.
+is "alt-c copies the marked paths, one per line, absolute" "$PCD/a.txt"$'\n'"$PCD/b.txt" "$(cat "$PCS/log.buf" 2>/dev/null)"
+is "and loads them with -w, so the clipboard gets them too" "LOADBUF load-buffer -w -" "$(grep LOADBUF "$PCS/log" 2>/dev/null)"
+"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1; rm -rf "$PCD"
+fi
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -4402,6 +4545,39 @@ is "no intent-to-add entry leaked into the real index" "" \
 unset -f ri_stamp
 rm -rf "$RI"
 
+echo "== tmux-review --lines: a file over 32 MB is skipped before git reads it, and the list says so =="
+RB=$(mktmpd)
+(
+  cd "$RB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
+  printf 'a\nb\n' > f.c
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
+  printf 'x\n' > small.txt                                  # untracked, small: still reviewed
+) >/dev/null 2>&1
+rb_t0=$(date +%s%N)
+rbrows=$("$DIR/scripts/tmux-review" --lines "$RB")
+rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
+is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
+is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
+case "$rbrows" in
+    *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
+    *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
+esac
+[ "$rb_ms" -lt 1500 ] && ok "and the list comes back in under 1.5 s (${rb_ms} ms)" || bad "and the list comes back in under 1.5 s" "< 1500 ms" "${rb_ms} ms"
+is "--numstat (the Stop hook's and the fleet's read) omits it too" "0" "$("$DIR/scripts/tmux-review" --copy "$RB" | grep -c '^diff --git a/core')"
+printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
+rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
+is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
+case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
+rb_t0=$(date +%s%N)
+rbpv=$( (cd "$RB" && "$DIR/scripts/tmux-open-path" --preview-diff core) )
+rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
+[ "$rb_ms" -lt 500 ] && ok "and it answers without hashing the file (${rb_ms} ms)" || bad "and it answers without hashing the file" "< 500 ms" "${rb_ms} ms"
+rm -rf "$RB"
+
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
@@ -5909,8 +6085,24 @@ is "--delta: a branch ahead of main has something to review" "D=0" \
 is "--delta: a clean agent on an unadvanced branch has nothing to review" "D=1" \
    "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $CLEAN_PANE; echo D=\$?" 2>/dev/null | tail -1)"
 
+# A tree whose ONLY change is a file over the cap. tree_diff keeps it away
+# from git, so its --numstat would come back empty and the Stop hook would
+# call the pane clean -- the one thing the skip must not do. git itself
+# printed "-\t-\tcore" here (its binary row) before the skip existed.
+FQ_BIG=$(mktmpd)
+(
+  cd "$FQ_BIG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core   # untracked, over the cap, and nothing else
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_BIG" 'exec -a claude bash' >/dev/null 2>&1
+BIG_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:7 -F '#{pane_id}')
+is "--delta: a tree whose only change is a skipped big file is still dirty" "D=0" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $BIG_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
@@ -6052,12 +6244,15 @@ is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
     "19" "$fd_diff_calls"
 # The budget above is forks: 19 roots in 1 s is ~50 ms each and one git is
 # 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
-# blew it. Pinned as a count -- one rev-parse per pane to find its root, four
-# per unique root (rev-parse, add -N, for-each-ref, diff) -- so the next
-# helper that costs a fork per root fails here on any box, not only a busy one.
+# blew it. Pinned as a count -- one rev-parse per pane to find its root, five
+# per unique root (rev-parse, add -N, for-each-ref, diff, and big_files'
+# ls-files, which is what keeps a 1 GB file from costing that root 26 s) -- so
+# the next helper that costs a fork per root fails here on any box, not only a
+# busy one. The wall-clock gates above are unchanged and still hold: 20 panes
+# under 1 s, 50 panes 1818 ms against a 5000 ms bar.
 fd_git_calls=$(grep -c . "$FD_LOG" || true)
-is "one fork per pane and four per dirty root, no more" "1" \
-   "$([ "$fd_git_calls" -le $((20 + 19 * 4)) ] && echo 1 || echo "$fd_git_calls")"
+is "one fork per pane and five per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 5)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
@@ -6377,6 +6572,83 @@ esac
 is "no editor temp file is left behind" "" "$(ls "$ETTMP"/* 2>/dev/null)"
 "$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
 fi
+
+echo "== tmux-review --edit: with nothing configured, ^E opens in VS Code's remote shim when a window is reachable, else vi =="
+# On a Remote-SSH/Coder host there is no code(1) and usually no $EDITOR either,
+# and ^E fell back to vi inside the popup -- next to the VS Code window the
+# person is actually reading the diff in. The shim takes it with --wait, so the
+# buffer comes back the same way vi's does. No live window: vi, and say so.
+VETM=$(mktmpd); VEH=$(mktmpd); VE=$(mktmpd)
+VESK="$VEH/run"; VELOG="$VEH/log"; VELOGT="$VETM/log"; VESTORE="$VEH/store.md"
+VESHIM="$VEH/.vscode-server/cli/servers/Stable-abc/server/bin/remote-cli"
+cat > "$VETM/tmux" <<'VESTUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)  printf '\n' ;;
+  display-message) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+VESTUB
+chmod +x "$VETM/tmux"
+mkdir -p "$VESHIM" "$VESK"
+cat > "$VESHIM/code" <<'VESHIMEOF'
+#!/bin/sh
+# The real CLI reads its stdin. If the probe loop leaves the socket list on
+# fd 0, this eats the rest of it and the walk stops after one socket.
+head -c 200 >/dev/null
+printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
+case "$VSCODE_IPC_HOOK_CLI" in
+    *live.sock) case " $* " in
+                    *' --wait '*) for a in "$@"; do last=$a; done
+                                  printf 'FROM-VSCODE\n' >> "$last" ;;
+                esac
+                exit 0 ;;
+    *) exit 1 ;;
+esac
+VESHIMEOF
+chmod +x "$VESHIM/code"
+: > "$VESK/vscode-ipc-live.sock"; touch -t 202001010000 "$VESK/vscode-ipc-live.sock"
+: > "$VESK/vscode-ipc-dead.sock"
+# `vi` on PATH is the fallback the last assertion measures: $EDITOR unset, so
+# editor_cmd's own last resort is the bare name.
+printf '#!/bin/sh\nprintf "FROM-VI\\n" >> "$1"\n' > "$VETM/vi"; chmod +x "$VETM/vi"
+(
+  cd "$VE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+: > "$VELOG"; : > "$VELOGT"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VSCODE*) ok "^E with no editor configured reaches the live window with --wait" ;;
+    *) bad "^E with no editor configured reaches the live window with --wait" \
+         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
+esac
+# The shim command carries the script's own path, and $ed is word-split on
+# purpose (EDITOR="code --wait") -- so an install under "~/my dotfiles" split
+# it into two words and ^E ran a command that does not exist.
+: > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
+mkdir -p "$VEH/my dotfiles"; cp -r "$DIR/scripts" "$VEH/my dotfiles/"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$VEH/my dotfiles/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VSCODE*) ok "and from an install path with a space in it" ;;
+    *) bad "and from an install path with a space in it" \
+         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
+esac
+rm -f "$VESK"/vscode-ipc-live.sock; : > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VI*) ok "with no live window it falls back to \$EDITOR" ;;
+    *) bad "with no live window it falls back to \$EDITOR" "FROM-VI" "$(cat "$VESTORE" 2>/dev/null)" ;;
+esac
+case "$(cat "$VELOGT" 2>/dev/null)" in
+    *"no VS Code window reachable"*) ok "and the status line says which editor it used instead" ;;
+    *) bad "and the status line says which editor it used instead" \
+         "a display-message naming vi" "$(cat "$VELOGT" 2>/dev/null)" ;;
+esac
 
 echo "== tmux-review --loop: ^E with nothing typed on a commented row edits that comment instead of adding one =="
 if need_tmux "tmux-review ^E edit in place"; then :; else

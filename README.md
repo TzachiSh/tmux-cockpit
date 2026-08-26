@@ -316,6 +316,17 @@ like a path is dropped.
 diff names two files: mark both, `↵` opens them all. Tab means the same thing in
 `tm`'s kill picker.
 
+**`alt-c` copies the paths instead of opening them.** The marked rows, or the
+row under the cursor when nothing is marked, go to the tmux buffer and the
+clipboard as absolute paths, one per line, for pasting into an agent's prompt.
+It works in the folder browser too, where `⇥` marks rows for `alt-c` alone: `↵`
+and `^O` there act on the first marked row. The copy goes out as OSC 52, so it
+reaches the system clipboard only if your terminal accepts clipboard writes.
+
+To copy something no key already copies, hold **shift** and drag. A tmux popup
+has no copy mode, so in any of these popups the terminal's own selection is the
+one that works.
+
 **A folder browses, it does not open.** `↵` on a directory descends into it —
 `..` climbs back up, `↵` on a file opens it. `^O` — in the picker and in the
 browser — opens the selection **as-is**: on a folder that means the whole
@@ -477,9 +488,14 @@ Keep it a **terminal** editor: the review's `^E` reads the same option, and
 opens it in the popup's own terminal. A GUI editor belongs in `VISUAL`
 instead.
 
-Where neither `@cockpit_editor` nor `code` is available it falls back to `$VISUAL`
-or `$EDITOR`, and says so plainly if there is no editor at all rather than
-reporting a success that never happened.
+`@cockpit_editor` wins. After it comes VS Code, either as `code` on the `PATH`
+or as the remote shim Remote-SSH and Coder install under `~/.vscode-server`,
+and only where neither of those exists does the click fall back to `$VISUAL` or
+`$EDITOR`. On a Remote-SSH or Coder host that is a change: with `EDITOR=nvim`
+and no `@cockpit_editor` set, a click now lands in the VS Code window you are
+already looking at, where it used to open nvim in a tmux window. Set
+`@cockpit_editor nvim` to keep nvim. With no editor anywhere it says so plainly
+rather than reporting a success that never happened.
 
 ## Review the agent's changes
 
@@ -585,18 +601,20 @@ everything and saving is the cancel. With nothing typed on a row that already
 carries a comment, `^E` opens that comment instead and replaces it; saving an
 empty file deletes it. `^E` uses `@cockpit_editor` when set
 (`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
-opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`, else
-`vi`. A GUI editor goes in `VISUAL`:
-`tmux set-environment -g VISUAL 'code --wait'`. The popup's children see the
-tmux *server's* environment, so a shell `export` made after the server started
-is not seen. Over VS Code Remote-SSH the tmux server has no live
-`VSCODE_IPC_HOOK_CLI`; point `VISUAL` at the wrapper under *VS Code over
-Remote-SSH*, which finds the newest listening `vscode-ipc-*.sock` and falls
-back to a terminal editor. From a plain ssh session nothing can reach the
-laptop's VS Code. The list reloads in place and marks the row `●` (the digit
-instead, when more than one comment sits there), so five comments cost one
-popup, not five — the same
-`execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
+opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
+none of the three set it tries VS Code's remote shim, and falls back to `vi`.
+A GUI editor goes in `VISUAL`: `tmux set-environment -g VISUAL 'code --wait'`.
+The popup's children see the tmux *server's* environment, so a shell `export`
+made after the server started is not seen. That shim arm is for the Remote-SSH
+or Coder host where there is no `code` on the `PATH` and usually no `$EDITOR`
+either, and where `vi` in a popup is the wrong answer next to the VS Code
+window the diff is being read in. It takes `--wait`, so the buffer comes back
+the way `vi`'s does, and `^S`'s confirm offers
+`edit the batch in VS Code first`. From a plain ssh session nothing can reach
+the laptop's VS Code. The list reloads in place and marks the row `●` (the
+digit instead, when more than one comment sits there), so five comments cost
+one popup, not five — the same `execute-silent(...)+reload(...)` shape `tm`'s
+kill picker already uses.
 `^S` delivers the whole batch, and asks first: it names the count and the
 target pane by its title, and offers the batch to your editor as text before it
 goes (`deliver N comment(s) to fix the parser (%7)` /
@@ -624,6 +642,25 @@ into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
 row, when what you want is a handful of lines rather than a file. All three go
 out as OSC 52, so they reach the system clipboard only if your terminal accepts
 clipboard writes; some disable them by default.
+
+**Big files are named, not diffed.** To tell whether a file changed at all git
+hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB, and the popup
+is modal and rebuilds its rows on every reload. So a changed or untracked file
+over **32 MB** is kept away from git and reported on one notice row at the top
+of the list instead, though a tracked file whose size did not change is still
+hashed once, so git can tell it changed:
+
+```text
+data/dump.bin (412 MB) skipped — over 32 MB, review it directly
+```
+
+The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
+diff too large to anchor line-by-line leaves. The file itself is untouched, and
+the tree still counts as dirty because of it, so a pane whose only change is a
+skipped file stays in the fleet queue and its review opens on that notice
+rather than on an empty diff. The path picker's `^G` diff preview refuses any
+file over 32 MB, naming the size. Put core dumps in `.gitignore`, as git's own
+templates do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
@@ -777,59 +814,43 @@ in hand. Running `/cockpit-review` again resumes exactly those comments.
 
 ### VS Code over Remote-SSH
 
-`VISUAL='code --wait'` is enough on a local machine. Over Remote-SSH it is
-not: VS Code hands the remote a fresh `VSCODE_IPC_HOOK_CLI` socket per
-connection, and the tmux server, started before that connection or outliving
-it, never has a live one. This wrapper finds the newest socket that is
-actually listening, and falls back to a terminal editor when there is none.
-Point `VISUAL` at it:
+`VISUAL='code --wait'` is enough on a local machine, and only there. Over
+Remote-SSH `code` is not on the `PATH` tmux was started with, and VS Code hands
+the remote a fresh `VSCODE_IPC_HOOK_CLI` socket per connection that the tmux
+server, started before that connection or outliving it, never has. Nothing to
+install: click-to-open finds the shim itself, and `^E` does too when
+`@cockpit_editor`, `$VISUAL` and `$EDITOR` are all empty. They take the newest
+shim under `~/.vscode-server` (`cli/servers/*/server/bin/remote-cli/code`, or
+`bin/*/bin/remote-cli/code` from an older server) and run it against each
+`vscode-ipc-*.sock` in `$XDG_RUNTIME_DIR`, newest first, until a window takes
+the file. The shim is its own probe, so no `nc` or `socat` is needed.
 
-```sh
-#!/bin/sh
-# ~/bin/cockpit-code — VISUAL target for ^E over Remote-SSH / Coder.
-cli=$(ls -t "$HOME"/.vscode-server/cli/servers/*/server/bin/remote-cli/code \
-             "$HOME"/.vscode-server/bin/*/bin/remote-cli/code 2>/dev/null | head -1)
-if [ -x "$cli" ]; then
-    for s in $(ls -t "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"/vscode-ipc-*.sock 2>/dev/null); do
-        nc -zU "$s" 2>/dev/null || socat -u OPEN:/dev/null "UNIX-CONNECT:$s" 2>/dev/null || continue
-        VSCODE_IPC_HOOK_CLI=$s exec "$cli" --wait "$@"
-    done
-fi
-exec "${FALLBACK_EDITOR:-vi}" "$@"
-```
-
-`/tmp` is only the fallback for a workspace with no `$XDG_RUNTIME_DIR` (a Coder
-container); on a shared host with `$XDG_RUNTIME_DIR` set the wrapper never
-looks in `/tmp`, where another user could plant a listening socket.
-
-It needs `nc` (OpenBSD netcat, for `-U`) or `socat` to probe a socket. With
-neither, every socket is skipped and it falls back to the terminal editor.
-Both server layouts are covered. The local leg was tested against a real VS
-Code; the Remote-SSH leg was verified against a mock socket, because the test
-box has no SSH keys. A closed window's socket can
-keep listening through the server's reconnection grace, so "newest listening"
-is not proof of a live window, and `--wait` can then hang until you kill the
-popup.
+Two caveats. A dead socket refuses in about 150 ms, so the walk stops at the 8
+newest rather than spending six seconds on a home full of stale ones, and a
+window whose socket is older than those 8 is missed. And a closed window's
+socket keeps listening through VS Code's reconnection grace, so answering is
+not proof of a live window: `^E` can then sit on `--wait` until you press esc.
 
 From a plain ssh session, with no VS Code on the far end, nothing can reach
 the laptop's editor. Use a terminal editor there.
 
 ### Coder
 
-A Coder workspace opened from VS Code is Remote-SSH underneath, and the
-snippet above already covers it: the IPC sockets are in
-`${XDG_RUNTIME_DIR:-/tmp}` (a workspace usually has no `/run/user/$UID`), which
-is what the wrapper probes, and the shim it picks up lives at
-`~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`. Put the wrapper in
-`$HOME`, which persists; `/tmp` does not survive a restart.
+A Coder workspace opened from VS Code is Remote-SSH underneath, and there is
+nothing extra to do: the shim sits in the same place, and a workspace that has
+no `/run/user/$UID` puts its sockets in `$TMPDIR` or `/tmp`, which is where the
+walk looks when `$XDG_RUNTIME_DIR` is unset.
 
 ### Security
 
-`VISUAL='code --wait'` and the Remote-SSH wrapper run entirely as you: they
-use the VS Code CLI socket in your own `$XDG_RUNTIME_DIR`, which no other
-user can open, and give a same-user process nothing it did not already have.
-Never run the wrapper or the popup under `sudo`. VS Code's remote server
-listens on a loopback TCP port by default, so on a shared host set
+`VISUAL='code --wait'` and the shim the popup finds for itself run entirely as
+you: they use the VS Code CLI socket in your own `$XDG_RUNTIME_DIR`, which no
+other user can open, and give a same-user process nothing it did not already
+have. `/tmp` is only the fallback for a workspace with neither
+`$XDG_RUNTIME_DIR` nor `$TMPDIR` set (a Coder container); where either is set
+the walk never looks in `/tmp`, where another user could plant a listening
+socket. Never run the popup under `sudo`. VS Code's remote server listens on a
+loopback TCP port by default, so on a shared host set
 `"remote.SSH.remoteServerListenOnSocket": true`, or another local user can
 attach to your editor session. Remote-SSH installs and auto-updates
 `~/.vscode-server` on that host; some admins do not allow that, ask first.

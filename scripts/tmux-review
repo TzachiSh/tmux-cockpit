@@ -35,6 +35,11 @@ OPENPATH="$(dirname "$SELF")/tmux-open-path"
 # its absolute path, so one readlink hop is the whole resolution; a plain
 # run (no link) has nothing to read and keeps $SELF's own directory.
 LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$SELF")")/lib"
+# shellcheck source=lib/vscode.sh
+. "$LIBDIR/vscode.sh" 2>/dev/null || {
+    vscode_shim() { return 1; }        # a half-installed copy: no shim, plain vi
+    vscode_open() { return 1; }
+}
 
 # tmux runs bind/preview strings through sh, so every path inside one has to be
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
@@ -44,6 +49,12 @@ shq() { printf '%q' "$1"; }
 # file, no line -- so it shares this one string with attach(), which refuses
 # to comment on it. A row-shaped notice, not a special case in every reader.
 CAP_SENTINEL='(diff too large)'
+
+# Files git would have to hash in full to diff, and the knee in what that
+# costs: 100 ms at 32 MB, 680 ms at 256 MB, 26 s at 1 GB, measured. NOT the
+# review's 4 MB byte cap -- a 4.6 MB lockfile bump is two rows and must stay.
+BIGCAP=$(( 32 * 1024 * 1024 ))
+# ponytail: one number at the measured knee, no option; add @cockpit_review_max_file when someone reviews a 40 MB fixture on purpose.
 
 # How a pane names itself, for the fleet queue and the ^S confirm alike; the
 # fallback convention (and why #{host_short} reads as "unset") is the note
@@ -92,6 +103,25 @@ In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark 
 USAGE
 }
 
+# Untracked and stat-modified files over BIGCAP, "<bytes>\t<path>". An
+# untracked file, and a tracked one whose SIZE changed, cost a stat here and
+# nothing more; a touched tracked file of unchanged size git still hashes to
+# tell -- once, here. ':(top)' because ls-files alone stops at the cwd, while
+# git diff never does. ONE stat for the whole list: a fork per file made an
+# 800-file tree a fork walk.
+# ponytail: that leaves one 0.68 s hash on a touched 256 MB tracked file whose
+# size did not change; to drop it, walk `ls-files -z` and stat every tracked
+# file over the cap, `cat-file -s` its index blob for a size change -- equal
+# sizes still need the hash.
+big_files() {                 # <dir>
+    local dir=$1
+    local -a sz=(-c $'%s\t%n')          # GNU; BSD spells the same two fields -f '%z\t%N'
+    stat -c %s -- "$dir" >/dev/null 2>&1 || sz=(-f $'%z\t%N')
+    git -C "$dir" --no-optional-locks ls-files -o -m --exclude-standard -z -- ':(top)' 2>/dev/null \
+    | ( cd "$dir" 2>/dev/null || exit; xargs -0 -r stat "${sz[@]}" -- 2>/dev/null ) \
+    | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
+}
+
 # --- the base every review diffs against --------------------------------------
 # ONE diff, whatever the base: staged, unstaged AND untracked changes come out
 # of a single `git diff <base>`, because the diff runs against a COPY of the
@@ -134,17 +164,33 @@ tree_diff() {
     else idx=$(mktemp) || return 1; fi
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
+    # Keep the big files away from git rather than filter them afterwards: the
+    # cost is the hashing, and only a pathspec stops that. Exclusions with no
+    # positive pathspec beside them still leave the diff whole-worktree wide.
+    local -a ex=() bigp=()
+    case " $* " in *' -- '*) ;; *)
+        local bp
+        while IFS=$'\t' read -r _ bp; do
+            [ -n "$bp" ] || continue
+            bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
+        done < <(big_files "$dir")
+        [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
+    esac
     if [ -n "$br" ]; then
         local base
         base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff "$base" "$@" 2>/dev/null
+            diff --no-color --no-ext-diff "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
     else
         local out
-        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
-        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
         printf '%s\n' "$out"
     fi
+    # The row git printed for these itself, before we kept it from reading
+    # them: a binary file's numstat is "-\t-\tpath". Without it a tree whose
+    # only change is a big file reads CLEAN to --delta and to the fleet scan.
+    [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
     [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
 }
 
@@ -370,6 +416,15 @@ lines_mode() {
         # never meets a short row -- this notice has no file to scroll anyway.
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
+    fi
+
+    # The files tree_diff kept away from git, as one notice row on the
+    # sentinel every reader already refuses (attach, ^Y, mark_rows).
+    local skipped
+    skipped=$(big_files "$dir" | awk -F'\t' '{ printf "%s%s (%d MB)", (n++ ? ", " : ""), $2, $1 / 1048576 }')
+    if [ -n "$skipped" ]; then
+        local note="$skipped skipped — over $(( BIGCAP / 1048576 )) MB, review it directly"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$note" "$note" 1
     fi
 
     [ -n "$diff" ] || return 0
@@ -922,10 +977,29 @@ detach() {                    # <store> <path> <line-with-sign>
 #
 # The one editor chain, shared with ^S's "edit the batch": the path picker's
 # @cockpit_editor first, then the environment, then vi.
+# On a Remote-SSH/Coder host there is no code(1) and usually no $EDITOR, and vi
+# in the popup is the wrong answer next to the VS Code window the diff is being
+# read in. The shim takes --wait, so the buffer comes back like vi's does.
 editor_cmd() {
     local ed
     ed=$(tmux show-options -gqv @cockpit_editor 2>/dev/null)
-    printf '%s\n' "${ed:-${VISUAL:-${EDITOR:-vi}}}"
+    ed=${ed:-${VISUAL:-${EDITOR:-}}}
+    if [ -z "$ed" ] && vscode_shim >/dev/null; then ed="$SELF --vscode --wait"; fi
+    printf '%s\n' "${ed:-vi}"
+}
+
+# Both callers of editor_cmd run its answer here. A user's EDITOR is a STRING
+# and must word-split (EDITOR="code --wait"), but the shim arm is a path this
+# script built out of its own $SELF -- and an install under "~/my dotfiles"
+# split that into two words and ran a command that does not exist.
+run_editor() {                # <editor-command> <file>
+    if [ "$1" = "$SELF --vscode --wait" ]; then
+        "$SELF" --vscode --wait "$2"
+        return
+    fi
+    # Word-splitting on purpose: EDITOR="code --wait".
+    # shellcheck disable=SC2086
+    $1 "$2"
 }
 
 # A pane id means nothing to the person reading the confirm; the agent's own
@@ -969,9 +1043,7 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
         [ -n "$seed" ] && { printf '%s\n' "$seed" > "$tmp"; inplace=1; }
     fi
     ed=$(editor_cmd)
-    # Word-splitting on purpose: EDITOR="code --wait".
-    # shellcheck disable=SC2086
-    $ed "$tmp"
+    run_editor "$ed" "$tmp"
     # A buffer that comes back untouched is a cancel (:q) and must not reach the
     # rewrite below: two comments on one row seed ONE buffer, so a ^E someone
     # only looked at would merge them into a single record, ●2 down to ●.
@@ -1251,13 +1323,15 @@ run_loop() {
             local to ed e
             to="the agent"; [ -n "$REVIEW_PANE_ID" ] && to=$(pane_label "$REVIEW_PANE_ID")
             ed=$(editor_cmd); e=${ed%% *}; e=${e##*/}
+            # The shim arm's first word is this script's own path; "tmux-review"
+            # is not the name of the thing the batch would open in.
+            case "$ed" in "$SELF"*) e="VS Code" ;; esac
             choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in %s first\nkeep reviewing\n' "$n" "$to" "$e" \
                 | fzf --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
             case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
             case "$choice" in
                 deliver*) exit 20 ;;
-                edit*)    # shellcheck disable=SC2086
-                          $ed "$store" </dev/tty >/dev/tty 2>&1
+                edit*)    run_editor "$ed" "$store" </dev/tty >/dev/tty 2>&1
                           rows_out=$(rows_mode "$dir" "$store"); continue ;;
                 *)        rows_out=$(rows_mode "$dir" "$store"); continue ;;
             esac
@@ -2170,6 +2244,19 @@ case "${1:-}" in
         shift; copy_mode "${1:-}" "${2:-}" ;;
     --edit)
         shift; edit_comment "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+    --vscode)
+        # editor_cmd's shim arm lands here, so this must BLOCK like an editor
+        # and it must always leave an editor holding the buffer: a shim that
+        # finds no live window (every socket stale) would otherwise return
+        # instantly and pin whatever was already in the file.
+        shift
+        # No arguments at all: ${@: -1} below expands to $0, and vi would open
+        # this very script instead of a comment buffer.
+        [ $# -gt 0 ] || exit 1
+        vscode_open "$@" || {
+            tmux display-message "tmux-review: no VS Code window reachable, using ${EDITOR:-vi}" 2>/dev/null
+            "${EDITOR:-vi}" "${@: -1}"
+        } ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --resnap)

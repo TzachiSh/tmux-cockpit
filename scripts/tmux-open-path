@@ -36,6 +36,33 @@ fi
 # already guards this; a "~/..." token on a clicked line used to kill this one.
 H=${HOME:-/nonexistent}
 
+# --- vscode -------------------------------------------------------------------
+# Sourced on demand, not at startup: --preview below is re-run by fzf on every
+# arrow key, and it must not pay a readlink for a lib it never touches. $0 is
+# the ~/.local/bin symlink install.sh made; lib/ sits beside the REAL script,
+# and ${x%/*} is dirname without the second fork.
+vscode_lib() {
+    local real
+    real=$(readlink -f "$0" 2>/dev/null) || real=$0
+    [ -n "$real" ] || real=$0
+    # shellcheck source=lib/vscode.sh
+    . "${real%/*}/lib/vscode.sh" 2>/dev/null && return 0
+    # A half-installed copy (scripts/ without lib/) must still open files the
+    # ordinary ways rather than die on an undefined function.
+    vscode_shim() { return 1; }
+    vscode_open() { return 1; }
+}
+
+# Fire-and-forget: open_one hands this to `run-shell -b` because a popup kills
+# its own process group, so nobody is left to read a failure. No fallback here
+# for the same reason -- editor_cmd in tmux-review is where one can be seen.
+if [ "${1:-}" = --vscode ]; then
+    shift
+    vscode_lib
+    vscode_open "$@"
+    exit $?
+fi
+
 # --- preview ------------------------------------------------------------------
 # Its own subcommand rather than a shell string inside --preview: the logic
 # below needs conditionals and git, and threading that through fzf's quoting
@@ -90,6 +117,13 @@ if [ "${1:-}" = --preview-diff ]; then
         if [ -n "$st$dd" ]; then printf '%s\n%s\n' "$st" "$dd"
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
+    fi
+    # Over the review's 32 MiB cap git would hash the whole file (26 s per GB,
+    # measured); tmux-review already skips it, so this says why, at once.
+    # 32 MiB here and there: see BIGCAP in tmux-review.
+    sz=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null)
+    if [ "${sz:-0}" -gt $(( 32 * 1024 * 1024 )) ]; then
+        printf '%s (%d MB, not diffed: over 32 MB)\n' "$base" $(( sz / 1048576 )); exit 0
     fi
     # This used to capture the WHOLE coloured diff into a shell variable, then
     # run git diff a second time (--stat) just for one summary line -- a
@@ -555,6 +589,7 @@ shq() { printf '%q' "$1"; }
 
 open_one() {
     local file=$1 ln=$2 col=$3 editor
+    vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
     if [ -z "$editor" ]; then
         # The old, unprefixed name. Kept working for one release; it is generic
@@ -563,9 +598,11 @@ open_one() {
         [ -n "$editor" ] && tmux display-message \
             "tmux-cockpit: @open-editor has been renamed @cockpit_editor"
     fi
-    # VS Code stays the default, but only where it is actually installed.
-    # Otherwise fall back to the editor the user already told the shell about.
-    if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1; then
+    # VS Code stays the default, but only where it is actually installed --
+    # either as code(1) on PATH, or as the remote shim under ~/.vscode-server
+    # that Remote-SSH and Coder install instead. Otherwise fall back to the
+    # editor the user already told the shell about.
+    if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1 && ! vscode_shim >/dev/null; then
         editor=${VISUAL:-${EDITOR:-}}
     fi
     if [ -n "$editor" ]; then
@@ -591,6 +628,19 @@ open_one() {
             tmux run-shell -b "code $(shq "$file") >/dev/null 2>&1"
         else
             tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
+        fi
+        note "opened ${file/#$H/\~}${ln:+:$ln}"
+        return
+    fi
+    # Remote-SSH and Coder: VS Code is right there, but its CLI is not on the
+    # PATH tmux was started with. Same run-shell -b as above, re-entering this
+    # script so the socket probe (which runs the shim, ~150 ms per dead socket)
+    # happens off the popup's dying process group.
+    if vscode_shim >/dev/null; then
+        if [ -d "$file" ]; then
+            tmux run-shell -b "$(shq "$0") --vscode $(shq "$file") >/dev/null 2>&1"
+        else
+            tmux run-shell -b "$(shq "$0") --vscode --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
         fi
         note "opened ${file/#$H/\~}${ln:+:$ln}"
         return
@@ -672,21 +722,28 @@ browse() {
         # were unreachable; .git/ alone is filtered as noise. load:down starts
         # the cursor on the first real entry instead of ../, where a second
         # Enter just climbed straight back out.
+        # alt-c's prefix is $PWD, not $dir: the cd below makes them the same
+        # directory, and skipping the quoting layer keeps a backslash in a name.
         out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
             | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-                  --expect=ctrl-o \
+                  --multi --expect=ctrl-o \
                   --bind 'load:down' \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})+change-preview-label( diff )" \
                   --bind "ctrl-f:change-preview($(shq "$0") --preview {})+change-preview-label( content )" \
+                  --bind 'alt-c:execute-silent(for f in {+}; do printf "%s/%s\n" "$PWD" "$f"; done | tmux load-buffer -w -)' \
                   --prompt="$(tail3 "$dir")/ " \
-                  --header='↵ open / enter dir   ^O as-is
-^G diff   ^F content   ^/ preview   esc cancel' \
+                  --header='↵ open / enter dir   tab mark   ^O as-is
+^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
                   --preview-label=' content ' --preview-label-pos=2 \
                   --preview-window='down,65%,border-top') || return 0
         key=${out%%$'\n'*}; sel=${out#*$'\n'}
         [ -n "$sel" ] && [ "$sel" != "$key" ] || sel=""
+        # ⇥ marks rows for alt-c only: ↵ and ^O act on the FIRST marked row.
+        # Without this trim the rest arrive as one newline-glued "name" and
+        # descend into a directory that does not exist.
+        sel=${sel%%$'\n'*}
         [ -n "$sel" ] || return 0
         if [ "$key" = ctrl-o ]; then
             open_one "$dir/${sel%/}" "" ""; return 0
@@ -717,7 +774,8 @@ if command -v fzf >/dev/null; then
     # candidate is under it -- which is how the token read in the output --
     # with the line number kept. The absolute path stays in field 2 for the
     # preview commands. --keep-right protects the basename:line end when a
-    # long row still truncates.
+    # long row still truncates. Field 2 is ~-abbreviated, so alt-c's sed puts
+    # $HOME back -- what you paste elsewhere has to be a path, not a display.
     out=$(for i in "${!FILES[@]}"; do
                case "${FILES[$i]}" in
                    "$dir"/*) disp=${FILES[$i]#"$dir"/} ;;
@@ -731,9 +789,10 @@ if command -v fzf >/dev/null; then
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})+change-preview-label( diff )" \
                       --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})+change-preview-label( content )" \
+                      --bind 'alt-c:execute-silent(printf "%s\n" {+2} | sed "s|^~|$HOME|" | tmux load-buffer -w -)' \
                       --prompt='open> ' \
                       --header='↵ open (folder: browse)   tab mark   ^O as-is
-^G diff   ^F content   ^/ preview   esc cancel' \
+^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-label=' content ' --preview-label-pos=2 \
                       --preview-window="down,$pshare,border-top")
