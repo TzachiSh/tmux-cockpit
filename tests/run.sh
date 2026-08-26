@@ -3790,6 +3790,25 @@ case "$(cat "$RXN/log" 2>/dev/null)" in
     *) bad "so does ^X on an empty store" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
 esac
 
+echo "== tmux-review --copy: the file as it is now, then its diff; no path: the whole review's diff =="
+RCP=$(mktmpd)
+(
+  cd "$RCP" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f; printf 'n\n' > g
+) >/dev/null 2>&1
+rcp=$("$DIR/scripts/tmux-review" --copy "$RCP" f)
+case "$rcp" in
+    "### f"*"a"$'\n'"b"*"### diff f"*"+b"*) ok "one path: the whole file, then its diff" ;;
+    *) bad "one path: the whole file, then its diff" "### f / a b / ### diff f / +b" "$rcp" ;;
+esac
+rcpall=$("$DIR/scripts/tmux-review" --copy "$RCP")
+case "$rcpall" in
+    *"+b"*"+n"*|*"+n"*"+b"*) ok "no path: every file's diff, untracked included" ;;
+    *) bad "no path: every file's diff, untracked included" "+b and +n" "$rcpall" ;;
+esac
+is "the cap row copies nothing" "" "$("$DIR/scripts/tmux-review" --copy "$RCP" '(diff too large)' | head -c 1)"
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
