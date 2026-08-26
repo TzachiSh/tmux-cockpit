@@ -81,6 +81,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
+  tmux-review --sess <pane>             the review session dir for <pane> (tmux-fixer, review-gate)
 In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
@@ -1690,6 +1691,13 @@ session_dir() {               # <pane-id> <root>
         "${1#%}" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
 }
 
+sess_mode() {                 # <pane> -> the review session dir for the pane's repo root, created 0700
+    local pane=$1 dir root sess
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null); [ -n "$dir" ] || return 1
+    root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root")
+    (umask 077; mkdir -p -- "$sess") && printf '%s\n' "$sess"
+}
+
 review_pane() {
     local pane=$1 dir=$2 store rc
     local sess cleanup
@@ -2052,6 +2060,8 @@ case "${1:-}" in
         shift; request "${1:-}" ;;
     --info)
         info_mode "${REVIEW_PANE_ID:-}" ;;
+    --sess)
+        shift; sess_mode "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# tmux-fixer — a side-fixer pane beside a busy agent, and the wrapper that runs
+# inside it. The human spawns a separate `claude -p` for an orthogonal job (fix
+# the tests, regenerate a fixture) instead of interrupting the main agent; the
+# main agent is held at its next Stop by review-gate while the fixer's PANE is
+# alive, and resumes with ONE handover line. There is no lock file: a dead
+# process cannot leave a live pane.
+#   tmux-fixer -p <pane>                     the prefix f popup: job, guard, fence, spawn
+#   tmux-fixer --run <pane> <sess> <job…>    inside the fixer pane: claude -p, then the handover
+# State: <sess>/fixer/{pane,reason,deadline,fence,guard} and <sess>/handover.
+set -uo pipefail
+
+# --- --run: the wrapper --------------------------------------------------------
+# The MODEL writes nothing: the wrapper runs the fixer and turns the last
+# "HANDOVER: …" line of claude -p's .result into <sess>/handover -- the ONLY
+# thing that reaches the main agent. On any failure the fallback line is
+# written FIRST (the hold and the gate open on the file), then the output stays
+# on screen for the human (↵ closes the pane).
+handover_write() {            # <sess> <line>
+    local line=${2//[$'\001'-$'\037']/}
+    [ "${#line}" -gt 300 ] && line="${line:0:285}... (truncated)"
+    (umask 077; printf '%s\n' "$line" > "$1/handover")
+}
+run_fixer() {                 # <main-pane> <sess> <job…>
+    local pane=$1 sess=$2; shift 2
+    local job="$*" f="$sess/fixer" sid out res rc reason line fence
+    reason=$(cat -- "$f/reason" 2>/dev/null); reason=${reason:-$job}
+    fence=$(tr '\n' ' ' < "$f/fence" 2>/dev/null)
+    sid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s' "$$" "$(date +%s)")
+    printf 'side fix for %s: %s\n(this pane closes itself when done; it stays open if claude fails)\n\n' "$pane" "$reason"
+    # The fence: every path the main agent has dirty is denied to Edit (Write
+    # path rules are never consulted -- permissions.md, v2.1.210+); mutating
+    # git is denied outright; acceptEdits so a headless run never stalls on a
+    # prompt nobody can answer.
+    local -a deny=()
+    while IFS= read -r p; do [ -n "$p" ] && deny+=("Edit(./$p)"); done < "$f/fence"
+    for g in commit push checkout switch stash reset rebase merge restore; do deny+=("Bash(git $g *)"); done
+    out=$(claude -p "$job
+
+You are a SIDE TASK running beside another agent that is working in this repository right now. Do only this job. Do not touch these files, they are the other agent's live edits: ${fence:-none}. Do not commit. When you are done, your final message must be exactly ONE line that starts with 'HANDOVER: ' and states what changed and the observable delta (for example 'HANDOVER: tests fixed; suite 118s -> 8s; re-read any test file you had open'). No reasoning, no summary, one line." \
+        --output-format json --permission-mode acceptEdits --max-turns 60 --session-id "$sid" \
+        --allowedTools 'Bash(*)' --disallowedTools "${deny[@]}" 2>&1)
+    rc=$?
+    if command -v jq >/dev/null 2>&1; then res=$(printf '%s' "$out" | jq -r '.result // empty' 2>/dev/null)
+    else res=$(printf '%s' "$out" | grep -o '"result":"[^"]*"' | head -1 | sed 's/^"result":"//; s/"$//'); fi
+    line=$(printf '%s\n' "$res" | grep '^HANDOVER: ' | tail -1)
+    [ -n "$line" ] || line="HANDOVER: side task finished without a handover line ($reason); re-check anything it may have touched"
+    handover_write "$sess" "$line"
+    if [ "$rc" -ne 0 ] || [ -z "$res" ]; then
+        printf '%s\n\nclaude exited %s — the other agent has been told the job did not finish cleanly.\n↵ to close\n' "$out" "$rc"
+        read -r _ 2>/dev/null
+        exit 1
+    fi
+    printf '%s\n' "$line"
+    exit 0
+}
+
+case "${1:-}" in
+    --run) shift; run_fixer "${1:-}" "${2:-}" "${@:3}" ;;
+    *) printf 'usage: tmux-fixer -p <pane> | --run <pane> <sess> <job…>\n' >&2; exit 2 ;;
+esac

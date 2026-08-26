@@ -17,7 +17,7 @@ SHELL := /bin/bash
 
 # Every executable shell file, whatever its extension. Listed once so a new
 # script cannot be added to the repo and quietly skipped by the linter.
-SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/fixtures/review/mkfix.sh $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
+SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/fixtures/review/mkfix.sh tests/fixtures/fake-claude $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
 
 .PHONY: all check test test-par check-par gate test-changed lint fmt install uninstall bootstrap help
 

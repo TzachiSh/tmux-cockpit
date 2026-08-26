@@ -6646,5 +6646,26 @@ printf 'a\nb\n' > "$GROOT/scripts/foo"
 is "one changed byte: check misses" "1" "$?"
 is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
 
+echo "== tmux-fixer --run: one HANDOVER line from claude -p's result, the fallback when it forgot, a failure that stays readable =="
+FX=$(mktmpd); FXSESS="$FX/sess"; mkdir -p "$FXSESS/fixer"; printf 'fix the tests\n' > "$FXSESS/fixer/reason"; : > "$FXSESS/fixer/fence"
+FXBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$FXBIN/claude"; FXARGS=$(mktmpf)
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_ARGS="$FXARGS" "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix the tests >/dev/null 2>&1 </dev/null
+is "a HANDOVER result exits 0" "0" "$?"
+is "the handover is that one line, verbatim" "HANDOVER: fixed the thing; suite 118s → 8s; re-read tests/" "$(cat "$FXSESS/handover" 2>/dev/null)"
+case "$(cat "$FXARGS")" in *"-p"*"--output-format"*"json"*"--permission-mode"*"acceptEdits"*"--session-id"*) ok "claude -p: headless, json, acceptEdits, a chosen session id" ;; *) bad "claude -p: headless, json, acceptEdits, a chosen session id" "-p … json … acceptEdits … --session-id" "$(cat "$FXARGS")" ;; esac
+case "$(cat "$FXARGS")" in *"HANDOVER: "*) ok "the prompt states the one-line contract" ;; *) bad "the prompt states the one-line contract" "HANDOVER: in the prompt" "$(tail -3 "$FXARGS")" ;; esac
+rm -f "$FXSESS/handover"
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RESULT='I did things, here is a long explanation' "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "no HANDOVER line: the fallback names the job" "HANDOVER: side task finished without a handover line (fix the tests); re-check anything it may have touched" "$(cat "$FXSESS/handover" 2>/dev/null)"
+rm -f "$FXSESS/handover"
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RESULT="HANDOVER: $(printf 'x%.0s' $(seq 1 400))" "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "a long handover is capped at 300 characters" "300" "$(awk '{ print length }' "$FXSESS/handover")"
+rm -f "$FXSESS/handover"
+# claude fails: the fallback handover is written FIRST (the hold opens on it), the wrapper exits 1 and waits for ↵ (stdin here is /dev/null, so it returns).
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RC=1 FAKE_CLAUDE_RESULT='' "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "a failed claude exits 1" "1" "$?"
+case "$(cat "$FXSESS/handover" 2>/dev/null)" in HANDOVER:*"did not"*|HANDOVER:*"without a handover"*) ok "and still leaves a handover so nobody waits on it" ;; *) bad "and still leaves a handover so nobody waits on it" "a HANDOVER: fallback line" "$(cat "$FXSESS/handover" 2>/dev/null)" ;; esac
+rm -rf "$FX" "$FXBIN"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
