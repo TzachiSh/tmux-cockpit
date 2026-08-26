@@ -288,9 +288,9 @@ fmt_needs='#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_a
 fmt_state='#{?#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},A,}}},idle,}}}}}'
 
 # --- fleet counter, the same precompute for the same reason -------------------
-# #{agent_fleet} in status-right counts blocked and errored agent panes across
-# every session. Each count is a whole-server #{S:#{W:#{P:}}} walk, and the
-# format named each count TWICE -- a ">0" test and the number itself -- so a
+# #{agent_fleet} in status-right counts blocked, errored and pending-review
+# agent panes across every session. Each count is a whole-server
+# #{S:#{W:#{P:}}} walk, and the format named each count TWICE -- a ">0" test and the number itself -- so a
 # redraw ran up to four whole-server walks, the freeze rig's second-worst
 # offender (gate: 360 pane visits per redraw with it enabled). Counted here, the
 # format reads one option (#{E:@cockpit_fleet}) and walks nothing.

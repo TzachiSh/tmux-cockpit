@@ -11,8 +11,9 @@
 # Tokens it expands in status-left / status-right:
 #   #{agent_where_path}   ~/path locally, ssh destination when remote
 #   #{agent_where_branch} git branch locally, blank when remote
-#   #{agent_fleet}        ▲N blocked and ✕N errored agent panes, counted across
-#                         every session on the server; empty when all is quiet
+#   #{agent_fleet}        ▲N blocked, ✕N errored and ◆N with a pending review,
+#                         counted across every session on the server; empty
+#                         when all is quiet
 #
 # Keys it binds (see the README for the status-right marker the click needs):
 #   MouseDown1Control1    branch picker, on whatever you marked range=control|1

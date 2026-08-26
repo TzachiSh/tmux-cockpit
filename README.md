@@ -60,8 +60,9 @@ on a terminal that coalesces fine (Ghostty, kitty, iTerm2), uncomment the two
   one-key approval from a decision without switching to it.
 - **Active pane's border** — names any *other* window that is blocked, since
   you cannot see its border from here.
-- **Status bar** — the `#{agent_fleet}` token counts blocked and errored agents
-  across *every* session, not only the one you are attached to.
+- **Status bar** — the `#{agent_fleet}` token counts blocked, errored and
+  unreviewed agents across *every* session, not only the one you are attached
+  to.
 
 Nothing is drawn when nothing is happening.
 
@@ -124,13 +125,12 @@ has no means to de-duplicate them. So the count can read high on a grouped
 setup. It never reads low, which is the direction that would matter: a fleet
 rendering nothing is genuinely quiet.
 
-It is pure format syntax — a redraw runs no shell — but unlike the other two it
-is not free: tmux walks every pane of every session, twice, on each expansion.
-That costs about **1.7 ms per expansion on a 40-pane server** (1.2 ms measured
-on an idle machine with every pane blocked). Against a default
-`status-interval` of 15 s that is nothing, and it is small beside the 7.7 ms a
-six-window redraw already costs. Panes in neither state pay only their
-`@panestate` read; the dearer agent-glob test runs on the few that are.
+It is pure format syntax — a redraw runs no shell — and it walks nothing
+either: the token expands to one precomputed option, `#{E:@cockpit_fleet}`,
+which `scripts/agent-state` rewrites at each state transition, off the redraw
+path. The whole-server pane walk it replaced ran up to four times per
+expansion, and an agent emitting an OSC-2 title forces an expansion on every
+keystroke.
 ### Context fill, optional
 
 `scripts/agent-context` is a Claude Code `statusLine` shim: fed the statusline
@@ -227,8 +227,8 @@ from `examples/claude-hooks.json` by hand:
 | `SessionEnd` | `off` |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
-interrupted agent lands at the next turn end, or `prefix r` pastes it now that
-the pane is idle.
+interrupted agent waits for the end of that agent's next turn — nothing hands it
+over earlier, `prefix r` included.
 
 ## Requirements
 
@@ -671,13 +671,16 @@ the batch to `delivered.md` and still writes the spool, but nothing ever reads
 it; install the hook, or deliver again once the pane is idle.
 
 A `Stop` hook does not fire on a user interrupt (Esc). A review queued for an
-agent you interrupted therefore lands at its next turn end instead, or
-`prefix + r` pastes it now that the pane is idle.
+agent you interrupted therefore waits: nothing hands it over early, and it
+lands at the end of the agent's *next* turn — after whatever you prompt next
+has already run. `prefix + r` on that pane does not paste it; it opens a fresh
+review of the same rows.
 
 A second review delivered to the same pane before the agent stops replaces the
 queued one: the spool is a single file, so the agent is handed the newer batch.
-Both are in `delivered.md`. `^A` on a later round removes the review directory,
-a still-queued spool with it.
+Both are in `delivered.md`. `^A` on a later round ends the review directory but
+leaves a still-queued spool alone — the review you already sent is in flight,
+and it still lands at the agent's next `Stop`.
 
 Delivery can still be **refused**: the target is not an agent pane, or is not a
 pane id at all. A busy one is not a refusal, it is the queue above. A refusal
@@ -814,7 +817,7 @@ is the wanted behaviour.
 tests/run.sh
 ```
 
-309 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
+745 cases. They run against a dedicated scratch pane, never a live one. They skip rather than fail when no tmux server is running.
 
 The path-extraction cases drive `tmux-open-path --dry-run`, so they need neither
 tmux nor an editor. The branch cases build a scratch repo with `git commit-tree`
