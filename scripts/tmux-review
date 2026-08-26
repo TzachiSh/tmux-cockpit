@@ -1876,6 +1876,16 @@ pad_field() {                 # <width> <string>
 # instead of four prefix+r. esc on the list is the only way out -- a review's
 # own exit code (deliver, approve, discard, leave) says nothing about whether
 # you are done with the fleet.
+kill_window() {               # <pane>  the row's window, after a y/N in the popup
+    local pane=$1 where ans
+    where=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
+    [ -n "$where" ] || return 0
+    printf 'kill window %s? [y/N] ' "$where"
+    IFS= read -r -n1 ans || ans=
+    printf '\n'
+    case "$ans" in y|Y) tmux kill-window -t "$pane" 2>/dev/null ;; esac
+}
+
 fleet_queue() {               # [preselect-pane]
     command -v fzf >/dev/null 2>&1 || {
         tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
@@ -1958,16 +1968,24 @@ fleet_queue() {               # [preselect-pane]
             | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --expect=ctrl-x \
                   --preview "$preview_cmd" \
                   --preview-window="down,$psz,border-top" \
                   --prompt='fleet> ' \
-                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review it   ^/ preview   ^x kill window   esc cancel' \
                   ${presel[@]+"${presel[@]}"} \
                   ${extra[@]+"${extra[@]}"})
         [ -n "$out" ] || return 0
 
-        pane=$(cut -f1 <<<"$out")
+        # --expect: the first line is the key (empty for ↵), the row follows.
+        local key=${out%%$'\n'*}
+        pane=$(cut -f1 <<<"${out#*$'\n'}")
         [ -n "$pane" ] || return 0
+        if [ "$key" = ctrl-x ]; then
+            kill_window "$pane"
+            [ "$pane" = "$pre" ] && pre=
+            continue
+        fi
         dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
         if [ -z "$dir" ]; then
             tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null

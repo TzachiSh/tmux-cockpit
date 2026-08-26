@@ -559,7 +559,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
-| `^X` | — | delete the comment(s) on the row under the cursor |
+| `^X` | kill the window under the cursor, after a y/N (a forgotten agent in another session) | delete the comment(s) on the row under the cursor |
 | `^L` | — | show every pinned comment in the terminal |
 | `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
 | `^B` | — | cycle the base the diff is taken against |

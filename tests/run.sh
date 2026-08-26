@@ -6651,5 +6651,45 @@ printf 'a\nb\n' > "$GROOT/scripts/foo"
 is "one changed byte: check misses" "1" "$?"
 is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
 
+echo "== tmux-review fleet: ^x kills the window under the cursor, after a y/N =="
+if need_tmux "fleet ^x"; then :; else
+KW="cockpit-kw-$$"; SOCKS="$SOCKS $KW"
+KWD=$(mktmpd)
+( cd "$KWD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'b\n' >> f
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$KW" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$KW" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+KWCTL=$("$TMUX_REAL" -L "$KW" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$KW" new-window -d -t t: -c "$KWD" 'exec -a claude bash' >/dev/null 2>&1
+KWP=$("$TMUX_REAL" -L "$KW" list-panes -t t:1 -F '#{pane_id}')
+# A stand-in fzf: the first call "presses" ^x on the agent's row, the second escs.
+KWB=$(mktmpd)
+cat > "$KWB/fzf" <<'KWFZF'
+#!/usr/bin/env bash
+rows=$(cat)
+if [ ! -e "$KWFLAG" ]; then : > "$KWFLAG"; printf 'ctrl-x\n%s\n' "$(grep "^$KWTARGET"$'\t' <<<"$rows")"; exit 0; fi
+exit 130
+KWFZF
+chmod +x "$KWB/fzf"
+kw_run() { rm -f "$KWB/flag"
+    "$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" "KWFLAG='$KWB/flag' KWTARGET='$KWP' PATH='$KWB:$PATH' '$DIR/scripts/tmux-review'" Enter
+    sleep 1.5; }
+kw_run
+case "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL")" in
+    *"kill window t:1"*"[y/N]"*) ok "^x asks first, naming the window" ;;
+    *) bad "^x asks first, naming the window" "kill window t:1 ...? [y/N]" \
+         "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL" | grep -v '^$' | tail -3)" ;;
+esac
+"$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" n; sleep 1
+is "n leaves the window alone" "2" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
+kw_run
+"$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" y; sleep 1
+is "y kills it" "1" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
+is "and the pane the list was opened from survives" "$KWCTL" "$("$TMUX_REAL" -L "$KW" list-panes -a -F '#{pane_id}')"
+"$TMUX_REAL" -L "$KW" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
