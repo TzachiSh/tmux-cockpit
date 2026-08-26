@@ -28,3 +28,16 @@ Root causes found while tracing:
   always appends a new block.
 - Ranges: the store grammar already accepts `## path:a-b (+)`; the picker
   never writes one.
+
+## Popups and copy mode, checked against tmux 3.7 (owner's pointer: tmux/tmux#3377)
+
+nicm, 2022-11-05: "you can't currently enter copy mode in a popup." Nothing in
+CHANGES through 3.7 adds it; popup entries since are OSC 52 in popups (3.4),
+focus events (3.5), nested display-popup modifies the popup (3.6). The
+workaround in that thread is a nested session inside the popup
+(`display-popup -E 'tmux attach -t x || tmux new -s x'`): the inner tmux owns
+the screen, so copy mode and drag-select work, and OSC 52 carries the copy
+out. For this picker that also needs fzf `--no-mouse` (else fzf takes the
+drag), which loses wheel scrolling of the preview, and leaves a session per
+review on the server. Kept as an opt-in idea (`@cockpit_review_select`), not
+built; shift+drag is the zero-cost default.
