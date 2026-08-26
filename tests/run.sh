@@ -2078,6 +2078,11 @@ MV="cockpit-mv-$$"; MVO="cockpit-mvo-$$"; SOCKS="$SOCKS $MV $MVO"
     "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
 sleep 1.2
 OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
+mv_open() {                   # press prefix M and wait for the menu; a no-show is one clean failure
+    "$TMUX_REAL" -L "$MVO" send-keys -t "$1" C-b M
+    until_cap "$MVO" "$1" '*agents*' || bad "the menu opens again" "a menu listing agents" \
+        "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" | tail -3)"
+}
 mv_client() { "$TMUX_REAL" -L "$MV" list-clients -F '#{session_name}:#{window_name}' 2>/dev/null; }
 mv_until() {                  # <pattern> against the client's session:window
     local i
@@ -2105,7 +2110,7 @@ else
     skip_ "and names the window it moves"; skip_ "a quote or a space in a name does not break it"
     skip_ "the session you are in is not offered"
 fi
-# the first row opens highlighted and rows come in creation order: Enter is agents
+# the first row opens highlighted and S/n: sorts rows by name: Enter is agents
 if mv_until 'agents:editor'; then ok "the client follows the window"
 else bad "the client follows the window" "agents:editor" "$(mv_client)"; fi
 case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')" in
@@ -2115,8 +2120,7 @@ case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | t
 esac
 # the last window out: work now holds only keeper; move it into a NEW session
 "$TMUX_REAL" -L "$MV" switch-client -t work: >/dev/null 2>&1; sleep 0.3
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-until_cap "$MVO" "$OP" '*agents*'
+mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" solo Enter
@@ -2129,27 +2133,23 @@ case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | t
     *) ok "the emptied source session is gone" ;;
 esac
 # a taken name moves nothing; an empty name moves nothing
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-until_cap "$MVO" "$OP" '*agents*'
+mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" agents Enter; sleep 0.8
 is "a taken name creates and moves nothing" "solo:keeper" "$(mv_client)"
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-until_cap "$MVO" "$OP" '*agents*'
+mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter; sleep 0.8
 is "an empty name creates and moves nothing" "solo:keeper" "$(mv_client)"
 is "and the session count is unchanged" "4" "$("$TMUX_REAL" -L "$MV" list-sessions 2>/dev/null | wc -l)"
 # hostile targets: a session named it's receives the window; a new a.b does too
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-until_cap "$MVO" "$OP" '*agents*'
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Down Enter     # agents, it's
+mv_open "$OP"
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Down Down Enter     # agents, has space, it's
 if mv_until "it?s:keeper"; then ok "a session named it's receives the window"
 else bad "a session named it's receives the window" "it's:keeper" "$(mv_client)"; fi
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
-until_cap "$MVO" "$OP" '*agents*'
+mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" a.b Enter
@@ -2157,6 +2157,16 @@ if mv_until 'a.b:keeper'; then ok "a dotted new-session name works"
 else bad "a dotted new-session name works" "a.b:keeper" "$(mv_client)"; fi
 is "and leaves no stray placeholder session" "a.b agents has space it's" \
    "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+# the typed name is data: a colon, a quote and a #( all become plain names
+for hn in 'x:y' 'p"q' '#(touch pwned)'; do
+    mv_open "$OP"
+    "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
+    until_cap "$MVO" "$OP" '*new session:*'
+    "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" -l "$hn"; "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter
+    if mv_until "$hn:keeper"; then ok "a new session named $hn receives the window"
+    else bad "a new session named $hn receives the window" "$hn:keeper" "$(mv_client)"; fi
+done
+[ -e "$DIR/pwned" ] && { bad "and #( in the name never runs" "no file" "pwned created"; rm -f "$DIR/pwned"; } || ok "and #( in the name never runs"
 "$TMUX_REAL" -L "$MVO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$MV" kill-server >/dev/null 2>&1
 fi

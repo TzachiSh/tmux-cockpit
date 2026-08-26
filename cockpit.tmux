@@ -350,23 +350,33 @@ rm -f "$rlconf"
 # pinned in a global option before the menu opens (-F: without it the option
 # stores the literal format and the menu wedges the server). #{window_id}
 # inside #{S:} shadows to the looped session's window, hence the pin.
-# ##{window_name} in the title stays for display-menu to expand as data, so
-# a window named it's cannot tear the command apart; sessions are labelled
-# with #{qa:} and targeted by id for the same reason. The new-session row
-# uses -k so the moved window REPLACES the placeholder shell, and =%1: with
-# the trailing colon so a.b is a session, not pane b of session a. The
-# if-shell -F guard is for an empty name: new-session -s "" creates a session
-# with no name on 3.7 instead of refusing (a name of exactly 0 is refused too;
-# tmux numbers sessions from 0, so that one is taken anyway).
+#
+# Every piece of user text stays data. ##{window_name} in the title is left
+# for display-menu to expand, so a window named it's cannot tear the command
+# apart; sessions are labelled with #{qa:} and targeted by id. The typed
+# new-session name goes through %%% (quotes escaped) ONCE, into an option,
+# and everything after reads the option: an option value expands as text, so
+# #( in the name never runs, and no =name: target exists for a : or . in the
+# name to break. Four # because the string is expanded twice before if-shell
+# sees it (run-shell -C, then display-menu). new-session without -d switches
+# the client itself, so -t :^ is the new session, and -k makes the moved
+# window REPLACE its placeholder shell. The if-shell guard is for an empty
+# name: 3.7 makes a session with no name instead of refusing (a name of
+# exactly 0 is refused too; tmux numbers sessions from 0, so it is taken).
 MK=$(tmux show-option -gqv @cockpit_move_key)
+case "$MK" in
+    off) ;;                          # explicitly disabled
+    "")  mk=M ;;
+    *)   mk=$MK ;;
+esac
 if [ "$MK" != off ]; then
     mvconf=$(mktemp) || exit 1
     trap 'rm -f "$mvconf"' EXIT HUP INT TERM
     {
-        printf 'bind-key %s {\n' "$(sq "${MK:-M}")"
+        printf 'bind-key %s {\n' "$(sq "$mk")"
         cat <<'EOF'
     set -gF @cockpit_move_src "#{window_id}"
-    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'if-shell -F \\\"%1\\\" { new-session -d -s \\\"%1\\\" ; switch-client -t \\\"=%1:\\\" ; move-window -k -s #{@cockpit_move_src} -t \\\"=%1:^\\\" }'\""
+    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
     } > "$mvconf"
