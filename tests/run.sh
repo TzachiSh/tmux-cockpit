@@ -6226,7 +6226,10 @@ while [ "$i" -le 20 ]; do
     else
         wd="${FD_DIRS[$((i - 1))]}"
     fi
-    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude bash' >/dev/null 2>&1
+    # sleep, not bash: 20 interactive shells sourcing ~/.bashrc (nvm alone is
+    # 0.2 s here) ran beside the timed scan and tripled it (0.19 s -> 0.65 s,
+    # measured), so the 1 s gate flaked on any box whose rc files cost something.
+    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude sleep 3600' >/dev/null 2>&1
     i=$((i + 1))
 done
 
