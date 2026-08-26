@@ -17,11 +17,9 @@ use std::time::{Duration, Instant};
 
 /// The glyph pair: status glyph + review mark.
 pub const MARK: u16 = 2;
-/// The keyboard wait, and so the ceiling on how late a push wakeup can be.
-/// ponytail: 10 ms costs ~0.8 % of a core in idle wakeups (0.1 % at 100 ms).
-/// Worth it only while a screen is open. If it ever matters, move accept() to a
-/// blocking thread that kill()s our own pid, and this goes back to 100 ms.
-const POLL: Duration = Duration::from_millis(10);
+/// The keyboard wait, and the ceiling on a wakeup that does not end it. Only
+/// SIGWINCH ends it, which is why SIGUSR1 raises one.
+const POLL: Duration = Duration::from_millis(100);
 /// Below this the row would lie about which agent it names (screens.md §"80 columns").
 pub const MIN_R: u16 = 40;
 
@@ -323,9 +321,9 @@ pub fn render_needs_popup(f: &mut Frame, area: Rect, th: &Theme, n: &Needs) {
 }
 
 /// Returns the action line for the shell wrapper, e.g. "jump %14".
-pub fn run(sock: bool) -> Option<String> {
+pub fn run() -> Option<String> {
     let th = Theme::load();
-    let push = Push::start(sock);
+    let push = Push::start();
     let mut term = ratatui::init();
     let mut st = TableState::new();
     let (mut panes, mut sel, mut pv) = (Vec::<Pane>::new(), 0usize, String::new());
@@ -398,8 +396,14 @@ pub fn run(sock: bool) -> Option<String> {
             log("draw");
             dirty = false;
         }
-        if event::poll(POLL).unwrap_or(false)
-            && let Ok(Event::Key(k)) = event::read()
+        let ev = if event::poll(POLL).unwrap_or(false) { event::read().ok() } else { None };
+        // a resize is the same request as USR1: look again. It costs nothing to
+        // honour, and it means a real terminal resize refreshes the data too.
+        if let Some(Event::Resize(..)) = &ev {
+            tick -= Duration::from_secs(1);
+            dirty = true;
+        }
+        if let Some(Event::Key(k)) = ev
             && k.kind == KeyEventKind::Press
         {
             dirty = true;
