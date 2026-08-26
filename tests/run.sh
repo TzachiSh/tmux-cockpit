@@ -6572,7 +6572,7 @@ until_cap "$PQ" "$PQCTL" '*$*'
 fi
 
 # group: serial
-echo "== tmux-review --fleet: from a non-agent pane, the queue lists exactly the dirty agent panes =="
+echo "== tmux-review --fleet: from a non-agent pane, the queue lists every agent pane and only those =="
 if need_tmux "tmux-review --fleet"; then :; else
 FQ="cockpit-fq-$$"; SOCKS="$SOCKS $FQ"
 # Window 0's pane is the CONTROL pane -- a plain shell, the non-agent
@@ -6596,7 +6596,7 @@ FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
 printf 'x\n' > "$FQ_DIRTY/new1.txt"                  # + three one-line untracked files
 printf 'y\n' > "$FQ_DIRTY/new2.txt"
 printf 'z\n' > "$FQ_DIRTY/new3.txt"
-FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- excluded
+FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- listed as clean (#49)
 FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
 # Same rank as FQ_DIRTY (neither has @panestate set, below) but its 5 changed
 # lines are all TRACKED, none untracked -- against FQ_DIRTY's 1 tracked + 3
@@ -6628,18 +6628,22 @@ case "$fqout" in
     *"$DIRTY_PANE"*) ok "the dirty agent pane is in the queue" ;;
     *) bad "the dirty agent pane is in the queue" "$DIRTY_PANE in the rows" "$fqout" ;;
 esac
+# #49: a clean agent is still an agent. The queue used to drop it, and with
+# every agent in a hand-made worktree reading clean from its cwd, prefix r
+# told six live agents "no agent pane".
 case "$fqout" in
-    *"$CLEAN_PANE"*) bad "a clean agent pane is not in the queue" \
-         "no $CLEAN_PANE in the rows" "$fqout" ;;
-    *) ok "a clean agent pane is not in the queue" ;;
+    *"$CLEAN_PANE"$'\t'*) ok "a clean agent pane is in the queue" ;;
+    *) bad "a clean agent pane is in the queue" "$CLEAN_PANE in the rows" "$fqout" ;;
 esac
+is "and its ± column reads clean, not a dash" "clean" \
+   "$(printf '%s\n' "$fqout" | awk -F'\t' -v p="$CLEAN_PANE" '$1 == p { print $5; exit }')"
 case "$fqout" in
     *"$NONAGENT_PANE"*) bad "a dirty non-agent pane is not in the queue" \
          "no $NONAGENT_PANE in the rows" "$fqout" ;;
     *) ok "a dirty non-agent pane is not in the queue" ;;
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly two rows" "2" "$rowcount"
+is "the queue lists exactly three rows" "3" "$rowcount"
 
 # Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
 # one-line files), folded into the same numstat by tree_diff's intent-to-add
@@ -6689,7 +6693,7 @@ is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
 is "its state is in the row" "needs-input" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f2)"
-is "and a clean tree shows no churn instead of +0 -0" "—" \
+is "and a clean tree reads clean instead of +0 -0" "clean" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f5)"
 is "the dirty running agent sorts below it" "$DIRTY_PANE" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | sed -n 2p | cut -f1)"
@@ -6720,7 +6724,7 @@ done
 nrrow=$(printf '%s\n' "$fqout3" | awk -F'\t' -v p="$NOREPO_PANE" '$1 == p { print; exit }')
 is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?" \
    "$(printf '%s\n' "$nrrow" | cut -f4)"
-is "and its ± column reads —, not an empty field" "—" \
+is "and its ± column reads no repo, not an empty field" "no repo" \
    "$(printf '%s\n' "$nrrow" | cut -f5)"
 
 # An agent that committed on its branch: `git status --porcelain` is clean
@@ -6774,8 +6778,47 @@ BIG_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:7 -F '#{pane_id}')
 is "--delta: a tree whose only change is a skipped big file is still dirty" "D=0" \
    "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $BIG_PANE; echo D=\$?" 2>/dev/null | tail -1)"
 
+# #49: an agent that made its worktree by hand (`git worktree add` from the
+# main checkout) keeps its process in the main checkout and drives the tree
+# with git -C, so its cwd reads clean master. @cockpit_dir, a pane option the
+# agent sets, names the tree it WORKS in, and every reader of a pane's tree
+# prefers it. t:8 is the next free window.
+FQ_MAIN=$(mktmpd); mk_git_dir "$FQ_MAIN" 0
+FQ_WT="$FQ_MAIN-wt"
+git -C "$FQ_MAIN" worktree add -q -b feat "$FQ_WT" >/dev/null 2>&1
+printf 'b\n' >> "$FQ_WT/f"
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_MAIN" 'exec -a claude bash' >/dev/null 2>&1
+WT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:8 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$WT_PANE" @cockpit_dir "$FQ_WT" >/dev/null 2>&1
+# A dangling @cockpit_dir (the worktree was removed since) falls back to the cwd.
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @cockpit_dir "$FQ_CLEAN/gone" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+fqout5=""
+for i in $(seq 1 20); do
+    fqout5=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout5" in *"$WT_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+wtrow=$(printf '%s\n' "$fqout5" | awk -F'\t' -v p="$WT_PANE" '$1 == p { print; exit }')
+is "@cockpit_dir: the row names the worktree and its branch, not the cwd's" "$(basename "$FQ_WT")⑂feat" \
+   "$(printf '%s\n' "$wtrow" | cut -f4)"
+is "and its churn is the worktree's" "+1 -0" "$(printf '%s\n' "$wtrow" | cut -f5)"
+clrow=$(printf '%s\n' "$fqout5" | awk -F'\t' -v p="$CLEAN_PANE" '$1 == p { print; exit }')
+is "a dangling @cockpit_dir falls back to the pane's own tree" "$(basename "$FQ_CLEAN")⑂main" \
+   "$(printf '%s\n' "$clrow" | cut -f4)"
+is "--delta: the Stop hook sees the worktree's change through @cockpit_dir" "D=0" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $WT_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+is "--dir: the tree the pane works in, for tmux-fixer" "$FQ_WT" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --dir $WT_PANE" 2>/dev/null | tail -1)"
+wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --sess $WT_PANE" 2>/dev/null | tail -1)
+"$TMUX_REAL" -L "$FQ" set-option -pu -t "$WT_PANE" @cockpit_dir >/dev/null 2>&1
+cwdsess=$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --sess $WT_PANE" 2>/dev/null | tail -1)
+is "--sess: the worktree review keeps its own store, not the main checkout's" "1" \
+   "$([ -n "$wtsess" ] && [ "$wtsess" != "$cwdsess" ] && echo 1 || echo "$wtsess = $cwdsess")"
+rm -rf -- "$wtsess" "$cwdsess"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG" "$FQ_WT" "$FQ_MAIN"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
@@ -7010,6 +7053,41 @@ case "$(cat "$RMARKER")" in
     *) bad "-p pane_id resolves the pane the popup was opened from" \
          "start:pos( in the fzf invocation" "$(cat "$RMARKER")" ;;
 esac
+# #49: ↵ on a clean row jumps to the pane instead of opening a review that
+# closes itself with "no uncommitted changes" and lands back on the list
+# (section 8 #3). A second window in cliA's session holds a clean agent; the
+# stub fzf picks its row; the session's current window must move there and
+# tmux-review must exit rather than re-list forever.
+RDC=$(mktmpd)
+(
+    cd "$RDC" || exit
+    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+    git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+) >/dev/null 2>&1
+tmux -L "$RINNER" new-window -d -t cliA: -c "$RDC" 'exec -a claude bash' >/dev/null 2>&1
+rpaneC=$(tmux -L "$RINNER" list-panes -t cliA:1 -F '#{pane_id}')
+for i in $(seq 1 20); do   # until bash has exec'd as claude, or the row is not built
+    [ "$(tmux -L "$RINNER" display-message -p -t "$rpaneC" '#{pane_current_command}' 2>/dev/null)" = claude ] && break
+    sleep 0.1
+done
+cat > "$RFZFSTUB/fzf" <<EOF
+#!/usr/bin/env bash
+row=\$(grep "^$rpaneC"\$'\\t' || true)
+[ -n "\$row" ] || exit 1
+printf '\\n%s\\n' "\$row"
+EOF
+jrc=$(timeout 5 env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1; echo $?)
+is "↵ on a clean row leaves the queue instead of re-listing" "0" "$jrc"
+is "and the session's current window is now that agent's" "1" \
+   "$(tmux -L "$RINNER" display-message -p -t cliA: '#{window_index}' 2>/dev/null)"
+# A bare switch-client inside the popup lands on the most recently active
+# client -- cliB's, attached second -- and yanks THAT person to cliA.
+case "$(tmux -L "$RINNER" list-clients -F '#{client_session}' 2>/dev/null)" in
+    *cliB*) ok "and the other client is still on its own session" ;;
+    *) bad "and the other client is still on its own session" "a client on cliB" \
+         "$(tmux -L "$RINNER" list-clients -F '#{client_name} #{client_session}' 2>/dev/null)" ;;
+esac
+rm -rf "$RDC"
 tmux -L "$ROUTERA" kill-server >/dev/null 2>&1
 tmux -L "$ROUTERB" kill-server >/dev/null 2>&1
 tmux -L "$RINNER" kill-server >/dev/null 2>&1

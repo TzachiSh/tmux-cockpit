@@ -515,11 +515,30 @@ rather than reporting a success that never happened.
 attach to individual lines, and nothing reaches the agent until you say so —
 there is deliberately no key that approves the whole thing at once.
 
-It always opens the **fleet queue**: every agent pane, on every session, that
-is blocked or has a dirty tree, previewed the same way the path picker's
-folder preview shows a directory's `git status`. Nothing else in this plugin
-answers "which of my agents needs my eyes"; the queue exists because visiting
-each pane in turn to find out does not scale past two or three of them.
+It always opens the **fleet queue**: every agent pane, on every session,
+blocked ones first, previewed the same way the path picker's folder preview
+shows a directory's `git status`. A pane with nothing to review reads `clean`
+(or `no repo`) in the ± column and `↵` on it jumps there instead of opening
+an empty review. Nothing else in this plugin answers "which of my agents
+needs my eyes"; the queue exists because visiting each pane in turn to find
+out does not scale past two or three of them.
+
+The tree a row diffs is the pane's cwd, unless the pane option `@cockpit_dir`
+names another. An agent that made its worktree by hand (`git worktree add`
+from the main checkout) keeps its process, and so its cwd, in the main
+checkout and drives the tree with `git -C`; its row would read clean master.
+One line from the agent fixes that, and every reader (the queue, `--delta`
+for the Stop hook's ◆, `prefix + i`, side fixes) follows it:
+
+```sh
+tmux set-option -p -t "$TMUX_PANE" @cockpit_dir ~/.cache/cockpit-wt/my-branch
+```
+
+`-p` is not optional: a window or global `@cockpit_dir` is inherited by every
+pane, and then every row diffs that one tree.
+
+`EnterWorktree` and `claude --worktree` need none of this; they move the
+process itself, and the cwd is the tree.
 
 From an **agent pane** the queue opens with that pane already under the
 pointer, so `prefix + r` there is still one `↵` from its review — and the

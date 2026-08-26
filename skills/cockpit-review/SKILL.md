@@ -1,8 +1,16 @@
 ---
 name: cockpit-review
 description: Ask the human for a code review of this pane's changes through the tmux-cockpit review popup, then act on the comments. Use when you finished a piece of work and want it looked at before going on, or when the user says "review this" / "get a review".
-allowed-tools: Bash(*tmux-review*--request*)
+allowed-tools: Bash(*tmux-review*--request*), Bash(tmux set-option -p *@cockpit_dir*)
 ---
+
+If the tree you work in is not your cwd (a worktree you made with `git
+worktree add`, driven with `git -C`), say so once first, or the review shows
+the wrong tree:
+
+    tmux set-option -p -t "$TMUX_PANE" @cockpit_dir <path-to-that-worktree>
+
+Keep the `-p`: without it the option is inherited by every pane on the server.
 
 Run this, with a long timeout (the human is reading and annotating; do not
 poll, do not retry, do not run anything else meanwhile):

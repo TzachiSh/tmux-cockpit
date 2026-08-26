@@ -76,6 +76,16 @@ git_root() {
     printf '%s\n' "${root:-$dir}"
 }
 
+# The tree a pane WORKS in: @cockpit_dir when the agent set one (a worktree
+# made by hand keeps the process, so the cwd, in the main checkout, #49),
+# else the cwd. A dangling option (tree removed since) falls back to the cwd.
+pane_dir() {                  # <pane> -> a directory; empty when the pane is gone
+    local out wt cwd
+    out=$(tmux display-message -p -t "$1" '#{@cockpit_dir}'$'\037''#{pane_current_path}' 2>/dev/null)
+    wt=${out%%$'\037'*}; cwd=${out#*$'\037'}
+    if [ -n "$wt" ] && [ -d "$wt" ]; then printf '%s\n' "$wt"; else printf '%s\n' "$cwd"; fi
+}
+
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
@@ -99,6 +109,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
   tmux-review --sess <pane>             the review session dir for <pane> (tmux-fixer, review-gate)
+  tmux-review --dir <pane>              the tree <pane> works in: @cockpit_dir, else its cwd
 In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-c copy lines   alt-y copy all   ^/ preview   alt-↑↓ scroll   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
@@ -268,7 +279,7 @@ next_base() {                 # <dir> <current-mode>
 # Stop hook asks. Reads the mode the pane's own review chose with ^B, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    dir=$(pane_dir "$pane")
     [ -n "$dir" ] || return 1
     root=$(git_root "$dir")
     git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
@@ -1144,7 +1155,9 @@ run_loop() {
     local dir=$1 store=$2
     [ -n "$dir" ] || { usage; exit 2; }
     command -v fzf >/dev/null 2>&1 || {
-        printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
+        # display-message, not stderr: inside display-popup -E stderr of a
+        # command that exits at once is rendered to nobody.
+        tmux display-message "tmux-review: the review loop needs fzf" 2>/dev/null; exit 1;
     }
 
     # The base this review diffs against: ^B's choice, remembered beside the
@@ -1208,7 +1221,7 @@ run_loop() {
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
-        tmux display-message "tmux-review: no uncommitted changes" 2>/dev/null
+        tmux display-message "tmux-review: no uncommitted changes in $dir" 2>/dev/null
         drop_store "$store"
         exit 0
     fi
@@ -1704,7 +1717,10 @@ fleet_rows() {
     # Same sentinel, same reason: @cockpit_review is unset on most panes.
     fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'$'\t'
     fmt="${fmt}"'#{session_name}:#{window_index} '"$AGENT_TITLE_FMT"$'\t'
-    fmt="${fmt}"'#{pane_current_path}'
+    # Sentinelled too now that it is not the last field (an unset cwd shifted
+    # @cockpit_dir into it). The option: pane_dir()'s rule off this one call.
+    fmt="${fmt}"'#{?#{pane_current_path},#{pane_current_path},-}'$'\t'
+    fmt="${fmt}"'#{?#{@cockpit_dir},#{@cockpit_dir},-}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
     [ -n "$raw" ] || return 0
 
@@ -1728,11 +1744,12 @@ fleet_rows() {
     # below), before any status call runs. rev-parse --show-toplevel takes no
     # lock; it is the status/diff calls after it that do, and those are what
     # phase 2 below dedups.
-    local isagent id state review title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local isagent id state review title path wt n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
     local -a pids=() pane_id=() pane_state=() pane_review=() pane_title=() pane_root=()
-    while IFS=$'\t' read -r isagent id state review title path; do
+    while IFS=$'\t' read -r isagent id state review title path wt; do
         [ "$isagent" = 1 ] || continue
-        [ -n "$path" ] || continue
+        [ "$path" != - ] || continue
+        [ "$wt" != - ] && [ -d "$wt" ] && path=$wt
         [ "$state" = - ] && state=   # the wire sentinel above, back to unset
         [ "$review" = - ] && review=
         n=$((n + 1))
@@ -1783,15 +1800,11 @@ fleet_rows() {
     # No git call left here -- just the per-pane state/title/rank the shared
     # scan does not know, joined against the one result its group produced.
     local -a rows=()
-    local dirty repo branch stat churn rank line glyph
+    local _dirty repo branch stat churn rank line glyph
     for ((i = 1; i <= n; i++)); do
         id=${pane_id[i]}; state=${pane_state[i]}; title=${pane_title[i]}
         key=${pane_root[i]:-@@none@@}
-        IFS=$'\t' read -r dirty repo branch stat churn < "$tmpdir/scan-${root_idx[$key]}"
-        # A blocked pane earns its row on state alone -- that is the case a
-        # dirty-only filter dropped, and it is the most urgent one there is.
-        [ "$dirty" = 1 ] || [ "$state" = needs-input ] || continue
-
+        IFS=$'\t' read -r _dirty repo branch stat churn < "$tmpdir/scan-${root_idx[$key]}"
         case "$state" in
             needs-input) rank=0 ;;
             done)        rank=1 ;;
@@ -1837,7 +1850,7 @@ fleet_scan_root() {
         # repo rendered "—⑂" + churn with a blank ± column instead of "?⑂?"
         # and "—". Same trap, same sentinel, as the #{@panestate} guard in
         # fleet_rows' pane format above.
-        printf '0\t?\t?\t—\t0\n'
+        printf '0\t?\t?\tno repo\t0\n'
         return 0
     fi
     # Two agents on two worktrees of the same repo are indistinguishable from
@@ -1880,8 +1893,8 @@ fleet_scan_root() {
         churn=$(( add + del ))
     else
         # Nothing to review, only someone to unblock. "+0 -0" would read as a
-        # measurement; — reads as "not applicable", which it is.
-        stat='—'; churn=0
+        # measurement; the word is what the queue's ↵ keys its jump on.
+        stat=clean; churn=0
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\n' "$dirty" "${repo:-?}" "${branch:-?}" "$stat" "$churn"
@@ -1911,7 +1924,7 @@ session_dir() {               # <pane-id> <root>
 
 sess_mode() {                 # <pane> -> the review session dir for the pane's repo root, created 0700
     local pane=$1 dir root sess
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null); [ -n "$dir" ] || return 1
+    dir=$(pane_dir "$pane"); [ -n "$dir" ] || return 1
     root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root")
     (umask 077; mkdir -p -- "$sess") && printf '%s\n' "$sess"
 }
@@ -1995,7 +2008,7 @@ request() {                   # <pane>
         printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
         exit 1
     fi
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    dir=$(pane_dir "$pane")
     [ -n "$dir" ] || { printf 'tmux-review: pane %s is gone\n' "$pane" >&2; exit 1; }
     root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root"); store="$sess/comments.md"
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
@@ -2040,9 +2053,9 @@ request() {                   # <pane>
 # (agent-state's idiom -- tab would collapse the empty fields that mean
 # "unset").
 info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f id where cmd path state msg review spool sid title hold root sess b n1 n2
+    local pane=$1 sep=$'\037' f id where cmd path wt state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}' 2>/dev/null)
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}' 2>/dev/null)
     id=${f%%"$sep"*};     f=${f#*"$sep"}
     # display-message does NOT fail on a pane id that does not exist -- it
     # expands every format to the empty string and exits 0 (measured on 3.7c),
@@ -2053,6 +2066,7 @@ info_mode() {                 # <pane>
     where=${f%%"$sep"*};  f=${f#*"$sep"}
     cmd=${f%%"$sep"*};    f=${f#*"$sep"}
     path=${f%%"$sep"*};   f=${f#*"$sep"}
+    wt=${f%%"$sep"*};     f=${f#*"$sep"}
     state=${f%%"$sep"*};  f=${f#*"$sep"}
     msg=${f%%"$sep"*};    f=${f#*"$sep"}
     review=${f%%"$sep"*}; f=${f#*"$sep"}
@@ -2061,9 +2075,13 @@ info_mode() {                 # <pane>
     title=${f%%"$sep"*};  hold=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
-    # The root is the tree prefix r diffs. It is derived from the cwd, so an
-    # agent that edits another worktree by absolute path (issue #3) shows the
-    # wrong tree here -- and this line is how the human notices.
+    # The root is the tree prefix r diffs; an agent editing another tree
+    # without setting @cockpit_dir shows the wrong one, and this is how the
+    # human notices.
+    if [ -n "$wt" ]; then
+        if [ -d "$wt" ]; then path=$wt; printf 'dir       %s  (@cockpit_dir)\n' "$wt"
+        else printf 'dir       %s  (@cockpit_dir, missing -- using cwd)\n' "$wt"; fi
+    fi
     root=$(git_root "$path")
     printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
@@ -2131,7 +2149,10 @@ kill_window() {               # <pane>  the row's window, after a y/N in the pop
 }
 
 
-# The fzf queue over fleet_rows(). Unlike the review loop this filters as you
+# The fzf queue over fleet_rows(): every agent pane, clean ones too (#49; a
+# dirty-only filter hid an agent whose work sat in a tree its cwd did not
+# name, and with it the only list of which agents exist).
+# Unlike the review loop this filters as you
 # type -- it is a pane list, not comment entry, so --disabled has no place
 # here. Rows carry pane, state, title, repo⑂branch and stat; the preview
 # re-asks tmux for the pane's cwd by id rather than smuggling a sixth hidden
@@ -2156,7 +2177,7 @@ fleet_queue() {               # [preselect-pane]
         local rows
         rows=$(fleet_rows)
         if [ -z "$rows" ]; then
-            tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
+            tmux display-message "tmux-review: no pane runs an agent named in @cockpit_agents_glob" 2>/dev/null
             return 0
         fi
 
@@ -2207,10 +2228,9 @@ fleet_queue() {               # [preselect-pane]
         for i in "${!disp[@]}"; do [ "${disp[$i]%%$'\t'*}" = "$pre" ] && { pos=$(( i + 1 )); break; }; done
         [ "$pos" -gt 0 ] && presel=(--sync --bind "start:pos($pos)")
 
-        # Same root-vs-cwd seam as review_pane: the row only carries the pane's
-        # raw cwd, so resolve it to the repo root here too before handing it to
-        # --preview-diff, which expects a real, existing path.
-        preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
+        # The row carries no path: ask --dir (pane_dir's rule, dangling option
+        # included) and resolve to the root, which --preview-diff expects.
+        preview_cmd="pdir=\$($(shq "$SELF") --dir {1} 2>/dev/null); "
         preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
         preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
@@ -2232,7 +2252,7 @@ fleet_queue() {               # [preselect-pane]
                   --preview "$preview_cmd" \
                   --preview-window="down,$psz,border-top" \
                   --prompt='fleet> ' \
-                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review   ^/ preview   ^X kill window   esc cancel' \
+                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review, or jump to a clean pane   ^/ preview   ^X kill window   esc cancel' \
                   ${presel[@]+"${presel[@]}"} \
                   ${extra[@]+"${extra[@]}"})
         [ -n "$out" ] || return 0
@@ -2248,7 +2268,19 @@ fleet_queue() {               # [preselect-pane]
             pre=$pane
             continue
         fi
-        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+        # Nothing to review on a clean row: ↵ goes to the pane instead of a
+        # review that closes itself (§8 #3). -c pins the opener's client: bare
+        # switch-client in a popup takes the busiest client (main_entry's note).
+        case ${sel##*$'\t'} in clean|'no repo')
+            local cl
+            cl=$(tmux list-clients -t "$(tmux display-message -p -t "${REVIEW_PANE_ID:-$pane}" '#{session_name}' 2>/dev/null)" \
+                    -F '#{client_name}' 2>/dev/null | head -n1)
+            [ -z "$cl" ] || tmux switch-client -c "$cl" -t "$pane" 2>/dev/null
+            tmux select-window -t "$pane" 2>/dev/null
+            tmux select-pane -t "$pane" 2>/dev/null
+            return 0 ;;
+        esac
+        dir=$(pane_dir "$pane")
         if [ -z "$dir" ]; then
             tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
             continue
@@ -2351,6 +2383,8 @@ case "${1:-}" in
         info_mode "${REVIEW_PANE_ID:-}" ;;
     --sess)
         shift; sess_mode "${1:-}" ;;
+    --dir)
+        shift; pane_dir "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")
