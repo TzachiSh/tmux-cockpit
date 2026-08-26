@@ -4428,6 +4428,11 @@ printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.
 rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
 is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
 case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
+rb_t0=$(date +%s%N)
+rbpv=$( (cd "$RB" && "$DIR/scripts/tmux-open-path" --preview-diff core) )
+rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
+[ "$rb_ms" -lt 500 ] && ok "and it answers without hashing the file (${rb_ms} ms)" || bad "and it answers without hashing the file" "< 500 ms" "${rb_ms} ms"
 rm -rf "$RB"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="

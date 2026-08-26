@@ -91,6 +91,13 @@ if [ "${1:-}" = --preview-diff ]; then
         else printf 'no uncommitted changes under %s\n' "${f##*/}"; fi
         exit 0
     fi
+    # Over the review's 32 MiB cap git would hash the whole file (26 s per GB,
+    # measured); tmux-review already skips it, so this says why, at once.
+    # 32 MiB here and there: see BIGCAP in tmux-review.
+    sz=$(stat -c %s -- "$f" 2>/dev/null || stat -f %z -- "$f" 2>/dev/null)
+    if [ "${sz:-0}" -gt $(( 32 * 1024 * 1024 )) ]; then
+        printf '%s (%d MB, not diffed: over 32 MB)\n' "$base" $(( sz / 1048576 )); exit 0
+    fi
     # This used to capture the WHOLE coloured diff into a shell variable, then
     # run git diff a second time (--stat) just for one summary line -- a
     # 21MB/400k-line diff measured 2.06s + 177MB RSS per render, rerun on every
