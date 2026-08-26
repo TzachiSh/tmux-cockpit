@@ -26,7 +26,8 @@
 | 1. `alt-c` reads the line from the file per marked row | **do** | `attach()` has the read; one function, two callers. |
 | 2. `^E` picker or separator grammar for several comments on one row | **skip** | one agent reads the paragraphs under one anchor either way; only `●2` changes. README states the one-buffer rule. |
 | 3. shorter legend plus a help key (`F1`/`alt-h`, `execute(less)`) | **replace** | reflow the three key lines to ≤ 80 cells; `--help` already holds the full map. No help screen. |
-| 4. `tmux display-message` from `detach`/`seed_comment` when `STORE_N` is 0 on a non-empty file | **replace** | one line in `parse_store` itself, where every caller passes, next to the stderr note it duplicates. |
+| 4. `tmux display-message` from `detach`/`seed_comment` when `STORE_N` is 0 on a non-empty file | **replace** | one `load_store` wrapper in `tmux-review` that both go through; the lib stays tmux-free (a test pins it). |
+| 7 (research): a gutter sized to the file's largest line number | **skip** | needs a pass over the diff before the render; `%6` is one character and the ceiling is 99999. |
 | 5. `CAP_SENTINEL` guard on `alt-c` | **do** | inside the new `--copy-lines`, same test `attach` and `^Y` use. |
 | 6. the token in each picker, or one shared `FZF_COLOR` in `cockpit.tmux` | **do the first** | five fzf calls; an environment contract for one token is more than it saves. `popup-border-style` styles a different border. |
 | 7. `%6` widths and `▸` or `>` | **do** | `%6`, and `▸` (U+25B8 is neutral width; U+25B6 is ambiguous). A highlighted line needs fzf 0.52. |

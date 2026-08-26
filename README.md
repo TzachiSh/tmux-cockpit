@@ -608,7 +608,9 @@ to your editor and pins the file that comes back, so a comment that needs three
 lines costs no more than one — an empty file pins nothing, so deleting
 everything and saving is the cancel. With nothing typed on a row that already
 carries a comment, `^E` opens that comment instead and replaces it; saving an
-empty file deletes it. `^E` uses `@cockpit_editor` when set
+empty file deletes it. Several comments on one row open as one buffer and
+save back as one: the agent reads them as paragraphs under one anchor either
+way. `^E` uses `@cockpit_editor` when set
 (`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
 opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
 none of the three set it tries VS Code's remote shim, and falls back to `vi`.

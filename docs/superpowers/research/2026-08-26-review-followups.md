@@ -130,7 +130,53 @@ quote itself, which is exactly the snapshot rule.
 
 ## 3. Legend truncates below ~90 columns
 
-PENDING
+What ours does `[repo]`, measured: the three fixed key lines are 77, 53 and
+64 cells; the dynamic fourth (`root: … base: … ● pinned ↺ last round ↺ N
+delivered earlier`) runs to about 135 with a worktree root. An 80-column
+popup leaves 76 cells for a header line: 2 for the popup border, 2 for fzf's
+pointer margin. So line 1 lost the tail of `^R refresh`, and line 4 lost the
+delivered count, which sat last.
+
+What the tools do: lazygit shows a one-line hint bar and `?` for the full
+map; tig has `h`; fzf-based tools (fzf-git, forgit) show little and rely on
+docs. fzf 0.44 has `change-header` and `toggle-header` actions, and a help
+key can `execute(less)` a text; `?` is typeable here because the query is a
+comment, so a help key would have to be `F1` or `alt-h`.
+
+Need: yes at 80 columns, and a 115-column terminal at the default 70% width
+is one.
+
+How: reflow, no help screen. `^R refresh` moves to line 2 (64/66/64 cells),
+and `$ndlv` moves ahead of the glyph legend on line 4, so the count that
+changes between rounds is the part that survives a long root. `--help`
+already carries the full key map. A help key is a subsystem for three lines
+that fit once rebalanced.
+
+## 7. `▶` overwrites a digit past 9999 lines; `▶` is ambiguous-width
+
+What ours does `[repo]`, measured: a 12345-line file with line 12340 changed
+rendered its removed row as `▶2340       │ -12340`; the `%5` gutter overflowed
+and the mark ate the first digit.
+
+What the tools do: delta's line-number gutter widens to the file (its
+`line-numbers-left-format` defaults to `{nm:^4}` and grows); tig marks the
+current line with reverse video, not a glyph; fzf's own `--highlight-line`
+arrived in 0.52, we pin 0.44. Unicode's EastAsianWidth lists U+25B6 `▶` as
+Ambiguous (two cells in a terminal set to ambiguous-wide) and U+25B8 `▸` as
+Neutral.
+
+Need: yes. Lockfiles and generated files run past 9999 lines and get
+reviewed.
+
+How: `%6` in the gutter's five `printf`s (the ceiling moves to 99999) and
+`▸` for the mark. The six pinned test strings widen with it, plus two new
+pins: the 12340 case and a `\ No newline at end of file` row, which the
+issue listed as untested. A width sized to the file's largest line number
+(delta's and GitLab's shape) needs a pass over the diff before the render
+or a numstat read; one column for a ceiling nobody reviews past is the
+cheaper answer. The render bytes changed, so the memo cache's version tag
+(`gutter1` → `gutter2`) moves with them; a warm cache from before the
+upgrade otherwise keeps serving the old gutter.
 
 ## 4. A corrupt store is set aside silently under ^E and ^X
 
@@ -166,9 +212,11 @@ Need: yes. `^S`'s "edit the batch" invites hand edits, and a hand edit is
 how a store stops parsing.
 
 How: the `.bak` move stays (the lib's contract is that a hook never fails on
-a bad store, so refusing like git is out). The note gains a `tmux
-display-message` beside the stderr `printf`, inside `parse_store`, so every
-caller (`^X`, `^E`, `--list`, the Stop hook) says it once. A timestamped
+a bad store, so refusing like git is out). The lib also stays tmux-free (a
+test pins "touches neither tmux nor git"), so the note is a `tmux
+display-message` in `tmux-review`'s one `load_store` wrapper, which `^X` and
+`^E` both go through: a non-empty store that parses to nothing and now has a
+`.bak` beside it was just set aside. A timestamped
 backup name is not worth a line: a second failed parse is the same file
 edited again, and the first `.bak` was already superseded by that edit.
 `tmux display-message` from inside the popup reaches the status line of the
