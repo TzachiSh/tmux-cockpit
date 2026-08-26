@@ -220,6 +220,23 @@ tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
 # tests: examples/tmux.conf cockpit.tmux
+echo "== the shipped menu's Switch branch names the pane it was opened on =="
+# A popup is not a pane: its $PWD is the SESSION's start directory (the first
+# window's), and a bare display-message inside it can come back empty. The
+# prefix b bind passes -p '#{pane_id}' since d64e409; the action menu's
+# "Switch branch" did not, and showed the first window's tree from any window.
+if need_tmux "shipped menu passes the pane id"; then :; else
+SM="cockpit-menu-$$"; SOCKS="$SOCKS $SM"
+"$TMUX_REAL" -L "$SM" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SM" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+smk=$("$TMUX_REAL" -L "$SM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')
+case "$smk" in
+    *"tmux-branch -p #{pane_id}"*) ok "the menu's Switch branch passes -p #{pane_id}" ;;
+    *) bad "the menu's Switch branch passes -p #{pane_id}" "tmux-branch -p #{pane_id} in the m menu" "$(printf '%s' "$smk" | grep -o 'Switch branch[^"]*"[^"]*"' | cut -c1-120)" ;;
+esac
+"$TMUX_REAL" -L "$SM" kill-server >/dev/null 2>&1
+fi
+
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
