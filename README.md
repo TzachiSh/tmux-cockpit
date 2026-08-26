@@ -256,7 +256,7 @@ the pane is idle.
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + r` | review an agent's uncommitted diff — from an agent pane: that pane; anywhere else: the fleet queue, blocked agents first, then dirty ones (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock |
+| `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -481,13 +481,22 @@ reporting a success that never happened.
 attach to individual lines, and nothing reaches the agent until you say so —
 there is deliberately no key that approves the whole thing at once.
 
-From an **agent pane** it reviews that pane. From anywhere else — a shell, a
-build pane, wherever `prefix + r` finds you — it opens the **fleet queue**
-instead: every agent pane, on every session, that is blocked or has a dirty
-tree, previewed the same way the path picker's folder preview shows a
-directory's `git status`. Nothing else in this plugin answers "which of my
-agents needs my eyes"; the queue exists because visiting each pane in turn to
-find out does not scale past two or three of them.
+It always opens the **fleet queue**: every agent pane, on every session, that
+is blocked or has a dirty tree, previewed the same way the path picker's
+folder preview shows a directory's `git status`. Nothing else in this plugin
+answers "which of my agents needs my eyes"; the queue exists because visiting
+each pane in turn to find out does not scale past two or three of them.
+
+From an **agent pane** the queue opens with that pane already under the
+pointer, so `prefix + r` there is still one `↵` from its review — and the
+other agents waiting on you stay on screen instead of being replaced by it.
+Finishing a review returns to the queue, on the pane you just left, so
+reviewing four agents is four `↵` rather than four `prefix + r`; `esc` on the
+list is the way out.
+
+The review opens in a popup. `set -g @cockpit_review_window on` opens it as a
+real window (`new-window -n review`) instead, if you would rather keep the
+fleet's borders and window tabs visible while you read.
 
 The order is that question's answer, and it is deliberately **not** churn.
 Agent state ranks first — `needs-input`, then `done`, `error`, `running`, then
@@ -504,10 +513,15 @@ Each row is `state · title · repo⑂branch · ±`, in aligned columns. The
 `s:w claude` alone cannot:
 
 ```text
-needs-input   main:2 claude    cockpit⑂feat/review-p0     —
-running       side:0 codex     cockpit⑂main               +142 -30  ?2 new
-—             main:4 claude    api⑂fix/token-refresh      +8 -8
+needs-input     main:2 claude    cockpit⑂feat/review-p0     —
+◆ done          side:0 codex     cockpit⑂main               +142 -30  ?2 new
+↵ running       main:4 claude    api⑂fix/token-refresh      +8 -8
 ```
+
+The state column carries the review mark: `◆` a finished diff nobody has read
+yet (the `Stop` gate flagged it), `↵` a review already pasted into that pane
+and not yet sent. Without them the queue keeps sending you back to a pane you
+have already been through.
 
 `tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
 to drive the same list from a script.

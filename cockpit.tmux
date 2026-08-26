@@ -250,13 +250,22 @@ esac
 # own pseudo-pane, and a bare display-message resolves the most-recently-active
 # client instead -- with two clients that landed the review on the wrong one.
 # tmux expands #{pane_id} at bind time in the originating pane. With the id the
-# script resolves the target -- that pane if it is an agent, else the fleet
-# queue of every dirty one. Same popup chrome and off-disables as the jump key.
+# script opens the fleet queue with that pane preselected. Same popup chrome
+# and off-disables as the jump key.
+#
+# @cockpit_review_window on: a real window instead of the modal popup, so the
+# fleet's borders and tabs stay visible while you read (§8 #2: popup default,
+# window opt-in, decided again after this phase). Same script, same -p.
+if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
+    R_OPEN=(new-window -n review)
+else
+    R_OPEN=(display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ')
+fi
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key r display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$RK" display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ' "$Q_REVIEW -p '#{pane_id}'" ;;
+    "")  tmux bind-key r "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
+    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and

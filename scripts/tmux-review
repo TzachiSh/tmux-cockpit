@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # tmux-review — review an agent's uncommitted diff, one comment at a time, and
 # hand the finished review back to the agent's pane.
-#   tmux-review [-p pane_id]               no args: review the given pane, or
-#                                          (without -p) the CLIENT's active
-#                                          pane, if it is an agent, else the
-#                                          fleet queue (bound to prefix R)
+#   tmux-review [-p pane_id]               no args: the fleet queue (bound to
+#                                          prefix r), with that pane -- or,
+#                                          without -p, the CLIENT's active
+#                                          pane -- preselected
 #   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
@@ -63,9 +63,10 @@ git_root() {
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
-  tmux-review [-p pane_id]                review that pane (or, without -p,
-                                          the client's active pane), or the
-                                          fleet queue when it is not an agent
+  tmux-review [-p pane_id]                the fleet queue, with that pane (or,
+                                          without -p, the client's active pane)
+                                          preselected; it returns to the queue
+                                          after every review
   tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
@@ -1423,7 +1424,7 @@ deliver() {
 # --- --fleet / entry-point resolution --------------------------------------
 # Which of the fleet needs your eyes: every agent pane, every session, that is
 # either blocked or dirty -- landscape-gap #1, nothing else answers this. Rows
-# are pane\tstate\ttitle\trepo⑂branch\t±stat.
+# are pane\t[◆|↵ ]state\ttitle\trepo⑂branch\t±stat.
 #
 # The order is the whole point, and it is NOT churn. A pane parked on a
 # permission prompt is the one that actually needs a human, and it usually has
@@ -1457,6 +1458,8 @@ fleet_rows() {
     # keeps the field non-empty on the wire; it is turned back into "unset"
     # the moment it has been read.
     fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
+    # Same sentinel, same reason: @cockpit_review is unset on most panes.
+    fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'$'\t'
     fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
     fmt="${fmt}"'#{pane_current_path}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
@@ -1482,14 +1485,15 @@ fleet_rows() {
     # below), before any status call runs. rev-parse --show-toplevel takes no
     # lock; it is the status/diff calls after it that do, and those are what
     # phase 2 below dedups.
-    local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
-    local -a pids=() pane_id=() pane_state=() pane_title=() pane_root=()
-    while IFS=$'\t' read -r isagent id state title path; do
+    local isagent id state review title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local -a pids=() pane_id=() pane_state=() pane_review=() pane_title=() pane_root=()
+    while IFS=$'\t' read -r isagent id state review title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
         [ "$state" = - ] && state=   # the wire sentinel above, back to unset
+        [ "$review" = - ] && review=
         n=$((n + 1))
-        pane_id[n]=$id; pane_state[n]=$state; pane_title[n]=$title
+        pane_id[n]=$id; pane_state[n]=$state; pane_review[n]=$review; pane_title[n]=$title
         git -C "$path" --no-optional-locks rev-parse --show-toplevel \
             > "$tmpdir/root-$n" 2>/dev/null &
         pids+=("$!")
@@ -1536,7 +1540,7 @@ fleet_rows() {
     # No git call left here -- just the per-pane state/title/rank the shared
     # scan does not know, joined against the one result its group produced.
     local -a rows=()
-    local dirty repo branch stat churn rank line
+    local dirty repo branch stat churn rank line glyph
     for ((i = 1; i <= n; i++)); do
         id=${pane_id[i]}; state=${pane_state[i]}; title=${pane_title[i]}
         key=${pane_root[i]:-@@none@@}
@@ -1552,8 +1556,12 @@ fleet_rows() {
             running)     rank=3 ;;
             *)           rank=4 ;;
         esac
+        # The review mark rides the state column: ◆ the gate flagged a finished
+        # diff nobody has read, ↵ a review is sitting pasted-but-unsent in the
+        # pane. Without it the queue sends you back to a pane you just reviewed.
+        case "${pane_review[i]}" in pending) glyph='◆ ' ;; sent) glyph='↵ ' ;; *) glyph='' ;; esac
         rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-            "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
+            "$rank" "$churn" "$id" "$glyph${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
     done
     # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
     # a killed popup takes its children with it, but not necessarily this rm.
@@ -1785,88 +1793,112 @@ pad_field() {                 # <width> <string>
 # The four visible fields are padded to their own column widths before fzf
 # sees them: ragged single-space columns made the ± numbers impossible to
 # compare down the list, which is most of what this list is FOR.
-fleet_queue() {
+#
+# The queue LOOPS (§8 #3): finishing one review re-lists the fleet with the
+# pane you just left under the pointer, so reviewing four agents is four ↵
+# instead of four prefix+r. esc on the list is the only way out -- a review's
+# own exit code (deliver, approve, discard, leave) says nothing about whether
+# you are done with the fleet.
+fleet_queue() {               # [preselect-pane]
     command -v fzf >/dev/null 2>&1 || {
         tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
         return 1
     }
-    local rows
-    rows=$(fleet_rows)
-    if [ -z "$rows" ]; then
-        tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
-        return 0
-    fi
+    local pre=${1:-}
+    while :; do
+        local rows
+        rows=$(fleet_rows)
+        if [ -z "$rows" ]; then
+            tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
+            return 0
+        fi
 
-    # Column widths, capped: one 200-character pane title should not push
-    # repo⑂branch and the ± count off the right edge for every other row.
-    # A field over its cap simply overflows its column instead of being
-    # truncated -- losing the end of a title is worse than one ragged row.
-    local f_pane f_state f_title f_loc f_stat
-    local w_state=0 w_title=0 w_loc=0
-    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
-        [ -n "$f_pane" ] || continue
-        [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
-        [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
-        [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
-    done <<<"$rows"
-    [ "$w_state" -gt 12 ] && w_state=12
-    [ "$w_title" -gt 40 ] && w_title=40
-    [ "$w_loc"   -gt 32 ] && w_loc=32
+        # Column widths, capped: one 200-character pane title should not push
+        # repo⑂branch and the ± count off the right edge for every other row.
+        # A field over its cap simply overflows its column instead of being
+        # truncated -- losing the end of a title is worse than one ragged row.
+        local f_pane f_state f_title f_loc f_stat
+        local w_state=0 w_title=0 w_loc=0
+        while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+            [ -n "$f_pane" ] || continue
+            [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
+            [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
+            [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
+        done <<<"$rows"
+        [ "$w_state" -gt 12 ] && w_state=12
+        [ "$w_title" -gt 40 ] && w_title=40
+        [ "$w_loc"   -gt 32 ] && w_loc=32
 
-    local -a disp=()
-    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
-        [ -n "$f_pane" ] || continue
-        disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
-    done <<<"$rows"
-    [ ${#disp[@]} -gt 0 ] || return 0
+        local -a disp=()
+        while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+            [ -n "$f_pane" ] || continue
+            disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
+        done <<<"$rows"
+        [ ${#disp[@]} -gt 0 ] || return 0
 
-    local nrows avail lrows psz preview_cmd out pane dir
-    nrows=${#disp[@]}
-    avail=$(tput lines 2>/dev/null || echo 24)
-    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    # 6, not 5: this header is two lines now -- one line of it is 95 columns
-    # and the popup is 70% of the terminal, so fzf truncated the key hints off
-    # the right edge on anything narrower than 136 columns. Reserve the second
-    # row rather than taking it out of the list.
-    psz=$(( avail - lrows - 6 ))
-    [ "$psz" -lt 5 ] && psz=5
+        local nrows avail lrows psz preview_cmd out pane dir
+        nrows=${#disp[@]}
+        avail=$(tput lines 2>/dev/null || echo 24)
+        lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
+        # 6, not 5: this header is two lines now -- one line of it is 95 columns
+        # and the popup is 70% of the terminal, so fzf truncated the key hints off
+        # the right edge on anything narrower than 136 columns. Reserve the second
+        # row rather than taking it out of the list.
+        psz=$(( avail - lrows - 6 ))
+        [ "$psz" -lt 5 ] && psz=5
 
-    # Same root-vs-cwd seam as review_pane: the row only carries the pane's
-    # raw cwd, so resolve it to the repo root here too before handing it to
-    # --preview-diff, which expects a real, existing path.
-    preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
-    preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
-    preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
+        # The pointer starts on $pre's row -- the pane prefix+r was pressed in,
+        # then whichever pane the last review was of. Without it the pointer
+        # sits on whatever the SORT put first, and the one pane you actually
+        # asked for is one you have to hunt for. --sync is what makes the bind
+        # land: without it fzf runs `start` before the list is loaded and the
+        # move is silently lost. pos() is 1-based over the input order.
+        # A pane that is not in the queue at all (nothing to review there)
+        # leaves pos at 0 and the list unmoved.
+        local pos=0 i
+        local -a presel=()
+        for i in "${!disp[@]}"; do [ "${disp[$i]%%$'\t'*}" = "$pre" ] && { pos=$(( i + 1 )); break; }; done
+        [ "$pos" -gt 0 ] && presel=(--sync --bind "start:pos($pos)")
 
-    # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
-    # been written by the owner's own tmux.conf, so `eval`ing it is eval of
-    # their config, not of anything an agent pane can reach. It is confined to
-    # this navigation picker on purpose: in the review loop ↵ has a contract
-    # (pin a comment, never approve) and ^S is the consent gesture, and one
-    # stray --bind from a config would quietly break either of them.
-    local -a extra=()
-    local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
-    [ -n "$opt" ] && eval "extra=($opt)"
+        # Same root-vs-cwd seam as review_pane: the row only carries the pane's
+        # raw cwd, so resolve it to the repo root here too before handing it to
+        # --preview-diff, which expects a real, existing path.
+        preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
+        preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
+        preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
-    out=$(printf '%s\n' "${disp[@]}" \
-        | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-              --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-              --preview "$preview_cmd" \
-              --preview-window="down,$psz,border-top" \
-              --prompt='fleet> ' \
-              --header=$'which agent needs you   state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
-              ${extra[@]+"${extra[@]}"})
-    [ -n "$out" ] || return 0
+        # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
+        # been written by the owner's own tmux.conf, so `eval`ing it is eval of
+        # their config, not of anything an agent pane can reach. It is confined to
+        # this navigation picker on purpose: in the review loop ↵ has a contract
+        # (pin a comment, never approve) and ^S is the consent gesture, and one
+        # stray --bind from a config would quietly break either of them.
+        local -a extra=()
+        local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
+        [ -n "$opt" ] && eval "extra=($opt)"
 
-    pane=$(cut -f1 <<<"$out")
-    [ -n "$pane" ] || return 0
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-    [ -n "$dir" ] || {
-        tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
-        return 0
-    }
-    review_pane "$pane" "$(git_root "$dir")"
+        out=$(printf '%s\n' "${disp[@]}" \
+            | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --preview "$preview_cmd" \
+                  --preview-window="down,$psz,border-top" \
+                  --prompt='fleet> ' \
+                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+                  ${presel[@]+"${presel[@]}"} \
+                  ${extra[@]+"${extra[@]}"})
+        [ -n "$out" ] || return 0
+
+        pane=$(cut -f1 <<<"$out")
+        [ -n "$pane" ] || return 0
+        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+        if [ -z "$dir" ]; then
+            tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
+            continue
+        fi
+        review_pane "$pane" "$(git_root "$dir")"
+        pre=$pane
+    done
 }
 
 # No args, bound to prefix R: ask tmux which pane the CLIENT is actually on --
@@ -1881,7 +1913,7 @@ fleet_queue() {
 # from when the caller has it; without it this falls back to the old
 # best-effort client-recency resolution.
 main_entry() {
-    local pane is_agent dir
+    local pane is_agent
     if [ -n "$REVIEW_PANE_ID" ]; then
         pane=$REVIEW_PANE_ID
     else
@@ -1893,12 +1925,9 @@ main_entry() {
     fi
     is_agent=$(tmux display-message -p -t "$pane" \
         '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
-    if [ "$is_agent" = 1 ]; then
-        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-        review_pane "$pane" "$(git_root "$dir")"
-    else
-        fleet_queue
-    fi
+    # Always the queue (§8 #3): the other blocked agents stay visible, and the
+    # pane the key was pressed in is preselected so one ↵ reviews it.
+    if [ "$is_agent" = 1 ]; then fleet_queue "$pane"; else fleet_queue; fi
 }
 
 # -p pane_id, parsed here so the dispatch below sees only the subcommand --
