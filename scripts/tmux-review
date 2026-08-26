@@ -106,9 +106,9 @@ USAGE
 # Untracked and stat-modified files over BIGCAP, "<bytes>\t<path>". An
 # untracked file, and a tracked one whose SIZE changed, cost a stat here and
 # nothing more; a touched tracked file of unchanged size git still hashes to
-# tell -- once for this ls-files, again for `add -N`/diff. ':(top)' because
-# ls-files alone stops at the cwd, while git diff never does. ONE stat for the
-# whole list: a fork per file made an 800-file tree a fork walk.
+# tell -- once, here. ':(top)' because ls-files alone stops at the cwd, while
+# git diff never does. ONE stat for the whole list: a fork per file made an
+# 800-file tree a fork walk.
 # ponytail: that leaves one 0.68 s hash on a touched 256 MB tracked file whose
 # size did not change; to drop it, walk `ls-files -z` and stat every tracked
 # file over the cap, `cat-file -s` its index blob for a size change -- equal
