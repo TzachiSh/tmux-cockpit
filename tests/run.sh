@@ -3569,7 +3569,11 @@ rm -rf "$RVCAP" "$RVUNDER"
 # numstat alone), which no ordering can fix, and hides the thing being removed.
 # Spread over 30 files git's peak stays at one file's worth and the 222 MB is
 # the shell's captured copy -- exactly what the reorder deletes.
-# FAIL-first: before the reorder this returns in 3.25s and timeout 1.5 kills it.
+# FAIL-first: before the reorder the full `git diff` ran before numstat, so
+# the shim log below shows a diff call without --numstat. That is the pin.
+# The clock is not: `timeout 1.5` (3.25 s pre-fix) went red under peer load
+# and took the notice check with it through an empty rvlock.out (issue #32),
+# so timeout 10 is only a hang guard now.
 RVLOCK=$(mktmpd)
 (
   cd "$RVLOCK" || exit
@@ -3579,12 +3583,20 @@ RVLOCK=$(mktmpd)
   git add -A; git commit -q -m init
   for i in $(seq 1 30); do seq 1 200000 > "lock$i.json"; done
 ) >/dev/null 2>&1
-if timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVLOCK" > "$STATE/rvlock.out" 2>/dev/null; then
-    ok "a 6,000,030-row tree answers in under 1.5s (3.25s before the cap moved ahead of the capture)"
+RVLOCK_SHIM=$(mktmpd); RVLOCK_LOG="$STATE/rvlock-git-calls"; : > "$RVLOCK_LOG"
+cat > "$RVLOCK_SHIM/git" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RVLOCK_LOG"
+exec "$(command -v git)" "\$@"
+SHIMEOF
+chmod +x "$RVLOCK_SHIM/git"
+if PATH="$RVLOCK_SHIM:$PATH" timeout 10 "$DIR/scripts/tmux-review" --lines "$RVLOCK" > "$STATE/rvlock.out" 2>/dev/null; then
+    ok "a 6,000,030-row tree answers with a notice"
 else
-    bad "a 6,000,030-row tree answers in under 1.5s" \
-        "the notice within 1.5s" "timed out -- the diff is still captured before the cap"
+    bad "a 6,000,030-row tree answers with a notice" "exit 0 within 10s" "rc $?"
 fi
+is "the capped tree is counted, never captured -- no git diff without --numstat" "0" \
+   "$(grep ' diff ' "$RVLOCK_LOG" | grep -vc -- '--numstat')"
 case "$(cat "$STATE/rvlock.out")" in
     *"diff too large to anchor line-by-line (6000030 changed lines)"*)
         ok "the uncaptured cap still names the exact row count numstat totalled" ;;
