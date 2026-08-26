@@ -262,6 +262,7 @@ over earlier, `prefix r` included.
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
+| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
 cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
@@ -875,10 +876,21 @@ set -g @cockpit_review_key     r       # off restores stock refresh-client
 set -g @cockpit_review_window  off     # on: a window instead of the popup
 set -g @cockpit_info_key       i       # off restores stock window info
 set -g @cockpit_jump_key       J
+set -g @cockpit_move_key       M       # off restores stock select-pane -M
 set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""
 ```
+
+## prefix + M — move a window between sessions
+
+One row per other session, plus `new session...` which asks for a name. Stock
+`prefix + .` moves the window but leaves you behind in the old session, and if
+that window was the session's last, tmux destroys the session and detaches
+you: you are out of tmux. This binding switches the client first, then moves,
+so the emptied session is destroyed with nobody in it and you land on the
+window you moved. A new session gets exactly the moved window, no placeholder
+shell beside it. `prefix + .` is untouched for the "renumber to index N" case.
 
 ## tm — session launcher
 

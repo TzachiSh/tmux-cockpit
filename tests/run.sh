@@ -2028,6 +2028,139 @@ esac
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 
+# tests: cockpit.tmux
+echo "== prefix M is the move-window menu =="
+if need_tmux "prefix M"; then :; else
+PM="cockpit-pm-$$"; SOCKS="$SOCKS $PM"
+"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
+    *display-menu*) ok "prefix M opens the move menu" ;;
+    *) bad "prefix M opens the move menu" "a display-menu" \
+         "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="M"')" ;;
+esac
+"$TMUX_REAL" -L "$PM" set -g @cockpit_move_key W >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="W"')" in
+    *display-menu*) ok "@cockpit_move_key rebinds it" ;;
+    *) bad "@cockpit_move_key rebinds it" "the menu on W" \
+         "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="W"')" ;;
+esac
+"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" set -g @cockpit_move_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
+    *"select-pane -M"*) ok "off keeps stock select-pane -M" ;;
+    *) bad "off keeps stock select-pane -M" "select-pane -M" \
+         "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="M"')" ;;
+esac
+"$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
+fi
+
+# tests: cockpit.tmux
+echo "== the move menu follows the client and never detaches it =="
+# Stock move-window leaves the client behind, and moving the last window out
+# of the session you are attached to destroys it under you: the client is
+# detached and you are out of tmux. The binding switches the client first, so
+# every case below ends with one client still attached, on the moved window.
+# A menu and a prefix key both need a real client, hence the two-server rig.
+if need_tmux "move menu"; then :; else
+MV="cockpit-mv-$$"; MVO="cockpit-mvo-$$"; SOCKS="$SOCKS $MV $MVO"
+"$TMUX_REAL" -L "$MV" -f /dev/null new-session -d -s work -n editor -x 90 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" new-window -t work -n keeper >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" select-window -t work:editor >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" new-session -d -s agents >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" new-session -d -s "it's" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" new-session -d -s "has space" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MVO" -f /dev/null new-session -d -s o -x 90 -y 26 \
+    "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
+sleep 1.2
+OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
+mv_client() { "$TMUX_REAL" -L "$MV" list-clients -F '#{session_name}:#{window_name}' 2>/dev/null; }
+mv_until() {                  # <pattern> against the client's session:window
+    local i
+    for i in $(seq 1 40); do
+        # shellcheck disable=SC2254
+        case "$(mv_client)" in $1) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+if until_cap "$MVO" "$OP" '*agents*'; then
+    ok "the menu opens with the other sessions"
+    cap=$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$OP")
+    case "$cap" in *"move 0:editor to"*) ok "and names the window it moves" ;;
+        *) bad "and names the window it moves" "move 0:editor to" "$(printf '%s\n' "$cap" | grep -m1 move)" ;; esac
+    case "$cap" in *"it's"*"has space"*|*"has space"*"it's"*) ok "a quote or a space in a name does not break it" ;;
+        *) bad "a quote or a space in a name does not break it" "it's and has space rows" "$(printf '%s\n' "$cap" | grep -m3 "'")" ;; esac
+    case "$cap" in *" work "*) bad "the session you are in is not offered" "no work row" "$(printf '%s\n' "$cap" | grep -m1 ' work ')" ;;
+        *) ok "the session you are in is not offered" ;; esac
+    "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter
+else
+    bad "the menu opens with the other sessions" "a menu listing agents" \
+        "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$OP" | tail -4)"
+    skip_ "and names the window it moves"; skip_ "a quote or a space in a name does not break it"
+    skip_ "the session you are in is not offered"
+fi
+# the first row opens highlighted and rows come in creation order: Enter is agents
+if mv_until 'agents:editor'; then ok "the client follows the window"
+else bad "the client follows the window" "agents:editor" "$(mv_client)"; fi
+case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')" in
+    *work*) ok "the source session survives with its other window" ;;
+    *) bad "the source session survives with its other window" "work listed" \
+         "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' | tr '\n' ' ')" ;;
+esac
+# the last window out: work now holds only keeper; move it into a NEW session
+"$TMUX_REAL" -L "$MV" switch-client -t work: >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+until_cap "$MVO" "$OP" '*agents*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
+until_cap "$MVO" "$OP" '*new session:*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" solo Enter
+if mv_until 'solo:keeper'; then ok "the last window out lands in the new session, client attached"
+else bad "the last window out lands in the new session, client attached" "solo:keeper" "$(mv_client)"; fi
+is "the new session holds only the moved window (no placeholder shell)" "keeper:1" \
+   "$("$TMUX_REAL" -L "$MV" list-windows -t solo -F '#{window_name}:#{window_panes}' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')" in
+    *work*) bad "the emptied source session is gone" "no work" "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' | tr '\n' ' ')" ;;
+    *) ok "the emptied source session is gone" ;;
+esac
+# a taken name moves nothing; an empty name moves nothing
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+until_cap "$MVO" "$OP" '*agents*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
+until_cap "$MVO" "$OP" '*new session:*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" agents Enter; sleep 0.8
+is "a taken name creates and moves nothing" "solo:keeper" "$(mv_client)"
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+until_cap "$MVO" "$OP" '*agents*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
+until_cap "$MVO" "$OP" '*new session:*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter; sleep 0.8
+is "an empty name creates and moves nothing" "solo:keeper" "$(mv_client)"
+is "and the session count is unchanged" "4" "$("$TMUX_REAL" -L "$MV" list-sessions 2>/dev/null | wc -l)"
+# hostile targets: a session named it's receives the window; a new a.b does too
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+until_cap "$MVO" "$OP" '*agents*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Down Enter     # agents, it's
+if mv_until "it?s:keeper"; then ok "a session named it's receives the window"
+else bad "a session named it's receives the window" "it's:keeper" "$(mv_client)"; fi
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" C-b M
+until_cap "$MVO" "$OP" '*agents*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
+until_cap "$MVO" "$OP" '*new session:*'
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" a.b Enter
+if mv_until 'a.b:keeper'; then ok "a dotted new-session name works"
+else bad "a dotted new-session name works" "a.b:keeper" "$(mv_client)"; fi
+is "and leaves no stray placeholder session" "a.b agents has space it's" \
+   "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+"$TMUX_REAL" -L "$MVO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$MV" kill-server >/dev/null 2>&1
+fi
+
 echo "== clicking the directory segment browses the working dir =="
 # range=control|2 on the status bar's directory segment opens the folder
 # browser at the pane's cwd -- the same popup the path picker descends into,
