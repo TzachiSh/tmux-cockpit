@@ -94,6 +94,101 @@ write when the list changed. Popup: one wider format string.
 Ceiling, by design: rows vanish 30 s after a subagent idles and >3 idle
 collapse. Fine for "what is running now".
 
+## How it shows in the popup
+
+The queue is fzf over padded rows (`fleet_queue` :1896). Four visible columns,
+state (cap 12) · title (cap 40) · repo⑂branch (cap 32) · ±, a two-line header,
+list height capped at 8 rows, the diff preview below. A child row reuses the
+same four columns, nothing new to lay out:
+
+```
+fleet>
+which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±
+↵ review   ^/ preview   ^X kill window   esc cancel
+> ◆ done       cockpit:1 tmux-cockpit                cockpit⑂master          +12 -3
+  running      cockpit:2 fix/teammate-idle           cockpit⑂fix/teammate    +80 -9
+    running    └ code-research · Codebase: how fleet shows agents
+    running    └ community-research · Community: subagent visib…
+  needs-input  api:0 claude                          api⑂main                +0 -0
+```
+
+- Indent lives in the state column (`  running`, 9 chars, under the 12 cap).
+  Title is `└ name · description`, name falls back to `type`
+  (`general-purpose`), description cut so the whole title fits the 40 cap.
+  repo⑂branch and ± are blank on a child: they belong to the pane, and
+  repeating them under every child is noise.
+- Field 1 (hidden) is the parent's pane id on every child row, so ↵ reviews
+  the parent, `^/` previews the parent's diff, and `^X` prompts to kill the
+  parent's window with the same y/N naming the window. No new key.
+- Children are inserted in `fleet_queue` after the rank/churn sort, directly
+  into the padded `disp` array, not into `rows`: the width loop keeps
+  measuring parents only, and an empty repo⑂branch never hits the
+  tab-collapse trap because the child never passes through `read`.
+- The preselect scan (`pos`) breaks on the first row carrying the pane id,
+  which is the parent, so `prefix r` still lands on the parent row.
+- Sort order is untouched: children follow their parent wherever rank put
+  it. A blocked pane still comes first.
+- Completed subagents show `completed` for the 30 s Claude Code keeps the
+  row, then drop, same as the built-in panel. Beyond 8 subagents the shim
+  keeps the first 8 and the last row reads `└ +N more`.
+- The pane reads `@cockpit_subs` in `fleet_queue` with one
+  `list-panes -a -F '#{pane_id}<TAB>#{?#{@cockpit_subs},#{@cockpit_subs},-}'`
+  rather than a sixth `fleet_rows` field, the same seam the preview uses so
+  `--fleet` stays a five-field interface.
+
+Not a tree widget. One level, plain indent, a fixed `└`. fzf renders lines,
+so a deeper tree would be more indent, not a different mechanism.
+
+## Risks
+
+| risk | why it matters | mitigation |
+|---|---|---|
+| The queue lists only dirty or blocked panes (`fleet_rows` :1567). A clean `running` lead with live subagents is not in the list at all. | The feature is invisible in the most common "agent is busy" case. | Decision for the owner. Keep the rule (the queue is "who needs you", a busy clean agent does not) or add `[ -n "$subs" ]` to the keep test, one line, rank 3. Recommend the one-liner: seeing what a lead is doing is the point of the ask. |
+| fzf filters lines independently. Typing a query can hide a parent and leave its children as orphans. | Confusing rows with no context. | Accept. Orphans keep the `└`, ↵ still opens the right pane. Add the parent's title to the child's hidden field 6 and `--nth` it only if it bites. |
+| Children eat the 8-row list height. Two leads with four subagents each shows two parents and a scrollbar. | Parents below the fold. | Count parents only toward `lrows`, cap the list at 12 when children exist. Or leave it, `--cycle` scrolls. |
+| Stale `@cockpit_subs` after the agent exits without a final empty tick. | Ghost rows under a pane whose agent is gone. | `SessionEnd -> agent-state off` unsets the option inside its existing batch (fixed option name, closed set). Verify in the rig that the final tick sends `tasks: []`. |
+| Each shim tick is a bash+jq spawn, each changed value one `set-option`, and every `set-option` forces a server-wide redraw. | A redraw storm if the value churns per tick. | The value excludes `tokenCount` and `startTime`, so it changes only on start, stop and status flips. Compare-then-set, the `agent-context` :46 guard. Measure spawns and writes per minute in the rig. |
+| `subagentStatusLine` is a top-level settings key, not under `hooks`. `install.sh --hooks` does not merge it. | Opt-in, most users never see the feature. | Have `--hooks` add the key when absent (unlike `statusLine` it does not replace a HUD; the OMC HUD leaves it null). Document. |
+| Teammates in split panes are also tasks in the lead's panel, so they appear as `└` rows under the lead and as their own pane rows. | Double listing. | Accept for v1. Filter by `type` once the rig shows what the field carries for a teammate. |
+| Untrusted workspace or `disableAllHooks` silently skips the shim (binary strings: "workspace trust not accepted"). | No rows, no error. | Fail-open by design. Note in README. |
+| Minimum Claude Code version for `subagentStatusLine` unknown; the doc marks `model` v2.1.205+, `effort` v2.1.214+. | An older CC ignores the key or logs a schema error. | Rig it on the installed version, state the floor in the README. |
+| `status` values undocumented (`running`, `completed`, `failed`, `pending`?). | Wrong column text. | Take them verbatim from the fixture the rig captures. |
+
+## Test plan
+
+Three layers, in the repo's existing shapes.
+
+1. Live rig, once, by hand (the `tests/fixtures/statusline.json` capture
+   pattern). A real `claude` in a tmux pane with the shim wired, spawning two
+   background subagents and one teammate. The shim `tee`s its stdin to a
+   file. Outputs: the fixture `tests/fixtures/subagent-statusline.json`, the
+   observed `status` values, whether `TMUX_PANE` is set, ticks per minute
+   with rows visible, whether a final `tasks: []` tick arrives after the 30 s
+   hide, and the `type` value of a teammate task. Every unknown above is
+   answered by this one session.
+2. `tests/run.sh` blocks, each on a private `tmux -L` server, the pattern at
+   :420 and :5620.
+   - shim: fixture in, `@cockpit_subs` out; garbage in, no write; tabs and
+     newlines in a description stripped; 20 tasks capped at 8 with `+12
+     more`; unchanged input costs exactly 1 tmux invocation and 0 writes
+     (the PATH shim counter from :426); no `TMUX_PANE`, exit 0 and no tmux
+     call.
+   - popup: a fake agent pane in a dirty repo with `@cockpit_subs` set by
+     hand; drive the popup with `send-keys`, `capture-pane -p -J`, assert the
+     `└` row directly under the parent, the parent still first; ↵ on the
+     child row opens the parent's review (the :1693 path); ^X on the child
+     row prompts with the parent's window name; `--fleet` still prints
+     exactly the parent rows (`grep -c '^%'` unchanged at :5688); a 40-char
+     title column never widens for a child.
+   - `SessionEnd -> off` unsets `@cockpit_subs`.
+3. Freeze rig, `tests/freeze-rig/redraw_cost.sh`, one run to confirm zero
+   pane visits added per redraw (no format reads the option) and to count
+   writes per minute under 8 churning subagents. Not a gate, a number for
+   the commit message.
+
+`make test-changed` picks the two new blocks; `make check-par` before the
+merge.
+
 ## Skipped, and when to add
 
 - Hook ledger (`SubagentStart`/`Stop` -> option keyed on `agent_id`): only if
