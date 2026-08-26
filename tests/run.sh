@@ -1708,6 +1708,56 @@ fi
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
 fi
 
+# tests: examples/tmux.conf cockpit.tmux
+echo "== a left click on a window tab selects it and draws nothing (#21) =="
+# Issue #21 saw a menu flash on a plain left click in the status line. Stock
+# MouseDown1Status is switch-client -t = and draws nothing; the menus that do
+# close on release are all button 3. Pinned with a real click: the SGR press
+# is written into an attached client and the screen is read while the button
+# is still held, which is the only moment a release-closed menu is visible.
+if need_tmux "status-line left click"; then :; else
+OUTER="cockpit-clk-outer-$$"; INNER="cockpit-clk-inner-$$"
+SOCKS="$SOCKS $OUTER $INNER"
+# Both windows run a silent sleep under the same border format, so the pane
+# area renders the same in either: anything that differs while the button is
+# held is an overlay, whatever its text.
+"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 -n zero \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" new-window -d -t t -n TARGET 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
+OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
+if until_cap "$OUTER" "$OP" '*TARGET*'; then
+    # The tab's cell: the inner status line is the last line of the outer pane.
+    scr=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")
+    row=$(printf '%s\n' "$scr" | grep -n TARGET | tail -1 | cut -d: -f1)
+    line=$(printf '%s\n' "$scr" | sed -n "${row}p"); pre=${line%%TARGET*}; col=$((${#pre}+1))
+    before=$(printf '%s\n' "$scr" | head -n "$((row-1))")
+    press=$(printf '\033[<0;%s;%sM' "$col" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    release=$(printf '\033[<0;%s;%sm' "$col" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    # shellcheck disable=SC2086  # the hex bytes are meant to split
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $press >/dev/null 2>&1
+    for i in $(seq 1 40); do
+        [ "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')" = 1 ] && break
+        sleep 0.1
+    done
+    is "the click selects the window" "1" \
+       "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')"
+    held=$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP" | head -n "$((row-1))")
+    if [ "$held" = "$before" ]; then ok "and draws nothing while the button is held"
+    else bad "and draws nothing while the button is held" "the pane area unchanged" \
+             "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$held") | grep '^> *[^ ]' | head -3)"; fi
+    # shellcheck disable=SC2086
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $release >/dev/null 2>&1
+else
+    bad "the click selects the window" "an attached client" "no client"
+    bad "and draws nothing while the button is held" "an attached client" "no client"
+fi
+"$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
+fi
+
 echo "== the fixes review found =="
 # agent-state joined payload lines with NO separator, so the tail of one line
 # and the head of the next could fuse into a marker that appears in neither.
