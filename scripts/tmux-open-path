@@ -722,6 +722,8 @@ browse() {
         # were unreachable; .git/ alone is filtered as noise. load:down starts
         # the cursor on the first real entry instead of ../, where a second
         # Enter just climbed straight back out.
+        # alt-c's prefix is $PWD, not $dir: the cd below makes them the same
+        # directory, and skipping the quoting layer keeps a backslash in a name.
         out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
             | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --multi --expect=ctrl-o \
@@ -729,10 +731,10 @@ browse() {
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})+change-preview-label( diff )" \
                   --bind "ctrl-f:change-preview($(shq "$0") --preview {})+change-preview-label( content )" \
-                  --bind "alt-c:execute-silent(printf '%s\n' {+} | sed \"s|^|$(shq "$dir")/|\" | tmux load-buffer -w -)" \
+                  --bind 'alt-c:execute-silent(for f in {+}; do printf "%s/%s\n" "$PWD" "$f"; done | tmux load-buffer -w -)' \
                   --prompt="$(tail3 "$dir")/ " \
-                  --header='↵ open / enter dir   tab mark   alt-c copy path   ^O as-is
-^G diff   ^F content   ^/ preview   esc cancel' \
+                  --header='↵ open / enter dir   tab mark   ^O as-is
+^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
                   --preview-label=' content ' --preview-label-pos=2 \
                   --preview-window='down,65%,border-top') || return 0
@@ -772,7 +774,8 @@ if command -v fzf >/dev/null; then
     # candidate is under it -- which is how the token read in the output --
     # with the line number kept. The absolute path stays in field 2 for the
     # preview commands. --keep-right protects the basename:line end when a
-    # long row still truncates.
+    # long row still truncates. Field 2 is ~-abbreviated, so alt-c's sed puts
+    # $HOME back -- what you paste elsewhere has to be a path, not a display.
     out=$(for i in "${!FILES[@]}"; do
                case "${FILES[$i]}" in
                    "$dir"/*) disp=${FILES[$i]#"$dir"/} ;;
@@ -786,10 +789,10 @@ if command -v fzf >/dev/null; then
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})+change-preview-label( diff )" \
                       --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})+change-preview-label( content )" \
-                      --bind "alt-c:execute-silent(printf '%s\n' {+2} | tmux load-buffer -w -)" \
+                      --bind 'alt-c:execute-silent(printf "%s\n" {+2} | sed "s|^~|$HOME|" | tmux load-buffer -w -)' \
                       --prompt='open> ' \
-                      --header='↵ open (folder: browse)   tab mark   alt-c copy path   ^O as-is
-^G diff   ^F content   ^/ preview   esc cancel' \
+                      --header='↵ open (folder: browse)   tab mark   ^O as-is
+^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-label=' content ' --preview-label-pos=2 \
                       --preview-window="down,$pshare,border-top")

@@ -1141,12 +1141,16 @@ rm -f "$VTMUX/code"
 
 echo "== tmux-open-path: alt-c copies the marked paths to the tmux buffer =="
 if need_tmux "tmux-open-path alt-c"; then :; else
-PC="cockpit-pc-$$"; SOCKS="$SOCKS $PC"; PCD=$(mktmpd); : > "$PCD/a.txt"; : > "$PCD/b.txt"; : > "$PCD/c.txt"
+# Under $HOME on purpose, not mktmpd's /tmp: field 2 of the list is the
+# ~-abbreviated path, so only a fixture below $HOME makes the picker's own
+# un-abbreviation the thing under test. Removed at the end of the block.
+PC="cockpit-pc-$$"; SOCKS="$SOCKS $PC"; PCD="$HOME/.cache/cockpit-test-$$"
+mkdir -p "$PCD"; : > "$PCD/a.txt"; : > "$PCD/b.txt"; : > "$PCD/c.txt"
 PCS=$(mktmpd); cat > "$PCS/tmux" <<'STUB'
 case "$1" in
   show-options) printf '%s\n' "${CLICK_LINE:-}" ;;   # every option query answers the clicked line; only @cockpit_click_line is read here
   display-message) case " $* " in *pane_current_path*) printf '%s\n' "$CLICK_DIR" ;; *window_id*) printf '@0\n' ;; *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
-  load-buffer) cat > "$TMUX_LOG.buf" ;;
+  load-buffer) printf 'LOADBUF %s\n' "$*" >> "$TMUX_LOG"; cat > "$TMUX_LOG.buf" ;;
   *) printf '%s\n' "$*" >> "$TMUX_LOG" ;;
 esac
 exit 0
@@ -1160,8 +1164,11 @@ until_cap "$PC" "$PCP" '*open>*' || bad "the picker comes up" "open>" "$("$TMUX_
 "$TMUX_REAL" -L "$PC" send-keys -t "$PCP" Tab Tab; until_cap "$PC" "$PCP" '*(2)*'
 "$TMUX_REAL" -L "$PC" send-keys -t "$PCP" M-c
 until_file "$PCS/log.buf" '*a.txt*'
-is "alt-c copies the marked paths, one per line" "$PCD/a.txt"$'\n'"$PCD/b.txt" "$(sed "s|^~|$HOME|" "$PCS/log.buf" 2>/dev/null)"
-"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1
+# Read raw: un-abbreviating HERE would pass whether the bind copies ~/… or the
+# absolute path, which is the one thing this block exists to tell apart.
+is "alt-c copies the marked paths, one per line, absolute" "$PCD/a.txt"$'\n'"$PCD/b.txt" "$(cat "$PCS/log.buf" 2>/dev/null)"
+is "and loads them with -w, so the clipboard gets them too" "LOADBUF load-buffer -w -" "$(grep LOADBUF "$PCS/log" 2>/dev/null)"
+"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1; rm -rf "$PCD"
 fi
 
 echo "== agent-state: notify must not hang on a silent stdin =="
