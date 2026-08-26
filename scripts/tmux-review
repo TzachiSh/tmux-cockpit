@@ -872,7 +872,8 @@ attach() {
 # and nothing else in the script rewrites the store; attach() appends.
 detach() {                    # <store> <path> <line-with-sign>
     local store=$1 path=$2 line=$3 sign=+ num i j=0 k
-    [ -n "$path" ] && [ -n "$line" ] && [ -s "$store" ] || return 0
+    [ -n "$path" ] && [ -n "$line" ] || return 0
+    [ -s "$store" ] || { tmux display-message "tmux-review: nothing pinned on this row" 2>/dev/null; return 0; }
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
@@ -892,6 +893,7 @@ detach() {                    # <store> <path> <line-with-sign>
         done
         j=$((j + 1))
     done
+    [ "$j" -lt "$STORE_N" ] || { tmux display-message "tmux-review: nothing pinned on this row" 2>/dev/null; return 0; }
     STORE=(); for k in "${!OUT[@]}"; do STORE[$k]=${OUT[$k]}; done; STORE_N=$j
     format_store "$store"
 }

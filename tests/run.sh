@@ -3773,6 +3773,23 @@ is "an indented line is stored whole, indentation and all" \
    "> $INDENTED" "$(sed -n 6p "$RVLS")"
 rm -rf "$RVLONG" "$RVLS"
 
+echo "== tmux-review --detach: a row with nothing pinned says so instead of doing nothing in silence =="
+RXN=$(mktmpd)
+printf '#!/bin/sh\necho "$*" >> %s/log\n' "$RXN" > "$RXN/tmux"; chmod +x "$RXN/tmux"
+printf '## src.go:3 (+)\n> x\nkeep\n\n' > "$RXN/store"
+PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/store" src.go 9
+case "$(cat "$RXN/log" 2>/dev/null)" in
+    *"nothing pinned on this row"*) ok "^X on an uncommented row reports it" ;;
+    *) bad "^X on an uncommented row reports it" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
+esac
+is "and the store is untouched" "1" "$(grep -c '^## src.go:3 (+)' "$RXN/store")"
+: > "$RXN/log"; : > "$RXN/empty"
+PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/empty" src.go 3
+case "$(cat "$RXN/log" 2>/dev/null)" in
+    *"nothing pinned on this row"*) ok "so does ^X on an empty store" ;;
+    *) bad "so does ^X on an empty store" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
+esac
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
