@@ -4494,6 +4494,9 @@ rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review"
 is "comments pinned: exit 10" "10" "$rq_rc"
 case "$rq_out" in "Code review of your changes"*"REQUEST-MARKER"*) ok "and the composed review is on stdout" ;; *) bad "and the composed review is on stdout" "header + REQUEST-MARKER" "$rq_out" ;; esac
 is "the batch is archived, the store consumed" "1" "$(grep -c REQUEST-MARKER "$RQSESS/delivered.md" 2>/dev/null)"
+# The agent has the review in hand, so the pane reads "sent" exactly as it does
+# after a paste -- the shim passes set-option through to the real server.
+is "and the pane is marked sent, as after a paste" "sent" "$("$TMUX_REAL" -L "$RQ" show-option -pqv -t "$RQAP" @cockpit_review)"
 rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
 is "nothing pinned: exit 0, nothing printed" "0 " "$rq_rc $rq_out"
 # esc's `leave` (Task 8) keeps a non-empty store and does NOT deliver it: the

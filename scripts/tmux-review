@@ -1737,6 +1737,10 @@ request() {                   # <pane>
         printf 'tmux-review: could not create %s\n' "$sess" >&2; exit 1; }
     pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
     ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
+    # A killed launcher leaves its popup running, and that popup still writes
+    # its rc when the human closes it -- so clear the file BEFORE opening this
+    # one: an rc read here must belong to the popup this call just waited on.
+    rm -f -- "$sess/rc"
     # -E: this returns when the loop exits. display-popup runs the string
     # through sh, so the escaped \$? is the LOOP's code, not tmux's.
     tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T ' review · requested ' \
@@ -1744,13 +1748,20 @@ request() {                   # <pane>
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
         20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
+            # The agent has the review in hand the moment this returns, so the
+            # pane carries the same "sent" the paste path sets on delivery.
+            tmux set-option -p -t "$pane" @cockpit_review sent 2>/dev/null
             compose "$store" "$root"; done_store "$store"; exit 10 ;;
         21) # ^A: same clean-up review_pane does — the ref is written by the loop
             tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
             "$(dirname "$SELF")/agent-state" recount "$pane"
             [ -d "$sess" ] && [ ! -L "$sess" ] && rm -rf -- "$sess"
             exit 0 ;;
-        *)  exit 0 ;;                          # leave / discard / a dropped popup: the store stays as the loop left it
+        *)  # leave / discard / a dropped popup: the store stays as the loop
+            # left it. The rmdir is review_pane's own -- it takes the dir a
+            # discard emptied and is a no-op while `leave` keeps the store.
+            rmdir -- "$sess" 2>/dev/null
+            exit 0 ;;
     esac
 }
 

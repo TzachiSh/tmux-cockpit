@@ -1,7 +1,7 @@
 ---
 name: cockpit-review
 description: Ask the human for a code review of this pane's changes through the tmux-cockpit review popup, then act on the comments. Use when you finished a piece of work and want it looked at before going on, or when the user says "review this" / "get a review".
-allowed-tools: Bash(*/scripts/tmux-review --request *)
+allowed-tools: Bash(*tmux-review*--request*)
 ---
 
 Run this, with a long timeout (the human is reading and annotating; do not
