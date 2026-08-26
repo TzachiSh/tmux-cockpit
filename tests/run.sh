@@ -889,8 +889,12 @@ fi
 
 # With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
 # rather than reporting "opened" for a command that was never found.
+# HOME is the fixture dir, not the real one: the VS Code shim now sits between
+# code(1) and $EDITOR, and it is looked up under $HOME -- so on a machine that
+# HAS Remote-SSH installed these two would measure the developer's laptop
+# rather than the code.
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
     EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *NEWWIN*vi*) ok "no code(1): falls back to \$EDITOR" ;;
@@ -899,7 +903,7 @@ esac
 
 # ...and with no editor at all it must say so, not claim success.
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
     bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *"no editor"*) ok "no editor at all: says so instead of claiming success" ;;
@@ -1027,6 +1031,93 @@ rm -rf "$GL"
 # later blocks reuse this stub
 ETMUX_TEMPLATE=$(mktmpf); cp "$ETMUX/tmux" "$ETMUX_TEMPLATE"; chmod +x "$ETMUX_TEMPLATE"
 rm -rf "$EQ" "$ETMUX"
+
+echo "== tmux-open-path: with no code on PATH, a click opens through VS Code's remote shim on the live socket =="
+# Remote-SSH and Coder put no code(1) on tmux's PATH: the CLI is a shim under
+# ~/.vscode-server that only reaches a window through VSCODE_IPC_HOOK_CLI, and
+# only when that socket is LIVE. The shim is its own probe -- a dead socket
+# fails in ~150 ms, a live one answers --goto in ~150 ms -- so the fake below
+# exits 1 on every socket but live.sock, and the NEWEST socket is the dead one.
+VTMUX=$(mktmpd); VQ=$(mktmpd); VH=$(mktmpd)
+VSK="$VH/run"; VLOG="$VH/log"; VSHIM="$VH/.vscode-server/cli/servers/Stable-abc/server/bin/remote-cli"
+: > "$VQ/it's.txt"
+# Self-contained by design: make test-only extracts a block on its own, so this
+# one builds its own tmux stub instead of borrowing another block's.
+cat > "$VTMUX/tmux" <<'VSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)
+      case " $* " in
+          *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@cockpit_open_single*) printf '%s\n' "${OPEN_SINGLE:-}" ;;
+          *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
+          *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
+      esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
+          *window_id*)         printf '@0\n' ;;
+          *)                   printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+      esac ;;
+  new-window)    printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  display-popup) printf 'POPUP %s\n'  "${!#}" >> "$TMUX_LOG" ;;
+  run-shell)     printf 'RUNSHELL %s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+VSTUB
+chmod +x "$VTMUX/tmux"
+# env -i below leaves only this dir on PATH, so everything the script and the
+# lib run has to be in it: bash for the shebang, ls/head/grep for the probe.
+for t in bash ls head grep sort readlink; do ln -sf "$(command -v $t)" "$VTMUX/$t"; done
+VOUT="$VTMUX/log"
+mkdir -p "$VSHIM" "$VSK"
+# /bin/sh is dash here, so no ${@: -1}: the last argument comes off a loop.
+cat > "$VSHIM/code" <<'VSHIMEOF'
+#!/bin/sh
+printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
+case "$VSCODE_IPC_HOOK_CLI" in
+    *live.sock) case " $* " in
+                    *' --wait '*) for a in "$@"; do last=$a; done
+                                  printf 'FROM-VSCODE\n' >> "$last" ;;
+                esac
+                exit 0 ;;
+    *) exit 1 ;;
+esac
+VSHIMEOF
+chmod +x "$VSHIM/code"
+: > "$VSK/vscode-ipc-live.sock"; touch -t 202001010000 "$VSK/vscode-ipc-live.sock"
+: > "$VSK/vscode-ipc-dead.sock"
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+vcmd=$(sed -n 's/^RUNSHELL run-shell -b //p' "$VOUT" | head -1)
+# The quote in the name is shell-quoted for run-shell (it\'s.txt), so a glob
+# for the plain name stops at the escape. The shim's own log below is where the
+# path is checked whole -- after sh has put it back together.
+case "$vcmd" in
+    *"--vscode --goto"*"s.txt:12:1"*) ok "the click hands the file to the shim through run-shell" ;;
+    *) bad "the click hands the file to the shim through run-shell" \
+         "--vscode --goto .../it's.txt:12:1" "$(cat "$VOUT")" ;;
+esac
+: > "$VLOG"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" bash -c "$vcmd"
+case "$(cat "$VLOG")" in
+    *"SOCK=$VSK/vscode-ipc-dead.sock"*"SOCK=$VSK/vscode-ipc-live.sock ARGS=--goto $VQ/it's.txt:12:1"*)
+        ok "the newer dead socket is tried first and skipped, the live one takes the file" ;;
+    *) bad "the newer dead socket is tried first and skipped, the live one takes the file" \
+         "dead then live" "$(cat "$VLOG")" ;;
+esac
+# The shim is the LAST resort, not a new default: a $VISUAL/$EDITOR still wins
+# over it, exactly as it wins over a code(1) that is not installed.
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt" OPEN_EDITOR=nvim \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$VOUT")" in
+    *NEWWIN*nvim*) ok "@cockpit_editor still wins over the shim" ;;
+    *) bad "@cockpit_editor still wins over the shim" "a new window running nvim" "$(cat "$VOUT")" ;;
+esac
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -6429,6 +6520,68 @@ esac
 is "no editor temp file is left behind" "" "$(ls "$ETTMP"/* 2>/dev/null)"
 "$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
 fi
+
+echo "== tmux-review --edit: with nothing configured, ^E opens in VS Code's remote shim when a window is reachable, else vi =="
+# On a Remote-SSH/Coder host there is no code(1) and usually no $EDITOR either,
+# and ^E fell back to vi inside the popup -- next to the VS Code window the
+# person is actually reading the diff in. The shim takes it with --wait, so the
+# buffer comes back the same way vi's does. No live window: vi, and say so.
+VETM=$(mktmpd); VEH=$(mktmpd); VE=$(mktmpd)
+VESK="$VEH/run"; VELOG="$VEH/log"; VELOGT="$VETM/log"; VESTORE="$VEH/store.md"
+VESHIM="$VEH/.vscode-server/cli/servers/Stable-abc/server/bin/remote-cli"
+cat > "$VETM/tmux" <<'VESTUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)  printf '\n' ;;
+  display-message) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+VESTUB
+chmod +x "$VETM/tmux"
+mkdir -p "$VESHIM" "$VESK"
+cat > "$VESHIM/code" <<'VESHIMEOF'
+#!/bin/sh
+printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
+case "$VSCODE_IPC_HOOK_CLI" in
+    *live.sock) case " $* " in
+                    *' --wait '*) for a in "$@"; do last=$a; done
+                                  printf 'FROM-VSCODE\n' >> "$last" ;;
+                esac
+                exit 0 ;;
+    *) exit 1 ;;
+esac
+VESHIMEOF
+chmod +x "$VESHIM/code"
+: > "$VESK/vscode-ipc-live.sock"; touch -t 202001010000 "$VESK/vscode-ipc-live.sock"
+: > "$VESK/vscode-ipc-dead.sock"
+# `vi` on PATH is the fallback the last assertion measures: $EDITOR unset, so
+# editor_cmd's own last resort is the bare name.
+printf '#!/bin/sh\nprintf "FROM-VI\\n" >> "$1"\n' > "$VETM/vi"; chmod +x "$VETM/vi"
+(
+  cd "$VE" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+: > "$VELOG"; : > "$VELOGT"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VSCODE*) ok "^E with no editor configured reaches the live window with --wait" ;;
+    *) bad "^E with no editor configured reaches the live window with --wait" \
+         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
+esac
+rm -f "$VESK"/vscode-ipc-live.sock; : > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VI*) ok "with no live window it falls back to \$EDITOR" ;;
+    *) bad "with no live window it falls back to \$EDITOR" "FROM-VI" "$(cat "$VESTORE" 2>/dev/null)" ;;
+esac
+case "$(cat "$VELOGT" 2>/dev/null)" in
+    *"no VS Code window reachable"*) ok "and the status line says which editor it used instead" ;;
+    *) bad "and the status line says which editor it used instead" \
+         "a display-message naming vi" "$(cat "$VELOGT" 2>/dev/null)" ;;
+esac
 
 echo "== tmux-review --loop: ^E with nothing typed on a commented row edits that comment instead of adding one =="
 if need_tmux "tmux-review ^E edit in place"; then :; else

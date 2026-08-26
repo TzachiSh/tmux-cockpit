@@ -36,6 +36,33 @@ fi
 # already guards this; a "~/..." token on a clicked line used to kill this one.
 H=${HOME:-/nonexistent}
 
+# --- vscode -------------------------------------------------------------------
+# Sourced on demand, not at startup: --preview below is re-run by fzf on every
+# arrow key, and it must not pay a readlink for a lib it never touches. $0 is
+# the ~/.local/bin symlink install.sh made; lib/ sits beside the REAL script,
+# and ${x%/*} is dirname without the second fork.
+vscode_lib() {
+    local real
+    real=$(readlink -f "$0" 2>/dev/null) || real=$0
+    [ -n "$real" ] || real=$0
+    # shellcheck source=lib/vscode.sh
+    . "${real%/*}/lib/vscode.sh" 2>/dev/null && return 0
+    # A half-installed copy (scripts/ without lib/) must still open files the
+    # ordinary ways rather than die on an undefined function.
+    vscode_shim() { return 1; }
+    vscode_open() { return 1; }
+}
+
+# Fire-and-forget: open_one hands this to `run-shell -b` because a popup kills
+# its own process group, so nobody is left to read a failure. No fallback here
+# for the same reason -- editor_cmd in tmux-review is where one can be seen.
+if [ "${1:-}" = --vscode ]; then
+    shift
+    vscode_lib
+    vscode_open "$@"
+    exit $?
+fi
+
 # --- preview ------------------------------------------------------------------
 # Its own subcommand rather than a shell string inside --preview: the logic
 # below needs conditionals and git, and threading that through fzf's quoting
@@ -562,6 +589,7 @@ shq() { printf '%q' "$1"; }
 
 open_one() {
     local file=$1 ln=$2 col=$3 editor
+    vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
     if [ -z "$editor" ]; then
         # The old, unprefixed name. Kept working for one release; it is generic
@@ -570,9 +598,11 @@ open_one() {
         [ -n "$editor" ] && tmux display-message \
             "tmux-cockpit: @open-editor has been renamed @cockpit_editor"
     fi
-    # VS Code stays the default, but only where it is actually installed.
-    # Otherwise fall back to the editor the user already told the shell about.
-    if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1; then
+    # VS Code stays the default, but only where it is actually installed --
+    # either as code(1) on PATH, or as the remote shim under ~/.vscode-server
+    # that Remote-SSH and Coder install instead. Otherwise fall back to the
+    # editor the user already told the shell about.
+    if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1 && ! vscode_shim >/dev/null; then
         editor=${VISUAL:-${EDITOR:-}}
     fi
     if [ -n "$editor" ]; then
@@ -598,6 +628,19 @@ open_one() {
             tmux run-shell -b "code $(shq "$file") >/dev/null 2>&1"
         else
             tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
+        fi
+        note "opened ${file/#$H/\~}${ln:+:$ln}"
+        return
+    fi
+    # Remote-SSH and Coder: VS Code is right there, but its CLI is not on the
+    # PATH tmux was started with. Same run-shell -b as above, re-entering this
+    # script so the socket probe (which runs the shim, ~150 ms per dead socket)
+    # happens off the popup's dying process group.
+    if vscode_shim >/dev/null; then
+        if [ -d "$file" ]; then
+            tmux run-shell -b "$(shq "$0") --vscode $(shq "$file") >/dev/null 2>&1"
+        else
+            tmux run-shell -b "$(shq "$0") --vscode --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
         fi
         note "opened ${file/#$H/\~}${ln:+:$ln}"
         return

@@ -35,6 +35,11 @@ OPENPATH="$(dirname "$SELF")/tmux-open-path"
 # its absolute path, so one readlink hop is the whole resolution; a plain
 # run (no link) has nothing to read and keeps $SELF's own directory.
 LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$SELF")")/lib"
+# shellcheck source=lib/vscode.sh
+. "$LIBDIR/vscode.sh" 2>/dev/null || {
+    vscode_shim() { return 1; }        # a half-installed copy: no shim, plain vi
+    vscode_open() { return 1; }
+}
 
 # tmux runs bind/preview strings through sh, so every path inside one has to be
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
@@ -966,10 +971,15 @@ detach() {                    # <store> <path> <line-with-sign>
 #
 # The one editor chain, shared with ^S's "edit the batch": the path picker's
 # @cockpit_editor first, then the environment, then vi.
+# On a Remote-SSH/Coder host there is no code(1) and usually no $EDITOR, and vi
+# in the popup is the wrong answer next to the VS Code window the diff is being
+# read in. The shim takes --wait, so the buffer comes back like vi's does.
 editor_cmd() {
     local ed
     ed=$(tmux show-options -gqv @cockpit_editor 2>/dev/null)
-    printf '%s\n' "${ed:-${VISUAL:-${EDITOR:-vi}}}"
+    ed=${ed:-${VISUAL:-${EDITOR:-}}}
+    if [ -z "$ed" ] && vscode_shim >/dev/null; then ed="$SELF --vscode --wait"; fi
+    printf '%s\n' "${ed:-vi}"
 }
 
 # A pane id means nothing to the person reading the confirm; the agent's own
@@ -2214,6 +2224,16 @@ case "${1:-}" in
         shift; copy_mode "${1:-}" "${2:-}" ;;
     --edit)
         shift; edit_comment "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
+    --vscode)
+        # editor_cmd's shim arm lands here, so this must BLOCK like an editor
+        # and it must always leave an editor holding the buffer: a shim that
+        # finds no live window (every socket stale) would otherwise return
+        # instantly and pin whatever was already in the file.
+        shift
+        vscode_open "$@" || {
+            tmux display-message "tmux-review: no VS Code window reachable, using vi" 2>/dev/null
+            "${EDITOR:-vi}" "${@: -1}"
+        } ;;
     --loop)
         shift; run_loop "${1:-}" "${2:-}" ;;
     --resnap)
