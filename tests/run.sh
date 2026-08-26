@@ -3570,10 +3570,10 @@ rm -rf "$RVCAP" "$RVUNDER"
 # Spread over 30 files git's peak stays at one file's worth and the 222 MB is
 # the shell's captured copy -- exactly what the reorder deletes.
 # FAIL-first: before the reorder the full `git diff` ran before numstat, so
-# the shim log below shows a diff call without --numstat. That is the pin.
-# The clock is not: `timeout 1.5` (3.25 s pre-fix) went red under peer load
-# and took the notice check with it through an empty rvlock.out (issue #32),
-# so timeout 10 is only a hang guard now.
+# the shim log below shows a diff call without --numstat. `timeout 1.5`
+# (3.25 s pre-fix) went red under peer load and took the notice check with it
+# through an empty rvlock.out (issue #32); every timeout in this block is a
+# hang guard now, and the shim is what pins the reorder.
 RVLOCK=$(mktmpd)
 (
   cd "$RVLOCK" || exit
@@ -3595,8 +3595,10 @@ if PATH="$RVLOCK_SHIM:$PATH" timeout 10 "$DIR/scripts/tmux-review" --lines "$RVL
 else
     bad "a 6,000,030-row tree answers with a notice" "exit 0 within 10s" "rc $?"
 fi
-is "the capped tree is counted, never captured -- no git diff without --numstat" "0" \
-   "$(grep ' diff ' "$RVLOCK_LOG" | grep -vc -- '--numstat')"
+# "1" is the positive control: an empty log (shim never reached) must not
+# read as "nothing captured".
+is "the capped tree is counted once and never captured" "1 0" \
+   "$(grep -cE '(^| )diff( |$)' "$RVLOCK_LOG") $(grep -E '(^| )diff( |$)' "$RVLOCK_LOG" | grep -vc -- '--numstat')"
 case "$(cat "$STATE/rvlock.out")" in
     *"diff too large to anchor line-by-line (6000030 changed lines)"*)
         ok "the uncaptured cap still names the exact row count numstat totalled" ;;
@@ -3678,7 +3680,7 @@ is "the bump fixture is over the 4 MB cap when measured as a whole file" \
    "4810000" "$(wc -c < "$RVBUMP/package-lock.json")"
 is "...while its diff is two rows" "2" \
    "$(git -C "$RVBUMP" diff --numstat | awk -F'\t' '{print $1 + $2}')"
-rvbumpout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVBUMP")
+rvbumpout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVBUMP")
 case "$rvbumpout" in
     *"diff too large"*)
         bad "a one-line bump in a 4.6 MB lockfile is still reviewable" \
@@ -3736,7 +3738,7 @@ is "the mixed fixture is two numstat rows, so the ROW cap cannot be what fires" 
    "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
 is "...and its per-file AVERAGE estimate is 103 bytes, far under the 4 MB cap" \
    "103" "$(wc -lc < "$RVSKEW/mix.txt" | awk '{printf "%d\n", $2 * 2 / $1}')"
-rvskewout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+rvskewout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
 case "$rvskewout" in
     *"diff too large"*" MB)"*)
         ok "one 5 MB line among 100k short ones caps on bytes, not on the average" ;;
@@ -3754,7 +3756,7 @@ is "the skewed notice is one row, not two 5 MB ones" \
   head -c 5000000 /dev/zero | tr '\0' 'L'; printf '\n'; } > "$RVSKEW/mix.txt"
 is "...and with only a SHORT line changed it is two numstat rows too" \
    "2" "$(git -C "$RVSKEW" diff --numstat | awk -F'\t' '{print $1 + $2}')"
-rvskewshort=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
+rvskewshort=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVSKEW" 2>/dev/null)
 case "$rvskewshort" in
     *"diff too large"*) bad "a SHORT-line edit in the same skewed file is shown, not refused" \
          "two anchored mix.txt rows" "$(head -c 120 <<<"$rvskewshort")" ;;
@@ -3795,7 +3797,7 @@ is "the cross-file fixture is 26 changed rows, well under the row cap" "26" \
    "$(git -C "$RVCROSS" diff --numstat | awk -F'\t' '{a += $1 + $2} END {print a}')"
 is "...and its whole real diff is well under 4 MB" "1" \
    "$(git -C "$RVCROSS" diff | wc -c | awk '{print ($1 < 4194304) ? 1 : 0}')"
-rvcrossout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVCROSS" 2>/dev/null)
+rvcrossout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVCROSS" 2>/dev/null)
 case "$rvcrossout" in
     *"diff too large"*) bad "a 744-byte review is not refused for containing one long line" \
          "26 anchored rows" "$(head -c 120 <<<"$rvcrossout")" ;;
@@ -3822,7 +3824,7 @@ RVUBIG=$(mktmpd)
 ) >/dev/null 2>&1
 is "the untracked fixture is 6 MB on disk, and tracked-clean" "6004000" \
    "$(wc -c < "$RVUBIG/huge.txt")"
-rvubigout=$(timeout 1.5 "$DIR/scripts/tmux-review" --lines "$RVUBIG" 2>/dev/null)
+rvubigout=$(timeout 10 "$DIR/scripts/tmux-review" --lines "$RVUBIG" 2>/dev/null)
 case "$rvubigout" in
     *"diff too large"*) ok "a 6 MB untracked file caps on its own exact size" ;;
     *) bad "a 6 MB untracked file caps on its own exact size" \
