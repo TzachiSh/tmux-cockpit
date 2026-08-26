@@ -214,17 +214,21 @@ from `examples/claude-hooks.json` by hand:
 | hook | state |
 |------|-------|
 | `SessionStart` | `off` — a resumed pane must not inherit old state |
+| `SessionStart` (2nd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
 | `UserPromptSubmit` | `running` |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
+| `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `PreToolUse` (`Bash`) | `review-gate --pretool` — while a side fix runs, denies the command pattern the human named; one stat otherwise |
 | `Stop` | `done` |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; while a side fix is alive for this pane, holds here first (`@cockpit_hold`) and hands over a one-line result when it ends; then hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
+| `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
+| `WorktreeRemove` | `worktree-remove` — when claude means to remove a tree the hook above made (remove on `ExitWorktree`, verified on 2.1.246; a subagent finishing clean, per the docs), a clean tree on a merged branch goes, tree and branch; a dirty tree or unmerged commits stay, which is claude's own rule for the trees it makes itself. `claude -p` never cleans up worktrees, so a subagent run under `-p` leaves its tree and slug branch behind; `git worktree remove` plus `git branch -d` |
 | `SessionEnd` | `off` |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
@@ -258,9 +262,10 @@ over earlier, `prefix r` included.
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
-| `prefix + i` | one screen for the pane you are on: state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
+| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
+| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
 cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
@@ -316,6 +321,17 @@ like a path is dropped.
 **Tab marks several** — a compiler error names a header and its source, a git
 diff names two files: mark both, `↵` opens them all. Tab means the same thing in
 `tm`'s kill picker.
+
+**`alt-c` copies the paths instead of opening them.** The marked rows, or the
+row under the cursor when nothing is marked, go to the tmux buffer and the
+clipboard as absolute paths, one per line, for pasting into an agent's prompt.
+It works in the folder browser too, where `⇥` marks rows for `alt-c` alone: `↵`
+and `^O` there act on the first marked row. The copy goes out as OSC 52, so it
+reaches the system clipboard only if your terminal accepts clipboard writes.
+
+To copy something no key already copies, hold **shift** and drag. A tmux popup
+has no copy mode, so in any of these popups the terminal's own selection is the
+one that works.
 
 **A folder browses, it does not open.** `↵` on a directory descends into it —
 `..` climbs back up, `↵` on a file opens it. `^O` — in the picker and in the
@@ -474,9 +490,18 @@ Opens in VS Code at the line. For a terminal editor instead:
 set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
 
-Where neither `@cockpit_editor` nor `code` is available it falls back to `$VISUAL`
-or `$EDITOR`, and says so plainly if there is no editor at all rather than
-reporting a success that never happened.
+Keep it a **terminal** editor: the review's `^E` reads the same option, and
+opens it in the popup's own terminal. A GUI editor belongs in `VISUAL`
+instead.
+
+`@cockpit_editor` wins. After it comes VS Code, either as `code` on the `PATH`
+or as the remote shim Remote-SSH and Coder install under `~/.vscode-server`,
+and only where neither of those exists does the click fall back to `$VISUAL` or
+`$EDITOR`. On a Remote-SSH or Coder host that is a change: with `EDITOR=nvim`
+and no `@cockpit_editor` set, a click now lands in the VS Code window you are
+already looking at, where it used to open nvim in a tmux window. Set
+`@cockpit_editor nvim` to keep nvim. With no editor anywhere it says so plainly
+rather than reporting a success that never happened.
 
 ## Review the agent's changes
 
@@ -496,6 +521,13 @@ other agents waiting on you stay on screen instead of being replaced by it.
 Finishing a review returns to the queue, on the pane you just left, so
 reviewing four agents is four `↵` rather than four `prefix + r`; `esc` on the
 list is the way out.
+
+The review diffs the **git root of the pane's cwd**, and the header names it
+(`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
+by absolute path from a main-checkout pane is reviewed on the wrong tree, and
+that line is how you notice. The fix is workflow, not the plugin: an agent that
+works on a branch lives in that worktree, which is what the `WorktreeCreate`
+hook above arranges for `claude --worktree` and `EnterWorktree`.
 
 The review opens in a popup. `set -g @cockpit_review_window on` opens it as a
 real window (`new-window -n review`) instead, if you would rather keep the
@@ -559,11 +591,15 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `alt-↵` | — | alias for `↵` |
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
-| `alt-u` / `alt-d` | — | scroll the preview |
+| `alt-↑` / `alt-↓`, `alt-u` / `alt-d` | — | scroll the preview a line, half a page (the mouse wheel over it scrolls too) |
 | `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
-| `^X` | — | delete the comment(s) on the row under the cursor |
+| `^X` | kill the window under the cursor, after a y/N that names it and its pane count — the session too, when it is that session's last window (a forgotten agent elsewhere) | delete the comment(s) on the row under the cursor |
 | `^L` | — | show every pinned comment in the terminal |
-| `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
+| `^E` | — | open your editor on the typed text; with nothing typed on a commented row, on that comment (save empty to delete it) |
+| `⇥` | — | mark the row (any number) |
+| `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
+| `alt-y` | — | copy the whole review's diff |
+| `alt-c` | — | copy the marked rows' text (or the row under the cursor) to the tmux buffer and the clipboard |
 | `^B` | — | cycle the base the diff is taken against |
 | `^A` | — | approve what you just read (only with nothing pinned) |
 | `^S` | — | deliver the whole batch; asks first |
@@ -572,17 +608,30 @@ comment, so the keys that would collide with typing it move elsewhere:
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
 terminals where the plain chord doesn't land. `^E` hands what you have typed
-to `$EDITOR` and pins the file that comes back, so a comment that needs three
+to your editor and pins the file that comes back, so a comment that needs three
 lines costs no more than one — an empty file pins nothing, so deleting
-everything and saving is the cancel. The popup's children see the tmux
-*server's* environment: export `EDITOR` before the server starts, or
-`tmux set-environment -g EDITOR nvim` for a running one. The list reloads
-in place and marks the row `●` (the digit instead, when more than one
-comment sits there), so five comments cost one popup, not five — the same
-`execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
+everything and saving is the cancel. With nothing typed on a row that already
+carries a comment, `^E` opens that comment instead and replaces it; saving an
+empty file deletes it. `^E` uses `@cockpit_editor` when set
+(`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
+opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
+none of the three set it tries VS Code's remote shim, and falls back to `vi`.
+A GUI editor goes in `VISUAL`: `tmux set-environment -g VISUAL 'code --wait'`.
+The popup's children see the tmux *server's* environment, so a shell `export`
+made after the server started is not seen. That shim arm is for the Remote-SSH
+or Coder host where there is no `code` on the `PATH` and usually no `$EDITOR`
+either, and where `vi` in a popup is the wrong answer next to the VS Code
+window the diff is being read in. It takes `--wait`, so the buffer comes back
+the way `vi`'s does, and `^S`'s confirm offers
+`edit the batch in VS Code first`. From a plain ssh session nothing can reach
+the laptop's VS Code. The list reloads in place and marks the row `●` (the
+digit instead, when more than one comment sits there), so five comments cost
+one popup, not five — the same `execute-silent(...)+reload(...)` shape `tm`'s
+kill picker already uses.
 `^S` delivers the whole batch, and asks first: it names the count and the
-target pane, and offers the batch to `$EDITOR` as text before it goes
-(`deliver N comment(s) to %7` / `edit the batch in $EDITOR first` /
+target pane by its title, and offers the batch to your editor as text before it
+goes (`deliver N comment(s) to fix the parser (%7)` /
+`edit the batch in nano first` /
 `keep reviewing`). `esc` asks the same way once anything is pinned
 (`leave — N comment(s) stay pinned` / `keep reviewing` / `discard N
 comment(s)`), because one reflexive escape should not throw away a
@@ -598,6 +647,33 @@ want its newest lines, `^R` takes a fresh snapshot on purpose and names the
 comments that no longer sit on a changed line — they still deliver, because
 the quoted fragment is what the agent finds them by. A resumed review says the
 same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
+
+To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
+copy mode, so the terminal's own selection is the one that works there. `^Y`
+copies the whole file plus its diff, `alt-y` every file's diff, for pasting
+into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
+row, when what you want is a handful of lines rather than a file. All three go
+out as OSC 52, so they reach the system clipboard only if your terminal accepts
+clipboard writes; some disable them by default.
+
+**Big files are named, not diffed.** To tell whether a file changed at all git
+hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB, and the popup
+is modal and rebuilds its rows on every reload. So a changed or untracked file
+over **32 MB** is kept away from git and reported on one notice row at the top
+of the list instead, though a tracked file whose size did not change is still
+hashed once, so git can tell it changed:
+
+```text
+data/dump.bin (412 MB) skipped — over 32 MB, review it directly
+```
+
+The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
+diff too large to anchor line-by-line leaves. The file itself is untouched, and
+the tree still counts as dirty because of it, so a pane whose only change is a
+skipped file stays in the fleet queue and its review opens on that notice
+rather than on an empty diff. The path picker's `^G` diff preview refuses any
+file over 32 MB, naming the size. Put core dumps in `.gitignore`, as git's own
+templates do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
@@ -739,7 +815,7 @@ What this deliberately does **not** do, and why:
 - **Test files sort first, never last** in the diff-line list — a change to
   the tests is read before the change it tests, not after.
 
-**The agent can ask.** `install.sh` links `skills/cockpit-review` into
+**The agent can ask.** `install.sh` links every `skills/*` dir into
 `~/.claude/skills`, so `/cockpit-review` (or "get this reviewed") runs
 `tmux-review --request` from the agent's own pane: one popup, the same
 loop, and the batch comes back as the tool's result (exit 10) instead of a
@@ -748,6 +824,49 @@ paste — revdiff's contract. `^A` there approves as anywhere else.
 You can also leave a requested review for later: `esc → leave` keeps the
 comments pinned and `--request` returns 0, so the agent carries on with nothing
 in hand. Running `/cockpit-review` again resumes exactly those comments.
+
+### VS Code over Remote-SSH
+
+`VISUAL='code --wait'` is enough on a local machine, and only there. Over
+Remote-SSH `code` is not on the `PATH` tmux was started with, and VS Code hands
+the remote a fresh `VSCODE_IPC_HOOK_CLI` socket per connection that the tmux
+server, started before that connection or outliving it, never has. Nothing to
+install: click-to-open finds the shim itself, and `^E` does too when
+`@cockpit_editor`, `$VISUAL` and `$EDITOR` are all empty. They take the newest
+shim under `~/.vscode-server` (`cli/servers/*/server/bin/remote-cli/code`, or
+`bin/*/bin/remote-cli/code` from an older server) and run it against each
+`vscode-ipc-*.sock` in `$XDG_RUNTIME_DIR`, newest first, until a window takes
+the file. The shim is its own probe, so no `nc` or `socat` is needed.
+
+Two caveats. A dead socket refuses in about 150 ms, so the walk stops at the 8
+newest rather than spending six seconds on a home full of stale ones, and a
+window whose socket is older than those 8 is missed. And a closed window's
+socket keeps listening through VS Code's reconnection grace, so answering is
+not proof of a live window: `^E` can then sit on `--wait` until you press esc.
+
+From a plain ssh session, with no VS Code on the far end, nothing can reach
+the laptop's editor. Use a terminal editor there.
+
+### Coder
+
+A Coder workspace opened from VS Code is Remote-SSH underneath, and there is
+nothing extra to do: the shim sits in the same place, and a workspace that has
+no `/run/user/$UID` puts its sockets in `$TMPDIR` or `/tmp`, which is where the
+walk looks when `$XDG_RUNTIME_DIR` is unset.
+
+### Security
+
+`VISUAL='code --wait'` and the shim the popup finds for itself run entirely as
+you: they use the VS Code CLI socket in your own `$XDG_RUNTIME_DIR`, which no
+other user can open, and give a same-user process nothing it did not already
+have. `/tmp` is only the fallback for a workspace with neither
+`$XDG_RUNTIME_DIR` nor `$TMPDIR` set (a Coder container); where either is set
+the walk never looks in `/tmp`, where another user could plant a listening
+socket. Never run the popup under `sudo`. VS Code's remote server listens on a
+loopback TCP port by default, so on a shared host set
+`"remote.SSH.remoteServerListenOnSocket": true`, or another local user can
+attach to your editor session. Remote-SSH installs and auto-updates
+`~/.vscode-server` on that host; some admins do not allow that, ask first.
 
 ### Review options
 
@@ -760,6 +879,7 @@ set -g @cockpit_review_key     r       # off restores stock refresh-client
 set -g @cockpit_review_window  off     # on: a window instead of the popup
 set -g @cockpit_info_key       i       # off restores stock window info
 set -g @cockpit_jump_key       J
+set -g @cockpit_move_key       M       # off restores stock select-pane -M
 set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""
@@ -855,6 +975,16 @@ pane) on a scratch repo and a private tmux server:
 - Twice, a fixer whose `claude` ended its run without a `HANDOVER:` line (it
   backgrounded the command it had been asked to wait for) left the wrapper's
   fallback line, and the main agent resumed on that instead.
+
+## prefix + M — move a window between sessions
+
+One row per other session, plus `new session...` which asks for a name. Stock
+`prefix + .` moves the window but leaves you behind in the old session, and if
+that window was the session's last, tmux destroys the session and detaches
+you: you are out of tmux. This binding switches the client first, then moves,
+so the emptied session is destroyed with nobody in it and you land on the
+window you moved. A new session gets exactly the moved window, no placeholder
+shell beside it. `prefix + .` is untouched for the "renumber to index N" case.
 
 ## tm — session launcher
 
@@ -998,13 +1128,22 @@ it, would otherwise keep counting toward `◆N` forever.
 
 ## Deliberately unwired
 
-`SubagentStop`, `TaskCompleted`, `PreCompact`, `TeammateIdle`.
+`SubagentStop`, `TaskCompleted`, `PreCompact`.
 
 `SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
 so a run that failed finished **green**. The next `PostToolUse` restores `running`
 anyway, so the hook only ever destroyed information. `TaskCompleted` fires
 mid-turn per task-list item and flashed green while the agent kept working;
 `Stop` already covers every turn end.
+
+`TeammateIdle` IS wired, to `agent-state wake`. A teammate going idle posts an
+idle notification to its lead, and that message wakes an idle lead with no
+hook of its own, so the lead's pane sat on green `done` (and `◆ done` in the
+fleet) until its first tool call, 6 s on a live team. `wake` flips `done` (or
+no state) to `running` and leaves a blocked or errored lead exactly as it is.
+Measured with in-process teammates (the default); in split-pane team mode the
+hook lands on the teammate's own pane, so an idle teammate may read `running`
+until its next turn.
 
 ## Known limits
 

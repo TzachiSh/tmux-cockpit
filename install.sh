@@ -110,11 +110,14 @@ link_one() {                  # <link> <target>
 
 if [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
-# The cockpit-review skill, for Claude Code -- only where Claude Code is
-# installed (~/.claude exists), so a plain shell box gets no stray dir.
+# Every skills/* dir, for Claude Code -- only where Claude Code is installed
+# (~/.claude exists), so a plain shell box gets no stray dir.
 if [ -d "${HOME:-}/.claude" ]; then
     [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
-    link_one "${HOME}/.claude/skills/cockpit-review" "$DIR/skills/cockpit-review"
+    for s in "$DIR"/skills/*/; do    # [ -d ]: an empty skills/ leaves the glob unexpanded
+        [ -d "$s" ] || continue
+        s=${s%/}; link_one "${HOME}/.claude/skills/${s##*/}" "$s"
+    done
 fi
 else
     printf 'dry-run: skipping the symlink step\n'
