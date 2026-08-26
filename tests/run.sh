@@ -237,6 +237,29 @@ esac
 "$TMUX_REAL" -L "$SM" kill-server >/dev/null 2>&1
 fi
 
+echo "== prefix b acts on the pane's own directory, not the session's start dir (#38) =="
+# display-popup expands no format in its shell-command: the bind's
+# '#{pane_id}' reached tmux-branch as literal text and DIR fell back to the
+# popup's $PWD, the session's start dir. Only a real key press shows it.
+if need_tmux "prefix b pane"; then :; else
+PB="cockpit-pb-$$"; PBO="cockpit-pbo-$$"; SOCKS="$SOCKS $PB $PBO"; PBD=$(mktmpd)
+( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for b in alpha beta; do mkdir -p "$PBD/$b"; ( cd "$PBD/$b" && git init -q -b "$b" . && git commit -q --allow-empty -m init ); done ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$PB" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PBD/alpha" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PB" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+# The example conf loads ~/.tmux/plugins/tmux-cockpit, not this tree: rebind
+# from the plugin under test.
+"$TMUX_REAL" -L "$PB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PB" new-window -t t -c "$PBD/beta" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PBO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $PB attach -t t" >/dev/null 2>&1
+sleep 1
+for k in C-Space b; do "$TMUX_REAL" -L "$PBO" send-keys -t o "$k"; sleep 0.4; done
+until_cap "$PBO" o '*on beta*' && ok "prefix b opens on the pane's repo (beta), not the session's start dir (alpha)" \
+    || bad "prefix b opens on the pane's repo (beta), not the session's start dir (alpha)" "on beta" "$("$TMUX_REAL" -L "$PBO" capture-pane -p -t o | grep -o 'on [a-z]* ·[^ ]* [^ ]*' | head -1)"
+"$TMUX_REAL" -L "$PBO" send-keys -t o Escape; sleep 0.3
+"$TMUX_REAL" -L "$PBO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
+fi
+
 echo "== the shipped menu is not a way for a directory name to run tmux commands =="
 # display-menu expands an item's command as a format and THEN parses it as
 # tmux syntax, so a live #{pane_current_path} inside an item let a directory
@@ -2311,19 +2334,20 @@ echo "== branch popup passes the source pane id =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
 # must be told which pane the key/click actually fired on rather than
 # resolving it itself. Both the prefix+b bind and the click gesture pass
-# -p '#{pane_id}', expanded by tmux at bind time on the originating pane.
+# -p resolved by the popup's own sh from $TMUX's session id (#38); the
+# key-press test above proves the resolution, this one pins the shape.
 if need_tmux "branch popup pane id"; then :; else
 BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
 "$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
-    *"-p '#{pane_id}'"*) ok "prefix b passes the source pane id" ;;
-    *) bad "prefix b passes the source pane id" "-p '#{pane_id}' in the bind" \
+    *'-p \"$(tmux display-message -p -t'*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
          "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" in
-    *"-p '#{pane_id}'"*) ok "the branch click passes the source pane id" ;;
-    *) bad "the branch click passes the source pane id" "-p '#{pane_id}' in the bind" \
+    *'-p \"$(tmux display-message -p -t'*) ok "the branch click passes the source pane id" ;;
+    *) bad "the branch click passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
          "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseDown1Control1)" ;;
 esac
 "$TMUX_REAL" -L "$BPI" kill-server >/dev/null 2>&1
