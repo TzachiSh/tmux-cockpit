@@ -6582,8 +6582,14 @@ FP_DIR=$(mktmpd)
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 i=1
 while [ "$i" -le 50 ]; do
-    "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude bash' >/dev/null 2>&1
+    # sleep, not bash: 50 shells sourcing rc files are the load spike, and the
+    # last one had not exec'd when the scan ran, so it read 49 rows (issue #47).
+    "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude sleep 3600' >/dev/null 2>&1
     i=$((i + 1))
+done
+for i in $(seq 1 40); do
+    [ "$("$TMUX_REAL" -L "$FP" list-panes -a -F '#{pane_current_command}' | grep -c '^claude$')" -eq 50 ] && break
+    sleep 0.1
 done
 FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
 
