@@ -5,7 +5,7 @@ Opus lane, 2026-08-26, plus direct checks. Owner's ask: `bootstrap.sh` / `instal
 ## What kills the obvious design (measured)
 
 1. `releases/latest/download/<asset>` does not save resolving the version: every fzf/bat/Diagon asset name embeds it. The only version-free asset across the four tools is gum's `checksums.txt`. The API-free way to the version is the HTML redirect, zero quota: `curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/junegunn/fzf/releases/latest` → `…/tag/v0.74.3`. Confirmed for all four repos. The unauthenticated REST API is 60 requests/hour per IP (`x-ratelimit-limit: 60`), shared behind NAT and in CI; a bootstrap that calls it fails at the worst moment.
-2. fzf latest is **v0.74.3**; the pickers doc's 0.74.4 tag does not exist (fixed there).
+2. fzf latest is **v0.74.3**; the pickers doc's 0.74.3 tag does not exist (fixed there).
 3. **bat publishes no checksums** (v0.26.1, .26.0, .25.0 checked): TLS only, or prefer the distro/brew package.
 4. **Diagon is broken as a scripted install**: tag v1.1.158, assets named 1.1.156 (`…/v1.1.158/diagon-1.1.158-Linux.tar.gz` → 404); `bin/diagon` in the tarball is a symlink, so extracting that name yields a dangling link; the binary is dated 2023-05-08; `--version` prints `version: 156`; dynamic libstdc++; no checksums. Keep it out (`snap install diagon` or nothing; diagon.md says nothing).
 5. `version_at_least` (cockpit.tmux:175-180) fails open-down for three-component versions: `${v#*.}` of `0.74.3` is `74.3`, fails the digit test, becomes 0, so both 0.74.3 and 0.63.0 read as "< 0.63" and the styled tier would never activate for anyone. Fine for tmux's pre-stripped `3.7`; never call it for fzf.

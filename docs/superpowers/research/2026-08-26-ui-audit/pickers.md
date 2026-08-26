@@ -1,6 +1,6 @@
 # The fzf pickers: theme, version gate, key hints, rows, previews, glyphs
 
-Read-only lane, 2026-08-26. Installed fzf 0.44.1 (Debian); upstream 0.74.4. Targets 0.63+ per the owner ("use the latest version") with a plain tier that is today's screens. The eight current invocations are quoted in inventory.md §C.
+Read-only lane, 2026-08-26. Installed fzf 0.44.1 (Debian); upstream 0.74.3. Targets 0.63+ per the owner ("use the latest version") with a plain tier that is today's screens. The eight current invocations are quoted in inventory.md §C.
 
 ## 1. Critique
 
@@ -35,7 +35,7 @@ Previews. Better than expected: tmux-open-path:404-419 already uses bat/batcat w
 
 Empty states are all `display-message` outside the popup, so on prefix r in a clean tree the popup opens, vanishes, and the message lands on a status line nobody was looking at (:1224, :2178, :1159, :2171). tmux-branch:194 `fail` pauses; tmux-open-path:760 `note` likewise. Two conventions for one event.
 
-## 2. Version floor and what it buys (from the CHANGELOG, latest 0.74.4)
+## 2. Version floor and what it buys (from the CHANGELOG, latest 0.74.3)
 
 | option | first version | buys |
 |---|---|---|
@@ -152,7 +152,7 @@ case "${fzf_v#0.}" in
 esac
 ```
 
-Do not reuse `version_at_least` (cockpit.tmux:175-180): it takes `${v#*.}` as the minor, which on 0.74.4 yields `74.4`, fails its own `*[!0-9]*` test, and becomes 0. Correct for tmux's pre-stripped `3.7`, wrong for three components. README: "fzf is optional, every picker falls back to a numbered select menu; fzf 0.63+ enables the styled pickers."
+Do not reuse `version_at_least` (cockpit.tmux:175-180): it takes `${v#*.}` as the minor, which on 0.74.3 yields `74.4`, fails its own `*[!0-9]*` test, and becomes 0. Correct for tmux's pre-stripped `3.7`, wrong for three components. README: "fzf is optional, every picker falls back to a numbered select menu; fzf 0.63+ enables the styled pickers."
 
 ## 6. Header / key-hint convention
 
