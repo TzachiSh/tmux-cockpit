@@ -6727,5 +6727,47 @@ unset -f sf_spawn
 "$TMUX_REAL" -L "$SF" kill-server >/dev/null 2>&1; rm -rf "$SFBIN"
 fi
 
+echo "== review-gate --pretool: the guarded command is denied while the fixer lives, one stat when it does not =="
+if need_tmux "review-gate --pretool"; then :; else
+PG="cockpit-pg-$$"; SOCKS="$SOCKS $PG"; PGSTATE=$(mktmpd); PGDIR=$(mktmpd)
+( cd "$PGDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e; git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$PG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$PGDIR" 'exec -a claude bash' >/dev/null 2>&1
+PGAP=$("$TMUX_REAL" -L "$PG" list-panes -t t: -F '#{pane_id}')
+PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300')       # a live "fixer" pane
+PGSESS="$PGSTATE/tmux-cockpit/review/${PGAP#%}-$(printf '%s' "$PGDIR" | cksum | cut -d' ' -f1)"
+mkdir -p "$PGSESS/fixer"; printf 'fix the tests\n' > "$PGSESS/fixer/reason"; printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
+printf '%s\n' $(( $(date +%s) + 300 )) > "$PGSESS/fixer/deadline"; printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
+pg_run() {                    # <command> [marker-present:1|0] -> stdout in $PGSTATE/out, rc in $PGSTATE/rc
+    printf '{"session_id":"s","transcript_path":"/x","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s","description":"d"}}\n' "$PGDIR" "$1" > "$PGSTATE/pay"
+    "$TMUX_REAL" -L "$PG" run-shell "TMUX_PANE=$PGAP XDG_STATE_HOME=$(printf '%q' "$PGSTATE") '$DIR/scripts/review-gate' --pretool < $(printf '%q' "$PGSTATE/pay") > $(printf '%q' "$PGSTATE/out"); echo \$? > $(printf '%q' "$PGSTATE/rc")" >/dev/null 2>&1
+}
+# No marker: exit 0, nothing printed, and it never touched tmux or git (PATH holds neither).
+printf '{"tool_input":{"command":"make test"}}\n' > "$PGSTATE/pay"
+pg_t0=$EPOCHREALTIME; PATH=/nonexistent TMUX_PANE=$PGAP XDG_STATE_HOME=$PGSTATE /bin/bash "$DIR/scripts/review-gate" --pretool < "$PGSTATE/pay" > "$PGSTATE/out" 2>/dev/null; pg_rc=$?
+is "no marker: exit 0" "0" "$pg_rc"; is "no marker: nothing printed" "" "$(cat "$PGSTATE/out")"
+awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN { exit !((b - a) < 0.2) }' && ok "no marker: one stat, under 200 ms with no tools on PATH" || bad "no marker: one stat, under 200 ms with no tools on PATH" "<0.2s" "$(awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN{print b-a}')s"
+# Marker + live fixer + matching command: deny with a reason that names the job and tells the agent to continue.
+printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"
+pg_run 'make test 2>&1 | tail'
+case "$(cat "$PGSTATE/out")" in *'"permissionDecision":"deny"'*'"permissionDecisionReason":"the side fix \"fix the tests\" is repairing this right now'*'continue with your task'*) ok "a guarded command is denied, the reason names the job and says continue" ;; *) bad "a guarded command is denied, the reason names the job and says continue" "deny JSON with the job and 'continue with your task'" "$(cat "$PGSTATE/out")" ;; esac
+is "and the hook exits 0 (the JSON is the decision)" "0" "$(cat "$PGSTATE/rc")"
+pg_run 'ls -la'
+is "an unguarded command passes" "" "$(cat "$PGSTATE/out")"
+printf '\n' > "$PGSESS/fixer/guard"; pg_run 'make test'
+is "an empty guard denies nothing" "" "$(cat "$PGSTATE/out")"
+printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
+# The fixer's pane dies: the gate opens at once, but the marker itself is left for delivery/re-spawn to own.
+"$TMUX_REAL" -L "$PG" kill-pane -t "$PGFX"
+pg_run 'make test'
+is "a dead fixer denies nothing" "" "$(cat "$PGSTATE/out")"
+is "and the marker stays until the Stop delivers it" "present" "$([ -e "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}" ] && echo present || echo absent)"
+# A handover present (failed fixer, pane kept open) also opens the gate.
+PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
+printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"; printf 'HANDOVER: gave up\n' > "$PGSESS/handover"
+pg_run 'make test'; is "a written handover opens the gate even with the pane alive" "" "$(cat "$PGSTATE/out")"
+unset -f pg_run
+"$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -220,6 +220,7 @@ from `examples/claude-hooks.json` by hand:
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
+| `PreToolUse` (`Bash`) | `review-gate --pretool` — while a side fix runs, denies the command pattern the human named; one stat otherwise |
 | `Stop` | `done` |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |

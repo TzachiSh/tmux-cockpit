@@ -21,15 +21,101 @@
 #      instead of only "finished" -- and stash the conversation title and the
 #      session id the payload carries, for the tab and for prefix i.
 #
+# A third, unrelated job lives here too under `--pretool` (PreToolUse, matcher
+# Bash, examples/claude-hooks.json): while a side fixer (tmux-fixer) is alive
+# for this pane, deny a Bash command that matches its guard pattern. See that
+# section below for why it shares this file instead of its own script.
+#
 # agent-state's discipline, verbatim: pane id shape guard, bounded stdin read
 # with one deadline, one JSON field pulled by parameter expansion (no jq),
 # silent no-op on anything unparseable, fail-open everywhere. A hook must never
 # block the agent that fired it; the hooks entry carries "timeout": 5 as the
-# outer bound, the read stops at the two fields it wants rather than at EOF,
-# and this script is built to finish in well under one second.
+# outer bound, the read stops at the fields it wants rather than at EOF, and
+# this script is built to finish in well under one second.
 set -u
 pane=${TMUX_PANE:-}
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
+
+# --- fixer liveness (mirror of tmux-fixer's; a hook fires on every Bash call
+# and must not exec a second script just to stat three files) ------------------
+fixer_alive() {               # <sess>
+    local f="$1/fixer" p dl
+    [ -d "$f" ] || return 1
+    [ -f "$1/handover" ] && return 1
+    dl=$(cat -- "$f/deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$dl" ] || return 1
+    p=$(cat -- "$f/pane" 2>/dev/null)
+    [ "$p" = pending ] && return 0
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$p"
+}
+
+# Bounded stdin read, one deadline for the whole thing: read -t so a writer
+# that holds the pipe open (Claude Code does, past the payload) cannot wedge
+# the hook, the partial line kept, and the newline `read` strips put back so
+# two lines cannot fuse into a field name that was never sent. Shared by the
+# drain below and by --pretool -- one read, one deadline, used from both ends
+# of this script instead of two copies of the same loop.
+read_payload() {
+    payload="" chunk=""
+    local deadline=$(( SECONDS + 2 )) left
+    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
+        IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
+        payload="$payload$chunk
+"; chunk=""
+        case $payload in
+            *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*|*'"tool_input"'*) break ;;
+        esac
+    done
+}
+# "name":"value" -> value, control chars stripped, length capped. Not a JSON
+# parser: an escaped quote inside the value truncates it, which is fine for a
+# path, a UUID, a title, or (in --pretool) a command prefix.
+field() {
+    local v
+    case "$payload" in
+        *"\"$1\""*) v=${payload#*\""$1"\"}; v=${v#*:}; v=${v#*\"}; v=${v%%\"*} ;;
+        *) v="" ;;
+    esac
+    v=${v//[$'\001'-$'\037']/}
+    printf '%s' "${v:0:200}"
+}
+# JSON string body by parameter expansion, no jq (not a dependency here, and a
+# fork on the agent's turn boundary is exactly what this script avoids). The
+# three whitespace controls become their escapes FIRST, so the strip of
+# everything else cannot eat them.
+json() {                            # <text> -> the JSON string body
+    local s=$1
+    s=${s//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n}
+    s=${s//$'\r'/\\r}
+    s=${s//$'\t'/\\t}
+    printf '%s' "${s//[$'\001'-$'\037']/}"
+}
+
+# --- --pretool: the gate (PreToolUse, matcher Bash) ----------------------------
+# Fires on EVERY Bash call, so the common case (no side fixer) must be one
+# stat and nothing else -- no tmux, no git, not even `dirname` -- which is why
+# this sits above `here=` below and everything that follows it. With a live
+# fixer and a guard pattern the guarded command is denied with a reason; a
+# deny ends the turn by default (hooks-guide, v2.1.210+), which is the point --
+# no in-turn route-around; the Stop that follows holds and hands over.
+marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
+if [ "${1:-}" = --pretool ]; then
+    [ -f "$marker" ] || exit 0
+    sess=$(cat -- "$marker" 2>/dev/null)
+    # A dead fixer opens the gate; the marker itself is left for delivery (the
+    # Stop hold) or a re-spawn to own -- --pretool only reads it, never removes it.
+    fixer_alive "$sess" || exit 0
+    guard=$(cat -- "$sess/fixer/guard" 2>/dev/null); [ -n "$guard" ] || exit 0
+    read_payload
+    cmd=$(field command)
+    printf '%s' "$cmd" | grep -Eq -- "$guard" || exit 0
+    reason="the side fix \"$(cat -- "$sess/fixer/reason")\" is repairing this right now (pane $(cat -- "$sess/fixer/pane")); this run would give invalid results — skip it and continue with your task; you will get a one-line handover when it finishes."
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(json "$reason")"
+    exit 0
+fi
+
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # --- 1. the drain -------------------------------------------------------------
@@ -46,19 +132,6 @@ if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
     # corrects it too; this only closes the gap). Muted: stdout is a protocol
     # channel from here on, and one stray byte would not be JSON any more.
     "$here/agent-state" running "$pane" >/dev/null 2>&1
-    # JSON string body by parameter expansion, no jq (not a dependency here, and
-    # a fork on the agent's turn boundary is exactly what this script avoids).
-    # The three whitespace controls become their escapes FIRST, so the strip of
-    # everything else cannot eat them.
-    json() {                            # <text> -> the JSON string body
-        local s=$1
-        s=${s//\\/\\\\}
-        s=${s//\"/\\\"}
-        s=${s//$'\n'/\\n}
-        s=${s//$'\r'/\\r}
-        s=${s//$'\t'/\\t}
-        printf '%s' "${s//[$'\001'-$'\037']/}"
-    }
     printf '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"%s"}}\n' \
         "$(json "$(cat -- "$spool")")"
     rm -f -- "$spool"
@@ -67,36 +140,11 @@ if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
 fi
 
 # --- 2. the flag, and the two payload fields worth keeping --------------------
-# Bounded exactly as agent-state's notify arm: one deadline for the whole read,
-# read -t so a writer that holds the pipe open without sending cannot wedge
-# the hook, the partial line kept, and the newline the read strips put back so
-# two lines cannot fuse into a field name that was never sent.
-#
 # The deadline is the BACKSTOP, not the exit: Claude Code keeps a hook's stdin
 # open after the payload (the wedge the notify arm documents), so waiting for
 # EOF would spend the full two seconds on every single Stop. Both fields in
-# hand is everything this needs, so that is where the loop stops.
-payload="" chunk="" deadline=$(( SECONDS + 2 ))
-while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
-    IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-    payload="$payload$chunk
-"; chunk=""
-    case $payload in
-        *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*) break ;;
-    esac
-done
-# "name":"value" -> value, control chars stripped, length capped. Not a JSON
-# parser: an escaped quote inside the value truncates it, which is fine for
-# a path and a UUID and merely shortens a title.
-field() {
-    local v
-    case "$payload" in
-        *"\"$1\""*) v=${payload#*\""$1"\"}; v=${v#*:}; v=${v#*\"}; v=${v%%\"*} ;;
-        *) v="" ;;
-    esac
-    v=${v//[$'\001'-$'\037']/}
-    printf '%s' "${v:0:200}"
-}
+# hand is everything this needs, so that is where read_payload's loop stops.
+read_payload
 tx=$(field transcript_path)
 sid=$(field session_id)
 title=""

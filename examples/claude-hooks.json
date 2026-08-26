@@ -22,7 +22,12 @@
     "Stop runs a second command, review-gate: it flags a finished pane whose",
     "diff is unreviewed (◆) and hands a queued review to the agent as Stop hook",
     "feedback (additionalContext on stdout). Its own timeout is 5 s; it never",
-    "blocks a turn otherwise."
+    "blocks a turn otherwise.",
+    "",
+    "PreToolUse also runs review-gate --pretool (matcher Bash): while a side",
+    "fixer (prefix f) is alive for this pane, it denies a command matching the",
+    "fixer's guard pattern so a stale run does not race the fix. One stat when",
+    "no fixer is running."
   ],
   "_statusline_comment": [
     "Optional, and NOT part of the 'hooks' merge above: a statusLine that",
@@ -52,7 +57,8 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state needs-input" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate --pretool", "timeout": 5 } ] }
     ],
     "PostToolUse": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
