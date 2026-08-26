@@ -2065,17 +2065,113 @@ case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
                *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
 rm -rf "$RN" "$RT"
 
-echo "== prefix S opens the session picker =="
-if need_tmux "prefix S"; then :; else
+echo "== prefix g opens the session picker, prefix u jumps (#43) =="
+# Shift-letter chords bind the CHARACTER the terminal sends, so S and J were
+# dead under Caps Lock or a non-Latin layout. g (goto session) and u
+# (unblock) are free in stock tmux and after examples/full.tmux.conf; the old
+# letters come back through the options.
+if need_tmux "prefix g / u"; then :; else
 PS="cockpit-ps-$$"; SOCKS="$SOCKS $PS"
+pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4==k'; }
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
-case "$("$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk '$4=="S"')" in
-    *sessions*) ok "prefix S is bound to the sessions popup" ;;
-    *) bad "prefix S is bound to the sessions popup" "a display-popup running tm" \
-         "$("$TMUX_REAL" -L "$PS" list-keys -T prefix | awk '$4=="S"')" ;;
+case "$(pk g)" in
+    *sessions*) ok "prefix g is bound to the sessions popup" ;;
+    *) bad "prefix g is bound to the sessions popup" "a display-popup running tm" "$(pk g)" ;;
 esac
+is "and S is no longer taken" "" "$(pk S)"
+case "$(pk u)" in
+    *tmux-jump*) ok "prefix u is bound to jump" ;;
+    *) bad "prefix u is bound to jump" "run-shell tmux-jump" "$(pk u)" ;;
+esac
+is "and J is no longer taken" "" "$(pk J)"
+"$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key S >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" set -g @cockpit_jump_key J >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$(pk S)" in *sessions*) ok "@cockpit_sessions_key S brings the old key back" ;;
+    *) bad "@cockpit_sessions_key S brings the old key back" "the popup on S" "$(pk S)" ;; esac
+case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" ;;
+    *) bad "@cockpit_jump_key J brings the old key back" "tmux-jump on J" "$(pk J)" ;; esac
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+is "@cockpit_sessions_key off binds nothing" "" "$(pk g)"
+"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix a is the agents menu (#43) =="
+# One menu, every cockpit action, each row replaying the key it is bound to
+# (send-keys -K, tmux 3.4) so a rebound key moves the row with it and an
+# `off` key drops its row. Stock a is unbound, so off leaves nothing.
+if need_tmux "prefix a"; then :; else
+PA="cockpit-pa-$$"; SOCKS="$SOCKS $PA"
+ak() { "$TMUX_REAL" -L "$PA" list-keys -T prefix 2>/dev/null | awk '$4=="a"'; }
+"$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$(ak)" in
+    *display-menu*) ok "prefix a opens a menu" ;;
+    *) bad "prefix a opens a menu" "a display-menu" "$(ak)" ;;
+esac
+for key in u r f i b M g; do
+    case "$(ak)" in
+        *"send-keys -K $key"*|*"send-keys -K '$key'"*) ok "the menu replays prefix $key" ;;
+        *) bad "the menu replays prefix $key" "send-keys -K $key" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
+    esac
+done
+"$TMUX_REAL" -L "$PA" set -g @cockpit_review_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -g @cockpit_move_key W >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$(ak)" in
+    *"send-keys -K r"*) bad "a review key of off drops the review row" "no send-keys -K r" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
+    *) ok "a review key of off drops the review row" ;;
+esac
+case "$(ak)" in
+    *"send-keys -K W"*) ok "a rebound move key moves the row with it" ;;
+    *) bad "a rebound move key moves the row with it" "send-keys -K W" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
+esac
+"$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -g @cockpit_ai_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+is "@cockpit_ai_key off binds nothing" "" "$(ak)"
+"$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
+fi
+
+echo "== the example m menu reaches move-window and the plugin's reload (#43) =="
+# prefix m m opens the move menu and prefix m r runs the plugin's R, both by
+# replaying the key; the V and B layout keys are gone (the menu has the rows).
+if need_tmux "example menu rows"; then :; else
+EM="cockpit-em-$$"; EMO="cockpit-emo-$$"; SOCKS="$SOCKS $EM $EMO"
+"$TMUX_REAL" -L "$EM" -f "$DIR/examples/full.tmux.conf" new-session -d -s work -n editor -x 120 -y 30 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EM" new-session -d -s agents 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+emk=$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')
+case "$emk" in *"Move window"*) ok "the m menu has a Move window row" ;;
+    *) bad "the m menu has a Move window row" "Move window in the m menu" "$(printf '%s' "$emk" | cut -c1-120)" ;; esac
+is "prefix V is gone from the example" "" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="V"')"
+is "prefix B is gone from the example" "" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="B"')"
+case "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="v"')" in
+    *even-horizontal*even-vertical*) ok "prefix v toggles stacked and side-by-side" ;;
+    *) bad "prefix v toggles stacked and side-by-side" "if-shell over both layouts" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix | awk '$4=="v"')" ;;
+esac
+"$TMUX_REAL" -L "$EMO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $EM attach -t work" >/dev/null 2>&1
+sleep 1
+for k in C-Space m; do "$TMUX_REAL" -L "$EMO" send-keys -t o "$k"; sleep 0.4; done
+until_cap "$EMO" o '*Move window*'
+"$TMUX_REAL" -L "$EMO" send-keys -t o m
+until_cap "$EMO" o '*new session...*' && ok "prefix m m opens the move menu" \
+    || bad "prefix m m opens the move menu" "the move menu" "$("$TMUX_REAL" -L "$EMO" capture-pane -p -t o | grep -v '^\s*$' | tail -4)"
+"$TMUX_REAL" -L "$EMO" send-keys -t o Escape; sleep 0.6
+for k in C-Space m; do "$TMUX_REAL" -L "$EMO" send-keys -t o "$k"; sleep 0.4; done
+until_cap "$EMO" o '*Reload config*'
+"$TMUX_REAL" -L "$EMO" send-keys -t o r; sleep 1
+case "$("$TMUX_REAL" -L "$EM" show-messages 2>/dev/null)" in
+    *"config reloaded"*) ok "prefix m r runs the plugin's reload" ;;
+    *) bad "prefix m r runs the plugin's reload" "config reloaded in the log" "$("$TMUX_REAL" -L "$EM" show-messages | grep -v ' command: ' | tail -2)" ;;
+esac
+"$TMUX_REAL" -L "$EMO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$EM" kill-server >/dev/null 2>&1
 fi
 
 # tests: cockpit.tmux
@@ -3059,7 +3155,7 @@ case "$out" in *usage:*) ok "and it prints usage" ;;
     *) bad "and it prints usage" "a usage: line" "$out" ;; esac
 
 rm -rf "$HK"
-echo "== prefix J jumps to the pane that needs you =="
+echo "== prefix u jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
 JJ="cockpit-jj-$$"; SOCKS="$SOCKS $JJ"
 "$TMUX_REAL" -L "$JJ" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
@@ -3099,7 +3195,7 @@ JP4=$("$TMUX_REAL" -L "$JJ" new-window -t t: -P -F '#{pane_id}' 'sleep 300' 2>/d
 is "a shell holding stale state is never jumped to" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # Nothing blocked, but one agent holds a review the gate flagged: that is
-# still somewhere you have to go, so prefix J walks to it -- after the blocked
+# still somewhere you have to go, so prefix u walks to it -- after the blocked
 # panes and after the ones holding a delivered review, never before them.
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
@@ -3109,7 +3205,7 @@ is "a shell holding stale state is never jumped to" "1" \
 # digit after the =, so only the finished command's output matches.
 "$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JPR=\$?" Enter
 until_cap "$JJ" "$JP1" '*JPR=[0-9]*'
-is "prefix J walks to a pane with a pending review when nothing is blocked" "1" \
+is "prefix u walks to a pane with a pending review when nothing is blocked" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 "$TMUX_REAL" -L "$JJ" set-option -pu -t "$JP2" @cockpit_review >/dev/null 2>&1
 # Nothing blocked: the script must not move you, and must not error.
@@ -5523,7 +5619,7 @@ is "the paste never executes (still one prompt, no fresh one after Enter)" \
    "0" "$promptcount"
 
 # A delivered review is a STATE, not a 750 ms flash. The pane carries
-# @cockpit_review=sent until the human actually sends it, so prefix J can walk
+# @cockpit_review=sent until the human actually sends it, so prefix u can walk
 # back to the review still sitting unsent in someone's prompt.
 is "a landed review marks the pane" "sent" \
    "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
@@ -5537,7 +5633,7 @@ for i in $(seq 1 20); do
 done
 is "the mark clears when the agent starts working" "" \
    "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review)"
-# And prefix J walks to it. @panestate is `running` here (agent-state just set
+# And prefix u walks to it. @panestate is `running` here (agent-state just set
 # it), so the pane is NOT needs-input: the jump can only come from the review
 # mark, not from the blocked-pane path the earlier tmux-jump block covers.
 "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @cockpit_review sent >/dev/null 2>&1
@@ -5547,7 +5643,7 @@ for i in $(seq 1 20); do
     [ "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')" = "$AP" ] && break
     sleep 0.1
 done
-is "prefix J walks to a pane holding an unsent review" "$AP" \
+is "prefix u walks to a pane holding an unsent review" "$AP" \
    "$("$TMUX_REAL" -L "$RDS" display-message -p -t t: '#{pane_id}')"
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
