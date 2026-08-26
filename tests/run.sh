@@ -6567,9 +6567,8 @@ echo "== tmux-review --fleet: dedups panes sharing a repo root across 20 panes =
 # come out, but only 19 `git status` calls should ever run. `timeout 5` is a
 # hang guard, not a perf gate: the scan is 0.3-0.7 s on a quiet box, but a
 # peer suite or an ssh sync pushed it past the old `timeout 1`, and a killed
-# scan left fd-out empty, so the row count read 0 too (issue #18). The fork
-# count below is what pins the dedup; it does not depend on the clock.
-if need_tmux "tmux-review --fleet dedup + 20-pane timing"; then :; else
+# scan left fd-out empty, so the row count read 0 too (issue #18).
+if need_tmux "tmux-review --fleet dedup across 20 panes"; then :; else
 FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
 "$TMUX_REAL" -L "$FD" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FD" set -g @cockpit_agents_glob \
@@ -6617,6 +6616,8 @@ chmod +x "$FD_SHIM/git"
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL" \
     "PATH='$FD_SHIM:'\"\$PATH\" timeout 5 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
 fd_out=""
+# 80 x 0.1 s outlasts the timeout 5 above on purpose: a killed scan must
+# still print RC=124 here rather than leave fd_out empty.
 for i in $(seq 1 80); do
     fd_out=$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$CTL")
     # The typed-but-not-yet-run command line already contains the literal
@@ -6636,7 +6637,7 @@ is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
 fd_diff_calls=$(grep -c ' diff ' "$FD_LOG" || true)
 is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
     "19" "$fd_diff_calls"
-# The budget above is forks: 19 roots in 1 s is ~50 ms each and one git is
+# The budget above is forks: 19 roots in ~0.5 s is ~25 ms each and one git is
 # 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
 # blew it. Pinned as a count -- one rev-parse per pane to find its root, five
 # per unique root (rev-parse, add -N, for-each-ref, diff, and big_files'

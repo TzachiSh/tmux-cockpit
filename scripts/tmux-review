@@ -154,7 +154,7 @@ tree_diff() {
     # index to copy), HEAD, and the branch review_base keys on. rev-parse
     # carries on past an argument it cannot resolve, so an unborn HEAD leaves
     # two lines (git dir, "HEAD") and a born one three. This and review_base
-    # were 10 forks per root; the 20-pane fleet gate (timeout 1) caught it.
+    # were 10 forks per root; the 20-pane fleet fork count caught it.
     mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
     gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
     [ -n "$gd" ] || return 1
