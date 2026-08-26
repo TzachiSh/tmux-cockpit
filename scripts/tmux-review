@@ -1212,7 +1212,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^R refresh\n^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
+                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^R refresh\n^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1944,7 +1944,7 @@ review_pane() {
 # timed out) leaves the popup, the store and the rc file alone; running it
 # again resumes the pinned comments, so the recovery is "run it again".
 request() {                   # <pane>
-    local pane=$1 dir root sess store pw ph rc
+    local pane=$1 dir root sess store pw ph rc t
     case "$pane" in %[0-9]*) ;; *) usage; exit 2 ;; esac
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
         printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
@@ -1963,7 +1963,9 @@ request() {                   # <pane>
     rm -f -- "$sess/rc"
     # -E: this returns when the loop exits. display-popup runs the string
     # through sh, so the escaped \$? is the LOOP's code, not tmux's.
-    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T ' review · requested ' \
+    # -T is a tmux format: a # in the path would be expanded, so double it.
+    t=${root/#"$HOME/"/\~/}; t=${t//\#/\#\#}
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T " review · requested · $t " \
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
@@ -2012,9 +2014,14 @@ info_mode() {                 # <pane>
     sid=${f%%"$sep"*};    title=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
+    # The root is the tree prefix r diffs. It is derived from the cwd, so an
+    # agent that edits another worktree by absolute path (issue #3) shows the
+    # wrong tree here -- and this line is how the human notices.
+    root=$(git_root "$path")
+    printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
-    root=$(git_root "$path"); sess=$(session_dir "$id" "$root")
+    sess=$(session_dir "$id" "$root")
     if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
         # The mode ^B chose for THIS review, as run_loop reads it -- passed as
         # the argument review_base actually keys on, not exported (nothing this

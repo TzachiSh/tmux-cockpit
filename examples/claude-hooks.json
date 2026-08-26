@@ -27,7 +27,20 @@
     "Stop runs a second command, review-gate: it flags a finished pane whose",
     "diff is unreviewed (◆) and hands a queued review to the agent as Stop hook",
     "feedback (additionalContext on stdout). Its own timeout is 5 s; it never",
-    "blocks a turn otherwise."
+    "blocks a turn otherwise.",
+    "",
+    "WorktreeCreate -> worktree-create: claude --worktree <name> and EnterWorktree",
+    "put the tree under ~/.cache/cockpit-wt/<name> (branch <name>) instead of",
+    ".claude/worktrees/, and the session's cwd moves there, so prefix r, ◆, the",
+    "fleet and the status line all read the tree the agent works in (issue #3).",
+    "Creating through the hook does not prompt; entering an outside path by",
+    "hand does. Not with --worktree --tmux together: that skips the hook.",
+    "WorktreeRemove -> worktree-remove: claude deletes a git worktree itself",
+    "and then runs this with its cwd inside the deleted directory, so the",
+    "branch is found through the <tree>.repo sidecar worktree-create wrote.",
+    "A clean tree on a merged branch goes; a dirty tree or unmerged commits",
+    "stay, as claude does. claude -p never cleans up worktrees (docs), so a",
+    "subagent run under -p leaves its tree and slug branch behind."
   ],
   "_statusline_comment": [
     "Optional, and NOT part of the 'hooks' merge above: a statusLine that",
@@ -80,6 +93,12 @@
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
+    ],
+    "WorktreeCreate": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }
+    ],
+    "WorktreeRemove": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-remove" } ] }
     ],
     "SessionEnd": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }

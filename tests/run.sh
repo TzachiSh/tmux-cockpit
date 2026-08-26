@@ -220,6 +220,61 @@ tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
 # tests: examples/tmux.conf cockpit.tmux
+echo "== the shipped menu's Switch branch names the pane it was opened on =="
+# A popup is not a pane: its $PWD is the SESSION's start directory (the first
+# window's), and a bare display-message inside it can come back empty. The
+# prefix b bind passes -p '#{pane_id}' since d64e409; the action menu's
+# "Switch branch" did not, and showed the first window's tree from any window.
+if need_tmux "shipped menu passes the pane id"; then :; else
+SM="cockpit-menu-$$"; SOCKS="$SOCKS $SM"
+"$TMUX_REAL" -L "$SM" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SM" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+smk=$("$TMUX_REAL" -L "$SM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')
+case "$smk" in
+    *"tmux-branch -p #{pane_id}"*) ok "the menu's Switch branch passes -p #{pane_id}" ;;
+    *) bad "the menu's Switch branch passes -p #{pane_id}" "tmux-branch -p #{pane_id} in the m menu" "$(printf '%s' "$smk" | grep -o 'Switch branch[^"]*"[^"]*"' | cut -c1-120)" ;;
+esac
+"$TMUX_REAL" -L "$SM" kill-server >/dev/null 2>&1
+fi
+
+echo "== the shipped menu is not a way for a directory name to run tmux commands =="
+# display-menu expands an item's command as a format and THEN parses it as
+# tmux syntax, so a live #{pane_current_path} inside an item let a directory
+# named x';run-shell ...;' run on selection. A bind parses once and is safe;
+# the menu has to hand the command the FORMAT (##{...}) to expand itself.
+if need_tmux "shipped menu injection"; then :; else
+MI="cockpit-mi-$$"; MO="cockpit-mo-$$"; SOCKS="$SOCKS $MI $MO"; MIDIR=$(mktmpd)
+MIHOSTILE="$MIDIR/x';set-option -g @pwned INJECTED;display-popup -T '"
+mkdir -p "$MIHOSTILE"
+"$TMUX_REAL" -L "$MI" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MIHOSTILE" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MI" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $MI attach -t t" >/dev/null 2>&1
+sleep 1
+for k in C-Space m; do "$TMUX_REAL" -L "$MO" send-keys -t o "$k"; sleep 0.4; done
+until_cap "$MO" o '*Switch branch*'
+"$TMUX_REAL" -L "$MO" send-keys -t o b; sleep 1.5
+# ##{pane_id} still reaches tmux-branch as the pane: it names the hostile
+# directory itself, which is not a repo.
+until_cap "$MO" o '*not a git repository*' && ok "and the popup still resolves the pane's own directory" \
+    || bad "and the popup still resolves the pane's own directory" "not a git repository: <the hostile dir>" "$("$TMUX_REAL" -L "$MO" capture-pane -p -t o | grep -v '^\s*$' | sed -n 2,4p)"
+# The injected commands are queued behind the popup: close it, then look.
+"$TMUX_REAL" -L "$MO" send-keys -t o C-d; sleep 1.5
+is "selecting Switch branch from a hostile directory runs nothing" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+# The runtime case above proves the mechanism on the one item that resolves a
+# pane. The other three re-expanded formats (the two split-window -c, the
+# new-window -c, and the sh popup's #{pane_title}) are guarded structurally:
+# the shipped menu must carry the doubled form, never the single one that a
+# quote in a cwd or a pane title turned into a command.
+menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
+for bad_sub in "-c '#{pane_current_path}'" "-F '#{window_index}" "switch branch · #{b:"; do
+    case "$menu" in *"$bad_sub"*) bad "menu re-expands a format singly: $bad_sub" "no single #{ here" "present" ;; *) ok "menu does not re-expand singly: $bad_sub" ;; esac
+done
+for good_sub in "-c '##{pane_current_path}'" "##{pane_title}" "switch branch · ##{b:"; do
+    case "$menu" in *"$good_sub"*) ok "menu doubles the format: $good_sub" ;; *) bad "menu doubles the format: $good_sub" "$good_sub present" "missing" ;; esac
+done
+"$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MI" kill-server >/dev/null 2>&1
+fi
+
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
@@ -520,6 +575,63 @@ case "$(tmux show-option -gqv @cockpit_fleet)" in
     *) ok "and the ◆ is gone" ;;
 esac
 fi
+
+echo "== worktree-create: EnterWorktree lands under ~/.cache/cockpit-wt/<name>, on a branch of that name =="
+# issue #3: an agent that works on a branch has to LIVE in that worktree, or
+# every cockpit read (review, ◆, fleet, status line) describes the wrong tree.
+# The WorktreeCreate hook replaces claude's own .claude/worktrees/ placement;
+# claude reads the last stdout line as the path, so anything else goes to stderr.
+WCREPO=$(mktmpd); WCCACHE=$(mktmpd)
+( cd "$WCREPO" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; git branch old ) >/dev/null 2>&1
+wc_run() { ( cd "$WCREPO" && printf '%s' "$1" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-create" 2>"$WCCACHE/err" ); }
+is "a new name gets a worktree under cockpit-wt and prints its path" "$WCCACHE/cockpit-wt/feat-x" \
+   "$(wc_run '{"session_id":"s","cwd":"'"$WCREPO"'","hook_event_name":"WorktreeCreate","name":"feat-x"}' | tail -n1)"
+is "and that worktree is on a branch of the same name" "feat-x" "$(git -C "$WCCACHE/cockpit-wt/feat-x" branch --show-current 2>/dev/null)"
+is "an existing branch is checked out, not recreated" "old" \
+   "$(wc_run '{"name": "old", "cwd": "'"$WCREPO"'"}' >/dev/null; git -C "$WCCACHE/cockpit-wt/old" branch --show-current 2>/dev/null)"
+is "an existing worktree is reused (claude --worktree <name> reopens it)" "$WCCACHE/cockpit-wt/old" "$(wc_run '{"name":"old"}' | tail -n1)"
+is "only the path reaches stdout" "1" "$(wc_run '{"name":"feat-y"}' | grep -c .)"
+wc_run '{"name":"../escape"}' >/dev/null; is "a name with .. is refused" "1" "$?"
+[ -e "$WCCACHE/escape" ] && bad "a name with .. is refused" "nothing created" "$WCCACHE/escape exists"
+wc_run '{"cwd":"x"}' >/dev/null; is "no name is refused" "1" "$?"
+wc_run '{"name":"."}' >/dev/null; is "a bare . is refused" "1" "$?"
+# rev-parse resolves revision syntax: main@{0} "verified" as an existing
+# branch and checked out a detached historical commit instead of a branch.
+wc_run '{"name":"main@{0}"}' >/dev/null; is "revision syntax is refused, not resolved" "1" "$?"
+[ -e "$WCCACHE/cockpit-wt/main@{0}" ] && bad "and nothing is checked out for it" "nothing" "a tree"
+is "HOME unset is a refusal, not a bash error" "1" "$(cd "$WCREPO" && printf '{"name":"h"}' | env -u HOME -u XDG_CACHE_HOME "$DIR/scripts/worktree-create" >/dev/null 2>&1; echo $?)"
+# The cache is one namespace for every repo on the machine.
+WCREPO2=$(mktmpd); ( cd "$WCREPO2" && git init -q -b main . ) >/dev/null 2>&1
+( cd "$WCREPO2" && printf '{"name":"old"}' | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-create" >/dev/null 2>"$WCCACHE/err2" ); is "another repo asking for a taken name is refused" "1" "$?"
+case "$(cat "$WCCACHE/err2")" in *"not a worktree of this repo"*) ok "and told why" ;; *) bad "and told why" "not a worktree of this repo" "$(cat "$WCCACHE/err2")" ;; esac
+mkdir -p "$WCCACHE/cockpit-wt/plain"
+wc_run '{"name":"plain"}' >/dev/null; is "a plain directory of that name is refused, not handed over" "1" "$?"
+rm -rf "$WCCACHE/cockpit-wt/feat-y"
+is "a removed tree's stale entry does not block the name forever" "$WCCACHE/cockpit-wt/feat-y" "$(wc_run '{"name":"feat-y"}' | tail -n1)"
+is "a relative XDG_CACHE_HOME is ignored, not resolved into the repo" "$WCCACHE/.cache/cockpit-wt/rel-x" \
+   "$(cd "$WCREPO" && printf '{"name":"rel-x"}' | XDG_CACHE_HOME=relcache HOME="$WCCACHE" "$DIR/scripts/worktree-create" 2>/dev/null | tail -n1)"
+# WorktreeRemove fires when claude means to remove (a subagent finished, the
+# human chose remove on exit). Mirror its own rule for git-made trees: a clean
+# tree and a merged branch go, anything with work in it stays.
+wr_run() { ( cd "$WCREPO" && printf '{"session_id":"s","hook_event_name":"WorktreeRemove","worktree_path":"%s"}' "$1" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>"$WCCACHE/rerr" ); }
+wr_run "$WCCACHE/cockpit-wt/feat-y"; is "a clean tree on a merged branch is removed" "0" "$?"
+[ -d "$WCCACHE/cockpit-wt/feat-y" ] && bad "and its directory is gone" "gone" "still there"
+is "and its branch too" "" "$(git -C "$WCREPO" branch --list feat-y)"
+printf 'edit\n' >> "$WCCACHE/cockpit-wt/old/f"
+wr_run "$WCCACHE/cockpit-wt/old"; [ -d "$WCCACHE/cockpit-wt/old" ] && ok "a dirty tree is kept" || bad "a dirty tree is kept" "kept" "removed"
+git -C "$WCCACHE/cockpit-wt/old" -c user.name=t -c user.email=t@e commit -qam wip
+wr_run "$WCCACHE/cockpit-wt/old"; is "a clean tree whose branch has unmerged commits keeps the branch" "old" "$(git -C "$WCREPO" branch --list old | tr -d '*+ ')"
+wr_run "/nonexistent/x"; is "a path that is not ours is a no-op, exit 0" "0" "$?"
+# claude removes a git worktree ITSELF before the hook runs, and runs the hook
+# with cwd inside the deleted directory (measured on 2.1.246 via ExitWorktree),
+# so the branch has to be found without a cwd and without the tree.
+wc_run '{"name":"feat-z"}' >/dev/null; git -C "$WCREPO" worktree remove "$WCCACHE/cockpit-wt/feat-z" >/dev/null 2>&1
+( cd "$WCCACHE/cockpit-wt" && printf '{"worktree_path":"%s"}' "$WCCACHE/cockpit-wt/feat-z" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>/dev/null )
+is "a tree claude already removed still gets its merged branch deleted" "" "$(git -C "$WCREPO" branch --list feat-z)"
+[ -e "$WCCACHE/cockpit-wt/feat-z.repo" ] && bad "and the sidecar goes with it" "gone" "still there" || ok "and the sidecar goes with it"
+wr_run "$WCREPO"; [ -d "$WCREPO/.git" ] && ok "the main checkout is never removed" || bad "the main checkout is never removed" "kept" "removed"
+git -C "$WCREPO" worktree prune >/dev/null 2>&1
 
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
 if need_tmux "review-gate"; then :; else
@@ -4624,6 +4736,9 @@ RBP=$("$TMUX_REAL" -L "$RBS" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" \
     "XDG_STATE_HOME=$(printf '%q' "$RBSTATE") '$DIR/scripts/tmux-review' --loop $(printf '%q' "$RB") $(printf '%q' "$RBSTATE/c.md")" Enter
 until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the base" || bad "the header names the base" "base: since last review" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+# issue #3: the header says which tree this review diffs, so a session that
+# reached into another worktree by absolute path is caught by eye.
+until_cap "$RBS" "$RBP" "*root: ${RB/#"$HOME/"/\~/}*" && ok "the header names the root" || bad "the header names the root" "root: ${RB/#"$HOME/"/\~/}" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
 until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"
@@ -6202,7 +6317,10 @@ while [ "$i" -le 20 ]; do
     else
         wd="${FD_DIRS[$((i - 1))]}"
     fi
-    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude bash' >/dev/null 2>&1
+    # sleep, not bash: 20 interactive shells sourcing ~/.bashrc (nvm alone is
+    # 0.2 s here) ran beside the timed scan and tripled it (0.19 s -> 0.65 s,
+    # measured), so the 1 s gate flaked on any box whose rc files cost something.
+    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude sleep 3600' >/dev/null 2>&1
     i=$((i + 1))
 done
 
@@ -6408,8 +6526,18 @@ INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
 INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
 mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
 inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
-for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+for want in "pane      $INAP" "cwd       $INDIR" "root      $INDIR" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
     case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
+done
+# The root is what the review diffs, and it is not the cwd: a pane parked in
+# a subdirectory (or, issue #3, a session that edits another tree by absolute
+# path) has to see the tree the popup will actually show.
+mkdir -p "$INDIR/sub"
+"$TMUX_REAL" -L "$IN" new-window -d -t t: -c "$INDIR/sub" 'exec -a claude bash' >/dev/null 2>&1
+INSUB=$("$TMUX_REAL" -L "$IN" list-panes -t t:1 -F '#{pane_id}')
+insub=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INSUB --info" 2>&1)
+for want in "cwd       $INDIR/sub" "root      $INDIR"; do
+    case "$insub" in *"$want"*) ok "info from a subdirectory shows: $want" ;; *) bad "info from a subdirectory shows: $want" "$want" "$insub" ;; esac
 done
 # display-message exits 0 on a pane id that does not exist, expanding every
 # format to "" -- so a screen built on the exit code described the CALLER's own
