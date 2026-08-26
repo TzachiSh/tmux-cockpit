@@ -1017,9 +1017,10 @@ pane_label() {                # <pane-id>
 }
 
 # Every body pinned on one anchor, so ^E can open what is there. Several
-# comments on one row come back as one, blank-line separated.
-seed_comment() {              # <store> <path> <line-with-sign>
-    local store=$1 path=$2 line=$3 sign=+ num i sep=""
+# comments on one row come back as one, blank-line separated. With `frag`,
+# the first record's > quote instead: the snapshot the edit must keep.
+seed_comment() {              # <store> <path> <line-with-sign> [body|frag]
+    local store=$1 path=$2 line=$3 key=${4:-body} sign=+ num i sep=""
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     [ -s "$store" ] || return 0
     # shellcheck source=lib/review-store.sh
@@ -1029,7 +1030,8 @@ seed_comment() {              # <store> <path> <line-with-sign>
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] || continue
-        printf '%s%s\n' "$sep" "${STORE[$i.body]}"; sep=$'\n'
+        printf '%s%s\n' "$sep" "${STORE[$i.$key]:-}"; sep=$'\n'
+        [ "$key" = body ] || break
     done
 }
 
@@ -1055,7 +1057,13 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     # only looked at would merge them into a single record, ●2 down to ●.
     [ "$inplace" -eq 1 ] && [ "$(cat -- "$tmp")" = "$seed" ] && { rm -f -- "$tmp"; return 0; }
     # Edit in place = the old blocks go, the file comes back as one; an emptied file deletes.
-    [ "$inplace" -eq 1 ] && detach "$store" "$path" "$line"
+    # The stored quote, not the row's fragment: attach re-reads the live line
+    # only while it still starts with what is passed here, so a line the agent
+    # moved since the snapshot keeps its old quote instead of taking the new text.
+    if [ "$inplace" -eq 1 ]; then
+        seed=$(seed_comment "$store" "$path" "$line" frag); [ -n "$seed" ] && fragment=$seed
+        detach "$store" "$path" "$line"
+    fi
     attach "$store" "$path" "$line" "$fragment" "$(cat -- "$tmp")" "$dir"
     rm -f -- "$tmp"
 }

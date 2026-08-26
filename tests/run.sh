@@ -6802,6 +6802,27 @@ case "$(cat "$VELOGT" 2>/dev/null)" in
          "a display-message naming vi" "$(cat "$VELOGT" 2>/dev/null)" ;;
 esac
 
+echo "== tmux-review --edit: an in-place edit keeps the stored quote when the line moved under it (#22 item 8) =="
+# The store's > quote is the review's snapshot. edit_comment used to hand
+# attach the row's display fragment, and attach re-read the LIVE line: an
+# agent that had moved the line since the snapshot replaced the quote with
+# whatever sits there now, or with the 160-byte fragment.
+RM=$(mktmpd); RMSTORE="$STATE/review-edit-moved-$$"; RMQ=$(printf 'q%.0s' $(seq 1 300))
+(
+  cd "$RM" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nMOVED\n' > src.go
+) >/dev/null 2>&1
+printf '## src.go:3 (+)\n> %s\nold text\n\n' "$RMQ" > "$RMSTORE"
+RMED=$(mktmpf); printf '#!/bin/sh\necho "more" >> "$1"\n' > "$RMED"; chmod +x "$RMED"
+TMPDIR="$RM" VISUAL='' EDITOR="$RMED" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
+is "the edit landed" "1" "$(grep -c '^more$' "$RMSTORE")"
+is "and the quote is still the snapshot's, not the line that sits there now" "> $RMQ" "$(grep '^> ' "$RMSTORE")"
+# Test debt from #22: an editor that empties the buffer deletes the record.
+RMED2=$(mktmpf); printf '#!/bin/sh\n: > "$1"\n' > "$RMED2"; chmod +x "$RMED2"
+TMPDIR="$RM" VISUAL='' EDITOR="$RMED2" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
+is "an emptied buffer deletes the comment" "0" "$(grep -c '^## ' "$RMSTORE" 2>/dev/null)"
+
 echo "== tmux-review --loop: ^E with nothing typed on a commented row edits that comment instead of adding one =="
 if need_tmux "tmux-review ^E edit in place"; then :; else
 RI="cockpit-ri-$$"; SOCKS="$SOCKS $RI"; RIDIR=$(mktmpd); RITMP=$(mktmpd); RISTORE="$STATE/review-edit-inplace-$$"
