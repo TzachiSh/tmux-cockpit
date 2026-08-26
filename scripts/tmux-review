@@ -78,6 +78,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
+  tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
 In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
@@ -1708,6 +1709,51 @@ review_pane() {
     fi
 }
 
+# --- --request: the agent asks ----------------------------------------------
+# The blocking path (ai lens §7.C, revdiff's contract): run from the agent's
+# own Bash tool by the cockpit-review skill, this opens ONE popup on the pane,
+# waits for the human, and hands the batch back as stdout + exit 10 -- the
+# tool result -- instead of a paste. Nothing else changes: the same session
+# dir, the same loop, ^A and esc mean what they always mean.
+#
+# What comes back is decided by the LOOP's exit code, not by the store: esc
+# now offers "leave" (the human said "not now"), which keeps the batch pinned
+# and non-empty, and only ^S (rc 20) is a delivery. display-popup does not
+# return the command's status -- it returns tmux's own -- so the popup command
+# records it in <sess>/rc and this reads it back. A dropped launcher (the tool
+# timed out) leaves the popup, the store and the rc file alone; running it
+# again resumes the pinned comments, so the recovery is "run it again".
+request() {                   # <pane>
+    local pane=$1 dir root sess store pw ph rc
+    case "$pane" in %[0-9]*) ;; *) usage; exit 2 ;; esac
+    if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
+        printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
+        exit 1
+    fi
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$dir" ] || { printf 'tmux-review: pane %s is gone\n' "$pane" >&2; exit 1; }
+    root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root"); store="$sess/comments.md"
+    (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
+        printf 'tmux-review: could not create %s\n' "$sess" >&2; exit 1; }
+    pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
+    ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
+    # -E: this returns when the loop exits. display-popup runs the string
+    # through sh, so the escaped \$? is the LOOP's code, not tmux's.
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T ' review · requested ' \
+        "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
+    rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
+    case "$rc" in
+        20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
+            compose "$store" "$root"; done_store "$store"; exit 10 ;;
+        21) # ^A: same clean-up review_pane does — the ref is written by the loop
+            tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
+            "$(dirname "$SELF")/agent-state" recount "$pane"
+            [ -d "$sess" ] && [ ! -L "$sess" ] && rm -rf -- "$sess"
+            exit 0 ;;
+        *)  exit 0 ;;                          # leave / discard / a dropped popup: the store stays as the loop left it
+    esac
+}
+
 # Pad one field to a fixed COLUMN width. bash's printf pads %-*s by BYTES,
 # while ${#s} counts characters -- so a field holding ⑂ or — (3 bytes each)
 # came out short and dragged every column to its right with it. Measuring the
@@ -1885,6 +1931,8 @@ case "${1:-}" in
         shift; done_store "${1:-}" ;;
     --delta)
         shift; delta_mode "${1:-}" ;;
+    --request)
+        shift; request "${1:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

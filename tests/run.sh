@@ -1381,18 +1381,24 @@ esac
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
-XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
+# HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
+# the cockpit-review skill into ~/.claude/skills wherever Claude Code lives, and
+# the suite must never write into the real one.
+mkdir -p "$IB/.claude"
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
 is "installs through a symlinked plugin dir" "3" "$(ls "$IBIN" | wc -l)"
+is "the skill is linked into ~/.claude/skills" "$DIR/skills/cockpit-review" "$(readlink "$IB/.claude/skills/cockpit-review")"
 # DIR came from a LOGICAL pwd while the guard compared readlink -f of the link,
 # so reaching the plugin through a symlink -- a dotfiles checkout linked into
 # ~/.tmux/plugins is the usual way -- made --uninstall remove nothing, silently.
-XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
 is "and uninstalls through one too" "0" "$(ls "$IBIN" | wc -l)"
+is "and unlinked on --uninstall" "absent" "$([ -e "$IB/.claude/skills/cockpit-review" ] && echo present || echo absent)"
 # A same-named symlink owned by another tool must be left alone: "tm" is a name
 # plenty of things want, and --uninstall would later have deleted it as well.
-XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 rm -f "$IBIN/tm"; ln -s /bin/echo "$IBIN/tm"
-XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 is "leaves another tool's link alone" "/bin/echo" "$(readlink "$IBIN/tm")"
 rm -rf "$IB"
 
@@ -1596,7 +1602,11 @@ rm -rf "$HB"
 # install.sh printed "linked ..." for every link ln had just failed to create,
 # and exited 0.
 RO=$(mktmpd); chmod 555 "$RO"
-out=$(XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
+# HOME="$RO" too: install.sh also links the cockpit-review skill into
+# ~/.claude/skills, and with the real HOME that one link SUCCEEDED -- printing
+# "linked" in a block that asserts none, and leaving a link in the user's own
+# skills dir. $RO holds no .claude, so the skill step is skipped here.
+out=$(HOME="$RO" XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
 chmod 755 "$RO"; rm -rf "$RO"
 case "$out" in
     *linked*) bad "a failed link is not reported as linked" "no 'linked' line" "$out" ;;
@@ -4446,6 +4456,53 @@ is "and refs/cockpit/reviewed/feat was never written" "" \
    "$(git -C "$SRDIR" rev-parse -q --verify refs/cockpit/reviewed/feat 2>/dev/null)"
 unset -f ra_shell
 "$TMUX_REAL" -L "$RA" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review --request: the agent asks — exit 10 with the review on stdout, 0 on nothing, 1 with no client =="
+if need_tmux "tmux-review --request"; then :; else
+RQ="cockpit-rq-$$"; SOCKS="$SOCKS $RQ"; RQSTATE=$(mktmpd); RQDIR=$(mktmpd)
+(
+  cd "$RQDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RQ" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RQDIR" 'exec -a claude bash' >/dev/null 2>&1
+RQAP=$("$TMUX_REAL" -L "$RQ" list-panes -t t: -F '#{pane_id}')
+# A detached server has no client to draw a popup on: a launcher error, not a
+# "discarded" -- the skill tells them apart by the exit code.
+XDG_STATE_HOME=$RQSTATE TMUX='' "$TMUX_REAL" -L "$RQ" run-shell "XDG_STATE_HOME=$(printf '%q' "$RQSTATE") '$DIR/scripts/tmux-review' --request $RQAP; echo RQRC=\$?" >"$RQSTATE/out" 2>&1
+case "$(cat "$RQSTATE/out")" in *RQRC=1*) ok "no attached client: exit 1" ;; *) bad "no attached client: exit 1" "RQRC=1" "$(cat "$RQSTATE/out")" ;; esac
+# The popup itself needs a client and a human; stand a tmux shim in front of it
+# (the suite's own shim technique) that answers `display-popup` by writing the
+# exit code the loop would have left behind -- 20 is ^S deliver -- and doing
+# nothing else. The human's whole review is then whatever the store already
+# holds when the popup "closes"; RQ_NO_RC=1 writes no rc at all, which is esc's
+# `leave` and a dropped popup alike.
+RQSESS="$RQSTATE/tmux-cockpit/review/${RQAP#%}-$(printf '%s' "$RQDIR" | cksum | cut -d' ' -f1)"
+RQSHIM=$(mktmpd)
+cat > "$RQSHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) [ -n "\${RQ_NO_RC:-}" ] || printf '20\n' > "$RQSESS/rc"; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQ" "\$@"
+SHIMEOF
+chmod +x "$RQSHIM/tmux"
+mkdir -p "$RQSESS"; printf '## f:2 (+)\n> b\nREQUEST-MARKER\n\n' > "$RQSESS/comments.md"
+rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "comments pinned: exit 10" "10" "$rq_rc"
+case "$rq_out" in "Code review of your changes"*"REQUEST-MARKER"*) ok "and the composed review is on stdout" ;; *) bad "and the composed review is on stdout" "header + REQUEST-MARKER" "$rq_out" ;; esac
+is "the batch is archived, the store consumed" "1" "$(grep -c REQUEST-MARKER "$RQSESS/delivered.md" 2>/dev/null)"
+rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "nothing pinned: exit 0, nothing printed" "0 " "$rq_rc $rq_out"
+# esc's `leave` (Task 8) keeps a non-empty store and does NOT deliver it: the
+# batch decides nothing, the recorded exit code does.
+printf '## f:2 (+)\n> b\nLEAVE-MARKER\n\n' > "$RQSESS/comments.md"
+rq_out=$(RQ_NO_RC=1 PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "left for later: exit 0, nothing printed" "0 " "$rq_rc $rq_out"
+is "and the batch stays pinned" "1" "$(grep -c LEAVE-MARKER "$RQSESS/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
 fi
 
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
