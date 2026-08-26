@@ -6308,6 +6308,32 @@ esac
 "$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --loop: ^E with nothing typed on a commented row edits that comment instead of adding one =="
+if need_tmux "tmux-review ^E edit in place"; then :; else
+RI="cockpit-ri-$$"; SOCKS="$SOCKS $RI"; RIDIR=$(mktmpd); RITMP=$(mktmpd); RISTORE="$STATE/review-edit-inplace-$$"
+(
+  cd "$RIDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+printf '## src.go:3 (+)\n> CHANGED\nold text\n\n' > "$RISTORE"
+RIED=$(mktmpf); printf '#!/bin/sh\nsed -i "s/old text/new text/" "$1"\n' > "$RIED"; chmod +x "$RIED"
+"$TMUX_REAL" -L "$RI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+RIP=$("$TMUX_REAL" -L "$RI" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RI" send-keys -t "$RIP" \
+    "TMPDIR=$(printf '%q' "$RITMP") VISUAL= EDITOR=$(printf '%q' "$RIED") '$DIR/scripts/tmux-review' --loop '$RIDIR' '$RISTORE'" Enter
+until_cap "$RI" "$RIP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RI" capture-pane -p -t "$RIP")"
+"$TMUX_REAL" -L "$RI" send-keys -t "$RIP" C-e
+if until_file "$RISTORE" '*new text*'; then ok "^E opened the editor on the pinned text and the edit landed"
+else bad "^E opened the editor on the pinned text and the edit landed" "new text" "$(cat "$RISTORE" 2>/dev/null)"; fi
+is "the comment was replaced, not appended" "1" "$(grep -c '^## ' "$RISTORE")"
+is "and the old text is gone" "0" "$(grep -c 'old text' "$RISTORE")"
+"$TMUX_REAL" -L "$RI" send-keys -t "$RIP" Escape
+until_cap "$RI" "$RIP" '*discard 1 comment*'
+"$TMUX_REAL" -L "$RI" send-keys -t "$RIP" Down Down Enter
+"$TMUX_REAL" -L "$RI" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
 # The store had a writer and no reader: three comments on one line showed
 # one dot, and nothing could take one back short of discarding the batch.
