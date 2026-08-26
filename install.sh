@@ -181,15 +181,16 @@ if [ "$hooks" -eq 1 ]; then
     # append one more duplicate, forever, while the other ten events held.
     # review-gate's own Stop entry changes shape across versions (timeout 5 ->
     # 330, the hold added) -- additive alone would keep the old one forever
-    # beside the new. Drop any of THEIRS whose command names review-gate
-    # first (both the Stop and the --pretool command match "/scripts/review-
-    # gate"), so an upgrade replaces cockpit's own entries instead of piling
-    # a second one on; a foreign hook never matches that path and survives.
+    # beside the new. Drop any of THEIRS whose command ENDS in
+    # /scripts/review-gate or /scripts/review-gate --pretool first (anchored
+    # -- an unanchored substring test would also delete a foreign hook that
+    # merely logs to a path containing that text), so an upgrade replaces
+    # cockpit's own entries instead of piling a second one on.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         .[0].hooks as $mine | .[1] as $theirs
         | ($theirs.hooks // {} | with_entries(.value |=
-            (map(.hooks |= map(select(((.command // "") | test("/scripts/review-gate")) | not)))
+            (map(.hooks |= map(select(((.command // "") | test("/scripts/review-gate( --pretool)?\"?$")) | not)))
              | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
             $h + ($mine | with_entries(

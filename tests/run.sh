@@ -2321,16 +2321,28 @@ is "a matcher-less twin does not duplicate" "2" \
 rm -rf "$HKN"
 # review-gate's own Stop entry is REPLACED on upgrade, not duplicated: seed a
 # settings.json holding the phase-3 shape (timeout 5, no hold) and assert the
-# merge leaves exactly one review-gate Stop entry, at the new timeout.
+# merge leaves exactly one review-gate Stop entry, at the new timeout. A
+# second, FOREIGN entry that merely contains "/scripts/review-gate" as a
+# substring (not at the end of its command) must survive untouched -- the
+# drop clause is anchored, not a bare substring test.
 HKG=$(mktmpd); mkdir -p "$HKG/.claude"
 cat > "$HKG/.claude/settings.json" <<'EOF'
-{ "hooks": { "Stop": [ { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 5 } ] } ] } }
+{ "hooks": { "Stop": [
+    { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 5 } ] },
+    { "matcher": "", "hooks": [ { "type": "command", "command": "/usr/local/bin/mywrap --log /scripts/review-gate-audit.log" } ] }
+  ] } }
 EOF
 HOME="$HKG" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "an upgrade replaces the old review-gate Stop entry, not duplicates it" "1 330" \
-   "$(jq -r '[ ([.hooks.Stop[].hooks[] | select(.command | test("review-gate"))] | length),
-             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add) ] | join(" ")' \
+   "$(jq -r '[ ([.hooks.Stop[].hooks[] | select(.command | test("/scripts/review-gate$"))] | length),
+             ([.hooks.Stop[].hooks[] | select(.command | test("/scripts/review-gate$")) | .timeout] | add) ] | join(" ")' \
        "$HKG/.claude/settings.json")"
+case "$(cat "$HKG/.claude/settings.json")" in
+    *'/usr/local/bin/mywrap --log /scripts/review-gate-audit.log'*)
+        ok "a foreign command merely containing the review-gate path survives (anchored, not substring)" ;;
+    *) bad "a foreign command merely containing the review-gate path survives (anchored, not substring)" \
+         "mywrap --log /scripts/review-gate-audit.log still present" "$(cat "$HKG/.claude/settings.json")" ;;
+esac
 rm -rf "$HKG"
 # dry-run: shows the diff, writes nothing
 HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
@@ -6835,8 +6847,15 @@ is "and the gate's marker with it" "absent" "$([ -e "$RHMARK" ] && echo present 
 rh_run "$RHPAY"; is "the next Stop hands over nothing (no replay)" "" "$(grep -o 'HANDOVER[^"]*' "$RHSTATE/out")"
 # 3. The fixer pane dies with no handover (kill -9 of the process closes the pane): proceed at once, warned.
 RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 )); "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+# A leaked @cockpit_hold (the previous invocation was killed mid-poll -- the
+# hook's own 330s timeout, or ^C on the spinner -- before it reached its own
+# unset) must not survive forever: the record is still here, so this Stop
+# reaches the unset even though ITS OWN hold never starts (the pane is
+# already dead).
+"$TMUX_REAL" -L "$RH" set-option -p -t "$RHAP" @cockpit_hold 'stale: a previous run left this' >/dev/null 2>&1
 rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "a dead fixer pane does not hold" || bad "a dead fixer pane does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"
 case "$(cat "$RHSTATE/out")" in *'a side task (\"fix the tests\") was running and did not finish; earlier results may be stale.'*) ok "and the agent is warned" ;; *) bad "and the agent is warned" "the stale warning (JSON-escaped quotes)" "$(cat "$RHSTATE/out")" ;; esac
+is "a leaked @cockpit_hold from a killed prior run is cleared, not left forever" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
 # 4. A stuck fixer (pane alive, deadline passed): proceed, warned.
 RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) - 1 ))
 rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "an expired deadline does not hold" || bad "an expired deadline does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"

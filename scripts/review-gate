@@ -146,8 +146,14 @@ if [ -n "$sess" ] && [ "$active" != true ] && [ -d "$sess/fixer" ]; then
         tmux set-option -p -t "$pane" @cockpit_hold "$reason" 2>/dev/null
         tmux display-message "held: $reason (side fix in $(cat -- "$sess/fixer/pane" 2>/dev/null)) — $pane resumes when it finishes" 2>/dev/null
         while fixer_alive "$sess"; do sleep 1; done
-        tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null
     fi
+    # Outside the fixer_alive branch on purpose: this hook can be killed
+    # mid-poll (the hook entry's 330 s timeout, or a user interrupt), which
+    # leaves @cockpit_hold set with nothing left to clear it -- the next
+    # Stop still finds the same record and reaches this line, so an
+    # already-leaked value is unset here too, not only the one this
+    # invocation itself set.
+    tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null
     # Reached with no hold (a dead pane or a past deadline from the start) or
     # after one (the pane went away without writing a handover): either way,
     # a record with no handover means the job never finished cleanly.

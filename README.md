@@ -797,7 +797,10 @@ The flow, five lines:
    `HANDOVER: …` line — never the fixer's transcript — ahead of any pending
    review. A pane gone with no handover, or one past its deadline, opens the
    hold anyway with a one-line warning instead of the handover; the
-   `review-gate` Stop hook's own `timeout` is `330`s to cover the wait.
+   `review-gate` Stop hook's own `timeout` is `330`s to cover the wait — a
+   `@cockpit_fixer_deadline` set at or above that is unsupported (Claude
+   Code kills the hook mid-hold before the deadline it is waiting on ever
+   arrives), so keep it comfortably below `330`.
 
 ```sh
 set -g @cockpit_fixer_key      f       # off restores stock find-window
