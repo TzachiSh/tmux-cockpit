@@ -3041,6 +3041,12 @@ is "the capped output is exactly one row (the popup stays trivially small)" \
 # rows_mode, so it carries an offset too rather than arriving one field short.
 is "the cap notice carries the offset field too, so no row is short" \
    "5" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
+# mark_rows rebuilds every display field out of path/line/fragment. The cap
+# row is a notice, not an anchor -- rebuilt it reads "(diff too large):0  + ..."
+# with a green sign, a code row the user cannot pin and that names no file.
+is "the cap row is shown as the plain notice, not a rebuilt path:0 row" \
+   "$(printf '%s' "$rvcapout" | cut -f4)" \
+   "$("$DIR/scripts/tmux-review" --rows "$RVCAP" /dev/null | cut -f4)"
 # A diff at or under the cap is untouched -- still fully parsed, row per line.
 RVUNDER=$(mktmpd)
 (
