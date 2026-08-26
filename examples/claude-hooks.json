@@ -17,7 +17,12 @@
     "",
     "PreToolUse fires BEFORE the permission decision, so it cannot clear a",
     "needs-input flag raised by the prompt that follows it. PostToolUse is what",
-    "clears the red, once the approved tool has run."
+    "clears the red, once the approved tool has run.",
+    "",
+    "Stop runs a second command, review-gate: it flags a finished pane whose",
+    "diff is unreviewed (◆) and hands a queued review to the agent as Stop hook",
+    "feedback (additionalContext on stdout). Its own timeout is 5 s; it never",
+    "blocks a turn otherwise."
   ],
   "_statusline_comment": [
     "Optional, and NOT part of the 'hooks' merge above: a statusLine that",
@@ -65,7 +70,8 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state error" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
     ],
     "SessionEnd": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }

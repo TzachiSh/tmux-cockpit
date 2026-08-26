@@ -60,10 +60,14 @@ link_target() { readlink "$1" 2>/dev/null; }
 # symlinks at all. This used to run unconditionally, so "--hooks --dry-run" on
 # a fresh $HOME still created three links and then reported "dry-run: nothing
 # written" underneath them.
-if [ "$dry" -eq 0 ]; then
-for c in "${COMMANDS[@]}"; do
-    link="$BIN/$c"
-    target="$DIR/scripts/$c"
+# One link, created or -- on --uninstall -- removed, but only ever one that is
+# ours. A function, not the loop body it used to be, because the skill link
+# below lives outside $BIN and outside the COMMANDS loop and needs exactly
+# these guards. `return`, not the `continue` this read as inside the loop: a
+# `continue` in a function is a no-op with a warning on stderr, in bash even
+# when the caller is a loop.
+link_one() {                  # <link> <target>
+    local link=$1 target=$2
 
     if [ "$uninstall" -eq 1 ]; then
         # Only ever remove a link that points back into this plugin. Deleting
@@ -79,19 +83,19 @@ for c in "${COMMANDS[@]}"; do
                 rc=1
             fi
         fi
-        continue
+        return 0
     fi
 
     if [ -e "$link" ] && [ ! -L "$link" ]; then
         printf 'SKIP     %s already exists and is not a symlink\n' "$link" >&2
-        continue
+        return 0
     fi
     # A symlink of the same name that points somewhere else belongs to another
     # tool -- "tm" is a name plenty of things want. Overwriting it silently is
     # bad enough; --uninstall would then delete it too, leaving neither.
     if [ -L "$link" ] && [ "$(link_target "$link")" != "$target" ]; then
         printf 'SKIP     %s is a symlink to %s, not ours\n' "$link" "$(link_target "$link")" >&2
-        continue
+        return 0
     fi
     # Reporting "linked" after ln failed is worse than failing: a read-only bin
     # directory produced three permission errors and three success lines, and
@@ -102,7 +106,16 @@ for c in "${COMMANDS[@]}"; do
         printf 'FAILED   %s (cannot create the link)\n' "$link" >&2
         rc=1
     fi
-done
+}
+
+if [ "$dry" -eq 0 ]; then
+for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
+# The cockpit-review skill, for Claude Code -- only where Claude Code is
+# installed (~/.claude exists), so a plain shell box gets no stray dir.
+if [ -d "${HOME:-}/.claude" ]; then
+    [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
+    link_one "${HOME}/.claude/skills/cockpit-review" "$DIR/skills/cockpit-review"
+fi
 else
     printf 'dry-run: skipping the symlink step\n'
 fi

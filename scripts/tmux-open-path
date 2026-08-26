@@ -98,14 +98,20 @@ if [ "${1:-}" = --preview-diff ]; then
     # small counted line, not the diff text); the diff itself now streams
     # straight through awk to head, never held in a bash variable.
     #
-    # The base is `git diff HEAD` -- staged AND unstaged in one call, the same
-    # base tmux-review --lines reviews from. The old "unstaged, else --cached"
-    # rule made the two disagree in opposite directions: --lines dropped the
-    # whole index the moment one unstaged edit existed, while this preview kept
-    # showing the staged file it had just been told did not change. Same helper
-    # body as tmux-review's tree_diff(), inlined -- these are one-shot scripts
-    # and neither sources the other. An unborn HEAD has no HEAD to diff
-    # against, so that one case keeps the old fallback.
+    # The base is `git diff <rbase>` -- staged AND unstaged in one call, the
+    # same base tmux-review --lines reviews from (tree_diff/review_base). The
+    # old "unstaged, else --cached" rule made the two disagree in opposite
+    # directions: --lines dropped the whole index the moment one unstaged edit
+    # existed, while this preview kept showing the staged file it had just
+    # been told did not change. An unborn HEAD has no HEAD to diff against, so
+    # that one case keeps the old fallback.
+    #
+    # $rbase is $COCKPIT_REVIEW_BASE_REV when tmux-review's run_loop set it
+    # (its own preview subprocess -- the pane's chosen base: a checkpoint, the
+    # branch's merge-base, or HEAD, and ^B's re-export follows a switch here
+    # too), else plain HEAD -- any other caller of this preview (a direct run,
+    # tmux-branch) sees the same "today's uncommitted view" it always did.
+    rbase=${COCKPIT_REVIEW_BASE_REV:-HEAD}
     #
     # fzf re-invokes this preview on every arrow key across the picker, even
     # though the candidate under the cursor did not change since the last time
@@ -130,7 +136,11 @@ if [ "${1:-}" = --preview-diff ]; then
     idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
     csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
     if [ -n "$csum" ]; then
-        cksum=$(printf '%s\n%s\n%s\n%s\n' "$apath" "$chd" "$idx" "$csum" \
+        # $rbase in the key too: ^B switches the same pane's base mid-review,
+        # and without this a render cached under the old base would be served
+        # right back for the new one -- same file, same index, same content,
+        # different diff.
+        cksum=$(printf '%s\n%s\n%s\n%s\n%s\n' "$apath" "$chd" "$idx" "$csum" "$rbase" \
                 | { sha1sum 2>/dev/null || shasum 2>/dev/null; })
         ckey=${cksum%% *}
     fi
@@ -159,7 +169,7 @@ if [ "${1:-}" = --preview-diff ]; then
     [ -n "$chd" ] && headok=1
     render_preview_diff() {
         if [ "$headok" -eq 1 ]; then
-            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat HEAD -- "$base" 2>/dev/null)
+            numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat "$rbase" -- "$base" 2>/dev/null)
         else
             numstat=$(git -C "$d" --no-optional-locks -c core.quotePath=false diff --numstat -- "$base" 2>/dev/null)
             if [ -z "$numstat" ]; then
@@ -173,6 +183,13 @@ if [ "${1:-}" = --preview-diff ]; then
         # /dev/null is its whole content as one added hunk, rendered in the
         # same shape as a tracked file's: one stat line, then the diff from
         # its first @@.
+        # ponytail: this always previews an untracked file as a whole new
+        # file, even under a since-review base whose checkpoint tree already
+        # holds it (tree_diff's intent-to-add temp index would show only the
+        # delta since then; this --no-index shortcut doesn't consult it).
+        # Upgrade path: build the preview through the same temp-index copy
+        # tree_diff uses instead of a direct --no-index diff, if a since-
+        # review preview of an untracked file's delta is ever asked for.
         if [ -z "$numstat" ] && \
            [ -n "$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files --others --exclude-standard -- "$base" 2>/dev/null)" ]; then
             untracked=1
@@ -191,7 +208,7 @@ if [ "${1:-}" = --preview-diff ]; then
             git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --no-index -- /dev/null "$f" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         elif [ "$headok" -eq 1 ]; then
-            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always HEAD -- "$base" 2>/dev/null \
+            git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always "$rbase" -- "$base" 2>/dev/null \
                 | awk '/^\x1b\[[0-9;]*m@@|^@@/{h=1} h' | head -400
         elif [ "$cached" -eq 1 ]; then
             git -C "$d" --no-optional-locks -c core.quotePath=false diff --color=always --cached -- "$base" 2>/dev/null \

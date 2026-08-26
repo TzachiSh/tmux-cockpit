@@ -7,6 +7,7 @@ set -u
 cur="${TMUX_PANE:-}"
 blocked=()
 pending=()
+review_pending=()
 # Sorted so the cycle order is stable between presses. @panestate can outlive
 # the agent that set it -- a hand-set option, or a shell reused after the
 # agent exited -- so the format guards it with the same glob-on-current-command
@@ -31,12 +32,16 @@ while IFS= read -r line; do
         blocked+=("$id")
     elif [ "$review" = sent ]; then
         pending+=("$id")
+    elif [ "$review" = pending ]; then
+        review_pending+=("$id")
     fi
 done < <(tmux list-panes -a -F '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@cockpit_review},}' 2>/dev/null | sort -t% -k2 -n)
 
 # Blocked agents first, then panes holding a review that was pasted and never
 # sent: an agent stopped dead waiting on you is the more urgent stop, and
 # appending leaves the existing blocked-pane cycle order byte-for-byte unchanged.
+# Last, the panes review-gate flagged (@cockpit_review pending): a finished
+# diff nobody has read yet is a stop you owe the agent, not one it owes you.
 #
 # ${pending[@]+"${pending[@]}"}, not a bare "${pending[@]}": bash before 4.4
 # treats an EMPTY array's expansion as an unset variable, so under `set -u` the
@@ -45,6 +50,7 @@ done < <(tmux list-panes -a -F '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{
 # The +alternate form expands to nothing when the array is empty and to the
 # quoted elements when it is not. Same idiom as tmux-review's fzf option array.
 blocked+=(${pending[@]+"${pending[@]}"})
+blocked+=(${review_pending[@]+"${review_pending[@]}"})
 
 if [ ${#blocked[@]} -eq 0 ]; then
     tmux display-message "no agent needs you" 2>/dev/null

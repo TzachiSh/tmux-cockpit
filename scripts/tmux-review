@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # tmux-review — review an agent's uncommitted diff, one comment at a time, and
 # hand the finished review back to the agent's pane.
-#   tmux-review [-p pane_id]               no args: review the given pane, or
-#                                          (without -p) the CLIENT's active
-#                                          pane, if it is an agent, else the
-#                                          fleet queue (bound to prefix R)
+#   tmux-review [-p pane_id]               no args: the fleet queue (bound to
+#                                          prefix r), with that pane -- or,
+#                                          without -p, the CLIENT's active
+#                                          pane -- preselected
 #   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
-#                                          ctrl-s exits 20 (deliver), esc/^C
-#                                          exit 0 (discard, store deleted --
-#                                          asked for first if any are pinned)
+#                                          ctrl-s asks, then exits 20
+#                                          (deliver); esc leaves the batch
+#                                          pinned (asks first when any are)
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
@@ -63,42 +63,166 @@ git_root() {
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
-  tmux-review [-p pane_id]                review that pane (or, without -p,
-                                          the client's active pane), or the
-                                          fleet queue when it is not an agent
+  tmux-review [-p pane_id]                the fleet queue, with that pane (or,
+                                          without -p, the client's active pane)
+                                          preselected; it returns to the queue
+                                          after every review
   tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
-  tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
+  tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
+                                          ctrl-s asks, then exits 20 (deliver);
+                                          esc leaves the batch pinned (asks
+                                          first when any are)
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
   tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
-  tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>
-In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^S deliver   esc discard
+  tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
+  tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
+  tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
+  tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
+  tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
+In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
 
-# --- the base every uncommitted view diffs against --------------------------
-# Everything uncommitted is ONE set: `git diff HEAD` is staged + unstaged in a
-# single call. The old "unstaged, else staged" fallback dropped the whole
-# index the moment one unstaged edit existed -- reproduced: a staged file was
-# invisible to the list while the preview showed it. An unborn HEAD (no
-# commits yet) has no HEAD to diff against, so that case keeps the fallback.
+# --- the base every review diffs against --------------------------------------
+# ONE diff, whatever the base: staged, unstaged AND untracked changes come out
+# of a single `git diff <base>`, because the diff runs against a COPY of the
+# index that `git add -N -A` has extended with an intent-to-add entry for
+# every untracked file. -N records the path only (no content is hashed), and
+# a plain `git diff` then shows such a file as a new file against the working
+# tree -- the documented use of intent-to-add. Measured on the eight goldens:
+# byte-identical to the ls-files/awk synthesis this replaces, 12/12 runs.
 #
-# --no-optional-locks on every call, the same discipline fleet_scan_root() already
-# uses: `git diff` refreshes the index and takes index.lock to do it, and this
-# runs against a repo an AGENT is working in. A read that fights the agent's own
-# git for the lock is a read that can make its command fail.
+# The copy is not optional: an `add` against the real index would rewrite the
+# agent's own index under it. `cp -p`, not `cp`: git's racy-timestamp guard
+# compares each entry's mtime with the INDEX FILE's mtime, and a fresh copy
+# with a fresh mtime made git trust a same-size, same-second edit as clean --
+# reproduced 1 run in 3 on the `spaces` fixture, 0 in 12 with -p. An unborn
+# repo has no index to copy; the rm lets git start one from nothing.
+#
+# It also makes the approved checkpoint (^A, a tree that INCLUDES untracked
+# files) diff exactly: against the real index `git diff <tree>` reports a
+# file present in the tree but untracked here as DELETED (reproduced); with
+# the -N entry it compares the file's content instead.
+#
+# --no-optional-locks on every call, the same discipline fleet_scan_root()
+# uses: even a read can take index.lock, and this runs against a repo an
+# AGENT is working in.
 tree_diff() {
     local dir=$1; shift
-    if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
-        git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff HEAD "$@" 2>/dev/null
+    local idx gd head br rp
+    # One rev-parse for the three facts every diff needs -- the git dir (whose
+    # index to copy), HEAD, and the branch review_base keys on. rev-parse
+    # carries on past an argument it cannot resolve, so an unborn HEAD leaves
+    # two lines (git dir, "HEAD") and a born one three. This and review_base
+    # were 10 forks per root; the 20-pane fleet gate (timeout 1) caught it.
+    mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
+    gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
+    [ -n "$gd" ] || return 1
+    # A caller that scans many roots at once (fleet_rows) lends the one temp
+    # dir it already owns, and the copy is named by PID and dies with that
+    # dir: mktemp + rm per root were 40 of the fleet's forks.
+    if [ -n "${TREE_DIFF_TMP:-}" ]; then idx=$TREE_DIFF_TMP/idx.$BASHPID
+    else idx=$(mktemp) || return 1; fi
+    cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
+    GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
+    if [ -n "$br" ]; then
+        local base
+        base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
+        GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
+            diff --no-color --no-ext-diff "$base" "$@" 2>/dev/null
     else
         local out
-        out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
-        [ -n "$out" ] || out=$(git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
+        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
         printf '%s\n' "$out"
     fi
+    [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
+}
+
+# --- which base ---------------------------------------------------------------
+# Four cases, the first that holds (when-how lens §2.3; revdiff's auto-detect):
+#   since-review  refs/cockpit/reviewed/<branch> exists (^A wrote it)  -> only what moved since
+#   branch        merge-base of the upstream (else origin/HEAD, else main/master) and HEAD,
+#                 when that is not HEAD itself                          -> the branch + uncommitted
+#   uncommitted   HEAD                                                  -> today's view
+# MODE forces one; a forced mode that does not hold falls through to the next,
+# so the printed mode is the one that HELD -- next_base relies on that.
+# Prints "<rev>\t<label>\t<mode>". Never called on an unborn HEAD.
+review_base() {               # <dir> [auto|since-review|branch|uncommitted] [branch] [head-sha]
+    local dir=$1 mode=${2:-auto} br=${3:-} head=${4:-} ref up mb
+    local name sha ups track sym ckpt="" bups="" btrack="" ohead="" osha="" mainsha="" mastersha="" upsha=""
+    [ -n "$br" ] || br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    ref="refs/cockpit/reviewed/${br:-HEAD}"
+    # Every ref the cases below ask about, from ONE for-each-ref rather than a
+    # rev-parse per candidate (seven, before): the checkpoint; the branch's
+    # upstream, whose :track is "[gone]" exactly when `--verify @{u}` would
+    # refuse it and "" when it sits at HEAD; origin/HEAD's target; main;
+    # master. Rows come back sorted by name, not by our preference, so they
+    # are collected first and chosen after. A pattern also matches refs BELOW
+    # it (refs/heads/main/x when no main exists), hence the exact names.
+    while IFS=$'\t' read -r name sha ups track sym; do
+        case "$name" in
+            "$ref")                   ckpt=$sha ;;
+            "refs/heads/$br")         [ -n "$head" ] || head=$sha; bups=$ups; btrack=$track ;;
+            refs/remotes/origin/HEAD) ohead=$sym; osha=$sha ;;
+            refs/heads/main)          mainsha=$sha ;;
+            refs/heads/master)        mastersha=$sha ;;
+        esac
+    done < <(git -C "$dir" --no-optional-locks for-each-ref \
+        --format='%(refname)%09%(objectname)%09%(upstream:short)%09%(upstream:track)%09%(symref:short)' \
+        -- "$ref" "refs/heads/$br" refs/remotes/origin/HEAD refs/heads/main refs/heads/master 2>/dev/null)
+    case "$mode" in auto|since-review)
+        [ -z "$ckpt" ] || { printf '%s\tsince last review\tsince-review\n' "$ckpt"; return 0; } ;;
+    esac
+    case "$mode" in auto|since-review|branch)
+        # The upstream, else origin/HEAD, else main, else master -- and, where
+        # the rows already say the merge-base IS HEAD, no merge-base fork: an
+        # upstream that is not ahead of us, or a fallback whose sha is HEAD's.
+        if [ -n "$bups" ] && [ "$btrack" != '[gone]' ]; then
+            up=$bups; case "$btrack" in *ahead*) upsha="" ;; *) upsha=$head ;; esac
+        elif [ -n "$ohead" ];     then up=$ohead;  upsha=$osha
+        elif [ -n "$mainsha" ];   then up=main;    upsha=$mainsha
+        elif [ -n "$mastersha" ]; then up=master;  upsha=$mastersha
+        else up=""
+        fi
+        if [ -n "$up" ] && { [ -z "$head" ] || [ "$upsha" != "$head" ]; }; then
+            mb=$(git -C "$dir" --no-optional-locks merge-base "$up" HEAD 2>/dev/null)
+            [ -n "$head" ] || head=$(git -C "$dir" --no-optional-locks rev-parse HEAD 2>/dev/null)
+            if [ -n "$mb" ] && [ "$mb" != "$head" ]; then
+                printf '%s\tvs %s\tbranch\n' "$mb" "$up"; return 0
+            fi
+        fi ;;
+    esac
+    printf 'HEAD\tuncommitted\tuncommitted\n'
+}
+
+# The mode after CUR among those that hold, wrapping -- ^B's cycle.
+next_base() {                 # <dir> <current-mode>
+    local dir=$1 cur=$2 m first="" prev="" out
+    for m in since-review branch uncommitted; do
+        out=$(review_base "$dir" "$m"); [ "${out##*$'\t'}" = "$m" ] || continue
+        [ -n "$first" ] || first=$m
+        [ -n "$prev" ] && [ "$prev" = "$cur" ] && { printf '%s\n' "$m"; return 0; }
+        prev=$m
+    done
+    printf '%s\n' "$first"
+}
+
+# Exit 0 when PANE's tree differs from its review base -- the one question the
+# Stop hook asks. Reads the mode the pane's own review chose with ^B, if any.
+delta_mode() {                # <pane>
+    local pane=$1 dir root sess mode
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$dir" ] || return 1
+    root=$(git_root "$dir")
+    git -C "$root" --no-optional-locks rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    sess=$(session_dir "$pane" "$root")
+    mode=$(cat -- "$sess/comments.md.base" 2>/dev/null)
+    export COCKPIT_REVIEW_BASE=${mode:-auto}
+    [ -n "$(tree_diff "$root" --numstat)" ]
 }
 
 # --- --lines -------------------------------------------------------------
@@ -110,44 +234,7 @@ tree_diff() {
 #
 # Everything uncommitted is ONE set -- staged, unstaged and brand-new files --
 # because that is what "review what I have not committed" means. See tree_diff
-# below for the base, and the untracked synthesis inside for the new files.
-# Run one awk program over every path in a newline-separated list of paths
-# relative to $dir, batched through xargs so a huge untracked tree cannot blow
-# ARG_MAX. Every path is passed "./"-prefixed: awk reads a bare `name=value`
-# operand as a variable assignment, and mawk rejects a `--` before the first
-# filename ("cannot open --"), so there is no option-terminator to hide behind
-# -- "./" in front is what makes an arbitrary path an operand awk cannot
-# mistake for an assignment. The programs strip it back off with
-# substr(FILENAME, 3).
-#
-# A path holding a literal TAB is dropped here, before it can become an
-# operand. `ls-files -z` does NOT C-quote -- the -z form emits raw bytes,
-# core.quotePath or not -- so such a path arrived intact and then split ITSELF
-# across the tab-separated wire every consumer below reads with awk -F'\t':
-# "has<TAB>tab.txt" became path=has, line=tab.txt, fragment=the file's first
-# line, offset=+, and attach() (which guards only "path non-empty" and "not
-# the cap sentinel") would pin and deliver that as an instruction about a file
-# that does not exist at a line that is not a number. The wire format is
-# tab-separated and cannot carry the name, so the file is dropped, exactly as
-# a binary or an unreadable file already is. Filtered on the LIST rather than
-# in each program so both callers -- the numstat walk and the row walk -- and
-# the byte estimator that reads their output all agree on the same set.
-# The list, turned into NUL-separated "./path" operands. Factored out of
-# awk_over() because the byte cap below sizes the very same files with `wc -c`
-# and MUST see the same set: a path this drops has no rows, so charging the
-# cap for it would refuse a review over a file it was never going to show.
-ulist_operands() {
-    printf '%s\n' "$1" \
-        | awk 'index($0, "\t") == 0 { print "./" $0 }' \
-        | tr '\n' '\0'
-}
-
-awk_over() {
-    local dir=$1 list=$2 prog=$3
-    [ -n "$list" ] || return 0
-    ulist_operands "$list" \
-        | (cd "$dir" 2>/dev/null && xargs -0 awk "$prog" 2>/dev/null)
-}
+# below for the base.
 
 # ${#s} counts CHARACTERS in a UTF-8 locale and BYTES in C. The cap below is a
 # byte cap and `head -c` is a byte bound, so the length that decides it has to
@@ -182,42 +269,7 @@ lines_mode() {
     local diff numstat
     numstat=$(tree_diff "$dir" --numstat)
 
-    # Untracked files carry no diff at all -- so the newest code, the code most
-    # worth reviewing, was invisible. Synthesise their numstat here (every line
-    # an addition) so the size cap below counts them too, and their rows after
-    # the awk. Binary and unreadable files are skipped (grep -I fails on both).
-    #
-    # ONE batched walk, not four forks per file. The first shape here ran
-    # [ -f ] + grep -Iq + wc -l per untracked file for the numstat, and then
-    # [ -f ] + grep -Iq + awk per file AGAIN for the rows -- and rows_mode
-    # calls lines_mode, so the popup re-paid the whole thing on open and after
-    # every pinned comment. Measured on an unignored 800-file vendor tree:
-    # 7.928s per open (master, which ignored untracked files entirely, took
-    # 0.018s). `ls-files -z | xargs grep -Il .` answers "which of these are
-    # readable text" for the whole tree in one pipeline -- grep -I still skips
-    # binaries, and a file it cannot read simply is not listed, the same two
-    # exclusions as before -- and the two awks below take that list as
-    # operands instead of re-walking it: 0.008s.
-    #
-    # The line count comes from the awk that already reads every file (FNR at
-    # EOF), not from a per-file `wc -l`; that also counts a final line with no
-    # trailing newline, which `wc -l` dropped while the row loop emitted it.
-    #
-    # core.quotePath=false here for the same reason it is on the diff above, and
-    # it bites harder: ls-files C-quotes a non-ASCII name ("caf\303\251-new.txt"),
-    # and a quoted name is not a path that exists, so [ -f ] failed and the file
-    # was dropped from the list without a word -- while --preview-diff, which
-    # asks with the flag set, rendered it. List and preview disagreed again.
-    # One call, both awks below read it.
-    local ulist
-    ulist=$(cd "$dir" 2>/dev/null && git -c core.quotePath=false \
-                ls-files -z --others --exclude-standard 2>/dev/null \
-            | xargs -0 grep -Il . -- 2>/dev/null)
-    if [ -n "$ulist" ]; then
-        numstat="${numstat:+$numstat$'\n'}$(awk_over "$dir" "$ulist" '
-            { c[FILENAME] = FNR }
-            END { for (f in c) printf "%d\t0\t%s\n", c[f], substr(f, 3) }')"
-    fi
+    # Untracked files are rows of the same diff: see tree_diff's intent-to-add copy.
 
     # A giant single-file diff -- a regenerated lockfile, a vendored bundle, a
     # minified asset -- would feed the per-row parse below tens of thousands of
@@ -282,27 +334,6 @@ lines_mode() {
     if [ "$total" -gt "$cap" ]; then
         reason="$total changed lines"
     else
-        # Untracked files are charged first and exactly. They have no diff to
-        # bound -- every byte of them is an added row -- so their size IS
-        # their contribution, and one batched `wc -c` over the SAME operand
-        # list the row walk uses gets all of it (`wc -c` stats a regular file,
-        # it does not read it). Charging them before the capture is also what
-        # makes a huge unignored untracked tree cap without capturing at all.
-        if [ -n "$ulist" ]; then
-            bytes=$(ulist_operands "$ulist" \
-                    | (cd "$dir" 2>/dev/null && xargs -0 wc -c 2>/dev/null) \
-                    | awk '
-                        # "<bytes> ./<path>", picked apart by hand because a
-                        # path may hold spaces. Anything not "./"-prefixed is
-                        # wc own total line, one per xargs batch.
-                        { w = $0; sub(/^[ \t]+/, "", w)
-                          i = index(w, " "); if (i == 0) next
-                          n = substr(w, 1, i - 1) + 0
-                          if (substr(w, i + 1) !~ /^\.\//) next
-                          s += n }
-                        END { printf "%d\n", s + 0 }')
-            bytes=${bytes:-0}
-        fi
         if [ "$bytes" -gt "$bytecap" ]; then
             reason='> 4 MB'
         else
@@ -335,7 +366,7 @@ lines_mode() {
         return 0
     fi
 
-    [ -n "$diff$ulist" ] || return 0
+    [ -n "$diff" ] || return 0
 
     # One pass: track the file a hunk belongs to (from the +++/--- header
     # pair -- a whole-file deletion has "+++ /dev/null", so the path has to
@@ -433,20 +464,6 @@ lines_mode() {
         }
     ')
 
-    # The untracked files' rows: no diff to parse, so every line of the file is
-    # its own + row at its own number -- the same shape the awk emits. One awk
-    # over the whole readable-text list, so FNR (per file), not NR.
-    #
-    # NR + 2, not NR + 1: an untracked preview is the same two prefixes a
-    # tracked one has -- the stat line AND the single "@@ -0,0 +1,N @@" of
-    # its --no-index diff, which is where --preview-diff starts printing.
-    # Counting only the stat line put every untracked row one line high,
-    # landing the whole file on its hunk header. Measured against the
-    # preview itself: line 1 of a new file renders at preview line 3.
-    if [ -n "$ulist" ]; then
-        raw="${raw:+$raw$'\n'}$(awk_over "$dir" "$ulist" '
-            { printf "%s\t%d\t+\t%d\t%s\n", substr(FILENAME, 3), FNR, FNR + 2, $0 }')"
-    fi
     [ -n "$raw" ] || return 0
 
     # Churn, the rows, the test-first partition and the ordering: ONE awk over
@@ -614,6 +631,65 @@ stale_keys() {                # <store> <rows-file>  -> stale headers, one per l
     ' "$st" "$rows"
 }
 
+# --- approve -------------------------------------------------------------------
+# refs/cockpit/reviewed/<branch> = the tree the human just looked at, untracked
+# files included (a real add -A into a temp index, then write-tree; content IS
+# hashed here, once per approve). A ref to a tree object is what makes the
+# since-review base a plain `git diff <ref>`; git update-ref accepts it.
+# It does NOT die with the branch -- `git branch -D` and `worktree remove`
+# leave it standing (reproduced), so a deleted-and-recreated branch of the
+# same name inherits a stale checkpoint, and a name that collides on the
+# refs/ hierarchy (a branch "feat" after a checkpoint at "feat/x") blocks a
+# later approve outright. Purge by hand:
+#   git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
+# The pane's state is the caller's to clear -- this function knows the repo,
+# not the pane.
+approve() {                   # <dir>
+    local dir=$1 idx gd br tree
+    idx=$(mktemp) || return 1
+    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; return 1; }
+    cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
+    br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A 2>/dev/null \
+           && GIT_INDEX_FILE=$idx git -C "$dir" write-tree 2>/dev/null)
+    rm -f -- "$idx"
+    [ -n "$tree" ] && git -C "$dir" update-ref "refs/cockpit/reviewed/${br:-HEAD}" "$tree" 2>/dev/null
+}
+
+# After a delivery: the batch joins delivered.md beside the store (the ↺ marks
+# of the next round read it), the store and its snapshot go, the dir stays
+# while anything is in it -- ^A is what removes it. Public as --done so the
+# by-hand re-delivery keep_hint() prints can finish the same way.
+done_store() {                # <store>
+    local st=$1 d=${1%/*}
+    [ "$d" = "$1" ] && d=.
+    # The store is removed only once its content is actually IN delivered.md --
+    # an append that fails (a full disk, a permissions slip) must not lose the
+    # only copy of the review.
+    if [ -f "$st" ] && [ ! -L "$st" ] && [ -s "$st" ]; then
+        cat -- "$st" >> "$d/delivered.md" || return 1
+    fi
+    rm -f -- "$st" "$st.rows" "$st.base"
+    rmdir -- "$d" 2>/dev/null
+    return 0
+}
+
+# What ^A ends: the session dir's own files, by name. Not `rm -rf` -- the dir
+# may also hold comments.md.deliver, a review already handed to a busy pane
+# with @cockpit_review_spool armed at it, and that one belongs to the agent's
+# next Stop, not to this approval. rmdir therefore succeeds on an approval with
+# nothing in flight and fails (harmlessly) on one with a spool still waiting;
+# review-gate rmdirs the leftover after it drains. Two callers, ^A in the
+# picker and ^A in --request, and the list must not drift between them.
+clear_sess() {                # <sess dir>
+    local s=$1
+    [ -d "$s" ] && [ ! -L "$s" ] || return 0
+    rm -f -- "$s/comments.md" "$s/comments.md.rows" "$s/comments.md.base" \
+             "$s/delivered.md" "$s/rc"
+    rmdir -- "$s" 2>/dev/null
+    return 0
+}
+
 # --- --rows / --attach (internal: the picker's own reentry, tmux-open-path's
 # --preview/--pick convention) --------------------------------------------
 # --lines rows, marked: a leading "●" on any row whose path:line already has
@@ -651,12 +727,13 @@ rows_mode() {
     # this, someone who wins the sliver of a race between the failed write and
     # its `rm -f` gets to choose the rows the picker shows -- and every comment
     # the human then pins is anchored to a path THEY named.
-    local hdr=/dev/null
+    local hdr=/dev/null dlv=/dev/null
     [ -n "$store" ] && [ -f "$store" ] && hdr=$store
+    [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && dlv=${store%/*}/delivered.md
     if [ -n "$store" ] && [ ! -L "$store.rows" ] && [ -s "$store.rows" ]; then
-        mark_rows "$hdr" "$store.rows"
+        mark_rows "$hdr" "$dlv" "$store.rows"
     else
-        mark_rows "$hdr" <(lines_mode "$dir")
+        mark_rows "$hdr" "$dlv" <(lines_mode "$dir")
     fi
 }
 
@@ -686,9 +763,10 @@ rows_mode() {
 # And a marker key is an exact string, matching what the `grep -qxF` before it
 # matched: "## " is the store's own grammar, written by attach() and nothing
 # else, so a substr test on the first three bytes cannot pick up a body line.
-mark_rows() {                 # <store-or-/dev/null> <rows-file>
+mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <rows-file>
     LC_ALL=C awk -F'\t' -v OFS='\t' '
         FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
+        FILENAME == ARGV[2] { if (substr($0, 1, 3) == "## ") d[$0]++; next }
         NF == 0 { next }
         {
             # A deletion carries the OLD line number prefixed "-", so the
@@ -697,9 +775,12 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             sign = (substr($2, 1, 1) == "-") ? "-" : "+"
             num = $2; sub(/^-/, "", num)
             # One column wide whatever the count: ● for one, the digit past
-            # that, + for anything more -- a wrong digit lies, "+" does not.
-            n = c["## " $1 ":" num " (" sign ")"] + 0
-            m = (n == 0) ? " " : (n == 1) ? "●" : (n > 9) ? "+" : n ""
+            # that, + for anything more, ↺ for a row commented in an EARLIER
+            # round (delivered, nothing pinned on it now) -- "you said this
+            # last time, it is still here". A wrong digit lies, "+" does not.
+            key = "## " $1 ":" num " (" sign ")"
+            n = c[key] + 0
+            m = (n == 0) ? ((key in d) ? "↺" : " ") : (n == 1) ? "●" : (n > 9) ? "+" : n ""
             # Prepend, never repaint: "●" and " " are both one column, so a
             # marked row does not shift against an unmarked one.
             disp = $4
@@ -707,7 +788,7 @@ mark_rows() {                 # <store-or-/dev/null> <rows-file>
             else             sub(/ \(-\) /,  " \033[31m(-)\033[0m ", disp)
             print $1, $2, $3, m disp, $5
         }
-    ' "$1" "$2"
+    ' "$1" "$2" "$3"
 }
 
 # One block, appended -- never rewrite the store, only grow it, so a crash or
@@ -848,7 +929,7 @@ drop_rows() {
 
 drop_store() {
     [ -n "${1:-}" ] || return 0
-    rm -f -- "$1" "$1.rows"
+    rm -f -- "$1" "$1.rows" "$1.base"
 }
 
 # --- --loop ----------------------------------------------------------------
@@ -869,6 +950,27 @@ run_loop() {
     command -v fzf >/dev/null 2>&1 || {
         printf 'tmux-review: the review loop needs fzf\n' >&2; exit 1;
     }
+
+    # The base this review diffs against: ^B's choice, remembered beside the
+    # store so a resumed review keeps it; exported because --rows and --resnap
+    # re-exec through fzf and inherit this environment. COCKPIT_REVIEW_BASE_REV
+    # (review_base's field 1 -- the actual rev, not the mode word) rides along
+    # so the preview subprocess (a separate tmux-open-path invocation, below)
+    # diffs against the same base this review does, instead of always HEAD.
+    local base_line label mode
+    COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
+    set_base_line() {
+        if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+            base_line=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}")
+            label=$(cut -f2 <<<"$base_line"); mode=$(cut -f3 <<<"$base_line")
+            COCKPIT_REVIEW_BASE_REV=${base_line%%$'\t'*}
+        else
+            label=uncommitted; mode=uncommitted
+            COCKPIT_REVIEW_BASE_REV=HEAD
+        fi
+        export COCKPIT_REVIEW_BASE_REV
+    }
+    set_base_line
 
     local rows_cmd attach_cmd preview_cmd resnap_cmd list_cmd detach_cmd edit_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
@@ -916,10 +1018,12 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    local out rc key n choice crc
+    local out rc key n choice crc ndlv abr
     while :; do
+        ndlv=""
+        [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s --disabled --ansi \
+            | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
@@ -933,7 +1037,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^S deliver   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^/ preview  alt-u/alt-d scroll')
+                  --header=$'↵ pin the typed comment   ^S deliver (asks first)   ^A approve   esc leave (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -949,8 +1053,8 @@ run_loop() {
                 # so it still exits straight out.
                 if [ -s "$store" ]; then
                     n=$(grep -c '^## ' "$store")
-                    choice=$(printf 'keep reviewing\ndiscard %d comment(s)\n' "$n" \
-                        | fzf --reverse --no-info --prompt='discard? ' \
+                    choice=$(printf 'leave — %d comment(s) stay pinned\nkeep reviewing\ndiscard %d comment(s)\n' "$n" "$n" \
+                        | fzf --reverse --no-info --prompt='esc? ' \
                               --header="$n comment(s) are pinned and not delivered")
                     crc=$?
                     # The confirm picker's OWN exit code decides, not just what
@@ -976,6 +1080,7 @@ run_loop() {
                             exit 0 ;;
                     esac
                     case "$choice" in
+                        leave*)   drop_rows "$store"; exit 0 ;;     # the dir keeps the store; prefix r resumes it
                         discard*) drop_store "$store"; exit 0 ;;
                         *)  # Back to the list, store kept. Re-mark the rows:
                             # the marks in $rows_out are from before the
@@ -995,8 +1100,60 @@ run_loop() {
         # --disabled already routed it into the comment via {q} inside the
         # alt-enter bind -- the outer loop only needs which --expect key fired.
         key=$(sed -n 2p <<<"$out")
+        if [ "$key" = ctrl-b ]; then
+            mode=$(next_base "$dir" "$mode")
+            printf '%s\n' "$mode" > "$store.base"
+            COCKPIT_REVIEW_BASE=$mode; export COCKPIT_REVIEW_BASE
+            set_base_line
+            # snapshot(), not resnap(): the base just changed, so EVERY row is
+            # a fresh anchor against the new diff, not a re-mark of stale ones
+            # -- and resnap()'s `read -n 1` would block here, inside the loop,
+            # waiting on a key nothing prompted for. Any pinned comment that
+            # no longer anchors still shows as stale the next time this store
+            # is opened (run_loop's own "resumed" message), same as any other
+            # base switch would leave it.
+            snapshot "$dir" "$store"
+            rows_out=$(rows_mode "$dir" "$store")
+            [ "$(printf '%s\n' "$rows_out" | grep -c .)" -gt 0 ] || \
+                tmux display-message "tmux-review: nothing to review against $label" 2>/dev/null
+            continue
+        fi
+        if [ "$key" = ctrl-a ]; then
+            if [ -s "$store" ]; then
+                # Not dead work: fzf's own reload() (enter/alt-enter, inside
+                # THIS session) marks its internal list live but never touches
+                # $rows_out -- a comment pinned since the last computation
+                # needs this refresh or the next fzf launch shows a stale,
+                # unmarked list. The other two exits below genuinely change
+                # nothing about the rows, so they skip it.
+                tmux display-message "tmux-review: deliver or discard the $(grep -c '^## ' "$store") pinned comment(s) first" 2>/dev/null
+                rows_out=$(rows_mode "$dir" "$store"); continue
+            fi
+            if ! git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+                tmux display-message "tmux-review: nothing to approve against before the first commit" 2>/dev/null
+                continue
+            fi
+            if approve "$dir"; then exit 21; fi
+            abr=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null); abr=${abr:-HEAD}
+            tmux display-message "tmux-review: could not write refs/cockpit/reviewed/$abr — a stale ref may block it: git update-ref -d refs/cockpit/reviewed/$abr" 2>/dev/null
+            continue
+        fi
         if [ "$key" = ctrl-s ]; then
-            exit 20
+            # Once, in the same picker shape esc uses: the consent gesture
+            # shows what it is about to send and to whom, and offers the whole
+            # batch to $EDITOR first (a comment edited as text -- the grammar
+            # is forgiving, compose is cat).
+            n=$(grep -c '^## ' "$store")
+            [ "$n" -gt 0 ] || { tmux display-message "tmux-review: nothing pinned" 2>/dev/null; continue; }
+            choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in $EDITOR first\nkeep reviewing\n' "$n" "${REVIEW_PANE_ID:-the agent}" \
+                | fzf --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
+            case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
+            case "$choice" in
+                deliver*) exit 20 ;;
+                edit*)    ${VISUAL:-${EDITOR:-vi}} "$store" </dev/tty >/dev/tty 2>&1
+                          rows_out=$(rows_mode "$dir" "$store"); continue ;;
+                *)        rows_out=$(rows_mode "$dir" "$store"); continue ;;
+            esac
         fi
         # No --expect key matched -- enter/alt-enter stay inside the picker via
         # execute-silent, so this should not happen, but an unmatched exit is a
@@ -1050,17 +1207,21 @@ list_store() {                # <store>
 }
 
 # --- --compose ---------------------------------------------------------------
-# The fixed header, then the store verbatim -- cat, nothing clever. The header
-# is what tells the agent "??" means a question; the store itself needs no
-# reformatting because attach() already wrote it in the delivered shape.
+# The header (ai lens §7.F: scope fence, questions first, dissent licence,
+# trust the fragment, a close-out line the next review can key on), then the
+# store verbatim -- cat, nothing clever.
 compose() {
     local store=${1:-} root=${2:-}
-    printf 'Code review of your uncommitted changes. Address each comment; a comment\ncontaining ?? is a question — answer it in chat, do not edit for it.\nComments are anchored as path:line with the original line quoted.\n'
+    printf 'Code review of your changes, from the human, batched on purpose.\n\n'
+    printf 'Scope: change only what these comments ask for. Do not refactor, rename,\ntidy or commit anything else — a fix that grows the diff defeats the review.\n'
+    printf 'Questions first: a comment containing ?? is a question. Answer every question\nin chat before you edit anything, then make the edits in one pass.\n'
+    printf 'Disagree out loud: if a comment is wrong or would break something, say so and\ndo not make the change. Silent compliance with a wrong comment is the worse\nfailure.\n'
+    printf 'Anchors: comments are path:line with the original line quoted. The numbers are\nfrom the diff as it was when the review was written and drift after your first\nedit — trust the quoted fragment, not the number.\n'
     # root is the repo root a comment's path is relative to -- optional
     # (omitted, --compose still reads standalone), named here because
     # deliver() has it and the agent otherwise has no way to tell.
     [ -n "$root" ] && printf 'Paths are relative to %s.\n' "$root"
-    printf '\n'
+    printf 'When done, end your reply with one line per comment:\n  <path>:<line> — done | skipped: <reason>\n\n'
     [ -n "$store" ] && [ -f "$store" ] && cat -- "$store"
     return 0
 }
@@ -1087,9 +1248,10 @@ compose() {
 #   2. pane_current_command against @cockpit_agents_glob (cockpit.tmux's own
 #      #{m:*|cmd|*,glob} shape, reused verbatim from tmux-jump/tm) -- a shell
 #      pane would EXECUTE review text instead of merely displaying it.
-#   3. @panestate is not needs-input -- a pane sitting on a permission
-#      prompt would take the paste into the dialog, where the Enter this
-#      script tells the human to press becomes a blind approval.
+#   3. (no longer a refusal) a pane that is running or on a permission
+#      prompt gets the review QUEUED: the composed text is spooled beside
+#      the store and @cockpit_review_spool names it; review-gate hands it
+#      over at the agent's next Stop. Nothing is ever pasted into a dialog.
 #   4. store non-empty -- nothing pinned means nothing to deliver.
 #
 # Every refusal names the store. review_pane() deletes it only when delivery
@@ -1107,8 +1269,8 @@ keep_hint() {
     # $SELF, not a bare "tmux-review": the name is only on $PATH after
     # install.sh symlinks it, and from a plugin-only install the suggested
     # command has to be copy-pasteable as printed.
-    printf '; comments kept at %s — deliver later with: %s --deliver %s %s' \
-        "$store" "$(shq "$SELF")" "$pane" "$(shq "$store")"
+    printf '; comments kept at %s — deliver later with: %s --deliver %s %s && %s --done %s' \
+        "$store" "$(shq "$SELF")" "$pane" "$(shq "$store")" "$(shq "$SELF")" "$(shq "$store")"
 }
 
 deliver() {
@@ -1132,19 +1294,6 @@ deliver() {
         return 1
     }
 
-    # Guard 3: a pane sitting on a permission prompt. The paste would land in
-    # the dialog and the human's Enter -- the one this script tells them to
-    # press -- becomes a blind approval of whatever tool was being asked about.
-    # @panestate is written only by agent-state, so this is the cheap read.
-    local pstate
-    pstate=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null)
-    if [ "$pstate" = needs-input ]; then
-        tmux display-message \
-            "tmux-review: $pane is waiting on a permission prompt — answer it first$(keep_hint "$pane" "$store")" \
-            2>/dev/null
-        return 1
-    fi
-
     [ -n "$store" ] && [ -s "$store" ] || {
         tmux display-message "tmux-review: nothing to deliver" 2>/dev/null
         return 1
@@ -1152,6 +1301,21 @@ deliver() {
 
     local payload bytes
     payload=$("$SELF" --compose "$store" "$root")
+
+    # The spool: the composed review as a file, born 0600 beside the store. On
+    # the paste path it is the Stop hook's copy if the pane turns out busy at
+    # paste time; on the hook path it is the whole delivery (review-gate hands the
+    # file's text to the agent as Stop hook feedback, and the harness saves any
+    # output past 10,000 characters to a file with a preview and the path, so the
+    # 2048-byte pointer below is paste-only).
+    local spool="$store.deliver"
+    if ! (umask 077; [ ! -L "$spool" ] && printf '%s' "$payload" > "$spool"); then
+        tmux display-message \
+            "tmux-review: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")" \
+            2>/dev/null
+        return 1
+    fi
+
     bytes=$(printf '%s' "$payload" | wc -c)
 
     # Over 2048 bytes: the review becomes a file the agent reads, not a wall
@@ -1179,7 +1343,7 @@ deliver() {
             return 1
         }
         printf '%s' "$payload" > "$file"
-        payload="Read and address every comment in $file — review of your uncommitted changes; ?? comments are questions."
+        payload="Read and address every comment in $file — a code review from the human; ?? comments are questions."
     fi
 
     # A per-invocation buffer name: tmux buffers are SERVER-GLOBAL, so a
@@ -1197,33 +1361,30 @@ deliver() {
         return 1
     fi
     # The is-agent test the shell ran up top is a ~50ms-stale snapshot: a
-    # compose re-exec, a wc, an mktemp and this load-buffer all sit between it
-    # and the paste. Kill the agent in that window -- a `claude` foreground
-    # child exits and the pane's own shell is back -- and the old unconditional
-    # `paste-buffer` landed the review in that shell (the hunt reproduced it
-    # 6/6, pasting a live, one-Enter-from-running command line the reviewer
-    # never targeted). So the check is redone HERE, by tmux itself, in the same
-    # command-queue item as the paste: `if-shell -F -t <pane>` re-evaluates the
-    # SAME #{m:...} test -- AND guard 3's #{!=:#{@panestate},needs-input}, which
-    # has the identical staleness window: a permission prompt can come up in it
-    # -- against the pane at paste time and only pastes if it is still an idle
-    # agent. The window is closed -- there is no shell round-trip left
-    # between the test and the paste. The early check up top stays as the
-    # cheap fast-fail for a pane that is already not an agent, or already
-    # sitting on a permission prompt.
+    # compose re-exec, a wc, an mktemp, a spool write and this load-buffer all
+    # sit between it and the paste. Kill the agent in that window -- a `claude`
+    # foreground child exits and the pane's own shell is back -- and the old
+    # unconditional `paste-buffer` landed the review in that shell (the hunt
+    # reproduced it 6/6, pasting a live, one-Enter-from-running command line
+    # the reviewer never targeted). So the check is redone HERE, by tmux
+    # itself, in the same command-queue item as the paste: `if-shell -F -t
+    # <pane>` re-evaluates the SAME #{m:...} test -- AND whether @panestate is
+    # running or needs-input, which has the identical staleness window: a
+    # permission prompt (or a tool starting to run) can come up in it -- against
+    # the pane at paste time, and only pastes if it is still an idle agent;
+    # otherwise it takes the queued branch below instead of the paste. The
+    # window is closed -- there is no shell round-trip left between the test
+    # and the paste. The early check up top stays as the cheap fast-fail for a
+    # pane that is already not an agent.
     #
-    # The refused branch deliberately does NOT delete $bufname (only the
-    # delivered branch's `paste-buffer -d` does) -- if-shell's nested command
-    # has already run by the time this CLI call returns (same command-queue
-    # item, no -b job behind it), so the buffer's survival IS the atomic
-    # gate's own true/false outcome, readable here without a second stale
-    # re-test of the pane. Before this, a race-refusal here fell through with
-    # whatever `tmux if-shell` itself returns ("the queue accepted it", always
-    # 0) even though nothing was delivered -- silently breaking the exit-1
-    # refusal contract every early guard above already honors. Checking (and
-    # then clearing) the buffer closes that gap: both refusal paths now share
-    # one contract, and the buffer is gone either way before this function
-    # returns, same as before.
+    # Both arms consume $bufname themselves -- the idle arm's `paste-buffer -d`,
+    # the busy arm's `delete-buffer` -- because if-shell's nested command has
+    # already run by the time this CLI call returns (same command-queue item,
+    # no -b job behind it), so the buffer's survival is only possible if tmux
+    # never ran either arm at all (the pane vanished between load-buffer and
+    # if-shell). The post-if-shell check below exists for that gap, not to
+    # distinguish paste from queue -- both arms are exit-0 successes and both
+    # report themselves via their own display-message.
 
     # Where the review landed, named the way a human navigates: "work:2 api"
     # beats a bare %7 when the pane is three windows away. Read once, HERE,
@@ -1256,10 +1417,26 @@ deliver() {
     where=${where//\'/}
     where=${where//#/##}
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
+
+    # Armed FIRST, disarmed by the idle arm below: the busy/idle choice is made
+    # by tmux inside one command-queue item, and arming ahead of it means the
+    # spool is never armed on a pane that just took the paste, and never
+    # missing on one that did not. A pane that stopped being an agent inside
+    # the ~50ms window keeps a harmless armed option that dies with it --
+    # review-gate only ever runs from an agent's own hook.
+    tmux set-option -p -t "$pane" @cockpit_review_spool "$spool" 2>/dev/null
+
     tmux if-shell -F -t "$pane" \
-        "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{!=:#{@panestate},needs-input}}" \
-        "set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
-        "display-message 'tmux-review: $pane is not an idle agent — not delivered'"
+        "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
+        "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
+        "delete-buffer -b $bufname ; display-message -d 0 'review queued for $where ($pane) — it lands when the agent next stops'"
+
+    # The idle arm disarms the option as it pastes, so an empty option here
+    # means the paste happened and nobody will ever read this spool -- the
+    # queued arm is the only one that leaves it armed. Without this every
+    # pasted review left a .deliver file behind in the session dir, and
+    # done_store's rmdir then found the dir non-empty and left that too.
+    [ -n "$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)" ] || rm -f -- "$spool"
 
     if tmux list-buffers -F '#{buffer_name}' 2>/dev/null | grep -qxF "$bufname"; then
         tmux delete-buffer -b "$bufname" 2>/dev/null
@@ -1271,7 +1448,7 @@ deliver() {
 # --- --fleet / entry-point resolution --------------------------------------
 # Which of the fleet needs your eyes: every agent pane, every session, that is
 # either blocked or dirty -- landscape-gap #1, nothing else answers this. Rows
-# are pane\tstate\ttitle\trepo⑂branch\t±stat.
+# are pane\t[◆|↵ ]state\ttitle\trepo⑂branch\t±stat.
 #
 # The order is the whole point, and it is NOT churn. A pane parked on a
 # permission prompt is the one that actually needs a human, and it usually has
@@ -1305,6 +1482,8 @@ fleet_rows() {
     # keeps the field non-empty on the wire; it is turned back into "unset"
     # the moment it has been read.
     fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
+    # Same sentinel, same reason: @cockpit_review is unset on most panes.
+    fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'$'\t'
     fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
     fmt="${fmt}"'#{pane_current_path}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
@@ -1320,6 +1499,7 @@ fleet_rows() {
     # another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
+    local TREE_DIFF_TMP=$tmpdir      # tree_diff's index copies live here too
 
     # --- Phase 1: one pane list, one root each -------------------------------
     # Two agent panes cd'd into the same worktree (a subdirectory, or the
@@ -1329,14 +1509,15 @@ fleet_rows() {
     # below), before any status call runs. rev-parse --show-toplevel takes no
     # lock; it is the status/diff calls after it that do, and those are what
     # phase 2 below dedups.
-    local isagent id state title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
-    local -a pids=() pane_id=() pane_state=() pane_title=() pane_root=()
-    while IFS=$'\t' read -r isagent id state title path; do
+    local isagent id state review title path n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
+    local -a pids=() pane_id=() pane_state=() pane_review=() pane_title=() pane_root=()
+    while IFS=$'\t' read -r isagent id state review title path; do
         [ "$isagent" = 1 ] || continue
         [ -n "$path" ] || continue
         [ "$state" = - ] && state=   # the wire sentinel above, back to unset
+        [ "$review" = - ] && review=
         n=$((n + 1))
-        pane_id[n]=$id; pane_state[n]=$state; pane_title[n]=$title
+        pane_id[n]=$id; pane_state[n]=$state; pane_review[n]=$review; pane_title[n]=$title
         git -C "$path" --no-optional-locks rev-parse --show-toplevel \
             > "$tmpdir/root-$n" 2>/dev/null &
         pids+=("$!")
@@ -1383,7 +1564,7 @@ fleet_rows() {
     # No git call left here -- just the per-pane state/title/rank the shared
     # scan does not know, joined against the one result its group produced.
     local -a rows=()
-    local dirty repo branch stat churn rank line
+    local dirty repo branch stat churn rank line glyph
     for ((i = 1; i <= n; i++)); do
         id=${pane_id[i]}; state=${pane_state[i]}; title=${pane_title[i]}
         key=${pane_root[i]:-@@none@@}
@@ -1399,8 +1580,12 @@ fleet_rows() {
             running)     rank=3 ;;
             *)           rank=4 ;;
         esac
+        # The review mark rides the state column: ◆ the gate flagged a finished
+        # diff nobody has read, ↵ a review is sitting pasted-but-unsent in the
+        # pane. Without it the queue sends you back to a pane you just reviewed.
+        case "${pane_review[i]}" in pending) glyph='◆ ' ;; sent) glyph='↵ ' ;; *) glyph='' ;; esac
         rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
-            "$rank" "$churn" "$id" "${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
+            "$rank" "$churn" "$id" "$glyph${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
     done
     # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
     # a killed popup takes its children with it, but not necessarily this rm.
@@ -1423,7 +1608,7 @@ fleet_rows() {
 # is nothing to look up.
 fleet_scan_root() {
     local root=$1
-    local st numstat add del untracked churn stat dirty=0 repo branch a d line
+    local numstat add del untracked churn stat dirty=0 repo branch a d gd
 
     if [ -z "$root" ]; then
         # "?" on the wire, never an empty field: phase 3 joins this row back
@@ -1441,38 +1626,39 @@ fleet_scan_root() {
     # rev-parse --show-toplevel result already (fleet_rows resolved it to do
     # the grouping), so naming the repo costs no second call.
     repo=${root##*/}
-    branch=$(git -C "$root" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
+    # The branch straight off the HEAD ref file, the way `git branch
+    # --show-current` reads it, instead of a rev-parse fork per root: "ref:
+    # refs/heads/<name>", or a bare sha when detached. A linked worktree's
+    # .git is a file naming the dir that holds its own HEAD.
+    gd=$root/.git
+    if [ ! -d "$gd" ]; then
+        read -r gd < "$gd" 2>/dev/null || gd=
+        gd=${gd#gitdir: }; case "$gd" in ''|/*) ;; *) gd=$root/$gd ;; esac
+    fi
+    read -r branch < "$gd/HEAD" 2>/dev/null || branch=
+    case "$branch" in 'ref: refs/heads/'*) branch=${branch#ref: refs/heads/} ;; *) branch=HEAD ;; esac
 
-    # --no-optional-locks on every read here: this is a read on someone else's
-    # live worktree, and plain `git status` writes the index back to refresh
-    # stat info. Taking index.lock under an agent that is mid-commit is a race
-    # the reader has no business starting.
-    st=$(git -C "$root" --no-optional-locks status --porcelain 2>/dev/null)
-    if [ -n "$st" ]; then
+    # One diff per root, and that is every git this row needs beyond the
+    # copy: `git status` here was a second walk of the tree for the "?N new"
+    # count alone, and its `??` was the wrong count anyway once the base can
+    # be a checkpoint -- a file untracked at ^A and untouched since is not
+    # new to this review. --summary's "create mode" lines are the files new
+    # AGAINST THE BASE, which is what the rest of the stat already measures.
+    # tree_diff's --no-optional-locks is why reading a live worktree is safe.
+    numstat=$(tree_diff "$root" --numstat --summary)
+    if [ -n "$numstat" ]; then
         dirty=1
-        # The same one base --lines reviews from: staged + unstaged together,
-        # so a fully staged change gets its real churn instead of reading as 0.
-        numstat=$(tree_diff "$root" --numstat)
-        add=0; del=0
+        add=0; del=0; untracked=0
         while IFS=$'\t' read -r a d _f; do
+            case "$a" in ' create mode '*) untracked=$((untracked + 1)); continue ;; esac
             [ -n "$a" ] || continue
             case "$a" in *[!0-9]*) a=0 ;; esac
             case "$d" in *[!0-9]*) d=0 ;; esac
             add=$(( add + a )); del=$(( del + d ))
         done <<<"$numstat"
-
-        # Untracked files carry no numstat line at all -- without counting
-        # them a pane holding only new files reads as 0 churn and sorts last,
-        # even though `git status` already called it dirty. Counted straight
-        # off $st in bash (a byte-for-byte compare against the two-char
-        # prefix) instead of forking `grep -c '^??'` per repo.
-        untracked=0
-        while IFS= read -r line; do
-            case "$line" in "??"*) untracked=$((untracked + 1)) ;; esac
-        done <<<"$st"
         stat="+$add -$del"
         [ "$untracked" -gt 0 ] && stat="$stat  ?$untracked new"
-        churn=$(( add + del + untracked ))
+        churn=$(( add + del ))
     else
         # Nothing to review, only someone to unblock. "+0 -0" would read as a
         # measurement; — reads as "not applicable", which it is.
@@ -1517,7 +1703,7 @@ review_pane() {
         tmux display-message "tmux-review: could not create $sess" 2>/dev/null
         return 1
     }
-    "$SELF" --loop "$dir" "$store"
+    REVIEW_PANE_ID=$pane "$SELF" --loop "$dir" "$store"
     rc=$?
     if [ "$rc" -eq 20 ]; then
         # deliver() is a public subcommand the suite re-delivers the same
@@ -1541,11 +1727,127 @@ review_pane() {
         # and tested with a plain `if`; the `\$` keep both out of the reach of
         # the bash expansion that is building the string. Every path is still
         # shq-quoted.
-        cleanup="rc=\$?; rm -f -- $(shq "$store.rows"); if [ \$rc -eq 0 ]; then rm -f -- $(shq "$store"); rmdir -- $(shq "$sess") 2>/dev/null; fi"
+        cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store"); else rm -f -- $(shq "$store.rows"); fi"
         tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
+    elif [ "$rc" -eq 21 ]; then
+        # Approved: the ref is written (run_loop did it, in the popup); the
+        # pane's attention state and the review dir end here -- by NAME, not
+        # rm -rf. A review already delivered to a busy pane is in flight in
+        # comments.md.deliver with @cockpit_review_spool armed at it, and ^A is
+        # allowed then (the pinned-comments guard sees an empty store), so the
+        # recursive remove took the queued review, dangled the option at a path
+        # that no longer existed, and took delivered.md with it. An armed spool
+        # keeps the dir standing; review-gate's own rmdir finishes it after the
+        # drain.
+        tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
+        "$(dirname "$SELF")/agent-state" recount "$pane"
+        clear_sess "$sess"
+        tmux display-message "review approved — the next one shows only what changes from here" 2>/dev/null
     else
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
     fi
+}
+
+# --- --request: the agent asks ----------------------------------------------
+# The blocking path (ai lens §7.C, revdiff's contract): run from the agent's
+# own Bash tool by the cockpit-review skill, this opens ONE popup on the pane,
+# waits for the human, and hands the batch back as stdout + exit 10 -- the
+# tool result -- instead of a paste. Nothing else changes: the same session
+# dir, the same loop, ^A and esc mean what they always mean.
+#
+# What comes back is decided by the LOOP's exit code, not by the store: esc
+# now offers "leave" (the human said "not now"), which keeps the batch pinned
+# and non-empty, and only ^S (rc 20) is a delivery. display-popup does not
+# return the command's status -- it returns tmux's own -- so the popup command
+# records it in <sess>/rc and this reads it back. A dropped launcher (the tool
+# timed out) leaves the popup, the store and the rc file alone; running it
+# again resumes the pinned comments, so the recovery is "run it again".
+request() {                   # <pane>
+    local pane=$1 dir root sess store pw ph rc
+    case "$pane" in %[0-9]*) ;; *) usage; exit 2 ;; esac
+    if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
+        printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
+        exit 1
+    fi
+    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+    [ -n "$dir" ] || { printf 'tmux-review: pane %s is gone\n' "$pane" >&2; exit 1; }
+    root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root"); store="$sess/comments.md"
+    (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
+        printf 'tmux-review: could not create %s\n' "$sess" >&2; exit 1; }
+    pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
+    ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
+    # A killed launcher leaves its popup running, and that popup still writes
+    # its rc when the human closes it -- so clear the file BEFORE opening this
+    # one: an rc read here must belong to the popup this call just waited on.
+    rm -f -- "$sess/rc"
+    # -E: this returns when the loop exits. display-popup runs the string
+    # through sh, so the escaped \$? is the LOOP's code, not tmux's.
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T ' review · requested ' \
+        "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
+    rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
+    case "$rc" in
+        20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
+            # The agent has the review in hand the moment this returns, so the
+            # pane carries the same "sent" the paste path sets on delivery.
+            tmux set-option -p -t "$pane" @cockpit_review sent 2>/dev/null
+            compose "$store" "$root"; done_store "$store"; exit 10 ;;
+        21) # ^A: same clean-up review_pane does — the ref is written by the loop,
+            # and clear_sess leaves an in-flight comments.md.deliver alone.
+            tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
+            "$(dirname "$SELF")/agent-state" recount "$pane"
+            clear_sess "$sess"
+            exit 0 ;;
+        *)  # leave / discard / a dropped popup: the store stays as the loop
+            # left it. The rmdir is review_pane's own -- it takes the dir a
+            # discard emptied and is a no-op while `leave` keeps the store.
+            rmdir -- "$sess" 2>/dev/null
+            exit 0 ;;
+    esac
+}
+
+# --- --info: one screen for prefix i -------------------------------------------
+# What the plugin knows about one pane, in the order you ask it: who, what it
+# waits on, the review state, the base, the session, the review dir. Read in
+# ONE display-message, split on a US byte (agent-state's idiom -- tab would
+# collapse the empty fields that mean "unset").
+info_mode() {                 # <pane>
+    local pane=$1 sep=$'\037' f id where cmd path state msg review spool sid title root sess b n1 n2
+    f=$(tmux display-message -p -t "$pane" \
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}' 2>/dev/null)
+    id=${f%%"$sep"*};     f=${f#*"$sep"}
+    # display-message does NOT fail on a pane id that does not exist -- it
+    # expands every format to the empty string and exits 0 (measured on 3.7c),
+    # and without this the screen below described the CALLER's own cwd
+    # (git_root "" is the caller's repo) as if it were that pane's. The
+    # resolved id, not the exit code, is what says the pane was found.
+    [ -n "$id" ] || { printf 'tmux-review: no such pane %s\n' "$pane" >&2; return 1; }
+    where=${f%%"$sep"*};  f=${f#*"$sep"}
+    cmd=${f%%"$sep"*};    f=${f#*"$sep"}
+    path=${f%%"$sep"*};   f=${f#*"$sep"}
+    state=${f%%"$sep"*};  f=${f#*"$sep"}
+    msg=${f%%"$sep"*};    f=${f#*"$sep"}
+    review=${f%%"$sep"*}; f=${f#*"$sep"}
+    spool=${f%%"$sep"*};  f=${f#*"$sep"}
+    sid=${f%%"$sep"*};    title=${f#*"$sep"}
+    printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
+    printf 'cwd       %s\n' "$path"
+    printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
+    printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
+    root=$(git_root "$path"); sess=$(session_dir "$id" "$root")
+    if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        # The mode ^B chose for THIS review, as run_loop reads it -- passed as
+        # the argument review_base actually keys on, not exported (nothing this
+        # function calls reads COCKPIT_REVIEW_BASE from the environment).
+        b=$(review_base "$root" "$(cat -- "$sess/comments.md.base" 2>/dev/null)")
+        printf 'base      %s  (%s)\n' "$(cut -f2 <<<"$b")" "$(cut -f1 <<<"$b")"
+    fi
+    printf 'session   %s\n' "${sid:-—}"
+    printf 'title     %s\n' "${title:-—}"
+    if [ -d "$sess" ]; then
+        n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
+        printf 'review dir %s\n           %s pinned · %s delivered · ^A removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
+    fi
+    printf '\n↵ to close\n'
 }
 
 # Pad one field to a fixed COLUMN width. bash's printf pads %-*s by BYTES,
@@ -1568,88 +1870,112 @@ pad_field() {                 # <width> <string>
 # The four visible fields are padded to their own column widths before fzf
 # sees them: ragged single-space columns made the ± numbers impossible to
 # compare down the list, which is most of what this list is FOR.
-fleet_queue() {
+#
+# The queue LOOPS (§8 #3): finishing one review re-lists the fleet with the
+# pane you just left under the pointer, so reviewing four agents is four ↵
+# instead of four prefix+r. esc on the list is the only way out -- a review's
+# own exit code (deliver, approve, discard, leave) says nothing about whether
+# you are done with the fleet.
+fleet_queue() {               # [preselect-pane]
     command -v fzf >/dev/null 2>&1 || {
         tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
         return 1
     }
-    local rows
-    rows=$(fleet_rows)
-    if [ -z "$rows" ]; then
-        tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
-        return 0
-    fi
+    local pre=${1:-}
+    while :; do
+        local rows
+        rows=$(fleet_rows)
+        if [ -z "$rows" ]; then
+            tmux display-message "tmux-review: no agent pane is blocked or has uncommitted changes" 2>/dev/null
+            return 0
+        fi
 
-    # Column widths, capped: one 200-character pane title should not push
-    # repo⑂branch and the ± count off the right edge for every other row.
-    # A field over its cap simply overflows its column instead of being
-    # truncated -- losing the end of a title is worse than one ragged row.
-    local f_pane f_state f_title f_loc f_stat
-    local w_state=0 w_title=0 w_loc=0
-    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
-        [ -n "$f_pane" ] || continue
-        [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
-        [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
-        [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
-    done <<<"$rows"
-    [ "$w_state" -gt 12 ] && w_state=12
-    [ "$w_title" -gt 40 ] && w_title=40
-    [ "$w_loc"   -gt 32 ] && w_loc=32
+        # Column widths, capped: one 200-character pane title should not push
+        # repo⑂branch and the ± count off the right edge for every other row.
+        # A field over its cap simply overflows its column instead of being
+        # truncated -- losing the end of a title is worse than one ragged row.
+        local f_pane f_state f_title f_loc f_stat
+        local w_state=0 w_title=0 w_loc=0
+        while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+            [ -n "$f_pane" ] || continue
+            [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
+            [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
+            [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
+        done <<<"$rows"
+        [ "$w_state" -gt 12 ] && w_state=12
+        [ "$w_title" -gt 40 ] && w_title=40
+        [ "$w_loc"   -gt 32 ] && w_loc=32
 
-    local -a disp=()
-    while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
-        [ -n "$f_pane" ] || continue
-        disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
-    done <<<"$rows"
-    [ ${#disp[@]} -gt 0 ] || return 0
+        local -a disp=()
+        while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
+            [ -n "$f_pane" ] || continue
+            disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
+        done <<<"$rows"
+        [ ${#disp[@]} -gt 0 ] || return 0
 
-    local nrows avail lrows psz preview_cmd out pane dir
-    nrows=${#disp[@]}
-    avail=$(tput lines 2>/dev/null || echo 24)
-    lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-    # 6, not 5: this header is two lines now -- one line of it is 95 columns
-    # and the popup is 70% of the terminal, so fzf truncated the key hints off
-    # the right edge on anything narrower than 136 columns. Reserve the second
-    # row rather than taking it out of the list.
-    psz=$(( avail - lrows - 6 ))
-    [ "$psz" -lt 5 ] && psz=5
+        local nrows avail lrows psz preview_cmd out pane dir
+        nrows=${#disp[@]}
+        avail=$(tput lines 2>/dev/null || echo 24)
+        lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
+        # 6, not 5: this header is two lines now -- one line of it is 95 columns
+        # and the popup is 70% of the terminal, so fzf truncated the key hints off
+        # the right edge on anything narrower than 136 columns. Reserve the second
+        # row rather than taking it out of the list.
+        psz=$(( avail - lrows - 6 ))
+        [ "$psz" -lt 5 ] && psz=5
 
-    # Same root-vs-cwd seam as review_pane: the row only carries the pane's
-    # raw cwd, so resolve it to the repo root here too before handing it to
-    # --preview-diff, which expects a real, existing path.
-    preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
-    preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
-    preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
+        # The pointer starts on $pre's row -- the pane prefix+r was pressed in,
+        # then whichever pane the last review was of. Without it the pointer
+        # sits on whatever the SORT put first, and the one pane you actually
+        # asked for is one you have to hunt for. --sync is what makes the bind
+        # land: without it fzf runs `start` before the list is loaded and the
+        # move is silently lost. pos() is 1-based over the input order.
+        # A pane that is not in the queue at all (nothing to review there)
+        # leaves pos at 0 and the list unmoved.
+        local pos=0 i
+        local -a presel=()
+        for i in "${!disp[@]}"; do [ "${disp[$i]%%$'\t'*}" = "$pre" ] && { pos=$(( i + 1 )); break; }; done
+        [ "$pos" -gt 0 ] && presel=(--sync --bind "start:pos($pos)")
 
-    # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
-    # been written by the owner's own tmux.conf, so `eval`ing it is eval of
-    # their config, not of anything an agent pane can reach. It is confined to
-    # this navigation picker on purpose: in the review loop ↵ has a contract
-    # (pin a comment, never approve) and ^S is the consent gesture, and one
-    # stray --bind from a config would quietly break either of them.
-    local -a extra=()
-    local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
-    [ -n "$opt" ] && eval "extra=($opt)"
+        # Same root-vs-cwd seam as review_pane: the row only carries the pane's
+        # raw cwd, so resolve it to the repo root here too before handing it to
+        # --preview-diff, which expects a real, existing path.
+        preview_cmd="pdir=\$(tmux display-message -p -t {1} '#{pane_current_path}' 2>/dev/null); "
+        preview_cmd="${preview_cmd}proot=\$(git -C \"\$pdir\" rev-parse --show-toplevel 2>/dev/null); "
+        preview_cmd="${preview_cmd}$(shq "$OPENPATH") --preview-diff \"\${proot:-\$pdir}\""
 
-    out=$(printf '%s\n' "${disp[@]}" \
-        | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-              --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-              --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-              --preview "$preview_cmd" \
-              --preview-window="down,$psz,border-top" \
-              --prompt='fleet> ' \
-              --header=$'which agent needs you   state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
-              ${extra[@]+"${extra[@]}"})
-    [ -n "$out" ] || return 0
+        # @cockpit_fleet_fzf_options is a GLOBAL tmux option -- it can only have
+        # been written by the owner's own tmux.conf, so `eval`ing it is eval of
+        # their config, not of anything an agent pane can reach. It is confined to
+        # this navigation picker on purpose: in the review loop ↵ has a contract
+        # (pin a comment, never approve) and ^S is the consent gesture, and one
+        # stray --bind from a config would quietly break either of them.
+        local -a extra=()
+        local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)
+        [ -n "$opt" ] && eval "extra=($opt)"
 
-    pane=$(cut -f1 <<<"$out")
-    [ -n "$pane" ] || return 0
-    dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-    [ -n "$dir" ] || {
-        tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
-        return 0
-    }
-    review_pane "$pane" "$(git_root "$dir")"
+        out=$(printf '%s\n' "${disp[@]}" \
+            | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --preview "$preview_cmd" \
+                  --preview-window="down,$psz,border-top" \
+                  --prompt='fleet> ' \
+                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+                  ${presel[@]+"${presel[@]}"} \
+                  ${extra[@]+"${extra[@]}"})
+        [ -n "$out" ] || return 0
+
+        pane=$(cut -f1 <<<"$out")
+        [ -n "$pane" ] || return 0
+        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+        if [ -z "$dir" ]; then
+            tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
+            continue
+        fi
+        review_pane "$pane" "$(git_root "$dir")"
+        pre=$pane
+    done
 }
 
 # No args, bound to prefix R: ask tmux which pane the CLIENT is actually on --
@@ -1664,7 +1990,7 @@ fleet_queue() {
 # from when the caller has it; without it this falls back to the old
 # best-effort client-recency resolution.
 main_entry() {
-    local pane is_agent dir
+    local pane is_agent
     if [ -n "$REVIEW_PANE_ID" ]; then
         pane=$REVIEW_PANE_ID
     else
@@ -1676,18 +2002,18 @@ main_entry() {
     fi
     is_agent=$(tmux display-message -p -t "$pane" \
         '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
-    if [ "$is_agent" = 1 ]; then
-        dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-        review_pane "$pane" "$(git_root "$dir")"
-    else
-        fleet_queue
-    fi
+    # Always the queue (§8 #3): the other blocked agents stay visible, and the
+    # pane the key was pressed in is preselected so one ↵ reviews it.
+    if [ "$is_agent" = 1 ]; then fleet_queue "$pane"; else fleet_queue; fi
 }
 
 # -p pane_id, parsed here so the dispatch below sees only the subcommand --
 # mirrors tmux-branch's own -c/-p loop (tmux-branch:25-33); tmux-review only
-# needs -p (main_entry's click-binding pin), not -c.
-REVIEW_PANE_ID=""
+# needs -p (main_entry's click-binding pin), not -c. Default, not reset: an
+# unconditional `REVIEW_PANE_ID=""` here would clobber the value review_pane()
+# exports around its own `--loop` re-invocation (the ^S picker's label) before
+# -p ever gets a chance to override it.
+: "${REVIEW_PANE_ID:=}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) REVIEW_PANE_ID="${2:-}"; shift 2 || break ;;
@@ -1718,6 +2044,14 @@ case "${1:-}" in
         shift; compose "${1:-}" "${2:-}" ;;
     --deliver)
         shift; deliver "${1:-}" "${2:-}" "${3:-}" ;;
+    --done)
+        shift; done_store "${1:-}" ;;
+    --delta)
+        shift; delta_mode "${1:-}" ;;
+    --request)
+        shift; request "${1:-}" ;;
+    --info)
+        info_mode "${REVIEW_PANE_ID:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

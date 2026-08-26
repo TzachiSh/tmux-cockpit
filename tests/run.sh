@@ -111,6 +111,11 @@ until_cap() {                 # <socket> <pane> <pattern>
     done
     return 1
 }
+review_enter() {              # <socket> <ctl-pane>  the queue opens preselected on the pressed pane; ↵ reviews it
+    until_cap "$1" "$2" '*fleet>*' || return 1
+    "$TMUX_REAL" -L "$1" send-keys -t "$2" Enter
+    until_cap "$1" "$2" '*review>*'
+}
 until_file() {                # <file> <pattern>
     local i
     for i in $(seq 1 40); do
@@ -214,6 +219,7 @@ esac
 tmux -L "$SOCK4" kill-server >/dev/null 2>&1
 fi
 
+# tests: examples/tmux.conf cockpit.tmux
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
@@ -296,6 +302,7 @@ is "but a real pane id still works" "error" "$(sv)"
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 
 fi
+# tests: cockpit.tmux
 echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
 # Hooks cannot fire if an agent is killed or crashes, so @panestate can outlive
@@ -371,6 +378,7 @@ is "idle notification does not clear done" "done" "$(sv)"
 is "and done is still intact"  "done" "$(sv)"
 
 fi
+# tests: cockpit.tmux
 echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
 sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
@@ -472,6 +480,134 @@ is "and the stored count still carries its colour tokens" \
    '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
    "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
+if need_tmux "agent-state recount"; then :; else
+tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆1'*) ok "recount adds ◆1 to the fleet string" ;;
+    *) bad "recount adds ◆1 to the fleet string" "…◆1…" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+esac
+tmux set-option -p -t "$PANE" @cockpit_review sent >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆'*) bad "a sent review is not a pending one" "no ◆" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+    *) ok "a sent review is not a pending one" ;;
+esac
+tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
+tmux set-option -p -t "$PANE" @cockpit_review_spool /nonexistent >/dev/null 2>&1
+tmux set-option -p -t "$PANE" @panestate needs-input >/dev/null 2>&1
+st recount "$PANE"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'▲'*'◆1'*) ok "recount runs under a sticky needs-input too, ▲ before ◆" ;;
+    *) bad "recount runs under a sticky needs-input too, ▲ before ◆" "▲N … ◆1" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+esac
+st off "$PANE"
+is "off clears the review state" "" "$(tmux show-option -pqv -t "$PANE" @cockpit_review)"
+is "off clears a queued spool" "" "$(tmux show-option -pqv -t "$PANE" @cockpit_review_spool)"
+case "$(tmux show-option -gqv @cockpit_fleet)" in
+    *'◆'*) bad "and the ◆ is gone" "no ◆" "$(tmux show-option -gqv @cockpit_fleet)" ;;
+    *) ok "and the ◆ is gone" ;;
+esac
+fi
+
+echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
+if need_tmux "review-gate"; then :; else
+RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"; RGSTATE=$(mktmpd); RGDIR=$(mktmpd)
+(
+  cd "$RGDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RGDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RGAP=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id}')
+RGCTL=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash')
+until_cap "$RG" "$RGCTL" '*$*'
+rg_n() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -c 'GRC=[0-9]'; }
+rg_wait() {                   # <count-before>  until one more finished GRC= marker is on screen (rundeliver's shape)
+    local i; for i in $(seq 1 60); do [ "$(rg_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1
+}
+rg_run() {                    # <stdin-file>  runs the hook inside the session as the pane's own hook would, RC on the control pane
+    local n0; n0=$(rg_n)
+    "$TMUX_REAL" -L "$RG" send-keys -t "$RGCTL" \
+        "TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
+    rg_wait "$n0"
+}
+rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1; }
+RGPAY=$(mktmpf); printf '{"session_id":"sid-123","transcript_path":"%s/tx.jsonl","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RGSTATE" "$RGDIR" > "$RGPAY"
+printf '{"type":"ai-title","aiTitle":"First topic"}\n{"type":"user"}\n{"type":"ai-title","aiTitle":"Fix the parser"}\n{"type":"assistant"}\n' > "$RGSTATE/tx.jsonl"
+# Clean tree: nothing to flag; the payload's fields are stashed.
+rg_run "$RGPAY"; is "a clean tree exits 0" "GRC=0" "$(rg_rc)"
+is "no review is pending on a clean tree" "" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+is "the newest ai-title becomes the pane's title" "Fix the parser" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_title)"
+is "the session id is stashed for prefix i" "sid-123" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_session)"
+# Dirty tree: ◆.
+printf 'a\nb\n' > "$RGDIR/f"
+rg_run "$RGPAY"; is "a finished, unreviewed diff exits 0" "GRC=0" "$(rg_rc)"
+is "and flags the pane pending" "pending" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
+case "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" in *'◆1'*) ok "the fleet string says ◆1" ;; *) bad "the fleet string says ◆1" "◆1" "$("$TMUX_REAL" -L "$RG" show-option -gqv @cockpit_fleet)" ;; esac
+# A queued review: handed over as Stop hook feedback on stdout, exit 0, exactly once.
+printf 'Code review from the human\n\n## f:2 (+)\n> b\nDRAIN-MARKER\na "quoted" \\ back\\slash\ttabbed\n\n' > "$RGSTATE/spool.md"
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review_spool "$RGSTATE/spool.md" >/dev/null 2>&1
+rg_run "$RGPAY"; is "a queued review makes the hook exit 0" "GRC=0" "$(rg_rc)"
+case "$(cat "$RGSTATE/out")" in
+    *'"hookSpecificOutput"'*'"hookEventName":"Stop"'*'"additionalContext":"'*DRAIN-MARKER*)
+        ok "and the review rides additionalContext on stdout, where Claude reads it as Stop hook feedback" ;;
+    *) bad "and the review rides additionalContext on stdout, where Claude reads it as Stop hook feedback" "DRAIN-MARKER" "$(cat "$RGSTATE/out")" ;;
+esac
+is "the review's newlines are escaped, not raw, inside the JSON" "1" "$(wc -l < "$RGSTATE/out")"
+# The escaper's ORDER is what this pins: a backslash escaped after the quotes
+# would double the ones the quote pass just wrote, and a control-char strip run
+# before the whitespace passes would swallow the tab instead of escaping it.
+rg_esc=""
+case "$(cat "$RGSTATE/out")" in *'\"quoted\"'*)  rg_esc="quote" ;;             *) rg_esc="RAW-QUOTE" ;; esac
+case "$(cat "$RGSTATE/out")" in *'back\\slash'*) rg_esc="$rg_esc backslash" ;; *) rg_esc="$rg_esc RAW-BACKSLASH" ;; esac
+case "$(cat "$RGSTATE/out")" in
+    *$'\t'*)           rg_esc="$rg_esc RAW-TAB" ;;
+    *'slash\ttabbed'*) rg_esc="$rg_esc tab" ;;
+    *)                 rg_esc="$rg_esc LOST-TAB" ;;
+esac
+is 'and the quote, the backslash and the tab are escaped, not raw' "quote backslash tab" "$rg_esc"
+is "and stderr stays empty on a handover" "" "$(cat "$RGSTATE/err")"
+is "the spool option is cleared before speaking" "" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_spool)"
+is "the spool file is consumed" "absent" "$([ -e "$RGSTATE/spool.md" ] && echo present || echo absent)"
+is "the pane reads running again (the agent is about to work)" "running" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @panestate)"
+rg_run "$RGPAY"; is "the same Stop fired again delivers nothing (no rewake loop)" "GRC=0" "$(rg_rc)"
+is "and stdout is empty the second time" "" "$(cat "$RGSTATE/out")"
+is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
+# The two stdin cases, both driven by a background writer on a FIFO. A pipeline
+# (`sleep N | review-gate`) would measure bash waiting for the WHOLE pipeline,
+# not the hook's read; agent-state's own hang guard above uses this same holder
+# shape. %999999 is no pane on any server and TMUX_TMPDIR points at an empty
+# dir, so every bare tmux call finds nothing, the hook fails open, and its stdin
+# read is the only thing under test -- never the developer's live server.
+RGF="$RGSTATE/gate.fifo"; mkfifo "$RGF"
+# 1. The payload arrives and the writer then keeps the pipe open, which is what
+#    Claude Code actually does. Waiting for EOF here would burn the full
+#    deadline on every Stop; the read stops at the fields it wants instead.
+( exec 9>"$RGF"; cat "$RGPAY" >&9; sleep 8 ) & rg_holder=$!   # a holder, not a wait
+rg_t0=$SECONDS
+TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
+    timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
+rg_grc=$?
+kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+is "a payload whose writer keeps stdin open is not waited out" "0" "$rg_grc"
+[ $(( SECONDS - rg_t0 )) -lt 2 ] && ok "and the read returns as soon as it has both fields ($(( SECONDS - rg_t0 ))s)" || bad "and the read returns as soon as it has both fields" "under the 2s deadline" "$(( SECONDS - rg_t0 ))s"
+# 2. Nothing ever arrives: the deadline is the backstop, and it must fire.
+( exec 9>"$RGF"; sleep 8 ) & rg_holder=$!                     # a holder, not a wait
+rg_t0=$SECONDS
+TMUX_PANE=%999999 TMUX_TMPDIR="$RGSTATE" XDG_STATE_HOME="$RGSTATE" \
+    timeout 6 "$DIR/scripts/review-gate" >/dev/null 2>&1 < "$RGF"
+rg_grc=$?
+kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
+is "a silent stdin does not hang the hook" "0" "$rg_grc"
+[ $(( SECONDS - rg_t0 )) -le 4 ] && ok "and it gives up inside its own deadline ($(( SECONDS - rg_t0 ))s)" || bad "and it gives up inside its own deadline" "under 4s" "$(( SECONDS - rg_t0 ))s"
+rm -f "$RGF"
+unset -f rg_n rg_wait rg_run rg_rc
+"$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
 
 echo "== worktree in the branch label =="
@@ -589,6 +725,7 @@ is "file(12,3) is not a wrapper" "$OP/tm:12:3"        "$(op 'tm(12,3): error TS1
 is "nested (Write(path))"    "$OP/README.md::"        "$(op '(Write(README.md))')"
 rm -rf "$OP"
 
+# tests: scripts/tmux-branch
 echo "== tmux-branch: local and remote branches =="
 # Plumbing, not `git commit`: no user config, no hooks, no signing prompt.
 BR=$(mktmpd); RM=$(mktmpd)
@@ -692,6 +829,7 @@ else
     ok "a 4000-token clicked line is bounded, not just slow"
 fi
 
+# group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
@@ -1248,18 +1386,24 @@ esac
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
-XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
+# HOME="$IB" on every call below, and a ~/.claude to find: install.sh also links
+# the cockpit-review skill into ~/.claude/skills wherever Claude Code lives, and
+# the suite must never write into the real one.
+mkdir -p "$IB/.claude"
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" >/dev/null 2>&1
 is "installs through a symlinked plugin dir" "3" "$(ls "$IBIN" | wc -l)"
+is "the skill is linked into ~/.claude/skills" "$DIR/skills/cockpit-review" "$(readlink "$IB/.claude/skills/cockpit-review")"
 # DIR came from a LOGICAL pwd while the guard compared readlink -f of the link,
 # so reaching the plugin through a symlink -- a dotfiles checkout linked into
 # ~/.tmux/plugins is the usual way -- made --uninstall remove nothing, silently.
-XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$IL/install.sh" --uninstall >/dev/null 2>&1
 is "and uninstalls through one too" "0" "$(ls "$IBIN" | wc -l)"
+is "and unlinked on --uninstall" "absent" "$([ -e "$IB/.claude/skills/cockpit-review" ] && echo present || echo absent)"
 # A same-named symlink owned by another tool must be left alone: "tm" is a name
 # plenty of things want, and --uninstall would later have deleted it as well.
-XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 rm -f "$IBIN/tm"; ln -s /bin/echo "$IBIN/tm"
-XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
+HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 is "leaves another tool's link alone" "/bin/echo" "$(readlink "$IBIN/tm")"
 rm -rf "$IB"
 
@@ -1463,7 +1607,11 @@ rm -rf "$HB"
 # install.sh printed "linked ..." for every link ln had just failed to create,
 # and exited 0.
 RO=$(mktmpd); chmod 555 "$RO"
-out=$(XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
+# HOME="$RO" too: install.sh also links the cockpit-review skill into
+# ~/.claude/skills, and with the real HOME that one link SUCCEEDED -- printing
+# "linked" in a block that asserts none, and leaving a link in the user's own
+# skills dir. $RO holds no .claude, so the skill step is skipped here.
+out=$(HOME="$RO" XDG_BIN_HOME="$RO" "$DIR/install.sh" 2>&1); rc=$?
 chmod 755 "$RO"; rm -rf "$RO"
 case "$out" in
     *linked*) bad "a failed link is not reported as linked" "no 'linked' line" "$out" ;;
@@ -2056,6 +2204,7 @@ is "full.tmux.conf leaves the outer terminal title off" "off" \
 "$TMUX_REAL" -L "$ST" kill-server >/dev/null 2>&1
 fi
 
+# group: etmux
 echo "== @cockpit_open_single skips the popup for machine output =="
 # Opt-in: a lone candidate that carried an explicit :line is a stack trace or
 # compiler error, not a guess. "line" opens those directly; "always" opens any
@@ -2154,6 +2303,11 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
+is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 5 s" "3 1 5" \
+   "$(jq -r '[(.hooks.Stop | length),
+             ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
+             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add)] | join(" ")' \
+       "$HK/.claude/settings.json")"
 # The same hook with and without an explicit matcher:"" is the SAME hook:
 # a live Stop entry carrying the key while the shipped one lacked it made
 # every --hooks run append one more duplicate, forever. Seed the matcher-less
@@ -2162,7 +2316,7 @@ HKN=$(mktmpd); mkdir -p "$HKN/.claude"
 jq '.hooks.Stop[0] |= del(.matcher)' "$DIR/examples/claude-hooks.json" \
     | jq '{hooks: {Stop: .hooks.Stop}}' > "$HKN/.claude/settings.json"
 HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
-is "a matcher-less twin does not duplicate" "1" \
+is "a matcher-less twin does not duplicate" "2" \
    "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
 rm -rf "$HKN"
 # dry-run: shows the diff, writes nothing
@@ -2307,7 +2461,10 @@ printf '{"model":"opus"}' > "$HK7/.claude/settings.json"
 HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
 jq -S . "$HK7/.claude/settings.json" > "$HK7/.claude/reformatted.json" && mv "$HK7/.claude/reformatted.json" "$HK7/.claude/settings.json"
 HOME="$HK7" "$DIR/install.sh" --hooks >/dev/null 2>&1
-dupes=$(jq '[.hooks[] | length] | map(select(. > 1)) | length' "$HK7/.claude/settings.json")
+# Counted as duplicates WITHIN an event, not as "more than one group": Stop
+# ships two distinct groups (agent-state done, review-gate), and a length test
+# would call that legitimate pair a duplication.
+dupes=$(jq '[.hooks[] | length - (unique | length)] | add' "$HK7/.claude/settings.json")
 is "a reformat-then-merge leaves exactly one cockpit entry per event" "0" "$dupes"
 rm -rf "$HK7"
 
@@ -2452,6 +2609,20 @@ JP4=$("$TMUX_REAL" -L "$JJ" new-window -t t: -P -F '#{pane_id}' 'sleep 300' 2>/d
 "$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
 is "a shell holding stale state is never jumped to" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+# Nothing blocked, but one agent holds a review the gate flagged: that is
+# still somewhere you have to go, so prefix J walks to it -- after the blocked
+# panes and after the ones holding a delivered review, never before them.
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @cockpit_review pending >/dev/null 2>&1
+"$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
+# The marker poll, not a fixed sleep: the typed line's own "JPR=$?" has no
+# digit after the =, so only the finished command's output matches.
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JPR=\$?" Enter
+until_cap "$JJ" "$JP1" '*JPR=[0-9]*'
+is "prefix J walks to a pane with a pending review when nothing is blocked" "1" \
+   "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
+"$TMUX_REAL" -L "$JJ" set-option -pu -t "$JP2" @cockpit_review >/dev/null 2>&1
 # Nothing blocked: the script must not move you, and must not error.
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
@@ -2788,6 +2959,7 @@ rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.
 is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
 rm -rf "$RVOFFN"
 
+# group: serial
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -3166,6 +3338,7 @@ case "$("$DIR/scripts/tmux-review" --lines "$RVBIN")" in
 esac
 rm -rf "$RVBIN"
 
+# group: serial
 echo "== tmux-review --lines: builds rows without a fork or a quadratic append per line =="
 # The row build used `disp=$(printf ...)` (a subshell fork per row) and
 # `group[path]+=<row>` into one associative-array element (bash rebuilds the
@@ -3308,6 +3481,7 @@ else
 fi
 rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
 
+# group: serial
 echo "== tmux-review --rows: re-marking after a comment reads the cache, not git =="
 # The picker reloads the WHOLE marked list after every pinned comment, and
 # rows_mode re-derived that list from `git diff` + the full row build every
@@ -3693,8 +3867,9 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
          "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
 esac
 
-# Row 1 -- keep reviewing. Back to the list, every pinned comment still there.
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# Row 2 -- keep reviewing (row 1 is now "leave", covered by the ^S confirm
+# block below). Back to the list, every pinned comment still there.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
 # fzf RESTORES the screen it covered when it exits, so the list's own text is
 # back on the pane before the second picker is actually up -- a content poll
 # cannot tell the restored screen from the live one. Sync on the pane's
@@ -3710,13 +3885,13 @@ done
 is "keep reviewing returns to the list with the store intact" \
    "$rvbefore" "$(wc -c < "$RVSTORE" 2>/dev/null)"
 
-# Row 2 -- discard. Only this second, deliberate answer deletes the store.
+# Row 3 -- discard. Only this deliberate, third answer deletes the store.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
     sleep 0.1
 done
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Down Enter
 for i in $(seq 1 20); do [ -e "$RVSTORE" ] || break; sleep 0.1; done
 if [ -e "$RVSTORE" ]; then
     bad "esc discards: the store is gone" "no such file" "$RVSTORE still exists"
@@ -3763,6 +3938,49 @@ fi
 is "the pinned comments are kept, not shredded, on that exit" \
    "$rvspinwant" "$(cat "$RVSPINSTORE" 2>/dev/null)"
 rm -rf "$RVSPIN" "$RVSPINSTORE"
+
+echo "== tmux-review --loop: ^S asks first — deliver, edit the batch, or keep reviewing; esc leaves the batch pinned =="
+if need_tmux "review ^S confirm"; then :; else
+CS="cockpit-cs-$$"; SOCKS="$SOCKS $CS"; CSSTATE=$(mktmpd); CSDIR=$(mktmpd)
+(
+  cd "$CSDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
+) >/dev/null 2>&1
+CSED=$(mktmpf); printf '#!/bin/sh\nprintf "EDITED-BY-EDITOR\\n" >> "$1"\n' > "$CSED"; chmod +x "$CSED"
+"$TMUX_REAL" -L "$CS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$CSDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CS" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+CSAP=$("$TMUX_REAL" -L "$CS" list-panes -t t: -F '#{pane_id}')
+CSCTL=$("$TMUX_REAL" -L "$CS" split-window -t t -P -F '#{pane_id}' 'exec bash'); until_cap "$CS" "$CSCTL" '*$*'
+CSSESS="$CSSTATE/tmux-cockpit/review/${CSAP#%}-$(printf '%s' "$CSDIR" | cksum | cut -d' ' -f1)"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
+review_enter "$CS" "$CSCTL"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "one"; until_cap "$CS" "$CSCTL" '*one*'; "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter; until_file "$CSSESS/comments.md" '*one*'
+# esc: leave, batch kept, dir kept.
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Escape
+until_cap "$CS" "$CSCTL" '*leave — 1 comment*' && ok "esc offers to leave with the batch pinned" || bad "esc offers to leave with the batch pinned" "leave — 1 comment(s) stay pinned" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter
+# Leaving the review drops back into the queue it was opened from; esc there
+# is what returns the control pane to its shell prompt.
+until_cap "$CS" "$CSCTL" '*fleet>*'
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Escape
+until_cap "$CS" "$CSCTL" '*$*'
+is "leaving keeps the store" "1" "$(grep -c '^## ' "$CSSESS/comments.md" 2>/dev/null)"
+# Back in: ^S asks; edit runs $EDITOR on the whole store; then deliver.
+# `clear;` first: fzf restores the screen it covered when it exits, so without
+# it the pane still shows the first open's "review>" list (verified: it does)
+# and the wait below would match that stale text instead of the real re-open.
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "clear; EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
+review_enter "$CS" "$CSCTL"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" C-s
+until_cap "$CS" "$CSCTL" "*deliver 1 comment(s) to $CSAP*" && ok "^S asks before delivering, naming the pane" || bad "^S asks before delivering, naming the pane" "deliver 1 comment(s) to $CSAP" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Down Enter      # edit the batch in $EDITOR first
+until_file "$CSSESS/comments.md" '*EDITED-BY-EDITOR*' && ok "edit hands the whole store to \$EDITOR" || bad "edit hands the whole store to \$EDITOR" "EDITED-BY-EDITOR in the store" "$(cat "$CSSESS/comments.md")"
+until_cap "$CS" "$CSCTL" '*review>*' && ok "and returns to the list" || bad "and returns to the list" "review>" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" C-s; until_cap "$CS" "$CSCTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter
+until_cap "$CS" "$CSAP" '*EDITED-BY-EDITOR*' && ok "deliver pastes the edited batch" || bad "deliver pastes the edited batch" "EDITED-BY-EDITOR in the agent pane" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSAP")"
+"$TMUX_REAL" -L "$CS" kill-server >/dev/null 2>&1
+fi
 
 echo "== review-store: parse is the inverse of format over the full grammar =="
 # The one module that knows what "## path:line (+)" means. Sourced, pure:
@@ -3833,9 +4051,20 @@ use errors.Is() instead of direct comparison
 
 STORE
 rv3golden=$(cat <<'GOLDEN'
-Code review of your uncommitted changes. Address each comment; a comment
-containing ?? is a question — answer it in chat, do not edit for it.
-Comments are anchored as path:line with the original line quoted.
+Code review of your changes, from the human, batched on purpose.
+
+Scope: change only what these comments ask for. Do not refactor, rename,
+tidy or commit anything else — a fix that grows the diff defeats the review.
+Questions first: a comment containing ?? is a question. Answer every question
+in chat before you edit anything, then make the edits in one pass.
+Disagree out loud: if a comment is wrong or would break something, say so and
+do not make the change. Silent compliance with a wrong comment is the worse
+failure.
+Anchors: comments are path:line with the original line quoted. The numbers are
+from the diff as it was when the review was written and drift after your first
+edit — trust the quoted fragment, not the number.
+When done, end your reply with one line per comment:
+  <path>:<line> — done | skipped: <reason>
 
 ## scripts/tm:43 (+)
 > the quoted fragment
@@ -3853,10 +4082,21 @@ is "the composed review matches the golden text byte-for-byte" \
 # The same store, but with the root that --deliver threads through in real
 # use: one more header line naming it, nothing else in the body changed.
 rv3rootgolden=$(cat <<'GOLDEN'
-Code review of your uncommitted changes. Address each comment; a comment
-containing ?? is a question — answer it in chat, do not edit for it.
-Comments are anchored as path:line with the original line quoted.
+Code review of your changes, from the human, batched on purpose.
+
+Scope: change only what these comments ask for. Do not refactor, rename,
+tidy or commit anything else — a fix that grows the diff defeats the review.
+Questions first: a comment containing ?? is a question. Answer every question
+in chat before you edit anything, then make the edits in one pass.
+Disagree out loud: if a comment is wrong or would break something, say so and
+do not make the change. Silent compliance with a wrong comment is the worse
+failure.
+Anchors: comments are path:line with the original line quoted. The numbers are
+from the diff as it was when the review was written and drift after your first
+edit — trust the quoted fragment, not the number.
 Paths are relative to /home/agent/project.
+When done, end your reply with one line per comment:
+  <path>:<line> — done | skipped: <reason>
 
 ## scripts/tm:43 (+)
 > the quoted fragment
@@ -4031,6 +4271,304 @@ for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
     rm -rf "$GD"
 done
 
+echo "== tmux-review --lines: the diff never writes the agent's index =="
+# Every diff now runs against a COPY of the index (git add -N -A on the copy
+# folds untracked files into the same diff). The copy is the whole point:
+# an `add -N` against the real index would rewrite the agent's own index
+# under it mid-commit. Pinned by the index file's mtime and size.
+RI=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" untracked "$RI" >/dev/null 2>&1
+ri_stamp() { stat -c '%Y %s' "$RI/.git/index" 2>/dev/null || stat -f '%m %z' "$RI/.git/index"; }
+touch -d '2020-01-01 00:00:00' "$RI/.git/index" 2>/dev/null || touch -t 202001010000 "$RI/.git/index"
+ri_before=$(ri_stamp)
+is "untracked rows still come out of one diff" "2" \
+   "$("$DIR/scripts/tmux-review" --lines "$RI" | grep -c $'^new.txt\t')"
+is "and the real index is byte- and mtime-identical afterwards" "$ri_before" "$(ri_stamp)"
+is "no intent-to-add entry leaked into the real index" "" \
+   "$(git -C "$RI" ls-files -s -- new.txt)"
+unset -f ri_stamp
+rm -rf "$RI"
+
+echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
+# revdiff's auto-detect, one function: a checkpoint ref wins, then the
+# merge-base with the upstream/default branch when it is not HEAD itself,
+# then HEAD (today's view). ^B cycles the modes that hold. Exercised through
+# --delta and --lines so the tests see what a reviewer sees.
+RB=$(mktmpd)
+(
+  cd "$RB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  printf 'a\n' > f; git add -A; git commit -q -m init
+  # "topic", not "feat": it has to sort AFTER main and master, because
+  # review_base reads its refs from one for-each-ref whose rows come back
+  # sorted by name -- a fallback seen before the branch's own row must not be
+  # lost to it (it was, once).
+  git checkout -q -b topic
+  printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am topic
+) >/dev/null 2>&1
+is "a clean feature branch reviews its commits against main" "1" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT')"
+printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\n' > "$RB/f"
+is "branch + uncommitted are one set" "2" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
+   "$(COCKPIT_REVIEW_BASE=uncommitted "$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+# A checkpoint: the tree as it stands now, under the ref ^A will write.
+(
+  cd "$RB" || exit
+  I=$(mktemp); cp -p .git/index "$I"; GIT_INDEX_FILE=$I git add -A
+  git update-ref refs/cockpit/reviewed/topic "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
+) >/dev/null 2>&1
+is "with a checkpoint at the current tree there is nothing to review" "" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB")"
+printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\nSINCE\n' > "$RB/f"
+is "and after one more edit only that edit is a row" "SINCE" \
+   "$("$DIR/scripts/tmux-review" --lines "$RB" | cut -f3)"
+is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3" \
+   "$(COCKPIT_REVIEW_BASE=branch "$DIR/scripts/tmux-review" --lines "$RB" | grep -c .)"
+
+if need_tmux "review base ^B"; then :; else
+RBS="cockpit-rbs-$$"; SOCKS="$SOCKS $RBS"; RBSTATE=$(mktmpd)
+"$TMUX_REAL" -L "$RBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RB" 'exec bash' >/dev/null 2>&1
+RBP=$("$TMUX_REAL" -L "$RBS" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" \
+    "XDG_STATE_HOME=$(printf '%q' "$RBSTATE") '$DIR/scripts/tmux-review' --loop $(printf '%q' "$RB") $(printf '%q' "$RBSTATE/c.md")" Enter
+until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the base" || bad "the header names the base" "base: since last review" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
+until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"
+# The preview is a separate tmux-open-path subprocess, memoised by its own
+# content cache -- COCKPIT_REVIEW_BASE_REV has to be in that cache's key, or
+# this would keep serving the since-review render (just SINCE, no committed
+# line) after ^B switched the base. COMMITTED-ON-FEAT is only in the diff
+# against main, never against the since-review checkpoint.
+until_cap "$RBS" "$RBP" '*COMMITTED-ON-FEAT*' \
+    && ok "the preview re-renders against the new base, not a cache hit from the old one" \
+    || bad "the preview re-renders against the new base, not a cache hit from the old one" \
+        "COMMITTED-ON-FEAT in the preview" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+"$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" Escape
+# Polled, not slept for: esc on an empty store discards straight away
+# (run_loop's own drop_store), which now has to shed ".base" beside the store
+# too -- left behind, it would make the NEXT review of this same store resume
+# a discarded review's base instead of starting at auto.
+rbbasegone=0
+for i in $(seq 1 20); do
+    [ -e "$RBSTATE/c.md.base" ] || { rbbasegone=1; break; }
+    sleep 0.1
+done
+if [ "$rbbasegone" = 1 ]; then
+    ok "a discard sheds the base file beside the store, not just the store"
+else
+    bad "a discard sheds the base file beside the store, not just the store" \
+        "$RBSTATE/c.md.base gone" "still present"
+fi
+"$TMUX_REAL" -L "$RBS" kill-server >/dev/null 2>&1
+fi
+rm -rf "$RB"
+
+echo "== tmux-review --loop: ^A approves — the ref is the tree, the dir is gone, the next review is the delta =="
+if need_tmux "review ^A"; then :; else
+RA="cockpit-ra-$$"; SOCKS="$SOCKS $RA"; RASTATE=$(mktmpd); RADIR=$(mktmpd)
+(
+  cd "$RADIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init
+  printf 'a\nb\nCHANGED\n' > src.go; printf 'brand new\n' > new.txt
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RADIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RAAP=$("$TMUX_REAL" -L "$RA" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RA" set-option -p -t "$RAAP" @cockpit_review pending >/dev/null 2>&1
+# new-window, not split-window: a split pane in a 30-row window shrinks to a
+# handful of rows once RACTL2 joins it too, and fzf silently drops header
+# lines (the base/↺ line first) once the picker does not fit -- reproduced.
+# Each control shell gets its own full-height window instead; -p still
+# targets RAAP explicitly, so which window the picker runs from is moot.
+ra_shell() { local p i; p=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -P -F '#{pane_id}' 'exec bash'); for i in $(seq 1 40); do [ "$("$TMUX_REAL" -L "$RA" display-message -p -t "$p" '#{pane_current_command}')" = bash ] && break; sleep 0.1; done; printf '%s' "$p"; }
+RACTL=$(ra_shell)
+RASESS="$RASTATE/tmux-cockpit/review/${RAAP#%}-$(printf '%s' "$RADIR" | cksum | cut -d' ' -f1)"
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
+review_enter "$RA" "$RACTL"
+# One pinned comment: ^A must refuse -- approve means "nothing more to say".
+# Down first: new.txt sorts before src.go (lines_mode's own order), and the
+# comment has to land on src.go for the ↺ assertions below to mean anything.
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Down
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" "not yet"; until_cap "$RA" "$RACTL" '*not yet*'
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Enter; until_file "$RASESS/comments.md" '*not yet*'
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-a
+# This session has no attached client (new-session -d), so the refusal's own
+# tmux display-message has nothing to render to -- confirmed a genuine no-op
+# without one, not a bug to chase here. Assert the refusal's EFFECT instead:
+# the picker stays open and the pinned comment is still there, marked.
+until_cap "$RA" "$RACTL" '*●src.go:3 (+)*' && ok "^A with a pinned comment refuses -- the picker stays open, the comment survives" || bad "^A with a pinned comment refuses -- the picker stays open, the comment survives" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
+is "and nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# The picker is genuinely back in its own prompt (not fzf mid-relaunch) before
+# the next key goes in -- closes a race where C-s lands while fzf is still
+# tearing down and re-drawing from the refusal.
+until_cap "$RA" "$RACTL" '*review>*'
+# Deliver it (the pane is idle: a paste), then re-open and approve.
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-s
+until_cap "$RA" "$RACTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Enter
+until_cap "$RA" "$RAAP" '*not yet*' && ok "the batch lands in the agent pane" || bad "the batch lands in the agent pane" "not yet" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RAAP")"
+until_file "$RASESS/delivered.md" '*not yet*' && ok "a delivered batch is archived as delivered.md" || bad "a delivered batch is archived as delivered.md" "not yet in delivered.md" "$(ls "$RASESS" 2>/dev/null)"
+is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo present || echo absent)"
+RACTL2=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
+review_enter "$RA" "$RACTL2"
+until_cap "$RA" "$RACTL2" '*↺src.go:3 (+)*' && ok "on re-open the delivered comment's row reads ↺" || bad "on re-open the delivered comment's row reads ↺" "↺src.go:3 (+)" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
+until_cap "$RA" "$RACTL2" '*1 delivered earlier*' && ok "and the header counts it" || bad "and the header counts it" "↺ 1 delivered earlier" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL2")"
+# approve() works on a cp -p COPY of the index (tree_diff's own discipline) --
+# the agent's real index must read back byte-unchanged mtime-wise.
+RAIDXBEFORE=$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)
+"$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" C-a
+for i in $(seq 1 40); do [ -e "$RASESS" ] || break; sleep 0.1; done
+is "^A removes the session dir" "gone" "$([ -e "$RASESS" ] && echo present || echo gone)"
+is "approve never writes the real index" "$RAIDXBEFORE" "$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)"
+is "^A clears the pane's review state" "" "$("$TMUX_REAL" -L "$RA" show-option -pqv -t "$RAAP" @cockpit_review)"
+RAREF=$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)
+is "^A wrote the checkpoint ref to a tree" "tree" "$(git -C "$RADIR" cat-file -t "$RAREF" 2>/dev/null)"
+is "the tree holds the untracked file too" "1" "$(git -C "$RADIR" ls-tree -r "$RAREF" --name-only 2>/dev/null | grep -c '^new.txt$')"
+is "nothing is left to review" "" "$("$DIR/scripts/tmux-review" --lines "$RADIR")"
+# --delta asks tmux about the pane, so it runs on THIS server (run-shell), not the suite's.
+is "--delta says so (exit 1)" "D=1" "$("$TMUX_REAL" -L "$RA" run-shell "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' --delta $RAAP; echo D=\$?" 2>/dev/null | tail -1)"
+printf 'brand new\nEDITED\n' > "$RADIR/new.txt"
+is "an edit to the approved untracked file is the only row" "EDITED" "$("$DIR/scripts/tmux-review" --lines "$RADIR" | cut -f3)"
+# --done as a public subcommand: keep_hint()'s own re-delivery command chains
+# into it, so a by-hand delivery has to finish the same way as review_pane()'s
+# own cleanup does.
+DNDIR=$(mktmpd)
+printf '## d.go:1 (+)\n> x\nnote\n\n' > "$DNDIR/comments.md"
+: > "$DNDIR/comments.md.base"
+"$DIR/scripts/tmux-review" --done "$DNDIR/comments.md"
+case "$(cat "$DNDIR/delivered.md" 2>/dev/null)" in
+    *note*) ok "--done, called directly, archives the batch" ;;
+    *) bad "--done, called directly, archives the batch" "note in delivered.md" "$(cat "$DNDIR/delivered.md" 2>/dev/null)" ;;
+esac
+is "and drops the store" "absent" "$([ -e "$DNDIR/comments.md" ] && echo present || echo absent)"
+is "and the base file beside it" "absent" "$([ -e "$DNDIR/comments.md.base" ] && echo present || echo absent)"
+# `git branch -D` / `worktree remove` do NOT GC refs/cockpit/reviewed/* (they
+# are plain refs, not branch-scoped) -- a ref left at "feat/x" D/F-blocks a
+# later `update-ref refs/cockpit/reviewed/feat`. ^A must refuse, not crash or
+# silently overwrite; this session has no attached client (as above), so the
+# refusal is asserted by its effect, not its display-message wording.
+SRDIR=$(mktmpd)
+(
+  cd "$SRDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b feat .; printf 'x\n' > f; git add -A; git commit -q -m init
+  git update-ref refs/cockpit/reviewed/feat/x "$(git rev-parse "HEAD^{tree}")"
+  printf 'x\nCHANGED\n' > f
+) >/dev/null 2>&1
+SRAP=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -c "$SRDIR" -P -F '#{pane_id}' 'exec -a claude bash')
+SRSESS="$RASTATE/tmux-cockpit/review/${SRAP#%}-$(printf '%s' "$SRDIR" | cksum | cut -d' ' -f1)"
+SRCTL=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$SRCTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $SRAP" Enter
+review_enter "$RA" "$SRCTL"
+"$TMUX_REAL" -L "$RA" send-keys -t "$SRCTL" C-a
+# Nothing to poll FOR -- a refusal leaves the same file on disk a success
+# would remove. Poll for the disappearance instead, up to the same 2s budget
+# every other settle in this block uses: a slow but correct approve() still
+# reads as present here, a wrongly-succeeding one is caught the moment it
+# fires rather than only at a fixed deadline.
+srgone=0
+for i in $(seq 1 20); do
+    [ -e "$SRSESS" ] || { srgone=1; break; }
+    sleep 0.1
+done
+is "a D/F-blocked ref refuses the approve -- the session dir survives" "0" "$srgone"
+is "and refs/cockpit/reviewed/feat was never written" "" \
+   "$(git -C "$SRDIR" rev-parse -q --verify refs/cockpit/reviewed/feat 2>/dev/null)"
+# ^A must not take a review that is already IN FLIGHT. A delivery into a busy
+# pane lives in comments.md.deliver with @cockpit_review_spool armed at it, and
+# ^A is allowed then (the guard only refuses PINNED comments, and the store is
+# empty once the batch went out) -- so the old `rm -rf` on the session dir threw
+# the queued review away, left the option pointing at a path that no longer
+# existed, and took delivered.md with it. Named files only now; the dir stands
+# while the spool is in it and review-gate rmdirs it after the drain.
+QSDIR=$(mktmpd)
+(
+  cd "$QSDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'q\n' > f; git add -A; git commit -q -m init
+  printf 'q\nCHANGED\n' > f
+) >/dev/null 2>&1
+QSAP=$("$TMUX_REAL" -L "$RA" new-window -d -t t: -c "$QSDIR" -P -F '#{pane_id}' 'exec -a claude bash')
+QSSESS="$RASTATE/tmux-cockpit/review/${QSAP#%}-$(printf '%s' "$QSDIR" | cksum | cut -d' ' -f1)"
+QSCTL=$(ra_shell)
+"$TMUX_REAL" -L "$RA" send-keys -t "$QSCTL" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $QSAP" Enter
+review_enter "$RA" "$QSCTL"
+# The picker is up, so review_pane has made the dir: drop into it exactly what a
+# queued delivery leaves behind, then approve.
+printf 'IN-FLIGHT REVIEW\n' > "$QSSESS/comments.md.deliver"
+printf 'an earlier batch\n' > "$QSSESS/delivered.md"
+"$TMUX_REAL" -L "$RA" set-option -p -t "$QSAP" @cockpit_review_spool "$QSSESS/comments.md.deliver" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RA" send-keys -t "$QSCTL" C-a
+for i in $(seq 1 40); do [ -e "$QSSESS/delivered.md" ] || break; sleep 0.1; done
+is "^A leaves a queued review's spool alone" "IN-FLIGHT REVIEW" "$(cat "$QSSESS/comments.md.deliver" 2>/dev/null)"
+is "and the pane's spool option still points at it" "$QSSESS/comments.md.deliver" \
+   "$("$TMUX_REAL" -L "$RA" show-option -pqv -t "$QSAP" @cockpit_review_spool)"
+is "the session dir stands while the spool is in it" "present" "$([ -d "$QSSESS" ] && echo present || echo gone)"
+is "but ^A took the store and delivered.md" "gone gone" \
+   "$([ -e "$QSSESS/comments.md" ] && echo present || echo gone) $([ -e "$QSSESS/delivered.md" ] && echo present || echo gone)"
+is "and it still wrote the checkpoint ref" "tree" \
+   "$(git -C "$QSDIR" cat-file -t "$(git -C "$QSDIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)" 2>/dev/null)"
+# review-gate's own rmdir is what finishes the dir off after the drain.
+rm -f "$QSSESS/comments.md.deliver"; rmdir "$QSSESS" 2>/dev/null
+is "and the dir goes once the spool is drained" "gone" "$([ -d "$QSSESS" ] && echo present || echo gone)"
+unset -f ra_shell
+"$TMUX_REAL" -L "$RA" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review --request: the agent asks — exit 10 with the review on stdout, 0 on nothing, 1 with no client =="
+if need_tmux "tmux-review --request"; then :; else
+RQ="cockpit-rq-$$"; SOCKS="$SOCKS $RQ"; RQSTATE=$(mktmpd); RQDIR=$(mktmpd)
+(
+  cd "$RQDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RQ" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RQDIR" 'exec -a claude bash' >/dev/null 2>&1
+RQAP=$("$TMUX_REAL" -L "$RQ" list-panes -t t: -F '#{pane_id}')
+# A detached server has no client to draw a popup on: a launcher error, not a
+# "discarded" -- the skill tells them apart by the exit code.
+XDG_STATE_HOME=$RQSTATE TMUX='' "$TMUX_REAL" -L "$RQ" run-shell "XDG_STATE_HOME=$(printf '%q' "$RQSTATE") '$DIR/scripts/tmux-review' --request $RQAP; echo RQRC=\$?" >"$RQSTATE/out" 2>&1
+case "$(cat "$RQSTATE/out")" in *RQRC=1*) ok "no attached client: exit 1" ;; *) bad "no attached client: exit 1" "RQRC=1" "$(cat "$RQSTATE/out")" ;; esac
+# The popup itself needs a client and a human; stand a tmux shim in front of it
+# (the suite's own shim technique) that answers `display-popup` by writing the
+# exit code the loop would have left behind -- 20 is ^S deliver -- and doing
+# nothing else. The human's whole review is then whatever the store already
+# holds when the popup "closes"; RQ_NO_RC=1 writes no rc at all, which is esc's
+# `leave` and a dropped popup alike.
+RQSESS="$RQSTATE/tmux-cockpit/review/${RQAP#%}-$(printf '%s' "$RQDIR" | cksum | cut -d' ' -f1)"
+RQSHIM=$(mktmpd)
+cat > "$RQSHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) [ -n "\${RQ_NO_RC:-}" ] || printf '20\n' > "$RQSESS/rc"; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQ" "\$@"
+SHIMEOF
+chmod +x "$RQSHIM/tmux"
+mkdir -p "$RQSESS"; printf '## f:2 (+)\n> b\nREQUEST-MARKER\n\n' > "$RQSESS/comments.md"
+rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "comments pinned: exit 10" "10" "$rq_rc"
+case "$rq_out" in "Code review of your changes"*"REQUEST-MARKER"*) ok "and the composed review is on stdout" ;; *) bad "and the composed review is on stdout" "header + REQUEST-MARKER" "$rq_out" ;; esac
+is "the batch is archived, the store consumed" "1" "$(grep -c REQUEST-MARKER "$RQSESS/delivered.md" 2>/dev/null)"
+# The agent has the review in hand, so the pane reads "sent" exactly as it does
+# after a paste -- the shim passes set-option through to the real server.
+is "and the pane is marked sent, as after a paste" "sent" "$("$TMUX_REAL" -L "$RQ" show-option -pqv -t "$RQAP" @cockpit_review)"
+rq_out=$(PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "nothing pinned: exit 0, nothing printed" "0 " "$rq_rc $rq_out"
+# esc's `leave` (Task 8) keeps a non-empty store and does NOT deliver it: the
+# batch decides nothing, the recorded exit code does.
+printf '## f:2 (+)\n> b\nLEAVE-MARKER\n\n' > "$RQSESS/comments.md"
+rq_out=$(RQ_NO_RC=1 PATH="$RQSHIM:$PATH" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
+is "left for later: exit 0, nothing printed" "0 " "$rq_rc $rq_out"
+is "and the batch stays pinned" "1" "$(grep -c LEAVE-MARKER "$RQSESS/comments.md" 2>/dev/null)"
+"$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
 PD=$(mktmpd)
 (
@@ -4062,6 +4600,7 @@ case "$rv5preview" in
 esac
 rm -rf "$PD"
 
+# group: serial
 echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
 # Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
 # block makes, so the memoised cache lives and dies with the test.
@@ -4180,10 +4719,15 @@ is "and nothing is written into it either" "0" \
    "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
 rm -rf "$HC"
 
+# group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
 RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
-"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+# -y 60: split-window below halves it, and the composed review's header grew
+# to 13 lines (ai lens §7.F) -- AP's half needs to clear ~20 pasted lines
+# without scrolling, or bash's readline garbles the unexecuted multi-line
+# buffer redraw (reproduced: a 15-row pane truncates and interleaves lines).
+"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
 # a spawn settle, not an event: nothing to poll until the shell prints
@@ -4252,13 +4796,14 @@ EMPTYSTORE="$STATE/deliver-empty-$$"
 : > "$EMPTYSTORE"
 rundeliver "$AP" "$EMPTYSTORE"
 case "$(apcap)" in
-    *"Code review of your uncommitted changes"*) \
+    *"Code review of your changes"*) \
         bad "an empty store is refused, nothing to deliver" \
             "no composed header in the agent pane" "$(apcap)" ;;
     *) ok "an empty store is refused, nothing to deliver" ;;
 esac
 is "an empty store is refused (exit 1)" "RC=1" "$(lastrc)"
 
+# group: deliver
 echo "== tmux-review --deliver: the composed review lands typed-but-unsent =="
 rundeliver "$AP" "$RDSTORE"
 apafter=$(apcap)
@@ -4310,24 +4855,44 @@ is "prefix J walks to a pane holding an unsent review" "$AP" \
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" select-pane -t "$NP" >/dev/null 2>&1
 
-echo "== tmux-review --deliver: a pane on a permission prompt is refused, not pasted into =="
+# group: deliver
+echo "== tmux-review --deliver: a busy pane gets the review queued for its next turn boundary =="
 "$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1      # clear the earlier paste
-"$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate needs-input >/dev/null 2>&1
-printf '## src.go:1 (+)\n> foo\nNI-MARKER fix\n\n' > "$RDSTORE"
-rundeliver "$AP" "$RDSTORE"
-is "delivery into needs-input exits 1" "RC=1" "$(lastrc)"
-case "$(apcap)" in
-    *"NI-MARKER"*) bad "nothing is pasted into a needs-input pane" "no NI-MARKER on the agent pane" "$(apcap)" ;;
-    *) ok "nothing is pasted into a needs-input pane" ;;
-esac
+for busy in needs-input running; do
+    "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate "$busy" >/dev/null 2>&1
+    printf '## src.go:1 (+)\n> foo\nQUEUE-MARKER-%s fix\n\n' "$busy" > "$RDSTORE"
+    rundeliver "$AP" "$RDSTORE"
+    is "delivery into a $busy pane exits 0 (queued, not refused)" "RC=0" "$(lastrc)"
+    case "$(apcap)" in
+        *"QUEUE-MARKER-$busy"*) bad "nothing is pasted into a $busy pane" "no marker on the agent pane" "$(apcap)" ;;
+        *) ok "nothing is pasted into a $busy pane" ;;
+    esac
+    is "the spool is armed on the pane" "$RDSTORE.deliver" \
+       "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
+    case "$(cat "$RDSTORE.deliver" 2>/dev/null)" in
+        "Code review of your changes"*"QUEUE-MARKER-$busy"*) ok "and the spool holds the composed review" ;;
+        *) bad "and the spool holds the composed review" "composed header + marker" "$(cat "$RDSTORE.deliver" 2>/dev/null)" ;;
+    esac
+    is "the spool is born 0600" "600" "$(stat -c '%a' "$RDSTORE.deliver" 2>/dev/null || stat -f '%Lp' "$RDSTORE.deliver")"
+    is "no buffer is left behind" "" "$("$TMUX_REAL" -L "$RDS" list-buffers -F '#{buffer_name}' 2>/dev/null | grep 'cockpit-review')"
+    "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review_spool >/dev/null 2>&1
+    rm -f "$RDSTORE.deliver"
+done
 "$TMUX_REAL" -L "$RDS" set-option -p -t "$AP" @panestate done >/dev/null 2>&1
 rundeliver "$AP" "$RDSTORE"
 case "$(apcap)" in
-    *"NI-MARKER"*) ok "the same review lands once the pane is done" ;;
-    *) bad "the same review lands once the pane is done" "NI-MARKER on the agent pane" "$(apcap)" ;;
+    *"QUEUE-MARKER-running"*) ok "the same review lands as a paste once the pane is done" ;;
+    *) bad "the same review lands as a paste once the pane is done" "marker on the agent pane" "$(apcap)" ;;
 esac
+is "an idle delivery leaves no spool armed" "" "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
+# The spool is written BEFORE the busy/idle choice tmux makes, so the paste
+# path writes one too and nobody will ever read it. Left behind, it also kept
+# done_store's rmdir from ever emptying the session dir.
+is "and no .deliver file behind" "absent" "$([ -e "$RDSTORE.deliver" ] && echo present || echo absent)"
 "$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @panestate >/dev/null 2>&1
+"$TMUX_REAL" -L "$RDS" set-option -pu -t "$AP" @cockpit_review >/dev/null 2>&1
 
+# group: deliver
 echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes =="
 # A second agent pane and a second control pane -- driving both deliveries
 # from their OWN panes, fired back-to-back with no sleep between, is the
@@ -4371,6 +4936,7 @@ case "$raceB" in
     *) ok "pane B's review is not pane A's" ;;
 esac
 
+# group: deliver
 echo "== tmux-review --deliver: an oversized review goes to a file, not the pane =="
 # Both the old-name symlink target and the spillover glob below are keyed
 # only on the PANE ID ("${AP#%}") -- which tmux hands out per-socket
@@ -4404,6 +4970,7 @@ if [ "$bigbytes" -le 2048 ]; then
 else
     ok "fixture actually exceeds the 2048-byte threshold ($bigbytes bytes)"
 fi
+"$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1  # clear the earlier paste
 rundeliver "$AP" "$BIGSTORE"
 
 is "the planted symlink at the old predictable name is never followed" \
@@ -4545,6 +5112,7 @@ esac
 "$TMUX_REAL" -L "$FI_IN"  kill-server >/dev/null 2>&1
 fi
 
+# tests: scripts/tmux-review
 echo "== tmux-review --deliver: the paste is gated atomically, so a pane that stopped being an agent never gets it =="
 # deliver()'s shell-side is-agent check is a ~50ms-stale snapshot -- a compose
 # re-exec, a wc, an mktemp and a load-buffer sit between it and the paste. Kill
@@ -4803,6 +5371,7 @@ until_cap "$FD" "$CTL2" '*fix this*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" M-Enter
 until_cap "$FD" "$CTL2" '*●*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" C-s
+until_cap "$FD" "$CTL2" '*deliver 1 comment*'; "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" Enter
 until_cap "$FD" "$FD_AGENT" '*fix this*'
 
 case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
@@ -4818,21 +5387,34 @@ if [ -n "$storefile" ] && [ -e "$storefile" ]; then
 else
     ok "the comment store does not outlive the delivered review"
 fi
-for i in $(seq 1 40); do [ -n "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)" ] || break; sleep 0.1; done
-is "a delivered review's session dir is removed too" "" "$(ls -d "$FDTMPDIR"/tmux-cockpit/review/* 2>/dev/null)"
+sessdir="${storefile%/*}"
+for i in $(seq 1 40); do [ -s "$sessdir/delivered.md" ] && break; sleep 0.1; done
+if [ -d "$sessdir" ]; then
+    ok "a delivered review's session dir stays -- the batch is archived, not the dir"
+else
+    bad "a delivered review's session dir stays -- the batch is archived, not the dir" \
+        "$sessdir present" "$sessdir gone"
+fi
+case "$(cat "$sessdir/delivered.md" 2>/dev/null)" in
+    *"fix this"*) ok "and delivered.md holds the delivered comment" ;;
+    *) bad "and delivered.md holds the delivered comment" "fix this in delivered.md" "$(cat "$sessdir/delivered.md" 2>/dev/null)" ;;
+esac
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 rm -rf "$FD_DIRTY" "$FDTMPDIR"
 fi
 
-echo "== tmux-review: a REFUSED delivery keeps the pinned comments instead of deleting them =="
-# The mirror of the block above. review_pane() chains the store cleanup after
-# --deliver inside `tmux run-shell -b`, and --deliver runs AFTER the popup is
-# torn down -- so a refusal (a pane on a permission prompt, a non-agent pane,
-# a bogus pane id) used to throw the whole pinned batch away silently. The
-# store must outlive a refusal: it is the only copy of the review. Its row
-# snapshot must NOT: the popup that needed it is gone.
-if need_tmux "tmux-review refused-delivery store keep"; then :; else
+echo "== tmux-review: a delivery into a busy pane is queued — the store is archived, the spool holds the review, nothing is pasted =="
+# The mirror of the block above, now for a busy target. review_pane() chains
+# the store cleanup after --deliver inside `tmux run-shell -b`, and --deliver
+# runs AFTER the popup is torn down -- but deliver() no longer refuses a busy
+# pane (needs-input, running): it spools the composed review beside the store
+# and arms @cockpit_review_spool, and review-gate drains that spool at the
+# agent's next Stop. Because deliver() now reports success (rc=0) even though
+# nothing was pasted, review_pane()'s chain still runs --done: the store is
+# archived into delivered.md like any other successful delivery, and only the
+# spool -- not the store -- carries the review onward from here.
+if need_tmux "tmux-review busy-delivery queue"; then :; else
 RK="cockpit-rk-$$"; SOCKS="$SOCKS $RK"
 RKTMPDIR="$STATE/rk-tmp-$$"
 mkdir -p "$RKTMPDIR"
@@ -4865,13 +5447,14 @@ RK_DIRTY=$(mktmpd)
 
 "$TMUX_REAL" -L "$RK" new-window -d -t t: -c "$RK_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
-# The target is sitting on a permission prompt -- deliver()'s guard 3, the
-# refusal a human is most likely to hit right after finishing a review.
+# The target is sitting on a permission prompt -- deliver()'s busy path, the
+# state a human is most likely to leave a pane in right after finishing a
+# review.
 "$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
 # Both preconditions, polled rather than slept for: the fleet queue filters on
 # pane_current_command, so the agent pane's own shell has to be up before
 # --fleet runs (it would otherwise report no dirty agent pane at all), and
-# deliver()'s guard 3 reads @panestate back off the pane.
+# deliver()'s if-shell reads @panestate back off the pane at paste time.
 for i in $(seq 1 20); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RK_AGENT" '#{pane_current_command}')" = claude ] &&
     [ "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @panestate)" = needs-input ] && break
@@ -4886,7 +5469,7 @@ for i in $(seq 1 20); do
     esac
     sleep 0.25
 done
-[ "$rkup" = 1 ] || bad "the fleet queue comes up (refused-delivery case)" \
+[ "$rkup" = 1 ] || bad "the fleet queue comes up (queued-delivery case)" \
     "a visible 'fleet>' prompt" "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")"
 
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
@@ -4926,33 +5509,28 @@ else
 fi
 
 # ^S: the loop exits 20, review_pane fires --deliver through run-shell -b, and
-# deliver() refuses. Wait for the picker's own process to go away first, so
-# the run-shell chain has actually been reached.
+# deliver() queues instead of pasting. Wait for the picker's own process to go
+# away first, so the run-shell chain has actually been reached.
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" C-s
+until_cap "$RK" "$RKCTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
 for i in $(seq 1 30); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RKCTL" '#{pane_current_command}')" = fzf ] || break
     sleep 0.1
 done
-# Bounded poll, not a fixed wait: the store must be there for the whole
-# window in which the (backgrounded) rm could have fired.
-rkkept=1
-for i in $(seq 1 20); do
-    [ -n "$rkstore" ] && [ -e "$rkstore" ] || { rkkept=0; break; }
-    sleep 0.1
-done
-if [ "$rkkept" = 1 ]; then
-    ok "a refused delivery keeps the comment store"
+# Bounded poll, not a fixed wait: unlike a real refusal, a queued delivery
+# still reports success (rc=0), so review_pane()'s chain still archives the
+# store -- its removal rides the same backgrounded run-shell -b as the
+# delivery itself.
+for i in $(seq 1 40); do [ -n "$rkstore" ] && [ -e "$rkstore" ] || break; sleep 0.1; done
+if [ -n "$rkstore" ] && [ -e "$rkstore" ]; then
+    bad "a queued delivery still archives the comment store" \
+        "$rkstore gone" "$rkstore still exists"
 else
-    bad "a refused delivery keeps the comment store" \
-        "$rkstore still on disk" "gone"
+    ok "a queued delivery still archives the comment store"
 fi
-# ...and sheds the snapshot beside it. The two have different lifetimes: the
-# store is the only copy of the review and outlives a refusal on purpose,
-# while "<store>.rows" served the popup, which is already gone. Nothing
-# downstream reads it -- not deliver(), not the --deliver the refusal message
-# tells the human to re-run -- so keeping it would leave a diff-sized file in
-# the popup's TMPDIR that nothing will ever collect. Polled, not slept for:
-# the rm rides the same backgrounded `run-shell -b` as the delivery.
+# ...and sheds the snapshot beside it, exactly as a pasted delivery does:
+# "<store>.rows" served the popup, which is already gone. Polled, not slept
+# for: the rm rides the same backgrounded `run-shell -b` as the delivery.
 rkrowsgone=0
 if [ -n "$rkstore" ]; then
     for i in $(seq 1 20); do
@@ -4966,11 +5544,27 @@ else
     bad "and sheds the row snapshot beside it" \
         "$rkstore.rows removed" "$(ls -la "$RKTMPDIR" 2>&1)"
 fi
-case "$(cat "$rkstore" 2>/dev/null)" in
-    *"## src.go:3 (+)"*"keep me"*) ok "and the kept store still holds the pinned comment" ;;
-    *) bad "and the kept store still holds the pinned comment" \
-         "## src.go:3 (+) / keep me" "$(cat "$rkstore" 2>/dev/null)" ;;
+rksess="${rkstore%/*}"
+for i in $(seq 1 20); do [ -s "$rksess/delivered.md" ] && break; sleep 0.1; done
+case "$(cat "$rksess/delivered.md" 2>/dev/null)" in
+    *"## src.go:3 (+)"*"keep me"*) ok "and the archived batch holds the pinned comment" ;;
+    *) bad "and the archived batch holds the pinned comment" \
+         "## src.go:3 (+) / keep me" "$(cat "$rksess/delivered.md" 2>/dev/null)" ;;
 esac
+# The spool: deliver()'s own queue, the only copy of the review that survives
+# --done archiving the store out from under it. review-gate drains it at
+# RK_AGENT's next Stop.
+rkspool="$rkstore.deliver"
+case "$(cat "$rkspool" 2>/dev/null)" in
+    "Code review of your changes"*"keep me"*) \
+        ok "and the spool holds the composed review with the pinned comment" ;;
+    *) bad "and the spool holds the composed review with the pinned comment" \
+         "composed header + keep me" "$(cat "$rkspool" 2>/dev/null)" ;;
+esac
+is "the spool is born 0600" "600" \
+   "$(stat -c '%a' "$rkspool" 2>/dev/null || stat -f '%Lp' "$rkspool")"
+is "review-gate's handle is armed on the busy pane" "$rkspool" \
+   "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @cockpit_review_spool)"
 case "$("$TMUX_REAL" -L "$RK" capture-pane -p -J -t "$RK_AGENT")" in
     *"keep me"*) bad "and nothing was pasted into the needs-input pane" \
          "no review text in the agent pane" \
@@ -4982,42 +5576,39 @@ esac
 rm -rf "$RK_DIRTY" "$RKTMPDIR"
 fi
 
-echo "== tmux-review: a clean-tree direct pane says so instead of opening an empty picker =="
-if need_tmux "tmux-review clean-tree direct pane"; then :; else
-MT="cockpit-mt-$$"; SOCKS="$SOCKS $MT"
-MTSTATE=$(mktmpd)
-MT_DIR=$(mktmpd)
-(
-  cd "$MT_DIR" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\n' > f
-  git add -A; git commit -q -m init
-) >/dev/null 2>&1
-"$TMUX_REAL" -L "$MT" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MT_DIR" \
-    'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$MT" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-MTP=$("$TMUX_REAL" -L "$MT" list-panes -t t: -F '#{pane_id}')
-"$TMUX_REAL" -L "$MT" send-keys -t "$MTP" \
-    "XDG_STATE_HOME=$(shq_test "$MTSTATE") '$DIR/scripts/tmux-review'; echo MTDONE=\$?" Enter
-# The typed command line itself contains "MTDONE=$?" -- match only a marker
-# followed by a digit, the one a finished command actually printed.
-until_cap "$MT" "$MTP" '*MTDONE=[0-9]*'
-mtout=$("$TMUX_REAL" -L "$MT" capture-pane -p -t "$MTP")
-case "$mtout" in
-    *"review>"*) bad "a clean-tree direct pane never opens an empty picker" \
-         "no 'review>' prompt" "$mtout" ;;
-    *) ok "a clean-tree direct pane never opens an empty picker" ;;
+echo "== tmux-review: prefix r from an agent pane opens the queue with that pane preselected, and returns to it after a review =="
+if need_tmux "prefix r is the queue"; then :; else
+PQ="cockpit-pq-$$"; SOCKS="$SOCKS $PQ"; PQSTATE=$(mktmpd); PQA=$(mktmpd); PQB=$(mktmpd)
+for d in "$PQA" "$PQB"; do (
+  cd "$d" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
+) >/dev/null 2>&1; done
+"$TMUX_REAL" -L "$PQ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PQA" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PQ" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PQ" new-window -t t: -c "$PQB" 'exec -a claude bash' >/dev/null 2>&1
+PQAP=$("$TMUX_REAL" -L "$PQ" list-panes -t t:0 -F '#{pane_id}'); PQBP=$("$TMUX_REAL" -L "$PQ" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQAP" @panestate done >/dev/null 2>&1
+"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQBP" @panestate needs-input >/dev/null 2>&1   # ranks FIRST in the queue
+"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQAP" @cockpit_review pending >/dev/null 2>&1
+PQCTL=$("$TMUX_REAL" -L "$PQ" split-window -t t:0 -P -F '#{pane_id}' 'exec bash'); until_cap "$PQ" "$PQCTL" '*$*'
+"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" "XDG_STATE_HOME=$(printf '%q' "$PQSTATE") '$DIR/scripts/tmux-review' -p $PQAP" Enter
+until_cap "$PQ" "$PQCTL" '*fleet>*' && ok "prefix r from an agent pane opens the queue" || bad "prefix r from an agent pane opens the queue" "fleet>" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
+# The pointer sits on the row of the pane the key was pressed in, not on the
+# needs-input pane that sorts first.
+case "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")" in
+    *"> ◆ done"*) ok "with that pane preselected (its row shows ◆ for the pending review)" ;;
+    *) bad "with that pane preselected (its row shows ◆ for the pending review)" "> ◆ done …" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")" ;;
 esac
-case "$mtout" in
-    *"MTDONE=0"*) ok "and exits 0" ;;
-    *) bad "and exits 0" "MTDONE=0" "$mtout" ;;
-esac
-"$TMUX_REAL" -L "$MT" kill-server >/dev/null 2>&1
-rm -rf "$MT_DIR"
+"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" Enter
+until_cap "$PQ" "$PQCTL" '*review>*' && ok "↵ reviews it" || bad "↵ reviews it" "review>" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
+"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" Escape
+until_cap "$PQ" "$PQCTL" '*fleet>*' && ok "esc from the review returns to the queue" || bad "esc from the review returns to the queue" "fleet>" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
+"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" Escape
+until_cap "$PQ" "$PQCTL" '*$*'
+"$TMUX_REAL" -L "$PQ" kill-server >/dev/null 2>&1
 fi
 
+# group: serial
 echo "== tmux-review --fleet: from a non-agent pane, the queue lists exactly the dirty agent panes =="
 if need_tmux "tmux-review --fleet"; then :; else
 FQ="cockpit-fq-$$"; SOCKS="$SOCKS $FQ"
@@ -5039,8 +5630,18 @@ mk_git_dir() {  # mk_git_dir <dir> <dirty:0|1>
     ) >/dev/null 2>&1
 }
 FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
+printf 'x\n' > "$FQ_DIRTY/new1.txt"                  # + three one-line untracked files
+printf 'y\n' > "$FQ_DIRTY/new2.txt"
+printf 'z\n' > "$FQ_DIRTY/new3.txt"
 FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- excluded
 FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
+# Same rank as FQ_DIRTY (neither has @panestate set, below) but its 5 changed
+# lines are all TRACKED, none untracked -- against FQ_DIRTY's 1 tracked + 3
+# untracked. The double-count bug inflated FQ_DIRTY's churn to 7 (4 real + the
+# untracked FILE count charged again), sorting it above this one; the fix's
+# real 4 sorts it below.
+FQ_DIRTY2=$(mktmpd);   mk_git_dir "$FQ_DIRTY2" 0
+printf 'b\nc\nd\ne\nf\n' >> "$FQ_DIRTY2/f"
 
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
@@ -5048,9 +5649,14 @@ DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
 CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NONAGENT" 'exec bash' >/dev/null 2>&1
 NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY2" 'exec -a claude bash' >/dev/null 2>&1
+DIRTY2_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
 # a spawn settle, not an event: nothing to poll until the shell prints
 sleep 0.3
 
+# A review pasted into this pane and not yet sent: the row has to SAY so, or
+# the queue sends you back to a pane you already reviewed.
+"$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @cockpit_review sent >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
 sleep 0.6
 fqout=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
@@ -5070,7 +5676,35 @@ case "$fqout" in
     *) ok "a dirty non-agent pane is not in the queue" ;;
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly one row" "1" "$rowcount"
+is "the queue lists exactly two rows" "2" "$rowcount"
+
+# Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
+# one-line files), folded into the same numstat by tree_diff's intent-to-add
+# copy, so the ?? walk below must count the untracked files only toward the
+# "?3 new" file-count suffix, not toward churn too (that double-counted it as
+# +4 -0 +3 = 7 before the fix).
+case "$fqout" in
+    *"$DIRTY_PANE"*"+4 -0  ?3 new"*) ok "the dirty row's stat is +4 -0  ?3 new, not double-counted" ;;
+    *) bad "the dirty row's stat is +4 -0  ?3 new, not double-counted" \
+         "$DIRTY_PANE ... +4 -0  ?3 new" "$fqout" ;;
+esac
+
+case "$fqout" in
+    *"$DIRTY_PANE"$'\t'"↵ "*) ok "a pane holding a delivered, unsent review reads ↵ in its state column" ;;
+    *) bad "a pane holding a delivered, unsent review reads ↵ in its state column" \
+         "$DIRTY_PANE<tab>↵ " "$fqout" ;;
+esac
+
+# The bite: FQ_DIRTY and FQ_DIRTY2 are the SAME rank here (neither has
+# @panestate set) so ordering between them falls straight to churn, real
+# churn under the fix (4 vs 5, DIRTY2 wins) or double-counted churn under the
+# bug (7 vs 5, DIRTY wins instead). This is the only assertion in the suite
+# that can tell the two arithmetics apart -- the stat pin above and every
+# other assertion in this block read the same either way, because $stat's
+# TEXT was never wrong; only the hidden sort key was.
+fq_first=$(printf '%s\n' "$fqout" | grep -n "^$DIRTY2_PANE\|^$DIRTY_PANE" | head -1 | cut -d: -f2 | cut -f1)
+is "same-rank rows sort by real churn: +5 tracked outranks +1 tracked + 3 untracked files" \
+   "$DIRTY2_PANE" "$fq_first"
 
 # The queue is a triage list, not a churn leaderboard. A pane parked on a
 # permission prompt is exactly the one that needs a human -- and it typically
@@ -5110,7 +5744,7 @@ esac
 # at fleet_rows' #{@panestate} sentinel. Sentinels on the wire, not empties.
 FQ_NOREPO=$(mktmpd)
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NOREPO" 'exec -a claude bash' >/dev/null 2>&1
-NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
+NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:5 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
 # Polled on the row we assert about, same reason as the loop above.
@@ -5126,8 +5760,43 @@ is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?"
 is "and its ± column reads —, not an empty field" "—" \
    "$(printf '%s\n' "$nrrow" | cut -f5)"
 
+# An agent that committed on its branch: `git status --porcelain` is clean
+# (nothing uncommitted), but the branch itself is ahead of main -- and that
+# is still a review worth queuing. Window/pane index is the next FREE one
+# (t:6): t:0-t:5 are already CTL/DIRTY/CLEAN/NONAGENT/DIRTY2/NOREPO above.
+FQ_AHEAD=$(mktmpd)                                   # agent, clean tree, commits ahead of main -- wanted
+(
+  cd "$FQ_AHEAD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+  git checkout -q -b feat; printf 'b\n' >> f; git commit -q -am feat
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_AHEAD" 'exec -a claude bash' >/dev/null 2>&1
+AHEAD_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:6 -F '#{pane_id}')
+"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
+fqout4=""
+for i in $(seq 1 20); do
+    fqout4=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
+    case "$fqout4" in *"$AHEAD_PANE"$'\t'*) break ;; esac
+    sleep 0.1
+done
+case "$fqout4" in
+    *"$AHEAD_PANE"*"+1 -0"*) ok "an agent that committed on its branch is still in the queue, with its branch churn" ;;
+    *) bad "an agent that committed on its branch is still in the queue, with its branch churn" "$AHEAD_PANE with +1 -0" "$fqout4" ;;
+esac
+
+# --delta answers the Stop hook's one question: does this pane's tree still
+# differ from its review base? Run through `run-shell` on THIS block's own
+# server -- delta_mode's internal `tmux` calls need to land on $FQ, not
+# whatever server a bare tmux-review invocation from the suite's own shell
+# would resolve against.
+is "--delta: a branch ahead of main has something to review" "D=0" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $AHEAD_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+is "--delta: a clean agent on an unadvanced branch has nothing to review" "D=1" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $CLEAN_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_NOREPO"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
@@ -5191,6 +5860,7 @@ is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 rm -rf "$FP_DIR"
 fi
 
+# group: serial
 echo "== tmux-review --fleet: dedups panes sharing a repo root and scans 20 panes under a second =="
 # fleet_rows() used to cost one status+numstat scan PER PANE even when two
 # panes were cd'd into the exact same worktree -- resolving the repo root now
@@ -5263,9 +5933,17 @@ is "20 panes scan in under 1s" "RC=0" \
 fd_rows=$(grep -c . "$STATE/fd-out" || true)
 is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
 
-fd_status_calls=$(grep -c ' status ' "$FD_LOG" || true)
-is "the shared repo is scanned once -- 19 status calls for 19 unique roots" \
-    "19" "$fd_status_calls"
+fd_diff_calls=$(grep -c ' diff ' "$FD_LOG" || true)
+is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
+    "19" "$fd_diff_calls"
+# The budget above is forks: 19 roots in 1 s is ~50 ms each and one git is
+# 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
+# blew it. Pinned as a count -- one rev-parse per pane to find its root, four
+# per unique root (rev-parse, add -N, for-each-ref, diff) -- so the next
+# helper that costs a fork per root fails here on any box, not only a busy one.
+fd_git_calls=$(grep -c . "$FD_LOG" || true)
+is "one fork per pane and four per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 4)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
@@ -5277,11 +5955,12 @@ echo "== tmux-review: the popup resolves the pane it was opened from, not the bu
 # `display-message -p` (no -t) falls back to whichever attached client was
 # most recently active -- reproduced here with two real attached clients,
 # cliB attaching after cliA so cliB is the busier one. Only cliA is an agent
-# pane, so main_entry's two branches (review_pane vs fleet_queue) are
-# observably different picker sessions -- a stub fzf on PATH records which
-# --prompt it was invoked with ("review> " only from review_pane, "fleet> "
-# only from fleet_queue) and exits 1 (a harmless no-match/cancel) rather than
-# actually opening anything, so this needs no real interactive picker.
+# pane, and prefix r is the queue either way now, so the observable difference
+# is the PRESELECT: resolved to cliA the queue opens with that pane under the
+# pointer (--sync --bind start:pos(N)), resolved to cliB's plain shell there is
+# no such pane in the queue and no bind at all. A stub fzf on PATH records the
+# arguments it was invoked with and exits 1 (a harmless no-match/cancel) rather
+# than actually opening anything, so this needs no real interactive picker.
 if need_tmux "review popup pane resolution"; then :; else
 RDA=$(mktmpd); RDB=$(mktmpd)
 (
@@ -5318,23 +5997,26 @@ EOF
 chmod +x "$RFZFSTUB/fzf"
 
 # Without -p: unpinned resolution lands on cliB (the busier client, attached
-# second) -- a plain shell, so main_entry falls to fleet_queue. The hazard is
-# real.
+# second) -- a plain shell, which is in nobody's queue, so the list opens with
+# no preselect at all. The hazard is real.
 : > "$RMARKER"
 env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
 case "$(cat "$RMARKER")" in
+    *'fleet>'*'start:pos('*|*'start:pos('*'fleet>'*)
+        bad "unpinned resolution really does land on the busier client (the hazard is real)" \
+         "fleet> with no start:pos( in the fzf invocation" "$(cat "$RMARKER")" ;;
     *'fleet>'*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
     *) bad "unpinned resolution really does land on the busier client (the hazard is real)" \
          "fleet> in the fzf invocation" "$(cat "$RMARKER")" ;;
 esac
 # With -p pane_id: pinned to the pane the popup actually opened from -- the
-# agent pane, so main_entry opens review_pane's loop, not the fleet queue.
+# agent pane, so the queue opens with that pane's row under the pointer.
 : > "$RMARKER"
 env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1
 case "$(cat "$RMARKER")" in
-    *'review>'*) ok "-p pane_id resolves the pane the popup was opened from" ;;
+    *'start:pos('*) ok "-p pane_id resolves the pane the popup was opened from" ;;
     *) bad "-p pane_id resolves the pane the popup was opened from" \
-         "review> in the fzf invocation" "$(cat "$RMARKER")" ;;
+         "start:pos( in the fzf invocation" "$(cat "$RMARKER")" ;;
 esac
 tmux -L "$ROUTERA" kill-server >/dev/null 2>&1
 tmux -L "$ROUTERB" kill-server >/dev/null 2>&1
@@ -5384,6 +6066,56 @@ esac
 is "@cockpit_reload_key off leaves R unbound" "" \
    "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="R"')"
 "$TMUX_REAL" -L "$RB2" kill-server >/dev/null 2>&1
+
+# @cockpit_review_window on: the same script and the same -p, opened as a real
+# window instead of the modal popup, so the fleet's borders and tabs stay
+# visible while you read.
+RB3="cockpit-rb3-$$"; SOCKS="$SOCKS $RB3"
+"$TMUX_REAL" -L "$RB3" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB3" set -g @cockpit_review_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$RB3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+case "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
+    *new-window*tmux-review*) ok "@cockpit_review_window on opens a window instead of the popup" ;;
+    *) bad "@cockpit_review_window on opens a window instead of the popup" \
+         "a new-window running tmux-review" \
+         "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix | awk '$4=="r"')" ;;
+esac
+"$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review --info / prefix i: one screen says what the pane is, waits on, and holds =="
+if need_tmux "tmux-review --info"; then :; else
+IN="cockpit-in-$$"; SOCKS="$SOCKS $IN"; INSTATE=$(mktmpd); INDIR=$(mktmpd)
+( cd "$INDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$INDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate_msg 'run make?' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_review pending >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_session sid-9 >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_title 'Fix the parser' >/dev/null 2>&1
+INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
+mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
+inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
+for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+    case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
+done
+# display-message exits 0 on a pane id that does not exist, expanding every
+# format to "" -- so a screen built on the exit code described the CALLER's own
+# repo (git_root "") as if it were that pane's.
+inbad=$("$TMUX_REAL" -L "$IN" run-shell "'$DIR/scripts/tmux-review' -p %999 --info 2>&1" 2>&1)
+case "$inbad" in
+    *"no such pane %999"*) ok "a pane that does not exist is named, not described" ;;
+    *) bad "a pane that does not exist is named, not described" "no such pane %999" "$inbad" ;;
+esac
+"$TMUX_REAL" -L "$IN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$IN" list-keys -T prefix 2>/dev/null | awk '$4=="i"')" in
+    *tmux-review*--info*) ok "prefix i is bound to the info popup" ;;
+    *) bad "prefix i is bound to the info popup" "a display-popup running tmux-review --info" "$("$TMUX_REAL" -L "$IN" list-keys -T prefix | awk '$4=="i"')" ;;
+esac
+"$TMUX_REAL" -L "$IN" kill-server >/dev/null 2>&1
 fi
 
 echo "== prefix R sources every config file tmux loaded, not just the first =="
@@ -5492,7 +6224,7 @@ esac
 is "no editor temp file is left behind, and none went beside the store" "" "$(ls "$RETMP"/* "$RESTORE".edit.* 2>/dev/null)"
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Escape
 until_cap "$RE" "$REP" '*discard 1 comment*'
-"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Down Enter
 "$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
 fi
 
@@ -5682,7 +6414,7 @@ is "--resnap names exactly the stale headers" "## src.go:3 (+)" \
    "$("$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1 | grep '^## ')"
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Escape
 until_cap "$RR" "$RRP" '*discard 1 comment*'
-"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Down Enter
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Down Down Enter
 "$TMUX_REAL" -L "$RR" kill-server >/dev/null 2>&1
 fi
 
@@ -5722,7 +6454,7 @@ pm_shell() {                  # a fresh control pane in the terminal window, rea
 pm_review() {                 # <control-pane> <agent-pane>   opens that agent's review from the control pane
     "$TMUX_REAL" -L "$PM" send-keys -t "$1" \
         "XDG_STATE_HOME=$(printf '%q' "$PMSTATE") '$DIR/scripts/tmux-review' -p $2" Enter
-    until_cap "$PM" "$1" '*review>*'
+    review_enter "$PM" "$1"
 }
 pm_sess() {                   # <agent-pane> <root>   the session dir the script will use
     printf '%s/tmux-cockpit/review/%s-%s' "$PMSTATE" "${1#%}" \
@@ -5784,7 +6516,7 @@ if until_cap "$PM" "$C" '*alpha⑂main*bravo⑂main*'; then ok "both projects' a
 if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "picking A in the queue resumes A's review, marks and all"; else bad "picking A in the queue resumes A's review, marks and all" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
 "$TMUX_REAL" -L "$PM" send-keys -t "$C" Escape
 until_cap "$PM" "$C" '*discard 1 comment*'
-"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Enter
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Down Enter
 for i in $(seq 1 40); do [ -e "$(pm_sess "$PMA" "$ALPHA")" ] || break; sleep 0.1; done
 is "discarding A from the queue path removes only A's dir" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
 unset -f pm_shell pm_review pm_sess pm_cap
@@ -5824,7 +6556,7 @@ sd_shell() {                  # a control pane, ready to take a command
 SDCTL=$(sd_shell)
 "$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL" \
     "XDG_STATE_HOME=$(printf '%q' "$SDSTATE") '$DIR/scripts/tmux-review' -p $SDAP" Enter
-if until_cap "$SD" "$SDCTL" '*review>*'; then ok "the picker comes up for -p <agent pane>"
+if review_enter "$SD" "$SDCTL"; then ok "the picker comes up for -p <agent pane>"
 else bad "the picker comes up for -p <agent pane>" "review>" "$("$TMUX_REAL" -L "$SD" capture-pane -p -t "$SDCTL")"; fi
 SDROOT=$(git -C "$SDDIR" rev-parse --show-toplevel)
 SDSESS="$SDSTATE/tmux-cockpit/review/${SDAP#%}-$(printf '%s' "$SDROOT" | cksum | cut -d' ' -f1)"
@@ -5844,16 +6576,75 @@ is "the review outlives the client" "1" "$(grep -c '^## src.go:3 (+)' "$SDSESS/c
 SDCTL2=$(sd_shell)
 "$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" \
     "XDG_STATE_HOME=$(printf '%q' "$SDSTATE") '$DIR/scripts/tmux-review' -p $SDAP" Enter
+review_enter "$SD" "$SDCTL2"
 if until_cap "$SD" "$SDCTL2" '*●src.go:3 (+)*'; then ok "reopening the same pane resumes its comments, marked"
 else bad "reopening the same pane resumes its comments, marked" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$SD" capture-pane -p -t "$SDCTL2")"; fi
 "$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Escape
 until_cap "$SD" "$SDCTL2" '*discard 1 comment*'
-"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Down Enter
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Down Down Enter
 for i in $(seq 1 40); do [ -e "$SDSESS" ] || break; sleep 0.1; done
 is "discarding removes the session dir, not just the store" "gone" "$([ -e "$SDSESS" ] && echo present || echo gone)"
 unset -f sd_shell sdmode
 "$TMUX_REAL" -L "$SD" kill-server >/dev/null 2>&1
 fi
+
+echo "== tests/par.sh: every block runs exactly once across the shards, and a red shard reddens the run =="
+# A sandboxed copy, never the live tests/run.sh: par.sh derives DIR from its
+# own BASH_SOURCE, so it has to sit under tests/ of a fake repo root, not be
+# pointed at the file this suite is itself running from (that would recurse).
+PARROOT=$(mktmpd)
+mkdir -p "$PARROOT/tests"
+cp "$DIR/tests/par.sh" "$PARROOT/tests/par.sh"
+# The real prelude verbatim (everything above the first block -- ok/bad/is,
+# mktmpd, the private-server setup), then four small fixture blocks: a solo
+# pass, two sharing a group (one shard), and one that fails on purpose. Built
+# with $Q rather than a literal `echo "== `, so this suite's own block-scanning
+# tools never mistake the fixture text below for real blocks in THIS file --
+# they match that exact substring at column 0, heredoc or not.
+awk '/^echo "== /{exit} {print}' "$DIR/tests/run.sh" > "$PARROOT/tests/run.sh"
+Q='"'
+{
+    printf 'echo %s== fake1: solo ==%s\n' "$Q" "$Q"
+    printf 'is "fake1" 1 1\n\n'
+    printf '# group: g\n'
+    printf 'echo %s== fake2a: grouped ==%s\n' "$Q" "$Q"
+    printf 'is "fake2a" 1 1\n\n'
+    printf '# group: g\n'
+    printf 'echo %s== fake2b: grouped ==%s\n' "$Q" "$Q"
+    printf 'is "fake2b" 1 1\n\n'
+    printf 'echo %s== fake3: the injected failure ==%s\n' "$Q" "$Q"
+    printf 'bad "deliberately red" want got\n'
+} >> "$PARROOT/tests/run.sh"
+
+EXPECT_BLOCKS=$(grep -c '^echo "== ' "$PARROOT/tests/run.sh")
+PAROUT=$(J=3 "$PARROOT/tests/par.sh" 2>&1); PARRC=$?
+is "a red shard makes par.sh exit non-zero" "1" "$PARRC"
+SUMMARY=$(printf '%s\n' "$PAROUT" | grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' | tail -1)
+COUNTED=$(printf '%s\n' "$SUMMARY" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
+is "every fixture block is counted exactly once (faithfulness: extracted == grep -c)" "$EXPECT_BLOCKS" "$COUNTED"
+is "the injected bad is the one failure, the rest still pass" "3 passed, 1 failed, 0 skipped" "$SUMMARY"
+
+echo "== tests/green.sh: the stamp hits on unchanged content, misses on one changed byte, and tool versions are in the key =="
+GROOT=$(mktmpd)
+mkdir -p "$GROOT/scripts/lib" "$GROOT/tests" "$GROOT/examples"
+cp "$DIR/tests/green.sh" "$GROOT/tests/green.sh"
+for f in cockpit.tmux install.sh bootstrap.sh scripts/foo scripts/lib/bar tests/baz examples/qux; do
+    printf 'a\n' > "$GROOT/$f"
+done
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "no stamp yet: check misses" "1" "$?"
+(cd "$GROOT" && bash tests/green.sh stamp) >/dev/null 2>&1
+is "stamp records green" "0" "$?"
+case "$(cat "$GROOT/tests/.cache/green" 2>/dev/null)" in
+    *"tool "*tmux*) ok "tool versions are recorded in the stamp" ;;
+    *) bad "tool versions are recorded in the stamp" "a 'tool ...tmux...' line" "$(cat "$GROOT/tests/.cache/green" 2>/dev/null)" ;;
+esac
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "unchanged content: check hits" "0" "$?"
+printf 'a\nb\n' > "$GROOT/scripts/foo"
+(cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
+is "one changed byte: check misses" "1" "$?"
+is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
