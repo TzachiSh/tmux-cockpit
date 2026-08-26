@@ -3861,9 +3861,9 @@ until_cap "$MC" "$MCP" '*review>*' || bad "the picker comes up" "review>" "$("$T
 # so two Tabs mark the first two rows and leave the cursor on the third.
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Tab Tab; until_cap "$MC" "$MCP" '*(2)*'   # fzf's inline info shows the mark count in parentheses
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" M-c
-until_file_cmd() { local i=0; while [ $i -lt 50 ]; do [ "$("$TMUX_REAL" -L "$MC" show-buffer 2>/dev/null)" != OLD ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
-until_file_cmd
-is "alt-c copies the marked rows' text, one per line, in list order" $'FIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
+until_buffer() { local i=0; while [ $i -lt 50 ]; do [ "$("$TMUX_REAL" -L "$MC" show-buffer 2>/dev/null)" != OLD ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+until_buffer
+is "alt-c copies the marked rows' text, one per line, in mark order" $'FIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
 # --multi must not change what ↵ pins: {1} {2} {3} are still the CURSOR row,
 # so with FIRST and SECOND marked and the cursor on THIRD (src.go:4) it pins
 # exactly one comment, and on THIRD -- never on the marked rows.
@@ -3875,6 +3875,7 @@ is "and pins nothing anywhere else" "1" "$(grep -c '^## ' "$MCSTORE" 2>/dev/null
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Escape; until_cap "$MC" "$MCP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Down Down Enter; until_cap "$MC" "$MCP" '*$*'
 "$TMUX_REAL" -L "$MC" kill-server >/dev/null 2>&1
+unset -f until_buffer
 fi
 
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
@@ -6346,7 +6347,7 @@ echo "== tmux-review --edit: the editor gets the terminal even while fzf holds s
 # own stdout -- which run_loop captures. vi printed "Output is not to a
 # terminal" and ate every key after. `| cat` below is that exact shape.
 if need_tmux "tmux-review --edit tty"; then :; else
-ET="cockpit-et-$$"; SOCKS="$SOCKS $ET"; ETDIR=$(mktmpd); ETSTORE="$STATE/review-edit-tty-$$"
+ET="cockpit-et-$$"; SOCKS="$SOCKS $ET"; ETDIR=$(mktmpd); ETTMP=$(mktmpd); ETSTORE="$STATE/review-edit-tty-$$"
 (
   cd "$ETDIR" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -6358,7 +6359,7 @@ ETED=$(mktmpf); printf '#!/bin/sh\nif [ -t 1 ]; then r=STDOUT-IS-TTY; else r=STD
 ETED2=$(mktmpf); printf '#!/bin/sh\necho FROM-COCKPIT-EDITOR >> "$1"\n' > "$ETED2"; chmod +x "$ETED2"
 "$TMUX_REAL" -L "$ET" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 ETP=$("$TMUX_REAL" -L "$ET" list-panes -t t: -F '#{pane_id}'); until_cap "$ET" "$ETP" '*$*'
-"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC=\$?" Enter
+"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "TMPDIR=$(printf '%q' "$ETTMP") VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC=\$?" Enter
 # ETRC=0, not ETRC=: the send-keys line echoes into the pane as `echo ETRC=$?`,
 # so the looser glob matches the typed command and reads the store too early.
 until_cap "$ET" "$ETP" '*ETRC=0*'
@@ -6367,12 +6368,13 @@ case "$(cat "$ETSTORE" 2>/dev/null)" in
     *) bad "stdin a tty, stdout a pipe: the editor still writes to the terminal" "STDOUT-IS-TTY" "$(cat "$ETSTORE" 2>/dev/null)" ;;
 esac
 "$TMUX_REAL" -L "$ET" set -g @cockpit_editor "$ETED2"
-"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "clear; VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC2=\$?" Enter
+"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "clear; TMPDIR=$(printf '%q' "$ETTMP") VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC2=\$?" Enter
 until_cap "$ET" "$ETP" '*ETRC2=0*'
 case "$(cat "$ETSTORE" 2>/dev/null)" in
     *FROM-COCKPIT-EDITOR*) ok "@cockpit_editor wins over \$EDITOR, same chain as the path picker" ;;
     *) bad "@cockpit_editor wins over \$EDITOR, same chain as the path picker" "FROM-COCKPIT-EDITOR" "$(cat "$ETSTORE" 2>/dev/null)" ;;
 esac
+is "no editor temp file is left behind" "" "$(ls "$ETTMP"/* 2>/dev/null)"
 "$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
 fi
 

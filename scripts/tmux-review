@@ -87,7 +87,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
-In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-y copy all   ^S deliver (asks first)   esc leave (asks first)
+In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-c copy lines   alt-y copy all   ^/ preview   alt-↑↓ scroll   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
@@ -1140,7 +1140,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll   ^R refresh\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
+                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^R refresh\n^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
