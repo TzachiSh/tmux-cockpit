@@ -3,4 +3,5 @@ pub mod board;
 pub mod data;
 pub mod fleet;
 pub mod info;
+pub mod push;
 pub mod theme;

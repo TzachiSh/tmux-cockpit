@@ -80,3 +80,19 @@ Still lacking: control-mode push (and, measured, not available anyway), mouse, s
 ## Verdict
 
 Build it in Rust if a compiled screen is ever built, for the board alone, optional and additive, with actions in shell and the fzf list untouched. The demo shows it renders right, tests in a second, ships at under 1 MB static, and costs 3 MB resident. The three things that bite: the 380 ms `claude agents` fork (cache it), the 1.88 MSRV against distro toolchains (fail the source fallback loudly), and crossterm #1104 (no queries, pin 0.29.0, keep `q`). The bash board at 40 lines is the honest counter-offer: it works today at 47 ms/tick and needs no fetcher; the binary earns its tax only when the tile count, or mouse, or per-cell styling makes bash's cost visible. Owner decision 6 in the README.
+
+## Push channel: unix socket vs SIGUSR1 vs poll (2026-08-27)
+
+The owner asked for the demo to take push events over a socket. Added `src/push.rs` (106 lines: non-blocking `UnixListener` polled in the same loop as crossterm, a SIGUSR1 handler via `libc::signal`, a `notify <line>` client, Drop cleanup), `fleet --sock`, `bench.sh`; binary +10 KB; 12 tests still pass. The socket lives at `${XDG_RUNTIME_DIR:-/tmp}/cockpit-tui-<pid>.sock` (under 108 bytes, 0600), its path is published in `@cockpit_tui_sock` and the pid in `@cockpit_tui_pid`; a line only pulls the next tick forward, the 1 s poll stays underneath, and the line's content is logged and discarded (no payload is parsed; every action still comes from a keystroke and leaves as a printed line).
+
+Latency from the trigger to the redraw showing the new state, 10 samples each, 4-agent demo server, the client's own exec included (what a hook pays):
+
+| channel | min | median | max | wake | refetch + draw |
+|---|---|---|---|---|---|
+| unix socket | 28.2 ms | 34.0 ms | 37.1 ms | 8.5 ms | 25.3 ms |
+| SIGUSR1 | 23.7 ms | 29.5 ms | 36.7 ms | 4.8 ms | 26.3 ms |
+| poll (1 s) | 110.5 ms | 481.8 ms | 1013.2 ms | | |
+
+The channel is not the cost: waking is 5–9 ms, the refetch (`list-panes` + `capture-pane`) is ~25 ms, and push only deletes the 0–1000 ms of waiting. Below ~30 ms the fix is not re-walking every pane per tick, which is a control-mode client pushing the changed pane, a different project. Idle cost with the listener open: RSS 2.98 MB (noise), CPU 0.3–0.9 % because the keyboard poll dropped to 10 ms to service `accept()`; the upgrade is `accept()` on a blocking thread that signals the loop, with the poll back at 100 ms (~8 lines, not done). Teardown: `q` and `display-popup -E` close both remove the file and unset the option; `kill -9` leaves a 0-byte file whose pid-named path never collides, startup connects first and unlinks on `ECONNREFUSED`, and `notify` against a stale option returns in 4 ms rc 0. End to end in a real popup: `set-option -p @panestate needs-input` + `cockpit-tui notify 'state %2 needs-input'` from another pane promoted the row and raised the needs-you overlay 0.4 s later. Security: 0600 in a 0700 runtime dir; if `XDG_RUNTIME_DIR` is unset the fallback is `/tmp`, where a pre-created file at the path is a pid guessing game; if this ships, refuse to bind under a world-writable dir. The hook must never block: connect-and-forget with a 50 ms write timeout.
+
+Verdict: SIGUSR1 for cockpit (fastest, ~12 lines, the hook is `kill -USR1 "$(tmux show-option -gqv @cockpit_tui_pid)"`, nothing to unlink, no client binary, a dead pid fails harmlessly); the socket only if a message must ever carry a payload the refetch cannot discover; the 1 s poll stays as the floor. Publishing the pid or path is a write to the tmux server (`set-option -g`), exercised on the demo server only.

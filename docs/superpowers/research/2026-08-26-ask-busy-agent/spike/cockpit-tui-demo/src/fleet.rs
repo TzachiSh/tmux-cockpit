@@ -3,6 +3,7 @@
 //! word, and needs-input rows whose question replaces everything right of the
 //! title.
 use crate::data::{Pane, fmt_dur, hash_rows, list_panes, log, preview, trunc, trunc_left, wrap};
+use crate::push::Push;
 use crate::theme::Theme;
 use ansi_to_tui::IntoText;
 use ratatui::Frame;
@@ -16,6 +17,11 @@ use std::time::{Duration, Instant};
 
 /// The glyph pair: status glyph + review mark.
 pub const MARK: u16 = 2;
+/// The keyboard wait, and so the ceiling on how late a push wakeup can be.
+/// ponytail: 10 ms costs ~0.8 % of a core in idle wakeups (0.1 % at 100 ms).
+/// Worth it only while a screen is open. If it ever matters, move accept() to a
+/// blocking thread that kill()s our own pid, and this goes back to 100 ms.
+const POLL: Duration = Duration::from_millis(10);
 /// Below this the row would lie about which agent it names (screens.md §"80 columns").
 pub const MIN_R: u16 = 40;
 
@@ -317,8 +323,9 @@ pub fn render_needs_popup(f: &mut Frame, area: Rect, th: &Theme, n: &Needs) {
 }
 
 /// Returns the action line for the shell wrapper, e.g. "jump %14".
-pub fn run() -> Option<String> {
+pub fn run(sock: bool) -> Option<String> {
     let th = Theme::load();
+    let push = Push::start(sock);
     let mut term = ratatui::init();
     let mut st = TableState::new();
     let (mut panes, mut sel, mut pv) = (Vec::<Pane>::new(), 0usize, String::new());
@@ -332,6 +339,11 @@ pub fn run() -> Option<String> {
     let mut dirty = true;
     let mut action = None;
     loop {
+        // a push says "look now": it pulls the next tick forward, it does not
+        // replace it, so a missed message costs a second and never a hang
+        if push.pending() {
+            tick -= Duration::from_secs(1);
+        }
         if tick.elapsed() >= Duration::from_secs(1) {
             let t0 = Instant::now();
             let size = term.size().unwrap_or_default();
@@ -383,9 +395,10 @@ pub fn run() -> Option<String> {
         if dirty {
             let v = View { panes: &panes, sel, th: &th, preview: &pv, overlay: overlay.as_ref().map(|(n, _)| n) };
             let _ = term.draw(|f| render(f, f.area(), &v, &mut st));
+            log("draw");
             dirty = false;
         }
-        if event::poll(Duration::from_millis(100)).unwrap_or(false)
+        if event::poll(POLL).unwrap_or(false)
             && let Ok(Event::Key(k)) = event::read()
             && k.kind == KeyEventKind::Press
         {

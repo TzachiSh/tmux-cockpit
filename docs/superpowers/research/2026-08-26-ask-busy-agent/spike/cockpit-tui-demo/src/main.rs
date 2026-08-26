@@ -1,9 +1,9 @@
 //! One binary, five screens. Every action the TUI decides on is printed to
 //! stdout for the shell wrapper to run (tui.md §6: the bash path stays the
 //! source of truth), so this process never switches a client or kills a window.
-use cockpit_tui::{ask, board, data, fleet, info, theme};
+use cockpit_tui::{ask, board, data, fleet, info, push, theme};
 
-const USAGE: &str = "cockpit-tui fleet | board | info %N | ask %N | --rows | --json";
+const USAGE: &str = "cockpit-tui fleet [--sock] | board | info %N | ask %N | notify <line> | --rows | --json";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -18,7 +18,11 @@ fn main() {
             println!("{}", fleet::rows_json(&data::list_panes()));
             None
         }
-        "fleet" => fleet::run(),
+        "fleet" => fleet::run(arg == "--sock" || std::env::var("COCKPIT_SOCK").is_ok()),
+        "notify" => {
+            push::notify(arg);
+            None
+        }
         "board" => board::run(),
         "info" => {
             info::run(arg);

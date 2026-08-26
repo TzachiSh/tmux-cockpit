@@ -31,7 +31,8 @@ pub fn log(s: &str) {
     if let Ok(p) = std::env::var("COCKPIT_LOG")
         && let Ok(mut f) = OpenOptions::new().append(true).create(true).open(p)
     {
-        let _ = writeln!(f, "{s}");
+        let us = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_micros();
+        let _ = writeln!(f, "{us} {s}");
     }
 }
 
