@@ -749,7 +749,7 @@ RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"; RGSTATE=$(mktmpd); RGDIR=$(mktmpd)
 RGAP=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id}')
 RGCTL=$("$TMUX_REAL" -L "$RG" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_cap "$RG" "$RGCTL" '*$*'
-rg_n() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -c 'GRC=[0-9]'; }
+rg_n() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -S - -t "$RGCTL" | grep -c 'GRC=[0-9]'; }   # -S -: the block runs more hooks than the 30-line pane shows
 rg_wait() {                   # <count-before>  until one more finished GRC= marker is on screen (rundeliver's shape)
     local i; for i in $(seq 1 60); do [ "$(rg_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1
 }
@@ -759,7 +759,7 @@ rg_run() {                    # <stdin-file>  runs the hook inside the session a
         "TMUX_PANE=$RGAP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out") 2> $(printf '%q' "$RGSTATE/err"); echo GRC=\$?" Enter
     rg_wait "$n0"
 }
-rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1; }
+rg_rc() { "$TMUX_REAL" -L "$RG" capture-pane -p -J -S - -t "$RGCTL" | grep -o 'GRC=[0-9]*' | tail -1; }
 RGPAY=$(mktmpf); printf '{"session_id":"sid-123","transcript_path":"%s/tx.jsonl","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RGSTATE" "$RGDIR" > "$RGPAY"
 printf '{"type":"ai-title","aiTitle":"First topic"}\n{"type":"user"}\n{"type":"ai-title","aiTitle":"Fix the parser"}\n{"type":"assistant"}\n' > "$RGSTATE/tx.jsonl"
 # Clean tree: nothing to flag; the payload's fields are stashed.
@@ -801,6 +801,58 @@ is "the pane reads running again (the agent is about to work)" "running" "$("$TM
 rg_run "$RGPAY"; is "the same Stop fired again delivers nothing (no rewake loop)" "GRC=0" "$(rg_rc)"
 is "and stdout is empty the second time" "" "$(cat "$RGSTATE/out")"
 is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
+# A rewake chain (issue #52): Claude Code's /goal blocks every Stop it judges
+# not met, without a cap. Each Stop it causes carries stop_hook_active:true;
+# review-gate counts those per pane, ends the turn with continue:false at
+# @cockpit_rewake_cap, and a Stop with stop_hook_active:false (a fresh user
+# turn) resets the count. `--concede` ends the next turn on the agent's say-so.
+RGACT=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RGPAY" > "$RGACT"
+RGLOOP="$RGSTATE/tmux-cockpit/review/loop-${RGAP#%}"
+"$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
+rg_run "$RGACT"; rg_run "$RGACT"
+is "two rewakes under a cap of 3 pass through silently" "" "$(cat "$RGSTATE/out")"
+is "and the pane's counter reads 2" "2" "$(cat "$RGLOOP" 2>/dev/null)"
+rg_run "$RGACT"; is "the third rewake exits 0" "GRC=0" "$(rg_rc)"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*'"stopReason":"'*'3 '*) ok "and ends the turn: continue:false, the count in the reason" ;;
+    *) bad "and ends the turn: continue:false, the count in the reason" '"continue":false ... 3' "$(cat "$RGSTATE/out")" ;;
+esac
+is "the counter is gone once the cap fired" "absent" "$([ -e "$RGLOOP" ] && echo present || echo absent)"
+rg_run "$RGACT"; is "one rewake after the cap starts a new count, silently" "" "$(cat "$RGSTATE/out")"
+rg_run "$RGPAY"; is "a Stop with stop_hook_active:false resets the count" "absent" "$([ -e "$RGLOOP" ] && echo present || echo absent)"
+is "and passes through (no continue:false on a fresh turn)" "" "$(cat "$RGSTATE/out")"
+# The concession: the agent names why the goal will not be met; the next Stop
+# ends the turn with that line as the reason, whatever stop_hook_active says.
+TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'push denied by the classifier; a "human" must run it'
+rg_run "$RGPAY"; is "a conceded Stop exits 0" "GRC=0" "$(rg_rc)"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*'push denied by the classifier; a \"human\" must run it'*) ok "and ends the turn with the agent's reason, JSON-escaped" ;;
+    *) bad "and ends the turn with the agent's reason, JSON-escaped" 'continue:false + the reason' "$(cat "$RGSTATE/out")" ;;
+esac
+rg_run "$RGPAY"; is "the concession is consumed: the next Stop passes through" "" "$(cat "$RGSTATE/out")"
+is "and stderr stayed empty through the cap and the concession" "" "$(cat "$RGSTATE/err")"
+# --concede is a foreground call, not a hook: it confirms, or fails out loud.
+is "--concede confirms on stdout" "concession recorded; your next turn ends here, with that line as the reason" \
+   "$(TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'again')"
+is "--concede outside a tmux pane fails, not silently" "1" "$(TMUX_PANE='' XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'x' 2>/dev/null; echo $?)"
+# A concession an hour old is a killed agent's, or a pane id reused after a
+# server restart: dropped, never fired on whoever holds the id now.
+touch -d '-2 hours' "$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}"
+rg_run "$RGPAY"; is "a stale concession does not end the turn" "" "$(cat "$RGSTATE/out")"
+is "and is dropped" "absent" "$([ -e "$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}" ] && echo present || echo absent)"
+# 0 disables: eleven rewakes, one past the default, and nothing fires; then
+# with the option unset the twelfth trips the default of 10.
+"$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 0 >/dev/null 2>&1
+for _ in 1 2 3 4 5 6 7 8 9 10 11; do rg_run "$RGACT"; done
+is "@cockpit_rewake_cap 0 disables the cap (11 rewakes, silent)" "" "$(cat "$RGSTATE/out")"
+is "and the count still climbs" "11" "$(cat "$RGLOOP" 2>/dev/null)"
+"$TMUX_REAL" -L "$RG" set -gu @cockpit_rewake_cap >/dev/null 2>&1
+rg_run "$RGACT"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*'12 stop-hook rewakes'*'@cockpit_rewake_cap 10'*) ok "the option unset, the default of 10 fires on the next rewake" ;;
+    *) bad "the option unset, the default of 10 fires on the next rewake" 'continue:false ... 12 ... cap 10' "$(cat "$RGSTATE/out")" ;;
+esac
+rg_run "$RGPAY"                 # a fresh turn: resets the count for the stdin cases below
 # The two stdin cases, both driven by a background writer on a FIFO. A pipeline
 # (`sleep N | review-gate`) would measure bash waiting for the WHOLE pipeline,
 # not the hook's read; agent-state's own hang guard above uses this same holder
