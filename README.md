@@ -473,6 +473,10 @@ Opens in VS Code at the line. For a terminal editor instead:
 set -g @cockpit_editor nvim   # new window next to the one you clicked, at +LINE
 ```
 
+Keep it a **terminal** editor: the review's `^E` reads the same option, and
+opens it in the popup's own terminal. A GUI editor belongs in `VISUAL`
+instead.
+
 Where neither `@cockpit_editor` nor `code` is available it falls back to `$VISUAL`
 or `$EDITOR`, and says so plainly if there is no editor at all rather than
 reporting a success that never happened.
@@ -558,11 +562,15 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `alt-↵` | — | alias for `↵` |
 | `^/` | toggle the preview | toggle the preview |
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
-| `alt-u` / `alt-d` | — | scroll the preview |
+| `alt-↑` / `alt-↓`, `alt-u` / `alt-d` | — | scroll the preview a line, half a page (the mouse wheel over it scrolls too) |
 | `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
 | `^X` | kill the window under the cursor, after a y/N that names it and its pane count — the session too, when it is that session's last window (a forgotten agent elsewhere) | delete the comment(s) on the row under the cursor |
 | `^L` | — | show every pinned comment in the terminal |
-| `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
+| `^E` | — | open your editor on the typed text; with nothing typed on a commented row, on that comment (save empty to delete it) |
+| `⇥` | — | mark the row (any number) |
+| `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
+| `alt-y` | — | copy the whole review's diff |
+| `alt-c` | — | copy the marked rows' text (or the row under the cursor) to the tmux buffer and the clipboard |
 | `^B` | — | cycle the base the diff is taken against |
 | `^A` | — | approve what you just read (only with nothing pinned) |
 | `^S` | — | deliver the whole batch; asks first |
@@ -571,17 +579,27 @@ comment, so the keys that would collide with typing it move elsewhere:
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
 terminals where the plain chord doesn't land. `^E` hands what you have typed
-to `$EDITOR` and pins the file that comes back, so a comment that needs three
+to your editor and pins the file that comes back, so a comment that needs three
 lines costs no more than one — an empty file pins nothing, so deleting
-everything and saving is the cancel. The popup's children see the tmux
-*server's* environment: export `EDITOR` before the server starts, or
-`tmux set-environment -g EDITOR nvim` for a running one. The list reloads
+everything and saving is the cancel. With nothing typed on a row that already
+carries a comment, `^E` opens that comment instead and replaces it; saving an
+empty file deletes it. `^E` uses `@cockpit_editor` when set
+(`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
+opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`, else
+`vi`. A GUI editor goes in `VISUAL`:
+`tmux set-environment -g VISUAL 'code --wait'`. The popup's children see the
+tmux *server's* environment, so a shell `export` made after the server started
+is not seen. Over VS Code Remote-SSH the tmux server has no live
+`VSCODE_IPC_HOOK_CLI`; point `VISUAL` at the wrapper below, which finds the
+newest listening `vscode-ipc-*.sock` and falls back to a terminal editor. From
+a plain ssh session nothing can reach the laptop's VS Code. The list reloads
 in place and marks the row `●` (the digit instead, when more than one
 comment sits there), so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
 `^S` delivers the whole batch, and asks first: it names the count and the
-target pane, and offers the batch to `$EDITOR` as text before it goes
-(`deliver N comment(s) to %7` / `edit the batch in $EDITOR first` /
+target pane by its title, and offers the batch to your editor as text before it
+goes (`deliver N comment(s) to ✳ fix the parser (%7)` /
+`edit the batch in nano first` /
 `keep reviewing`). `esc` asks the same way once anything is pinned
 (`leave — N comment(s) stay pinned` / `keep reviewing` / `discard N
 comment(s)`), because one reflexive escape should not throw away a
@@ -597,6 +615,12 @@ want its newest lines, `^R` takes a fresh snapshot on purpose and names the
 comments that no longer sit on a changed line — they still deliver, because
 the quoted fragment is what the agent finds them by. A resumed review says the
 same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
+
+To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
+copy mode, so the terminal's own selection is the one that works there. `^Y`
+copies the whole file plus its diff, `alt-y` every file's diff, for pasting
+into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
+row, when what you want is a handful of lines rather than a file.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
@@ -747,6 +771,61 @@ paste — revdiff's contract. `^A` there approves as anywhere else.
 You can also leave a requested review for later: `esc → leave` keeps the
 comments pinned and `--request` returns 0, so the agent carries on with nothing
 in hand. Running `/cockpit-review` again resumes exactly those comments.
+
+### VS Code over Remote-SSH
+
+`VISUAL='code --wait'` is enough on a local machine. Over Remote-SSH it is
+not: VS Code hands the remote a fresh `VSCODE_IPC_HOOK_CLI` socket per
+connection, and the tmux server, started before that connection or outliving
+it, never has a live one. This wrapper finds the newest socket that is
+actually listening, and falls back to a terminal editor when there is none.
+Point `VISUAL` at it:
+
+```sh
+#!/bin/sh
+# ~/bin/cockpit-code — VISUAL target for ^E over Remote-SSH / Coder.
+cli=$(ls -t "$HOME"/.vscode-server/cli/servers/*/server/bin/remote-cli/code \
+             "$HOME"/.vscode-server/bin/*/bin/remote-cli/code 2>/dev/null | head -1)
+if [ -x "$cli" ]; then
+    for s in $(ls -t "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/vscode-ipc-*.sock \
+                     "${TMPDIR:-/tmp}"/vscode-ipc-*.sock 2>/dev/null); do
+        nc -zU "$s" 2>/dev/null || socat -u OPEN:/dev/null "UNIX-CONNECT:$s" 2>/dev/null || continue
+        VSCODE_IPC_HOOK_CLI=$s exec "$cli" --wait "$@"
+    done
+fi
+exec "${FALLBACK_EDITOR:-vi}" "$@"
+```
+
+It needs `nc` (OpenBSD netcat, for `-U`) or `socat` to probe a socket. With
+neither, every socket is skipped and it falls back to the terminal editor.
+Both server layouts and both socket directories are covered. The local leg was
+tested against a real VS Code; the Remote-SSH leg was verified against a mock
+socket, because the test box has no SSH keys. A closed window's socket can
+keep listening through the server's reconnection grace, so "newest listening"
+is not proof of a live window, and `--wait` can then hang until you kill the
+popup.
+
+From a plain ssh session, with no VS Code on the far end, nothing can reach
+the laptop's editor. Use a terminal editor there.
+
+### Coder
+
+A Coder workspace opened from VS Code is Remote-SSH underneath, so the
+snippet above applies with two changes: the IPC sockets are in
+`${XDG_RUNTIME_DIR:-/tmp}` (a workspace usually has no `/run/user/$UID`), and
+the shim lives at `~/.vscode-server/cli/servers/*/server/bin/remote-cli/code`.
+Put the wrapper in `$HOME`, which persists; `/tmp` does not survive a restart.
+
+### Security
+
+`VISUAL='code --wait'` and the Remote-SSH wrapper run entirely as you: they
+use the VS Code CLI socket in your own `$XDG_RUNTIME_DIR`, which no other
+user can open, and give a same-user process nothing it did not already have.
+Never run the wrapper or the popup under `sudo`. VS Code's remote server
+listens on a loopback TCP port by default, so on a shared host set
+`"remote.SSH.remoteServerListenOnSocket": true`, or another local user can
+attach to your editor session. Remote-SSH installs and auto-updates
+`~/.vscode-server` on that host; some admins do not allow that, ask first.
 
 ### Review options
 
