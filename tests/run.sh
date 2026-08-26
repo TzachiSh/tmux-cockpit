@@ -5651,7 +5651,10 @@ printf '## b.go:2 (+)\n> b\nBETA-MARKER-CONTENT\n\n' > "$BSTORE"
     "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$AP") $(shq_test "$ASTORE")" Enter
 "$TMUX_REAL" -L "$RDS" send-keys -t "$NP2" \
     "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$AP2") $(shq_test "$BSTORE")" Enter
-sleep 0.8
+# Polled: NP2 is a fresh shell still sourcing its rc files, and a fixed 0.8 s
+# read pane B before its delivery had run under a J=12 run (issue #44).
+until_cap "$RDS" "$AP" '*ALPHA-MARKER-CONTENT*'
+until_cap "$RDS" "$AP2" '*BETA-MARKER-CONTENT*'
 
 raceA=$("$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$AP")
 raceB=$("$TMUX_REAL" -L "$RDS" capture-pane -p -J -t "$AP2")
