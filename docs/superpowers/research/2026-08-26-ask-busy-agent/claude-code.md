@@ -42,6 +42,9 @@ Doc: https://code.claude.com/docs/en/agent-view
 | `type: assistant`, `content[].type == tool_use` | `name`, `input.description` (Bash), `input.prompt` (Agent), `input.command`, `input.file_path` |
 | `type: user`, `content[].type == tool_result` | the result, `sourceToolAssistantUUID` |
 | `type: ai-title` | the title review-gate already greps |
+| `type: attachment` (the most common non-message row), `last-prompt`, `custom-title`, `agent-name`, `permission-mode`, `system` (subtypes `stop_hook_summary`, `turn_duration`, …) | interleave after assistant rows; scan backwards past them |
+
+Correction (2026-08-27, verified on 588 transcripts, PR #62 verified.md F): a DENIED permission is recorded, as the tool_use plus a `tool_result` "The user doesn't want to proceed with this tool use…"; a PENDING permission prompt has no marker at all and is byte-identical to a still-running tool. The earlier claim that the tool_use is written only after approval was wrong. Subagent transcripts live in the sibling directory `<session-uuid>/subagents/`, never inline.
 
 Every hook payload carries `session_id` and `transcript_path` (SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, Notification, StatusLine, SessionEnd); cockpit's review-gate reads both at Stop and keeps only the id, as `@cockpit_session`.
 
