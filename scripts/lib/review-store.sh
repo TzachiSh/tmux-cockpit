@@ -69,6 +69,9 @@ parse_store() {
         STORE=(); STORE_N=0
         mv -f -- "$file" "$file.bak" 2>/dev/null
         printf 'review-store: %s does not parse; set aside as %s.bak\n' "$file" "$file" >&2
+        # stderr alone was lost under fzf's execute-silent: ^X and ^E showed
+        # every mark gone and said nothing (#22).
+        tmux display-message "review-store: ${file##*/} does not parse; set aside as .bak" 2>/dev/null || true
         return 0
     fi
     STORE_N=$((i+1))

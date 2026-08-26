@@ -2161,7 +2161,7 @@ fleet_queue() {               # [preselect-pane]
 
         out=$(printf '%s\n' "${disp[@]}" \
             | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --expect=ctrl-x \
                   --preview "$preview_cmd" \

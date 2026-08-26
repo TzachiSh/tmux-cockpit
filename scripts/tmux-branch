@@ -231,7 +231,7 @@ query=""
 while :; do
     out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
         | fzf --print-query --expect=alt-enter --query="$query" \
-              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16 \
+              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
               --delimiter=$'\t' --with-nth=2 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --prompt="switch> " \

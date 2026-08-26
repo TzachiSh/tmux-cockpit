@@ -4079,6 +4079,22 @@ case "$(cat "$RXN/log" 2>/dev/null)" in
     *"nothing pinned on this row"*) ok "so does ^X on an empty store" ;;
     *) bad "so does ^X on an empty store" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
 esac
+# A store that does not parse is set aside as .bak with a note on stderr, and
+# ^X runs under execute-silent, which eats stderr: every mark vanished with
+# no word (#22 item 4). The note must reach the status line too.
+: > "$RXN/log"; printf 'garbage before any header\n## src.go:3 (+)\nfine\n' > "$RXN/corrupt"
+PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/corrupt" src.go 3 2>/dev/null
+case "$(cat "$RXN/log" 2>/dev/null)" in
+    *"set aside as"*) ok "^X on a store that does not parse says so on the status line" ;;
+    *) bad "^X on a store that does not parse says so on the status line" "display-message ... set aside as" "$(cat "$RXN/log" 2>/dev/null)" ;;
+esac
+
+echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
+for f in tm tmux-branch tmux-open-path tmux-review; do
+    is "$f: every --color=16 carries border:8" \
+       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16')" \
+       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16,[^ ]*border:8')"
+done
 
 echo "== tmux-review --copy: the file as it is now, then its diff; no path: the whole review's diff =="
 RCP=$(mktmpd)

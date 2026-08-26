@@ -725,7 +725,7 @@ browse() {
         # alt-c's prefix is $PWD, not $dir: the cd below makes them the same
         # directory, and skipping the quoting layer keeps a backslash in a name.
         out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
-            | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+            | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --multi --expect=ctrl-o \
                   --bind 'load:down' \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
@@ -783,7 +783,7 @@ if command -v fzf >/dev/null; then
                esac
                printf '%s\t%s\t%s\t%s%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}" \
                       "$disp" "${LINES[$i]:+:${LINES[$i]}}"
-           done | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+           done | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                       --delimiter=$'\t' --with-nth=4 --multi --keep-right \
                       --expect=ctrl-o \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
