@@ -152,6 +152,10 @@ done
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
+# The pane a popup came from: $TMUX ends in the session id, whose active pane
+# is where the key fired. display-popup expands formats only in -T and -d; a
+# '#{pane_id}' here was literal text and scripts fell back to $PWD (#38).
+SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
 
 # Version gate. Measured against real 3.4 and 3.7c binaries, not guessed:
 #
@@ -215,25 +219,24 @@ fi
 # and should read as one tool. No -b/-S -- the border belongs to the user's
 # popup-border-style, and overriding it would fight their theme.
 #
-# -p '#{pane_id}': inside a popup, $TMUX_PANE is the popup's own pseudo-pane,
-# so tmux-branch asking the client "what pane am I on" resolves to whichever
-# CLIENT was most recently active, not the pane this binding actually fired
-# on. tmux expands #{pane_id} at bind time, on the pane the key/click landed
-# on, the same way #{pane_current_path} already does for the title above.
+# -p $SRC_PANE: inside a popup $TMUX_PANE is the popup's own pseudo-pane, so
+# the script cannot ask "what pane am I on" itself.
 if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
+    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
     # popup the path picker descends into, entered from the top. Wired to
     # range=control|2 in status-right, the slot beside the branch's control|1.
+    # -d is a format (the shell-command is not, see SRC_PANE): the popup
+    # starts in the pane's directory and --browse takes its $PWD.
     tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
-        -T ' files · #{b:pane_current_path} ' \
-        "$Q_OPEN --browse '#{pane_current_path}'"
+        -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
+        "$Q_OPEN --browse"
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
     tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
 fi
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p '#{pane_id}'"
+tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
 # Session picker in the same popup chrome. prefix+S is unbound in stock tmux
 # (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup
@@ -249,7 +252,7 @@ case "$JK" in
     *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump'" ;;
 esac
 
-# Review an agent's diff. The popup passes -p '#{pane_id}' so the script sees
+# Review an agent's diff. The popup passes -p $SRC_PANE so the script sees
 # the pane the popup was opened FROM: inside a popup $TMUX_PANE is the popup's
 # own pseudo-pane, and a bare display-message resolves the most-recently-active
 # client instead -- with two clients that landed the review on the wrong one.
@@ -268,8 +271,8 @@ fi
 RK=$(tmux show-option -gqv @cockpit_review_key)
 case "$RK" in
     off) ;;                          # explicitly disabled
-    "")  tmux bind-key r "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
+    "")  tmux bind-key r "${R_OPEN[@]}" "$Q_REVIEW -p $SRC_PANE" ;;
+    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$Q_REVIEW -p $SRC_PANE" ;;
 esac
 
 # prefix i: what this pane is, waits on, and holds -- state, review, base,
@@ -279,8 +282,8 @@ esac
 IK=$(tmux show-option -gqv @cockpit_info_key)
 case "$IK" in
     off) ;;
-    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
-    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
+    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
+    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
 esac
 
 # prefix f: a side fix beside a busy agent -- two lines, a fenced claude -p in
@@ -290,8 +293,8 @@ Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 FK=$(tmux show-option -gqv @cockpit_fixer_key)
 case "$FK" in
     off) ;;
-    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
-    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
+    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
+    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and
