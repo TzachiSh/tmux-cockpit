@@ -222,7 +222,7 @@ from `examples/claude-hooks.json` by hand:
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `PreToolUse` (`Bash`) | `review-gate --pretool` — while a side fix runs, denies the command pattern the human named; one stat otherwise |
 | `Stop` | `done` |
-| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
+| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; while a side fix is alive for this pane, holds here first (`@cockpit_hold`) and hands over a one-line result when it ends; then hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `SessionEnd` | `off` |
@@ -258,7 +258,7 @@ over earlier, `prefix r` included.
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
-| `prefix + i` | one screen for the pane you are on: state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
+| `prefix + i` | one screen for the pane you are on: state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
@@ -792,9 +792,12 @@ The flow, five lines:
    for the main agent while the fixer lives — a suite the fixer is mid-fix
    on stays un-run rather than reporting a false red. The main agent's next
    `Stop` **holds** until the fixer's pane is gone (deadline: `300`s,
-   `@cockpit_fixer_deadline`, unless it finishes sooner), then hands over
-   **one** `HANDOVER: …` line — never the fixer's transcript — ahead of any
-   pending review.
+   `@cockpit_fixer_deadline`, unless it finishes sooner — visible on the
+   pane as `@cockpit_hold` and in `prefix + i`), then hands over **one**
+   `HANDOVER: …` line — never the fixer's transcript — ahead of any pending
+   review. A pane gone with no handover, or one past its deadline, opens the
+   hold anyway with a one-line warning instead of the handover; the
+   `review-gate` Stop hook's own `timeout` is `330`s to cover the wait.
 
 ```sh
 set -g @cockpit_fixer_key      f       # off restores stock find-window

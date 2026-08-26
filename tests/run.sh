@@ -2303,7 +2303,7 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
-is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 5 s" "3 1 5" \
+is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 330 s" "3 1 330" \
    "$(jq -r '[(.hooks.Stop | length),
              ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
              ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add)] | join(" ")' \
@@ -2319,6 +2319,19 @@ HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a matcher-less twin does not duplicate" "2" \
    "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
 rm -rf "$HKN"
+# review-gate's own Stop entry is REPLACED on upgrade, not duplicated: seed a
+# settings.json holding the phase-3 shape (timeout 5, no hold) and assert the
+# merge leaves exactly one review-gate Stop entry, at the new timeout.
+HKG=$(mktmpd); mkdir -p "$HKG/.claude"
+cat > "$HKG/.claude/settings.json" <<'EOF'
+{ "hooks": { "Stop": [ { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 5 } ] } ] } }
+EOF
+HOME="$HKG" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "an upgrade replaces the old review-gate Stop entry, not duplicates it" "1 330" \
+   "$(jq -r '[ ([.hooks.Stop[].hooks[] | select(.command | test("review-gate"))] | length),
+             ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add) ] | join(" ")' \
+       "$HKG/.claude/settings.json")"
+rm -rf "$HKG"
 # dry-run: shows the diff, writes nothing
 HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
 out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
@@ -6096,12 +6109,22 @@ INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_review pending >/dev/null 2>&1
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_session sid-9 >/dev/null 2>&1
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_title 'Fix the parser' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_hold 'fix the tests' >/dev/null 2>&1
 INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
 mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
+# tmux-fixer's own record shape (pane "pending" -- alive with no split yet).
+mkdir -p "$INSESS/fixer"; printf 'fix the tests\n' > "$INSESS/fixer/reason"; printf 'make test|pytest\n' > "$INSESS/fixer/guard"
+printf 'pending\n' > "$INSESS/fixer/pane"; printf '%s\n' $(( $(date +%s) + 300 )) > "$INSESS/fixer/deadline"
 inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
-for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "hold      fix the tests" "1 pinned · 2 delivered"; do
     case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
 done
+case "$inout" in
+    *'side fix  fix the tests  pane pending (alive)  deadline in '*'s  guard /make test|pytest/'*)
+        ok "info shows the side fix: reason, pane, liveness, deadline, guard" ;;
+    *) bad "info shows the side fix: reason, pane, liveness, deadline, guard" \
+         "side fix  fix the tests  pane pending (alive)  deadline in Ns  guard /make test|pytest/" "$inout" ;;
+esac
 # display-message exits 0 on a pane id that does not exist, expanding every
 # format to "" -- so a screen built on the exit code described the CALLER's own
 # repo (git_root "") as if it were that pane's.
@@ -6767,6 +6790,74 @@ printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"; printf
 pg_run 'make test'; is "a written handover opens the gate even with the pane alive" "" "$(cat "$PGSTATE/out")"
 unset -f pg_run
 "$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
+fi
+
+echo "== review-gate: holds at Stop while a side fix lives, resumes with one line, opens on a dead pane, a handover, or the deadline =="
+if need_tmux "review-gate hold"; then :; else
+RH="cockpit-rh-$$"; SOCKS="$SOCKS $RH"; RHSTATE=$(mktmpd); RHDIR=$(mktmpd)
+( cd "$RHDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e; git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RH" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RHDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RH" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RHAP=$("$TMUX_REAL" -L "$RH" list-panes -t t: -F '#{pane_id}')
+RHCTL=$("$TMUX_REAL" -L "$RH" split-window -t t -P -F '#{pane_id}' 'exec bash'); until_cap "$RH" "$RHCTL" '*$*'
+RHSESS="$RHSTATE/tmux-cockpit/review/${RHAP#%}-$(printf '%s' "$RHDIR" | cksum | cut -d' ' -f1)"; RHMARK="$RHSTATE/tmux-cockpit/review/fixer-${RHAP#%}"
+RHPAY=$(mktmpf); printf '{"session_id":"s","transcript_path":"/nonexistent","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RHDIR" > "$RHPAY"
+RHPAY2=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RHPAY" > "$RHPAY2"
+# -S -: the full scrollback, not just the visible screen -- six rh_run calls
+# of a long wrapped send-keys command overflow the split pane's own height,
+# and a visible-only capture can lose an OLD marker off the top for every NEW
+# one that scrolls in, so the count never climbs past n0 and rh_wait spins to
+# its ceiling on a command that actually finished at once.
+rh_n() { "$TMUX_REAL" -L "$RH" capture-pane -p -S - -J -t "$RHCTL" | grep -c 'HRC=[0-9]'; }
+rh_start() { "$TMUX_REAL" -L "$RH" send-keys -t "$RHCTL" "TMUX_PANE=$RHAP XDG_STATE_HOME=$(printf '%q' "$RHSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RHSTATE/out") 2>/dev/null; echo HRC=\$?" Enter; }
+rh_wait() { local i; for i in $(seq 1 100); do [ "$(rh_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1; }
+rh_run() { local n0; n0=$(rh_n); rh_start "$1"; rh_wait "$n0"; }
+rh_record() {                 # <fixer-pane-id> <deadline>  the record + marker as tmux-fixer -p writes them
+    mkdir -p "$RHSESS/fixer"; printf 'fix the tests\n' > "$RHSESS/fixer/reason"; : > "$RHSESS/fixer/guard"
+    printf '%s\n' "$2" > "$RHSESS/fixer/deadline"; printf '%s\n' "$1" > "$RHSESS/fixer/pane"; printf '%s\n' "$RHSESS" > "$RHMARK"
+}
+# 1. No fixer: as fast as before, no hold state.
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 3 ] && ok "no fixer: no added latency" || bad "no fixer: no added latency" "≤3s" "$(( SECONDS - rh_t0 ))s"
+is "no fixer: no hold state" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+# 2. A live fixer pane: hold, visible reason; a handover + the pane closing resumes it with that one line.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 ))
+n0=$(rh_n); rh_start "$RHPAY"
+for i in $(seq 1 40); do [ -n "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)" ] && break; sleep 0.1; done
+is "a held pane carries the reason" "fix the tests" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+sleep 2; is "and the hook is still holding after 2 s" "$n0" "$(rh_n)"
+printf 'HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\n' > "$RHSESS/handover"; "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+rh_wait "$n0" && ok "the hook returns within 4 s of the fixer finishing" || bad "the hook returns within 4 s of the fixer finishing" "HRC" "$("$TMUX_REAL" -L "$RH" capture-pane -p -t "$RHCTL" | tail -3)"
+case "$(cat "$RHSTATE/out")" in *'"hookSpecificOutput"'*'"additionalContext":"HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\nContinue with your task."'*) ok "the handover is the additionalContext: one line, then the continue line" ;; *) bad "the handover is the additionalContext: one line, then the continue line" "…additionalContext with the HANDOVER line…" "$(cat "$RHSTATE/out")" ;; esac
+is "the hold state is cleared" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+is "the handover is consumed" "absent" "$([ -e "$RHSESS/handover" ] && echo present || echo absent)"
+is "the record is cleared" "absent" "$([ -d "$RHSESS/fixer" ] && echo present || echo absent)"
+is "and the gate's marker with it" "absent" "$([ -e "$RHMARK" ] && echo present || echo absent)"
+rh_run "$RHPAY"; is "the next Stop hands over nothing (no replay)" "" "$(grep -o 'HANDOVER[^"]*' "$RHSTATE/out")"
+# 3. The fixer pane dies with no handover (kill -9 of the process closes the pane): proceed at once, warned.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 )); "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "a dead fixer pane does not hold" || bad "a dead fixer pane does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"
+case "$(cat "$RHSTATE/out")" in *'a side task (\"fix the tests\") was running and did not finish; earlier results may be stale.'*) ok "and the agent is warned" ;; *) bad "and the agent is warned" "the stale warning (JSON-escaped quotes)" "$(cat "$RHSTATE/out")" ;; esac
+# 4. A stuck fixer (pane alive, deadline passed): proceed, warned.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) - 1 ))
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "an expired deadline does not hold" || bad "an expired deadline does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"
+case "$(cat "$RHSTATE/out")" in *'did not finish'*) ok "and warns" ;; *) bad "and warns" "the stale warning" "$(cat "$RHSTATE/out")" ;; esac
+"$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+# 5. stop_hook_active: no hold even with a live fixer.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 ))
+rh_t0=$SECONDS; rh_run "$RHPAY2"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "stop_hook_active true never holds" || bad "stop_hook_active true never holds" "≤4s" "$(( SECONDS - rh_t0 ))s"
+"$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"; rm -rf "$RHSESS/fixer" "$RHMARK"
+# 6. Ordering: a handover AND a queued review land in one payload, handover first.
+# The marker is the only way the Stop path finds sess (ruling B, no tmux-review
+# fallback), and a fixer that just finished has not been delivered yet -- its
+# marker is still on disk (only delivery removes it) -- so it is restored here.
+printf '%s\n' "$RHSESS" > "$RHMARK"
+printf 'HANDOVER: fixed\n' > "$RHSESS/handover"; printf 'Code review from the human\n\n## f:1 (+)\n> a\nREVIEW-MARKER\n\n' > "$RHSESS/spool.md"
+"$TMUX_REAL" -L "$RH" set-option -p -t "$RHAP" @cockpit_review_spool "$RHSESS/spool.md" >/dev/null 2>&1
+rh_run "$RHPAY"
+case "$(cat "$RHSTATE/out")" in *'HANDOVER: fixed'*'Continue with your task.'*'REVIEW-MARKER'*) ok "handover first, then the queued review, one payload" ;; *) bad "handover first, then the queued review, one payload" "HANDOVER … Continue … REVIEW-MARKER" "$(cat "$RHSTATE/out")" ;; esac
+is "the spool was drained too" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
+unset -f rh_n rh_start rh_wait rh_run rh_record
+"$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

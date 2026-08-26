@@ -179,12 +179,20 @@ if [ "$hooks" -eq 1 ]; then
     # matcher:"" and a shipped one without it are the same hook. Measured:
     # exactly that shape mismatch on the Stop event made every --hooks run
     # append one more duplicate, forever, while the other ten events held.
+    # review-gate's own Stop entry changes shape across versions (timeout 5 ->
+    # 330, the hold added) -- additive alone would keep the old one forever
+    # beside the new. Drop any of THEIRS whose command names review-gate
+    # first (both the Stop and the --pretool command match "/scripts/review-
+    # gate"), so an upgrade replaces cockpit's own entries instead of piling
+    # a second one on; a foreign hook never matches that path and survives.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         .[0].hooks as $mine | .[1] as $theirs
+        | ($theirs.hooks // {} | with_entries(.value |=
+            (map(.hooks |= map(select(((.command // "") | test("/scripts/review-gate")) | not)))
+             | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
-            ($theirs.hooks // {}) as $h
-            | $h + ($mine | with_entries(
+            $h + ($mine | with_entries(
                 .key as $k
                 | .value = (($h[$k] // []) + [ .value[]
                     | select(. as $e | (($h[$k] // []) | map(norm) | index($e | norm)) == null) ])
