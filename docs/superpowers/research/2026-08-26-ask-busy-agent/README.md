@@ -1,6 +1,6 @@
 # Issue #54: asking a busy agent, seeing what it does, being told when it needs you
 
-Research, 2026-08-26. Four lanes: [claude-code.md](claude-code.md) (what 2.1.246 already offers, and a spike that runs), [landscape.md](landscape.md) (30 community tools, how each shows state, asks, and notifies), [sources.md](sources.md) (the source of the eight tmux-native ones, file:line), and a read of what cockpit records per pane today. No code changed.
+Research, 2026-08-26. Five lanes: [claude-code.md](claude-code.md) (what 2.1.246 already offers, and two spikes that run), [landscape.md](landscape.md) (30 community tools, how each shows state, asks, and notifies), [sources.md](sources.md) (the source of the tmux-native ones, file:line), [ux.md](ux.md) (the flow from the human's seat, the screens, and the TUI verdict), and a read of what cockpit records per pane today. No code changed.
 
 ## What happened in the screenshot
 
@@ -34,6 +34,7 @@ Optional, fourth: **an `ask` popup from outside the pane**, the observer way. `p
 3. Fall back to `claude agents --json` when `@cockpit_session` is unset (an agent that has not Stopped yet), or wait for the first Stop. The fallback is one fork and a `pgrep -P` walk.
 4. Whether the `doing` line should also feed `@cockpit_title` when there is no ai-title yet. Adds a transcript read to a hook path; the Stop hook already opens the file for the title, so the cost is one more jq there.
 5. The observer `ask` popup: build it (fourth change), or leave `/btw` and `prefix u` as the answer. It is the one piece that costs API money per press.
+6. A `claude agents` row in the `prefix a` menu (`display-popup -E claude agents`): Anthropic's live dashboard with the Haiku summary and the peek, machine-wide, one line. ux.md §4 says no other TUI.
 
 ## Fail-first tests
 
