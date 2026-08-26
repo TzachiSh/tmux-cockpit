@@ -3223,8 +3223,8 @@ JK="cockpit-jk-$$"; JKO="cockpit-jko-$$"; SOCKS="$SOCKS $JK $JKO"
 for w in 0 1; do "$TMUX_REAL" -L "$JK" set-option -p -t "t:$w" @panestate needs-input >/dev/null 2>&1; done
 "$TMUX_REAL" -L "$JK" select-window -t t:0 >/dev/null 2>&1
 "$TMUX_REAL" -L "$JKO" -f /dev/null new-session -d -s o -x 80 -y 26 "TERM=xterm-256color exec $TMUX_REAL -L $JK attach -t t" >/dev/null 2>&1
-sleep 1; "$TMUX_REAL" -L "$JKO" send-keys -t o C-b J; sleep 1.5
-is "prefix J from the first blocked pane cycles to the second (#45)" "1" \
+sleep 1; "$TMUX_REAL" -L "$JKO" send-keys -t o C-b u; sleep 1.5
+is "prefix u from the first blocked pane cycles to the second (#45)" "1" \
    "$("$TMUX_REAL" -L "$JK" display-message -p -t t: '#{window_index}')"
 "$TMUX_REAL" -L "$JKO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$JK" kill-server >/dev/null 2>&1
 JJ="cockpit-jj-$$"; SOCKS="$SOCKS $JJ"
