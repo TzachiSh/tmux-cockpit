@@ -905,13 +905,19 @@ it, would otherwise keep counting toward `◆N` forever.
 
 ## Deliberately unwired
 
-`SubagentStop`, `TaskCompleted`, `PreCompact`, `TeammateIdle`.
+`SubagentStop`, `TaskCompleted`, `PreCompact`.
 
 `SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
 so a run that failed finished **green**. The next `PostToolUse` restores `running`
 anyway, so the hook only ever destroyed information. `TaskCompleted` fires
 mid-turn per task-list item and flashed green while the agent kept working;
 `Stop` already covers every turn end.
+
+`TeammateIdle` IS wired, to `agent-state wake`. A teammate going idle posts an
+idle notification to its lead, and that message wakes an idle lead with no
+hook of its own, so the lead's pane sat on green `done` (and `◆ done` in the
+fleet) until its first tool call, 6 s on a live team. `wake` flips `done` (or
+no state) to `running` and leaves a blocked or errored lead exactly as it is.
 
 ## Known limits
 

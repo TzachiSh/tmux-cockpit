@@ -341,6 +341,11 @@ is "a failed run ends red, not green" "error" "$(seq_ running running error done
 # the tool starts, instead of after it finishes.
 is "approval clears red when the tool starts" "running" "$(seq_ needs-input running)"
 is "a clean run still ends green" "done" "$(seq_ running running done)"
+# TeammateIdle -> wake: a teammate's idle notification wakes the lead with no hook.
+is "a teammate idling wakes a finished lead" "running" "$(seq_ running done wake)"
+is "and a lead that never ran" "running" "$(seq_ wake)"
+is "but not one blocked on a prompt" "needs-input" "$(seq_ running needs-input wake)"
+is "nor one that errored" "error" "$(seq_ running error wake)"
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 fi
 

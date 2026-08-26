@@ -1,6 +1,6 @@
 #!/bin/bash
 # Record a tmux pane's agent state. Called from Claude Code hooks and tmux hooks.
-#   usage: agent-state <running|needs-input|error|done|off|notify|recount> [pane-id]
+#   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # State is a per-pane tmux option, so it dies with the pane.
 set -u
@@ -143,6 +143,12 @@ notify)
             tmux set-option -pu -t "$pane" @panestate_msg 2>/dev/null
         fi
     fi
+    ;;
+wake)
+    # TeammateIdle: a teammate's idle notification wakes the lead with no hook
+    # of its own, so the pane stayed `done` until its first tool call. Sticky
+    # states are left alone; the notification queues behind a prompt.
+    case "$current" in done|'') state=running ;; *) exit 0 ;; esac
     ;;
 esac
 
