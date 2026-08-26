@@ -45,6 +45,12 @@ shq() { printf '%q' "$1"; }
 # to comment on it. A row-shaped notice, not a special case in every reader.
 CAP_SENTINEL='(diff too large)'
 
+# Files git would have to hash in full to diff, and the knee in what that
+# costs: 100 ms at 32 MB, 680 ms at 256 MB, 26 s at 1 GB, measured. NOT the
+# review's 4 MB byte cap -- a 4.6 MB lockfile bump is two rows and must stay.
+BIGCAP=$(( 32 * 1024 * 1024 ))
+# ponytail: one number at the measured knee, no option; add @cockpit_review_max_file when someone reviews a 40 MB fixture on purpose.
+
 # How a pane names itself, for the fleet queue and the ^S confirm alike; the
 # fallback convention (and why #{host_short} reads as "unset") is the note
 # above fleet_rows, examples/tmux.conf:42.
@@ -116,6 +122,24 @@ USAGE
 # --no-optional-locks on every call, the same discipline fleet_scan_root()
 # uses: even a read can take index.lock, and this runs against a repo an
 # AGENT is working in.
+# GNU and BSD spell stat's size differently; probed once per process, because
+# a stat per file turns an 800-file untracked tree back into the fork walk
+# tests/run.sh's "walked once, not four forks per file" block pins against.
+STAT_SZ=()
+
+# Untracked and stat-modified files over BIGCAP, "<bytes>\t<path>". ls-files
+# -o/-m never hash; git diff would. 0.01 s on a 1 GB file, measured. ':(top)'
+# because ls-files alone stops at the cwd, while git diff never does.
+big_files() {                 # <dir>
+    local dir=$1
+    [ "${#STAT_SZ[@]}" -gt 0 ] || \
+        if stat -c %s -- "$dir" >/dev/null 2>&1; then STAT_SZ=(-c '%s	%n')
+        else STAT_SZ=(-f '%z	%N'); fi
+    git -C "$dir" --no-optional-locks ls-files -o -m --exclude-standard -z -- ':(top)' 2>/dev/null \
+    | ( cd "$dir" 2>/dev/null || exit; xargs -0 -r stat "${STAT_SZ[@]}" -- 2>/dev/null ) \
+    | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
+}
+
 tree_diff() {
     local dir=$1; shift
     local idx gd head br rp
@@ -134,15 +158,24 @@ tree_diff() {
     else idx=$(mktemp) || return 1; fi
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
+    # Keep the big files away from git rather than filter them afterwards: the
+    # cost is the hashing, and only a pathspec stops that. Exclusions with no
+    # positive pathspec beside them still leave the diff whole-worktree wide.
+    local -a ex=()
+    case " $* " in *' -- '*) ;; *)
+        local bp
+        while IFS=$'\t' read -r _ bp; do [ -n "$bp" ] && ex+=(":(exclude,literal)$bp"); done < <(big_files "$dir")
+        [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
+    esac
     if [ -n "$br" ]; then
         local base
         base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff "$base" "$@" 2>/dev/null
+            diff --no-color --no-ext-diff "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
     else
         local out
-        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" 2>/dev/null)
-        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" 2>/dev/null)
+        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
         printf '%s\n' "$out"
     fi
     [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
@@ -370,6 +403,15 @@ lines_mode() {
         # never meets a short row -- this notice has no file to scroll anyway.
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
+    fi
+
+    # The files tree_diff kept away from git, as one notice row on the
+    # sentinel every reader already refuses (attach, ^Y, mark_rows).
+    local skipped
+    skipped=$(big_files "$dir" | awk -F'\t' '{ printf "%s%s (%d MB)", (n++ ? ", " : ""), $2, $1 / 1048576 }')
+    if [ -n "$skipped" ]; then
+        local note="$skipped skipped — over 32 MB, review it directly"
+        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$note" "$note" 1
     fi
 
     [ -n "$diff" ] || return 0

@@ -4402,6 +4402,34 @@ is "no intent-to-add entry leaked into the real index" "" \
 unset -f ri_stamp
 rm -rf "$RI"
 
+echo "== tmux-review --lines: a file over 32 MB is skipped before git reads it, and the list says so =="
+RB=$(mktmpd)
+(
+  cd "$RB" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
+  printf 'a\nb\n' > f.c
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
+  printf 'x\n' > small.txt                                  # untracked, small: still reviewed
+) >/dev/null 2>&1
+rb_t0=$(date +%s%N)
+rbrows=$("$DIR/scripts/tmux-review" --lines "$RB")
+rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
+is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
+is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
+case "$rbrows" in
+    *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
+    *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
+esac
+[ "$rb_ms" -lt 1500 ] && ok "and the list comes back in under 1.5 s (${rb_ms} ms)" || bad "and the list comes back in under 1.5 s" "< 1500 ms" "${rb_ms} ms"
+is "--numstat (the Stop hook's and the fleet's read) omits it too" "0" "$("$DIR/scripts/tmux-review" --copy "$RB" | grep -c '^diff --git a/core')"
+printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
+rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
+is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
+case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
+rm -rf "$RB"
+
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
@@ -6052,12 +6080,15 @@ is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
     "19" "$fd_diff_calls"
 # The budget above is forks: 19 roots in 1 s is ~50 ms each and one git is
 # 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
-# blew it. Pinned as a count -- one rev-parse per pane to find its root, four
-# per unique root (rev-parse, add -N, for-each-ref, diff) -- so the next
-# helper that costs a fork per root fails here on any box, not only a busy one.
+# blew it. Pinned as a count -- one rev-parse per pane to find its root, five
+# per unique root (rev-parse, add -N, for-each-ref, diff, and big_files'
+# ls-files, which is what keeps a 1 GB file from costing that root 26 s) -- so
+# the next helper that costs a fork per root fails here on any box, not only a
+# busy one. The wall-clock gates above are unchanged and still hold: 20 panes
+# under 1 s, 50 panes 1818 ms against a 5000 ms bar.
 fd_git_calls=$(grep -c . "$FD_LOG" || true)
-is "one fork per pane and four per dirty root, no more" "1" \
-   "$([ "$fd_git_calls" -le $((20 + 19 * 4)) ] && echo 1 || echo "$fd_git_calls")"
+is "one fork per pane and five per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 5)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
