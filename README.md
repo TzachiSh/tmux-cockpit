@@ -603,19 +603,18 @@ empty file deletes it. `^E` uses `@cockpit_editor` when set
 (`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
 opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
 none of the three set it tries VS Code's remote shim, and falls back to `vi`.
-A GUI editor goes in `VISUAL`:
-`tmux set-environment -g VISUAL 'code --wait'`. The popup's children see the
-tmux *server's* environment, so a shell `export` made after the server started
-is not seen. That shim arm is for the Remote-SSH or Coder host where there is
-no `code` on the `PATH` and usually no `$EDITOR` either, and where `vi` in a
-popup is the wrong answer next to the VS Code window the diff is being read in.
-It takes `--wait`, so the buffer comes back the way `vi`'s does, and `^S`'s
-confirm offers `edit the batch in VS Code first`. From a plain ssh session
-nothing can reach the laptop's VS Code. The list reloads in place and marks the
-row `●` (the digit
-instead, when more than one comment sits there), so five comments cost one
-popup, not five — the same
-`execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
+A GUI editor goes in `VISUAL`: `tmux set-environment -g VISUAL 'code --wait'`.
+The popup's children see the tmux *server's* environment, so a shell `export`
+made after the server started is not seen. That shim arm is for the Remote-SSH
+or Coder host where there is no `code` on the `PATH` and usually no `$EDITOR`
+either, and where `vi` in a popup is the wrong answer next to the VS Code
+window the diff is being read in. It takes `--wait`, so the buffer comes back
+the way `vi`'s does, and `^S`'s confirm offers
+`edit the batch in VS Code first`. From a plain ssh session nothing can reach
+the laptop's VS Code. The list reloads in place and marks the row `●` (the
+digit instead, when more than one comment sits there), so five comments cost
+one popup, not five — the same `execute-silent(...)+reload(...)` shape `tm`'s
+kill picker already uses.
 `^S` delivers the whole batch, and asks first: it names the count and the
 target pane by its title, and offers the batch to your editor as text before it
 goes (`deliver N comment(s) to fix the parser (%7)` /
@@ -647,19 +646,21 @@ clipboard writes; some disable them by default.
 **Big files are named, not diffed.** To tell whether a file changed at all git
 hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB, and the popup
 is modal and rebuilds its rows on every reload. So a changed or untracked file
-over **32 MB** is kept away from git entirely and reported on one notice row at
-the top of the list instead:
+over **32 MB** is kept away from git and reported on one notice row at the top
+of the list instead, though a tracked file whose size did not change is still
+hashed once, so git can tell it changed:
 
 ```text
 data/dump.bin (412 MB) skipped — over 32 MB, review it directly
 ```
 
-The row carries no comment, no `^Y` and no mark, exactly like the row a diff
-too large to anchor line-by-line leaves. The file itself is untouched, and the
-tree still counts as dirty because of it, so a pane whose only change is a
+The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
+diff too large to anchor line-by-line leaves. The file itself is untouched, and
+the tree still counts as dirty because of it, so a pane whose only change is a
 skipped file stays in the fleet queue and its review opens on that notice
-rather than on an empty diff. The path picker's `^G` diff preview refuses the
-same files the same way, naming the size.
+rather than on an empty diff. The path picker's `^G` diff preview refuses any
+file over 32 MB, naming the size. Put core dumps in `.gitignore`, as git's own
+templates do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
@@ -817,8 +818,9 @@ in hand. Running `/cockpit-review` again resumes exactly those comments.
 Remote-SSH `code` is not on the `PATH` tmux was started with, and VS Code hands
 the remote a fresh `VSCODE_IPC_HOOK_CLI` socket per connection that the tmux
 server, started before that connection or outliving it, never has. Nothing to
-install: click-to-open and `^E` find it themselves. They take the newest shim
-under `~/.vscode-server` (`cli/servers/*/server/bin/remote-cli/code`, or
+install: click-to-open finds the shim itself, and `^E` does too when
+`@cockpit_editor`, `$VISUAL` and `$EDITOR` are all empty. They take the newest
+shim under `~/.vscode-server` (`cli/servers/*/server/bin/remote-cli/code`, or
 `bin/*/bin/remote-cli/code` from an older server) and run it against each
 `vscode-ipc-*.sock` in `$XDG_RUNTIME_DIR`, newest first, until a window takes
 the file. The shim is its own probe, so no `nc` or `socat` is needed.
@@ -844,11 +846,11 @@ walk looks when `$XDG_RUNTIME_DIR` is unset.
 `VISUAL='code --wait'` and the shim the popup finds for itself run entirely as
 you: they use the VS Code CLI socket in your own `$XDG_RUNTIME_DIR`, which no
 other user can open, and give a same-user process nothing it did not already
-have. `/tmp` is only the fallback for a workspace with no `$XDG_RUNTIME_DIR` (a
-Coder container); where one is set the walk never looks in `/tmp`, where
-another user could plant a listening socket. Never run the popup under `sudo`.
-VS Code's remote server
-listens on a loopback TCP port by default, so on a shared host set
+have. `/tmp` is only the fallback for a workspace with neither
+`$XDG_RUNTIME_DIR` nor `$TMPDIR` set (a Coder container); where either is set
+the walk never looks in `/tmp`, where another user could plant a listening
+socket. Never run the popup under `sudo`. VS Code's remote server listens on a
+loopback TCP port by default, so on a shared host set
 `"remote.SSH.remoteServerListenOnSocket": true`, or another local user can
 attach to your editor session. Remote-SSH installs and auto-updates
 `~/.vscode-server` on that host; some admins do not allow that, ask first.
