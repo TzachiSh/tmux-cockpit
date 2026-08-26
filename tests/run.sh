@@ -6707,7 +6707,7 @@ if need_tmux "tmux-fixer -p"; then :; else
 SF="cockpit-sf-$$"; SOCKS="$SOCKS $SF"; SFSTATE=$(mktmpd); SFDIR=$(mktmpd); SFBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$SFBIN/claude"
 ( cd "$SFDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git init -q -b main .; printf 'a\n' > api.go; printf 'x\n' > clean.go; git add -A; git commit -q -m init
-  printf 'a\nEDITING\n' > api.go; printf 'new\n' > scratch.txt ) >/dev/null 2>&1
+  printf 'a\nEDITING\n' > api.go; printf 'new\n' > scratch.txt; printf 'y\n' > 'my file.go' ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$SF" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$SFDIR" 'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$SF" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$SF" set-environment -g PATH "$SFBIN:$PATH" >/dev/null 2>&1
@@ -6733,6 +6733,7 @@ case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "the spawn returns 0 at once" ;; *) 
 is "the record holds the job" "fix the tests" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
 is "and the guard pattern" "make test|pytest" "$(cat "$SFSESS/fixer/guard" 2>/dev/null)"
 is "the fence is the main pane's dirty paths, tracked and untracked" "api.go
+my file.go
 scratch.txt" "$(sort "$SFSESS/fixer/fence" 2>/dev/null)"
 [ "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)" -gt "$(date +%s)" ] && ok "the deadline is in the future" || bad "the deadline is in the future" "> now" "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)"
 is "the gate's marker names the session dir" "$SFSESS" "$(cat "$SFSTATE/tmux-cockpit/review/fixer-${SFAP#%}" 2>/dev/null)"
@@ -6742,6 +6743,7 @@ is "the fixer pane runs in the repo root" "$SFDIR" "$("$TMUX_REAL" -L "$SF" disp
 until_file "$SFARGS" '*--disallowedTools*'
 case "$(cat "$SFARGS")" in *"Edit(./api.go)"*"Edit(./scratch.txt)"*|*"Edit(./scratch.txt)"*"Edit(./api.go)"*) ok "both dirty paths are denied to Edit" ;; *) bad "both dirty paths are denied to Edit" "Edit(./api.go), Edit(./scratch.txt)" "$(cat "$SFARGS")" ;; esac
 case "$(cat "$SFARGS")" in *"Edit(./clean.go)"*) bad "a clean path is not fenced" "no Edit(./clean.go)" "$(cat "$SFARGS")" ;; *) ok "a clean path is not fenced" ;; esac
+case "$(cat "$SFARGS")" in *"Edit(./my file.go)"*) ok "a dirty path with a space is fenced unquoted, not C-quoted" ;; *) bad "a dirty path with a space is fenced unquoted, not C-quoted" "Edit(./my file.go)" "$(cat "$SFARGS")" ;; esac
 case "$(cat "$SFARGS")" in *"Bash(git commit *)"*"Bash(git push *)"*) ok "mutating git is denied" ;; *) bad "mutating git is denied" "Bash(git commit *) … Bash(git push *)" "$(cat "$SFARGS")" ;; esac
 sf_spawn 'another' '' ''
 case "$(cat "$SFSTATE/out")" in *SRC=1*) ok "a second spawn while the fixer lives refuses (exit 1)" ;; *) bad "a second spawn while the fixer lives refuses (exit 1)" "SRC=1" "$(cat "$SFSTATE/out")" ;; esac

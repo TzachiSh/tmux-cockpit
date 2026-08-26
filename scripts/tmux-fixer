@@ -44,7 +44,7 @@ run_fixer() {                 # <main-pane> <sess> <job…>
     # prompt nobody can answer.
     local -a deny=()
     while IFS= read -r p; do [ -n "$p" ] && deny+=("Edit(./$p)"); done < "$f/fence"
-    for g in commit push checkout switch stash reset rebase merge restore; do deny+=("Bash(git $g *)"); done
+    for g in commit push checkout switch stash reset rebase merge restore clean; do deny+=("Bash(git $g *)"); done
     out=$(claude -p "$job
 
 You are a SIDE TASK running beside another agent that is working in this repository right now. Do only this job. Do not touch these files, they are the other agent's live edits: ${fence:-none}. Do not commit. When you are done, your final message must be exactly ONE line that starts with 'HANDOVER: ' and states what changed and the observable delta (for example 'HANDOVER: tests fixed; suite 118s -> 8s; re-read any test file you had open'). No reasoning, no summary, one line." \
@@ -83,10 +83,10 @@ fixer_alive() {               # <sess>
 
 # --- -p: the popup ---------------------------------------------------------------
 # Two lines from the human (the job; the command pattern to hold off, ↵ for
-# none), then: the fence, the RECORD (mkdir, atomic -- a second spawn refuses
-# here while the first lives; a stale record is freed), the marker the gate
-# stats, then the pane, spawned by the tmux SERVER (split-window -d) so nothing
-# about this popup's lifetime touches the fixer.
+# none), then: the fence, the RECORD (mkdir; a stale record is freed first --
+# what refuses a second spawn is the fixer_alive check above, not the mkdir),
+# the marker the gate stats, then the pane, spawned by the tmux SERVER
+# (split-window -d) so nothing about this popup's lifetime touches the fixer.
 spawn_fixer() {               # <main-pane>
     local pane=$1 job guard sess f root dl fp marker
     case "$pane" in %[0-9]*) ;; *) printf 'tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
@@ -109,8 +109,11 @@ spawn_fixer() {               # <main-pane>
     (umask 077; mkdir -- "$f") 2>/dev/null || { tmux display-message "tmux-fixer: a side fix is already running for $pane" 2>/dev/null; exit 1; }
     printf '%s\n' "$job" > "$f/reason"; printf '%s\n' "$guard" > "$f/guard"
     printf '%s\n' $(( $(date +%s) + dl )) > "$f/deadline"; printf 'pending\n' > "$f/pane"
+    # ponytail: strips the outer C-quotes git wraps around a path with a
+    # space or other special char; an escape LEFT INSIDE (\t, \") stays
+    # literal for exotic names -- upgrade to a real unquoter if that bites.
     git -C "$root" --no-optional-locks -c core.quotePath=false status --porcelain 2>/dev/null \
-        | sed 's/^...//; s/^.* -> //' > "$f/fence"
+        | sed 's/^...//; s/^.* -> //; s/^"//; s/"$//' > "$f/fence"
     marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
     (umask 077; printf '%s\n' "$sess" > "$marker")
     fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \

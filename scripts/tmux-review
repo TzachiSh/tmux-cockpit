@@ -1868,7 +1868,7 @@ info_mode() {                 # <pane>
         else
             falive=gone
         fi
-        case "$fdl" in ''|*[!0-9]*) fleft=0 ;; *) fleft=$(( fdl - $(date +%s) )) ;; esac
+        case "$fdl" in ''|*[!0-9]*) fleft=0 ;; *) fleft=$(( fdl - $(date +%s) )); [ "$fleft" -lt 0 ] && fleft=0 ;; esac
         printf 'side fix  %s  pane %s (%s)  deadline in %ss  guard /%s/\n' "$freason" "$fpane" "$falive" "$fleft" "$fguard"
     fi
     if [ -d "$sess" ]; then

@@ -157,7 +157,7 @@ if [ -n "$sess" ] && [ "$active" != true ] && [ -d "$sess/fixer" ]; then
     # Reached with no hold (a dead pane or a past deadline from the start) or
     # after one (the pane went away without writing a handover): either way,
     # a record with no handover means the job never finished cleanly.
-    [ -f "$sess/handover" ] || ctx="a side task (\"$reason\") was running and did not finish; earlier results may be stale."
+    { [ -f "$sess/handover" ] && [ ! -L "$sess/handover" ]; } || ctx="a side task (\"$reason\") was running and did not finish; earlier results may be stale."
 fi
 if [ -n "$sess" ] && [ -f "$sess/handover" ] && [ ! -L "$sess/handover" ]; then
     ctx=$(head -c 400 -- "$sess/handover"); ctx=${ctx//[$'\001'-$'\037']/}
@@ -165,6 +165,11 @@ if [ -n "$sess" ] && [ -f "$sess/handover" ] && [ ! -L "$sess/handover" ]; then
 fi
 if [ -n "$ctx" ]; then
     ctx="$ctx"$'\n'"Continue with your task."
+    # Also runs when the deadline passed with the fixer's pane still alive
+    # (fixer_alive already reads false there): the handover it writes later
+    # has no marker to be found by and is never delivered here -- it is
+    # only cleared at the next spawn -- and the --pretool guard, which also
+    # depends on the marker, stops applying from this point on.
     rm -rf -- "$sess/fixer" "$marker"            # delivered: the record and the gate's marker end here
 fi
 

@@ -779,7 +779,7 @@ The flow, five lines:
 2. Every path the main pane has dirty right now — tracked and untracked,
    `git status --porcelain` — becomes the fixer's **fence**: denied to `Edit`.
    Mutating git (`commit`, `push`, `checkout`, `switch`, `stash`, `reset`,
-   `rebase`, `merge`, `restore`) is denied outright.
+   `rebase`, `merge`, `restore`, `clean`) is denied outright.
 3. The record lands first: `mkdir` (atomic — a second `prefix + f` on the
    same pane refuses while this one lives) under the pane's review session
    dir, then a per-pane marker so the `PreToolUse`/`Stop` hooks can find it
@@ -796,7 +796,9 @@ The flow, five lines:
    pane as `@cockpit_hold` and in `prefix + i`), then hands over **one**
    `HANDOVER: …` line — never the fixer's transcript — ahead of any pending
    review. A pane gone with no handover, or one past its deadline, opens the
-   hold anyway with a one-line warning instead of the handover; the
+   hold anyway with a one-line warning instead of the handover — the guard
+   opens at the same moment, since a past deadline clears the same record
+   both read; the
    `review-gate` Stop hook's own `timeout` is `330`s to cover the wait — a
    `@cockpit_fixer_deadline` set at or above that is unsupported (Claude
    Code kills the hook mid-hold before the deadline it is waiting on ever
