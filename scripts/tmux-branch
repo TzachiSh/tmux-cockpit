@@ -40,10 +40,9 @@ DIR="${1:-}"
 # Bare `display-message -p` (no -t) has no client of its own to resolve
 # from inside a popup -- it falls back to whichever attached client was most
 # recently active, which is often a DIFFERENT session than the one the popup
-# was opened from -- and $PWD is worse: a popup starts in the SESSION's
-# directory, the first window's. -p pane_id, when the caller has it (the
-# binds in cockpit.tmux and full.tmux.conf's menu do), pins the query to the
-# actual pane the popup came from; without it we fall back to best effort.
+# was opened from, and $PWD is the SESSION's start directory, the first
+# window's. -p pane_id (every bind and menu entry passes it) pins the query
+# to the pane the popup came from; without it we fall back to best effort.
 if [ -z "$DIR" ] && [ -n "${TMUX:-}" ]; then
     if [ -n "$PANE_ID" ]; then
         DIR=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}' 2>/dev/null)

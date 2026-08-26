@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# WorktreeRemove hook, the pair of worktree-create: claude only calls it when
+# it means to remove (a subagent finished, the human chose remove on exit).
+# Plain `worktree remove` and `branch -d` refuse a dirty tree or an unmerged
+# branch, which is claude's own rule for the trees it makes itself.
+set -u
+payload=$(cat)
+path=""
+case "$payload" in
+    *'"worktree_path"'*) path=${payload#*'"worktree_path"'}; path=${path#*:}; path=${path#*'"'}; path=${path%%'"'*} ;;
+esac
+case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=$HOME/.cache ;; esac
+# Only our own trees: anything outside the cache dir, the main checkout
+# included, is claude's to handle and not this hook's.
+case "$path" in "$cache/cockpit-wt/"?*) ;; *) exit 0 ;; esac
+read -r repo < "$path.repo" 2>/dev/null || exit 0
+[ -d "$repo" ] || exit 0
+# -C: claude runs this with its cwd inside the directory it just deleted.
+branch=${path#"$cache/cockpit-wt/"}
+if [ -d "$path" ]; then
+    git -C "$repo" worktree remove -- "$path" >&2 || exit 0
+fi
+git -C "$repo" worktree prune >/dev/null 2>&1
+git -C "$repo" branch -d -- "$branch" >&2
+rm -f -- "$path.repo"
+exit 0

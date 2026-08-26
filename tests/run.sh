@@ -557,6 +557,37 @@ is "only the path reaches stdout" "1" "$(wc_run '{"name":"feat-y"}' | grep -c .)
 wc_run '{"name":"../escape"}' >/dev/null; is "a name with .. is refused" "1" "$?"
 [ -e "$WCCACHE/escape" ] && bad "a name with .. is refused" "nothing created" "$WCCACHE/escape exists"
 wc_run '{"cwd":"x"}' >/dev/null; is "no name is refused" "1" "$?"
+wc_run '{"name":"."}' >/dev/null; is "a bare . is refused" "1" "$?"
+# The cache is one namespace for every repo on the machine.
+WCREPO2=$(mktmpd); ( cd "$WCREPO2" && git init -q -b main . ) >/dev/null 2>&1
+( cd "$WCREPO2" && printf '{"name":"old"}' | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-create" >/dev/null 2>"$WCCACHE/err2" ); is "another repo asking for a taken name is refused" "1" "$?"
+case "$(cat "$WCCACHE/err2")" in *"not a worktree of this repo"*) ok "and told why" ;; *) bad "and told why" "not a worktree of this repo" "$(cat "$WCCACHE/err2")" ;; esac
+mkdir -p "$WCCACHE/cockpit-wt/plain"
+wc_run '{"name":"plain"}' >/dev/null; is "a plain directory of that name is refused, not handed over" "1" "$?"
+rm -rf "$WCCACHE/cockpit-wt/feat-y"
+is "a removed tree's stale entry does not block the name forever" "$WCCACHE/cockpit-wt/feat-y" "$(wc_run '{"name":"feat-y"}' | tail -n1)"
+is "a relative XDG_CACHE_HOME is ignored, not resolved into the repo" "$WCCACHE/.cache/cockpit-wt/rel-x" \
+   "$(cd "$WCREPO" && printf '{"name":"rel-x"}' | XDG_CACHE_HOME=relcache HOME="$WCCACHE" "$DIR/scripts/worktree-create" 2>/dev/null | tail -n1)"
+# WorktreeRemove fires when claude means to remove (a subagent finished, the
+# human chose remove on exit). Mirror its own rule for git-made trees: a clean
+# tree and a merged branch go, anything with work in it stays.
+wr_run() { ( cd "$WCREPO" && printf '{"session_id":"s","hook_event_name":"WorktreeRemove","worktree_path":"%s"}' "$1" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>"$WCCACHE/rerr" ); }
+wr_run "$WCCACHE/cockpit-wt/feat-y"; is "a clean tree on a merged branch is removed" "0" "$?"
+[ -d "$WCCACHE/cockpit-wt/feat-y" ] && bad "and its directory is gone" "gone" "still there"
+is "and its branch too" "" "$(git -C "$WCREPO" branch --list feat-y)"
+printf 'edit\n' >> "$WCCACHE/cockpit-wt/old/f"
+wr_run "$WCCACHE/cockpit-wt/old"; [ -d "$WCCACHE/cockpit-wt/old" ] && ok "a dirty tree is kept" || bad "a dirty tree is kept" "kept" "removed"
+git -C "$WCCACHE/cockpit-wt/old" -c user.name=t -c user.email=t@e commit -qam wip
+wr_run "$WCCACHE/cockpit-wt/old"; is "a clean tree whose branch has unmerged commits keeps the branch" "old" "$(git -C "$WCREPO" branch --list old | tr -d '*+ ')"
+wr_run "/nonexistent/x"; is "a path that is not ours is a no-op, exit 0" "0" "$?"
+# claude removes a git worktree ITSELF before the hook runs, and runs the hook
+# with cwd inside the deleted directory (measured on 2.1.246 via ExitWorktree),
+# so the branch has to be found without a cwd and without the tree.
+wc_run '{"name":"feat-z"}' >/dev/null; git -C "$WCREPO" worktree remove "$WCCACHE/cockpit-wt/feat-z" >/dev/null 2>&1
+( cd "$WCCACHE/cockpit-wt" && printf '{"worktree_path":"%s"}' "$WCCACHE/cockpit-wt/feat-z" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>/dev/null )
+is "a tree claude already removed still gets its merged branch deleted" "" "$(git -C "$WCREPO" branch --list feat-z)"
+[ -e "$WCCACHE/cockpit-wt/feat-z.repo" ] && bad "and the sidecar goes with it" "gone" "still there" || ok "and the sidecar goes with it"
+wr_run "$WCREPO"; [ -d "$WCREPO/.git" ] && ok "the main checkout is never removed" || bad "the main checkout is never removed" "kept" "removed"
 git -C "$WCREPO" worktree prune >/dev/null 2>&1
 
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
@@ -4664,7 +4695,7 @@ RBP=$("$TMUX_REAL" -L "$RBS" list-panes -t t: -F '#{pane_id}')
 until_cap "$RBS" "$RBP" '*base: since last review*' && ok "the header names the base" || bad "the header names the base" "base: since last review" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 # issue #3: the header says which tree this review diffs, so a session that
 # reached into another worktree by absolute path is caught by eye.
-until_cap "$RBS" "$RBP" "*root: ${RB/#$HOME/\~}*" && ok "the header names the root" || bad "the header names the root" "root: ${RB/#$HOME/\~}" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
+until_cap "$RBS" "$RBP" "*root: ${RB/#"$HOME/"/\~/}*" && ok "the header names the root" || bad "the header names the root" "root: ${RB/#"$HOME/"/\~/}" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 "$TMUX_REAL" -L "$RBS" send-keys -t "$RBP" C-b
 until_cap "$RBS" "$RBP" '*base: vs main*' && ok "^B cycles to the branch base and re-snapshots" || bad "^B cycles to the branch base and re-snapshots" "base: vs main" "$("$TMUX_REAL" -L "$RBS" capture-pane -p -t "$RBP")"
 is "the choice is remembered beside the store" "branch" "$(cat "$RBSTATE/c.md.base")"

@@ -1964,7 +1964,7 @@ request() {                   # <pane>
     # -E: this returns when the loop exits. display-popup runs the string
     # through sh, so the escaped \$? is the LOOP's code, not tmux's.
     # -T is a tmux format: a # in the path would be expanded, so double it.
-    t=${root/#$HOME/\~}; t=${t//\#/\#\#}
+    t=${root/#"$HOME/"/\~/}; t=${t//\#/\#\#}
     tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T " review · requested · $t " \
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
