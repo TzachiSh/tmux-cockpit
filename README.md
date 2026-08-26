@@ -595,7 +595,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `⇥` | — | mark the row (any number) |
 | `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
 | `alt-y` | — | copy the whole review's diff |
-| `alt-c` | — | copy the marked rows' text (or the row under the cursor) to the tmux buffer and the clipboard |
+| `alt-c` | — | copy the marked rows' lines as the file has them, tabs and all (or the row under the cursor), to the tmux buffer and the clipboard |
 | `^B` | — | cycle the base the diff is taken against |
 | `^A` | — | approve what you just read (only with nothing pinned) |
 | `^S` | — | deliver the whole batch; asks first |
@@ -647,7 +647,7 @@ same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
 To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
 copy mode, so the terminal's own selection is the one that works there. `^Y`
 copies the whole file plus its diff, `alt-y` every file's diff, for pasting
-into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
+into another agent. `⇥` marks rows and `alt-c` copies their lines as the file has them, one per
 row, when what you want is a handful of lines rather than a file. All three go
 out as OSC 52, so they reach the system clipboard only if your terminal accepts
 clipboard writes; some disable them by default.

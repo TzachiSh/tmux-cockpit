@@ -4114,6 +4114,14 @@ case "$rcpall" in
     *) bad "no path: every file's diff, untracked included" "+b and +n" "$rcpall" ;;
 esac
 is "the cap row copies nothing" "" "$("$DIR/scripts/tmux-review" --copy "$RCP" '(diff too large)' | head -c 1)"
+# alt-c used to copy the list row's fragment, control characters stripped and
+# cut at 160 bytes, so tab-indented code pasted flush left (#22 item 1).
+# --copy-lines takes fzf's {+1} {+2} shape (every path, then every line) and
+# reads each line from the tree (+) or HEAD (-).
+printf 'b\n' > "$RCP/f"; CL=$(printf 'y%.0s' $(seq 1 200)); printf '\t%s\n' "$CL" > "$RCP/t"
+is "--copy-lines reads the real lines: tab and 200-byte tail kept, HEAD's line for a - row, in order" \
+   $'\t'"$CL"$'\na' "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" t f 1 -1)"
+is "and the cap row copies nothing there either" "" "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" '(diff too large)' 1 | head -c 1)"
 
 echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their text, one line per row =="
 if need_tmux "tmux-review alt-c"; then :; else
@@ -4121,7 +4129,7 @@ MC="cockpit-mc-$$"; SOCKS="$SOCKS $MC"; MCDIR=$(mktmpd); MCSTORE="$STATE/review-
 (
   cd "$MCDIR" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > src.go; git add -A; git commit -q -m init; printf 'a\nFIRST\nSECOND\nTHIRD\n' > src.go
+  git init -q -b main .; printf 'a\n' > src.go; git add -A; git commit -q -m init; printf 'a\n\tFIRST\nSECOND\nTHIRD\n' > src.go
 ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$MC" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 MCP=$("$TMUX_REAL" -L "$MC" list-panes -t t: -F '#{pane_id}')
@@ -4134,7 +4142,7 @@ until_cap "$MC" "$MCP" '*review>*' || bad "the picker comes up" "review>" "$("$T
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" M-c
 until_buffer() { local i=0; while [ $i -lt 50 ]; do [ "$("$TMUX_REAL" -L "$MC" show-buffer 2>/dev/null)" != OLD ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 until_buffer
-is "alt-c copies the marked rows' text, one per line, in mark order" $'FIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
+is "alt-c copies the marked rows' real lines, tab kept, one per line, in mark order" $'\tFIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
 # --multi must not change what ↵ pins: {1} {2} {3} are still the CURSOR row,
 # so with FIRST and SECOND marked and the cursor on THIRD (src.go:4) it pins
 # exactly one comment, and on THIRD -- never on the marked rows.

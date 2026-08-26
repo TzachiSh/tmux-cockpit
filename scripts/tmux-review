@@ -873,6 +873,15 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
 # so the parser (compose is a plain cat, but any future reader) can't mistake
 # it for a header; "??" needs no handling at all, it passes straight through
 # -- the composed header is what tells the agent it is a question.
+# The line as the tree (+) or HEAD (-) has it, sign-prefixed line as the rows
+# carry it. attach() quotes it; alt-c copies it.
+read_line() {                 # <dir> <path> <line-with-sign>
+    case "$3" in
+        -*) git -C "$1" show "HEAD:$2" 2>/dev/null | sed -n "${3#-}p" ;;
+        *)  sed -n "${3}p" -- "$1/$2" 2>/dev/null ;;
+    esac
+}
+
 attach() {
     local store=$1 path=$2 line=$3 fragment=$4 comment=$5 dir=${6:-}
     # No row under the cursor (an empty list, or the query cleared the match)
@@ -898,10 +907,7 @@ attach() {
     # (+) or HEAD (-); fall back to the fragment on any miss.
     local full="" ft gt
     if [ -n "$dir" ]; then
-        case "$sign" in
-            +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
-            -) full=$(git -C "$dir" show "HEAD:$path" 2>/dev/null | sed -n "${num}p") ;;
-        esac
+        full=$(read_line "$dir" "$path" "$line")
         full=${full//[$'\001'-$'\037'$'\177']/}
         full=${full:0:1000}
         # The guard: the line read back from the tree must still START with the
@@ -1089,6 +1095,19 @@ copy_mode() {                 # <dir> [path]
     tree_diff "$dir" -- "$path"
 }
 
+# alt-c: fzf hands {+1} then {+2}, every marked row's path then every line, so
+# the first half of the arguments are paths and the second half their lines.
+# The list row's fragment is cut at 160 bytes and stripped of control
+# characters (tabs included); the file has the real line.
+copy_lines() {                # <dir> <path>... <line-with-sign>...
+    local dir=$1 n i; shift
+    n=$(( $# / 2 ))
+    for ((i = 1; i <= n; i++)); do
+        [ "${!i}" != "$CAP_SENTINEL" ] || continue
+        read_line "$dir" "${!i}" "${@:i+n:1}"
+    done
+}
+
 # --- --loop ----------------------------------------------------------------
 # tmux-branch's --print-query/--expect shape (tmux-branch:213-243) for the
 # keys that LEAVE the picker (ctrl-s delivers, esc/^C discard); tm's
@@ -1146,11 +1165,9 @@ run_loop() {
     # whatever was already there. Gate the load and the message on real output.
     copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
-    # alt-c has no variable here: its {+3} -- field 3 of every ⇥-marked row, or
-    # of the cursor row when none is marked -- is an fzf placeholder, and must
-    # reach fzf literally out of the double-quoted bind below, unexpanded.
-    # ponytail: a row's fragment is the list's -- cut at 160 bytes AND stripped of
-    # control chars, so tab indentation is lost; read the file per row if either matters.
+    # {+1} {+2}: the path and line of every ⇥-marked row, or of the cursor row
+    # when none is marked. Same output gate as ^Y: the cap row yields nothing.
+    copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -1204,7 +1221,7 @@ run_loop() {
                   --bind "ctrl-l:execute(${list_cmd})" \
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-y:execute-silent(${copy_cmd})" \
-                  --bind "alt-c:execute-silent(printf '%s\n' {+3} | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied')" \
+                  --bind "alt-c:execute-silent(${copy_lines_cmd})" \
                   --bind "alt-y:execute-silent(${copy_all_cmd})" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --bind 'alt-up:preview-up,alt-down:preview-down' \
@@ -2249,6 +2266,8 @@ case "${1:-}" in
         shift; detach "${1:-}" "${2:-}" "${3:-}" ;;
     --copy)
         shift; copy_mode "${1:-}" "${2:-}" ;;
+    --copy-lines)
+        shift; copy_lines "$@" ;;
     --edit)
         shift; edit_comment "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     --vscode)
