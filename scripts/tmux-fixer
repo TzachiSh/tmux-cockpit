@@ -10,6 +10,16 @@
 # State: <sess>/fixer/{pane,reason,deadline,fence,guard} and <sess>/handover.
 set -uo pipefail
 
+# Resolved once, not $0: a symlink from install.sh (or a PATH lookup) must
+# still find its sibling tmux-review, and --run must be able to re-invoke
+# this same file from inside the pane it is spawned into.
+SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+REVIEW="$(dirname "$SELF")/tmux-review"
+
+# Shell-quote a word for a command STRING tmux hands to sh -- the same
+# reasoning as tmux-review's and tmux-open-path's own shq.
+shq() { printf '%q' "$1"; }
+
 # --- --run: the wrapper --------------------------------------------------------
 # The MODEL writes nothing: the wrapper runs the fixer and turns the last
 # "HANDOVER: …" line of claude -p's .result into <sess>/handover -- the ONLY
@@ -55,7 +65,64 @@ You are a SIDE TASK running beside another agent that is working in this reposit
     exit 0
 }
 
+# --- liveness ------------------------------------------------------------------
+# The fixer is alive iff its record exists, no handover has been written, the
+# deadline has not passed, and its pane still exists (or is still "pending",
+# the milliseconds between the record and the split). No pid, no lock: a dead
+# process cannot leave a live pane. Mirrored in review-gate on purpose.
+fixer_alive() {               # <sess>
+    local f="$1/fixer" p dl
+    [ -d "$f" ] || return 1
+    [ -f "$1/handover" ] && return 1
+    dl=$(cat -- "$f/deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$dl" ] || return 1
+    p=$(cat -- "$f/pane" 2>/dev/null)
+    [ "$p" = pending ] && return 0
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$p"
+}
+
+# --- -p: the popup ---------------------------------------------------------------
+# Two lines from the human (the job; the command pattern to hold off, ↵ for
+# none), then: the fence, the RECORD (mkdir, atomic -- a second spawn refuses
+# here while the first lives; a stale record is freed), the marker the gate
+# stats, then the pane, spawned by the tmux SERVER (split-window -d) so nothing
+# about this popup's lifetime touches the fixer.
+spawn_fixer() {               # <main-pane>
+    local pane=$1 job guard sess f root dl fp marker
+    case "$pane" in %[0-9]*) ;; *) printf 'tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
+    sess=$("$REVIEW" --sess "$pane") || { tmux display-message "tmux-fixer: pane $pane is gone" 2>/dev/null; exit 1; }
+    f="$sess/fixer"
+    if fixer_alive "$sess"; then
+        tmux display-message "tmux-fixer: a side fix is already running for $pane: $(cat -- "$f/reason" 2>/dev/null) (pane $(cat -- "$f/pane" 2>/dev/null))" 2>/dev/null
+        exit 1
+    fi
+    if [ -t 0 ]; then
+        read -r -p 'side fix (one line, ↵ alone cancels): ' job
+        read -r -p 'hold off commands matching (ERE, ↵ for none): ' guard
+    else IFS= read -r job; IFS= read -r guard; fi
+    job=${job//[$'\001'-$'\037']/}; guard=${guard//[$'\001'-$'\037']/}
+    [ -n "$job" ] || exit 0
+    root=$(git -C "$(tmux display-message -p -t "$pane" '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null) || {
+        tmux display-message "tmux-fixer: $pane is not in a git repo" 2>/dev/null; exit 1; }
+    dl=$(tmux show-option -gqv @cockpit_fixer_deadline); case "$dl" in ''|*[!0-9]*) dl=300 ;; esac
+    rm -rf -- "$f" "$sess/handover"            # a stale record and its unconsumed handover
+    (umask 077; mkdir -- "$f") 2>/dev/null || { tmux display-message "tmux-fixer: a side fix is already running for $pane" 2>/dev/null; exit 1; }
+    printf '%s\n' "$job" > "$f/reason"; printf '%s\n' "$guard" > "$f/guard"
+    printf '%s\n' $(( $(date +%s) + dl )) > "$f/deadline"; printf 'pending\n' > "$f/pane"
+    git -C "$root" --no-optional-locks -c core.quotePath=false status --porcelain 2>/dev/null \
+        | sed 's/^...//; s/^.* -> //' > "$f/fence"
+    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
+    (umask 077; printf '%s\n' "$sess" > "$marker")
+    fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \
+        "$(shq "$SELF") --run $(shq "$pane") $(shq "$sess") $(shq "$job")") || {
+        rm -rf -- "$f" "$marker"; tmux display-message "tmux-fixer: could not open the fixer pane" 2>/dev/null; exit 1; }
+    printf '%s\n' "$fp" > "$f/pane"
+    tmux display-message "side fix running in $fp: $job — $pane is held at its next stop until it finishes${guard:+; commands matching /$guard/ are held off}" 2>/dev/null
+    exit 0
+}
+
 case "${1:-}" in
+    -p) shift; spawn_fixer "${1:-}" ;;
     --run) shift; run_fixer "${1:-}" "${2:-}" "${@:3}" ;;
     *) printf 'usage: tmux-fixer -p <pane> | --run <pane> <sess> <job…>\n' >&2; exit 2 ;;
 esac

@@ -258,6 +258,7 @@ over earlier, `prefix r` included.
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
+| `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -762,6 +763,59 @@ set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""
 ```
+
+## Side fixes
+
+`prefix + f` spawns a *separate* headless `claude -p` beside a busy agent, for
+an orthogonal job — fix the tests, regenerate a fixture — instead of
+interrupting the agent's own turn to ask for it.
+
+The flow, five lines:
+
+1. `prefix + f` on the busy pane opens a small popup, two prompts: the job
+   (one line, `↵` alone cancels) and a command pattern to hold off (an ERE,
+   `↵` for none).
+2. Every path the main pane has dirty right now — tracked and untracked,
+   `git status --porcelain` — becomes the fixer's **fence**: denied to `Edit`.
+   Mutating git (`commit`, `push`, `checkout`, `switch`, `stash`, `reset`,
+   `rebase`, `merge`, `restore`) is denied outright.
+3. The record lands first: `mkdir` (atomic — a second `prefix + f` on the
+   same pane refuses while this one lives) under the pane's review session
+   dir, then a per-pane marker so the `PreToolUse`/`Stop` hooks can find it
+   with one `stat`, no tmux, no git, when nothing is running.
+4. Only then does the pane open — a 40%-height split below the agent,
+   running `claude -p` headless (`--permission-mode acceptEdits`, so a
+   prompt nobody can answer never stalls it) with the fence as
+   `--disallowedTools`.
+5. The **guard**: a `Bash` command matching the ERE from step 1 is denied
+   for the main agent while the fixer lives — a suite the fixer is mid-fix
+   on stays un-run rather than reporting a false red. The main agent's next
+   `Stop` **holds** until the fixer's pane is gone (deadline: `300`s,
+   `@cockpit_fixer_deadline`, unless it finishes sooner), then hands over
+   **one** `HANDOVER: …` line — never the fixer's transcript — ahead of any
+   pending review.
+
+```sh
+set -g @cockpit_fixer_key      f       # off restores stock find-window
+set -g @cockpit_fixer_deadline 300     # seconds the Stop hold waits before giving up
+```
+
+What this deliberately does **not** do, and why:
+
+- **Not a review channel.** The handover is one line, not a diff; read the
+  fixer's own work the normal way, with `prefix + r`.
+- **Not a subagent, not Agent Teams.** It is a second, independent `claude
+  -p` process in its own pane — the main agent never spawns it, sees its
+  tool calls, or shares its context.
+- **The fence covers `Edit`, not the shell.** `--disallowedTools` denies the
+  `Edit` tool on the fenced paths; git's own mutating subcommands are denied
+  the same way. A fixer that writes a fenced file through `Bash` (`echo >
+  file`, `sed -i`) is not blocked by the fence — the prompt tells it not to,
+  and does not enforce it.
+- **A failed fixer keeps its pane open** — the output stays on screen and
+  `↵` closes it — rather than vanishing the one clue to what went wrong; a
+  fallback handover line is still written first, so the main agent is never
+  left holding forever on a fixer that crashed.
 
 ## tm — session launcher
 

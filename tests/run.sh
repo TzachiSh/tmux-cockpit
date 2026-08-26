@@ -6667,5 +6667,65 @@ is "a failed claude exits 1" "1" "$?"
 case "$(cat "$FXSESS/handover" 2>/dev/null)" in HANDOVER:*"did not"*|HANDOVER:*"without a handover"*) ok "and still leaves a handover so nobody waits on it" ;; *) bad "and still leaves a handover so nobody waits on it" "a HANDOVER: fallback line" "$(cat "$FXSESS/handover" 2>/dev/null)" ;; esac
 rm -rf "$FX" "$FXBIN"
 
+echo "== tmux-fixer -p: one popup records the fixer, fences it, spawns its pane, refuses a second while it lives, frees a stale record =="
+if need_tmux "tmux-fixer -p"; then :; else
+SF="cockpit-sf-$$"; SOCKS="$SOCKS $SF"; SFSTATE=$(mktmpd); SFDIR=$(mktmpd); SFBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$SFBIN/claude"
+( cd "$SFDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > api.go; printf 'x\n' > clean.go; git add -A; git commit -q -m init
+  printf 'a\nEDITING\n' > api.go; printf 'new\n' > scratch.txt ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$SFDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" set-environment -g PATH "$SFBIN:$PATH" >/dev/null 2>&1
+SFAP=$("$TMUX_REAL" -L "$SF" list-panes -t t: -F '#{pane_id}')
+SFSESS="$SFSTATE/tmux-cockpit/review/${SFAP#%}-$(printf '%s' "$SFDIR" | cksum | cut -d' ' -f1)"
+SFARGS=$(mktmpf)
+sf_spawn() {                  # <job> <guard> <extra-env: NAME=VALUE ...>  -> SRC= on stdout file $SFSTATE/out
+    # FAKE_CLAUDE_ARGS/_SLEEP have to reach the FIXER PANE, which split-window
+    # spawns from the tmux SERVER's environment plus this global one -- not
+    # from the shell run-shell happens to execute in. Set (or clear) them
+    # globally, the same way PATH already is above; XDG_STATE_HOME below stays
+    # inline because it is read by THIS run-shell process (spawn_fixer itself).
+    "$TMUX_REAL" -L "$SF" set-environment -gu FAKE_CLAUDE_ARGS >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SF" set-environment -gu FAKE_CLAUDE_SLEEP >/dev/null 2>&1
+    local kv
+    for kv in ${3:-}; do
+        "$TMUX_REAL" -L "$SF" set-environment -g "${kv%%=*}" "${kv#*=}" >/dev/null 2>&1
+    done
+    "$TMUX_REAL" -L "$SF" run-shell "cd $(printf '%q' "$SFDIR") && printf '%s\\n%s\\n' $(printf '%q' "$1") $(printf '%q' "$2") | XDG_STATE_HOME=$(printf '%q' "$SFSTATE") '$DIR/scripts/tmux-fixer' -p $SFAP; echo SRC=\$?" > "$SFSTATE/out" 2>&1
+}
+sf_spawn 'fix the tests' 'make test|pytest' "FAKE_CLAUDE_ARGS=$(printf '%q' "$SFARGS") FAKE_CLAUDE_SLEEP=3"
+case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "the spawn returns 0 at once" ;; *) bad "the spawn returns 0 at once" "SRC=0" "$(cat "$SFSTATE/out")" ;; esac
+is "the record holds the job" "fix the tests" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and the guard pattern" "make test|pytest" "$(cat "$SFSESS/fixer/guard" 2>/dev/null)"
+is "the fence is the main pane's dirty paths, tracked and untracked" "api.go
+scratch.txt" "$(sort "$SFSESS/fixer/fence" 2>/dev/null)"
+[ "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)" -gt "$(date +%s)" ] && ok "the deadline is in the future" || bad "the deadline is in the future" "> now" "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)"
+is "the gate's marker names the session dir" "$SFSESS" "$(cat "$SFSTATE/tmux-cockpit/review/fixer-${SFAP#%}" 2>/dev/null)"
+SFFP=$(cat "$SFSESS/fixer/pane" 2>/dev/null)
+case "$SFFP" in %[0-9]*) ok "the fixer pane id is recorded" ;; *) bad "the fixer pane id is recorded" "%N" "$SFFP" ;; esac
+is "the fixer pane runs in the repo root" "$SFDIR" "$("$TMUX_REAL" -L "$SF" display-message -p -t "$SFFP" '#{pane_current_path}' 2>/dev/null)"
+until_file "$SFARGS" '*--disallowedTools*'
+case "$(cat "$SFARGS")" in *"Edit(./api.go)"*"Edit(./scratch.txt)"*|*"Edit(./scratch.txt)"*"Edit(./api.go)"*) ok "both dirty paths are denied to Edit" ;; *) bad "both dirty paths are denied to Edit" "Edit(./api.go), Edit(./scratch.txt)" "$(cat "$SFARGS")" ;; esac
+case "$(cat "$SFARGS")" in *"Edit(./clean.go)"*) bad "a clean path is not fenced" "no Edit(./clean.go)" "$(cat "$SFARGS")" ;; *) ok "a clean path is not fenced" ;; esac
+case "$(cat "$SFARGS")" in *"Bash(git commit *)"*"Bash(git push *)"*) ok "mutating git is denied" ;; *) bad "mutating git is denied" "Bash(git commit *) … Bash(git push *)" "$(cat "$SFARGS")" ;; esac
+sf_spawn 'another' '' ''
+case "$(cat "$SFSTATE/out")" in *SRC=1*) ok "a second spawn while the fixer lives refuses (exit 1)" ;; *) bad "a second spawn while the fixer lives refuses (exit 1)" "SRC=1" "$(cat "$SFSTATE/out")" ;; esac
+is "and the running job is untouched" "fix the tests" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and only one fixer pane exists" "2" "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)"
+# The fixer finishes: handover written, the pane closes itself.
+until_file "$SFSESS/handover" '*HANDOVER*' && ok "the handover is written when the fixer finishes" || bad "the handover is written when the fixer finishes" "HANDOVER line" "$(cat "$SFSESS/handover" 2>/dev/null)"
+for i in $(seq 1 40); do [ "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)" = 1 ] && break; sleep 0.1; done
+is "the fixer pane closes itself on success" "1" "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)"
+# A stale record (handover present, pane gone) does not block the next spawn: it is freed and replaced.
+sf_spawn 'second job' '' "FAKE_CLAUDE_SLEEP=2"
+case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "a finished fixer's record does not block a new spawn" ;; *) bad "a finished fixer's record does not block a new spawn" "SRC=0" "$(cat "$SFSTATE/out")" ;; esac
+is "the new job replaced the old record" "second job" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and the old handover was not carried over" "absent" "$([ -e "$SFSESS/handover" ] && echo present || echo absent)"
+"$TMUX_REAL" -L "$SF" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$SF" list-keys -T prefix 2>/dev/null | awk '$4=="f"')" in *tmux-fixer*) ok "prefix f is bound to the side-fix popup" ;; *) bad "prefix f is bound to the side-fix popup" "display-popup … tmux-fixer" "$("$TMUX_REAL" -L "$SF" list-keys -T prefix | awk '$4=="f"')" ;; esac
+unset -f sf_spawn
+"$TMUX_REAL" -L "$SF" kill-server >/dev/null 2>&1; rm -rf "$SFBIN"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
