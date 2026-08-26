@@ -5937,8 +5937,24 @@ is "--delta: a branch ahead of main has something to review" "D=0" \
 is "--delta: a clean agent on an unadvanced branch has nothing to review" "D=1" \
    "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $CLEAN_PANE; echo D=\$?" 2>/dev/null | tail -1)"
 
+# A tree whose ONLY change is a file over the cap. tree_diff keeps it away
+# from git, so its --numstat would come back empty and the Stop hook would
+# call the pane clean -- the one thing the skip must not do. git itself
+# printed "-\t-\tcore" here (its binary row) before the skip existed.
+FQ_BIG=$(mktmpd)
+(
+  cd "$FQ_BIG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core   # untracked, over the cap, and nothing else
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_BIG" 'exec -a claude bash' >/dev/null 2>&1
+BIG_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:7 -F '#{pane_id}')
+is "--delta: a tree whose only change is a skipped big file is still dirty" "D=0" \
+   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $BIG_PANE; echo D=\$?" 2>/dev/null | tail -1)"
+
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD"
+rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG"
 fi
 
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="

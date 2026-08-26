@@ -122,21 +122,16 @@ USAGE
 # --no-optional-locks on every call, the same discipline fleet_scan_root()
 # uses: even a read can take index.lock, and this runs against a repo an
 # AGENT is working in.
-# GNU and BSD spell stat's size differently; probed once per process, because
-# a stat per file turns an 800-file untracked tree back into the fork walk
-# tests/run.sh's "walked once, not four forks per file" block pins against.
-STAT_SZ=()
-
 # Untracked and stat-modified files over BIGCAP, "<bytes>\t<path>". ls-files
 # -o/-m never hash; git diff would. 0.01 s on a 1 GB file, measured. ':(top)'
-# because ls-files alone stops at the cwd, while git diff never does.
+# because ls-files alone stops at the cwd, while git diff never does. ONE stat
+# for the whole list: a fork per file made an 800-file tree a fork walk.
 big_files() {                 # <dir>
     local dir=$1
-    [ "${#STAT_SZ[@]}" -gt 0 ] || \
-        if stat -c %s -- "$dir" >/dev/null 2>&1; then STAT_SZ=(-c '%s	%n')
-        else STAT_SZ=(-f '%z	%N'); fi
+    local -a sz=(-c $'%s\t%n')          # GNU; BSD spells the same two fields -f '%z\t%N'
+    stat -c %s -- "$dir" >/dev/null 2>&1 || sz=(-f $'%z\t%N')
     git -C "$dir" --no-optional-locks ls-files -o -m --exclude-standard -z -- ':(top)' 2>/dev/null \
-    | ( cd "$dir" 2>/dev/null || exit; xargs -0 -r stat "${STAT_SZ[@]}" -- 2>/dev/null ) \
+    | ( cd "$dir" 2>/dev/null || exit; xargs -0 -r stat "${sz[@]}" -- 2>/dev/null ) \
     | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
 }
 
@@ -161,10 +156,13 @@ tree_diff() {
     # Keep the big files away from git rather than filter them afterwards: the
     # cost is the hashing, and only a pathspec stops that. Exclusions with no
     # positive pathspec beside them still leave the diff whole-worktree wide.
-    local -a ex=()
+    local -a ex=() bigp=()
     case " $* " in *' -- '*) ;; *)
         local bp
-        while IFS=$'\t' read -r _ bp; do [ -n "$bp" ] && ex+=(":(exclude,literal)$bp"); done < <(big_files "$dir")
+        while IFS=$'\t' read -r _ bp; do
+            [ -n "$bp" ] || continue
+            bigp+=("$bp"); ex+=(":(exclude,literal)$bp")
+        done < <(big_files "$dir")
         [ "${#ex[@]}" -gt 0 ] && ex=(-- "${ex[@]}") ;;
     esac
     if [ -n "$br" ]; then
@@ -178,6 +176,10 @@ tree_diff() {
         [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
         printf '%s\n' "$out"
     fi
+    # The row git printed for these itself, before we kept it from reading
+    # them: a binary file's numstat is "-\t-\tpath". Without it a tree whose
+    # only change is a big file reads CLEAN to --delta and to the fleet scan.
+    [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
     [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
 }
 
@@ -410,7 +412,7 @@ lines_mode() {
     local skipped
     skipped=$(big_files "$dir" | awk -F'\t' '{ printf "%s%s (%d MB)", (n++ ? ", " : ""), $2, $1 / 1048576 }')
     if [ -n "$skipped" ]; then
-        local note="$skipped skipped — over 32 MB, review it directly"
+        local note="$skipped skipped — over $(( BIGCAP / 1048576 )) MB, review it directly"
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$note" "$note" 1
     fi
 
