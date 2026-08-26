@@ -1762,9 +1762,44 @@ if until_cap "$OUTER" "$OP" '*TARGET*' && until_cap "$OUTER" "$OP" '*\[x]*'; the
              "$(diff <(printf '%s\n' "$before") <(printf '%s\n' "$held") | grep '^> *[^ ]' | head -3)"; fi
     # shellcheck disable=SC2086
     "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $release >/dev/null 2>&1
+    # #21's real shape: a press that opens a popup, with a one-cell pointer
+    # twitch in the same read, sets tmux's drag flag before the popup exists;
+    # the popup eats the release, and the NEXT press anywhere arrives as
+    # MouseDragEnd1Status. The plugin binds that key to the same switch-client,
+    # so the lost press still selects the tab. Armed here on the session name.
+    "$TMUX_REAL" -L "$INNER" bind -n MouseDown1StatusLeft display-popup -E 'exec sleep 300' >/dev/null 2>&1
+    twitch=$(printf '\033[<0;2;%sM\033[<32;3;%sM' "$row" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    drop=$(printf '\033[<0;3;%sm' "$row" | od -An -tx1 | tr -s ' \n' ' ')
+    # shellcheck disable=SC2086
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $twitch >/dev/null 2>&1
+    if until_cap "$OUTER" "$OP" '*│*'; then      # the popup is up: its border is the only box drawn
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $drop >/dev/null 2>&1
+        ic=$("$TMUX_REAL" -L "$INNER" list-clients -F '#{client_name}' | head -1)
+        "$TMUX_REAL" -L "$INNER" display-popup -C -c "$ic" >/dev/null 2>&1
+        for i in $(seq 1 40); do
+            case "$("$TMUX_REAL" -L "$OUTER" capture-pane -p -t "$OP")" in *│*) sleep 0.1 ;; *) break ;; esac
+        done
+        pre=${line%%zero*}; zcol=$((${#pre}+1))
+        zpress=$(printf '\033[<0;%s;%sM' "$zcol" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+        zrelease=$(printf '\033[<0;%s;%sm' "$zcol" "$row" | od -An -tx1 | tr -s ' \n' ' ')
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $zpress >/dev/null 2>&1
+        for i in $(seq 1 40); do
+            [ "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')" = 0 ] && break
+            sleep 0.1
+        done
+        is "a click after a popup ate a release still selects the window" "0" \
+           "$("$TMUX_REAL" -L "$INNER" display-message -p -t t '#{window_index}')"
+        # shellcheck disable=SC2086
+        "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $zrelease >/dev/null 2>&1
+    else
+        bad "a click after a popup ate a release still selects the window" "a popup on the client" "none drawn"
+    fi
 else
     bad "the click selects the window" "an attached client" "no client"
     bad "and draws nothing while the button is held" "an attached client" "no client"
+    bad "a click after a popup ate a release still selects the window" "an attached client" "no client"
 fi
 "$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
