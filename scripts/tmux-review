@@ -1861,6 +1861,23 @@ pad_field() {                 # <width> <string>
     printf '%-*s' "$(( w + ${#2} - c ))" "$2"
 }
 
+kill_window() {               # <pane>  the row's window, after a y/N in the popup
+    local pane=$1 where nwin npane ans
+    case $pane in %[0-9]*) ;; *) return 0 ;; esac
+    # #{?pane_id,...}: a pane gone since the list was built reads ": ", not empty.
+    where=$(tmux display-message -p -t "$pane" '#{?pane_id,#{session_windows} #{window_panes} #{session_name}:#{window_index} #{window_name},}' 2>/dev/null)
+    [ -n "$where" ] || { tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null; return 0; }
+    nwin=${where%% *}; where=${where#* }; npane=${where%% *}; where=${where#* }
+    if [ "$nwin" = 1 ]; then printf 'kill session %s (last window' "${where%%:*}"
+    else printf 'kill window %s' "$where"; fi
+    [ "$npane" -gt 1 ] 2>/dev/null && printf ', %s panes' "$npane"
+    if [ "$nwin" = 1 ]; then printf ')? [y/N] '; else printf '? [y/N] '; fi
+    IFS= read -r -n1 ans || ans=
+    printf '\n'
+    case "$ans" in y|Y) tmux kill-window -t "$pane" 2>/dev/null ;; esac
+}
+
+
 # The fzf queue over fleet_rows(). Unlike the review loop this filters as you
 # type -- it is a pane list, not comment entry, so --disabled has no place
 # here. Rows carry pane, state, title, repo⑂branch and stat; the preview
@@ -1958,16 +1975,26 @@ fleet_queue() {               # [preselect-pane]
             | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
+                  --expect=ctrl-x \
                   --preview "$preview_cmd" \
                   --preview-window="down,$psz,border-top" \
                   --prompt='fleet> ' \
-                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review it   ^/ preview   esc cancel' \
+                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review   ^/ preview   ^X kill window   esc cancel' \
                   ${presel[@]+"${presel[@]}"} \
                   ${extra[@]+"${extra[@]}"})
         [ -n "$out" ] || return 0
 
-        pane=$(cut -f1 <<<"$out")
+        # --expect: the key line first (empty for ↵), then the row -- or no
+        # row at all when the key was pressed on an empty filter.
+        local key=${out%%$'\n'*} sel=${out#*$'\n'}
+        [ "$sel" != "$out" ] || continue
+        pane=${sel%%$'\t'*}
         [ -n "$pane" ] || return 0
+        if [ "$key" = ctrl-x ]; then
+            kill_window "$pane"
+            pre=$pane
+            continue
+        fi
         dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
         if [ -z "$dir" ]; then
             tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null

@@ -219,6 +219,7 @@ from `examples/claude-hooks.json` by hand:
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
+| `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `Stop` | `done` |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
@@ -559,7 +560,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
 | `alt-u` / `alt-d` | — | scroll the preview |
 | `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
-| `^X` | — | delete the comment(s) on the row under the cursor |
+| `^X` | kill the window under the cursor, after a y/N that names it and its pane count — the session too, when it is that session's last window (a forgotten agent elsewhere) | delete the comment(s) on the row under the cursor |
 | `^L` | — | show every pinned comment in the terminal |
 | `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
 | `^B` | — | cycle the base the diff is taken against |
@@ -905,13 +906,22 @@ it, would otherwise keep counting toward `◆N` forever.
 
 ## Deliberately unwired
 
-`SubagentStop`, `TaskCompleted`, `PreCompact`, `TeammateIdle`.
+`SubagentStop`, `TaskCompleted`, `PreCompact`.
 
 `SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
 so a run that failed finished **green**. The next `PostToolUse` restores `running`
 anyway, so the hook only ever destroyed information. `TaskCompleted` fires
 mid-turn per task-list item and flashed green while the agent kept working;
 `Stop` already covers every turn end.
+
+`TeammateIdle` IS wired, to `agent-state wake`. A teammate going idle posts an
+idle notification to its lead, and that message wakes an idle lead with no
+hook of its own, so the lead's pane sat on green `done` (and `◆ done` in the
+fleet) until its first tool call, 6 s on a live team. `wake` flips `done` (or
+no state) to `running` and leaves a blocked or errored lead exactly as it is.
+Measured with in-process teammates (the default); in split-pane team mode the
+hook lands on the teammate's own pane, so an idle teammate may read `running`
+until its next turn.
 
 ## Known limits
 
