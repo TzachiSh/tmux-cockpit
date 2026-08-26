@@ -6236,6 +6236,41 @@ until_cap "$RE" "$REP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --edit: the editor gets the terminal even while fzf holds stdout, and @cockpit_editor wins =="
+# fzf's execute() runs its command with stdin on the tty and stdout on fzf's
+# own stdout -- which run_loop captures. vi printed "Output is not to a
+# terminal" and ate every key after. `| cat` below is that exact shape.
+if need_tmux "tmux-review --edit tty"; then :; else
+ET="cockpit-et-$$"; SOCKS="$SOCKS $ET"; ETDIR=$(mktmpd); ETSTORE="$STATE/review-edit-tty-$$"
+(
+  cd "$ETDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+# The -t 1 test runs BEFORE the append: `if ...; fi >> "$1"` redirects the
+# condition too, and then reports a pipe however the caller left stdout.
+ETED=$(mktmpf); printf '#!/bin/sh\nif [ -t 1 ]; then r=STDOUT-IS-TTY; else r=STDOUT-IS-A-PIPE; fi\necho "$r" >> "$1"\n' > "$ETED"; chmod +x "$ETED"
+ETED2=$(mktmpf); printf '#!/bin/sh\necho FROM-COCKPIT-EDITOR >> "$1"\n' > "$ETED2"; chmod +x "$ETED2"
+"$TMUX_REAL" -L "$ET" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+ETP=$("$TMUX_REAL" -L "$ET" list-panes -t t: -F '#{pane_id}'); until_cap "$ET" "$ETP" '*$*'
+"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC=\$?" Enter
+# ETRC=0, not ETRC=: the send-keys line echoes into the pane as `echo ETRC=$?`,
+# so the looser glob matches the typed command and reads the store too early.
+until_cap "$ET" "$ETP" '*ETRC=0*'
+case "$(cat "$ETSTORE" 2>/dev/null)" in
+    *STDOUT-IS-TTY*) ok "stdin a tty, stdout a pipe: the editor still writes to the terminal" ;;
+    *) bad "stdin a tty, stdout a pipe: the editor still writes to the terminal" "STDOUT-IS-TTY" "$(cat "$ETSTORE" 2>/dev/null)" ;;
+esac
+"$TMUX_REAL" -L "$ET" set -g @cockpit_editor "$ETED2"
+"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "clear; VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC2=\$?" Enter
+until_cap "$ET" "$ETP" '*ETRC2=0*'
+case "$(cat "$ETSTORE" 2>/dev/null)" in
+    *FROM-COCKPIT-EDITOR*) ok "@cockpit_editor wins over \$EDITOR, same chain as the path picker" ;;
+    *) bad "@cockpit_editor wins over \$EDITOR, same chain as the path picker" "FROM-COCKPIT-EDITOR" "$(cat "$ETSTORE" 2>/dev/null)" ;;
+esac
+"$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
 # The store had a writer and no reader: three comments on one line showed
 # one dot, and nothing could take one back short of discarding the batch.

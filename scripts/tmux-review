@@ -896,16 +896,30 @@ detach() {                    # <store> <path> <line-with-sign>
 # rather than restarting it; an editor that leaves it empty pins nothing
 # (attach's own rule). Under $TMPDIR, not beside the store: a killed popup
 # leaves the editor's file behind, and a leftover inside the session dir
-# would block its rmdir for good. Word-splitting on purpose: EDITOR="code --wait".
+# would block its rmdir for good.
+#
+# The one editor chain, shared with ^S's "edit the batch": the path picker's
+# @cockpit_editor first, then the environment, then vi.
+editor_cmd() {
+    local ed
+    ed=$(tmux show-options -gqv @cockpit_editor 2>/dev/null)
+    printf '%s\n' "${ed:-${VISUAL:-${EDITOR:-vi}}}"
+}
+
 edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
-    local store=$1 path=$2 line=$3 fragment=$4 query=$5 dir=$6 tmp
+    local store=$1 path=$2 line=$3 fragment=$4 query=$5 dir=$6 tmp ed
     [ -n "$path" ] && [ -n "$store" ] || return 0
     # ^E on the cap row would otherwise open the editor and then discard the paragraph.
     [ "$path" != "$CAP_SENTINEL" ] || return 0
+    # fzf's execute() lends stdin the tty but leaves stdout on the pipe
+    # run_loop captures (resnap's rule); vi refused that pipe and ate keys.
+    [ -t 0 ] && [ ! -t 1 ] && exec >/dev/tty 2>&1
     tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/cockpit-review-edit.XXXXXX") || return 0
     [ -n "$query" ] && printf '%s\n' "$query" > "$tmp"
+    ed=$(editor_cmd)
+    # Word-splitting on purpose: EDITOR="code --wait".
     # shellcheck disable=SC2086
-    ${VISUAL:-${EDITOR:-vi}} "$tmp"
+    $ed "$tmp"
     attach "$store" "$path" "$line" "$fragment" "$(cat -- "$tmp")" "$dir"
     rm -f -- "$tmp"
 }
