@@ -958,6 +958,10 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     # Word-splitting on purpose: EDITOR="code --wait".
     # shellcheck disable=SC2086
     $ed "$tmp"
+    # A buffer that comes back untouched is a cancel (:q) and must not reach the
+    # rewrite below: two comments on one row seed ONE buffer, so a ^E someone
+    # only looked at would merge them into a single record, ●2 down to ●.
+    [ "$inplace" -eq 1 ] && [ "$(cat -- "$tmp")" = "$seed" ] && { rm -f -- "$tmp"; return 0; }
     # Edit in place = the old blocks go, the file comes back as one; an emptied file deletes.
     [ "$inplace" -eq 1 ] && detach "$store" "$path" "$line"
     attach "$store" "$path" "$line" "$fragment" "$(cat -- "$tmp")" "$dir"

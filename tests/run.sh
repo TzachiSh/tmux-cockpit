@@ -6334,6 +6334,41 @@ until_cap "$RI" "$RIP" '*discard 1 comment*'
 "$TMUX_REAL" -L "$RI" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --loop: ^E then quitting the editor unchanged writes nothing to the store =="
+# In-place editing is detach+attach, and two comments on one row come back as
+# ONE buffer -- so a ^E someone quits out of used to silently merge them, ●2
+# to ●, with no undo. :q has to be a cancel.
+if need_tmux "tmux-review ^E cancel"; then :; else
+RQ="cockpit-rq-$$"; SOCKS="$SOCKS $RQ"; RQDIR=$(mktmpd); RQTMP=$(mktmpd); RQSTORE="$STATE/review-edit-cancel-$$"
+(
+  cd "$RQDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
+) >/dev/null 2>&1
+printf '## src.go:3 (+)\n> CHANGED\nfirst\n\n## src.go:3 (+)\n> CHANGED\nsecond\n\n' > "$RQSTORE"
+cp -- "$RQSTORE" "$RQSTORE.before"
+# The editor leaves its file untouched -- :q -- and says so in a file of its
+# own, so the buffer stays byte-identical and the wait still has something to
+# poll.
+RQMARK=$(mktmpf)
+RQED=$(mktmpf); printf '#!/bin/sh\necho RAN > %s\nexit 0\n' "$(printf '%q' "$RQMARK")" > "$RQED"; chmod +x "$RQED"
+"$TMUX_REAL" -L "$RQ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+RQP=$("$TMUX_REAL" -L "$RQ" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$RQ" send-keys -t "$RQP" \
+    "TMPDIR=$(printf '%q' "$RQTMP") VISUAL= EDITOR=$(printf '%q' "$RQED") '$DIR/scripts/tmux-review' --loop '$RQDIR' '$RQSTORE'" Enter
+until_cap "$RQ" "$RQP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$RQ" capture-pane -p -t "$RQP")"
+"$TMUX_REAL" -L "$RQ" send-keys -t "$RQP" C-e
+until_file "$RQMARK" '*RAN*' || bad "^E ran the editor" "RAN" "$(cat "$RQMARK" 2>/dev/null)"
+# ctrl-e is execute()+reload+clear-query and fzf reads no key while execute()
+# runs, so a query that shows the text typed AFTER ^E is proof edit_comment
+# already returned -- the store is settled, whatever it decided to write.
+"$TMUX_REAL" -L "$RQ" send-keys -t "$RQP" "ZZQ"
+until_cap "$RQ" "$RQP" '*review> ZZQ*' || bad "the picker takes keys again" "review> ZZQ" "$("$TMUX_REAL" -L "$RQ" capture-pane -p -t "$RQP")"
+is "an unchanged buffer leaves the store byte-identical" "" "$(cmp -- "$RQSTORE" "$RQSTORE.before" 2>&1)"
+is "two comments stay two" "2" "$(grep -c '^## src.go:3 (+)' "$RQSTORE")"
+"$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: ^X deletes the comments under the cursor, the marker counts them, ^L lists them =="
 # The store had a writer and no reader: three comments on one line showed
 # one dot, and nothing could take one back short of discarding the batch.
