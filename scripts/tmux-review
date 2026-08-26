@@ -1074,6 +1074,10 @@ run_loop() {
     # whatever was already there. Gate the load and the message on real output.
     copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
+    # alt-c has no variable here: its {+3} -- field 3 of every ⇥-marked row, or
+    # of the cursor row when none is marked -- is an fzf placeholder, and must
+    # reach fzf literally out of the double-quoted bind below, unexpanded.
+    # ponytail: a row's fragment is cut at 160 bytes like the list; read the file per row if a longer line ever matters.
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -1117,7 +1121,7 @@ run_loop() {
         ndlv=""
         [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --ansi \
+            | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --multi --ansi \
                   --delimiter=$'\t' --with-nth=4 \
                   --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
@@ -1127,6 +1131,7 @@ run_loop() {
                   --bind "ctrl-l:execute(${list_cmd})" \
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-y:execute-silent(${copy_cmd})" \
+                  --bind "alt-c:execute-silent(printf '%s\n' {+3} | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied')" \
                   --bind "alt-y:execute-silent(${copy_all_cmd})" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --bind 'alt-up:preview-up,alt-down:preview-down' \
@@ -1134,7 +1139,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^E edit   ^X delete   ^L list   ^Y copy file+diff   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll   ^R refresh\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
+                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll   ^R refresh\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key

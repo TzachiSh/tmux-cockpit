@@ -3844,6 +3844,39 @@ case "$rcpall" in
 esac
 is "the cap row copies nothing" "" "$("$DIR/scripts/tmux-review" --copy "$RCP" '(diff too large)' | head -c 1)"
 
+echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their text, one line per row =="
+if need_tmux "tmux-review alt-c"; then :; else
+MC="cockpit-mc-$$"; SOCKS="$SOCKS $MC"; MCDIR=$(mktmpd); MCSTORE="$STATE/review-multicopy-$$"
+(
+  cd "$MCDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > src.go; git add -A; git commit -q -m init; printf 'a\nFIRST\nSECOND\nTHIRD\n' > src.go
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$MC" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+MCP=$("$TMUX_REAL" -L "$MC" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$MC" set-buffer OLD
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" "'$DIR/scripts/tmux-review' --loop '$MCDIR' '$MCSTORE'" Enter
+until_cap "$MC" "$MCP" '*review>*' || bad "the picker comes up" "review>" "$("$TMUX_REAL" -L "$MC" capture-pane -p -t "$MCP")"
+# ⇥ is fzf's own toggle+down (man fzf, KEY BINDINGS: `toggle+down  ctrl-i (tab)`),
+# so two Tabs mark the first two rows and leave the cursor on the third.
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Tab Tab; until_cap "$MC" "$MCP" '*(2)*'   # fzf's inline info shows the mark count in parentheses
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" M-c
+until_file_cmd() { local i=0; while [ $i -lt 50 ]; do [ "$("$TMUX_REAL" -L "$MC" show-buffer 2>/dev/null)" != OLD ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
+until_file_cmd
+is "alt-c copies the marked rows' text, one per line, in list order" $'FIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
+# --multi must not change what ↵ pins: {1} {2} {3} are still the CURSOR row,
+# so with FIRST and SECOND marked and the cursor on THIRD (src.go:4) it pins
+# exactly one comment, and on THIRD -- never on the marked rows.
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" "one comment only"; until_cap "$MC" "$MCP" '*one comment only*'
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Enter
+until_file "$MCSTORE" '*one comment only*'
+is "↵ with two rows marked still pins exactly one comment, on the cursor row" "1" "$(grep -c '^## src.go:4 (+)' "$MCSTORE" 2>/dev/null)"
+is "and pins nothing anywhere else" "1" "$(grep -c '^## ' "$MCSTORE" 2>/dev/null)"
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Escape; until_cap "$MC" "$MCP" '*discard 1 comment*'
+"$TMUX_REAL" -L "$MC" send-keys -t "$MCP" Down Down Enter; until_cap "$MC" "$MCP" '*$*'
+"$TMUX_REAL" -L "$MC" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --loop: alt-enter pins a comment, ctrl-s delivers, esc discards =="
 if need_tmux "tmux-review --loop"; then :; else
 RVS="cockpit-rv-$$"; SOCKS="$SOCKS $RVS"
