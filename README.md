@@ -1058,8 +1058,9 @@ make gate               # check-par, skipped via a content-keyed stamp if nothin
 ```
 
 `make test` and `make check` are unchanged and stay the merge gate — one
-process, source order. The six blocks that run against a clock (a giant diff
-under `timeout 1.5`, a 50-pane fleet scan under 5 s, …) run in
+process, source order. The six blocks marked `# group: serial` (a 50-pane
+fleet scan under 5 s, a 5000-row `--lines` build under 3 s, 50 MB of
+lockfile fixtures, …) run in
 their own serial shard, alone, before the rest: they measure the box's spare
 CPU as much as the code, and shard them apart and they flake under contention.
 
