@@ -39,10 +39,22 @@ FNR == NR {                                       # pass 1: the top-level helper
     }
     next
 }
-/^echo "== / { if (t != "") emit(); n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t); delete f; next }
+
+# A marker credits the block it is WRITTEN FOR, and all five in run.sh sit on
+# the line above their block title -- where it reads naturally, and where the
+# old rule (add to the current block, then `delete f` on the title) fed every
+# one of them to the PREVIOUS block and then threw it away: blocks 4, 7, 13, 23
+# and 107 came out with no dependencies at all, so `make test-changed` never
+# selected them for the very scripts the marker names. So the files are held in
+# pend[] and merged by whichever line comes next -- the title (the marker
+# announces the block below it) or any other line (the marker is inside a block
+# after all, the shape the file has always supported).
+/^# tests: / { for (i = 3; i <= NF; i++) pend[$i] = 1; next }
+/^echo "== / { if (t != "") emit(); n++; t = $0; sub(/^echo "== /, "", t); sub(/ =="$/, "", t)
+               delete f; for (k in pend) f[k] = 1; delete pend; next }
 t == "" { next }
-/^# tests: / { for (i = 3; i <= NF; i++) f[$i] = 1; next }
-{ note(f, $0)
+{ for (k in pend) f[k] = 1; delete pend
+  note(f, $0)
   for (hn in H) if ($0 ~ ("(^|[^A-Za-z_0-9])" hn "([^A-Za-z_0-9]|$)")) {
       m = split(H[hn], P, " "); for (i = 1; i <= m; i++) if (P[i] != "") f[P[i]] = 1 } }
 function emit(   k, s) { s = ""; for (k in f) s = s " " k; printf "%d\t%s\t%s\n", n, t, substr(s, 2) }
@@ -54,14 +66,20 @@ blocks_for() { awk -F'\t' -v f="$1" '{ n = split($3, D, " "); for (i = 1; i <= n
 # tests/run.sh: a hunk above the first block is the prelude or a helper and can
 # affect anything. A hunk inside a block runs that block.
 runsh_blocks() {
-    local first ln
+    local first ln out
     first=$(grep -n '^echo "== ' "$RUN" | head -1 | cut -d: -f1)
-    git diff -U0 -- tests/run.sh 2>/dev/null |
+    out=$(git diff -U0 -- tests/run.sh 2>/dev/null |
         awk '/^@@/ { split($3, a, ","); sub(/^\+/, "", a[1]); print a[1] }' |
         while read -r ln; do
             if [ "${ln:-0}" -lt "$first" ]; then echo ALL; return; fi
             awk -v l="$ln" '/^echo "== /{ n++ } NR == l { print n; exit }' "$RUN"
-        done
+        done)
+    # `git diff` is the WORKING TREE against the index, but green.sh compares
+    # against the stamp -- so a run.sh edit that has since been staged or
+    # committed is still "changed" here and yields no hunk at all. No hunks is
+    # not "no blocks": it is "this diff cannot tell", which is the ALL branch.
+    [ -n "$out" ] || out=ALL
+    printf '%s\n' "$out"
 }
 
 want=1                                            # the syntax block, always

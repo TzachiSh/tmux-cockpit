@@ -26,10 +26,25 @@ STAMP=$(git rev-parse --git-dir 2>/dev/null)/cockpit-green
 [ -d "${STAMP%/*}" ] || STAMP="$DIR/tests/.cache/green"
 
 manifest() {
+    # tests/fixtures/review/* is in the list because the tests READ it: the
+    # eight .tsv goldens the --lines blocks diff against, and mkfix.sh which
+    # builds the repo they run on. Without them, editing an expectation left
+    # the stamp valid and `make gate` answered "already green ... nothing
+    # changed since the last full gate" on a suite that would now fail.
+    #
+    # Regular files only. tests/* globs the fixture DIRECTORIES too, and
+    # sha256sum's "Is a directory" went into the manifest through the 2>&1 --
+    # noise, and it also meant an unmatched glob would have entered as a
+    # literal. The `case` keeps the old grep's job: a stamp must not depend on
+    # tests/.par.* or tests/.cache, which only exist mid-run.
+    local f
     # shellcheck disable=SC2046  # deliberate glob expansion into one sha256sum
-    sha256sum $(printf '%s\n' cockpit.tmux install.sh bootstrap.sh \
-                    scripts/* scripts/lib/* tests/* examples/* \
-                | grep -v '^tests/\.' | sort) 2>&1
+    sha256sum $(for f in cockpit.tmux install.sh bootstrap.sh \
+                         scripts/* scripts/lib/* tests/* \
+                         tests/fixtures/review/* examples/*; do
+                    case $f in tests/.*) continue ;; esac
+                    [ -f "$f" ] && printf '%s\n' "$f"
+                done | sort) 2>&1
     # A tmux, fzf or git upgrade changes what the suite observes without
     # changing a byte of this repo, so a green stamp must not survive one.
     printf 'tool %s\n' "$(tmux -V 2>&1)" "$(fzf --version 2>&1)" "$(git --version 2>&1)"
