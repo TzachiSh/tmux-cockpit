@@ -3934,8 +3934,11 @@ until_cap "$CS" "$CSCTL" '*leave — 1 comment*' && ok "esc offers to leave with
 until_cap "$CS" "$CSCTL" '*$*'
 is "leaving keeps the store" "1" "$(grep -c '^## ' "$CSSESS/comments.md" 2>/dev/null)"
 # Back in: ^S asks; edit runs $EDITOR on the whole store; then deliver.
-"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
-until_cap "$CS" "$CSCTL" '*resumed 1 pinned*'
+# `clear;` first: fzf restores the screen it covered when it exits, so without
+# it the pane still shows the first open's "review>" list (verified: it does)
+# and the wait below would match that stale text instead of the real re-open.
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "clear; EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
+until_cap "$CS" "$CSCTL" '*review>*'
 "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" C-s
 until_cap "$CS" "$CSCTL" "*deliver 1 comment(s) to $CSAP*" && ok "^S asks before delivering, naming the pane" || bad "^S asks before delivering, naming the pane" "deliver 1 comment(s) to $CSAP" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
 "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Down Enter      # edit the batch in $EDITOR first

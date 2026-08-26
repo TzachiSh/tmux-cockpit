@@ -1131,7 +1131,7 @@ run_loop() {
             case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
             case "$choice" in
                 deliver*) exit 20 ;;
-                edit*)    ${EDITOR:-vi} "$store" </dev/tty >/dev/tty 2>&1
+                edit*)    ${VISUAL:-${EDITOR:-vi}} "$store" </dev/tty >/dev/tty 2>&1
                           rows_out=$(rows_mode "$dir" "$store"); continue ;;
                 *)        rows_out=$(rows_mode "$dir" "$store"); continue ;;
             esac
