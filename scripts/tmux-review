@@ -874,6 +874,16 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
 # so the parser (compose is a plain cat, but any future reader) can't mistake
 # it for a header; "??" needs no handling at all, it passes straight through
 # -- the composed header is what tells the agent it is a question.
+# The line as the tree (+) or HEAD (-) has it, sign-prefixed line as the rows
+# carry it. attach() quotes it; alt-c copies it.
+read_line() {                 # <dir> <path> <line-with-sign>
+    case "${3#-}" in ''|*[!0-9]*) return 0 ;; esac   # anything else is a sed script
+    case "$3" in
+        -*) git -C "$1" show "HEAD:$2" 2>/dev/null | sed -n "${3#-}p" ;;
+        *)  sed -n "${3}p" -- "$1/$2" 2>/dev/null ;;
+    esac
+}
+
 attach() {
     local store=$1 path=$2 line=$3 fragment=$4 comment=$5 dir=${6:-}
     # No row under the cursor (an empty list, or the query cleared the match)
@@ -899,10 +909,7 @@ attach() {
     # (+) or HEAD (-); fall back to the fragment on any miss.
     local full="" ft gt
     if [ -n "$dir" ]; then
-        case "$sign" in
-            +) full=$(sed -n "${num}p" -- "$dir/$path" 2>/dev/null) ;;
-            -) full=$(git -C "$dir" show "HEAD:$path" 2>/dev/null | sed -n "${num}p") ;;
-        esac
+        full=$(read_line "$dir" "$path" "$line")
         full=${full//[$'\001'-$'\037'$'\177']/}
         full=${full:0:1000}
         # The guard: the line read back from the tree must still START with the
@@ -941,6 +948,15 @@ attach() {
 # goes, the rest are written back byte-identical (parse is the declared
 # inverse of format -- the round-trip test in tests/run.sh pins it). This
 # and nothing else in the script rewrites the store; attach() appends.
+# parse_store sets a store that does not parse aside as .bak and says so on
+# stderr only; ^X and ^E run under execute-silent, which eats stderr, so the
+# marks vanished without a word (#22). The lib stays tmux-free; this says it.
+load_store() {                # <store>; callers guard [ -s ] first, or a stale .bak beside an empty store would fire this
+    parse_store "$1"
+    [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
+        || tmux display-message "tmux-review: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
+}
+
 detach() {                    # <store> <path> <line-with-sign>
     local store=$1 path=$2 line=$3 sign=+ num i j=0 k
     [ -n "$path" ] && [ -n "$line" ] || return 0
@@ -949,7 +965,7 @@ detach() {                    # <store> <path> <line-with-sign>
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
     declare -A STORE=() OUT=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     # A store that fails to parse is moved aside to .bak and STORE_N comes
     # back 0 -- the [ -s "$store" ] guard above already sent a genuinely
     # empty file home, so 0 here can only mean the parse was rejected.
@@ -1012,19 +1028,21 @@ pane_label() {                # <pane-id>
 }
 
 # Every body pinned on one anchor, so ^E can open what is there. Several
-# comments on one row come back as one, blank-line separated.
-seed_comment() {              # <store> <path> <line-with-sign>
-    local store=$1 path=$2 line=$3 sign=+ num i sep=""
+# comments on one row come back as one, blank-line separated. With `frag`,
+# the first record's > quote instead: the snapshot the edit must keep.
+seed_comment() {              # <store> <path> <line-with-sign> [body|frag]
+    local store=$1 path=$2 line=$3 key=${4:-body} sign=+ num i sep=""
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     [ -s "$store" ] || return 0
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || return 0
     declare -A STORE=(); STORE_N=0
-    parse_store "$store"
+    load_store "$store"
     for ((i = 0; i < STORE_N; i++)); do
         [ "${STORE[$i.path]}" = "$path" ] && [ "${STORE[$i.line]:-}" = "$num" ] \
             && [ "${STORE[$i.side]}" = "$sign" ] || continue
-        printf '%s%s\n' "$sep" "${STORE[$i.body]}"; sep=$'\n'
+        printf '%s%s\n' "$sep" "${STORE[$i.$key]:-}"; sep=$'\n'
+        [ "$key" = body ] || break
     done
 }
 
@@ -1050,7 +1068,13 @@ edit_comment() {              # <store> <path> <line> <fragment> <query> <dir>
     # only looked at would merge them into a single record, ●2 down to ●.
     [ "$inplace" -eq 1 ] && [ "$(cat -- "$tmp")" = "$seed" ] && { rm -f -- "$tmp"; return 0; }
     # Edit in place = the old blocks go, the file comes back as one; an emptied file deletes.
-    [ "$inplace" -eq 1 ] && detach "$store" "$path" "$line"
+    # The stored quote, not the row's fragment: attach re-reads the live line
+    # only while it still starts with what is passed here, so a line the agent
+    # moved since the snapshot keeps its old quote instead of taking the new text.
+    if [ "$inplace" -eq 1 ]; then
+        seed=$(seed_comment "$store" "$path" "$line" frag); [ -n "$seed" ] && fragment=$seed
+        detach "$store" "$path" "$line"
+    fi
     attach "$store" "$path" "$line" "$fragment" "$(cat -- "$tmp")" "$dir"
     rm -f -- "$tmp"
 }
@@ -1088,6 +1112,20 @@ copy_mode() {                 # <dir> [path]
         printf '### %s\n' "$path"; cat -- "$dir/$path"; printf '\n### diff %s\n' "$path"
     fi
     tree_diff "$dir" -- "$path"
+}
+
+# alt-c: fzf hands {+1} then {+2}, every marked row's path then every line, so
+# the first half of the arguments are paths and the second half their lines.
+# The list row's fragment is cut at 160 bytes and stripped of control
+# characters (tabs included); the file has the real line.
+copy_lines() {                # <dir> <path>... <line-with-sign>...
+    local dir=${1:-} n i; shift
+    [ -n "$dir" ] && [ $(( $# % 2 )) -eq 0 ] || return 0
+    n=$(( $# / 2 ))
+    for ((i = 1; i <= n; i++)); do
+        [ "${!i}" != "$CAP_SENTINEL" ] || continue
+        read_line "$dir" "${!i}" "${@:i+n:1}"
+    done
 }
 
 # --- --loop ----------------------------------------------------------------
@@ -1147,11 +1185,10 @@ run_loop() {
     # whatever was already there. Gate the load and the message on real output.
     copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
     copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
-    # alt-c has no variable here: its {+3} -- field 3 of every ⇥-marked row, or
-    # of the cursor row when none is marked -- is an fzf placeholder, and must
-    # reach fzf literally out of the double-quoted bind below, unexpanded.
-    # ponytail: a row's fragment is the list's -- cut at 160 bytes AND stripped of
-    # control chars, so tab indentation is lost; read the file per row if either matters.
+    # {+1} {+2}: the path and line of every ⇥-marked row, or of the cursor row
+    # when none is marked. fzf placeholders: they must reach --bind literally,
+    # unexpanded. Same output gate as ^Y: the cap row yields nothing.
+    copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -1205,7 +1242,7 @@ run_loop() {
                   --bind "ctrl-l:execute(${list_cmd})" \
                   --bind "ctrl-e:execute(${edit_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-y:execute-silent(${copy_cmd})" \
-                  --bind "alt-c:execute-silent(printf '%s\n' {+3} | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied')" \
+                  --bind "alt-c:execute-silent(${copy_lines_cmd})" \
                   --bind "alt-y:execute-silent(${copy_all_cmd})" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
                   --bind 'alt-up:preview-up,alt-down:preview-down' \
@@ -1213,7 +1250,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list   ^R refresh\n^Y copy file+diff   alt-c copy lines   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
+                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list\n^Y copy file+diff   alt-c copy lines   alt-y copy all   ^R refresh\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}$ndlv   ● pinned   ↺ last round")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -2189,7 +2226,7 @@ fleet_queue() {               # [preselect-pane]
 
         out=$(printf '%s\n' "${disp[@]}" \
             | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --expect=ctrl-x \
                   --preview "$preview_cmd" \
@@ -2277,6 +2314,8 @@ case "${1:-}" in
         shift; detach "${1:-}" "${2:-}" "${3:-}" ;;
     --copy)
         shift; copy_mode "${1:-}" "${2:-}" ;;
+    --copy-lines)
+        shift; copy_lines "$@" ;;
     --edit)
         shift; edit_comment "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" ;;
     --vscode)

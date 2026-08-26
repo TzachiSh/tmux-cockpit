@@ -3448,7 +3448,7 @@ rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.
 is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
 rm -rf "$RVOFFN"
 
-echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▶ on the asked line =="
+echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▸ on the asked line =="
 RPG=$(mktmpd)
 (
   cd "$RPG" || exit
@@ -3460,21 +3460,28 @@ RPG=$(mktmpd)
 rpg=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g')
 rpgraw=$(git -C "$RPG" diff HEAD -- f.txt | awk '/^@@/{h=1} h')
 is "the gutter adds no line and removes none" "$(( $(printf '%s\n' "$rpgraw" | wc -l) + 1 ))" "$(printf '%s\n' "$rpg" | wc -l)"
-is "a context line carries both numbers"   "    1     1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
-is "a removed line carries the old number" "    3       │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
-is "an added line carries the new number"  "          3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
-is "a deletion keeps the old side counting" "   10       │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
-is "and the new side skips it"              "   11    10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
+is "a context line carries both numbers"   "     1      1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
+is "a removed line carries the old number" "     3        │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
+is "an added line carries the new number"  "            3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
+is "a deletion keeps the old side counting" "    10        │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
+is "and the new side skips it"              "    11     10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
 rpgm=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt 5) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgm" in "▶"*) ok "the asked line is marked ▶" ;; *) bad "the asked line is marked ▶" "▶..." "$rpgm" ;; esac
+case "$rpgm" in "▸"*) ok "the asked line is marked ▸" ;; *) bad "the asked line is marked ▸" "▸..." "$rpgm" ;; esac
 rpgc=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgc" in "▶"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
+case "$rpgc" in "▸"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
 # Every check above strips ANSI first, so a gutter that printed the stripped
 # copy instead of the raw line would pass them all with the colour gone. Peel
-# the 11-column prefix back off and the diff's own bytes must be left.
+# the 13-column prefix back off and the diff's own bytes must be left.
 rpgrawc=$(git -C "$RPG" diff --color=always HEAD -- f.txt | awk '/^\033\[[0-9;]*m@@|^@@/{h=1} h')
-rpgcol=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | tail -n +2 | sed 's/^.\{11\} │ //')
+rpgcol=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | tail -n +2 | sed 's/^.\{13\} │ //')
 is "the gutter is a prefix and nothing else, colour included" "$rpgrawc" "$rpgcol"
+# %5 overflowed past 9999 lines, and ▶ (ambiguous-width) then overwrote a
+# digit: a 12340 read ▶2340 (#22 item 7). A missing trailing newline is a
+# gutter row of its own (test debt from the same issue).
+(cd "$RPG" && export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e && seq 1 12345 > big.txt && git add big.txt && git commit -q -m big && sed -i '12340s/.*/X/' big.txt && printf 'tail' >> big.txt) >/dev/null 2>&1
+rpgb=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff big.txt 6) | sed 's/\x1b\[[0-9;]*m//g')
+is "a five-digit line number keeps every digit next to the mark" "▸12340        │ -12340" "$(printf '%s\n' "$rpgb" | grep '│ -12340$')"
+is "and a no-newline marker gets a blank gutter" "              │ \\ No newline at end of file" "$(printf '%s\n' "$rpgb" | grep 'No newline' | tail -1)"
 rm -rf "$RPG"
 
 # group: serial
@@ -4305,6 +4312,22 @@ case "$(cat "$RXN/log" 2>/dev/null)" in
     *"nothing pinned on this row"*) ok "so does ^X on an empty store" ;;
     *) bad "so does ^X on an empty store" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
 esac
+# A store that does not parse is set aside as .bak with a note on stderr, and
+# ^X runs under execute-silent, which eats stderr: every mark vanished with
+# no word (#22 item 4). The note must reach the status line too.
+: > "$RXN/log"; printf 'garbage before any header\n## src.go:3 (+)\nfine\n' > "$RXN/corrupt"
+PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/corrupt" src.go 3 2>/dev/null
+case "$(cat "$RXN/log" 2>/dev/null)" in
+    *"set aside as"*) ok "^X on a store that does not parse says so on the status line" ;;
+    *) bad "^X on a store that does not parse says so on the status line" "display-message ... set aside as" "$(cat "$RXN/log" 2>/dev/null)" ;;
+esac
+
+echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
+for f in tm tmux-branch tmux-open-path tmux-review; do
+    is "$f: every --color=16 carries border:8" \
+       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16')" \
+       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16,[^ ]*border:8')"
+done
 
 echo "== tmux-review --copy: the file as it is now, then its diff; no path: the whole review's diff =="
 RCP=$(mktmpd)
@@ -4324,14 +4347,41 @@ case "$rcpall" in
     *) bad "no path: every file's diff, untracked included" "+b and +n" "$rcpall" ;;
 esac
 is "the cap row copies nothing" "" "$("$DIR/scripts/tmux-review" --copy "$RCP" '(diff too large)' | head -c 1)"
+# alt-c used to copy the list row's fragment, control characters stripped and
+# cut at 160 bytes, so tab-indented code pasted flush left (#22 item 1).
+# --copy-lines takes fzf's {+1} {+2} shape (every path, then every line) and
+# reads each line from the tree (+) or HEAD (-).
+printf 'b\n' > "$RCP/f"; CL=$(printf 'y%.0s' $(seq 1 200)); printf '\t%s\n' "$CL" > "$RCP/t"
+is "--copy-lines reads the real lines: tab and 200-byte tail kept, HEAD's line for a - row, in order" \
+   $'\t'"$CL"$'\na' "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" t f 1 -1)"
+is "and the cap row copies nothing there either" "" "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" '(diff too large)' 1 | head -c 1)"
 
-echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their text, one line per row =="
+echo "== tmux-review --loop: the legend fits an 80-column popup (#22 item 3) =="
+# fzf cuts a header line at the popup's inner width: 80 columns leave 78 inside
+# the popup border and 76 past fzf's pointer margin. The first key line was 77
+# cells and lost the tail of "^R refresh"; the dynamic fourth line put the
+# "↺ N delivered earlier" count last, where a long root path pushed it off.
+RLH=$(grep -o "^ *--header=\$'[^']*'" "$DIR/scripts/tmux-review" | head -1 | sed "s/^ *--header=\$'//; s/'\$//; s/\\\\n/\\n/g")
+i=0
+while IFS= read -r l; do
+    [ -n "$l" ] || continue
+    i=$((i+1)); w=$(printf '%s' "$l" | wc -m)
+    if [ "$w" -le 76 ]; then ok "legend line $i fits 76 cells ($w)"; else bad "legend line $i fits 76 cells" "<= 76" "$w: $l"; fi
+done <<<"$(printf '%b' "$RLH")"
+is "three key lines" "3" "$i"
+rlh4=$(grep -o 'root: \${dir.*\$ndlv.*")' "$DIR/scripts/tmux-review" | head -1)
+case "$rlh4" in
+    *'$ndlv'*'● pinned'*) ok "the delivered count comes before the glyph legend on the fourth line" ;;
+    *) bad "the delivered count comes before the glyph legend on the fourth line" '...$ndlv... ● pinned ...' "$rlh4" ;;
+esac
+
+echo "== tmux-review --loop: ⇥ marks rows and alt-c copies their lines, one per row =="
 if need_tmux "tmux-review alt-c"; then :; else
 MC="cockpit-mc-$$"; SOCKS="$SOCKS $MC"; MCDIR=$(mktmpd); MCSTORE="$STATE/review-multicopy-$$"
 (
   cd "$MCDIR" || exit
   export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > src.go; git add -A; git commit -q -m init; printf 'a\nFIRST\nSECOND\nTHIRD\n' > src.go
+  git init -q -b main .; printf 'a\n' > src.go; git add -A; git commit -q -m init; printf 'a\n\tFIRST\nSECOND\nTHIRD\n' > src.go
 ) >/dev/null 2>&1
 "$TMUX_REAL" -L "$MC" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 MCP=$("$TMUX_REAL" -L "$MC" list-panes -t t: -F '#{pane_id}')
@@ -4344,7 +4394,7 @@ until_cap "$MC" "$MCP" '*review>*' || bad "the picker comes up" "review>" "$("$T
 "$TMUX_REAL" -L "$MC" send-keys -t "$MCP" M-c
 until_buffer() { local i=0; while [ $i -lt 50 ]; do [ "$("$TMUX_REAL" -L "$MC" show-buffer 2>/dev/null)" != OLD ] && return 0; sleep 0.1; i=$((i+1)); done; return 1; }
 until_buffer
-is "alt-c copies the marked rows' text, one per line, in mark order" $'FIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
+is "alt-c copies the marked rows' real lines, tab kept, one per line, in mark order" $'\tFIRST\nSECOND' "$("$TMUX_REAL" -L "$MC" show-buffer)"
 # --multi must not change what ↵ pins: {1} {2} {3} are still the CURSOR row,
 # so with FIRST and SECOND marked and the cursor on THIRD (src.go:4) it pins
 # exactly one comment, and on THIRD -- never on the marked rows.
@@ -7013,6 +7063,27 @@ case "$(cat "$VELOGT" 2>/dev/null)" in
     *) bad "and the status line says which editor it used instead" \
          "a display-message naming vi" "$(cat "$VELOGT" 2>/dev/null)" ;;
 esac
+
+echo "== tmux-review --edit: an in-place edit keeps the stored quote when the line moved under it (#22 item 8) =="
+# The store's > quote is the review's snapshot. edit_comment used to hand
+# attach the row's display fragment, and attach re-read the LIVE line: an
+# agent that had moved the line since the snapshot replaced the quote with
+# whatever sits there now, or with the 160-byte fragment.
+RM=$(mktmpd); RMSTORE="$STATE/review-edit-moved-$$"; RMQ=$(printf 'q%.0s' $(seq 1 300))
+(
+  cd "$RM" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nMOVED\n' > src.go
+) >/dev/null 2>&1
+printf '## src.go:3 (+)\n> %s\nold text\n\n' "$RMQ" > "$RMSTORE"
+RMED=$(mktmpf); printf '#!/bin/sh\necho "more" >> "$1"\n' > "$RMED"; chmod +x "$RMED"
+TMPDIR="$RM" VISUAL='' EDITOR="$RMED" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
+is "the edit landed" "1" "$(grep -c '^more$' "$RMSTORE")"
+is "and the quote is still the snapshot's, not the line that sits there now" "> $RMQ" "$(grep '^> ' "$RMSTORE")"
+# Test debt from #22: an editor that empties the buffer deletes the record.
+RMED2=$(mktmpf); printf '#!/bin/sh\n: > "$1"\n' > "$RMED2"; chmod +x "$RMED2"
+TMPDIR="$RM" VISUAL='' EDITOR="$RMED2" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
+is "an emptied buffer deletes the comment" "0" "$(grep -c '^## ' "$RMSTORE" 2>/dev/null)"
 
 echo "== tmux-review --loop: ^E with nothing typed on a commented row edits that comment instead of adding one =="
 if need_tmux "tmux-review ^E edit in place"; then :; else

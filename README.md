@@ -574,7 +574,7 @@ option, so you can bend the picker to your own taste without patching the
 script:
 
 ```sh
-set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▶'"
+set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▸'"
 ```
 
 It is confined to this picker on purpose. In the comment loop `↵` has a
@@ -599,7 +599,7 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `⇥` | — | mark the row (any number) |
 | `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
 | `alt-y` | — | copy the whole review's diff |
-| `alt-c` | — | copy the marked rows' text (or the row under the cursor) to the tmux buffer and the clipboard |
+| `alt-c` | — | copy the marked rows' lines as the file has them, tabs and all (a `-` row: HEAD's line; or the row under the cursor), to the tmux buffer and the clipboard |
 | `^B` | — | cycle the base the diff is taken against |
 | `^A` | — | approve what you just read (only with nothing pinned) |
 | `^S` | — | deliver the whole batch; asks first |
@@ -612,7 +612,9 @@ to your editor and pins the file that comes back, so a comment that needs three
 lines costs no more than one — an empty file pins nothing, so deleting
 everything and saving is the cancel. With nothing typed on a row that already
 carries a comment, `^E` opens that comment instead and replaces it; saving an
-empty file deletes it. `^E` uses `@cockpit_editor` when set
+empty file deletes it. Several comments on one row open as one buffer and
+save back as one: the agent reads them as paragraphs under one anchor either
+way. `^E` uses `@cockpit_editor` when set
 (`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
 opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
 none of the three set it tries VS Code's remote shim, and falls back to `vi`.
@@ -651,7 +653,7 @@ same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
 To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
 copy mode, so the terminal's own selection is the one that works there. `^Y`
 copies the whole file plus its diff, `alt-y` every file's diff, for pasting
-into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
+into another agent. `⇥` marks rows and `alt-c` copies their lines as the file has them, one per
 row, when what you want is a handful of lines rather than a file. All three go
 out as OSC 52, so they reach the system clipboard only if your terminal accepts
 clipboard writes; some disable them by default.

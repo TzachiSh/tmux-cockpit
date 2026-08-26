@@ -129,7 +129,7 @@ case "${1:-}" in
       # same colours as the benign attach list.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
         | fzf --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
-              --color=16,prompt:red,pointer:red,marker:red --marker='✗' \
+              --color=16,prompt:red,pointer:red,marker:red,border:8,scrollbar:8 --marker='✗' \
               --prompt='kill session> ' \
               --header='↵ kill   tab mark several   esc cancel')
     else
@@ -177,7 +177,7 @@ HEIGHT=${TM_HEIGHT:-40%}
 PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
   choice=$(list_rows | { cat; printf '%s\t%s\n' "$NEW_LABEL" "$NEW_LABEL"; } \
-    | fzf --height="$HEIGHT" --reverse --no-multi --color=16 --info=inline-right --cycle --scroll-off=2 \
+    | fzf --height="$HEIGHT" --reverse --no-multi --color=16,border:8,scrollbar:8 --info=inline-right --cycle --scroll-off=2 \
           --delimiter=$'\t' --with-nth=2 \
           --prompt='session> ' \
           --header='↵ attach   ^X kill   esc cancel' \
