@@ -64,12 +64,28 @@ case "$arg3" in
         # status tick and filled the 1000-entry message log in minutes, so
         # show-messages could not diagnose anything on a live server (#24).
         if [ -n "$pid" ] && read -r line 2>/dev/null < "/proc/$pid/stat"; then
-            read -r _ _ _ _ _ tp _ <<<"${line##*) }"
-            if [ -n "$tp" ] && cd -P "/proc/$tp/cwd" 2>/dev/null; then
-                path=$PWD
+            # After the ")": state ppid pgrp session tty tpgid. The positional
+            # params are free, $1-$4 are already in mode/pid/arg3/arg4.
+            # shellcheck disable=SC2086
+            set -- ${line##*) }; sess=${4:-}; tp=${6:-}
+            # The chdir is deliberate and is not undone: everything below
+            # takes an absolute path. cd -P through the magic link SUCCEEDS
+            # on a deleted directory and leaves PWD as the link itself, so
+            # that shape is rejected and falls through to tmux, which says
+            # "... (deleted)". tmux retries with the tty's session leader when
+            # the pgrp's cwd is unreadable (a pane parked in sudo); same here.
+            for d in "$tp" "$sess"; do
+                if cd -P "/proc/$d/cwd" 2>/dev/null && [ "$PWD" != "/proc/$d/cwd" ]; then
+                    path=$PWD; break
+                fi
+            done
+            if [ -n "$path" ]; then
                 IFS= read -r -d '' cmd 2>/dev/null < "/proc/$tp/cmdline"
-                # tmux's parse_window_name(): drop leading "-"/spaces, first word, basename
-                cmd=${cmd#"${cmd%%[! -]*}"}; cmd=${cmd%% *}; cmd=${cmd##*/}
+                # tmux's parse_window_name() without its "exec " strip and
+                # trailing-char trim, which no live argv[0] carries: drop
+                # leading "-"/spaces, first word, basename if absolute.
+                cmd=${cmd#"${cmd%%[! -]*}"}; cmd=${cmd%% *}
+                case "$cmd" in /*) cmd=${cmd##*/} ;; esac
             fi
         fi
         # No /proc (macOS, BSD) or a pane whose process is gone: ask tmux,

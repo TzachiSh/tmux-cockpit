@@ -803,11 +803,21 @@ if [ -d "/proc/$$" ]; then
     tmux new-window -d -c "$WD" -n wherepane 'exec -a claude sleep 30'
     WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
     WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
+    # The serial runner shares one server: past 1000 entries each show-messages
+    # evicts an old line and could shift the count below by itself.
+    tmux set -g message-limit 100000
     before=$(tmux show-messages | grep -c 'display-message -p -t')
     is "path comes from /proc"          " $WD" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
     is "branch is empty outside a repo" ""     "$("$DIR/scripts/tmux-where" branch "$WPID" "$WP" | plain)"
     after=$(tmux show-messages | grep -c 'display-message -p -t')
     is "neither call reached tmux" "$before" "$after"
+    # cd -P through /proc/<pid>/cwd SUCCEEDS on a deleted directory and leaves
+    # PWD as the link itself; that must never reach the status line.
+    rmdir "$WD"
+    is "a deleted cwd falls back to tmux's answer" " $WD (deleted)" \
+       "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
+    after2=$(tmux show-messages | grep -c 'display-message -p -t')
+    is "with one tmux call" "$((after + 1))" "$after2"
     tmux kill-window -t wherepane
     # argv[0] is what tmux reports as pane_current_command, so a process
     # exec'd under the name ssh must still take the ssh walk (which then reads
@@ -815,11 +825,16 @@ if [ -d "/proc/$$" ]; then
     tmux new-window -d -n wherepane 'exec -a ssh sleep 30'
     WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
     WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
+    for _ in $(seq 20); do              # sh -c may not have exec'd yet
+        IFS= read -r -d '' a0 2>/dev/null < "/proc/$WPID/cmdline"; [ "$a0" = ssh ] && break; sleep 0.1
+    done
     is "an ssh pane is recognised from /proc" " 󰢹 30" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
     tmux kill-window -t wherepane
     # A pane whose process is gone falls back to tmux: one call, not two.
+    # pid_max+1 cannot be alive; 999999 can, and would read a stranger's /proc.
+    DEADPID=$(( $(cat /proc/sys/kernel/pid_max) + 1 ))
     before=$(tmux show-messages | grep -c 'display-message -p -t')
-    "$DIR/scripts/tmux-where" path 999999 "$PANE" >/dev/null
+    "$DIR/scripts/tmux-where" path "$DEADPID" "$PANE" >/dev/null
     after=$(tmux show-messages | grep -c 'display-message -p -t')
     is "a dead pid asks tmux once" "$((before + 1))" "$after"
 else
