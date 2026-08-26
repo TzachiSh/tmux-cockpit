@@ -339,6 +339,52 @@ trap 'rm -f "$rlconf"' EXIT HUP INT TERM
 tmux source-file "$rlconf"
 rm -f "$rlconf"
 
+# prefix M: move this window to another session, or a new one, from a menu.
+# Stock M is select-pane -M (unmark), the partner of the m that full.tmux.conf
+# already takes; @cockpit_move_key rebinds, off keeps stock.
+#
+# Order is the whole trick: switch-client FIRST, then move-window, then
+# select-window. Moving the last window out of the session the client sits in
+# destroys that session, and with detach-on-destroy (the default) that throws
+# the client out of tmux -- verified, and not repairable after the fact. Once
+# the client has left, the source window can only be named by id, so it is
+# pinned in a global option before the menu opens (-F: without it the option
+# stores the literal format and the menu wedges the server). #{window_id}
+# inside #{S:} shadows to the looped session's window, hence the pin.
+#
+# Every piece of user text stays data. ##{window_name} in the title is left
+# for display-menu to expand, so a window named it's cannot tear the command
+# apart; sessions are labelled with #{qa:} and targeted by id. The typed
+# new-session name goes through %%% (quotes escaped) ONCE, into an option,
+# and everything after reads the option: an option value expands as text, so
+# #( in the name never runs, and no =name: target exists for a : or . in the
+# name to break. Four # because the string is expanded twice before if-shell
+# sees it (run-shell -C, then display-menu). new-session without -d switches
+# the client itself, so -t :^ is the new session, and -k makes the moved
+# window REPLACE its placeholder shell. The if-shell guard is for an empty
+# name: 3.7 makes a session with no name instead of refusing (a name of
+# exactly 0 is refused too; tmux numbers sessions from 0, so it is taken).
+MK=$(tmux show-option -gqv @cockpit_move_key)
+case "$MK" in
+    off) ;;                          # explicitly disabled
+    "")  mk=M ;;
+    *)   mk=$MK ;;
+esac
+if [ "$MK" != off ]; then
+    mvconf=$(mktemp) || exit 1
+    trap 'rm -f "$mvconf"' EXIT HUP INT TERM
+    {
+        printf 'bind-key %s {\n' "$(sq "$mk")"
+        cat <<'EOF'
+    set -gF @cockpit_move_src "#{window_id}"
+    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
+}
+EOF
+    } > "$mvconf"
+    tmux source-file "$mvconf"
+    rm -f "$mvconf"
+fi
+
 # Click a line of output to pick a path off it. -F is load-bearing: without it
 # set-option stores the literal "#{mouse_line}". The line travels in a pane
 # option rather than on the command line because pane output is full of quotes,
