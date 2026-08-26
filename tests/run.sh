@@ -2963,9 +2963,32 @@ RVOFFN=$(mktmpd)
 ) >/dev/null 2>&1
 rvoffn=$("$DIR/scripts/tmux-review" --lines "$RVOFFN" | awk -F'\t' '$1=="new.txt" && $3=="second" {print $5}')
 rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.txt) \
-    | awk '{ gsub(/\033\[[0-9;]*m/, ""); print }' | grep -n '^+second' | cut -d: -f1)
+    | awk '{ gsub(/\033\[[0-9;]*m/, ""); print }' | grep -n '│ +second' | cut -d: -f1)
 is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
 rm -rf "$RVOFFN"
+
+echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▶ on the asked line =="
+RPG=$(mktmpd)
+(
+  cd "$RPG" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  seq 1 40 > f.txt; git add -A; git commit -q -m init
+  sed -i '3s/.*/THREE/; 30s/.*/THIRTY/; 10d' f.txt
+) >/dev/null 2>&1
+rpg=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g')
+rpgraw=$(git -C "$RPG" diff HEAD -- f.txt | awk '/^@@/{h=1} h')
+is "the gutter adds no line and removes none" "$(( $(printf '%s\n' "$rpgraw" | wc -l) + 1 ))" "$(printf '%s\n' "$rpg" | wc -l)"
+is "a context line carries both numbers"   "    1     1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
+is "a removed line carries the old number" "    3       │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
+is "an added line carries the new number"  "          3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
+is "a deletion keeps the old side counting" "   10       │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
+is "and the new side skips it"              "   11    10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
+rpgm=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt 5) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
+case "$rpgm" in "▶"*) ok "the asked line is marked ▶" ;; *) bad "the asked line is marked ▶" "▶..." "$rpgm" ;; esac
+rpgc=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
+case "$rpgc" in "▶"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
+rm -rf "$RPG"
 
 # group: serial
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="

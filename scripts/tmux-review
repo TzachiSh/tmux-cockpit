@@ -1046,7 +1046,7 @@ run_loop() {
     local rows_cmd attach_cmd preview_cmd resnap_cmd list_cmd detach_cmd edit_cmd copy_cmd copy_all_cmd rows_out nrows
     rows_cmd="$(shq "$SELF") --rows $(shq "$dir") $(shq "$store")"
     attach_cmd="$(shq "$SELF") --attach $(shq "$store") {1} {2} {3} {q} $(shq "$dir")"
-    preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1}"
+    preview_cmd="cd $(shq "$dir") && $(shq "$OPENPATH") --preview-diff {1} {5}"
     resnap_cmd="$(shq "$SELF") --resnap $(shq "$dir") $(shq "$store")"
     list_cmd="$(shq "$SELF") --list $(shq "$store")"
     detach_cmd="$(shq "$SELF") --detach $(shq "$store") {1} {2}"
