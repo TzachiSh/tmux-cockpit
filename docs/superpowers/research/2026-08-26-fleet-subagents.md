@@ -64,7 +64,7 @@ plugin shows per-agent subagent rows.
 
 ## Plan (the lazy one)
 
-One shim, one pane option, one extra format field. No hook changes.
+One shim, one pane option, one extra `list-panes` in the popup. No hook changes.
 
 1. `scripts/agent-subs`, a `subagentStatusLine` command. Copy the
    `agent-context` skeleton: `%N` guard on `TMUX_PANE`, bounded stdin read,
@@ -73,12 +73,13 @@ One shim, one pane option, one extra format field. No hook changes.
    description cut at 40, at most 8 rows. Compare-then-set `@cockpit_subs` on
    the pane (a set with the same value still forces a server redraw). Print
    nothing.
-2. `tmux-review` `fleet_rows` :1487: add `#{?#{@cockpit_subs},#{@cockpit_subs},-}`
-   as a sixth internal field (sentinel per the tab-collapse trap :1479).
-   `fleet_queue` :1926: after each parent row emit one child row per entry,
-   field 1 = the parent's pane id (so ↵ reviews the parent and ^X kills its
-   window unchanged), state column = the task status, title column =
-   `└ name · description`, loc column `-`. `--fleet` output untouched.
+2. `tmux-review` `fleet_queue` :1926: one `list-panes -a -F` for
+   `#{pane_id}` and `@cockpit_subs` (`-` sentinel, the tab-collapse trap
+   :1479), the seam the preview already uses. After each parent's padded row
+   push one child row per entry into `disp`, field 1 = the parent's pane id
+   (so ↵ reviews the parent and ^X kills its window unchanged), state column
+   = the task status indented two, title column = `└ name · description`,
+   loc and ± blank. `fleet_rows` and `--fleet` untouched.
 3. `examples/claude-hooks.json`: document the `subagentStatusLine` key next
    to the `statusLine` note. `install.sh --hooks` does not merge it (same as
    statusLine today).
@@ -89,7 +90,7 @@ One shim, one pane option, one extra format field. No hook changes.
 
 Costs. Hook path: zero. Redraw path: zero (no format reads `@cockpit_subs`).
 Statusline tick: one bash+jq spawn while subagents are visible, one tmux
-write when the list changed. Popup: one wider format string.
+write when the list changed. Popup: one extra `list-panes` per keypress.
 
 Ceiling, by design: rows vanish 30 s after a subagent idles and >3 idle
 collapse. Fine for "what is running now".
