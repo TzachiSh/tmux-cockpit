@@ -1,5 +1,7 @@
 # Go + Bubble Tea, or something like it: the research
 
+(Rust, asked next, is in [rust.md](rust.md), with a third spike and a three-way table.)
+
 The owner asked "why not Go Bubble Tea?" after ux.md §4 said no in a table. This is the answer with numbers: two spikes built and measured against the live fleet, the source of the five Bubble Tea supervisors, the framework state in 2026, and how tmux plugins actually ship binaries. Spike code in [spike/](spike/).
 
 ## 1. Two spikes, same screen, same fleet
@@ -87,4 +89,4 @@ The fleet view is rows + preview + a handful of actions. Both spikes render the 
 
 What would flip it: a screen that is not a list. A side-by-side board of N agents each with its own scrolling preview and its own refresh rate; drag-to-reorder or drag-to-move-window; inline reply to a blocked agent's question inside the dashboard (agent view's peek); a control-mode subscription so previews update on `%output` without a fork per second. If the owner wants one of those, the spike is the starting point and the hybrid rule in §6 is the contract. Until then: `tmux-review --fleet` grows the `doing` column, `prefix r` gets `--listen` reload, and `prefix a` gets a `claude agents` row for the Haiku-summary dashboard Anthropic maintains.
 
-Owner decision 6 in the README is now this choice, with the numbers.
+Owner decision 6 in the README is now this choice, with the numbers. rust.md revises one line of it: if compiled, Rust, not Go.
