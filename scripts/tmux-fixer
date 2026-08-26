@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# tmux-fixer — a side-fixer pane beside a busy agent, and the wrapper that runs
+# inside it. The human spawns a separate `claude -p` for an orthogonal job (fix
+# the tests, regenerate a fixture) instead of interrupting the main agent; the
+# main agent is held at its next Stop by review-gate while the fixer's PANE is
+# alive, and resumes with ONE handover line. There is no lock file: a dead
+# process cannot leave a live pane.
+#   tmux-fixer -p <pane>                     the prefix f popup: job, guard, fence, spawn
+#   tmux-fixer --run <pane> <sess> <job…>    inside the fixer pane: claude -p, then the handover
+# State: <sess>/fixer/{pane,reason,deadline,fence,guard} and <sess>/handover.
+set -uo pipefail
+
+# Resolved once, not $0: a symlink from install.sh (or a PATH lookup) must
+# still find its sibling tmux-review, and --run must be able to re-invoke
+# this same file from inside the pane it is spawned into.
+SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+REVIEW="$(dirname "$SELF")/tmux-review"
+
+# Shell-quote a word for a command STRING tmux hands to sh -- the same
+# reasoning as tmux-review's and tmux-open-path's own shq.
+shq() { printf '%q' "$1"; }
+
+# --- --run: the wrapper --------------------------------------------------------
+# The MODEL writes nothing: the wrapper runs the fixer and turns the last
+# "HANDOVER: …" line of claude -p's .result into <sess>/handover -- the ONLY
+# thing that reaches the main agent. On any failure the fallback line is
+# written FIRST (the hold and the gate open on the file), then the output stays
+# on screen for the human (↵ closes the pane).
+handover_write() {            # <sess> <line>
+    local line=${2//[$'\001'-$'\037']/}
+    [ "${#line}" -gt 300 ] && line="${line:0:285}... (truncated)"
+    (umask 077; printf '%s\n' "$line" > "$1/handover")
+}
+run_fixer() {                 # <main-pane> <sess> <job…>
+    local pane=$1 sess=$2; shift 2
+    local job="$*" f="$sess/fixer" sid out res rc reason line fence
+    reason=$(cat -- "$f/reason" 2>/dev/null); reason=${reason:-$job}
+    fence=$(tr '\n' ' ' < "$f/fence" 2>/dev/null)
+    sid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || printf '%s-%s' "$$" "$(date +%s)")
+    printf 'side fix for %s: %s\n(this pane closes itself when done; it stays open if claude fails)\n\n' "$pane" "$reason"
+    # The fence: every path the main agent has dirty is denied to Edit (Write
+    # path rules are never consulted -- permissions.md, v2.1.210+); mutating
+    # git is denied outright; acceptEdits so a headless run never stalls on a
+    # prompt nobody can answer.
+    local -a deny=()
+    while IFS= read -r p; do [ -n "$p" ] && deny+=("Edit(./$p)"); done < "$f/fence"
+    for g in commit push checkout switch stash reset rebase merge restore clean; do deny+=("Bash(git $g *)"); done
+    out=$(claude -p "$job
+
+You are a SIDE TASK running beside another agent that is working in this repository right now. Do only this job. Do not touch these files, they are the other agent's live edits: ${fence:-none}. Do not commit. When you are done, your final message must be exactly ONE line that starts with 'HANDOVER: ' and states what changed and the observable delta (for example 'HANDOVER: tests fixed; suite 118s -> 8s; re-read any test file you had open'). No reasoning, no summary, one line." \
+        --output-format json --permission-mode acceptEdits --max-turns 60 --session-id "$sid" \
+        --allowedTools 'Bash(*)' --disallowedTools "${deny[@]}" 2>&1)
+    rc=$?
+    if command -v jq >/dev/null 2>&1; then res=$(printf '%s' "$out" | jq -r '.result // empty' 2>/dev/null)
+    else res=$(printf '%s' "$out" | grep -o '"result":"[^"]*"' | head -1 | sed 's/^"result":"//; s/"$//'); fi
+    line=$(printf '%s\n' "$res" | grep '^HANDOVER: ' | tail -1)
+    [ -n "$line" ] || line="HANDOVER: side task finished without a handover line ($reason); re-check anything it may have touched"
+    handover_write "$sess" "$line"
+    if [ "$rc" -ne 0 ] || [ -z "$res" ]; then
+        printf '%s\n\nclaude exited %s — the other agent has been told the job did not finish cleanly.\n↵ to close\n' "$out" "$rc"
+        read -r _ 2>/dev/null
+        exit 1
+    fi
+    printf '%s\n' "$line"
+    exit 0
+}
+
+# --- liveness ------------------------------------------------------------------
+# The fixer is alive iff its record exists, no handover has been written, the
+# deadline has not passed, and its pane still exists (or is still "pending",
+# the milliseconds between the record and the split). No pid, no lock: a dead
+# process cannot leave a live pane. Mirrored in review-gate on purpose.
+fixer_alive() {               # <sess>
+    local f="$1/fixer" p dl
+    [ -d "$f" ] || return 1
+    [ -f "$1/handover" ] && return 1
+    dl=$(cat -- "$f/deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$(date +%s)" -lt "$dl" ] || return 1
+    p=$(cat -- "$f/pane" 2>/dev/null)
+    [ "$p" = pending ] && return 0
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$p"
+}
+
+# --- -p: the popup ---------------------------------------------------------------
+# Two lines from the human (the job; the command pattern to hold off, ↵ for
+# none), then: the fence, the RECORD (mkdir; a stale record is freed first --
+# what refuses a second spawn is the fixer_alive check above, not the mkdir),
+# the marker the gate stats, then the pane, spawned by the tmux SERVER
+# (split-window -d) so nothing about this popup's lifetime touches the fixer.
+spawn_fixer() {               # <main-pane>
+    local pane=$1 job guard sess f root dl fp marker
+    case "$pane" in %[0-9]*) ;; *) printf 'tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
+    sess=$("$REVIEW" --sess "$pane") || { tmux display-message "tmux-fixer: pane $pane is gone" 2>/dev/null; exit 1; }
+    f="$sess/fixer"
+    if fixer_alive "$sess"; then
+        tmux display-message "tmux-fixer: a side fix is already running for $pane: $(cat -- "$f/reason" 2>/dev/null) (pane $(cat -- "$f/pane" 2>/dev/null))" 2>/dev/null
+        exit 1
+    fi
+    if [ -t 0 ]; then
+        read -r -p 'side fix (one line, ↵ alone cancels): ' job
+        read -r -p 'hold off commands matching (ERE, ↵ for none): ' guard
+    else IFS= read -r job; IFS= read -r guard; fi
+    job=${job//[$'\001'-$'\037']/}; guard=${guard//[$'\001'-$'\037']/}
+    [ -n "$job" ] || exit 0
+    root=$(git -C "$(tmux display-message -p -t "$pane" '#{pane_current_path}')" rev-parse --show-toplevel 2>/dev/null) || {
+        tmux display-message "tmux-fixer: $pane is not in a git repo" 2>/dev/null; exit 1; }
+    dl=$(tmux show-option -gqv @cockpit_fixer_deadline); case "$dl" in ''|*[!0-9]*) dl=300 ;; esac
+    rm -rf -- "$f" "$sess/handover"            # a stale record and its unconsumed handover
+    (umask 077; mkdir -- "$f") 2>/dev/null || { tmux display-message "tmux-fixer: a side fix is already running for $pane" 2>/dev/null; exit 1; }
+    printf '%s\n' "$job" > "$f/reason"; printf '%s\n' "$guard" > "$f/guard"
+    printf '%s\n' $(( $(date +%s) + dl )) > "$f/deadline"; printf 'pending\n' > "$f/pane"
+    # ponytail: strips the outer C-quotes git wraps around a path with a
+    # space or other special char; an escape LEFT INSIDE (\t, \") stays
+    # literal for exotic names -- upgrade to a real unquoter if that bites.
+    git -C "$root" --no-optional-locks -c core.quotePath=false status --porcelain 2>/dev/null \
+        | sed 's/^...//; s/^.* -> //; s/^"//; s/"$//' > "$f/fence"
+    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
+    (umask 077; printf '%s\n' "$sess" > "$marker")
+    fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \
+        "$(shq "$SELF") --run $(shq "$pane") $(shq "$sess") $(shq "$job")") || {
+        rm -rf -- "$f" "$marker"; tmux display-message "tmux-fixer: could not open the fixer pane" 2>/dev/null; exit 1; }
+    printf '%s\n' "$fp" > "$f/pane"
+    tmux display-message "side fix running in $fp: $job — $pane is held at its next stop until it finishes${guard:+; commands matching /$guard/ are held off}" 2>/dev/null
+    exit 0
+}
+
+case "${1:-}" in
+    -p) shift; spawn_fixer "${1:-}" ;;
+    --run) shift; run_fixer "${1:-}" "${2:-}" "${@:3}" ;;
+    *) printf 'usage: tmux-fixer -p <pane> | --run <pane> <sess> <job…>\n' >&2; exit 2 ;;
+esac

@@ -246,7 +246,7 @@ Nothing here overturns the design. Three things sharpen it:
    transcript path directly instead of discovering it.
 
 Two genuine gaps, not filled by docs, worth a live smoke-test rather than more searching:
-- Whether `--output-format json` includes a final `result` text field.
+- Whether `--output-format json` includes a final `result` text field -- verified live 2026-08-26 (Claude Code 2.1.246), the side-fixer smoke report, scenario (d): the fixer's `.result` carried the `HANDOVER: ` line end to end.
 - Exact behavior of Esc pressed by the human while your Stop hook is mid-poll-hold (spinner customizable
   via `statusMessage`, but cancel-during-hook-execution semantics are undocumented).
 

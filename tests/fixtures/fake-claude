@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# A `claude` the suite can afford: honours -p and --output-format json, prints
+# one result document. Records argv so a test can assert the fence; sleeps so
+# a test can keep a fixer alive; exits FAKE_CLAUDE_RC so a test can fail one.
+set -u
+[ -n "${FAKE_CLAUDE_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGS"
+sleep "${FAKE_CLAUDE_SLEEP:-0}"
+res=${FAKE_CLAUDE_RESULT-HANDOVER: fixed the thing; suite 118s → 8s; re-read tests/}
+res=${res//\\/\\\\}; res=${res//\"/\\\"}
+printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","session_id":"fake-session"}\n' "$res"
+exit "${FAKE_CLAUDE_RC:-0}"

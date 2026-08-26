@@ -283,6 +283,17 @@ case "$IK" in
     *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
 esac
 
+# prefix f: a side fix beside a busy agent -- two lines, a fenced claude -p in
+# its own pane, the agent's suite command held off and its next Stop held
+# until one handover line. Stock f is find-window; @cockpit_fixer_key off keeps it.
+Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
+FK=$(tmux show-option -gqv @cockpit_fixer_key)
+case "$FK" in
+    off) ;;
+    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
+    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p '#{pane_id}'" ;;
+esac
+
 # Reload on R, the shifted pair of the review key: you review all day and
 # reload only after editing the config, so the lowercase key goes to review.
 # The paths come from what tmux actually loaded, resolved once at bind time:

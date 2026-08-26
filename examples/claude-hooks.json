@@ -26,8 +26,16 @@
     "",
     "Stop runs a second command, review-gate: it flags a finished pane whose",
     "diff is unreviewed (◆) and hands a queued review to the agent as Stop hook",
-    "feedback (additionalContext on stdout). Its own timeout is 5 s; it never",
-    "blocks a turn otherwise.",
+    "feedback (additionalContext on stdout). While a side fixer (prefix f) is",
+    "alive for this pane it also HOLDS here, then hands over a one-line",
+    "handover ahead of any queued review; its timeout is 330 s (above the",
+    "300 s default fixer deadline) to cover that hold, and it never blocks a",
+    "turn otherwise.",
+    "",
+    "PreToolUse also runs review-gate --pretool (matcher Bash): while a side",
+    "fixer (prefix f) is alive for this pane, it denies a command matching the",
+    "fixer's guard pattern so a stale run does not race the fix. One stat when",
+    "no fixer is running.",
     "",
     "WorktreeCreate -> worktree-create: claude --worktree <name> and EnterWorktree",
     "put the tree under ~/.cache/cockpit-wt/<name> (branch <name>) instead of",
@@ -71,7 +79,8 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state needs-input" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate --pretool", "timeout": 5 } ] }
     ],
     "PostToolUse": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
@@ -93,7 +102,7 @@
     ],
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 330, "statusMessage": "cockpit: review-gate (holding for a side fix if one is running)" } ] }
     ],
     "WorktreeCreate": [
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }

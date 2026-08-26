@@ -2767,7 +2767,7 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
-is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 5 s" "3 1 5" \
+is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 330 s" "3 1 330" \
    "$(jq -r '[(.hooks.Stop | length),
              ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
              ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add)] | join(" ")' \
@@ -2783,6 +2783,31 @@ HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a matcher-less twin does not duplicate" "2" \
    "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
 rm -rf "$HKN"
+# review-gate's own Stop entry is REPLACED on upgrade, not duplicated: seed a
+# settings.json holding the phase-3 shape (timeout 5, no hold) and assert the
+# merge leaves exactly one review-gate Stop entry, at the new timeout. A
+# second, FOREIGN entry that merely contains "/scripts/review-gate" as a
+# substring (not at the end of its command) must survive untouched -- the
+# drop clause is anchored, not a bare substring test.
+HKG=$(mktmpd); mkdir -p "$HKG/.claude"
+cat > "$HKG/.claude/settings.json" <<'EOF'
+{ "hooks": { "Stop": [
+    { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 5 } ] },
+    { "matcher": "", "hooks": [ { "type": "command", "command": "/usr/local/bin/mywrap --log /scripts/review-gate-audit.log" } ] }
+  ] } }
+EOF
+HOME="$HKG" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "an upgrade replaces the old review-gate Stop entry, not duplicates it" "1 330" \
+   "$(jq -r '[ ([.hooks.Stop[].hooks[] | select(.command | test("/scripts/review-gate$"))] | length),
+             ([.hooks.Stop[].hooks[] | select(.command | test("/scripts/review-gate$")) | .timeout] | add) ] | join(" ")' \
+       "$HKG/.claude/settings.json")"
+case "$(cat "$HKG/.claude/settings.json")" in
+    *'/usr/local/bin/mywrap --log /scripts/review-gate-audit.log'*)
+        ok "a foreign command merely containing the review-gate path survives (anchored, not substring)" ;;
+    *) bad "a foreign command merely containing the review-gate path survives (anchored, not substring)" \
+         "mywrap --log /scripts/review-gate-audit.log still present" "$(cat "$HKG/.claude/settings.json")" ;;
+esac
+rm -rf "$HKG"
 # dry-run: shows the diff, writes nothing
 HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
 out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
@@ -6724,12 +6749,22 @@ INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_review pending >/dev/null 2>&1
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_session sid-9 >/dev/null 2>&1
 "$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_title 'Fix the parser' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_hold 'fix the tests' >/dev/null 2>&1
 INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
 mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
+# tmux-fixer's own record shape (pane "pending" -- alive with no split yet).
+mkdir -p "$INSESS/fixer"; printf 'fix the tests\n' > "$INSESS/fixer/reason"; printf 'make test|pytest\n' > "$INSESS/fixer/guard"
+printf 'pending\n' > "$INSESS/fixer/pane"; printf '%s\n' $(( $(date +%s) + 300 )) > "$INSESS/fixer/deadline"
 inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
-for want in "pane      $INAP" "cwd       $INDIR" "root      $INDIR" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+for want in "pane      $INAP" "cwd       $INDIR" "root      $INDIR" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "hold      fix the tests" "1 pinned · 2 delivered"; do
     case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
 done
+case "$inout" in
+    *'side fix  fix the tests  pane pending (alive)  deadline in '*'s  guard /make test|pytest/'*)
+        ok "info shows the side fix: reason, pane, liveness, deadline, guard" ;;
+    *) bad "info shows the side fix: reason, pane, liveness, deadline, guard" \
+         "side fix  fix the tests  pane pending (alive)  deadline in Ns  guard /make test|pytest/" "$inout" ;;
+esac
 # The root is what the review diffs, and it is not the cwd: a pane parked in
 # a subdirectory (or, issue #3, a session that edits another tree by absolute
 # path) has to see the tree the popup will actually show.
@@ -7457,6 +7492,206 @@ printf 'a\nb\n' > "$GROOT/scripts/foo"
 (cd "$GROOT" && bash tests/green.sh check) >/dev/null 2>&1
 is "one changed byte: check misses" "1" "$?"
 is "changed lists exactly the file that moved" "scripts/foo" "$(cd "$GROOT" && bash tests/green.sh changed)"
+
+echo "== tmux-fixer --run: one HANDOVER line from claude -p's result, the fallback when it forgot, a failure that stays readable =="
+FX=$(mktmpd); FXSESS="$FX/sess"; mkdir -p "$FXSESS/fixer"; printf 'fix the tests\n' > "$FXSESS/fixer/reason"; : > "$FXSESS/fixer/fence"
+FXBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$FXBIN/claude"; FXARGS=$(mktmpf)
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_ARGS="$FXARGS" "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix the tests >/dev/null 2>&1 </dev/null
+is "a HANDOVER result exits 0" "0" "$?"
+is "the handover is that one line, verbatim" "HANDOVER: fixed the thing; suite 118s → 8s; re-read tests/" "$(cat "$FXSESS/handover" 2>/dev/null)"
+case "$(cat "$FXARGS")" in *"-p"*"--output-format"*"json"*"--permission-mode"*"acceptEdits"*"--session-id"*) ok "claude -p: headless, json, acceptEdits, a chosen session id" ;; *) bad "claude -p: headless, json, acceptEdits, a chosen session id" "-p … json … acceptEdits … --session-id" "$(cat "$FXARGS")" ;; esac
+case "$(cat "$FXARGS")" in *"HANDOVER: "*) ok "the prompt states the one-line contract" ;; *) bad "the prompt states the one-line contract" "HANDOVER: in the prompt" "$(tail -3 "$FXARGS")" ;; esac
+rm -f "$FXSESS/handover"
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RESULT='I did things, here is a long explanation' "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "no HANDOVER line: the fallback names the job" "HANDOVER: side task finished without a handover line (fix the tests); re-check anything it may have touched" "$(cat "$FXSESS/handover" 2>/dev/null)"
+rm -f "$FXSESS/handover"
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RESULT="HANDOVER: $(printf 'x%.0s' $(seq 1 400))" "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "a long handover is capped at 300 characters" "300" "$(awk '{ print length }' "$FXSESS/handover")"
+rm -f "$FXSESS/handover"
+# claude fails: the fallback handover is written FIRST (the hold opens on it), the wrapper exits 1 and waits for ↵ (stdin here is /dev/null, so it returns).
+PATH="$FXBIN:$PATH" FAKE_CLAUDE_RC=1 FAKE_CLAUDE_RESULT='' "$DIR/scripts/tmux-fixer" --run %99 "$FXSESS" fix >/dev/null 2>&1 </dev/null
+is "a failed claude exits 1" "1" "$?"
+case "$(cat "$FXSESS/handover" 2>/dev/null)" in HANDOVER:*"did not"*|HANDOVER:*"without a handover"*) ok "and still leaves a handover so nobody waits on it" ;; *) bad "and still leaves a handover so nobody waits on it" "a HANDOVER: fallback line" "$(cat "$FXSESS/handover" 2>/dev/null)" ;; esac
+rm -rf "$FX" "$FXBIN"
+
+echo "== tmux-fixer -p: one popup records the fixer, fences it, spawns its pane, refuses a second while it lives, frees a stale record =="
+if need_tmux "tmux-fixer -p"; then :; else
+SF="cockpit-sf-$$"; SOCKS="$SOCKS $SF"; SFSTATE=$(mktmpd); SFDIR=$(mktmpd); SFBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$SFBIN/claude"
+( cd "$SFDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > api.go; printf 'x\n' > clean.go; git add -A; git commit -q -m init
+  printf 'a\nEDITING\n' > api.go; printf 'new\n' > scratch.txt; printf 'y\n' > 'my file.go' ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$SFDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SF" set-environment -g PATH "$SFBIN:$PATH" >/dev/null 2>&1
+SFAP=$("$TMUX_REAL" -L "$SF" list-panes -t t: -F '#{pane_id}')
+SFSESS="$SFSTATE/tmux-cockpit/review/${SFAP#%}-$(printf '%s' "$SFDIR" | cksum | cut -d' ' -f1)"
+SFARGS=$(mktmpf)
+sf_spawn() {                  # <job> <guard> <extra-env: NAME=VALUE ...>  -> SRC= on stdout file $SFSTATE/out
+    # FAKE_CLAUDE_ARGS/_SLEEP have to reach the FIXER PANE, which split-window
+    # spawns from the tmux SERVER's environment plus this global one -- not
+    # from the shell run-shell happens to execute in. Set (or clear) them
+    # globally, the same way PATH already is above; XDG_STATE_HOME below stays
+    # inline because it is read by THIS run-shell process (spawn_fixer itself).
+    "$TMUX_REAL" -L "$SF" set-environment -gu FAKE_CLAUDE_ARGS >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SF" set-environment -gu FAKE_CLAUDE_SLEEP >/dev/null 2>&1
+    local kv
+    for kv in ${3:-}; do
+        "$TMUX_REAL" -L "$SF" set-environment -g "${kv%%=*}" "${kv#*=}" >/dev/null 2>&1
+    done
+    "$TMUX_REAL" -L "$SF" run-shell "cd $(printf '%q' "$SFDIR") && printf '%s\\n%s\\n' $(printf '%q' "$1") $(printf '%q' "$2") | XDG_STATE_HOME=$(printf '%q' "$SFSTATE") '$DIR/scripts/tmux-fixer' -p $SFAP; echo SRC=\$?" > "$SFSTATE/out" 2>&1
+}
+sf_spawn 'fix the tests' 'make test|pytest' "FAKE_CLAUDE_ARGS=$(printf '%q' "$SFARGS") FAKE_CLAUDE_SLEEP=3"
+case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "the spawn returns 0 at once" ;; *) bad "the spawn returns 0 at once" "SRC=0" "$(cat "$SFSTATE/out")" ;; esac
+is "the record holds the job" "fix the tests" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and the guard pattern" "make test|pytest" "$(cat "$SFSESS/fixer/guard" 2>/dev/null)"
+is "the fence is the main pane's dirty paths, tracked and untracked" "api.go
+my file.go
+scratch.txt" "$(sort "$SFSESS/fixer/fence" 2>/dev/null)"
+[ "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)" -gt "$(date +%s)" ] && ok "the deadline is in the future" || bad "the deadline is in the future" "> now" "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)"
+is "the gate's marker names the session dir" "$SFSESS" "$(cat "$SFSTATE/tmux-cockpit/review/fixer-${SFAP#%}" 2>/dev/null)"
+SFFP=$(cat "$SFSESS/fixer/pane" 2>/dev/null)
+case "$SFFP" in %[0-9]*) ok "the fixer pane id is recorded" ;; *) bad "the fixer pane id is recorded" "%N" "$SFFP" ;; esac
+is "the fixer pane runs in the repo root" "$SFDIR" "$("$TMUX_REAL" -L "$SF" display-message -p -t "$SFFP" '#{pane_current_path}' 2>/dev/null)"
+until_file "$SFARGS" '*--disallowedTools*'
+case "$(cat "$SFARGS")" in *"Edit(./api.go)"*"Edit(./scratch.txt)"*|*"Edit(./scratch.txt)"*"Edit(./api.go)"*) ok "both dirty paths are denied to Edit" ;; *) bad "both dirty paths are denied to Edit" "Edit(./api.go), Edit(./scratch.txt)" "$(cat "$SFARGS")" ;; esac
+case "$(cat "$SFARGS")" in *"Edit(./clean.go)"*) bad "a clean path is not fenced" "no Edit(./clean.go)" "$(cat "$SFARGS")" ;; *) ok "a clean path is not fenced" ;; esac
+case "$(cat "$SFARGS")" in *"Edit(./my file.go)"*) ok "a dirty path with a space is fenced unquoted, not C-quoted" ;; *) bad "a dirty path with a space is fenced unquoted, not C-quoted" "Edit(./my file.go)" "$(cat "$SFARGS")" ;; esac
+case "$(cat "$SFARGS")" in *"Bash(git commit *)"*"Bash(git push *)"*) ok "mutating git is denied" ;; *) bad "mutating git is denied" "Bash(git commit *) … Bash(git push *)" "$(cat "$SFARGS")" ;; esac
+sf_spawn 'another' '' ''
+case "$(cat "$SFSTATE/out")" in *SRC=1*) ok "a second spawn while the fixer lives refuses (exit 1)" ;; *) bad "a second spawn while the fixer lives refuses (exit 1)" "SRC=1" "$(cat "$SFSTATE/out")" ;; esac
+is "and the running job is untouched" "fix the tests" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and only one fixer pane exists" "2" "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)"
+# The fixer finishes: handover written, the pane closes itself.
+until_file "$SFSESS/handover" '*HANDOVER*' && ok "the handover is written when the fixer finishes" || bad "the handover is written when the fixer finishes" "HANDOVER line" "$(cat "$SFSESS/handover" 2>/dev/null)"
+for i in $(seq 1 40); do [ "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)" = 1 ] && break; sleep 0.1; done
+is "the fixer pane closes itself on success" "1" "$("$TMUX_REAL" -L "$SF" list-panes -a | wc -l)"
+# A stale record (handover present, pane gone) does not block the next spawn: it is freed and replaced.
+sf_spawn 'second job' '' "FAKE_CLAUDE_SLEEP=2"
+case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "a finished fixer's record does not block a new spawn" ;; *) bad "a finished fixer's record does not block a new spawn" "SRC=0" "$(cat "$SFSTATE/out")" ;; esac
+is "the new job replaced the old record" "second job" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
+is "and the old handover was not carried over" "absent" "$([ -e "$SFSESS/handover" ] && echo present || echo absent)"
+"$TMUX_REAL" -L "$SF" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$SF" list-keys -T prefix 2>/dev/null | awk '$4=="f"')" in *tmux-fixer*) ok "prefix f is bound to the side-fix popup" ;; *) bad "prefix f is bound to the side-fix popup" "display-popup … tmux-fixer" "$("$TMUX_REAL" -L "$SF" list-keys -T prefix | awk '$4=="f"')" ;; esac
+unset -f sf_spawn
+"$TMUX_REAL" -L "$SF" kill-server >/dev/null 2>&1; rm -rf "$SFBIN"
+fi
+
+echo "== review-gate --pretool: the guarded command is denied while the fixer lives, one stat when it does not =="
+if need_tmux "review-gate --pretool"; then :; else
+PG="cockpit-pg-$$"; SOCKS="$SOCKS $PG"; PGSTATE=$(mktmpd); PGDIR=$(mktmpd)
+( cd "$PGDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e; git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$PG" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$PGDIR" 'exec -a claude bash' >/dev/null 2>&1
+PGAP=$("$TMUX_REAL" -L "$PG" list-panes -t t: -F '#{pane_id}')
+PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300')       # a live "fixer" pane
+PGSESS="$PGSTATE/tmux-cockpit/review/${PGAP#%}-$(printf '%s' "$PGDIR" | cksum | cut -d' ' -f1)"
+mkdir -p "$PGSESS/fixer"; printf 'fix the tests\n' > "$PGSESS/fixer/reason"; printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
+printf '%s\n' $(( $(date +%s) + 300 )) > "$PGSESS/fixer/deadline"; printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
+pg_run() {                    # <command> [marker-present:1|0] -> stdout in $PGSTATE/out, rc in $PGSTATE/rc
+    printf '{"session_id":"s","transcript_path":"/x","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"%s","description":"d"}}\n' "$PGDIR" "$1" > "$PGSTATE/pay"
+    "$TMUX_REAL" -L "$PG" run-shell "TMUX_PANE=$PGAP XDG_STATE_HOME=$(printf '%q' "$PGSTATE") '$DIR/scripts/review-gate' --pretool < $(printf '%q' "$PGSTATE/pay") > $(printf '%q' "$PGSTATE/out"); echo \$? > $(printf '%q' "$PGSTATE/rc")" >/dev/null 2>&1
+}
+# No marker: exit 0, nothing printed, and it never touched tmux or git (PATH holds neither).
+printf '{"tool_input":{"command":"make test"}}\n' > "$PGSTATE/pay"
+pg_t0=$EPOCHREALTIME; PATH=/nonexistent TMUX_PANE=$PGAP XDG_STATE_HOME=$PGSTATE /bin/bash "$DIR/scripts/review-gate" --pretool < "$PGSTATE/pay" > "$PGSTATE/out" 2>/dev/null; pg_rc=$?
+is "no marker: exit 0" "0" "$pg_rc"; is "no marker: nothing printed" "" "$(cat "$PGSTATE/out")"
+awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN { exit !((b - a) < 0.2) }' && ok "no marker: one stat, under 200 ms with no tools on PATH" || bad "no marker: one stat, under 200 ms with no tools on PATH" "<0.2s" "$(awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN{print b-a}')s"
+# Marker + live fixer + matching command: deny with a reason that names the job and tells the agent to continue.
+printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"
+pg_run 'make test 2>&1 | tail'
+case "$(cat "$PGSTATE/out")" in *'"permissionDecision":"deny"'*'"permissionDecisionReason":"the side fix \"fix the tests\" is repairing this right now'*'continue with your task'*) ok "a guarded command is denied, the reason names the job and says continue" ;; *) bad "a guarded command is denied, the reason names the job and says continue" "deny JSON with the job and 'continue with your task'" "$(cat "$PGSTATE/out")" ;; esac
+is "and the hook exits 0 (the JSON is the decision)" "0" "$(cat "$PGSTATE/rc")"
+pg_run 'ls -la'
+is "an unguarded command passes" "" "$(cat "$PGSTATE/out")"
+printf '\n' > "$PGSESS/fixer/guard"; pg_run 'make test'
+is "an empty guard denies nothing" "" "$(cat "$PGSTATE/out")"
+printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
+# The fixer's pane dies: the gate opens at once, but the marker itself is left for delivery/re-spawn to own.
+"$TMUX_REAL" -L "$PG" kill-pane -t "$PGFX"
+pg_run 'make test'
+is "a dead fixer denies nothing" "" "$(cat "$PGSTATE/out")"
+is "and the marker stays until the Stop delivers it" "present" "$([ -e "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}" ] && echo present || echo absent)"
+# A handover present (failed fixer, pane kept open) also opens the gate.
+PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
+printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"; printf 'HANDOVER: gave up\n' > "$PGSESS/handover"
+pg_run 'make test'; is "a written handover opens the gate even with the pane alive" "" "$(cat "$PGSTATE/out")"
+unset -f pg_run
+"$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
+fi
+
+echo "== review-gate: holds at Stop while a side fix lives, resumes with one line, opens on a dead pane, a handover, or the deadline =="
+if need_tmux "review-gate hold"; then :; else
+RH="cockpit-rh-$$"; SOCKS="$SOCKS $RH"; RHSTATE=$(mktmpd); RHDIR=$(mktmpd)
+( cd "$RHDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e; git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RH" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RHDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RH" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RHAP=$("$TMUX_REAL" -L "$RH" list-panes -t t: -F '#{pane_id}')
+RHCTL=$("$TMUX_REAL" -L "$RH" split-window -t t -P -F '#{pane_id}' 'exec bash'); until_cap "$RH" "$RHCTL" '*$*'
+RHSESS="$RHSTATE/tmux-cockpit/review/${RHAP#%}-$(printf '%s' "$RHDIR" | cksum | cut -d' ' -f1)"; RHMARK="$RHSTATE/tmux-cockpit/review/fixer-${RHAP#%}"
+RHPAY=$(mktmpf); printf '{"session_id":"s","transcript_path":"/nonexistent","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RHDIR" > "$RHPAY"
+RHPAY2=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RHPAY" > "$RHPAY2"
+# -S -: the full scrollback, not just the visible screen -- six rh_run calls
+# of a long wrapped send-keys command overflow the split pane's own height,
+# and a visible-only capture can lose an OLD marker off the top for every NEW
+# one that scrolls in, so the count never climbs past n0 and rh_wait spins to
+# its ceiling on a command that actually finished at once.
+rh_n() { "$TMUX_REAL" -L "$RH" capture-pane -p -S - -J -t "$RHCTL" | grep -c 'HRC=[0-9]'; }
+rh_start() { "$TMUX_REAL" -L "$RH" send-keys -t "$RHCTL" "TMUX_PANE=$RHAP XDG_STATE_HOME=$(printf '%q' "$RHSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RHSTATE/out") 2>/dev/null; echo HRC=\$?" Enter; }
+rh_wait() { local i; for i in $(seq 1 100); do [ "$(rh_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1; }
+rh_run() { local n0; n0=$(rh_n); rh_start "$1"; rh_wait "$n0"; }
+rh_record() {                 # <fixer-pane-id> <deadline>  the record + marker as tmux-fixer -p writes them
+    mkdir -p "$RHSESS/fixer"; printf 'fix the tests\n' > "$RHSESS/fixer/reason"; : > "$RHSESS/fixer/guard"
+    printf '%s\n' "$2" > "$RHSESS/fixer/deadline"; printf '%s\n' "$1" > "$RHSESS/fixer/pane"; printf '%s\n' "$RHSESS" > "$RHMARK"
+}
+# 1. No fixer: as fast as before, no hold state.
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 3 ] && ok "no fixer: no added latency" || bad "no fixer: no added latency" "≤3s" "$(( SECONDS - rh_t0 ))s"
+is "no fixer: no hold state" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+# 2. A live fixer pane: hold, visible reason; a handover + the pane closing resumes it with that one line.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 ))
+n0=$(rh_n); rh_start "$RHPAY"
+for i in $(seq 1 40); do [ -n "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)" ] && break; sleep 0.1; done
+is "a held pane carries the reason" "fix the tests" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+sleep 2; is "and the hook is still holding after 2 s" "$n0" "$(rh_n)"
+printf 'HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\n' > "$RHSESS/handover"; "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+rh_wait "$n0" && ok "the hook returns within 4 s of the fixer finishing" || bad "the hook returns within 4 s of the fixer finishing" "HRC" "$("$TMUX_REAL" -L "$RH" capture-pane -p -t "$RHCTL" | tail -3)"
+case "$(cat "$RHSTATE/out")" in *'"hookSpecificOutput"'*'"additionalContext":"HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\nContinue with your task."'*) ok "the handover is the additionalContext: one line, then the continue line" ;; *) bad "the handover is the additionalContext: one line, then the continue line" "…additionalContext with the HANDOVER line…" "$(cat "$RHSTATE/out")" ;; esac
+is "the hold state is cleared" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+is "the handover is consumed" "absent" "$([ -e "$RHSESS/handover" ] && echo present || echo absent)"
+is "the record is cleared" "absent" "$([ -d "$RHSESS/fixer" ] && echo present || echo absent)"
+is "and the gate's marker with it" "absent" "$([ -e "$RHMARK" ] && echo present || echo absent)"
+rh_run "$RHPAY"; is "the next Stop hands over nothing (no replay)" "" "$(grep -o 'HANDOVER[^"]*' "$RHSTATE/out")"
+# 3. The fixer pane dies with no handover (kill -9 of the process closes the pane): proceed at once, warned.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 )); "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+# A leaked @cockpit_hold (the previous invocation was killed mid-poll -- the
+# hook's own 330s timeout, or ^C on the spinner -- before it reached its own
+# unset) must not survive forever: the record is still here, so this Stop
+# reaches the unset even though ITS OWN hold never starts (the pane is
+# already dead).
+"$TMUX_REAL" -L "$RH" set-option -p -t "$RHAP" @cockpit_hold 'stale: a previous run left this' >/dev/null 2>&1
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "a dead fixer pane does not hold" || bad "a dead fixer pane does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"
+case "$(cat "$RHSTATE/out")" in *'a side task (\"fix the tests\") was running and did not finish; earlier results may be stale.'*) ok "and the agent is warned" ;; *) bad "and the agent is warned" "the stale warning (JSON-escaped quotes)" "$(cat "$RHSTATE/out")" ;; esac
+is "a leaked @cockpit_hold from a killed prior run is cleared, not left forever" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+# 4. A stuck fixer (pane alive, deadline passed): proceed, warned.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) - 1 ))
+rh_t0=$SECONDS; rh_run "$RHPAY"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "an expired deadline does not hold" || bad "an expired deadline does not hold" "≤4s" "$(( SECONDS - rh_t0 ))s"
+case "$(cat "$RHSTATE/out")" in *'did not finish'*) ok "and warns" ;; *) bad "and warns" "the stale warning" "$(cat "$RHSTATE/out")" ;; esac
+"$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
+# 5. stop_hook_active: no hold even with a live fixer.
+RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); rh_record "$RHFX" $(( $(date +%s) + 300 ))
+rh_t0=$SECONDS; rh_run "$RHPAY2"; [ $(( SECONDS - rh_t0 )) -le 4 ] && ok "stop_hook_active true never holds" || bad "stop_hook_active true never holds" "≤4s" "$(( SECONDS - rh_t0 ))s"
+"$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"; rm -rf "$RHSESS/fixer" "$RHMARK"
+# 6. Ordering: a handover AND a queued review land in one payload, handover first.
+# The marker is the only way the Stop path finds sess (ruling B, no tmux-review
+# fallback), and a fixer that just finished has not been delivered yet -- its
+# marker is still on disk (only delivery removes it) -- so it is restored here.
+printf '%s\n' "$RHSESS" > "$RHMARK"
+printf 'HANDOVER: fixed\n' > "$RHSESS/handover"; printf 'Code review from the human\n\n## f:1 (+)\n> a\nREVIEW-MARKER\n\n' > "$RHSESS/spool.md"
+"$TMUX_REAL" -L "$RH" set-option -p -t "$RHAP" @cockpit_review_spool "$RHSESS/spool.md" >/dev/null 2>&1
+rh_run "$RHPAY"
+case "$(cat "$RHSTATE/out")" in *'HANDOVER: fixed'*'Continue with your task.'*'REVIEW-MARKER'*) ok "handover first, then the queued review, one payload" ;; *) bad "handover first, then the queued review, one payload" "HANDOVER … Continue … REVIEW-MARKER" "$(cat "$RHSTATE/out")" ;; esac
+is "the spool was drained too" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
+unset -f rh_n rh_start rh_wait rh_run rh_record
+"$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
+fi
 
 echo "== tmux-review fleet: ^x kills the window under the cursor, after a y/N =="
 if need_tmux "fleet ^x"; then :; else
