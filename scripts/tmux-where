@@ -75,9 +75,9 @@ case "$arg3" in
             # "... (deleted)". tmux retries with the tty's session leader when
             # the pgrp's cwd is unreadable (a pane parked in sudo); same here.
             for d in "$tp" "$sess"; do
-                if cd -P "/proc/$d/cwd" 2>/dev/null && [ "$PWD" != "/proc/$d/cwd" ]; then
-                    path=$PWD; break
-                fi
+                cd -P "/proc/$d/cwd" 2>/dev/null || continue   # unreadable: try the leader
+                [ "$PWD" != "/proc/$d/cwd" ] && path=$PWD      # deleted: leave it to tmux
+                break                                          # not the leader's cwd
             done
             if [ -n "$path" ]; then
                 IFS= read -r -d '' cmd 2>/dev/null < "/proc/$tp/cmdline"
