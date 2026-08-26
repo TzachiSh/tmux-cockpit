@@ -793,6 +793,39 @@ is "a normal pane still shows its path" " /tmp/x" \
    "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
 
+echo "== tmux-where: the pane_id form opens no command client =="
+# The #() job runs twice per status tick, and each display-message it made
+# landed in show-messages: 120 entries a minute, the 1000-entry log spanning
+# eight minutes, no click diagnosable after the fact (issue #24). The values
+# come from /proc now; the count of display-message entries must not move.
+if [ -d "/proc/$$" ]; then
+    WD=$(mktmpd)
+    tmux new-window -d -c "$WD" -n wherepane 'exec -a claude sleep 30'
+    WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
+    WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
+    before=$(tmux show-messages | grep -c 'display-message -p -t')
+    is "path comes from /proc"          " $WD" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
+    is "branch is empty outside a repo" ""     "$("$DIR/scripts/tmux-where" branch "$WPID" "$WP" | plain)"
+    after=$(tmux show-messages | grep -c 'display-message -p -t')
+    is "neither call reached tmux" "$before" "$after"
+    tmux kill-window -t wherepane
+    # argv[0] is what tmux reports as pane_current_command, so a process
+    # exec'd under the name ssh must still take the ssh walk (which then reads
+    # its first bare argument, 30, as the destination).
+    tmux new-window -d -n wherepane 'exec -a ssh sleep 30'
+    WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
+    WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
+    is "an ssh pane is recognised from /proc" " 󰢹 30" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
+    tmux kill-window -t wherepane
+    # A pane whose process is gone falls back to tmux: one call, not two.
+    before=$(tmux show-messages | grep -c 'display-message -p -t')
+    "$DIR/scripts/tmux-where" path 999999 "$PANE" >/dev/null
+    after=$(tmux show-messages | grep -c 'display-message -p -t')
+    is "a dead pid asks tmux once" "$((before + 1))" "$after"
+else
+    skip_ "tmux-where /proc read (no /proc)"
+fi
+
 
 echo "== tmux-open-path: which token on the line is a file =="
 # A scratch tree with the shapes real output prints. --dry-run resolves without

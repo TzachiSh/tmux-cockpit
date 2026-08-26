@@ -49,7 +49,8 @@ interpolate() {
     # Only #{pane_pid} and #{pane_id} go into this command string -- both are
     # closed forms (digits, or a % plus digits) that can never carry a shell
     # metacharacter, so tmux-where can fetch pane_current_path/_command itself
-    # from pane_id, as DATA off a second tmux call, never as text sh re-parses.
+    # (from /proc via pane_pid; one tmux call as the fallback) as DATA, never
+    # as text sh re-parses.
     # #{q:} looked like the fix (man tmux: "q: will escape sh(1) special
     # characters") and was tried first, but it escapes quotes/$()/backticks
     # and passes NEWLINE and TAB straight through -- a command separator and a
