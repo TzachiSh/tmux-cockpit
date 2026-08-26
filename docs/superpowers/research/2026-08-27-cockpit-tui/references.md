@@ -77,3 +77,31 @@ DO NOT:
 - README advertises `curl … | sh` while its install.sh does verify; `#![allow(dead_code)]` crate-wide in `theme.rs:4` against its own AGENTS.md.
 
 Verdict: reference only, plus two files and ~90 lines: `terminal_backend.rs` (the wide-glyph fix, with its byte-level tests), `color_depth.rs`'s `rgb_to_xterm256` and pure `detect_from_env`, and the helpers in DO g/h/i; read `install.sh:326-364` and `ci.yml:440-460` before writing the `.tmux` fetch. One measurement it forces: 256-indexed vs truecolor passthrough on the owner's terminal.
+
+## bottom (ClementTsang/bottom), the grid engine
+
+htop/gotop replacement. 13,941 stars, MIT, v0.14.8, 37,872 lines in one crate (no workspace), ratatui 0.30.2 default-features off, crossterm 0.29 (caret), edition 2024, rust-version 1.95; clap, anyhow, serde, itertools, indexmap, unicode-ellipsis, sysinfo. Its model is a TOML-configured tree of rows/cols/widgets; the board's is N uniform tiles, which is the whole verdict.
+
+DO (under 60 lines total):
+- The nested `Layout::split` walk, `canvas.rs:432-455`, with the load-bearing comment at `:427-431`: "layouts are already cached in ratatui, so we don't need to do it manually"; a grid may re-split every frame. For a uniform board: `Layout::horizontal(vec![Constraint::Fill(1); ncols])` then `vertical(... nrows)`.
+- `widget_block()`, `drawing_utils.rs:31-51`: the one place every widget gets its border, `(is_basic, is_selected, border_type, style) -> Block`; widen to idle / focused / needs-input.
+- Focus is one `if`: `canvas.rs:57-63` `get_border_style` → highlighted or plain, applied at `data_table/draw.rs:74-89`.
+- Non-fitting widget skipped: `canvas.rs:485` `if width >= 2 && height >= 2`; the inner-area guard `data_table/draw.rs:161-163`. Keep rule 32's refusal below 40 columns and add this `>= 2` per-tile check.
+- The tier ladder: `cpu_basic.rs:99-110` splits first, measures the resulting cell, then picks a label limit applied to every cell; the pattern for what a tile shows at 3/2/1 columns.
+- Expand-to-fullscreen is a bool plus a re-dispatch of the same draw fn (`app.rs:111, 1264-1285`, `canvas.rs:226-291`, Esc at `app.rs:287-291`, a right-aligned " Esc to go back " title at `data_table/draw.rs:128-132`); ~15 lines if tile zoom is ever wanted.
+- Two titles on one block: `block.title_top(left)` + `block.title_top(right.right_aligned())` (`data_table/draw.rs:87-95`); ratatui places both, no rail arithmetic.
+- Title degradation, not truncation: prepare long and short forms, pick by width (`data_table/draw.rs:118-125`).
+- `truncate_to_text` (`utils/strings.rs:8-10`) wraps `unicode_ellipsis::truncate_str`, width-aware; the sixth-dependency question rule 31 implies (take the crate, or hand-roll and property-test).
+- Default palette is the 16 ANSI names (`themes/default.rs:11-21`); RGB appears only when a user writes hex; the zero-line 16-colour fallback when a role is unset.
+
+DO NOT:
+- Precompute a neighbour graph: `layout_manager.rs:40-553`, 514 lines of `BTreeMap<LineSegment, …>` geometry for an arbitrary user tree; a uniform grid is `idx ± 1`, `idx ± ncols`, clamped, under 15 lines.
+- Model focus as a state machine: `move_widget_selection_logic` `app.rs:1295-1639` (345 lines) plus expanded-movement handlers (66 more).
+- Build the row/col/ratio config (`options/config/layout.rs`, 2,620 lines across options/args/config); cockpit derives ncols from width. Copy nothing from its CLI/config layer.
+- `canvas_handled()` hiding widgets with `Constraint::Length(0)` and skipping through them in the movement code.
+- Mouse bookkeeping (`top_left_corner`/`bottom_right_corner`, the reset loop `canvas.rs:114-128`, the off-by-one hack noted at `widget_carousel.rs:130-141`).
+- Treat `--basic` as the narrow layout: an opt-in flag, a separate hand-written branch with per-platform `#[cfg]` arithmetic (`canvas.rs:293-424`), expand disabled, its own 155-line layout constructor. bottom has no responsive layout; the 3/2/1-by-width board is not in it.
+- Its focus keys as-is: uppercase H/L/K/J because lowercase scrolls inside the widget; Tab is a per-widget action. The precedent: the moment a tile scrolls, focus keys must move.
+- Expect rendering tests: `grep TestBackend` is empty; `tests/integration/layout_movement_tests.rs` is nine lines of commented TODOs; layout tests assert `children[0].children[0].down_neighbour == Some(3)`. No `NO_COLOR` handling anywhere.
+
+Verdict: reference, narrow. Five small things (~60 lines) cover the board's grid, borders, focus and tiers; tile zoom is ~15 more; the other ~1,400 lines serve nesting the board does not have.
