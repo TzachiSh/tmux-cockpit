@@ -45,6 +45,11 @@ shq() { printf '%q' "$1"; }
 # to comment on it. A row-shaped notice, not a special case in every reader.
 CAP_SENTINEL='(diff too large)'
 
+# How a pane names itself, for the fleet queue and the ^S confirm alike; the
+# fallback convention (and why #{host_short} reads as "unset") is the note
+# above fleet_rows, examples/tmux.conf:42.
+AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'
+
 # `git -C <dir> diff` always emits paths relative to the repo ROOT, no matter
 # how deep <dir> sits inside the tree -- but <dir> is the pane's own cwd, so
 # from an agent working in a subdirectory those root-relative paths do not
@@ -910,7 +915,7 @@ editor_cmd() {
 # title (claude sets it) or the window name does, with the id kept for prefix i.
 pane_label() {                # <pane-id>
     local t
-    t=$(tmux display-message -p -t "$1" '#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}' 2>/dev/null)
+    t=$(tmux display-message -p -t "$1" "$AGENT_TITLE_FMT" 2>/dev/null)
     printf '%s\n' "${t:+$t }($1)"
 }
 
@@ -1510,7 +1515,7 @@ fleet_rows() {
     fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
     # Same sentinel, same reason: @cockpit_review is unset on most panes.
     fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'$'\t'
-    fmt="${fmt}"'#{session_name}:#{window_index} #{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'$'\t'
+    fmt="${fmt}"'#{session_name}:#{window_index} '"$AGENT_TITLE_FMT"$'\t'
     fmt="${fmt}"'#{pane_current_path}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
     [ -n "$raw" ] || return 0
