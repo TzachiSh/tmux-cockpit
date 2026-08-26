@@ -140,7 +140,72 @@ fn glyph(state: &str) -> (&'static str, Color) {
 fn fmt_dur(d: Duration) -> String { let s = d.as_secs(); if s >= 3600 { format!("{}h{}m", s / 3600, s % 3600 / 60) } else if s >= 60 { format!("{}m{}s", s / 60, s % 60) } else { format!("{s}s") } }
 fn trunc(s: &str, n: usize) -> String { let c: Vec<char> = s.chars().collect(); if c.len() <= n { s.into() } else { c[..n.saturating_sub(1)].iter().collect::<String>() + "…" } }
 
+fn board() {
+    let mut term = ratatui::init();
+    let (mut panes, mut cur, mut pvs, mut took) = (Vec::<Pane>::new(), 0usize, Vec::<String>::new(), Duration::ZERO);
+    let mut last = Instant::now() - Duration::from_secs(2);
+    let mut jump = None;
+    loop {
+        let size = term.size().unwrap_or_default();
+        let cols = if size.width >= 160 { 3 } else if size.width >= 100 { 2 } else { 1 };
+        if last.elapsed() >= Duration::from_secs(1) {
+            let t0 = Instant::now();
+            panes = list_panes();
+            if cur >= panes.len() { cur = panes.len().saturating_sub(1); }
+            let rows = (panes.len() + cols - 1) / cols.max(1);
+            let tile_h = (size.height as usize).saturating_sub(2) / rows.max(1);
+            pvs = panes.iter().map(|p| preview(&p.id, tile_h.saturating_sub(4).max(2))).collect();
+            took = t0.elapsed(); last = Instant::now();
+            log(&format!("board {}x{} tiles {} cols {} took {:?}", size.width, size.height, panes.len(), cols, took));
+        }
+        let _ = term.draw(|f| {
+            let area = f.area();
+            let [top, grid] = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(area);
+            f.render_widget(Paragraph::new(format!(" board · {} agents · tick {:?} · ⇥ next · ↵ jump · q close", panes.len(), took)), top);
+            let rows = (panes.len() + cols - 1) / cols.max(1);
+            let row_areas = Layout::vertical(vec![Constraint::Ratio(1, rows.max(1) as u32); rows.max(1)]).split(grid);
+            for (i, p) in panes.iter().enumerate() {
+                let r = i / cols; let c = i % cols;
+                let cells = Layout::horizontal(vec![Constraint::Ratio(1, cols as u32); cols]).split(row_areas[r]);
+                let cell = cells[c];
+                let (g, colr) = glyph(&p.state);
+                let title = if p.title.is_empty() { &p.name } else { &p.title };
+                let age = match (p.since, p.state.as_str()) { (Some(d), "running") => fmt_dur(d), _ => String::new() };
+                let mut block = Block::default().borders(Borders::ALL)
+                    .title(Line::from(vec![Span::raw(" "), Span::styled(g, Style::default().fg(colr)), Span::raw(format!(" {} · {} ", p.wher, trunc(title, 30)))]))
+                    .border_style(Style::default().fg(if i == cur { Color::Magenta } else if p.state == "needs-input" { Color::Red } else { Color::DarkGray }));
+                if p.state == "needs-input" { block = block.title_bottom(Line::from(Span::styled(format!(" needs you: {} ", trunc(&p.msg, cell.width as usize - 16)), Style::default().fg(Color::Red)))); }
+                let inner = block.inner(cell);
+                f.render_widget(block, cell);
+                let doing = if p.state == "needs-input" { format!("needs you: {}", p.msg) } else { p.doing.clone() };
+                let [hd, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).areas(inner);
+                let head = vec![
+                    Line::from(vec![Span::styled(trunc(&doing, inner.width as usize - 8), Style::default().fg(if p.state == "needs-input" { Color::Red } else { Color::Reset })), Span::styled(format!("  {age}"), Style::default().fg(Color::DarkGray))]),
+                    Line::from(Span::styled(trunc(&p.said, inner.width as usize), Style::default().fg(Color::DarkGray))),
+                ];
+                f.render_widget(Paragraph::new(head), hd);
+                let text = pvs.get(i).map(|s| s.as_bytes().into_text().unwrap_or_default()).unwrap_or_default();
+                f.render_widget(Paragraph::new(text), body);
+            }
+        });
+        if event::poll(Duration::from_millis(200)).unwrap_or(false) {
+            if let Ok(Event::Key(k)) = event::read() {
+                match k.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Tab | KeyCode::Char('l') | KeyCode::Right => { if !panes.is_empty() { cur = (cur + 1) % panes.len(); } }
+                    KeyCode::BackTab | KeyCode::Char('h') | KeyCode::Left => { if !panes.is_empty() { cur = (cur + panes.len() - 1) % panes.len(); } }
+                    KeyCode::Enter => { jump = panes.get(cur).map(|p| p.id.clone()); break; }
+                    _ => {}
+                }
+            }
+        }
+    }
+    ratatui::restore();
+    if let Some(id) = jump { tmux(&["switch-client", "-t", &id]); }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--board") { board(); return; }
     if std::env::args().nth(1).as_deref() == Some("--rows") {
         for p in list_panes() {
             println!("{}\t{}\t{}\t{}\t{}\t{}\t{}", glyph(&p.state).0, p.id, p.wher, p.title, p.doing, p.since.map(fmt_dur).unwrap_or_default(), p.said);
