@@ -19,6 +19,8 @@
 #   prefix + b            the same picker, without the mouse
 #   C-DoubleClick1Pane    path picker for the clicked line (also M-MouseDown1Pane
 #                         where the terminal forwards Alt+click)
+#   prefix + i            what the pane is, waits on and holds -- state, review,
+#                         base, session id, review dir
 set -u
 
 # -P so DIR is resolved, and a hard exit if it fails: with `set -u` and no -e a
@@ -266,6 +268,17 @@ case "$RK" in
     off) ;;                          # explicitly disabled
     "")  tmux bind-key r "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
     *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$Q_REVIEW -p '#{pane_id}'" ;;
+esac
+
+# prefix i: what this pane is, waits on, and holds -- state, review, base,
+# session id, review dir. Replaces stock i (window info) because it IS the
+# window info you want on an agent pane; @cockpit_info_key rebinds, off keeps
+# stock. `read` is POSIX, so the popup's sh can wait for ↵ itself.
+IK=$(tmux show-option -gqv @cockpit_info_key)
+case "$IK" in
+    off) ;;
+    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
+    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p '#{pane_id}' --info; read -r _" ;;
 esac
 
 # Reload on R, the shifted pair of the review key: you review all day and

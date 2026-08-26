@@ -6042,6 +6042,41 @@ esac
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --info / prefix i: one screen says what the pane is, waits on, and holds =="
+if need_tmux "tmux-review --info"; then :; else
+IN="cockpit-in-$$"; SOCKS="$SOCKS $IN"; INSTATE=$(mktmpd); INDIR=$(mktmpd)
+( cd "$INDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$INDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate_msg 'run make?' >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_review pending >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_session sid-9 >/dev/null 2>&1
+"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_title 'Fix the parser' >/dev/null 2>&1
+INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
+mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
+inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
+for want in "pane      $INAP" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
+    case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
+done
+# display-message exits 0 on a pane id that does not exist, expanding every
+# format to "" -- so a screen built on the exit code described the CALLER's own
+# repo (git_root "") as if it were that pane's.
+inbad=$("$TMUX_REAL" -L "$IN" run-shell "'$DIR/scripts/tmux-review' -p %999 --info 2>&1" 2>&1)
+case "$inbad" in
+    *"no such pane %999"*) ok "a pane that does not exist is named, not described" ;;
+    *) bad "a pane that does not exist is named, not described" "no such pane %999" "$inbad" ;;
+esac
+"$TMUX_REAL" -L "$IN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$IN" list-keys -T prefix 2>/dev/null | awk '$4=="i"')" in
+    *tmux-review*--info*) ok "prefix i is bound to the info popup" ;;
+    *) bad "prefix i is bound to the info popup" "a display-popup running tmux-review --info" "$("$TMUX_REAL" -L "$IN" list-keys -T prefix | awk '$4=="i"')" ;;
+esac
+"$TMUX_REAL" -L "$IN" kill-server >/dev/null 2>&1
+fi
+
 echo "== prefix R sources every config file tmux loaded, not just the first =="
 # -f /dev/null above is single-entry #{config_files} -- it never exercised the
 # bug. A start with no -f is multi-entry (tmux tries /etc/tmux.conf, ~/.tmux.conf

@@ -80,6 +80,7 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
+  tmux-review -p <pane> --info          one screen: state, review, base, session, review dir (prefix i)
 In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
@@ -1773,6 +1774,51 @@ request() {                   # <pane>
     esac
 }
 
+# --- --info: one screen for prefix i -------------------------------------------
+# What the plugin knows about one pane, in the order you ask it: who, what it
+# waits on, the review state, the base, the session, the review dir. Read in
+# ONE display-message, split on a US byte (agent-state's idiom -- tab would
+# collapse the empty fields that mean "unset").
+info_mode() {                 # <pane>
+    local pane=$1 sep=$'\037' f id where cmd path state msg review spool sid title root sess b n1 n2
+    f=$(tmux display-message -p -t "$pane" \
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}' 2>/dev/null)
+    id=${f%%"$sep"*};     f=${f#*"$sep"}
+    # display-message does NOT fail on a pane id that does not exist -- it
+    # expands every format to the empty string and exits 0 (measured on 3.7c),
+    # and without this the screen below described the CALLER's own cwd
+    # (git_root "" is the caller's repo) as if it were that pane's. The
+    # resolved id, not the exit code, is what says the pane was found.
+    [ -n "$id" ] || { printf 'tmux-review: no such pane %s\n' "$pane" >&2; return 1; }
+    where=${f%%"$sep"*};  f=${f#*"$sep"}
+    cmd=${f%%"$sep"*};    f=${f#*"$sep"}
+    path=${f%%"$sep"*};   f=${f#*"$sep"}
+    state=${f%%"$sep"*};  f=${f#*"$sep"}
+    msg=${f%%"$sep"*};    f=${f#*"$sep"}
+    review=${f%%"$sep"*}; f=${f#*"$sep"}
+    spool=${f%%"$sep"*};  f=${f#*"$sep"}
+    sid=${f%%"$sep"*};    title=${f#*"$sep"}
+    printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
+    printf 'cwd       %s\n' "$path"
+    printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
+    printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
+    root=$(git_root "$path"); sess=$(session_dir "$id" "$root")
+    if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        # The mode ^B chose for THIS review, as run_loop reads it -- passed as
+        # the argument review_base actually keys on, not exported (nothing this
+        # function calls reads COCKPIT_REVIEW_BASE from the environment).
+        b=$(review_base "$root" "$(cat -- "$sess/comments.md.base" 2>/dev/null)")
+        printf 'base      %s  (%s)\n' "$(cut -f2 <<<"$b")" "$(cut -f1 <<<"$b")"
+    fi
+    printf 'session   %s\n' "${sid:-—}"
+    printf 'title     %s\n' "${title:-—}"
+    if [ -d "$sess" ]; then
+        n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
+        printf 'review dir %s\n           %s pinned · %s delivered · ^A removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
+    fi
+    printf '\n↵ to close\n'
+}
+
 # Pad one field to a fixed COLUMN width. bash's printf pads %-*s by BYTES,
 # while ${#s} counts characters -- so a field holding ⑂ or — (3 bytes each)
 # came out short and dragged every column to its right with it. Measuring the
@@ -1973,6 +2019,8 @@ case "${1:-}" in
         shift; delta_mode "${1:-}" ;;
     --request)
         shift; request "${1:-}" ;;
+    --info)
+        info_mode "${REVIEW_PANE_ID:-}" ;;
     -h|--help)
         usage; exit 0 ;;
     "")

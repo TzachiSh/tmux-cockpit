@@ -108,7 +108,7 @@ pulling your option in with `#{E:}` does not change that.
 | --- | --- |
 | `#{agent_where_path}` | `~/path` locally, the ssh destination when remote |
 | `#{agent_where_branch}` | the git branch locally, blank when remote |
-| `#{agent_fleet}` | `▲N` blocked and `✕N` errored agents, every session |
+| `#{agent_fleet}` | `▲N` blocked, `✕N` errored and `◆N` finished-but-unreviewed agents, every session |
 
 `#{agent_fleet}` is the one alert that is not tied to what you can see: window
 dots and borders only speak for the session in front of you, so a *detached*
@@ -257,6 +257,7 @@ the pane is idle.
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
+| `prefix + i` | one screen for the pane you are on: state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
@@ -523,6 +524,14 @@ yet (the `Stop` gate flagged it), `↵` a review already pasted into that pane
 and not yet sent. Without them the queue keeps sending you back to a pane you
 have already been through.
 
+`◆` is written by `review-gate`, the second `Stop` hook, at the turn boundary
+where the agent finishes: it sets `@cockpit_review = pending` when the pane's
+tree still differs from its review base. The mark clears when the agent starts
+working again, when that diff goes empty at a later `Stop`, or when you approve
+with `^A`. The same step recounts `◆N` in `#{agent_fleet}`, so the status bar
+tells you how many finished agents nobody has read across every session,
+attached or not. Nothing polls, and a redraw still runs no shell.
+
 `tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
 to drive the same list from a script.
 
@@ -553,8 +562,10 @@ comment, so the keys that would collide with typing it move elsewhere:
 | `^X` | — | delete the comment(s) on the row under the cursor |
 | `^L` | — | show every pinned comment in the terminal |
 | `^E` | — | open `$EDITOR` on the typed text; the file is the comment (multi-line) |
-| `^S` | — | deliver the whole batch |
-| `esc` | cancel | discard the batch — asks first when comments are pinned |
+| `^B` | — | cycle the base the diff is taken against |
+| `^A` | — | approve what you just read (only with nothing pinned) |
+| `^S` | — | deliver the whole batch; asks first |
+| `esc` | cancel | leave — the batch stays pinned (asks first) |
 
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
@@ -567,9 +578,14 @@ everything and saving is the cancel. The popup's children see the tmux
 in place and marks the row `●` (the digit instead, when more than one
 comment sits there), so five comments cost one popup, not five — the same
 `execute-silent(...)+reload(...)` shape `tm`'s kill picker already uses.
-`^S` delivers the whole batch; `esc` discards it — and with comments
-pinned it asks first (`keep reviewing` / `discard N comment(s)`), because
-one reflexive escape should not throw away a twenty-comment review.
+`^S` delivers the whole batch, and asks first: it names the count and the
+target pane, and offers the batch to `$EDITOR` as text before it goes
+(`deliver N comment(s) to %7` / `edit the batch in $EDITOR first` /
+`keep reviewing`). `esc` asks the same way once anything is pinned
+(`leave — N comment(s) stay pinned` / `keep reviewing` / `discard N
+comment(s)`), because one reflexive escape should not throw away a
+twenty-comment review. `leave` keeps them on disk: `prefix + r` on that pane
+picks the review up where you left it.
 **`↵` pins a comment — it never approves.** With nothing typed it does
 nothing: there is no accept-all key on purpose, a review whose only exit is
 one Enter on the whole diff is the rubber stamp this replaces.
@@ -580,6 +596,34 @@ want its newest lines, `^R` takes a fresh snapshot on purpose and names the
 comments that no longer sit on a changed line — they still deliver, because
 the quoted fragment is what the agent finds them by. A resumed review says the
 same thing on open: `resumed 5 pinned comment(s), 2 no longer anchor`.
+
+**`^B` picks what the diff is taken against.** The base is the first of three
+that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
+this branch was approved (only what moved since), the merge-base with the
+upstream when that is not `HEAD` itself (the branch plus its uncommitted work),
+else `HEAD` (today's uncommitted view). An agent that commits as it goes stays
+in the queue that way instead of dropping out of it the moment it commits. `^B`
+cycles the bases that hold, the picker's header names the one in force
+(`base: since last review`), and the choice is remembered beside the comments,
+so a resumed review reads the same diff it did before.
+
+**`^A` approves what you just read.** It writes that tree, untracked files
+included, to `refs/cockpit/reviewed/<branch>` and removes the review directory.
+The next review of the branch diffs against it, so it shows only what the agent
+changed after you looked. With comments pinned `^A` refuses and says to deliver
+or discard them first: approving a batch nobody sent would throw it away.
+
+That ref outlives the branch. `git branch -D` and `git worktree remove` both
+leave it standing, so a branch deleted and recreated under the same name
+inherits the old checkpoint. Nothing collects them; the purge is:
+
+```sh
+git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
+```
+
+**`↺` marks a row you commented on in an earlier round** of the same review:
+delivered already, with nothing pinned on it now. It reads "you said this last
+time and the line is still here", which a fresh diff on its own cannot tell you.
 
 A comment lands as:
 
@@ -611,16 +655,42 @@ still reachable by a keypress instead of by memory. The mark clears the
 moment the agent starts working again — pressing Enter is what fires the
 `running` hook — so it never outlives the thing it describes.
 
-Delivery can also be **refused** — the target is on a permission prompt, is
-not an agent pane, or is not a pane id at all. A refusal keeps the batch: the
-comment store is left on disk, and the message names it along with the
-`--deliver <pane> <store>` that re-sends it — spelled with the script's own
-resolved path, not a bare `tmux-review`, so it pastes back even from a
-plugin-only install where nothing is on `$PATH` yet. Every refusal you can see
-keeps the store. One window does not: the paste is gated a second time inside
-tmux, and if the pane stops being an idle agent between the shell guard and
-that gate, nothing is pasted but the store is still deleted. It is a few
-milliseconds wide and closes when the delete moves inside the gate itself.
+**A delivery into a busy pane is queued, not refused.** When the target is
+running or sitting on a permission prompt, nothing is pasted: the composed
+review is written beside the comment store and the pane is armed with
+`@cockpit_review_spool`. `review-gate` hands that text to the agent at its next
+turn end as `hookSpecificOutput.additionalContext` on stdout, which the
+transcript shows as Stop hook feedback rather than a hook error, and the spool
+is disarmed before the hook speaks, so a queued review is handed over once and
+never repeated. It costs no keystrokes: no paste, no Enter, no focus change,
+and the turn boundary is the hook itself.
+
+That drain is the hook's job and nothing else does it. Without `review-gate`
+installed (`install.sh --hooks`), a delivery into a busy pane still archives
+the batch to `delivered.md` and still writes the spool, but nothing ever reads
+it; install the hook, or deliver again once the pane is idle.
+
+A `Stop` hook does not fire on a user interrupt (Esc). A review queued for an
+agent you interrupted therefore lands at its next turn end instead, or
+`prefix + r` pastes it now that the pane is idle.
+
+A second review delivered to the same pane before the agent stops replaces the
+queued one: the spool is a single file, so the agent is handed the newer batch.
+Both are in `delivered.md`. `^A` on a later round removes the review directory,
+a still-queued spool with it.
+
+Delivery can still be **refused**: the target is not an agent pane, or is not a
+pane id at all. A busy one is not a refusal, it is the queue above. A refusal
+keeps the batch: the comment store is left on disk, and the message names it
+along with the `--deliver <pane> <store>` that re-sends it — spelled with the
+script's own resolved path, not a bare `tmux-review`, so it pastes back even
+from a plugin-only install where nothing is on `$PATH` yet.
+
+The paste is gated a second time inside tmux, in the same command-queue item,
+because the shell's own check is a ~50 ms-stale snapshot: a pane that stops
+being an idle agent inside that window takes the queued arm rather than the
+paste. A pane that is gone by then takes neither arm, and the store is kept
+for the by-hand re-delivery.
 
 What this deliberately does **not** do, and why:
 
@@ -635,12 +705,16 @@ What this deliberately does **not** do, and why:
 - **No review daemon, server, or port.** What *does* outlive the popup is
   one directory per review under
   `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/review/<pane>-<root>/`,
-  created `0700`, holding `comments.md` and its row snapshot. It exists so a
+  created `0700`, holding `comments.md`, its row snapshot, the base `^B` chose,
+  the batches already delivered and any queued spool. It exists so a
   dropped SSH client — which tears down a client-owned popup — cannot take a
   twenty-comment review with it: `prefix + r` on the same pane resumes it,
-  marks and all. It is removed when the review is discarded or delivered and
-  kept, and named in the message, when delivery is refused. There is no
-  garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
+  marks and all. It lives until `^A` approves the review or you discard it; a
+  delivered batch leaves `delivered.md` standing in it, which is what the next
+  round's `↺` marks read, and a refused delivery keeps the store and names it
+  in the message. `prefix + i` prints the directory for the pane you are on.
+  There is no garbage collector; `rm -rf ~/.local/state/tmux-cockpit/review`
+  is the purge.
   The spillover file an oversized review lands in is the delivery vehicle,
   not a store — the OS tmpdir is the only garbage collector it gets, the
   same as everything else this plugin writes.
@@ -665,6 +739,26 @@ What this deliberately does **not** do, and why:
 `tmux-review --request` from the agent's own pane: one popup, the same
 loop, and the batch comes back as the tool's result (exit 10) instead of a
 paste — revdiff's contract. `^A` there approves as anywhere else.
+
+You can also leave a requested review for later: `esc → leave` keeps the
+comments pinned and `--request` returns 0, so the agent carries on with nothing
+in hand. Running `/cockpit-review` again resumes exactly those comments.
+
+### Review options
+
+The options the review and its keys read, with their defaults, in one block.
+None of them has to be set; as with the rest, set them before the `run-shell`
+line.
+
+```sh
+set -g @cockpit_review_key     r       # off restores stock refresh-client
+set -g @cockpit_review_window  off     # on: a window instead of the popup
+set -g @cockpit_info_key       i       # off restores stock window info
+set -g @cockpit_jump_key       J
+set -g @cockpit_popup_width    70%
+set -g @cockpit_popup_height   70%
+set -g @cockpit_fleet_fzf_options ""
+```
 
 ## tm — session launcher
 
@@ -797,6 +891,14 @@ actually running one:
 
 Other projects solve this by polling the process tree from a background daemon.
 tmux already knows the foreground command, so this costs nothing.
+
+The review state is per-pane for the same reason. `@cockpit_review`
+(`pending` or `sent`), `@cockpit_review_spool`, `@cockpit_title` and
+`@cockpit_session` are all pane options, so a killed pane takes them with it
+and no `◆` can outlive the agent it counted. An agent that merely exits leaves
+its pane behind, so the `SessionEnd` hook clears the two review ones itself:
+a queued review nobody can drain, or a pending mark on a pane with no agent in
+it, would otherwise keep counting toward `◆N` forever.
 
 ## Deliberately unwired
 
