@@ -105,3 +105,60 @@ DO NOT:
 - Expect rendering tests: `grep TestBackend` is empty; `tests/integration/layout_movement_tests.rs` is nine lines of commented TODOs; layout tests assert `children[0].children[0].down_neighbour == Some(3)`. No `NO_COLOR` handling anywhere.
 
 Verdict: reference, narrow. Five small things (~60 lines) cover the board's grid, borders, focus and tiers; tile zoom is ~15 more; the other ~1,400 lines serve nesting the board does not have.
+
+## gitui (gitui-org/gitui)
+
+MIT, 48,516 lines in a 6-crate workspace (src/popups 10,610; asyncgit 3,032), 33 direct deps, ratatui 0.30 / crossterm 0.29 / rustc 1.88; 31 popups and 5 tabs wired into two hand-maintained lists. Good for two or three small files and two patterns, bad for architecture.
+
+DO:
+- `centered_rect_absolute` (`src/ui/mod.rs:113-124`, 12 lines) and `rect_inside(min, max, r)` (`:89-111`, tests `:156-221`), the clamp rule 32 needs.
+- The overlay idiom: `render_widget(Clear, area)` right before the bordered block, every time (`msg.rs:87`, `confirm.rs:39`, `help.rs:44`, `goto_line.rs:159`); message-box auto-width: longest line + 2, clamped to [60, frame width] (`msg.rs:41-56`).
+- Model the reply line on `popups/goto_line.rs` (167 lines: a `String`, push/pop, Esc clears, Enter emits, drawn as a `Paragraph` in a bordered block into a centred rect), not `textinput.rs`; paint the cursor as a reversed cell, gitui hides the real cursor globally (`main.rs:345`) and never calls `set_cursor`.
+- Key hints built from the binding table at call time: `format!("Help [{}]", key_config.get_hint(keys.open_help))` (`strings.rs:603-612`, `keys/key_config.rs:76-119`); for cockpit a `const KEYS` rendered by both `?` and the footer.
+- `command_pump` stops at the first `CommandBlocking::Blocking` so an open overlay's key list replaces the board's (`components/mod.rs:158-170, 202-210`).
+- Semantic theme accessors: 21 colour fields, no call site names one (`ui/style.rs:46-109`); keep `@thm_*` roles behind the same shape so the RGB-vs-256 choice lives in one function.
+- `Queue` (`src/queue.rs:169-193`, 25 lines): `Rc<RefCell<VecDeque>>`, drained after every event with `NeedsUpdate` bitflags; single-threaded, no `&mut` threaded through draw.
+- Its default key symbols are the Ambiguous-width set (`keys/symbols.rs:28-51`) with a whole override file; cockpit needs the table, not the file.
+
+DO NOT:
+- ratatui-textarea: `textinput.rs` is 890 lines wrapping the crate, 353 of them remapping crossterm to readline verbs (`:262-615`) plus a shift-selection machine and a OnceCell dance.
+- The Component / DrawableComponent / CommandInfo framework: the popup list is written twice by hand (`app.rs:495-534, 537-570`) with macros to paper over it.
+- A popup "stack": there is none; all 31 draw into the same rect in list order, "top" means earliest in the list; `popup_stack.rs` is back-navigation history. For cockpit: `enum Overlay { None, Triage, Help }`.
+- Its theme policy: zero capability detection, defaults are ANSI-16 names, RGB only from `theme.ron`; wrong inside a popup on `tmux-256color`.
+- Config errors swallowed into `log::error!` and defaults (`key_list.rs:240-251`, `style.rs:307-327`); invisible under `-E`.
+- asyncjob: a coalescing one-slot queue over three locks, rayon and crossbeam, inside asyncgit (git2 + gix). Our expensive call is already cached.
+- The main loop: full redraw after every event (`gitui.rs:141`), watcher XOR a 5 s ticker. The one trick: `Spinner::draw` writes a single cell straight to the backend (`spinner.rs:39-63`), optional.
+- As a base: git types leak into the UI layer (`ui/style.rs:3`, `popups/help.rs:11`, `queue.rs:9-15`).
+
+Verdict: MIT, copy ~60 lines and two patterns; imitate `goto_line.rs` for phase 2; nothing else.
+
+## agents-in-a-box (stevengonsalvez/agents-in-a-box)
+
+"Context engineering for agentic coding": manages Claude Code / Codex / Gemini / Copilot with worktree isolation plus 94 skills. MIT, 21 stars, commit 2026-08-26; 639,529 lines in a 34-crate workspace, 775 packages (tokio full, git2 vendored-openssl, rusqlite, bollard, axum, portable-pty, vt100, sqlx, reqwest, notify, ratatui 0.30 and 0.26 in one lockfile). The architecture is the anti-pattern; one crate, `ainb-fleet-core` (9,671 lines), solves exactly phase 1+2's discovery/classification/tailing problem and is dense with measured traps.
+
+DO:
+- Classify agent panes by the process tree, never by `pane_current_command`: a running Claude renames itself to its version (`2.1.220`), an exited one's pane reads `zsh` (`discover/tmux.rs:80-84`, tests `:267, :279`: a session named `…-claude-resume` minted a bogus row under the string heuristic).
+- `ps -axww` (not `-eo`): macOS truncates to terminal width even into a pipe and `comm` is the last column; lowercase the basename so `/Applications/Claude.app/…/Claude` is not the CLI; tokenise only the two leading numeric columns; BFS with `MAX_DEPTH = 8` and a seen set (`process_tree.rs:34-42, 102-121, 168`). ~40 lines.
+- `capture-pane` failure is exit 1 with empty stdout; never return `Ok("")` (`read/tmux_pane.rs:51-55`): the difference between "blank pane" and "pane is gone".
+- Snap byte offsets to char boundaries before slicing pane text; a live panic, twice (`read/errors.rs:54-64`, `read/tmux_pane.rs:70-75`, regression test `:88-94`).
+- **needs-input is a lifecycle**: an `AskUserQuestion` is open iff no later `user` row carries a `tool_result` with its `tool_use_id`; an answer, a 60 s AFK timeout and an interrupt all emit the pair (`jsonl_tail.rs:267-288`; test `needs.rs:599`). The previous version pinned a session to ASK forever.
+- **`stop_reason == "end_turn"` never fires on Claude ≥ 2.1.x**: the visible reply rides a `stop_reason: null` row and the only `end_turn` is a later metadata row with no text (`jsonl_tail.rs:79-96`); gate on `matches!(stop_reason, None | Some("end_turn"))` plus "has text" plus "no user follow-up" plus age (`needs.rs:203-221`). Our rule 22 lists the fields but not this gate.
+- Classifier priority ASK > ERR > WAIT > IDLE, one signal per tile; pane-capture regex primary, transcript fallback; a specific 7-pattern error set ("better to miss an error than to spam") (`needs.rs:1-6, 145-225`, `errors.rs:17-48`).
+- Test isolation: clear `TMUX`, `TMUX_PANE` and `TMUX_TMPDIR` (a `-L` flag on our calls does not reach children; `TMUX_TMPDIR` is ignored while `TMUX` is set), and keep an assertion that panes live on the private server (`tests/tmux_send_integrity.rs:36-73`; a real CI failure where one test's teardown killed a sibling's server).
+- EINTR guard on `poll`/`read` (`ainb-core/src/main.rs:499-505`): our rule 9 raises SIGWINCH on every push, so this path is hit by design.
+- `terminal.clear()` on `Event::Resize` (`main.rs:981-985`).
+- `unsupported platform → print the cargo command and exit 0` (`install.sh:130-136`); the `KNOWN_OLD_*` byte-match before offering to upgrade a shipped conf (`cli/tmux_install.rs:36-43`).
+- Field preference for the `doing` line: `command → file_path → path → pattern → description → query → subject` (`jsonl_tail.rs:752-768`); ours lacks path/pattern/query/subject and ranks `description` too high; keep `prompt` (they lack it, so a Task renders bare).
+- The cheapest phase-2 trigger: a `PreToolUse` hook matched on `AskUserQuestion` carries the question at the moment the picker opens (`jsonl_tail.rs:398-405`); it writes the pane option and SIGUSR1 pulls the tick forward. No transcript polling for needs-input at all.
+
+DO NOT:
+- The architecture (34 crates, a fake dependency as a transitive version cap because `time 0.3.48` breaks against ratatui-core's blanket impls, "the cause of every red CI run since 2026-06-11", `ainb-tui/Cargo.toml:139-146`).
+- A `send-keys` path: `send/tmux.rs` is 1,234 lines plus ~3,000 lines of tests to deliver one string; a macOS PTY reads at most 1,022 bytes, Claude classifies a ≥ 801-char read as a paste, the trailing Enter fuses into the payload's final read on a busy target, retried Enters arrived as `\r\r\r`, "there is no safe fixed delay; the wait must be OBSERVED"; an idle composer renders a dim ghost of the previous prompt (`send/tmux.rs:19-56`, `read/tmux_pane.rs:12-21`). The receipt for our DO NOT 26.
+- A 64 KB transcript tail: rows are whole tool results, live transcripts reach 130 MB+, one `Read` result can exceed 64 KB, and the window then holds one fragment and every probe goes blind (`jsonl_tail.rs:566-585, 632-645`); they use 320 rows / 4 MiB with a grow-and-retry. Also: check whether the window opened on a row boundary instead of unconditionally dropping the first line (`:612-621`), and decode with `from_utf8_lossy` over the whole buffer (`:623-627`).
+- mtime alone as the cache key (resolution can be 1 s); and any cached offset is invalid after `/compact` or `--resume`, which rotate to a new `<uuid>.jsonl` and re-emit old turns (`fleet/bridge/transport.rs:17-28`).
+- Picking the newest-mtime `.jsonl` in the project dir: two agents in one cwd would classify from whichever was touched last (`needs.rs:130-141`); the hook's `transcript_path` into a pane option is the source, the cwd scan a fallback. The project slug maps every non-`[A-Za-z0-9-]` char to `-` (so `.` and `_` too) after canonicalising the path (`jsonl_tail.rs:15-48`); symlinked worktrees are our normal case.
+- Its install path: `curl | bash`, sudo, `~/.local/bin`, checksum verification that soft-fails twice (`install.sh:65, 90-97, 156, 175-207`); a launchd/systemd timer for background release checks (`update.rs:688-777`).
+- Five hand-rolled terminal enable/disable pairs with no shared guard, one asymmetric; a panic hook that replaces rather than chains the default.
+- Their gaps: nothing handles `isSidechain` / `parentUuid` / `isCompactSummary` (a subagent's text can become the preview line; filter `isSidechain != true`); the API-error regex runs on the raw JSONL line, so a reply that says "API Error" classifies the session as errored.
+
+Verdict: reference only; steal eight techniques, zero files.
