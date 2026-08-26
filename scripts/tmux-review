@@ -8,9 +8,9 @@
 #   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
-#                                          ctrl-s exits 20 (deliver), esc/^C
-#                                          exit 0 (discard, store deleted --
-#                                          asked for first if any are pinned)
+#                                          ctrl-s asks, then exits 20
+#                                          (deliver); esc leaves the batch
+#                                          pinned (asks first when any are)
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
@@ -68,14 +68,17 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
                                           fleet queue when it is not an agent
   tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
-  tmux-review --loop <dir> <store>       the interactive picker (needs fzf)
+  tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
+                                          ctrl-s asks, then exits 20 (deliver);
+                                          esc leaves the batch pinned (asks
+                                          first when any are)
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
   tmux-review --list <store>            every pinned comment, then a key
   tmux-review --compose <store>          the composed review, ready to deliver
   tmux-review --deliver <pane> <store>   paste it typed-but-unsent into <pane>; a busy pane gets it queued for its next Stop
   tmux-review --done <store>            after a by-hand --deliver: archive the batch, drop the snapshot
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
-In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver   esc discard
+In the picker: ↵ pin the typed comment on the row under the cursor   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
 USAGE
 }
@@ -1015,7 +1018,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^S deliver   ^A approve   esc discard (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label$ndlv")
+                  --header=$'↵ pin the typed comment   ^S deliver (asks first)   ^A approve   esc leave (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1031,8 +1034,8 @@ run_loop() {
                 # so it still exits straight out.
                 if [ -s "$store" ]; then
                     n=$(grep -c '^## ' "$store")
-                    choice=$(printf 'keep reviewing\ndiscard %d comment(s)\n' "$n" \
-                        | fzf --reverse --no-info --prompt='discard? ' \
+                    choice=$(printf 'leave — %d comment(s) stay pinned\nkeep reviewing\ndiscard %d comment(s)\n' "$n" "$n" \
+                        | fzf --reverse --no-info --prompt='esc? ' \
                               --header="$n comment(s) are pinned and not delivered")
                     crc=$?
                     # The confirm picker's OWN exit code decides, not just what
@@ -1058,6 +1061,7 @@ run_loop() {
                             exit 0 ;;
                     esac
                     case "$choice" in
+                        leave*)   drop_rows "$store"; exit 0 ;;     # the dir keeps the store; prefix r resumes it
                         discard*) drop_store "$store"; exit 0 ;;
                         *)  # Back to the list, store kept. Re-mark the rows:
                             # the marks in $rows_out are from before the
@@ -1116,7 +1120,21 @@ run_loop() {
             continue
         fi
         if [ "$key" = ctrl-s ]; then
-            exit 20
+            # Once, in the same picker shape esc uses: the consent gesture
+            # shows what it is about to send and to whom, and offers the whole
+            # batch to $EDITOR first (a comment edited as text -- the grammar
+            # is forgiving, compose is cat).
+            n=$(grep -c '^## ' "$store")
+            [ "$n" -gt 0 ] || { tmux display-message "tmux-review: nothing pinned" 2>/dev/null; continue; }
+            choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in $EDITOR first\nkeep reviewing\n' "$n" "${REVIEW_PANE_ID:-the agent}" \
+                | fzf --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
+            case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
+            case "$choice" in
+                deliver*) exit 20 ;;
+                edit*)    ${EDITOR:-vi} "$store" </dev/tty >/dev/tty 2>&1
+                          rows_out=$(rows_mode "$dir" "$store"); continue ;;
+                *)        rows_out=$(rows_mode "$dir" "$store"); continue ;;
+            esac
         fi
         # No --expect key matched -- enter/alt-enter stay inside the picker via
         # execute-silent, so this should not happen, but an unmatched exit is a
@@ -1652,7 +1670,7 @@ review_pane() {
         tmux display-message "tmux-review: could not create $sess" 2>/dev/null
         return 1
     }
-    "$SELF" --loop "$dir" "$store"
+    REVIEW_PANE_ID=$pane "$SELF" --loop "$dir" "$store"
     rc=$?
     if [ "$rc" -eq 20 ]; then
         # deliver() is a public subcommand the suite re-delivers the same
@@ -1828,8 +1846,11 @@ main_entry() {
 
 # -p pane_id, parsed here so the dispatch below sees only the subcommand --
 # mirrors tmux-branch's own -c/-p loop (tmux-branch:25-33); tmux-review only
-# needs -p (main_entry's click-binding pin), not -c.
-REVIEW_PANE_ID=""
+# needs -p (main_entry's click-binding pin), not -c. Default, not reset: an
+# unconditional `REVIEW_PANE_ID=""` here would clobber the value review_pane()
+# exports around its own `--loop` re-invocation (the ^S picker's label) before
+# -p ever gets a chance to override it.
+: "${REVIEW_PANE_ID:=}"
 while [ $# -gt 0 ]; do
     case "$1" in
         -p) REVIEW_PANE_ID="${2:-}"; shift 2 || break ;;

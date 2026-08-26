@@ -3838,8 +3838,9 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
          "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" ;;
 esac
 
-# Row 1 -- keep reviewing. Back to the list, every pinned comment still there.
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
+# Row 2 -- keep reviewing (row 1 is now "leave", covered by the ^S confirm
+# block below). Back to the list, every pinned comment still there.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
 # fzf RESTORES the screen it covered when it exits, so the list's own text is
 # back on the pane before the second picker is actually up -- a content poll
 # cannot tell the restored screen from the live one. Sync on the pane's
@@ -3855,13 +3856,13 @@ done
 is "keep reviewing returns to the list with the store intact" \
    "$rvbefore" "$(wc -c < "$RVSTORE" 2>/dev/null)"
 
-# Row 2 -- discard. Only this second, deliberate answer deletes the store.
+# Row 3 -- discard. Only this deliberate, third answer deletes the store.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
     sleep 0.1
 done
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Enter
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Down Down Enter
 for i in $(seq 1 20); do [ -e "$RVSTORE" ] || break; sleep 0.1; done
 if [ -e "$RVSTORE" ]; then
     bad "esc discards: the store is gone" "no such file" "$RVSTORE still exists"
@@ -3908,6 +3909,42 @@ fi
 is "the pinned comments are kept, not shredded, on that exit" \
    "$rvspinwant" "$(cat "$RVSPINSTORE" 2>/dev/null)"
 rm -rf "$RVSPIN" "$RVSPINSTORE"
+
+echo "== tmux-review --loop: ^S asks first — deliver, edit the batch, or keep reviewing; esc leaves the batch pinned =="
+if need_tmux "review ^S confirm"; then :; else
+CS="cockpit-cs-$$"; SOCKS="$SOCKS $CS"; CSSTATE=$(mktmpd); CSDIR=$(mktmpd)
+(
+  cd "$CSDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
+) >/dev/null 2>&1
+CSED=$(mktmpf); printf '#!/bin/sh\nprintf "EDITED-BY-EDITOR\\n" >> "$1"\n' > "$CSED"; chmod +x "$CSED"
+"$TMUX_REAL" -L "$CS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$CSDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CS" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+CSAP=$("$TMUX_REAL" -L "$CS" list-panes -t t: -F '#{pane_id}')
+CSCTL=$("$TMUX_REAL" -L "$CS" split-window -t t -P -F '#{pane_id}' 'exec bash'); until_cap "$CS" "$CSCTL" '*$*'
+CSSESS="$CSSTATE/tmux-cockpit/review/${CSAP#%}-$(printf '%s' "$CSDIR" | cksum | cut -d' ' -f1)"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
+until_cap "$CS" "$CSCTL" '*review>*'
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "one"; until_cap "$CS" "$CSCTL" '*one*'; "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter; until_file "$CSSESS/comments.md" '*one*'
+# esc: leave, batch kept, dir kept.
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Escape
+until_cap "$CS" "$CSCTL" '*leave — 1 comment*' && ok "esc offers to leave with the batch pinned" || bad "esc offers to leave with the batch pinned" "leave — 1 comment(s) stay pinned" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter
+until_cap "$CS" "$CSCTL" '*$*'
+is "leaving keeps the store" "1" "$(grep -c '^## ' "$CSSESS/comments.md" 2>/dev/null)"
+# Back in: ^S asks; edit runs $EDITOR on the whole store; then deliver.
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" "EDITOR=$(printf '%q' "$CSED") XDG_STATE_HOME=$(printf '%q' "$CSSTATE") '$DIR/scripts/tmux-review' -p $CSAP" Enter
+until_cap "$CS" "$CSCTL" '*resumed 1 pinned*'
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" C-s
+until_cap "$CS" "$CSCTL" "*deliver 1 comment(s) to $CSAP*" && ok "^S asks before delivering, naming the pane" || bad "^S asks before delivering, naming the pane" "deliver 1 comment(s) to $CSAP" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Down Enter      # edit the batch in $EDITOR first
+until_file "$CSSESS/comments.md" '*EDITED-BY-EDITOR*' && ok "edit hands the whole store to \$EDITOR" || bad "edit hands the whole store to \$EDITOR" "EDITED-BY-EDITOR in the store" "$(cat "$CSSESS/comments.md")"
+until_cap "$CS" "$CSCTL" '*review>*' && ok "and returns to the list" || bad "and returns to the list" "review>" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSCTL")"
+"$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" C-s; until_cap "$CS" "$CSCTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$CS" send-keys -t "$CSCTL" Enter
+until_cap "$CS" "$CSAP" '*EDITED-BY-EDITOR*' && ok "deliver pastes the edited batch" || bad "deliver pastes the edited batch" "EDITED-BY-EDITOR in the agent pane" "$("$TMUX_REAL" -L "$CS" capture-pane -p -t "$CSAP")"
+"$TMUX_REAL" -L "$CS" kill-server >/dev/null 2>&1
+fi
 
 echo "== review-store: parse is the inverse of format over the full grammar =="
 # The one module that knows what "## path:line (+)" means. Sourced, pure:
@@ -4335,7 +4372,7 @@ is "and nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/c
 until_cap "$RA" "$RACTL" '*review>*'
 # Deliver it (the pane is idle: a paste), then re-open and approve.
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" C-s
-# Task 8 adds the ^S confirm popup and re-inserts the wait+Enter here; until then ^S delivers straight away.
+until_cap "$RA" "$RACTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Enter
 until_cap "$RA" "$RAAP" '*not yet*' && ok "the batch lands in the agent pane" || bad "the batch lands in the agent pane" "not yet" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RAAP")"
 until_file "$RASESS/delivered.md" '*not yet*' && ok "a delivered batch is archived as delivered.md" || bad "a delivered batch is archived as delivered.md" "not yet in delivered.md" "$(ls "$RASESS" 2>/dev/null)"
 is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo present || echo absent)"
@@ -5206,6 +5243,7 @@ until_cap "$FD" "$CTL2" '*fix this*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" M-Enter
 until_cap "$FD" "$CTL2" '*●*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" C-s
+until_cap "$FD" "$CTL2" '*deliver 1 comment*'; "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" Enter
 until_cap "$FD" "$FD_AGENT" '*fix this*'
 
 case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
@@ -5346,6 +5384,7 @@ fi
 # deliver() queues instead of pasting. Wait for the picker's own process to go
 # away first, so the run-shell chain has actually been reached.
 "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" C-s
+until_cap "$RK" "$RKCTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
 for i in $(seq 1 30); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RKCTL" '#{pane_current_command}')" = fzf ] || break
     sleep 0.1
@@ -5998,7 +6037,7 @@ esac
 is "no editor temp file is left behind, and none went beside the store" "" "$(ls "$RETMP"/* "$RESTORE".edit.* 2>/dev/null)"
 "$TMUX_REAL" -L "$RE" send-keys -t "$REP" Escape
 until_cap "$RE" "$REP" '*discard 1 comment*'
-"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Enter
+"$TMUX_REAL" -L "$RE" send-keys -t "$REP" Down Down Enter
 "$TMUX_REAL" -L "$RE" kill-server >/dev/null 2>&1
 fi
 
@@ -6188,7 +6227,7 @@ is "--resnap names exactly the stale headers" "## src.go:3 (+)" \
    "$("$DIR/scripts/tmux-review" --resnap "$RRDIR" "$RRSTORE" </dev/null 2>&1 | grep '^## ')"
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Escape
 until_cap "$RR" "$RRP" '*discard 1 comment*'
-"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Down Enter
+"$TMUX_REAL" -L "$RR" send-keys -t "$RRP" Down Down Enter
 "$TMUX_REAL" -L "$RR" kill-server >/dev/null 2>&1
 fi
 
@@ -6290,7 +6329,7 @@ if until_cap "$PM" "$C" '*alpha⑂main*bravo⑂main*'; then ok "both projects' a
 if until_cap "$PM" "$C" '*●alpha.go:3 (+)*'; then ok "picking A in the queue resumes A's review, marks and all"; else bad "picking A in the queue resumes A's review, marks and all" "●alpha.go:3 (+)" "$(pm_cap "$C")"; fi
 "$TMUX_REAL" -L "$PM" send-keys -t "$C" Escape
 until_cap "$PM" "$C" '*discard 1 comment*'
-"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Enter
+"$TMUX_REAL" -L "$PM" send-keys -t "$C" Down Down Enter
 for i in $(seq 1 40); do [ -e "$(pm_sess "$PMA" "$ALPHA")" ] || break; sleep 0.1; done
 is "discarding A from the queue path removes only A's dir" "2" "$(ls -d "$PMSTATE"/tmux-cockpit/review/* 2>/dev/null | wc -l)"
 unset -f pm_shell pm_review pm_sess pm_cap
@@ -6354,7 +6393,7 @@ if until_cap "$SD" "$SDCTL2" '*●src.go:3 (+)*'; then ok "reopening the same pa
 else bad "reopening the same pane resumes its comments, marked" "●src.go:3 (+)" "$("$TMUX_REAL" -L "$SD" capture-pane -p -t "$SDCTL2")"; fi
 "$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Escape
 until_cap "$SD" "$SDCTL2" '*discard 1 comment*'
-"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Down Enter
+"$TMUX_REAL" -L "$SD" send-keys -t "$SDCTL2" Down Down Enter
 for i in $(seq 1 40); do [ -e "$SDSESS" ] || break; sleep 0.1; done
 is "discarding removes the session dir, not just the store" "gone" "$([ -e "$SDSESS" ] && echo present || echo gone)"
 unset -f sd_shell sdmode
