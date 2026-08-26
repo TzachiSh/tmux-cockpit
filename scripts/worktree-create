@@ -10,12 +10,17 @@ case "$payload" in
     *'"name"'*) name=${payload#*'"name"'}; name=${name#*:}; name=${name#*'"'}; name=${name%%'"'*} ;;
 esac
 name=${name//[$'\001'-$'\037']/}
+# check-ref-format is git's own word on a branch name (no @{, ~, ^, :, ?, *,
+# [, no . segments, no control bytes); the case adds what is only a PATH
+# hazard here: a leading dash, a backslash, a space, a . or .. segment.
+git check-ref-format --branch "$name" >/dev/null 2>&1 || { printf 'worktree-create: not a branch name: "%s"\n' "$name" >&2; exit 1; }
 case "$name" in
-    ''|-*|*/-*|.|./*|*/.|*/./*|..|../*|*/..|*/../*|*\\*|*' '*) printf 'worktree-create: refusing name "%s"\n' "$name" >&2; exit 1 ;;
+    -*|*/-*|.|./*|*/.|*/./*|..|../*|*/..|*/../*|*\\*|*' '*) printf 'worktree-create: refusing name "%s"\n' "$name" >&2; exit 1 ;;
 esac
 # XDG says a relative XDG_CACHE_HOME is to be ignored; claude would resolve
 # it against the repo and drop the tree inside the main checkout.
-case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=$HOME/.cache ;; esac
+case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=${HOME:-}/.cache ;; esac
+case "$cache" in /*) ;; *) printf 'worktree-create: neither XDG_CACHE_HOME nor HOME is set\n' >&2; exit 1 ;; esac
 dir="$cache/cockpit-wt/$name"
 # One namespace for every repo on the machine: a directory of that name is
 # only reused when it is THIS repo's worktree, never another repo's or a
@@ -26,7 +31,7 @@ if [ -d "$dir" ]; then
         printf 'worktree-create: %s exists and is not a worktree of this repo\n' "$dir" >&2; exit 1; }
 else
     mkdir -p -- "${dir%/*}" || exit 1
-    if git rev-parse -q --verify "refs/heads/$name" >/dev/null 2>&1; then
+    if git show-ref --verify --quiet "refs/heads/$name"; then
         git worktree add -- "$dir" "$name" >&2 || exit 1
     else
         git worktree add -b "$name" -- "$dir" >&2 || exit 1

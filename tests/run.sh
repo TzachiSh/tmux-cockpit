@@ -237,6 +237,44 @@ esac
 "$TMUX_REAL" -L "$SM" kill-server >/dev/null 2>&1
 fi
 
+echo "== the shipped menu is not a way for a directory name to run tmux commands =="
+# display-menu expands an item's command as a format and THEN parses it as
+# tmux syntax, so a live #{pane_current_path} inside an item let a directory
+# named x';run-shell ...;' run on selection. A bind parses once and is safe;
+# the menu has to hand the command the FORMAT (##{...}) to expand itself.
+if need_tmux "shipped menu injection"; then :; else
+MI="cockpit-mi-$$"; MO="cockpit-mo-$$"; SOCKS="$SOCKS $MI $MO"; MIDIR=$(mktmpd)
+MIHOSTILE="$MIDIR/x';set-option -g @pwned INJECTED;display-popup -T '"
+mkdir -p "$MIHOSTILE"
+"$TMUX_REAL" -L "$MI" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MIHOSTILE" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MI" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $MI attach -t t" >/dev/null 2>&1
+sleep 1
+for k in C-Space m; do "$TMUX_REAL" -L "$MO" send-keys -t o "$k"; sleep 0.4; done
+until_cap "$MO" o '*Switch branch*'
+"$TMUX_REAL" -L "$MO" send-keys -t o b; sleep 1.5
+# ##{pane_id} still reaches tmux-branch as the pane: it names the hostile
+# directory itself, which is not a repo.
+until_cap "$MO" o '*not a git repository*' && ok "and the popup still resolves the pane's own directory" \
+    || bad "and the popup still resolves the pane's own directory" "not a git repository: <the hostile dir>" "$("$TMUX_REAL" -L "$MO" capture-pane -p -t o | grep -v '^\s*$' | sed -n 2,4p)"
+# The injected commands are queued behind the popup: close it, then look.
+"$TMUX_REAL" -L "$MO" send-keys -t o C-d; sleep 1.5
+is "selecting Switch branch from a hostile directory runs nothing" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+# The runtime case above proves the mechanism on the one item that resolves a
+# pane. The other three re-expanded formats (the two split-window -c, the
+# new-window -c, and the sh popup's #{pane_title}) are guarded structurally:
+# the shipped menu must carry the doubled form, never the single one that a
+# quote in a cwd or a pane title turned into a command.
+menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
+for bad_sub in "-c '#{pane_current_path}'" "-F '#{window_index}" "switch branch · #{b:"; do
+    case "$menu" in *"$bad_sub"*) bad "menu re-expands a format singly: $bad_sub" "no single #{ here" "present" ;; *) ok "menu does not re-expand singly: $bad_sub" ;; esac
+done
+for good_sub in "-c '##{pane_current_path}'" "##{pane_title}" "switch branch · ##{b:"; do
+    case "$menu" in *"$good_sub"*) ok "menu doubles the format: $good_sub" ;; *) bad "menu doubles the format: $good_sub" "$good_sub present" "missing" ;; esac
+done
+"$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MI" kill-server >/dev/null 2>&1
+fi
+
 echo "== the shipped config against a real agent pane =="
 tp="$PANE"; [ "$HAVE_TMUX" = 1 ] || tp=""
 if [ -n "$tp" ]; then
@@ -558,6 +596,11 @@ wc_run '{"name":"../escape"}' >/dev/null; is "a name with .. is refused" "1" "$?
 [ -e "$WCCACHE/escape" ] && bad "a name with .. is refused" "nothing created" "$WCCACHE/escape exists"
 wc_run '{"cwd":"x"}' >/dev/null; is "no name is refused" "1" "$?"
 wc_run '{"name":"."}' >/dev/null; is "a bare . is refused" "1" "$?"
+# rev-parse resolves revision syntax: main@{0} "verified" as an existing
+# branch and checked out a detached historical commit instead of a branch.
+wc_run '{"name":"main@{0}"}' >/dev/null; is "revision syntax is refused, not resolved" "1" "$?"
+[ -e "$WCCACHE/cockpit-wt/main@{0}" ] && bad "and nothing is checked out for it" "nothing" "a tree"
+is "HOME unset is a refusal, not a bash error" "1" "$(cd "$WCREPO" && printf '{"name":"h"}' | env -u HOME -u XDG_CACHE_HOME "$DIR/scripts/worktree-create" >/dev/null 2>&1; echo $?)"
 # The cache is one namespace for every repo on the machine.
 WCREPO2=$(mktmpd); ( cd "$WCREPO2" && git init -q -b main . ) >/dev/null 2>&1
 ( cd "$WCREPO2" && printf '{"name":"old"}' | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-create" >/dev/null 2>"$WCCACHE/err2" ); is "another repo asking for a taken name is refused" "1" "$?"
