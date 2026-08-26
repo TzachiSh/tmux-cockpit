@@ -20,14 +20,9 @@ from the popup opens on the remote's own monitor today.
   are one per connection and never cleaned up (vscode-remote-release#6362,
   vscode#157275). User-owned wrapper, newest socket that listens:
 
-      #!/bin/sh
-      # ~/bin/cockpit-code — VISUAL target for ^E over Remote-SSH
-      for s in $(ls -t /run/user/$(id -u)/vscode-ipc-*.sock 2>/dev/null); do
-          socat -u OPEN:/dev/null "UNIX-CONNECT:$s" 2>/dev/null || continue
-          VSCODE_IPC_HOOK_CLI=$s; export VSCODE_IPC_HOOK_CLI
-          exec "$(ls -t ~/.vscode-server/bin/*/bin/remote-cli/code | head -1)" --wait "$@"
-      done
-      exec "${FALLBACK_EDITOR:-vi}" "$@"
+      (wrapper superseded: see vscode-coder.md — sockets live in
+      ${XDG_RUNTIME_DIR:-/tmp}, the shim under ~/.vscode-server/cli/servers/*/
+      server/bin/remote-cli/code; the corrected script is there)
 
   (listen probe from chvolkmann/code-connect; `ls -t | head -1` from #6362.)
 - **Plain ssh, no VS Code window.** Only `rmate`/Remote VSCode (port 52698 via
