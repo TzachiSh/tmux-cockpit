@@ -621,10 +621,9 @@ To copy a piece of the preview, hold **shift** and drag: a tmux popup has no
 copy mode, so the terminal's own selection is the one that works there. `^Y`
 copies the whole file plus its diff, `alt-y` every file's diff, for pasting
 into another agent. `⇥` marks rows and `alt-c` copies their text, one line per
-row, when what you want is a handful of lines rather than a file. All three
-reach the system clipboard through OSC 52, which needs
-`set -g set-clipboard on` in `tmux.conf`; the default `external` only passes
-applications' own OSC 52 through.
+row, when what you want is a handful of lines rather than a file. All three go
+out as OSC 52, so they reach the system clipboard only if your terminal accepts
+clipboard writes; some disable them by default.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

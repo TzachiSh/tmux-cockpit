@@ -44,8 +44,10 @@ not exist. The remote leg below is verified against a mocked
 
 Needs `nc` (OpenBSD netcat, `-U`) or `socat`; with neither, every socket is
 skipped and it falls back to the terminal editor. Verified: new layout, old
-layout, socket in `$XDG_RUNTIME_DIR`, socket in `$TMPDIR`, no
-`.vscode-server` → fallback, no socket → fallback.
+layout, socket in `$XDG_RUNTIME_DIR`, no `.vscode-server` → fallback, no
+socket → fallback. The shipped wrapper reaches `$TMPDIR` only when
+`$XDG_RUNTIME_DIR` is unset; the `$TMPDIR` case was verified against the
+earlier two-glob version, which probed both directories.
 
 ## Left as found
 Test server killed, fakes removed, `~/.vscode-server` absent, no repo edits.
