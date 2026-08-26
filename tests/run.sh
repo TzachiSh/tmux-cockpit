@@ -6558,17 +6558,17 @@ rm -rf "$FP_DIR"
 fi
 
 # group: serial
-echo "== tmux-review --fleet: dedups panes sharing a repo root and scans 20 panes under a second =="
+echo "== tmux-review --fleet: dedups panes sharing a repo root across 20 panes =="
 # fleet_rows() used to cost one status+numstat scan PER PANE even when two
 # panes were cd'd into the exact same worktree -- resolving the repo root now
 # happens first (fleet_rows:~1180), panes are grouped on it, and
 # fleet_scan_root() runs once per UNIQUE root, not once per pane. 20 windows,
 # 19 fixture repos -- pane 20 reuses pane 1's directory -- so 20 rows still
-# come out, but only 19 `git status` calls should ever run. `timeout 1` is the
-# hard timing gate (real git on tiny fixture repos, no shim latency): the
-# pre-fix bounded-parallel dispatcher (cap 8) already clears this easily, so
-# it is the status-call COUNT below, not this timing, that is expected to go
-# red against the pre-fix script.
+# come out, but only 19 `git status` calls should ever run. `timeout 5` is a
+# hang guard, not a perf gate: the scan is 0.3-0.7 s on a quiet box, but a
+# peer suite or an ssh sync pushed it past the old `timeout 1`, and a killed
+# scan left fd-out empty, so the row count read 0 too (issue #18). The fork
+# count below is what pins the dedup; it does not depend on the clock.
 if need_tmux "tmux-review --fleet dedup + 20-pane timing"; then :; else
 FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
 "$TMUX_REAL" -L "$FD" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
@@ -6615,9 +6615,9 @@ SHIMEOF
 chmod +x "$FD_SHIM/git"
 
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL" \
-    "PATH='$FD_SHIM:'\"\$PATH\" timeout 1 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
+    "PATH='$FD_SHIM:'\"\$PATH\" timeout 5 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
 fd_out=""
-for i in $(seq 1 50); do
+for i in $(seq 1 80); do
     fd_out=$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$CTL")
     # The typed-but-not-yet-run command line already contains the literal
     # text "echo RC=$?" the instant send-keys lands it -- a bare *RC=* match
@@ -6627,7 +6627,7 @@ for i in $(seq 1 50); do
     sleep 0.1
 done
 
-is "20 panes scan in under 1s" "RC=0" \
+is "the 20-pane scan exits 0" "RC=0" \
    "$(printf '%s\n' "$fd_out" | grep -o 'RC=[0-9-]*' | tail -1)"
 
 fd_rows=$(grep -c . "$STATE/fd-out" || true)
@@ -6642,8 +6642,8 @@ is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
 # per unique root (rev-parse, add -N, for-each-ref, diff, and big_files'
 # ls-files, which is what keeps a 1 GB file from costing that root 26 s) -- so
 # the next helper that costs a fork per root fails here on any box, not only a
-# busy one. The wall-clock gates above are unchanged and still hold: 20 panes
-# under 1 s, 50 panes 1818 ms against a 5000 ms bar.
+# busy one. The 50-pane block above keeps the wall-clock bar (1818 ms against
+# 5000 ms); this one stopped timing itself, see the top of the block.
 fd_git_calls=$(grep -c . "$FD_LOG" || true)
 is "one fork per pane and five per dirty root, no more" "1" \
    "$([ "$fd_git_calls" -le $((20 + 19 * 5)) ] && echo 1 || echo "$fd_git_calls")"
