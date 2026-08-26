@@ -67,9 +67,10 @@ ask_name() {
 # from such a shell either fails ("no current client") or, worse, hijacks some
 # other terminal's client, because tmux then falls back to any client it finds.
 in_client() {
-  [ -n "${TMUX:-}" ] && [ -n "${TMUX_PANE:-}" ] || return 1
+  [ -n "${TMUX:-}" ] || return 1
   local n
-  n=$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached}' 2>/dev/null) || return 1
+  # A popup has $TMUX but no $TMUX_PANE; its session id is $TMUX's last field (#45).
+  n=$(tmux display-message -p -t "${TMUX_PANE:-\$${TMUX##*,}}" '#{session_attached}' 2>/dev/null) || return 1
   [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
 }
 
