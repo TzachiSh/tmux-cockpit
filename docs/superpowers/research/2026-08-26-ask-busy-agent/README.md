@@ -1,0 +1,40 @@
+# Issue #54: asking a busy agent, seeing what it does, being told when it needs you
+
+Research, 2026-08-26. Four lanes: [claude-code.md](claude-code.md) (what 2.1.246 already offers, and a spike that runs), [landscape.md](landscape.md) (30 community tools, how each shows state, asks, and notifies), [sources.md](sources.md) (the source of the eight tmux-native ones, file:line), and a read of what cockpit records per pane today. No code changed.
+
+## What happened in the screenshot
+
+21:03, a Claude pane 7m17s into a turn, a 30 s shellcheck running. The owner typed `why reload config? on c? …`, Enter. The line sat above the prompt, grey, no answer.
+
+Nothing was stuck. A plain message typed mid-turn is queued and handed to Claude as soon as the running tool call returns, inside the same turn, as part of the work. It gets an answer when the agent gets around to it, in the agent's own voice, mixed into the task. The tip line under the spinner said the right thing: `/btw` is the side-question channel. Nothing in cockpit says so, and the pane is the only place it works.
+
+## What was measured
+
+- `/btw <question>` runs while the turn continues, sees the whole conversation (except the reply being written), has no tools, and costs little on a warm cache. It is exactly "what are you doing / why did you do X", answered in an overlay that never enters history. Terminal only, in the pane only.
+- `claude agents --json` (2.1.139+, no hook needed) lists every live session with `pid`, `sessionId`, `cwd`, `status` busy/idle. Four sessions here, all four resolved. `pane_pid` → descendant pid → sessionId maps a tmux pane to its transcript without `@cockpit_session`, which review-gate only writes at the first Stop.
+- The transcript tail answers "what is it doing" with no model: `tail -n 300 | jq` over `~/.claude/projects/<slug>/<sid>.jsonl` gives the current tool and its description, the agent's last sentence, and the last prompt. Measured 0.1 s on a 1.2 MB live transcript. Output on the busy peer session: `Bash: Lint the changed scripts and show diff stat` / `While the suite and rig run: shellcheck on the two scripts, and the independent review pass on the diff.`
+- Asking from outside the pane works two ways. Fork: `claude -p --resume <sid> --fork-session --model haiku --max-turns 1 "what were you doing"` answered correctly in 12 s, new transcript, original untouched, $0.27 (133k tokens of cache creation on a cold session; warm it is cents). Observer, the pattern `aside` and `claude-code-ui` use: the transcript tail reduced to `USER: / AGENT: / TOOL name: description` lines (4 KB here) fed to `env -u CLAUDECODE claude -p --model haiku --tools '' --no-session-persistence` with the question appended. 7 s, $0.05, "waiting on a code review report it dispatched; suite 1014/0, rig no delta", and the agent's session is never opened. The observer wins: cheaper, no resume, no session file left behind.
+- Cockpit already has: `@panestate` and the 120-char question on `@panestate_msg`, the ai-title on `@cockpit_title`, `@cockpit_session`, the red `▲`, the `NEEDS YOU` border with the first 48 chars of the question, the fleet counter, `prefix u`. Missing: any "doing" line, any pointer to `/btw`, any transcript read besides review-gate's ai-title grep.
+- The community converged on three things (landscape.md, patterns): needs-input is the only colour that matters and sorting by it is the feature; "what is it doing" is either the transcript tail or a Haiku one-liner, and Anthropic shipped the Haiku one-liner natively in agent view; nobody has a clean channel into a busy agent. Every tool that talks to one types into the pane with `send-keys -l`, waits, sends Enter separately, and queues until the composer is idle. The read-only path is the observer: transcript or `capture-pane` → a second `claude -p` → a status line.
+
+## Recommendation, merged
+
+Three changes, ordered by how little they cost, and an optional fourth. Each one stands alone.
+
+1. **Say `/btw`.** README and KEYS.md, the `prefix i` screen, one line: `ask it: /btw <question> in the pane (answers while it works)`. Zero code beyond a printf. This is the fix for the screenshot.
+2. **A `doing` block on `prefix i`.** Three rows under `state`: `doing  <tool>: <description> (since <age>)`, `said   <last assistant sentence>`, `asked  <last prompt> (<age>)`, read from the transcript tail: last `tool_use` name and description, last text block, last string prompt; "since" from an assistant `stop_reason: tool_use` with no `tool_result` after it (marmonitor's rule). Session id from `@cockpit_session`, falling back to `claude agents --json` joined on `pid` → `ps -o tty=` → `#{pane_tty}` (craftzdog's one-awk join); transcript path from `~/.claude/projects/<slug of pane_current_path>/<sid>.jsonl`. jq, no model, no new key. Permission waits never appear in the transcript (the `tool_use` is written only after approval, ccmux verified on 2.1.214), so `state` stays on the hook path it has. The `--fleet` preview can show the same `doing` line per row later; same helper.
+3. **Needs-you, louder, without stealing focus.** In `agent-state`'s needs-input arm: `display-message -d 4000` with the window and the first line of the question (tmux-agent-indicator's line), skipped when the active pane is the one asking (tmux-notify's rule), plus a bell to `#{pane_tty}` so the terminal's own notification fires. An auto-raised `display-popup` is what notifynub does and what the owner asked about; it takes the keyboard from whatever pane the human is typing in, which the review-flow rule forbids ("never steal focus", review-flow.md:25), and `display-popup -E` from a hook blocks that hook until the popup closes, so it has to go through `run-shell -b`. Ship the message and bell by default, the popup behind `@cockpit_needs_popup on` if wanted at all, Enter in it jumps (`tmux-jump`), Esc dismisses, `read -t 10` auto-close.
+
+Optional, fourth: **an `ask` popup from outside the pane**, the observer way. `prefix ?` (or a row in the `a` menu): read one line, run the observer over the pane's transcript tail, print the answer, `↵` closes. 7 s and $0.05 per ask, no session touched, one script of ~30 lines beside `tmux-fixer`. It answers "what is it doing / is it stuck" for a pane in another window or session without switching to it; inside the pane `/btw` is still better (instant, full context). Not the fork: 12 s, a full re-read, and a stray `-p` transcript in `~/.claude/projects` each time. Not `send-keys "/btw …"` into the pane: it would work today (`/btw` runs at once, not queued), but it is the one thing the review flow ruled out, and typing it by hand is shorter than a popup that asks for the text.
+
+## Decisions the owner has to make
+
+1. Popup on needs-input: never, behind an option, or default. Recommendation above is behind an option.
+2. Should `doing` reach the fleet preview (`prefix r`) as well as `prefix i`. A transcript read per visible row, 0.1 s each, on a popup that already forks 5 per pane.
+3. Fall back to `claude agents --json` when `@cockpit_session` is unset (an agent that has not Stopped yet), or wait for the first Stop. The fallback is one fork and a `pgrep -P` walk.
+4. Whether the `doing` line should also feed `@cockpit_title` when there is no ai-title yet. Adds a transcript read to a hook path; the Stop hook already opens the file for the title, so the cost is one more jq there.
+5. The observer `ask` popup: build it (fourth change), or leave `/btw` and `prefix u` as the answer. It is the one piece that costs API money per press.
+
+## Fail-first tests
+
+In the existing `== tmux-review --info ==` block: a fake transcript with a `tool_use` Bash and a text block prints `doing  Bash: <description>` and `said   <text>`; no transcript prints neither row and no error; a session id unset on the pane and a fake `claude agents --json` on PATH resolves through the pid tree. In `== agent-state ==`: needs-input on a non-active pane runs `display-message` once (fake tmux records it); on the active pane it does not; `running` after it clears nothing new. README and KEYS.md mention `/btw` (grep).
