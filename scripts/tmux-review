@@ -769,6 +769,11 @@ rows_mode() {
 # And a marker key is an exact string, matching what the `grep -qxF` before it
 # matched: "## " is the store's own grammar, written by attach() and nothing
 # else, so a substr test on the first three bytes cannot pick up a body line.
+#
+# The display column is rebuilt here from fields 1-3, not patched out of the
+# one lines_mode wrote, so --lines and its goldens never change.
+# ponytail: length() is bytes under LC_ALL=C; a non-ASCII path pads a column
+# or two short.
 mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <rows-file>
     LC_ALL=C awk -F'\t' -v OFS='\t' '
         FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
@@ -787,12 +792,18 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
             key = "## " $1 ":" num " (" sign ")"
             n = c[key] + 0
             m = (n == 0) ? ((key in d) ? "↺" : " ") : (n == 1) ? "●" : (n > 9) ? "+" : n ""
-            # Prepend, never repaint: "●" and " " are both one column, so a
-            # marked row does not shift against an unmarked one.
-            disp = $4
-            if (sign == "+") sub(/ \(\+\) /, " \033[32m(+)\033[0m ", disp)
-            else             sub(/ \(-\) /,  " \033[31m(-)\033[0m ", disp)
-            print $1, $2, $3, m disp, $5
+            r++; f1[r] = $1; f2[r] = $2; f3[r] = $3; f5[r] = $5; mk[r] = m; sg[r] = sign
+            loc[r] = $1 ":" num; if (length(loc[r]) > w) w = length(loc[r])
+        }
+        END {
+            # Padded to the widest path:line so the signs make one column;
+            # a wider one keeps its tail (the file name), capped at 48.
+            if (w > 48) w = 48
+            for (i = 1; i <= r; i++) {
+                l = loc[i]; if (length(l) > w) l = "…" substr(l, length(l) - w + 4)
+                col = (sg[i] == "+") ? "\033[32m+\033[0m" : "\033[31m-\033[0m"
+                printf "%s\t%s\t%s\t%s %-" w "s  %s %s\t%s\n", f1[i], f2[i], f3[i], mk[i], l, col, f3[i], f5[i]
+            }
         }
     ' "$1" "$2" "$3"
 }
@@ -1028,16 +1039,20 @@ run_loop() {
     # (review_base's field 1 -- the actual rev, not the mode word) rides along
     # so the preview subprocess (a separate tmux-open-path invocation, below)
     # diffs against the same base this review does, instead of always HEAD.
-    local base_line label mode
+    local base_line label mode nxt
     COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
     set_base_line() {
         if git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
             base_line=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}")
             label=$(cut -f2 <<<"$base_line"); mode=$(cut -f3 <<<"$base_line")
             COCKPIT_REVIEW_BASE_REV=${base_line%%$'\t'*}
+            # next_base wraps, so with only one base holding it hands back the
+            # mode we are already on -- a "^B → uncommitted" that goes nowhere.
+            nxt=$(next_base "$dir" "$mode"); [ "$nxt" = "$mode" ] && nxt=""
         else
             label=uncommitted; mode=uncommitted
             COCKPIT_REVIEW_BASE_REV=HEAD
+            nxt=""
         fi
         export COCKPIT_REVIEW_BASE_REV
     }
@@ -1101,7 +1116,7 @@ run_loop() {
         out=$(printf '%s\n' "$rows_out" \
             | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --ansi \
                   --delimiter=$'\t' --with-nth=4 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-r:execute(${resnap_cmd})+reload(${rows_cmd})" \
@@ -1111,11 +1126,12 @@ run_loop() {
                   --bind "ctrl-y:execute-silent(${copy_cmd})" \
                   --bind "alt-y:execute-silent(${copy_all_cmd})" \
                   --bind 'ctrl-/:toggle-preview,alt-u:preview-half-page-up,alt-d:preview-half-page-down' \
+                  --bind 'alt-up:preview-up,alt-down:preview-down' \
                   --preview "$preview_cmd" \
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ^S deliver (asks first)   ^A approve   esc leave (asks first)\n^E editor  ^X delete  ^L list  ^R refresh  ^B base  ^/ preview  alt-u/alt-d scroll\n'"base: $label$ndlv")
+                  --header=$'↵ pin the typed comment   ^E edit   ^X delete   ^L list   ^Y copy file+diff   alt-y copy all\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll   ^R refresh\n'"base: $label${nxt:+ (^B → $nxt)}   ● pinned   ↺ last round$ndlv")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
