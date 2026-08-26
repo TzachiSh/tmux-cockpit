@@ -889,10 +889,12 @@ fi
 
 # With no @open-editor and no code(1) on PATH, fall back to $VISUAL/$EDITOR
 # rather than reporting "opened" for a command that was never found.
-# HOME is the fixture dir, not the real one: the VS Code shim now sits between
-# code(1) and $EDITOR, and it is looked up under $HOME -- so on a machine that
-# HAS Remote-SSH installed these two would measure the developer's laptop
-# rather than the code.
+# HOME is the fixture dir, not the real one. The VS Code shim now sits between
+# code(1) and $EDITOR and is looked up under $HOME, so a real home makes what
+# these two measure depend on whether the developer happens to have Remote-SSH
+# installed. (Today $ETMUX carries no ls/grep/head, so the probe cannot run at
+# all and the answer is the same either way -- that is an accident of the stub
+# PATH, not something to rest an assertion on.)
 : > "$LOG"
 env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
     EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
@@ -1074,6 +1076,9 @@ mkdir -p "$VSHIM" "$VSK"
 # /bin/sh is dash here, so no ${@: -1}: the last argument comes off a loop.
 cat > "$VSHIM/code" <<'VSHIMEOF'
 #!/bin/sh
+# The real CLI reads its stdin. If the probe loop leaves the socket list on
+# fd 0, this eats the rest of it and the walk stops after one socket.
+head -c 200 >/dev/null
 printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
 case "$VSCODE_IPC_HOOK_CLI" in
     *live.sock) case " $* " in
@@ -1101,15 +1106,19 @@ case "$vcmd" in
          "--vscode --goto .../it's.txt:12:1" "$(cat "$VOUT")" ;;
 esac
 : > "$VLOG"
-env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" bash -c "$vcmd"
+# </dev/null, or the mock shim's stdin drain blocks on the suite's own terminal.
+# The probe's fd-0 bug survives this redirect: the buggy loop rebinds fd 0 to
+# the socket list for the whole `while`, /dev/null and all.
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" bash -c "$vcmd" </dev/null
 case "$(cat "$VLOG")" in
     *"SOCK=$VSK/vscode-ipc-dead.sock"*"SOCK=$VSK/vscode-ipc-live.sock ARGS=--goto $VQ/it's.txt:12:1"*)
         ok "the newer dead socket is tried first and skipped, the live one takes the file" ;;
     *) bad "the newer dead socket is tried first and skipped, the live one takes the file" \
          "dead then live" "$(cat "$VLOG")" ;;
 esac
-# The shim is the LAST resort, not a new default: a $VISUAL/$EDITOR still wins
-# over it, exactly as it wins over a code(1) that is not installed.
+# The shim sits BETWEEN code(1) and $VISUAL/$EDITOR, so the two things it must
+# never displace are the ones above it: an explicit @cockpit_editor, and a real
+# code(1) on a host that has one.
 : > "$VOUT"
 env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
     CLICK_DIR="$VQ" CLICK_LINE="it's.txt" OPEN_EDITOR=nvim \
@@ -1118,6 +1127,17 @@ case "$(cat "$VOUT")" in
     *NEWWIN*nvim*) ok "@cockpit_editor still wins over the shim" ;;
     *) bad "@cockpit_editor still wins over the shim" "a new window running nvim" "$(cat "$VOUT")" ;;
 esac
+printf '#!/bin/sh\nexit 0\n' > "$VTMUX/code"; chmod +x "$VTMUX/code"
+: > "$VOUT"
+env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+case "$(cat "$VOUT")" in
+    *"--vscode"*) bad "code(1) on PATH still beats the shim" "code --goto" "$(cat "$VOUT")" ;;
+    *"RUNSHELL run-shell -b code --goto"*) ok "code(1) on PATH still beats the shim" ;;
+    *) bad "code(1) on PATH still beats the shim" "a run-shell carrying code --goto" "$(cat "$VOUT")" ;;
+esac
+rm -f "$VTMUX/code"
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -6541,6 +6561,9 @@ chmod +x "$VETM/tmux"
 mkdir -p "$VESHIM" "$VESK"
 cat > "$VESHIM/code" <<'VESHIMEOF'
 #!/bin/sh
+# The real CLI reads its stdin. If the probe loop leaves the socket list on
+# fd 0, this eats the rest of it and the walk stops after one socket.
+head -c 200 >/dev/null
 printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
 case "$VSCODE_IPC_HOOK_CLI" in
     *live.sock) case " $* " in
@@ -6568,6 +6591,18 @@ env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX
 case "$(cat "$VESTORE" 2>/dev/null)" in
     *FROM-VSCODE*) ok "^E with no editor configured reaches the live window with --wait" ;;
     *) bad "^E with no editor configured reaches the live window with --wait" \
+         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
+esac
+# The shim command carries the script's own path, and $ed is word-split on
+# purpose (EDITOR="code --wait") -- so an install under "~/my dotfiles" split
+# it into two words and ^E ran a command that does not exist.
+: > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
+mkdir -p "$VEH/my dotfiles"; cp -r "$DIR/scripts" "$VEH/my dotfiles/"
+env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
+    "$VEH/my dotfiles/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
+case "$(cat "$VESTORE" 2>/dev/null)" in
+    *FROM-VSCODE*) ok "and from an install path with a space in it" ;;
+    *) bad "and from an install path with a space in it" \
          "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
 esac
 rm -f "$VESK"/vscode-ipc-live.sock; : > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
