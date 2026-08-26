@@ -201,16 +201,16 @@ if [ "${1:-}" = --preview-diff ]; then
         s ~ /^@@/ { h = 1
                     match(s, /-[0-9]+/);  o = substr(s, RSTART + 1, RLENGTH - 1) + 0
                     match(s, /\+[0-9]+/); n = substr(s, RSTART + 1, RLENGTH - 1) + 0
-                    printf "%5s %5s │ %s\n", "", "", $0; next }
+                    printf "%6s %6s │ %s\n", "", "", $0; next }
         !h { next }
-        s ~ /^-/  { printf "%5d %5s │ %s\n", o++, "", $0; next }
-        s ~ /^\+/ { printf "%5s %5d │ %s\n", "", n++, $0; next }
-        s ~ /^\\/ { printf "%5s %5s │ %s\n", "", "", $0; next }
-                  { printf "%5d %5d │ %s\n", o++, n++, $0 }
+        s ~ /^-/  { printf "%6d %6s │ %s\n", o++, "", $0; next }
+        s ~ /^\+/ { printf "%6s %6d │ %s\n", "", n++, $0; next }
+        s ~ /^\\/ { printf "%6s %6s │ %s\n", "", "", $0; next }
+                  { printf "%6d %6d │ %s\n", o++, n++, $0 }
     '
     mark=${3:-0}
-    # ponytail: ▶ overwrites the gutter's first byte, a space below 10000 lines.
-    mark_line() { if [ "$mark" -gt 0 ] 2>/dev/null; then awk -v n="$mark" 'NR == n { $0 = "▶" substr($0, 2) } 1'; else cat; fi; }
+    # ▸ (U+25B8, neutral width) overwrites the gutter's first byte, a space below 100000 lines; ▶ is ambiguous-width.
+    mark_line() { if [ "$mark" -gt 0 ] 2>/dev/null; then awk -v n="$mark" 'NR == n { $0 = "▸" substr($0, 2) } 1'; else cat; fi; }
 
     if [ "$cache_ok" -eq 1 ] && [ -f "$cdir/$ckey" ] && [ ! -L "$cdir/$ckey" ]; then
         mark_line < "$cdir/$ckey"

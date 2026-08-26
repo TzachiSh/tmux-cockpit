@@ -3222,7 +3222,7 @@ rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.
 is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
 rm -rf "$RVOFFN"
 
-echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▶ on the asked line =="
+echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▸ on the asked line =="
 RPG=$(mktmpd)
 (
   cd "$RPG" || exit
@@ -3234,21 +3234,28 @@ RPG=$(mktmpd)
 rpg=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g')
 rpgraw=$(git -C "$RPG" diff HEAD -- f.txt | awk '/^@@/{h=1} h')
 is "the gutter adds no line and removes none" "$(( $(printf '%s\n' "$rpgraw" | wc -l) + 1 ))" "$(printf '%s\n' "$rpg" | wc -l)"
-is "a context line carries both numbers"   "    1     1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
-is "a removed line carries the old number" "    3       │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
-is "an added line carries the new number"  "          3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
-is "a deletion keeps the old side counting" "   10       │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
-is "and the new side skips it"              "   11    10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
+is "a context line carries both numbers"   "     1      1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
+is "a removed line carries the old number" "     3        │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
+is "an added line carries the new number"  "            3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
+is "a deletion keeps the old side counting" "    10        │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
+is "and the new side skips it"              "    11     10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
 rpgm=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt 5) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgm" in "▶"*) ok "the asked line is marked ▶" ;; *) bad "the asked line is marked ▶" "▶..." "$rpgm" ;; esac
+case "$rpgm" in "▸"*) ok "the asked line is marked ▸" ;; *) bad "the asked line is marked ▸" "▸..." "$rpgm" ;; esac
 rpgc=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgc" in "▶"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
+case "$rpgc" in "▸"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
 # Every check above strips ANSI first, so a gutter that printed the stripped
 # copy instead of the raw line would pass them all with the colour gone. Peel
-# the 11-column prefix back off and the diff's own bytes must be left.
+# the 13-column prefix back off and the diff's own bytes must be left.
 rpgrawc=$(git -C "$RPG" diff --color=always HEAD -- f.txt | awk '/^\033\[[0-9;]*m@@|^@@/{h=1} h')
-rpgcol=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | tail -n +2 | sed 's/^.\{11\} │ //')
+rpgcol=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | tail -n +2 | sed 's/^.\{13\} │ //')
 is "the gutter is a prefix and nothing else, colour included" "$rpgrawc" "$rpgcol"
+# %5 overflowed past 9999 lines, and ▶ (ambiguous-width) then overwrote a
+# digit: a 12340 read ▶2340 (#22 item 7). A missing trailing newline is a
+# gutter row of its own (test debt from the same issue).
+(cd "$RPG" && export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e && seq 1 12345 > big.txt && git add big.txt && git commit -q -m big && sed -i '12340s/.*/X/' big.txt && printf 'tail' >> big.txt) >/dev/null 2>&1
+rpgb=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff big.txt 6) | sed 's/\x1b\[[0-9;]*m//g')
+is "a five-digit line number keeps every digit next to the mark" "▸12340        │ -12340" "$(printf '%s\n' "$rpgb" | grep '│ -12340$')"
+is "and a no-newline marker gets a blank gutter" "              │ \\ No newline at end of file" "$(printf '%s\n' "$rpgb" | grep 'No newline' | tail -1)"
 rm -rf "$RPG"
 
 # group: serial
