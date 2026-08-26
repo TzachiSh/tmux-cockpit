@@ -724,19 +724,24 @@ browse() {
         # Enter just climbed straight back out.
         out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
             | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16 \
-                  --expect=ctrl-o \
+                  --multi --expect=ctrl-o \
                   --bind 'load:down' \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {})+change-preview-label( diff )" \
                   --bind "ctrl-f:change-preview($(shq "$0") --preview {})+change-preview-label( content )" \
+                  --bind "alt-c:execute-silent(printf '%s\n' {+} | sed \"s|^|$(shq "$dir")/|\" | tmux load-buffer -w -)" \
                   --prompt="$(tail3 "$dir")/ " \
-                  --header='↵ open / enter dir   ^O as-is
+                  --header='↵ open / enter dir   tab mark   alt-c copy path   ^O as-is
 ^G diff   ^F content   ^/ preview   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
                   --preview-label=' content ' --preview-label-pos=2 \
                   --preview-window='down,65%,border-top') || return 0
         key=${out%%$'\n'*}; sel=${out#*$'\n'}
         [ -n "$sel" ] && [ "$sel" != "$key" ] || sel=""
+        # ⇥ marks rows for alt-c only: ↵ and ^O act on the FIRST marked row.
+        # Without this trim the rest arrive as one newline-glued "name" and
+        # descend into a directory that does not exist.
+        sel=${sel%%$'\n'*}
         [ -n "$sel" ] || return 0
         if [ "$key" = ctrl-o ]; then
             open_one "$dir/${sel%/}" "" ""; return 0
@@ -781,8 +786,9 @@ if command -v fzf >/dev/null; then
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                       --bind "ctrl-g:change-preview($(shq "$0") --preview-diff {2})+change-preview-label( diff )" \
                       --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})+change-preview-label( content )" \
+                      --bind "alt-c:execute-silent(printf '%s\n' {+2} | tmux load-buffer -w -)" \
                       --prompt='open> ' \
-                      --header='↵ open (folder: browse)   tab mark   ^O as-is
+                      --header='↵ open (folder: browse)   tab mark   alt-c copy path   ^O as-is
 ^G diff   ^F content   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-label=' content ' --preview-label-pos=2 \

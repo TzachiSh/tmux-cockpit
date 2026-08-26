@@ -1139,6 +1139,31 @@ case "$(cat "$VOUT")" in
 esac
 rm -f "$VTMUX/code"
 
+echo "== tmux-open-path: alt-c copies the marked paths to the tmux buffer =="
+if need_tmux "tmux-open-path alt-c"; then :; else
+PC="cockpit-pc-$$"; SOCKS="$SOCKS $PC"; PCD=$(mktmpd); : > "$PCD/a.txt"; : > "$PCD/b.txt"; : > "$PCD/c.txt"
+PCS=$(mktmpd); cat > "$PCS/tmux" <<'STUB'
+case "$1" in
+  show-options) printf '%s\n' "${CLICK_LINE:-}" ;;   # every option query answers the clicked line; only @cockpit_click_line is read here
+  display-message) case " $* " in *pane_current_path*) printf '%s\n' "$CLICK_DIR" ;; *window_id*) printf '@0\n' ;; *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
+  load-buffer) cat > "$TMUX_LOG.buf" ;;
+  *) printf '%s\n' "$*" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+# sh too: fzf runs an execute-silent() body through `sh -c`, and env -i leaves
+# only this dir on PATH -- without it alt-c dies as `exec: "sh": not found`.
+chmod +x "$PCS/tmux"; for t in bash sh fzf ls head grep sort sed awk cat tput; do ln -sf "$(command -v $t)" "$PCS/$t"; done
+"$TMUX_REAL" -L "$PC" -f /dev/null new-session -d -s t -x 100 -y 30 "env -i PATH=$(printf '%q' "$PCS") HOME=$(printf '%q' "$HOME") TMUX_LOG=$(printf '%q' "$PCS/log") CLICK_DIR=$(printf '%q' "$PCD") CLICK_LINE='a.txt b.txt c.txt' TERM=xterm bash $(printf '%q' "$DIR/scripts/tmux-open-path") --pick %1; sleep 30" >/dev/null 2>&1
+PCP=$("$TMUX_REAL" -L "$PC" list-panes -t t: -F '#{pane_id}')
+until_cap "$PC" "$PCP" '*open>*' || bad "the picker comes up" "open>" "$("$TMUX_REAL" -L "$PC" capture-pane -p -t "$PCP")"
+"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" Tab Tab; until_cap "$PC" "$PCP" '*(2)*'
+"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" M-c
+until_file "$PCS/log.buf" '*a.txt*'
+is "alt-c copies the marked paths, one per line" "$PCD/a.txt"$'\n'"$PCD/b.txt" "$(sed "s|^~|$HOME|" "$PCS/log.buf" 2>/dev/null)"
+"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1
+fi
+
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
 # waits for EOF. A writer that holds the pipe open without sending -- and Claude
