@@ -5303,13 +5303,15 @@ RTD=$(mktmpd)
 PV=$(mktmpd); ( cd "$PV" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git init -q -b main .; seq 1 2000 > big.txt; git add -A; git commit -q -m init; sed -i '1000s/.*/CHANGED/' big.txt ) >/dev/null 2>&1
 XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv1"
-if XDG_RUNTIME_DIR="$RTD" timeout 0.05 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render returns in under 50ms"
-else bad "a repeat render returns in under 50ms" "cache hit" "timeout"; fi
+if XDG_RUNTIME_DIR="$RTD" timeout 5 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render exits 0"
+else bad "a repeat render exits 0" "rc 0 within 5s" "rc $?"; fi
 is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
-# The 50ms tooth alone does not prove the cache is READ. On this fixture a
-# HIT costs 24-29ms and a MISS 39-43ms, so 50ms separates neither: a mutant
-# copy of the script whose cache read is dead passes all three assertions
-# above unchanged. Only a row that could not have come from anywhere else
+# A clock does not prove the cache is READ. On this fixture a HIT costs
+# 24-29ms and a MISS 39-43ms, so no budget separates them, and the old
+# `timeout 0.05` only ever went red under peer load, emptying pv2 for the cmp
+# above (issue #36); timeout 5 is a hang guard. A mutant copy of the script
+# whose cache read is dead passes all three assertions above unchanged.
+# Only a row that could not have come from anywhere else
 # proves the memo was used. Plant one -- the hermetic dir holds exactly the
 # single entry the first render wrote -- and demand the next render hand it
 # back verbatim. Same trick as the SENTINEL row in the row-snapshot block.
