@@ -238,21 +238,27 @@ elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
 fi
 tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
-# Session picker in the same popup chrome. prefix+S is unbound in stock tmux
-# (lowercase s is choose-tree); TM_HEIGHT=100% because inside a popup the popup
-# is the frame and fzf's inline 40%% would leave the bottom half empty.
+# Every key below is lowercase (#43): tmux binds the character the terminal
+# sends, so a Shift-letter chord dies under Caps Lock or a non-Latin layout.
+# Each block leaves its effective key in a lowercase variable (empty = off)
+# for the agents menu further down, which replays them.
+
+# Session picker in the same popup chrome. g (goto session) is unbound in
+# stock tmux and in examples/full.tmux.conf; TM_HEIGHT=100% because inside a
+# popup the popup is the frame and fzf's inline 40%% would leave the bottom
+# half empty.
 Q_TM=$(sq "$DIR/scripts/tm")
-tmux bind-key S display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
+SK=$(tmux show-option -gqv @cockpit_sessions_key)
+case "$SK" in off) sk= ;; "") sk=g ;; *) sk=$SK ;; esac
+[ -z "$sk" ] || tmux bind-key "$sk" display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
 
 # Jump to the pane that needs you; press again to cycle through all of them.
+# u as in unblock; j is pane-down in the example config.
 JK=$(tmux show-option -gqv @cockpit_jump_key)
-case "$JK" in
-    off) ;;                          # explicitly disabled
-    # run-shell expands #{pane_id} but sets no $TMUX_PANE, so the pane goes
-    # in as an argument: without it the cycle never knew where it stood (#45).
-    "")  tmux bind-key J run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'" ;;
-    *)   tmux bind-key "$JK" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'" ;;
-esac
+# run-shell expands #{pane_id} but sets no $TMUX_PANE, so the pane goes in
+# as an argument: without it the cycle never knew where it stood (#45).
+case "$JK" in off) jk= ;; "") jk=u ;; *) jk=$JK ;; esac
+[ -z "$jk" ] || tmux bind-key "$jk" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'"
 
 # Review an agent's diff. The popup passes -p $SRC_PANE so the script sees
 # the pane the popup was opened FROM: inside a popup $TMUX_PANE is the popup's
@@ -276,33 +282,24 @@ else
     R_CMD="$Q_REVIEW -p $SRC_PANE"
 fi
 RK=$(tmux show-option -gqv @cockpit_review_key)
-case "$RK" in
-    off) ;;                          # explicitly disabled
-    "")  tmux bind-key r "${R_OPEN[@]}" "$R_CMD" ;;
-    *)   tmux bind-key "$RK" "${R_OPEN[@]}" "$R_CMD" ;;
-esac
+case "$RK" in off) rk= ;; "") rk=r ;; *) rk=$RK ;; esac
+[ -z "$rk" ] || tmux bind-key "$rk" "${R_OPEN[@]}" "$R_CMD"
 
 # prefix i: what this pane is, waits on, and holds -- state, review, base,
 # session id, review dir. Replaces stock i (window info) because it IS the
 # window info you want on an agent pane; @cockpit_info_key rebinds, off keeps
 # stock. `read` is POSIX, so the popup's sh can wait for ↵ itself.
 IK=$(tmux show-option -gqv @cockpit_info_key)
-case "$IK" in
-    off) ;;
-    "")  tmux bind-key i display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
-    *)   tmux bind-key "$IK" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _" ;;
-esac
+case "$IK" in off) ik= ;; "") ik=i ;; *) ik=$IK ;; esac
+[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
 # prefix f: a side fix beside a busy agent -- two lines, a fenced claude -p in
 # its own pane, the agent's suite command held off and its next Stop held
 # until one handover line. Stock f is find-window; @cockpit_fixer_key off keeps it.
 Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 FK=$(tmux show-option -gqv @cockpit_fixer_key)
-case "$FK" in
-    off) ;;
-    "")  tmux bind-key f display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
-    *)   tmux bind-key "$FK" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE" ;;
-esac
+case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
+[ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
 # Reload on R, the shifted pair of the review key: you review all day and
 # reload only after editing the config, so the lowercase key goes to review.
@@ -339,12 +336,9 @@ trap 'rm -f "$rlconf"' EXIT HUP INT TERM
     IFS=$old_ifs
     [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
     RLK=$(tmux show-option -gqv @cockpit_reload_key)
-    case "$RLK" in
-        off) ;;                      # explicitly disabled
-        "")  printf 'bind-key R {\n' ;;
-        *)   printf 'bind-key %s {\n' "$RLK" ;;
-    esac
-    if [ "$RLK" != off ]; then
+    case "$RLK" in off) rlk= ;; "") rlk=R ;; *) rlk=$RLK ;; esac
+    [ -z "$rlk" ] || printf 'bind-key %s {\n' "$(sq "$rlk")"
+    if [ -n "$rlk" ]; then
         for f in "$@"; do
             # -q: #{config_files} lists every path tmux tried, not every path
             # that existed (/etc/tmux.conf is almost always in the list and
@@ -405,6 +399,29 @@ EOF
     } > "$mvconf"
     tmux source-file "$mvconf"
     rm -f "$mvconf"
+fi
+
+# prefix a: the agents menu, every cockpit action as a row with its letter on
+# screen. A row replays the key the action is bound to (send-keys -K, 3.4):
+# one definition per action, a rebound key moves its row, an off key drops
+# it. Stock a is unbound; @cockpit_ai_key rebinds (n if you never use
+# next-window), off disables.
+AK=$(tmux show-option -gqv @cockpit_ai_key)
+case "$AK" in off) ak= ;; "") ak=a ;; *) ak=$AK ;; esac
+if [ -n "$ak" ] && version_at_least 3 4; then
+    rows=()
+    row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
+    row 'Jump to the pane that needs you' u "$jk"
+    row 'Review its diff'                 r "$rk"
+    row 'Side fix beside it'              f "$fk"
+    row 'Pane info'                       i "$ik"
+    rows+=('')
+    row 'Switch branch'                   b b
+    row 'Move window to a session...'     m "$mk"
+    row 'Sessions...'                     s "$sk"
+    tmux bind-key "$ak" display-menu -T ' agents ' -x C -y C "${rows[@]}"
+elif [ -n "$ak" ]; then
+    tmux display-message "tmux-cockpit: the prefix+$ak menu needs tmux 3.4 (found ${tmux_version:-unknown}); the keys still work"
 fi
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it

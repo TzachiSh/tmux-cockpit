@@ -260,12 +260,18 @@ over earlier, `prefix r` included.
 |-----|------|
 | `Ctrl`+click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
-| `prefix + J` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
+| `prefix + a` | the agents menu: every row below, one letter each, no Shift — `@cockpit_ai_key` rebinds, `off` disables (needs tmux 3.4) |
+| `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
+| `prefix + g` | the session picker — `@cockpit_sessions_key` rebinds, `off` disables |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
-| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock |
+| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
+
+Every key on one page, a line each: [KEYS.md](KEYS.md). Keys that moved in
+#43: jump was `J` (now `u`), the session picker was `S` (now `g`); `set -g
+@cockpit_jump_key J` and `set -g @cockpit_sessions_key S` bring them back.
 
 The branch picker and the path picker share their keys: `↵` acts, `esc`
 cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
@@ -729,7 +735,7 @@ not a wall of text typed straight into the agent's own prompt.
 **A delivered review is a state, not a flash.** The notice naming the target
 window stays up until the next message rather than blinking away in 750 ms,
 and the pane itself is marked `@cockpit_review = sent` for as long as the
-review sits there unsent. `prefix J` walks to those panes after the ones
+review sits there unsent. `prefix u` walks to those panes after the ones
 whose agent is blocked on you, so a review you pasted and then forgot is
 still reachable by a keypress instead of by memory. The mark clears the
 moment the agent starts working again — pressing Enter is what fires the
@@ -880,8 +886,10 @@ line.
 set -g @cockpit_review_key     r       # off restores stock refresh-client
 set -g @cockpit_review_window  off     # on: a window instead of the popup
 set -g @cockpit_info_key       i       # off restores stock window info
-set -g @cockpit_jump_key       J
+set -g @cockpit_jump_key       u
+set -g @cockpit_sessions_key   g
 set -g @cockpit_move_key       M       # off restores stock select-pane -M
+set -g @cockpit_ai_key         a       # the agents menu; n if you never use next-window
 set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""
@@ -988,9 +996,22 @@ so the emptied session is destroyed with nobody in it and you land on the
 window you moved. A new session gets exactly the moved window, no placeholder
 shell beside it. `prefix + .` is untouched for the "renumber to index N" case.
 
+The Shift is optional: `prefix + a m` opens the same menu from the agents
+menu, and the example config's `prefix + m` menu has a `Move window...` row.
+Both replay the key, so they follow `@cockpit_move_key`.
+
+## prefix + a — the agents menu
+
+Every cockpit action as a row with its letter on screen: jump `u`, review
+`r`, side fix `f`, pane info `i`, branch `b`, move window `m`, sessions `s`.
+A row replays the key the action is bound to, so a rebound key moves its row
+and an `off` key drops it. Needs tmux 3.4 (`send-keys -K`); below that the
+keys still work and the menu says so once at load. `@cockpit_ai_key` rebinds,
+`off` disables. Stock `a` is unbound.
+
 ## tm — session launcher
 
-`prefix + S` opens it in the same popup chrome as the other pickers. Each
+`prefix + g` opens it in the same popup chrome as the other pickers. Each
 session previews as its windows with the cockpit state beside every agent pane
 — the one view the status bar cannot give you is *across* sessions.
 
