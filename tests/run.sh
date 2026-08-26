@@ -3978,9 +3978,20 @@ use errors.Is() instead of direct comparison
 
 STORE
 rv3golden=$(cat <<'GOLDEN'
-Code review of your uncommitted changes. Address each comment; a comment
-containing ?? is a question — answer it in chat, do not edit for it.
-Comments are anchored as path:line with the original line quoted.
+Code review of your changes, from the human, batched on purpose.
+
+Scope: change only what these comments ask for. Do not refactor, rename,
+tidy or commit anything else — a fix that grows the diff defeats the review.
+Questions first: a comment containing ?? is a question. Answer every question
+in chat before you edit anything, then make the edits in one pass.
+Disagree out loud: if a comment is wrong or would break something, say so and
+do not make the change. Silent compliance with a wrong comment is the worse
+failure.
+Anchors: comments are path:line with the original line quoted. The numbers are
+from the diff as it was when the review was written and drift after your first
+edit — trust the quoted fragment, not the number.
+When done, end your reply with one line per comment:
+  <path>:<line> — done | skipped: <reason>
 
 ## scripts/tm:43 (+)
 > the quoted fragment
@@ -3998,10 +4009,21 @@ is "the composed review matches the golden text byte-for-byte" \
 # The same store, but with the root that --deliver threads through in real
 # use: one more header line naming it, nothing else in the body changed.
 rv3rootgolden=$(cat <<'GOLDEN'
-Code review of your uncommitted changes. Address each comment; a comment
-containing ?? is a question — answer it in chat, do not edit for it.
-Comments are anchored as path:line with the original line quoted.
+Code review of your changes, from the human, batched on purpose.
+
+Scope: change only what these comments ask for. Do not refactor, rename,
+tidy or commit anything else — a fix that grows the diff defeats the review.
+Questions first: a comment containing ?? is a question. Answer every question
+in chat before you edit anything, then make the edits in one pass.
+Disagree out loud: if a comment is wrong or would break something, say so and
+do not make the change. Silent compliance with a wrong comment is the worse
+failure.
+Anchors: comments are path:line with the original line quoted. The numbers are
+from the diff as it was when the review was written and drift after your first
+edit — trust the quoted fragment, not the number.
 Paths are relative to /home/agent/project.
+When done, end your reply with one line per comment:
+  <path>:<line> — done | skipped: <reason>
 
 ## scripts/tm:43 (+)
 > the quoted fragment
@@ -4540,7 +4562,11 @@ rm -rf "$HC"
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
 RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
-"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+# -y 60: split-window below halves it, and the composed review's header grew
+# to 13 lines (ai lens §7.F) -- AP's half needs to clear ~20 pasted lines
+# without scrolling, or bash's readline garbles the unexecuted multi-line
+# buffer redraw (reproduced: a 15-row pane truncates and interleaves lines).
+"$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
 # a spawn settle, not an event: nothing to poll until the shell prints
@@ -4609,7 +4635,7 @@ EMPTYSTORE="$STATE/deliver-empty-$$"
 : > "$EMPTYSTORE"
 rundeliver "$AP" "$EMPTYSTORE"
 case "$(apcap)" in
-    *"Code review of your uncommitted changes"*) \
+    *"Code review of your changes"*) \
         bad "an empty store is refused, nothing to deliver" \
             "no composed header in the agent pane" "$(apcap)" ;;
     *) ok "an empty store is refused, nothing to deliver" ;;
@@ -4683,7 +4709,7 @@ for busy in needs-input running; do
     is "the spool is armed on the pane" "$RDSTORE.deliver" \
        "$("$TMUX_REAL" -L "$RDS" show-option -pqv -t "$AP" @cockpit_review_spool)"
     case "$(cat "$RDSTORE.deliver" 2>/dev/null)" in
-        "Code review of your uncommitted changes"*"QUEUE-MARKER-$busy"*) ok "and the spool holds the composed review" ;;
+        "Code review of your changes"*"QUEUE-MARKER-$busy"*) ok "and the spool holds the composed review" ;;
         *) bad "and the spool holds the composed review" "composed header + marker" "$(cat "$RDSTORE.deliver" 2>/dev/null)" ;;
     esac
     is "the spool is born 0600" "600" "$(stat -c '%a' "$RDSTORE.deliver" 2>/dev/null || stat -f '%Lp' "$RDSTORE.deliver")"
@@ -4779,6 +4805,7 @@ if [ "$bigbytes" -le 2048 ]; then
 else
     ok "fixture actually exceeds the 2048-byte threshold ($bigbytes bytes)"
 fi
+"$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1  # clear the earlier paste
 rundeliver "$AP" "$BIGSTORE"
 
 is "the planted symlink at the old predictable name is never followed" \
@@ -5362,7 +5389,7 @@ esac
 # RK_AGENT's next Stop.
 rkspool="$rkstore.deliver"
 case "$(cat "$rkspool" 2>/dev/null)" in
-    "Code review of your uncommitted changes"*"keep me"*) \
+    "Code review of your changes"*"keep me"*) \
         ok "and the spool holds the composed review with the pinned comment" ;;
     *) bad "and the spool holds the composed review with the pinned comment" \
          "composed header + keep me" "$(cat "$rkspool" 2>/dev/null)" ;;

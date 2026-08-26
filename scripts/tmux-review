@@ -1170,17 +1170,21 @@ list_store() {                # <store>
 }
 
 # --- --compose ---------------------------------------------------------------
-# The fixed header, then the store verbatim -- cat, nothing clever. The header
-# is what tells the agent "??" means a question; the store itself needs no
-# reformatting because attach() already wrote it in the delivered shape.
+# The header (ai lens §7.F: scope fence, questions first, dissent licence,
+# trust the fragment, a close-out line the next review can key on), then the
+# store verbatim -- cat, nothing clever.
 compose() {
     local store=${1:-} root=${2:-}
-    printf 'Code review of your uncommitted changes. Address each comment; a comment\ncontaining ?? is a question — answer it in chat, do not edit for it.\nComments are anchored as path:line with the original line quoted.\n'
+    printf 'Code review of your changes, from the human, batched on purpose.\n\n'
+    printf 'Scope: change only what these comments ask for. Do not refactor, rename,\ntidy or commit anything else — a fix that grows the diff defeats the review.\n'
+    printf 'Questions first: a comment containing ?? is a question. Answer every question\nin chat before you edit anything, then make the edits in one pass.\n'
+    printf 'Disagree out loud: if a comment is wrong or would break something, say so and\ndo not make the change. Silent compliance with a wrong comment is the worse\nfailure.\n'
+    printf 'Anchors: comments are path:line with the original line quoted. The numbers are\nfrom the diff as it was when the review was written and drift after your first\nedit — trust the quoted fragment, not the number.\n'
     # root is the repo root a comment's path is relative to -- optional
     # (omitted, --compose still reads standalone), named here because
     # deliver() has it and the agent otherwise has no way to tell.
     [ -n "$root" ] && printf 'Paths are relative to %s.\n' "$root"
-    printf '\n'
+    printf 'When done, end your reply with one line per comment:\n  <path>:<line> — done | skipped: <reason>\n\n'
     [ -n "$store" ] && [ -f "$store" ] && cat -- "$store"
     return 0
 }
@@ -1302,7 +1306,7 @@ deliver() {
             return 1
         }
         printf '%s' "$payload" > "$file"
-        payload="Read and address every comment in $file — review of your uncommitted changes; ?? comments are questions."
+        payload="Read and address every comment in $file — a code review from the human; ?? comments are questions."
     fi
 
     # A per-invocation buffer name: tmux buffers are SERVER-GLOBAL, so a
