@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# cockpit-board — the shell half of the board (prefix w). cockpit-tui renders
+# and decides; every mutating action stays one of the scripts beside this one,
+# so the suite keeps testing those paths with no binary installed.
+#
+#   cockpit-board -p <pane>     the pane the key was pressed in
+#
+# The action comes back through a FILE, never $(…): ratatui paints on stdout,
+# so a command substitution swallows the whole UI and the popup renders blank.
+set -u
+
+DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$DIR/bin/cockpit-tui"
+LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
+
+# %<digits> and nothing else. Everything here reaches a tmux target or a script
+# argument, and one of the two producers is a binary rather than shell.
+is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+
+PANE=
+case "${1:-}" in
+    -p) PANE=${2:-} ;;
+    "") ;;
+    *)  printf 'usage: cockpit-board -p <pane>\n' >&2; exit 2 ;;
+esac
+# -t the source pane: a bare display-message inside a popup resolves the
+# most-recently-active client, and with two attached that landed on the wrong
+# one (cockpit.tmux:267-272).
+say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
+
+# The binary is additive and gitignored, so "not installed" is a normal state,
+# not an error: say it once and leave the fleet list where it was.
+if [ ! -x "$BIN" ]; then
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" 2>/dev/null
+    exit 0
+fi
+
+mkdir -p "$(dirname "$LOG")" 2>/dev/null
+f=$(mktemp) || exit 1
+trap 'rm -f "$f"' EXIT
+
+# display-popup -E closes on exit, so an unlogged crash leaves no trace at all.
+# env -u CLAUDECODE: inside a popup the agent's own marker is still exported and
+# the binary must not read as one of its children.
+env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board 2>>"$LOG" || {
+    rc=$?
+    tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
+    exit 0
+}
+
+# ONE line, `<verb> <pane-id>`, and nothing after it on that line.
+read -r verb target rest < "$f" || exit 0
+[ -z "$rest" ] || exit 0
+case "$verb" in ''|*[!a-z]*) exit 0 ;; esac
+is_pane "$target" || exit 0
+
+case "$verb" in
+    # switch-client fails on a detached server; the window/pane selection still
+    # retargets the session, so it is not fatal (scripts/tmux-jump:70).
+    jump)
+        tmux switch-client -t "$target" 2>/dev/null || true
+        tmux select-window -t "$target" 2>/dev/null
+        tmux select-pane   -t "$target" 2>/dev/null
+        ;;
+    # The board's own popup is the terminal these get: display-popup is one per
+    # client, so reusing this one is the only place they can draw.
+    review)  "$DIR/scripts/tmux-review" -p "$target" ;;
+    fix)     "$DIR/scripts/tmux-fixer"  -p "$target" ;;
+    info)    "$DIR/scripts/tmux-review" -p "$target" --info; read -r _ ;;
+    deliver) tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null ;;
+esac
+exit 0

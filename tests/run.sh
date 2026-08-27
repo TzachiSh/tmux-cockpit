@@ -8274,5 +8274,200 @@ is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
 "$TMUX_REAL" -L "$TJ" kill-server >/dev/null 2>&1
 fi
 
+echo "== prefix w: the board binds, off keeps stock, 3.6 refuses, and one action line reaches one script =="
+if need_tmux "the board binding"; then :; else
+BD=$(mktmpd)
+mkdir -p "$BD/p/scripts" "$BD/p/bin" "$BD/rec"
+cp "$DIR/cockpit.tmux" "$BD/p/"
+cp -r "$DIR"/scripts/. "$BD/p/scripts/"
+# Nothing in a test may reach the network: the copy's tui-fetch only counts its
+# own runs, which is also how "once, in the background" is pinned.
+printf '#!/bin/sh\necho ran >> %s/fetched\n' "$BD" > "$BD/p/scripts/tui-fetch"
+chmod +x "$BD/p/scripts/tui-fetch"
+
+# cockpit.tmux runs under run-shell, which inherits the SERVER's environment, so
+# a shim has to be on PATH when the server STARTS, not when the key is bound.
+# This one records every argv AND forwards, so one load proves both the refusal
+# message and the missing binding. The -L is forced: with $TMUX unset a bare
+# forward would land on the user's own server.
+bshim() {                     # <dir> <socket> <version-to-report|"">
+    mkdir -p "$1"
+    { printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/argv\n' "$BD"
+      [ -z "$3" ] || printf '[ "$1" = -V ] && { echo "tmux %s"; exit 0; }\n' "$3"
+      printf 'exec %s -L %s "$@"\n' "$TMUX_REAL" "$2"
+    } > "$1/tmux"
+    chmod +x "$1/tmux"
+}
+bkey()  { "$TMUX_REAL" -L "$1" list-keys -T prefix 2>/dev/null | awk -v k="$2" '$4==k'; }
+# The plugin is loaded when its unconditional prefix b bind exists -- polled,
+# because run-shell -b work behind it is not.
+bloaded() {
+    local i
+    for i in $(seq 1 40); do
+        bkey "$1" b | grep -q tmux-branch && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
+# --- the shipped default -------------------------------------------------------
+B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
+PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
+bw=$(bkey "$B" w)
+# bin/cockpit-tui is absent in this copy on purpose: the binary arrives by a
+# gesture, so the key is bound either way and the wrapper says so at press time.
+case "$bw" in *cockpit-board*) ok "prefix w opens the board, with no binary installed" ;;
+    *) bad "prefix w opens the board, with no binary installed" "a display-popup running cockpit-board" "$bw" ;;
+esac
+case "$bw" in *90%*80%*|*80%*90%*) ok "the board popup is 90% x 80%, not the pickers' 70%" ;;
+    *) bad "the board popup is 90% x 80%, not the pickers' 70%" "-w 90% -h 80%" "$bw" ;;
+esac
+case "$bw" in *'#{session_name}'*) ok "the popup title leaves #{session_name} for tmux to expand" ;;
+    *) bad "the popup title leaves #{session_name} for tmux to expand" "#{session_name} in -T" "$bw" ;;
+esac
+# display-popup expands only -T and -d, so the pane id cannot be a format here
+# (#38): the popup's own sh resolves it.
+case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
+    *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
+esac
+case "$(bkey "$B" r)" in *tmux-review*) ok "prefix r still opens the fleet list without the binary" ;;
+    *) bad "prefix r still opens the fleet list without the binary" "a display-popup running tmux-review" "$(bkey "$B" r)" ;;
+esac
+case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
+    *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
+esac
+is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$B" kill-server >/dev/null 2>&1
+
+# --- off, the parked window, and the opt-in fetch ------------------------------
+# "off" cannot leave w EMPTY: stock tmux binds it to choose-tree, and not
+# binding ours simply leaves that standing. Unbound-from-the-board is the
+# contract, the same as @cockpit_review_key.
+B2="cockpit-bw2-$$"; SOCKS="$SOCKS $B2"; bshim "$BD/s2" "$B2" ""
+PATH="$BD/s2:$PATH" "$TMUX_REAL" -L "$B2" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B2" set -g @cockpit_board_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$B2" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B2"
+case "$(bkey "$B2" w)" in *cockpit-board*) bad "@cockpit_board_key off leaves w to stock tmux" \
+        "no cockpit-board in the binding" "$(bkey "$B2" w)" ;;
+    *) ok "@cockpit_board_key off leaves w to stock tmux" ;;
+esac
+case "$(bkey "$B2" a)" in *'Board of every agent'*) bad "and the agents menu drops its row with it" \
+        "no board row" "$(bkey "$B2" a)" ;;
+    *) ok "and the agents menu drops its row with it" ;;
+esac
+"$TMUX_REAL" -L "$B2" kill-server >/dev/null 2>&1
+
+B3="cockpit-bw3-$$"; SOCKS="$SOCKS $B3"; bshim "$BD/s3" "$B3" ""
+PATH="$BD/s3:$PATH" "$TMUX_REAL" -L "$B3" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B3" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$B3" set -g @cockpit_tui_fetch on >/dev/null 2>&1
+"$TMUX_REAL" -L "$B3" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B3"
+case "$(bkey "$B3" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
+    *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B3" w)" ;;
+esac
+until_file "$BD/fetched" '*ran*'
+is "@cockpit_tui_fetch on runs tui-fetch once, in the background" "1" "$(wc -l < "$BD/fetched" 2>/dev/null)"
+"$TMUX_REAL" -L "$B3" kill-server >/dev/null 2>&1
+
+# --- the 3.7 floor -------------------------------------------------------------
+# 3.7 fixed "popup window gets overwritten by background updates" (#4920) and a
+# hook-driven cockpit repaints constantly, so below it the board tears.
+B4="cockpit-bw4-$$"; SOCKS="$SOCKS $B4"; bshim "$BD/s4" "$B4" 3.6; rm -f "$BD/argv"
+PATH="$BD/s4:$PATH" "$TMUX_REAL" -L "$B4" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B4"
+case "$(bkey "$B4" w)" in *cockpit-board*) bad "tmux 3.6 does not bind the board" \
+        "no cockpit-board in the binding" "$(bkey "$B4" w)" ;;
+    *) ok "tmux 3.6 does not bind the board" ;;
+esac
+case "$(cat "$BD/argv" 2>/dev/null)" in *'needs tmux 3.7 (found 3.6)'*)
+        ok "and it refuses by name instead of leaving a dead key" ;;
+    *) bad "and it refuses by name instead of leaving a dead key" \
+         "display-message ... needs tmux 3.7 (found 3.6)" "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
+esac
+"$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
+
+# --- the wrapper: one action line, one script ----------------------------------
+# Every script the wrapper can reach is a stub that records its argv, and tmux
+# only records: the assertion is what ran, in full, not just that the right
+# thing did.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/wargv\nexit 0\n' "$BD" > "$BD/rec/tmux"
+chmod +x "$BD/rec/tmux"
+for s in tmux-jump tmux-review tmux-fixer; do
+    printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
+    chmod +x "$BD/p/scripts/$s"
+done
+# The line travels in a file rather than inside the fake binary's source: the
+# cases below are shell syntax, and re-quoting them into a script is the test
+# writing the very bug it is checking for.
+wact() {                      # <action-line> -> every argv the wrapper produced
+    : > "$BD/wargv"; printf '%s\n' "$1" > "$BD/line"
+    printf '#!/bin/sh\ncat %s/line > "$COCKPIT_ACTION"\n' "$BD" > "$BD/p/bin/cockpit-tui"
+    chmod +x "$BD/p/bin/cockpit-tui"
+    PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+    tr '\n' ';' < "$BD/wargv"
+}
+# jump is three tmux calls and NOT tmux-jump: that script cycles to the next
+# blocked pane from where you are, and the board has already chosen the pane.
+is "jump %9 goes to that pane and runs nothing else" \
+   "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact 'jump %9')"
+is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
+is "fix %1 runs tmux-fixer on it and nothing else"    "tmux-fixer -p %1;"  "$(wact 'fix %1')"
+is "info %1 runs the info screen and waits for the key" "tmux-review -p %1 --info;" "$(wact 'info %1')"
+case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
+    *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;
+esac
+is "only the FIRST line of the action file is ever acted on" \
+   "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact $'jump %9\nreview %1')"
+
+# The binary is the one piece of this plugin that is not shell, so its one line
+# of output is re-checked here rather than trusted. Empty means nothing ran.
+inject() { wact "${1//@/$BD/pwn}"; [ -e "$BD/pwn" ] && printf pwned; }
+is "a verb carrying a command separator runs nothing"        "" "$(inject 'jump; touch @')"
+is "a target written as a command substitution runs nothing" "" "$(inject 'jump $(touch @)')"
+is "a verb written as a command substitution runs nothing"   "" "$(inject '$(touch @) %9')"
+is "a third field on the action line runs nothing"           "" "$(inject 'jump %9 extra')"
+is "a target that is not %<digits> runs nothing"             "" "$(inject 'jump %9x')"
+is "an upper-case verb runs nothing"                         "" "$(inject 'JUMP %9')"
+
+rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+brc=$?
+is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
+   "0 display-message -t %3 cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" \
+   "$brc $(cat "$BD/wargv" 2>/dev/null)"
+
+# --- a plugin directory that is shell syntax -----------------------------------
+# sq() quotes $DIR into the bind, so pressing the key runs the wrapper and not
+# the directory's name. Pressed for real: display-popup needs a client, so an
+# outer server provides the pty (the same shape as the RCE-via-directory-name
+# block above).
+BI=$(mktmpd); BIDIR="$BI/x'\$(touch $BI/OWNED)'y"
+mkdir -p "$BIDIR"; cp -r "$BD/p/." "$BIDIR/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" > %s/args\n' "$BI" > "$BIDIR/scripts/cockpit-board"
+chmod +x "$BIDIR/scripts/cockpit-board"
+BW_IN="cockpit-bwi-$$"; BW_OUT="cockpit-bwo-$$"; SOCKS="$SOCKS $BW_IN $BW_OUT"
+"$TMUX_REAL" -L "$BW_IN" -f /dev/null new-session -d -s s -x 100 -y 30 'exec -a claude sleep 300' >/dev/null 2>&1
+# run-shell hands its string to sh, so the conf line quotes the path -- what
+# this block owns is that the BINDING quotes it too.
+"$TMUX_REAL" -L "$BW_IN" run-shell "$(printf "'%s'" "${BIDIR//\'/\'\\\'\'}/cockpit.tmux")" >/dev/null 2>&1
+bloaded "$BW_IN"
+BIP=$("$TMUX_REAL" -L "$BW_IN" list-panes -t s:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$BW_OUT" -f /dev/null new-session -d -s o -x 100 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $BW_IN attach -t s" >/dev/null 2>&1
+# The client is attached when the inner server sees one -- polled, not slept for.
+for i in $(seq 1 40); do
+    [ -n "$("$TMUX_REAL" -L "$BW_IN" list-clients -F x 2>/dev/null)" ] && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$BW_OUT" send-keys -t o C-b w
+until_file "$BI/args" '*-p*'
+is "a plugin directory named like a command substitution still reaches the wrapper" "-p $BIP" \
+   "$(cat "$BI/args" 2>/dev/null)"
+is "and its name never runs" "no" "$([ -e "$BI/OWNED" ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$BW_OUT" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$BW_IN" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

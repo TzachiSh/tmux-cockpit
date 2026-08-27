@@ -305,6 +305,48 @@ FK=$(tmux show-option -gqv @cockpit_fixer_key)
 case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
+# prefix w: the board -- every agent pane as a live tile, blocked ones first.
+# Stock w is choose-tree; the board IS a better choose-window, so it takes the
+# key. @cockpit_board_key rebinds, off keeps stock.
+#
+# 90%/80% and not the pickers' $PW: a 70% popup on a 120-column terminal is an
+# 84-column board, which is one tile column.
+#
+# 3.7 rather than the plugin's own 3.3 floor: 3.7 fixed "popup window gets
+# overwritten by background updates" (#4920), and a hook-driven cockpit repaints
+# panes constantly, so below it the board tears while you read it.
+#
+# The key is bound whether or not bin/cockpit-tui exists: the binary is fetched
+# by a gesture, not by a config load, so the wrapper says "not installed" at
+# press time instead of the key vanishing until the next reload.
+Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
+BK=$(tmux show-option -gqv @cockpit_board_key)
+case "$BK" in off) bk= ;; "") bk=w ;; *) bk=$BK ;; esac
+if [ -n "$bk" ] && ! version_at_least 3 7; then
+    tmux display-message "tmux-cockpit: the board (prefix $bk) needs tmux 3.7 (found ${tmux_version:-unknown}); prefix r is the fleet list"
+    bk=
+fi
+if [ -n "$bk" ]; then
+    # @cockpit_board_window on: a parked window instead of the modal popup,
+    # mirroring @cockpit_review_window. new-window activates itself before its
+    # command runs, so SRC_PANE would resolve to the board's own pane; run-shell
+    # expands #{pane_id} on the source pane instead (#45).
+    if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
+        tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
+    else
+        tmux bind-key "$bk" display-popup -E -w 90% -h 80% -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
+    fi
+fi
+
+# The binary is optional, and nothing here downloads it. tpm's `prefix U`
+# re-runs every *.tmux -- but so does every plain `source-file ~/.tmux.conf`,
+# and from in here the two are indistinguishable, so an unconditional fetch
+# would put curl's timeout on the tmux startup path. Opt in with
+# `set -g @cockpit_tui_fetch on`, or run scripts/tui-fetch by hand.
+if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
+    tmux run-shell -b "$(sq "$DIR/scripts/tui-fetch")"
+fi
+
 # Reload on R, the shifted pair of the review key: you review all day and
 # reload only after editing the config, so the lowercase key goes to review.
 # The paths come from what tmux actually loaded, resolved once at bind time:
@@ -419,6 +461,7 @@ if [ -n "$ak" ] && version_at_least 3 4; then
     row 'Review its diff'                 r "$rk"
     row 'Side fix beside it'              f "$fk"
     row 'Pane info'                       i "$ik"
+    row 'Board of every agent'            w "$bk"
     rows+=('')
     row 'Switch branch'                   b b
     row 'Move window to a session...'     m "$mk"
