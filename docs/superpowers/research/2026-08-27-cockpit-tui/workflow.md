@@ -53,7 +53,7 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
 - **Outputs:** `tui/src/data.rs` only. The 60 s `claude agents --json` cache, the
   `fs::metadata().modified()` gate on transcript tails, `--rows`/`--json` moved
   behind stable formatting, `COCKPIT_READONLY` honoured on every write path.
-- **Contract:** `list_panes() -> Vec<Pane>`, `preview(id:&str, n:usize) -> String`,
+- **Contract:** `list_panes() -> Vec<Pane>`, `preview(id:&str, n:usize) -> Option<String>` (`None` = capture-pane failed, never an empty preview),
   `hash_rows(&[Pane], extra:&str) -> u64`, `one_pane(id:&str) -> Pane`,
   `tmux(&[&str]) -> String`, `log(&str)`. **Signatures are frozen by L0; L1 may
   change bodies only.** JSON shape per §3.
@@ -232,7 +232,7 @@ asked_since: Option<u64>, idle_since: Option<u64>`. Derives
 
 **`--json`** — an array of objects with exactly these 14 keys, in this order:
 `id, where, state, title, doing, said, asked, msg, since, loc, diff, review, session, path`.
-`where` is `sess:idx name`; `title` falls back to pane name then `(no title)`;
+`where` is `sess:idx` (the window name is the `name` field); `title` falls back to pane name then `(no title)`;
 `since` is seconds or `null`; `diff` is the `±` string; `state` ∈
 `needs-input | running | done | error | ""`. Pretty-printed, one object per agent pane,
 never a non-agent pane.
@@ -323,7 +323,7 @@ You own L1 of #61: the cockpit-tui data layer. Fork from feat/tui-skeleton once 
 Open the issue first ("cockpit-tui L1: session cache, mtime gate, --json contract", "Part of #61."), then
   git worktree add ~/.cache/cockpit-wt/tui-data -b feat/tui-data feat/tui-skeleton
 Scope: tui/src/data.rs ONLY. Cache `claude agents --json` for 60 s (it costs 380 ms and used to run every tick); skip the transcript parse when fs::metadata().modified() is unchanged; route every tmux write through one function that COCKPIT_READONLY disables.
-Contract, frozen by L0, bodies only: list_panes() -> Vec<Pane>, preview(&str, usize) -> String, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Pane, tmux(&[&str]) -> String, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
+Contract, frozen by L0, bodies only: list_panes() -> Vec<Pane>, preview(&str, usize) -> Option<String>, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Pane, tmux(&[&str]) -> Option<String>, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
 Fail-first, all three before the fix: a PATH-shim `claude` counter shows ONE fork across two list_panes() inside 60 s; a transcript whose mtime did not change is not re-read (poison its second line so a re-read panics); COCKPIT_READONLY=1 leaves the tmux shim's log empty.
 Gate: make tui; then `make check` unpiped with the built binary present (L0's block must go green, not skip).
 Do not touch: board.rs, theme.rs, push.rs, lib.rs, main.rs, cockpit.tmux, scripts/*.
