@@ -277,6 +277,7 @@ non-zero exit the same way: one `display-message`, exit 0, never a broken popup.
 ## 4. Gates and verification
 
 Every lane, before asking for review:
+0. Log to a path with `$$` in it. Two suites writing `cmd > same.log` truncate one inode both hold open and interleave; the tail read "1022 passed, 0 failed, exit=0" with a FAIL 800 lines up. The tell: `grep -c '^== ' log` is 2x the distinct block headers (L1, 2026-08-27).
 1. `make check` **unpiped** (`gate-pipelines-mask-failures` — `| tail` reported exit 0
    on a red suite), then `make gate` to stamp. Must be green **with cargo absent from
    PATH**: `env PATH=$(echo "$PATH" | tr ':' '\n' | grep -v cargo | paste -sd:) make check`.
