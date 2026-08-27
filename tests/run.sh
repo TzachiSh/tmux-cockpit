@@ -8199,6 +8199,33 @@ is "and the pane the list was opened from survives" "$KWCTL" "$("$TMUX_REAL" -L 
 "$TMUX_REAL" -L "$KW" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui: docs name only real options =="
+# Three README lines went stale on review phase 3 and cost a round; this asserts
+# every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
+# The freeze (#61 workflow §3) is agreed before the code lands, so its names are
+# allowed early -- each is listed with the lane that introduces it.
+TUI_FROZEN="@cockpit_tui_pid:L0 @cockpit_tui_version:L4 @cockpit_board_key:L6 \
+@cockpit_board_window:L6 @cockpit_tui_fetch:L6 COCKPIT_ACTION:L0 COCKPIT_TMUX:L0 COCKPIT_LOG:L0 \
+COCKPIT_READONLY:L0 COCKPIT_GLYPHS:L0"
+if [ ! -f "$DIR/docs/tui.md" ]; then
+    bad "docs/tui.md exists" "a file" "missing"
+else
+    tui_unknown=""
+    while read -r n; do
+        [ -n "$n" ] || continue
+        case " $TUI_FROZEN " in *" $n:"*) continue ;; esac
+        grep -rqF -- "$n" "$DIR/cockpit.tmux" "$DIR"/scripts/* "$DIR"/tui/src/* 2>/dev/null \
+            || tui_unknown="$tui_unknown $n"
+    done <<< "$(grep -oE '@cockpit_[a-z0-9_]+|COCKPIT_[A-Z0-9_]+' "$DIR/docs/tui.md" | sort -u)"
+    is "every option and env name in docs/tui.md is real or frozen" "" "$tui_unknown"
+    # The action file is the whole reason the binary can stay pure; a doc that
+    # loses it lets the next lane reach for stdout, which ratatui already owns.
+    case "$(cat "$DIR/docs/tui.md")" in
+        *COCKPIT_ACTION*) ok "docs/tui.md documents the action file" ;;
+        *) bad "docs/tui.md documents the action file" "COCKPIT_ACTION" "absent" ;;
+    esac
+fi
+
 echo "== cockpit-tui: --json names every agent pane and nothing else =="
 # The Rust binary is additive: no cargo on the box means no bin/cockpit-tui, and
 # `make check` must still be green, so this skips rather than fails. skip_ is
