@@ -1,13 +1,13 @@
 *.swp
 *~
 
-# The optional cockpit-tui binary (scripts/tui-fetch puts it here) and its
-# build tree. Fetched per machine on prefix U, never committed.
-bin/
-tui/target/
-
 # Agent/orchestration scratch state, not part of the plugin.
 .omc/
 tests/.only.*
 tests/.par.*
 tests/.cache/
+
+# The Rust view: build output only, never the source under tui/.
+# scripts/tui-fetch writes bin/cockpit-tui there on prefix U.
+bin/
+tui/target/
