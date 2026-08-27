@@ -31,6 +31,15 @@ fn draw(w: u16, h: u16, f: impl FnOnce(&mut ratatui::Frame)) -> String {
     t.backend().to_string()
 }
 
+/// TestBackend's Display quotes every row, which is two columns a width check
+/// must not count.
+fn rows(screen: &str) -> Vec<&str> {
+    screen
+        .lines()
+        .map(|l| l.strip_prefix('"').and_then(|l| l.strip_suffix('"')).unwrap_or(l))
+        .collect()
+}
+
 /// The same render, kept as cells, so a test can assert a colour or a modifier.
 fn render_to_buffer(w: u16, h: u16, f: impl FnOnce(&mut ratatui::Frame)) -> Buffer {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -227,8 +236,15 @@ fn needs_input_border_is_red_and_carries_the_verb() {
 
     // the tile starts on row 1 (row 0 is the header); its top-left corner cell
     assert_eq!(b[(0, 1)].fg, th.needs, "needs-input tile border must be needs red");
+    // row 0 is the board header, row 1 the tile's top border, row 2 its first
+    // header line: the question belongs there, not merely somewhere on screen
+    let row2: String = (0..72).map(|x| b[(x, 2)].symbol()).collect();
+    assert!(
+        row2.contains("permission: Bash(sudo openvpn"),
+        "the question must be on the tile's first header row: {row2:?}"
+    );
+    assert_eq!(b[(1, 2)].fg, th.needs, "the question is in needs red");
     let text = b.content.iter().map(|c| c.symbol()).collect::<String>();
-    assert!(text.contains("permission: Bash(sudo openvpn"), "the question must be on the tile");
     assert!(text.contains("↵ answer"), "the bottom title must carry the verb");
 }
 
@@ -252,11 +268,33 @@ fn done_and_idle_tiles_are_dimmed() {
     let (ps, pvs) = (fixture(), previews());
     let v = view(&ps, &pvs, &th, 1, 0);
     let b = render_to_buffer(120, 30, |f| board::render(f, f.area(), &v));
-    let dim = (0..b.area.height).any(|y| {
-        let row: String = (0..b.area.width).map(|x| b[(x, y)].symbol()).collect();
-        row.contains("PR #28 opened") && (0..b.area.width).any(|x| b[(x, y)].modifier.contains(Modifier::DIM))
-    });
-    assert!(dim, "the done tile's preview must carry DIM");
+    // located by each tile's own title, so a neighbouring tile in the other
+    // column cannot satisfy the assertion meant for this one
+    let at = |marker: &str| -> (u16, u16) {
+        let y = (0..b.area.height)
+            .find(|&y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>().contains(marker))
+            .unwrap_or_else(|| panic!("no row carries {marker:?}"));
+        let row: Vec<String> = (0..b.area.width).map(|x| b[(x, y)].symbol().to_string()).collect();
+        let x = (0..b.area.width as usize).find(|&x| row[x..].concat().starts_with(marker)).unwrap() as u16;
+        (x, y)
+    };
+    // expressed twice: the title greys, and the preview dims, so a terminal that
+    // ignores DIM still shows the state and a reader who ignores colour still does
+    for (marker, who) in [("Left click issue", "done"), ("(no title)", "idle")] {
+        let (x, y) = at(marker);
+        assert_eq!(b[(x, y)].fg, th.meta, "the {who} tile's title must be meta, not value");
+        assert!(
+            b[(x, y + 3)].modifier.contains(Modifier::DIM),
+            "the {who} tile's preview must carry DIM"
+        );
+    }
+    // and a running tile is left alone, so the dimming still discriminates
+    let (x, y) = at("Fleet gate review");
+    assert_ne!(b[(x, y)].fg, th.meta, "a running tile's title must not be dimmed");
+    assert!(
+        !b[(x, y + 3)].modifier.contains(Modifier::DIM),
+        "a running tile's preview must not carry DIM"
+    );
 }
 
 // ------------------------------------------------------------ colour tiers
@@ -280,18 +318,32 @@ fn no_color_tier() {
 /// it had in the unicode tier (ux.md §5.4).
 #[test]
 fn ascii_tier_keeps_every_column_width() {
-    let mut th = Theme::fixed();
-    th.g = Glyphs::ascii();
-    let ascii = board_at(80, 24, 0, &th);
-    golden("board-ascii", &ascii);
-
-    let uni = board_at(80, 24, 0, &Theme::fixed());
-    for (i, (a, u)) in ascii.lines().zip(uni.lines()).enumerate() {
-        assert_eq!(a.chars().count(), u.chars().count(), "line {i} changed width in the ascii tier");
+    use unicode_width::UnicodeWidthStr;
+    // ascii pane content too: the tier swaps chrome, and unicode left in the
+    // preview would let a chrome glyph hide behind it
+    let pvs: Vec<String> = previews().iter().map(|p| p.replace(['❯', '⏺', '✓'], ">")).collect();
+    // the dot in `idle · handover pending` is pane data, not chrome, so it is
+    // sanitised here too and is_ascii() can stay the strongest assertion
+    let mut ps = fixture();
+    for p in &mut ps {
+        p.doing = p.doing.replace('·', ".");
     }
-    // the preview stays raw pane bytes by design, so only the chrome is checked
+    let at = |g| {
+        let mut th = Theme::fixed();
+        th.g = g;
+        let v = view(&ps, &pvs, &th, 1, 0);
+        draw(80, 24, |f| board::render(f, f.area(), &v))
+    };
+    let ascii = at(Glyphs::ascii());
+    golden("board-ascii", &ascii);
+    assert!(ascii.is_ascii(), "the ascii tier emitted a non-ascii byte:\n{ascii}");
+
+    let uni = at(Glyphs::unicode());
+    for (i, (a, u)) in rows(&ascii).iter().zip(rows(&uni)).enumerate() {
+        assert_eq!(a.width(), u.width(), "line {i} changed display width in the ascii tier");
+    }
     for glyph in [
-        "┌", "┐", "└", "┘", "│", "─", "┏", "┓", "┗", "┛", "┃", "━", "▲", "▼", "●", "○", "✕", "◆", "↵", "▎", "…",
+        "┌", "│", "─", "┏", "┃", "━", "▲", "▼", "●", "○", "✓", "✕", "◆", "↵", "▎", "…", "·", "—",
     ] {
         assert!(!ascii.contains(glyph), "the ascii tier still draws {glyph}:\n{ascii}");
     }
@@ -398,12 +450,12 @@ fn no_wrapping_and_no_terminal_queries() {
             assert!(!src.contains(q), "{name} sends a terminal query ({q})");
         }
     }
-    // window_size is a required Backend method, so backend.rs may name it once
-    // to delegate; nothing else in the crate may call it.
+    // window_size is a required Backend method, so backend.rs names it exactly
+    // twice: the signature and the delegation. Nothing else may call it.
+    let calls = backend.lines().filter(|l| l.contains("window_size")).count();
     assert_eq!(
-        backend.matches("window_size").count(),
-        2,
-        "backend.rs must only delegate window_size"
+        calls, 2,
+        "backend.rs must only declare and delegate window_size, found {calls} lines"
     );
     assert!(!include_str!("../src/board.rs").contains("window_size"));
     // every colour literal lives in theme.rs
@@ -474,6 +526,68 @@ fn paging_reaches_the_last_row_and_back() {
     assert_eq!(board::moved(Act::NextNeeds, 2, ps.len(), &g, 0, &ps, &ord).0, 0);
 }
 
+/// h and l move a column and stop at the row edge; tab is what wraps in reading
+/// order. Written as `idx ± 1` they would be the same two keys (ux.md §3.1).
+#[test]
+fn column_movement_stops_at_the_row_edge() {
+    let ps = fixture();
+    let ord = board::order(&ps);
+    let g = board::grid(ratatui::layout::Rect::new(0, 0, 120, 30), ps.len());
+    assert_eq!(g.cols, 2);
+    let m = |a, sel| board::moved(a, sel, ps.len(), &g, 0, &ps, &ord).0;
+    assert_eq!(m(Act::Right, 0), 1);
+    assert_eq!(m(Act::Right, 1), 1, "l must not fall into the next row");
+    assert_eq!(m(Act::Left, 2), 2, "h must not climb into the previous row");
+    assert_eq!(m(Act::Next, 1), 2, "tab is the one that crosses rows");
+    assert_eq!(m(Act::Next, 4), 0, "and wraps");
+}
+
+/// Neither moved() nor the tick may leave the selection off-screen: focus is
+/// border weight, so an off-screen selection has nothing pointing at it.
+#[test]
+fn the_viewport_always_holds_the_selection() {
+    let ps = fixture();
+    let ord = board::order(&ps);
+    let acts = [
+        Act::Left,
+        Act::Right,
+        Act::Up,
+        Act::Down,
+        Act::Next,
+        Act::Prev,
+        Act::First,
+        Act::Last,
+        Act::PageUp,
+        Act::PageDown,
+        Act::NextNeeds,
+        Act::Tile(1),
+        Act::Tile(5),
+        Act::Tile(9),
+    ];
+    for (w, h) in [(80u16, 24u16), (120, 30), (160, 24), (48, 12)] {
+        let g = board::grid(ratatui::layout::Rect::new(0, 0, w, h), ps.len());
+        for a in acts {
+            for sel in 0..ps.len() {
+                for top in 0..g.rows {
+                    let (s2, t2) = board::moved(a, sel, ps.len(), &g, top, &ps, &ord);
+                    assert!(
+                        s2 < ps.len() && t2 < g.rows,
+                        "{a:?} from sel={sel} top={top} at {w}x{h} produced sel={s2} top={t2}"
+                    );
+                    let row = s2 / g.cols;
+                    assert!(
+                        row >= t2 && row < t2 + g.rows_shown,
+                        "{a:?} from sel={sel} top={top} at {w}x{h} left sel={s2} off-screen (top={t2})"
+                    );
+                }
+            }
+        }
+    }
+    // and it never panics on an empty fleet
+    let g = board::grid(ratatui::layout::Rect::new(0, 0, 80, 24), 0);
+    assert_eq!(board::moved(Act::Tile(0), 0, 0, &g, 0, &[], &[]), (0, 0));
+}
+
 /// ux.md §1.5's table: sixteen agents at 160x24 is compact, twelve visible, and
 /// the tile numbers reach two digits.
 #[test]
@@ -495,4 +609,92 @@ fn sixteen_agents_page_and_number_correctly() {
     assert!(head.contains("1-12 of 16"), "{head}");
     assert!(head.contains("▼4"), "{head}");
     assert!(out.contains(" 12 ●"), "the twelfth tile keeps its two-digit number:\n{out}");
+
+    // and on page two the number printed in a tile is still the number that
+    // selects it: `5` reaches the tile labelled 5 wherever the viewport is
+    let ord = board::order(&ps);
+    let g = board::grid(ratatui::layout::Rect::new(0, 0, 160, 24), ps.len());
+    let (sel, top) = board::moved(Act::PageDown, 0, ps.len(), &g, 0, &ps, &ord);
+    let v = view(&ps, &pvs, &th, sel, top);
+    let out = draw(160, 24, |f| board::render(f, f.area(), &v));
+    assert!(out.lines().next().unwrap().contains("13-16 of 16"), "{out}");
+    assert!(out.contains(" 13 "), "page two labels its first tile 13:\n{out}");
+    assert_eq!(
+        board::moved(Act::Tile(5), sel, ps.len(), &g, top, &ps, &ord).0,
+        4,
+        "5 selects the tile printed as 5, from any page"
+    );
+}
+
+/// A token wider than a header line must be marked truncated, never silently
+/// clipped: it used to push the 5-column age rail off the tile entirely.
+#[test]
+fn an_over_wide_token_never_eats_the_rail() {
+    use unicode_width::UnicodeWidthStr;
+    let th = Theme::fixed();
+    let mut ps = fixture();
+    ps[0].msg = format!("{} tail", "x".repeat(200));
+    ps[1].doing = "y".repeat(200);
+    let pvs = previews();
+    for (w, h) in [(80u16, 24u16), (120, 30), (160, 24)] {
+        let v = view(&ps, &pvs, &th, 1, 0);
+        let out = draw(w, h, |f| board::render(f, f.area(), &v));
+        assert!(out.contains("4m12s"), "the blocked tile lost its rail at {w}x{h}:\n{out}");
+        assert!(out.contains(" 32s"), "the running tile lost its rail at {w}x{h}:\n{out}");
+        assert!(out.contains('…'), "an over-wide token must be marked truncated at {w}x{h}:\n{out}");
+        for (i, line) in rows(&out).iter().enumerate() {
+            assert!(
+                line.width() <= w as usize,
+                "at {w}x{h} row {i} is {} columns, over {w}: {line:?}",
+                line.width()
+            );
+        }
+    }
+}
+
+/// No fixture, width, tier or scroll position may produce a row wider than the
+/// area. A golden pins one size; this pins the rule across all of them.
+#[test]
+fn no_rendered_row_ever_exceeds_the_area() {
+    use unicode_width::UnicodeWidthStr;
+    let mut ps = fixture();
+    ps.push(pane(
+        "%77",
+        "a-very-long-session-name:12",
+        "and a title that keeps going and going and going",
+        "error",
+    ));
+    let pvs = previews();
+    let ascii = {
+        let mut t = Theme::fixed();
+        t.g = Glyphs::ascii();
+        t
+    };
+    for th in [Theme::fixed(), Theme::no_color(), ascii] {
+        for w in [39u16, 40, 48, 60, 80, 96, 120, 144, 160, 200] {
+            for h in [4u16, 5, 8, 12, 24, 30, 40] {
+                for top in [0usize, 1, 3] {
+                    let v = view(&ps, &pvs, &th, 0, top);
+                    let out = draw(w, h, |f| board::render(f, f.area(), &v));
+                    for (i, line) in rows(&out).iter().enumerate() {
+                        assert!(
+                            line.width() <= w as usize,
+                            "at {w}x{h} top={top} row {i} is {} columns, over {w}: {line:?}",
+                            line.width()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Below either floor the board says why instead of drawing a blank rectangle.
+#[test]
+fn refuses_below_the_height_floor_too() {
+    let th = Theme::fixed();
+    let (ps, pvs) = (fixture(), previews());
+    let v = view(&ps, &pvs, &th, 0, 0);
+    assert!(draw(80, 4, |f| board::render(f, f.area(), &v)).contains("terminal too narrow"));
+    assert!(draw(80, 5, |f| board::render(f, f.area(), &v)).contains("henosis:1"));
 }

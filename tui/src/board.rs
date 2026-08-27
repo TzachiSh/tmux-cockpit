@@ -91,9 +91,13 @@ pub fn grid(area: Rect, n: usize) -> Grid {
 /// Below this the tiles are narrower than a pane name, so a row would lie about
 /// which agent it names. fleet.rs refuses at the same width.
 const MIN_BOARD_W: u16 = 40;
+/// Header, footer and one tile with a border and a content row.
+const MIN_BOARD_H: u16 = 5;
 
 pub fn render(f: &mut Frame, area: Rect, v: &View) {
-    if area.width < MIN_BOARD_W {
+    // below either floor every tile fails its own size guard and the board is a
+    // blank rectangle with nothing saying why
+    if area.width < MIN_BOARD_W || area.height < MIN_BOARD_H {
         narrow(f, area, v.th);
         return;
     }
@@ -103,6 +107,11 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
     }
     let ord = order(v.panes);
     let g = grid(area, ord.len());
+    // View.top is caller-supplied and the terminal can shrink under it
+    let v = &View {
+        top: v.top.min(g.rows.saturating_sub(1)),
+        ..*v
+    };
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
     header(f, head, v, &g, ord.len());
@@ -182,6 +191,8 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
         for (c, cell) in cells.iter().enumerate() {
             let k = (v.top + r) * g.cols + c;
             let Some(&i) = ord.get(k) else { continue };
+            // the printed number is absolute (ux.md §1.7 labels the last page's
+            // lone tile `5`, beside a `5-5 of 5` header) and Act::Tile matches it
             let pv = v.pvs.get(i).map(String::as_str).unwrap_or_default();
             tile(
                 f,
@@ -292,7 +303,9 @@ fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<
         (true, Some(s)) if s >= 60 => th.error,
         _ => th.meta,
     };
-    let rail = Span::styled(format!(" {age:>RAIL_W$}"), Style::new().fg(rail_c));
+    // {:>w} is a minimum, not a maximum: a duration past 9999d would take six
+    // columns and render an age with its unit clipped off
+    let rail = Span::styled(format!(" {:>RAIL_W$}", g.trunc(&age, RAIL_W)), Style::new().fg(rail_c));
 
     let mut out = Vec::new();
     if needs {
@@ -365,15 +378,17 @@ fn fold(s: &str, first_w: usize, rest_w: usize, rows: usize, g: &Glyphs) -> Vec<
     if out.is_empty() {
         out.push(String::new());
     }
-    let last = out.len() - 1;
-    let w = if last == 0 { first_w } else { rest_w };
     // a line that fits but leaves words behind still needs the marker, or the
     // reader cannot tell the question was cut
     let rest = words[taken.min(words.len())..].join(" ");
-    if rest.is_empty() {
-        out[last] = g.trunc(&out[last], w);
-    } else {
-        out[last] = g.trunc(&format!("{} {rest}", out[last]), w);
+    if !rest.is_empty() {
+        let last = out.len() - 1;
+        out[last] = format!("{} {rest}", out[last]);
+    }
+    // every line, not just the last: a single token wider than its budget is
+    // accepted whole above, and pad() cannot shrink it, so it would eat the rail
+    for (i, l) in out.iter_mut().enumerate() {
+        *l = g.trunc(l, if i == 0 { first_w } else { rest_w });
     }
     out
 }
@@ -647,9 +662,12 @@ pub fn action(k: KeyEvent) -> Option<Act> {
 /// Move the selection and pull the viewport after it. Index arithmetic, never
 /// a neighbour graph: the grid is uniform except for a short last row.
 pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], ord: &[usize]) -> (usize, usize) {
-    let last = n - 1;
+    let Some(last) = n.checked_sub(1) else { return (sel, top) };
     let sel = match a {
-        Act::Left => sel.saturating_sub(1),
+        // a column move, not a reading-order move: that is what tab is for
+        Act::Left if sel.is_multiple_of(g.cols) => sel,
+        Act::Left => sel - 1,
+        Act::Right if sel % g.cols == g.cols - 1 => sel,
         Act::Right => (sel + 1).min(last),
         Act::Up => sel.saturating_sub(g.cols),
         Act::Down => (sel + g.cols).min(last),
@@ -657,7 +675,7 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::Prev => (sel + n - 1) % n,
         Act::First => 0,
         Act::Last => last,
-        Act::Tile(t) => (top * g.cols + t as usize - 1).min(last),
+        Act::Tile(t) => (t.max(1) as usize - 1).min(last),
         Act::NextNeeds => (1..=n)
             .map(|d| (sel + d) % n)
             .find(|&k| rank(&ps[ord[k]].state) == 0)
@@ -666,7 +684,6 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::PageDown => (sel + g.cols * g.rows_shown).min(last),
         _ => sel,
     };
-    let row = sel / g.cols;
     let top = match a {
         // a literal screenful, stopping on the last row rather than on the last
         // full page: ux.md §1.7 wants `5-5 of 5 ▲4`, one tile at its normal size
@@ -674,14 +691,21 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::PageDown => (top + g.rows_shown).min(g.rows.saturating_sub(1)),
         _ => top,
     };
-    let top = if row < top {
+    (sel, follow(sel, top, g))
+}
+
+/// Pull the viewport to the selection. Also runs on every tick, because the
+/// terminal can shrink between frames and leave the focused tile off-screen
+/// with nothing to point at it — focus is border weight, not a colour.
+fn follow(sel: usize, top: usize, g: &Grid) -> usize {
+    let row = sel / g.cols;
+    if row < top {
         row
     } else if row >= top + g.rows_shown {
         row + 1 - g.rows_shown
     } else {
         top
-    };
-    (sel, top)
+    }
 }
 
 const DRAW_BUDGET: u8 = 5;
@@ -712,7 +736,7 @@ pub fn run() -> Option<String> {
     let (mut sel, mut top, mut help_open) = (0usize, 0usize, false);
     let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
-    let mut tick = Instant::now() - Duration::from_secs(2);
+    let mut tick = Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or_else(Instant::now);
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let mut action_line = None;
 
@@ -720,7 +744,7 @@ pub fn run() -> Option<String> {
         // a push pulls the next tick forward, it never replaces it, so a missed
         // signal costs one second and never a hang
         if push.pending() {
-            tick -= Duration::from_secs(1);
+            tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick);
         }
         if note.as_ref().is_some_and(|(_, t)| t.elapsed() >= Duration::from_secs(2)) {
             note = None;
@@ -733,7 +757,8 @@ pub fn run() -> Option<String> {
             sel = sel.min(panes.len().saturating_sub(1));
             let area = Rect::new(0, 0, size.width, size.height);
             let g = grid(area, panes.len());
-            top = top.min(g.rows.saturating_sub(g.rows_shown));
+            // the same ceiling moved() pages to, or `]` snaps back within a second
+            top = follow(sel, top.min(g.rows.saturating_sub(1)), &g);
             let tile_h = (size.height.saturating_sub(2) as usize) / g.rows_shown;
             let ord = order(&panes);
             // visible tiles only: crmux runs one capture-pane exec per tile on
@@ -793,7 +818,7 @@ pub fn run() -> Option<String> {
         // a resize is the same request as USR1: look again. It costs nothing to
         // honour, and it means a real terminal resize refreshes the data too.
         if let Some(Event::Resize(..)) = &ev {
-            tick -= Duration::from_secs(1);
+            tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick);
             dirty = true;
         }
         let Some(Event::Key(k)) = ev else { continue };
