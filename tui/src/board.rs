@@ -126,7 +126,10 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     let th = v.th;
     let needs = v.panes.iter().filter(|p| p.state == "needs-input").count();
-    let mut left = vec![Span::styled(format!(" board {} {n} agents", th.g.dot), Style::new().fg(th.label))];
+    let mut left = vec![Span::styled(
+        format!(" board {} {n} agent{}", th.g.dot, if n == 1 { "" } else { "s" }),
+        Style::new().fg(th.label),
+    )];
     if needs > 0 {
         left.push(Span::styled(format!(" {} {needs} needs you", th.g.dot), Style::new().fg(th.needs)));
     }
@@ -185,17 +188,27 @@ pub fn footer_text(g: &Glyphs, w: usize) -> String {
     String::new()
 }
 
+/// The redraw gate's extra input. `hash_rows` leaves the age fields out so an
+/// idle server never repaints; the rail is rendered text, so hash what it
+/// renders and `32s -> 33s` still redraws while `12m0s -> 12m1s` does not.
+pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>]) -> String {
+    let mut out: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
+    out.extend(ps.iter().filter_map(|p| p.since).map(fmt_dur));
+    out
+}
+
 fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
     let rows = Layout::vertical(vec![Constraint::Ratio(1, g.rows_shown as u32); g.rows_shown]).split(area);
     for (r, row) in rows.iter().enumerate() {
         let cells = Layout::horizontal(vec![Constraint::Ratio(1, g.cols as u32); g.cols]).split(*row);
         for (c, cell) in cells.iter().enumerate() {
+            // the printed number is absolute: ux.md §1.7 labels the last
+            // page's lone tile `5` beside a `5-5 of 5` header, and Act::Tile
+            // resolves to the same number
             let k = (v.top + r) * g.cols + c;
             let Some(&i) = ord.get(k) else { continue };
-            // the printed number is absolute (ux.md §1.7 labels the last page's
-            // lone tile `5`, beside a `5-5 of 5` header) and Act::Tile matches it
-            // a short pvs is "not fetched yet" and draws nothing; a stored None
-            // is a failed capture and says so
+            // a short pvs is "not fetched yet" and draws nothing; a stored
+            // None is a failed capture and says so
             let pv = v.pvs.get(i).map(|o| o.as_deref());
             tile(
                 f,
@@ -424,26 +437,21 @@ fn narrow(f: &mut Frame, area: Rect, th: &Theme) {
     );
 }
 
-fn empty(f: &mut Frame, area: Rect, th: &Theme) {
+/// A centred card: the shape ux.md §4's states share.
+fn card(f: &mut Frame, area: Rect, th: &Theme, body: &[&str], foot: Option<(&str, &str)>) {
     let g = &th.g;
-    let body = [
-        String::new(),
-        " no agent panes".into(),
-        String::new(),
-        " cockpit tracks a pane once an agent runs in it.".into(),
-        " start one, or press q and use prefix r for the full fleet.".into(),
-        String::new(),
-    ];
     let w = 62.min(area.width);
     let r = area.centered(Constraint::Length(w), Constraint::Length(body.len() as u16 + 2));
-    let block = Block::bordered()
+    let mut block = Block::bordered()
         .border_set(g.round)
         .border_style(Style::new().fg(th.meta))
-        .title(Line::from(Span::styled(" board ", Style::new().fg(th.label))))
-        .title_bottom(Line::from(vec![
-            Span::styled(" q", Style::new().fg(th.accent)),
-            Span::styled(" close ", Style::new().fg(th.meta)),
+        .title(Line::from(Span::styled(" board ", Style::new().fg(th.label))));
+    if let Some((key, verb)) = foot {
+        block = block.title_bottom(Line::from(vec![
+            Span::styled(format!(" {key}"), Style::new().fg(th.accent)),
+            Span::styled(format!(" {verb} "), Style::new().fg(th.meta)),
         ]));
+    }
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
@@ -452,6 +460,30 @@ fn empty(f: &mut Frame, area: Rect, th: &Theme) {
         .map(|l| Line::from(Span::styled(g.trunc(l, inner.width as usize), Style::new().fg(th.value))))
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn empty(f: &mut Frame, area: Rect, th: &Theme) {
+    card(
+        f,
+        area,
+        th,
+        &[
+            "",
+            " no agent panes",
+            "",
+            " cockpit tracks a pane once an agent runs in it.",
+            " start one, or press q and use prefix r for the full fleet.",
+            "",
+        ],
+        Some(("q", "close")),
+    );
+}
+
+/// Drawn once before the first fetch: `claude agents --json` alone measures
+/// 380 ms, and a popup that is a black rectangle until it returns reads as a
+/// hang (ux.md §4).
+pub fn loading(f: &mut Frame, area: Rect, th: &Theme) {
+    card(f, area, th, &["", " reading the fleet \u{2026}", ""], None);
 }
 
 fn help(f: &mut Frame, area: Rect, th: &Theme) {
@@ -739,6 +771,8 @@ pub fn run() -> Option<String> {
     let mut term = match crate::backend::init() {
         Ok(t) => t,
         Err(e) => {
+            // Push::start() already published the pid and exit() skips Drop
+            crate::push::cleanup();
             eprintln!("cockpit-tui: {e}");
             std::process::exit(1);
         }
@@ -750,6 +784,10 @@ pub fn run() -> Option<String> {
     let mut tick = Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or_else(Instant::now);
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let mut action_line = None;
+
+    // before the first tick, not after: the fetch below is measured at ~600 ms
+    // on three panes and the popup would be a blank rectangle for all of it
+    let _ = term.draw(|f| loading(f, f.area(), &th));
 
     loop {
         // a push pulls the next tick forward, it never replaces it, so a missed
@@ -784,11 +822,7 @@ pub fn run() -> Option<String> {
                 fresh[ord[k]] = preview(&panes[ord[k]].id, rows);
             }
             pvs = fresh;
-            let shown: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
-            // hash_rows leaves the age fields out so an idle server never
-            // redraws; the rail is rendered text, so hash what it renders
-            let rails: String = panes.iter().filter_map(|p| p.since).map(fmt_dur).collect();
-            let h = hash_rows(&panes, &(shown + &rails));
+            let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
             if h != last_hash {
                 last_hash = h;
                 dirty = true;
@@ -865,7 +899,7 @@ pub fn run() -> Option<String> {
         match a {
             Act::Quit => break,
             Act::Help => help_open = true,
-            Act::Refresh => tick -= Duration::from_secs(1),
+            Act::Refresh => tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick),
             Act::Jump => {
                 action_line = Some(format!("jump {id}"));
                 break;

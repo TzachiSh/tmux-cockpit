@@ -20,12 +20,11 @@ pub struct Theme {
     pub done: Color,
     /// the review mark: ◆ must not share "working" yellow with ● (chrome.md C1)
     pub sky: Color,
-    pub sel_bg: Color,
     pub g: Glyphs,
 }
 
 /// role -> (@thm option, Catppuccin Mocha default)
-const ROLES: [(&str, &str); 10] = [
+const ROLES: [(&str, &str); 9] = [
     ("@thm_overlay_1", "#7f849c"),
     ("@thm_subtext_0", "#a6adc8"),
     ("@thm_overlay_0", "#6c7086"),
@@ -35,7 +34,6 @@ const ROLES: [(&str, &str); 10] = [
     ("@thm_yellow", "#f9e2af"),
     ("@thm_green", "#a6e3a1"),
     ("@thm_sky", "#89dceb"),
-    ("@thm_surface_0", "#313244"),
 ];
 
 fn hex(s: &str) -> Option<Color> {
@@ -57,7 +55,7 @@ impl Theme {
             };
         }
         let opts = tmux(&["show-options", "-g"]).unwrap_or_default();
-        let mut c = [Color::Reset; 10];
+        let mut c = [Color::Reset; 9];
         for (i, (opt, fallback)) in ROLES.iter().enumerate() {
             let set = opts.lines().find_map(|l| l.strip_prefix(opt)?.strip_prefix(' '));
             c[i] = set.and_then(hex).or_else(|| hex(fallback)).unwrap_or(Color::Reset);
@@ -68,7 +66,7 @@ impl Theme {
         }
     }
 
-    fn from_roles(c: [Color; 10]) -> Self {
+    fn from_roles(c: [Color; 9]) -> Self {
         Self {
             label: c[0],
             value: Color::Reset,
@@ -80,7 +78,6 @@ impl Theme {
             running: c[6],
             done: c[7],
             sky: c[8],
-            sel_bg: c[9],
             g: Glyphs::unicode(),
         }
     }
@@ -88,7 +85,7 @@ impl Theme {
     /// The test fixture: the shipped defaults with no tmux read, so a snapshot
     /// never moves with the user's palette.
     pub fn fixed() -> Self {
-        let mut c = [Color::Reset; 10];
+        let mut c = [Color::Reset; 9];
         for (i, (_, fallback)) in ROLES.iter().enumerate() {
             c[i] = hex(fallback).unwrap_or(Color::Reset);
         }
@@ -99,7 +96,7 @@ impl Theme {
     /// that also drops bold, dim and reverse — the three attributes the
     /// colourless fallback is built on (p2pmux tui/terminal.rs:79-99).
     pub fn no_color() -> Self {
-        Self::from_roles([Color::Reset; 10])
+        Self::from_roles([Color::Reset; 9])
     }
 
     /// Per-state glyph and colour. chrome.md §1's urgency ramp.
@@ -111,12 +108,6 @@ impl Theme {
             "done" => (self.g.done, self.done),
             _ => (self.g.idle, self.meta),
         }
-    }
-
-    pub fn sel(&self) -> ratatui::style::Style {
-        ratatui::style::Style::new()
-            .bg(self.sel_bg)
-            .add_modifier(ratatui::style::Modifier::BOLD)
     }
 
     pub fn review_mark(&self, review: &str) -> (&'static str, Color) {
