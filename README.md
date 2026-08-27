@@ -255,10 +255,12 @@ over earlier, `prefix r` included.
 
   An earlier version of this file claimed 3.5 was the floor because per-pane
   border colour "silently does nothing" on 3.4. That was wrong — it works.
-- **tmux >= 3.7** for the board (`prefix + w`), which is optional: 3.7 fixed a
-  popup being overwritten by background repaints, and a hook-driven cockpit
-  repaints constantly. Building the board from source with `make tui` also
-  needs **Rust >= 1.88**; the fetched binary needs neither Rust nor cargo.
+- **tmux >= 3.7** for the board *popup* (`prefix + w`), which is optional: 3.7
+  fixed a popup being overwritten by background repaints, and a hook-driven
+  cockpit repaints constantly. `@cockpit_board_window on` parks the board in a
+  window instead, which repaints like any other window and binds down to 3.3.
+  Building the board from source with `make tui` also needs **Rust >= 1.88**;
+  the fetched binary needs neither Rust nor cargo.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 

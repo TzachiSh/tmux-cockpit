@@ -48,11 +48,13 @@ env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board 2>>"$LOG" 
 
 # ONE line, `<verb> <pane-id>`; a second line is read and dropped. Pre-set, or a
 # binary that deletes $COCKPIT_ACTION fails the redirect, skips the read, and
-# `set -u` aborts on $verb with a bash error inside the popup. No `|| exit` on
-# the read either: it returns non-zero on an unterminated last line AFTER
-# assigning, and the wrapper and the binary ship on separate tags.
+# `set -u` aborts on $verb with a bash error inside the popup. 2> comes BEFORE
+# the input redirect: after it, the failing `<` has already written its own
+# diagnostic to the screen. No `|| exit` on the read either: it returns
+# non-zero on an unterminated last line AFTER assigning, and the wrapper and
+# the binary ship on separate tags.
 verb='' target='' rest=''
-read -r verb target rest < "$f"
+read -r verb target rest 2>/dev/null < "$f"
 [ -n "$verb" ] || exit 0                 # nothing chosen: the ordinary q
 bad=
 [ -z "$rest" ] || bad=1

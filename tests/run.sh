@@ -8828,9 +8828,9 @@ is "a rejected line leaves a trace instead of a silently dead key" "1" \
 
 : > "$BD/wargv"
 printf '#!/bin/sh\nrm -f "$COCKPIT_ACTION"\n' > "$BD/p/bin/cockpit-tui"; chmod +x "$BD/p/bin/cockpit-tui"
-PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
-is "a binary that deletes the action file exits 0 and says nothing" "0 " \
-   "$? $(cat "$BD/wargv" 2>/dev/null)"
+bnoise=$(PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null 2>&1); brc=$?
+is "a binary that deletes the action file exits 0, prints nothing, says nothing" "0  " \
+   "$brc $bnoise $(cat "$BD/wargv" 2>/dev/null)"
 
 rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
