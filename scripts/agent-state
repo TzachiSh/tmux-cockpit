@@ -337,7 +337,7 @@ fmt_nr='#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?#{m:*|#{pane_curr
 # colour tokens survive the read and still compare equal to what was stored.
 sep=$'\037'
 tq display-message -p -t "$pane" \
-    "$fmt_needs$sep"'#{@cockpit_win_needs}'"$sep$fmt_state$sep"'#{@cockpit_win_state}'"$sep$fmt_nb$sep$fmt_ne$sep$fmt_nr$sep"'#{@cockpit_fleet}'
+    "$fmt_needs$sep"'#{@cockpit_win_needs}'"$sep$fmt_state$sep"'#{@cockpit_win_state}'"$sep$fmt_nb$sep$fmt_ne$sep$fmt_nr$sep"'#{@cockpit_fleet}'"$sep"'#{@cockpit_tui_pid}'
 # Not tflush: this one hands its output back. Same fail-open -- a dead server
 # yields an empty string, every field then reads empty, and empty fields ask for
 # no writes at all, which is what the separate reads did when they failed too.
@@ -349,7 +349,8 @@ win_state_cur=${pre%%"$sep"*}; pre=${pre#*"$sep"}
 nb=${pre%%"$sep"*};            pre=${pre#*"$sep"}
 ne=${pre%%"$sep"*};            pre=${pre#*"$sep"}
 nr=${pre%%"$sep"*};            pre=${pre#*"$sep"}
-fleet_cur=$pre
+fleet_cur=${pre%%"$sep"*};     pre=${pre#*"$sep"}
+tui_pid=$pre
 
 # The compare-then-set guards, unchanged in substance: a counter that did not
 # move writes nothing, because every set-option -- even -p with the same value
@@ -371,6 +372,22 @@ case "$ne" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_peach}]✕$ne#[defau
 case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_yellow}]◆$nr#[default] " ;; esac
 [ "$fleet" = "$fleet_cur" ] || tq set-option -gq @cockpit_fleet "$fleet"
 tflush
+
+# --- the push channel: tell cockpit-tui to look now ---------------------------
+# The pid rode the batched read above and the check is a builtin, so a wake adds
+# no tmux round-trip and no fork (25-31ms to the view's redraw, against its 1s
+# poll). The name check is not optional: a published pid outlives its process --
+# SIGKILL unpublishes nothing -- pids get recycled, and SIGUSR1's default action
+# is terminate. A probe already shot a stranger's process on the live server.
+if [ -n "$tui_pid" ]; then
+    tui_comm=""
+    # macOS has no /proc and its ps prints a path, so strip either way.
+    read -r tui_comm < "/proc/$tui_pid/comm" 2>/dev/null ||
+        tui_comm=$(ps -o comm= -p "$tui_pid" 2>/dev/null)
+    if [ "${tui_comm##*/}" = cockpit-tui ]; then
+        kill -USR1 "$tui_pid" 2>/dev/null || true
+    fi
+fi
 
 # No refresh-client here, deliberately. set-option already repaints everything
 # that reads the option -- measured: the border, the tab marker and even the
