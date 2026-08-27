@@ -42,7 +42,7 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
 - **Fail-first:** the bash block asserts `--json` has one object per `claude` pane
   with the 14 frozen keys, and **skips** via `skip_` when `bin/cockpit-tui` is absent.
   Run it before the binary exists: it must print SKIP, not PASS and not FAIL.
-- **Gate:** `make check` green **with cargo removed from PATH**; `make tui` green;
+- **Gate:** `make check` green **with cargo removed from PATH**; `make tui` (build only) and `make tui-test` (cargo test, clippy -D warnings, fmt --check) green;
   `bash -n tests/run.sh`.
 - **Size:** ~2,000 lines moved, ~150 new. Half a day.
 - **Day one: yes, and it is the only thing on the critical path.** Push the branch
@@ -62,7 +62,7 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
   transcript whose mtime is untouched is not re-parsed (shim `open` count via a
   fixture with a poisoned second line that would panic if read twice);
   (c) `COCKPIT_READONLY=1` makes zero `set-option` calls (tmux shim log is empty).
-- **Gate:** `make tui`; the L0 bash block still green against the built binary.
+- **Gate:** `make tui` + `make tui-test`; the L0 bash block still green against the built binary.
 - **Size:** ~120 lines changed, ~90 test. Half a day. **Day one after L0's push.**
 
 ### L2 — board renderer (parallel, no tmux at all)
@@ -78,7 +78,7 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
   property test over widths 1..40 (never panics, never exceeds the width);
   an ascii-tier golden under `COCKPIT_GLYPHS=ascii`; a test that asserts the
   preview `Paragraph` is built **without** `Wrap` (ratatui #2679).
-- **Gate:** `make tui`. TestBackend only — no tmux, no popup, no clock.
+- **Gate:** `make tui-test` (`make tui` only builds). TestBackend only — no tmux, no popup, no clock.
 - **Size:** ~140 lines, ~120 test. One day. **Day one, against the demo crate,
   before L0 even merges.**
 
@@ -281,8 +281,8 @@ Every lane, before asking for review:
 1. `make check` **unpiped** (`gate-pipelines-mask-failures` — `| tail` reported exit 0
    on a red suite), then `make gate` to stamp. Must be green **with cargo absent from
    PATH**: `env PATH=$(echo "$PATH" | tr ':' '\n' | grep -v cargo | paste -sd:) make check`.
-2. `make tui` = `cargo build --release && cargo test && cargo clippy -- -D warnings &&
-   cargo fmt --check`, run from `tui/`. Zero clippy warnings is the bar the demo already meets.
+2. `make tui` = `cargo build --release` + copy to `bin/` + `--version`; `make tui-test` = `cargo test && cargo clippy --all-targets -- -D warnings &&
+   cargo fmt --check`, both from `tui/`. Run both; `make tui` alone runs no test (L6 caught every lane reading it as build+test).
 3. `bash -n tests/run.sh` after any merge that touches it.
 4. **Freeze rig, required for L3 and L6, offered by everyone else:**
    `bash tests/freeze-rig/gate.sh tests/freeze-rig/fixed-example.conf` on the branch
