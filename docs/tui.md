@@ -311,7 +311,8 @@ id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
 session, path
 ```
 
-`where` is `sess:idx name`. `title` falls back to the pane name, then
+`where` is `sess:idx`, and nothing else: the window name is `data::Pane`'s
+`name` field, which `--json` does not carry. `title` falls back to the pane name, then
 `(no title)`. `since` is seconds or `null`. `diff` is the `±` string. `state` is
 one of `needs-input | running | done | error | ""`. Pretty-printed, one object
 per agent pane, never a non-agent pane.
@@ -332,6 +333,17 @@ jump %N · review %N · fix %N · deliver %N   (deliver reserved for phase 2)
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
 nothing.
 
+**Signatures.** Frozen; each lane changes bodies only.
+
+```
+tmux(&[&str])           -> Option<String>   None = unreachable, or a non-zero exit
+preview(&str, usize)    -> Option<String>   None = capture-pane failed
+```
+
+Neither returns an empty string for a failure. A `None` from `preview` renders
+as one line, `capture failed`, never a blank tile: an empty preview and a dead
+pane are different facts and a blank tile tells you which one it is.
+
 **CLI:** `cockpit-tui board | fleet | info %N | ask %N | --rows | --json |
 --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
 `board`.
@@ -342,6 +354,10 @@ when `COCKPIT_LOG` is set. No rotation.
 **Exit codes:** `0` normal (an action was written, or none), `1` runtime failure
 (tmux unreachable, terminal not a tty), `2` usage error (unknown subcommand, bad
 pane id). The binding treats a missing binary and a non-zero exit the same way.
+
+`--rows` and `--json` exit 1 when the `list-panes` call fails, so a wrapper can
+tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
+"no tmux".
 
 ### The hard rules
 
@@ -361,6 +377,13 @@ pane id). The binding treats a missing binary and a non-zero exit the same way.
 - **`ratatui::init()` paired with `panic = "abort"`**, never a Drop-based
   terminal guard with abort: no unwinding means Drop never runs. `init()`'s
   panic hook runs before the abort and restores the terminal.
+- **Emit truecolor unconditionally** from `@thm_*`. Measured on 3.7c: tmux
+  downgrades per attached client, to nearest-256 without RGB and to 16 on a
+  16-colour client, and the inner `TERM` has no effect. There is no 16-colour
+  tier to write, and `#{client_termfeatures}` is at most a shortcut.
+- **Honour `NO_COLOR` in-app**, every role set to `Reset`, and leave crossterm's
+  own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
+  and reverse, the three attributes the colourless fallback is built on.
 - **Actions are printed, never executed.**
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
