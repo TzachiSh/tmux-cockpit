@@ -312,8 +312,9 @@ case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 # prefix w: the board -- every agent pane as a live tile. Stock w is
 # choose-tree; @cockpit_board_key rebinds, off keeps stock.
 #
-# 90%/80% and not the pickers' $PW: a 70% popup on a 120-column terminal is an
-# 84-column board, which is one tile column.
+# Wider than the pickers' $PW and only wider: a 70% popup on a 120-column
+# terminal is an 84-column board, which is one tile column. The height stays
+# $PH, so a user who set @cockpit_popup_height gets it here too.
 #
 # 3.7, above the plugin's own 3.3 floor: 3.7 fixed #4920, "popup window gets
 # overwritten by background updates", and a hook-driven cockpit repaints panes
@@ -336,7 +337,7 @@ if [ -n "$bk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
         tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
     else
-        tmux bind-key "$bk" display-popup -E -w 90% -h 80% -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
+        tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 

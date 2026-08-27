@@ -8320,8 +8320,13 @@ bw=$(bkey "$B" w)
 case "$bw" in *cockpit-board*) ok "prefix w opens the board, with no binary installed" ;;
     *) bad "prefix w opens the board, with no binary installed" "a display-popup running cockpit-board" "$bw" ;;
 esac
-case "$bw" in *90%*80%*|*80%*90%*) ok "the board popup is 90% x 80%, not the pickers' 70%" ;;
-    *) bad "the board popup is 90% x 80%, not the pickers' 70%" "-w 90% -h 80%" "$bw" ;;
+case "$bw" in *'"90%"'*) ok "the board popup is 90% wide, not the pickers' 70%" ;;
+    *) bad "the board popup is 90% wide, not the pickers' 70%" "-w 90%" "$bw" ;;
+esac
+# Only the WIDTH is the board's own: a 70% popup on a 120-column terminal is
+# one tile column. The height is whatever the other cockpit popups use.
+case "$bw" in *'"70%"'*) ok "and its height is @cockpit_popup_height, like every other cockpit popup" ;;
+    *) bad "and its height is @cockpit_popup_height, like every other cockpit popup" "-h 70%" "$bw" ;;
 esac
 case "$bw" in *'#{session_name}'*) ok "the popup title leaves #{session_name} for tmux to expand" ;;
     *) bad "the popup title leaves #{session_name} for tmux to expand" "#{session_name} in -T" "$bw" ;;
@@ -8360,11 +8365,11 @@ esac
 
 B3="cockpit-bw3-$$"; SOCKS="$SOCKS $B3"; bshim "$BD/s3" "$B3" ""
 PATH="$BD/s3:$PATH" "$TMUX_REAL" -L "$B3" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B3" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$B3" set -g @cockpit_popup_height 44% >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" set -g @cockpit_tui_fetch on >/dev/null 2>&1
 "$TMUX_REAL" -L "$B3" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B3"
-case "$(bkey "$B3" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
-    *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B3" w)" ;;
+case "$(bkey "$B3" w)" in *'"44%"'*) ok "a set @cockpit_popup_height reaches the board too" ;;
+    *) bad "a set @cockpit_popup_height reaches the board too" "-h 44%" "$(bkey "$B3" w)" ;;
 esac
 until_file "$BD/fetched" '*ran*'
 is "@cockpit_tui_fetch on runs tui-fetch, exactly once" "1" "$(wc -l < "$BD/fetched" 2>/dev/null)"
@@ -8375,6 +8380,15 @@ case "$(grep 'run-shell -b' "$BD/argv" 2>/dev/null)" in *tui-fetch*) ok "and bac
          "$(grep run-shell "$BD/argv" 2>/dev/null)" ;;
 esac
 "$TMUX_REAL" -L "$B3" kill-server >/dev/null 2>&1
+
+B6="cockpit-bw6-$$"; SOCKS="$SOCKS $B6"; bshim "$BD/s6" "$B6" ""
+PATH="$BD/s6:$PATH" "$TMUX_REAL" -L "$B6" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B6" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$B6" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B6"
+case "$(bkey "$B6" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
+    *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B6" w)" ;;
+esac
+"$TMUX_REAL" -L "$B6" kill-server >/dev/null 2>&1
 
 # --- the 3.7 floor -------------------------------------------------------------
 # 3.7 fixed "popup window gets overwritten by background updates" (#4920) and a
