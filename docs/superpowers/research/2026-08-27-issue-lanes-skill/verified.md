@@ -24,7 +24,7 @@ Rubric ambiguities that produced every disagreement: does a gh intermediate file
 | 6 Nygard | TIGHTENED | CONFIRMED | no date line; "keep the old one around, but mark it as superseded" |
 | 14 SRE action items | TIGHTENED | CONFIRMED | table is Appendix D, columns Action Item / Type / Owner / Bug; ch. 15 has no shape list |
 | 27 Chromium | TIGHTENED | CONFIRMED | "pinpoint" appears only as a verb; perf trybots and bisect bots |
-| 26 benchstat | CONFIRMED | TIGHTENED (R3's quote) | "at least 10 times"; "ideally 20" is not on the page |
+| 26 benchstat | CONFIRMED | CONFIRMED (V3's tightening was itself wrong: review-L4 on issue-lanes-skill#10 found "at least 10, ideally 20" on the page by fixed-string grep) | "at least 10 times"; "ideally 20" is on the page |
 | 25 actions/runner#1212 | CONFIRMED | CONFIRMED | policy stated in #353 comment; add it beside #1212 |
 | Go "about a week" | CONFIRMED | CONFIRMED | proposal README, Accepted and Declined sections |
 
