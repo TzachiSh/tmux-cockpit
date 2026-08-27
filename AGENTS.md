@@ -36,10 +36,18 @@ already happened once, to a probe on the live server.
 Check the name first, in the shape `scripts/agent-state` uses:
 
 ```sh
-read -r comm < "/proc/$pid/comm" 2>/dev/null ||
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null)   # macOS has no /proc
+if [ -r "/proc/$pid/comm" ]; then
+    read -r comm 2>/dev/null < "/proc/$pid/comm"
+elif [ ! -d /proc/self ]; then
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null)   # macOS: ps prints a path
+fi
 [ "${comm##*/}" = cockpit-tui ] && kill -USR1 "$pid"
 ```
+
+Test `-r` first rather than falling back from a failed `read`: the pid that needs
+this guard is exactly the one that is absent from `/proc`, so `read || ps` forks
+`ps` on every call. And `2>/dev/null` goes *before* the input redirect, or bash
+reports the failure before that redirect applies.
 
 The same holds for any pid option added later. The publisher's half of the
 bargain is to unpublish on **every** exit path, signal handlers included

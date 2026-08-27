@@ -374,16 +374,19 @@ case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_yellow}]◆$nr#[defa
 tflush
 
 # --- the push channel: tell cockpit-tui to look now ---------------------------
-# The pid rode the batched read above and the check is a builtin, so a wake adds
-# no tmux round-trip and no fork (25-31ms to the view's redraw, against its 1s
-# poll). The name check is not optional: a published pid outlives its process --
-# SIGKILL unpublishes nothing -- pids get recycled, and SIGUSR1's default action
-# is terminate. A probe already shot a stranger's process on the live server.
+# The name check is not optional: a published pid outlives its process (SIGKILL
+# unpublishes nothing), pids get recycled, and SIGUSR1's default action is
+# terminate -- a probe already shot a stranger's process on the live server.
 if [ -n "$tui_pid" ]; then
     tui_comm=""
-    # macOS has no /proc and its ps prints a path, so strip either way.
-    read -r tui_comm < "/proc/$tui_pid/comm" 2>/dev/null ||
-        tui_comm=$(ps -o comm= -p "$tui_pid" 2>/dev/null)
+    # -r first, not `read || ps`: a pid nobody unpublished is absent from /proc,
+    # so the || forked ps on every transition. 2>/dev/null before the input
+    # redirect, or bash reports its failure before that redirect applies.
+    if [ -r "/proc/$tui_pid/comm" ]; then
+        read -r tui_comm 2>/dev/null < "/proc/$tui_pid/comm"
+    elif [ ! -d /proc/self ]; then
+        tui_comm=$(ps -o comm= -p "$tui_pid" 2>/dev/null)   # macOS: ps prints a path
+    fi
     if [ "${tui_comm##*/}" = cockpit-tui ]; then
         kill -USR1 "$tui_pid" 2>/dev/null || true
     fi
