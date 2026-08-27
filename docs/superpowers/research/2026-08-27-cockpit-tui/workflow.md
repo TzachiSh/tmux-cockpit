@@ -323,7 +323,7 @@ You own L1 of #61: the cockpit-tui data layer. Fork from feat/tui-skeleton once 
 Open the issue first ("cockpit-tui L1: session cache, mtime gate, --json contract", "Part of #61."), then
   git worktree add ~/.cache/cockpit-wt/tui-data -b feat/tui-data feat/tui-skeleton
 Scope: tui/src/data.rs ONLY. Cache `claude agents --json` for 60 s (it costs 380 ms and used to run every tick); skip the transcript parse when fs::metadata().modified() is unchanged; route every tmux write through one function that COCKPIT_READONLY disables.
-Contract, frozen by L0, bodies only: list_panes() -> Vec<Pane>, preview(&str, usize) -> Option<String>, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Pane, tmux(&[&str]) -> Option<String>, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
+Contract, frozen by L0, bodies only: list_panes() -> Option<Vec<Pane>>, preview(&str, usize) -> Option<String>, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Option<Pane>, tmux(&[&str]) -> Option<String>, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
 Fail-first, all three before the fix: a PATH-shim `claude` counter shows ONE fork across two list_panes() inside 60 s; a transcript whose mtime did not change is not re-read (poison its second line so a re-read panics); COCKPIT_READONLY=1 leaves the tmux shim's log empty.
 Gate: make tui; then `make check` unpiped with the built binary present (L0's block must go green, not skip).
 Do not touch: board.rs, theme.rs, push.rs, lib.rs, main.rs, cockpit.tmux, scripts/*.
