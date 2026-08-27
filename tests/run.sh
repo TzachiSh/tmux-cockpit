@@ -568,6 +568,86 @@ is "and the stored count still carries its colour tokens" \
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state: a transition wakes cockpit-tui, and never a pid that is not it =="
+# The push channel's sender (issue #61). @cockpit_tui_pid outlives the process
+# that published it and pids get recycled, and SIGUSR1's default action is
+# terminate -- so an unverified kill shoots a stranger's process, as one probe
+# already did on the live server.
+# Known gap, no code: a second ask on an ALREADY-blocked pane exits at the
+# sticky needs-input guard (scripts/agent-state:176) before reaching the sender,
+# so that question reaches the board on its 1 s poll rather than on a push.
+if need_tmux "agent-state push sender"; then :; else
+PS="cockpit-push-$$"; SOCKS="$SOCKS $PS"
+"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+PSP=$("$TMUX_REAL" -L "$PS" list-panes -t t -F '#{pane_id}')
+PSD=$(mktmpd)
+pstrans() {                   # one real transition on this block's server
+    PATH="$SHIM:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$PSP" >/dev/null 2>&1
+}
+# The recycled-pid stand-in wears cockpit-tui in argv0 and `sleep` in comm, so
+# it also pins WHICH name the guard reads: ps argv0 would signal this one.
+"$TMUX_REAL" -L "$PS" new-window -d -t t: 'exec -a cockpit-tui sleep 30' >/dev/null 2>&1
+PSSLEEP=$("$TMUX_REAL" -L "$PS" list-panes -t t:1 -F '#{pane_pid}')
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSSLEEP" >/dev/null 2>&1
+pstrans running
+pstrans needs-input
+if kill -0 "$PSSLEEP" 2>/dev/null; then ok "a stale pid that is not cockpit-tui is never signalled"
+else bad "a stale pid that is not cockpit-tui is never signalled" "the process still alive" "USR1 killed it"; fi
+# The wake half. A symlink named cockpit-tui gives the process that comm, so
+# this is the same check the real binary passes; `sleep & wait` because bash
+# runs no trap while a foreground child is running.
+ln -s "$(command -v bash)" "$PSD/cockpit-tui" 2>/dev/null
+PSMARK="$PSD/woke"
+"$PSD/cockpit-tui" -c 'trap "printf woke > \"$1\"; exit 0" USR1; sleep 30 & wait' _ "$PSMARK" &
+PSPID=$!
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSPID" >/dev/null 2>&1
+# running, not done: needs-input is sticky and a done would exit before the
+# batch (scripts/agent-state:175-180), so no transition would happen to push.
+pstrans running
+if until_file "$PSMARK" '*woke*'; then ok "a transition signals the running cockpit-tui"
+else bad "a transition signals the running cockpit-tui" "woke" "$(cat "$PSMARK" 2>/dev/null)"; fi
+# An exact count, not the "<= 4" the block above uses: the pid rides a
+# round-trip the transition already pays for, and a `tmux show-option` of its
+# own lands at 4 and would slip through that ceiling unnoticed. The ps shim
+# beside it pins the other half -- the verify must stay a builtin.
+PSC=$(mktmpd); PSCLOG="$PSC/calls"; PSPSLOG="$PSC/pscalls"; PSERR="$PSC/err"
+cat > "$PSC/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PSCLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+cat > "$PSC/ps" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PSPSLOG"
+exec "$(command -v ps)" "\$@"
+SHIMEOF
+chmod +x "$PSC/tmux" "$PSC/ps"
+pscount() { : > "$PSCLOG"; : > "$PSPSLOG"; : > "$PSERR"
+    PATH="$PSC:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$PSP" >/dev/null 2>"$PSERR"
+    wc -l < "$PSCLOG" | tr -d ' '; }
+is "a transition with the view up still costs 3 tmux round-trips" "3" "$(pscount needs-input)"
+kill "$PSPID" 2>/dev/null; wait "$PSPID" 2>/dev/null
+# An empty option is the common case (no TUI running) and must cost nothing and
+# signal nobody -- `kill -USR1 ''` would be an error on every hook in the world.
+"$TMUX_REAL" -L "$PS" set -gu @cockpit_tui_pid >/dev/null 2>&1
+is "with no pid published the transition still succeeds" "0" "$(pstrans running; echo $?)"
+is "and still costs the same 3 round-trips" "3" "$(pscount needs-input)"
+# The state the guard exists for: a pid nobody unpublished, because SIGKILL, a
+# crash and a power cut all leave @cockpit_tui_pid standing. It is absent from
+# /proc, which is where a `read || ps` fallback forked ps on every transition
+# and leaked bash's redirect failure onto the hook's real stderr.
+sleep 0 & PSDEAD=$!; wait "$PSDEAD" 2>/dev/null
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSDEAD" >/dev/null 2>&1
+is "a dead published pid still costs 3 round-trips" "3" "$(pscount running)"
+is "and forks no ps to ask about it" "" "$(cat "$PSPSLOG")"
+is "and says nothing on the hook's stderr" "" "$(cat "$PSERR")"
+"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
 if need_tmux "agent-state recount"; then :; else
 tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
@@ -8197,6 +8277,225 @@ kw_run; until_cap "$KW" "$KWCTL" '*y/N*'
 is "y kills it" "1" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
 is "and the pane the list was opened from survives" "$KWCTL" "$("$TMUX_REAL" -L "$KW" list-panes -a -F '#{pane_id}')"
 "$TMUX_REAL" -L "$KW" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui: tui-fetch verifies before it installs, and never breaks a working binary =="
+# No network: the release host is a file:// tree the block builds itself. The
+# binary is a stand-in shell script -- tui-fetch only ever asks it --version,
+# which is exactly the check a checksum cannot make.
+if ! command -v curl >/dev/null 2>&1; then skip_ "tui-fetch (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum)"; else
+TF=$(mktmpd); mkdir -p "$TF/plugin/scripts" "$TF/build" "$TF/curlshim" "$TF/shim"
+cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
+TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"; TFGONE="file://$TF/no-such-host"
+# Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
+printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" > "$TF/curlshim/curl"
+# An old rustc and a cargo that shouts if the floor check ever lets it run.
+printf '#!/bin/sh\necho "rustc 1.85.0 (0000000 2026-01-01)"\n' > "$TF/shim/rustc"
+printf '#!/bin/sh\necho CARGO_RAN >&2; exit 1\n' > "$TF/shim/cargo"
+chmod +x "$TF/curlshim/curl" "$TF/shim/rustc" "$TF/shim/cargo"
+# Every target name gets the same bytes, so the block runs on whatever box the
+# suite is on without re-deriving the uname mapping the script under test owns.
+tf_release() {                # <tag> <version-it-reports> [flip|flat|broken|noasset]
+    local d="$TF/rel/$1" t
+    mkdir -p "$d"; rm -rf "$TF/build"; mkdir -p "$TF/build"
+    if [ "${3:-}" = noasset ]; then
+        # A manifest that lists only somebody else's platform: settled, not transient.
+        printf '%s  cockpit-tui-mips-unknown-linux.tar.gz\n' 0000 > "$d/sha256.sum"
+        return 0
+    fi
+    # Measured on dist 0.32.0: the archive is a cockpit-tui-<target>/ directory
+    # holding the binary beside LICENSE and README. `flat` pins that an archive
+    # without that wrapper still installs; `broken` is a binary that cannot run
+    # here at all, which is a different answer from one that names another version.
+    if [ "${3:-}" = broken ]; then
+        printf '#!/nonexistent-interpreter\n' > "$TF/build/cockpit-tui"
+        chmod +x "$TF/build/cockpit-tui"
+        ( cd "$TF/build" && tar -czf "$d/a.tgz" cockpit-tui )
+    elif [ "${3:-}" = flat ]; then
+        printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$2" > "$TF/build/cockpit-tui"
+        chmod +x "$TF/build/cockpit-tui"
+        ( cd "$TF/build" && tar -czf "$d/a.tgz" cockpit-tui )
+    else
+        mkdir -p "$TF/build/wrap"
+        printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$2" > "$TF/build/wrap/cockpit-tui"
+        chmod +x "$TF/build/wrap/cockpit-tui"; : > "$TF/build/wrap/LICENSE"
+        ( cd "$TF/build" && tar -czf "$d/a.tgz" wrap )
+    fi
+    for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
+        cp "$d/a.tgz" "$d/cockpit-tui-$t.tar.gz"
+    done
+    rm -f "$d/a.tgz"
+    ( cd "$d" && sha256sum cockpit-tui-*.tar.gz > sha256.sum )
+    if [ "${3:-}" = flip ]; then
+        awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
+            "$d/sha256.sum" > "$d/s2" && mv "$d/s2" "$d/sha256.sum"
+    fi
+}
+tf() {                        # <release-base-url> <args...>
+    local u=$1; shift
+    COCKPIT_TUI_RELEASES="$u" "$TF/plugin/scripts/tui-fetch" "$@" 2>&1
+}
+tf_ver() { "$TFB" --version 2>/dev/null; }
+tf_mark() { cat "$TF/plugin/bin/.tried" 2>/dev/null; }
+
+tf_release tui-v0.1.0 0.1.0
+tfout=$(tf "$TFR" --version tui-v0.1.0); tfrc=$?
+is "tui-fetch installs a tarball that matches its published checksum" "0" "$tfrc"
+is "and the installed binary is the one the tag named" "cockpit-tui 0.1.0" "$(tf_ver)"
+# Deleting the release proves the second run never went looking for it: the
+# probe is the binary in bin/, not a name on PATH -- fzf's installer
+# re-downloaded everything when a distro copy shadowed its own.
+rm -rf "$TF/rel/tui-v0.1.0"
+tfout=$(tf "$TFR" --version tui-v0.1.0); tfrc=$?
+case "$tfout" in
+    *"already current"*) ok "a second run with a current binary says already current" ;;
+    *) bad "a second run with a current binary says already current" "already current" "$tfout" ;;
+esac
+is "and exits 0 without reaching the release host" "0" "$tfrc"
+tfout=$(tf "$TFR" --version); tfrc=$?
+is "--version with no tag is a usage error, not a silent install of the pin" "2" "$tfrc"
+
+# A refusal must shout on EVERY press. Marking it tried would turn the one
+# signal that says "these bytes are not ours" into a single line nobody re-reads.
+tf_release tui-v0.2.0 0.2.0 flip
+tfout=$(tf "$TFR" --version tui-v0.2.0); tfrc=$?
+is "a flipped checksum exits non-zero" "1" "$tfrc"
+case "$tfout" in
+    *REFUSED*"does not match its published checksum"*) ok "and says so instead of installing" ;;
+    *) bad "and says so instead of installing" "REFUSED ... does not match its published checksum" "$tfout" ;;
+esac
+is "and the working binary is untouched" "cockpit-tui 0.1.0" "$(tf_ver)"
+tfout=$(tf "$TFR" --version tui-v0.2.0); tfrc=$?
+is "the refusal repeats on the next press" "1" "$tfrc"
+case "$tfout" in
+    *REFUSED*) ok "and is never silenced by a tried marker" ;;
+    *) bad "and is never silenced by a tried marker" "REFUSED" "$tfout" ;;
+esac
+is "a refusal leaves no marker behind" "" "$(tf_mark)"
+
+# A checksum says the bytes arrived intact, not that they are the version the
+# tag claims -- fzf's installer runs the same behavioural check.
+tf_release tui-v0.3.0 9.9.9
+tfout=$(tf "$TFR" --version tui-v0.3.0); tfrc=$?
+is "a tarball whose binary reports another version installs nothing" "1" "$tfrc"
+is "and the working binary is still the old one" "cockpit-tui 0.1.0" "$(tf_ver)"
+
+# An uncut tag is the ordinary state before the first release, and it is
+# transient: the marker must not lock the next press out of trying again.
+: > "$TF/curlcount"
+tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0); tfrc=$?
+is "a release host it cannot reach exits 0" "0" "$tfrc"
+case "$tfout" in
+    *"no release tui-v0.4.0 (or offline)"*) ok "and names the tag rather than blaming the network" ;;
+    *) bad "and names the tag rather than blaming the network" "skip: no release tui-v0.4.0 (or offline)" "$tfout" ;;
+esac
+is "and leaves no marker" "" "$(tf_mark)"
+tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
+is "so the next press fetches again instead of saying already tried" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
+# A box that could not ask must not fall through to a full cargo build.
+tfout=$(PATH="$TF/shim:$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
+case "$tfout" in
+    *"needs Rust"*|*CARGO_RAN*) bad "an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
+    *) ok "an unreachable host never starts a source build" ;;
+esac
+
+# Deleting the binary after a good install must reinstall it, not report a
+# marker left over from the install that worked.
+tf_release tui-v0.5.0 0.5.0
+tfout=$(tf "$TFR" --version tui-v0.5.0)
+is "a new version installs over the old one" "cockpit-tui 0.5.0" "$(tf_ver)"
+rm -f "$TFB"
+tfout=$(tf "$TFR" --version tui-v0.5.0)
+is "and deleting the binary refetches it" "cockpit-tui 0.5.0" "$(tf_ver)"
+
+# The source fallback. The floor is READ from tui/Cargo.toml, never pinned
+# twice: Debian 13 ships rustc 1.85 against ratatui's 1.88, so this refusal is
+# the common case and it must not turn into a page of compiler errors.
+mkdir -p "$TF/plugin/tui"
+printf 'rust-version = "1.88"\n' > "$TF/plugin/tui/Cargo.toml"
+tf_release tui-v0.6.0 - noasset
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.6.0); tfrc=$?
+case "$tfout" in
+    *"no binary for this platform"*) ok "a manifest without this platform is a settled answer" ;;
+    *) bad "a manifest without this platform is a settled answer" "no binary for this platform" "$tfout" ;;
+esac
+is "and it is remembered, so the next press does not re-ask" "tui-v0.6.0" "$(tf_mark)"
+is "a rustc below the floor still exits 0" "0" "$tfrc"
+case "$tfout" in
+    *"needs Rust >= 1.88"*"found 1.85.0"*) ok "and names the floor and the rustc it found" ;;
+    *) bad "and names the floor and the rustc it found" "needs Rust >= 1.88 ... (found 1.85.0)" "$tfout" ;;
+esac
+case "$tfout" in
+    *CARGO_RAN*) bad "and never reaches the compiler" "no cargo invocation" "$tfout" ;;
+    *) ok "and never reaches the compiler" ;;
+esac
+is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.6.0)
+case "$tfout" in
+    *"has no release build for"*) ok "the marker skips the download on the next press" ;;
+    *) bad "the marker skips the download on the next press" "tui-v0.6.0 has no release build for" "$tfout" ;;
+esac
+case "$tfout" in
+    *"needs Rust >= 1.88"*) ok "and still offers the source build, which the marker must never block" ;;
+    *) bad "and still offers the source build, which the marker must never block" "needs Rust >= 1.88" "$tfout" ;;
+esac
+printf 'rust-version = "1.99"\n' > "$TF/plugin/tui/Cargo.toml"
+tf_release tui-v0.7.0 - noasset
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.7.0)
+case "$tfout" in
+    *"needs Rust >= 1.99"*) ok "the floor comes from Cargo.toml, not a second pin in the script" ;;
+    *) bad "the floor comes from Cargo.toml, not a second pin in the script" "needs Rust >= 1.99" "$tfout" ;;
+esac
+
+# A verified binary that will not execute here is this box's problem, not a
+# broken release: source is the way out, so it must not exit 1 like a refusal.
+tf_release tui-v0.8.0 0.8.0 broken
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.8.0); tfrc=$?
+is "a verified binary that cannot run here exits 0" "0" "$tfrc"
+case "$tfout" in
+    *"does not run here"*"needs Rust >= 1.99"*) ok "and falls through to the source build" ;;
+    *) bad "and falls through to the source build" "does not run here ... needs Rust >= 1.99" "$tfout" ;;
+esac
+is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
+
+tf_release tui-v0.9.0 0.9.0 flat
+tfout=$(tf "$TFR" --version tui-v0.9.0)
+is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(tf_ver)"
+unset -f tf tf_release tf_ver tf_mark
+fi
+
+echo "== cockpit-tui: the tui row in tmux-review --info =="
+# A COPY of scripts/, so the row reads that copy's bin/ and the suite never
+# writes into the checkout it is running from (several sessions share it).
+if need_tmux "tui row in --info"; then :; else
+TI="cockpit-ti-$$"; SOCKS="$SOCKS $TI"; TIP=$(mktmpd)
+cp -r "$DIR/scripts" "$TIP/"
+"$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+TIAP=$("$TMUX_REAL" -L "$TI" list-panes -t t: -F '#{pane_id}')
+ti_info() { "$TMUX_REAL" -L "$TI" run-shell "'$TIP/scripts/tmux-review' -p $TIAP --info" 2>&1; }
+tiout=$(ti_info)
+case "$tiout" in
+    *"tui       not installed  (prefix U fetches it)"*) ok "an absent binary is a row naming the gesture, not an error" ;;
+    *) bad "an absent binary is a row naming the gesture, not an error" "tui       not installed  (prefix U fetches it)" "$tiout" ;;
+esac
+mkdir -p "$TIP/bin"
+printf '#!/bin/sh\necho "cockpit-tui 0.1.0"\n' > "$TIP/bin/cockpit-tui"; chmod +x "$TIP/bin/cockpit-tui"
+tiout=$(ti_info)
+case "$tiout" in
+    *"tui       0.1.0  $TIP/bin/cockpit-tui"*) ok "an installed binary shows its version and its path" ;;
+    *) bad "an installed binary shows its version and its path" "tui       0.1.0  $TIP/bin/cockpit-tui" "$tiout" ;;
+esac
+"$TMUX_REAL" -L "$TI" set -g @cockpit_tui_version tui-v0.2.0 >/dev/null 2>&1
+tiout=$(ti_info)
+case "$tiout" in
+    *"tui       0.1.0  $TIP/bin/cockpit-tui  (want 0.2.0 -- prefix U updates it)"*)
+        ok "a pinned version the binary does not match reads as stale" ;;
+    *) bad "a pinned version the binary does not match reads as stale" \
+         "tui       0.1.0  ...  (want 0.2.0 -- prefix U updates it)" "$tiout" ;;
+esac
+unset -f ti_info
+"$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-tui: docs name only real options =="

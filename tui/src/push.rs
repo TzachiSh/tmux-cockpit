@@ -4,10 +4,11 @@
 //! WINCH carries a payload, and neither needs to -- the screen reads the truth
 //! from tmux anyway, it only needs to be told when.
 //!
-//! The hook must confirm the pid is ours before signalling
-//! (`[ "$(cat /proc/$pid/comm)" = cockpit-tui ]`): a published pid outlives
-//! SIGKILL, and SIGUSR1's default action on a recycled pid is *terminate*.
-use crate::data::{readonly, tmux_argv, tmux_set};
+//! The hook must confirm the pid is ours before signalling (`scripts/agent-state`
+//! reads `/proc/$pid/comm`, or `ps -o comm=` where there is no /proc): a
+//! published pid outlives SIGKILL, and SIGUSR1's default action on a recycled
+//! pid is *terminate*.
+use crate::data::{log, readonly, tmux_argv, tmux_set};
 use std::ffi::CString;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -122,7 +123,14 @@ impl Push {
     /// True when something asked for a refresh. A burst collapses to one
     /// refetch, because the flag is a bool and not a queue.
     pub fn pending(&self) -> bool {
-        SIGNALLED.swap(false, Ordering::Relaxed)
+        let woke = SIGNALLED.swap(false, Ordering::Relaxed);
+        // The only place that can tell a pushed refresh from the 1 s one, and
+        // "did my hook actually reach it?" is the first question anyone
+        // debugging the channel asks. Costs an open() per wake, never per tick.
+        if woke {
+            log("push wake");
+        }
+        woke
     }
 }
 

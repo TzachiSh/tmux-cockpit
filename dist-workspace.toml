@@ -1,0 +1,30 @@
+[workspace]
+members = ["cargo:tui"]
+
+# Config for 'dist'
+#
+# Written by `dist init` (0.32.0) and edited in four places, each of which
+# scripts/tui-fetch depends on: unified-checksum publishes the one sha256.sum
+# the fetch reads before it touches a tarball, unix-archive makes the assets
+# .tar.gz rather than dist's default .tar.xz, installers stay empty because the
+# plugin's bin/ is the install path, and tag-namespace makes `tui-v0.1.0` the
+# release tag so the plugin can be tagged separately from its binary.
+#
+# No aarch64-unknown-linux-musl: it needs hand-wired cross linkers
+# (cargo-dist #1581). That platform falls through to the source build.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-musl"]
+# The installers to generate for each app
+installers = []
+# Checksums to generate for each App
+checksum = "sha256"
+unified-checksum = true
+# The archive format to use for non-windows builds (defaults .tar.xz)
+unix-archive = ".tar.gz"
+# A prefix git tags must include for dist to care about them
+tag-namespace = "tui"

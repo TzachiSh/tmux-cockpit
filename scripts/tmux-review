@@ -2046,6 +2046,25 @@ request() {                   # <pane>
     esac
 }
 
+# The optional cockpit-tui binary, for the info screen: whether it is there,
+# which version, and whether @cockpit_tui_version asks for a different one.
+# Absent is a normal state, not a fault -- prefix r is the fleet view with or
+# without it -- so the row names the gesture that installs it and stops.
+tui_row() {
+    local bin have want
+    bin="$(dirname "$(dirname "$LIBDIR")")/bin/cockpit-tui"
+    # Absent is the common case: test the file before paying a fork for it.
+    [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
+    have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
+    [ -n "$have" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
+    want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); want=${want#tui-}; want=${want#v}
+    if [ -n "$want" ] && [ "$want" != "$have" ]; then
+        printf '%s  %s  (want %s -- prefix U updates it)' "$have" "$bin" "$want"
+    else
+        printf '%s  %s' "$have" "$bin"
+    fi
+}
+
 # --- --info: one screen for prefix i -------------------------------------------
 # What the plugin knows about one pane, in the order you ask it: who, what it
 # waits on, the review state, whether a side fix holds it, the base, the
@@ -2097,6 +2116,7 @@ info_mode() {                 # <pane>
     fi
     printf 'session   %s\n' "${sid:-—}"
     printf 'title     %s\n' "${title:-—}"
+    printf 'tui       %s\n' "$(tui_row)"
     if [ -d "$sess/fixer" ]; then
         # tmux-fixer/review-gate's own record, read the same way they read it
         # -- no fixer_alive() call here, this reports the raw facts (reason,
