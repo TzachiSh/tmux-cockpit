@@ -8299,12 +8299,12 @@ bshim() {                     # <dir> <socket> <version-to-report|"">
     chmod +x "$1/tmux"
 }
 bkey()  { "$TMUX_REAL" -L "$1" list-keys -T prefix 2>/dev/null | awk -v k="$2" '$4==k'; }
-# The plugin is loaded when its unconditional prefix b bind exists -- polled,
-# because run-shell -b work behind it is not.
+# Polled on the LAST binding cockpit.tmux installs -- the board block runs
+# before it, so this cannot pass while the code under test is still to come.
 bloaded() {
     local i
     for i in $(seq 1 40); do
-        bkey "$1" b | grep -q tmux-branch && return 0
+        "$TMUX_REAL" -L "$1" list-keys -T root 2>/dev/null | grep -q C-MouseDown3Pane && return 0
         sleep 0.1
     done
     return 1
@@ -8367,7 +8367,13 @@ case "$(bkey "$B3" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window 
     *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B3" w)" ;;
 esac
 until_file "$BD/fetched" '*ran*'
-is "@cockpit_tui_fetch on runs tui-fetch once, in the background" "1" "$(wc -l < "$BD/fetched" 2>/dev/null)"
+is "@cockpit_tui_fetch on runs tui-fetch, exactly once" "1" "$(wc -l < "$BD/fetched" 2>/dev/null)"
+# -b, not a plain run-shell: a foreground curl would sit on the config load,
+# which is the whole reason the fetch is not on that path.
+case "$(grep 'run-shell -b' "$BD/argv" 2>/dev/null)" in *tui-fetch*) ok "and backgrounds it, so a dead network cannot stall the load" ;;
+    *) bad "and backgrounds it, so a dead network cannot stall the load" "run-shell -b .../tui-fetch" \
+         "$(grep run-shell "$BD/argv" 2>/dev/null)" ;;
+esac
 "$TMUX_REAL" -L "$B3" kill-server >/dev/null 2>&1
 
 # --- the 3.7 floor -------------------------------------------------------------
@@ -8380,12 +8386,28 @@ case "$(bkey "$B4" w)" in *cockpit-board*) bad "tmux 3.6 does not bind the board
         "no cockpit-board in the binding" "$(bkey "$B4" w)" ;;
     *) ok "tmux 3.6 does not bind the board" ;;
 esac
-case "$(cat "$BD/argv" 2>/dev/null)" in *'needs tmux 3.7 (found 3.6)'*)
+case "$(cat "$BD/argv" 2>/dev/null)" in *'the board (prefix w) needs tmux 3.7 (found 3.6)'*)
         ok "and it refuses by name instead of leaving a dead key" ;;
     *) bad "and it refuses by name instead of leaving a dead key" \
-         "display-message ... needs tmux 3.7 (found 3.6)" "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
+         "display-message ... the board (prefix w) needs tmux 3.7 (found 3.6)" \
+         "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
 esac
 "$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
+
+# A client has ONE message slot, so a second display-message replaces the
+# first: both 3.7 casualties have to arrive in the same line or the branch
+# warning that was there first is never seen.
+B5="cockpit-bw5-$$"; SOCKS="$SOCKS $B5"; bshim "$BD/s5" "$B5" 3.6; rm -f "$BD/argv"
+PATH="$BD/s5:$PATH" "$TMUX_REAL" -L "$B5" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B5" set -g status-right '#[range=control|1]x#[norange]' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B5" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B5"
+case "$(cat "$BD/argv" 2>/dev/null)" in *'clicking the branch and the board (prefix w) needs tmux 3.7'*)
+        ok "and a config that also marks a click range loses neither warning" ;;
+    *) bad "and a config that also marks a click range loses neither warning" \
+         "one display-message naming both" "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
+esac
+is "and it is ONE message, not two" "1" "$(grep -c 'display-message tmux-cockpit:.*3\.7' "$BD/argv" 2>/dev/null)"
+"$TMUX_REAL" -L "$B5" kill-server >/dev/null 2>&1
 
 # --- the wrapper: one action line, one script ----------------------------------
 # Every script the wrapper can reach is a stub that records its argv, and tmux
@@ -8413,7 +8435,7 @@ is "jump %9 goes to that pane and runs nothing else" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact 'jump %9')"
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
 is "fix %1 runs tmux-fixer on it and nothing else"    "tmux-fixer -p %1;"  "$(wact 'fix %1')"
-is "info %1 runs the info screen and waits for the key" "tmux-review -p %1 --info;" "$(wact 'info %1')"
+is "info %1 runs the info screen and nothing else" "tmux-review -p %1 --info;" "$(wact 'info %1')"
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
     *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;
 esac
@@ -8429,8 +8451,22 @@ is "a verb written as a command substitution runs nothing"   "" "$(inject '$(tou
 is "a third field on the action line runs nothing"           "" "$(inject 'jump %9 extra')"
 is "a target that is not %<digits> runs nothing"             "" "$(inject 'jump %9x')"
 is "an upper-case verb runs nothing"                         "" "$(inject 'JUMP %9')"
+is "a verb from a newer binary runs nothing"                 "" "$(inject 'frobnicate %9')"
+# The log is the assertion, not the argv: an ordinary q and a rejected line both
+# run nothing, and only the log tells a version skew from a normal close.
+is "an empty action file is the ordinary q, and logs nothing" "0" \
+   "$(: > "$BD/tui.log"; wact '' >/dev/null; grep -c 'ignored action line' "$BD/tui.log" 2>/dev/null)"
+is "a rejected line leaves a trace instead of a silently dead key" "1" \
+   "$(: > "$BD/tui.log"; wact 'jump %9x' >/dev/null; grep -c 'ignored action line' "$BD/tui.log" 2>/dev/null)"
 
 rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
+case "$(cat "$BD/wargv" 2>/dev/null)" in
+    'display-message cockpit: board needs'*) ok "a -p that is not a pane id drops the -t rather than passing it on" ;;
+    *) bad "a -p that is not a pane id drops the -t rather than passing it on" \
+         "display-message cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
+esac
+: > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \

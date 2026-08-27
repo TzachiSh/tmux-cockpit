@@ -9,7 +9,7 @@
 # so a command substitution swallows the whole UI and the popup renders blank.
 set -u
 
-DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 
@@ -48,15 +48,28 @@ env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board 2>>"$LOG" 
     exit 0
 }
 
-# ONE line, `<verb> <pane-id>`, and nothing after it on that line.
-read -r verb target rest < "$f" || exit 0
-[ -z "$rest" ] || exit 0
-case "$verb" in ''|*[!a-z]*) exit 0 ;; esac
-is_pane "$target" || exit 0
+# ONE line, `<verb> <pane-id>`, and nothing after it on that line. No `|| exit`
+# on the read: it returns non-zero on an unterminated last line AFTER assigning,
+# and the wrapper and the binary ship on separate tags.
+read -r verb target rest < "$f"
+[ -n "$verb" ] || exit 0                 # nothing chosen: the ordinary q
+bad=
+[ -z "$rest" ] || bad=1
+case "$verb" in *[!a-z]*) bad=1 ;; esac
+is_pane "$target" || bad=1
+# A rejection here means the binary's grammar drifted from this wrapper's -- the
+# two ship on separate tags -- so it leaves a line behind instead of a key that
+# silently does nothing. $EPOCHREALTIME is empty before bash 5, and no `date`
+# flag gives microseconds on both GNU and macOS.
+if [ -n "$bad" ]; then
+    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-board: ignored action line [%s]\n' "$ts" "$verb $target $rest" >> "$LOG"
+    exit 0
+fi
 
 case "$verb" in
     # switch-client fails on a detached server; the window/pane selection still
-    # retargets the session, so it is not fatal (scripts/tmux-jump:70).
+    # retargets the session, so it is not fatal (scripts/tmux-jump:73).
     jump)
         tmux switch-client -t "$target" 2>/dev/null || true
         tmux select-window -t "$target" 2>/dev/null

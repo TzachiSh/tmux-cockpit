@@ -221,6 +221,10 @@ fi
 #
 # -p $SRC_PANE: inside a popup $TMUX_PANE is the popup's own pseudo-pane, so
 # the script cannot ask "what pane am I on" itself.
+# tmux keeps ONE message slot per client, so a second display-message replaces
+# the first: every 3.7 casualty travels in one line, printed after the last of
+# them is known.
+v37=
 if version_at_least 3 7; then
     tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
@@ -234,7 +238,7 @@ if version_at_least 3 7; then
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
-    tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
+    v37='clicking the branch'
 fi
 # tmux keeps its drag flag set when a popup or menu eats the release, then
 # rewrites the NEXT press anywhere into MouseDragEnd1<where> (#21, 3.7c): a
@@ -305,27 +309,25 @@ FK=$(tmux show-option -gqv @cockpit_fixer_key)
 case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
-# prefix w: the board -- every agent pane as a live tile, blocked ones first.
-# Stock w is choose-tree; the board IS a better choose-window, so it takes the
-# key. @cockpit_board_key rebinds, off keeps stock.
+# prefix w: the board -- every agent pane as a live tile. Stock w is
+# choose-tree; @cockpit_board_key rebinds, off keeps stock.
 #
 # 90%/80% and not the pickers' $PW: a 70% popup on a 120-column terminal is an
 # 84-column board, which is one tile column.
 #
-# 3.7 rather than the plugin's own 3.3 floor: 3.7 fixed "popup window gets
-# overwritten by background updates" (#4920), and a hook-driven cockpit repaints
-# panes constantly, so below it the board tears while you read it.
-#
-# The key is bound whether or not bin/cockpit-tui exists: the binary is fetched
-# by a gesture, not by a config load, so the wrapper says "not installed" at
-# press time instead of the key vanishing until the next reload.
+# 3.7, above the plugin's own 3.3 floor: 3.7 fixed #4920, "popup window gets
+# overwritten by background updates", and a hook-driven cockpit repaints panes
+# constantly, so below it the board tears while you read it.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 BK=$(tmux show-option -gqv @cockpit_board_key)
 case "$BK" in off) bk= ;; "") bk=w ;; *) bk=$BK ;; esac
 if [ -n "$bk" ] && ! version_at_least 3 7; then
-    tmux display-message "tmux-cockpit: the board (prefix $bk) needs tmux 3.7 (found ${tmux_version:-unknown}); prefix r is the fleet list"
+    v37="${v37:+$v37 and }the board (prefix $bk)"
     bk=
 fi
+# Bound whether or not bin/cockpit-tui exists: the binary arrives by a gesture,
+# so the wrapper says "not installed" at press time rather than the key
+# appearing only after the next reload.
 if [ -n "$bk" ]; then
     # @cockpit_board_window on: a parked window instead of the modal popup,
     # mirroring @cockpit_review_window. new-window activates itself before its
@@ -337,6 +339,8 @@ if [ -n "$bk" ]; then
         tmux bind-key "$bk" display-popup -E -w 90% -h 80% -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
+
+[ -z "$v37" ] || tmux display-message "tmux-cockpit: $v37 needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b and prefix r still work"
 
 # The binary is optional, and nothing here downloads it. tpm's `prefix U`
 # re-runs every *.tmux -- but so does every plain `source-file ~/.tmux.conf`,
