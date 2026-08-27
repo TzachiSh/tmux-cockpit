@@ -25,9 +25,10 @@ message and exits 0.
 
 ## Install
 
-The binary ships as a release asset. `prefix U` (tpm's update key) fetches it:
-uname picks the asset, the `.sha256` is fetched first and verified, and only a
-verified file is installed. A checksum mismatch, an unfetchable manifest or a
+The binary ships as a release asset. With `@cockpit_tui_fetch on`, `prefix U`
+(tpm's update key) fetches it; otherwise run `scripts/tui-fetch` yourself.
+Either way: uname picks the asset, the `.sha256` is fetched first and verified,
+and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
 once.
 
@@ -94,6 +95,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 |--------|---------|------|
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
+| `@cockpit_tui_fetch` | `off` | `on` lets `prefix U` run `scripts/tui-fetch`. Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
 
