@@ -252,10 +252,8 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// 256 KB first, with one grow to 2 MB when the window said nothing at all: one
-/// row can be 750 KB, 2 of 20 live transcripts hold no complete assistant row in
-/// their last 64 KB, and a busy session buries an open question behind its own
-/// padding well before that. The old doubling ladder re-parsed every rung below.
+/// A single row can be 750 KB, and at 64 KB a busy session buried its own open
+/// question behind its padding.
 const TAIL_FIRST: u64 = 256 * 1024;
 const TAIL_MAX: u64 = 2 * 1024 * 1024;
 
@@ -273,6 +271,9 @@ fn read_facts(path: &str) -> Facts {
         return fa;
     }
     let mut fa = parse(tail(&mut f, len, TAIL_FIRST));
+    // ponytail: escalating on "no rows at all" misses a session that writes
+    // >256 KB after an open ask -- it finds *a* row, so it never grows. Rule 69
+    // accepts that; upgrade to "no open ask and no end_turn" if it ever bites.
     if fa.tool.is_empty() && fa.text.is_empty() && len > TAIL_FIRST {
         fa = parse(tail(&mut f, len, TAIL_MAX));
     }
@@ -293,8 +294,10 @@ const DOING: [&str; 8] = [
     "subject",
 ];
 
-/// An interrupt writes this as an ordinary user text row. It ends the turn
-/// without closing anything, so it is neither a human prompt nor an answer.
+/// An interrupt ends the turn without closing anything, so it is neither a
+/// human prompt nor an answer. It almost always arrives as a `text` block in
+/// the array form: 36 of the 38 rows on this box, the two string ones being
+/// `/compact` continuations quoting the phrase.
 const INTERRUPT: &str = "[Request interrupted by user";
 
 fn parse(lines: Vec<String>) -> Facts {
@@ -322,18 +325,26 @@ fn parse(lines: Vec<String>) -> Facts {
                 match c.as_str() {
                     // a tool_result arrives as an array, a human turn as a string
                     Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
+                    // <task-notification, <command-name, <local-command-*: the
+                    // harness wrote these, nobody typed them (48 of 278 string
+                    // rows here), so they are not a new turn and not `asked`.
+                    Some(t) if t.starts_with('<') => {}
                     Some(t) => {
                         fa.user = first_line(t);
                         fa.user_at = ts;
                         turn_over = false;
                     }
                     None => {
+                        let mut interrupted = false;
                         for b in c.as_array().into_iter().flatten() {
                             if let Some(id) = b["tool_use_id"].as_str() {
                                 asks.retain(|a| a != id);
                             }
+                            // safe beside the tool_results: not one of 1211 on
+                            // this box carries a `text` key.
+                            interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
                         }
-                        turn_over = false;
+                        turn_over = interrupted;
                     }
                 }
             }
@@ -506,7 +517,8 @@ fn procs() -> Procs {
     t
 }
 
-/// Eight levels is a shell, a wrapper, the agent and room to spare. Both the cap
+/// Depth-first (`Vec::pop`); order does not matter, only membership. Eight
+/// levels is a shell, a wrapper, the agent and room to spare, and both the cap
 /// and the seen set are load-bearing: `ps` really does report a process as its
 /// own parent, and the previous uncapped walk queued that row forever.
 const MAX_DEPTH: usize = 8;
@@ -530,9 +542,8 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
 }
 
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
-/// agent names too; an exited one leaves a pane reading `zsh`, which is the
-/// whole reason the name alone cannot answer this. The name list itself stays
-/// @cockpit_agents_glob, so the user's edit reaches the tree walk too.
+/// agent names too. The list stays @cockpit_agents_glob, one source, so the
+/// user's edit reaches the tree walk as well as the pane name.
 fn agentish(comm: &str) -> bool {
     let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
     is_agent_cmd(&b) || version_shaped(&b)
@@ -668,10 +679,9 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         // A pane carrying @panestate counts whatever it runs: the hooks are the
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let state = unsentinel(f[4]);
-        // Rule 72, in priority order: @panestate means the hooks already
-        // classified this pane; otherwise the process tree decides, and
-        // pane_current_command is only a third opinion, for the wrapper that
-        // execs an agent under its own argv0 (`ps` reports the wrapper's comm).
+        // Rule 72: @panestate is the hooks' own answer, the name is a fast path
+        // that skips the `ps` fork when tmux already says agent, and the process
+        // tree is the one that actually decides.
         let agent = !state.is_empty() || agentish(f[3]) || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))

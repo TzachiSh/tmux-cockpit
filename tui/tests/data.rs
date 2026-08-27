@@ -242,7 +242,13 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
              \"content\":[{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"AskUserQuestion\",\"input\":{{\"question\":\"which?\"}}}}]}}}}\n"
         )
     };
-    let interrupt = user("30", "\"[Request interrupted by user for tool use]\"");
+    // The real interrupt row is the array form: 36 of the 38 on this box, the
+    // two string ones being /compact continuations that quote the phrase.
+    let interrupt = user(
+        "30",
+        "[{\"type\":\"text\",\"text\":\"[Request interrupted by user for tool use]\"}]",
+    );
+    let interrupt_str = user("30", "\"[Request interrupted by user]\"");
 
     r.transcript("ask", &(user("00", "\"go\"") + &ask("01", "tu1")));
     r.transcript(
@@ -265,6 +271,16 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
             + &interrupt),
     );
     r.transcript("stopped-asking", &(user("00", "\"go\"") + &ask("01", "tu5") + &interrupt));
+    r.transcript("stopped-str", &(user("00", "\"go\"") + &ask("01", "tu7") + &interrupt_str));
+    // <task-notification and friends are written by the harness, not typed:
+    // 48 of 278 string user rows on this box, after the turn already ended.
+    r.transcript(
+        "injected",
+        &("{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"end_turn\",\
+           \"content\":[{\"type\":\"text\",\"text\":\"all set\"}]}}\n"
+            .to_string()
+            + &user("30", "\"<task-notification>a background task finished</task-notification>\"")),
+    );
     r.rows(&[
         row("%1", "node", "-", "ask", "100"),
         row("%2", "node", "-", "answered", "100"),
@@ -272,6 +288,8 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
         row("%4", "node", "-", "stopped", "100"),
         row("%5", "node", "-", "stopped-asking", "100"),
         row("%6", "node", "running", "done", "100"),
+        row("%7", "node", "-", "injected", "100"),
+        row("%8", "node", "-", "stopped-str", "100"),
     ]);
     let ps = list_panes().unwrap();
 
@@ -290,6 +308,16 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
         done.since,
         done.idle_since
     );
+
+    assert_eq!(
+        get(&ps, "%8").state,
+        "needs-input",
+        "the string interrupt form still terminates a turn"
+    );
+
+    let injected = get(&ps, "%7");
+    assert_eq!(injected.state, "done", "a machine-injected row is not a new human turn");
+    assert_eq!(injected.asked, "", "and it is not what the human asked");
 
     let stopped = get(&ps, "%4");
     assert_eq!(stopped.doing, "Bash: sleep 100", "command outranks description");
