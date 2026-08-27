@@ -183,9 +183,11 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
 /// sibling `<uuid>/subagents/` is never opened: every row there is a sidechain.
 fn transcript_path(sess: &str, path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    // Per BYTE, not per char: a two-byte glyph in the cwd becomes two dashes,
+    // and a char-wise slug is one short of the directory that actually exists.
     let slug: String = path
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
         .collect();
     format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
 }
@@ -250,10 +252,11 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// 64 KB first (the p95 row is 4 KB), doubling while the window says nothing:
-/// one row can be 750 KB, and 2 of 20 live transcripts hold no complete
-/// assistant row in their last 64 KB.
-const TAIL_FIRST: u64 = 64 * 1024;
+/// 256 KB first, with one grow to 2 MB when the window said nothing at all: one
+/// row can be 750 KB, 2 of 20 live transcripts hold no complete assistant row in
+/// their last 64 KB, and a busy session buries an open question behind its own
+/// padding well before that. The old doubling ladder re-parsed every rung below.
+const TAIL_FIRST: u64 = 256 * 1024;
 const TAIL_MAX: u64 = 2 * 1024 * 1024;
 
 fn read_facts(path: &str) -> Facts {
@@ -269,14 +272,9 @@ fn read_facts(path: &str) -> Facts {
     if let Some(fa) = hit {
         return fa;
     }
-    let mut cap = TAIL_FIRST;
-    let mut fa;
-    loop {
-        fa = parse(tail(&mut f, len, cap));
-        if !fa.tool.is_empty() || !fa.text.is_empty() || cap >= TAIL_MAX || cap >= len {
-            break;
-        }
-        cap *= 2;
+    let mut fa = parse(tail(&mut f, len, TAIL_FIRST));
+    if fa.tool.is_empty() && fa.text.is_empty() && len > TAIL_FIRST {
+        fa = parse(tail(&mut f, len, TAIL_MAX));
     }
     TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
     fa

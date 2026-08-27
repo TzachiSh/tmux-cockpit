@@ -97,7 +97,11 @@ impl Rig {
 
     /// `$HOME/.claude/projects/<slug>/<sess>.jsonl`; the slug of `/w` is `-w`.
     fn transcript(&self, sess: &str, body: &str) -> PathBuf {
-        let dir = self.dir.join(".claude/projects/-w");
+        self.transcript_in("-w", sess, body)
+    }
+
+    fn transcript_in(&self, slug: &str, sess: &str, body: &str) -> PathBuf {
+        let dir = self.dir.join(format!(".claude/projects/{slug}"));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(format!("{sess}.jsonl"));
         std::fs::write(&p, body).unwrap();
@@ -116,12 +120,12 @@ impl Drop for Rig {
 }
 
 /// One `list-panes -F` row: 13 `\037` fields, `-` where the option is unset.
-fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
-    [id, wher, "win", cmd, state, "-", "-", sess, "/w", pid, "-", "-", "-"].join("\u{1f}")
+fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str, path: &str) -> String {
+    [id, wher, "win", cmd, state, "-", "-", sess, path, pid, "-", "-", "-"].join("\u{1f}")
 }
 
 fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
-    row_at(id, "w:0", cmd, state, sess, pid)
+    row_at(id, "w:0", cmd, state, sess, pid, "/w")
 }
 
 fn get<'a>(ps: &'a [Pane], id: &str) -> &'a Pane {
@@ -181,7 +185,7 @@ fn agent_panes_come_from_the_process_tree_and_not_from_a_name() {
     r.rows(&[
         row("%1", "node", "-", "s1", "200"),
         row("%2", "zsh", "-", "s2", "202"),
-        row_at("%3", "henosis-claude-resume:0", "zsh", "-", "s3", "203"),
+        row_at("%3", "henosis-claude-resume:0", "zsh", "-", "s3", "203", "/w"),
     ]);
 
     assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
@@ -291,3 +295,43 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
     assert_eq!(stopped.doing, "Bash: sleep 100", "command outranks description");
     assert_eq!(stopped.asked, "go", "the interrupt row is not a human turn");
 }
+
+/// Rule 70: the project slug maps every non-`[A-Za-z0-9-]` **byte** to `-`, not
+/// every char, so a two-byte glyph in the cwd becomes two dashes. Per char the
+/// path is one dash short and the session reads as having no transcript at all.
+#[test]
+fn a_non_ascii_cwd_finds_its_transcript() {
+    let r = Rig::new("slug");
+    r.transcript_in("-w--", "s1", BASH_ROW);
+    r.rows(&[row_at("%1", "w:0", "claude", "running", "s1", "100", "/w\u{e9}")]);
+
+    assert_eq!(get(&list_panes().unwrap(), "%1").doing, "Bash: echo one");
+}
+
+/// Rule 69: the window is >= 256 KB. At 64 KB a transcript busy enough to fill
+/// it hides the open question behind its own padding, and the escalation never
+/// fires because the small window did find *a* row -- just not that one.
+#[test]
+fn an_open_question_further_back_than_64k_is_still_found() {
+    let r = Rig::new("window");
+    r.ps("100 1 claude\n");
+    let pad: String = (0..300)
+        .map(|i| {
+            format!(
+                "{{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:01:00.000Z\",\"message\":{{\"stop_reason\":\"tool_use\",\
+                 \"content\":[{{\"type\":\"tool_use\",\"id\":\"p{i}\",\"name\":\"Bash\",\"input\":{{\"command\":\"{}\"}}}}]}}}}\n",
+                "x".repeat(300)
+            )
+        })
+        .collect();
+    assert!(pad.len() > 64 * 1024 && pad.len() < 256 * 1024, "padding is {} bytes", pad.len());
+    let ask = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
+               \"content\":[{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"AskUserQuestion\",\"input\":{\"question\":\"which?\"}}]}}\n";
+    r.transcript("s1", &(ask.to_string() + &pad));
+    r.rows(&[row("%1", "node", "-", "s1", "100")]);
+
+    assert_eq!(get(&list_panes().unwrap(), "%1").state, "needs-input");
+}
+
+const BASH_ROW: &str = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
+     \"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo one\"}}]}}\n";
