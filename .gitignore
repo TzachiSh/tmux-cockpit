@@ -1,6 +1,11 @@
 *.swp
 *~
 
+# The optional cockpit-tui binary (scripts/tui-fetch puts it here) and its
+# build tree. Fetched per machine on prefix U, never committed.
+bin/
+tui/target/
+
 # Agent/orchestration scratch state, not part of the plugin.
 .omc/
 tests/.only.*

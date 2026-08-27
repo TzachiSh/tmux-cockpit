@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# tui-fetch — put the optional cockpit-tui binary in the plugin's own bin/.
+#
+#   scripts/tui-fetch [--version <tag>]
+#
+# Run it from `prefix U` (tpm re-runs every *.tmux of a plugin it updates),
+# never from a plain config load: a dead network on the tmux startup path
+# makes every `source-file ~/.tmux.conf` pay the full curl timeout.
+#
+# The tag comes from --version, else @cockpit_tui_version, else the pin below.
+# The checksum manifest is fetched BEFORE the tarball: "could not verify" is
+# not "verified", and a name missing from the manifest means "no binary for
+# this platform", not a failed download. Nothing is installed unless the
+# extracted binary also reports the version its tag claims.
+#
+# Anything short of a verified binary leaves whatever is already in bin/ alone
+# and exits 0 -- the binary is additive, and `prefix r` is the fleet view with
+# or without it. Only a checksum or a version mismatch exits non-zero.
+#
+# Never ~/.local/bin (install.sh owns its symlinks there), never sudo.
+# COCKPIT_TUI_RELEASES overrides the release host; the suite points it at a
+# file:// tree.
+set -u
+
+PIN=tui-v0.1.0
+DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$DIR/bin"
+RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
+
+say() { printf 'tui-fetch: %s\n' "$1"; }
+
+TAG=
+case "${1:-}" in
+    --version) TAG=${2:-} ;;
+    -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    "")        ;;
+    *)         say "usage: tui-fetch [--version <tag>]" >&2; exit 2 ;;
+esac
+[ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
+[ -n "$TAG" ] || TAG=$PIN
+
+# `tui-v0.1.0` and `cockpit-tui 0.1.0` both reduce to `0.1.0`: the tag carries
+# the crate prefix because the repo tags more than one thing, and the binary
+# prints its package name first.
+norm() { local v=${1##* }; v=${v#tui-}; printf '%s\n' "${v#v}"; }
+
+# 0.74.3 -> 0074003, "1.85.0 (abc)" -> 1085000. Never version_at_least
+# (cockpit.tmux): ${v#*.} of a three-component version fails its own digit
+# test and reads as 0, so 1.85 and 1.88 would compare equal.
+vnum() { local v=${1%% *}; v=${v#v}; local IFS=.; set -- $v
+    local a=${1:-0} b=${2:-0} c=${3:-0}
+    a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
+    printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"; }
+
+case "$(uname -s):$(uname -m)" in
+    Linux:x86_64|Linux:amd64)    TARGET=x86_64-unknown-linux-musl ;;
+    Linux:aarch64|Linux:arm64)   TARGET=aarch64-unknown-linux-musl ;;
+    Darwin:x86_64)               TARGET=x86_64-apple-darwin ;;
+    Darwin:arm64|Darwin:aarch64) TARGET=aarch64-apple-darwin ;;
+    *) say "no release build for $(uname -s)/$(uname -m) -- cargo build --release --manifest-path $DIR/tui/Cargo.toml"
+       exit 0 ;;
+esac
+
+sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
+
+download() {                  # 0 installed · 1 refused (mismatch) · 2 skipped, try source
+    local tmp asset base line got
+    asset="cockpit-tui-$TARGET.tar.gz"
+    base="$RELEASES/$TAG"
+    command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 2; }
+    command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
+        say "skip: neither sha256sum nor shasum is installed to verify with"; return 2; }
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf "$tmp"' RETURN
+    curl -fsSL --max-time 30 -o "$tmp/sums" "$base/sha256.sum" || {
+        say "skip: $base/sha256.sum is unreachable (offline?)"; return 2; }
+    # cargo-dist writes one sha256sum line per asset, so a name that is not
+    # there was never built for this platform -- a different answer from a
+    # download that failed, and neither one is an install.
+    line=$(grep -E " \*?${asset//./\\.}\$" "$tmp/sums") || {
+        say "no binary for this platform in $TAG ($TARGET)"; return 2; }
+    curl -fsSL --max-time 30 -o "$tmp/$asset" "$base/$asset" || {
+        say "skip: $base/$asset is unreachable (offline?)"; return 2; }
+    ( cd "$tmp" && printf '%s\n' "$line" | sha_c ) >/dev/null 2>&1 || {
+        say "REFUSED: $asset does not match its published checksum -- nothing installed" >&2; return 1; }
+    tar -xzf "$tmp/$asset" -C "$tmp" 2>/dev/null || { say "could not extract $asset" >&2; return 1; }
+    [ -f "$tmp/cockpit-tui" ] || { say "$asset holds no cockpit-tui at its root" >&2; return 1; }
+    chmod +x "$tmp/cockpit-tui"
+    # Only if it is actually there: `xattr -d` on a file with no quarantine
+    # attribute exits 1 and prints, and curl+tar do not set one anyway.
+    if [ "$(uname -s)" = Darwin ] && command -v xattr >/dev/null 2>&1 &&
+       xattr -p com.apple.quarantine "$tmp/cockpit-tui" >/dev/null 2>&1; then
+        xattr -d com.apple.quarantine "$tmp/cockpit-tui" 2>/dev/null
+    fi
+    # fzf's installer earned this one: a checksum says the bytes arrived
+    # intact, not that they are the version the tag names. Run it in the temp
+    # dir so a wrong answer never displaces the binary already installed.
+    got=$("$tmp/cockpit-tui" --version 2>/dev/null)
+    [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
+        say "the $TAG tarball reports '${got:-nothing}' -- nothing installed" >&2; return 1; }
+    install -m 755 "$tmp/cockpit-tui" "$BIN/cockpit-tui" || return 1
+    say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui"
+}
+
+build() {                     # 0 built · 2 skipped
+    local floor rv
+    [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
+    command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
+    # Read, never hardcoded: the floor lives in Cargo.toml and a second copy
+    # here would drift. Debian 13 ships 1.85 against ratatui's 1.88, so the
+    # refusal below is the common case, not the corner.
+    floor=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" | head -1)
+    rv=$(rustc --version 2>/dev/null | awk '{print $2}')
+    if [ -n "$floor" ] && [ "$(vnum "$rv")" -lt "$(vnum "$floor")" ]; then
+        say "cockpit-tui needs Rust >= $floor to build from source (found ${rv:-none}); install rustup and press prefix U again"
+        return 2
+    fi
+    cargo build --release --manifest-path "$DIR/tui/Cargo.toml" >&2 || { say "cargo build failed"; return 2; }
+    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$BIN/cockpit-tui" || return 2
+    say "cockpit-tui built from source -> $BIN/cockpit-tui"
+}
+
+have=$("$BIN/cockpit-tui" --version 2>/dev/null)
+if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
+    say "cockpit-tui $(norm "$TAG") already current"
+    exit 0
+fi
+# One attempt per tag, remembered. Without it a machine that is offline (or a
+# platform with no asset) re-runs the whole fetch on every prefix U.
+if [ "$(cat "$BIN/.tried" 2>/dev/null)" = "$TAG" ]; then
+    say "skip: $TAG was already tried -- rm $BIN/.tried to retry"
+    exit 0
+fi
+mkdir -p "$BIN" || exit 1
+printf '%s\n' "$TAG" > "$BIN/.tried"
+
+download; rc=$?
+[ "$rc" = 0 ] && exit 0
+[ "$rc" = 1 ] && exit 1
+build
+exit 0
