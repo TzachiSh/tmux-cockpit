@@ -2053,6 +2053,8 @@ request() {                   # <pane>
 tui_row() {
     local bin have want
     bin="$(dirname "$(dirname "$LIBDIR")")/bin/cockpit-tui"
+    # Absent is the common case: test the file before paying a fork for it.
+    [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
     have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
     [ -n "$have" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
     want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); want=${want#tui-}; want=${want#v}

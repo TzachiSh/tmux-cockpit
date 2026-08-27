@@ -31,7 +31,8 @@ say() { printf 'tui-fetch: %s\n' "$1"; }
 
 TAG=
 case "${1:-}" in
-    --version) TAG=${2:-} ;;
+    --version) TAG=${2:-}
+               [ -n "$TAG" ] || { say "usage: tui-fetch [--version <tag>]" >&2; exit 2; } ;;
     -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     "")        ;;
     *)         say "usage: tui-fetch [--version <tag>]" >&2; exit 2 ;;
@@ -63,24 +64,31 @@ esac
 
 sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
-download() {                  # 0 installed · 1 refused (mismatch) · 2 skipped, try source
+# 2 and 3 both mean "no binary installed", but they are opposite facts: 2 is
+# settled (this release has nothing for this platform, so build from source and
+# remember it), 3 is a box that could not ask (offline, no tools) and must be
+# free to ask again on the next press.
+download() {                  # 0 installed · 1 refused · 2 nothing for this platform · 3 could not ask
     local tmp asset base line bin got
     asset="cockpit-tui-$TARGET.tar.gz"
     base="$RELEASES/$TAG"
-    command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 2; }
+    command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 3; }
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
-        say "skip: neither sha256sum nor shasum is installed to verify with"; return 2; }
-    tmp=$(mktemp -d) || return 1
+        say "skip: neither sha256sum nor shasum is installed to verify with"; return 3; }
+    tmp=$(mktemp -d) || return 3
     trap 'rm -rf "$tmp"' RETURN
-    curl -fsSL --max-time 30 -o "$tmp/sums" "$base/sha256.sum" || {
-        say "skip: $base/sha256.sum is unreachable (offline?)"; return 2; }
+    # -fsL, not -fsSL: a tag that has not been cut yet is the ordinary case
+    # before the first release, and curl's own "(22) ... 404" beside the line
+    # below reads like a fault.
+    curl -fsL --max-time 30 -o "$tmp/sums" "$base/sha256.sum" || {
+        say "skip: no release $TAG (or offline)"; return 3; }
     # cargo-dist writes one sha256sum line per asset, so a name that is not
-    # there was never built for this platform -- a different answer from a
-    # download that failed, and neither one is an install.
+    # there was never built for this platform -- a settled answer, unlike a
+    # download that failed.
     line=$(grep -E " \*?${asset//./\\.}\$" "$tmp/sums") || {
         say "no binary for this platform in $TAG ($TARGET)"; return 2; }
-    curl -fsSL --max-time 30 -o "$tmp/$asset" "$base/$asset" || {
-        say "skip: $base/$asset is unreachable (offline?)"; return 2; }
+    curl -fsL --max-time 30 -o "$tmp/$asset" "$base/$asset" || {
+        say "skip: $asset is missing from $TAG (or offline)"; return 3; }
     ( cd "$tmp" && printf '%s\n' "$line" | sha_c ) >/dev/null 2>&1 || {
         say "REFUSED: $asset does not match its published checksum -- nothing installed" >&2; return 1; }
     tar -xzf "$tmp/$asset" -C "$tmp" 2>/dev/null || { say "could not extract $asset" >&2; return 1; }
@@ -100,14 +108,18 @@ download() {                  # 0 installed · 1 refused (mismatch) · 2 skipped
     # intact, not that they are the version the tag names. Run it in the temp
     # dir so a wrong answer never displaces the binary already installed.
     got=$("$bin" --version 2>/dev/null)
+    # Two different answers. Saying nothing at all is this box's problem (wrong
+    # libc, wrong arch) and source is the way out; running and naming another
+    # version is a broken release, and installing it anyway is not.
+    [ -n "$got" ] || { say "the $TAG build for $TARGET does not run here"; return 2; }
     [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
-        say "the $TAG tarball reports '${got:-nothing}' -- nothing installed" >&2; return 1; }
+        say "the $TAG tarball reports '$got' -- nothing installed" >&2; return 1; }
     install -m 755 "$bin" "$BIN/cockpit-tui" || return 1
     say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui"
 }
 
 build() {                     # 0 built · 2 skipped
-    local floor rv
+    local floor rv log
     [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
     # Read, never hardcoded: the floor lives in Cargo.toml and a second copy
@@ -119,7 +131,12 @@ build() {                     # 0 built · 2 skipped
         say "cockpit-tui needs Rust >= $floor to build from source (found ${rv:-none}); install rustup and press prefix U again"
         return 2
     fi
-    cargo build --release --manifest-path "$DIR/tui/Cargo.toml" >&2 || { say "cargo build failed"; return 2; }
+    # Captured, not streamed: this runs from a keypress, and a screenful of
+    # rustc diagnostics past the popup is not the answer to "why no binary".
+    log=$(mktemp) || return 2
+    trap 'rm -f "$log"' RETURN
+    cargo build --release --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
+        say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
     install -m 755 "$DIR/tui/target/release/cockpit-tui" "$BIN/cockpit-tui" || return 2
     say "cockpit-tui built from source -> $BIN/cockpit-tui"
 }
@@ -129,17 +146,23 @@ if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
     say "cockpit-tui $(norm "$TAG") already current"
     exit 0
 fi
-# One attempt per tag, remembered. Without it a machine that is offline (or a
-# platform with no asset) re-runs the whole fetch on every prefix U.
-if [ "$(cat "$BIN/.tried" 2>/dev/null)" = "$TAG" ]; then
-    say "skip: $TAG was already tried -- rm $BIN/.tried to retry"
-    exit 0
-fi
 mkdir -p "$BIN" || exit 1
+# The marker records a fact about the RELEASE -- this tag published nothing for
+# this platform -- so it skips the download and never the source build. An
+# unreachable host and a checksum refusal deliberately leave no marker: the
+# first is transient and the second must shout on every press, and a marker
+# would silence both until someone found a dotfile to delete.
+if [ "$(cat "$BIN/.tried" 2>/dev/null)" = "$TAG" ]; then
+    say "$TAG has no release build for $TARGET"
+    rc=2
+else
+    download; rc=$?
+fi
+case "$rc" in
+    0) rm -f "$BIN/.tried"; exit 0 ;;
+    1) exit 1 ;;
+    3) exit 0 ;;
+esac
 printf '%s\n' "$TAG" > "$BIN/.tried"
-
-download; rc=$?
-[ "$rc" = 0 ] && exit 0
-[ "$rc" = 1 ] && exit 1
 build
 exit 0
