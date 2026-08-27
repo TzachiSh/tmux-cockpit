@@ -162,3 +162,24 @@ DO NOT:
 - Their gaps: nothing handles `isSidechain` / `parentUuid` / `isCompactSummary` (a subagent's text can become the preview line; filter `isSidechain != true`); the API-error regex runs on the raw JSONL line, so a reply that says "API Error" classifies the session as errored.
 
 Verdict: reference only; steal eight techniques, zero files.
+
+## tmux-claude-session-manager (craftzdog), asked as "can we drop Rust and do the same"
+
+385 lines of bash across seven files; tmux ≥ 3.2, fzf, jq, Claude Code ≥ 2.1.139. One fzf list, one row per running Claude process, status dot from `claude agents --json`, identity by pid joined pid→tty→pane in one awk over three tagged streams (three subprocesses regardless of fleet size), age from the transcript's mtime, sort rank then age; ONE preview (`capture-pane -ept {2}`, `--preview-window up,70%,follow`); Enter attaches through a nested tmux in a popup (closing the popup detaches, the agent survives; `list.sh:31-61` documents the teardown race); needs-input is bell forwarding only, and only if Claude is configured to ring; no reply, no timer, a 600 s cache. It cannot show N sessions at once, so it cannot meet "manage multiple sessions from one place"; cockpit's `prefix r` already is this shape with more columns, a filter and a review loop. Worth lifting: ~90 lines (the pid→tty→pane join so two Claudes in one cwd are two rows; bell forwarding).
+
+The lane then built the bash board to ux.md's design (`scratchpad/board2/fleet-board2.sh`, 160 lines: needs-first, `clamp(W/48,1,3)` grid, density ladder, whole-row scroll, h/l/j/k, ↵/r/f actions, inline reply via a `tmux-review --deliver` store file, push over a fifo because bash restarts `read -t` after a trap so SIGUSR1 never wakes it) and measured it against the Rust board on a private server at 160×40, 1 Hz, 20 ticks:
+
+| | bash board | Rust board |
+|---|---|---|
+| CPU/tick @3 / 6 / 9 tiles | 44 / 62 / 77 ms | 21 / 23 / 28 ms |
+| bytes/tick @3 / 6 / 9 | 1,764 / 2,394 / 3,066 | 0 / 0 / 0 |
+| execs/tick @3 / 6 / 9 | 5 / 10 / 14 | ~36/s (200 ms focused-tile capture) |
+| RSS | 4.5 MB | 3.2 MB |
+| push | fifo 41 ms (36–47) | SIGUSR1 31 ms |
+| poll | 824 ms median | 712 ms |
+| in `display-popup -E` | yes, keys and ↵ verified | yes |
+| LOC | 160 (213 with harness) | 2,008 |
+
+The 47 ms in candidates.md was three fork bugs, not a floor (`$(cup)` per preview line, `tput` per frame, awk per line); fixed, a tile costs two execs. Where bash breaks, measured: **wide glyphs bleed across tiles** (a CJK line in a 52-column tile is 104 display columns and wiped the first preview row of both tiles to its right; bash has no wcwidth); the fifo forwarder holds the tty raw and must be torn down while the human types a reply, so no push arrives during a reply; `${s:0:n}` on `-e` output cuts mid-escape (the awk clip fixes it at no cost); unconditional full repaint.
+
+Verdict (the lane's, and the owner chose Rust on it): craftzdog's project cannot meet the need and cockpit already contains it; the bash board can meet it at 160 lines and no toolchain; Rust buys correct unicode width (the one correctness bug with no cheap bash fix), 0 bytes on an unchanged frame, 2–3 % of a core instead of 4–8 %, and headroom (bash extrapolates to ~130 ms at 16 tiles). If Rust had been dropped, ux.md and the tmux findings would have transferred verbatim; base/awesome/L4 would not.
