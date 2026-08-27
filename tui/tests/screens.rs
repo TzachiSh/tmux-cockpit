@@ -1,142 +1,11 @@
-//! TestBackend snapshots. No tmux, no transcripts, no clock: every fixture is
-//! a literal, so a failure means the layout moved and nothing else.
+//! Contracts a golden cannot hold: the collapse order across every width, the
+//! rail's column budget, and the redraw hash. No clock and no tmux -- every
+//! fixture is a literal, so a failure means the logic moved and nothing else.
 //!
-//! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
-use cockpit_tui::data::Pane;
+//! The board's goldens land here with L2. There is deliberately no golden for a
+//! ratatui fleet list: `prefix r` stays fzf.
+use cockpit_tui::data::{Pane, hash_rows};
 use cockpit_tui::fleet;
-use cockpit_tui::theme::Theme;
-use ratatui::Terminal;
-use ratatui::backend::TestBackend;
-use ratatui::widgets::TableState;
-
-fn golden(name: &str, got: &str) {
-    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
-    let path = format!("{dir}/{name}.txt");
-    if std::env::var("COCKPIT_BLESS").as_deref() == Ok("1") {
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, got).unwrap();
-        return;
-    }
-    let want = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("missing golden {path}; run COCKPIT_BLESS=1 cargo test"));
-    assert_eq!(want, got, "\n{name} changed:\n--- want ---\n{want}\n--- got ---\n{got}");
-}
-
-fn draw(w: u16, h: u16, f: impl FnOnce(&mut ratatui::Frame)) -> String {
-    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(f).unwrap();
-    t.backend().to_string()
-}
-
-fn pane(id: &str, wher: &str, title: &str, state: &str) -> Pane {
-    Pane {
-        id: id.into(),
-        wher: wher.into(),
-        title: title.into(),
-        state: state.into(),
-        cmd: "claude".into(),
-        ..Default::default()
-    }
-}
-
-/// The five agents of screens.md §2's mockups.
-fn fixture() -> Vec<Pane> {
-    let mut a = pane("%9", "henosis:1", "Openvpn setup", "needs-input");
-    a.msg = "permission: Bash(sudo openvpn --config /etc/openvpn/work.conf --daemon --log /var/log/ovpn.log)".into();
-    a.pm = "—".into();
-
-    let mut b = pane("%14", "henosis:3", "Implement with test review and rig", "running");
-    b.doing = "Bash: shellcheck on cockpit.tmux and tests/run.sh".into();
-    b.said = "While the suite and rig run: shellcheck on the two scripts, and the independent review pass on the diff.".into();
-    b.asked = "do it review it test rig and implaments".into();
-    b.since = Some(32);
-    b.idle_since = Some(432);
-    b.asked_since = Some(2460);
-    b.loc = "cockpit⑂lowercase-keys".into();
-    b.pm = "+214 -63".into();
-    b.review = "pending".into();
-    b.sess = "098c323f-5ffe-4309-a3dc-996d24d6f00a".into();
-    b.name = "Claude Code".into();
-    b.path = "/home/u/.cache/cockpit-wt/lowercase-keys".into();
-    b.root = "/home/u/.cache/cockpit-wt/lowercase-keys".into();
-    b.spool = "/home/u/.local/state/tmux-cockpit/review/14-3187720301".into();
-    b.delivered = 2;
-
-    let mut c = pane("%21", "work:2", "Fleet gate review", "running");
-    c.doing = "Agent: whole-branch review of phase 1".into();
-    c.since = Some(252);
-    c.loc = "cockpit⑂fleet-timing".into();
-    c.pm = "+12 -4".into();
-
-    let mut d = pane("%30", "work:4", "Left click issue", "done");
-    d.doing = "idle · handover pending".into();
-    d.since = Some(720);
-    d.loc = "cockpit⑂master".into();
-    d.pm = "+3 -0".into();
-
-    let mut e = pane("%31", "work:5", "", "");
-    e.loc = "cockpit⑂master".into();
-    e.pm = "clean".into();
-
-    vec![a, b, c, d, e]
-}
-
-fn fleet_at(w: u16) -> String {
-    let ps = fixture();
-    let th = Theme::fixed();
-    let mut st = TableState::new();
-    let v = fleet::View {
-        panes: &ps,
-        sel: 1,
-        th: &th,
-        preview: "$ make check\n1001 assertions, 0 failures",
-        overlay: None,
-    };
-    draw(w, 16, |f| fleet::render(f, f.area(), &v, &mut st))
-}
-
-#[test]
-fn fleet_profile_a_50() {
-    golden("fleet-50", &fleet_at(52)); // R = 50
-}
-
-#[test]
-fn fleet_profile_b_77() {
-    golden("fleet-77", &fleet_at(79)); // R = 77
-}
-
-#[test]
-fn fleet_profile_c_106() {
-    golden("fleet-106", &fleet_at(108)); // R = 106
-}
-
-#[test]
-fn fleet_too_narrow() {
-    let out = fleet_at(30);
-    assert!(out.contains("terminal too narrow"), "{out}");
-    assert!(out.contains("prefix i on the pane"), "{out}");
-}
-
-#[test]
-fn needs_you_overlay() {
-    let ps = fixture();
-    let th = Theme::fixed();
-    let mut st = TableState::new();
-    let n = fleet::Needs {
-        id: "%9".into(),
-        wher: "henosis:1".into(),
-        title: "Openvpn setup".into(),
-        msg: "Bash(sudo openvpn --config /etc/openvpn/work.conf --daemon)".into(),
-        left: 7,
-    };
-    let v = fleet::View {
-        panes: &ps,
-        sel: 0,
-        th: &th,
-        preview: "",
-        overlay: Some(&n),
-    };
-    golden("needs-you", &draw(79, 16, |f| fleet::render(f, f.area(), &v, &mut st)));
-}
 
 /// The collapse order of screens.md §2: loc first, then ±, then where. A width
 /// never drops a later column while keeping an earlier one.
@@ -186,14 +55,34 @@ fn truncation_marker_and_wrap() {
     assert_eq!(wrap("one two three four", 9, 2), vec!["one two", "three fo…"]);
 }
 
-/// The rail is 5 columns wide (screens.md §0). A duration that needs 6 is
-/// clipped by the Table and loses its leading digit, so no duration may.
+/// The rail is 5 columns wide (screens.md §0). A duration needing 6 is clipped
+/// by the row and loses its leading digit, so none may -- u64::MAX included,
+/// which is why the day count clamps.
 #[test]
 fn rail_never_exceeds_five_columns() {
     use cockpit_tui::data::fmt_dur;
-    for s in [
-        0u64, 1, 59, 60, 61, 599, 600, 605, 3599, 3600, 3661, 35999, 36000, 86399, 86400, 999_999,
-    ] {
+    let boundaries = [
+        0u64,
+        1,
+        59,
+        60,
+        61,
+        599,
+        600,
+        605,
+        3599,
+        3600,
+        3661,
+        35999,
+        36000,
+        86399,
+        86400,
+        999_999,
+        9999 * 86400,
+        10_000 * 86400,
+        u64::MAX,
+    ];
+    for s in boundaries {
         let d = fmt_dur(s);
         assert!(d.chars().count() <= 5, "fmt_dur({s}) = {d:?} is {} columns", d.chars().count());
     }
@@ -203,4 +92,42 @@ fn rail_never_exceeds_five_columns() {
     assert_eq!(fmt_dur(3840), "1h04m");
     assert_eq!(fmt_dur(86399), "23h");
     assert_eq!(fmt_dur(3 * 86400), "3d");
+    assert_eq!(fmt_dur(u64::MAX), "9999d");
+}
+
+/// The redraw gate. `age()` recomputes since/asked_since/idle_since against
+/// `now` every tick, so hashing them leaves `dirty` true forever and the board
+/// repaints at 1 Hz against a server where nothing happened. No sleep: the ages
+/// are simply set to what the next tick would compute.
+#[test]
+fn hash_ignores_the_ages_but_not_the_facts() {
+    fn h(p: &Pane, pv: &str) -> u64 {
+        hash_rows(std::slice::from_ref(p), pv)
+    }
+    let mut a = Pane {
+        id: "%14".into(),
+        state: "running".into(),
+        doing: "Bash: make check".into(),
+        since: Some(32),
+        asked_since: Some(2460),
+        idle_since: Some(432),
+        ..Default::default()
+    };
+    let b = Pane {
+        since: Some(33),
+        asked_since: Some(2461),
+        idle_since: Some(433),
+        ..a.clone()
+    };
+    assert_eq!(h(&a, "pv"), h(&b, "pv"), "one tick of ageing redrew the board");
+
+    // and the gate still notices what actually changed
+    a.doing = "Bash: make tui".into();
+    assert_ne!(h(&a, "pv"), h(&b, "pv"), "a new tool call did not redraw");
+    let c = Pane {
+        state: "needs-input".into(),
+        ..b.clone()
+    };
+    assert_ne!(h(&b, "pv"), h(&c, "pv"), "a state flip did not redraw");
+    assert_ne!(h(&b, "pv"), h(&b, "other preview"), "a changed preview did not redraw");
 }

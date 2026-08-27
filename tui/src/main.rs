@@ -4,17 +4,29 @@
 //! suite keeps working with no binary present.
 use cockpit_tui::{data, fleet, theme};
 
+/// `[]` and exit 0 is "no agents"; exit 1 and no stdout is "no tmux". A wrapper
+/// has to be able to tell those apart, which is what exit 1 is specified for.
+fn panes() -> Vec<data::Pane> {
+    match data::list_panes() {
+        Some(ps) => ps,
+        None => {
+            eprintln!("cockpit-tui: tmux is not reachable");
+            std::process::exit(1);
+        }
+    }
+}
+
 const USAGE: &str = "cockpit-tui --rows | --json | --version | -h";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action: Option<String> = match args.first().map(String::as_str) {
         Some("--rows") => {
-            println!("{}", fleet::rows_text(&data::list_panes(), &theme::Theme::fixed()));
+            println!("{}", fleet::rows_text(&panes(), &theme::Theme::fixed()));
             None
         }
         Some("--json") => {
-            println!("{}", fleet::rows_json(&data::list_panes()));
+            println!("{}", fleet::rows_json(&panes()));
             None
         }
         Some("--version") => {

@@ -135,14 +135,23 @@ pub fn run() -> Option<String> {
         if tick.elapsed() >= Duration::from_secs(1) {
             let t0 = Instant::now();
             let size = term.size().unwrap_or_default();
-            panes = list_panes();
+            // a transient tmux failure keeps the last good tiles rather than
+            // blanking the whole board for one tick
+            if let Some(ps) = list_panes() {
+                panes = ps;
+            }
             if sel >= panes.len() {
                 sel = panes.len().saturating_sub(1);
             }
             let cols = cols_for(size.width);
             let rows = panes.len().div_ceil(cols).max(1);
             let tile_h = (size.height.saturating_sub(1) as usize) / rows;
-            pvs = panes.iter().map(|p| preview(&p.id, tile_h.saturating_sub(4).max(2))).collect();
+            // rule 73: capture-pane failing means the pane is gone, which is not
+            // an empty preview and must not be drawn as a blank tile
+            pvs = panes
+                .iter()
+                .map(|p| preview(&p.id, tile_h.saturating_sub(4).max(2)).unwrap_or_else(|| "capture failed".into()))
+                .collect();
             let h = hash_rows(&panes, &pvs.concat());
             if h != last_hash {
                 last_hash = h;

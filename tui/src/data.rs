@@ -13,9 +13,10 @@
 //! **`--json`** — one object per agent pane, never a non-agent pane, with
 //! exactly these 14 keys **in this order**:
 //! `id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
-//! session, path`. `where` is `sess:idx name`; `title` falls back to the pane
-//! name then `(no title)`; `since` is seconds or `null`; `diff` is the `±`
-//! string; `state` ∈ `needs-input | running | done | error | ""`.
+//! session, path`. `where` is `sess:idx`, the window name is the separate
+//! `name` field; `title` falls back to the pane name then `(no title)`;
+//! `since` is seconds or `null`; `diff` is the `±` string for every state;
+//! `state` ∈ `needs-input | running | done | error | ""`.
 //!
 //! **`--rows`** — tab-separated, 8 fields, no header:
 //! `glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc \t diff`.
@@ -38,7 +39,8 @@
 //! executes nothing.
 //!
 //! **Exit codes:** `0` normal, `1` runtime failure (tmux unreachable, terminal
-//! not a tty), `2` usage error.
+//! not a tty), `2` usage error. `[]` with exit 0 is "no agents"; exit 1 with no
+//! stdout is "no tmux" -- a wrapper must be able to tell them apart.
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -55,14 +57,12 @@ pub fn tmux_argv() -> Vec<String> {
         .collect()
 }
 
-pub fn tmux(args: &[&str]) -> String {
+/// `None` when tmux cannot be spawned or exits non-zero, so "no agents" and
+/// "no tmux" stay distinguishable all the way out to the exit code.
+pub fn tmux(args: &[&str]) -> Option<String> {
     let c = tmux_argv();
-    Command::new(&c[0])
-        .args(&c[1..])
-        .args(args)
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default()
+    let out = Command::new(&c[0]).args(&c[1..]).args(args).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 pub fn readonly() -> bool {
@@ -76,7 +76,7 @@ pub fn tmux_set(args: &[&str]) {
     if readonly() {
         return;
     }
-    tmux(args);
+    let _ = tmux(args); // best effort: a failed unpublish is not actionable
 }
 
 pub fn log(s: &str) {
@@ -91,7 +91,7 @@ pub fn log(s: &str) {
     }
 }
 
-#[derive(Default, Clone, Hash, PartialEq)]
+#[derive(Default, Clone, PartialEq)]
 pub struct Pane {
     pub id: String,
     pub wher: String,
@@ -120,6 +120,45 @@ pub struct Pane {
     /// age of the newest transcript event of any kind: "how long since this
     /// session did anything", the number the state row wants
     pub idle_since: Option<u64>,
+}
+
+/// Everything except the three ages, which `age()` recomputes against `now`
+/// every tick and would leave the redraw gate dirty on every tick. Destructured
+/// on purpose: a new field is a compile error until it is placed on one side.
+impl Hash for Pane {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        let Pane {
+            id,
+            wher,
+            name,
+            cmd,
+            state,
+            title,
+            msg,
+            sess,
+            path,
+            root,
+            spool,
+            pinned,
+            delivered,
+            pid,
+            review,
+            hold,
+            doing,
+            said,
+            asked,
+            loc,
+            pm,
+            since: _,
+            asked_since: _,
+            idle_since: _,
+        } = self;
+        [
+            id, wher, name, cmd, state, title, msg, sess, path, root, spool, pid, review, hold, doing, said, asked, loc, pm,
+        ]
+        .hash(h);
+        (pinned, delivered).hash(h);
+    }
 }
 
 impl Pane {
@@ -176,8 +215,15 @@ fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
     lines
 }
 
+/// The one place doing/said/asked are built, so the one place to sanitise them:
+/// a Bash tool_use whose command held a TAB split `--rows` into 10 fields.
 fn first_line(s: &str) -> String {
-    s.trim().lines().next().unwrap_or("").trim().to_string()
+    let one = s.trim().lines().next().unwrap_or("");
+    one.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// What the tail says, held as timestamps rather than ages: the ages move every
@@ -451,11 +497,25 @@ fn spool_counts(dir: &str) -> (usize, usize) {
 }
 
 /// One pane by id.
-pub fn one_pane(id: &str) -> Pane {
-    list_panes().into_iter().find(|p| p.id == id).unwrap_or(Pane {
+pub fn one_pane(id: &str) -> Option<Pane> {
+    let found = list_panes()?.into_iter().find(|p| p.id == id);
+    Some(found.unwrap_or(Pane {
         id: id.to_string(),
         ..Default::default()
-    })
+    }))
+}
+
+thread_local! {
+    /// `cockpit.tmux` already precomputes `|claude|codex|…|` into
+    /// @cockpit_agents_glob from the public @cockpit_agents, so reading it keeps
+    /// one list instead of a second copy here that drifts when the user edits
+    /// theirs. Empty (plugin not loaded) leaves @panestate as the only test,
+    /// which is the hooks' own answer anyway.
+    static AGENT_GLOB: String = tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]).unwrap_or_default().trim().to_string();
+}
+
+fn is_agent_cmd(cmd: &str) -> bool {
+    AGENT_GLOB.with(|g| g.contains(&format!("|{cmd}|")))
 }
 
 const SEP: char = '\u{1f}';
@@ -486,12 +546,9 @@ fn unsentinel(s: &str) -> String {
     if s == "-" { String::new() } else { s.to_string() }
 }
 
-pub fn list_panes() -> Vec<Pane> {
-    let out = tmux(&["list-panes", "-a", "-F", FIELDS]);
-    // The command list is cockpit's own @cockpit_agents default. A pane that
-    // carries @panestate counts too: the hooks are the source of truth, and a
-    // wrapper script hides `claude` behind its own argv0.
-    let known = ["claude", "codex", "aider", "cursor", "opencode", "gemini", "crush"];
+/// `None` when the list-panes call itself failed: no tmux, not "no agents".
+pub fn list_panes() -> Option<Vec<Pane>> {
+    let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
     let (mut agents, mut kids) = (None, None);
     let mut git: HashMap<String, (String, String, String)> = HashMap::new();
     let mut ps = vec![];
@@ -500,8 +557,10 @@ pub fn list_panes() -> Vec<Pane> {
         if f.len() < 13 {
             continue;
         }
+        // A pane carrying @panestate counts whatever it runs: the hooks are the
+        // source of truth, and a wrapper hides `claude` behind its own argv0.
         let state = unsentinel(f[4]);
-        if !known.contains(&f[3]) && state.is_empty() {
+        if !is_agent_cmd(f[3]) && state.is_empty() {
             continue;
         }
         let mut p = Pane {
@@ -532,7 +591,7 @@ pub fn list_panes() -> Vec<Pane> {
         p.loc = loc;
         p.root = root;
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        p.pm = if p.state == "needs-input" { "—".into() } else { pm };
+        p.pm = pm;
         ps.push(p);
     }
     // needs-input first, then running, then the rest; the fleet exists to answer
@@ -544,16 +603,18 @@ pub fn list_panes() -> Vec<Pane> {
         "done" => 3,
         _ => 4,
     });
-    ps
+    Some(ps)
 }
 
-pub fn preview(id: &str, n: usize) -> String {
+/// `None` when capture-pane fails: the pane is gone, which is not the same as
+/// an empty preview and must never be drawn as a blank tile.
+pub fn preview(id: &str, n: usize) -> Option<String> {
     if n == 0 {
-        return String::new();
+        return Some(String::new());
     }
-    let out = tmux(&["capture-pane", "-ep", "-t", id, "-S", &format!("-{n}")]);
+    let out = tmux(&["capture-pane", "-ep", "-t", id, "-S", &format!("-{n}")])?;
     let lines: Vec<&str> = out.trim_end().lines().collect();
-    lines[lines.len().saturating_sub(n)..].join("\n")
+    Some(lines[lines.len().saturating_sub(n)..].join("\n"))
 }
 
 /// The 5-column right rail of screens.md §0: 32s, 7m12s, 1h04m, 3d. Never more
@@ -568,7 +629,8 @@ pub fn fmt_dur(s: u64) -> String {
         600..3600 => format!("{}m", s / 60),
         3600..36000 => format!("{}h{:02}m", s / 3600, s % 3600 / 60),
         36000..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
+        // clamped: 10000d is six columns and the rail would eat its leading digit
+        _ => format!("{}d", (s / 86400).min(9999)),
     }
 }
 
