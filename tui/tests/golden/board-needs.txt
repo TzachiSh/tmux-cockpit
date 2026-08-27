@@ -1,4 +1,4 @@
-" board · 1 agents · 1 needs you                                         "
+" board · 1 agent · 1 needs you                                          "
 "┏ 1 ▲  henosis:1 · Openvpn setup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
 "┃permission: Bash(sudo openvpn --config /etc/openvpn/work.conf    4m12s┃"
 "┃--daemon --log /var/log/ovpn.log)                                     ┃"

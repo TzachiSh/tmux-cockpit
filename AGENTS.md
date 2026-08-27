@@ -24,3 +24,31 @@ stock bindings immediately afterward.
 
 Branch work goes in a `~/.cache/cockpit-wt/<branch>` worktree; the main checkout
 stays on `master`.
+
+## Never signal a pid the hook has not verified
+
+A pid published in a tmux option (`@cockpit_tui_pid`) outlives the process that
+wrote it -- SIGKILL, a crash and a power cut unpublish nothing -- and the kernel
+hands that number to something else. `SIGUSR1`'s default action is *terminate*,
+so an unverified `kill` is a way to shoot a random process of the user's. It has
+already happened once, to a probe on the live server.
+
+Check the name first, in the shape `scripts/agent-state` uses:
+
+```sh
+if [ -r "/proc/$pid/comm" ]; then
+    read -r comm 2>/dev/null < "/proc/$pid/comm"
+elif [ ! -d /proc/self ]; then
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null)   # macOS: ps prints a path
+fi
+[ "${comm##*/}" = cockpit-tui ] && kill -USR1 "$pid"
+```
+
+Test `-r` first rather than falling back from a failed `read`: the pid that needs
+this guard is exactly the one that is absent from `/proc`, so `read || ps` forks
+`ps` on every call. And `2>/dev/null` goes *before* the input redirect, or bash
+reports the failure before that redirect applies.
+
+The same holds for any pid option added later. The publisher's half of the
+bargain is to unpublish on **every** exit path, signal handlers included
+(`tui/src/push.rs`).

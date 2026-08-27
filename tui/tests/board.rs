@@ -641,19 +641,24 @@ fn an_over_wide_token_never_eats_the_rail() {
     let mut ps = fixture();
     ps[0].msg = format!("{} tail", "x".repeat(200));
     ps[1].doing = "y".repeat(200);
-    let pvs = previews();
-    for (w, h) in [(80u16, 24u16), (120, 30), (160, 24)] {
-        let v = view(&ps, &pvs, &th, 1, 0);
-        let out = draw(w, h, |f| board::render(f, f.area(), &v));
-        assert!(out.contains("4m12s"), "the blocked tile lost its rail at {w}x{h}:\n{out}");
-        assert!(out.contains(" 32s"), "the running tile lost its rail at {w}x{h}:\n{out}");
-        assert!(out.contains('…'), "an over-wide token must be marked truncated at {w}x{h}:\n{out}");
-        for (i, line) in rows(&out).iter().enumerate() {
-            assert!(
-                line.width() <= w as usize,
-                "at {w}x{h} row {i} is {} columns, over {w}: {line:?}",
-                line.width()
-            );
+
+    // each pane alone, so the assertion can only be satisfied by its own tile:
+    // %21 also renders 4m12s, and any tile can supply the ellipsis
+    for (i, rail) in [(0usize, "4m12s"), (1, "32s")] {
+        let one = [ps[i].clone()];
+        let pv = [Some(String::new())];
+        for (w, h) in [(80u16, 24u16), (60, 10), (160, 12)] {
+            let v = view(&one, &pv, &th, 0, 0);
+            let out = draw(w, h, |f| board::render(f, f.area(), &v));
+            assert!(out.contains(rail), "tile {i} lost its rail at {w}x{h}:\n{out}");
+            assert!(out.contains('…'), "tile {i} must mark the token truncated at {w}x{h}:\n{out}");
+            for (n, line) in rows(&out).iter().enumerate() {
+                assert!(
+                    line.width() <= w as usize,
+                    "at {w}x{h} row {n} is {} columns, over {w}: {line:?}",
+                    line.width()
+                );
+            }
         }
     }
 }
@@ -733,10 +738,12 @@ fn a_failed_capture_says_so_instead_of_going_blank() {
 /// `since`, which is what a clock would have done anyway.
 #[test]
 fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
-    use cockpit_tui::data::{fmt_dur, hash_rows};
-    let rails = |ps: &[Pane]| ps.iter().filter_map(|p| p.since).map(fmt_dur).collect::<String>();
+    use cockpit_tui::data::hash_rows;
+    // the same expression run() feeds the gate, not a local re-implementation
+    let extra = board::gate_extra;
 
     let a = fixture();
+    let pvs = previews();
     let mut older = fixture();
     for p in &mut older {
         p.since = p.since.map(|s| s + 1);
@@ -749,10 +756,10 @@ fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
         "a second of ageing must not dirty the gate"
     );
 
-    // board::run hashes the RENDERED durations on top, so a rail the reader can
-    // see change still redraws -- and one they cannot does not
-    assert_ne!(rails(&a), rails(&older), "32s -> 33s is visible");
-    assert_ne!(hash_rows(&a, &rails(&a)), hash_rows(&older, &rails(&older)));
+    // but the gate hashes the RENDERED durations, so a rail the reader can see
+    // change still redraws -- and one they cannot does not
+    assert_ne!(extra(&a, &pvs), extra(&older, &pvs), "32s -> 33s is visible");
+    assert_ne!(hash_rows(&a, &extra(&a, &pvs)), hash_rows(&older, &extra(&older, &pvs)));
 
     let mut invisible = fixture();
     for p in &mut invisible {
@@ -760,8 +767,13 @@ fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
             p.since = Some(721);
         }
     }
-    assert_eq!(rails(&a), rails(&invisible), "12m0s and 12m1s both render 12m");
-    assert_eq!(hash_rows(&a, &rails(&a)), hash_rows(&invisible, &rails(&invisible)));
+    assert_eq!(extra(&a, &pvs), extra(&invisible, &pvs), "12m0s and 12m1s both render 12m");
+    assert_eq!(hash_rows(&a, &extra(&a, &pvs)), hash_rows(&invisible, &extra(&invisible, &pvs)));
+
+    // and a changed preview always dirties it
+    let mut moved = pvs.clone();
+    moved[0] = Some("something else".into());
+    assert_ne!(extra(&a, &pvs), extra(&a, &moved));
 }
 
 /// Every SGR parameter crossterm emitted, in order.
@@ -830,4 +842,15 @@ fn no_color_puts_no_colour_byte_on_the_wire() {
     }
     assert!(params.contains(&1), "bold must survive NO_COLOR");
     assert!(params.contains(&2), "dim must survive NO_COLOR");
+}
+
+/// The popup must not be a blank rectangle while the first fetch runs
+/// (ux.md §4); `claude agents --json` alone measures 380 ms.
+#[test]
+fn a_loading_frame_is_drawn_before_the_first_fetch() {
+    let th = Theme::fixed();
+    let out = draw(80, 24, |f| board::loading(f, f.area(), &th));
+    assert!(out.contains("reading the fleet"), "{out}");
+    // and it is not the empty-fleet card, which would be a lie before a read
+    assert!(!out.contains("no agent panes"), "{out}");
 }
