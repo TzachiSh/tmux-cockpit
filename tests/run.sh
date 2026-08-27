@@ -8601,6 +8601,14 @@ is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
 fi
 
 echo "== prefix w: the board binds, off keeps stock, 3.6 refuses, and one action line reaches one script =="
+# Every script cockpit.tmux names has to be in the tree. The fetch assertions
+# below write a stub over their copy, so a deleted scripts/tui-fetch would sail
+# through them; a binding pointing at nothing fails only in the user's hands.
+bmissing=
+while IFS= read -r bs; do
+    [ -e "$DIR/$bs" ] || bmissing="$bmissing $bs"
+done < <(grep -o '[$]DIR/scripts/[a-z-]*' "$DIR/cockpit.tmux" | sed 's|[$]DIR/||' | sort -u)
+is "every script cockpit.tmux names exists in the tree" "" "$bmissing"
 if need_tmux "the board binding"; then :; else
 BD=$(mktmpd)
 mkdir -p "$BD/p/scripts" "$BD/p/bin" "$BD/rec"
@@ -8734,6 +8742,16 @@ case "$(cat "$BD/argv" 2>/dev/null)" in *'the board (prefix w) needs tmux 3.7 (f
 esac
 "$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
 
+B7="cockpit-bw7-$$"; SOCKS="$SOCKS $B7"; bshim "$BD/s7" "$B7" 3.6
+PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$B7" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$B7" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$B7" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B7"
+case "$(bkey "$B7" w)" in *new-window*cockpit-board*) ok "but a parked window still binds on 3.6: #4920 is a popup bug" ;;
+    *) bad "but a parked window still binds on 3.6: #4920 is a popup bug" \
+         "a new-window running cockpit-board" "$(bkey "$B7" w)" ;;
+esac
+"$TMUX_REAL" -L "$B7" kill-server >/dev/null 2>&1
+
 # A client has ONE message slot, so a second display-message replaces the
 # first: both 3.7 casualties have to arrive in the same line or the branch
 # warning that was there first is never seen.
@@ -8798,6 +8816,12 @@ is "an empty action file is the ordinary q, and logs nothing" "0" \
    "$(: > "$BD/tui.log"; wact '' >/dev/null; grep -c 'ignored action line' "$BD/tui.log" 2>/dev/null)"
 is "a rejected line leaves a trace instead of a silently dead key" "1" \
    "$(: > "$BD/tui.log"; wact 'jump %9x' >/dev/null; grep -c 'ignored action line' "$BD/tui.log" 2>/dev/null)"
+
+: > "$BD/wargv"
+printf '#!/bin/sh\nrm -f "$COCKPIT_ACTION"\n' > "$BD/p/bin/cockpit-tui"; chmod +x "$BD/p/bin/cockpit-tui"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+is "a binary that deletes the action file exits 0 and says nothing" "0 " \
+   "$? $(cat "$BD/wargv" 2>/dev/null)"
 
 rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1

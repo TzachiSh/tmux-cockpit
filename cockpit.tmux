@@ -313,19 +313,10 @@ case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 # choose-tree; @cockpit_board_key rebinds, off keeps stock.
 #
 # Wider than the pickers' $PW and only wider: a 70% popup on a 120-column
-# terminal is an 84-column board, which is one tile column. The height stays
-# $PH, so a user who set @cockpit_popup_height gets it here too.
-#
-# 3.7, above the plugin's own 3.3 floor: 3.7 fixed #4920, "popup window gets
-# overwritten by background updates", and a hook-driven cockpit repaints panes
-# constantly, so below it the board tears while you read it.
+# terminal is an 84-column board, which is one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 BK=$(tmux show-option -gqv @cockpit_board_key)
 case "$BK" in off) bk= ;; "") bk=w ;; *) bk=$BK ;; esac
-if [ -n "$bk" ] && ! version_at_least 3 7; then
-    v37="${v37:+$v37 and }the board (prefix $bk)"
-    bk=
-fi
 # Bound whether or not bin/cockpit-tui exists: the binary arrives by a gesture,
 # so the wrapper says "not installed" at press time rather than the key
 # appearing only after the next reload.
@@ -336,8 +327,14 @@ if [ -n "$bk" ]; then
     # expands #{pane_id} on the source pane instead (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
         tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
-    else
+    elif version_at_least 3 7; then
         tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
+    else
+        # 3.7 fixed #4920, "popup window gets overwritten by background
+        # updates", and a hook-driven cockpit repaints constantly. It is a
+        # POPUP bug: @cockpit_board_window on repaints like any other window
+        # and binds all the way down to the plugin's own 3.3 floor.
+        v37="${v37:+$v37 and }the board (prefix $bk)"
     fi
 fi
 

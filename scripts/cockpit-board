@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# cockpit-board — the shell half of the board (prefix w). cockpit-tui renders
-# and decides; every mutating action stays one of the scripts beside this one,
-# so the suite keeps testing those paths with no binary installed.
+# cockpit-board — the shell half of the board (prefix w).
 #
 #   cockpit-board -p <pane>     the pane the key was pressed in
 #
@@ -48,9 +46,12 @@ env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board 2>>"$LOG" 
     exit 0
 }
 
-# ONE line, `<verb> <pane-id>`, and nothing after it on that line. No `|| exit`
-# on the read: it returns non-zero on an unterminated last line AFTER assigning,
-# and the wrapper and the binary ship on separate tags.
+# ONE line, `<verb> <pane-id>`; a second line is read and dropped. Pre-set, or a
+# binary that deletes $COCKPIT_ACTION fails the redirect, skips the read, and
+# `set -u` aborts on $verb with a bash error inside the popup. No `|| exit` on
+# the read either: it returns non-zero on an unterminated last line AFTER
+# assigning, and the wrapper and the binary ship on separate tags.
+verb='' target='' rest=''
 read -r verb target rest < "$f"
 [ -n "$verb" ] || exit 0                 # nothing chosen: the ordinary q
 bad=
