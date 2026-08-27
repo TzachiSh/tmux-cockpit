@@ -5,6 +5,9 @@ edition = "2024"
 # ratatui 0.30.2's MSRV, written once: the .tmux source-build fallback and CI
 # both read the floor from here (Debian 13 ships 1.85, Ubuntu 24.04 ships 1.75).
 rust-version = "1.88"
+# Not decoration: without it `dist plan` and `dist generate --check` both refuse
+# ("Github CI support requires you to specify the URL of your repository").
+repository = "https://github.com/TzachiSh/tmux-cockpit"
 
 [dependencies]
 ansi-to-tui = "8.0.1"
@@ -25,3 +28,9 @@ opt-level = "s"
 # Paired with ratatui::init(), whose panic hook restores the terminal before the
 # abort. Never pair abort with a Drop-based terminal guard: Drop never runs.
 panic = "abort"
+
+# What cargo-dist builds with. `inherits` alone, deliberately: `dist init` also
+# writes `lto = "thin"`, which would quietly ship every release binary at thin
+# LTO instead of the fat LTO above.
+[profile.dist]
+inherits = "release"

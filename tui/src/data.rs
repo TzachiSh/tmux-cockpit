@@ -34,7 +34,8 @@
 //!
 //! **Action lines** — exactly one `\n`-terminated line, nothing else ever
 //! written to `$COCKPIT_ACTION`: `jump %N` · `review %N` · `fix %N` ·
-//! `deliver %N` (reserved). The verb is `[a-z]+`; the binary executes nothing.
+//! `info %N` · `deliver %N` (reserved for L7). The verb is `[a-z]+`; the binary
+//! executes nothing.
 //!
 //! **Exit codes:** `0` normal, `1` runtime failure (tmux unreachable, terminal
 //! not a tty), `2` usage error.
