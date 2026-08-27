@@ -294,10 +294,9 @@ const DOING: [&str; 8] = [
     "subject",
 ];
 
-/// An interrupt ends the turn without closing anything, so it is neither a
-/// human prompt nor an answer. It almost always arrives as a `text` block in
-/// the array form: 36 of the 38 rows on this box, the two string ones being
-/// `/compact` continuations quoting the phrase.
+/// Ends the turn without closing anything, so it is neither a prompt nor an
+/// answer. It arrives as a `text` block in the array form: 32 of 32 rows over
+/// all 105 transcripts here, none as a string.
 const INTERRUPT: &str = "[Request interrupted by user";
 
 fn parse(lines: Vec<String>) -> Facts {
@@ -326,8 +325,8 @@ fn parse(lines: Vec<String>) -> Facts {
                     // a tool_result arrives as an array, a human turn as a string
                     Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
                     // <task-notification, <command-name, <local-command-*: the
-                    // harness wrote these, nobody typed them (48 of 278 string
-                    // rows here), so they are not a new turn and not `asked`.
+                    // harness wrote these, nobody typed them (330 of 1831
+                    // string rows here), so not a new turn and not `asked`.
                     Some(t) if t.starts_with('<') => {}
                     Some(t) => {
                         fa.user = first_line(t);
@@ -340,8 +339,8 @@ fn parse(lines: Vec<String>) -> Facts {
                             if let Some(id) = b["tool_use_id"].as_str() {
                                 asks.retain(|a| a != id);
                             }
-                            // safe beside the tool_results: not one of 1211 on
-                            // this box carries a `text` key.
+                            // safe beside the tool_results: not one of the
+                            // 7208 here carries a `text` key.
                             interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
                         }
                         turn_over = interrupted;
@@ -517,10 +516,9 @@ fn procs() -> Procs {
     t
 }
 
-/// Depth-first (`Vec::pop`); order does not matter, only membership. Eight
-/// levels is a shell, a wrapper, the agent and room to spare, and both the cap
-/// and the seen set are load-bearing: `ps` really does report a process as its
-/// own parent, and the previous uncapped walk queued that row forever.
+/// Depth-first (`Vec::pop`): only membership matters, not order. Cap and seen
+/// set are both load-bearing -- `ps` really does report a process as its own
+/// parent, and the previous uncapped walk queued that row forever.
 const MAX_DEPTH: usize = 8;
 
 fn tree(pid: &str, t: &Procs) -> Vec<String> {

@@ -271,7 +271,13 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
             + &interrupt),
     );
     r.transcript("stopped-asking", &(user("00", "\"go\"") + &ask("01", "tu5") + &interrupt));
-    r.transcript("stopped-str", &(user("00", "\"go\"") + &ask("01", "tu7") + &interrupt_str));
+    r.transcript(
+        "stopped-str",
+        &(user("00", "\"go\"")
+            + "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
+               \"content\":[{\"type\":\"tool_use\",\"id\":\"t8\",\"name\":\"Bash\",\"input\":{\"command\":\"sleep 1\"}}]}}\n"
+            + &interrupt_str),
+    );
     // <task-notification and friends are written by the harness, not typed:
     // 48 of 278 string user rows on this box, after the turn already ended.
     r.transcript(
@@ -309,11 +315,9 @@ fn the_transcript_lifecycle_drives_state_when_the_hooks_are_silent() {
         done.idle_since
     );
 
-    assert_eq!(
-        get(&ps, "%8").state,
-        "needs-input",
-        "the string interrupt form still terminates a turn"
-    );
+    let stopped_str = get(&ps, "%8");
+    assert_eq!(stopped_str.state, "done", "the string interrupt form still terminates a turn");
+    assert_eq!(stopped_str.asked, "go", "the string interrupt row is not a human turn either");
 
     let injected = get(&ps, "%7");
     assert_eq!(injected.state, "done", "a machine-injected row is not a new human turn");
