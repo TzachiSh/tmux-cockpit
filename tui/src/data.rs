@@ -114,7 +114,7 @@ pub struct Pane {
     pub asked: String,
     pub loc: String,
     pub pm: String,
-    /// seconds since the last tool call; not Duration, so the type can Hash
+    /// seconds since the newest assistant row; not Duration, so the type can Hash
     pub since: Option<u64>,
     pub asked_since: Option<u64>,
     /// age of the newest transcript event of any kind: "how long since this
@@ -183,9 +183,11 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
 /// sibling `<uuid>/subagents/` is never opened: every row there is a sidechain.
 fn transcript_path(sess: &str, path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
+    // Per BYTE, not per char: a two-byte glyph in the cwd becomes two dashes,
+    // and a char-wise slug is one short of the directory that actually exists.
     let slug: String = path
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
         .collect();
     format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
 }
@@ -233,9 +235,13 @@ struct Facts {
     tool: String,
     text: String,
     user: String,
+    /// the newest assistant row, which is what "how long has it been thinking"
+    /// means; the newest row of any type is `newest`
     at: Option<SystemTime>,
     user_at: Option<SystemTime>,
     newest: Option<SystemTime>,
+    /// needs-input / running / done, or empty when the tail said nothing
+    state: String,
 }
 
 thread_local! {
@@ -246,10 +252,9 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// 64 KB first (the p95 row is 4 KB), doubling while the window says nothing:
-/// one row can be 750 KB, and 2 of 20 live transcripts hold no complete
-/// assistant row in their last 64 KB.
-const TAIL_FIRST: u64 = 64 * 1024;
+/// A single row can be 750 KB, and at 64 KB a busy session buried its own open
+/// question behind its padding.
+const TAIL_FIRST: u64 = 256 * 1024;
 const TAIL_MAX: u64 = 2 * 1024 * 1024;
 
 fn read_facts(path: &str) -> Facts {
@@ -265,21 +270,42 @@ fn read_facts(path: &str) -> Facts {
     if let Some(fa) = hit {
         return fa;
     }
-    let mut cap = TAIL_FIRST;
-    let mut fa;
-    loop {
-        fa = parse(tail(&mut f, len, cap));
-        if !fa.tool.is_empty() || !fa.text.is_empty() || cap >= TAIL_MAX || cap >= len {
-            break;
-        }
-        cap *= 2;
+    let mut fa = parse(tail(&mut f, len, TAIL_FIRST));
+    // ponytail: escalating on "no rows at all" misses a session that writes
+    // >256 KB after an open ask -- it finds *a* row, so it never grows. Rule 69
+    // accepts that; upgrade to "no open ask and no end_turn" if it ever bites.
+    if fa.tool.is_empty() && fa.text.is_empty() && len > TAIL_FIRST {
+        fa = parse(tail(&mut f, len, TAIL_MAX));
     }
     TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
     fa
 }
 
+/// Rule 22's documented set, in preference order: the concrete argument first,
+/// the prose last, so a Bash row reads as its command and a Task as its brief.
+const DOING: [&str; 8] = [
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "description",
+    "prompt",
+    "query",
+    "subject",
+];
+
+/// Ends the turn without closing anything, so it is neither a prompt nor an
+/// answer. It arrives as a `text` block in the array form: 32 of 32 rows over
+/// all 105 transcripts here, none as a string.
+const INTERRUPT: &str = "[Request interrupted by user";
+
 fn parse(lines: Vec<String>) -> Facts {
     let mut fa = Facts::default();
+    // Rule 66: an AskUserQuestion is open until a later user row carries a
+    // tool_result with its id -- an answer, a dismissal and a denial all write
+    // one, an interrupt does not.
+    let mut asks: Vec<String> = vec![];
+    let (mut turn_over, mut saw) = (false, false);
     for raw in lines {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
         // A belt against a future version inlining subagent rows: today all of
@@ -293,13 +319,41 @@ fn parse(lines: Vec<String>) -> Facts {
         }
         match v["type"].as_str() {
             Some("user") => {
-                if let Some(t) = v["message"]["content"].as_str() {
+                saw = true;
+                let c = &v["message"]["content"];
+                match c.as_str() {
                     // a tool_result arrives as an array, a human turn as a string
-                    fa.user = first_line(t);
-                    fa.user_at = ts;
+                    Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
+                    // <task-notification, <command-name, <local-command-*: the
+                    // harness wrote these, nobody typed them (330 of 1831
+                    // string rows here), so not a new turn and not `asked`.
+                    Some(t) if t.starts_with('<') => {}
+                    Some(t) => {
+                        fa.user = first_line(t);
+                        fa.user_at = ts;
+                        turn_over = false;
+                    }
+                    None => {
+                        let mut interrupted = false;
+                        for b in c.as_array().into_iter().flatten() {
+                            if let Some(id) = b["tool_use_id"].as_str() {
+                                asks.retain(|a| a != id);
+                            }
+                            // safe beside the tool_results: not one of the
+                            // 7208 here carries a `text` key.
+                            interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
+                        }
+                        turn_over = interrupted;
+                    }
                 }
             }
             Some("assistant") => {
+                saw = true;
+                fa.at = ts.or(fa.at);
+                // Rule 67: in a main transcript end_turn is reliable and rides
+                // the text row; attachment and custom-title rows land after it
+                // and must not reopen the turn, so only these two arms move it.
+                turn_over = v["message"]["stop_reason"].as_str() == Some("end_turn");
                 let Some(blocks) = v["message"]["content"].as_array() else {
                     continue;
                 };
@@ -307,12 +361,14 @@ fn parse(lines: Vec<String>) -> Facts {
                     match b["type"].as_str() {
                         Some("tool_use") => {
                             let i = &b["input"];
-                            let d = ["description", "summary", "prompt", "command", "file_path"]
-                                .iter()
-                                .find_map(|k| i[k].as_str().filter(|s| !s.is_empty()))
-                                .unwrap_or("");
-                            fa.tool = format!("{}: {}", b["name"].as_str().unwrap_or(""), first_line(d));
-                            fa.at = ts;
+                            let d = DOING.iter().find_map(|k| i[k].as_str().filter(|s| !s.is_empty())).unwrap_or("");
+                            let name = b["name"].as_str().unwrap_or("");
+                            fa.tool = format!("{name}: {}", first_line(d));
+                            if name == "AskUserQuestion"
+                                && let Some(id) = b["id"].as_str()
+                            {
+                                asks.push(id.to_string());
+                            }
                         }
                         Some("text") => {
                             let t = first_line(b["text"].as_str().unwrap_or(""));
@@ -327,6 +383,16 @@ fn parse(lines: Vec<String>) -> Facts {
             _ => {}
         }
     }
+    // An open question outranks a finished turn: the interrupt that ended the
+    // turn left the picker's tool_use open, and the human still owes an answer.
+    fa.state = match () {
+        _ if !asks.is_empty() => "needs-input",
+        // rule 78: an unknown state is unknown, never idle
+        _ if !saw => "",
+        _ if turn_over => "done",
+        _ => "running",
+    }
+    .into();
     fa
 }
 
@@ -336,6 +402,11 @@ fn read_transcript(p: &mut Pane) {
         return;
     }
     let fa = read_facts(&transcript_path(&p.sess, &p.path));
+    // Rule 78: never re-derive what the hooks already wrote. @panestate wins;
+    // the transcript only speaks for panes cockpit's hooks never touched.
+    if p.state.is_empty() {
+        p.state = fa.state;
+    }
     p.doing = fa.tool;
     p.said = fa.text;
     p.asked = fa.user;
@@ -410,33 +481,79 @@ fn agent_sessions() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-fn descendants() -> HashMap<String, Vec<String>> {
+/// One `ps` for the whole fleet, serving both the agent classifier and the
+/// session lookup.
+#[derive(Default)]
+struct Procs {
+    kids: HashMap<String, Vec<String>>,
+    /// pid to the lowercased basename of its command
+    comm: HashMap<String, String>,
+}
+
+/// `-axww`, not `-eo`: macOS truncates to the terminal width even into a pipe,
+/// and a truncated `comm` misses the agent. `comm` is the last column and may
+/// hold spaces, so only the two leading numeric fields are tokenised.
+fn procs() -> Procs {
     let out = Command::new("ps")
-        .args(["-eo", "pid=,ppid="])
+        .args(["-axww", "-o", "pid=,ppid=,comm="])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
         .unwrap_or_default();
-    let mut m: HashMap<String, Vec<String>> = HashMap::new();
+    let mut t = Procs::default();
     for l in out.lines() {
-        let f: Vec<&str> = l.split_whitespace().collect();
-        if f.len() == 2 {
-            m.entry(f[1].into()).or_default().push(f[0].into());
+        let mut it = l.split_whitespace();
+        let (Some(pid), Some(ppid)) = (it.next(), it.next()) else {
+            continue;
+        };
+        if pid.parse::<u64>().is_err() || ppid.parse::<u64>().is_err() {
+            continue;
         }
+        let comm: String = it.collect::<Vec<_>>().join(" ");
+        let base = comm.rsplit('/').next().unwrap_or(&comm);
+        t.comm.insert(pid.into(), base.trim_start_matches('-').to_ascii_lowercase());
+        t.kids.entry(ppid.into()).or_default().push(pid.into());
     }
-    m
+    t
 }
 
-fn find_session(pid: &str, kids: &HashMap<String, Vec<String>>, agents: &HashMap<String, String>) -> String {
-    let mut q = vec![pid.to_string()];
-    while let Some(p) = q.pop() {
-        if let Some(s) = agents.get(&p) {
-            return s.clone();
+/// Depth-first (`Vec::pop`): only membership matters, not order. Cap and seen
+/// set are both load-bearing -- `ps` really does report a process as its own
+/// parent, and the previous uncapped walk queued that row forever.
+const MAX_DEPTH: usize = 8;
+
+fn tree(pid: &str, t: &Procs) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    let mut q = vec![(pid.to_string(), 0usize)];
+    while let Some((p, d)) = q.pop() {
+        if !seen.insert(p.clone()) {
+            continue;
         }
-        if let Some(k) = kids.get(&p) {
-            q.extend(k.iter().cloned());
+        if d < MAX_DEPTH
+            && let Some(k) = t.kids.get(&p)
+        {
+            q.extend(k.iter().map(|c| (c.clone(), d + 1)));
         }
+        out.push(p);
     }
-    String::new()
+    out
+}
+
+/// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
+/// agent names too. The list stays @cockpit_agents_glob, one source, so the
+/// user's edit reaches the tree walk as well as the pane name.
+fn agentish(comm: &str) -> bool {
+    let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
+    is_agent_cmd(&b) || version_shaped(&b)
+}
+
+fn version_shaped(s: &str) -> bool {
+    let seps = s.chars().filter(|c| *c == '.' || *c == '_').count();
+    seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
+}
+
+fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> String {
+    tree(pid, t).iter().find_map(|p| agents.get(p).cloned()).unwrap_or_default()
 }
 
 /// repo⑂branch and the working-tree diff, one pair of git calls per unique path.
@@ -549,7 +666,7 @@ fn unsentinel(s: &str) -> String {
 /// `None` when the list-panes call itself failed: no tmux, not "no agents".
 pub fn list_panes() -> Option<Vec<Pane>> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
-    let (mut agents, mut kids) = (None, None);
+    let (mut agents, mut procs_t) = (None, None);
     let mut git: HashMap<String, (String, String, String)> = HashMap::new();
     let mut ps = vec![];
     for l in out.lines() {
@@ -560,7 +677,14 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         // A pane carrying @panestate counts whatever it runs: the hooks are the
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let state = unsentinel(f[4]);
-        if !is_agent_cmd(f[3]) && state.is_empty() {
+        // Rule 72: @panestate is the hooks' own answer, the name is a fast path
+        // that skips the `ps` fork when tmux already says agent, and the process
+        // tree is the one that actually decides.
+        let agent = !state.is_empty() || agentish(f[3]) || {
+            let t = procs_t.get_or_insert_with(procs);
+            tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
+        };
+        if !agent {
             continue;
         }
         let mut p = Pane {
@@ -580,11 +704,8 @@ pub fn list_panes() -> Option<Vec<Pane>> {
             ..Default::default()
         };
         if p.sess.is_empty() {
-            if agents.is_none() {
-                agents = Some(agent_sessions_cached());
-                kids = Some(descendants());
-            }
-            p.sess = find_session(&p.pid, kids.as_ref().unwrap(), agents.as_ref().unwrap());
+            let agents = agents.get_or_insert_with(agent_sessions_cached);
+            p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
         }
         read_transcript(&mut p);
         let (loc, pm, root) = git.entry(p.path.clone()).or_insert_with(|| git_facts(&p.path)).clone();
@@ -606,15 +727,30 @@ pub fn list_panes() -> Option<Vec<Pane>> {
     Some(ps)
 }
 
+/// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
+/// whole preview each time it changes. Keep the newest 64 KB.
+const PREVIEW_MAX: usize = 64 * 1024;
+
 /// `None` when capture-pane fails: the pane is gone, which is not the same as
 /// an empty preview and must never be drawn as a blank tile.
 pub fn preview(id: &str, n: usize) -> Option<String> {
     if n == 0 {
         return Some(String::new());
     }
-    let out = tmux(&["capture-pane", "-ep", "-t", id, "-S", &format!("-{n}")])?;
+    // -J so a wrap point cannot split an ANSI sequence and hand the parser halves.
+    let out = tmux(&["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")])?;
     let lines: Vec<&str> = out.trim_end().lines().collect();
-    Some(lines[lines.len().saturating_sub(n)..].join("\n"))
+    let text = lines[lines.len().saturating_sub(n)..].join("\n");
+    Some(text[snap(&text, text.len().saturating_sub(PREVIEW_MAX))..].to_string())
+}
+
+/// Pane text is valid UTF-8 but rarely ASCII, and slicing a byte offset that
+/// lands inside a glyph panics; agents-in-a-box shipped that crash twice.
+fn snap(s: &str, mut at: usize) -> usize {
+    while at < s.len() && !s.is_char_boundary(at) {
+        at += 1;
+    }
+    at
 }
 
 /// The 5-column right rail of screens.md §0: 32s, 7m12s, 1h04m, 3d. Never more
