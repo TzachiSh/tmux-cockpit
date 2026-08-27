@@ -3,9 +3,9 @@ name: tui
 # Path-filtered: the rest of the repo is shell and has no cargo to run.
 on:
   push:
-    paths: ['tui/**', '.github/workflows/tui.yml']
+    paths: ['tui/**', 'Makefile', 'tests/run.sh', '.github/workflows/tui.yml']
   pull_request:
-    paths: ['tui/**', '.github/workflows/tui.yml']
+    paths: ['tui/**', 'Makefile', 'tests/run.sh', '.github/workflows/tui.yml']
 
 jobs:
   tui-test:
@@ -22,3 +22,6 @@ jobs:
           rustup default "$floor"
           rustc --version
       - run: make tui-test
+      # The release build is a separate failure mode from the test build: LTO,
+      # panic=abort and the dist profile only compile here.
+      - run: make tui

@@ -56,7 +56,7 @@ impl Theme {
                 ..Self::no_color()
             };
         }
-        let opts = tmux(&["show-options", "-g"]);
+        let opts = tmux(&["show-options", "-g"]).unwrap_or_default();
         let mut c = [Color::Reset; 10];
         for (i, (opt, fallback)) in ROLES.iter().enumerate() {
             let set = opts.lines().find_map(|l| l.strip_prefix(opt)?.strip_prefix(' '));

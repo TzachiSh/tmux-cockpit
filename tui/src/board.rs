@@ -731,7 +731,10 @@ pub fn run() -> Option<String> {
         std::process::exit(1);
     }
     let th = Theme::load();
-    let active = crate::data::tmux(&["display-message", "-p", "#{pane_id}"]).trim().to_string();
+    let active = crate::data::tmux(&["display-message", "-p", "#{pane_id}"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let push = Push::start();
     let mut term = match crate::backend::init() {
         Ok(t) => t,
@@ -761,7 +764,11 @@ pub fn run() -> Option<String> {
         if tick.elapsed() >= Duration::from_secs(1) {
             let t0 = Instant::now();
             let size = term.size().unwrap_or_default();
-            panes = list_panes();
+            // None is "tmux did not answer"; keep the last good tile list rather
+            // than blanking the board on one failed read
+            if let Some(ps) = list_panes() {
+                panes = ps;
+            }
             sel = sel.min(panes.len().saturating_sub(1));
             let area = Rect::new(0, 0, size.width, size.height);
             let g = grid(area, panes.len());
@@ -771,10 +778,10 @@ pub fn run() -> Option<String> {
             let ord = order(&panes);
             // visible tiles only: crmux runs one capture-pane exec per tile on
             // every ~50 ms loop tick, forever, whether anything changed or not
-            let mut fresh = vec![None; panes.len()];
+            let mut fresh: Vec<Option<String>> = vec![None; panes.len()];
             for k in top * g.cols..panes.len().min((top + g.rows_shown) * g.cols) {
                 let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
-                fresh[ord[k]] = Some(preview(&panes[ord[k]].id, rows));
+                fresh[ord[k]] = preview(&panes[ord[k]].id, rows);
             }
             pvs = fresh;
             let shown: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();

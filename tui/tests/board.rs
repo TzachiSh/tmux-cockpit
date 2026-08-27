@@ -727,3 +727,107 @@ fn a_failed_capture_says_so_instead_of_going_blank() {
     assert!(!out.contains("capture failed"), "an unfetched tile is not a failed one:\n{out}");
     assert!(out.contains("henosis:1"), "the tiles still draw:\n{out}");
 }
+
+/// F8: the ages must not reach the redraw gate, or an idle server repaints once
+/// a second forever. No clock and no sleep -- a tick is simulated by advancing
+/// `since`, which is what a clock would have done anyway.
+#[test]
+fn the_gate_ignores_the_ages_but_the_rail_still_redraws() {
+    use cockpit_tui::data::{fmt_dur, hash_rows};
+    let rails = |ps: &[Pane]| ps.iter().filter_map(|p| p.since).map(fmt_dur).collect::<String>();
+
+    let a = fixture();
+    let mut older = fixture();
+    for p in &mut older {
+        p.since = p.since.map(|s| s + 1);
+        p.idle_since = Some(99);
+        p.asked_since = Some(7);
+    }
+    assert_eq!(
+        hash_rows(&a, ""),
+        hash_rows(&older, ""),
+        "a second of ageing must not dirty the gate"
+    );
+
+    // board::run hashes the RENDERED durations on top, so a rail the reader can
+    // see change still redraws -- and one they cannot does not
+    assert_ne!(rails(&a), rails(&older), "32s -> 33s is visible");
+    assert_ne!(hash_rows(&a, &rails(&a)), hash_rows(&older, &rails(&older)));
+
+    let mut invisible = fixture();
+    for p in &mut invisible {
+        if p.since == Some(720) {
+            p.since = Some(721);
+        }
+    }
+    assert_eq!(rails(&a), rails(&invisible), "12m0s and 12m1s both render 12m");
+    assert_eq!(hash_rows(&a, &rails(&a)), hash_rows(&invisible, &rails(&invisible)));
+}
+
+/// Every SGR parameter crossterm emitted, in order.
+fn sgr_params(bytes: &[u8]) -> Vec<u16> {
+    let s = String::from_utf8_lossy(bytes).into_owned();
+    let mut out = Vec::new();
+    let mut rest = s.as_str();
+    while let Some(i) = rest.find("\u{1b}[") {
+        rest = &rest[i + 2..];
+        let Some(end) = rest.find(|c: char| c.is_ascii_alphabetic()) else {
+            break;
+        };
+        let (params, tail) = rest.split_at(end);
+        if tail.starts_with('m') {
+            out.extend(params.split(';').filter_map(|p| p.parse::<u16>().ok()));
+        }
+        rest = &tail[1..];
+    }
+    out
+}
+
+/// The pin `Theme::load` could not have, because it is only reached from
+/// `board::run`: under NO_COLOR=1 nothing colour-bearing reaches the wire, and
+/// bold and dim survive -- which is the whole reason NO_COLOR is honoured here
+/// instead of being left to crossterm, whose empty SGR would drop all three.
+#[test]
+fn no_color_puts_no_colour_byte_on_the_wire() {
+    use cockpit_tui::backend::WideCellBackend;
+    use ratatui::backend::Backend;
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    let th = {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: every test that touches the environment takes ENV first, and
+        // Theme::load returns before any tmux call when NO_COLOR is set
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+        let th = Theme::load();
+        unsafe { std::env::remove_var("NO_COLOR") };
+        th
+    };
+
+    let (ps, pvs) = (fixture(), previews());
+    let v = view(&ps, &pvs, &th, 1, 0);
+    let b = render_to_buffer(120, 30, |f| board::render(f, f.area(), &v));
+
+    let mut sink: Vec<u8> = Vec::new();
+    {
+        let mut backend = WideCellBackend::new(&mut sink);
+        let mut cells = Vec::new();
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                cells.push((x, y, &b[(x, y)]));
+            }
+        }
+        backend.draw(cells.into_iter()).unwrap();
+        Backend::flush(&mut backend).unwrap();
+    }
+    assert!(!sink.is_empty(), "nothing reached the wire");
+
+    let params = sgr_params(&sink);
+    for p in &params {
+        assert!(
+            !matches!(p, 30..=38 | 40..=48 | 90..=97 | 100..=107),
+            "NO_COLOR still emitted SGR colour parameter {p}"
+        );
+    }
+    assert!(params.contains(&1), "bold must survive NO_COLOR");
+    assert!(params.contains(&2), "dim must survive NO_COLOR");
+}
