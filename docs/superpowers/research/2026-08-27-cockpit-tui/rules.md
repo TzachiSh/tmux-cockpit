@@ -42,7 +42,7 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
 
 **Data sources and caches**
 
-15. One `list-panes -a -F` per tick, the field list from `scripts/tmux-review:1706-1723` with two changes verified on 3.7c: the separator is `\037`, not tab (a tab in a cwd breaks the tab-separated rows today), and every free-form field (`pane_current_path`, `@panestate_msg`) is wrapped in `#{s/\n/ /:#{s/\011/ /:#{s/\037/ /:…}}}` so a newline cannot split the record; built into **one** `-F` argument.
+15. One `list-panes -a -F` per tick, the field list from `scripts/tmux-review:1706-1723` with two changes verified on 3.7c: the separator is `\037`, not tab (a tab in a cwd breaks the tab-separated rows today), and every free-form field (`pane_current_path`, `@panestate_msg`) is wrapped in a `#{s/<NL>/ /:#{s/<TAB>/ /:#{s/<US>/ /:…}}}` nest where `<NL>`, `<TAB>`, `<US>` are the REAL bytes: tmux does not interpret escape text inside `#{s/…}` (`s/\n/ /` matches the letter n and mangles the value; `s/\011/ /` does nothing; measured on 3.7c by L0). In Rust emit `"\n"`, `"\t"`, `"\u{1f}"`; in bash build the format with `$'\n'`, `$'\t'`, `$'\037'`. Built into **one** `-F` argument.
     Continuation lines each starting a fresh quoted string become separate argv words and tmux refuses them ("too many arguments"), reproduced live. (scripts/tmux-review:1701-1705)
 16. Sentinel every optional field — `#{?#{@panestate},#{@panestate},-}` — and unwrap it after reading.
     Tab is IFS whitespace, so an unset field emits `\t\t`, collapses to one delimiter and shifts every field left; a pane silently vanished from the queue. (scripts/tmux-review:1708-1716)
