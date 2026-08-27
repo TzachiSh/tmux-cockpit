@@ -8209,19 +8209,31 @@ cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"
 # Every target name gets the same bytes, so the block runs on whatever box the
 # suite is on without re-deriving the uname mapping the script under test owns.
-tf_release() {                # <tag> <version-it-reports> [flip-the-checksum]
+tf_release() {                # <tag> <version-it-reports> [flip|flat]
     local d="$TF/rel/$1" t
-    mkdir -p "$d"
-    printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$2" > "$TF/build/cockpit-tui"
-    chmod +x "$TF/build/cockpit-tui"
-    ( cd "$TF/build" && tar -czf "$d/a.tgz" cockpit-tui )
+    mkdir -p "$d"; rm -rf "$TF/build"; mkdir -p "$TF/build"
+    # Measured on dist 0.32.0: the archive is a cockpit-tui-<target>/ directory
+    # holding the binary beside LICENSE and README. `flat` pins that an archive
+    # without that wrapper still installs.
+    if [ "${3:-}" = flat ]; then
+        printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$2" > "$TF/build/cockpit-tui"
+        chmod +x "$TF/build/cockpit-tui"
+        ( cd "$TF/build" && tar -czf "$d/a.tgz" cockpit-tui )
+    else
+        mkdir -p "$TF/build/wrap"
+        printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$2" > "$TF/build/wrap/cockpit-tui"
+        chmod +x "$TF/build/wrap/cockpit-tui"; : > "$TF/build/wrap/LICENSE"
+        ( cd "$TF/build" && tar -czf "$d/a.tgz" wrap )
+    fi
     for t in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
         cp "$d/a.tgz" "$d/cockpit-tui-$t.tar.gz"
     done
     rm -f "$d/a.tgz"
     ( cd "$d" && sha256sum cockpit-tui-*.tar.gz > sha256.sum )
-    [ -z "${3:-}" ] || { awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
-        "$d/sha256.sum" > "$d/s2" && mv "$d/s2" "$d/sha256.sum"; }
+    if [ "${3:-}" = flip ]; then
+        awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
+            "$d/sha256.sum" > "$d/s2" && mv "$d/s2" "$d/sha256.sum"
+    fi
 }
 tf() {                        # <release-base-url> <args...>
     local u=$1; shift
@@ -8305,6 +8317,10 @@ case "$tfout" in
     *"needs Rust >= 1.99"*) ok "the floor comes from Cargo.toml, not a second pin in the script" ;;
     *) bad "the floor comes from Cargo.toml, not a second pin in the script" "needs Rust >= 1.99" "$tfout" ;;
 esac
+tf_release tui-v0.8.0 0.8.0 flat
+rm -f "$TF/plugin/bin/.tried"
+tfout=$(tf "$TFR" --version tui-v0.8.0)
+is "an archive with no wrapping directory installs too" "cockpit-tui 0.8.0" "$("$TFB" --version 2>/dev/null)"
 unset -f tf tf_release
 fi
 

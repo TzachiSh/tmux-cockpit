@@ -64,7 +64,7 @@ esac
 sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 download() {                  # 0 installed · 1 refused (mismatch) · 2 skipped, try source
-    local tmp asset base line got
+    local tmp asset base line bin got
     asset="cockpit-tui-$TARGET.tar.gz"
     base="$RELEASES/$TAG"
     command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 2; }
@@ -84,21 +84,25 @@ download() {                  # 0 installed · 1 refused (mismatch) · 2 skipped
     ( cd "$tmp" && printf '%s\n' "$line" | sha_c ) >/dev/null 2>&1 || {
         say "REFUSED: $asset does not match its published checksum -- nothing installed" >&2; return 1; }
     tar -xzf "$tmp/$asset" -C "$tmp" 2>/dev/null || { say "could not extract $asset" >&2; return 1; }
-    [ -f "$tmp/cockpit-tui" ] || { say "$asset holds no cockpit-tui at its root" >&2; return 1; }
-    chmod +x "$tmp/cockpit-tui"
+    # Measured on dist 0.32.0: the archive is a cockpit-tui-<target>/ directory
+    # holding the binary next to LICENSE and README, not a flat one. Look the
+    # binary up rather than pinning either layout, and install only it.
+    bin=$(find "$tmp" -type f -name cockpit-tui 2>/dev/null | head -1)
+    [ -n "$bin" ] || { say "$asset holds no cockpit-tui" >&2; return 1; }
+    chmod +x "$bin"
     # Only if it is actually there: `xattr -d` on a file with no quarantine
     # attribute exits 1 and prints, and curl+tar do not set one anyway.
     if [ "$(uname -s)" = Darwin ] && command -v xattr >/dev/null 2>&1 &&
-       xattr -p com.apple.quarantine "$tmp/cockpit-tui" >/dev/null 2>&1; then
-        xattr -d com.apple.quarantine "$tmp/cockpit-tui" 2>/dev/null
+       xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
+        xattr -d com.apple.quarantine "$bin" 2>/dev/null
     fi
     # fzf's installer earned this one: a checksum says the bytes arrived
     # intact, not that they are the version the tag names. Run it in the temp
     # dir so a wrong answer never displaces the binary already installed.
-    got=$("$tmp/cockpit-tui" --version 2>/dev/null)
+    got=$("$bin" --version 2>/dev/null)
     [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
         say "the $TAG tarball reports '${got:-nothing}' -- nothing installed" >&2; return 1; }
-    install -m 755 "$tmp/cockpit-tui" "$BIN/cockpit-tui" || return 1
+    install -m 755 "$bin" "$BIN/cockpit-tui" || return 1
     say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui"
 }
 
