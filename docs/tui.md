@@ -1,0 +1,405 @@
+# The board (cockpit-tui)
+
+`prefix w` opens a grid of live agent panes, one tile each, blocked ones first.
+Each tile carries the pane's state glyph, what the agent is doing, how long it
+has been doing it, and a live `capture-pane` of the pane itself. `↵` jumps to
+the tile you are on and closes the board.
+
+It is a small Rust binary, `bin/cockpit-tui`, and it is **optional**. Nothing
+else in the plugin needs it, nothing breaks without it, and every key it offers
+already exists as a bash path. If it is not installed the binding prints one
+message and exits 0.
+
+## What it is not
+
+- **Not the fleet list.** `prefix r` stays fzf. fzf gives fuzzy filter,
+  multi-select and the wheel for free; a table in Rust would buy `j`/`k`/`↵` and
+  lose the filter. The board is a grid of previews, which is the thing fzf
+  cannot draw.
+- **Not an actor.** The binary renders and decides. It writes one line,
+  `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
+  runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
+  stays shell, so the suite keeps testing it with no binary present.
+- **Not a replacement for `prefix i` or `prefix f`.** The board reaches them; it
+  does not reimplement them.
+
+## Install
+
+The binary ships as a release asset. `prefix U` (tpm's update key) fetches it:
+uname picks the asset, the `.sha256` is fetched first and verified, and only a
+verified file is installed. A checksum mismatch, an unfetchable manifest or a
+platform with no asset all leave whatever binary is already there and say so
+once.
+
+Nothing is fetched when tmux loads its config. The load path stays offline, the
+way tpm's own install and update are gestures you make.
+
+To build from source instead, from the plugin directory:
+
+```sh
+make tui
+```
+
+That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
+Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
+rather than dumping a compiler error, and keeps any binary you already have.
+
+`make check`, the repo's own gate, stays green with no cargo installed at all.
+`make tui` is a separate target on purpose: the board must never become a build
+prerequisite for a plugin that is otherwise shell.
+
+The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
+does not touch it; that script manages only its symlinks in `~/.local/bin`.
+
+Requires **tmux >= 3.7** for the board binding. 3.7 fixed "popup window gets
+overwritten by background updates" (#4920), and a hook-driven cockpit repaints
+constantly, so below 3.7 the popup tears. On an older tmux the binding prints a
+message and does not bind.
+
+## Keys
+
+Inside the board:
+
+| key | does |
+|-----|------|
+| `h` `l` `←` `→` | focus one tile left / right |
+| `j` `k` `↑` `↓` | focus one tile up / down |
+| `⇥` `⇧⇥` | next / previous tile in reading order |
+| `1`-`9` | select tile N on this page. Selects, does not jump |
+| `g` `G` | first / last tile |
+| `u` | the next needs-input tile, mirroring `prefix u` |
+| `[` `]` `PgUp` `PgDn` | scroll a screenful, only when rows are hidden |
+| `↵` | jump to the selected pane, close the board |
+| `r` | review its diff (`tmux-review`) |
+| `f` | side fix from it (`tmux-fixer`) |
+| `i` | info for the selected pane |
+| `a` | ask this agent. Phase 1 jumps; phase 2 opens the reply overlay |
+| `?` | help overlay, generated from the key table itself |
+| `^L` | refetch and redraw now |
+| `q` | close. `esc` closes an open overlay, else closes the board |
+
+`j`/`k` are vertical because the board is a grid; `⇥` is the linear one. The
+help overlay is generated from the same table the dispatch reads, so a renamed
+key cannot go stale in one and not the other.
+
+**No mouse**, in phase 1 or phase 2. Enabling SGR capture inside a popup takes
+the wheel and text selection away from you for as long as the board is open,
+and the board is a screen you hold for seconds.
+
+## Options
+
+Set these before the plugin's `run-shell` line, like every other cockpit option.
+
+| option | default | does |
+|--------|---------|------|
+| `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
+| `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
+| `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches |
+| `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
+
+The popup is `-w 90% -h 80%`, wider than the 70% the pickers use. A 70% popup on
+a 120-column terminal is an 84-column board, which is one tile column.
+
+`@cockpit_tui_pid` is how the state hooks wake the board: `agent-state` sends
+`SIGUSR1` after a transition, and the board pulls its next tick forward. The
+sender checks `/proc/$pid/comm` first, because a published pid outlives a
+`SIGKILL` and `SIGUSR1`'s default action on a recycled pid is *terminate*.
+
+Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
+`@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
+`@cockpit_hold`, `@thm_*`.
+
+## Environment
+
+| variable | does |
+|----------|------|
+| `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
+| `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
+| `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
+| `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier |
+
+The binding runs the binary under `env -u CLAUDECODE`, which is required inside
+a popup.
+
+`COCKPIT_READONLY=1` exists because a probe run once left a dead
+`@cockpit_tui_pid` on the owner's live server. Use it for screenshots and
+benchmarks.
+
+## The screens
+
+### The board
+
+120 columns, 5 agents, 2 columns, full density. The width is the board's own
+area, not the terminal's.
+
+```
+ board · 5 agents · 1 needs you
+┌ 1 ▲  henosis:1 · Openvpn setup ──────────────────────────┐┏▎2 ●◆ henosis:3 · Implement with test review and rig ━━━━━┓
+│permission: Bash(sudo openvpn --config                4m12│┃Bash: shellcheck on cockpit.tmux and tests/run.sh      32s┃
+│/etc/openvpn/work.conf --daemon --log /var/log/ovpn.log)  │┃While the suite and rig run: shellcheck on the two script…┃
+│Bash command                                              │┃$ make check                                              ┃
+│sudo openvpn --config /etc/openvpn/work.conf --daemon     │┃1001 assertions, 0 failures                               ┃
+│Do you want to proceed?                                   │┃$ shellcheck cockpit.tmux tests/run.sh                    ┃
+│❯ 1. Yes   2. Yes, don't ask again   3. No                │┃                                                          ┃
+│                                                          │┃                                                          ┃
+│                                                          │┃                                                          ┃
+└─ ↵ answer ───────────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌ 3 ●  work:2 · Fleet gate review ─────────────────────────┐┌ 4 ✓↵ work:4 · Left click issue ──────────────────────────┐
+│Agent: whole-branch review of phase 1                 4m12││idle · handover pending                                12m│
+│Dispatched the review agent; waiting on its report before…││Pushed PR #28 and left the branch on master.              │
+│⏺ Agent (fleet-gate-review)                               ││  ✓ pushed to origin/fix/left-click                       │
+│  Read tests/fleet.sh, 214 lines                          ││  PR #28 opened                                           │
+│  Read scripts/agent-state, 412 lines                     ││❯                                                         │
+│                                                          ││                                                          │
+│                                                          ││                                                          │
+└──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────┘
+┌ 5 ○  work:5 · (no title) ────────────────────────────────┐
+│—                                                         │
+│                                                          │
+│❯                                                         │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ ↵ jump   a ask   r review   f fix   i info   ? help   q close
+```
+
+Tile 1 is blocked: red border, the question in place of the doing line, and
+` ↵ answer ` on the bottom border. Tile 2 has focus (thick border) and is
+tmux's active pane (the `▎`). The `◆` after its state glyph is a pending
+review. The right rail is exactly 5 columns of elapsed duration; a 6-column
+duration would be clipped by the rail and lose its leading digit.
+
+Tiles sort by `(state rank, pane id)`: needs-input, error, running, done, idle.
+Nothing in the sort key is a clock, so tiles do not reorder while you read them.
+Page 1 is the triage page by construction.
+
+The grid is `clamp(width / 48, 1, 3)` columns, then `min(cols, n)`. Height picks
+a density: 2 header rows at `h >= 7`, 1 at `h >= 5` (the `said` line drops),
+and below that the grid scrolls by whole tile rows. A tile is never half cut and
+never resizes as you scroll; the header's `1-4 of 5   ▼1` is the indicator, not
+a scrollbar.
+
+### The help overlay
+
+```
+╭ keys ──────────────────────────────────────────────────────────────────╮
+│ move                          act                                      │
+│ h l  ← →   column             ↵    jump to this pane, close the board  │
+│ j k  ↑ ↓   row                a    answer / ask this agent             │
+│ ⇥ ⇧⇥       next / previous    r    review its diff                     │
+│ 1-9        tile by number     f    side fix from it                    │
+│ g G        first / last       i    info for this pane                  │
+│ u          next blocked                                                │
+│ [ ]        page               view                                     │
+│                               ?    this help                           │
+│                               ^L   refresh now                         │
+│                               q    close   ·   esc close overlay       │
+╰ any key closes ────────────────────────────────────────────────────────╯
+```
+
+### The triage overlay
+
+Phase 2, not shipped. It answers a blocked agent in place rather than attaching
+to its pane, and reserves the action line `deliver %N`. Its design is on
+[#61](https://github.com/TzachiSh/tmux-cockpit/issues/61), in the research
+lane's `ux.md` §2.
+
+## States
+
+Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
+only on `display-message` output, never inside the board, where the frame
+already says who is talking.
+
+**No agent panes:**
+
+```
+╭ board ─────────────────────────────────────────────────────╮
+│                                                            │
+│ no agent panes                                             │
+│                                                            │
+│ cockpit tracks a pane once an agent runs in it.            │
+│ start one, or press q and use prefix r for the full fleet. │
+│                                                            │
+╰ q close ───────────────────────────────────────────────────╯
+```
+
+**tmux not answering**, in two stages, never an instant blank screen. Until 30 s
+the last-known tiles stay and the header carries `· stale 34s`. After 30 s or
+three consecutive failures the grid is replaced:
+
+```
+╭ board · stale 34s ─────────────────────────────────────────╮
+│                                                            │
+│ tmux is not answering                                      │
+│                                                            │
+│ last good read 34s ago · the server may have exited.       │
+│ the tiles below are from that read.                        │
+│                                                            │
+╰ ^L retry   q close ────────────────────────────────────────╯
+```
+
+**Run outside tmux** (`$TMUX` unset and no `COCKPIT_TMUX`): no TUI at all, one
+line on stderr, exit 1. A usage error must not raise a full-screen app you then
+have to work out how to leave.
+
+```
+cockpit-tui: no tmux server — run this from inside tmux, or set COCKPIT_TMUX
+```
+
+**Loading:** a frame is drawn *before* the first fetch, so the popup is never a
+black rectangle while `claude agents --json` takes its measured 380 ms.
+
+```
+╭ board ─────────────────────────────────────────────────────╮
+│                                                            │
+│ reading the fleet …                                        │
+│                                                            │
+╰ q close ───────────────────────────────────────────────────╯
+```
+
+A braille spinner appears only after 1 s of waiting, prefixed to that line. It
+is the only animation in the binary.
+
+**No transcript for a pane:** the tile still renders, the preview is the
+fallback. `doing` reads `—`, `said` is omitted rather than printed empty. Never
+the word "unknown".
+
+**A transcript that cannot be read:** `doing` reads `transcript unreadable`,
+once, for that tile only, and the errno goes to the log. One unreadable file
+must never take the screen.
+
+**Terminal below 40 usable columns:** the board refuses to draw and prints
+`terminal too narrow — prefix i on the pane instead`. Better than a row that
+lies about which agent it names.
+
+**`a` on a tile that is not waiting on you:** one line in the footer row for
+2 s, replacing the key hints.
+
+```
+ work:2 is not waiting on you — ↵ jumps there, /btw asks it while it works
+```
+
+**No binary, or a non-zero exit:** one `display-message`, exit 0, never a broken
+popup. `prefix r` still opens the fleet list.
+
+## Rules
+
+Every lane of the board reads this section before its first commit. The freeze
+is agreed; changing any of it takes a comment on
+[#61](https://github.com/TzachiSh/tmux-cockpit/issues/61), not a commit.
+
+### The freeze
+
+**`data::Pane`**, field for field:
+
+```
+id, wher, name, cmd, state, title, msg, sess, path, root, spool, pinned,
+delivered, pid, review, hold, doing, said, asked, loc, pm,
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
+```
+
+Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
+`Duration` because of `Hash`.
+
+**`--json`**: an array of objects with exactly these 14 keys, in this order:
+
+```
+id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
+session, path
+```
+
+`where` is `sess:idx name`. `title` falls back to the pane name, then
+`(no title)`. `since` is seconds or `null`. `diff` is the `±` string. `state` is
+one of `needs-input | running | done | error | ""`. Pretty-printed, one object
+per agent pane, never a non-agent pane.
+
+**`--rows`**: tab-separated, 8 fields, no header:
+
+```
+glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc \t diff
+```
+
+**The action file.** Exactly one line, `\n`-terminated, written to
+`$COCKPIT_ACTION` on exit. Nothing else is ever written there:
+
+```
+jump %N · review %N · fix %N · deliver %N   (deliver reserved for phase 2)
+```
+
+The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
+nothing.
+
+**CLI:** `cockpit-tui board | fleet | info %N | ask %N | --rows | --json |
+--version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
+`board`.
+
+**Log format:** one line per event, `<unix_micros> <text>`, append-only, only
+when `COCKPIT_LOG` is set. No rotation.
+
+**Exit codes:** `0` normal (an action was written, or none), `1` runtime failure
+(tmux unreachable, terminal not a tty), `2` usage error (unknown subcommand, bad
+pane id). The binding treats a missing binary and a non-zero exit the same way.
+
+### The hard rules
+
+- **Never enable `Wrap`** on a preview. ratatui #2679 (open) panics on
+  double-width graphemes in a wrapped `Paragraph`, and wrapping folds
+  200-column pane lines into `↳` fragments. A `Paragraph` with no `Wrap` clips
+  at the widget edge for free.
+- **Send no terminal queries**, and pin `crossterm = "=0.29.0"` exactly, never a
+  caret range. crossterm #1104 (open): an unrecognised `CSI ? … $y` report
+  wedges the parser and swallows all later input, and tmux emits exactly that
+  family around a popup. Keep `q` as an exit that does not route through Escape
+  parsing.
+- **No mouse in phase 1 or 2.**
+- **No tokio, no `notify`, no clap, no anyhow, no color-eyre, no chrono, no
+  git2.** One input source, one timer, about four forks a tick. Five
+  subcommands parse from `args[0..2]`.
+- **`ratatui::init()` paired with `panic = "abort"`**, never a Drop-based
+  terminal guard with abort: no unwinding means Drop never runs. `init()`'s
+  panic hook runs before the abort and restores the terminal.
+- **Actions are printed, never executed.**
+- **Every tmux write goes through one function** that `COCKPIT_READONLY`
+  disables, the pid publish included.
+- **Tests run on private `-L` sockets**, registered in `SOCKS`, killed after.
+  Never a binding, hook or option on the live server.
+- **Pin a count or poll a condition. Never a clock, never a `sleep`.** Five
+  issues (#18, #32, #36, #44, #47) were wall-clock gates measuring this box
+  under peer load; `tests/run.sh` already has `until_cap` and `until_file`.
+- **Comments are 2 to 3 lines**, carrying one fact the code cannot say: a
+  measurement, a constraint, a trap.
+
+## Troubleshooting
+
+**The popup is blank.** Something captured stdout. ratatui paints on stdout, so
+`act=$(cockpit-tui board)` swallows the entire UI and the popup renders empty.
+The action comes back through `$COCKPIT_ACTION`; never use command
+substitution on the binary.
+
+**The board draws but ignores every key.** It has no controlling terminal.
+crossterm builds its event reader lazily on the first `poll` and caches a
+failure forever, so a daemonized or hook-spawned invocation paints a TUI that
+answers nothing. The binary probes with `event::poll(Duration::ZERO)` before it
+initialises the terminal and prints one line instead. Reproduced with `setsid`,
+with `</dev/null`, and with a non-tty stdin; a real `display-popup -E` has a pty
+and is fine.
+
+**A crash left nothing behind.** `display-popup -E` closes the popup the moment
+the command exits, so a panic disappears with it. The log is at
+`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log`, on by default, and
+the binding appends stderr to it.
+
+**The glyphs shift the columns.** `▲ ● ✓ ◆` are East-Asian Ambiguous: a terminal
+with an emoji-preferring fallback draws them two cells wide. The 2-column gutter
+absorbs that. If it still looks wrong, `COCKPIT_GLYPHS=ascii` swaps the glyphs
+and the borders for a tier that is byte-stable across fonts.
+
+**Screenshots and benchmarks.** `COCKPIT_READONLY=1` makes the binary skip every
+`set-option`, so watching the fleet does not mutate it.
+
+**A stale `@cockpit_tui_pid`.** The board unpublishes the pid on `q`, SIGHUP and
+SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
+`/proc/$pid/comm` before it signals anything.

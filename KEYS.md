@@ -17,6 +17,7 @@ layout.
 | `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane. |
 | `prefix b` | branch picker for this pane's repo. |
 | `prefix g` | session picker (`tm`), with each session's agents previewed. |
+| `prefix w` | the board: every agent pane as a live tile, blocked first. Bound only when the optional `cockpit-tui` binary is installed ([docs/tui.md](docs/tui.md)). |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
 
@@ -77,6 +78,7 @@ Set the option before the plugin's `run-shell` line. `off` disables the key
 set -g @cockpit_ai_key        a    # n if you never use next-window
 set -g @cockpit_jump_key      u    # was J before #43
 set -g @cockpit_sessions_key  g    # was S before #43
+set -g @cockpit_board_key     w    # the board; off keeps stock tmux
 set -g @cockpit_review_key    r
 set -g @cockpit_info_key      i
 set -g @cockpit_fixer_key     f

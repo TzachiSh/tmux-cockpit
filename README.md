@@ -175,6 +175,10 @@ file or by another tool's link, reports anything it could not create, and
 `--uninstall` removes only links that point back into the plugin (and reports
 anything it could not remove). `install.sh --help` prints usage and exits.
 
+The board (`prefix + w`) is the one optional extra: a small binary, fetched by
+`prefix + U` or built with `make tui`. Everything else here works without it.
+See [docs/tui.md](docs/tui.md).
+
 ### Or with tpm
 
 It is a normal tpm plugin — an executable `*.tmux` at the repo root — so:
@@ -913,6 +917,42 @@ set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""
 ```
+
+## The board (cockpit-tui)
+
+`prefix + w` opens every agent pane as a live tile: the state glyph, what the
+agent is doing, how long it has been doing it, and a `capture-pane` of the pane
+itself. Blocked agents sort first, so page 1 is the triage page. `↵` jumps to
+the tile you are on and closes the board.
+
+```text
+ board · 5 agents · 1 needs you                                   1-4 of 5   ▼1 
+┌ 1 ▲  henosis:1 · Openvpn setup ──────────────────────────────────────────────┐
+│permission: Bash(sudo openvpn --config /etc/openvpn/work.conf --daemon…   4m12│
+│Bash command                                                                  │
+│sudo openvpn --config /etc/openvpn/work.conf --daemon                         │
+│Do you want to proceed?                                                       │
+└─ ↵ answer ───────────────────────────────────────────────────────────────────┘
+┏▎2 ●◆ henosis:3 · Implement with test review and rig ━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃Bash: shellcheck on cockpit.tmux and tests/run.sh                          32s┃
+┃$ make check                                                                  ┃
+┃1001 assertions, 0 failures                                                   ┃
+┃$ shellcheck cockpit.tmux tests/run.sh                                        ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+```
+
+It is a separate optional binary, `bin/cockpit-tui`, fetched by `prefix + U` or
+built with `make tui` (Rust >= 1.88, tmux >= 3.7 for the board's popup). Without
+it the binding prints one message and exits 0, and nothing else changes.
+`prefix + r` remains the fleet list: fuzzy filter, multi-select and the wheel
+come free from fzf, and the board is the grid of previews fzf cannot draw.
+
+The binary renders and decides; it never acts. It writes one line,
+`<verb> <pane-id>`, and the binding runs the same `tmux-jump` / `tmux-review`
+script the keys already use.
+
+Keys, options, the screens, the states and the engineering rules:
+[docs/tui.md](docs/tui.md).
 
 ## Side fixes
 
