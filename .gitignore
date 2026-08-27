@@ -8,5 +8,6 @@ tests/.par.*
 tests/.cache/
 
 # The Rust view: build output only, never the source under tui/.
+# scripts/tui-fetch writes bin/cockpit-tui there on prefix U.
 bin/
 tui/target/
