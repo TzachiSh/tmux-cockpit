@@ -221,6 +221,10 @@ fi
 #
 # -p $SRC_PANE: inside a popup $TMUX_PANE is the popup's own pseudo-pane, so
 # the script cannot ask "what pane am I on" itself.
+# tmux keeps ONE message slot per client, so a second display-message replaces
+# the first: every 3.7 casualty travels in one line, printed after the last of
+# them is known.
+v37=
 if version_at_least 3 7; then
     tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
     # Clicking the DIRECTORY segment browses the pane's working dir -- the same
@@ -234,7 +238,7 @@ if version_at_least 3 7; then
 elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
     # Their config marks a click range this tmux cannot deliver. Say so, or the
     # segment is simply dead with no explanation.
-    tmux display-message "tmux-cockpit: clicking the branch needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b still works"
+    v37='clicking the branch'
 fi
 # tmux keeps its drag flag set when a popup or menu eats the release, then
 # rewrites the NEXT press anywhere into MouseDragEnd1<where> (#21, 3.7c): a
@@ -304,6 +308,46 @@ Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 FK=$(tmux show-option -gqv @cockpit_fixer_key)
 case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
+
+# prefix w: the board -- every agent pane as a live tile. Stock w is
+# choose-tree; @cockpit_board_key rebinds, off keeps stock.
+#
+# Wider than the pickers' $PW and only wider: a 70% popup on a 120-column
+# terminal is an 84-column board, which is one tile column.
+Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
+BK=$(tmux show-option -gqv @cockpit_board_key)
+case "$BK" in off) bk= ;; "") bk=w ;; *) bk=$BK ;; esac
+# Bound whether or not bin/cockpit-tui exists: the binary arrives by a gesture,
+# so the wrapper says "not installed" at press time rather than the key
+# appearing only after the next reload.
+if [ -n "$bk" ]; then
+    # @cockpit_board_window on: a parked window instead of the modal popup,
+    # mirroring @cockpit_review_window. new-window activates itself before its
+    # command runs, so SRC_PANE would resolve to the board's own pane; run-shell
+    # expands #{pane_id} on the source pane instead (#45).
+    if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
+        tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
+    elif version_at_least 3 7; then
+        tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
+    else
+        # 3.7 fixed #4920, "popup window gets overwritten by background
+        # updates", and a hook-driven cockpit repaints constantly. It is a
+        # POPUP bug: @cockpit_board_window on repaints like any other window
+        # and binds all the way down to the plugin's own 3.3 floor.
+        v37="${v37:+$v37 and }the board (prefix $bk)"
+    fi
+fi
+
+[ -z "$v37" ] || tmux display-message "tmux-cockpit: $v37 needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b and prefix r still work"
+
+# The binary is optional, and nothing here downloads it. tpm's `prefix U`
+# re-runs every *.tmux -- but so does every plain `source-file ~/.tmux.conf`,
+# and from in here the two are indistinguishable, so an unconditional fetch
+# would put curl's timeout on the tmux startup path. Opt in with
+# `set -g @cockpit_tui_fetch on`, or run scripts/tui-fetch by hand.
+if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
+    tmux run-shell -b "$(sq "$DIR/scripts/tui-fetch")"
+fi
 
 # Reload on R, the shifted pair of the review key: you review all day and
 # reload only after editing the config, so the lowercase key goes to review.
@@ -419,6 +463,7 @@ if [ -n "$ak" ] && version_at_least 3 4; then
     row 'Review its diff'                 r "$rk"
     row 'Side fix beside it'              f "$fk"
     row 'Pane info'                       i "$ik"
+    row 'Board of every agent'            w "$bk"
     rows+=('')
     row 'Switch branch'                   b b
     row 'Move window to a session...'     m "$mk"
