@@ -214,8 +214,8 @@ screen** with no special case.
 | 1 | 1 tile, full height — a live mirror of that pane | same | same |
 | 2 | 2 tiles stacked, h=11, full | 2 tiles side by side, full | 2 tiles, 80 wide each (`min(cols, n)`) |
 | 5 | compact, 4 visible, `▼1` | full, 3 rows (last row half empty) | full, 2 rows (one gap) |
-| 9 | compact, 4 visible, `▼5` | compact, 6 visible, `▼3` | **full, 3×3, all visible** |
-| 16 | compact, 4 visible, `▼12` | compact, 6 visible, `▼10` | compact, 12 visible, `▼4` |
+| 9 | compact, 4 visible, `▼5` | compact, all 9 visible | **full, 3×3, all visible** |
+| 16 | compact, 4 visible, `▼12` | compact, 10 visible, `▼6` | compact, 12 visible, `▼4` |
 
 At 1 agent the tile is as tall as the board and the preview asks `capture-pane` for
 `h-4` lines, so a tall tile shows *more of the pane*, not more blank. The board at n=1 is
@@ -494,7 +494,7 @@ every second becomes a full redraw of every preview.
 | `h` `l` `←` `→` | focus one tile left / right |
 | `j` `k` `↑` `↓` | focus one tile up / down |
 | `⇥` `⇧⇥` | next / previous tile in reading order, wrapping across pages |
-| `1`-`9` | select tile N **on this page** |
+| `1`-`9` | select the tile whose printed number is N (absolute; the number you see is the key you press, tiles past 9 are not key-addressable) |
 | `g` `G` | first / last tile |
 | `u` | select the next needs-input tile (mirrors `prefix u`, the repo's jump key) |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful (only when rows are hidden) |
