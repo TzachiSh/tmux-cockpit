@@ -1,0 +1,226 @@
+//! A backend shim for one measured bug in ratatui-crossterm 0.1.2.
+//!
+//! The Crossterm backend emits an absolute `MoveTo` only when the next changed
+//! cell is not `prev.x + 1` (`ratatui-crossterm-0.1.2/src/lib.rs:241-247`;
+//! position is tracked, width never is). For an ordinary wide grapheme
+//! `Buffer::diff` skips the covered column, so the next cell lands at `x + 2`,
+//! the contiguity test fails and a `MoveTo` is emitted — CJK and emoji-modifier
+//! sequences are safe. For an **emoji presentation sequence** (U+FE0F) the diff
+//! deliberately re-emits the covered trailing column at `x + 1`
+//! (`ratatui-core-0.1.2/src/buffer/diff.rs:158-165`, the "some terminals do not
+//! clear the trailing cell" workaround); that *is* contiguous, no `MoveTo` is
+//! emitted, and on a terminal drawing the glyph two cells wide everything after
+//! it shifts one column. Agent panes carry emoji, so this fires in practice.
+//!
+//! The fix fabricates nothing: when a changed cell lands on a column the
+//! preceding VS16 glyph covers, the current batch is flushed and that cell
+//! begins a fresh delegated `draw`, so the backend emits an absolute `MoveTo`
+//! for it while its real symbol and style are preserved.
+//!
+//! Upstream is ratatui#2721 (merged 2026-08-24, in no published crate). Delete
+//! this module when ratatui-crossterm > 0.1.2 ships. Do not add zeroclaw's CJK
+//! `suppress_until` branch: it is unreachable given the diff above, and would
+//! silently drop a real cell if it ever were reached.
+use crossterm::execute;
+use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
+use ratatui::Terminal;
+use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
+use ratatui::buffer::Cell;
+use ratatui::layout::{Position, Size};
+use std::io::{self, Stdout, Write, stdout};
+use unicode_width::UnicodeWidthStr;
+
+pub struct WideCellBackend<W: Write> {
+    inner: CrosstermBackend<W>,
+}
+
+impl<W: Write> WideCellBackend<W> {
+    pub fn new(writer: W) -> Self {
+        Self {
+            inner: CrosstermBackend::new(writer),
+        }
+    }
+}
+
+fn cell_width(cell: &Cell) -> u16 {
+    u16::try_from(cell.symbol().width()).unwrap_or(u16::MAX)
+}
+
+fn has_vs16(cell: &Cell) -> bool {
+    cell.symbol().contains('\u{FE0F}')
+}
+
+impl<W: Write> Write for WideCellBackend<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Write::flush(&mut self.inner)
+    }
+}
+
+impl<W: Write> Backend for WideCellBackend<W> {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        let mut batch: Vec<(u16, u16, &'a Cell)> = Vec::new();
+        let mut cover: Option<(u16, u16)> = None;
+
+        for (x, y, cell) in content {
+            if let Some((cy, cx_end)) = cover.take()
+                && y == cy
+                && x < cx_end
+                && !batch.is_empty()
+            {
+                self.inner.draw(batch.drain(..))?;
+            }
+            let w = cell_width(cell);
+            if w > 1 && has_vs16(cell) {
+                cover = Some((y, x.saturating_add(w)));
+            }
+            batch.push((x, y, cell));
+        }
+        if !batch.is_empty() {
+            self.inner.draw(batch.drain(..))?;
+        }
+        Ok(())
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        self.inner.get_cursor_position()
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, p: P) -> io::Result<()> {
+        self.inner.set_cursor_position(p)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+
+    fn clear_region(&mut self, t: ClearType) -> io::Result<()> {
+        self.inner.clear_region(t)
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        self.inner.size()
+    }
+
+    fn window_size(&mut self) -> io::Result<WindowSize> {
+        self.inner.window_size()
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Backend::flush(&mut self.inner)
+    }
+
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+}
+
+/// `ratatui::init()` with our backend in place. The panic hook runs before
+/// `panic = "abort"` takes the process down, which is why no Drop guard exists.
+pub fn init() -> io::Result<Terminal<WideCellBackend<Stdout>>> {
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        ratatui::restore();
+        hook(info);
+    }));
+    enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen)?;
+    Terminal::new(WideCellBackend::new(stdout()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::style::Modifier;
+
+    /// The absolute move Crossterm emits for `MoveTo(x, y)`.
+    fn move_to(x: u16, y: u16) -> String {
+        format!("\x1b[{};{}H", y + 1, x + 1)
+    }
+
+    fn render(content: Vec<(u16, u16, Cell)>) -> Vec<u8> {
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let refs: Vec<(u16, u16, &Cell)> = content.iter().map(|(x, y, c)| (*x, *y, c)).collect();
+            let mut b = WideCellBackend::new(&mut sink);
+            b.draw(refs.into_iter()).expect("draw into an in-memory writer");
+        }
+        sink
+    }
+
+    fn cell(symbol: &str) -> Cell {
+        let mut c = Cell::default();
+        c.set_symbol(symbol);
+        c
+    }
+
+    fn count(hay: &[u8], needle: &str) -> usize {
+        let n = needle.as_bytes();
+        let (mut i, mut total) = (0, 0);
+        while i + n.len() <= hay.len() {
+            if &hay[i..i + n.len()] == n {
+                total += 1;
+                i += n.len();
+            } else {
+                i += 1;
+            }
+        }
+        total
+    }
+
+    fn contains(hay: &[u8], needle: &str) -> bool {
+        count(hay, needle) > 0
+    }
+
+    #[test]
+    fn vs16_trailing_cell_gets_an_absolute_move_and_keeps_its_style() {
+        // ⌨️ (U+2328 U+FE0F, width 2) at x=0 covers x=0..=1. The real changed
+        // cell at x=1 carries a non-space symbol and bold, so a fabricated
+        // Print(" ") would be visible in the bytes.
+        let glyph = "\u{2328}\u{FE0F}";
+        let mut z = cell("z");
+        z.modifier = Modifier::BOLD;
+        let out = render(vec![(0, 0, cell(glyph)), (1, 0, z), (2, 0, cell("x"))]);
+
+        assert!(contains(&out, &move_to(0, 0)), "glyph start needs its own move");
+        assert!(contains(&out, glyph), "the glyph must be printed");
+        assert_eq!(count(&out, &move_to(1, 0)), 1, "exactly one MoveTo(1,0) for the trailing cell");
+        assert!(!contains(&out, &move_to(2, 0)), "x=2 rides the relative advance from x=1");
+        assert_eq!(count(&out, "z"), 1, "the real trailing symbol survives, exactly once");
+        assert!(contains(&out, "\x1b[1m"), "the trailing cell's bold reaches the wire");
+    }
+
+    /// An ordinary wide glyph is already safe: the diff yields x+2, which is
+    /// non-contiguous, so the inner backend emits the move by itself.
+    #[test]
+    fn cjk_is_left_alone_and_nothing_is_dropped() {
+        let out = render(vec![(1, 0, cell("中")), (3, 0, cell("x"))]);
+        assert!(contains(&out, "中"), "the CJK glyph must be printed");
+        assert!(contains(&out, "x"), "the following cell must not be dropped");
+        assert!(contains(&out, &move_to(3, 0)), "x+2 is non-contiguous, so it gets a move");
+    }
+
+    #[test]
+    fn ascii_run_uses_only_the_initial_move() {
+        let out = render(vec![(0, 0, cell("a")), (1, 0, cell("b")), (2, 0, cell("c"))]);
+        assert!(contains(&out, &move_to(0, 0)), "initial MoveTo(0,0)");
+        assert!(!contains(&out, &move_to(1, 0)), "a contiguous run must not re-position");
+        assert!(!contains(&out, &move_to(2, 0)), "a contiguous run must not re-position");
+    }
+}
