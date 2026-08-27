@@ -40,10 +40,9 @@ esac
 [ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
 [ -n "$TAG" ] || TAG=$PIN
 
-# `cockpit-tui-v0.1.0` and `cockpit-tui 0.1.0` both reduce to `0.1.0`: the tag
-# carries the package name because cargo-dist parses it with axotag, which wants
-# `<package>-v<ver>`, and the binary prints its package name first. The bare
-# `tui-` form is still stripped so a pre-#79 @cockpit_tui_version resolves.
+# The tag carries the package name because axotag wants `<package>-v<ver>`.
+# Stripping the pre-#79 `tui-` form only makes such a pin COMPARE equal, never
+# fetch: the URL is built from the tag as written.
 norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
 # 0.74.3 -> 0074003, "1.85.0 (abc)" -> 1085000. Never version_at_least

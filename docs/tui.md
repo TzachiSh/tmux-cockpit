@@ -96,7 +96,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
 | `@cockpit_tui_fetch` | `off` | `on` lets `prefix U` run `scripts/tui-fetch`. Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
-| `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches |
+| `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
