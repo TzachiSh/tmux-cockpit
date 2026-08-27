@@ -8339,20 +8339,29 @@ tf() {                        # <release-base-url> <args...>
 tf_ver() { "$TFB" --version 2>/dev/null; }
 tf_mark() { cat "$TF/plugin/bin/.tried" 2>/dev/null; }
 
-tf_release tui-v0.1.0 0.1.0
-tfout=$(tf "$TFR" --version tui-v0.1.0); tfrc=$?
+tf_release cockpit-tui-v0.1.0 0.1.0
+tfout=$(tf "$TFR" --version cockpit-tui-v0.1.0); tfrc=$?
 is "tui-fetch installs a tarball that matches its published checksum" "0" "$tfrc"
 is "and the installed binary is the one the tag named" "cockpit-tui 0.1.0" "$(tf_ver)"
 # Deleting the release proves the second run never went looking for it: the
 # probe is the binary in bin/, not a name on PATH -- fzf's installer
 # re-downloaded everything when a distro copy shadowed its own.
-rm -rf "$TF/rel/tui-v0.1.0"
-tfout=$(tf "$TFR" --version tui-v0.1.0); tfrc=$?
+rm -rf "$TF/rel/cockpit-tui-v0.1.0"
+tfout=$(tf "$TFR" --version cockpit-tui-v0.1.0); tfrc=$?
 case "$tfout" in
     *"already current"*) ok "a second run with a current binary says already current" ;;
     *) bad "a second run with a current binary says already current" "already current" "$tfout" ;;
 esac
 is "and exits 0 without reaching the release host" "0" "$tfrc"
+# The release dir is gone, so this can only match by reducing tag and binary to
+# the same string: cargo-dist parses the tag with axotag, which wants the
+# PACKAGE name, and `tui-v0.1.0` died in the plan step (#79). The pre-#79 form
+# still has to resolve for anyone whose @cockpit_tui_version still holds it.
+tfout=$(tf "$TFR" --version tui-v0.1.0)
+case "$tfout" in
+    *"already current"*) ok "the pre-#79 tui-v tag form reduces to the same version" ;;
+    *) bad "the pre-#79 tui-v tag form reduces to the same version" "already current" "$tfout" ;;
+esac
 tfout=$(tf "$TFR" --version); tfrc=$?
 is "--version with no tag is a usage error, not a silent install of the pin" "2" "$tfrc"
 
@@ -8486,7 +8495,7 @@ case "$tiout" in
     *"tui       0.1.0  $TIP/bin/cockpit-tui"*) ok "an installed binary shows its version and its path" ;;
     *) bad "an installed binary shows its version and its path" "tui       0.1.0  $TIP/bin/cockpit-tui" "$tiout" ;;
 esac
-"$TMUX_REAL" -L "$TI" set -g @cockpit_tui_version tui-v0.2.0 >/dev/null 2>&1
+"$TMUX_REAL" -L "$TI" set -g @cockpit_tui_version cockpit-tui-v0.2.0 >/dev/null 2>&1
 tiout=$(ti_info)
 case "$tiout" in
     *"tui       0.1.0  $TIP/bin/cockpit-tui  (want 0.2.0 -- prefix U updates it)"*)

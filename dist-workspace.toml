@@ -7,8 +7,13 @@ members = ["cargo:tui"]
 # scripts/tui-fetch depends on: unified-checksum publishes the one sha256.sum
 # the fetch reads before it touches a tarball, unix-archive makes the assets
 # .tar.gz rather than dist's default .tar.xz, installers stay empty because the
-# plugin's bin/ is the install path, and tag-namespace makes `tui-v0.1.0` the
-# release tag so the plugin can be tagged separately from its binary.
+# plugin's bin/ is the install path, and tag-namespace makes `cockpit-tui-v0.1.0`
+# the release tag so the plugin can be tagged separately from its binary.
+#
+# The namespace has to be the PACKAGE name, not a nickname: it only sets the CI
+# tag filter, while the tag itself is parsed by axotag, which accepts v<ver>,
+# <package>-v<ver> or <package>/v<ver>. `tui-v0.1.0` is none of those and the
+# plan step died on it (#79).
 #
 # No aarch64-unknown-linux-musl: it needs hand-wired cross linkers
 # (cargo-dist #1581). That platform falls through to the source build.
@@ -27,4 +32,4 @@ unified-checksum = true
 # The archive format to use for non-windows builds (defaults .tar.xz)
 unix-archive = ".tar.gz"
 # A prefix git tags must include for dist to care about them
-tag-namespace = "tui"
+tag-namespace = "cockpit-tui"
