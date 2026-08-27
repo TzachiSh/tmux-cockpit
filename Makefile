@@ -7,11 +7,14 @@
 #   make test-changed only the blocks a change could have broken
 #   make lint         shellcheck every shell file (skipped if not installed)
 #   make check        lint + test, the merge gate
+#   make tui          build the optional Rust view into bin/cockpit-tui
+#   make tui-test     its tests, clippy -D warnings and fmt --check
 #   make install      symlink the commands into ~/.local/bin
 #   make uninstall    remove only the symlinks pointing back here
 #   make bootstrap    full setup from nothing: packages, plugins, config, hooks
 #
-# Everything here is shell; there is nothing to build.
+# Everything here is shell except tui/, and `check` never touches that: a box
+# with no cargo must still be able to run the suite.
 
 SHELL := /bin/bash
 
@@ -19,7 +22,7 @@ SHELL := /bin/bash
 # script cannot be added to the repo and quietly skipped by the linter.
 SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests/par.sh tests/green.sh tests/changed.sh tests/fixtures/review/mkfix.sh tests/fixtures/fake-claude $(filter-out scripts/lib,$(wildcard scripts/*)) $(wildcard scripts/lib/*)
 
-.PHONY: all check test test-par check-par gate test-changed lint fmt install uninstall bootstrap help
+.PHONY: all check test test-par check-par gate test-changed lint fmt tui tui-test install uninstall bootstrap help
 
 all: help
 
@@ -49,6 +52,20 @@ lint:
 	fi
 
 check: lint test
+
+# The optional Rust view (issue #61). Deliberately NOT a prerequisite of check:
+# the binary is additive, and tests/run.sh skips its block when bin/ is empty.
+# --locked everywhere: a build that silently updates Cargo.lock is not the
+# build the crossterm "=0.29.0" pin was measured against.
+tui:
+	@cargo build --release --locked --manifest-path tui/Cargo.toml
+	@mkdir -p bin && cp tui/target/release/cockpit-tui bin/cockpit-tui
+	@bin/cockpit-tui --version
+
+tui-test:
+	@cargo test --locked --manifest-path tui/Cargo.toml
+	@cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+	@cargo fmt --manifest-path tui/Cargo.toml --check
 
 # lint and test-par are independent, so `make -j2 check-par` runs them
 # concurrently and the 17s of lint disappears into the tests' wall clock.
