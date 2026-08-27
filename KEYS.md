@@ -17,7 +17,7 @@ layout.
 | `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane. |
 | `prefix b` | branch picker for this pane's repo. |
 | `prefix g` | session picker (`tm`), with each session's agents previewed. |
-| `prefix w` | the board: every agent pane as a live tile, blocked first. Bound only when the optional `cockpit-tui` binary is installed ([docs/tui.md](docs/tui.md)). |
+| `prefix w` | the board: every agent pane as a live tile, blocked first. Needs the optional `cockpit-tui` binary. |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
 

@@ -31,8 +31,8 @@ verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
 once.
 
-Nothing is fetched when tmux loads its config. The load path stays offline, the
-way tpm's own install and update are gestures you make.
+Nothing is fetched when tmux loads its config. The load path stays offline;
+installing and updating stay gestures you make, the way tpm's own are.
 
 To build from source instead, from the plugin directory:
 
@@ -97,8 +97,10 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
 
-The popup is `-w 90% -h 80%`, wider than the 70% the pickers use. A 70% popup on
-a 120-column terminal is an 84-column board, which is one tile column.
+The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
+on a 120-column terminal is an 84-column board, which is one tile column. The
+height is whatever `@cockpit_popup_height` gives, like every other cockpit
+popup.
 
 `@cockpit_tui_pid` is how the state hooks wake the board: `agent-state` sends
 `SIGUSR1` after a transition, and the board pulls its next tick forward. The
@@ -312,10 +314,10 @@ session, path
 ```
 
 `where` is `sess:idx`, and nothing else: the window name is `data::Pane`'s
-`name` field, which `--json` does not carry. `title` falls back to the pane name, then
-`(no title)`. `since` is seconds or `null`. `diff` is the `±` string. `state` is
-one of `needs-input | running | done | error | ""`. Pretty-printed, one object
-per agent pane, never a non-agent pane.
+`name` field, which `--json` does not carry. `title` falls back to the pane
+name, then `(no title)`. `since` is seconds or `null`. `diff` is the `±`
+string. `state` is one of `needs-input | running | done | error | ""`.
+Pretty-printed, one object per agent pane, never a non-agent pane.
 
 **`--rows`**: tab-separated, 8 fields, no header:
 
@@ -327,7 +329,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 `$COCKPIT_ACTION` on exit. Nothing else is ever written there:
 
 ```
-jump %N · review %N · fix %N · deliver %N   (deliver reserved for phase 2)
+jump %N · review %N · fix %N · info %N · deliver %N   (deliver reserved for phase 2)
 ```
 
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes

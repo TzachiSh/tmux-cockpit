@@ -8204,9 +8204,9 @@ echo "== cockpit-tui: docs name only real options =="
 # every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
 # The freeze (#61 workflow §3) is agreed before the code lands, so its names are
 # allowed early -- each is listed with the lane that introduces it.
-TUI_FROZEN="@cockpit_tui_pid:L3 @cockpit_tui_version:L4 @cockpit_board_key:L6 \
+TUI_FROZEN="@cockpit_tui_pid:L0 @cockpit_tui_version:L4 @cockpit_board_key:L6 \
 @cockpit_board_window:L6 COCKPIT_ACTION:L0 COCKPIT_TMUX:L0 COCKPIT_LOG:L0 \
-COCKPIT_READONLY:L1 COCKPIT_GLYPHS:L2"
+COCKPIT_READONLY:L0 COCKPIT_GLYPHS:L0"
 if [ ! -f "$DIR/docs/tui.md" ]; then
     bad "docs/tui.md exists" "a file" "missing"
 else

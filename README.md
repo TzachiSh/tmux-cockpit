@@ -255,6 +255,10 @@ over earlier, `prefix r` included.
 
   An earlier version of this file claimed 3.5 was the floor because per-pane
   border colour "silently does nothing" on 3.4. That was wrong — it works.
+- **tmux >= 3.7** for the board (`prefix + w`), which is optional: 3.7 fixed a
+  popup being overwritten by background repaints, and a hook-driven cockpit
+  repaints constantly. Building the board from source with `make tui` also
+  needs **Rust >= 1.88**; the fetched binary needs neither Rust nor cargo.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 
@@ -270,6 +274,7 @@ over earlier, `prefix r` included.
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
 | `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
+| `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the optional `cockpit-tui` binary and tmux 3.7, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 | `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
 
@@ -939,6 +944,17 @@ the tile you are on and closes the board.
 ┃1001 assertions, 0 failures                                                   ┃
 ┃$ shellcheck cockpit.tmux tests/run.sh                                        ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┌ 3 ●  work:2 · Fleet gate review ─────────────────────────────────────────────┐
+│Agent: whole-branch review of phase 1                                     4m12│
+│⏺ Agent (fleet-gate-review)                                                   │
+│  Read tests/fleet.sh, 214 lines                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌ 4 ✓↵ work:4 · Left click issue ──────────────────────────────────────────────┐
+│idle · handover pending                                                    12m│
+│  ✓ pushed to origin/fix/left-click                                           │
+│  PR #28 opened                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+ ↵ jump   a ask   r review   f fix   i info   ? help   q close
 ```
 
 It is a separate optional binary, `bin/cockpit-tui`, fetched by `prefix + U` or
