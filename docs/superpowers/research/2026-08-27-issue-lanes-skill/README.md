@@ -84,4 +84,4 @@ The edit lane records these before editing, each red before and green after:
 ## Implementation history
 
 - 2026-08-27 07:00 issue #78 opened; R1-R5 and 20 rig runs dispatched at 07:10; V1-V5 dispatched 07:16-07:20.
-- 2026-08-27 research PR opened (this folder).
+- 2026-08-27 07:41 draft PR #82 opened; V4 reported 07:26Z (one R4 deviation refuted: #73 was retargeted by hand, not by GitHub).

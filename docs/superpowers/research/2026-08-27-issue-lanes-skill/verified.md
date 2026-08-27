@@ -60,7 +60,21 @@ Artifact drift: gates.md mtime moved from 10:02 to 10:15 while the lanes were re
 Conflicting pairs the owner must settle: (1) R1 #2+#4 shrink SKILL.md by ~230 words while R2 #5, #12, #20 grow it (mapping table, plan shape, glossary); (2) R1 #5 deletes SKILL.md:59, R2 #2 rewrites it; (3) R1 #1 removes "stacked PRs" from the description, R1 #11 adds it. Compatible: R1 #6/R2 #7, R1 #3/R2 #5, R1 #4/R2 #17, R1 #8/R2 #6, R1 #10/R2 #5.
 
 
-V4_SECTION
+## V4 over R4 (every deviation re-checked against gh timelines, UTC)
+
+| claim | grade | evidence |
+|---|---|---|
+| B5 #69 merged with no MERGE-at-sha on the PR | CONFIRMED (for the GitHub record) | #69 has one comment, 05:12:33 "merge after fixes ... Full text is with the lane owner"; commits 0894e07 05:25, 8f42393 05:33; merged 06:06:17; no MERGE next to 8f42393 on #69, #63 or #61. The message channel was not read, so "nowhere" is not shown |
+| B6 #67 merged two commits past c75861a | TIGHTENED | the content change (52af942, docs/tui.md and tests/run.sh) was pre-announced on #61 06:05:16 as freeze amendment 2 "after #67 merges"; it landed before the merge instead, never stated or diffed on the PR, on a PR whose body says "No code" |
+| B7 #73 auto-retargeted by GitHub; nobody retargeted before | REFUTED | #73 base_ref_changed 06:06:36 by TzachiSh, then #74 06:06:38, #68 06:06:41, #77 06:06:42, #76 06:06:44 (a loop, in the posted merge order); #69 head_ref_deleted 06:07:58, 82 s later. GitHub's auto-retarget fires only after deletion. The plan and gates.md:13 were followed; the tui-data-branch memory line "GitHub auto-retargeted #73" is wrong (fixed). R4 finding 6 (gates.md:13's why overstated) stands on the changelog alone |
+| B11 two lanes owned theme.rs | CONFIRMED | #64 scope lists tui/src/theme.rs; #69 review put F2 (theme.rs) on L0; 8f42393 "shrink the theme.rs F2 edit to the three items L2 does not own"; #74 "one line in L0's file, with the lead's say-so". Both declared and resolved by an explicit call: declared deviations, not silent |
+| B13 #76 author dispatched its own reviewer | TIGHTENED | 05:59:44 author-voice comment carries the subagent's summary and the author's fixes (4d99fc4, later rebased out); the reviewer never wrote to the PR. Who dispatched it is not proven by the wording |
+| B1 decision list never on #61 in shape 3 | TIGHTENED | none of the 15 comments is a numbered list with defaults; the README on PR #62 is. SKILL.md:30 says "README ... summary comment on the issue", templates.md:31 says "issue comment". The run followed SKILL.md:30. The defect is the two files disagreeing, plus no "Asked <date>" |
+| B12 #67/#68 opened against master, base unpushed | CONFIRMED | #67 body "polled for 5 minutes"; #68 body "not pushed yet"; kickoff 04:14, #69 pushed 04:43, a 29-minute window; #68 retargeted at 05:04, #67 never |
+| finding 3, five wrong or vacuous mutations | CONFIRMED | two wrong knobs (cache filter, seen set), three vacuous tests (#74 F1, F2; #73 stopped-str arm), each quoted |
+
+Contradiction check on R4's actions 1-5: (1) "PR comment is the record" contradicts SKILL.md:59 as written and agrees with :34 and templates:78; the skill is already split, so :59 needs the clause. (2) widening "seam merges" to "any commit after the verdict" contradicts nothing; #69 and #67 broke the rule that exists, so this is a compliance failure and more words alone do not fix it. (3) additive to gates.md:8. (4) "a cross-lane one-liner is a numbered amendment" contradicts :56's absolute "never" and needs :56 reworded "except through a numbered freeze amendment naming the edit". (5) contradicts the run's own DAG, which started disjoint leaves before lane 0 pushed on purpose: a trade of 29 minutes of parallelism for a clean stack, not a rule conflict.
+
 
 ## V5 over R5 (binary decoded, hook fed seven payloads, run 1 reproduced)
 

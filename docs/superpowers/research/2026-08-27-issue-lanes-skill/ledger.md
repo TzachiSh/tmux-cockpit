@@ -10,9 +10,9 @@ Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute
 | A2 | "nothing reversible waits on the owner; the irreversible go/no-go does" | SKILL.md:10 | BLOCKER | GREEN | R2 #1, V1 |
 | A3 | one line naming the allowed channels: reply or SendMessage to the lead, PR body, issue/PR comment; not files, scratchpad, .omc/, shared_memory, notepad, lane-to-lane messages | SKILL.md:59, templates.md:63 | MAJOR | GREEN | R5 #1, V5 |
 | A4 | roster shape 11 (lane, scope, where, reviewer, status at sha) as an issue comment edited in place; row 6 names it; shape 6 opens with the lane | templates.md, SKILL.md:32 | MAJOR | YELLOW | R6 #1-4 |
-| A5 | the mutation removes the mechanism the test names; green after a mutation is a finding about the test, never a pass | gates.md:8 | MAJOR | pending V4 | R4 #3 |
-| A6 | the DAG names an owner for every integration line; a finding on another lane's file routes via Belongs elsewhere; a cross-lane one-liner is a numbered amendment | SKILL.md:32/56 | MAJOR | pending V4 | R4 #4 |
-| A7 | lane 0 pushes its branch before any leaf is dispatched | templates.md:57 | MAJOR | pending V4 | R4 #5 |
+| A5 | the mutation removes the mechanism the test names; green after a mutation is a finding about the test, never a pass | gates.md:8 | MAJOR | GREEN | R4 #3 |
+| A6 | the DAG names an owner for every integration line; a finding on another lane's file routes via Belongs elsewhere; a cross-lane one-liner is a numbered amendment | SKILL.md:32/56 | MAJOR | GREEN (V4: :56 must gain "except through a numbered freeze amendment") | R4 #4 |
+| A7 | lane 0 pushes its branch before any leaf is dispatched | templates.md:57 | MAJOR | GREEN (V4: costs the 29 min of parallelism #61 chose) | R4 #5 |
 | A8 | status token `<confirmed\|plausible\|refuted>` in shape 7; Did/Did not/Could do next slot in shapes 6 and 7 | templates.md:82, :76, :86 | MAJOR | GREEN | R1 #3, R2 #5, V1 |
 | A9 | "Size / deps: <before -> after> (or n/a)" slot in shape 6 | templates.md:70 | MAJOR | GREEN | R2 #10, V1 |
 | A10 | gates row: fail-first by copy-aside, never git stash (all worktrees share one stash stack) | gates.md | MINOR | YELLOW | R4 #15 |
@@ -23,10 +23,10 @@ Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute
 | A15 | plan comment shape; template 5 pointed to from row 7; release checklist | templates.md, SKILL.md:33 | MAJOR | YELLOW | R2 #12, V1 (narrowed) |
 | A16 | glossary: trunk, seam, skeleton, integration lane, packaging lane, collection issue, block, keep/skip/replace | templates.md or gates.md tail | MINOR | GREEN | R2 #14, #20 |
 | A17 | peer check before claiming: `git worktree list` + ListAgents | SKILL.md:55 | MINOR | YELLOW | R4 #14 |
-| A18 | decision list is posted on the issue even when the README carries it; "Asked <date>" line | SKILL.md:30 | MINOR | pending V4 | R4 #7 |
-| A19 | "a reviewer is dispatched by the orchestrator, never by the author" | SKILL.md:34 | MINOR | pending V4 | R4 #8 |
-| A20 | "every rebase or trunk merge after the verdict repeats row 9; the reviewer states the post-verdict diff on the PR" | SKILL.md:36 | MAJOR | pending V4 | R4 #2, R2 #18 |
-| A21 | which channel carries the full review: the PR comment is the record, the message is the notification | SKILL.md:59 | MAJOR | pending V4 | R4 #1 |
+| A18 | decision list is posted on the issue even when the README carries it; "Asked <date>" line | SKILL.md:30 | MINOR | YELLOW (V4: SKILL.md:30 and templates.md:31 disagree on where shape 3 lives; the run followed SKILL.md) | R4 #7 |
+| A19 | "a reviewer is dispatched by the orchestrator, never by the author" | SKILL.md:34 | MINOR | YELLOW (V4: the author's comment carried summary and fixes; who dispatched is unproven) | R4 #8 |
+| A20 | "every rebase or trunk merge after the verdict repeats row 9; the reviewer states the post-verdict diff on the PR" | SKILL.md:36 | MAJOR | GREEN (V4: a compliance failure on an existing rule; wording widens it) | R4 #2, R2 #18 |
+| A21 | which channel carries the full review: the PR comment is the record, the message is the notification | SKILL.md:59 | MAJOR | GREEN (V4: :59 needs the clause or it contradicts :34) | R4 #1 |
 | A22 | $$ and lane name on every scratch file; kill strays by readlink /proc/PID/cwd; a worktree test must load the worktree's code | gates.md:6, :12 | NIT | YELLOW | R4 #16, #17 |
 | A23 | memory: named-subagent-reports names the built-in regex (REPORT/SUMMARY/FINDINGS/ANALYSIS*.md, Write, subagents only) | memory dir | MAJOR | GREEN | R5 #2, V5 |
 
@@ -38,7 +38,7 @@ Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute
 | I2 | community.md:39 OWNERS: reviewer never the author; an OWNERS author approves implicitly (require_self_approval false) | community.md:39 | MAJOR | GREEN | R3 #1, V3 |
 | I3 | community.md:59 drop the Graphite attribution for same-file conflicts; :34 cite arXiv 2607.20189 as Gerrit relation chains, 2.6x slower merge, 1.5x revision rounds | community.md:34, :59 | MAJOR | GREEN | R3 #2, #3, V3 |
 | I4 | 15 further community.md corrections (Nygard date, SRE columns, Chromium, benchstat "at least 10", Gerrit, RFC 3614, PEP 12 quote, PEP 207, Conventional Comments nine labels, seniority, Rust perf, Apache votes, KEP verdict marked as ours) | community.md | MINOR/NIT | GREEN | R3 #4-18, V3 |
-| I5 | gates.md:13 "deleting the base closes them" only for an unmerged base; use community.md:31's wording | gates.md:13 | MINOR | pending V4 | R4 #6 |
+| I5 | gates.md:13 "deleting the base closes them" only for an unmerged base; use community.md:31's wording | gates.md:13 | MINOR | YELLOW (V4 refuted the #73 story: a loop retargeted five PRs 82 s before deletion; the why-column stands on GitHub's changelog alone) | R4 #6 |
 | I6 | gates.md why-column: mechanism, not cockpit incident counts | gates.md:5-20 | MINOR | YELLOW | R1 #9 |
 | I7 | rename state 3 "Refute" | SKILL.md:29 | MINOR | GREEN | R1 #10 |
 | I8 | red flags as bullets ending "All of these mean: stop, post the default or the issue, then continue" | SKILL.md:78-80 | NIT | GREEN | R1 #14 |
@@ -51,8 +51,8 @@ Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute
 | I15 | gates:10 adds "n runs per side, n named" | gates.md:10 | MINOR | YELLOW | R2 #22 |
 | I16 | brief says "reply to <lead>; the Agent return or a SendMessage to the lead both count" | templates.md:63 | MINOR | GREEN | R2 #23, R5 #3, V5 |
 | I17 | "Considered, kept ours because" line for Conventional Comments and the four other Take items with no rule | community.md:22, :29, :40, :41, :54, :65 | NIT | GREEN | R2 #6, #25, V1 |
-| I18 | gates.md:17 installer dry run and leak sweep become slots in shape 6 | templates.md | MINOR | pending V4 | R4 #12 |
-| I19 | numbering of freeze amendments starts on acceptance | templates.md:51 | MINOR | pending V4 | R4 #9 |
+| I18 | gates.md:17 installer dry run and leak sweep become slots in shape 6 | templates.md | MINOR | YELLOW | R4 #12 |
+| I19 | numbering of freeze amendments starts on acceptance | templates.md:51 | MINOR | YELLOW | R4 #9 |
 | I20 | memory: 32 sourced practices (27 Take, 5 Struggled), not 33 | memory dir | NIT | GREEN | R3, V3 |
 | I21 | skill research path: "the repo's research folder" instead of `docs/research/` (this repo uses docs/superpowers/research/; two GREEN runs used the skill's literal path) | SKILL.md:28, templates.md:21 | MINOR | GREEN | orchestrator, rig reading 4 |
 
