@@ -85,3 +85,16 @@ The edit lane records these before editing, each red before and green after:
 
 - 2026-08-27 07:00 issue #78 opened; R1-R5 and 20 rig runs dispatched at 07:10; V1-V5 dispatched 07:16-07:20.
 - 2026-08-27 07:41 draft PR #82 opened; V4 reported 07:26Z (one R4 deviation refuted: #73 was retargeted by hand, not by GitHub).
+
+## Outcome (written after the edit rounds, same day)
+
+The decisions were taken on the defaults and the skill moved to its own repository, TzachiSh/issue-lanes-skill, as decision 12 said (baseline commit = the 10:15 files). Two edit rounds ran there under the skill's own process, each with a freeze, lanes, reviewers and an audit.
+
+| round | issue | PRs | what changed | measure |
+|---|---|---|---|---|
+| apply the review | issue-lanes-skill#1 | 6 merged | the three contradictions, the backwards OWNERS claim, the flake rule, shapes 11 (roster) and 12 (plan), status token, channel definition, lane name and title on every post, project-agnostic lint | gate 0/48 red at baseline to 61/68 green; but total words 3646 to 6899 |
+| KISS | issue-lanes-skill#14 | 6 merged | every file cut by deletion with a rule map per PR; community.md and sources.md deleted (no lane ever read a URL: 0 of 20 rig agents); dates and provenance banned; prose lint from a measured comparison against three human-written process docs | 6899 to 3079 words; 60/60 checks; rig re-run GREEN 10/10, RED 0/1 |
+
+The final refute lane (V-final) inventoried 208 baseline rules: 165 present, 22 duplicate-deleted, 14 decided-out, 7 lost. The 7 came from two lanes each cutting the same rule as a duplicate of the other's file; they are restored under epic issue-lanes-skill#29. A demo run on a throwaway project (TzachiSh/tally-demo) feeds the same epic.
+
+Lessons that changed the skill: a template names no project, path, issue, sha, date or URL; a budget is set after the floor is measured, not before (three budgets were raised); a rule cut as a duplicate lives in the file a lane loads first; the Cleanup line pastes ls, never asserts; an audit per round, not per project.
