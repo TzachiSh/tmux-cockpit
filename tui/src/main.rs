@@ -1,14 +1,15 @@
-//! The CLI. Phase 0 ships the two headless forms; `board` arrives with phase 1
+//! The CLI. Phase 0 shipped the two headless forms; phase 1 adds `board`
 //! (workflow.md §3). Every mutating action stays a shell script: this process
 //! prints `<verb> <pane-id>` and a wrapper runs it, so the 1000-assertion bash
 //! suite keeps working with no binary present.
-use cockpit_tui::{data, fleet, theme};
+use cockpit_tui::{board, data, fleet, theme};
 
-const USAGE: &str = "cockpit-tui --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board | --rows | --json | --version | -h";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action: Option<String> = match args.first().map(String::as_str) {
+        Some("board") => board::run(),
         Some("--rows") => {
             println!("{}", fleet::rows_text(&data::list_panes(), &theme::Theme::fixed()));
             None

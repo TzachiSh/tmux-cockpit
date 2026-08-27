@@ -23,8 +23,9 @@ const RAIL_W: usize = 5;
 
 pub struct View<'a> {
     pub panes: &'a [Pane],
-    /// previews, indexed like `panes`, not like the sorted order
-    pub pvs: &'a [String],
+    /// previews, indexed like `panes`, not like the sorted order. `None` is a
+    /// failed capture-pane, which is "the pane is gone", not an empty pane.
+    pub pvs: &'a [Option<String>],
     pub th: &'a Theme,
     /// position in `order()`, not an index into `panes`
     pub sel: usize,
@@ -193,7 +194,9 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
             let Some(&i) = ord.get(k) else { continue };
             // the printed number is absolute (ux.md §1.7 labels the last page's
             // lone tile `5`, beside a `5-5 of 5` header) and Act::Tile matches it
-            let pv = v.pvs.get(i).map(String::as_str).unwrap_or_default();
+            // a short pvs is "not fetched yet" and draws nothing; a stored None
+            // is a failed capture and says so
+            let pv = v.pvs.get(i).map(|o| o.as_deref());
             tile(
                 f,
                 *cell,
@@ -214,7 +217,7 @@ fn dimmed(state: &str) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: &str, focused: bool, active: bool, full: bool, th: &Theme) {
+fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>>, focused: bool, active: bool, full: bool, th: &Theme) {
     // ratatui caches layouts, so the grid is re-split every frame; a tile too
     // small for a border and one content row is skipped rather than drawn torn.
     if cell.width < 8 || cell.height < 3 {
@@ -282,8 +285,13 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: &str, focused: bool
     let [hd, body] = Layout::vertical([Constraint::Length(hdr), Constraint::Min(0)]).areas(inner);
     f.render_widget(Paragraph::new(head_lines(p, inner.width as usize, hdr as usize, needs, th)), hd);
 
-    let text = pv.as_bytes().into_text().unwrap_or_default();
-    let mut para = Paragraph::new(text);
+    let mut para = match pv {
+        Some(Some(text)) => Paragraph::new(text.as_bytes().into_text().unwrap_or_default()),
+        // capture-pane failed: never leave the body blank, or a gone pane and a
+        // quiet one look the same
+        Some(None) => Paragraph::new(Line::from(Span::styled("capture failed", Style::new().fg(th.error)))),
+        None => return,
+    };
     if dimmed(&p.state) {
         // expressed twice: a terminal that ignores DIM still gets the meta title
         para = para.style(Style::new().add_modifier(Modifier::DIM));
@@ -732,7 +740,7 @@ pub fn run() -> Option<String> {
             std::process::exit(1);
         }
     };
-    let (mut panes, mut pvs) = (Vec::<Pane>::new(), Vec::<String>::new());
+    let (mut panes, mut pvs) = (Vec::<Pane>::new(), Vec::<Option<String>>::new());
     let (mut sel, mut top, mut help_open) = (0usize, 0usize, false);
     let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
@@ -763,13 +771,17 @@ pub fn run() -> Option<String> {
             let ord = order(&panes);
             // visible tiles only: crmux runs one capture-pane exec per tile on
             // every ~50 ms loop tick, forever, whether anything changed or not
-            let mut fresh = vec![String::new(); panes.len()];
+            let mut fresh = vec![None; panes.len()];
             for k in top * g.cols..panes.len().min((top + g.rows_shown) * g.cols) {
                 let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
-                fresh[ord[k]] = preview(&panes[ord[k]].id, rows);
+                fresh[ord[k]] = Some(preview(&panes[ord[k]].id, rows));
             }
             pvs = fresh;
-            let h = hash_rows(&panes, &pvs.concat());
+            let shown: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
+            // hash_rows leaves the age fields out so an idle server never
+            // redraws; the rail is rendered text, so hash what it renders
+            let rails: String = panes.iter().filter_map(|p| p.since).map(fmt_dur).collect();
+            let h = hash_rows(&panes, &(shown + &rails));
             if h != last_hash {
                 last_hash = h;
                 dirty = true;

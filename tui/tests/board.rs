@@ -86,17 +86,20 @@ fn fixture() -> Vec<Pane> {
     vec![a, b, c, d, e]
 }
 
-fn previews() -> Vec<String> {
-    vec![
-        "Bash command\nsudo openvpn --config /etc/openvpn/work.conf --daemon\nDo you want to proceed?\n❯ 1. Yes   2. Yes, don't ask again   3. No".into(),
-        "$ make check\n1001 assertions, 0 failures\n$ shellcheck cockpit.tmux tests/run.sh".into(),
-        "⏺ Agent (fleet-gate-review)\n  Read tests/fleet.sh, 214 lines\n  Read scripts/agent-state, 412 lines".into(),
-        "  ✓ pushed to origin/fix/left-click\n  PR #28 opened\n❯".into(),
-        "❯".into(),
+fn previews() -> Vec<Option<String>> {
+    [
+        "Bash command\nsudo openvpn --config /etc/openvpn/work.conf --daemon\nDo you want to proceed?\n❯ 1. Yes   2. Yes, don't ask again   3. No",
+        "$ make check\n1001 assertions, 0 failures\n$ shellcheck cockpit.tmux tests/run.sh",
+        "⏺ Agent (fleet-gate-review)\n  Read tests/fleet.sh, 214 lines\n  Read scripts/agent-state, 412 lines",
+        "  ✓ pushed to origin/fix/left-click\n  PR #28 opened\n❯",
+        "❯",
     ]
+    .iter()
+    .map(|s| Some((*s).to_string()))
+    .collect()
 }
 
-fn view<'a>(ps: &'a [Pane], pvs: &'a [String], th: &'a Theme, sel: usize, top: usize) -> View<'a> {
+fn view<'a>(ps: &'a [Pane], pvs: &'a [Option<String>], th: &'a Theme, sel: usize, top: usize) -> View<'a> {
     View {
         panes: ps,
         pvs,
@@ -321,7 +324,10 @@ fn ascii_tier_keeps_every_column_width() {
     use unicode_width::UnicodeWidthStr;
     // ascii pane content too: the tier swaps chrome, and unicode left in the
     // preview would let a chrome glyph hide behind it
-    let pvs: Vec<String> = previews().iter().map(|p| p.replace(['❯', '⏺', '✓'], ">")).collect();
+    let pvs: Vec<Option<String>> = previews()
+        .iter()
+        .map(|p| p.as_ref().map(|t| t.replace(['❯', '⏺', '✓'], ">")))
+        .collect();
     // the dot in `idle · handover pending` is pane data, not chrome, so it is
     // sanitised here too and is_ascii() can stay the strongest assertion
     let mut ps = fixture();
@@ -600,7 +606,7 @@ fn sixteen_agents_page_and_number_correctly() {
         ps.push(p);
     }
     assert_eq!(ps.len(), 16);
-    let pvs = vec![String::new(); 16];
+    let pvs = vec![Some(String::new()); 16];
     let th = Theme::fixed();
     let v = view(&ps, &pvs, &th, 0, 0);
     let out = draw(160, 24, |f| board::render(f, f.area(), &v));
@@ -697,4 +703,27 @@ fn refuses_below_the_height_floor_too() {
     let v = view(&ps, &pvs, &th, 0, 0);
     assert!(draw(80, 4, |f| board::render(f, f.area(), &v)).contains("terminal too narrow"));
     assert!(draw(80, 5, |f| board::render(f, f.area(), &v)).contains("henosis:1"));
+}
+
+/// capture-pane exit 1 with empty stdout means the pane is gone, not that the
+/// pane is quiet. A blank body would make those two look identical.
+#[test]
+fn a_failed_capture_says_so_instead_of_going_blank() {
+    let th = Theme::fixed();
+    let ps = fixture();
+    let mut pvs = previews();
+    pvs[1] = None;
+    let v = view(&ps, &pvs, &th, 1, 0);
+    let out = draw(120, 30, |f| board::render(f, f.area(), &v));
+    assert!(out.contains("capture failed"), "a failed capture must say so:\n{out}");
+    // and only that tile: the others still show their pane
+    assert!(out.contains("Do you want to proceed?"), "{out}");
+    assert_eq!(out.matches("capture failed").count(), 1, "{out}");
+
+    // before the first fetch there is no entry at all, and that draws nothing
+    let none: Vec<Option<String>> = Vec::new();
+    let v = view(&ps, &none, &th, 1, 0);
+    let out = draw(120, 30, |f| board::render(f, f.area(), &v));
+    assert!(!out.contains("capture failed"), "an unfetched tile is not a failed one:\n{out}");
+    assert!(out.contains("henosis:1"), "the tiles still draw:\n{out}");
 }
