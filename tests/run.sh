@@ -8418,6 +8418,33 @@ unset -f ti_info
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui: docs name only real options =="
+# Three README lines went stale on review phase 3 and cost a round; this asserts
+# every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
+# The freeze (#61 workflow §3) is agreed before the code lands, so its names are
+# allowed early -- each is listed with the lane that introduces it.
+TUI_FROZEN="@cockpit_tui_pid:L0 @cockpit_tui_version:L4 @cockpit_board_key:L6 \
+@cockpit_board_window:L6 @cockpit_tui_fetch:L6 COCKPIT_ACTION:L0 COCKPIT_TMUX:L0 COCKPIT_LOG:L0 \
+COCKPIT_READONLY:L0 COCKPIT_GLYPHS:L0"
+if [ ! -f "$DIR/docs/tui.md" ]; then
+    bad "docs/tui.md exists" "a file" "missing"
+else
+    tui_unknown=""
+    while read -r n; do
+        [ -n "$n" ] || continue
+        case " $TUI_FROZEN " in *" $n:"*) continue ;; esac
+        grep -rqF -- "$n" "$DIR/cockpit.tmux" "$DIR"/scripts/* "$DIR"/tui/src/* 2>/dev/null \
+            || tui_unknown="$tui_unknown $n"
+    done <<< "$(grep -oE '@cockpit_[a-z0-9_]+|COCKPIT_[A-Z0-9_]+' "$DIR/docs/tui.md" | sort -u)"
+    is "every option and env name in docs/tui.md is real or frozen" "" "$tui_unknown"
+    # The action file is the whole reason the binary can stay pure; a doc that
+    # loses it lets the next lane reach for stdout, which ratatui already owns.
+    case "$(cat "$DIR/docs/tui.md")" in
+        *COCKPIT_ACTION*) ok "docs/tui.md documents the action file" ;;
+        *) bad "docs/tui.md documents the action file" "COCKPIT_ACTION" "absent" ;;
+    esac
+fi
+
 echo "== cockpit-tui: --json names every agent pane and nothing else =="
 # The Rust binary is additive: no cargo on the box means no bin/cockpit-tui, and
 # `make check` must still be green, so this skips rather than fails. skip_ is
@@ -8452,6 +8479,44 @@ is "--json carries the 14 frozen keys, in order" \
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
+
+# F1: a Bash tool_use whose command holds a TAB used to split --rows into 10
+# fields. HOME is redirected so the fixture transcript never touches the real
+# ~/.claude; the slug is the cwd with every byte outside [A-Za-z0-9-] as "-".
+TJH=$(mktmpd); TJW=$(mktmpd)
+TJSLUG=$(printf '%s' "$TJW" | sed 's/[^A-Za-z0-9-]/-/g')
+TJUUID="0-$TJA"
+mkdir -p "$TJH/.claude/projects/$TJSLUG"
+printf '%s\n' \
+  "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T10:00:00.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"col1\tcol2\"}}]}}" \
+  > "$TJH/.claude/projects/$TJSLUG/$TJUUID.jsonl"
+"$TMUX_REAL" -L "$TJ" kill-pane -t "$TJB" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: -c "$TJW" 'exec -a claude sleep 3600' >/dev/null 2>&1
+TJT=$("$TMUX_REAL" -L "$TJ" list-panes -a -F '#{pane_id} #{pane_current_path}' | awk -v d="$TJW" '$2==d{print $1; exit}')
+"$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @panestate running          >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @cockpit_session "$TJUUID"  >/dev/null 2>&1
+is "a TAB in a tool_use keeps --rows at 8 fields" "8" \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+      | awk -F'\t' -v p="$TJT" '$2==p{print NF; exit}')"
+is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+      | awk -F'\t' -v p="$TJT" '$2==p{print $5; exit}')"
+
+# F4: the agent command list is @cockpit_agents_glob, which cockpit.tmux
+# precomputes -- never a second copy compiled into the binary.
+TJZ=$(mktmpd); ln -sf "$(command -v sleep)" "$TJZ/zzz"
+"$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz 3600" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
+TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
+TJCMDS=$(for i in $TJIDS; do "$TMUX_REAL" -L "$TJ" display-message -p -t "$i" '#{pane_current_command}'; done | sort -u | tr '\n' ' ')
+is "@cockpit_agents_glob names zzz and not sleep" "claude zzz" "$(printf '%s' "$TJCMDS" | sed 's/ $//')"
+
+# F6: "no agents" ([] , exit 0) and "no tmux" (exit 1, no stdout) are different.
+TJOUT2=$(COCKPIT_TMUX="tmux -L cockpit-nosuch-$$" "$DIR/bin/cockpit-tui" --json 2>/dev/null); TJRC=$?
+is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
+   "$TJRC $([ -z "$TJOUT2" ] && echo empty || echo "[$TJOUT2]")"
+
 "$TMUX_REAL" -L "$TJ" kill-server >/dev/null 2>&1
 fi
 

@@ -55,14 +55,16 @@ check: lint test
 
 # The optional Rust view (issue #61). Deliberately NOT a prerequisite of check:
 # the binary is additive, and tests/run.sh skips its block when bin/ is empty.
+# --locked everywhere: a build that silently updates Cargo.lock is not the
+# build the crossterm "=0.29.0" pin was measured against.
 tui:
-	@cargo build --release --manifest-path tui/Cargo.toml
+	@cargo build --release --locked --manifest-path tui/Cargo.toml
 	@mkdir -p bin && cp tui/target/release/cockpit-tui bin/cockpit-tui
 	@bin/cockpit-tui --version
 
 tui-test:
-	@cargo test --manifest-path tui/Cargo.toml
-	@cargo clippy --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+	@cargo test --locked --manifest-path tui/Cargo.toml
+	@cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
 	@cargo fmt --manifest-path tui/Cargo.toml --check
 
 # lint and test-par are independent, so `make -j2 check-par` runs them

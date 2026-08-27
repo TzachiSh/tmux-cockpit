@@ -1,6 +1,8 @@
 //! The colour roles of screens.md §0, read once at startup from the server's
-//! @thm_* options. Truecolor or 256 is decided from #{client_termfeatures},
-//! never by querying the terminal (a query inside display-popup can hang).
+//! @thm_* options, and always emitted as RGB: measured on 3.7c, tmux does the
+//! downgrade itself per attached client (nearest-256 without RGB, 16 on a
+//! 16-colour client), so a `#{client_termfeatures}` gate only picks one client
+//! of several and throws the user's palette away on a client-less server.
 use crate::data::tmux;
 use ratatui::style::{Color, Modifier, Style};
 use std::collections::HashMap;
@@ -19,7 +21,7 @@ pub struct Theme {
     pub sel_bg: Color,
 }
 
-/// role -> (@thm option, Catppuccin Mocha default, 256 index)
+/// role -> (@thm option, Catppuccin Mocha default, the fixed 256 index tests pin)
 const ROLES: [(&str, &str, u8); 9] = [
     ("@thm_overlay_1", "#7f849c", 245),
     ("@thm_subtext_0", "#a6adc8", 250),
@@ -42,10 +44,9 @@ fn hex(s: &str) -> Option<Color> {
 }
 
 impl Theme {
-    /// Two tmux calls, once per process.
+    /// One tmux call, once per process.
     pub fn load() -> Self {
-        let rgb = tmux(&["display-message", "-p", "#{client_termfeatures}"]).contains("RGB");
-        let opts = tmux(&["show-options", "-g"]);
+        let opts = tmux(&["show-options", "-g"]).unwrap_or_default();
         let mut set: HashMap<&str, &str> = HashMap::new();
         for l in opts.lines() {
             if let Some((k, v)) = l.split_once(' ')
@@ -54,13 +55,14 @@ impl Theme {
                 set.insert(k, v);
             }
         }
+        // Every role stays Reset under NO_COLOR. Ours and not crossterm's: its
+        // NO_COLOR emits an empty SGR that also drops bold, dim and reverse, the
+        // three attributes a colourless fallback is built on.
         let mut c = [Color::Reset; 9];
-        for (i, (opt, fallback, idx)) in ROLES.iter().enumerate() {
-            c[i] = if rgb {
-                set.get(opt).and_then(|v| hex(v)).or_else(|| hex(fallback)).unwrap_or(Color::Reset)
-            } else {
-                Color::Indexed(*idx)
-            };
+        if std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()) {
+            for (i, (opt, fallback, _)) in ROLES.iter().enumerate() {
+                c[i] = set.get(opt).and_then(|v| hex(v)).or_else(|| hex(fallback)).unwrap_or(Color::Reset);
+            }
         }
         Self {
             label: c[0],
