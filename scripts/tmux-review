@@ -2057,7 +2057,8 @@ tui_row() {
     [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
     have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
     [ -n "$have" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
-    want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); want=${want#tui-}; want=${want#v}
+    want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
+    want=${want#cockpit-}; want=${want#tui-}; want=${want#v}
     if [ -n "$want" ] && [ "$want" != "$have" ]; then
         printf '%s  %s  (want %s -- prefix U updates it)' "$have" "$bin" "$want"
     else

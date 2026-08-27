@@ -22,7 +22,7 @@
 # file:// tree.
 set -u
 
-PIN=tui-v0.1.0
+PIN=cockpit-tui-v0.1.0
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$DIR/bin"
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
@@ -40,10 +40,11 @@ esac
 [ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
 [ -n "$TAG" ] || TAG=$PIN
 
-# `tui-v0.1.0` and `cockpit-tui 0.1.0` both reduce to `0.1.0`: the tag carries
-# the crate prefix because the repo tags more than one thing, and the binary
-# prints its package name first.
-norm() { local v=${1##* }; v=${v#tui-}; printf '%s\n' "${v#v}"; }
+# `cockpit-tui-v0.1.0` and `cockpit-tui 0.1.0` both reduce to `0.1.0`: the tag
+# carries the package name because cargo-dist parses it with axotag, which wants
+# `<package>-v<ver>`, and the binary prints its package name first. The bare
+# `tui-` form is still stripped so a pre-#79 @cockpit_tui_version resolves.
+norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
 # 0.74.3 -> 0074003, "1.85.0 (abc)" -> 1085000. Never version_at_least
 # (cockpit.tmux): ${v#*.} of a three-component version fails its own digit
