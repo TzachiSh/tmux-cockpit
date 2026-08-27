@@ -6,3 +6,7 @@
 tests/.only.*
 tests/.par.*
 tests/.cache/
+
+# The Rust view: build output only, never the source under tui/.
+bin/
+tui/target/

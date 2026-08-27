@@ -1,0 +1,2 @@
+# The crate was written at this width; the default 100 would reflow every file.
+max_width = 140
