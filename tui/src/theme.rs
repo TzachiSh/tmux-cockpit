@@ -34,18 +34,6 @@ const ROLES: [(&str, &str, u8); 9] = [
     ("@thm_surface_0", "#313244", 236),
 ];
 
-/// Ours, not crossterm's: crossterm's NO_COLOR emits an empty SGR that also
-/// drops bold, dim and reverse -- the three attributes a colourless fallback is
-/// built on.
-fn no_color() -> bool {
-    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
-}
-
-/// Read once, not per cell per frame.
-fn ascii_glyphs() -> bool {
-    std::env::var("COCKPIT_GLYPHS").as_deref() == Ok("ascii")
-}
-
 fn hex(s: &str) -> Option<Color> {
     let h = s.trim().trim_matches('"').trim_start_matches('#');
     if h.len() != 6 {
@@ -58,9 +46,6 @@ fn hex(s: &str) -> Option<Color> {
 impl Theme {
     /// One tmux call, once per process.
     pub fn load() -> Self {
-        if no_color() {
-            return Self::colourless();
-        }
         let opts = tmux(&["show-options", "-g"]).unwrap_or_default();
         let mut set: HashMap<&str, &str> = HashMap::new();
         for l in opts.lines() {
@@ -70,9 +55,14 @@ impl Theme {
                 set.insert(k, v);
             }
         }
+        // Every role stays Reset under NO_COLOR. Ours and not crossterm's: its
+        // NO_COLOR emits an empty SGR that also drops bold, dim and reverse, the
+        // three attributes a colourless fallback is built on.
         let mut c = [Color::Reset; 9];
-        for (i, (opt, fallback, _)) in ROLES.iter().enumerate() {
-            c[i] = set.get(opt).and_then(|v| hex(v)).or_else(|| hex(fallback)).unwrap_or(Color::Reset);
+        if std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty()) {
+            for (i, (opt, fallback, _)) in ROLES.iter().enumerate() {
+                c[i] = set.get(opt).and_then(|v| hex(v)).or_else(|| hex(fallback)).unwrap_or(Color::Reset);
+            }
         }
         Self {
             label: c[0],
@@ -88,25 +78,15 @@ impl Theme {
         }
     }
 
-    /// Every role Reset, so bold, dim and reverse still carry the meaning.
-    fn colourless() -> Self {
-        Self {
-            label: Color::Reset,
-            value: Color::Reset,
-            quote: Color::Reset,
-            meta: Color::Reset,
-            accent: Color::Reset,
-            needs: Color::Reset,
-            error: Color::Reset,
-            running: Color::Reset,
-            done: Color::Reset,
-            sel_bg: Color::Reset,
-        }
-    }
-
     /// The test fixture: fixed 256-colour indices, so a snapshot never moves
     /// with the user's palette.
     pub fn fixed() -> Self {
+        let mut t = Self::load_defaults();
+        t.value = Color::Reset;
+        t
+    }
+
+    fn load_defaults() -> Self {
         Self {
             label: Color::Indexed(245),
             value: Color::Reset,
@@ -124,7 +104,7 @@ impl Theme {
     /// The glyph tier of screens.md §0. Only unicode and ascii ship; nerd would
     /// be a third table and nothing in the default path needs one.
     pub fn glyph(&self, state: &str) -> (&'static str, Color) {
-        let ascii = ascii_glyphs();
+        let ascii = std::env::var("COCKPIT_GLYPHS").as_deref() == Ok("ascii");
         match state {
             "needs-input" => (if ascii { "!" } else { "▲" }, self.needs),
             "error" => (if ascii { "x" } else { "✕" }, self.error),
@@ -135,7 +115,7 @@ impl Theme {
     }
 
     pub fn review_mark(&self, review: &str) -> (&'static str, Color) {
-        let ascii = ascii_glyphs();
+        let ascii = std::env::var("COCKPIT_GLYPHS").as_deref() == Ok("ascii");
         match review {
             "pending" => (if ascii { "#" } else { "◆" }, self.accent),
             "sent" | "pasted" => (if ascii { "<" } else { "↵" }, self.meta),
