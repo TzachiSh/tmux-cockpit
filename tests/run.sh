@@ -568,6 +568,86 @@ is "and the stored count still carries its colour tokens" \
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state: a transition wakes cockpit-tui, and never a pid that is not it =="
+# The push channel's sender (issue #61). @cockpit_tui_pid outlives the process
+# that published it and pids get recycled, and SIGUSR1's default action is
+# terminate -- so an unverified kill shoots a stranger's process, as one probe
+# already did on the live server.
+# Known gap, no code: a second ask on an ALREADY-blocked pane exits at the
+# sticky needs-input guard (scripts/agent-state:176) before reaching the sender,
+# so that question reaches the board on its 1 s poll rather than on a push.
+if need_tmux "agent-state push sender"; then :; else
+PS="cockpit-push-$$"; SOCKS="$SOCKS $PS"
+"$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+PSP=$("$TMUX_REAL" -L "$PS" list-panes -t t -F '#{pane_id}')
+PSD=$(mktmpd)
+pstrans() {                   # one real transition on this block's server
+    PATH="$SHIM:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$PSP" >/dev/null 2>&1
+}
+# The recycled-pid stand-in wears cockpit-tui in argv0 and `sleep` in comm, so
+# it also pins WHICH name the guard reads: ps argv0 would signal this one.
+"$TMUX_REAL" -L "$PS" new-window -d -t t: 'exec -a cockpit-tui sleep 30' >/dev/null 2>&1
+PSSLEEP=$("$TMUX_REAL" -L "$PS" list-panes -t t:1 -F '#{pane_pid}')
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSSLEEP" >/dev/null 2>&1
+pstrans running
+pstrans needs-input
+if kill -0 "$PSSLEEP" 2>/dev/null; then ok "a stale pid that is not cockpit-tui is never signalled"
+else bad "a stale pid that is not cockpit-tui is never signalled" "the process still alive" "USR1 killed it"; fi
+# The wake half. A symlink named cockpit-tui gives the process that comm, so
+# this is the same check the real binary passes; `sleep & wait` because bash
+# runs no trap while a foreground child is running.
+ln -s "$(command -v bash)" "$PSD/cockpit-tui" 2>/dev/null
+PSMARK="$PSD/woke"
+"$PSD/cockpit-tui" -c 'trap "printf woke > \"$1\"; exit 0" USR1; sleep 30 & wait' _ "$PSMARK" &
+PSPID=$!
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSPID" >/dev/null 2>&1
+# running, not done: needs-input is sticky and a done would exit before the
+# batch (scripts/agent-state:175-180), so no transition would happen to push.
+pstrans running
+if until_file "$PSMARK" '*woke*'; then ok "a transition signals the running cockpit-tui"
+else bad "a transition signals the running cockpit-tui" "woke" "$(cat "$PSMARK" 2>/dev/null)"; fi
+# An exact count, not the "<= 4" the block above uses: the pid rides a
+# round-trip the transition already pays for, and a `tmux show-option` of its
+# own lands at 4 and would slip through that ceiling unnoticed. The ps shim
+# beside it pins the other half -- the verify must stay a builtin.
+PSC=$(mktmpd); PSCLOG="$PSC/calls"; PSPSLOG="$PSC/pscalls"; PSERR="$PSC/err"
+cat > "$PSC/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PSCLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+cat > "$PSC/ps" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PSPSLOG"
+exec "$(command -v ps)" "\$@"
+SHIMEOF
+chmod +x "$PSC/tmux" "$PSC/ps"
+pscount() { : > "$PSCLOG"; : > "$PSPSLOG"; : > "$PSERR"
+    PATH="$PSC:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
+        "$1" "$PSP" >/dev/null 2>"$PSERR"
+    wc -l < "$PSCLOG" | tr -d ' '; }
+is "a transition with the view up still costs 3 tmux round-trips" "3" "$(pscount needs-input)"
+kill "$PSPID" 2>/dev/null; wait "$PSPID" 2>/dev/null
+# An empty option is the common case (no TUI running) and must cost nothing and
+# signal nobody -- `kill -USR1 ''` would be an error on every hook in the world.
+"$TMUX_REAL" -L "$PS" set -gu @cockpit_tui_pid >/dev/null 2>&1
+is "with no pid published the transition still succeeds" "0" "$(pstrans running; echo $?)"
+is "and still costs the same 3 round-trips" "3" "$(pscount needs-input)"
+# The state the guard exists for: a pid nobody unpublished, because SIGKILL, a
+# crash and a power cut all leave @cockpit_tui_pid standing. It is absent from
+# /proc, which is where a `read || ps` fallback forked ps on every transition
+# and leaked bash's redirect failure onto the hook's real stderr.
+sleep 0 & PSDEAD=$!; wait "$PSDEAD" 2>/dev/null
+"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSDEAD" >/dev/null 2>&1
+is "a dead published pid still costs 3 round-trips" "3" "$(pscount running)"
+is "and forks no ps to ask about it" "" "$(cat "$PSPSLOG")"
+is "and says nothing on the hook's stderr" "" "$(cat "$PSERR")"
+"$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
 if need_tmux "agent-state recount"; then :; else
 tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
