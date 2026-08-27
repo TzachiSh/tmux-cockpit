@@ -1,0 +1,24 @@
+name: tui
+
+# Path-filtered: the rest of the repo is shell and has no cargo to run.
+on:
+  push:
+    paths: ['tui/**', '.github/workflows/tui.yml']
+  pull_request:
+    paths: ['tui/**', '.github/workflows/tui.yml']
+
+jobs:
+  tui-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Exactly the floor, never "stable": pinning here is what catches an
+      # accidental MSRV bump, and the number lives in Cargo.toml alone.
+      - name: Pin the toolchain to Cargo.toml's rust-version
+        run: |
+          floor=$(sed -n 's/^rust-version *= *"\(.*\)".*/\1/p' tui/Cargo.toml)
+          [ -n "$floor" ] || { echo "no rust-version in tui/Cargo.toml" >&2; exit 1; }
+          rustup toolchain install "$floor" --profile minimal --component clippy,rustfmt
+          rustup default "$floor"
+          rustc --version
+      - run: make tui-test

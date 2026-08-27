@@ -8199,5 +8199,42 @@ is "and the pane the list was opened from survives" "$KWCTL" "$("$TMUX_REAL" -L 
 "$TMUX_REAL" -L "$KW" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui: --json names every agent pane and nothing else =="
+# The Rust binary is additive: no cargo on the box means no bin/cockpit-tui, and
+# `make check` must still be green, so this skips rather than fails. skip_ is
+# not a pass (tests/run.sh:76) -- a green run with this line absent from the
+# output means the binary was never exercised.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui --json (no bin/cockpit-tui; run make tui)"
+elif need_tmux "cockpit-tui --json"; then :; else
+TJ="cockpit-tj-$$"; SOCKS="$SOCKS $TJ"
+"$TMUX_REAL" -L "$TJ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+TJSH=$("$TMUX_REAL" -L "$TJ" list-panes -t t:0 -F '#{pane_id}')
+# argv0 claude, so pane_current_command reads as an agent; sleep and not bash so
+# no rc file runs beside the assertion.
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec -a claude sleep 3600' >/dev/null 2>&1
+TJA=$("$TMUX_REAL" -L "$TJ" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec -a claude sleep 3600' >/dev/null 2>&1
+TJB=$("$TMUX_REAL" -L "$TJ" list-panes -t t:2 -F '#{pane_id}')
+for p in "$TJA" "$TJB"; do
+    "$TMUX_REAL" -L "$TJ" set -p -t "$p" @panestate running     >/dev/null 2>&1
+    "$TMUX_REAL" -L "$TJ" set -p -t "$p" @cockpit_title "t $p"   >/dev/null 2>&1
+    "$TMUX_REAL" -L "$TJ" set -p -t "$p" @cockpit_session "0-$p" >/dev/null 2>&1
+done
+# COCKPIT_TMUX still resolves `tmux` through the suite's PATH shim; tmux takes
+# the LAST -L, so the binary lands on this block's server, not the suite's
+# (tests/run.sh:31). $TJSH carries no option and must not appear.
+TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json 2>/dev/null)
+is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
+is "--json carries the 14 frozen keys, in order" \
+   "id where state title doing said asked msg since loc diff review session path" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
+is "--json exits 0 and says nothing about $TJSH" "0 no" \
+   "$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json >/dev/null 2>&1; printf '%s ' "$?"; \
+      case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
+"$TMUX_REAL" -L "$TJ" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
