@@ -125,6 +125,23 @@ until_file() {                # <file> <pattern>
     done
     return 1
 }
+# A perf budget is CPU time, never the wall clock. Measured on this box (#75):
+# under twelve background spinners the wall tooth at the 4900-row site failed
+# 10/10 while its CPU sat at 0.23-0.26s. A wall budget grades the box.
+CPUOUT="$STATE/cpu.out"; CPUT="$STATE/cpu.time"
+cpu_is() {                    # <label> <budget-seconds> <measured-user+sys>
+    if awk -v t="$3" -v b="$2" 'BEGIN{exit !(t+0 < b+0)}'; then ok "$1"
+    else bad "$1" "under ${2}s of CPU" "${3}s user+sys"; fi
+}
+# Each budget is 3x its site's CPU measured under twelve spinners, not idle:
+# fork-heavy sites cost up to 2.8x more CPU on a busy box, so idle numbers left
+# one of them 1.1x of headroom. `timeout` is only a hang guard.
+cpu_under() {                 # <label> <budget-seconds> <cmd...>  stdout -> $CPUOUT
+    local label=$1 budget=$2 rc; local TIMEFORMAT='%U %S'; shift 2
+    { time timeout 10 "$@" </dev/null >"$CPUOUT" 2>/dev/null; rc=$?; } 2>"$CPUT"
+    [ "$rc" -eq 124 ] && { bad "$label" "under ${budget}s of CPU" "hung: killed at 10s"; return; }
+    cpu_is "$label" "$budget" "$(awk '{printf "%.3f", $1+$2}' "$CPUT")"
+}
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
@@ -1213,14 +1230,8 @@ echo "== tmux-open-path: a pathologically long clicked line is bounded, not just
 # wordlist) measured 1.59s in this loop alone, all before the picker even
 # opens. Capped at 500 tokens, same idea as the preview's render-window guard.
 BIGLINE=$(awk 'BEGIN{s="";for(i=1;i<=4000;i++) s = s "nope" i "xxxxxxxxxxxxxxxx ";print s}')
-timeout 0.6 "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE" >/dev/null 2>&1
-biglinerc=$?
-if [ "$biglinerc" -eq 124 ]; then
-    bad "a 4000-token clicked line is bounded, not just slow" \
-        "output within 0.6s" "timed out (the uncapped per-token loop)"
-else
-    ok "a 4000-token clicked line is bounded, not just slow"
-fi
+cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
+    "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
 
 # group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
@@ -1619,11 +1630,13 @@ case "$out" in
 esac
 rm -rf "$CB" "$NOCOL"
 
+# group: serial
 echo "== tmux-branch: builds each row without a fork per branch =="
 # The disps loop ran `$(printf ...)` inside a command substitution -- a fork
 # per branch. 5000 branches measured 16.9s (for-each-ref itself is 0.12s; 99%
 # was the loop). printf -v does the identical formatting inside the running
-# shell instead. timeout is the fail-first teeth: it fires on the fork build.
+# shell instead. The fork build is the CPU it burns, so the CPU budget is the
+# fail-first teeth: 3s against a measured 1.10s under twelve spinners.
 BP=$(mktmpd)
 (
   cd "$BP" || exit
@@ -1649,14 +1662,8 @@ chmod +x "$FZFSTUB/fzf"
 for c in git bash tput; do
     p=$(command -v "$c" 2>/dev/null) && ln -s "$p" "$FZFSTUB/$c"
 done
-timeout 2 env -u TMUX PATH="$FZFSTUB" "$DIR/scripts/tmux-branch" "$BP" </dev/null >/dev/null 2>&1
-brc=$?
-if [ "$brc" -eq 124 ]; then
-    bad "5000 branches build their rows well under 2s" \
-        "exit within 2s" "timed out (the fork-per-branch build)"
-else
-    ok "5000 branches build their rows well under 2s"
-fi
+cpu_under "5000 branches build their rows in well under 3s of CPU" 3.0 \
+    env -u TMUX PATH="$FZFSTUB" "$DIR/scripts/tmux-branch" "$BP"
 rm -rf "$BP" "$FZFSTUB"
 
 echo "== tmux-branch: row format is unchanged by the fork removal =="
@@ -1985,9 +1992,9 @@ SOCK5="cockpit-keys-$$"; SOCKS="$SOCKS $SOCK5"
 tmux -L "$SOCK5" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$KB" >/dev/null 2>&1
 KP=$(tmux -L "$SOCK5" list-panes -a -F '#{pane_id}' | head -1)
 tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
-sleep 2
 # The list marks the branch you are ON; the header alone said it before, and
 # the current branch looked like a normal destination.
+until_cap "$SOCK5" "$KP" '*● main*'
 case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
     *"● main"*) ok "the current branch is marked in the list" ;;
     *) bad "the current branch is marked in the list" "● main" \
@@ -2065,25 +2072,35 @@ echo "== the path picker fires in a window with a split =="
 if need_tmux "path picker with a split"; then :; else
 OUTER="cockpit-outer-$$"; INNER="cockpit-inner-$$"
 SOCKS="$SOCKS $OUTER $INNER"
-"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+# The clicked row is printed by the pane's own command, not typed at a shell:
+# a real prompt can win the echo race and, from a long cwd, truncates the row
+# so README.md never reaches column 3 (#75).
+"$TMUX_REAL" -L "$INNER" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'printf "MARK README.md\n"; exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" set -g mouse on >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" split-window -t t >/dev/null 2>&1
 IP=$("$TMUX_REAL" -L "$INNER" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$INNER" send-keys -t "$IP" 'echo MARK README.md' Enter >/dev/null 2>&1
-sleep 0.4
+until_cap "$INNER" "$IP" '*MARK README.md*'
 "$TMUX_REAL" -L "$INNER" set-option -p -t "$IP" @cockpit_click_line "" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OUTER" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t t" >/dev/null 2>&1
 OP=$("$TMUX_REAL" -L "$OUTER" list-panes -t o -F '#{pane_id}' | head -1)
-sleep 1.5
+# The outer pane shows the inner session, so the row being there is the proof
+# the client attached AND drew before any mouse byte goes in.
+until_cap "$OUTER" "$OP" '*MARK README.md*'
 CDBL='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
 # The client has to be up, or the keys go nowhere and the assertion passes for
 # the wrong reason -- twice today a test of mine did exactly that.
 if "$TMUX_REAL" -L "$OUTER" list-panes -t o >/dev/null 2>&1; then
-    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 0.05
-    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL >/dev/null 2>&1; sleep 1.5
-    got=$("$TMUX_REAL" -L "$INNER" show-options -p -t "$IP" -qv @cockpit_click_line)
+    # One send-keys, not two: the gap between two calls is wall time on a
+    # shared box, and tmux stops reading a double click past ~300ms.
+    "$TMUX_REAL" -L "$OUTER" send-keys -t "$OP" -H $CDBL $CDBL >/dev/null 2>&1
+    for i in $(seq 1 40); do
+        got=$("$TMUX_REAL" -L "$INNER" show-options -p -t "$IP" -qv @cockpit_click_line)
+        case "$got" in *README.md*) break ;; esac
+        sleep 0.1
+    done
     case "$got" in
         *README.md*) ok "ctrl+double-click reaches the picker with 2 panes" ;;
         *) bad "ctrl+double-click reaches the picker with 2 panes" "the clicked line" "$got" ;;
@@ -2289,14 +2306,21 @@ is "the pane really reports mouse mode" "1" \
 "$TMUX_REAL" -L "$GO" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $GI attach -t t" >/dev/null 2>&1
 GOP=$("$TMUX_REAL" -L "$GO" list-panes -t o -F '#{pane_id}' | head -1)
-sleep 1.5
+# The clicked row has to be drawn in the outer pane before any mouse byte goes
+# in, or the click lands on a blank screen and reads back empty.
+until_cap "$GO" "$GOP" '*MARK README.md*'
 GSEQ='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
-"$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 0.05
-"$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ >/dev/null 2>&1; sleep 1.5
-case "$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @cockpit_click_line)" in
+# One send-keys, not two: the gap between two calls is wall time on a shared
+# box, and tmux stops reading a double click past ~300ms.
+"$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ $GSEQ >/dev/null 2>&1
+for i in $(seq 1 40); do
+    ggot=$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @cockpit_click_line)
+    case "$ggot" in *README.md*) break ;; esac
+    sleep 0.1
+done
+case "$ggot" in
     *README.md*) ok "ctrl+double-click fires in a mouse-mode pane" ;;
-    *) bad "ctrl+double-click fires in a mouse-mode pane" "the clicked line" \
-         "$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @cockpit_click_line)" ;;
+    *) bad "ctrl+double-click fires in a mouse-mode pane" "the clicked line" "$ggot" ;;
 esac
 "$TMUX_REAL" -L "$GO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$GI" kill-server >/dev/null 2>&1
@@ -2807,16 +2831,20 @@ printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$BRLOG" > "$BRED"; chmod +x "$BRED"
 BP=$("$TMUX_REAL" -L "$BR" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$BR" set-option -p -t "$BP" @cockpit_click_line "look in scripts/ now" >/dev/null 2>&1
 "$TMUX_REAL" -L "$BR" send-keys -t "$BP" "'$DIR/scripts/tmux-open-path' --pick '$BP'" Enter
-sleep 2.2
+until_cap "$BR" "$BP" '*open>*'
 "$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter          # the one candidate is a dir
-sleep 2
+until_cap "$BR" "$BP" '*enter dir*'
 case "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP")" in
     *"enter dir"*) ok "enter on a folder opens the browser, not the editor" ;;
     *) bad "enter on a folder opens the browser, not the editor" "the browse header" \
          "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP" | head -3)" ;;
 esac
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "tmux-where"; sleep 0.8
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter; sleep 2
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "tmux-where"
+# The query has to be in the prompt before Enter, or Enter opens whatever the
+# unfiltered list had selected.
+until_cap "$BR" "$BP" '*/ tmux-where*'
+"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter
+until_file "$BRLOG" '*OPEN *'
 is "and a file inside it opens" "OPEN $DIR/scripts/tmux-where" "$(cat "$BRLOG")"
 "$TMUX_REAL" -L "$BR" kill-server >/dev/null 2>&1
 rm -f "$BRLOG" "$BRED"
@@ -2825,6 +2853,7 @@ else
 fi
 fi
 
+# group: serial
 echo "== the preview shows what changed, not just that it changed =="
 # The bat rewrite kept the thin git gutter but lost the actual diff view. For a
 # modified file with no target line, the diff is nearly always why the file is
@@ -2870,8 +2899,8 @@ rm -rf "$DV"
 # and run git diff a second time for --stat, both before ever checking the
 # result was non-empty. Measured here: a 22.9MB/400000-line single-file diff
 # was 3.32s + 191MB RSS on the pre-fix build, 0.76s + 76MB RSS after streaming
-# the diff and deriving the stat from --numstat instead. timeout is the
-# fail-first teeth -- the pre-fix build reliably misses a 2s budget here.
+# the diff and deriving the stat from --numstat instead. Both halves of that
+# are the teeth, and maxRSS is the one no amount of box load can move.
 GD=$(mktmpd)
 (
   cd "$GD" || exit
@@ -2882,13 +2911,23 @@ GD=$(mktmpd)
   awk 'BEGIN{for(i=1;i<=200000;i++) print "line " i " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' > big.txt
 ) >/dev/null 2>&1
 gdout=$(mktmpf)
-timeout 2 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt" >"$gdout" 2>/dev/null
-gdrc=$?
-if [ "$gdrc" -eq 124 ]; then
-    bad "a 400000-line single-file diff renders well under a 2s budget" \
-        "output within 2s" "timed out (the pre-fix capture-and-rediff)"
+# One measured run, not two: --preview-diff caches its render under
+# $XDG_RUNTIME_DIR, so a second pass would grade the cache instead. GNU time
+# reports maxRSS and CPU from that single run; POSIX time reports neither.
+GDCPU="a 400000-line single-file diff renders in well under 2.5s of CPU"
+GDRSS="and it streams that diff instead of capturing it (maxRSS under 120MB)"
+if /usr/bin/time -f '%M %U %S' -o /dev/null true 2>/dev/null; then
+    /usr/bin/time -f '%M %U %S' -o "$STATE/gd.time" \
+        timeout 10 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt" \
+        >"$gdout" 2>/dev/null
+    cpu_is "$GDCPU" 2.5 "$(awk '{printf "%.3f", $2+$3}' "$STATE/gd.time")"
+    gdrss=$(awk '{print $1+0}' "$STATE/gd.time")
+    if [ "$gdrss" -lt 120000 ]; then ok "$GDRSS"
+    else bad "$GDRSS" "under 120000 kB" "$gdrss kB"; fi
 else
-    ok "a 400000-line single-file diff renders well under a 2s budget"
+    cpu_under "$GDCPU" 2.5 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt"
+    cat "$CPUOUT" > "$gdout"
+    skip_ "$GDRSS (no GNU time)"
 fi
 case "$(head -1 "$gdout")" in
     *'insertion(s)'*) ok "and still leads with a real stat summary" ;;
@@ -3513,11 +3552,14 @@ JP3=$("$TMUX_REAL" -L "$JJ" list-panes -t t:2 -F '#{pane_id}')
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
 # Drive from inside the session so $TMUX/$TMUX_PANE are real, like a keypress.
-# sleep 2, not 1: tmux-jump forks a fresh nested tmux client per send-keys
-# invocation here, and under concurrent load (several suites' worth of tmux
-# servers on one box) that fork+connect can take noticeably longer than 1s.
+# tmux-jump forks a fresh nested tmux client per invocation here, so wait on
+# the window index the assertion reads rather than guess at that fork's cost.
 JP1=$("$TMUX_REAL" -L "$JJ" list-panes -t t:0 -F '#{pane_id}')
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'" Enter
+for i in $(seq 1 40); do
+    [ "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')" = 2 ] && break
+    sleep 0.1
+done
 is "jump lands on the blocked window" "2" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # A second blocked pane: pressing again from the first cycles to the next.
@@ -3567,12 +3609,16 @@ fi
 echo "== the fleet counter reads every session =="
 if need_tmux "agent_fleet"; then :; else
 FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
-"$TMUX_REAL" -L "$FC" -f /dev/null new-session -d -s a -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" new-session -d -s b 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" new-window  -t b 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" set -g status-right '[#{agent_fleet}]' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+# Unredirected stderr, deliberately: a `can't find window: 1` from this setup
+# used to be swallowed and resurface three assertions later as a short count.
+"$TMUX_REAL" -L "$FC" -f /dev/null new-session -d -s a -x 80 -y 24 'exec -a claude sleep 300' >/dev/null
+"$TMUX_REAL" -L "$FC" new-session -d -s b 'exec -a claude sleep 300' >/dev/null
+"$TMUX_REAL" -L "$FC" new-window  -t b 'exec -a claude sleep 300' >/dev/null
+"$TMUX_REAL" -L "$FC" set -g @cockpit_agents_glob '|claude|' >/dev/null
+"$TMUX_REAL" -L "$FC" set -g status-right '[#{agent_fleet}]' >/dev/null
+"$TMUX_REAL" -L "$FC" run-shell "$DIR/cockpit.tmux" >/dev/null
+is "the fleet fixture really has three agent panes" "3" \
+   "$("$TMUX_REAL" -L "$FC" list-panes -a -F '#{pane_id}' | grep -c .)"
 FCP1=$("$TMUX_REAL" -L "$FC" list-panes -t a:0 -F '#{pane_id}')
 FCP2=$("$TMUX_REAL" -L "$FC" list-panes -t b:0 -F '#{pane_id}')
 FCP3=$("$TMUX_REAL" -L "$FC" list-panes -t b:1 -F '#{pane_id}')
@@ -3819,6 +3865,7 @@ case "$rvtab" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*)
          "new.txt:1 first, new.txt:2 second" "$rvtab" ;; esac
 rm -rf "$RVNEW"
 
+# group: serial
 echo "== tmux-review --lines: an untracked tree is walked once, not four forks per file =="
 # The untracked synthesis walked every file FOUR times over -- [ -f ],
 # grep -Iq, wc -l and awk -- and did it twice, once in the numstat loop that
@@ -3828,7 +3875,8 @@ echo "== tmux-review --lines: an untracked tree is walked once, not four forks p
 # takes 0.134s now (the walk itself 7.9s -> 0.008s in the review's own
 # measurement; master, which ignored untracked files entirely, was 0.018s), off
 # the single batched `ls-files -z | xargs grep -Il .` list both loops now share.
-# timeout is the fail-first teeth -- on the per-file walk this fires.
+# The per-file walk is 3200 forks, so CPU is where it shows: 1.4s against a
+# measured 0.46s under twelve spinners.
 RVMANY=$(mktmpd)
 (
   cd "$RVMANY" || exit
@@ -3838,13 +3886,8 @@ RVMANY=$(mktmpd)
   mkdir -p vendor
   i=1; while [ "$i" -le 800 ]; do printf 'line\n' > "vendor/f$i.txt"; i=$((i+1)); done
 ) >/dev/null 2>&1
-timeout 1 "$DIR/scripts/tmux-review" --lines "$RVMANY" >/dev/null; rvmanyrc=$?
-if [ "$rvmanyrc" -eq 124 ]; then
-    bad "800 untracked files list in well under 1s" \
-        "output within 1s" "timed out (the per-file fork walk)"
-else
-    ok "800 untracked files list in well under 1s"
-fi
+cpu_under "800 untracked files list in well under 1.4s of CPU" 1.4 \
+    "$DIR/scripts/tmux-review" --lines "$RVMANY"
 is "each untracked file still contributes its one + row" \
    "800" "$("$DIR/scripts/tmux-review" --lines "$RVMANY" | grep -c .)"
 rm -rf "$RVMANY"
@@ -4388,16 +4431,10 @@ rm -rf "$RVPERF"
 # git diff and the parsing awk, both of which were always there, are 44ms.
 # So the row build fell from ~165ms to ~19ms.
 #
-# The tooth is 0.2 -- the rig's convention, ~3x the expected time -- not the
-# 0.4 the plan wrote: 0.4 is where the bash build sat on the plan's machine
-# (427ms) and this box runs it in ~210ms, so 0.4 passed the very code this
-# test exists to reject. Know what 0.2 does and does not catch: probed
-# against the bash build it failed 2 runs in 3 and passed the third, so it
-# rejects that build most of the time but is not a proof. 0.15 was probed
-# too (0/5 on bash, 5/5 on awk) and rejected as the tooth: it bites harder,
-# but the awk build needs only a 2.2x slowdown to cross it, and a false
-# failure on a loaded gate box costs more than the third bash run it would
-# have caught.
+# The tooth is 0.4s of CPU (#75): 0.15-0.17s idle here and 0.23-0.26s under
+# both twelve and twenty-four spinners, so it plateaus. It bites the bash
+# build less often than the old 0.2s wall tooth did, which is the trade --
+# that tooth also rejected the awk build on any box with a peer job running.
 RV49=$(mktmpd)
 (
   cd "$RV49" || exit
@@ -4407,12 +4444,8 @@ RV49=$(mktmpd)
   git add -A; git commit -q -m init
   seq 1 4900 > f
 ) >/dev/null 2>&1
-if timeout 0.2 "$DIR/scripts/tmux-review" --lines "$RV49" >/dev/null 2>&1; then
-    ok "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)"
-else
-    bad "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)" \
-        "rows within 0.2s" "timed out (the bash row build)"
-fi
+cpu_under "4900 rows build in under 0.4s of CPU" 0.4 \
+    "$DIR/scripts/tmux-review" --lines "$RV49"
 is "and all 4900 rows are there" "4900" \
    "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
 rm -rf "$RV49"
@@ -4476,15 +4509,18 @@ RV49=$(mktmpd); ( cd "$RV49" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=
   git init -q -b main .; printf 'seed\n' > f; git add -A; git commit -q -m init; seq 1 4900 > f ) >/dev/null 2>&1
 RV49S=$(mktmpf); "$DIR/scripts/tmux-review" --lines "$RV49" > "$RV49S.rows"
 for i in $(seq 1 500); do printf '## f:%d (+)\n> %d\nc\n\n' "$i" "$i"; done > "$RV49S"
-if timeout 0.15 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null; then
-    ok "a 500-comment re-mark over 4900 rows takes under 0.15s (measured 306ms before, 15ms after)"
-else bad "a 500-comment re-mark over 4900 rows takes under 0.15s" "exit within 0.15s" "timeout"; fi
-# The timing tooth alone does not prove the snapshot is READ. A version that
-# writes it and still re-derives every row passes it, now that the uncached
-# path is 68ms rather than the 306ms it was -- 0.15s no longer separates
-# cached from uncached, only awk marking from bash marking. A row that exists
-# ONLY in the snapshot does separate them: there is no way for it to reach the
-# output except by being read back out of the file.
+# timeout 10 is a hang guard, not a budget: the 0.15s tooth that stood here
+# killed the write often enough on a loaded box to drag its two readers below
+# red with it (#75), and it never proved the cache was read anyway.
+timeout 10 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null
+rvcrc=$?
+if [ "$rvcrc" -eq 0 ]; then
+    ok "a 500-comment re-mark over 4900 rows exits 0"
+else bad "a 500-comment re-mark over 4900 rows exits 0" "exit 0" "exit $rvcrc"; fi
+# What does prove the snapshot is READ: a row that exists ONLY in it. There is
+# no way for that row to reach the output except by being read back out of the
+# file -- a build that writes the snapshot and still re-derives every row
+# passes every timing tooth and fails this one.
 printf 'SENTINEL\t1\tx\tSENTINEL:1 (+)  x\t1\n' >> "$RV49S.rows"
 if "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" | grep -q '^SENTINEL'; then
     ok "a row that exists only in the snapshot is served from it"
@@ -4492,9 +4528,16 @@ else
     bad "a row that exists only in the snapshot is served from it" \
         "a row starting SENTINEL" "no SENTINEL row -- the rows were re-derived"
 fi
-rm -f "$RV49S.rows"; "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
-is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
-is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
+rm -f "$RV49S.rows"
+# Both readers below are rows.cached: a killed write leaves it empty and they
+# would report that kill twice over as failures of their own.
+if [ "$rvcrc" -eq 0 ]; then
+    "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
+    is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
+    is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
+else
+    skip_ "the cached and fresh rows are identical"; skip_ "500 rows are marked"
+fi
 rm -rf "$RV49" "$RV49S"
 
 echo "== tmux-review --loop: the row snapshot is born 0600 and never follows a planted symlink =="
@@ -4926,9 +4969,11 @@ case "$(cat "$RVSTORE" 2>/dev/null)" in
     *) bad "plain Enter pins the typed comment" "the comment in the store" "$(cat "$RVSTORE" 2>/dev/null)" ;; esac
 rvbefore=$(wc -c < "$RVSTORE")
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
-# Negative assertion ("nothing pinned") -- there is no event to poll for, so
-# this is a bounded fixed wait, capped at 0.3s, not a blind sleep.
-sleep 0.3
+# A no-op has no event of its own to wait for. Keys reach the pty in order, so
+# a probe typed after the Enter, once it shows in the prompt, proves the Enter
+# has been spent. The picker runs --disabled, so a query filters nothing.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" zz
+until_cap "$RVS" "$RVP" '*review> zz*'
 is "Enter with nothing typed pins nothing (no accept-all)" "$rvbefore" "$(wc -c < "$RVSTORE")"
 case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
     *"review>"*) ok "and the picker is still open" ;;
@@ -4938,8 +4983,10 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
 # enter must neither leave the picker nor touch the store, on a row that
 # already has an unrelated pending comment pinned to it.
 storebefore=$(cat "$RVSTORE" 2>/dev/null)
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Enter
-sleep 1
+# ^U first: the probe above is still in the query and this Enter must be bare.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" C-u Enter
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" zz
+until_cap "$RVS" "$RVP" '*review> zz*'
 case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
     *"review>"*) ok "plain enter does nothing: still in the picker" ;;
     *) bad "plain enter does nothing: still in the picker" "a visible 'review>' prompt" \
@@ -4950,7 +4997,8 @@ is "plain enter does nothing: the store is unchanged" \
 
 # esc on a non-empty batch ASKS instead of discarding outright -- the whole
 # point: one reflexive escape must not throw away a twenty-comment review.
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" Escape
+# ^U clears the probe query above, so esc is read on an empty prompt as before.
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" C-u Escape
 for i in $(seq 1 20); do
     "$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP" | grep -q "discard 2 comment" && break
     sleep 0.1
@@ -5543,6 +5591,9 @@ until_cap "$RA" "$RACTL" '*review>*'
 until_cap "$RA" "$RACTL" '*deliver 1 comment*'; "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" Enter
 until_cap "$RA" "$RAAP" '*not yet*' && ok "the batch lands in the agent pane" || bad "the batch lands in the agent pane" "not yet" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RAAP")"
 until_file "$RASESS/delivered.md" '*not yet*' && ok "a delivered batch is archived as delivered.md" || bad "a delivered batch is archived as delivered.md" "not yet in delivered.md" "$(ls "$RASESS" 2>/dev/null)"
+# done_store() appends to delivered.md and unlinks the store as two statements,
+# so the poll above can land between them. Poll the store path itself.
+for i in $(seq 1 40); do [ -e "$RASESS/comments.md" ] || break; sleep 0.1; done
 is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo present || echo absent)"
 RACTL2=$(ra_shell)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
