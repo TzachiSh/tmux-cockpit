@@ -137,7 +137,9 @@ cpu_is() {                    # <label> <budget-seconds> <measured-user+sys>
 # fork-heavy sites cost up to 2.8x more CPU on a busy box, so idle numbers left
 # one of them 1.1x of headroom. `timeout` is only a hang guard.
 cpu_under() {                 # <label> <budget-seconds> <cmd...>  stdout -> $CPUOUT
-    local label=$1 budget=$2 rc; local TIMEFORMAT='%U %S'; shift 2
+    # LC_ALL=C: a comma-decimal locale makes `time` print 0,152 and awk read it
+    # as 0, which passes every budget silently.
+    local label=$1 budget=$2 rc; local TIMEFORMAT='%U %S' LC_ALL=C; shift 2
     { time timeout 10 "$@" </dev/null >"$CPUOUT" 2>/dev/null; rc=$?; } 2>"$CPUT"
     [ "$rc" -eq 124 ] && { bad "$label" "under ${budget}s of CPU" "hung: killed at 10s"; return; }
     cpu_is "$label" "$budget" "$(awk '{printf "%.3f", $1+$2}' "$CPUT")"
@@ -2920,10 +2922,19 @@ if /usr/bin/time -f '%M %U %S' -o /dev/null true 2>/dev/null; then
     /usr/bin/time -f '%M %U %S' -o "$STATE/gd.time" \
         timeout 10 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt" \
         >"$gdout" 2>/dev/null
-    cpu_is "$GDCPU" 2.5 "$(awk '{printf "%.3f", $2+$3}' "$STATE/gd.time")"
-    gdrss=$(awk '{print $1+0}' "$STATE/gd.time")
-    if [ "$gdrss" -lt 120000 ]; then ok "$GDRSS"
-    else bad "$GDRSS" "under 120000 kB" "$gdrss kB"; fi
+    # A killed command burns almost no CPU and holds almost no memory, so both
+    # gates below would pass it. GNU time prepends a line when it kills, hence
+    # END rather than the first record.
+    gdrc=$?
+    if [ "$gdrc" -eq 124 ]; then
+        bad "$GDCPU" "under 2.5s of CPU" "hung: killed at 10s"
+        bad "$GDRSS" "under 120000 kB" "hung: killed at 10s"
+    else
+        cpu_is "$GDCPU" 2.5 "$(awk 'END{printf "%.3f", $2+$3}' "$STATE/gd.time")"
+        gdrss=$(awk 'END{print $1+0}' "$STATE/gd.time")
+        if [ "$gdrss" -lt 120000 ]; then ok "$GDRSS"
+        else bad "$GDRSS" "under 120000 kB" "$gdrss kB"; fi
+    fi
 else
     cpu_under "$GDCPU" 2.5 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt"
     cat "$CPUOUT" > "$gdout"
@@ -4984,9 +4995,11 @@ case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
 # already has an unrelated pending comment pinned to it.
 storebefore=$(cat "$RVSTORE" 2>/dev/null)
 # ^U first: the probe above is still in the query and this Enter must be bare.
+# A DIFFERENT token, or the poll satisfies on the zz still painted from it and
+# the store read below races this Enter.
 "$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" C-u Enter
-"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" zz
-until_cap "$RVS" "$RVP" '*review> zz*'
+"$TMUX_REAL" -L "$RVS" send-keys -t "$RVP" qq
+until_cap "$RVS" "$RVP" '*review> qq*'
 case "$("$TMUX_REAL" -L "$RVS" capture-pane -p -t "$RVP")" in
     *"review>"*) ok "plain enter does nothing: still in the picker" ;;
     *) bad "plain enter does nothing: still in the picker" "a visible 'review>' prompt" \
