@@ -81,10 +81,17 @@ MIT (`LICENSE`, © 2026 hiroppy). 32,070 LOC `src` + 7,849 tests. ratatui 0.30.2
 crossterm 0.29, `vte`, `insta` — all pinned with `=` (`Cargo.toml:14-28`).
 
 Genuinely valuable, and mostly *plumbing*:
-- `#{q:}` quoting + the matching backslash unescaper —
-  `src/tmux/query.rs:102-104` and `:526-558`. Our demo splits on a raw `\t`
-  (`data.rs:376`); a title or prompt containing a tab **silently shifts every
-  field**. ~40 lines, take them.
+- ~~`#{q:}` quoting + the matching backslash unescaper —
+  `src/tmux/query.rs:102-104` and `:526-558`~~ **rejected by measurement.** The
+  problem is real: our demo splits on a raw `\t` (`data.rs:376`), and a title or
+  prompt containing a tab **silently shifts every field**. The fix is not this one.
+  verified.md tmux B/C measured that tmux never octal-escapes format output (so the
+  unescaper decodes an escape that was never applied, and corrupts any value holding
+  a backslash) and that `#{q:}` passes every control character raw while escaping
+  space — the two characters that threaten cockpit survive it and spaces get mangled.
+  Decision 3 settled on a raw `\037` separator plus in-format
+  `#{s/<NL>/ /:#{s/<TAB>/ /:#{s/<US>/ /:…}}}` on free-form fields, no unescaper
+  (rules 15/16, DO NOT 11).
 - `src/process.rs:20-99` — one `ps -eo pid=,ppid=,comm=,args=`, child map, BFS.
   Ours already does the pid→session BFS (`data.rs:229-256`) but without
   comm/args, so it cannot tell a dead agent from a live one.
@@ -207,7 +214,7 @@ Exact files to copy in:
 
 | from | file:line | LOC | for |
 |---|---|---|---|
-| tmux-agent-sidebar | `src/tmux/query.rs:102-104` + `:526-558` | ~40 | `#{q:}` + unescaper — **do this first**, `data.rs:376` is a tab-split waiting to break |
+| ~~tmux-agent-sidebar~~ | ~~`src/tmux/query.rs:102-104` + `:526-558`~~ | ~~~40~~ | **do not copy** — `#{q:}` + unescaper, refuted by verified.md tmux B/C; `data.rs:376`'s tab-split is still the bug, fixed instead by decision 3's `\037` + in-format `#{s/…}` |
 | tmux-agent-sidebar | `src/process.rs:20-99` | ~80 | `ps` walk with comm/args, for liveness |
 | tmux-agent-sidebar | `hook.sh` | 43 | late-binding wrapper, s/tmux-agent-sidebar/cockpit-tui/ |
 | tmux-agent-sidebar | `install-wizard.sh:64-68` | ~5 | macOS xattr strip + ad-hoc codesign |
@@ -386,9 +393,10 @@ fi
 - `data.rs:376` splits the `list-panes` line on a raw `\t` while `FIELDS`
   (`data.rs:364`) uses unquoted `#{...}`. A window name or a `@panestate_msg`
   containing a tab shifts every subsequent field. `data.rs:377` guards on
-  `f.len() < 13`, which catches too-few but not mis-aligned. **Fix with
-  tmux-agent-sidebar's `#{q:}` + `split_tmux_fields`** (`query.rs:102-104,
-  526-558`) before phase 1 ships.
+  `f.len() < 13`, which catches too-few but not mis-aligned. Fix it before phase 1
+  ships — but **not** with tmux-agent-sidebar's `#{q:}` + `split_tmux_fields`
+  (`query.rs:102-104, 526-558`), which verified.md tmux B/C refuted: use decision 3's
+  raw `\037` separator with in-format `#{s/…}` sanitising of the free-form fields.
 - **Per-tick cost scales with tiles.** `board.rs:118` calls `preview()` for
   *every* pane every second, each an exec of `capture-pane`
   (`data.rs:427`); `data.rs:403` runs `read_transcript` per pane, which reads
@@ -462,8 +470,21 @@ never touched (`AGENTS.md`).
   — `sq()` quoting intact, `#{pane_id}` passed through unexpanded for the
   wrapper to resolve (#38).
 
+- **extract-and-install** — **not verified here, and measured wrong by L4** (freeze
+  amendment on #61, `dist` 0.32.0 against a stand-in crate). The sketch extracts the
+  tarball straight into `bin/`; a cargo-dist archive is not flat.
+  `cockpit-tui-<target>.tar.gz` unpacks to a `cockpit-tui-<target>/` directory holding
+  the binary beside `LICENSE` and `README.md`, so the sketch would have installed a
+  directory where the binary belongs. `scripts/tui-fetch` looks the binary up inside
+  the archive instead.
+
 Not yet verified: macOS target detection and the xattr/codesign step (no Mac
 here), and the `cargo build` fallback branch.
+
+The `.tried` marker above is gone: review removed it before the first release. It
+bounded the retry, but it also locked a user out of the first release that fixed
+whatever had failed, and it silenced the checksum-tamper alarm on every load after
+the first.
 
 ---
 
@@ -537,13 +558,19 @@ And `%output` only streams for panes in *attached* sessions — the invisible-wi
 `capture-pane` polling sidesteps. Cost: bosun's own fast tick captures the **focused session
 only** (`tmux_actor.rs:1400`) because all-sessions was ~60 tmux processes/sec.
 
-Two free lessons: use a **printable** field separator, never `\x1f` — tmux 3.4+ octal-escapes
-control chars in format output (bosun `client.rs:492-498`, hence its `|||`); and `capture-pane`
-wants `-J` or you split mid-ANSI-sequence (`client.rs:300-306`).
+Two lessons, one of which did not survive: `capture-pane` wants `-J` or you split
+mid-ANSI-sequence (`client.rs:300-306`) — that one holds. The other, "use a **printable**
+field separator, never `\x1f`, because tmux 3.4+ octal-escapes control chars in format
+output" (bosun `client.rs:492-498`, hence its `|||`), is **refuted**: verified.md tmux B
+measured format output raw through `list-panes -F`, `display-message -p`, `show-options -v`
+and `show-environment`; only the `show-options` listing form escapes. bosun's unescaper
+decodes an escape tmux never applied.
 
 One bug to not inherit: crmux's `splitn(4, ' ')` on an unquoted `list-panes` format
 (`tcs/.../tmux.rs:27-34,54-63`) **silently drops any pane whose `pane_current_path` contains a
-space**. Same class as our `data.rs:376` tab-split. `#{q:}` fixes both.
+space**. Same class as our `data.rs:376` tab-split. Decision 3's `\037` + in-format `#{s/…}`
+fixes both; `#{q:}` does not (verified.md tmux C: it escapes the space and passes the
+control characters raw, which is backwards for us).
 
 ## B. Widget crates — adopt ZERO for phase 1, one for phase 2
 

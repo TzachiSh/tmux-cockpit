@@ -173,12 +173,12 @@ The lane then built the bash board to ux.md's design (`scratchpad/board2/fleet-b
 |---|---|---|
 | CPU/tick @3 / 6 / 9 tiles | 44 / 62 / 77 ms | 21 / 23 / 28 ms |
 | bytes/tick @3 / 6 / 9 | 1,764 / 2,394 / 3,066 | 0 / 0 / 0 |
-| execs/tick @3 / 6 / 9 | 5 / 10 / 14 | ~36/s (200 ms focused-tile capture) |
+| execs **per second** @3 / 6 / 9 (both at the 1 Hz tick this ran at) | 5 / 10 / 14 | ~36, but measured under a 200 ms focused-tile capture — five refreshes a second, not the flat 1 s the board shipped with |
 | RSS | 4.5 MB | 3.2 MB |
 | push | fifo 41 ms (36–47) | SIGUSR1 31 ms |
 | poll | 824 ms median | 712 ms |
 | in `display-popup -E` | yes, keys and ↵ verified | yes |
-| LOC | 160 (213 with harness) | 2,008 |
+| LOC | 160 (213 with harness) | 1,968 (base.md §"size": `src` 1,756 + `tests/screens.rs` 212) |
 
 The 47 ms in candidates.md was three fork bugs, not a floor (`$(cup)` per preview line, `tput` per frame, awk per line); fixed, a tile costs two execs. Where bash breaks, measured: **wide glyphs bleed across tiles** (a CJK line in a 52-column tile is 104 display columns and wiped the first preview row of both tiles to its right; bash has no wcwidth); the fifo forwarder holds the tty raw and must be torn down while the human types a reply, so no push arrives during a reply; `${s:0:n}` on `-e` output cuts mid-escape (the awk clip fixes it at no cost); unconditional full repaint.
 

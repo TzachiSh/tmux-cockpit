@@ -9,7 +9,7 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
 **Crate, deps, toolchain**
 
 1. One crate, flat modules in `src/`, a `lib.rs` that only re-exports.
-   Nothing below 15k LOC in the eight apps read uses a workspace; the demo is 2,019 lines in 9 files. (54/ratatui.md §"Event loop", 54/spike/cockpit-tui-demo/src/lib.rs)
+   Nothing below 15k LOC in the eight apps read uses a workspace; the demo is 1,968 lines in 10 `.rs` files (9 in `src`, plus `tests/screens.rs`). (54/ratatui.md §"Event loop", 54/spike/cockpit-tui-demo/src/lib.rs; count per base.md §"size")
 2. Five dependencies, no sixth without a measurement: `ratatui 0.30.2`, `crossterm "=0.29.0"`, `ansi-to-tui 8`, `serde_json`, `libc`.
    The demo ships every screen on exactly these; each added crate is build time and a supply-chain surface. (54/spike/cockpit-tui-demo/Cargo.toml.txt)
 3. Pin crossterm exactly (`=0.29.0`), never a caret range.
@@ -17,7 +17,7 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
 4. Edition 2024, and gate the source-build fallback on `rustc >= 1.88`.
    ratatui 0.30.2's MSRV is 1.88.0; Debian 13 ships 1.85 and Ubuntu 24.04 ships 1.75, so a bare `cargo build` fallback dumps a compiler error on stock toolchains. (54/ratatui.md §"Corrections" 1)
 5. Release profile `lto = true, strip = true, codegen-units = 1, opt-level = "s", panic = "abort"`, paired with `ratatui::init()`.
-   785 KB glibc / 889 KB musl at 2,019 lines; init's panic hook runs *before* the abort and restores the terminal. (54/ratatui.md §"Corrections" 5, §"Packaging")
+   785 KB glibc / 889 KB musl at 1,968 lines; init's panic hook runs *before* the abort and restores the terminal. (54/ratatui.md §"Corrections" 5, §"Packaging")
 
 **Event loop and push**
 
@@ -50,8 +50,8 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
     380 ms per call (three runs, 0.37-0.38 s); uncached it made a tick 0.40-0.47 s instead of 0.00. The single most important implementation constraint. (54/ratatui.md §"Corrections" 3, 54/spike/cockpit-tui-demo/src/data.rs:190-213)
 18. Resolve the session id for such panes with one `ps -eo pid=,ppid=` BFS from `pane_pid`.
     One fork for the whole fleet instead of a `ps`/`lsof` per pid. (54/ratatui.md §"Data model", 54/spike/cockpit-tui-demo/src/data.rs:229-256)
-19. Read the last 64 KB of a transcript, whole lines only, and skip the parse when `fs::metadata().modified()` is unchanged.
-    0.1 s on a 1.2 MB live file, and the mtime gate makes an idle session free. (54/claude-code.md §"Transcripts", 54/ratatui.md §"Data model" — the demo does the tail, not yet the gate)
+19. Read the last 64 KB of a transcript, whole lines only, discard the leading partial, and **double the window on a miss up to ~2 MB**; skip the parse when `fs::metadata().modified()` is unchanged.
+    0.1 s on a 1.2 MB live file, and the mtime gate makes an idle session free. 64 KB alone is not sufficient: over the 20 newest main transcripts the max row is 750,889 B (p99 14,248, p50 820) and 2 of 20 hold no complete assistant text row in their last 64 KB, so one row can be 11× the window. This supersedes the flat "≥ 256 KB with one grow-and-retry" of rule 69, which was written before the measurement. (verified.md E; 54/claude-code.md §"Transcripts", 54/ratatui.md §"Data model" — the demo does the tail, not yet the gate)
 20. `capture-pane -ep` per **visible** tile only, staggering unfocused tiles past ~8.
     ~4.5 ms each; 30,000 calls against 10 scrolling panes left server RSS flat (3,860 → 3,964 KB). (54/ratatui.md §"Data model")
 21. Measure tmux server RSS over an hour before any 1 Hz view ships.
@@ -76,8 +76,8 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
     ratatui #2679 (open) panics on double-width graphemes in a wrapped `Paragraph`, and wrap folds 200-column pane lines into `↳` fragments. (54/ratatui.md §"Rendering hazards", 58/README.md §"What was measured")
 30. Send no terminal queries from inside the popup, and keep `q` as an exit that does not depend on Escape parsing.
     tmux itself emits `CSI ? 2031 h` / `CSI ? 996 n` into a popup; that family crashed tmux next-3.7 (#4942) and wedges crossterm (#1104). (54/ratatui.md §"Event loop", 54/rust.md §3)
-31. Truncate with `…`, counting characters; paths truncate left; the right rail is exactly 5 columns of elapsed duration.
-    A 6-column duration is clipped by the rail and loses its leading digit — a live "10m05s" rendered as "0m05s". (54/screens.md §0, 54/ratatui.md §"The demo, as built")
+31. Truncate with `…`, counting **display width** (`UnicodeWidthStr::width`), never `chars().count()`; paths truncate left; the right rail is exactly 5 columns of elapsed duration.
+    A 6-column duration is clipped by the rail and loses its leading digit — a live "10m05s" rendered as "0m05s". "Counting characters" was the demo's bug, not the rule: rule 56 and ux.md §6 item 10 ban `chars().count()`, and L2 measured `⌨`+U+FE0F at 1 by summing char widths and 2 at string level — a real one-column overrun. (54/screens.md §0, 54/ratatui.md §"The demo, as built"; rule 56, ux.md §6)
 32. Refuse to draw below 40 usable columns: print "terminal too narrow — prefix i on the pane instead".
     Better than a row that lies about which agent it names. (54/screens.md §"Graceful degradation", 54/spike/cockpit-tui-demo/src/fleet.rs:24)
 33. Log to `${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/tui.log` and `2>>` it in the binding, on by default.
@@ -221,7 +221,7 @@ Each is a command. A phase is done when all of its gates pass on a private `-L` 
 66. needs-input from a transcript is a lifecycle: an `AskUserQuestion` `tool_use` is open iff no later `user` row carries a `tool_result` with its id (an answer, a dismissal and a denial all write one; 106/106 on this box). An interrupt does NOT: it writes a user text row `[Request interrupted by user…]`, which is a turn terminator in its own right and can leave the tool_use open. An open tool_use is PENDING (still running or waiting), never an error. No 60 s timeout string exists in 2.1.246 transcripts; do not code against one. (verified.md B; agents-in-a-box `jsonl_tail.rs:267-288`)
 67. In a MAIN transcript `stop_reason == "end_turn"` is reliable and rides the text row of the finished message (289 of 428 `end_turn` rows carry text; `null` is 0.16 %); the "never fires" claim came from subagent files, where `null` dominates. Find the last assistant row by scanning backwards past `attachment`, `last-prompt`, `custom-title` and `agent-name` rows; still require "has text" and "no user follow-up". (verified.md A; agents-in-a-box `jsonl_tail.rs:79-96` is wrong for main files)
 68. Treat `ErrorKind::Interrupted` from `poll`/`read` as a retry: our own `raise(SIGWINCH)` guarantees it fires on every push. (references.md, agents-in-a-box `ainb-core/src/main.rs:499-505`; rust-code `is_transient_io`)
-69. The transcript tail is a row cap plus a byte window of ≥ 256 KB with one grow-and-retry, opened on a verified row boundary and decoded lossily; a 64 KB window can hold one fragment of a single tool result. The cache key is `(len, mtime)`, and the path is re-resolved every tick because `/compact` and `--resume` rotate the file. (references.md, agents-in-a-box `jsonl_tail.rs:566-645`, `transport.rs:17-28`; awesome.md, agent-console `discovery.rs`)
+69. The transcript tail is a row cap plus a byte window, opened on a verified row boundary and decoded lossily; a 64 KB window can hold one fragment of a single tool result. **Sizing corrected by verified.md E, which measured it: 64 KB first, discard the leading partial, double on a miss up to ~2 MB** — not the flat ≥ 256 KB with one grow-and-retry written here. Rule 19 carries the same numbers. The cache key is `(len, mtime)`, and the path is re-resolved every tick because `/compact` and `--resume` rotate the file. (references.md, agents-in-a-box `jsonl_tail.rs:566-645`, `transport.rs:17-28`; awesome.md, agent-console `discovery.rs`)
 70. The transcript path comes from the hook's `transcript_path` into a pane option; a newest-mtime scan of the project dir is a fallback only, because two agents in one cwd share the dir. The slug maps every non-`[A-Za-z0-9-]` byte to `-` (23/23 dirs verified); canonicalisation is unverified on this box; derive the slug from the directory being read, never from a row's cwd, which changes within a file when a session enters a worktree. (verified.md D; agents-in-a-box `needs.rs:130-141`, `jsonl_tail.rs:15-48`)
 71. Read only `<slug>/<session-uuid>.jsonl` and never recurse into `<session-uuid>/subagents/`, where every subagent transcript lives (0 of 588 main files contain an `isSidechain` row; 100 % of subagent rows do, with an `agentId` key). Keep a cheap row guard (`isSidechain == true` or `agentId` present) as a belt. `isCompactSummary` does not exist on 2.1.246. (verified.md C)
 72. A pane is an agent pane by its process tree, never by `pane_current_command` alone (Claude renames itself to its version; an exited agent's pane reads `zsh`); `ps -axww`, lowercase basename, BFS depth 8 with a seen set. (references.md, agents-in-a-box `discover/tmux.rs:80-84`, `process_tree.rs:34-121`; bosun `detector/claude.rs:120-152`)

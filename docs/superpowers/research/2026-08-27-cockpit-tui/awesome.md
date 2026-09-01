@@ -649,8 +649,10 @@ that already work. The five-dependency budget survives this survey intact.
   architectures for a 1,968-line program. rat-widget alone has 17 non-optional dependencies;
   widgetui and ratatui-garnish are not even 0.30-compatible.
 - **termprofile / coolor / color-to-tui** — env-based colour detection is the exact thing rule 27
-  forbids inside a popup. `theme.rs` asking tmux for `#{client_termfeatures}` is the right answer
-  and is already written.
+  forbids inside a popup. The verdict holds, the reason moved: verified.md tmux A refuted the
+  premise this was written on, and corrected rule 27 emits RGB unconditionally, so there is no
+  detection to delegate at all. `theme.rs`'s `#{client_termfeatures}` query — the answer named
+  here — is itself now at most an optimisation, and the gate on it was deleted.
 - **tui-popup** — 6 lines of centring and a `Clear`, for a popup that already IS the window; its
   differentiator is mouse drag, banned in phase 1.
 - **throbber-widgets-tui / tui-logger / tui-prompts / tui-textarea / tui-tree-widget / tui-big-text /
@@ -660,8 +662,12 @@ that already work. The five-dependency budget survives this survey intact.
 - **tmux_interface / tmux-lib** — a builder API whose value is composing the format string that
   rule 15 requires be copied verbatim, and which would break the PATH-shim test strategy of
   rule 26. Neither is in awesome-ratatui.
-- **unicode-width** — would formalise the wrong answer (it reports 1 for the ambiguous-width
-  glyphs that emoji-preferring fonts draw as 2). The 2-column gutter of rule 28 is the fix.
+- **unicode-width** — **overturned; the owner accepted it on #61.** The objection stands on its
+  own terms (it reports 1 for the ambiguous-width glyphs that emoji-preferring fonts draw as 2,
+  and the 2-column gutter of rule 28 remains that fix) but it is not a reason to hand-roll: it is
+  already in the tree via ratatui 0.30.2, so it adds nothing to the build, and rule 2's
+  "no sixth without a measurement" was satisfied — L2 measured `⌨`+U+FE0F as 1 by summing char
+  widths against 2 at string level, a one-column overrun that `chars().count()` cannot see.
 - **Anything from claudectl (80k LOC, workspace, MCP+tokio), thurbox (112k LOC, vendored Lua),
   p2pmux (69k LOC), Reeve (29k LOC, no identifiable licence)** — and note Reeve, matchmaker, agx,
   erldash and nereid all report NOASSERTION or no licence: do not copy code from them at all.

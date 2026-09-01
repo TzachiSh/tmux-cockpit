@@ -4,7 +4,9 @@ UI/UX lane, 2026-08-27, read-only. Designs phase 1 (the board) and phase 2 (need
 triage) of the Rust/Ratatui binary against screens.md §0's grid, colour roles and glyph
 tiers, chrome.md §1's urgency ramp, and ratatui.md's measured constraints. Every mockup
 below is generated at an exact column count (`scratchpad/mock.py`, `over.py`), not
-hand-drawn; all lines verified at 80/120/160.
+hand-drawn; all lines verified at 80/120/160. Both generators were session-local scratch
+and are not committed anywhere, so **the mockups here cannot be regenerated** — they are
+a record, and an edit to one is a hand edit whose column count nothing re-checks.
 
 Mockup widths are the **board's own area** (`f.area()`), not the terminal. A 70 % popup
 on a 120-column terminal gives an 84-column board, which is one tile column. That is the
@@ -243,10 +245,15 @@ Footer, one line, no border, degrading in exactly two stages (television
 then to nothing, rather than letting a `Paragraph` clip mid-word):
 
 ```
- ↵ jump   a ask   r review   f fix   i info   ? help   q close     (fits >= 62)
+ ↵ jump   r review   f fix   i info   ? help   q close             (fits >= 54)
  ↵ jump   ? help   q close                                         (fits >= 27)
  ? help                                                            (last resort)
 ```
+
+`a ask` is **not** in the phase-1 footer. There is no `ask` verb in the action protocol
+(workflow.md §3 froze five: `jump | review | fix | info | deliver %N`), and §3.1 maps `a`
+to jump in phase 1; phase 2 adds the triage overlay (§3.2) and with it the pair
+`a ask`, which puts the full line back at `fits >= 62`.
 
 Keys in `accent`, verbs in `meta`, three spaces between pairs — screens.md §0's key-hint
 convention, pickers.md:161's ordering rule (leftmost = least skippable). **Drop whole pairs,
@@ -556,7 +563,7 @@ closes it — a help screen you have to learn a key to leave is a joke at its ow
 ╭ keys ──────────────────────────────────────────────────────────────────╮
 │ move                          act                                      │
 │ h l  ← →   column             ↵    jump to this pane, close the board  │
-│ j k  ↑ ↓   row                a    answer / ask this agent             │
+│ j k  ↑ ↓   row                a    answer / ask (phase 2; jump in 1)   │
 │ ⇥ ⇧⇥       next / previous    r    review its diff                     │
 │ 1-9        tile by number     f    side fix from it                    │
 │ g G        first / last       i    info for this pane                  │
@@ -700,13 +707,19 @@ One `display-message -p` at startup packing every `@thm_*` plus `#{client_termfe
 (theme.rs:57-72 already does two calls; make it one). **Never query the terminal** — a
 query inside `display-popup` can wedge crossterm's parser.
 
-```
-client_termfeatures contains RGB  -> Color::Rgb from @thm_*      (theme.rs today)
-else tput colors >= 256           -> Color::Indexed(N)           (theme.rs today)
-else                              -> the 16 rung                 (missing)
-```
+**Corrected by measurement — there is no ladder.** verified.md tmux A graded this
+REFUTED, backwards, and rule 27 was rewritten: emit `Color::Rgb` from `@thm_*`
+**unconditionally** inside tmux. tmux does the downgrade itself, per attached client,
+with a real nearest-colour fit — 256-indexed is what survives a 256-colour client and
+truecolor is what gets downgraded without RGB, and the inner `TERM` has no effect at
+all. So rung 1 is redundant, rung 3 is unimplementable (a 16-colour client reports
+`bpaste,focus,title`, no colour feature to test against), and one
+`#{client_termfeatures}` query picks one client when two of different capability are
+attached. Keep the startup `display-message -p` for `@thm_*`; `client_termfeatures`
+is at most an optimisation. `NO_COLOR` is still honoured in-app (§5.3).
 
-The 16 rung, from screens.md §0's last column:
+~~The 16 rung~~, kept only as the record of what was dropped, from screens.md §0's
+last column:
 
 | role | 16-colour |
 |---|---|
@@ -722,8 +735,9 @@ The 16 rung, from screens.md §0's last column:
 
 Peach folds into yellow and lavender into blue, so **error and running are the same colour
 at 16 and accent and the review mark collide**. That is exactly why every state also
-carries a glyph and why focus is a border weight. The 16 rung is where the shape-first
-discipline pays for itself.
+carries a glyph and why focus is a border weight — and that argument is untouched by the
+correction above: tmux still collapses to 16 for a 16-colour client, it just does it
+itself, downstream of us, so the binary carries no 16 rung of its own.
 
 ### 5.3 NO_COLOR
 
@@ -878,6 +892,8 @@ SIGWINCH to end the poll (push.rs). No tokio, no `notify`, no control mode.
 11. No second copy of the key list. The help overlay reads the dispatch table.
 12. No new dependency beyond ratatui, crossterm, unicode-width, unicode-segmentation,
     ansi-to-tui, serde_json, libc. No clap, no anyhow, no color-eyre, no tokio.
+    (`unicode-width` is the one the owner ruled on afterwards, against awesome.md's
+    rejection of it: accepted, and free — ratatui 0.30.2 already pulls 0.2.2.)
 13. No `Modifier::SLOW_BLINK`. reeve puts its most important alert (health < 20) on it
     (`panels/left.rs:260-263`); many terminals ignore or mangle it, so the loudest signal is
     the least reliable one.

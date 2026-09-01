@@ -1,7 +1,7 @@
 # cockpit-tui: the parallel implementation workflow (#61)
 
 Read: ratatui.md §Testing/§Packaging/§Popup/§Phased plan, the demo crate
-(`spike/cockpit-tui-demo/`, 2,019 lines / 12 tests / 7 goldens), AGENTS.md,
+(`spike/cockpit-tui-demo/`, 1,968 lines / 12 tests / 7 goldens), AGENTS.md,
 Makefile, tests/run.sh (prelude + block shape), two house plans
 (2026-08-25-side-fixer.md, 2026-08-25-review-phase3.md), 2026-08-26-issue-cli-flow.md,
 `git log -40`, `gh pr list --state merged -L 30`, and ten memory rules.
@@ -53,10 +53,14 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
 - **Outputs:** `tui/src/data.rs` only. The 60 s `claude agents --json` cache, the
   `fs::metadata().modified()` gate on transcript tails, `--rows`/`--json` moved
   behind stable formatting, `COCKPIT_READONLY` honoured on every write path.
-- **Contract:** `list_panes() -> Vec<Pane>`, `preview(id:&str, n:usize) -> Option<String>` (`None` = capture-pane failed, never an empty preview),
-  `hash_rows(&[Pane], extra:&str) -> u64`, `one_pane(id:&str) -> Pane`,
-  `tmux(&[&str]) -> String`, `log(&str)`. **Signatures are frozen by L0; L1 may
-  change bodies only.** JSON shape per §3.
+- **Contract:** `list_panes() -> Option<Vec<Pane>>`, `preview(id:&str, n:usize) -> Option<String>`
+  (`None` = capture-pane failed, never an empty preview),
+  `hash_rows(&[Pane], extra:&str) -> u64`, `one_pane(id:&str) -> Option<Pane>`,
+  `tmux(&[&str]) -> Option<String>`, `log(&str)`. **Signatures are frozen by L0; L1 may
+  change bodies only.** JSON shape per §3. The three `Option` returns are freeze
+  amendment 1 and its addendum on #61: `None` is "tmux could not be spoken to",
+  which is how `--rows`/`--json` reach exit 1 and how the board keeps its last
+  good tile list through a transient failure.
 - **Fail-first:** (a) a PATH-shim `claude` that appends to a counter file — two
   `list_panes()` calls inside 60 s fork it **once** (the 380 ms fact); (b) a
   transcript whose mtime is untouched is not re-parsed (shim `open` count via a
@@ -146,12 +150,17 @@ L6 merges last. L1–L5 never touch the same file — that is the design.
   `examples/tmux.conf` + `examples/full.tmux.conf` rows, `tests/run.sh` binding block.
 - **Contract:** the binding passes `-p '#{pane_id}'` (`display-popup` expands only
   `-T` and `-d`, never its shell-command — `popup-needs-pane-id`), sets
-  `COCKPIT_ACTION` to an `mktemp`, runs the binary, then executes the action line
-  through the existing `tmux-jump` / `tmux-review` scripts. Missing binary → one
-  `display-message` and exit 0.
+  `COCKPIT_ACTION` to an `mktemp`, runs the binary, then dispatches the action line.
+  `review`/`fix` go to the existing `tmux-review` / `tmux-fixer`; `jump %N` is
+  `switch-client` + `select-window` + `select-pane` on the named pane, byte-identical
+  to `scripts/tmux-jump:73-75` and **not** a call to `tmux-jump`, which takes the pane
+  you are on and cycles to the *next* blocked one (`scripts/tmux-jump:61-68`), so it
+  would leave the board's chosen target for somewhere else (freeze amendment 2, #61).
+  Missing binary → one `display-message` and exit 0.
 - **Fail-first:** (a) the shipped-config block asserts the bind exists and that
   `@cockpit_board_key off` removes it; (b) a fake `cockpit-tui` on PATH writing
-  `jump %9` makes the wrapper run `tmux-jump %9` and nothing else (argv shim);
+  `jump %9` makes the wrapper run exactly `switch-client -t %9`, `select-window -t %9`,
+  `select-pane -t %9` and nothing else — no `tmux-jump` (argv shim);
   (c) tmux 3.6 (a `-V` shim) produces the named refusal, not a broken popup;
   (d) a pane directory named `$(touch /tmp/pwn)` does not run — the existing menu
   injection block's shape.
@@ -242,9 +251,15 @@ never a non-agent pane.
 
 **Options** (read/written by the binary):
 `@cockpit_tui_pid` (written on start, **unset on q/SIGHUP/SIGTERM**),
-`@cockpit_tui_version` (written by `tui-fetch`, read by `--info`),
+`@cockpit_tui_version` (written by `tui-fetch`, read by `tmux-review --info`'s doctor row),
 `@cockpit_board_window` (`on` = parked window instead of popup),
-`@cockpit_board_key` (rebind / `off`).
+`@cockpit_board_key` (rebind / `off`),
+`@cockpit_tui_fetch` (default **off**; freeze amendment 2 on #61 — inside
+`cockpit.tmux` tpm's `prefix U` and a plain `source-file ~/.tmux.conf` are the same
+event, so rule 39 and DO NOT 14 can only both hold behind an opt-in; off means
+nothing is ever fetched and `scripts/tui-fetch` run by hand stays the manual path),
+`@cockpit_popup_height` (the board's popup height; freeze amendment 2 replaced the
+fixed 80 %, only the `-w 90%` width is the board's own number).
 Read-only, already owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
 `@cockpit_hold`, `@thm_*`.
@@ -259,8 +274,11 @@ The binding runs the binary under `env -u CLAUDECODE` (required inside a popup).
 
 **Action file protocol.** Exactly one line, `\n`-terminated, written to
 `$COCKPIT_ACTION` on exit; nothing else is ever written there:
-`jump %N` · `review %N` · `fix %N` · `deliver %N` (reserved for L7).
+`jump %N` · `review %N` · `fix %N` · `info %N` · `deliver %N` (reserved for L7).
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary **executes nothing**.
+`info %N` is the fifth verb, accepted by the owner on #61: ux.md §3.1, its footer and
+its `?` overlay all bind `i`, so `i` is either bound and emitted or dropped from all
+three; the wrapper maps it onto the existing `prefix i` screen in one `case`.
 
 **CLI:** `cockpit-tui board | fleet | info %N | ask %N | --rows | --json | --version | -h`.
 Phase 0 ships `--rows --json --version -h`; phase 1 adds `board`. `fleet`/`ask` stay
@@ -310,7 +328,7 @@ Open the issue first ("cockpit-tui L0: crate skeleton, CI, make tui, the bash bl
 Never edit ~/.tmux/plugins/tmux-cockpit; it stays on master and other sessions share it.
 Scope: copy /home/tzachi/.cache/cockpit-wt/issue-54-research/docs/superpowers/research/2026-08-26-ask-busy-agent/spike/cockpit-tui-demo/ into tui/ (Cargo.toml.txt -> Cargo.toml), delete ask.rs/info.rs and fleet.rs's interactive run() (keep rows_text/rows_json), keep data.rs board.rs theme.rs push.rs main.rs tests/.
 Files you own: tui/**, .github/workflows/tui.yml, Makefile (a `tui:` target), .gitignore (bin/, tui/target/), one tests/run.sh block appended at the end.
-Contract you publish and freeze (see §3 of the plan): lib.rs's full module list so no other lane ever edits it; data::Pane's fields; the 14 --json keys in order; --rows' 8 tab fields; @cockpit_tui_pid/@cockpit_tui_version/@cockpit_board_window/@cockpit_board_key; COCKPIT_ACTION/TMUX/LOG/READONLY/GLYPHS; the action lines jump|review|fix|deliver %N; exit 0/1/2.
+Contract you publish and freeze (see §3 of the plan): lib.rs's full module list so no other lane ever edits it; data::Pane's fields; the 14 --json keys in order; --rows' 8 tab fields; @cockpit_tui_pid/@cockpit_tui_version/@cockpit_board_window/@cockpit_board_key/@cockpit_tui_fetch/@cockpit_popup_height; COCKPIT_ACTION/TMUX/LOG/READONLY/GLYPHS; the action lines jump|review|fix|info|deliver %N; exit 0/1/2.
 Fail-first: the block `== cockpit-tui: --json names every agent pane and nothing else ==` must print SKIP (skip_, never a pass) with no binary present, then PASS once built.
 Gate: `make check` green with cargo removed from PATH; `make tui` (build+test+clippy -D warnings+fmt --check); bash -n tests/run.sh. Run it unpiped.
 Do not touch: cockpit.tmux, scripts/*, README, KEYS.md, docs/. No binding in this lane.
@@ -324,7 +342,7 @@ You own L1 of #61: the cockpit-tui data layer. Fork from feat/tui-skeleton once 
 Open the issue first ("cockpit-tui L1: session cache, mtime gate, --json contract", "Part of #61."), then
   git worktree add ~/.cache/cockpit-wt/tui-data -b feat/tui-data feat/tui-skeleton
 Scope: tui/src/data.rs ONLY. Cache `claude agents --json` for 60 s (it costs 380 ms and used to run every tick); skip the transcript parse when fs::metadata().modified() is unchanged; route every tmux write through one function that COCKPIT_READONLY disables.
-Contract, frozen by L0, bodies only: list_panes() -> Option<Vec<Pane>>, preview(&str, usize) -> Option<String>, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Option<Pane>, tmux(&[&str]) -> Option<String>, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
+Contract, frozen by L0 (the Option returns are freeze amendment 1 and its addendum on #61), bodies only: list_panes() -> Option<Vec<Pane>>, preview(&str, usize) -> Option<String>, hash_rows(&[Pane], &str) -> u64, one_pane(&str) -> Option<Pane>, tmux(&[&str]) -> Option<String>, log(&str). Do not change a signature, a Pane field, or a --json key - open a comment on #61 instead.
 Fail-first, all three before the fix: a PATH-shim `claude` counter shows ONE fork across two list_panes() inside 60 s; a transcript whose mtime did not change is not re-read (poison its second line so a re-read panics); COCKPIT_READONLY=1 leaves the tmux shim's log empty.
 Gate: make tui; then `make check` unpiped with the built binary present (L0's block must go green, not skip).
 Do not touch: board.rs, theme.rs, push.rs, lib.rs, main.rs, cockpit.tmux, scripts/*.
@@ -340,7 +358,7 @@ Open the issue first ("cockpit-tui L2: the board grid, goldens, ascii tier", "Pa
   git worktree add ~/.cache/cockpit-wt/tui-board -b feat/tui-board feat/tui-skeleton
 (work against the demo crate meanwhile: .../spike/cockpit-tui-demo/)
 Scope: tui/src/board.rs, tui/src/theme.rs, tui/tests/screens.rs, tui/tests/golden/*. TestBackend only - your code calls no tmux and no clock.
-Contract: render(f, area, &View, &mut TableState) is pure over &[Pane]; run() -> Option<String> is the only impure entry and returns one action line (jump|review|fix %N). Pane's fields and the golden helper come from L0 and are frozen.
+Contract: render(f, area, &View, &mut TableState) is pure over &[Pane]; run() -> Option<String> is the only impure entry and returns one action line (jump|review|fix|info %N). Pane's fields and the golden helper come from L0 and are frozen.
 Deliver: 3/2/1 column profiles, ANSI previews, needs-you border, keys tab/h/l/enter/q, dirty-flag redraw (hash_rows), theme read once at startup, 2-column glyph gutter, COCKPIT_GLYPHS=ascii tier.
 Fail-first: goldens at 80/120/160 showing 3/2/1 columns; a needs-input tile draws the red border AND its question; a truncation property test over widths 1..40 that never panics or overruns; an ascii-tier golden; a test asserting the preview Paragraph is built WITHOUT Wrap.
 Hard rules: never enable Wrap on the preview (ratatui #2679 panics on double-width); send no terminal queries and keep crossterm pinned =0.29.0 (crossterm #1104 wedges the parser inside a popup); no mouse in phase 1 - SGR capture takes the wheel and text selection away.
@@ -387,7 +405,7 @@ You own L5 of #61: the docs and the shared rules page. Start now.
 Open the issue first ("cockpit-tui L5: docs/tui.md, KEYS.md, README", "Part of #61."), then
   git worktree add ~/.cache/cockpit-wt/tui-docs -b docs/tui feat/tui-skeleton
 Scope: docs/tui.md (new), one KEYS.md row, one README section, and the AGENTS.md rule if L3 has not landed it. Prose only - no code, no bindings.
-docs/tui.md must carry the §3 freeze VERBATIM, because every lane reads it before its first commit: data::Pane's fields, the 14 --json keys in order, --rows' 8 fields, the option names, the COCKPIT_* env vars, the action lines jump|review|fix|deliver %N, the log format `<unix_micros> <text>`, exit codes 0/1/2. Plus the rules: never Wrap the preview, no terminal queries and crossterm pinned =0.29.0, no mouse in phase 1, no tokio/notify/clap/anyhow, ratatui::init() + panic="abort" (never a Drop guard with abort), actions are printed and never executed, every tmux write behind the COCKPIT_READONLY guard.
+docs/tui.md must carry the §3 freeze VERBATIM, because every lane reads it before its first commit: data::Pane's fields, the 14 --json keys in order, --rows' 8 fields, the option names (including @cockpit_tui_fetch and @cockpit_popup_height), the COCKPIT_* env vars, the action lines jump|review|fix|info|deliver %N, the log format `<unix_micros> <text>`, exit codes 0/1/2. Plus the rules: never Wrap the preview, no terminal queries and crossterm pinned =0.29.0, no mouse in phase 1, no tokio/notify/clap/anyhow, ratatui::init() + panic="abort" (never a Drop guard with abort), actions are printed and never executed, every tmux write behind the COCKPIT_READONLY guard.
 Say plainly: the binary is optional; a missing binary is one message and exit 0, and `prefix r` remains the list.
 Fail-first: a tests/run.sh assertion that every @cockpit_* option name in docs/tui.md also appears in cockpit.tmux or tui/src/ (three README lines went stale on phase 3 and cost a review round), plus grep -q COCKPIT_ACTION docs/tui.md.
 Voice: measured, past tense where something was measured, no marketing, no emoji, tables over paragraphs. Numbers only from the research doc, none invented.
@@ -403,9 +421,9 @@ You own L6 of #61: the binding and the integration gate. Start only after L1-L5 
 Open the issue first ("cockpit-tui L6: the board binding, popup/window, tmux >= 3.7 gate", "Part of #61."), then
   git worktree add ~/.cache/cockpit-wt/tui-binding -b feat/tui-binding master
 Scope: cockpit.tmux (one binding + @cockpit_board_key with `off`, copying the @cockpit_review_key block at :288; @cockpit_board_window mirroring @cockpit_review_window; a tmux >= 3.7 guard; 2>> the log), examples/tmux.conf and examples/full.tmux.conf rows, one tests/run.sh block.
-Contract: the binding passes -p '#{pane_id}' - display-popup expands only -T and -d, never its shell-command, so $TMUX_PANE inside a popup is wrong. It sets COCKPIT_ACTION to an mktemp, runs the binary under env -u CLAUDECODE, then dispatches the one action line to the existing tmux-jump / tmux-review scripts. Missing binary or non-zero exit: one display-message, exit 0.
+Contract: the binding passes -p '#{pane_id}' - display-popup expands only -T and -d, never its shell-command, so $TMUX_PANE inside a popup is wrong. It sets COCKPIT_ACTION to an mktemp, runs the binary under env -u CLAUDECODE, then dispatches the one action line: review/fix to the existing tmux-review / tmux-fixer, and jump %N as switch-client + select-window + select-pane on that pane (byte-identical to scripts/tmux-jump:73-75). Do NOT call tmux-jump: it cycles from the pane you are on to the next blocked one (scripts/tmux-jump:61-68) and would ignore the board's chosen target (freeze amendment 2 on #61). Missing binary or non-zero exit: one display-message, exit 0.
 Key: recommend `prefix w` (the board is a better choose-window); a u r i f b g are taken. Confirm with the UX lane on #61 before binding.
-Fail-first: the shipped-config block asserts the bind exists and that @cockpit_board_key off removes it; a fake cockpit-tui writing "jump %9" makes the wrapper run tmux-jump %9 and nothing else (argv shim); a tmux -V shim reporting 3.6 produces the named refusal; a pane directory named `$(touch /tmp/pwn)` does not execute (copy the menu-injection block's shape).
+Fail-first: the shipped-config block asserts the bind exists and that @cockpit_board_key off removes it; a fake cockpit-tui writing "jump %9" makes the wrapper run exactly switch-client -t %9, select-window -t %9, select-pane -t %9 and nothing else - no tmux-jump (argv shim); a tmux -V shim reporting 3.6 produces the named refusal; a pane directory named `$(touch /tmp/pwn)` does not execute (copy the menu-injection block's shape).
 Gate: make check unpiped, make gate stamped, freeze rig fixed-example.conf on branch AND master (delta only), leak sweep vs the socket baseline, install.sh --hooks --dry-run. Then the ONE manual popup run recorded as a comment on #61: tmux version, terminal, geometry, tick ms, the q exit, and @cockpit_tui_pid gone afterwards.
 Then request a review from a SEPARATE agent (/code-review on the PR, or a fresh code-reviewer) - never self-approve.
 No git stash. PR --base master.
