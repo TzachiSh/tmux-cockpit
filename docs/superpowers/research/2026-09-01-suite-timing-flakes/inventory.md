@@ -1,6 +1,6 @@
 # r1-75 — Inventory of time-sensitive assertions in tests/run.sh
 
-Read-only sweep of `/home/tzachi/.tmux/plugins/tmux-cockpit/tests/run.sh` (9094 lines) at master `a77f882`, against issue #75's body and its 11 comments.
+Read-only sweep of `/home/tzachi/.tmux/plugins/tmux-cockpit/tests/run.sh` (9094 lines) at master `6c6424a`, against issue #75's body and its 11 comments. (Corrected after the refute pass: the first draft said a77f882, whose run.sh is 8882 lines.)
 
 Note on line numbers: #75 quotes numbers from older trees (`5372` for "the store itself is gone", `1814` for the `sleep 2`, `1890-1919` for the ctrl+double-click block). The file has grown since. Every row below carries the number on current master, with the issue's number in the last column where it differs.
 
@@ -20,9 +20,9 @@ Five classes, defined by how the clock reaches the verdict:
 |---|---|---|---|---|
 | run.sh:1219 | "a 4000-token clicked line is bounded, not just slow" | wall-budget (timeout verdict) | `timeout 0.6` | yes, issue body run 5 |
 | run.sh:1655 | "5000 branches build their rows well under 2s" | wall-budget (timeout verdict) | `timeout 2` | yes, L2 lane comment and PR #68 verifier comment |
-| run.sh:2888 | "a 400000-line single-file diff renders well under a 2s budget" | wall-budget (timeout verdict) | `timeout 2` | yes, PR #73 reviewer |
-| run.sh:2895 | "and still leads with a real stat summary" | timeout-kill cascade from 2885 | same `timeout 2` | yes, PR #73 reviewer |
-| run.sh:3843 | "800 untracked files list in well under 1s" | wall-budget (timeout verdict) | `timeout 1` | yes, PR #68 and PR #73 reviewers |
+| run.sh:2888 | "a 400000-line single-file diff renders well under a 2s budget" | wall-budget (timeout verdict) | `timeout 2` | yes, PR #73 and PR #77 reviewers |
+| run.sh:2895 | "and still leads with a real stat summary" | timeout-kill cascade from 2885 | same `timeout 2` | yes, PR #73 and PR #77 reviewers |
+| run.sh:3843 | "800 untracked files list in well under 1s" | wall-budget (timeout verdict) | `timeout 1` | yes, PR #68, PR #73 and PR #77 reviewers |
 | run.sh:3952 | "a 12001-row diff returns fast, not after a 10s+ parse" | wall-budget (timeout verdict) | `timeout 10` | no |
 | run.sh:4030 | "a 6,000,030-row tree answers with a notice" | wall-budget (timeout verdict) | `timeout 10` | no |
 | run.sh:4116-4126 (4 asserts) | "the bump fixture is over the 4 MB cap…", "…while its diff is two rows", "a one-line bump in a 4.6 MB lockfile is still reviewable" | timeout-kill cascade | `timeout 10` at 4120 | no |
@@ -30,14 +30,14 @@ Five classes, defined by how the clock reaches the verdict:
 | run.sh:4233-4244 (4 asserts) | "the cross-file fixture is 26 changed rows…", "…and its whole real diff is well under 4 MB", "every row is there, both files", "and the unrelated Go file is not lost with the skewed one" | timeout-kill cascade | `timeout 10` at 4237 | no |
 | run.sh:4264 block | "the untracked fixture is 6 MB on disk, and tracked-clean" and siblings | timeout-kill cascade | `timeout 10` | no |
 | run.sh:4372 | "a 5000-row under-cap diff parses in well under 3s" | wall-budget (timeout verdict) | `timeout 3` | no |
-| run.sh:4411 | "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)" | wall-budget (timeout verdict) | `timeout 0.2` | yes, four times: PR #69 verifier, #80 (dup), PR #87 verifier run 1, plus a master run |
+| run.sh:4411 | "4900 rows build in under 0.2s (measured 210ms bash, 65ms awk)" | wall-budget (timeout verdict) | `timeout 0.2` | yes, five times: PR #69 verifier, PR #77 reviewer, #80 (dup), PR #87 verifier run 1, plus a master run |
 | run.sh:4459 | "--rows re-marks a 4000-row diff in well under 5s" | wall-budget (timeout verdict) | `timeout 5` | no |
 | run.sh:4480 | "a 500-comment re-mark over 4900 rows takes under 0.15s" | wall-budget (timeout verdict) | `timeout 0.15` | yes, L2 lane |
-| run.sh:4481 onward (3 asserts) | the marking assertions reading `$STATE/rows.cached` | timeout-kill cascade from 4479 | same `timeout 0.15` | yes, L2 lane, cascaded from the kill |
+| run.sh:4496, 4497 | "the cached and fresh rows are identical", "500 rows are marked" | timeout-kill cascade: both read `$STATE/rows.cached`, emptied when 4479's `timeout 0.15` kills the write | same `timeout 0.15` | yes, L2 lane. 4489-4494 re-runs `--rows` without a timeout and cannot cascade; the `bad` at 4481 is the failure branch of 4480's own assertion. The L2 comment says three cascaded; only two can |
 | run.sh:5029 | "--loop gives up when fzf cannot start, instead of spinning" | wall-budget (timeout verdict) | `timeout 5` | no |
 | run.sh:5407 | "and the list comes back in under 1.5 s" | wall-budget (measured, `date +%s%N`) | `< 1500 ms` | no |
 | run.sh:5417 | "and it answers without hashing the file" | wall-budget (measured, `date +%s%N`) | `< 500 ms` | no |
-| run.sh:5744 | "a repeat render exits 0" | wall-budget (timeout verdict) | `timeout 5` | no; its `timeout 0.05` ancestor was #36 |
+| run.sh:5743 | "a repeat render exits 0" | wall-budget (timeout verdict) | `timeout 5` | no; its `timeout 0.05` ancestor was #36 |
 | run.sh:7053 | "the fleet queue gathers 50 panes' git state well under the old serial time" | measured `date +%s%N` plus `timeout 15` guard | `< 5000 ms` | no |
 | run.sh:915 | "and the read returns as soon as it has both fields" | measured, `SECONDS` | `< 2s` | no |
 | run.sh:924 | "and it gives up inside its own deadline" | measured, `SECONDS` | `<= 4s` | no |
@@ -65,16 +65,16 @@ Five classes, defined by how the clock reaches the verdict:
 | run.sh:2030-2042 | branch-picker create/pause assertions | sleep-then-assert | 1.2s | no |
 | run.sh:3143-3152 | ctrl-x / ctrl-u branch-key assertions | sleep-then-assert | 1.2s | no |
 | run.sh:3497 | "prefix u from the first blocked pane cycles to the second (#45)" | sleep-then-assert | 1.5s | no |
-| run.sh:4931 | "Enter with nothing typed pins nothing (no accept-all)" | sleep-then-assert, deliberate per comment at 4929-4930 | 0.3s | no |
-| run.sh:4942 | "plain enter does nothing: still in the picker" | sleep-then-assert | 1s | no |
+| run.sh:4931 | "Enter with nothing typed pins nothing (no accept-all)" | sleep-then-assert after `send-keys Enter` at 4929, deliberate per comment at 4929-4930 | 0.3s | candidate for PR #77's unnamed "fzf keystroke assertion in `--loop`" |
+| run.sh:4942 | "plain enter does nothing: still in the picker" | sleep-then-assert after `send-keys Enter` at 4940, `sleep 1` | 1s | candidate for the same, not separately named. Every other assertion in the `--loop` pty block (4880-4995) polls, so PR #77's red is one of these two |
 | run.sh:7338 | `C-b r` review binding assertions | sleep-then-assert | 1.5s | no |
 | 110 sites total | remaining green sleep-then-assert sites | sleep-then-assert | 0.1s to 2.5s | no; clustered at 255-284, 390, 470, 1713-1716, 2001-2005, 2021-2042, 2074-2085, 2285-2295, 2399-2520, 2548, 2591-2678, 2722-2819, 2911-2920, 3128-3152, 3420, 3493-3556, 5868-6798, 7191-7452 |
 
 ## Counts
 
-748 assertion calls; 29 `timeout N` uses; 240 fixed `sleep` calls; 198 poll loops. By class: 14 wall-budget with the timeout as the verdict, 13 wall-budget measured against `SECONDS` / `date +%s%N` / `EPOCHREALTIME`, 8 timeout-kill cascade blocks covering roughly 20 downstream assertions, 2 mouse-timing, 110 sleep-then-assert sites.
+748 assertion calls in tests/run.sh. 33 textual `timeout N` occurrences, of which 7 are comment prose (3209, 4010, 5748, 5749, 7072, 7074, 7124) and 26 execute. 255 `sleep` tokens, of which 79 are long-lived pane fixtures (`sleep 300/3600/30/8` holders) and 56 are poll cadence; roughly 119 are fixed waits gating an assertion. By class: 14 wall-budget with the timeout as the verdict, 13 wall-budget measured against `SECONDS` / `date +%s%N` / `EPOCHREALTIME`, 8 timeout-kill cascade blocks, 2 mouse-timing, and the ~119 fixed waits, 110 of which sit within three lines of an observation feeding an assertion.
 
-Distinct assertions reported red across the 11 comments: 19. Of those, 8 are timeout-verdict wall budgets, 3 are the `rows.cached` cascade, 2 are mouse-timing, 5 are sleep-then-assert, 1 fits no timing class.
+Distinct assertions reported red across the 11 comments: 20 (19 named plus the one unnamed `--loop` keystroke assertion from PR #77). Per class: 8 wall-budget timeout-verdict, 2 timeout-kill cascade, 2 mouse-timing, 7 sleep-then-assert (counting the two `--loop` candidates as one), 1 fitting no timing class. The PR #77 comment adds cites, not new distinct assertions, for four of the wall budgets.
 
 ## Fits no class
 

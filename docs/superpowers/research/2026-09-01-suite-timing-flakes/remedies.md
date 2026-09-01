@@ -6,19 +6,21 @@ Lane r3-75, issue #75. Line numbers below are master at a77f882; the numbers in 
 
 | what | idle | under load |
 |---|---|---|
-| `tmux-review --lines` on 4900 rows (run.sh:4410, budget 0.2 s) | wall 142-163 ms, n=7 | wall 428-632 ms, n=7, 24 spinners |
-| same, CPU (user+sys) | 168-197 ms | 225-249 ms |
+| `tmux-review --lines` on 4900 rows (run.sh:4410, budget 0.2 s) | wall 150 ms, n=7 | wall 427 ms at 12 spinners, 653 ms at 24 (4.35x) |
+| same, CPU (user+sys), bare command | 111 ms (range 93-135) | 103 ms at 12 spinners, 112 ms at 24 (1.01x) |
+
+(Corrected after the refute pass: the first draft's 168-197 ms idle CPU was the `| grep -c .` pipeline form, not the bare command the suite times.)
 | `tmux-branch` 5000 branches (run.sh:1653, budget 2 s) | wall 346-618 ms, n=5 | not sampled |
 | `--lines` 800 untracked (run.sh:3841, budget 1 s) | wall 228-272 ms, n=5 | not sampled |
 | `--preview-diff` 400k lines (run.sh:2884, budget 2 s) | wall 0.55 s, maxRSS 75.7 MB, n=1 cold | not sampled |
 
-Two facts drive everything. First, **the 4900-row budget has 1.23-1.4x headroom, not the 3x its own comment claims** (run.sh:4386 says "the rig's convention, ~3x the expected time"). The comment's 59-74 ms was the inner row build; `timeout` sees the whole script. That is why this assertion is the most-reported one in #75. Second, **wall time inflated 3.9x under load while CPU time inflated 1.27x.** CPU time is the instrument that survives peers.
+Two facts drive everything. First, **the 4900-row budget has 1.23-1.4x headroom, not the 3x its own comment claims** (run.sh:4386 says "the rig's convention, ~3x the expected time"). The comment's 59-74 ms was the inner row build; `timeout` sees the whole script. That is why this assertion is the most-reported one in #75. Second, **wall time inflated 4.35x under load while CPU time did not move at all: 111 ms idle, 112 ms at 24 spinners, 1.01x.** CPU is not merely more stable than wall time here, it is flat, which is a stronger case for a1 than the first draft made. And the budget does not need a stress rig to redden: three spinners, a quarter of `nproc`, already fail it 1/10 with a 0.175 s wall mean; 12 spinners fail 10/10. A single peer build is enough.
 
 ## Class (a): wall-clock perf budgets
 
 **a1. CPU time instead of wall time.** `TIMEFORMAT='%U %S'; { time cmd; } 2>&1 | awk '{print ($1+$2 < B)}'`. Bash's `time` sums waited-for descendants, confirmed above (CPU 0.168 exceeded wall 0.143 on a pipeline). Diff: about 4 lines per site, 4 sites. Still catches the regression: yes for every one of these, because each pre-fix build burned CPU (fork per row, fork per branch, O(n^2) append, per-file fork walk), not wall time waiting. At load 15+: the 1.27x inflation I measured means a 3x margin holds. Pristine box: unchanged. Caveat: CPU is blind to a regression that adds *waiting*; none of these four are that shape.
 
-**a2. Pin the count, not the clock.** The repo already does this three times: run.sh:8385 ("Counting curl, not timing it... a fork count, never a clock"), run.sh:7154 ("one fork per pane and five per dirty root"), run.sh:508 (PATH shim logging one line per call). Diff: 10-20 lines per site. Fits `800 untracked files` cleanly (the regression is four `git` forks per file, and a PATH shim over `git` counts them). **Rejected for 5000 branches and 4900 rows**: the regression there was `$(printf ...)`, a subshell fork of a bash *builtin*. No execve happens, so no PATH shim can see it and there is no portable fork counter. This is the strongest rule-honoring candidate but it only reaches one of the four sites.
+**a2. Pin the count, not the clock.** The repo already does this three times: run.sh:8385 ("Counting curl, not timing it... a fork count, never a clock"), run.sh:7154 ("one fork per pane and five per dirty root"), run.sh:508 (PATH shim logging one line per call). Diff: 10-20 lines per site. Fits `800 untracked files` cleanly (the regression is four `git` forks per file, and a PATH shim over `git` counts them). **Rejected for 5000 branches and 4900 rows**: for 5000 branches the regression was `$(printf ...)`, a subshell fork of a bash builtin (commit 50eb7ed). For 4900 rows the fix commit 30ba10f removed `$(( ))` arithmetic and bash loop passes over the rows; the code already used `printf -v`, so there was never a fork here at all, only interpreter passes. The rejection holds a fortiori: no execve either way, so no PATH shim can count anything, and there is no portable fork counter. This is the strongest rule-honoring candidate but it only reaches one of the four sites.
 
 **a3. Raise the budget.** Diff: one digit. Still catches: 0.2 already "is not a proof" by its own comment (run.sh:4394, rejects the bash build 2 runs in 3); doubling it makes it decorative. At load 15+: still red, because the inflation is unbounded, only less likely. Reject as a solution, accept only as an interim.
 
@@ -50,14 +52,14 @@ Site run.sh:1989, `sleep 2` then `capture-pane` asserting `● main`.
 
 Site run.sh:2081-2089. Two independent causes, both need fixing.
 
-**d1. One `send-keys`, not two.** Measured: tmux 3.7c registers a double click at a 280 ms gap 3/3 and at 350 ms 0/3. The current two-call form spans 77-106 ms at load 8 (n=10, 10/10 registered), so about 3x margin, same order as the wall budgets; I did not reproduce it red. `send-keys -t "$OP" -H $CDBL $CDBL` writes all four events at once, gap in microseconds, load-independent. Verified 5/5 idle and 5/5 at load 6.4. Diff: one line merged, one sleep deleted.
+**d1. One `send-keys`, not two.** Measured: tmux 3.7c registers a double click at a 280 ms gap 3/3 and at 350 ms 0/3. The current two-call form spans 77-106 ms at load 8 (n=10, 10/10 registered), so about 3x margin. The pass rates do not distinguish the forms: the single-call `send-keys -t "$OP" -H $CDBL $CDBL` ran 5/5 and the current two-call form also ran 5/5 under 24 spinners. Neither could be turned red, so merging the two calls is hardening against a failure never reproduced in the rig, not a demonstrated fix. Price is still one line merged, one sleep deleted; take it on the mechanism (gap in microseconds, load-independent), not on evidence.
 
-**d2. Pin the pane content, drop the shell.** The #87 failures were at load 2-3, so this is the likelier cause. The inner session inherits the runner's cwd and a real prompt; in 80 columns from a long cwd the prompt line truncates at `...timing-flakes-75$ ech`, so README.md is not on the clicked row, and row 1's content is a race between the tty echo and bash's first prompt. Replace with `new-session -d -s t -x 80 -y 24 'printf "MARK README.md\n"; exec sleep 300'` plus `until_cap` before the click. Verified row 1 is exactly `MARK README.md`. Diff: about 4 lines, deletes `sleep 0.4` and `sleep 1.5`.
+**d2. Pin the pane content, drop the shell.** The #87 failures were at load 2-3, so this is the likelier cause. The long cwd and the echo/prompt race are one contingency, not two independent facts: the inner session inherits the runner's cwd and a real prompt, and when the tty echo wins the race, row 0 is a bare `echo MARK README.md` and the click succeeds 5/5 even from a long cwd. Truncation bites only when the prompt draws first, and it truncates at `...flakes-7` in 80 columns, pushing README.md off the clicked row. Replace with `new-session -d -s t -x 80 -y 24 'printf "MARK README.md\n"; exec sleep 300'` plus `until_cap` before the click, which removes the contingency instead of betting on which side of the race wins. Verified row 1 is exactly `MARK README.md`. Diff: about 4 lines, deletes `sleep 0.4` and `sleep 1.5`.
 
 ## Decision list
 
 1. **CPU budgets (a1) or counts and sentinels?** Default: CPU at all four sites; counts reach only one. Needs an explicit rule amendment that CPU time is not a clock.
-2. **What margin?** Default 3x idle CPU max, so 0.6 s at run.sh:4410 against 197 ms measured.
+2. **What margin?** Default 3x idle CPU max, so 0.40 s at run.sh:4410 against 135 ms measured (the first draft said 0.6 s against 197 ms; that was the pipeline form's CPU).
 3. **maxRSS for the 400k-diff site?** Default yes, with `skip_` when `/usr/bin/time` is absent: 191 MB to 76 MB, load-independent.
 4. **0.15 s becomes a hang guard?** Default yes, per run.sh:5748.
 5. **Sweep or point fix for the sleeps?** Default sweep, plus the three missing `# group: serial` markers.
@@ -68,7 +70,7 @@ Site run.sh:2081-2089. Two independent causes, both need fixing.
 
 Remedy: poll the store path instead of testing it once. The idiom already exists ten lines down at run.sh:5556, `for i in $(seq 1 40); do [ -e "$RASESS" ] || break; sleep 0.1; done`, so copy it, no new helper. Price: 1 line added. Catches the regression: yes, a store that is never removed is still absent after 4 s and still fails. Load 15+: green. Pristine: no measurable cost.
 
-**2. run.sh:3588 `two blocked and one errored, across sessions`.** Diagnosed as far as read-only allows, and the location is pinned. Every setup call at run.sh:3570-3576 sends stderr to `/dev/null`; run.sh:3579, `FCP3=$(... list-panes -t b:1 ...)`, does not. So `can't find window: 1` came from 3579, and it means session `b` existed while window `b:1` did not. The `new-window -t b` at 3572 therefore failed or its window was gone by 3579, and its error was swallowed. `FCP3` is then empty, `asFC error ""` at 3585 does nothing, and the count reads short.
+**2. run.sh:3588 `two blocked and one errored, across sessions`.** Diagnosed as far as read-only allows, and the location is pinned. All three `FCP` reads at run.sh:3577-3579 are unredirected; only 3579, `FCP3=$(... list-panes -t b:1 ...)`, targets window 1, so `can't find window: 1` still attributes to it, and it means session `b` existed while window `b:1` did not. A fix lane dropping `2>/dev/null` from the setup should expect the two neighbours to start speaking too. The `new-window -t b` at 3572 therefore failed or its window was gone by 3579, and its error was swallowed. `FCP3` is then empty, `asFC error ""` at 3585 does nothing, and the count reads short.
 
 Why the `new-window` failed I cannot pin read-only, and I did not reproduce it. Cheapest instrumentation for a fix lane: drop `2>/dev/null` from 3570-3576 and let the setup speak.
 
