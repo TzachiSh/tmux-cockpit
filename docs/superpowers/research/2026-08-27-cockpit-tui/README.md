@@ -8,7 +8,7 @@ Status 2026-08-27: the owner confirmed the board is wanted ("multiple sessions, 
 
 Two of them were overturned that way afterwards, so read 1 and 5 with their amendments: **1** is now `prefix U` only **and behind `@cockpit_tui_fetch`, default off** (freeze amendment 2 — inside `cockpit.tmux` tpm's `prefix U` and a plain `source-file ~/.tmux.conf` are the same event, so the opt-in is the only way rule 39 and DO NOT 14 both hold), and **5** keeps `-w 90%` for the width but the height is `@cockpit_popup_height`, not a fixed 80 %.
 
-**Merge order.** rules.md roots its citations at `54/` and `58/` — the research directories on PRs #55 and #59. Those two merge first or every such citation here dangles.
+**Merge order.** rules.md roots its citations at `54/` and `58/` — the research directories from PRs #55 and #59. Both merged, so those roots are in-repo paths under `docs/superpowers/research/` now and the citations resolve on master.
 
 1. **Fetch timing.** rules.md 39 / DO NOT 14: fetch the binary only on `prefix U`, never at plugin load. base.md §4's `.tmux` sketch fetches once per version at load, bounded by a `.tried` marker and `curl --max-time 30`. Pick one. Recommendation: `prefix U` only; the load path stays offline. **Superseded:** freeze amendment 2 put it behind `@cockpit_tui_fetch`, default off.
 2. **tmux floor for the board.** rules.md 35 says ≥ 3.7 (#4920, popup overwritten by background repaints); base.md §4 says the plugin's existing 3.3 floor is enough because the board is `display-popup -E -T`. Recommendation: 3.7, because a hook-driven cockpit repaints panes constantly and the tear is exactly the board's failure mode; gate it in the binding with a message.

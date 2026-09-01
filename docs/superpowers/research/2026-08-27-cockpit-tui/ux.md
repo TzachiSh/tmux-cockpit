@@ -245,15 +245,15 @@ Footer, one line, no border, degrading in exactly two stages (television
 then to nothing, rather than letting a `Paragraph` clip mid-word):
 
 ```
- ↵ jump   r review   f fix   i info   ? help   q close             (fits >= 54)
+ ↵ jump   a ask   r review   f fix   i info   ? help   q close     (fits >= 62)
  ↵ jump   ? help   q close                                         (fits >= 27)
  ? help                                                            (last resort)
 ```
 
-`a ask` is **not** in the phase-1 footer. There is no `ask` verb in the action protocol
-(workflow.md §3 froze five: `jump | review | fix | info | deliver %N`), and §3.1 maps `a`
-to jump in phase 1; phase 2 adds the triage overlay (§3.2) and with it the pair
-`a ask`, which puts the full line back at `fits >= 62`.
+`a ask` is a key hint, not one of §3's action verbs — the same line carries `? help` and
+`q close`, which are not verbs either. Until phase 2, `a` resolves to jump: on a blocked
+tile it emits `jump %N`, and on any other tile it emits nothing and says so in a note
+(§3.1; `tui/src/board.rs:919-926` on master, the footer itself at `:180`).
 
 Keys in `accent`, verbs in `meta`, three spaces between pairs — screens.md §0's key-hint
 convention, pickers.md:161's ordering rule (leftmost = least skippable). **Drop whole pairs,

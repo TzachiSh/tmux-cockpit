@@ -36,9 +36,9 @@ render budget — is the part every candidate is missing and our demo has done.
 | | |
 |---|---|
 | licence | ours, MIT-compatible by construction |
-| size | 1,968 LOC (`src` 1,756 + `tests/screens.rs` 212), 7 goldens |
+| size | 1,982 LOC (`src` 1,770 + `tests/screens.rs` 212, `wc -l` on master), 7 goldens |
 | deps | 4: `ratatui 0.30.2`, `ansi-to-tui 8.0.1`, `serde_json`, `libc` (`Cargo.toml.txt:7-11`) |
-| binary | **803 KB** glibc, **910 KB** musl — both already built |
+| binary | **803 KB** glibc (803,776 B), **910 KB** musl — both already built; decimal kB, so the same two binaries rules.md 5 reports as 785 KiB / 889 KiB |
 
 Has, that cockpit needs:
 - board/tiles + per-tile ANSI preview — `board.rs:25-97`

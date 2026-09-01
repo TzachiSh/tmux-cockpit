@@ -350,7 +350,7 @@ A crate depending on `ratatui-core ^0.1` / `ratatui-widgets ^0.3` IS 0.30-compat
 depending on `ratatui ^0.29` or lower is NOT, without a fork.
 
 The five-dependency budget is currently spent: ratatui 0.30.2, crossterm =0.29.0, ansi-to-tui 8,
-serde_json, libc. Every "adopt" below is a proposal to make it six. The demo is 1,968 lines across
+serde_json, libc. Every "adopt" below is a proposal to make it six. The demo is 1,982 lines across
 9 files and ships every screen on the five. That is the number each verdict is measured against.
 
 ### The one the lead asked about first
@@ -438,7 +438,7 @@ there is no overflow to scroll. VERDICT: SKIP now; the honest phase-3 candidate 
 
 **tui-widget-list** — https://crates.io/crates/tui-widget-list | 0.15.3 | compatible.
 Selectable list of arbitrary widgets with per-item heights. This is the fleet list, and rule
-DO-NOT-6 already retired that question: 1,756 lines of Rust bought j/k/enter, while fzf gives fuzzy
+DO-NOT-6 already retired that question: 1,770 lines of Rust bought j/k/enter, while fzf gives fuzzy
 filter, multi-select and the wheel for free. VERDICT: SKIP. The board is a fixed grid of N tiles
 with `Tab` cycling (`board.rs:139-152`), not a scrolling list — there is no list to hold.
 
@@ -506,7 +506,7 @@ written in 127 lines. Adopting termprofile would replace a right answer with a w
 | schemaui | 0.12.4 (2026-08-13) | YES (optional) | SKIP |
 | ratzilla / egui-ratatui / mousefood / soft_ratatui / bevy_ratatui* / ratatui-uefi / crepuscularity | — | — | SKIP (alternate backends; irrelevant to a tmux popup) |
 
-Every one of these is an Elm/React/component architecture over a 1,968-line program with one input
+Every one of these is an Elm/React/component architecture over a 1,982-line program with one input
 source and one timer. rat-salsa's pitch — "event-queue with tasks, timers, application events,
 focus handling, dialog windows" — is a description of tokio-shaped complexity arriving through a
 different door. SKIP all.
@@ -576,7 +576,7 @@ awesome list's Frameworks section, already covered in part 2.
   futures, strum, directories, signal-hook, action enums, a Component trait — is the shape
   DO-NOT-7/8 rule out. Its dependency list is 20 crates for a hello-world with an FPS counter.
 - **tui-realm / rat-salsa / ratatui-kit / tui-react / widgetui** — see part 2. Each teaches
-  "component architecture". None teaches anything a 1,968-line program with one screen needs.
+  "component architecture". None teaches anything a 1,982-line program with one screen needs.
 - **The ratatui book chapters the lead named** — I could not verify these from the awesome list,
   which does not link the book. Their subject matter maps onto rules already carrying evidence:
   testing → rule 41 (TestBackend goldens + `COCKPIT_BLESS=1`, 12 tests in 0.02 s, and 22 files of
@@ -646,7 +646,7 @@ that already work. The five-dependency budget survives this survey intact.
 - **tui-widget-list / television-style compiled fuzzy lists** — rule DO-NOT-6, and television is
   29,656 lines of evidence for it. fzf already gives fuzzy filter, multi-select and the wheel.
 - **rat-widget / rat-salsa / tui-realm / ratatui-kit / tui-react / widgetui** — component
-  architectures for a 1,968-line program. rat-widget alone has 17 non-optional dependencies;
+  architectures for a 1,982-line program. rat-widget alone has 17 non-optional dependencies;
   widgetui and ratatui-garnish are not even 0.30-compatible.
 - **termprofile / coolor / color-to-tui** — env-based colour detection is the exact thing rule 27
   forbids inside a popup. The verdict holds, the reason moved: verified.md tmux A refuted the

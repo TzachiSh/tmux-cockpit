@@ -1,15 +1,15 @@
 # cockpit-tui: the engineering rulebook
 
 For issue #61, tmux-cockpit's Rust/Ratatui binary. Every rule carries its evidence.
-Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue-54-research/docs/superpowers/research/2026-08-26-ask-busy-agent/`,
-`58/` = `~/.cache/cockpit-wt/issue-58-research/docs/superpowers/research/2026-08-26-ui-audit/`; bare paths are the plugin repo.
+Paths are relative to the two research roots, both now merged to master: `54/` = `docs/superpowers/research/2026-08-26-ask-busy-agent/`,
+`58/` = `docs/superpowers/research/2026-08-26-ui-audit/`; bare paths are the plugin repo. (They were written against the `~/.cache/cockpit-wt/issue-54-research` and `issue-58-research` worktrees, which are deleted.)
 
 ## 1. DO
 
 **Crate, deps, toolchain**
 
 1. One crate, flat modules in `src/`, a `lib.rs` that only re-exports.
-   Nothing below 15k LOC in the eight apps read uses a workspace; the demo is 1,968 lines in 10 `.rs` files (9 in `src`, plus `tests/screens.rs`). (54/ratatui.md §"Event loop", 54/spike/cockpit-tui-demo/src/lib.rs; count per base.md §"size")
+   Nothing below 15k LOC in the eight apps read uses a workspace; the demo is 1,982 lines in 10 `.rs` files (`src` 1,770 + `tests/screens.rs` 212, `wc -l` on master). (54/ratatui.md §"Event loop", 54/spike/cockpit-tui-demo/src/lib.rs; count per base.md §"size")
 2. Five dependencies, no sixth without a measurement: `ratatui 0.30.2`, `crossterm "=0.29.0"`, `ansi-to-tui 8`, `serde_json`, `libc`.
    The demo ships every screen on exactly these; each added crate is build time and a supply-chain surface. (54/spike/cockpit-tui-demo/Cargo.toml.txt)
 3. Pin crossterm exactly (`=0.29.0`), never a caret range.
@@ -17,7 +17,7 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
 4. Edition 2024, and gate the source-build fallback on `rustc >= 1.88`.
    ratatui 0.30.2's MSRV is 1.88.0; Debian 13 ships 1.85 and Ubuntu 24.04 ships 1.75, so a bare `cargo build` fallback dumps a compiler error on stock toolchains. (54/ratatui.md §"Corrections" 1)
 5. Release profile `lto = true, strip = true, codegen-units = 1, opt-level = "s", panic = "abort"`, paired with `ratatui::init()`.
-   785 KB glibc / 889 KB musl at 1,968 lines; init's panic hook runs *before* the abort and restores the terminal. (54/ratatui.md §"Corrections" 5, §"Packaging")
+   785 KiB glibc (803,776 B) / 889 KiB musl at 1,982 lines; init's panic hook runs *before* the abort and restores the terminal. base.md §"binary"'s 803 KB / 910 KB is the same two binaries in decimal kB, not a second measurement. (54/ratatui.md §"Corrections" 5, §"Packaging"; the byte count is ratatui.md's push section)
 
 **Event loop and push**
 
@@ -123,7 +123,7 @@ Paths are relative to the two research roots: `54/` = `~/.cache/cockpit-wt/issue
 3. **No control mode.** `refresh-client -B` reports "at most once a second" (measured 0.54 s, and five writes 30 ms apart collapsed to one notification); `%output` is raw pane bytes, so previews would mean writing a terminal emulator. (54/ratatui.md §"Corrections" 2)
 4. **No unix socket for push.** It measured 32 ms against a signal's 31 ms, cost 106 lines, and carried no payload the receiver could not refetch. (54/ratatui.md §"Push channel", 54/competition.md table)
 5. **No mouse in phase 1.** Enabling SGR capture inside a popup takes the wheel and text selection away. (54/ratatui.md §"Event loop", 54/tui.md §5)
-6. **Never rebuild the fleet list as a Table.** 1,756 lines of Rust bought j/k/enter; fzf gives fuzzy filter, multi-select and the wheel for free, and the demo's Table has no filter input at all. (54/competition.md §"Verdict", 54/ratatui.md §"What the binary would own")
+6. **Never rebuild the fleet list as a Table.** 1,770 lines of Rust bought j/k/enter; fzf gives fuzzy filter, multi-select and the wheel for free, and the demo's Table has no filter input at all. (54/competition.md §"Verdict", 54/ratatui.md §"What the binary would own")
 7. **No workspace or crates split below 15k LOC.** Nobody among eight apps does it; the `event-driven` template is 272 lines total. (54/ratatui.md §"Event loop")
 8. **No clap, anyhow, color-eyre, chrono, git2.** Five subcommands parse from `args[0..2]`; claude-tmux's git2 → libgit2 → libssh2 → openssl chain fails to build on a clean box and ships "libgit2.so.1.9 not found" issues. (54/rust.md §2, 54/spike/cockpit-tui-demo/src/main.rs)
 9. **Never pair `panic = "abort"` with a Drop-based terminal guard.** No unwinding means Drop never runs. Pick `init()` + abort, or a Drop guard without abort. (54/ratatui.md §"Corrections" 5)

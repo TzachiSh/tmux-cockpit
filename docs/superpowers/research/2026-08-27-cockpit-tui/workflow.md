@@ -1,7 +1,7 @@
 # cockpit-tui: the parallel implementation workflow (#61)
 
 Read: ratatui.md §Testing/§Packaging/§Popup/§Phased plan, the demo crate
-(`spike/cockpit-tui-demo/`, 1,968 lines / 12 tests / 7 goldens), AGENTS.md,
+(`spike/cockpit-tui-demo/`, 1,982 lines / 12 tests / 7 goldens), AGENTS.md,
 Makefile, tests/run.sh (prelude + block shape), two house plans
 (2026-08-25-side-fixer.md, 2026-08-25-review-phase3.md), 2026-08-26-issue-cli-flow.md,
 `git log -40`, `gh pr list --state merged -L 30`, and ten memory rules.
