@@ -1,8 +1,8 @@
 # R3: every community.md claim against its source
 
-Lane R3, read-only, 2026-08-27. community.md mtime Aug 27 10:00, 79 lines, 31 URLs. All 31 fetched with WebFetch; raw text pulled with curl for 11 ambiguous ones. None unreachable.
+Lane R3, read-only, 2026-08-27. community.md mtime Aug 27 10:00, 79 lines, 30 URLs. All 30 fetched with WebFetch; raw text pulled with curl for 11 ambiguous ones. None unreachable.
 
-Count: 31 claims, 13 CONFIRMED, 17 TIGHTENED, 1 REFUTED. Practices: 32 distinct bullets (27 Take, 5 Struggled); the memory's "33" counts a restated summary item.
+Count: 31 claims over those 30 URLs (line 42's claim carries no URL of its own), so 32 grades, because row 18 is graded once for each of its two lines: 13 CONFIRMED, 17 TIGHTENED, 2 REFUTED. Practices: 32 distinct bullets (27 Take, 5 Struggled); the memory's "33" counts a restated summary item.
 
 | # | line | claim (short) | grade | what the source says |
 |---|---|---|---|---|
@@ -60,6 +60,6 @@ Findings (all confirmed):
 17. NIT :49 - Rust compares two commit hashes.
 18. NIT :64 - votes for legal/process approvals.
 
-Did: fetched all 31 URLs, raw text for 11, graded every row, counted practices.
+Did: fetched all 30 URLs, raw text for 11, graded every row, counted practices.
 Did not: edit anything; use WebSearch; verify unlinked claims beyond the two noted.
 Could do next: apply the 18 corrections in a worktree lane; fix the memory count 33 to 32.

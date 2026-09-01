@@ -1,8 +1,8 @@
 # The orchestrating-issue-lanes skill, reviewed by its own process
 
-Issue #78. 2026-08-27. Status: research merged, decisions posted on #78 with defaults; edits to the skill happen in a follow-up lane after the owner answers or the defaults take effect.
+Issue #78. 2026-08-27. Research complete; it reaches the repo as PR #82. Decisions are posted on #78 with defaults; edits to the skill happen in a follow-up lane after the owner answers or the defaults take effect.
 
-The skill lives at `~/.claude/skills/orchestrating-issue-lanes/` (SKILL.md 1211 words, templates.md 922, gates.md 595, community.md 857; 30 URLs). It was written 2026-08-27 from the cockpit-tui run (#61) and had not been reviewed. This round ran the skill's own lifecycle on it: issue first, five read-only research lanes, one rig, five refute lanes, this README, decisions with defaults.
+The skill lives at `~/.claude/skills/orchestrating-issue-lanes/` (SKILL.md 1211 words, templates.md 922, gates.md 595 — 656 once the 10:15 release row V1 declared landed — community.md 857; 30 URLs). It was written 2026-08-27 from the cockpit-tui run (#61) and had not been reviewed. This round ran the skill's own lifecycle on it: issue first, five read-only research lanes, one rig, five refute lanes, this README, decisions with defaults.
 
 ## What was measured
 
@@ -10,10 +10,10 @@ The skill lives at `~/.claude/skills/orchestrating-issue-lanes/` (SKILL.md 1211 
 |---|---|---|---|
 | R1 | does the skill meet the skill-authoring rules (writing-skills, Anthropic best practices)? | [R1-form.md](R1-form.md) | 14 (7 major) |
 | R2 | do the four files agree with each other; what is undefined? | [R2-consistency.md](R2-consistency.md) | 26 (3 blocker, 9 major) |
-| R3 | does every community.md claim hold against its source? | [R3-sources.md](R3-sources.md) | 31 URLs: 13 confirmed, 17 tightened, 1 refuted |
-| R4 | did the #61 run's lessons land; where was the process skipped? | [R4-field.md](R4-field.md) | 47-row ledger, 18 deviations, 7 gates never exercised; 20 findings |
+| R3 | does every community.md claim hold against its source? | [R3-sources.md](R3-sources.md) | 30 URLs, 31 claims, 32 grades: 13 confirmed, 17 tightened, 2 refuted |
+| R4 | did the #61 run's lessons land; where was the process skipped? | [R4-field.md](R4-field.md) | 23 PARTIAL/ABSENT lesson rows (the PRESENT rows stayed in the transcript), 18 deviations, 7 gates never exercised; 20 findings |
 | R5 | can the skill force one channel; what would? | [R5-channel.md](R5-channel.md) | channel inventory, built-in block found, hook written and run; 6 findings |
-| rig | 5 scenarios x red/green x 2 reps, fixed rubric | [rig.md](rig.md) | RED 2/10, GREEN 10/10 |
+| rig | 5 scenarios x red/green x 2 reps, fixed rubric | [rig.md](rig.md) | RED 0/10, GREEN 10/10 |
 | V1-V5 | refute R1-R5 and the rig scoring | [verified.md](verified.md) | see file |
 
 ## Rig result in one table
@@ -92,9 +92,11 @@ The decisions were taken on the defaults and the skill moved to its own reposito
 
 | round | issue | PRs | what changed | measure |
 |---|---|---|---|---|
-| apply the review | issue-lanes-skill#1 | 6 merged | the three contradictions, the backwards OWNERS claim, the flake rule, shapes 11 (roster) and 12 (plan), status token, channel definition, lane name and title on every post, project-agnostic lint | gate 0/48 red at baseline to 61/68 green; but total words 3646 to 6899 |
-| KISS | issue-lanes-skill#14 | 6 merged | every file cut by deletion with a rule map per PR; community.md and sources.md deleted (no lane ever read a URL: 0 of 20 rig agents); dates and provenance banned; prose lint from a measured comparison against three human-written process docs | 6899 to 3079 words; 60/60 checks; rig re-run GREEN 10/10, RED 0/1 |
+| apply the review | issue-lanes-skill#1 | issue-lanes-skill#7, #8, #9, #10, #11, #15 | the three contradictions, the backwards OWNERS claim, the flake rule, shapes 11 (roster) and 12 (plan), status token, channel definition, lane name and title on every post, project-agnostic lint | gate 0/48 red at baseline to 61/68 green; but total words 3646 to 6899 |
+| KISS | issue-lanes-skill#14 | issue-lanes-skill#20, #22, #23, #24, #26, #28 | every file cut by deletion with a rule map per PR; community.md and sources.md deleted (no lane ever read a URL: 0 of 20 rig agents); dates and provenance banned; prose lint from a measured comparison against three human-written process docs | 6899 to 3079 words; 60/60 checks; rig re-run GREEN 10/10, RED 0/1 |
 
-The final refute lane (V-final) inventoried 208 baseline rules: 165 present, 22 duplicate-deleted, 14 decided-out, 7 lost. The 7 came from two lanes each cutting the same rule as a duplicate of the other's file; they are restored under epic issue-lanes-skill#29. A demo run on a throwaway project (TzachiSh/tally-demo) feeds the same epic.
+Every figure in that table is a command on TzachiSh/issue-lanes-skill. Word counts are `git show <sha>:<file> | wc -w` summed over the skill's top-level `.md` files, README.md excluded, at 491b9f9 (baseline, 3646), 1e00591 (end of round one, 6899) and c930237 (end of KISS, 3079). Gate ratios are `git archive <sha> | tar -x` into a scratch dir followed by `bash tests/check.sh`: 99b1620 prints "0 passed, 48 failed" against the baseline files, 1e00591 "61 passed, 7 failed", c930237 "60 passed, 0 failed". The rig re-run is the one figure here that cannot be re-derived without dispatching the twenty scenario agents again.
+
+The final refute lane (V-final, the inventory comment on issue-lanes-skill#14) counted 208 baseline rules: 165 present, 22 duplicate-deleted, 14 decided-out, 7 lost. The 7 came from two lanes each cutting the same rule as a duplicate of the other's file; epic issue-lanes-skill#29 carried them, issue-lanes-skill#41 and #42 restored them, and the epic closed. A demo run on a throwaway project (TzachiSh/tally-demo) fed the same epic.
 
 Lessons that changed the skill: a template names no project, path, issue, sha, date or URL; a budget is set after the floor is measured, not before (three budgets were raised); a rule cut as a duplicate lives in the file a lane loads first; the Cleanup line pastes ls, never asserts; an audit per round, not per project.

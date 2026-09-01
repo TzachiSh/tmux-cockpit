@@ -1,6 +1,8 @@
 # Findings ledger: keep / improve / remove / add
 
-Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute lane or a command; YELLOW = plausible or refute-lane tightened; RED = refuted or a defect with no fix yet. Line numbers are the 10:03 SKILL.md / 10:00 templates.md / 10:15 gates.md (V1 shift applied).
+Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = confirmed by an independent refute lane, or by a command anyone can re-run; YELLOW = plausible or refute-lane tightened; RED = refuted or a defect with no fix yet. Line numbers are the 10:03 SKILL.md / 10:00 templates.md / 10:15 gates.md (V1 shift applied).
+
+Not every finding became a row: MINOR and NIT findings that no decision or edit rides on were dropped at that threshold, so a finding with no row here was declined, not overlooked.
 
 ## Add (to do)
 
@@ -37,7 +39,7 @@ Consolidated from R1-R6, the rig and V1-V5. Status: GREEN = verified by a refute
 | I1 | description: drop "green/yellow/red" and "merge order" as outputs; add subagents, agent team, worktree; keep "stacked PRs" as a trigger | SKILL.md:3 | MINOR | GREEN | R1 #1, #11, V1 |
 | I2 | community.md:39 OWNERS: reviewer never the author; an OWNERS author approves implicitly (require_self_approval false) | community.md:39 | MAJOR | GREEN | R3 #1, V3 |
 | I3 | community.md:59 drop the Graphite attribution for same-file conflicts; :34 cite arXiv 2607.20189 as Gerrit relation chains, 2.6x slower merge, 1.5x revision rounds | community.md:34, :59 | MAJOR | GREEN | R3 #2, #3, V3 |
-| I4 | 15 further community.md corrections (Nygard date, SRE columns, Chromium, benchstat "at least 10", Gerrit, RFC 3614, PEP 12 quote, PEP 207, Conventional Comments nine labels, seniority, Rust perf, Apache votes, KEP verdict marked as ours) | community.md | MINOR/NIT | GREEN | R3 #4-18, V3 |
+| I4 | 15 further community.md corrections (Nygard date, SRE columns, Chromium, Gerrit, RFC 3614, PEP 12 quote, PEP 207, Conventional Comments nine labels, seniority, Rust perf, Apache votes, KEP verdict marked as ours) | community.md | MINOR/NIT | GREEN | R3 #4-18, V3 |
 | I5 | gates.md:13 "deleting the base closes them" only for an unmerged base; use community.md:31's wording | gates.md:13 | MINOR | YELLOW (V4 refuted the #73 story: a loop retargeted five PRs 82 s before deletion; the why-column stands on GitHub's changelog alone) | R4 #6 |
 | I6 | gates.md why-column: mechanism, not cockpit incident counts | gates.md:5-20 | MINOR | YELLOW | R1 #9 |
 | I7 | rename state 3 "Refute" | SKILL.md:29 | MINOR | GREEN | R1 #10 |

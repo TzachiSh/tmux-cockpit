@@ -2,7 +2,7 @@
 
 Lane R4, read-only, 2026-08-27. SKILL.md mtime Aug 27 10:03. Read: four skill files; 15 memory files; issues 61, 63, 70, 71, 75 (+64/65/66 bodies); PRs 62, 67, 68, 69, 73 (+74, 76, 77 comments, commit lists, timelines); README/verified.md/workflow.md on PR #62.
 
-## A. Lesson ledger (47 rows; PARTIAL/ABSENT only, the 20 PRESENT rows are in the transcript)
+## A. Lesson ledger (23 rows below: 13 PARTIAL, 9 ABSENT, 1 present but ineffective; the 20 PRESENT rows live only in the transcript)
 
 | lesson | source | skill |
 |---|---|---|

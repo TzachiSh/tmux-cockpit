@@ -6,7 +6,7 @@ Five fresh lanes, each told to refute one research lane and default to REFUTED w
 
 | claim | grade | reproduction |
 |---|---|---|
-| GREEN 10/10 | CONFIRMED | 100 cells scored; every GREEN cell agrees |
+| GREEN 10/10 | CONFIRMED | 108 cells scored (5 criteria on S1, S3, S4 and S5, 7 on S2, over 20 runs); every GREEN cell agrees |
 | RED 2/10 | TIGHTENED to RED 0/10 | S5 red a and b fail criterion c (gate lines carry counts, no exit code) and red a writes two intermediate files to the shared scratch dir before feeding them to gh. Orchestrator accepts the stricter reading; rig.md totals corrected |
 | S1 red b criterion a | TIGHTENED | refuses the LGTM but asks no reviewer for a verdict at a sha; only the CI URL request carries a sha. Orchestrator's 1 stands as borderline |
 | "the control does not fail on the piped exit code, the false fail-first, or the report file" | TIGHTENED | true for the first two. For the report file, the control sends text but leaves intermediates in the shared scratch dir; and the RED arm most likely had this project's MEMORY.md in context (three RED answers cite ~/.cache/cockpit-wt and "lane name + $$", which are memory-index rules). The baseline is clean of the skill (0/10 read it, 0/10 used the Skill tool) but not of the house rules. Shape criteria (verdict at sha, severities, dated decision list, exit codes) are where RED failed and the memory does not carry those |
