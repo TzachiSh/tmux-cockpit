@@ -807,16 +807,18 @@ is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
 # @cockpit_rewake_cap, and a Stop with stop_hook_active:false (a fresh user
 # turn) resets the count. `--concede` ends the next turn on the agent's say-so.
 RGACT=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RGPAY" > "$RGACT"
-RGLOOP="$RGSTATE/tmux-cockpit/review/loop-${RGAP#%}"
+RGLOOP="$RGSTATE/tmux-cockpit/review/loop-${RGAP#%}"; RGCF="$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
 rg_run "$RGACT"; rg_run "$RGACT"
 is "two rewakes under a cap of 3 pass through silently" "" "$(cat "$RGSTATE/out")"
 is "and the pane's counter reads 2" "2" "$(cat "$RGLOOP" 2>/dev/null)"
+"$TMUX_REAL" -L "$RG" set-option -pu -t "$RGAP" @cockpit_review >/dev/null 2>&1   # cleared: the ◆ below can then only be the capping Stop's
 rg_run "$RGACT"; is "the third rewake exits 0" "GRC=0" "$(rg_rc)"
 case "$(cat "$RGSTATE/out")" in
     *'"continue":false'*'"stopReason":"'*'3 '*) ok "and ends the turn: continue:false, the count in the reason" ;;
     *) bad "and ends the turn: continue:false, the count in the reason" '"continue":false ... 3' "$(cat "$RGSTATE/out")" ;;
 esac
+is "and a turn cut short still flags ◆ on the unreviewed diff" "pending" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review)"
 is "the counter is gone once the cap fired" "absent" "$([ -e "$RGLOOP" ] && echo present || echo absent)"
 rg_run "$RGACT"; is "one rewake after the cap starts a new count, silently" "" "$(cat "$RGSTATE/out")"
 rg_run "$RGPAY"; is "a Stop with stop_hook_active:false resets the count" "absent" "$([ -e "$RGLOOP" ] && echo present || echo absent)"
@@ -834,12 +836,23 @@ is "and stderr stayed empty through the cap and the concession" "" "$(cat "$RGST
 # --concede is a foreground call, not a hook: it confirms, or fails out loud.
 is "--concede confirms on stdout" "concession recorded; your next turn ends here, with that line as the reason" \
    "$(TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'again')"
-is "--concede outside a tmux pane fails, not silently" "1" "$(TMUX_PANE='' XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'x' 2>/dev/null; echo $?)"
+TMUX_PANE='' XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'x' >/dev/null 2>"$RGSTATE/cerr"
+is "--concede outside a tmux pane fails, not silently" "1" "$?"
+is "and says so on stderr" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
 # A concession an hour old is a killed agent's, or a pane id reused after a
 # server restart: dropped, never fired on whoever holds the id now.
-touch -d '-2 hours' "$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}"
+touch -d '-2 hours' "$RGCF"
 rg_run "$RGPAY"; is "a stale concession does not end the turn" "" "$(cat "$RGSTATE/out")"
-is "and is dropped" "absent" "$([ -e "$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}" ] && echo present || echo absent)"
+is "and is dropped" "absent" "$([ -e "$RGCF" ] && echo present || echo absent)"
+# A concession with no line is the one case that must not go through: the write
+# below it expands $2 under set -u, which kills the shell before any handler.
+TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede >/dev/null 2>"$RGSTATE/cerr"
+is "--concede with no line fails" "1" "$?"
+is "and says so on stderr, not silently" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
+TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede '' >/dev/null 2>"$RGSTATE/cerr"
+is "--concede with an empty line fails the same way" "1" "$?"
+is "and says so on stderr too" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
+is "and neither armed a reasonless concession" "absent" "$([ -e "$RGCF" ] && echo present || echo absent)"
 # 0 disables: eleven rewakes, one past the default, and nothing fires; then
 # with the option unset the twelfth trips the default of 10.
 "$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 0 >/dev/null 2>&1
@@ -851,6 +864,35 @@ rg_run "$RGACT"
 case "$(cat "$RGSTATE/out")" in
     *'"continue":false'*'12 stop-hook rewakes'*'@cockpit_rewake_cap 10'*) ok "the option unset, the default of 10 fires on the next rewake" ;;
     *) bad "the option unset, the default of 10 fires on the next rewake" 'continue:false ... 12 ... cap 10' "$(cat "$RGSTATE/out")" ;;
+esac
+# An absurd cap is not a disabled one: past intmax `[ -gt ]` errors out, which
+# left the cap off and a shell error on the hook's stderr.
+printf '9' > "$RGLOOP"
+"$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 99999999999999999999 >/dev/null 2>&1
+rg_run "$RGACT"
+is "an oversized cap leaves no shell error on stderr" "" "$(cat "$RGSTATE/err")"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*'@cockpit_rewake_cap 10'*) ok "and falls back to the default of 10, like any other unusable value" ;;
+    *) bad "and falls back to the default of 10, like any other unusable value" 'continue:false ... cap 10' "$(cat "$RGSTATE/out")" ;;
+esac
+# A review queued while the agent worked outlives a capping Stop: ending the
+# turn skips the drain, so it is still armed for the Stop after the next prompt.
+rg_run "$RGPAY"
+printf 'Code review from the human\n\nSPOOL-SURVIVES\n' > "$RGSTATE/spool2.md"
+"$TMUX_REAL" -L "$RG" set-option -p -t "$RGAP" @cockpit_review_spool "$RGSTATE/spool2.md" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 1 >/dev/null 2>&1
+rg_run "$RGACT"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*) ok "a capping Stop ends the turn with a review still queued" ;;
+    *) bad "a capping Stop ends the turn with a review still queued" '"continue":false' "$(cat "$RGSTATE/out")" ;;
+esac
+is "and the spool stays armed" "$RGSTATE/spool2.md" "$("$TMUX_REAL" -L "$RG" show-option -pqv -t "$RGAP" @cockpit_review_spool)"
+is "and its file is untouched" "present" "$([ -e "$RGSTATE/spool2.md" ] && echo present || echo absent)"
+"$TMUX_REAL" -L "$RG" set -gu @cockpit_rewake_cap >/dev/null 2>&1
+rg_run "$RGPAY"
+case "$(cat "$RGSTATE/out")" in
+    *SPOOL-SURVIVES*) ok "and the Stop after the human's next prompt hands it over" ;;
+    *) bad "and the Stop after the human's next prompt hands it over" "SPOOL-SURVIVES" "$(cat "$RGSTATE/out")" ;;
 esac
 rg_run "$RGPAY"                 # a fresh turn: resets the count for the stdin cases below
 # The two stdin cases, both driven by a background writer on a FIFO. A pipeline

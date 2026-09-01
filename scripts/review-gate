@@ -44,6 +44,9 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # a silent no-op here would leave the agent in exactly the loop it is escaping.
 if [ "${1:-}" = --concede ]; then
     case "$pane" in %[0-9]*) ;; *) echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1 ;; esac
+    # Before the write, whose own ${2} expansion would abort the script under
+    # set -u -- inside a 2>/dev/null group, so even bash's complaint is eaten.
+    [ -n "${2:-}" ] || { echo "review-gate --concede: needs a line saying what blocks the goal; nothing recorded" >&2; exit 1; }
     { mkdir -p -- "$state" && printf '%s' "${2:0:400}" > "$state/concede-${pane#%}"; } 2>/dev/null \
         || { echo "review-gate --concede: cannot write $state; nothing recorded" >&2; exit 1; }
     echo "concession recorded; your next turn ends here, with that line as the reason"
@@ -210,7 +213,9 @@ fi
 if [ "$active" = true ]; then
     n=$(cat -- "$loop" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
     n=$((n + 1)); mkdir -p -- "$state" 2>/dev/null; printf '%s' "$n" > "$loop"
-    cap=$(tmux show-option -gqv @cockpit_rewake_cap 2>/dev/null); case "$cap" in ''|*[!0-9]*) cap=10 ;; esac
+    # 10 digits or more falls back like any other unusable value: past intmax
+    # `[ -gt ]` errors instead of comparing, which would leave the cap off.
+    cap=$(tmux show-option -gqv @cockpit_rewake_cap 2>/dev/null); case "$cap" in ''|*[!0-9]*|??????????*) cap=10 ;; esac
     [ "$cap" -gt 0 ] && [ "$n" -ge "$cap" ] && \
         end_turn "$n stop-hook rewakes in one turn (@cockpit_rewake_cap $cap); /goal clear ends the goal, a new prompt resumes it"
 else
