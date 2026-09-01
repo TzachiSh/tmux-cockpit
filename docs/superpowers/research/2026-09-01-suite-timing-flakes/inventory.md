@@ -74,7 +74,17 @@ Five classes, defined by how the clock reaches the verdict:
 
 748 assertion calls in tests/run.sh. 33 textual `timeout N` occurrences, of which 7 are comment prose (3209, 4010, 5748, 5749, 7072, 7074, 7124) and 26 execute. 255 `sleep` tokens, of which 79 are long-lived pane fixtures (`sleep 300/3600/30/8` holders) and 56 are poll cadence; roughly 119 are fixed waits gating an assertion. By class: 14 wall-budget with the timeout as the verdict, 13 wall-budget measured against `SECONDS` / `date +%s%N` / `EPOCHREALTIME`, 8 timeout-kill cascade blocks, 2 mouse-timing, and the ~119 fixed waits, 110 of which sit within three lines of an observation feeding an assertion.
 
-Distinct assertions reported red across the 11 comments: 20 (19 named plus the one unnamed `--loop` keystroke assertion from PR #77). Per class: 8 wall-budget timeout-verdict, 2 timeout-kill cascade, 2 mouse-timing, 7 sleep-then-assert (counting the two `--loop` candidates as one), 1 fitting no timing class. The PR #77 comment adds cites, not new distinct assertions, for four of the wall budgets.
+Distinct assertions reported red across the 11 comments: **18**, recounted off the "yes" rows of the table above, which name 17 between them, plus the one unnamed `--loop` keystroke assertion from PR #77 (rows 4931 and 4942 are the two candidates for it and count as one). Per class, each line listed so the split can be audited against the table:
+
+- **wall-budget (timeout verdict), 6**: 1219, 1655, 2888, 3843, 4411, 4480.
+- **timeout-kill cascade, 3**: 2895, 4496, 4497.
+- **mouse-timing, 2**: 2088 (the `bad` at 2092 is the same assertion's other branch), 2297.
+- **sleep-then-assert, 6**: 1992, 2814, 2820, 3521, 5546 (an unpolled read after a poll on a different file), plus the unnamed `--loop` keystroke assertion.
+- **fits no timing class, 1**: 3588.
+
+The PR #77 comment adds cites, not new distinct assertions, for four of the wall budgets. Its one non-budget failure is the `--loop` keystroke assertion counted above.
+
+18 is the number of record for this research. `verified.md` re-derived the list from the issue comments rather than from this table and reported 18 named plus the unnamed one; the difference is one assertion string, and the table above is what every count here is taken from.
 
 ## Fits no class
 

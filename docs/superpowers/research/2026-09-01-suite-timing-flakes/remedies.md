@@ -1,6 +1,6 @@
 # r3-75: remedy options per flake class, with prices
 
-Lane r3-75, issue #75. Line numbers below are master at a77f882; the numbers in the issue comments have drifted.
+Lane r3-75, issue #75. Line numbers below are master at 6c6424a; the numbers in the issue comments have drifted.
 
 ## Measurements (this box: 12 cores, tmux 3.7c, load 2.0 at rest)
 
@@ -8,19 +8,22 @@ Lane r3-75, issue #75. Line numbers below are master at a77f882; the numbers in 
 |---|---|---|
 | `tmux-review --lines` on 4900 rows (run.sh:4410, budget 0.2 s) | wall 150 ms, n=7 | wall 427 ms at 12 spinners, 653 ms at 24 (4.35x) |
 | same, CPU (user+sys), bare command | 111 ms (range 93-135) | 103 ms at 12 spinners, 112 ms at 24 (1.01x) |
-
-(Corrected after the refute pass: the first draft's 168-197 ms idle CPU was the `| grep -c .` pipeline form, not the bare command the suite times.)
 | `tmux-branch` 5000 branches (run.sh:1653, budget 2 s) | wall 346-618 ms, n=5 | not sampled |
 | `--lines` 800 untracked (run.sh:3841, budget 1 s) | wall 228-272 ms, n=5 | not sampled |
-| `--preview-diff` 400k lines (run.sh:2884, budget 2 s) | wall 0.55 s, maxRSS 75.7 MB, n=1 cold | not sampled |
+| `--preview-diff` 400k lines (run.sh:2885, budget 2 s) | wall 0.55 s, maxRSS 75.7 MB, n=1 cold | not sampled |
+| `tmux-open-path --dry-run` on a 4000-token line (run.sh:1216, budget 0.6 s) | not measured | not sampled |
+
+(Corrected after the refute pass: the first draft's 168-197 ms idle CPU was the `| grep -c .` pipeline form, not the bare command the suite times.)
 
 Two facts drive everything. First, **the 4900-row budget has 1.23-1.4x headroom, not the 3x its own comment claims** (run.sh:4386 says "the rig's convention, ~3x the expected time"). The comment's 59-74 ms was the inner row build; `timeout` sees the whole script. That is why this assertion is the most-reported one in #75. Second, **wall time inflated 4.35x under load while CPU time did not move at all: 111 ms idle, 112 ms at 24 spinners, 1.01x.** CPU is not merely more stable than wall time here, it is flat, which is a stronger case for a1 than the first draft made. And the budget does not need a stress rig to redden: three spinners, a quarter of `nproc`, already fail it 1/10 with a 0.175 s wall mean; 12 spinners fail 10/10. A single peer build is enough.
 
 ## Class (a): wall-clock perf budgets
 
-**a1. CPU time instead of wall time.** `TIMEFORMAT='%U %S'; { time cmd; } 2>&1 | awk '{print ($1+$2 < B)}'`. Bash's `time` sums waited-for descendants, confirmed above (CPU 0.168 exceeded wall 0.143 on a pipeline). Diff: about 4 lines per site, 4 sites. Still catches the regression: yes for every one of these, because each pre-fix build burned CPU (fork per row, fork per branch, O(n^2) append, per-file fork walk), not wall time waiting. At load 15+: the 1.27x inflation I measured means a 3x margin holds. Pristine box: unchanged. Caveat: CPU is blind to a regression that adds *waiting*; none of these four are that shape.
+**a1. CPU time instead of wall time.** `TIMEFORMAT='%U %S'; { time cmd; } 2>&1 | awk '{print ($1+$2 < B)}'`. Bash's `time` sums waited-for descendants, confirmed above (CPU 0.168 exceeded wall 0.143 on a pipeline). Diff: about 4 lines per site, 5 sites. Still catches the regression: yes for every one of these, because each pre-fix build burned CPU (fork per row, fork per branch, O(n^2) append, per-file fork walk, uncapped per-token loop), not wall time waiting. At load 15+: CPU did not move at all, 111 ms idle against 112 ms at 24 spinners (1.01x), so a 3x margin over the idle CPU maximum holds under any load this box can reach. Pristine box: unchanged. Caveat: CPU is blind to a regression that adds *waiting*; none of these five are that shape.
 
-**a2. Pin the count, not the clock.** The repo already does this three times: run.sh:8385 ("Counting curl, not timing it... a fork count, never a clock"), run.sh:7154 ("one fork per pane and five per dirty root"), run.sh:508 (PATH shim logging one line per call). Diff: 10-20 lines per site. Fits `800 untracked files` cleanly (the regression is four `git` forks per file, and a PATH shim over `git` counts them). **Rejected for 5000 branches and 4900 rows**: for 5000 branches the regression was `$(printf ...)`, a subshell fork of a bash builtin (commit 50eb7ed). For 4900 rows the fix commit 30ba10f removed `$(( ))` arithmetic and bash loop passes over the rows; the code already used `printf -v`, so there was never a fork here at all, only interpreter passes. The rejection holds a fortiori: no execve either way, so no PATH shim can count anything, and there is no portable fork counter. This is the strongest rule-honoring candidate but it only reaches one of the four sites.
+The fifth site is **run.sh:1219**, "a 4000-token clicked line is bounded, not just slow" (`timeout 0.6` at 1216, red once in the issue body). It is a wall budget of exactly the same shape as the other four and joins a1 on the same terms; nothing new was measured for it here, so a fix lane must take its own idle CPU reading before picking its budget.
+
+**a2. Pin the count, not the clock.** The repo already does this three times: run.sh:8385 ("Counting curl, not timing it... a fork count, never a clock"), run.sh:7154 ("one fork per pane and five per dirty root"), run.sh:508 (PATH shim logging one line per call). Diff: 10-20 lines per site. Fits `800 untracked files` cleanly (the regression is four `git` forks per file, and a PATH shim over `git` counts them). **Rejected for 5000 branches and 4900 rows**: for 5000 branches the regression was `$(printf ...)`, a subshell fork of a bash builtin (commit 50eb7ed). For 4900 rows the fix commit 30ba10f removed `$(( ))` arithmetic and bash loop passes over the rows; the code already used `printf -v`, so there was never a fork here at all, only interpreter passes. The rejection holds a fortiori: no execve either way, so no PATH shim can count anything, and there is no portable fork counter. This is the strongest rule-honoring candidate but it only reaches one of the five sites.
 
 **a3. Raise the budget.** Diff: one digit. Still catches: 0.2 already "is not a proof" by its own comment (run.sh:4394, rejects the bash build 2 runs in 3); doubling it makes it decorative. At load 15+: still red, because the inflation is unbounded, only less likely. Reject as a solution, accept only as an interim.
 
@@ -28,21 +31,21 @@ Two facts drive everything. First, **the 4900-row budget has 1.23-1.4x headroom,
 
 **Rejected: scaling by /proc/loadavg or nproc.** It reintroduces the clock and adds a second thing to get wrong; a budget that moves is a budget nobody can reason about, and loadavg lags by a minute so it under-reports a spike that just started.
 
-**Rejected: a separate serial gate with a loadavg floor.** `# group: serial` already exists (par.sh:102-113) and already runs clock blocks alone at J=1. It does nothing for *peer* load, which is #75. A refusal floor turns a flake into a skip, so the gate stops gating exactly when the box is busy, which is when people push. Worth noting separately: **`5000 branches`, `800 untracked` and the 400k-diff block carry no `# group:` marker at all**, so each runs in a parallel shard today and contends with the suite itself. Adding `# group: serial` above run.sh:1622, run.sh:2865 and run.sh:3822 is one line each and is worth doing whichever remedy wins.
+**Rejected: a separate serial gate with a loadavg floor.** `# group: serial` already exists (par.sh:102-113) and already runs clock blocks alone at J=1. It does nothing for *peer* load, which is #75. A refusal floor turns a flake into a skip, so the gate stops gating exactly when the box is busy, which is when people push. Worth noting separately: **`5000 branches`, `800 untracked` and the 400k-diff block carry no `# group:` marker at all**, so each runs in a parallel shard today and contends with the suite itself. Adding `# group: serial` above run.sh:1622, run.sh:2828 and run.sh:3822 is one line each and is worth doing whichever remedy wins. (A marker must sit directly above the block title `par.sh` splits on: 2828 is the title of the 400k-diff block, while 2865 is mid-block and would group the block after it and leave the 400k one bare.)
 
 ## Class: the 0.15 s timeout that cascades
 
-Site run.sh:4479, `timeout 0.15 ... > "$STATE/rows.cached"`. On timeout the file is empty and run.sh:4494 (`cmp` cached against fresh) and run.sh:4495 (`500 rows are marked`) fail from it. Three reds, one cause.
+Site run.sh:4479, `timeout 0.15 ... > "$STATE/rows.cached"`. On timeout the file is empty and run.sh:4496 (`cmp` cached against fresh) and run.sh:4497 (`500 rows are marked`) fail from it. Two reds, one cause. The sentinel assertion at 4489-4494 re-runs `--rows` and greps stdout, never reading `rows.cached`, so it cannot cascade.
 
-**c1. Demote to a hang guard, keep the sentinel.** `timeout 10`, drop the timing claim. Precedent is already in the file: run.sh:5748 records `timeout 0.05` becoming `timeout 5` plus a planted cache sentinel, same failure mode, issue #36. This block already has its sentinel at run.sh:4486, and its own comment (run.sh:4483) admits 0.15 "no longer separates cached from uncached, only awk marking from bash marking". Diff: one digit plus 3 comment lines. Catches the regression: yes, the sentinel is the real proof. Load 15+: green. Pristine: unchanged. **Take it.**
+**c1. Demote to a hang guard, keep the sentinel.** `timeout 10`, drop the timing claim. Precedent is already in the file: run.sh:5748 records `timeout 0.05` becoming `timeout 5` plus a planted cache sentinel, same failure mode, issue #36. This block already has its sentinel at run.sh:4488, and its own comment (run.sh:4482) admits 0.15 "no longer separates cached from uncached, only awk marking from bash marking". Diff: one digit plus 3 comment lines. Catches the regression: yes, the sentinel is the real proof. Load 15+: green. Pristine: unchanged. **Take it.**
 
-**c2. Guard dependents on the exit code so they skip.** About 6 lines. Turns three reds into one red plus two skips. Honest, but leaves the false red. Good hygiene rule, not the fix.
+**c2. Guard dependents on the exit code so they skip.** About 6 lines. Turns two reds into one red plus one skip. Honest, but leaves the false red. Good hygiene rule, not the fix.
 
 **Rejected: retry once.** Halves the false failures and the true detections together, and hides the cascade instead of removing it.
 
 ## Class: fixed sleep then capture-pane
 
-Site run.sh:1989, `sleep 2` then `capture-pane` asserting `● main`.
+Site run.sh:1988, `sleep 2` then `capture-pane` asserting `● main`.
 
 **b1. `until_cap`,** which exists at run.sh:105: `until_cap "$SOCK5" "$KP" '*● main*' || bad ...`. Diff: 2 lines, minus the sleep. Catches the regression: yes, an unmarked list never matches inside 4 s. Load 15+: green. Pristine: faster than today. Sweep every `sleep N; capture-pane` pair, not just this one.
 
@@ -58,13 +61,15 @@ Site run.sh:2081-2089. Two independent causes, both need fixing.
 
 ## Decision list
 
-1. **CPU budgets (a1) or counts and sentinels?** Default: CPU at all four sites; counts reach only one. Needs an explicit rule amendment that CPU time is not a clock.
+1. **CPU budgets (a1) or counts and sentinels?** Default: CPU at all five sites; counts reach only one. Needs an explicit rule amendment that CPU time is not a clock.
 2. **What margin?** Default 3x idle CPU max, so 0.40 s at run.sh:4410 against 135 ms measured (the first draft said 0.6 s against 197 ms; that was the pipeline form's CPU).
 3. **maxRSS for the 400k-diff site?** Default yes, with `skip_` when `/usr/bin/time` is absent: 191 MB to 76 MB, load-independent.
 4. **0.15 s becomes a hang guard?** Default yes, per run.sh:5748.
 5. **Sweep or point fix for the sleeps?** Default sweep, plus the three missing `# group: serial` markers.
 
-## Addendum: the two sites the issue title names
+## Addendum: the two red sites that are not budgets
+
+Both prescriptions below stand up a tmux server. Run them only on a private `tmux -L <socket>` of your own; never against the attached server.
 
 **1. run.sh:5546 `the store itself is gone`.** Line 5545 polls `delivered.md` with `until_file`, then 5546 bare-tests `$RASESS/comments.md`. Deliver writes the archive and unlinks the store; nothing makes those atomic, so the poll can return between them and the store is still present.
 
