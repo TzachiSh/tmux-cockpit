@@ -36,7 +36,7 @@ The first row is the screenshot. The second is the one cockpit can build. The th
  ↵ close
 ```
 
-Four rows added: `since` on `state`, `doing`, `said`, `asked`, and the one-line `ask it` pointer. Everything else is the existing screen. `since` and the tool age come from the transcript timestamps; a `doing` row older than a minute with `state running` is the "is it stuck" answer without asking anyone.
+Four rows added: `since` on `state`, `doing`, `said`, `asked`, and the one-line `ask it` pointer. Everything else is the existing screen. `since` and the tool age come from the transcript timestamps; a `doing` row older than a minute with `state running` is the "is it stuck" answer without asking anyone, with one caveat: a pending permission prompt is byte-identical to a running tool in the transcript (claude-code.md:47), so the row cannot tell stuck from waiting-on-permission and `state` remains the one that can.
 
 ### `prefix r`, the fleet row
 
@@ -110,7 +110,7 @@ The flow: main agent is on a bug, its suite is taking minutes, the human presses
  7s · $0.05 · ↵ close · a ask again
 ```
 
-One `read -r -p`, the transcript tail through jq, one tool-less haiku, print, `read`. Same shape as `prefix f`'s two-line popup and `prefix i`'s `read -r _`. If the pane is idle the popup should say so and point at typing into it instead.
+The `7s · $0.05` in the footer is the one measured run (n=1, a second pending; claude-code.md:68 flags the same for the fork spike), not a typical figure, and decision 5 turns on it. One `read -r -p`, the transcript tail through jq, one tool-less haiku, print, `read`. Same shape as `prefix f`'s two-line popup and `prefix i`'s `read -r _`. If the pane is idle the popup should say so and point at typing into it instead.
 
 ## 3. The flow, end to end
 

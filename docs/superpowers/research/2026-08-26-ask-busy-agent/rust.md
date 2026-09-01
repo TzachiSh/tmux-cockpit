@@ -6,7 +6,7 @@ The owner asked "what about Rust?" after [tui.md](tui.md) measured Go. Same meth
 
 | | Ratatui | Bubble Tea | bash + fzf `--listen` |
 |---|---|---|---|
-| code | 198 lines | 383 lines | 8 lines |
+| code | 263 lines | 383 lines | 8 lines |
 | toolchain | cargo 1.98, installed here | Go, not installed (70 MB SDK to scratch) | fzf 0.44, installed |
 | deps | ratatui 0.30.2, ansi-to-tui 8, serde_json; 187 crates in the lockfile | bubbletea v1.3, lipgloss; ~20 modules | curl |
 | clean release build | 32 s (lto, strip, opt-level z) | 5.5 s fetch + 9 s | none |

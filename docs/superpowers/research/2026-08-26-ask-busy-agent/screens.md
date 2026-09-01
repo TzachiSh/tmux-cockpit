@@ -1,6 +1,6 @@
 # The five #54 screens, designed
 
-Design lane, 2026-08-26, read-only. Refines the drafts in [ux.md](ux.md) §2 with a shared grid, colour roles, glyph tiers, truncation rules and 80/120-column mockups. The fzf notes target 0.74.3 (latest) with a plain tier; see the #58 audit ([pickers.md](../2026-08-26-ui-audit/pickers.md)) for the shared theme.
+Design lane, 2026-08-26, read-only. Refines the drafts in [ux.md](ux.md) §2 with a shared grid, colour roles, glyph tiers, truncation rules and 80/120-column mockups. The fzf notes target 0.74.3 (latest) with a plain tier; see the #58 audit ([pickers.md](../2026-08-26-ui-audit/pickers.md), lands with PR #59) for the shared theme.
 
 ## 0. Shared style guide
 
@@ -103,7 +103,7 @@ Three structural changes: the state word becomes a 2-cell glyph pair (status gly
 
 fzf options and first versions: `--highlight-line` 0.52, `--tmux` 0.53, `--wrap`/`--wrap-sign` 0.54, `--gap` 0.56, `--gap-line` 0.58, `--style=full` and the `*-border`/`*-label` set 0.58, `--accept-nth` 0.60, `--ghost` 0.61, `--footer` 0.63, `--info=inline-right` 0.42 (in use), `pos()`/`start:` 0.36 (in use). Two notes: 0.58 made a single-character `--delimiter` a plain string (the tab at :2248 is unaffected); 0.66 with `--tmux` makes an explicit `--border` the only one drawn, so pair `--tmux` with `--style=full` if used.
 
-`--tmux` (0.53+) would replace the display-popup wrapper for this key: the bind becomes `run-shell "'$Q_REVIEW' -p '#{pane_id}'"`, which expands `#{pane_id}` on the source pane directly (the pattern cockpit.tmux:279-281 documents for `@cockpit_review_window`), and the `$SRC_PANE` dance disappears; the popup title is lost, `--input-label` / `--list-label` carry it. Below 0.53 `display-popup` as today. (The pickers lane recommends against `--tmux`; owner decision 2 in the #58 README.)
+`--tmux` (0.53+) would replace the display-popup wrapper for this key: the bind becomes `run-shell "'$Q_REVIEW' -p '#{pane_id}'"`, which expands `#{pane_id}` on the source pane directly (the pattern cockpit.tmux:279-281 documents for `@cockpit_review_window`), and the `$SRC_PANE` dance disappears; the popup title is lost, `--input-label` / `--list-label` carry it. Below 0.53 `display-popup` as today. (The pickers lane recommends against `--tmux`; owner decision 2 in the #58 README, which lands with PR #59.)
 
 Column budget: R = floor(client_width × 0.7) − 6 (fzf popup border 2 + list border 2 + pointer gutter 2): 50 at 80 columns, 77 at 120, 106 at 160.
 

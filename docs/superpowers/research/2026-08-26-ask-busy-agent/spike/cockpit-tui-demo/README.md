@@ -2,8 +2,10 @@
 
 A Ratatui demo of tmux-cockpit's #54 screens, built to `screens.md` and to the
 contract in `tui.md` §6: the binary reads tmux and the transcripts, decides, and
-prints an action; a shell wrapper performs it. Nothing here writes to a tmux
-server.
+prints an action; a shell wrapper performs it. The one exception is the push
+channel: `fleet` publishes its own pid as `@cockpit_tui_pid` on whatever
+`COCKPIT_TMUX` names (the live socket if it is unset) and unsets it on exit.
+Set `COCKPIT_READONLY=1` to skip that write, as the C twin does.
 
     cargo build --release
     ./demo.sh            # a private `tmux -L demo` server with four fake agents
@@ -21,6 +23,7 @@ server.
 | `COCKPIT_TMUX` | the tmux command, e.g. `tmux -L demo -f /dev/null` |
 | `COCKPIT_ACTION` | file the chosen action is written to; without it, stdout |
 | `COCKPIT_LOG` | append tick timings here |
+| `COCKPIT_READONLY=1` | never write to the server: skips publishing `@cockpit_tui_pid` |
 | `COCKPIT_ASK_STUB=1` | stub the observer instead of calling claude |
 | `COCKPIT_GLYPHS=ascii` | the ascii glyph tier |
 

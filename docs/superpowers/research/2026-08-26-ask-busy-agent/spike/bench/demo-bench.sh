@@ -7,9 +7,10 @@ BIN=$SCRATCH/demo-target/release/cockpit-tui
 T=(tmux -L bench -f /dev/null)
 
 "${T[@]}" kill-server 2>/dev/null || true
-# real repo paths, so loc and ± are real git output rather than a fixture
-R1=/home/tzachi/.tmux/plugins/tmux-cockpit
-R2=/home/tzachi/.cache/cockpit-wt/issue-54-research
+# real repo paths, so loc and ± are real git output rather than a fixture; this
+# checkout, found from the script, since the research worktree is deleted on merge
+R1=$(cd "$D/../../../../../.." && pwd)
+R2=$R1
 "${T[@]}" new-session -d -s demo -x 200 -y 50 -n openvpn -c "$R1" "printf 'sudo openvpn --config /etc/openvpn/work.conf\n\n> Do you want to proceed?\n  1. Yes\n  2. No\n'; sleep 100000"
 "${T[@]}" new-window  -t demo -n build  -c "$R2" "printf '\033[32m$ make check\033[0m\n1001 assertions, 0 failures\nshellcheck cockpit.tmux ... ok\n'; sleep 100000"
 "${T[@]}" new-window  -t demo -n review -c "$R1" "printf '\033[33m● reviewing\033[0m branch fleet-timing\n 12 files, +12 -4\n'; sleep 100000"

@@ -19,10 +19,24 @@ extern "C" fn on_usr1(_: libc::c_int) {
 
 pub struct Push;
 
+/// The C twin's guard (`spike/c-demo/fleet.c:261`): never set-option on a server
+/// we only read. Without it a screenshot run against the live socket leaves a
+/// dead `@cockpit_tui_pid` behind, which is how competition.md:33 happened.
+fn publish(on: bool) {
+    if std::env::var_os("COCKPIT_READONLY").is_some() {
+        return;
+    }
+    if on {
+        tmux(&["set-option", "-g", "@cockpit_tui_pid", &std::process::id().to_string()]);
+    } else {
+        tmux(&["set-option", "-gu", "@cockpit_tui_pid"]);
+    }
+}
+
 impl Push {
     pub fn start() -> Self {
         unsafe { libc::signal(libc::SIGUSR1, on_usr1 as *const () as libc::sighandler_t) };
-        tmux(&["set-option", "-g", "@cockpit_tui_pid", &std::process::id().to_string()]);
+        publish(true);
         Self
     }
 
@@ -35,6 +49,6 @@ impl Push {
 
 impl Drop for Push {
     fn drop(&mut self) {
-        tmux(&["set-option", "-gu", "@cockpit_tui_pid"]);
+        publish(false);
     }
 }

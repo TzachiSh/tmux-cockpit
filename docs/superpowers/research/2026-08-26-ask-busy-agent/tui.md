@@ -23,6 +23,8 @@ Both list cockpit's agent panes from the live server (read-only), with the state
 | filter / multi-select / mouse wheel | none written | free |
 | what the human sees | the same rows | the same rows |
 
+The fzf column was measured on 2026-08-26 against fzf 0.44.1, the version installed then; the box was upgraded to 0.74.3 before the 2026-08-27 lanes, which is the version candidates.md and screens.md quote. The gap matters for one row: `--listen` on 0.44 is TCP only, and the mode-0600 unix socket the recommendation now asks for needs 0.74.
+
 The Bubble Tea one took one build to run and one fix to render right. It is not hard. It is also not different on screen.
 
 ## 2. What the five Bubble Tea supervisors cost their authors

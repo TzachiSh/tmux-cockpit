@@ -1,6 +1,6 @@
 # Every other candidate, spiked
 
-Opus lane, 2026-08-27. The same screen as the fzf, Bubble Tea and Ratatui spikes (rows with glyph/id/window/title/doing/age, a `capture-pane -ep` preview of the selection, j/k, ↵ prints the pane id and exits, q, 1 s refresh), each fed by the Rust `--rows` binary (6 ms headless) so every spike is only the UI. Private tmux servers throughout; popup runs used a nested private server so a real client existed. Bytes/tick = what the app writes to its pty per second (`pipe-pane`, 10 s); execs/s from `strace -f -e execve`. Sources under the session scratch dir (`more/`), not committed.
+Opus lane, 2026-08-27. The same screen as the fzf, Bubble Tea and Ratatui spikes (rows with glyph/id/window/title/doing/age, a `capture-pane -ep` preview of the selection, j/k, ↵ prints the pane id and exits, q, 1 s refresh), each fed by the Rust `--rows` binary (6 ms headless) so every spike is only the UI. Private tmux servers throughout; popup runs used a nested private server so a real client existed. Bytes/tick = what the app writes to its pty per second (`pipe-pane`, 10 s); execs/s from `strace -f -e execve`. Sources under the session scratch dir (`more/`), not committed: the table below is a record of what was measured, not a harness anyone can re-run from this repo.
 
 ## Table (3 agents, 160×40, app process only)
 
