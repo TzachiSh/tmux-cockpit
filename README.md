@@ -228,7 +228,7 @@ from `examples/claude-hooks.json` by hand:
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `PreToolUse` (`Bash`) | `review-gate --pretool` — while a side fix runs, denies the command pattern the human named; one stat otherwise |
 | `Stop` | `done` |
-| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; while a side fix is alive for this pane, holds here first (`@cockpit_hold`) and hands over a one-line result when it ends; then hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once) |
+| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; while a side fix is alive for this pane, holds here first (`@cockpit_hold`) and hands over a one-line result when it ends; then hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
@@ -1062,6 +1062,31 @@ pane) on a scratch repo and a private tmux server:
 - Twice, a fixer whose `claude` ended its run without a `HANDOVER:` line (it
   backgrounded the command it had been asked to wait for) left the wrapper's
   fallback line, and the main agent resumed on that instead.
+
+## A goal that will not be met
+
+Claude Code's `/goal` is a Stop hook: after every turn an evaluator reads the
+transcript and, unless it judges the condition met, sends the agent back in.
+There is no cap, and the agent has no way to give up; the only exits are the
+evaluator's own "impossible" verdict, which it is told to grant only after
+confirming that itself, and your `/goal clear`. An agent that hit a permission
+it will not route around ends its turn, is told the goal is unmet, ends it
+again, and the pane sits on `running` until you notice (issue #52).
+
+`review-gate` takes two things off that loop, per turn. Each Stop the goal hook
+causes carries `stop_hook_active:true`; the hook counts those per pane and at
+`@cockpit_rewake_cap` (`set -g @cockpit_rewake_cap 10` is the default, `0`
+disables) ends the turn with `continue:false`, which Claude Code honours ahead
+of the goal hook's block (2.1.246: the Stop handler returns on a hook's
+`preventContinuation` before it looks at any blocking error). And the agent
+can concede:
+
+    review-gate --concede "push denied by the permission classifier; needs you"
+
+ends its next turn with that line as the stop reason, whatever the count. The
+`cockpit-concede` skill (installed with the others) tells the agent when. The
+goal itself stays set either way, since only Claude Code can clear it: your
+next prompt resumes it, `/goal clear` ends it.
 
 ## prefix + M — move a window between sessions
 

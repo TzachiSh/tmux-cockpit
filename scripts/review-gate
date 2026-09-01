@@ -34,6 +34,24 @@
 # this script is built to finish in well under one second.
 set -u
 pane=${TMUX_PANE:-}
+state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
+
+# --- --concede <line>: the agent will not meet the active /goal ----------------
+# Claude Code's /goal rewakes the agent on every Stop its evaluator judges not
+# met, with no cap and no way for the agent to give up (issue #52). The line is
+# kept per pane; the next Stop ends the turn with it as the stop reason. Not a
+# hook but a foreground call, so unlike everything below it says what it did:
+# a silent no-op here would leave the agent in exactly the loop it is escaping.
+if [ "${1:-}" = --concede ]; then
+    case "$pane" in %[0-9]*) ;; *) echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1 ;; esac
+    # Before the write, whose own ${2} expansion would abort the script under
+    # set -u -- inside a 2>/dev/null group, so even bash's complaint is eaten.
+    [ -n "${2:-}" ] || { echo "review-gate --concede: needs a line saying what blocks the goal; nothing recorded" >&2; exit 1; }
+    { mkdir -p -- "$state" && printf '%s' "${2:0:400}" > "$state/concede-${pane#%}"; } 2>/dev/null \
+        || { echo "review-gate --concede: cannot write $state; nothing recorded" >&2; exit 1; }
+    echo "concession recorded; your next turn ends here, with that line as the reason"
+    exit 0
+fi
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
 # --- fixer liveness (mirror of tmux-fixer's; a hook fires on every Bash call
@@ -100,7 +118,7 @@ json() {                            # <text> -> the JSON string body
 # fixer and a guard pattern the guarded command is denied with a reason; a
 # deny ends the turn by default (hooks-guide, v2.1.210+), which is the point --
 # no in-turn route-around; the Stop that follows holds and hands over.
-marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
+marker="$state/fixer-${pane#%}"
 if [ "${1:-}" = --pretool ]; then
     [ -f "$marker" ] || exit 0
     sess=$(cat -- "$marker" 2>/dev/null)
@@ -115,7 +133,6 @@ if [ "${1:-}" = --pretool ]; then
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(json "$reason")"
     exit 0
 fi
-
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # The deadline is the BACKSTOP, not the exit: Claude Code keeps a hook's stdin
@@ -126,6 +143,84 @@ here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # read_payload is only ever called once per run now.
 read_payload
 case "$payload" in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) active=true ;; *) active=false ;; esac
+
+# --- 2. the flag, and the two payload fields worth keeping --------------------
+# A function: the end of the script in the normal case, and called from
+# end_turn below so a pane whose turn is cut short still shows ◆, its title
+# and its session id.
+flag_pane() {
+    tx=$(field transcript_path)
+    sid=$(field session_id)
+    title=""
+    if [ -n "$tx" ] && [ -f "$tx" ]; then
+        # The newest ai-title record wins; read from the end (9 ms on a 64 MB
+        # project dir, measured). tac is GNU, tail -r is BSD; neither means no title.
+        rec=$( { tac -- "$tx" 2>/dev/null || tail -r -- "$tx" 2>/dev/null; } | grep -m1 '"ai-title"')
+        case "$rec" in
+            *'"aiTitle"'*) title=${rec#*\"aiTitle\"}; title=${title#*:}; title=${title#*\"}; title=${title%%\"*} ;;
+        esac
+        title=${title//[$'\001'-$'\037']/}
+        title=${title:0:120}
+    fi
+
+    # One read for everything this decides against; one write per value that
+    # actually changed -- every set-option is a redraw.
+    sep=$'\037'
+    cur=$(tmux display-message -p -t "$pane" \
+        '#{@cockpit_review}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_session}' 2>/dev/null)
+    review=${cur%%"$sep"*};  cur=${cur#*"$sep"}
+    title_cur=${cur%%"$sep"*}; sid_cur=${cur#*"$sep"}
+
+    if "$here/tmux-review" --delta "$pane" >/dev/null 2>&1; then want=pending; else want=""; fi
+    if [ "$review" != "$want" ]; then
+        if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
+        else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi
+        "$here/agent-state" recount "$pane"
+    fi
+    # Untrusted strings each get a call of their own (agent-state's rule: a bare
+    # `;` argument splits a tmux command list).
+    [ -n "$title" ] && [ "$title" != "$title_cur" ] && tmux set-option -p -t "$pane" @cockpit_title "$title" 2>/dev/null
+    [ -n "$sid" ]   && [ "$sid"   != "$sid_cur"   ] && tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
+}
+
+# --- the rewake cap ------------------------------------------------------------
+# stop_hook_active:true marks a Stop that a stop hook's block caused. A chain
+# of them is one turn the agent keeps ending and being sent back into; the
+# count lives in a file per pane and a Stop with the flag false (a fresh user
+# turn) drops it. At @cockpit_rewake_cap (default 10, 0 disables) the turn ends
+# here: `continue:false` is honoured before any sibling hook's block, the goal
+# itself stays set (only Claude Code can clear it), and the user's next prompt
+# resumes it. A concession ends the turn on the first Stop, whatever the flag.
+# Ending the turn skips the hold and the drain: a queued review stays armed
+# for the Stop after the human's next prompt, never lost. Two stats on the
+# common Stop, nothing else.
+loop="$state/loop-${pane#%}"
+concede="$state/concede-${pane#%}"
+end_turn() {                                # <reason>  ends the turn, exit 0
+    rm -f -- "$loop" "$concede"
+    tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null   # a hold leaked by a killed poll; section 0's own clear is skipped
+    flag_pane >/dev/null 2>&1
+    printf '{"continue":false,"stopReason":"%s"}\n' "$(json "cockpit: $1")"
+    exit 0
+}
+if [ -f "$concede" ] && [ ! -L "$concede" ]; then
+    if [ -n "$(find "$concede" -mmin -60 2>/dev/null)" ]; then
+        { IFS= read -r why || :; } < "$concede"; why=${why//[$'\001'-$'\037']/}
+        end_turn "the agent conceded the goal: ${why:-no reason given}"
+    fi
+    rm -f -- "$concede"     # an hour old: a killed agent's, or a pane id reused after a server restart
+fi
+if [ "$active" = true ]; then
+    n=$(cat -- "$loop" 2>/dev/null); case "$n" in ''|*[!0-9]*) n=0 ;; esac
+    n=$((n + 1)); mkdir -p -- "$state" 2>/dev/null; printf '%s' "$n" > "$loop"
+    # 10 digits or more falls back like any other unusable value: past intmax
+    # `[ -gt ]` errors instead of comparing, which would leave the cap off.
+    cap=$(tmux show-option -gqv @cockpit_rewake_cap 2>/dev/null); case "$cap" in ''|*[!0-9]*|??????????*) cap=10 ;; esac
+    [ "$cap" -gt 0 ] && [ "$n" -ge "$cap" ] && \
+        end_turn "$n stop-hook rewakes in one turn (@cockpit_rewake_cap $cap); /goal clear ends the goal, a new prompt resumes it"
+else
+    [ ! -e "$loop" ] || rm -f -- "$loop"
+fi
 
 # --- 0. the hold: a side fix (tmux-fixer) is alive for this pane --------------
 # While its pane exists, no handover is written and the deadline has not
@@ -178,9 +273,9 @@ spool=$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)
 review=""
 if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
     # Disarm BEFORE speaking. A Stop hook that re-emits its own reason on the
-    # Stop it caused is a rewake loop (codex-plugin-cc#248); Claude Code also
-    # caps consecutive blocks, but the cap is not the design. A crash past this
-    # line loses one review; it never repeats one.
+    # Stop it caused is a rewake loop (codex-plugin-cc#248), and Claude Code
+    # caps nothing (2.1.246: its Stop handler only counts), so the disarm is
+    # the only guard. A crash past this line loses one review; never repeats one.
     tmux set-option -pu -t "$pane" @cockpit_review_spool 2>/dev/null
     review=$(cat -- "$spool")
     rm -f -- "$spool"
@@ -202,37 +297,5 @@ if [ -n "$ctx" ] || [ -n "$review" ]; then
     exit 0
 fi
 
-# --- 2. the flag, and the two payload fields worth keeping --------------------
-tx=$(field transcript_path)
-sid=$(field session_id)
-title=""
-if [ -n "$tx" ] && [ -f "$tx" ]; then
-    # The newest ai-title record wins; read from the end (9 ms on a 64 MB
-    # project dir, measured). tac is GNU, tail -r is BSD; neither means no title.
-    rec=$( { tac -- "$tx" 2>/dev/null || tail -r -- "$tx" 2>/dev/null; } | grep -m1 '"ai-title"')
-    case "$rec" in
-        *'"aiTitle"'*) title=${rec#*\"aiTitle\"}; title=${title#*:}; title=${title#*\"}; title=${title%%\"*} ;;
-    esac
-    title=${title//[$'\001'-$'\037']/}
-    title=${title:0:120}
-fi
-
-# One read for everything this decides against; one write per value that
-# actually changed -- every set-option is a redraw.
-sep=$'\037'
-cur=$(tmux display-message -p -t "$pane" \
-    '#{@cockpit_review}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_session}' 2>/dev/null)
-review=${cur%%"$sep"*};  cur=${cur#*"$sep"}
-title_cur=${cur%%"$sep"*}; sid_cur=${cur#*"$sep"}
-
-if "$here/tmux-review" --delta "$pane" >/dev/null 2>&1; then want=pending; else want=""; fi
-if [ "$review" != "$want" ]; then
-    if [ -n "$want" ]; then tmux set-option -p -t "$pane" @cockpit_review pending 2>/dev/null
-    else                    tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null; fi
-    "$here/agent-state" recount "$pane"
-fi
-# Untrusted strings each get a call of their own (agent-state's rule: a bare
-# `;` argument splits a tmux command list).
-[ -n "$title" ] && [ "$title" != "$title_cur" ] && tmux set-option -p -t "$pane" @cockpit_title "$title" 2>/dev/null
-[ -n "$sid" ]   && [ "$sid"   != "$sid_cur"   ] && tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
+flag_pane
 exit 0
