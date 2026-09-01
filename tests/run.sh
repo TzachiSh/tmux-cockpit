@@ -8572,10 +8572,11 @@ is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(t
 mkdir -p "$TF/ghshim" "$TF/ghbad" "$TF/curlfake"
 cat > "$TF/ghshim/gh" <<'GHSHIM'
 #!/bin/sh
-# auth always passes; download copies the fixture asset and logs its argv.
+# auth always passes; download copies the fixture asset. Every argv is logged,
+# auth included: which auth subcommand runs is asserted below.
 TF="$(cd "$(dirname "$0")/.." && pwd)"
-[ "$1" = auth ] && exit 0
 printf '%s\n' "$*" >> "$TF/ghlog"
+[ "$1" = auth ] && exit 0
 shift 2
 tag= pat= out=
 while [ $# -gt 0 ]; do
@@ -8605,6 +8606,18 @@ while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
 exec cp "$TF/rel/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
+
+# The tmux-review tui row runs --auth on both "not installed" branches, i.e. on
+# a keypress: `gh auth token` reads the local config, `gh auth status` would
+# validate against api.github.com with no timeout to bound it.
+: > "$TF/ghlog"
+tfout=$(PATH="$TF/ghshim:$PATH" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
+is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
+case "$(cat "$TF/ghlog")" in
+    *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
+    *"auth token"*)  ok "and asks the local token, never the network auth status" ;;
+    *) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
+esac
 
 tf_release tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"

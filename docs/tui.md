@@ -31,7 +31,7 @@ Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
 once. The repository is private, so the fetch rides your own `gh` login when
-`gh auth status` passes (the plugin never carries a token); without one the
+`gh auth token` finds one (the plugin never carries a token); without one the
 release URL 404s and the fetch skips. `COCKPIT_TUI_REPO` overrides the
 `owner/repo` gh downloads from.
 

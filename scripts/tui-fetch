@@ -18,7 +18,7 @@
 # or without it. Only a checksum or a version mismatch exits non-zero.
 #
 # The repository is private (#84): its release URLs 404 without credentials,
-# so downloads ride the user's own `gh` login when `gh auth status` passes --
+# so downloads ride the user's own `gh` login when `gh auth token` finds one --
 # the plugin never carries a token. A gh failure falls back to the plain URL.
 #
 # Never ~/.local/bin (install.sh owns its symlinks there), never sudo.
@@ -34,11 +34,13 @@ RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releas
 
 say() { printf 'tui-fetch: %s\n' "$1"; }
 
-# Which credentials a download would ride (#84). Checked at download time, not
-# here at the top: the already-current early exit must never pay gh's round trip.
+# Which credentials a download would ride (#84). `gh auth token` reads the local
+# config; `gh auth status` would validate against api.github.com, and the
+# tmux-review tui row asks this on a keypress. An expired token is no worse: the
+# download fails and fetch() falls to curl.
 auth_path() {
     if [ -z "${COCKPIT_TUI_RELEASES:-}" ] && command -v gh >/dev/null 2>&1 &&
-       gh auth status >/dev/null 2>&1
+       gh auth token >/dev/null 2>&1
     then printf 'via gh'; else printf 'unauthenticated'; fi
 }
 
