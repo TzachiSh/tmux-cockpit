@@ -8490,8 +8490,8 @@ is "and the working binary is still the old one" "cockpit-tui 0.1.0" "$(tf_ver)"
 tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0); tfrc=$?
 is "a release host it cannot reach exits 0" "0" "$tfrc"
 case "$tfout" in
-    *"no release tui-v0.4.0 (or offline)"*) ok "and names the tag rather than blaming the network" ;;
-    *) bad "and names the tag rather than blaming the network" "skip: no release tui-v0.4.0 (or offline)" "$tfout" ;;
+    *"no release tui-v0.4.0 (private repository, or offline)"*) ok "and names the tag rather than blaming the network" ;;
+    *) bad "and names the tag rather than blaming the network" "skip: no release tui-v0.4.0 (private repository, or offline)" "$tfout" ;;
 esac
 is "and leaves no marker" "" "$(tf_mark)"
 tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
@@ -8565,6 +8565,113 @@ is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
 tf_release tui-v0.9.0 0.9.0 flat
 tfout=$(tf "$TFR" --version tui-v0.9.0)
 is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(tf_ver)"
+
+# The repo is private (#84): the plain URL 404s without credentials, so the
+# fetch rides the user's own gh login when there is one. The shims serve the
+# same fixture tree; fork counts prove which path carried the bytes.
+mkdir -p "$TF/ghshim" "$TF/ghbad" "$TF/curlfake"
+cat > "$TF/ghshim/gh" <<'GHSHIM'
+#!/bin/sh
+# auth always passes; download copies the fixture asset. Every argv is logged,
+# auth included: which auth subcommand runs is asserted below.
+TF="$(cd "$(dirname "$0")/.." && pwd)"
+printf '%s\n' "$*" >> "$TF/ghlog"
+[ "$1" = auth ] && exit 0
+shift 2
+tag= pat= out=
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -R) shift 2 ;;
+        -p) pat=$2; shift 2 ;;
+        -O) out=$2; shift 2 ;;
+        *)  tag=$1; shift ;;
+    esac
+done
+exec cp "$TF/rel/$tag/$pat" "$out"
+GHSHIM
+cat > "$TF/ghbad/gh" <<'GHBAD'
+#!/bin/sh
+# a gh that is installed but not logged in; a download through it shouts.
+TF="$(cd "$(dirname "$0")/.." && pwd)"
+[ "$1" = auth ] && exit 1
+echo GH_RAN >> "$TF/ghlog"; exit 1
+GHBAD
+cat > "$TF/curlfake/curl" <<'CURLFAKE'
+#!/bin/sh
+# the real default URL served from the fixture: no network, one line per fork.
+TF="$(cd "$(dirname "$0")/.." && pwd)"
+echo x >> "$TF/curlcount"
+out=
+while [ $# -gt 1 ]; do [ "$1" = -o ] && out=$2; shift; done
+exec cp "$TF/rel/${1##*releases/download/}" "$out"
+CURLFAKE
+chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
+
+# The tmux-review tui row runs --auth on both "not installed" branches, i.e. on
+# a keypress: `gh auth token` reads the local config, `gh auth status` would
+# validate against api.github.com with no timeout to bound it.
+: > "$TF/ghlog"
+tfout=$(PATH="$TF/ghshim:$PATH" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
+is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
+case "$(cat "$TF/ghlog")" in
+    *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
+    *"auth token"*)  ok "and asks the local token, never the network auth status" ;;
+    *) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
+esac
+
+tf_release tui-v1.0.0 1.0.0
+: > "$TF/curlcount"; : > "$TF/ghlog"
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
+is "an authenticated gh is preferred over the plain URL" "0" "$tfrc"
+is "and installs the release it serves" "cockpit-tui 1.0.0" "$(tf_ver)"
+case "$tfout" in
+    *"via gh"*) ok "and the install line says via gh" ;;
+    *) bad "and the install line says via gh" "cockpit-tui 1.0.0 -> ... via gh" "$tfout" ;;
+esac
+is "and curl is never forked" "0" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
+case "$(cat "$TF/ghlog")" in
+    *"-R TzachiSh/tmux-cockpit"*) ok "and -R defaults to the plugin's own repo" ;;
+    *) bad "and -R defaults to the plugin's own repo" "-R TzachiSh/tmux-cockpit" "$(cat "$TF/ghlog")" ;;
+esac
+tf_release tui-v1.1.0 1.1.0
+: > "$TF/ghlog"
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" COCKPIT_TUI_REPO=alice/example \
+    "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
+case "$(cat "$TF/ghlog")" in
+    *"-R alice/example"*) ok "COCKPIT_TUI_REPO overrides the repo gh asks" ;;
+    *) bad "COCKPIT_TUI_REPO overrides the repo gh asks" "-R alice/example" "$(cat "$TF/ghlog")" ;;
+esac
+
+tf_release tui-v1.2.0 1.2.0
+: > "$TF/curlcount"; : > "$TF/ghlog"
+tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
+is "a gh that is not logged in falls back to curl" "0" "$tfrc"
+is "and still installs" "cockpit-tui 1.2.0" "$(tf_ver)"
+is "and paid exactly the two curl forks" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
+case "$(cat "$TF/ghlog")" in
+    *GH_RAN*) bad "and gh is never asked to download" "no gh release download" "$(cat "$TF/ghlog")" ;;
+    *) ok "and gh is never asked to download" ;;
+esac
+case "$tfout" in
+    *unauthenticated*) ok "and the install line says unauthenticated" ;;
+    *) bad "and the install line says unauthenticated" "cockpit-tui 1.2.0 -> ... unauthenticated" "$tfout" ;;
+esac
+
+# A tag gh has no release for: fall to the plain URL, then skip -- never a
+# source build, and no marker, so the next press may ask again.
+: > "$TF/curlcount"; : > "$TF/ghlog"
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
+is "a tag gh has no release for still exits 0" "0" "$tfrc"
+case "$tfout" in
+    *"no release tui-v9.9.0 via gh (or offline)"*) ok "and the skip names the gh path" ;;
+    *) bad "and the skip names the gh path" "skip: no release tui-v9.9.0 via gh (or offline)" "$tfout" ;;
+esac
+is "and fell through to one curl try" "1" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
+case "$tfout" in
+    *CARGO_RAN*|*"needs Rust"*) bad "a gh 404 never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
+    *) ok "a gh 404 never starts a source build" ;;
+esac
+is "and leaves no marker" "" "$(tf_mark)"
 unset -f tf tf_release tf_ver tf_mark
 fi
 
@@ -8576,11 +8683,22 @@ TI="cockpit-ti-$$"; SOCKS="$SOCKS $TI"; TIP=$(mktmpd)
 cp -r "$DIR/scripts" "$TIP/"
 "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 TIAP=$("$TMUX_REAL" -L "$TI" list-panes -t t: -F '#{pane_id}')
-ti_info() { "$TMUX_REAL" -L "$TI" run-shell "'$TIP/scripts/tmux-review' -p $TIAP --info" 2>&1; }
-tiout=$(ti_info)
+# The optional shim dir pins the row's credential word (#84) whatever gh on
+# the box would say; \$PATH is the server's, expanded by its own sh.
+ti_info() { "$TMUX_REAL" -L "$TI" run-shell "PATH=\"${1:-/nonexistent}:\$PATH\" '$TIP/scripts/tmux-review' -p $TIAP --info" 2>&1; }
+mkdir -p "$TIP/gh" "$TIP/ghbad"
+printf '#!/bin/sh\nexit 0\n' > "$TIP/gh/gh"
+printf '#!/bin/sh\nexit 1\n' > "$TIP/ghbad/gh"
+chmod +x "$TIP/gh/gh" "$TIP/ghbad/gh"
+tiout=$(ti_info "$TIP/gh")
 case "$tiout" in
-    *"tui       not installed  (prefix U fetches it)"*) ok "an absent binary is a row naming the gesture, not an error" ;;
-    *) bad "an absent binary is a row naming the gesture, not an error" "tui       not installed  (prefix U fetches it)" "$tiout" ;;
+    *"tui       not installed  (prefix U fetches it, via gh)"*) ok "an absent binary names the gesture and the gh login it will ride" ;;
+    *) bad "an absent binary names the gesture and the gh login it will ride" "tui       not installed  (prefix U fetches it, via gh)" "$tiout" ;;
+esac
+tiout=$(ti_info "$TIP/ghbad")
+case "$tiout" in
+    *"tui       not installed  (prefix U fetches it, unauthenticated)"*) ok "and without a gh login, says the fetch is unauthenticated" ;;
+    *) bad "and without a gh login, says the fetch is unauthenticated" "tui       not installed  (prefix U fetches it, unauthenticated)" "$tiout" ;;
 esac
 mkdir -p "$TIP/bin"
 printf '#!/bin/sh\necho "cockpit-tui 0.1.0"\n' > "$TIP/bin/cockpit-tui"; chmod +x "$TIP/bin/cockpit-tui"

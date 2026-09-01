@@ -30,7 +30,10 @@ The binary ships as a release asset. With `@cockpit_tui_fetch on`, `prefix U`
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
-once.
+once. The repository is private, so the fetch rides your own `gh` login when
+`gh auth token` finds one (the plugin never carries a token); without one the
+release URL 404s and the fetch skips. `COCKPIT_TUI_REPO` overrides the
+`owner/repo` gh downloads from.
 
 Nothing is fetched when tmux loads its config. The load path stays offline;
 installing and updating stay gestures you make, the way tpm's own are.

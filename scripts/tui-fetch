@@ -17,9 +17,14 @@
 # and exits 0 -- the binary is additive, and `prefix r` is the fleet view with
 # or without it. Only a checksum or a version mismatch exits non-zero.
 #
+# The repository is private (#84): its release URLs 404 without credentials,
+# so downloads ride the user's own `gh` login when `gh auth token` finds one --
+# the plugin never carries a token. A gh failure falls back to the plain URL.
+#
 # Never ~/.local/bin (install.sh owns its symlinks there), never sudo.
-# COCKPIT_TUI_RELEASES overrides the release host; the suite points it at a
-# file:// tree.
+# COCKPIT_TUI_RELEASES overrides the release host, and an explicit URL is
+# curl's alone -- the suite points it at a file:// tree gh could not serve.
+# COCKPIT_TUI_REPO overrides the owner/repo gh downloads from.
 set -u
 
 PIN=cockpit-tui-v0.1.0
@@ -29,10 +34,21 @@ RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releas
 
 say() { printf 'tui-fetch: %s\n' "$1"; }
 
+# Which credentials a download would ride (#84). `gh auth token` reads the local
+# config; `gh auth status` would validate against api.github.com, and the
+# tmux-review tui row asks this on a keypress. An expired token is no worse: the
+# download fails and fetch() falls to curl.
+auth_path() {
+    if [ -z "${COCKPIT_TUI_RELEASES:-}" ] && command -v gh >/dev/null 2>&1 &&
+       gh auth token >/dev/null 2>&1
+    then printf 'via gh'; else printf 'unauthenticated'; fi
+}
+
 TAG=
 case "${1:-}" in
     --version) TAG=${2:-}
                [ -n "$TAG" ] || { say "usage: tui-fetch [--version <tag>]" >&2; exit 2; } ;;
+    --auth)    auth_path; echo; exit 0 ;;    # the tmux-review tui row asks
     -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     "")        ;;
     *)         say "usage: tui-fetch [--version <tag>]" >&2; exit 2 ;;
@@ -64,14 +80,22 @@ esac
 
 sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
+fetch() {                     # <asset> <dest>
+    # gh first when logged in; a gh failure falls to the plain URL, never
+    # straight to a source build -- checksum-first order is the same either way.
+    if [ "$VIA" = 'via gh' ]; then
+        gh release download -R "$REPO" "$TAG" -p "$1" -O "$2" >/dev/null 2>&1 && return 0
+    fi
+    curl -fsL --max-time 30 -o "$2" "$RELEASES/$TAG/$1"
+}
+
 # 2 and 3 both mean "no binary installed", but they are opposite facts: 2 is
 # settled (this release has nothing for this platform, so build from source and
 # remember it), 3 is a box that could not ask (offline, no tools) and must be
 # free to ask again on the next press.
 download() {                  # 0 installed · 1 refused · 2 nothing for this platform · 3 could not ask
-    local tmp asset base line bin got
+    local tmp asset line bin got
     asset="cockpit-tui-$TARGET.tar.gz"
-    base="$RELEASES/$TAG"
     command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 3; }
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
         say "skip: neither sha256sum nor shasum is installed to verify with"; return 3; }
@@ -79,16 +103,21 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     trap 'rm -rf "$tmp"' RETURN
     # -fsL, not -fsSL: a tag that has not been cut yet is the ordinary case
     # before the first release, and curl's own "(22) ... 404" beside the line
-    # below reads like a fault.
-    curl -fsL --max-time 30 -o "$tmp/sums" "$base/sha256.sum" || {
-        say "skip: no release $TAG (or offline)"; return 3; }
+    # below reads like a fault. Unauthenticated, the private repo 404s the
+    # same way (#84), so that line names the likelier of the two.
+    fetch sha256.sum "$tmp/sums" || {
+        case $VIA in
+            'via gh') say "skip: no release $TAG via gh (or offline)" ;;
+            *)        say "skip: no release $TAG (private repository, or offline)" ;;
+        esac
+        return 3; }
     # cargo-dist writes one sha256sum line per asset, so a name that is not
     # there was never built for this platform -- a settled answer, unlike a
     # download that failed.
     line=$(grep -E " \*?${asset//./\\.}\$" "$tmp/sums") || {
         say "no binary for this platform in $TAG ($TARGET)"; return 2; }
-    curl -fsL --max-time 30 -o "$tmp/$asset" "$base/$asset" || {
-        say "skip: $asset is missing from $TAG (or offline)"; return 3; }
+    fetch "$asset" "$tmp/$asset" || {
+        say "skip: $asset is missing from $TAG, $VIA (or offline)"; return 3; }
     ( cd "$tmp" && printf '%s\n' "$line" | sha_c ) >/dev/null 2>&1 || {
         say "REFUSED: $asset does not match its published checksum -- nothing installed" >&2; return 1; }
     tar -xzf "$tmp/$asset" -C "$tmp" 2>/dev/null || { say "could not extract $asset" >&2; return 1; }
@@ -115,7 +144,7 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
         say "the $TAG tarball reports '$got' -- nothing installed" >&2; return 1; }
     install -m 755 "$bin" "$BIN/cockpit-tui" || return 1
-    say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui"
+    say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui $VIA"
 }
 
 build() {                     # 0 built · 2 skipped
@@ -147,6 +176,20 @@ if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
     exit 0
 fi
 mkdir -p "$BIN" || exit 1
+VIA=$(auth_path)
+if [ "$VIA" = 'via gh' ]; then
+    REPO=${COCKPIT_TUI_REPO:-}
+    if [ -z "$REPO" ]; then
+        REPO=$(git -C "$DIR" remote get-url origin 2>/dev/null)
+        # git@github.com:o/r.git and https://github.com/o/r reduce the same
+        # way: strip through github.com, one [:/] separator, then .git.
+        case $REPO in
+            *github.com*) REPO=${REPO#*github.com}; REPO=${REPO#[:/]}; REPO=${REPO%.git} ;;
+            *)            REPO= ;;
+        esac
+    fi
+    REPO=${REPO:-TzachiSh/tmux-cockpit}
+fi
 # The marker records a fact about the RELEASE -- this tag published nothing for
 # this platform -- so it skips the download and never the source build. An
 # unreachable host and a checksum refusal deliberately leave no marker: the

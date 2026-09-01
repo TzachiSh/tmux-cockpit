@@ -2050,13 +2050,16 @@ request() {                   # <pane>
 # which version, and whether @cockpit_tui_version asks for a different one.
 # Absent is a normal state, not a fault -- prefix r is the fleet view with or
 # without it -- so the row names the gesture that installs it and stops.
+# Which credentials that fetch would ride (#84): the repo is private, so an
+# unauthenticated prefix U 404s, and the fix is `gh auth login`, not retrying.
+tui_auth() { "$(dirname "$LIBDIR")/tui-fetch" --auth 2>/dev/null || printf 'unauthenticated'; }
 tui_row() {
     local bin have want
     bin="$(dirname "$(dirname "$LIBDIR")")/bin/cockpit-tui"
     # Absent is the common case: test the file before paying a fork for it.
-    [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
+    [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }
     have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
-    [ -n "$have" ] || { printf 'not installed  (prefix U fetches it)'; return 0; }
+    [ -n "$have" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }
     want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
     want=${want#cockpit-}; want=${want#tui-}; want=${want#v}
     if [ -n "$want" ] && [ "$want" != "$have" ]; then
