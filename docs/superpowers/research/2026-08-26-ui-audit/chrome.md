@@ -78,12 +78,13 @@ Proposed ladder, two options set once, then one substitution per format [V]:
 
 ```
 # Per-tab label budget: what is left after the fixed chrome, split across the windows.
+# 61 = status-left ~9 + status-right ~52, the same fixed chrome §3 subtracts above.
 # Floored at 10 (also the safe arm when client_width is unavailable), capped at 34.
-set -g @cockpit_tab_raw "#{e|/:#{e|-:#{client_width},56},#{session_windows}}"
+set -g @cockpit_tab_raw "#{e|/:#{e|-:#{client_width},61},#{session_windows}}"
 set -g @cockpit_tab_w   "#{?#{e|<:#{E:@cockpit_tab_raw},10},10,#{?#{e|>:#{E:@cockpit_tab_raw},34},34,#{E:@cockpit_tab_raw}}}"
 ```
 
-Then replace `#{=/16/…:` and `#{=/34/…:` with `#{=/#{E:@cockpit_tab_w}/…:` in both tab formats. Key fact [V]: the width argument of `#{=/N/…:}` may itself be a format (`#{=/#{@w}/…:#{E:@lbl}}` with `@w=6`, `@lbl=abcdefghijkl` → `abcdef…`), and a bare word after the colon is a variable lookup, not a literal. Measured budgets: 80/3 → 10, 80/8 → 10, 120/3 → 21, 120/8 → 10, 160/3 → 34, 160/8 → 13.
+Then replace `#{=/16/…:` and `#{=/34/…:` with `#{=/#{E:@cockpit_tab_w}/…:` in both tab formats. Key fact [V]: the width argument of `#{=/N/…:}` may itself be a format (`#{=/#{@w}/…:#{E:@lbl}}` with `@w=6`, `@lbl=abcdefghijkl` → `abcdef…`), and a bare word after the colon is a variable lookup, not a literal. Budgets, `(client_width − 61) / session_windows` with tmux's integer division truncating (which the measured run showed: 64/3 came back 21, not 22), then floor 10 / cap 34 — 80/3: 19/3 = 6 → 10; 80/8: 19/8 = 2 → 10; 120/3: 59/3 = 19; 120/8: 59/8 = 7 → 10; 160/3: 99/3 = 33; 160/8: 99/8 = 12. The three renders below are unchanged by the constant: their longest label is 31 columns, under both 33 and 34.
 
 The ladder alone does not save 80 columns (3 × 16 = 48 > 19), so status-right joins it:
 
@@ -123,7 +124,7 @@ Recommendation: README.md:255 already promises "A Nerd Font is not required. The
 
 ## 5. Feedback moments
 
-Six facts from docs/superpowers/research/2026-08-26-hand-made-worktree/ux.md:9-14: a display-message from inside `display-popup -E` survives the popup closing; display-time is 2000 ms here (full.tmux.conf:15), 750 ms stock; on this theme the message is painted into the middle of status-right with no separator (captured: `t 1 sh    tmux-review: no agent pane is blocked or has uncommitted changesockpit ⑂ master ⏰ 21:11`); `printf >&2` inside the popup renders to nobody (tmux-review:2280, :1160); a message longer than the client is silently cut; `-d 0` stays until a keypress.
+Six facts from docs/superpowers/research/2026-08-26-hand-made-worktree/ux.md:9-14: a display-message from inside `display-popup -E` survives the popup closing; display-time is 2000 ms here (full.tmux.conf:15), 750 ms stock; on this theme the message is painted into the middle of status-right with no separator (captured: `t 1 sh    tmux-review: no agent pane is blocked or has uncommitted changesockpit ⑂ master ⏰ 21:11`); `printf >&2` inside the popup renders to nobody (the rule is written down at tmux-review:1158-1159, beside the display-message it forces); a message longer than the client is silently cut; `-d 0` stays until a keypress.
 
 What each keypress says today:
 
@@ -133,14 +134,14 @@ What each keypress says today:
 | prefix f | "side fix running in %N: <job> — %N is held at its next stop until it finishes[; commands matching /X/ are held off]" tmux-fixer:123 (~110 chars); busy: :96 | display-time |
 | review delivered, idle | "review pasted into <where> (%N) — press Enter there to send; prefix J walks there" tmux-review:1663 | -d 0 |
 | review delivered, busy | "review queued for <where> (%N) — it lands when the agent next stops" :1664 | -d 0 |
-| prefix r, empty | "tmux-review: no agent pane is blocked or has uncommitted changes" :2159 | display-time |
+| prefix r, empty | "tmux-review: no pane runs an agent named in @cockpit_agents_glob" :2180 | display-time |
 | prefix R | "config reloaded" cockpit.tmux:354 | display-time |
 | copy in review | "file + diff copied" / "line(s) copied" / "the whole diff copied" :1199-1204 | display-time |
 | hook | "held: <reason> (side fix in %N) — %N resumes when it finishes" review-gate:147 | display-time |
 
-The bug: tmux-review:1663 says "prefix J walks there"; the key is `u` (cockpit.tmux:264, README:273-274, KEYS.md). Read the option, not a literal: `prefix #{?#{@cockpit_jump_key},#{@cockpit_jump_key},u} walks there`.
+The bug: tmux-review:1663 says "prefix J walks there"; the key is `u` (cockpit.tmux:264, README:273-274, KEYS.md). Read the option, not a literal: `prefix #{?#{@cockpit_jump_key},#{@cockpit_jump_key},u} walks there`. That format still has one wrong arm: cockpit.tmux:264 treats `off` as unbind (`case "$JK" in off) jk= ;;`), so with `@cockpit_jump_key off` the clause renders "prefix off walks there" for a key that is bound to nothing — the whole clause has to drop, `#{?#{==:#{@cockpit_jump_key},off},,; prefix … walks there}`. The fail-first test in README:26 sets the key to `x` and checks for `prefix x`, so it passes over exactly this arm; it needs an `off` case beside it.
 
-Convention: `cockpit: <what happened> · <what you do next>`, one prefix (because of the weld into status-right), hard ceiling 72 characters so it survives an 80-column client. Over budget today: tmux-fixer:123 (split the guard clause onto a second message or drop it), tmux-review:1364 (~120, the update-ref line; deserves `-d 0`). Three tiers: act = `-d 0` (both delivery notices, tmux-fixer:123, refusals carrying a pasteable fix); inform = display-time ("config reloaded", "copied", "no agent needs you"); never = `printf >&2` in a popup (convert :2280 and :1160). Do not raise display-time. prefix u stays silent on success: the viewport moving is the acknowledgement.
+Convention: `cockpit: <what happened> · <what you do next>`, one prefix (because of the weld into status-right), hard ceiling 72 characters so it survives an 80-column client. Over budget today: tmux-fixer:123 (split the guard clause onto a second message or drop it), tmux-review:1364 (~120, the update-ref line; deserves `-d 0`). Three tiers: act = `-d 0` (both delivery notices, tmux-fixer:123, refusals carrying a pasteable fix); inform = display-time ("config reloaded", "copied", "no agent needs you"); never = `printf >&2` in a popup — and there is nothing left to convert, every popup path already uses display-message. The six stderr sites in inventory.md:72's census (tmux-review:2008 :2012 :2015 :2065 :2312 :2393) are the CLI and `--request` entry paths, where stderr is the right stream and stays. Do not raise display-time. prefix u stays silent on success: the viewport moving is the acknowledgement.
 
 ## 6. Flicker and repaint
 

@@ -19,11 +19,11 @@ Consistency. Six of eight calls share `--reverse --info=inline-right --cycle --s
 - On 0.44.1 `--pointer` and `--marker` are both fzf's default `>` in every picker except tm kill (tm:136 `--marker='✗'`). In the two `--multi` pickers a ⇥-marked row and the cursor row render with the identical glyph in the identical column. (0.53.0 changed the defaults to Unicode bars; the theme should pin both anyway.)
 - The selected row is only `bg+` from the `16` base scheme; no `hl+`, `fg+`, `gutter` anywhere. tmux-open-path:406 measured bat's `--highlight-line` at 1.4:1 and rejected it; the pickers' own selection bar fails the same test.
 - `^/` toggle-preview is unbound in tm, the one picker whose preview (cross-session agent state, tm:182) is most valuable.
-- Preview scroll: `^U/^D` (branch, fleet, path), `alt-u/alt-d` (review, justified at tmux-review:1238-1241: readline owns ^U/^D in a comment field), nothing (tm).
+- Preview scroll: `^U/^D` (branch, fleet, path), `alt-u/alt-d` (review, justified at tmux-review:1236-1239: readline owns ^U/^D in a comment field), nothing (tm).
 - Header wording: "esc cancel" vs "esc leave"; "tab mark" (path :794) / "tab mark several" (tm :138) / "⇥ mark" (review :1266); three spaces in five headers, ` · ` in the fleet legend (:2255) and the branch context (:239). Prompts `name> ` in five, `$(tail3 "$dir")/ ` in browse, `esc? `/`^S? ` in the confirms.
 - The two confirm pickers (tmux-review:1283, :1381) pass no `--color`: fzf's opaque default dark scheme next to siblings that are `--color=16` transparent. The most visible inconsistency: the confirm dialog looks like a different program.
 
-Hierarchy. The review row, tmux-review:867-875: `if (w > 48) w = 48` then `printf "%s\t%s\t%s\t%s %-" w "s  %s %s\t%s\n"`. Field 4 = mark + space + path:line padded to w + two spaces + sign + space + code: at the 48 cap, 55 columns of gutter before the diff text. The popup is `-w 70%` (cockpit.tmux:210), so on a 100-column terminal fzf's content width is ~68 and the code under review gets ~13 columns.
+Hierarchy. The review row, tmux-review:868-875: `if (w > 48) w = 48` then `printf "%s\t%s\t%s\t%s %-" w "s  %s %s\t%s\n"`. Field 4 = mark + space + path:line padded to w + two spaces + sign + space + code: at the 48 cap, 55 columns of gutter before the diff text. The popup is `-w 70%` (cockpit.tmux:210), so on a 100-column terminal fzf's content width is ~68 and the code under review gets ~13 columns.
 
 Fleet tab grid (reproduced). `--with-nth=2,3,4,5` (tmux-review:2249) rejoins fields with the original tab, and fzf expands tabs to `--tabstop` (8) from the start of the item. Columns land at 8/24/40 regardless of `pad_field`; the caps 12/40/32 (:2186-2188) are not the real widths; the overflow policy at :2183-2185 shifts a row's remaining columns by a full 8; the known "◆ needs-input" = 13 > 12 case is exactly this. One flag fixes it: `--tabstop=1`.
 
@@ -144,15 +144,15 @@ One line in cockpit.tmux beside the tmux-version message at :212-214, once at lo
 ```sh
 # 0.63 is where --footer landed, the newest option the pickers use. Debian 13
 # and Ubuntu 24.04 both ship 0.44.1, so most users see this exactly once.
-fzf_v=$(fzf --version 2>/dev/null | cut -d' ' -f1)
-case "${fzf_v#0.}" in
-    ''|*[!0-9.]*) ;;
-    *) [ "${fzf_v#0.}" = "$fzf_v" ] || [ "${fzf_v#0.}" -ge 63 ] 2>/dev/null || \
-        tmux display-message "tmux-cockpit: fzf $fzf_v works, but 0.63+ gets the styled pickers (wrapped diffs, footer key hints). Upgrade: git clone --depth 1 https://github.com/junegunn/fzf ~/.fzf && ~/.fzf/install --bin  ·  brew install fzf  ·  github.com/junegunn/fzf/releases" ;;
-esac
+. "$DIR/scripts/lib/fzf.sh"   # fzf_minor and COCKPIT_FZF_MIN, §4
+if command -v fzf >/dev/null 2>&1 && [ "$(fzf_minor)" -lt "$COCKPIT_FZF_MIN" ]; then
+    tmux display-message "tmux-cockpit: fzf $(fzf --version | cut -d' ' -f1) works, but 0.63+ gets the styled pickers (wrapped diffs, footer key hints). Upgrade: git clone --depth 1 https://github.com/junegunn/fzf ~/.fzf && ~/.fzf/install --bin  ·  brew install fzf  ·  github.com/junegunn/fzf/releases"
+fi
 ```
 
-Do not reuse `version_at_least` (cockpit.tmux:175-180): it takes `${v#*.}` as the minor, which on 0.74.3 yields `74.4`, fails its own `*[!0-9]*` test, and becomes 0. Correct for tmux's pre-stripped `3.7`, wrong for three components. README: "fzf is optional, every picker falls back to a numbered select menu; fzf 0.63+ enables the styled pickers."
+The gate calls `fzf_minor` (§4) rather than re-deriving the version: sourcing the lib is what the pickers already do, and it keeps one floor constant. Run in a plain shell against a fake `fzf`: `0.74.3` quiet, `0.63.0` quiet, `0.44.1` advisory, `1.2.0` quiet (the `-gt 0` major arm returns 999), and no fzf at all quiet — the `command -v` guard, because README calls fzf optional and every picker falls back to a numbered select menu.
+
+Do not reuse `version_at_least` (cockpit.tmux:175-180): it takes `${v#*.}` as the minor, which on 0.74.3 yields `74.3`, fails its own `*[!0-9]*` test, and becomes 0. Correct for tmux's pre-stripped `3.7`, wrong for three components. Any hand-rolled `${v#0.}` arithmetic has the same defect — `[ 74.3 -ge 63 ]` is not an integer comparison, it errors and falls through. README: "fzf is optional, every picker falls back to a numbered select menu; fzf 0.63+ enables the styled pickers."
 
 ## 6. Header / key-hint convention
 
@@ -209,7 +209,7 @@ Plain tier at 80 (dynamic cap replaces `--wrap`) and 120:
   ├──────────────── 46 ────────────────────────┤ │ ├─────────────── 71 ──────────────────┤
 ```
 
-Rule: the path column gives way first, from the left (head-ellipsis), which tmux-review:873 already implements (`l = "…" substr(l, length(l)-w+4)`) and never runs because the cap at :867 is the constant 48. Change it to `int(width*0.35)` clamped [18,48], width from `tput cols` at build time (as `avail` at :2206). The diff text is never truncated by our hand; fzf cuts it, correctly, because a diff line's left end is the informative end.
+Rule: the path column gives way first, from the left (head-ellipsis), which tmux-review:873 already implements (`l = "…" substr(l, length(l)-w+4)`) and which does run: any `path:line` longer than the cap at :868 (`if (w > 48) w = 48`) gets its head cut today. So the mechanism is there and only the constant is wrong — 48 columns of path is a reasonable gutter at 120 and half the screen at 80. Change the cap to `int(width*0.35)` clamped [18,48], width from `tput cols` at build time (as `avail` at :2206); the ellipsis code is untouched. The diff text is never truncated by our hand; fzf cuts it, correctly, because a diff line's left end is the informative end.
 
 Fleet today at 80 (tabstop grid; real column starts 0/16/56 or 64), proposed at 120 (`--tabstop=1` + alt-bg + one-glyph state) and at 80 (state word drops, glyph stays):
 
@@ -284,4 +284,4 @@ Where the choice lives: resolve once at plugin load in cockpit.tmux, written bac
 2. `--tabstop=1` on the fleet queue (tmux-review:2249). Hands the grid back to `pad_field`. One flag, reproduced bug.
 3. `--color` on the two confirm pickers (tmux-review:1283, :1381).
 4. `--highlight-line` + `--pointer='▌'` (new tier) / `--pointer` + `bg+` (plain tier). The selected row.
-5. `--wrap` on the review loop (new tier) or the dynamic path cap at tmux-review:867 (plain tier). Gives the diff text back its columns.
+5. `--wrap` on the review loop (new tier) or the dynamic path cap at tmux-review:868 (plain tier). Gives the diff text back its columns.

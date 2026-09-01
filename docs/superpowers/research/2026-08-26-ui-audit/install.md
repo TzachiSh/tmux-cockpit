@@ -132,4 +132,4 @@ fetch bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
 ## Two repo bugs found on the way
 
 1. `bootstrap.sh:180` overwrites an existing `$CONF.bak` whenever it appends the `run-shell` line (only when the config is not wired, so: after the line was removed and bootstrap runs again); `install.sh:261` already keeps an existing backup for `settings.json.bak`.
-2. `cockpit.tmux:175-180` `version_at_least` is tmux-only; whoever wires the fzf tier must use `vnum` above.
+2. `cockpit.tmux:175-180` `version_at_least` is tmux-only; whoever wires the fzf tier must use `vnum` above. Two parsers stay, not one: `vnum` is the installer's (it compares whole versions across four tools, so it needs all three components), and `fzf_minor` (pickers.md §4) is the picker path's — `scripts/lib/fzf.sh` is sourced by the pickers and by nothing the installer runs, fzf is the only tool it sees, and one minor number is the whole comparison. Same defect avoided, different scopes; neither file can source the other without pulling in the rest of it.

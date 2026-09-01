@@ -93,7 +93,7 @@ Divergences: full.tmux.conf:199-200 read `@cockpit_win_state` and walk nothing (
 - `#{P:}` / `#{S:#{W:}}` walks: tm:181 (per cursor move); agent-state:266 :295 :308 :309 :315 (per transition); full.tmux.conf:220 and tmux.conf:24 (per redraw); tmux.conf:42-43 ×5 each (per redraw, the remaining hot walk).
 - `#{b:}` popup titles only.
 
-## H. Test coverage (tests/run.sh, 154 `== ` blocks)
+## H. Test coverage (tests/run.sh, 157 blocks: `grep -c 'echo "== ' tests/run.sh`)
 
 Tested: shipped config renders :150; usable as shipped :180; example menu Switch branch :223 :263 :2289; prefix b pane resolution :240; agents menu :2251; move menu :2326 :2356; prefix g + u :2216; prefix r/R :7097; prefix R multi-config :7225; prefix i :7170; popup geometry :2540; branch popup pane id :2557; tm :920 :1566 :2941; tmux-branch :948 :1426 :1448 :1488 :1515 :1794; path picker :868 :1881 :2580 :2622 :2726 :2471 :2912; preview-diff :3714 :5530 :5562 :5594 :5633 :5658; review loop keys :4655 :4689 :4827 :4863 :7296 :7335 :7371 :7448 :7469 :7495 :7530 :7655; ^A :5327; --request :5480; deliver :5683 :5767 :5819 :5856 :5903 :5988 :6079; fleet :6542 :6575 :6824 :6892; fleet ^X :8148; side fix :7948 :7969; review-gate :8031 :8073; border buttons :2131; click gestures :1925 :2096; legend fits 80 cols :4636; preview border :4602.
 
