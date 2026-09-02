@@ -1083,8 +1083,13 @@ can concede:
 
     review-gate --concede "push denied by the permission classifier; needs you"
 
-ends its next turn with that line as the stop reason, whatever the count. The
-`cockpit-concede` skill (installed with the others) tells the agent when. The
+ends its next turn with that line as the stop reason, whatever the count. Both
+the count and the concession are keyed on the pane *and* its tmux server, so a
+private `tmux -L` socket cannot fire either on the live server's same-numbered
+pane; files under the older pane-only names are ignored, and the
+`rm -rf ~/.local/state/tmux-cockpit/review` purge above clears them. Re-run
+`install.sh` after upgrading: the `cockpit-concede` skill is a symlink, and a box
+installed before it has none. That skill tells the agent when to concede. The
 goal itself stays set either way, since only Claude Code can clear it: your
 next prompt resumes it, `/goal clear` ends it.
 

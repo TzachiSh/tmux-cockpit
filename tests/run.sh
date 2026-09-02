@@ -137,6 +137,13 @@ until_out() {                 # <pattern> <cmd...>
     done
     return 1
 }
+# review-gate keys its state files on the pane id AND the server's socket path
+# (issue #88). Spelled out here rather than read back from the script: a test
+# that asks the code under test for its own answer agrees with any answer.
+gate_key() {                  # <socket> <pane-id>
+    local s; s=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}' 2>/dev/null)
+    s=${s//_/__}; printf '%s-%s' "${s//\//_.}" "${2#%}"
+}
 # A perf budget is CPU time, never the wall clock. Measured on this box (#75):
 # under twelve background spinners the wall tooth at the 4900-row site failed
 # 10/10 while its CPU sat at 0.23-0.26s. A wall budget grades the box.
@@ -846,7 +853,11 @@ is "and stderr is empty the second time" "" "$(cat "$RGSTATE/err")"
 # @cockpit_rewake_cap, and a Stop with stop_hook_active:false (a fresh user
 # turn) resets the count. `--concede` ends the next turn on the agent's say-so.
 RGACT=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RGPAY" > "$RGACT"
-RGLOOP="$RGSTATE/tmux-cockpit/review/loop-${RGAP#%}"; RGCF="$RGSTATE/tmux-cockpit/review/concede-${RGAP#%}"
+RGKEY=$(gate_key "$RG" "$RGAP")
+RGLOOP="$RGSTATE/tmux-cockpit/review/loop-$RGKEY"; RGCF="$RGSTATE/tmux-cockpit/review/concede-$RGKEY"
+# --concede runs as the agent's own Bash call, inside the pane: $TMUX is what
+# tells it which server's key to write under, and the suite unsets it.
+RGTMUX="$("$TMUX_REAL" -L "$RG" display-message -p '#{socket_path}'),0,0"
 "$TMUX_REAL" -L "$RG" set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
 rg_run "$RGACT"; rg_run "$RGACT"
 is "two rewakes under a cap of 3 pass through silently" "" "$(cat "$RGSTATE/out")"
@@ -864,7 +875,7 @@ rg_run "$RGPAY"; is "a Stop with stop_hook_active:false resets the count" "absen
 is "and passes through (no continue:false on a fresh turn)" "" "$(cat "$RGSTATE/out")"
 # The concession: the agent names why the goal will not be met; the next Stop
 # ends the turn with that line as the reason, whatever stop_hook_active says.
-TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'push denied by the classifier; a "human" must run it'
+TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'push denied by the classifier; a "human" must run it'
 rg_run "$RGPAY"; is "a conceded Stop exits 0" "GRC=0" "$(rg_rc)"
 case "$(cat "$RGSTATE/out")" in
     *'"continue":false'*'push denied by the classifier; a \"human\" must run it'*) ok "and ends the turn with the agent's reason, JSON-escaped" ;;
@@ -874,10 +885,25 @@ rg_run "$RGPAY"; is "the concession is consumed: the next Stop passes through" "
 is "and stderr stayed empty through the cap and the concession" "" "$(cat "$RGSTATE/err")"
 # --concede is a foreground call, not a hook: it confirms, or fails out loud.
 is "--concede confirms on stdout" "concession recorded; your next turn ends here, with that line as the reason" \
-   "$(TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'again')"
+   "$(TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'again')"
 TMUX_PANE='' XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'x' >/dev/null 2>"$RGSTATE/cerr"
 is "--concede outside a tmux pane fails, not silently" "1" "$?"
 is "and says so on stderr" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
+# Two socket paths that differ only in where the `_` and the `/` sit. `/` -> `_`
+# mapped both to one key; `_` -> `__` with `/` -> `_.` is prefix-free, so they
+# cannot land on one file. No server needed: --concede writes and exits.
+RGENC=$(mktmpd)
+for rg_sock in '/tmp/a_/b' '/tmp/a/_b'; do
+    TMUX="$rg_sock,0,0" TMUX_PANE=$RGAP XDG_STATE_HOME="$RGENC" "$DIR/scripts/review-gate" --concede "probe $rg_sock" >/dev/null
+done
+is "two socket paths differing only in _ and / get two keys, not one" "2" \
+   "$(ls "$RGENC"/tmux-cockpit/review/ 2>/dev/null | wc -l)"
+# No $TMUX, no server to key on: the file would land under a name no Stop hook
+# reads, and a concession that silently never fires is the worse failure.
+TMUX='' TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'y' >/dev/null 2>"$RGSTATE/cerr"
+is "--concede with a pane id but no \$TMUX fails the same way" "1" "$?"
+is "and writes no serverless concession" "absent" \
+   "$([ -e "$RGSTATE/tmux-cockpit/review/concede--${RGAP#%}" ] && echo present || echo absent)"
 # A concession an hour old is a killed agent's, or a pane id reused after a
 # server restart: dropped, never fired on whoever holds the id now.
 touch -d '-2 hours' "$RGCF"
@@ -885,10 +911,10 @@ rg_run "$RGPAY"; is "a stale concession does not end the turn" "" "$(cat "$RGSTA
 is "and is dropped" "absent" "$([ -e "$RGCF" ] && echo present || echo absent)"
 # A concession with no line is the one case that must not go through: the write
 # below it expands $2 under set -u, which kills the shell before any handler.
-TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede >/dev/null 2>"$RGSTATE/cerr"
+TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede >/dev/null 2>"$RGSTATE/cerr"
 is "--concede with no line fails" "1" "$?"
 is "and says so on stderr, not silently" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
-TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede '' >/dev/null 2>"$RGSTATE/cerr"
+TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede '' >/dev/null 2>"$RGSTATE/cerr"
 is "--concede with an empty line fails the same way" "1" "$?"
 is "and says so on stderr too" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
 is "and neither armed a reasonless concession" "absent" "$([ -e "$RGCF" ] && echo present || echo absent)"
@@ -962,7 +988,35 @@ kill "$rg_holder" 2>/dev/null; wait "$rg_holder" 2>/dev/null
 is "a silent stdin does not hang the hook" "0" "$rg_grc"
 [ $(( SECONDS - rg_t0 )) -le 4 ] && ok "and it gives up inside its own deadline ($(( SECONDS - rg_t0 ))s)" || bad "and it gives up inside its own deadline" "under 4s" "$(( SECONDS - rg_t0 ))s"
 rm -f "$RGF"
-unset -f rg_n rg_wait rg_run rg_rc
+# Two servers, one state dir, the same pane id on each (issue #88). Keyed on the
+# pane id alone, the second server's first Stop consumed the first server's
+# concession and ended the wrong turn with it.
+RG2="cockpit-rg2-$$"; SOCKS="$SOCKS $RG2"
+"$TMUX_REAL" -L "$RG2" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RGDIR" 'exec -a claude bash' >/dev/null 2>&1
+RG2AP=$("$TMUX_REAL" -L "$RG2" list-panes -t t: -F '#{pane_id}')
+is "a second server's first pane carries the same id as the first server's" "$RGAP" "$RG2AP"
+rg2_run() {                   # <stdin-file>  the same hook, in the OTHER server; run-shell waits
+    "$TMUX_REAL" -L "$RG2" run-shell "TMUX_PANE=$RG2AP XDG_STATE_HOME=$(printf '%q' "$RGSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RGSTATE/out2") 2>&1" >/dev/null 2>&1
+}
+rm -f "$RGSTATE"/tmux-cockpit/review/loop-* "$RGSTATE"/tmux-cockpit/review/concede-*
+TMUX=$RGTMUX TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'CROSS-PROBE-88' >/dev/null
+rg2_run "$RGPAY"
+is "one server's concession does not end the other server's turn" "" "$(cat "$RGSTATE/out2")"
+rg_run "$RGPAY"
+case "$(cat "$RGSTATE/out")" in
+    *'"continue":false'*CROSS-PROBE-88*) ok "and still ends the turn on the server that recorded it" ;;
+    *) bad "and still ends the turn on the server that recorded it" 'continue:false + CROSS-PROBE-88' "$(cat "$RGSTATE/out")" ;;
+esac
+"$TMUX_REAL" -L "$RG"  set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG2" set -g @cockpit_rewake_cap 3 >/dev/null 2>&1
+rg_run "$RGACT"; rg_run "$RGACT"
+is "two rewakes on the first server leave it one under the cap" "2" "$(cat "$RGLOOP" 2>/dev/null)"
+rg2_run "$RGACT"
+is "and the other server's first rewake is not capped by that count" "" "$(cat "$RGSTATE/out2")"
+is "it counts its own" "1" "$(cat "$RGSTATE/tmux-cockpit/review/loop-$(gate_key "$RG2" "$RG2AP")" 2>/dev/null)"
+"$TMUX_REAL" -L "$RG" set -gu @cockpit_rewake_cap >/dev/null 2>&1
+"$TMUX_REAL" -L "$RG2" kill-server >/dev/null 2>&1
+unset -f rg_n rg_wait rg_run rg_rc rg2_run
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
 
@@ -8323,7 +8377,8 @@ is "the fence is the main pane's dirty paths, tracked and untracked" "api.go
 my file.go
 scratch.txt" "$(sort "$SFSESS/fixer/fence" 2>/dev/null)"
 [ "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)" -gt "$(date +%s)" ] && ok "the deadline is in the future" || bad "the deadline is in the future" "> now" "$(cat "$SFSESS/fixer/deadline" 2>/dev/null)"
-is "the gate's marker names the session dir" "$SFSESS" "$(cat "$SFSTATE/tmux-cockpit/review/fixer-${SFAP#%}" 2>/dev/null)"
+is "the gate's marker names the session dir, under the spawning server's key" "$SFSESS" \
+   "$(cat "$SFSTATE/tmux-cockpit/review/fixer-$(gate_key "$SF" "$SFAP")" 2>/dev/null)"
 SFFP=$(cat "$SFSESS/fixer/pane" 2>/dev/null)
 case "$SFFP" in %[0-9]*) ok "the fixer pane id is recorded" ;; *) bad "the fixer pane id is recorded" "%N" "$SFFP" ;; esac
 is "the fixer pane runs in the repo root" "$SFDIR" "$("$TMUX_REAL" -L "$SF" display-message -p -t "$SFFP" '#{pane_current_path}' 2>/dev/null)"
@@ -8359,6 +8414,8 @@ PG="cockpit-pg-$$"; SOCKS="$SOCKS $PG"; PGSTATE=$(mktmpd); PGDIR=$(mktmpd)
 PGAP=$("$TMUX_REAL" -L "$PG" list-panes -t t: -F '#{pane_id}')
 PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300')       # a live "fixer" pane
 PGSESS="$PGSTATE/tmux-cockpit/review/${PGAP#%}-$(printf '%s' "$PGDIR" | cksum | cut -d' ' -f1)"
+PGMARK="$PGSTATE/tmux-cockpit/review/fixer-$(gate_key "$PG" "$PGAP")"
+PGTMUX="$("$TMUX_REAL" -L "$PG" display-message -p '#{socket_path}'),0,0"
 mkdir -p "$PGSESS/fixer"; printf 'fix the tests\n' > "$PGSESS/fixer/reason"; printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
 printf '%s\n' $(( $(date +%s) + 300 )) > "$PGSESS/fixer/deadline"; printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
 pg_run() {                    # <command> [marker-present:1|0] -> stdout in $PGSTATE/out, rc in $PGSTATE/rc
@@ -8367,11 +8424,11 @@ pg_run() {                    # <command> [marker-present:1|0] -> stdout in $PGS
 }
 # No marker: exit 0, nothing printed, and it never touched tmux or git (PATH holds neither).
 printf '{"tool_input":{"command":"make test"}}\n' > "$PGSTATE/pay"
-pg_t0=$EPOCHREALTIME; PATH=/nonexistent TMUX_PANE=$PGAP XDG_STATE_HOME=$PGSTATE /bin/bash "$DIR/scripts/review-gate" --pretool < "$PGSTATE/pay" > "$PGSTATE/out" 2>/dev/null; pg_rc=$?
+pg_t0=$EPOCHREALTIME; PATH=/nonexistent TMUX=$PGTMUX TMUX_PANE=$PGAP XDG_STATE_HOME=$PGSTATE /bin/bash "$DIR/scripts/review-gate" --pretool < "$PGSTATE/pay" > "$PGSTATE/out" 2>/dev/null; pg_rc=$?
 is "no marker: exit 0" "0" "$pg_rc"; is "no marker: nothing printed" "" "$(cat "$PGSTATE/out")"
 awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN { exit !((b - a) < 0.2) }' && ok "no marker: one stat, under 200 ms with no tools on PATH" || bad "no marker: one stat, under 200 ms with no tools on PATH" "<0.2s" "$(awk -v a="$pg_t0" -v b="$EPOCHREALTIME" 'BEGIN{print b-a}')s"
 # Marker + live fixer + matching command: deny with a reason that names the job and tells the agent to continue.
-printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"
+printf '%s\n' "$PGSESS" > "$PGMARK"
 pg_run 'make test 2>&1 | tail'
 case "$(cat "$PGSTATE/out")" in *'"permissionDecision":"deny"'*'"permissionDecisionReason":"the side fix \"fix the tests\" is repairing this right now'*'continue with your task'*) ok "a guarded command is denied, the reason names the job and says continue" ;; *) bad "a guarded command is denied, the reason names the job and says continue" "deny JSON with the job and 'continue with your task'" "$(cat "$PGSTATE/out")" ;; esac
 is "and the hook exits 0 (the JSON is the decision)" "0" "$(cat "$PGSTATE/rc")"
@@ -8384,10 +8441,10 @@ printf 'make test|pytest\n' > "$PGSESS/fixer/guard"
 "$TMUX_REAL" -L "$PG" kill-pane -t "$PGFX"
 pg_run 'make test'
 is "a dead fixer denies nothing" "" "$(cat "$PGSTATE/out")"
-is "and the marker stays until the Stop delivers it" "present" "$([ -e "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}" ] && echo present || echo absent)"
+is "and the marker stays until the Stop delivers it" "present" "$([ -e "$PGMARK" ] && echo present || echo absent)"
 # A handover present (failed fixer, pane kept open) also opens the gate.
 PGFX=$("$TMUX_REAL" -L "$PG" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'); printf '%s\n' "$PGFX" > "$PGSESS/fixer/pane"
-printf '%s\n' "$PGSESS" > "$PGSTATE/tmux-cockpit/review/fixer-${PGAP#%}"; printf 'HANDOVER: gave up\n' > "$PGSESS/handover"
+printf '%s\n' "$PGSESS" > "$PGMARK"; printf 'HANDOVER: gave up\n' > "$PGSESS/handover"
 pg_run 'make test'; is "a written handover opens the gate even with the pane alive" "" "$(cat "$PGSTATE/out")"
 unset -f pg_run
 "$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
@@ -8401,7 +8458,7 @@ RH="cockpit-rh-$$"; SOCKS="$SOCKS $RH"; RHSTATE=$(mktmpd); RHDIR=$(mktmpd)
 "$TMUX_REAL" -L "$RH" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 RHAP=$("$TMUX_REAL" -L "$RH" list-panes -t t: -F '#{pane_id}')
 RHCTL=$("$TMUX_REAL" -L "$RH" split-window -t t -P -F '#{pane_id}' 'exec bash'); until_cap "$RH" "$RHCTL" '*$*'
-RHSESS="$RHSTATE/tmux-cockpit/review/${RHAP#%}-$(printf '%s' "$RHDIR" | cksum | cut -d' ' -f1)"; RHMARK="$RHSTATE/tmux-cockpit/review/fixer-${RHAP#%}"
+RHSESS="$RHSTATE/tmux-cockpit/review/${RHAP#%}-$(printf '%s' "$RHDIR" | cksum | cut -d' ' -f1)"; RHMARK="$RHSTATE/tmux-cockpit/review/fixer-$(gate_key "$RH" "$RHAP")"
 RHPAY=$(mktmpf); printf '{"session_id":"s","transcript_path":"/nonexistent","cwd":"%s","hook_event_name":"Stop","stop_hook_active":false}\n' "$RHDIR" > "$RHPAY"
 RHPAY2=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RHPAY" > "$RHPAY2"
 # -S -: the full scrollback, not just the visible screen -- six rh_run calls

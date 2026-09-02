@@ -8,6 +8,10 @@ Say in one line what blocks the goal and what you tried, then run:
 
     "${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}/scripts/review-gate" --concede "<that line>"
 
+Run it in your own pane, not through `ssh` or a nested `tmux -L`: the record is
+keyed to the pane and to that pane's tmux server, and one written under another
+server never fires here.
+
 It prints one line confirming (or fails, outside a cockpit pane: then say
 so and end your turn anyway). End your turn. The cockpit ends it at the next Stop, ahead of
 the goal hook's block, and shows your line to the human as the stop reason.
