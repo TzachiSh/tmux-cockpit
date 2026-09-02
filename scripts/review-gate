@@ -36,11 +36,11 @@ set -u
 pane=${TMUX_PANE:-}
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # Pane ids are per-server, so the socket path from $TMUX joins the key: the live
-# server's %5 and a private `tmux -L` one's %5 are two panes (issue #88). `_`
-# doubled before `/` becomes `_` keeps distinct paths distinct, with no fork --
-# which --pretool, on every Bash call, cannot afford. Duplicated in tmux-fixer,
-# which writes the fixer- marker this reads.
-srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}; key="${srv////_}-${pane#%}"
+# server's %5 and a private `tmux -L` one's %5 are two panes (issue #88). `_` ->
+# `__` and `/` -> `_.` are prefix-free, so no two paths encode alike, and both
+# are parameter expansion -- no fork, which --pretool cannot afford on every
+# Bash call. Duplicated in tmux-fixer, which writes the fixer- marker this reads.
+srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}; key="${srv//\//_.}-${pane#%}"
 
 # --- --concede <line>: the agent will not meet the active /goal ----------------
 # Claude Code's /goal rewakes the agent on every Stop its evaluator judges not
@@ -52,7 +52,8 @@ if [ "${1:-}" = --concede ]; then
     # $TMUX as well as the pane id: without it the key is not the one the Stop
     # hook will look under, and a concession that silently never fires is worse
     # than one that says it was not taken.
-    case "$pane${TMUX:-}" in %[0-9]*/*) ;; *) echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1 ;; esac
+    if ! case "$pane" in %[0-9]*) [ -n "${TMUX:-}" ] ;; *) false ;; esac
+    then echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1; fi
     # Before the write, whose own ${2} expansion would abort the script under
     # set -u -- inside a 2>/dev/null group, so even bash's complaint is eaten.
     [ -n "${2:-}" ] || { echo "review-gate --concede: needs a line saying what blocks the goal; nothing recorded" >&2; exit 1; }

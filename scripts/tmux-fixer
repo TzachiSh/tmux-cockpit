@@ -118,7 +118,7 @@ spawn_fixer() {               # <main-pane>
     # have a %5 (issue #88), so the socket path joins it. $TMUX is set in this
     # popup by the same server that owns $pane, which is the one the gate reads.
     srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}
-    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${srv////_}-${pane#%}"
+    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${srv//\//_.}-${pane#%}"
     (umask 077; printf '%s\n' "$sess" > "$marker")
     fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \
         "$(shq "$SELF") --run $(shq "$pane") $(shq "$sess") $(shq "$job")") || {

@@ -142,7 +142,7 @@ until_out() {                 # <pattern> <cmd...>
 # that asks the code under test for its own answer agrees with any answer.
 gate_key() {                  # <socket> <pane-id>
     local s; s=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}' 2>/dev/null)
-    s=${s//_/__}; printf '%s-%s' "${s////_}" "${2#%}"
+    s=${s//_/__}; printf '%s-%s' "${s//\//_.}" "${2#%}"
 }
 # A perf budget is CPU time, never the wall clock. Measured on this box (#75):
 # under twelve background spinners the wall tooth at the 4900-row site failed
@@ -889,6 +889,15 @@ is "--concede confirms on stdout" "concession recorded; your next turn ends here
 TMUX_PANE='' XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'x' >/dev/null 2>"$RGSTATE/cerr"
 is "--concede outside a tmux pane fails, not silently" "1" "$?"
 is "and says so on stderr" "nonempty" "$([ -s "$RGSTATE/cerr" ] && echo nonempty || echo empty)"
+# Two socket paths that differ only in where the `_` and the `/` sit. `/` -> `_`
+# mapped both to one key; `_` -> `__` with `/` -> `_.` is prefix-free, so they
+# cannot land on one file. No server needed: --concede writes and exits.
+RGENC=$(mktmpd)
+for rg_sock in '/tmp/a_/b' '/tmp/a/_b'; do
+    TMUX="$rg_sock,0,0" TMUX_PANE=$RGAP XDG_STATE_HOME="$RGENC" "$DIR/scripts/review-gate" --concede "probe $rg_sock" >/dev/null
+done
+is "two socket paths differing only in _ and / get two keys, not one" "2" \
+   "$(ls "$RGENC"/tmux-cockpit/review/ 2>/dev/null | wc -l)"
 # No $TMUX, no server to key on: the file would land under a name no Stop hook
 # reads, and a concession that silently never fires is the worse failure.
 TMUX='' TMUX_PANE=$RGAP XDG_STATE_HOME="$RGSTATE" "$DIR/scripts/review-gate" --concede 'y' >/dev/null 2>"$RGSTATE/cerr"
