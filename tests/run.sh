@@ -2036,6 +2036,208 @@ HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 is "leaves another tool's link alone" "/bin/echo" "$(readlink "$IBIN/tm")"
 rm -rf "$IB"
 
+echo "== install.sh --check: one row per thing that can be wrong, exit on the worst =="
+# The box is faked whole -- HOME, $BIN, PATH shims, an empty TMUX_TMPDIR so no
+# tmux server is reachable -- so every row is the code's answer, never this
+# machine's, and the doctor cannot read the live server.
+if ! command -v jq >/dev/null 2>&1; then skip_ "install.sh --check (no jq)"; else
+DC=$(mktmpd)
+DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DOLD="$DC/old"; DNO="$DC/notmux"
+mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DOLD" "$DNO" "$DC/tmuxtmp"
+printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
+dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
+dshim fzf "0.74.3 (15f64c49)" "$DSH"
+dshim gum "gum version v2.0.0 (b1f2)" "$DSH"
+dshim bat "bat 0.26.1 (a3c4)" "$DSH"
+dshim fzf "0.44.1 (debian)" "$DOLD"
+# The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
+# PATH" is the absence itself rather than a shim standing in for it.
+for u in bash dirname jq; do ln -s "$(command -v "$u")" "$DNO/$u" 2>/dev/null; done
+HOME="$DH" "$DIR/install.sh" --hooks >/dev/null 2>&1
+dc() {                        # dc <PATH> -- the doctor's output on the fake box
+    env -u TMUX -u TMUX_PANE HOME="$DH" XDG_BIN_HOME="$DBIN" XDG_CONFIG_HOME="$DH/.config" \
+        TMUX_TMPDIR="$DC/tmuxtmp" PATH="$1" "$DIR/install.sh" --check 2>&1
+}
+# Mark and row name only: the found and fix columns are prose and would make
+# every rewording a red suite.
+dcrows() { sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p'; }
+dcrow() { printf '%s\n' "$1" | dcrows | grep -c -x "$2"; }
+
+# vnum is install.sh's own copy of the parser in scripts/tui-fetch (neither
+# script can source the other). Lifted out whole, so these assert the numbers
+# rather than a row's verdict.
+eval "$(sed -n '/^vnum() {/,/^}/p' "$DIR/install.sh")"
+dcge() { [ "$(vnum "$1" 2>/dev/null)" -ge "$(vnum "$2" 2>/dev/null)" ] 2>/dev/null \
+         && echo yes || echo no; }
+is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/dev/null)"
+is "vnum: 0.63.0 is not below itself" "yes" "$(dcge 0.63.0 0.63.0)"
+is "vnum: the debian fzf is below the 0.63.0 floor, and only that way" "no yes" \
+   "$(dcge '0.44.1 (debian)' 0.63.0) $(dcge 0.63.0 '0.44.1 (debian)')"
+
+DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
+before=$(find "$DH" "$DBIN" | sort)
+dcout=$(dc "$DCP"); dcrc=$?
+is "the doctor writes nothing" "$before" "$(find "$DH" "$DBIN" | sort)"
+is "fzf at the pinned version is an ok row" "1" "$(dcrow "$dcout" "ok fzf")"
+is "a wired config is an ok row"            "1" "$(dcrow "$dcout" "ok config")"
+is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
+# Neither can be answered from a bare shell, and a skip is 0: a doctor that
+# failed in CI over a missing client would be ignored everywhere else.
+is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolor")"
+is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
+dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
+if [ "$(dcge "$dctv" 3.7)" = no ]; then
+    skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.7)"
+else
+    is "and the whole run exits 0"          "0" "$dcrc"
+fi
+# Debian ships 0.44.1, below the 0.63 floor the styled pickers need: a warning,
+# never a failure -- it is today's shipped experience.
+dcout=$(dc "$DOLD:$DCP"); dcrc=$?
+is "an fzf below the floor is a warn row"   "1" "$(dcrow "$dcout" "warn fzf")"
+is "and warnings exit 1"                    "1" "$dcrc"
+dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
+is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
+is "and a failure exits 2"                  "2" "$dcrc"
+# tmux loads both files, so the run-shell line in either one wires the box.
+mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
+dcout=$(dc "$DCP")
+is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
+rm -rf "$DH/.config"
+dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
+is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
+case "$dcout" in
+    *"--check runs alone"*"usage: install.sh"*) ok "and says which flag it refused, with usage" ;;
+    *) bad "and says which flag it refused, with usage" \
+           "--check runs alone ... usage: install.sh" "$dcout" ;;
+esac
+rm -rf "$DC"
+fi
+
+echo "== bootstrap.sh --full: verified before it installs, and the first backup kept =="
+# A file:// release tree, a faked box, and a sudo shim that would exit 99 if
+# anything reached for it. Nothing here opens a socket, touches the real HOME
+# or talks to a tmux server.
+if ! command -v curl >/dev/null 2>&1; then skip_ "bootstrap.sh --full (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh --full (no sha256sum)"; else
+BS=$(mktmpd)
+BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/rel"; BSBIN=""
+mkdir -p "$BH/.tmux/plugins" "$BB" "$BB2" "$BSH" "$BS/tmuxtmp"
+# Every plugin already cloned, every package already present, no ~/.claude and
+# no claude on PATH: the packages, plugins and hooks steps all do nothing, so
+# what runs is the step under test.
+for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do
+    mkdir -p "$BH/.tmux/plugins/$d/.git"
+done
+printf '#!/bin/sh\ntouch "%s"\nexit 99\n' "$BS/SUDO_RAN" > "$BSH/sudo"
+printf '#!/bin/sh\necho "0.44.1 (debian)"\n' > "$BSH/fzf"
+printf '#!/bin/sh\necho "bat 0.24.0"\n' > "$BSH/batcat"
+chmod +x "$BSH/sudo" "$BSH/fzf" "$BSH/batcat"
+BPATH="$BSH:$SHIM:/usr/bin:/bin"
+printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
+bs() {                        # bs <args...> -- bootstrap.sh on the faked box
+    env -u TMUX -u TMUX_PANE HOME="$BH" XDG_BIN_HOME="${BSBIN:-$BB}" \
+        XDG_CONFIG_HOME="$BH/.config" TMUX_TMPDIR="$BS/tmuxtmp" \
+        COCKPIT_GITHUB="file://$REL" PATH="$BPATH" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
+}
+# One tarball per published asset name, so the block never repeats the uname
+# mapping the script under test owns. The binaries are shell scripts: the only
+# thing asked of them is --version, which is what a checksum cannot answer.
+mkrel() {                     # mkrel [flip|nosums|noasset]
+    local a d f="$REL/junegunn/fzf/releases/download/v0.74.3"
+    rm -rf "$REL" "$BS/pack"; mkdir -p "$f" "$BS/pack"
+    printf '#!/bin/sh\necho "0.74.3 (15f64c49)"\n' > "$BS/pack/fzf"; chmod +x "$BS/pack/fzf"
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        ( cd "$BS/pack" && tar -czf "$f/fzf-0.74.3-$a.tar.gz" fzf )
+    done
+    ( cd "$f" && sha256sum fzf-0.74.3-*.tar.gz > fzf_0.74.3_checksums.txt )
+    d="$REL/charmbracelet/gum/releases/download/v2.0.0"; mkdir -p "$d"
+    for a in Linux_x86_64 Linux_arm64 Darwin_x86_64 Darwin_arm64; do
+        rm -rf "$BS/pack"; mkdir -p "$BS/pack/gum_2.0.0_$a"
+        printf '#!/bin/sh\necho "gum version v2.0.0 (b1f2)"\n' > "$BS/pack/gum_2.0.0_$a/gum"
+        chmod +x "$BS/pack/gum_2.0.0_$a/gum"
+        ( cd "$BS/pack" && tar -czf "$d/gum_2.0.0_$a.tar.gz" "gum_2.0.0_$a" )
+    done
+    ( cd "$d" && sha256sum gum_2.0.0_*.tar.gz > checksums.txt )
+    d="$REL/sharkdp/bat/releases/download/v0.26.1"; mkdir -p "$d"
+    for a in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
+             x86_64-apple-darwin aarch64-apple-darwin; do
+        rm -rf "$BS/pack"; mkdir -p "$BS/pack/bat-v0.26.1-$a"
+        printf '#!/bin/sh\necho "bat 0.26.1 (a3c4)"\n' > "$BS/pack/bat-v0.26.1-$a/bat"
+        chmod +x "$BS/pack/bat-v0.26.1-$a/bat"
+        ( cd "$BS/pack" && tar -czf "$d/bat-v0.26.1-$a.tar.gz" "bat-v0.26.1-$a" )
+    done
+    case "${1:-}" in
+        flip) awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
+                  "$f/fzf_0.74.3_checksums.txt" > "$f/s2" &&
+              mv "$f/s2" "$f/fzf_0.74.3_checksums.txt" ;;
+        nosums)  rm -f "$f/fzf_0.74.3_checksums.txt" "$f"/fzf-0.74.3-*.tar.gz ;;
+        noasset) rm -f "$f"/fzf-0.74.3-*.tar.gz ;;
+    esac
+}
+bsclear() { rm -f "$BB/fzf" "$BB/gum" "$BB/bat"; }
+bssaid() {                    # bssaid <label> <literal line the freeze spells>
+    case "$3" in
+        *"$2"*) ok "$1" ;;
+        *) bad "$1" "$2" "$3" ;;
+    esac
+}
+
+mkrel
+bsout=$(bs --full); bsrc=$?
+is "--full installs all three pinned tools into \$BIN" "fzf gum bat" \
+   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+is "and each is the version the pin names" "0.74.3 (15f64c49)" "$("$BB/fzf" --version 2>/dev/null)"
+is "and the run exits 0" "0" "$bsrc"
+# The probe is $BIN/<tool>, never PATH: the shimmed 0.44.1 fzf sits ahead of
+# $BIN here, and probing PATH would re-download all three on every run.
+bsout=$(bs --full)
+is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c 'already current')"
+
+bsclear; mkrel flip
+bsout=$(bs --full); bsrc=$?
+bssaid "a flipped checksum installs nothing" \
+       "FAIL:  fzf checksum mismatch -- NOT installed" "$bsout"
+is "and \$BIN/fzf stays absent" "absent" "$([ -e "$BB/fzf" ] && echo present || echo absent)"
+is "and the run exits 1" "1" "$bsrc"
+
+# Offline is not a failure: the tools are optional and the run has to end 0.
+bsclear; mkrel noasset
+bsout=$(bs --full); bsrc=$?
+bssaid "an asset it cannot fetch is a skip" "skip:  fzf (download failed -- offline?)" "$bsout"
+is "and the run still exits 0" "0" "$bsrc"
+
+# Fail closed the other way round: "could not verify" is not "verified". The
+# asset is gone too, so taking it before the sums would say skip, not FAIL.
+bsclear; mkrel nosums
+bsout=$(bs --full)
+bssaid "unreachable checksums refuse the install" "FAIL:  fzf checksums unreachable" "$bsout"
+
+mkrel; BSBIN="$BB2"
+bsout=$(bs --full --dry-run); BSBIN=""
+bssaid "--dry-run names the fetch" "would: fetch fzf 0.74.3" "$bsout"
+is "and creates nothing under \$BIN" "0" "$(ls -A "$BB2" | wc -l)"
+
+bsclear; bsout=$(bs --check --full); is "--check with --full exits 2" "2" "$?"
+bssaid "and says which flag it refused" "--check runs alone" "$bsout"
+is "and fetches nothing" "absent" "$([ -e "$BB/fzf" ] && echo present || echo absent)"
+bsout=$(bs --latest); is "--latest without --full exits 2" "2" "$?"
+bssaid "and says which flag it needs" "--latest needs --full" "$bsout"
+is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
+
+# The re-append: the run-shell line was removed, so bootstrap appends again --
+# and the pristine backup taken the first time must survive it.
+printf '# mine\n' > "$BH/.tmux.conf"; rm -f "$BH/.tmux.conf.bak"
+bs >/dev/null 2>&1
+is "the first append backs the config up" "# mine" "$(cat "$BH/.tmux.conf.bak" 2>/dev/null)"
+grep -v cockpit "$BH/.tmux.conf" > "$BH/c2" && mv "$BH/c2" "$BH/.tmux.conf"
+printf '# edited since\n' >> "$BH/.tmux.conf"
+bsout=$(bs)
+is "a re-append keeps the FIRST backup" "# mine" "$(cat "$BH/.tmux.conf.bak" 2>/dev/null)"
+bssaid "and says the backup was kept" "(existing backup kept, not overwritten)" "$bsout"
+rm -rf "$BS"
+fi
+
 echo "== HOME unset must not kill the path picker =="
 # set -u plus a bare $HOME: a "~/..." token on a clicked line aborted the script
 # outright wherever HOME is missing -- a stripped run-shell, a systemd tmux.

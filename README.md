@@ -175,6 +175,21 @@ file or by another tool's link, reports anything it could not create, and
 `--uninstall` removes only links that point back into the plugin (and reports
 anything it could not remove). `install.sh --help` prints usage and exits.
 
+`install.sh --check` is the doctor. It writes nothing and fixes nothing: one
+row per thing that can be wrong (tmux, jq, fzf, bat, gum, `$PATH` order, the
+config, the hooks, truecolor, the popup border), the fix beside it, and the
+exit is the worst row, 0 ok or skipped, 1 warnings, 2 something is broken.
+Rows it cannot answer from where you ran it, such as truecolor outside tmux,
+come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
+
+`bootstrap.sh --full` is the opt-in tier: it fetches pinned versions of fzf,
+gum and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
+project publishes checksums, and shadows a distro copy rather than replacing
+it. No sudo, and nothing is downloaded when tmux loads the plugin or when you
+press a key. Add `--latest` for each project's newest tag instead of the pins.
+Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
+match installs nothing. On macOS with brew it runs `brew install fzf bat gum`.
+
 The board (`prefix + w`) is the one optional extra: a small binary, fetched by
 `prefix + U` or built with `make tui`. Everything else here works without it.
 See [docs/tui.md](docs/tui.md).
@@ -261,6 +276,11 @@ over earlier, `prefix r` included.
   window instead, which repaints like any other window and binds down to 3.3.
   Building the board from source with `make tui` also needs **Rust >= 1.88**;
   the fetched binary needs neither Rust nor cargo.
+- **fzf >= 0.63** for the styled pickers; below it they still work, plainer.
+  Debian and Ubuntu ship 0.44.1, so `bootstrap.sh --full` fetches 0.74.3 into
+  `~/.local/bin` and `install.sh --check` says which tier you are on. `bat`
+  (`batcat` on Debian) and `gum` are optional; `jq` is needed by
+  `install.sh --hooks` and the review gate.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 
