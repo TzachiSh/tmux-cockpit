@@ -51,10 +51,9 @@ esac; done
 
 
 # ---------------------------------------------------------------- doctor ----
-# vnum: 0.74.3 -> 0074003, "0.44.1 (debian)" -> 0044001, 3.7c -> 3007000. The
-# twin is in scripts/tui-fetch; neither script can source the other without
-# pulling in the rest of it. Never cockpit.tmux's version_at_least, which reads
-# ${v#*.} as the minor and so grades every three-component version as 0.
+# vnum: 0.74.3 -> 0074003, 3.7c -> 3007000. The twin is in scripts/tui-fetch;
+# neither script can source the other. Never cockpit.tmux's version_at_least,
+# which reads ${v#*.} as the minor and grades 0.74.3 as 0.
 vnum() {
     local v=${1%% *}; v=${v#v}; local IFS=.
     # shellcheck disable=SC2086  # split on the dots is the point
@@ -64,8 +63,8 @@ vnum() {
     printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"
 }
 
-# fzf, bat and gum each name their version in a different field, so the field
-# number belongs to the tool and there is no shared parser to get it wrong.
+# Each tool names its version in its own field. A builtin, not awk: the fail
+# rows still have to be right on a PATH with nothing on it.
 fld() {                       # fld <field> <version line>
     local n=$1 i=1 w
     # shellcheck disable=SC2086  # ditto, on whitespace
@@ -148,13 +147,17 @@ if [ "$check" -eq 1 ]; then
     esac
 
     conf=''; wired=0
+    # Both candidates, not the first readable one: tmux loads both, so the
+    # run-shell line in either wires the box.
     for c in "${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf" "${HOME:-}/.tmux.conf"; do
-        [ -r "$c" ] && { conf="$c"; break; }
+        [ -r "$c" ] || continue
+        [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
+        # read, not grep: this row still has to answer on a PATH with nothing on it.
+        while read -r l || [ -n "$l" ]; do
+            case "$l" in *cockpit.tmux*) wired=1; conf="$c"; break ;; esac
+        done < "$c"
+        [ "$wired" -eq 1 ] && break
     done
-    # read, not grep: this row still has to answer on a PATH with nothing on it.
-    [ -n "$conf" ] && while read -r l || [ -n "$l" ]; do
-        case "$l" in *cockpit.tmux*) wired=1; break ;; esac
-    done < "$conf"
     wire_fix="run bootstrap.sh, or add run-shell $DIR/cockpit.tmux"
     if [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"

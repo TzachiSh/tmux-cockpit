@@ -46,7 +46,9 @@ esac; done
 [ "$latest" -eq 1 ] && [ "$full" -eq 0 ] && {
     printf -- '--latest needs --full\n\n%s\n' "$USAGE" >&2; exit 2; }
 # One implementation of the doctor, in install.sh; this is only the name people
-# reach for first.
+# reach for first, and it reports rather than doing any of the rest.
+[ "$check" -eq 1 ] && [ $((full + latest + dry + assume_yes)) -gt 0 ] && {
+    printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
 [ "$check" -eq 1 ] && exec "$DIR/install.sh" --check
 
 did=() skipped=() failed=()
@@ -193,10 +195,9 @@ else
         if [ "$dry" -eq 1 ]; then
             printf '  would: append run-shell to %s\n' "$CONF"
         else
-            # Keep the FIRST backup. This step runs again whenever the
-            # run-shell line was removed, and overwriting the backup there
-            # replaces the pristine config with one cockpit already edited.
-            # install.sh guards settings.json.bak the same way.
+            # Keep the FIRST backup: this step runs again whenever the
+            # run-shell line was removed, and the second copy would already
+            # carry cockpit's own edit. install.sh guards its .bak the same way.
             bak_ok=1; bak_note=" (backup: $CONF.bak)"
             if [ -e "$CONF.bak" ]; then
                 bak_note=' (existing backup kept, not overwritten)'
@@ -227,10 +228,9 @@ else
 fi
 
 # ----------------------------------------------------------- latest tools ----
-# Opt-in (--full) and pinned, the way fzf's own installer pins: a fetch into
-# $BIN, never over a distro binary, never with sudo, and never from anything
-# tmux runs on its own. Debian ships fzf 0.44.1, below the 0.63 floor the
-# styled pickers need, and shadowing it in $BIN is the only clean way up.
+# Opt-in and pinned, the way fzf's own installer pins. Debian ships fzf 0.44.1,
+# below the 0.63 floor the styled pickers need, and shadowing it in $BIN is the
+# only clean way up: never over a distro binary, never with sudo.
 FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
 
 # The releases redirect, not the API: no token and no 60-per-hour quota.
@@ -247,9 +247,8 @@ latest_tag() {                # latest_tag <owner/repo> <pin>
 }
 
 # Checksums first, then the asset: "could not verify" is not "verified", so an
-# unreachable sums file fails closed while an unreachable asset is only a skip
-# (offline is the ordinary case, and these tools are optional). Same order as
-# scripts/tui-fetch, which fetches the board binary.
+# unreachable sums file fails closed while an unreachable asset is only a skip.
+# Same order as scripts/tui-fetch.
 fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
     local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 tmp a depth
     if [ "$dry" -eq 1 ]; then printf '  would: fetch %s %s\n' "$name" "$ver"; return 0; fi
@@ -277,7 +276,9 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     if ! tar -xzf "$tmp/a.tgz" -C "$tmp" --strip-components="$depth" "$path" 2>/dev/null; then
         printf '  FAIL:  %s could not extract %s\n' "$name" "$path" >&2; return 1
     fi
-    mkdir -p "$BIN" && install -m 755 "$tmp/${path##*/}" "$BIN/$name" || return 1
+    if ! ( mkdir -p "$BIN" && install -m 755 "$tmp/${path##*/}" "$BIN/$name" ); then
+        printf '  FAIL:  %s could not install into %s\n' "$name" "$BIN" >&2; return 1
+    fi
     printf '  ok:    %s -> %s %s\n' "$name" "$BIN/$name" "$ver"
 }
 
@@ -315,6 +316,8 @@ if [ "$full" -eq 1 ]; then
             FZF=$(latest_tag junegunn/fzf "$FZF")
             GUM=$(latest_tag charmbracelet/gum "$GUM")
             BAT=$(latest_tag sharkdp/bat "$BAT")
+        elif [ "$latest" -eq 1 ]; then
+            note "would: resolve the latest tags first; the pins are shown"
         fi
         # The probe is "$BIN/<tool>", never PATH: with a distro fzf ahead of
         # $BIN, a PATH probe re-downloads everything on every run.

@@ -2050,10 +2050,8 @@ dshim fzf "0.74.3 (15f64c49)" "$DSH"
 dshim gum "gum version v2.0.0 (b1f2)" "$DSH"
 dshim bat "bat 0.26.1 (a3c4)" "$DSH"
 dshim fzf "0.44.1 (debian)" "$DOLD"
-# The no-tmux PATH carries exactly what install.sh itself needs -- bash for its
-# own shebang, dirname(1) for its own directory, jq for the hooks row -- and
-# nothing else, so "no tmux on PATH" is the absence itself rather than a shim
-# standing in for it.
+# The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
+# PATH" is the absence itself rather than a shim standing in for it.
 for u in bash dirname jq; do ln -s "$(command -v "$u")" "$DNO/$u" 2>/dev/null; done
 HOME="$DH" "$DIR/install.sh" --hooks >/dev/null 2>&1
 dc() {                        # dc <PATH> -- the doctor's output on the fake box
@@ -2073,7 +2071,8 @@ dcge() { [ "$(vnum "$1" 2>/dev/null)" -ge "$(vnum "$2" 2>/dev/null)" ] 2>/dev/nu
          && echo yes || echo no; }
 is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/dev/null)"
 is "vnum: 0.63.0 is not below itself" "yes" "$(dcge 0.63.0 0.63.0)"
-is "vnum: the debian fzf is below the 0.63.0 floor" "no" "$(dcge '0.44.1 (debian)' 0.63.0)"
+is "vnum: the debian fzf is below the 0.63.0 floor, and only that way" "no yes" \
+   "$(dcge '0.44.1 (debian)' 0.63.0) $(dcge 0.63.0 '0.44.1 (debian)')"
 
 DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
 before=$(find "$DH" "$DBIN" | sort)
@@ -2100,6 +2099,11 @@ is "and warnings exit 1"                    "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
 is "and a failure exits 2"                  "2" "$dcrc"
+# tmux loads both files, so the run-shell line in either one wires the box.
+mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
+dcout=$(dc "$DCP")
+is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
+rm -rf "$DH/.config"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
 case "$dcout" in
@@ -2167,7 +2171,7 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         flip) awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
                   "$f/fzf_0.74.3_checksums.txt" > "$f/s2" &&
               mv "$f/s2" "$f/fzf_0.74.3_checksums.txt" ;;
-        nosums)  rm -f "$f/fzf_0.74.3_checksums.txt" ;;
+        nosums)  rm -f "$f/fzf_0.74.3_checksums.txt" "$f"/fzf-0.74.3-*.tar.gz ;;
         noasset) rm -f "$f"/fzf-0.74.3-*.tar.gz ;;
     esac
 }
@@ -2203,7 +2207,8 @@ bsout=$(bs --full); bsrc=$?
 bssaid "an asset it cannot fetch is a skip" "skip:  fzf (download failed -- offline?)" "$bsout"
 is "and the run still exits 0" "0" "$bsrc"
 
-# Fail closed the other way round: "could not verify" is not "verified".
+# Fail closed the other way round: "could not verify" is not "verified". The
+# asset is gone too, so taking it before the sums would say skip, not FAIL.
 bsclear; mkrel nosums
 bsout=$(bs --full)
 bssaid "unreachable checksums refuse the install" "FAIL:  fzf checksums unreachable" "$bsout"
@@ -2213,6 +2218,9 @@ bsout=$(bs --full --dry-run); BSBIN=""
 bssaid "--dry-run names the fetch" "would: fetch fzf 0.74.3" "$bsout"
 is "and creates nothing under \$BIN" "0" "$(ls -A "$BB2" | wc -l)"
 
+bsclear; bsout=$(bs --check --full); is "--check with --full exits 2" "2" "$?"
+bssaid "and says which flag it refused" "--check runs alone" "$bsout"
+is "and fetches nothing" "absent" "$([ -e "$BB/fzf" ] && echo present || echo absent)"
 bsout=$(bs --latest); is "--latest without --full exits 2" "2" "$?"
 bssaid "and says which flag it needs" "--latest needs --full" "$bsout"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
