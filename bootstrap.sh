@@ -3,6 +3,9 @@
 #
 #   ./bootstrap.sh             ask before each step
 #   ./bootstrap.sh --yes       take every default, ask nothing
+#   ./bootstrap.sh --full      also fetch the pinned fzf, gum and bat into $BIN
+#   ./bootstrap.sh --full --latest   the same, at each project's newest tag
+#   ./bootstrap.sh --check     run install.sh --check (the doctor) and exit
 #   ./bootstrap.sh --dry-run   print what would happen, change nothing
 #   ./bootstrap.sh --help
 #
@@ -25,15 +28,26 @@ PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
 TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=3
 TMUX_CLICK_MAJ=3 TMUX_CLICK_MIN=7
 
-assume_yes=0 dry=0
+USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--full [--latest]] [--check]'
+assume_yes=0 dry=0 full=0 latest=0 check=0
 for a in "$@"; do case "$a" in
     "") ;;
     --yes|-y)  assume_yes=1 ;;
+    --full)    full=1 ;;
+    --latest)  latest=1 ;;
+    --check)   check=1 ;;
     --dry-run) dry=1 ;;
-    --help|-h) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     # A typo must not install a different set of things than the user asked for.
-    *) printf 'unknown option: %s\n\nusage: bootstrap.sh [--yes] [--dry-run]\n' "$a" >&2; exit 2 ;;
+    *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
+# --latest is an opt-in on top of --full, never instead of it: alone it would
+# resolve three tags for a fetch that never runs.
+[ "$latest" -eq 1 ] && [ "$full" -eq 0 ] && {
+    printf -- '--latest needs --full\n\n%s\n' "$USAGE" >&2; exit 2; }
+# One implementation of the doctor, in install.sh; this is only the name people
+# reach for first.
+[ "$check" -eq 1 ] && exec "$DIR/install.sh" --check
 
 did=() skipped=() failed=()
 note()  { printf '  %s\n' "$*"; }
@@ -56,6 +70,7 @@ ask() {  # ask <question> <default y|n>
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux } maj min
@@ -177,13 +192,25 @@ else
     if ask "append the run-shell line to it? (a backup is kept)" y; then
         if [ "$dry" -eq 1 ]; then
             printf '  would: append run-shell to %s\n' "$CONF"
-        elif cp -- "$CONF" "$CONF.bak" &&
-             printf '\n# tmux-cockpit\nrun-shell %s/cockpit.tmux\n' "$DIR" >> "$CONF"; then
-            did+=("append run-shell to $CONF (backup $CONF.bak)")
-            printf '  ok:    appended to %s (backup: %s.bak)\n' "$CONF" "$CONF"
-            note "the full example config is at $DIR/examples/full.tmux.conf"
         else
-            failed+=("append to $CONF")
+            # Keep the FIRST backup. This step runs again whenever the
+            # run-shell line was removed, and overwriting the backup there
+            # replaces the pristine config with one cockpit already edited.
+            # install.sh guards settings.json.bak the same way.
+            bak_ok=1; bak_note=" (backup: $CONF.bak)"
+            if [ -e "$CONF.bak" ]; then
+                bak_note=' (existing backup kept, not overwritten)'
+            elif ! cp -- "$CONF" "$CONF.bak"; then
+                bak_ok=0
+            fi
+            if [ "$bak_ok" -eq 1 ] &&
+               printf '\n# tmux-cockpit\nrun-shell %s/cockpit.tmux\n' "$DIR" >> "$CONF"; then
+                did+=("append run-shell to $CONF$bak_note")
+                printf '  ok:    appended to %s%s\n' "$CONF" "$bak_note"
+                note "the full example config is at $DIR/examples/full.tmux.conf"
+            else
+                failed+=("append to $CONF")
+            fi
         fi
     else
         skipped+=("config")
@@ -197,6 +224,114 @@ if ask "link tm, tmux-branch and tmux-open-path into ~/.local/bin?" y; then
     else "$DIR/install.sh" && did+=("linked commands") || failed+=("install.sh"); fi
 else
     skipped+=("commands")
+fi
+
+# ----------------------------------------------------------- latest tools ----
+# Opt-in (--full) and pinned, the way fzf's own installer pins: a fetch into
+# $BIN, never over a distro binary, never with sudo, and never from anything
+# tmux runs on its own. Debian ships fzf 0.44.1, below the 0.63 floor the
+# styled pickers need, and shadowing it in $BIN is the only clean way up.
+FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
+
+# The releases redirect, not the API: no token and no 60-per-hour quota.
+latest_tag() {                # latest_tag <owner/repo> <pin>
+    local u v
+    u=$(curl -fsSLI -o /dev/null -w '%{url_effective}' --max-time 30 \
+        "$G/$1/releases/latest" 2>/dev/null)
+    v=${u##*/tag/}; v=${v#v}
+    case "$v" in
+        ''|*/*) note "could not resolve the latest $1; keeping the pin $2" >&2
+                printf '%s\n' "$2" ;;
+        *) printf '%s\n' "$v" ;;
+    esac
+}
+
+# Checksums first, then the asset: "could not verify" is not "verified", so an
+# unreachable sums file fails closed while an unreachable asset is only a skip
+# (offline is the ordinary case, and these tools are optional). Same order as
+# scripts/tui-fetch, which fetches the board binary.
+fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
+    local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 tmp a depth
+    if [ "$dry" -eq 1 ]; then printf '  would: fetch %s %s\n' "$name" "$ver"; return 0; fi
+    if [ "$have" = "$ver" ]; then
+        printf '  ok:    %s %s already current\n' "$name" "$ver"; return 0
+    fi
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf "$tmp"' RETURN
+    a=${asset##*/}
+    if [ "$sums" = - ]; then
+        printf '  note:  %s publishes no checksums; TLS only\n' "$name"
+    elif ! curl -fsSL --max-time 30 -o "$tmp/sums" "$sums"; then
+        printf '  FAIL:  %s checksums unreachable\n' "$name" >&2; return 1
+    fi
+    if ! curl -fsSL --retry 2 --max-time 120 -o "$tmp/a.tgz" "$asset"; then
+        printf '  skip:  %s (download failed -- offline?)\n' "$name" >&2; return 0
+    fi
+    # Rewrite the published name onto the temp file, so sha256sum -c checks the
+    # bytes that arrived rather than a name that is not on disk.
+    if [ "$sums" != - ] && ! ( cd "$tmp" && grep -E " \*?${a//./\\.}\$" sums |
+            sed -E "s| \*?${a//./\\.}\$| a.tgz|" | sha_c ) >/dev/null 2>&1; then
+        printf '  FAIL:  %s checksum mismatch -- NOT installed\n' "$name" >&2; return 1
+    fi
+    depth=$(( $(printf '%s' "$path" | tr -cd / | wc -c) ))
+    if ! tar -xzf "$tmp/a.tgz" -C "$tmp" --strip-components="$depth" "$path" 2>/dev/null; then
+        printf '  FAIL:  %s could not extract %s\n' "$name" "$path" >&2; return 1
+    fi
+    mkdir -p "$BIN" && install -m 755 "$tmp/${path##*/}" "$BIN/$name" || return 1
+    printf '  ok:    %s -> %s %s\n' "$name" "$BIN/$name" "$ver"
+}
+
+if [ "$full" -eq 1 ]; then
+    step "latest tools"
+    BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+    G="${COCKPIT_GITHUB:-https://github.com}"
+    fz='' gu='' ba=''
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64|Linux/amd64) fz=linux_amd64; gu=Linux_x86_64
+                                  ba=x86_64-unknown-linux-musl ;;
+        Linux/aarch64|Linux/arm64) fz=linux_arm64; gu=Linux_arm64
+                                   ba=aarch64-unknown-linux-musl ;;
+        Darwin/x86_64) fz=darwin_amd64; gu=Darwin_x86_64; ba=x86_64-apple-darwin ;;
+        Darwin/arm64|Darwin/aarch64) fz=darwin_arm64; gu=Darwin_arm64
+                                     ba=aarch64-apple-darwin ;;
+    esac
+    if [ -z "$fz" ]; then
+        note "no prebuilt binaries for $(uname -s)/$(uname -m), use your package manager"
+        skipped+=("latest tools: no prebuilt binaries")
+    elif [ "$(uname -s)" = Darwin ] && have brew; then
+        # brew already owns these on macOS; a fetched copy would shadow the one
+        # it upgrades, and only one of the two would ever move again.
+        if ask "install fzf, gum and bat with brew?" y; then
+            run "brew install fzf bat gum" brew install fzf bat gum
+        else
+            skipped+=("latest tools")
+        fi
+    elif ! have curl; then
+        note "curl is missing; nothing to fetch with"
+        skipped+=("latest tools: no curl")
+    elif ask "fetch fzf $FZF, gum $GUM and bat $BAT into $BIN?" y; then
+        # Not in a dry run: a preview opens no connection, and the redirect is one.
+        if [ "$latest" -eq 1 ] && [ "$dry" -eq 0 ]; then
+            FZF=$(latest_tag junegunn/fzf "$FZF")
+            GUM=$(latest_tag charmbracelet/gum "$GUM")
+            BAT=$(latest_tag sharkdp/bat "$BAT")
+        fi
+        # The probe is "$BIN/<tool>", never PATH: with a distro fzf ahead of
+        # $BIN, a PATH probe re-downloads everything on every run.
+        fetch_tool fzf "$FZF" "$("$BIN/fzf" --version 2>/dev/null | awk '{print $1}')" \
+            "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
+            "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
+            fzf || failed+=("fetch fzf")
+        fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
+            "$G/charmbracelet/gum/releases/download/v$GUM/gum_${GUM}_$gu.tar.gz" \
+            "$G/charmbracelet/gum/releases/download/v$GUM/checksums.txt" \
+            "gum_${GUM}_$gu/gum" || failed+=("fetch gum")
+        fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
+            "$G/sharkdp/bat/releases/download/v$BAT/bat-v$BAT-$ba.tar.gz" - \
+            "bat-v$BAT-$ba/bat" || failed+=("fetch bat")
+    else
+        skipped+=("latest tools")
+    fi
 fi
 
 # ------------------------------------------------------------------ hooks ----
@@ -223,6 +358,13 @@ step "summary"
 for x in "${did[@]:-}";     do [ -n "$x" ] && printf '  done     %s\n' "$x"; done
 for x in "${skipped[@]:-}"; do [ -n "$x" ] && printf '  skipped  %s\n' "$x"; done
 for x in "${failed[@]:-}";  do [ -n "$x" ] && printf '  FAILED   %s\n' "$x" >&2; done
+
+# --full ends by showing the state it left behind. Advisory, like brew doctor:
+# its exit grades the box, not this run, so it never becomes ours.
+if [ "$full" -eq 1 ] && [ "$dry" -eq 0 ]; then
+    printf '\n'
+    "$DIR/install.sh" --check || :
+fi
 
 if [ "${#failed[@]}" -gt 0 ] && [ -n "${failed[0]:-}" ]; then
     printf '\nSome steps failed. Fix them and re-run: this script is idempotent.\n' >&2

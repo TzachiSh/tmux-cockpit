@@ -2,6 +2,7 @@
 # tmux-cockpit installer.
 #   ./install.sh            symlink the commands into ~/.local/bin
 #   ./install.sh --uninstall  remove only the symlinks that point back here
+#   ./install.sh --check      the doctor: one row per thing that can be wrong
 #
 # The tmux side needs no install: one run-shell line in ~/.tmux.conf loads
 # cockpit.tmux, which binds its own keys. This script exists for the two scripts
@@ -22,17 +23,23 @@ if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
 fi
 COMMANDS=(tm tmux-branch tmux-open-path)
 
-uninstall=0; hooks=0; dry=0
+USAGE='usage: install.sh [--check] [--uninstall] [--hooks [--dry-run]]'
+uninstall=0; hooks=0; dry=0; check=0
 for a in "$@"; do case "$a" in
     "") ;;
-    -h|--help) printf 'usage: install.sh [--uninstall] [--hooks [--dry-run]]\n'; exit 0 ;;
+    -h|--help) printf '%s\n' "$USAGE"; exit 0 ;;
     --uninstall) uninstall=1 ;;
+    --check)     check=1 ;;
     --hooks)     hooks=1 ;;
     --dry-run)   dry=1 ;;
     # A typo used to install silently. "./install.sh --uninstal" removing
     # nothing while reporting nothing is the worst possible answer.
-    *) printf 'unknown option: %s\n\nusage: install.sh [--uninstall] [--hooks [--dry-run]]\n' "$a" >&2; exit 2 ;;
+    *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
+# --check reports and changes nothing, so pairing it with a flag that writes
+# would mean one of the two was silently ignored.
+[ "$check" -eq 1 ] && [ $((uninstall + hooks + dry)) -gt 0 ] && {
+    printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
 # --dry-run only means something as a preview of --hooks; alone it previews
 # nothing and silently doing so would look like a no-op success.
 [ "$dry" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--dry-run needs --hooks\n' >&2; exit 2; }
@@ -41,6 +48,156 @@ esac; done
 # silent-wrong-answer this script refuses everywhere else -- a hard error is
 # the honest answer here, not a quiet no-op.
 [ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
+
+
+# ---------------------------------------------------------------- doctor ----
+# vnum: 0.74.3 -> 0074003, "0.44.1 (debian)" -> 0044001, 3.7c -> 3007000. The
+# twin is in scripts/tui-fetch; neither script can source the other without
+# pulling in the rest of it. Never cockpit.tmux's version_at_least, which reads
+# ${v#*.} as the minor and so grades every three-component version as 0.
+vnum() {
+    local v=${1%% *}; v=${v#v}; local IFS=.
+    # shellcheck disable=SC2086  # split on the dots is the point
+    set -- $v
+    local a=${1:-0} b=${2:-0} c=${3:-0}
+    a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
+    printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"
+}
+
+# fzf, bat and gum each name their version in a different field, so the field
+# number belongs to the tool and there is no shared parser to get it wrong.
+fld() {                       # fld <field> <version line>
+    local n=$1 i=1 w
+    # shellcheck disable=SC2086  # ditto, on whitespace
+    set -- $2
+    for w in "$@"; do
+        [ "$i" -eq "$n" ] && { printf '%s\n' "$w"; return 0; }
+        i=$((i+1))
+    done
+}
+
+# The exit is the worst row: 0 ok or skip, 1 warn, 2 fail. skip is 0 on
+# purpose -- a bare shell cannot answer the last two rows, and a doctor that
+# cried failure over that would be ignored the way brew doctor warns it can be.
+worst=0
+row() {                       # row <ok|skip|warn|fail> <what> <found> [fix]
+    local m
+    case "$1" in
+        ok)   m='  ok  ' ;;
+        skip) m=' skip ' ;;
+        warn) m=' warn '; [ "$worst" -lt 1 ] && worst=1 ;;
+        *)    m=' fail '; worst=2 ;;
+    esac
+    printf '[%s] %-14s %-24s %s\n' "$m" "$2" "$3" "${4:-}"
+}
+
+if [ "$check" -eq 1 ]; then
+    printf 'tmux-cockpit doctor\n\n'
+
+    v=$(tmux -V 2>/dev/null); v=${v#tmux }
+    if [ -z "$v" ]; then row fail tmux 'not found' 'install tmux >= 3.3'
+    elif [ "$(vnum "$v")" -lt "$(vnum 3.3)" ]; then row fail tmux "$v" 'install tmux >= 3.3'
+    elif [ "$(vnum "$v")" -lt "$(vnum 3.7)" ]; then
+        row warn tmux "$v" 'ctrl+click features off below 3.7'
+    else row ok tmux "$v"
+    fi
+
+    # A warning, not a failure: the status bar and the pickers work without jq.
+    v=$(jq --version 2>/dev/null)
+    if [ -n "$v" ]; then row ok jq "$v"
+    else row warn jq 'not found' 'needed by install.sh --hooks and the review gate'
+    fi
+
+    v=$(fld 1 "$(fzf --version 2>/dev/null)")
+    if [ -z "$v" ]; then
+        row warn fzf 'not found' 'bootstrap.sh --full (pickers fall back to a menu)'
+    elif [ "$(vnum "$v")" -lt "$(vnum 0.63.0)" ]; then
+        row warn fzf "$v" 'bootstrap.sh --full (styled pickers)'
+    else row ok fzf "$v"
+    fi
+
+    # Debian names it batcat, and the path matters here: which one won is the
+    # answer to "the preview is still plain text".
+    bp=$(command -v bat 2>/dev/null) || bp=$(command -v batcat 2>/dev/null) || bp=''
+    if [ -n "$bp" ]; then row ok bat "$(fld 2 "$("$bp" --version 2>/dev/null)") @ $bp"
+    else row warn bat 'not found' 'optional; bootstrap.sh --full'
+    fi
+
+    v=$(fld 3 "$(gum --version 2>/dev/null)"); v=${v#v}
+    if [ -z "$v" ] || [ "$(vnum "$v")" -lt "$(vnum 2.0.0)" ]; then
+        row warn gum "${v:-not found}" 'optional; bootstrap.sh --full'
+    else row ok gum "$v"
+    fi
+
+    # Order, not just presence: a fetched fzf in $BIN does nothing for anyone
+    # if apt's copy still answers first.
+    case ":$PATH:" in
+        *":$BIN:"*)
+            shadow=''; sdir=''
+            for t in fzf bat gum; do
+                [ -x "$BIN/$t" ] || continue
+                w=$(command -v "$t" 2>/dev/null) || w=''
+                [ -n "$w" ] && [ "$w" != "$BIN/$t" ] && { shadow=$t; sdir=${w%/*}; break; }
+            done
+            if [ -n "$shadow" ]; then
+                row warn PATH "$BIN present" "put $BIN before $sdir in PATH"
+            elif [ "${PATH%%:*}" = "$BIN" ]; then row ok PATH "$BIN first"
+            else row ok PATH "$BIN present"
+            fi ;;
+        *) row fail PATH 'not on PATH' "add $BIN to PATH" ;;
+    esac
+
+    conf=''; wired=0
+    for c in "${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf" "${HOME:-}/.tmux.conf"; do
+        [ -r "$c" ] && { conf="$c"; break; }
+    done
+    # read, not grep: this row still has to answer on a PATH with nothing on it.
+    [ -n "$conf" ] && while read -r l || [ -n "$l" ]; do
+        case "$l" in *cockpit.tmux*) wired=1; break ;; esac
+    done < "$conf"
+    wire_fix="run bootstrap.sh, or add run-shell $DIR/cockpit.tmux"
+    if [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
+    elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
+    else row fail config 'no tmux config' "$wire_fix"
+    fi
+
+    if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'
+    elif ! command -v jq >/dev/null 2>&1; then row skip hooks 'jq missing'
+    else
+        n=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
+                 | select(test("tmux-cockpit|agent-state"))] | length' \
+               "$HOME/.claude/settings.json" 2>/dev/null)
+        case "${n:-0}" in
+            0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
+            *) row ok hooks "$n cockpit hooks merged" ;;
+        esac
+    fi
+
+    if [ -z "${TMUX:-}" ]; then row skip truecolor 'run inside tmux to check'
+    else
+        tf=$(tmux display-message -p '#{client_termfeatures}' 2>/dev/null)
+        case ",$tf," in
+            *,RGB,*) row ok truecolor 'RGB advertised' ;;
+            *) row warn truecolor 'no RGB' \
+                   'set terminal-features ...:RGB, see examples/full.tmux.conf' ;;
+        esac
+    fi
+
+    pb=$(tmux show -gv popup-border-lines 2>/dev/null) || pb=''
+    if [ -z "$pb" ]; then row skip popup-border 'no tmux server'
+    elif [ "$pb" = single ]; then
+        row warn popup-border single 'set -g popup-border-lines rounded'
+    else row ok popup-border "$pb"
+    fi
+
+    printf '\n'
+    case "$worst" in
+        0) printf 'ok\n' ;;
+        1) printf 'usable, with warnings above\n' ;;
+        *) printf 'not working: fix the fail rows\n' ;;
+    esac
+    exit "$worst"
+fi
 
 rc=0
 # Not on --uninstall (nothing gets created there) and not on --dry-run (a
