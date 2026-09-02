@@ -125,6 +125,18 @@ until_file() {                # <file> <pattern>
     done
     return 1
 }
+# The same wait when the observable is a command's stdout rather than a pane or
+# a file: a tmux format, a session list, a marker file's contents. PATTERN is a
+# case-pattern with NO embedded quotes.
+until_out() {                 # <pattern> <cmd...>
+    local pat=$1 i; shift
+    for i in $(seq 1 40); do
+        # shellcheck disable=SC2254  # $pat is meant as a glob, not a literal
+        case "$("$@" 2>/dev/null)" in $pat) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
 # A perf budget is CPU time, never the wall clock. Measured on this box (#75):
 # under twelve background spinners the wall tooth at the 4900-row site failed
 # 10/10 while its CPU sat at 0.23-0.26s. A wall budget grades the box.
@@ -271,8 +283,10 @@ PB="cockpit-pb-$$"; PBO="cockpit-pbo-$$"; SOCKS="$SOCKS $PB $PBO"; PBD=$(mktmpd)
 "$TMUX_REAL" -L "$PB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$PB" new-window -t t -c "$PBD/beta" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PBO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $PB attach -t t" >/dev/null 2>&1
-sleep 1
-for k in C-Space b; do "$TMUX_REAL" -L "$PBO" send-keys -t o "$k"; sleep 0.4; done
+# Keys sent to the outer pane only reach the inner server once its client is
+# up, and one send-keys rather than two: the gap between two calls is wall time.
+until_out '?*' "$TMUX_REAL" -L "$PB" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$PBO" send-keys -t o C-Space b
 until_cap "$PBO" o '*on beta*' && ok "prefix b opens on the pane's repo (beta), not the session's start dir (alpha)" \
     || bad "prefix b opens on the pane's repo (beta), not the session's start dir (alpha)" "on beta" "$("$TMUX_REAL" -L "$PBO" capture-pane -p -t o | grep -o 'on [a-z]* ·[^ ]* [^ ]*' | head -1)"
 "$TMUX_REAL" -L "$PBO" send-keys -t o Escape; sleep 0.3
@@ -291,15 +305,17 @@ mkdir -p "$MIHOSTILE"
 "$TMUX_REAL" -L "$MI" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$MIHOSTILE" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$MI" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $MI attach -t t" >/dev/null 2>&1
-sleep 1
-for k in C-Space m; do "$TMUX_REAL" -L "$MO" send-keys -t o "$k"; sleep 0.4; done
+until_out '?*' "$TMUX_REAL" -L "$MI" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$MO" send-keys -t o C-Space m
 until_cap "$MO" o '*Switch branch*'
-"$TMUX_REAL" -L "$MO" send-keys -t o b; sleep 1.5
+"$TMUX_REAL" -L "$MO" send-keys -t o b
 # ##{pane_id} still reaches tmux-branch as the pane: it names the hostile
 # directory itself, which is not a repo.
 until_cap "$MO" o '*not a git repository*' && ok "and the popup still resolves the pane's own directory" \
     || bad "and the popup still resolves the pane's own directory" "not a git repository: <the hostile dir>" "$("$TMUX_REAL" -L "$MO" capture-pane -p -t o | grep -v '^\s*$' | sed -n 2,4p)"
-# The injected commands are queued behind the popup: close it, then look.
+# The injected commands are queued behind the popup: close it, then look. The
+# sleep stays -- the assertion is that nothing ran, and an absence has no
+# observable to poll; only elapsed time gives the injection its chance.
 "$TMUX_REAL" -L "$MO" send-keys -t o C-d; sleep 1.5
 is "selecting Switch branch from a hostile directory runs nothing" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
 # The runtime case above proves the mechanism on the one item that resolves a
@@ -406,7 +422,9 @@ if need_tmux "stale state"; then :; else
 # the agent. The formats only believe it while the pane is actually running one.
 w=$(tmux new-window -d -P -F '#{window_index}' -n cockpit-test 'bash' 2>/dev/null)
 if [ -n "$w" ]; then
-    sleep 0.6
+    # The border style below is judged off pane_current_command, so wait for
+    # the shell to BE the pane's command rather than guess at the spawn.
+    until_out bash tmux display-message -p -t ":$w" '#{pane_current_command}'
     tp2=$(tmux list-panes -t ":$w" -F '#{pane_id}' 2>/dev/null | head -1)
     tmux set -p -t "$tp2" @panestate running >/dev/null 2>&1
     is "option is still set"        "running"     "$(tmux show-option -pqv -t "$tp2" @panestate)"
@@ -488,7 +506,9 @@ echo "== spaced window names survive the formats =="
 if need_tmux "spaced window names"; then :; else
 sw=$(tmux new-window -d -P -F '#{window_index}' -n 'my project' 'sleep 30' 2>/dev/null)
 if [ -n "$sw" ]; then
-    sleep 0.4
+    # automatic-rename fires on the pane's command, so waiting for that command
+    # to be there is what gives it its chance to clobber the name.
+    until_out sleep tmux display-message -p -t ":$sw" '#{pane_current_command}'
     # automatic-rename must not clobber an explicit name, and the format must
     # carry the space through -- the old shell version truncated at it.
     is "explicit name keeps its space" "my project" "$(tmux display-message -p -t ":$sw" '#{window_name}' 2>/dev/null)"
@@ -1130,7 +1150,7 @@ is "the new session starts where the pane was, not where the old session began" 
 # which a popup never has.
 TCO="cockpit-tmcwdo-$$"; SOCKS="$SOCKS $TCO"
 "$TMUX_REAL" -L "$TCO" -f /dev/null new-session -d -s o -x 80 -y 24 "TERM=xterm-256color exec $TMUX_REAL -L $TC attach -t here" >/dev/null 2>&1
-sleep 1
+until_out '?*' "$TMUX_REAL" -L "$TC" list-clients -F '#{client_name}'
 ( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" timeout 3 "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
 is "tm from a popup moves the real client to the session" "made" \
    "$("$TMUX_REAL" -L "$TC" list-clients -F '#{session_name}' 2>/dev/null | head -1)"
@@ -1717,12 +1737,15 @@ INNER="cockpit-branch-inner-$$"; OUTERA="cockpit-branch-outera-$$"; OUTERB="cock
 SOCKS="$SOCKS $INNER $OUTERA $OUTERB"
 tmux -L "$INNER" -f /dev/null new-session -d -s cliA -c "$DA" >/dev/null 2>&1
 tmux -L "$INNER" new-session -d -s cliB -c "$DB" >/dev/null 2>&1
+bp_clients() { "$TMUX_REAL" -L "$INNER" list-clients 2>/dev/null | grep -c .; }
+# The hazard below needs cliB to be the MORE RECENT client, so count them: the
+# second attach is only after the first one has landed.
 tmux -L "$OUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t cliA" >/dev/null 2>&1
-sleep 1
+until_out 1 bp_clients
 tmux -L "$OUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $INNER attach -t cliB" >/dev/null 2>&1
-sleep 1
+until_out 2 bp_clients
 paneA=$(tmux -L "$INNER" list-panes -t cliA -F '#{pane_id}')
 SOCKPATH=$(tmux -L "$INNER" display-message -p '#{socket_path}')
 NOCOLD=$(mktmpd)
@@ -1836,8 +1859,11 @@ tmux -L "$INNER" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER" -f /dev/null new-session -d -s o -x 100 -y 24 \
     "$TMUX_REAL -L $INNER attach -t s" >/dev/null 2>&1
-sleep 2
+until_out '?*' "$TMUX_REAL" -L "$INNER" list-clients -F '#{client_name}'
 tmux -L "$INNER" refresh-client >/dev/null 2>&1
+# The sleep stays: the assertion is that the #() job never ran, and an absence
+# has no observable to poll. The sibling block below proves the job does fire
+# inside this window when the cwd is a normal one.
 sleep 1
 if [ -e "$SP/OWNED" ]; then
     bad "a hostile cwd's \$(...) never runs" "no OWNED file" "OWNED file created"
@@ -1858,9 +1884,9 @@ tmux -L "$INNER2" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER2" -f /dev/null new-session -d -s o -x 100 -y 24 \
     "$TMUX_REAL -L $INNER2 attach -t s" >/dev/null 2>&1
-sleep 2
+until_out '?*' "$TMUX_REAL" -L "$INNER2" list-clients -F '#{client_name}'
 tmux -L "$INNER2" refresh-client >/dev/null 2>&1
-sleep 1
+until_cap "$OUTER2" o "*$D2*"
 scr=$(tmux -L "$OUTER2" capture-pane -p -t o)
 case "$scr" in
     *"$D2"*) ok "a normal cwd still renders its path" ;;
@@ -1895,8 +1921,10 @@ tmux -L "$INNER3" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER3" -f /dev/null new-session -d -s o -x 100 -y 24 \
     "$TMUX_REAL -L $INNER3 attach -t s" >/dev/null 2>&1
-sleep 2
+until_out '?*' "$TMUX_REAL" -L "$INNER3" list-clients -F '#{client_name}'
 tmux -L "$INNER3" refresh-client >/dev/null 2>&1
+# The sleep stays, same as the $(...) case above: nothing to poll for an
+# absence, and the normal-cwd block proves the job fires inside this window.
 sleep 1
 if [ -e "$SP2/marker" ]; then
     bad "a newline/tab cwd's command never runs" "no marker file" "marker file created"
@@ -1993,7 +2021,10 @@ KB=$(mktmpd)
 SOCK5="cockpit-keys-$$"; SOCKS="$SOCKS $SOCK5"
 tmux -L "$SOCK5" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$KB" >/dev/null 2>&1
 KP=$(tmux -L "$SOCK5" list-panes -a -F '#{pane_id}' | head -1)
-tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
+# The trailing marker is how the picker's EXIT gets an observable:
+# pane_current_command reads "bash" for the script the whole time fzf is up
+# (measured), so only the finished command's own output separates them.
+tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'; echo BRC1=\$?" Enter
 # The list marks the branch you are ON; the header alone said it before, and
 # the current branch looked like a normal destination.
 until_cap "$SOCK5" "$KP" '*● main*'
@@ -2007,11 +2038,11 @@ esac
 # branch name. "zzz" matches no branch, exactly the case the create key exists
 # for and exactly what a user filtering the list would trip over.
 tmux -L "$SOCK5" send-keys -t "$KP" "zzz"
-sleep 1
-tmux -L "$SOCK5" send-keys -t "$KP" C-n      # emacs move-down, NOT create
-sleep 1
-tmux -L "$SOCK5" send-keys -t "$KP" Escape   # leave without switching
-sleep 1
+until_cap "$SOCK5" "$KP" '*switch> zzz*'
+# fzf reads its keys in order, so it can only exit after it has handled the
+# ctrl-n: the picker's own exit is the proof that the create never fired.
+tmux -L "$SOCK5" send-keys -t "$KP" C-n Escape   # move-down, NOT create; then leave
+until_cap "$SOCK5" "$KP" '*BRC1=[0-9]*'
 after=$(git -C "$KB" for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
 is "ctrl-n after typing creates no branch" "main second third " "$after"
 is "and the checkout is untouched" "main" "$(git -C "$KB" branch --show-current)"
@@ -2021,7 +2052,7 @@ is "and the checkout is untouched" "main" "$(git -C "$KB" branch --show-current)
 # refusal through a pty raced fzf's own startup and the test keyed the wrong
 # row. Waiting for the prompt before typing fixes the label half too.
 git -C "$KB" worktree add -q "$KB-wt" second 2>/dev/null
-tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'" Enter
+tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'; echo BRC2=\$?" Enter
 picker_up=0
 for i in 1 2 3 4 5 6 7 8 9 10; do
     case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
@@ -2035,8 +2066,10 @@ case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
          "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | sed -n 4,6p)" ;;
 esac
 if [ "$picker_up" = 1 ]; then
-    tmux -L "$SOCK5" send-keys -t "$KP" "bad..name"; sleep 0.6
-    tmux -L "$SOCK5" send-keys -t "$KP" M-Enter; sleep 1.2     # create fails, pauses
+    tmux -L "$SOCK5" send-keys -t "$KP" "bad..name"
+    until_cap "$SOCK5" "$KP" '*switch> bad..name*'
+    tmux -L "$SOCK5" send-keys -t "$KP" M-Enter                # create fails, pauses
+    until_cap "$SOCK5" "$KP" '*any key*'
     tmux -L "$SOCK5" send-keys -t "$KP" Space                  # [any key] ...
     back=0
     for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -2048,7 +2081,10 @@ if [ "$picker_up" = 1 ]; then
     if [ "$back" = 1 ]; then ok "a failed action returns to the picker"
     else bad "a failed action returns to the picker" "the picker again" \
              "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | head -3)"; fi
-    tmux -L "$SOCK5" send-keys -t "$KP" Escape; sleep 0.5
+    # The picker exiting is what proves the failed create is finished, and the
+    # assertion below is that it checked nothing out.
+    tmux -L "$SOCK5" send-keys -t "$KP" Escape
+    until_cap "$SOCK5" "$KP" '*BRC2=[0-9]*'
 else
     bad "a failed action returns to the picker" "a visible picker" "never appeared"
 fi
@@ -2301,7 +2337,7 @@ GO="cockpit-go-$$"; GI="cockpit-gi-$$"; SOCKS="$SOCKS $GO $GI"
 GP=$("$TMUX_REAL" -L "$GI" list-panes -t t -F '#{pane_id}' | head -1)
 # Turn on mouse reporting in the pane, exactly what Claude Code does.
 "$TMUX_REAL" -L "$GI" send-keys -t "$GP" "echo MARK README.md; printf '\\e[?1000h'" Enter >/dev/null 2>&1
-sleep 0.5
+until_out 1 "$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{mouse_any_flag}'
 is "the pane really reports mouse mode" "1" \
    "$("$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{mouse_any_flag}')"
 "$TMUX_REAL" -L "$GI" set-option -p -t "$GP" @cockpit_click_line "" >/dev/null 2>&1
@@ -2422,7 +2458,10 @@ if need_tmux "prefix g / u"; then :; else
 PS="cockpit-ps-$$"; SOCKS="$SOCKS $PS"
 pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4==k'; }
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+# No sleep after any run-shell in this file: run-shell without -b blocks until
+# the script exits, and cockpit.tmux's own source-file lands with it (probed
+# 10/10 -- the binding is queryable the instant run-shell returns).
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(pk g)" in
     *sessions*) ok "prefix g is bound to the sessions popup" ;;
     *) bad "prefix g is bound to the sessions popup" "a display-popup running tm" "$(pk g)" ;;
@@ -2435,7 +2474,7 @@ esac
 is "and J is no longer taken" "" "$(pk J)"
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key S >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_jump_key J >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(pk S)" in *sessions*) ok "@cockpit_sessions_key S brings the old key back" ;;
     *) bad "@cockpit_sessions_key S brings the old key back" "the popup on S" "$(pk S)" ;; esac
 case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" ;;
@@ -2443,7 +2482,7 @@ case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" 
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_sessions_key off binds nothing" "" "$(pk g)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
@@ -2456,7 +2495,7 @@ if need_tmux "prefix a"; then :; else
 PA="cockpit-pa-$$"; SOCKS="$SOCKS $PA"
 ak() { "$TMUX_REAL" -L "$PA" list-keys -T prefix 2>/dev/null | awk '$4=="a"'; }
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
-"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(ak)" in
     *display-menu*) ok "prefix a opens a menu" ;;
     *) bad "prefix a opens a menu" "a display-menu" "$(ak)" ;;
@@ -2469,7 +2508,7 @@ for key in u r f i b M g; do
 done
 "$TMUX_REAL" -L "$PA" set -g @cockpit_review_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_move_key W >/dev/null 2>&1
-"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$(ak)" in
     *"send-keys -K r"*) bad "a review key of off drops the review row" "no send-keys -K r" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
     *) ok "a review key of off drops the review row" ;;
@@ -2481,7 +2520,7 @@ esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_ai_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_ai_key off binds nothing" "" "$(ak)"
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 fi
@@ -2504,16 +2543,19 @@ case "$("$TMUX_REAL" -L "$EM" list-keys -T prefix 2>/dev/null | awk '$4=="v"')" 
     *) bad "prefix v toggles stacked and side-by-side" "if-shell over both layouts" "$("$TMUX_REAL" -L "$EM" list-keys -T prefix | awk '$4=="v"')" ;;
 esac
 "$TMUX_REAL" -L "$EMO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $EM attach -t work" >/dev/null 2>&1
-sleep 1
-for k in C-Space m; do "$TMUX_REAL" -L "$EMO" send-keys -t o "$k"; sleep 0.4; done
+until_out '?*' "$TMUX_REAL" -L "$EM" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$EMO" send-keys -t o C-Space m
 until_cap "$EMO" o '*Move window*'
 "$TMUX_REAL" -L "$EMO" send-keys -t o m
 until_cap "$EMO" o '*new session...*' && ok "prefix m m opens the move menu" \
     || bad "prefix m m opens the move menu" "the move menu" "$("$TMUX_REAL" -L "$EMO" capture-pane -p -t o | grep -v '^\s*$' | tail -4)"
+# The sleep stays: the menu below is the same one, so a poll for its rows would
+# satisfy on the frame this Escape has not repainted yet.
 "$TMUX_REAL" -L "$EMO" send-keys -t o Escape; sleep 0.6
-for k in C-Space m; do "$TMUX_REAL" -L "$EMO" send-keys -t o "$k"; sleep 0.4; done
+"$TMUX_REAL" -L "$EMO" send-keys -t o C-Space m
 until_cap "$EMO" o '*Reload config*'
-"$TMUX_REAL" -L "$EMO" send-keys -t o r; sleep 1
+"$TMUX_REAL" -L "$EMO" send-keys -t o r
+until_out '*config reloaded*' "$TMUX_REAL" -L "$EM" show-messages
 case "$("$TMUX_REAL" -L "$EM" show-messages 2>/dev/null)" in
     *"config reloaded"*) ok "prefix m r runs the plugin's reload" ;;
     *) bad "prefix m r runs the plugin's reload" "config reloaded in the log" "$("$TMUX_REAL" -L "$EM" show-messages | grep -v ' command: ' | tail -2)" ;;
@@ -2527,14 +2569,14 @@ echo "== prefix M is the move-window menu =="
 if need_tmux "prefix M"; then :; else
 PM="cockpit-pm-$$"; SOCKS="$SOCKS $PM"
 "$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
-"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
     *display-menu*) ok "prefix M opens the move menu" ;;
     *) bad "prefix M opens the move menu" "a display-menu" \
          "$("$TMUX_REAL" -L "$PM" list-keys -T prefix | awk '$4=="M"')" ;;
 esac
 "$TMUX_REAL" -L "$PM" set -g @cockpit_move_key W >/dev/null 2>&1
-"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="W"')" in
     *display-menu*) ok "@cockpit_move_key rebinds it" ;;
     *) bad "@cockpit_move_key rebinds it" "the menu on W" \
@@ -2543,7 +2585,7 @@ esac
 "$TMUX_REAL" -L "$PM" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PM" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PM" set -g @cockpit_move_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PM" list-keys -T prefix 2>/dev/null | awk '$4=="M"')" in
     *"select-pane -M"*) ok "off keeps stock select-pane -M" ;;
     *) bad "off keeps stock select-pane -M" "select-pane -M" \
@@ -2571,7 +2613,7 @@ MVD=$(mktmpd)      # keeper's own dir: the new session made for it must start th
 "$TMUX_REAL" -L "$MV" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MVO" -f /dev/null new-session -d -s o -x 90 -y 26 \
     "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
-sleep 1.2
+until_out '?*' "$TMUX_REAL" -L "$MV" list-clients -F '#{client_name}'
 OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
 mv_open() {                   # press prefix M and wait for the menu; a no-show is one clean failure
     "$TMUX_REAL" -L "$MVO" send-keys -t "$1" C-b M
@@ -2614,7 +2656,8 @@ case "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' 2>/dev/null | t
          "$("$TMUX_REAL" -L "$MV" list-sessions -F '#{session_name}' | tr '\n' ' ')" ;;
 esac
 # the last window out: work now holds only keeper; move it into a NEW session
-"$TMUX_REAL" -L "$MV" switch-client -t work: >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$MV" switch-client -t work: >/dev/null 2>&1
+mv_until 'work:*'
 mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
@@ -2633,12 +2676,19 @@ esac
 mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" agents Enter; sleep 0.8
+# @cockpit_move_dst is the first command the prompt runs, and the create is the
+# rest of the same list: once a later query sees the new value, that list is
+# through the queue. The value here is the typed name, "agents".
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" agents Enter
+until_out agents "$TMUX_REAL" -L "$MV" show-option -gqv @cockpit_move_dst
 is "a taken name creates and moves nothing" "solo:keeper" "$(mv_client)"
 mv_open "$OP"
 "$TMUX_REAL" -L "$MVO" send-keys -t "$OP" n
 until_cap "$MVO" "$OP" '*new session:*'
-"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter; sleep 0.8
+# Same gate, and the empty name is distinguishable: the option holds "agents"
+# from the case above until this prompt clears it.
+"$TMUX_REAL" -L "$MVO" send-keys -t "$OP" Enter
+until_out '' "$TMUX_REAL" -L "$MV" show-option -gqv @cockpit_move_dst
 is "an empty name creates and moves nothing" "solo:keeper" "$(mv_client)"
 is "and the session count is unchanged" "4" "$("$TMUX_REAL" -L "$MV" list-sessions 2>/dev/null | wc -l)"
 # hostile targets: a session named it's receives the window; a new a.b does too
@@ -2675,7 +2725,7 @@ echo "== clicking the directory segment browses the working dir =="
 if need_tmux "directory click"; then :; else
 DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"
 "$TMUX_REAL" -L "$DB" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
-"$TMUX_REAL" -L "$DB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$DB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 # Ctrl+RIGHT-click is the collision-free picker gesture: Ghostty opens OSC 8
 # links on the first Ctrl+LEFT-click and a GUI raced the popup; the right
 # button reaches only us. Unbound in stock tmux, so nothing is displaced.
@@ -2694,14 +2744,18 @@ printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$DBLOG" > "$DBED"; chmod +x "$DBED"
 "$TMUX_REAL" -L "$DB" set -g @cockpit_editor "$DBED" >/dev/null 2>&1
 DP=$("$TMUX_REAL" -L "$DB" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$DB" send-keys -t "$DP" "'$DIR/scripts/tmux-open-path' --browse '$DIR'" Enter
-sleep 2.2
+until_cap "$DB" "$DP" '*enter dir*'
 case "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP")" in
     *"enter dir"*) ok "--browse opens the browser at the dir" ;;
     *) bad "--browse opens the browser at the dir" "the browse header" \
          "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP" | head -3)" ;;
 esac
-"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "LICENSE"; sleep 0.8
-"$TMUX_REAL" -L "$DB" send-keys -t "$DP" Enter; sleep 2
+# The query has to be in the prompt before Enter, or Enter opens whatever the
+# unfiltered list had selected.
+"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "LICENSE"
+until_cap "$DB" "$DP" '*/ LICENSE*'
+"$TMUX_REAL" -L "$DB" send-keys -t "$DP" Enter
+until_file "$DBLOG" '*OPEN *'
 is "and a file opens from it" "OPEN $DIR/LICENSE" "$(cat "$DBLOG")"
 "$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
 fi
@@ -2745,7 +2799,7 @@ PG="cockpit-geom-$$"; SOCKS="$SOCKS $PG"
 "$TMUX_REAL" -L "$PG" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PG" set -g @cockpit_popup_width 55% >/dev/null 2>&1
 "$TMUX_REAL" -L "$PG" set -g @cockpit_popup_height 45% >/dev/null 2>&1
-"$TMUX_REAL" -L "$PG" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$PG" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PG" list-keys -T root | grep MouseDown1Control1)" in
     *'-h "45%" -w "55%"'*) ok "a custom size reaches the binding" ;;
     *) bad "a custom size reaches the binding" '-h 45% -w 55%' \
@@ -2763,7 +2817,7 @@ echo "== branch popup passes the source pane id =="
 if need_tmux "branch popup pane id"; then :; else
 BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
 "$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
-"$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
     *'-p \"$(tmux display-message -p -t'*) ok "prefix b passes the source pane id" ;;
     *) bad "prefix b passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
@@ -2793,7 +2847,7 @@ MP=$("$TMUX_REAL" -L "$MO" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$MO" set-option -p -t "$MP" @cockpit_click_line \
     "see README.md and LICENSE and Makefile" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MO" send-keys -t "$MP" "'$DIR/scripts/tmux-open-path' --pick '$MP'" Enter
-sleep 2.2
+until_cap "$MO" "$MP" '*open>*'
 # The prompt must be visible first, or the keys land in a bare shell and the
 # assertion could pass without fzf ever running.
 case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
@@ -2808,9 +2862,10 @@ case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
     *) bad "the preview names its mode on the separator" "a ' content ' label" \
          "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | grep '^─' | head -1)" ;;
 esac
-"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4
-"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab; sleep 0.4
-"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Enter; sleep 2.5
+# One send-keys: fzf reads its keys in order, so the gaps between three calls
+# were wall time and nothing else. The log is what the assertion reads.
+"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab Tab Enter
+until_file "$MOLOG" '*OPEN*OPEN*'
 is "two marked files both open" "2" "$(grep -c OPEN "$MOLOG")"
 "$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1
 rm -f "$MOLOG" "$MOED"
@@ -2958,7 +3013,7 @@ printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OOLOG" > "$OOED"; chmod +x "$OOED"
 OP=$("$TMUX_REAL" -L "$OO" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$OO" set-option -p -t "$OP" @cockpit_click_line "scripts/tm:30 and scripts/" >/dev/null 2>&1
 "$TMUX_REAL" -L "$OO" send-keys -t "$OP" "'$DIR/scripts/tmux-open-path' --pick '$OP'" Enter
-sleep 2.2
+until_cap "$OO" "$OP" '*tm:30*'
 # A clicked "file:31" must read as file:31 in the list, not as a bare filename
 # stripped of the very thing that anchored it.
 case "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP")" in
@@ -2966,8 +3021,8 @@ case "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP")" in
     *) bad "the row keeps its line number" "scripts/tm:30" \
          "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP" | sed -n 3p)" ;;
 esac
-"$TMUX_REAL" -L "$OO" send-keys -t "$OP" Down; sleep 0.4
-"$TMUX_REAL" -L "$OO" send-keys -t "$OP" C-o; sleep 2
+"$TMUX_REAL" -L "$OO" send-keys -t "$OP" Down C-o
+until_file "$OOLOG" '*OPEN *'
 is "^O hands the folder to the editor whole" "OPEN $DIR/scripts/" "$(cat "$OOLOG")"
 "$TMUX_REAL" -L "$OO" kill-server >/dev/null 2>&1
 rm -f "$OOLOG" "$OOED"
@@ -3175,10 +3230,10 @@ TK="cockpit-tk-$$"; TKO="cockpit-tko-$$"; SOCKS="$SOCKS $TK $TKO"
 # picker test here.
 "$TMUX_REAL" -L "$TKO" -f /dev/null new-session -d -s o -x 90 -y 26 \
     "$TMUX_REAL -L $TK attach -t alpha" >/dev/null 2>&1
-sleep 1.2
+until_out '?*' "$TMUX_REAL" -L "$TK" list-clients -F '#{client_name}'
 KP2=$("$TMUX_REAL" -L "$TK" list-panes -t alpha -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "'$DIR/scripts/tm'" Enter
-sleep 2
+until_cap "$TK" "$KP2" '*(attached)*'
 case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
     *"(attached)"*) ok "the attached session is labelled" ;;
     *) bad "the attached session is labelled" "alpha (attached)" \
@@ -3190,13 +3245,17 @@ case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
          "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | grep -m1 '^─')" ;;
 esac
 # typing must FILTER now, not execute: "bet" narrows to beta
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "bet"; sleep 0.8
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "bet"
+until_cap "$TK" "$KP2" '*session> bet*'
 is "typing filters instead of killing" "2" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x; sleep 1.2
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
+until_out alpha "$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}'
 is "^X kills the highlighted session" "alpha" "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
-# and ^X on the attached one is refused
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-u; sleep 0.4
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x; sleep 1.2
+# and ^X on the attached one is refused. A refusal has no observable, so a
+# probe token after it does the waiting: fzf blocks on ctrl-x's execute-silent
+# and cannot paint tkq until that kill attempt has returned.
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-u C-x tkq
+until_cap "$TK" "$KP2" '*session> tkq*'
 is "the attached session refuses to die from the picker" "alpha" \
    "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
 "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Escape; sleep 0.5
@@ -3454,10 +3513,12 @@ rm -rf "$HK10"
 # background writer time to land mid-merge.
 REALJQ=$(command -v jq)
 JQSHIM=$(mktmpd)
+JQMARK="$STATE/jq-slurp-mark"
+rm -f "$JQMARK"
 cat > "$JQSHIM/jq" <<EOF
 #!/bin/sh
 for a in "\$@"; do
-    [ "\$a" = "-s" ] && sleep 1
+    [ "\$a" = "-s" ] && { printf 'slurping\n' > "$JQMARK"; sleep 1; }
 done
 exec "$REALJQ" "\$@"
 EOF
@@ -3467,7 +3528,9 @@ HKR=$(mktmpd); mkdir -p "$HKR/.claude"
 printf '{"model":"opus"}' > "$HKR/.claude/settings.json"
 (PATH="$JQSHIM:$PATH" HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1) &
 instpid=$!
-sleep 0.3
+# The shim's own marker, not a guessed head start: the concurrent write below
+# has to land while the merge is inside the slurp, which is what widens the race.
+until_file "$JQMARK" '*slurping*'
 # The concurrent writer: a live Claude Code session rewriting settings.json
 # mid-merge, e.g. after a permission approval.
 printf '{"model":"opus","concurrent_marker":"added-by-race"}' > "$HKR/.claude/settings.json"
@@ -3540,11 +3603,13 @@ JK="cockpit-jk-$$"; JKO="cockpit-jko-$$"; SOCKS="$SOCKS $JK $JKO"
 "$TMUX_REAL" -L "$JK" -f /dev/null new-session -d -s t -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$JK" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$JK" new-window -t t: 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$JK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$JK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 for w in 0 1; do "$TMUX_REAL" -L "$JK" set-option -p -t "t:$w" @panestate needs-input >/dev/null 2>&1; done
 "$TMUX_REAL" -L "$JK" select-window -t t:0 >/dev/null 2>&1
 "$TMUX_REAL" -L "$JKO" -f /dev/null new-session -d -s o -x 80 -y 26 "TERM=xterm-256color exec $TMUX_REAL -L $JK attach -t t" >/dev/null 2>&1
-sleep 1; "$TMUX_REAL" -L "$JKO" send-keys -t o C-b u; sleep 1.5
+until_out '?*' "$TMUX_REAL" -L "$JK" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$JKO" send-keys -t o C-b u
+until_out 1 "$TMUX_REAL" -L "$JK" display-message -p -t t: '#{window_index}'
 is "prefix u from the first blocked pane cycles to the second (#45)" "1" \
    "$("$TMUX_REAL" -L "$JK" display-message -p -t t: '#{window_index}')"
 "$TMUX_REAL" -L "$JKO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$JK" kill-server >/dev/null 2>&1
@@ -3575,7 +3640,8 @@ is "jump lands on the blocked window" "2" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # A second blocked pane: pressing again from the first cycles to the next.
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter
+until_out 1 "$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}'
 is "a second press cycles to the next blocked pane" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # A shell pane holding stale (or hand-set) @panestate must never be treated as
@@ -3585,7 +3651,8 @@ is "a second press cycles to the next blocked pane" "1" \
 # with the fix it wraps back to the first real agent pane instead.
 JP4=$("$TMUX_REAL" -L "$JJ" new-window -t t: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP4" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter
+until_out 1 "$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}'
 is "a shell holding stale state is never jumped to" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # Nothing blocked, but one agent holds a review the gate flagged: that is
@@ -3606,7 +3673,8 @@ is "prefix u walks to a pane with a pending review when nothing is blocked" "1" 
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JRC=\$?" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JRC=\$?" Enter
+until_cap "$JJ" "$JP1" '*JRC=[0-9]*'
 case "$("$TMUX_REAL" -L "$JJ" capture-pane -p -t "$JP1")" in
     *JRC=0*) ok "no blocked pane exits 0 and stays put" ;;
     *) bad "no blocked pane exits 0 and stays put" "JRC=0 in the pane" \
@@ -4411,7 +4479,8 @@ rm -rf "$RVGOLD"
 
 # Perf: a 5000-row single-file diff (the largest that stays under the cap) is
 # ~0.2s now; the pre-fix O(n^2)+fork build was ~5s here and ~13s on the slower
-# hunt machine. timeout is the fail-first teeth -- on the old build this fires.
+# hunt machine. The budget is CPU, 3x this site's 0.211s under twelve spinners
+# (0.146-0.235s idle) -- a wall tooth grades the box, not the build (#75).
 RVPERF=$(mktmpd)
 (
   cd "$RVPERF" || exit
@@ -4421,13 +4490,8 @@ RVPERF=$(mktmpd)
   git add -A; git commit -q -m init
   seq 1 5000 > big.txt
 ) >/dev/null 2>&1
-timeout 3 "$DIR/scripts/tmux-review" --lines "$RVPERF" >/dev/null; rvperfrc=$?
-if [ "$rvperfrc" -eq 124 ]; then
-    bad "a 5000-row under-cap diff parses in well under 3s" \
-        "output within 3s" "timed out (the O(n^2) build)"
-else
-    ok "a 5000-row under-cap diff parses in well under 3s"
-fi
+cpu_under "a 5000-row under-cap diff parses in well under 0.7s of CPU" 0.7 \
+    "$DIR/scripts/tmux-review" --lines "$RVPERF"
 rvperfrows=$("$DIR/scripts/tmux-review" --lines "$RVPERF" | grep -c .)
 is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
    "5000" "$rvperfrows"
@@ -5455,9 +5519,12 @@ RB=$(mktmpd)
   head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
   printf 'x\n' > small.txt                                  # untracked, small: still reviewed
 ) >/dev/null 2>&1
-rb_t0=$(date +%s%N)
-rbrows=$("$DIR/scripts/tmux-review" --lines "$RB")
-rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+# CPU, not the wall clock: the claim is that the 64 MiB file is skipped rather
+# than diffed, and diffing it is CPU. 3x this site's 0.157s under twelve
+# spinners (0.109-0.132s idle); a wall bound grades the box's I/O too (#75).
+cpu_under "a 64 MiB file is skipped, not diffed: the list is under 0.5s of CPU" 0.5 \
+    "$DIR/scripts/tmux-review" --lines "$RB"
+rbrows=$(cat "$CPUOUT")
 is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
 is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
 is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
@@ -5465,17 +5532,17 @@ case "$rbrows" in
     *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
     *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
 esac
-[ "$rb_ms" -lt 1500 ] && ok "and the list comes back in under 1.5 s (${rb_ms} ms)" || bad "and the list comes back in under 1.5 s" "< 1500 ms" "${rb_ms} ms"
 is "--numstat (the Stop hook's and the fleet's read) omits it too" "0" "$("$DIR/scripts/tmux-review" --copy "$RB" | grep -c '^diff --git a/core')"
 printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
 rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
 is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
 case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
-rb_t0=$(date +%s%N)
-rbpv=$( (cd "$RB" && "$DIR/scripts/tmux-open-path" --preview-diff core) )
-rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+# Same conversion: hashing 64 MB is CPU and nothing else here is. 3x this
+# site's 0.022s under twelve spinners, in this exact wrapped form.
+cpu_under "the preview answers without hashing the file (under 0.07s of CPU)" 0.07 \
+    sh -c 'cd "$1" && exec "$2" --preview-diff core' sh "$RB" "$DIR/scripts/tmux-open-path"
+rbpv=$(cat "$CPUOUT")
 is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
-[ "$rb_ms" -lt 500 ] && ok "and it answers without hashing the file (${rb_ms} ms)" || bad "and it answers without hashing the file" "< 500 ms" "${rb_ms} ms"
 rm -rf "$RB"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
@@ -5928,8 +5995,10 @@ RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
 "$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The two panes below are picked BY pane_current_command, so that is the thing
+# to wait for: sorted, it is exactly one claude and one bash.
+rds_cmds() { "$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude ' rds_cmds
 # The suite's private socket has no cockpit.tmux run-shell to default this --
 # set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
 "$TMUX_REAL" -L "$RDS" set -g @cockpit_agents_glob \
@@ -6099,7 +6168,8 @@ echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes ==
 # before A's paste-buffer -d ran.
 AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claude bash')
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
-sleep 0.3
+until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
+until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
 
 ASTORE="$STATE/deliver-race-a-$$"
 BSTORE="$STATE/deliver-race-b-$$"
@@ -6148,8 +6218,10 @@ echo "== tmux-review --deliver: an oversized review goes to a file, not the pane
 RUNDIR="$STATE/rd-runtime-$$"
 mkdir -p "$RUNDIR"
 "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
-    "export XDG_RUNTIME_DIR=$(shq_test "$RUNDIR")" Enter
-sleep 0.2
+    "export XDG_RUNTIME_DIR=$(shq_test "$RUNDIR"); echo XRD=\$?" Enter
+# The export has to be in the shell's environment before the delivery below
+# reads it, and only the finished command prints a digit after the =.
+until_cap "$RDS" "$NP" '*XRD=[0-9]*'
 OLDPATH="$RUNDIR/tmux-cockpit-review-${AP#%}.md"
 CANARY="$STATE/deliver-canary-$$"
 printf 'untouched canary\n' > "$CANARY"
@@ -6329,8 +6401,9 @@ RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
 "$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The two panes below are picked BY pane_current_command, so that is the wait.
+rg_cmds() { "$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude ' rg_cmds
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
@@ -6350,7 +6423,8 @@ case "$(gcap "$NPG")" in
          "HAZARD-MARKER in the shell" "$(gcap "$NPG")" ;;
 esac
 # Clear the shell's readline of the pasted-but-unsent hazard line before the
-# real assertion, so a later match cannot see it.
+# real assertion, so a later match cannot see it. The sleep stays: a discarded
+# readline buffer leaves nothing on screen to poll for.
 "$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
 sleep 0.2
 
@@ -6371,6 +6445,8 @@ printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
     "$RGGATE" \
     "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
     "delete-buffer -b rg-gate ; display-message 'not delivered'"
+# The sleep stays: the assertion is that the marker never reaches the pane, and
+# a paste that WOULD have landed needs time on the wire to prove it did not.
 sleep 0.3
 case "$(gcap "$NPG")" in
     *RACE-MARKER-CONTENT*) bad "the atomic gate refuses the paste into a shell at paste time" \
@@ -6502,8 +6578,10 @@ mkdir -p "$FDTMPDIR"
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 CTL2=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" \
-    "export XDG_STATE_HOME=$(shq_test "$FDTMPDIR")" Enter
-sleep 0.2
+    "export XDG_STATE_HOME=$(shq_test "$FDTMPDIR"); echo XSH=\$?" Enter
+# The export has to be in the shell's environment before the review below runs
+# there, and only the finished command prints a digit after the =.
+until_cap "$FD" "$CTL2" '*XSH=[0-9]*'
 
 FD_DIRTY=$(mktmpd)
 (
@@ -6522,8 +6600,8 @@ FD_DIRTY=$(mktmpd)
 # fleet queue this test means to exercise.
 "$TMUX_REAL" -L "$FD" new-window -d -t t: -c "$FD_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 FD_AGENT=$("$TMUX_REAL" -L "$FD" list-panes -t t:1 -F '#{pane_id}')
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The queue below picks this pane by its command, so wait for the command.
+until_out claude "$TMUX_REAL" -L "$FD" display-message -p -t "$FD_AGENT" '#{pane_current_command}'
 
 # The fleet queue, from the non-agent control pane -- main_entry()'s own
 # routing, the same path a real prefix-R press from a shell pane takes.
@@ -6852,14 +6930,16 @@ CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
 NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY2" 'exec -a claude bash' >/dev/null 2>&1
 DIRTY2_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The queue picks its rows by pane_current_command, so wait for the four new
+# panes to report theirs: three agents and the non-agent shell.
+fq_cmds() { "$TMUX_REAL" -L "$FQ" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash bash bash claude claude claude ' fq_cmds
 
 # A review pasted into this pane and not yet sent: the row has to SAY so, or
 # the queue sends you back to a pane you already reviewed.
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @cockpit_review sent >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
-sleep 0.6
+until_cap "$FQ" "$CTL" "*$DIRTY_PANE*"
 fqout=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 
 case "$fqout" in
@@ -7250,12 +7330,15 @@ tmux -L "$RINNER" -f /dev/null new-session -d -s cliA -c "$RDA" 'exec -a claude 
 tmux -L "$RINNER" new-session -d -s cliB -c "$RDB" 'exec bash' >/dev/null 2>&1
 tmux -L "$RINNER" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+rv_clients() { "$TMUX_REAL" -L "$RINNER" list-clients 2>/dev/null | grep -c .; }
+# Counted, not slept for: the hazard needs cliB to be the more recent client,
+# so the second attach only starts once the first has landed.
 tmux -L "$ROUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RINNER attach -t cliA" >/dev/null 2>&1
-sleep 1
+until_out 1 rv_clients
 tmux -L "$ROUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RINNER attach -t cliB" >/dev/null 2>&1
-sleep 1
+until_out 2 rv_clients
 rpaneA=$(tmux -L "$RINNER" list-panes -t cliA -F '#{pane_id}')
 RSOCKPATH=$(tmux -L "$RINNER" display-message -p '#{socket_path}')
 
@@ -7336,7 +7419,7 @@ echo "== prefix r reviews, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
     *tmux-review*) ok "prefix r is bound to the review popup by default" ;;
     *) bad "prefix r is bound to the review popup by default" \
@@ -7361,7 +7444,7 @@ RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 "$TMUX_REAL" -L "$RB2" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" set -g @cockpit_review_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB2" set -g @cockpit_reload_key off >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$RB2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 # "off" cannot make r EMPTY: stock tmux binds prefix r to refresh-client, and
 # not binding ours simply leaves the stock binding standing. Unbound-from-review
 # is the real contract.
@@ -7381,7 +7464,7 @@ is "@cockpit_reload_key off leaves R unbound" "" \
 RB3="cockpit-rb3-$$"; SOCKS="$SOCKS $RB3"; RB3D=$(mktmpd)
 "$TMUX_REAL" -L "$RB3" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_review_window on >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$RB3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
     *new-window*tmux-review*) ok "@cockpit_review_window on opens a window instead of the popup" ;;
     *) bad "@cockpit_review_window on opens a window instead of the popup" \
@@ -7396,10 +7479,12 @@ RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
 mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
 printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/tmux-review"; chmod +x "$RB3D/p/scripts/tmux-review"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+"$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$RB3O" -f /dev/null new-session -d -s o -x 100 -y 30 "TERM=xterm-256color exec $TMUX_REAL -L $RB3 attach -t t" >/dev/null 2>&1
-sleep 1; "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r; sleep 1.5
+until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
+until_file "$RB3D/args" '*-p *'
 is "the review window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
@@ -7481,7 +7566,7 @@ case "$cfgfiles" in
     *) bad "fixture really has a multi-entry #{config_files}" "comma-separated paths" "$cfgfiles" ;;
 esac
 
-HOME="$RCHOME" "$TMUX_REAL" -L "$RC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; sleep 0.3
+HOME="$RCHOME" "$TMUX_REAL" -L "$RC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 
 rbind=$("$TMUX_REAL" -L "$RC" list-keys -T prefix 2>/dev/null | awk '$4=="R"')
 case "$rbind" in
@@ -7513,10 +7598,10 @@ printf 'set -g @reload_marker_xdg v2\n' > "$RCHOME/.config/tmux/tmux.conf"
 "$TMUX_REAL" -L "$RCO" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RC attach -t t" >/dev/null 2>&1
 ROP=$("$TMUX_REAL" -L "$RCO" list-panes -t o -F '#{pane_id}' | head -1)
-sleep 1
+until_out '?*' "$TMUX_REAL" -L "$RC" list-clients -F '#{client_name}'
 if "$TMUX_REAL" -L "$RCO" list-panes -t o >/dev/null 2>&1; then
     "$TMUX_REAL" -L "$RCO" send-keys -t "$ROP" -H 02 52 >/dev/null 2>&1
-    sleep 0.5
+    until_out v2 "$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home
     is "prefix R actually reloads the home conf" "v2" \
        "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home)"
     is "prefix R actually reloads the second (xdg) conf too" "v2" \
@@ -8340,6 +8425,8 @@ RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'
 n0=$(rh_n); rh_start "$RHPAY"
 for i in $(seq 1 40); do [ -n "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)" ] && break; sleep 0.1; done
 is "a held pane carries the reason" "fix the tests" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+# The 2 s IS the assertion: the hook must not return inside it. There is
+# nothing to poll for -- a poll would end the wait the claim is made of.
 sleep 2; is "and the hook is still holding after 2 s" "$n0" "$(rh_n)"
 printf 'HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\n' > "$RHSESS/handover"; "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
 rh_wait "$n0" && ok "the hook returns within 4 s of the fixer finishing" || bad "the hook returns within 4 s of the fixer finishing" "HRC" "$("$TMUX_REAL" -L "$RH" capture-pane -p -t "$RHCTL" | tail -3)"
