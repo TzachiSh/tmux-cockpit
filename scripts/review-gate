@@ -35,6 +35,12 @@
 set -u
 pane=${TMUX_PANE:-}
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
+# Pane ids are per-server, so the socket path from $TMUX joins the key: the live
+# server's %5 and a private `tmux -L` one's %5 are two panes (issue #88). `_`
+# doubled before `/` becomes `_` keeps distinct paths distinct, with no fork --
+# which --pretool, on every Bash call, cannot afford. Duplicated in tmux-fixer,
+# which writes the fixer- marker this reads.
+srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}; key="${srv////_}-${pane#%}"
 
 # --- --concede <line>: the agent will not meet the active /goal ----------------
 # Claude Code's /goal rewakes the agent on every Stop its evaluator judges not
@@ -43,11 +49,14 @@ state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # hook but a foreground call, so unlike everything below it says what it did:
 # a silent no-op here would leave the agent in exactly the loop it is escaping.
 if [ "${1:-}" = --concede ]; then
-    case "$pane" in %[0-9]*) ;; *) echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1 ;; esac
+    # $TMUX as well as the pane id: without it the key is not the one the Stop
+    # hook will look under, and a concession that silently never fires is worse
+    # than one that says it was not taken.
+    case "$pane${TMUX:-}" in %[0-9]*/*) ;; *) echo "review-gate --concede: not in a tmux pane; nothing recorded" >&2; exit 1 ;; esac
     # Before the write, whose own ${2} expansion would abort the script under
     # set -u -- inside a 2>/dev/null group, so even bash's complaint is eaten.
     [ -n "${2:-}" ] || { echo "review-gate --concede: needs a line saying what blocks the goal; nothing recorded" >&2; exit 1; }
-    { mkdir -p -- "$state" && printf '%s' "${2:0:400}" > "$state/concede-${pane#%}"; } 2>/dev/null \
+    { mkdir -p -- "$state" && printf '%s' "${2:0:400}" > "$state/concede-$key"; } 2>/dev/null \
         || { echo "review-gate --concede: cannot write $state; nothing recorded" >&2; exit 1; }
     echo "concession recorded; your next turn ends here, with that line as the reason"
     exit 0
@@ -118,7 +127,7 @@ json() {                            # <text> -> the JSON string body
 # fixer and a guard pattern the guarded command is denied with a reason; a
 # deny ends the turn by default (hooks-guide, v2.1.210+), which is the point --
 # no in-turn route-around; the Stop that follows holds and hands over.
-marker="$state/fixer-${pane#%}"
+marker="$state/fixer-$key"
 if [ "${1:-}" = --pretool ]; then
     [ -f "$marker" ] || exit 0
     sess=$(cat -- "$marker" 2>/dev/null)
@@ -194,8 +203,8 @@ flag_pane() {
 # Ending the turn skips the hold and the drain: a queued review stays armed
 # for the Stop after the human's next prompt, never lost. Two stats on the
 # common Stop, nothing else.
-loop="$state/loop-${pane#%}"
-concede="$state/concede-${pane#%}"
+loop="$state/loop-$key"
+concede="$state/concede-$key"
 end_turn() {                                # <reason>  ends the turn, exit 0
     rm -f -- "$loop" "$concede"
     tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null   # a hold leaked by a killed poll; section 0's own clear is skipped

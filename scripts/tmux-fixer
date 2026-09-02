@@ -88,7 +88,7 @@ fixer_alive() {               # <sess>
 # the marker the gate stats, then the pane, spawned by the tmux SERVER
 # (split-window -d) so nothing about this popup's lifetime touches the fixer.
 spawn_fixer() {               # <main-pane>
-    local pane=$1 job guard sess f root dl fp marker
+    local pane=$1 job guard sess f root dl fp marker srv
     case "$pane" in %[0-9]*) ;; *) printf 'tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
     sess=$("$REVIEW" --sess "$pane") || { tmux display-message "tmux-fixer: pane $pane is gone" 2>/dev/null; exit 1; }
     f="$sess/fixer"
@@ -114,7 +114,11 @@ spawn_fixer() {               # <main-pane>
     # literal for exotic names -- upgrade to a real unquoter if that bites.
     git -C "$root" --no-optional-locks -c core.quotePath=false status --porcelain 2>/dev/null \
         | sed 's/^...//; s/^.* -> //; s/^"//; s/"$//' > "$f/fence"
-    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${pane#%}"
+    # review-gate's key, verbatim: pane ids are per-server and two servers each
+    # have a %5 (issue #88), so the socket path joins it. $TMUX is set in this
+    # popup by the same server that owns $pane, which is the one the gate reads.
+    srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}
+    marker="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review/fixer-${srv////_}-${pane#%}"
     (umask 077; printf '%s\n' "$sess" > "$marker")
     fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \
         "$(shq "$SELF") --run $(shq "$pane") $(shq "$sess") $(shq "$job")") || {
