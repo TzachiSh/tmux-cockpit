@@ -3513,10 +3513,12 @@ rm -rf "$HK10"
 # background writer time to land mid-merge.
 REALJQ=$(command -v jq)
 JQSHIM=$(mktmpd)
+JQMARK="$STATE/jq-slurp-mark"
+rm -f "$JQMARK"
 cat > "$JQSHIM/jq" <<EOF
 #!/bin/sh
 for a in "\$@"; do
-    [ "\$a" = "-s" ] && sleep 1
+    [ "\$a" = "-s" ] && { printf 'slurping\n' > "$JQMARK"; sleep 1; }
 done
 exec "$REALJQ" "\$@"
 EOF
@@ -3526,7 +3528,9 @@ HKR=$(mktmpd); mkdir -p "$HKR/.claude"
 printf '{"model":"opus"}' > "$HKR/.claude/settings.json"
 (PATH="$JQSHIM:$PATH" HOME="$HKR" "$DIR/install.sh" --hooks >/dev/null 2>&1) &
 instpid=$!
-sleep 0.3
+# The shim's own marker, not a guessed head start: the concurrent write below
+# has to land while the merge is inside the slurp, which is what widens the race.
+until_file "$JQMARK" '*slurping*'
 # The concurrent writer: a live Claude Code session rewriting settings.json
 # mid-merge, e.g. after a permission approval.
 printf '{"model":"opus","concurrent_marker":"added-by-race"}' > "$HKR/.claude/settings.json"
@@ -3603,7 +3607,9 @@ JK="cockpit-jk-$$"; JKO="cockpit-jko-$$"; SOCKS="$SOCKS $JK $JKO"
 for w in 0 1; do "$TMUX_REAL" -L "$JK" set-option -p -t "t:$w" @panestate needs-input >/dev/null 2>&1; done
 "$TMUX_REAL" -L "$JK" select-window -t t:0 >/dev/null 2>&1
 "$TMUX_REAL" -L "$JKO" -f /dev/null new-session -d -s o -x 80 -y 26 "TERM=xterm-256color exec $TMUX_REAL -L $JK attach -t t" >/dev/null 2>&1
-sleep 1; "$TMUX_REAL" -L "$JKO" send-keys -t o C-b u; sleep 1.5
+until_out '?*' "$TMUX_REAL" -L "$JK" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$JKO" send-keys -t o C-b u
+until_out 1 "$TMUX_REAL" -L "$JK" display-message -p -t t: '#{window_index}'
 is "prefix u from the first blocked pane cycles to the second (#45)" "1" \
    "$("$TMUX_REAL" -L "$JK" display-message -p -t t: '#{window_index}')"
 "$TMUX_REAL" -L "$JKO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$JK" kill-server >/dev/null 2>&1
@@ -3634,7 +3640,8 @@ is "jump lands on the blocked window" "2" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # A second blocked pane: pressing again from the first cycles to the next.
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter
+until_out 1 "$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}'
 is "a second press cycles to the next blocked pane" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # A shell pane holding stale (or hand-set) @panestate must never be treated as
@@ -3644,7 +3651,8 @@ is "a second press cycles to the next blocked pane" "1" \
 # with the fix it wraps back to the first real agent pane instead.
 JP4=$("$TMUX_REAL" -L "$JJ" new-window -t t: -P -F '#{pane_id}' 'sleep 300' 2>/dev/null)
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP4" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP3" "'$DIR/scripts/tmux-jump'" Enter
+until_out 1 "$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}'
 is "a shell holding stale state is never jumped to" "1" \
    "$("$TMUX_REAL" -L "$JJ" display-message -p -t t: '#{window_index}')"
 # Nothing blocked, but one agent holds a review the gate flagged: that is
@@ -3665,7 +3673,8 @@ is "prefix u walks to a pane with a pending review when nothing is blocked" "1" 
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP2" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" set-option -p -t "$JP3" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$JJ" select-window -t t:0 >/dev/null 2>&1
-"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JRC=\$?" Enter; sleep 2
+"$TMUX_REAL" -L "$JJ" send-keys -t "$JP1" "'$DIR/scripts/tmux-jump'; echo JRC=\$?" Enter
+until_cap "$JJ" "$JP1" '*JRC=[0-9]*'
 case "$("$TMUX_REAL" -L "$JJ" capture-pane -p -t "$JP1")" in
     *JRC=0*) ok "no blocked pane exits 0 and stays put" ;;
     *) bad "no blocked pane exits 0 and stays put" "JRC=0 in the pane" \
@@ -5987,8 +5996,10 @@ RDS="cockpit-rd-$$"; SOCKS="$SOCKS $RDS"
 "$TMUX_REAL" -L "$RDS" -f /dev/null new-session -d -s t -x 100 -y 60 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RDS" split-window -t t 'exec bash' >/dev/null 2>&1
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The two panes below are picked BY pane_current_command, so that is the thing
+# to wait for: sorted, it is exactly one claude and one bash.
+rds_cmds() { "$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude ' rds_cmds
 # The suite's private socket has no cockpit.tmux run-shell to default this --
 # set it exactly as cockpit.tmux itself would (cockpit.tmux:136).
 "$TMUX_REAL" -L "$RDS" set -g @cockpit_agents_glob \
@@ -6158,7 +6169,8 @@ echo "== tmux-review --deliver: concurrent deliveries do not cross-wire panes ==
 # before A's paste-buffer -d ran.
 AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claude bash')
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
-sleep 0.3
+until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
+until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
 
 ASTORE="$STATE/deliver-race-a-$$"
 BSTORE="$STATE/deliver-race-b-$$"
@@ -6207,8 +6219,10 @@ echo "== tmux-review --deliver: an oversized review goes to a file, not the pane
 RUNDIR="$STATE/rd-runtime-$$"
 mkdir -p "$RUNDIR"
 "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
-    "export XDG_RUNTIME_DIR=$(shq_test "$RUNDIR")" Enter
-sleep 0.2
+    "export XDG_RUNTIME_DIR=$(shq_test "$RUNDIR"); echo XRD=\$?" Enter
+# The export has to be in the shell's environment before the delivery below
+# reads it, and only the finished command prints a digit after the =.
+until_cap "$RDS" "$NP" '*XRD=[0-9]*'
 OLDPATH="$RUNDIR/tmux-cockpit-review-${AP#%}.md"
 CANARY="$STATE/deliver-canary-$$"
 printf 'untouched canary\n' > "$CANARY"
@@ -6388,8 +6402,9 @@ RG="cockpit-rg-$$"; SOCKS="$SOCKS $RG"
 "$TMUX_REAL" -L "$RG" -f /dev/null new-session -d -s t -x 100 -y 30 \
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RG" split-window -t t 'exec bash' >/dev/null 2>&1
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The two panes below are picked BY pane_current_command, so that is the wait.
+rg_cmds() { "$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude ' rg_cmds
 "$TMUX_REAL" -L "$RG" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 APG=$("$TMUX_REAL" -L "$RG" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
@@ -6409,7 +6424,8 @@ case "$(gcap "$NPG")" in
          "HAZARD-MARKER in the shell" "$(gcap "$NPG")" ;;
 esac
 # Clear the shell's readline of the pasted-but-unsent hazard line before the
-# real assertion, so a later match cannot see it.
+# real assertion, so a later match cannot see it. The sleep stays: a discarded
+# readline buffer leaves nothing on screen to poll for.
 "$TMUX_REAL" -L "$RG" send-keys -t "$NPG" C-c >/dev/null 2>&1
 sleep 0.2
 
@@ -6430,6 +6446,8 @@ printf 'RACE-MARKER-CONTENT\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-gate -
     "$RGGATE" \
     "paste-buffer -p -r -d -b rg-gate -t $NPG ; display-message pasted" \
     "delete-buffer -b rg-gate ; display-message 'not delivered'"
+# The sleep stays: the assertion is that the marker never reaches the pane, and
+# a paste that WOULD have landed needs time on the wire to prove it did not.
 sleep 0.3
 case "$(gcap "$NPG")" in
     *RACE-MARKER-CONTENT*) bad "the atomic gate refuses the paste into a shell at paste time" \
@@ -6561,8 +6579,10 @@ mkdir -p "$FDTMPDIR"
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 CTL2=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" \
-    "export XDG_STATE_HOME=$(shq_test "$FDTMPDIR")" Enter
-sleep 0.2
+    "export XDG_STATE_HOME=$(shq_test "$FDTMPDIR"); echo XSH=\$?" Enter
+# The export has to be in the shell's environment before the review below runs
+# there, and only the finished command prints a digit after the =.
+until_cap "$FD" "$CTL2" '*XSH=[0-9]*'
 
 FD_DIRTY=$(mktmpd)
 (
@@ -6581,8 +6601,8 @@ FD_DIRTY=$(mktmpd)
 # fleet queue this test means to exercise.
 "$TMUX_REAL" -L "$FD" new-window -d -t t: -c "$FD_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 FD_AGENT=$("$TMUX_REAL" -L "$FD" list-panes -t t:1 -F '#{pane_id}')
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The queue below picks this pane by its command, so wait for the command.
+until_out claude "$TMUX_REAL" -L "$FD" display-message -p -t "$FD_AGENT" '#{pane_current_command}'
 
 # The fleet queue, from the non-agent control pane -- main_entry()'s own
 # routing, the same path a real prefix-R press from a shell pane takes.
@@ -6911,14 +6931,16 @@ CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
 NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY2" 'exec -a claude bash' >/dev/null 2>&1
 DIRTY2_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
-# a spawn settle, not an event: nothing to poll until the shell prints
-sleep 0.3
+# The queue picks its rows by pane_current_command, so wait for the four new
+# panes to report theirs: three agents and the non-agent shell.
+fq_cmds() { "$TMUX_REAL" -L "$FQ" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash bash bash claude claude claude ' fq_cmds
 
 # A review pasted into this pane and not yet sent: the row has to SAY so, or
 # the queue sends you back to a pane you already reviewed.
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @cockpit_review sent >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
-sleep 0.6
+until_cap "$FQ" "$CTL" "*$DIRTY_PANE*"
 fqout=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 
 case "$fqout" in
@@ -7309,12 +7331,15 @@ tmux -L "$RINNER" -f /dev/null new-session -d -s cliA -c "$RDA" 'exec -a claude 
 tmux -L "$RINNER" new-session -d -s cliB -c "$RDB" 'exec bash' >/dev/null 2>&1
 tmux -L "$RINNER" set -g @cockpit_agents_glob \
     '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+rv_clients() { "$TMUX_REAL" -L "$RINNER" list-clients 2>/dev/null | grep -c .; }
+# Counted, not slept for: the hazard needs cliB to be the more recent client,
+# so the second attach only starts once the first has landed.
 tmux -L "$ROUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RINNER attach -t cliA" >/dev/null 2>&1
-sleep 1
+until_out 1 rv_clients
 tmux -L "$ROUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RINNER attach -t cliB" >/dev/null 2>&1
-sleep 1
+until_out 2 rv_clients
 rpaneA=$(tmux -L "$RINNER" list-panes -t cliA -F '#{pane_id}')
 RSOCKPATH=$(tmux -L "$RINNER" display-message -p '#{socket_path}')
 
@@ -7458,7 +7483,9 @@ printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scr
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 "$TMUX_REAL" -L "$RB3O" -f /dev/null new-session -d -s o -x 100 -y 30 "TERM=xterm-256color exec $TMUX_REAL -L $RB3 attach -t t" >/dev/null 2>&1
-sleep 1; "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r; sleep 1.5
+until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
+until_file "$RB3D/args" '*-p *'
 is "the review window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
@@ -7572,10 +7599,10 @@ printf 'set -g @reload_marker_xdg v2\n' > "$RCHOME/.config/tmux/tmux.conf"
 "$TMUX_REAL" -L "$RCO" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $RC attach -t t" >/dev/null 2>&1
 ROP=$("$TMUX_REAL" -L "$RCO" list-panes -t o -F '#{pane_id}' | head -1)
-sleep 1
+until_out '?*' "$TMUX_REAL" -L "$RC" list-clients -F '#{client_name}'
 if "$TMUX_REAL" -L "$RCO" list-panes -t o >/dev/null 2>&1; then
     "$TMUX_REAL" -L "$RCO" send-keys -t "$ROP" -H 02 52 >/dev/null 2>&1
-    sleep 0.5
+    until_out v2 "$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home
     is "prefix R actually reloads the home conf" "v2" \
        "$("$TMUX_REAL" -L "$RC" show-option -gqv @reload_marker_home)"
     is "prefix R actually reloads the second (xdg) conf too" "v2" \
@@ -8399,6 +8426,8 @@ RHFX=$("$TMUX_REAL" -L "$RH" split-window -d -t t -P -F '#{pane_id}' 'sleep 300'
 n0=$(rh_n); rh_start "$RHPAY"
 for i in $(seq 1 40); do [ -n "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)" ] && break; sleep 0.1; done
 is "a held pane carries the reason" "fix the tests" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_hold)"
+# The 2 s IS the assertion: the hook must not return inside it. There is
+# nothing to poll for -- a poll would end the wait the claim is made of.
 sleep 2; is "and the hook is still holding after 2 s" "$n0" "$(rh_n)"
 printf 'HANDOVER: tests fixed; suite 118s -> 8s; re-read tests/\n' > "$RHSESS/handover"; "$TMUX_REAL" -L "$RH" kill-pane -t "$RHFX"
 rh_wait "$n0" && ok "the hook returns within 4 s of the fixer finishing" || bad "the hook returns within 4 s of the fixer finishing" "HRC" "$("$TMUX_REAL" -L "$RH" capture-pane -p -t "$RHCTL" | tail -3)"
