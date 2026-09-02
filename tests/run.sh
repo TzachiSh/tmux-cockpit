@@ -4479,7 +4479,8 @@ rm -rf "$RVGOLD"
 
 # Perf: a 5000-row single-file diff (the largest that stays under the cap) is
 # ~0.2s now; the pre-fix O(n^2)+fork build was ~5s here and ~13s on the slower
-# hunt machine. timeout is the fail-first teeth -- on the old build this fires.
+# hunt machine. The budget is CPU, 3x this site's 0.211s under twelve spinners
+# (0.146-0.235s idle) -- a wall tooth grades the box, not the build (#75).
 RVPERF=$(mktmpd)
 (
   cd "$RVPERF" || exit
@@ -4489,13 +4490,8 @@ RVPERF=$(mktmpd)
   git add -A; git commit -q -m init
   seq 1 5000 > big.txt
 ) >/dev/null 2>&1
-timeout 3 "$DIR/scripts/tmux-review" --lines "$RVPERF" >/dev/null; rvperfrc=$?
-if [ "$rvperfrc" -eq 124 ]; then
-    bad "a 5000-row under-cap diff parses in well under 3s" \
-        "output within 3s" "timed out (the O(n^2) build)"
-else
-    ok "a 5000-row under-cap diff parses in well under 3s"
-fi
+cpu_under "a 5000-row under-cap diff parses in well under 0.7s of CPU" 0.7 \
+    "$DIR/scripts/tmux-review" --lines "$RVPERF"
 rvperfrows=$("$DIR/scripts/tmux-review" --lines "$RVPERF" | grep -c .)
 is "the 5000-row diff is fully parsed, not capped (5000 rows, no notice)" \
    "5000" "$rvperfrows"
@@ -5523,9 +5519,12 @@ RB=$(mktmpd)
   head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
   printf 'x\n' > small.txt                                  # untracked, small: still reviewed
 ) >/dev/null 2>&1
-rb_t0=$(date +%s%N)
-rbrows=$("$DIR/scripts/tmux-review" --lines "$RB")
-rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+# CPU, not the wall clock: the claim is that the 64 MiB file is skipped rather
+# than diffed, and diffing it is CPU. 3x this site's 0.157s under twelve
+# spinners (0.109-0.132s idle); a wall bound grades the box's I/O too (#75).
+cpu_under "a 64 MiB file is skipped, not diffed: the list is under 0.5s of CPU" 0.5 \
+    "$DIR/scripts/tmux-review" --lines "$RB"
+rbrows=$(cat "$CPUOUT")
 is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
 is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
 is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
@@ -5533,17 +5532,17 @@ case "$rbrows" in
     *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
     *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
 esac
-[ "$rb_ms" -lt 1500 ] && ok "and the list comes back in under 1.5 s (${rb_ms} ms)" || bad "and the list comes back in under 1.5 s" "< 1500 ms" "${rb_ms} ms"
 is "--numstat (the Stop hook's and the fleet's read) omits it too" "0" "$("$DIR/scripts/tmux-review" --copy "$RB" | grep -c '^diff --git a/core')"
 printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
 rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
 is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
 case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
-rb_t0=$(date +%s%N)
-rbpv=$( (cd "$RB" && "$DIR/scripts/tmux-open-path" --preview-diff core) )
-rb_ms=$(( ($(date +%s%N) - rb_t0) / 1000000 ))
+# Same conversion: hashing 64 MB is CPU and nothing else here is. 3x this
+# site's 0.022s under twelve spinners, in this exact wrapped form.
+cpu_under "the preview answers without hashing the file (under 0.07s of CPU)" 0.07 \
+    sh -c 'cd "$1" && exec "$2" --preview-diff core' sh "$RB" "$DIR/scripts/tmux-open-path"
+rbpv=$(cat "$CPUOUT")
 is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
-[ "$rb_ms" -lt 500 ] && ok "and it answers without hashing the file (${rb_ms} ms)" || bad "and it answers without hashing the file" "< 500 ms" "${rb_ms} ms"
 rm -rf "$RB"
 
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
