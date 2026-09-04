@@ -449,19 +449,9 @@ EOF
     rm -f "$mvconf"
 fi
 
-# prefix e: hide the status line and the pane borders, and put them back. The
-# phone screen is about 58 rows and every one of them counts (#99). Stock e is
-# unbound in tmux and in examples/full.tmux.conf; z is zoom, so it is not this.
-#
-# Both writes are session- and window-scoped, never -g: a desktop client on
-# another session of the same server keeps its chrome. The border value is
-# stashed on the way out rather than restored as a hardcoded `top`, because
-# the config may say `bottom` -- and a format in a value needs set -F, which
-# is also why an empty stash falls back to off instead of an invalid "".
-#
-# Built as a conf file and sourced, like the reload and move binds above: `;`
-# and `{` from scattered shell argv are parsed by bind-key itself, so the
-# second command would run once at load time instead of on the key.
+# prefix e: hide the status line and pane borders for THIS session and window.
+# The stash IS the state, so a config that already hides the status line is not
+# read as a restore. -F because an option value is not expanded as a format.
 FSK=$(tmux show-option -gqv @cockpit_fullscreen_key)
 case "$FSK" in off) fsk= ;; "") fsk=e ;; *) fsk=$FSK ;; esac
 if [ -n "$fsk" ]; then
@@ -470,9 +460,10 @@ if [ -n "$fsk" ]; then
     {
         printf 'bind-key %s {\n' "$(sq "$fsk")"
         cat <<'EOF'
-    if -F "#{==:#{status},off}" {
-        set status on
-        set -F pane-border-status "#{?#{@cockpit_fs_border},#{@cockpit_fs_border},off}"
+    if -F "#{@cockpit_fs_border}" {
+        set -u status
+        set -F pane-border-status "#{@cockpit_fs_border}"
+        set -u @cockpit_fs_border
     } {
         set -F @cockpit_fs_border "#{pane-border-status}"
         set status off

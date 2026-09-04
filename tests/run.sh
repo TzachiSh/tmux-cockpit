@@ -9546,7 +9546,8 @@ is "the global status is untouched" "on"     "$("$TMUX_REAL" -L "$FI" show-optio
 is "the global border is untouched" "bottom" "$("$TMUX_REAL" -L "$FI" show-options -gwv pane-border-status)"
 "$TMUX_REAL" -L "$FO" send-keys -t o C-b e
 until_out on "$TMUX_REAL" -L "$FI" show-options -t t -v status
-is "pressing it again brings the status line back" "on" "$(fs_sess)"
+is "pressing it again brings the status line back" "on" \
+   "$("$TMUX_REAL" -L "$FI" display-message -p -t t '#{status}')"
 is "and restores the border the config had, not a hardcoded top" "bottom" "$(fs_win)"
 "$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
 # A fresh server: nothing unbinds a key already bound, so `off` can only be
@@ -9558,6 +9559,49 @@ is "and restores the border the config had, not a hardcoded top" "bottom" "$(fs_
 is "@cockpit_fullscreen_key off binds nothing" "" \
    "$("$TMUX_REAL" -L "$FI" list-keys -T prefix 2>/dev/null | awk '$4=="e"')"
 "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix e reads the state the config starts in (#99) =="
+# Branching on #{status} read a config that already hides the status line as
+# "restore": one press turned the status ON, the borders off, and stashed
+# nothing, so the borders had nothing to come back to. #99 names that config as
+# the status quo on a phone. The stash is the state now: set means hidden.
+if need_tmux "prefix e starting state"; then :; else
+fs_client() {                 # <inner> <outer>: a real client on the inner server
+    "$TMUX_REAL" -L "$2" -f /dev/null new-session -d -s o -x 100 -y 32 \
+        "TERM=xterm-256color exec $TMUX_REAL -L $1 attach -t t" >/dev/null 2>&1
+    until_out '?*' "$TMUX_REAL" -L "$1" list-clients -F '#{client_name}'
+}
+FQ="cockpit-fsq-$$"; FQO="cockpit-fsqo-$$"; SOCKS="$SOCKS $FQ $FQO"
+"$TMUX_REAL" -L "$FQ" -f /dev/null new-session -d -s t -x 100 -y 30 >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" set -g status off >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" set -g pane-border-status bottom >/dev/null 2>&1
+"$TMUX_REAL" -L "$FQ" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fs_client "$FQ" "$FQO"
+"$TMUX_REAL" -L "$FQO" send-keys -t o C-b e
+until_out bottom "$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs_border
+is "starting from status off, the first press hides the borders" "off" \
+   "$("$TMUX_REAL" -L "$FQ" show-options -w -t t:0 -v pane-border-status 2>/dev/null)"
+is "and stashes the border it found" "bottom" \
+   "$("$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs_border)"
+is "and never turns the status line on" "off" \
+   "$("$TMUX_REAL" -L "$FQ" display-message -p -t t '#{status}')"
+"$TMUX_REAL" -L "$FQO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
+# status is a value, not a flag: a two-line status restored as `on` costs a row.
+FT="cockpit-fst-$$"; FTO="cockpit-fsto-$$"; SOCKS="$SOCKS $FT $FTO"
+"$TMUX_REAL" -L "$FT" -f /dev/null new-session -d -s t -x 100 -y 30 >/dev/null 2>&1
+"$TMUX_REAL" -L "$FT" set -g status 2 >/dev/null 2>&1
+"$TMUX_REAL" -L "$FT" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fs_client "$FT" "$FTO"
+"$TMUX_REAL" -L "$FTO" send-keys -t o C-b e
+until_out off "$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}'
+"$TMUX_REAL" -L "$FTO" send-keys -t o C-b e
+until_out 2 "$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}'
+is "a two-line status comes back as two lines, not as on" "2" \
+   "$("$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}')"
+is "and the stash is cleared, so the next press hides again" "" \
+   "$("$TMUX_REAL" -L "$FT" show-options -t t -qv @cockpit_fs_border)"
+"$TMUX_REAL" -L "$FTO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FT" kill-server >/dev/null 2>&1
 fi
 
 echo "== the override stops the status write one cell short of the corner (#99) =="
