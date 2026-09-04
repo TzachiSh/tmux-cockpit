@@ -62,7 +62,7 @@ base:  \e[58;1H[tests] 0:bash*\e[108X\e[108C07:59:40\e(B     <- 8-char clock, en
 am@:   \e[58;1H[tests] 0:bash*\e[108X\e[108C07:59:4\e(B      <- 7 chars, ends col 130
 ```
 
-The clock is truncated by one character, as `tty_putn` at tty.c:713 computes: `len = sx - cx - 1`, cx 123, sx 131, gives 7. That probe's status-right has no trailing pad; the shipped theme's date module ends with a space (examples/full.tmux.conf:274), so on the owner's config the dropped cell is that pad and the clock survives (review pass, 2026-09-04, measured: base ends at 131 with a space, am@ at 130 with the clock's last digit).
+The clock is truncated by one character, as `tty_putn` at tty.c:713 computes: `len = sx - cx - 1`, cx 123, sx 131, gives 7. That probe's status-right has no trailing pad; the shipped theme's date module ends with a space (the catppuccin module invoked at examples/full.tmux.conf:275), so on the owner's config the dropped cell is that pad and the clock survives (review pass, 2026-09-04, measured: base ends at 131 with a space, am@ at 130 with the clock's last digit).
 
 ### What else `am@` changes
 

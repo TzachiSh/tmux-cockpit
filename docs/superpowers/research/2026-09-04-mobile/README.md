@@ -63,13 +63,13 @@ The override costs one trailing space on the phone's status line and touches no 
 
 ## Decisions for the owner
 
-1. Ship the `am@` override in examples/full.tmux.conf and README, or only document it? Options: A ship it in full.tmux.conf, keyed to `xterm-256color` (the TERM every phone app sends; ghostty, kitty and alacritty send their own) / B document only. Recommended: A, the desktop is untouched by construction and the cost is one blank cell.
-2. Phone entry: a `tm --phone` arm in scripts/tm that runs `new-session -A -s phone`, or just document the one-line command? Options: A document the command in README under a "From a phone" heading / B add the arm. Recommended: A, the command is one line and needs no repo code; B when the phone session needs a default window or a fleet view.
+1. Ship the `am@` override in the example configs, or only document it? Options: A ship it, keyed to `xterm-256color` (the TERM every phone app sends; ghostty, kitty and alacritty send their own) / B document only. Recommended: A. Answered by the owner 2026-09-04: A.
+2. Phone entry: document the one-line command, or add repo code? Options: A document the command in README under a "From a phone" heading / B add a `tm --phone` arm. Recommended: A. Answered by the owner 2026-09-04: both, document the command and add a full-screen toggle key (one prefix key on the phone session that hides the status line and pane borders and brings them back); a "bigger UI" was asked and withdrawn, tmux cannot change the font. Child issue #99.
 3. Run the two device probes in terminal.md before the fix ships? Answered by the owner's run on 2026-09-04: the override stopped the ghosts on the phone, so hypothesis 1 holds on the device. The Termius version was not read against its 7.2.2 and 7.5.5 changelog fixes.
-4. The 60-column surfaces (tabs degrade below 120 columns and are gone at 80, touch targets misaligned, pickers width-blind, `[z][x]` pushed off a blocked pane's border): fold into #58's width-aware rows, or a new issue? Options: A fold into #58, which already owns width-aware rows and the fleet column cut / B new issue. Recommended: A, one owner for width.
-5. `status-position top` as a fallback: keep documented only? Options: A documented as the diagnostic and fallback, never combined with `am@` / B ship it instead of `am@`. Recommended: A, `am@` covers pane rows too, top does not; together they drop a visible glyph from the bottom pane row (verified.md, terminal claim 1).
+4. The 60-column surfaces (tabs degrade below 120 columns and are gone at 80, touch targets misaligned, pickers width-blind, `[z][x]` pushed off a blocked pane's border): fold into #58's width-aware rows, or a new issue? Options: A fold into #58, which already owns width-aware rows and the fleet column cut / B new issue. Recommended: A, one owner for width. Answered by the owner 2026-09-04: A.
+5. `status-position top` as a fallback: keep documented only? Options: A documented as the diagnostic and fallback, never combined with `am@` / B ship it instead of `am@`. Recommended: A, `am@` covers pane rows too, top does not; together they drop a visible glyph from the bottom pane row (verified.md, terminal claim 1). Answered by the owner 2026-09-04: A.
 
-Asked 2026-09-04, unanswered defaults apply.
+Asked 2026-09-04, all five answered by the owner the same day (#97 comment).
 
 ## Rejected
 
