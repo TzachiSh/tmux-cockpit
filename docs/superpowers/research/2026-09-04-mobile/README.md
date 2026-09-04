@@ -32,7 +32,7 @@ The owner's phone (Termius on Android, TERM `xterm-256color`, client size report
 | `attach -f ignore-size` | desktop stays 191x44, phone pans a 191-wide window | practice.md, verified.md 3 |
 | width at which window tabs vanish, two windows, owner config | absent at 80, whole at 120 | inventory.md, section 1 |
 | picker popup interior at 60x30 / 131x58 | 40x19 / 89x38 | inventory.md, section 3 |
-| fleet queue diff-stat column | cut at 89 columns, the 131-col popup interior | inventory.md |
+| fleet queue diff-stat column | cut at 89 columns (the 131-col popup interior) when a repo⑂branch field overflows its 32-char cap; the owner's names need 100 | inventory.md, verified.md 4 |
 | status touch targets at 60 columns | half the branch text switches windows, folder browser 0 to 1 column wide | inventory.md, section 4 |
 | `range=control|N` on 3.7c | a plain tap fires it, no Ctrl needed | inventory.md, section 4 |
 
@@ -91,4 +91,4 @@ Not applicable to the research PR. For the implementation: a test in tests/run.s
 
 ## History
 
-- 2026-09-04: three lanes dispatched and landed; refute-practice graded practice.md (7 CONFIRMED, 2 TIGHTENED, 1 sub-claim REFUTED, corrections in place); refute-terminal and refute-inventory pending at the time of this README.
+- 2026-09-04: three lanes dispatched and landed. Refute pass: practice.md 7 CONFIRMED, 2 TIGHTENED, 1 sub-claim REFUTED (aggressive-resize does work under `window-size smallest`); terminal.md 4 CONFIRMED, 2 TIGHTENED (two more TERM_NOAM consumers priced at +2.5% bytes; `am@` drops a visible glyph when the last row is a pane row, so never pair it with `status-position top`); inventory.md 3 CONFIRMED, 3 TIGHTENED, ECH-idle sub-claim REFUTED. Corrections dated in place. Decisions posted on #97 the same day.

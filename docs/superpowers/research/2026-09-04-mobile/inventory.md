@@ -8,6 +8,8 @@ Which cockpit surfaces break, truncate, overflow or become unreachable on a clie
 
 Rig: tmux 3.7c at `~/.local/bin/tmux`, fzf 0.44.1, private `-L` sockets only, a Python pty at each size, frames reconstructed with pyte. Two configs: `conf-example` is `examples/tmux.conf` plus the test palette and the worktree `cockpit.tmux`; `conf-full` is `examples/full.tmux.conf` minus tpm, resurrect and continuum, the shape of the owner's live file. Artifacts under `/tmp/repo-inventory-1957678`.
 
+examples/tmux.conf does not source catppuccin (only full.tmux.conf does, at :170 and :217), so conf-example renders the stock tmux status bar; its rows measure stock tmux, not the cockpit status line (refute pass, 2026-09-04).
+
 One rig defect found and corrected mid-run: `/usr/bin/tmux` is 3.4, `~/.local/bin/tmux` is 3.7c. The first key dump used 3.4 and showed no control ranges. Every measurement below was re-taken on 3.7c.
 
 ## Inventory
@@ -105,7 +107,7 @@ At 89x38 the last column is still cut:
   running         henosis:1 api           tmux-cockpit⑂master                     +0 -..
 ```
 
-The caps at scripts/tmux-review:2219-2221 are state 12, title 40, loc 32, and the four fields are joined with literal tabs that fzf lays on an 8-column grid, so the real minimum is above 84 columns before the diff-stat column starts. Issue #58 defect 5 said the column gets cut under about 150 terminal columns; 131 is inside that and the cut is now measured.
+The ± column is cut whenever the widest repo⑂branch field overflows its 32-character cap. With the owner's own `research-mobile-97⑂research/mobile-97` (37 characters) the queue needs 100 columns for the ± column; at 89 and at 95 it is cut. A fleet of short repo and branch names keeps the column at 89. The caps at scripts/tmux-review:2219-2221 are ceilings, and `pad_field` lets a longer field overflow rather than truncate, so the threshold is a property of the fleet, not of the popup (refute pass, 2026-09-04). Issue #58 defect 5 said the column gets cut under about 150 terminal columns; the cut is now measured.
 
 Pane info card at 40x19:
 
@@ -203,7 +205,7 @@ Redraw count. One 60-second window per row, n=1, idle client, no keystrokes, no 
 | 131x58 | conf-full | 693 | 2 | 1 |
 | 60x30 | conf-example | 101 | 2 | 1 |
 
-An idle phone receives one status repaint per minute, at the minute rollover, because tmux diffs the screen and the clock is the only cell that changes. Zero VPA and zero ECH appeared in any idle window.
+An idle phone receives one status repaint per minute, at the minute rollover, because tmux diffs the screen and the clock is the only cell that changes. Zero VPA in every idle window. One ECH appears per idle minute wherever the status line has a gap to clear between the window list and status-right: `\e[26X` at 131x58 with conf-full (n=2) and `\e[17X` at 60x30 with conf-example. Only 60x30 with conf-full, whose status line is full edge to edge, emits none (refute pass, 2026-09-04).
 
 The cost `status-interval 2` buys is on the server, not the wire. Swapping both status segments for counting jobs on a private server gave 60 shell spawns per 60 seconds idle, 30 status evaluations times two `#()` jobs, for one visible repaint. cockpit.tmux:63-78 already moved the fleet count off this path. The path and branch jobs at cockpit.tmux:60-61 are still on it. Same on a phone and a desktop.
 
@@ -215,7 +217,7 @@ scripts/tm is the only place in the repo that creates or attaches a session. The
 
 cockpit.tmux needs nothing new. It binds tm at cockpit.tmux:261 as prefix g through the same popup chrome.
 
-The two other new-session call sites are not seams. cockpit.tmux:444 creates a session from the move-window menu. full.tmux.conf:138 shells out to ~/.local/bin/tm, issue #58 defect 11.
+The other new-session call site is cockpit.tmux:444, in the move-window menu. full.tmux.conf:138 is not a call site at all: it shells out to ~/.local/bin/tm and so goes through `go()` like everything else (refute pass, 2026-09-04; #58 defect 11 covers the hardcoded path).
 
 window-size is unset everywhere in the repo, so tmux's `latest` applies, and a phone attaching to a shared session resizes every window to the phone's size for the desktop client too. cockpit.tmux:75 documents that a grouped session makes `#{agent_fleet}` read high because a format cannot de-duplicate pane ids, only ever high, never low.
 
@@ -225,7 +227,7 @@ Orchestrator's note, 2026-09-04: this lane's text said a grouped session "keeps 
 
 1. README.md:5,291 and KEYS.md:47-48 document the branch and directory clicks as "Ctrl+click". On tmux 3.7 a plain click fires them, confirmed with a bare SGR press. A documentation defect that hides a gesture the phone already has.
 2. `#{agent_fleet}` renders in no shipped config and not in the owner's live file: full.tmux.conf never mentions it, tmux.conf:74 has it commented, the live status-right at :233,238,240 has no fleet token. Same as #58 defect 4, but below 120 columns the window tabs are gone and the fleet string is the only remaining signal for a session that needs you.
-3. The diff-stat column of the fleet queue is cut at 89 columns, the picker interior of a 131-column client. #58 defect 5 predicted "under about 150"; now measured.
+3. The diff-stat column of the fleet queue is cut at 89 columns, the picker interior of a 131-column client, when a repo⑂branch field overflows its 32-character cap; the owner's own worktree names need 100 columns. #58 defect 5 predicted "under about 150"; now measured.
 4. pane-focus-in at full.tmux.conf:252 fires on terminal focus. A phone that backgrounds and foregrounds the SSH app repeatedly pays two shell spawns each time. #58 defect 12 and the ui-audit README decision 6 already default to dropping it.
 5. Rig defect for the next lane: /usr/bin/tmux on this box is 3.4 and ~/.local/bin/tmux is 3.7c. A probe that hardcodes /usr/bin/tmux silently loses every control range and reports the branch and directory clicks as unbound.
 
