@@ -39,3 +39,40 @@ The shared window shrinks on attach, before the phone ever selects it. `aggressi
 Corrections applied to practice.md in place, dated 2026-09-04. The Recommendation and Rejected sections stood.
 
 Leak sweep pasted by the lane: `ls /tmp/tmux-1000 | grep 2032807` empty; `/tmp/rp-2032807` kept as evidence; no `tmux -L rp` process; `tmux ls` shows only henosis and tests.
+
+## terminal.md (lane refute-terminal, 2026-09-04)
+
+Graded at 23314a9 (9e11e54 only added the am@ chain section). Own probes on private `-L refutterm-*` sockets, own cursor tracker and VT model, tmux 3.7c, source at db24c029.
+
+| # | Claim | Verdict | What ran | Output |
+|---|---|---|---|---|
+| 1 | bottom-right cell written; `am@` stops at 130; ghostty still 131 | CONFIRMED | own pty at 131x58 and 131x100, TERM xterm-256color, `status-interval 1`, `status-right "#(date +%T)"`, replayed through an own cursor tracker | 131x58 base 131, `am@` 130; 131x100 base 131, `am@` 130; owner's capture 131 |
+| 1b | scope is the client's TERM | CONFIRMED | same conf including the `am@` line under TERM xterm-ghostty | 131. Inert for a non-matching TERM |
+| 1c | the override reaches TERM_NOAM | CONFIRMED | `tmux -vv` server log | `NOAM flag is 1`, `xterm-256color override: am@` |
+| 2 | one scroll per full-width status repaint at bottom, zero at top | CONFIRMED | own 58-row VT model over own captures, n=8 repaints | bottom/EAGER 8 scrolls, 8 status rows at grid rows 50-57; bottom/deferred 0, 1; top/EAGER 0, 1; top/deferred 0, 1 |
+| 3 | the `\r\n` walk is ruled out because each step carries `\e[K` | CONFIRMED, survives the size lie | a stream captured from a 100-row pty fed into a 58-row deferred model | deferred 1 status row (42 scrolls); same stream 58-row EAGER 8 status rows; 100-row model deferred 0 scrolls 1 row, EAGER 8, 8 |
+| 4 | `status off` still writes column 131 on the last row | TIGHTENED | `status off`, idle vs a screen filled with 131-char lines | idle: zero writes on the last row, max column 42. Filled: last row reaches 131, glyph `#`. With `am@`: 130, cell blank |
+| 5 | the cited source lines | CONFIRMED, two precision notes | read every cited line at db24c029 | all land where the file says; 2487 and 2570 are comment lines, conditions follow, applied in place |
+| 6 | the device probe writes exactly `cols` chars and discriminates wrap modes | CONFIRMED | ran verbatim in a bare 131x58 pty, replayed in both wrap modes | `\e[58;1H` then exactly 131 `#`. Deferred: `#` row at index 57, marker intact. Eager: at 56, row 57 blank, marker destroyed |
+
+Decisive bytes for claim 1, SGR stripped:
+
+```
+base:  \e[58;1H[tests] 0:bash*\e[108X\e[108C07:59:40\e(B     <- 8-char clock, ends col 131
+am@:   \e[58;1H[tests] 0:bash*\e[108X\e[108C07:59:4\e(B      <- 7 chars, ends col 130
+```
+
+The clock is truncated by one character, as `tty_putn` at tty.c:713 computes: `len = sx - cx - 1`, cx 123, sx 131, gives 7.
+
+### What else `am@` changes
+
+TERM_NOAM has six consumers at db24c029, not the four the file named: tty-term.c:511, tty.c:677, 703, 713, 2110, 2257, 2431. 2110 (`tty_cmd_cells`) and 2431 (`tty_cursor_pane_unless_wrap`) disable the "let the terminal wrap" shortcut for full-width pane lines. Priced: 260-column lines wrapping on 131 columns cost 35,192 bytes with `am@` against 34,324 without (+2.5%), identical rendering; a full-screen fill 9,051 against 8,679 (+4.3%).
+
+| configuration | cost of the skipped cell |
+|---|---|
+| status at the bottom | the status pad, a space, nothing visible |
+| `status off` or `status-position top` | the last row is a pane row; a real glyph is dropped while that content sits on the bottom row |
+| copy mode | same choke point, 131 without, 130 with |
+| wrapped long lines | no degradation, only the byte cost above |
+
+So `am@` and `status-position top` are fine separately and worse together. Corrections applied to terminal.md and README decision 5 in place, 2026-09-04.

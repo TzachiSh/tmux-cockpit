@@ -41,7 +41,8 @@ Measured column positions, CONFIRMED by replaying the bytes through a cursor mod
 | probe, 131x100, same config | 131 |
 | probe, 131x58, same config | 131 |
 | probe, 131x100, `am@` override | 130 |
-| probe, `status off` | last-row write still reaches 131 |
+| probe, `status off`, screen filled to the bottom row | 131 (corrected 2026-09-04, refute pass) |
+| probe, `status off`, idle shell | no write to the last row at all |
 
 Column 131 means the cell at index 130, the bottom-right cell, was written. The character written there was a space.
 
@@ -113,9 +114,10 @@ Shallow clone at `~/.cache/tmux-src`, commit `db24c029`. All CONFIRMED by readin
 | `tty.c:713` | `tty_putn` truncates a run on the last row only under `TERM_NOAM` |
 | `tty.c:703` | under `TERM_NOAM` tmux emits an explicit CUP after a wrap, which is why the override is safe |
 | `tty.c:2482` | HOME branch, source of the top status's `\e[H` |
-| `tty.c:2487` | "Zero on the next line" branch, source of the bottom status's bare `\r\n` |
-| `tty.c:2570` | VPA preferred when the row change exceeds the target row |
+| `tty.c:2487` | "Zero on the next line" comment; the condition at 2488-2489 carries a third clause, `(!tty_use_margin(tty) || tty->rleft == 0)`. Source of the bottom status's bare `\r\n` |
+| `tty.c:2570` | closing of the comment; the condition at 2571-2573 prefers VPA when the row change exceeds the target row or the move would cross the scroll region |
 | `tty.c:1231` | ECH used for a mid-line erase when terminfo has `ech` |
+| `tty.c:2110`, `tty.c:2431` | under `TERM_NOAM` tmux stops relying on the terminal to wrap a full-width pane line and redraws or re-addresses instead. Measured cost of the override on a wrapping stream: 35,192 bytes against 34,324, about +2.5%, identical output (refute pass, 2026-09-04) |
 | `cmd-refresh-client.c:269` | `refresh-client -C` jumps to `not_control_client` unless `CLIENT_CONTROL` is set; `:285` emits "not a control client". The server cannot correct a normal client's size |
 | `cmd-refresh-client.c:276` | `-S` sets `CLIENT_STATUSFORCE` and calls `server_status_client`, a status-only redraw |
 | `resize.c:161`, `resize.c:184` | `window-size latest` applies only when several clients share a window. The phone and the desktop are on different sessions, so it never fired |
@@ -237,15 +239,15 @@ set -as terminal-overrides ',xterm-256color:am@'
 | Lost glyph | one space, the theme's trailing pad, CONFIRMED |
 | Scope | matched on client TERM. With `xterm-256color` the widest row write stopped at 130, with `xterm-ghostty` it reached 131, CONFIRMED by running the same config under both |
 | Desktop client | unaffected, it reports `xterm-ghostty` |
-| Coverage | every last-row write, status and pane alike, because `tty.c:2257` is the one choke point |
+| Coverage | every last-row write, status and pane alike, because `tty.c:2257` is the one choke point. With the status at the bottom the skipped cell is the status pad, a space. With `status off` or `status-position top` the last row is a pane row and a real glyph is dropped: a filled screen ends the last row at column 131 with `#` present, at 130 with the cell blank under the override. Copy mode inherits the same skip (refute pass, 2026-09-04) |
 
 The scope row is a per-client lever: the two clients already differ in TERM, so a TERM-keyed override discriminates them without a per-client option.
 
-`set -g status-position top` is a real second option. Under eager wrap it took the scrolls from 6 to 0. It is narrower: with the status at the top, tmux's last row becomes a pane row, and a full-width pane line still hits the bottom-right cell. Ship `am@`, keep `status-position top` as a diagnostic and a fallback.
+`set -g status-position top` is a real second option. Under eager wrap it took the scrolls from 6 to 0. It is narrower: with the status at the top, tmux's last row becomes a pane row, and a full-width pane line still hits the bottom-right cell. Ship `am@`, keep `status-position top` as a diagnostic and a fallback, but not both at once: with the status at the top the last row becomes a pane row, and `am@` then drops a visible character from it instead of a status pad (refute pass, 2026-09-04).
 
 | Alternative | Why not |
 |---|---|
-| `status off` | the last-row write still reached column 131. Removes the per-minute repaint, not the wrap |
+| `status off` | removes the per-minute repaint, not the wrap. Once pane output reaches the bottom row a full-width pane line still writes column 131, measured with the glyph `#` present; on an idle shell nothing is written to the last row, so the alternative only looks safe while the screen is empty (refute pass, 2026-09-04) |
 | shorter `status-right-length` | tmux pads the status to full width. Every probe ended at the screen width |
 | `window-size` or `aggressive-resize` changes | apply only when clients share a window. These are separate sessions |
 | `refresh-client -C` | "not a control client" for a normal SSH client, `cmd-refresh-client.c:269` |
