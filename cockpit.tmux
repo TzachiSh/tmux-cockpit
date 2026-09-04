@@ -167,7 +167,7 @@ SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
 #        real floor.
 #   3.7  MouseDown1Control1 and #[range=control|N] first appear. Below this,
 #        binding it fails with "unknown key" and the range marker is ignored,
-#        so Ctrl+clicking the branch segment cannot work. Everything else does.
+#        so clicking the branch segment cannot work. Everything else does.
 #
 # The message matters because tpm discards plugin stdout AND stderr, so a bare
 # "unknown key" line would vanish and the user would just have a dead segment.
