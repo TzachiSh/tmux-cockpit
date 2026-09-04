@@ -2,7 +2,7 @@
 
 Shows what every AI coding agent in your tmux session is doing, without you
 having to switch windows to find out — then lets you act on what you see without
-leaving the pane. Ctrl+click the branch in the status bar to switch branch.
+leaving the pane. Click the branch in the status bar to switch branch (a plain tap on a phone).
 Ctrl+double-click any line of output to pick a path off it and open that file,
 at the line it names.
 
@@ -263,7 +263,7 @@ over earlier, `prefix r` included.
   |---------|--------------|
   | 3.3 | the floor — `display-popup -T`, which both pickers use |
   | 3.4 | per-pane border colours, the markers, both pickers, `prefix + b` |
-  | 3.7 | adds `Ctrl`+click on the branch segment (`#[range=control\|N]`) |
+  | 3.7 | adds click on the branch segment (`#[range=control\|N]`) |
 
   Below 3.7 the plugin says so once and skips that one binding; `prefix + b`
   opens the same picker. Below 3.3 it says so and stops.
@@ -288,7 +288,7 @@ over earlier, `prefix r` included.
 
 | key | does |
 |-----|------|
-| `Ctrl`+click the branch segment | branch picker |
+| click the branch segment | branch picker |
 | `prefix + b` | the same picker, without the mouse |
 | `prefix + a` | the agents menu: every row below, one letter each, no Shift — `@cockpit_ai_key` rebinds, `off` disables (needs tmux 3.4) |
 | `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
