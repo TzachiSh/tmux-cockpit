@@ -107,7 +107,7 @@ At 89x38 the last column is still cut:
   running         henosis:1 api           tmux-cockpit⑂master                     +0 -..
 ```
 
-The ± column is cut whenever the widest repo⑂branch field overflows its 32-character cap. With the owner's own `research-mobile-97⑂research/mobile-97` (37 characters) the queue needs 100 columns for the ± column; at 89 and at 95 it is cut. A fleet of short repo and branch names keeps the column at 89. The caps at scripts/tmux-review:2219-2221 are ceilings, and `pad_field` lets a longer field overflow rather than truncate, so the threshold is a property of the fleet, not of the popup (refute pass, 2026-09-04). Issue #58 defect 5 said the column gets cut under about 150 terminal columns; the cut is now measured.
+The ± column is cut whenever the widest repo⑂branch field overflows its 32-character cap. With the owner's own `research-mobile-97⑂research/mobile-97` (37 characters) the queue needs 100 columns for the ± column; at 89 and at 95 it is cut. A fleet of short repo and branch names keeps the column at 89. The caps at scripts/tmux-review:2220-2221 are ceilings, and `pad_field` lets a longer field overflow rather than truncate, so the threshold is a property of the fleet, not of the popup (refute pass, 2026-09-04). Issue #58 defect 5 said the column gets cut under about 150 terminal columns; the cut is now measured.
 
 Pane info card at 40x19:
 

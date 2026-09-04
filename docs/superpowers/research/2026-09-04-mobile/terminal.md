@@ -8,7 +8,7 @@ Which sequence in tmux's output did the phone terminal mishandle, and what tmux 
 
 The sequence was the write into the bottom-right cell of the status line. tmux drove the cursor to the last row with `\e[100d` and then wrote a full-width status, ending at column 131 of a 131-column screen. That last write is safe only on a terminal that defers the wrap (the `xenl` pending-wrap state). On a terminal that wraps eagerly, writing that cell on the last row scrolls the whole screen by one line. Every status repaint then left the previous status one row higher, and every later absolute write landed one row below the content it belonged to.
 
-The tmux-side setting is `set -as terminal-overrides ',xterm-256color:am@'`. It makes tmux skip that cell (`tty.c:2256`). It is scoped to the client's TERM, so it hits the phone and not the ghostty client.
+The tmux-side setting is `set -as terminal-overrides ',xterm-256color:am@'`. It makes tmux skip that cell (`tty.c:2257`). It is scoped to the client's TERM, so it hits the phone and not the ghostty client.
 
 ## Sequences
 
@@ -288,6 +288,6 @@ $ tmux list-clients -F '#{client_name} #{client_width}x#{client_height} #{client
 
 Did: decoded the capture; measured the status write reaching the bottom-right cell; traced it to `tty.c:2257`; reproduced at 131x100, 131x58, across a mid-session resize, with `status off`, `am@` and `status-position top`; built a VT model and at a matched size showed eager wrap alone produces 6 scrolls and 9 stacked rows while deferred produces 0 and 1; confirmed phone-practice's byte reading, ruled out their mechanism, kept their `status-position top` finding with a corrected explanation; wrote and verified a device probe that needs no tmux.
 
-Did not: touch the phone, so hypothesis 1 is confirmed as a sufficient mechanism, not as the phone's observed behaviour. Identify Termius's rendering engine. Confirm whether Termius answers `\e[18t`, so the 100-row figure is inferred from the pty winsize and pixel arithmetic. Test the `resize-window` mitigation on a device.
+Did not: touch the phone, so at report time hypothesis 1 was confirmed as a sufficient mechanism, not as the phone's observed behaviour. Later the same day the owner applied the override on the live server and the ghost rows stopped on the phone (README, Cause). Identify Termius's rendering engine. Confirm whether Termius answers `\e[18t`, so the 100-row figure is inferred from the pty winsize and pixel arithmetic. Test the `resize-window` mitigation on a device.
 
 Could do next: run the two probes on the phone, about two minutes, closing both hypotheses. If hypothesis 1 confirms, file the `am@` line as an implementation issue and the row mismatch separately. Check the phone's Termius version against 7.2.2 and 7.5.5 from the changelog before treating it as unfixable upstream.

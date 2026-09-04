@@ -172,7 +172,7 @@ status-position=bottom  '...\r\n\x1b[K\r\n\x1b[K\x1b[30m\x1b[42m\r\n[base] 0:bas
 status-position=top     '...\r\n\x1b[K\r\n\x1b[K\x1b[30m\x1b[42m\x1b[H[base] 0:bash*\x1b[108X\x1b[108C'
 ```
 
-At the bottom, tmux emits no absolute cursor address. It walks down with `\r\n` and writes the status wherever the cursor lands. On a terminal whose real height is 58 but which accepted 100 rows, every `\r\n` past row 58 scrolls the visible region, so the status lands wherever the scroll left it and each redraw leaves another copy. That matches the 3-then-4 stacked copies in the two screenshots. At the top, tmux emits `\x1b[H`, an absolute home, which a client lying about its height cannot displace.
+At the bottom, tmux emits no absolute cursor address (the stacked copies are in artifacts/phone-0709.png and phone-0710.png). It walks down with `\r\n` and writes the status wherever the cursor lands. On a terminal whose real height is 58 but which accepted 100 rows, every `\r\n` past row 58 scrolls the visible region, so the status lands wherever the scroll left it and each redraw leaves another copy. That matches the 3-then-4 stacked copies in the two screenshots. At the top, tmux emits `\x1b[H`, an absolute home, which a client lying about its height cannot displace.
 
 `set -g status-position top` is therefore a one-word candidate mitigation. The mechanism call belongs to the terminal lane.
 
