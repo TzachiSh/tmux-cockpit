@@ -86,6 +86,17 @@ At the top position the target is (0,0), which hits the HOME branch at `tty.c:24
 
 This applies only to the full redraw. In the steady state the cursor sits inside the pane, the shortcut does not apply, and tmux emits an absolute address: `\e[58;1H` in the 58-row capture and `\e[100d` VPA in the owner's 100-row one, because `tty.c:2570` prefers VPA when the row change exceeds the target row.
 
+## How am@ reaches the skip
+
+Four hops, each read in source:
+
+1. `set -as terminal-overrides ',xterm-256color:am@'` removes the `am` capability for clients whose TERM is `xterm-256color`.
+2. `am` is a real overridable capability: `tty-term.c:61` declares `[TTYC_AM] = { TTYCODE_FLAG, "am" }`.
+3. `tty-term.c:511` sets `term->flags |= TERM_NOAM` when `tty_term_flag(term, TTYC_AM)` is false.
+4. `tty.c:2257` in `tty_cell` returns early when `TERM_NOAM` is set and `tty->cy == tty->sy - 1` and `tty->cx == tty->sx - 1`.
+
+`tty.c:703` then emits an explicit CUP after any wrap under `TERM_NOAM`, which makes the override safe rather than merely quieter. `tty_cell` is the single choke point every last-row write routes through, status and pane alike, so one override covers both.
+
 ## Sources, tmux
 
 Shallow clone at `~/.cache/tmux-src`, commit `db24c029`. All CONFIRMED by reading.
