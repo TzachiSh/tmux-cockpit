@@ -25,7 +25,7 @@ The owner's phone (Termius on Android, TERM `xterm-256color`, client size report
 | deferred-wrap model, same bytes | 0 scrolls, 1 status row | terminal.md |
 | eager-wrap model, status top | 0 scrolls | terminal.md |
 | idle status repaints per minute | 1, at the minute rollover (n=1) | inventory.md, section 5 |
-| idle server-side status evaluations per minute | 30, two `#()` jobs each, 60 shell spawns | inventory.md |
+| idle server-side status evaluations per minute | 30, two `#()` jobs each, 60 shell spawns (not re-run in the refute pass) | inventory.md |
 | phone attaches to the desktop's session, `window-size latest` | desktop window 191x44 → 60x29 | practice.md, Shape b |
 | grouped session `new-session -t` | desktop still shrinks, 60x29 then 45x25 | practice.md, verified.md 2a |
 | independent session `new-session -A -s phone` | desktop stays 191x44 through attach, rotate, detach | practice.md, verified.md 9 |
@@ -40,8 +40,8 @@ The owner's phone (Termius on Android, TERM `xterm-256color`, client size report
 
 Two separate defects.
 
-1. Ghost status rows. tmux writes the bottom-right cell of the last row (`tty.c:2257` skips it only when the terminal lacks `am`). A terminal that wraps eagerly at the last column, instead of holding a pending wrap the way xterm does, scrolls the screen one row on every full-width status repaint. The previous status stays one row up as a ghost, and every later absolute write lands one row below the content it belongs to, which is what erases the prompts. Confirmed as a sufficient mechanism by replaying the owner's own bytes through a 60-line terminal model; not yet confirmed on the device.
-2. The client reports 100 rows for about 58 visible. Consistent with Termius not resizing the pty when its keyboard opens. tmux cannot correct a client's size from the server (`refresh-client -C` is control-mode only). Separate defect, separate fix, peer-app bug.
+1. Ghost status rows. tmux writes the bottom-right cell of the last row (`tty.c:2257` skips it only when the terminal lacks `am`). A terminal that wraps eagerly at the last column, instead of holding a pending wrap the way xterm does, scrolls the screen one row on every full-width status repaint. The previous status stays one row up as a ghost, and every later absolute write lands one row below the content it belongs to, which is what erases the prompts. Confirmed as a sufficient mechanism by replaying the owner's own bytes through a 60-line terminal model, then observed on the device: on 2026-09-04 the owner applied the override on the live server and reattached the phone, and the ghost rows stopped.
+2. The client reports 100 rows for about 58 visible. PLAUSIBLE; the visible-row count is inferred from pixel pitch, not measured, and a later attach reported 131x60. Consistent with Termius not resizing the pty when its keyboard opens. tmux cannot correct a client's size from the server (`refresh-client -C` is control-mode only). Separate defect, separate fix, peer-app bug.
 
 The `\r\n` walk phone-practice noticed (the full redraw writes the bottom status after a bare `\r\n`, from the `tty_cursor` shortcut at `tty.c:2487`) is real but is not the ghost cause: each step carries `\e[K`, and the ghosts reproduce at a matched size with no row lie.
 
@@ -65,8 +65,8 @@ The override costs one trailing space on the phone's status line and touches no 
 
 1. Ship the `am@` override in examples/full.tmux.conf and README, or only document it? Options: A ship it in full.tmux.conf, keyed to `xterm-256color` (the TERM every phone app sends; ghostty, kitty and alacritty send their own) / B document only. Recommended: A, the desktop is untouched by construction and the cost is one blank cell.
 2. Phone entry: a `tm --phone` arm in scripts/tm that runs `new-session -A -s phone`, or just document the one-line command? Options: A document the command in README under a "From a phone" heading / B add the arm. Recommended: A, the command is one line and needs no repo code; B when the phone session needs a default window or a fleet view.
-3. Run the two device probes in terminal.md ("Experiment for the owner", about two minutes) before the fix ships? Options: A yes, close both hypotheses on the real phone / B ship on the model evidence. Recommended: A, the mechanism is proven sufficient but not yet observed on the device; the probe also reads the Termius version against its 7.2.2 and 7.5.5 changelog fixes.
-4. The 60-column surfaces (tabs vanish below about 104 columns, touch targets misaligned, pickers width-blind, `[z][x]` pushed off a blocked pane's border): fold into #58's width-aware rows, or a new issue? Options: A fold into #58, which already owns width-aware rows and the fleet column cut / B new issue. Recommended: A, one owner for width.
+3. Run the two device probes in terminal.md before the fix ships? Answered by the owner's run on 2026-09-04: the override stopped the ghosts on the phone, so hypothesis 1 holds on the device. The Termius version was not read against its 7.2.2 and 7.5.5 changelog fixes.
+4. The 60-column surfaces (tabs degrade below 120 columns and are gone at 80, touch targets misaligned, pickers width-blind, `[z][x]` pushed off a blocked pane's border): fold into #58's width-aware rows, or a new issue? Options: A fold into #58, which already owns width-aware rows and the fleet column cut / B new issue. Recommended: A, one owner for width.
 5. `status-position top` as a fallback: keep documented only? Options: A documented as the diagnostic and fallback, never combined with `am@` / B ship it instead of `am@`. Recommended: A, `am@` covers pane rows too, top does not; together they drop a visible glyph from the bottom pane row (verified.md, terminal claim 1).
 
 Asked 2026-09-04, unanswered defaults apply.
@@ -80,7 +80,7 @@ Asked 2026-09-04, unanswered defaults apply.
 | `window-size largest` or `manual` globally | protects the desktop, phone reads a 191-wide window or every window freezes at default-size |
 | `attach -f ignore-size` as the daily path | isolates size but the phone pans; keep as the safety net for an accidental attach to the desktop session |
 | `status off` | the last-row write still reaches the bottom-right cell from pane content |
-| shorter `status-right-length` | tmux pads the status to full width anyway |
+| shorter `status-right-length` | tmux pads the status to full width anyway (asserted by two lanes, not re-run in the refute pass) |
 | `refresh-client -C` to fix the row count | control-mode clients only |
 | a second tmux config for the phone | two files for one line |
 | a phone TUI | non-goal |
@@ -91,4 +91,4 @@ Not applicable to the research PR. For the implementation: a test in tests/run.s
 
 ## History
 
-- 2026-09-04: three lanes dispatched and landed. Refute pass: practice.md 7 CONFIRMED, 2 TIGHTENED, 1 sub-claim REFUTED (aggressive-resize does work under `window-size smallest`); terminal.md 4 CONFIRMED, 2 TIGHTENED (two more TERM_NOAM consumers priced at +2.5% bytes; `am@` drops a visible glyph when the last row is a pane row, so never pair it with `status-position top`); inventory.md 3 CONFIRMED, 3 TIGHTENED, ECH-idle sub-claim REFUTED. Corrections dated in place. Decisions posted on #97 the same day.
+- 2026-09-04: three lanes dispatched and landed. Refute pass, verdicts per row in verified.md: practice.md one sub-claim REFUTED (aggressive-resize does work under `window-size smallest`); terminal.md two more TERM_NOAM consumers priced at +2.5% bytes, and `am@` drops a visible glyph when the last row is a pane row, so never pair it with `status-position top`; inventory.md the ECH-idle sub-claim REFUTED and the 60-column boundaries tightened. Corrections dated in place. Decisions posted on #97 the same day; the owner confirmed the override on the device.
