@@ -82,3 +82,15 @@ So `am@` and `status-position top` are fine separately and worse together. Corre
 The refute lane's first pass falsely refuted claim 1: its tracker consumed two of the three bytes of `\e(B` (designate ASCII into G0, emitted after every status paint) and treated the trailing `B` as a printable, which landed on the pending-wrap cell and fabricated a scroll on the base run while hiding the truncation on the `am@` run. Treating `\e(`, `\e)`, `\e*`, `\e+` as three-byte sequences moved every number to agree with the file. A fixed-duration pty drain also cut mid-frame once and produced a spurious column-131 hit; drain until the stream goes quiet. The model sentence in terminal.md was corrected in place.
 
 Leak sweep pasted by the lane: `ls /tmp/tmux-1000 | grep refutterm` and `ls /tmp | grep refutterm` both empty; live clients at that moment `/dev/pts/10 191x45 xterm-ghostty henosis` only, the phone client gone, the `tests` session still present and untouched.
+
+## inventory.md (lane refute-inventory, 2026-09-04)
+
+Graded at 6f2e27e. Private `-L refute-inventory-2063156-*` sockets under `env -u TMUX -u TMUX_PANE`, tmux 3.7c.
+
+| # | Claim | Verdict | What ran | Output |
+|---|---|---|---|---|
+| 1 | bare SGR click fires MouseDown1Control1 | CONFIRMED | logging `bind -n MouseDown1<Key> run-shell -b` per key, bare `\e[<0;COL;30M`/`m` at every column; then unmodified conf-full at 60x30 (col 40) and 131x58 (col 100) | column 40 logged `Control1 x=39 y=0 range=control`; the branch picker opened at both sizes, frame identical to inventory.md's 40x19 render. Manual entry for `range=control|N` names no modifier. README.md:5,291 and KEYS.md:47-48 read as the file says and are wrong for 3.7 |
+| 2a | no window tabs at 60x30, three windows | CONFIRMED | conf-full, three windows, rendered status row | `  tests  󰊢  research/mobile-97 ⑂research-mobil 󰃰  08:14`, identical. Note `research/mobile-97 ⑂research-mobil` is one value: scripts/tmux-where:159 prints branch then worktree name |
+| 2b | column-to-key map at 60x30 | TIGHTENED | every column 1-60 pressed, three windows named bash; then window 3 renamed `bashXYZ` | 1-10 StatusLeft, 11-33 Status, 34-51 Control1, 52-60 StatusDefault. With the longer name 28-36 Status and 37-40 Control1, the file's boundary. Control1 always ends at 51; its left edge floats with the window-list width. The one-window table reproduced verbatim |
+| 2c | tabs whole at 120, absent at 80, two windows | CONFIRMED, middle rows misdescribed | bisect at 80, 96, 104, 112, 120 | absent at 80, both whole at 120, `<a` at 96. At 104 and 112 the marker is `<` on the left and window 2 survives while window 1 is eaten, the reverse of the file's wording. status-right is cut from the left: `ockpit-wt` |
+| 3 | popup interiors 40x19, 89x38, 52x19 | CONFIRMED | `stty size` inside each popup at both client sizes | 70%/70% 40x19 and 89x38; 90%/70% 52x19 and 115x38; 78%/40% 44x10 and 100x21; 60%/50% 34x13 and 76x27. The `-h 6` row was not re-run with `-w "$PW"`; with the default width it gave 28x4 and 63x4 |

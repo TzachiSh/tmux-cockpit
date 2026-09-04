@@ -31,8 +31,8 @@ The truncation direction is measurable. At 80 columns the line read `  tests ock
 |---|---|
 | 80 | none |
 | 96 | `<a` |
-| 104 | window 1 only, `>` marker |
-| 112 | window 1 plus `2  ed>` |
+| 104 | window 2 only, `<` marker on the left, window 1 eaten (corrected 2026-09-04) |
+| 112 | `<bash    2  bash`, window 1 partly eaten |
 | 120 | both tabs whole |
 
 The #58 finding that fleet columns get cut under 150 columns is confirmed at a new width and not re-derived. See `docs/superpowers/research/2026-08-26-ui-audit/README.md` and issue #58 defects 5 and 6.
@@ -139,8 +139,8 @@ At 60 columns the status bar's touch targets do not sit under the text that name
 | cols | key fired | what is drawn there |
 |---|---|---|
 | 1-10 | MouseDown1StatusLeft | `  tests ` |
-| 11-36 | MouseDown1Status, window switch | the branch text |
-| 37-51 | MouseDown1Control1, branch picker | the rest of the branch text |
+| 11-33 | MouseDown1Status, window switch | the branch text (refute pass measured 11-33 with three windows named bash; the file's 11-36 held with a window named `bashXYZ`, so the Control1 left edge floats with the window-list width, corrected 2026-09-04) |
+| 34-51 | MouseDown1Control1, branch picker | the rest of the branch text |
 | 52-60 | MouseDown1StatusDefault | the clock |
 
 60x30, one window:
