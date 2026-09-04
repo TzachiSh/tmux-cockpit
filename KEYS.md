@@ -15,6 +15,7 @@ layout.
 | `prefix r` | review an agent's uncommitted diff, blocked agents first. |
 | `prefix i` | one screen about this pane: cwd, git root, state, review, hold. |
 | `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane. |
+| `prefix e` | hide the status line and pane borders for this session; again restores them. |
 | `prefix b` | branch picker for this pane's repo. |
 | `prefix g` | session picker (`tm`), with each session's agents previewed. |
 | `prefix w` | the board: every agent pane as a live tile, blocked first. Needs the optional `cockpit-tui` binary. |
@@ -33,6 +34,7 @@ of the example's `prefix m` menu).
 | Review its diff | `r` |
 | Side fix beside it | `f` |
 | Pane info | `i` |
+| Full screen (hide the chrome) | `e` |
 | Switch branch | `b` |
 | Move window to a session... | `m` |
 | Sessions... | `s` |
@@ -82,6 +84,7 @@ set -g @cockpit_board_key     w    # the board; off keeps stock tmux
 set -g @cockpit_review_key    r
 set -g @cockpit_info_key      i
 set -g @cockpit_fixer_key     f
+set -g @cockpit_fullscreen_key e    # hide the chrome; off keeps stock tmux
 set -g @cockpit_move_key      M
 set -g @cockpit_reload_key    R
 ```

@@ -449,6 +449,33 @@ EOF
     rm -f "$mvconf"
 fi
 
+# prefix e: hide the status line and pane borders for THIS session and window.
+# The flag IS the state, so a config that already hides the status line is not
+# read as a restore; unsetting inherits whatever the config says, no stash.
+FSK=$(tmux show-option -gqv @cockpit_fullscreen_key)
+case "$FSK" in off) fsk= ;; "") fsk=e ;; *) fsk=$FSK ;; esac
+if [ -n "$fsk" ]; then
+    fsconf=$(mktemp) || exit 1
+    trap 'rm -f "$fsconf"' EXIT HUP INT TERM
+    {
+        printf 'bind-key %s {\n' "$(sq "$fsk")"
+        cat <<'EOF'
+    if -F "#{@cockpit_fs}" {
+        set -u @cockpit_fs
+        set -u status
+        set -uw pane-border-status
+    } {
+        set @cockpit_fs 1
+        set status off
+        set -w pane-border-status off
+    }
+}
+EOF
+    } > "$fsconf"
+    tmux source-file "$fsconf"
+    rm -f "$fsconf"
+fi
+
 # prefix a: the agents menu, every cockpit action as a row with its letter on
 # screen. A row replays the key the action is bound to (send-keys -K, 3.4):
 # one definition per action, a rebound key moves its row, an off key drops
@@ -464,6 +491,7 @@ if [ -n "$ak" ] && version_at_least 3 4; then
     row 'Side fix beside it'              f "$fk"
     row 'Pane info'                       i "$ik"
     row 'Board of every agent'            w "$bk"
+    row 'Full screen (hide the chrome)'   e "$fsk"
     rows+=('')
     row 'Switch branch'                   b b
     row 'Move window to a session...'     m "$mk"
