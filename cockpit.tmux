@@ -449,6 +449,42 @@ EOF
     rm -f "$mvconf"
 fi
 
+# prefix e: hide the status line and the pane borders, and put them back. The
+# phone screen is about 58 rows and every one of them counts (#99). Stock e is
+# unbound in tmux and in examples/full.tmux.conf; z is zoom, so it is not this.
+#
+# Both writes are session- and window-scoped, never -g: a desktop client on
+# another session of the same server keeps its chrome. The border value is
+# stashed on the way out rather than restored as a hardcoded `top`, because
+# the config may say `bottom` -- and a format in a value needs set -F, which
+# is also why an empty stash falls back to off instead of an invalid "".
+#
+# Built as a conf file and sourced, like the reload and move binds above: `;`
+# and `{` from scattered shell argv are parsed by bind-key itself, so the
+# second command would run once at load time instead of on the key.
+FSK=$(tmux show-option -gqv @cockpit_fullscreen_key)
+case "$FSK" in off) fsk= ;; "") fsk=e ;; *) fsk=$FSK ;; esac
+if [ -n "$fsk" ]; then
+    fsconf=$(mktemp) || exit 1
+    trap 'rm -f "$fsconf"' EXIT HUP INT TERM
+    {
+        printf 'bind-key %s {\n' "$(sq "$fsk")"
+        cat <<'EOF'
+    if -F "#{==:#{status},off}" {
+        set status on
+        set -F pane-border-status "#{?#{@cockpit_fs_border},#{@cockpit_fs_border},off}"
+    } {
+        set -F @cockpit_fs_border "#{pane-border-status}"
+        set status off
+        set pane-border-status off
+    }
+}
+EOF
+    } > "$fsconf"
+    tmux source-file "$fsconf"
+    rm -f "$fsconf"
+fi
+
 # prefix a: the agents menu, every cockpit action as a row with its letter on
 # screen. A row replays the key the action is bound to (send-keys -K, 3.4):
 # one definition per action, a rebound key moves its row, an off key drops
@@ -464,6 +500,7 @@ if [ -n "$ak" ] && version_at_least 3 4; then
     row 'Side fix beside it'              f "$fk"
     row 'Pane info'                       i "$ik"
     row 'Board of every agent'            w "$bk"
+    row 'Full screen (hide the chrome)'   e "$fsk"
     rows+=('')
     row 'Switch branch'                   b b
     row 'Move window to a session...'     m "$mk"

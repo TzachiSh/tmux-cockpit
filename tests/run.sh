@@ -9500,5 +9500,201 @@ is "and its name never runs" "no" "$([ -e "$BI/OWNED" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$BW_IN" kill-server >/dev/null 2>&1
 fi
 
+echo "== the example configs ship the phone wrap override (#99) =="
+# A phone terminal that wraps at the last cell scrolls the screen on every
+# full-width status repaint (#97), so the override has to be IN the shipped
+# config, not only in the README.
+if need_tmux "phone wrap override"; then :; else
+for phc in tmux.conf full.tmux.conf; do
+    PH="cockpit-am-${phc%%.*}-$$"; SOCKS="$SOCKS $PH"
+    "$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t >/dev/null 2>&1
+    "$TMUX_REAL" -L "$PH" source-file "$DIR/examples/$phc" >/dev/null 2>&1
+    pho=$("$TMUX_REAL" -L "$PH" show -s terminal-overrides 2>/dev/null)
+    case "$pho" in
+        *"xterm-256color:am@"*) ok "examples/$phc carries xterm-256color:am@" ;;
+        *) bad "examples/$phc carries xterm-256color:am@" "xterm-256color:am@" "$pho" ;;
+    esac
+    # -a appends, and reloading a config is routine: an unguarded append stacks
+    # another copy of the override on every reload, forever.
+    "$TMUX_REAL" -L "$PH" source-file "$DIR/examples/$phc" >/dev/null 2>&1
+    is "and reloading examples/$phc does not stack a second copy" "1" \
+       "$("$TMUX_REAL" -L "$PH" show -s terminal-overrides 2>/dev/null | grep -c 'xterm-256color:am@')"
+    "$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
+done
+fi
+
+echo "== prefix e hides the status line and borders for this session only (#99) =="
+# The toggle writes session and window options, never -g: a second client on
+# another session keeps its chrome. The restore reads what the config had --
+# the global is set to `bottom` here, so a hardcoded `top` fails.
+if need_tmux "prefix e full screen"; then :; else
+FI="cockpit-fs-$$"; FO="cockpit-fso-$$"; SOCKS="$SOCKS $FI $FO"
+"$TMUX_REAL" -L "$FI" -f /dev/null new-session -d -s t -x 100 -y 30 >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI" set -g status on >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI" set -g pane-border-status bottom >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fs_sess() { "$TMUX_REAL" -L "$FI" show-options -t t -v status 2>/dev/null; }
+fs_win()  { "$TMUX_REAL" -L "$FI" show-options -w -t t:0 -v pane-border-status 2>/dev/null; }
+"$TMUX_REAL" -L "$FO" -f /dev/null new-session -d -s o -x 100 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $FI attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$FI" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$FO" send-keys -t o C-b e
+until_out off "$TMUX_REAL" -L "$FI" show-options -t t -v status
+is "prefix e turns the status line off for the session" "off" "$(fs_sess)"
+is "and the pane borders off for the window"            "off" "$(fs_win)"
+is "the global status is untouched" "on"     "$("$TMUX_REAL" -L "$FI" show-options -gv status)"
+is "the global border is untouched" "bottom" "$("$TMUX_REAL" -L "$FI" show-options -gwv pane-border-status)"
+"$TMUX_REAL" -L "$FO" send-keys -t o C-b e
+until_out on "$TMUX_REAL" -L "$FI" show-options -t t -v status
+is "pressing it again brings the status line back" "on" "$(fs_sess)"
+is "and restores the border the config had, not a hardcoded top" "bottom" "$(fs_win)"
+"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
+# A fresh server: nothing unbinds a key already bound, so `off` can only be
+# read on a server that has not loaded the plugin yet -- the same shape as the
+# sessions-key block above.
+"$TMUX_REAL" -L "$FI" -f /dev/null new-session -d -s t >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI" set -g @cockpit_fullscreen_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$FI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "@cockpit_fullscreen_key off binds nothing" "" \
+   "$("$TMUX_REAL" -L "$FI" list-keys -T prefix 2>/dev/null | awk '$4=="e"')"
+"$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
+fi
+
+echo "== the override stops the status write one cell short of the corner (#99) =="
+# The mechanism, driven through a real pty: tmux writes the bottom-right cell
+# unless the terminal lacks am, and a terminal that wraps there scrolls. The
+# probe replays the client's own bytes through a cursor tracker and reports the
+# last column written on the bottom row: 130 with the override, 131 without.
+if need_tmux "phone pty column"; then :; elif ! command -v python3 >/dev/null 2>&1; then
+    skip_ "the override stops the status one cell short (no python3)"
+    skip_ "a desktop TERM still writes the last column (no python3)"
+elif ! infocmp xterm-ghostty >/dev/null 2>&1; then
+    skip_ "the override stops the status one cell short (no xterm-ghostty terminfo)"
+    skip_ "a desktop TERM still writes the last column (no xterm-ghostty terminfo)"
+else
+PTD=$(mktmpd); PTCONF="$PTD/conf"; PTPY="$PTD/probe.py"
+# The override comes out of the shipped file: delete it there and this block
+# goes red, which is the only reason the probe is worth its four seconds.
+sed -n 's/^ *\(set -as terminal-overrides .*\)$/\1/p' "$DIR/examples/tmux.conf" > "$PTCONF"
+cat >> "$PTCONF" <<'PTEOF'
+set -g status on
+set -g status-position bottom
+set -g status-interval 1
+set -g status-right "#(date +%T)"
+PTEOF
+cat > "$PTPY" <<'PTEOF'
+# Attach a 131x40 client over a pty and report the last column written on the
+# bottom row. Tracks CUP, VPA, CUF, HPA, CR and LF and counts printable cells;
+# SGR, OSC and the three-byte \e(B are skipped -- the refute lane's tracker ate
+# two bytes of \e(B and fabricated a scroll (verified.md, note).
+import fcntl, os, pty, select, struct, sys, termios, time
+
+sock, term, conf = sys.argv[1], sys.argv[2], sys.argv[3]
+COLS, ROWS = 131, 40
+env = dict(os.environ, TERM=term, COLUMNS=str(COLS), LINES=str(ROWS))
+env.pop('TMUX', None)
+env.pop('TMUX_PANE', None)
+pid, fd = pty.fork()
+if pid == 0:
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', ROWS, COLS, 0, 0))
+    os.execvpe('tmux', ['tmux', '-L', sock, '-f', conf, 'new-session', '-s', 'p'], env)
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack('HHHH', ROWS, COLS, 0, 0))
+
+
+def last_column(s):
+    row, col, hi, saved, i, n = 1, 1, 0, (1, 1), 0, len(s)
+    while i < n:
+        c = s[i]
+        if c == '\x1b':
+            nxt = s[i + 1] if i + 1 < n else ''
+            if nxt == '[':
+                j = i + 2
+                while j < n and not ('@' <= s[j] <= '~'):
+                    j += 1
+                if j >= n:
+                    break
+                body, final = s[i + 2:j].replace('?', '').replace('>', ''), s[j]
+                par = [int(p) if p.isdigit() else 0 for p in body.split(';')] if body else []
+                one = par[0] if par and par[0] else 1
+                two = par[1] if len(par) > 1 and par[1] else 1
+                if final in 'Hf':
+                    row, col = one, two
+                elif final == 'd':
+                    row = one
+                elif final in 'G`':
+                    col = one
+                elif final == 'C':
+                    col += one
+                elif final == 'D':
+                    col = max(1, col - one)
+                elif final == 'A':
+                    row = max(1, row - one)
+                elif final == 'B':
+                    row += one
+                i = j + 1
+            elif nxt == ']':
+                j = i + 2
+                while j < n and s[j] != '\x07' and not (s[j] == '\x1b' and j + 1 < n and s[j + 1] == '\\'):
+                    j += 1
+                i = j + (1 if j < n and s[j] == '\x07' else 2)
+            elif nxt in '()*+':
+                i += 3
+            elif nxt == '7':
+                saved = (row, col)
+                i += 2
+            elif nxt == '8':
+                row, col = saved
+                i += 2
+            else:
+                i += 2
+        else:
+            if c == '\r':
+                col = 1
+            elif c == '\n':
+                row += 1
+            elif c == '\b':
+                col = max(1, col - 1)
+            elif c >= ' ':
+                if row >= ROWS and col <= COLS:
+                    hi = max(hi, col)
+                col += 1
+                if col > COLS:
+                    col, row = 1, row + 1
+            i += 1
+        row = min(row, ROWS)
+    return hi
+
+
+buf, start, last = '', time.time(), time.time()
+while True:
+    now = time.time()
+    # Drained until the stream goes quiet, never for a fixed span: a cut mid
+    # frame reports a column the client never finished writing.
+    if now - start > 3 and now - last > 0.3 and last_column(buf) >= 100:
+        break
+    if now - start > 20:
+        break
+    r = select.select([fd], [], [], 0.2)[0]
+    if r:
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError:
+            break
+        if not chunk:
+            break
+        buf += chunk.decode('latin-1')
+        last = time.time()
+print(last_column(buf))
+PTEOF
+PTS1="cockpit-pty1-$$"; PTS2="cockpit-pty2-$$"; SOCKS="$SOCKS $PTS1 $PTS2"
+is "the status write on the bottom row stops at column 130 (xterm-256color)" "130" \
+   "$(python3 "$PTPY" "$PTS1" xterm-256color "$PTCONF" 2>/dev/null)"
+"$TMUX_REAL" -L "$PTS1" kill-server >/dev/null 2>&1
+is "and a desktop TERM still writes column 131 (xterm-ghostty)" "131" \
+   "$(python3 "$PTPY" "$PTS2" xterm-ghostty "$PTCONF" 2>/dev/null)"
+"$TMUX_REAL" -L "$PTS2" kill-server >/dev/null 2>&1
+rm -rf "$PTD"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
