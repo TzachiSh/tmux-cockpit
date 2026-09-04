@@ -76,3 +76,9 @@ TERM_NOAM has six consumers at db24c029, not the four the file named: tty-term.c
 | wrapped long lines | no degradation, only the byte cost above |
 
 So `am@` and `status-position top` are fine separately and worse together. Corrections applied to terminal.md and README decision 5 in place, 2026-09-04.
+
+### Methodology warning
+
+The refute lane's first pass falsely refuted claim 1: its tracker consumed two of the three bytes of `\e(B` (designate ASCII into G0, emitted after every status paint) and treated the trailing `B` as a printable, which landed on the pending-wrap cell and fabricated a scroll on the base run while hiding the truncation on the `am@` run. Treating `\e(`, `\e)`, `\e*`, `\e+` as three-byte sequences moved every number to agree with the file. A fixed-duration pty drain also cut mid-frame once and produced a spurious column-131 hit; drain until the stream goes quiet. The model sentence in terminal.md was corrected in place.
+
+Leak sweep pasted by the lane: `ls /tmp/tmux-1000 | grep refutterm` and `ls /tmp | grep refutterm` both empty; live clients at that moment `/dev/pts/10 191x45 xterm-ghostty henosis` only, the phone client gone, the `tests` session still present and untouched.

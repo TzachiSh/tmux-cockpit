@@ -135,7 +135,7 @@ Shallow clone at `~/.cache/tmux-src`, commit `db24c029`. All CONFIRMED by readin
 
 Replay the owner's real bytes twice, changing exactly one thing: whether the terminal defers the wrap.
 
-About 60 lines of Python, one class: a grid of `cols` by `rows`, a cursor, a `pend` flag, a scroll counter. It handles only what tmux emitted: CUP `H`, VPA `d`, CUF `C`, ECH `X`, EL `K`, ED `J`, DECSTBM `r`, CR, LF, printables. Private-parameter sequences, OSC strings and single-character escapes are consumed and ignored; none of them move the cursor.
+About 60 lines of Python, one class: a grid of `cols` by `rows`, a cursor, a `pend` flag, a scroll counter. It handles only what tmux emitted: CUP `H`, VPA `d`, CUF `C`, ECH `X`, EL `K`, ED `J`, DECSTBM `r`, CR, LF, printables. Private-parameter sequences, OSC and DCS strings, and the two-character charset designators `\e(B` and friends are consumed and ignored; none of them move the cursor. The designators matter: tmux emits one after every status paint, and a model that consumed only two of their three bytes would print the trailing `B`, which lands exactly on the pending-wrap cell and fabricates a scroll (refute pass, 2026-09-04).
 
 ```python
 def put(s, ch):
