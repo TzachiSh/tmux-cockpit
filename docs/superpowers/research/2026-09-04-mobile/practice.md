@@ -18,7 +18,7 @@ Same tmux config for the 191x45 desktop and the phone, or a different command fo
 | App launches straight into tmux | "Adding startup commands is as easy as going to Host settings, scrolling to bottom and inserting command we want to use: tmux a -t session_name" ([docs.blink.sh](https://docs.blink.sh/basics/tips-and-tricks)) | Yes. This is exactly where a phone entry command goes. |
 | Sticky modifier row is how phones send Ctrl | "A soft keyboard has no key you can hold down while tapping another." and "Every serious mobile terminal solves this the same way: an accessory row above the keyboard with sticky modifier keys you tap once, then tap the letter." ([mtmux.com](https://mtmux.com/blog/tmux-from-phone)) | Yes, and the owner's screenshot shows the row. |
 | Remap the prefix away from Ctrl on phones | Blink: "sending `ctrl-space` when hitting `ctrl-space`, as opposed to bringing up iPadOS's emoji menu." ([docs.blink.sh](https://docs.blink.sh/basics/tips-and-tricks)) | No. The owner's Termius row has a sticky Ctrl, so Ctrl-Space is two taps. |
-| Shared window shrinks to the smallest client, aggressive-resize frees it | "if two clients both select the same window then tmux will shrink the window to the smallest client's size" (search snippet, page not fetched) | PLAUSIBLE only. The lane's own test contradicted the aggressive-resize half, see Shape b. |
+| Shared window shrinks to the smallest client, aggressive-resize frees it | "if two clients both select the same window then tmux will shrink the window to the smallest client's size" (search snippet, page not fetched) | Half right (corrected 2026-09-04, refute pass). The shrink is CONFIRMED. `aggressive-resize` frees the window only under `window-size smallest`, and only on the next window switch; under the owner's `latest` it does nothing. |
 
 No source found recommends a width-conditional status line. None of the guides read mentions `#{client_width}`. The practice in the wild is to turn the status off, not to shrink it.
 
@@ -36,8 +36,8 @@ tmux 3.7c at `/home/tzachi/.local/bin/tmux`, all quotes from `man tmux` on this 
 | `#{=/N/…:}` truncation | "'#{=/5/...:pane_title}' will append '...' if the pane title is more than five characters" | CONFIRMED, rendered per client. |
 | `status-format` | "Specify the format to be used for each line of the status line." | CONFIRMED, expanded per client. |
 | `window-size` | "if smallest, the size of the smallest. If manual, the size of a new window is set from the default-size option ... With latest, tmux uses the size of the client that had the most recent activity." | CONFIRMED, measured table under Shape b. |
-| `aggressive-resize` | "resize the window to the size of the smallest or largest session ... for which it is the current window, rather than the session to which it is attached" | CONFIRMED as written; changed nothing in the test because it only matters for shared windows. |
-| `display-popup -w/-h` percent | "-w and -h give the width and height - both may be a percentage (followed by '%')" | CONFIRMED, percent scales per client. 90%/60% inside a 60x30 client gave a 52x16 popup. |
+| `aggressive-resize` | "resize the window to the size of the smallest or largest session ... for which it is the current window, rather than the session to which it is attached" | CONFIRMED as written, but it changed nothing in the test because the test ran under `window-size latest`, which ignores it. It bites only under `smallest` or `largest` (corrected 2026-09-04). |
+| `display-popup -w/-h` percent | "-w and -h give the width and height - both may be a percentage (followed by '%')" | CONFIRMED, percent scales per client. 90%/60% inside a 60x30 client gave a 52x16 usable interior; the box is 54x18 with one border cell each side. Measure with `stty size` inside the popup: `#{popup_width}` and `#{popup_height}` are not formats in 3.7c and expand empty (refute pass, 2026-09-04). |
 | `display-popup -w` as a format | not documented as a format | CONFIRMED negative. `-w '#{client_width}'` did not run. |
 | `new-session -t` grouped | "Sessions in the same group share the same set of windows ... The current and previous window and any session options remain independent" | CONFIRMED, and window size is not among the independent things. This sinks Shape b's grouped variant. |
 | `set -w` per window | "a set of window options is attached to each window and a set of pane options to each pane" | CONFIRMED. `window-size` is a window option. |
@@ -109,6 +109,8 @@ Desktop at 191x45, phone at 60x30. Window dimensions after each setting:
 
 `default-size` on that server was 80x24, but the session had been created with `-x 191 -y 45`, which sets `default-size` for the session, so manual held 191x45.
 
+`manual` freezes the window at whatever size it already holds. It held 191x45 here only because the option was in force before any client had sized the window. Set `window-size manual` after the 191x45 client is already attached and the window stays at 191x44 instead (refute pass, 2026-09-04).
+
 `latest` and `smallest` destroy the desktop layout the moment the phone attaches. That is the size half of the reported defect, reproduced. The owner is on `latest`.
 
 ### Grouped session: FAILED
@@ -122,7 +124,7 @@ C1 phone attaches to 'phone': base:0 60x29   |  phone:0 60x29
 C2 phone rotated to 45x26:    base:0 45x25   |  phone:0 45x25
 ```
 
-CONFIRMED negative. A group shares the windows themselves, so sizing one sizes the other. Window size is a window property, not a session option, so it is not independent. `window-size manual` on the grouped pair sent both to 191x45 together, still not independent.
+CONFIRMED negative. A group shares the windows themselves, so sizing one sizes the other. Window size is a window property, not a session option, so it is not independent. `window-size manual` on the grouped pair sent both to 191x44 together, still not independent (corrected from 191x45, 2026-09-04).
 
 ### Independent session: WORKED
 
@@ -145,7 +147,7 @@ F aggressive-resize=on,  phone on the SHARED window: base:0 60x29 | phone:0 60x2
 F aggressive-resize=off, phone on the SHARED window: base:0 60x29 | phone:0 60x29 | phone:9 60x29
 ```
 
-`link-window -s base:0 -t phone:9` makes phone:9 and base:0 one window object, so viewing it from the phone shrank it, and `aggressive-resize` made no difference. Rule: do not share windows between the desktop session and the phone session. The search-snippet claim that `aggressive-resize` frees the larger client when the smaller looks away did not reproduce; PLAUSIBLE at best, not load-bearing.
+`link-window -s base:0 -t phone:9` makes phone:9 and base:0 one window object, so the shared window drops to 60x29 the moment a client attaches to the phone session, even while that client is looking at a different window. Under the owner's `window-size latest`, `aggressive-resize` changes nothing, on or off. It is not inert everywhere: under `window-size smallest` with `aggressive-resize on`, the shared window returns to 191x44 as soon as the phone switches away from it, so the search-snippet claim is CONFIRMED for `smallest` and REFUTED for `latest` (refute pass, 2026-09-04, matrix in verified.md). Rule: do not share windows between the desktop session and the phone session, and do not expect `aggressive-resize` to rescue you while `window-size` is `latest`.
 
 ### attach -f ignore-size: WORKED, same session, no second session
 
