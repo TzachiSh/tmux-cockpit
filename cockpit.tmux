@@ -450,8 +450,8 @@ EOF
 fi
 
 # prefix e: hide the status line and pane borders for THIS session and window.
-# The stash IS the state, so a config that already hides the status line is not
-# read as a restore. -F because an option value is not expanded as a format.
+# The flag IS the state, so a config that already hides the status line is not
+# read as a restore; unsetting inherits whatever the config says, no stash.
 FSK=$(tmux show-option -gqv @cockpit_fullscreen_key)
 case "$FSK" in off) fsk= ;; "") fsk=e ;; *) fsk=$FSK ;; esac
 if [ -n "$fsk" ]; then
@@ -460,14 +460,14 @@ if [ -n "$fsk" ]; then
     {
         printf 'bind-key %s {\n' "$(sq "$fsk")"
         cat <<'EOF'
-    if -F "#{@cockpit_fs_border}" {
+    if -F "#{@cockpit_fs}" {
+        set -u @cockpit_fs
         set -u status
-        set -F pane-border-status "#{@cockpit_fs_border}"
-        set -u @cockpit_fs_border
+        set -uw pane-border-status
     } {
-        set -F @cockpit_fs_border "#{pane-border-status}"
+        set @cockpit_fs 1
         set status off
-        set pane-border-status off
+        set -w pane-border-status off
     }
 }
 EOF

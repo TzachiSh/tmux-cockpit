@@ -9548,7 +9548,8 @@ is "the global border is untouched" "bottom" "$("$TMUX_REAL" -L "$FI" show-optio
 until_out on "$TMUX_REAL" -L "$FI" show-options -t t -v status
 is "pressing it again brings the status line back" "on" \
    "$("$TMUX_REAL" -L "$FI" display-message -p -t t '#{status}')"
-is "and restores the border the config had, not a hardcoded top" "bottom" "$(fs_win)"
+is "and restores the border the config had, not a hardcoded top" "bottom" \
+   "$("$TMUX_REAL" -L "$FI" display-message -p -t t:0 '#{pane-border-status}')"
 "$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FI" kill-server >/dev/null 2>&1
 # A fresh server: nothing unbinds a key already bound, so `off` can only be
 # read on a server that has not loaded the plugin yet -- the same shape as the
@@ -9565,7 +9566,7 @@ echo "== prefix e reads the state the config starts in (#99) =="
 # Branching on #{status} read a config that already hides the status line as
 # "restore": one press turned the status ON, the borders off, and stashed
 # nothing, so the borders had nothing to come back to. #99 names that config as
-# the status quo on a phone. The stash is the state now: set means hidden.
+# the status quo on a phone. A flag is the state now: set means hidden.
 if need_tmux "prefix e starting state"; then :; else
 fs_client() {                 # <inner> <outer>: a real client on the inner server
     "$TMUX_REAL" -L "$2" -f /dev/null new-session -d -s o -x 100 -y 32 \
@@ -9579,11 +9580,11 @@ FQ="cockpit-fsq-$$"; FQO="cockpit-fsqo-$$"; SOCKS="$SOCKS $FQ $FQO"
 "$TMUX_REAL" -L "$FQ" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 fs_client "$FQ" "$FQO"
 "$TMUX_REAL" -L "$FQO" send-keys -t o C-b e
-until_out bottom "$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs_border
+until_out 1 "$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs
 is "starting from status off, the first press hides the borders" "off" \
    "$("$TMUX_REAL" -L "$FQ" show-options -w -t t:0 -v pane-border-status 2>/dev/null)"
-is "and stashes the border it found" "bottom" \
-   "$("$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs_border)"
+is "and marks the session hidden" "1" \
+   "$("$TMUX_REAL" -L "$FQ" show-options -t t -qv @cockpit_fs)"
 is "and never turns the status line on" "off" \
    "$("$TMUX_REAL" -L "$FQ" display-message -p -t t '#{status}')"
 "$TMUX_REAL" -L "$FQO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
@@ -9599,8 +9600,8 @@ until_out off "$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}'
 until_out 2 "$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}'
 is "a two-line status comes back as two lines, not as on" "2" \
    "$("$TMUX_REAL" -L "$FT" display-message -p -t t '#{status}')"
-is "and the stash is cleared, so the next press hides again" "" \
-   "$("$TMUX_REAL" -L "$FT" show-options -t t -qv @cockpit_fs_border)"
+is "and the flag is cleared, so the next press hides again" "" \
+   "$("$TMUX_REAL" -L "$FT" show-options -t t -qv @cockpit_fs)"
 "$TMUX_REAL" -L "$FTO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FT" kill-server >/dev/null 2>&1
 fi
 
