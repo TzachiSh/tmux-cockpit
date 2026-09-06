@@ -217,7 +217,7 @@ else
     # (examples/claude-hooks.json), so anything hoisted above that exit pays a
     # tmux round-trip per tool call. Known gap that buys: a review delivered
     # into a pane that is ALREADY running keeps its mark until the next real
-    # transition (done -> running), so prefix J can walk to it once more.
+    # transition (done -> running), so the jump key can walk to it once more.
     # Not on wake: nobody pressed Enter, a pending ◆ is still true.
     [ "$state" = running ] && [ "$1" != wake ] && tq set-option -pu -t "$pane" @cockpit_review
 fi
@@ -369,7 +369,7 @@ fi
 fleet=""
 case "$nb" in ''|0|*[!0-9]*) ;; *) fleet="#[fg=#{@thm_red}#,bold]▲$nb#[default] " ;; esac
 case "$ne" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_peach}]✕$ne#[default] " ;; esac
-case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_yellow}]◆$nr#[default] " ;; esac
+case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_sky}]◆$nr#[default] " ;; esac
 [ "$fleet" = "$fleet_cur" ] || tq set-option -gq @cockpit_fleet "$fleet"
 tflush
 

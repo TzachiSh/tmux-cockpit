@@ -194,8 +194,10 @@ done < <(list_branches)
 [ ${#refs[@]} -eq 0 ] && fail "no branches yet in $DIR"
 
 if ! command -v fzf >/dev/null; then
-    # No fzf: a numbered menu still beats no picker at all.
-    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}"
+    # No fzf: a numbered menu still beats no picker at all. On stderr, where
+    # `select` writes its own menu and prompt: split across two streams, one
+    # redirect separates the question from its answers.
+    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}" >&2
     select row in "${disps[@]}"; do
         [ -n "${row:-}" ] || exit 0
         break
@@ -227,17 +229,36 @@ psz=$(( avail - lrows - 5 ))
 # "[any key]" and making you reopen the picker and retype. The failure paths
 # are the normal case -- a dirty tree, a branch held by a worktree -- and each
 # already showed git's own message; now it costs a keypress, not the flow.
+# The theme lib sits beside the REAL script; install.sh links this file into
+# ~/bin by its absolute path, so one readlink hop is the whole resolution.
+SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}"
+# shellcheck source=lib/fzf.sh
+. "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null \
+     || printf '%s' "$SELF")")/lib/fzf.sh" \
+  || fail "cockpit: the fzf theme is missing · reinstall from the repo"
+
+# One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. 46 columns,
+# under the 48 a 70% popup shows at an 80-column terminal.
+KEYS='↵ switch · alt-↵ new branch · ^/ preview · esc'
+CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
+# Head-ellipsis: the directory tail is the half that says where you are.
+[ ${#CTX} -gt 48 ] && CTX="…${CTX: -47}"
+mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border "footer=$KEYS")
+# No --footer below the floor, so the keys ride the last --header line.
+if [ "$(cockpit_fzf_tier)" = styled ]; then THEME+=("--header=$CTX")
+else THEME+=("--header=$CTX"$'\n'"$KEYS"); fi
+
 query=""
 while :; do
     out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
-        | fzf --print-query --expect=alt-enter --query="$query" \
-              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+        | fzf "${THEME[@]}" \
+              --print-query --expect=alt-enter --query="$query" \
+              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \
               --delimiter=$'\t' --with-nth=2 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --prompt="switch> " \
-              --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
-on ${current:-detached HEAD} · $(tail3 "$DIR")" \
               --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
+              --preview-label=' log ' --preview-label-pos=2 \
               --preview-window="down,$psz,border-top")
     rc=$?
     # fzf's exit codes matter here: 0 = a row accepted, 1 = NO MATCH -- which is

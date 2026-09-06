@@ -192,6 +192,8 @@ done <<'PALETTE'
 @thm_yellow #f9e2af
 @thm_green #a6e3a1
 @thm_overlay_0 #6c7086
+@thm_sky #89dceb
+@thm_mauve #cba6f7
 @cockpit_blocked_bg #52303a
 PALETTE
 
@@ -586,3 +588,18 @@ trap 'rm -f "$conf"' EXIT HUP INT TERM
 } > "$conf"
 tmux source-file "$conf"
 rm -f "$conf"
+
+# Last, so it is the message left in the client's one slot rather than one an
+# earlier warning overwrites. Once per server: Debian 13 and Ubuntu 24.04 both
+# ship 0.44.1, and a nag on every config reload is what makes people stop
+# reading them. `command -v` first because fzf is optional -- every picker
+# falls back to a numbered menu, and an fzf-less user has nothing to upgrade.
+if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ]; then
+    # shellcheck source=scripts/lib/fzf.sh
+    . "$DIR/scripts/lib/fzf.sh" 2>/dev/null || true
+    tmux set-option -gq @cockpit_fzf_notice 1
+    if [ "$(cockpit_fzf_tier 2>/dev/null)" = plain ]; then
+        fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
+        tmux display-message "cockpit: fzf $fzf_v · styled pickers need 0.63, bootstrap.sh --full"
+    fi
+fi

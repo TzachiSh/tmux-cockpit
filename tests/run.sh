@@ -9784,5 +9784,138 @@ is "and a desktop TERM still writes column 131 (xterm-ghostty)" "131" \
 rm -rf "$PTD"
 fi
 
+# --- #104 fzf theme ---------------------------------------------------------
+echo "== the shared fzf theme: version tier, one argv, key hints (#104) =="
+FZTD=$(mktmpd)
+FZLIB="$DIR/scripts/lib/fzf.sh"
+# A fake fzf: answers --version, then records its argv one argument per line and
+# exits 130 -- the code a real esc returns, so each picker walks its own way out.
+# The suffix is the fake's own pid, so a picker that opens twice keeps both files.
+fzfake() {                    # fzfake <dir> <version string>
+    mkdir -p "$1"
+    cat > "$1/fzf" <<EOS
+#!/bin/sh
+case "\${1:-}" in --version) printf '%s\n' '$2'; exit 0 ;; esac
+cat >/dev/null
+[ -n "\${FZ_ARGV:-}" ] && printf '%s\n' "\$@" > "\$FZ_ARGV.\$\$"
+exit 130
+EOS
+    chmod +x "$1/fzf"
+}
+fznew="$FZTD/new"; fzold="$FZTD/old"; fzfloor="$FZTD/floor"; fznone="$FZTD/none"
+fzfake "$fznew" "0.74.3 (15f64c49)"
+fzfake "$fzold" "0.44.1 (debian)"
+fzfake "$fzfloor" "0.63.0"
+mkdir -p "$fznone"
+
+fztier() {                    # fztier <dir to put on PATH> -- the lib's verdict
+    env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$1" \
+        "$BASH" -c '. "$1" && cockpit_fzf_tier' _ "$FZLIB" 2>/dev/null
+}
+is "fzf 0.74.3 is the styled tier"        "styled" "$(fztier "$fznew")"
+is "the Debian 0.44.1 is the plain tier"  "plain"  "$(fztier "$fzold")"
+is "0.63.0 is the floor, not below it"    "styled" "$(fztier "$fzfloor")"
+is "no fzf at all is the plain tier"      "plain"  "$(fztier "$fznone")"
+
+# Every picker this lane owns, driven to the point where it hands off to fzf.
+FZP="$FZTD/bin"; fzfake "$FZP" "0.44.1 (debian)"
+FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
+for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename; do
+    p=$(command -v "$c" 2>/dev/null) || continue
+    ln -sf "$p" "$FZP/$c"; ln -sf "$p" "$FZNB/$c"
+done
+ln -sf "$SHIM/tmux" "$FZP/tmux"; ln -sf "$SHIM/tmux" "$FZNB/tmux"
+FZG=$(mktmpd)
+( cd "$FZG" && git init -q -b main . && : > a && git add a &&
+  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e \
+      git commit -q -m init ) >/dev/null 2>&1
+: > "$FZTD/clicked.txt"
+tmux set-option -p -t "$PANE" @cockpit_click_line "see $FZTD/clicked.txt:1" 2>/dev/null
+
+fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's argv
+    local tag=$1; shift
+    env -u TMUX -u TMUX_PANE PATH="$FZP" FZ_ARGV="$FZTD/argv-$tag-$$" \
+        "$@" </dev/null >/dev/null 2>&1
+}
+fzrun tm-attach "$DIR/scripts/tm"
+fzrun tm-kill   "$DIR/scripts/tm" -k
+fzrun branch    "$DIR/scripts/tmux-branch" "$FZG"
+fzrun path      "$DIR/scripts/tmux-open-path" --pick "$PANE"
+fzrun browse    "$DIR/scripts/tmux-open-path" --browse "$FZTD"
+fzn=0; fzboth=0
+for f in "$FZTD"/argv-*-"$$".*; do
+    [ -e "$f" ] || continue
+    fzn=$((fzn+1))
+    grep -qx -- '--ansi' "$f" && grep -qx -- '--tabstop=1' "$f" && fzboth=$((fzboth+1))
+done
+is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
+
+# fzf merges --color per key and the last occurrence wins, so an override is
+# only an override if it is appended after the theme.
+fzk=$(cat "$FZTD"/argv-tm-kill-"$$".* 2>/dev/null)
+fzti=$(printf '%s\n' "$fzk" | grep -n -- '^--color=16,fg:' | head -1 | cut -d: -f1)
+fzui=$(printf '%s\n' "$fzk" | grep -n -- 'prompt:red' | head -1 | cut -d: -f1)
+is "the kill picker's red --color lands after the theme's, so it wins" "yes" \
+   "$([ -n "$fzti" ] && [ -n "$fzui" ] && [ "$fzui" -gt "$fzti" ] 2>/dev/null && echo yes || echo no)"
+
+# The calling convention the freeze fixes: the theme first, the user's option
+# last. Asserted at the seam rather than through the fleet picker, which is
+# tmux-review's file and not this lane's.
+tmux set-option -g @cockpit_fleet_fzf_options "--color=fg+:red" 2>/dev/null
+fzlast=$( { env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$FZP" \
+                "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null
+            tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null; } \
+          | grep -- '--color=' | tail -1 )
+is "a user's own --color is the last one fzf sees" "--color=fg+:red" "$fzlast"
+tmux set-option -gu @cockpit_fleet_fzf_options 2>/dev/null
+
+fzh=$(env -u TMUX "$DIR/scripts/tm" -h 2>&1)
+is "tm -h names the picker's ^X and no longer a k kill key" "yes no" \
+   "$(case "$fzh" in *'^X'*) printf yes ;; *) printf no ;; esac
+      case "$fzh" in *'k kill'*) printf ' yes' ;; *) printf ' no' ;; esac)"
+
+# `select` writes its menu and its PS3 prompt to stderr, so the sentence that
+# introduces the menu belongs on stderr too: split across two streams, one
+# redirect separates the question from its own answers.
+fznofzf() {                   # fznofzf <tag> <cmd...> -- which stream got the prompt
+    local tag=$1 o e; shift
+    env -u TMUX -u TMUX_PANE PATH="$FZNB" "$@" </dev/null \
+        >"$FZTD/o-$tag" 2>"$FZTD/e-$tag"
+    grep -qF "$FZWANT" "$FZTD/o-$tag" && o=out || o=""
+    grep -qF "$FZWANT" "$FZTD/e-$tag" && e=err || e=""
+    printf '%s%s\n' "$o" "$e"
+}
+FZWANT='Kill which session'
+is "tm -k without fzf prompts on stderr, where the menu goes" "err" \
+   "$(fznofzf tmk "$DIR/scripts/tm" -k)"
+FZWANT='Sessions:'
+is "tm without fzf prompts on stderr" "err" \
+   "$(fznofzf tma "$DIR/scripts/tm")"
+FZWANT='Switch branch in'
+is "tmux-branch without fzf prompts on stderr" "err" \
+   "$(fznofzf tmb "$DIR/scripts/tmux-branch" "$FZG")"
+FZWANT='Open which path'
+is "tmux-open-path without fzf prompts on stderr" "err" \
+   "$(fznofzf tmo "$DIR/scripts/tmux-open-path" --pick "$PANE")"
+
+tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null
+FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
+env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
+    new-session -d 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'styled pickers')
+"$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'styled pickers')
+is "the plain-tier notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
+"$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
+FZNS2="cockpit-fzfquiet-$$"; SOCKS="$SOCKS $FZNS2"
+env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/null \
+    new-session -d 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZNS2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "and a 0.63+ fzf is never told about the tier at all" "0" \
+   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'styled pickers')"
+"$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
+rm -rf "$FZTD" "$FZG"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

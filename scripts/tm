@@ -26,6 +26,22 @@ NEW_LABEL='+ new session'
 die() { printf '%s\n' "$*" >&2; exit 1; }
 command -v tmux >/dev/null || die "tmux is not installed"
 
+# Key hints, one order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc.
+# Both fit in 48 columns, which is what survives a 70% popup at 80 columns.
+K_ATTACH='↵ attach · ^X kill · ^/ preview · esc cancel'
+K_KILL='↵ kill · ⇥ mark · esc cancel'
+
+# The theme lib sits beside the REAL script; install.sh links this file into
+# ~/bin by its absolute path, so one readlink hop is the whole resolution.
+# Called from the picker arms only: --rows and --kill-one exit before them and
+# run on every fzf reload, where a readlink per keystroke buys nothing.
+load_theme() {
+  # shellcheck source=lib/fzf.sh
+  . "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null \
+       || printf '%s' "$SELF")")/lib/fzf.sh" \
+    || die "cockpit: the fzf theme is missing · reinstall from the repo"
+}
+
 usage() {
   cat >&2 <<'USAGE'
 tm — tmux session launcher.
@@ -34,8 +50,7 @@ tm — tmux session launcher.
   tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
   tm -l            list sessions
   tm -h            this help
-In the picker: ↵ attach   k kill   / search   esc cancel
-  (after /, k types instead of killing)
+In the picker: ↵ attach · ^X kill · ^/ preview · esc cancel
 USAGE
 }
 
@@ -129,13 +144,18 @@ case "${1:-}" in
     # picker, so cancelling a kill offered to attach instead.
     doomed=()
     if command -v fzf >/dev/null; then
+      load_theme
+      mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
+      # No --footer below the floor, so the keys ride the last --header line.
+      [ "$(cockpit_fzf_tier)" = styled ] || THEME+=("--header=$K_KILL")
       # Red chrome on the destructive picker: it used to render in exactly the
-      # same colours as the benign attach list.
+      # same colours as the benign attach list. It carries no base scheme and
+      # comes AFTER the theme, the only order in which fzf lets it win.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
-        | fzf --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
-              --color=16,prompt:red,pointer:red,marker:red,border:8,scrollbar:8 --marker='✗' \
-              --prompt='kill session> ' \
-              --header='↵ kill   tab mark several   esc cancel')
+        | fzf "${THEME[@]}" \
+              --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
+              --color=prompt:red,pointer:red,marker:red --marker='✗' \
+              --prompt='kill session> ')
     else
       printf 'Kill which session?\n' >&2
       select s in "${sessions[@]}"; do doomed=("${s:-}"); break; done
@@ -207,14 +227,18 @@ HEIGHT=${TM_HEIGHT:-40%}
 # and "which of my agents needs me" is exactly a session-picker question.
 PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
+  load_theme
+  mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_ATTACH")
+  [ "$(cockpit_fzf_tier)" = styled ] || THEME+=("--header=$K_ATTACH")
   choice=$(list_rows | { cat; printf '%s\t%s\n' "$NEW_LABEL" "$NEW_LABEL"; } \
-    | fzf --height="$HEIGHT" --reverse --no-multi --color=16,border:8,scrollbar:8 --info=inline-right --cycle --scroll-off=2 \
+    | fzf "${THEME[@]}" \
+          --height="$HEIGHT" --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \
           --delimiter=$'\t' --with-nth=2 \
           --prompt='session> ' \
-          --header='↵ attach   ^X kill   esc cancel' \
           --preview="tmux list-windows -t \"=\$(echo {1}):\" -F '$PVFMT' 2>/dev/null" \
           --preview-label=' windows ' --preview-label-pos=2 \
           --preview-window='down,50%,border-top' \
+          --bind 'ctrl-/:toggle-preview' \
           --bind "ctrl-x:execute-silent('$SELF' --kill-one {1})+reload('$SELF' --rows; printf '%s\t%s\n' '$NEW_LABEL' '$NEW_LABEL')") || exit 0
   choice=${choice%%$'\t'*}
 else
