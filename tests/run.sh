@@ -1895,6 +1895,17 @@ KILL _restore" "$(cat "$TMS/log")"
 # Three lists after the placeholder: the poll's first (placeholder only), its
 # second (alpha is back, break), and tm's re-read. No wait reads 1, no break 101.
 is "and it stopped polling as soon as the restore landed" "3" "$(cat "$TMS/log.polls")"
+
+# The restore can simply never come: @continuum-restore being on is not the
+# whole of continuum's gate. Without TM_RESTORE the stub never brings alpha
+# back, and sleep is a no-op so the hundred naps cost the suite nothing.
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+ln -sf "$(command -v true)" "$TMS/sleep"   # -f replaces the link, never writes through it
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *'cockpit: no restore after 10s'*) ok "a restore that never lands says so" ;;
+    *) bad "a restore that never lands says so" "a cockpit: line" "$err" ;;
+esac
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="

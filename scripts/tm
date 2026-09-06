@@ -168,6 +168,11 @@ if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
     for _ in {1..100}; do
       mapfile -t sessions < <(list); [ ${#sessions[@]} -gt 1 ] && break; sleep 0.1
     done
+    # The option on is not continuum's whole gate: it also wants no halt file,
+    # no other tmux process and a young server. Silence here plus the old
+    # prompt below reads as "your sessions are gone", which is #106 again.
+    [ ${#sessions[@]} -gt 1 ] ||
+      printf 'cockpit: no restore after 10s · prefix+^r restores by hand\n' >&2
   fi
   tmux kill-session -t _restore 2>/dev/null
   mapfile -t sessions < <(list)
