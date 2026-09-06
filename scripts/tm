@@ -160,9 +160,11 @@ mapfile -t sessions < <(list)
 # After a reboot the old branch below read as "your sessions are gone" (#106).
 if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
      [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect/last" ]; }; then
-  printf 'Restoring saved sessions...\n' >&2
   if tmux new-session -d -s _restore 2>/dev/null &&
      [ "$(tmux show-option -gqv @continuum-restore)" = on ]; then
+    # Announced only once the option says a restore is coming: a resurrect
+    # user who restores by hand was promised sessions that never arrived.
+    printf 'Restoring saved sessions...\n' >&2
     for _ in {1..100}; do
       mapfile -t sessions < <(list); [ ${#sessions[@]} -gt 1 ] && break; sleep 0.1
     done
