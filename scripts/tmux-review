@@ -43,13 +43,19 @@ LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$S
 
 # The fzf theme, loaded from the picker arms only: --rows, --attach and the
 # preview re-exec this script on every keystroke, and none of them opens a
-# picker. Sourcing costs no fork; cockpit_fzf_tier's `fzf --version` does, once
-# per popup open.
+# picker. Sourcing costs no fork; the version probe does, once per popup open.
 load_theme() {
     # shellcheck source=lib/fzf.sh
-    . "$LIBDIR/fzf.sh" 2>/dev/null && return 0
-    tmux display-message "cockpit: the fzf theme is missing · reinstall from the repo" 2>/dev/null
-    return 1
+    . "$LIBDIR/fzf.sh" 2>/dev/null || {
+        tmux display-message "cockpit: the fzf theme is missing · reinstall from the repo" 2>/dev/null
+        return 1
+    }
+    # Warm the tier HERE, in the caller's own shell. cockpit_fzf_tier memoises
+    # in COCKPIT_FZF_TIER, but every consumer below reads it from inside a
+    # process substitution or a $( ), and a subshell's memo dies with it -- so
+    # each one paid its own `fzf --version`. Set once here and the subshells
+    # inherit it: one probe a picker open, not three.
+    COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
 }
 
 # tmux runs bind/preview strings through sh, so every path inside one has to be
@@ -1200,7 +1206,7 @@ run_loop() {
     # line is inside 48 columns, which is what a 70% popup draws at 80.
     local keys tier
     keys=$'↵ pin · ⇥ mark · ^E edit · ^X delete · ^L list\n^Y copy · alt-c lines · alt-y all · ^R refresh\n^S deliver · ^A approve · ^/ preview · esc leave'
-    tier=$(cockpit_fzf_tier)
+    tier=$COCKPIT_FZF_TIER
     # Appended, not asked of cockpit_fzf_args: that prints one argument per
     # line for mapfile, so a footer carrying newlines would arrive as three
     # array elements and the last two would reach fzf as stray arguments.
@@ -2288,7 +2294,7 @@ fleet_queue() {               # [preselect-pane]
     local -a THEME=()
     mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$keys")
     # No --footer below the floor, so the keys ride the last --header line.
-    [ "$(cockpit_fzf_tier)" = styled ] || ctx="$ctx"$'\n'"$keys"
+    [ "$COCKPIT_FZF_TIER" = styled ] || ctx="$ctx"$'\n'"$keys"
     local pre=${1:-}
     while :; do
         local rows

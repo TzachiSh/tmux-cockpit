@@ -10387,7 +10387,10 @@ cat > "$RRB/fzf" <<'RRFZF'
 #!/bin/sh
 # The theme lib probes the version before it builds an argv, and that probe
 # must not read the picker's stdin -- it swallowed the next typed line.
-case "$1" in --version) printf '%s\n' "${RR_FZF_VERSION:-0.74.3 (devel)}"; exit 0 ;; esac
+case "$1" in --version)
+    [ -n "${RR_VLOG:-}" ] && printf 'v\n' >> "$RR_VLOG"
+    printf '%s\n' "${RR_FZF_VERSION:-0.74.3 (devel)}"; exit 0 ;;
+esac
 n=$(cat "$RR_CAP.n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$RR_CAP.n"
 for a in "$@"; do printf '%s\n' "$a"; done > "$RR_CAP.argv.$n"
 cat > "$RR_CAP.stdin.$n"
@@ -10413,7 +10416,7 @@ rr_queue() {                  # rr_queue <cols>  -> $RRW/cap-<cols>.stdin.1 hold
     local cap="$RRW/cap-$1"
     rm -f "$cap".*
     "$TMUX_REAL" -L "$RRF" send-keys -t "$RRCTL" \
-        "PATH='$RRB':\$PATH RR_COLS=$1 RR_CAP='$cap' '$DIR/scripts/tmux-review' -p $RRCTL; echo rr-done > '$cap.done'" Enter
+        "PATH='$RRB':\$PATH RR_COLS=$1 RR_CAP='$cap' RR_VLOG='$cap.vlog' '$DIR/scripts/tmux-review' -p $RRCTL; echo rr-done > '$cap.done'" Enter
     until_file "$cap.done" '*rr-done*'
 }
 rr_field() { awk -F'\t' -v n="$2" 'NR == 1 { print $n; exit }' "$1"; }
@@ -10447,6 +10450,12 @@ if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
     is "and one --color, the shared theme's" "1" "$(grep -c '^--color=' "$rr_argv" 2>/dev/null)"
     is "the user's own options still come last, so they win" "yes" \
        "$( [ "$(grep -n '^--color=' "$rr_argv" | cut -d: -f1)" -lt "$(grep -c . "$rr_argv")" ] && echo yes || echo no )"
+    # cockpit_fzf_tier memoises, but every consumer here reads it from inside a
+    # process substitution or a $( ), and a subshell's memo dies with it. Warmed
+    # once in load_theme, a picker open probes `fzf --version` once; without
+    # that line the fleet queue paid two, and the review loop three.
+    is "one fleet queue open probes fzf --version exactly once" "1" \
+       "$(grep -c . "$RRW/cap-100.vlog" 2>/dev/null)"
 else
     bad "the fleet queue hands its rows to fzf under a fake tput" "a capture at 60 and at 100" \
         "100:[$(cat "$RRC100" 2>/dev/null)] 60:[$(cat "$RRC60" 2>/dev/null)]"
