@@ -9871,6 +9871,23 @@ is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
       printf ' '; fzhas '^--header='; printf ' '; fzhas '^--color=16,.*selected-bg:')"
 fzfake "$FZP" "0.44.1 (debian)"
 
+# A gapped palette is the DEFAULT install: cockpit.tmux's PALETTE sets four of
+# the eleven tokens the theme reads. With a whitespace separator the gaps
+# collapse and every later colour shifts onto the wrong key.
+FZGS="cockpit-fzfgap-$$"; SOCKS="$SOCKS $FZGS"
+"$TMUX_REAL" -L "$FZGS" -f /dev/null new-session -d 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZGS" set -g @thm_peach '#ff9838' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZGS" set -g @thm_mauve '#c9a2ff' >/dev/null 2>&1
+FZGB="$FZTD/gapbin"; mkdir -p "$FZGB"
+printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$FZGS" > "$FZGB/tmux"
+chmod +x "$FZGB/tmux"; ln -sf "$FZP/fzf" "$FZGB/fzf"
+fzc=$(env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$FZGB" \
+        "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
+is "two set tokens with gaps between them: no colour lands on its neighbour's key" \
+   "fg:#cdd6f4 hl:#ff9838 bg+:#313244 prompt:#c9a2ff" \
+   "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
+"$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
+
 # The calling convention the freeze fixes: the theme first, the user's option
 # last. Asserted at the seam rather than through the fleet picker, which is
 # tmux-review's file and not this lane's.

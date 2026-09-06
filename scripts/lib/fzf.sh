@@ -44,9 +44,13 @@ _cockpit_fzf_thm() {
                 overlay_2 mauve green teal)
     local defs=('#cdd6f4' '#fab387' '#313244' '#45475a' '#585b70' '#6c7086' \
                 '#7f849c' '#9399b2' '#cba6f7' '#a6e3a1' '#94e2d5')
-    for k in "${keys[@]}"; do fmt="$fmt#{@thm_$k}"$'\t'; done
+    # \037, not a tab: tab is IFS *whitespace*, so bash collapses a run of them
+    # into one delimiter and every unset @thm_ token shifts the colours after
+    # it onto the wrong keys. cockpit.tmux's PALETTE leaves seven of these
+    # eleven unset, so the gapped palette is the default install.
+    for k in "${keys[@]}"; do fmt="$fmt#{@thm_$k}"$'\037'; done
     local vals=()
-    IFS=$'\t' read -r -a vals <<<"$(tmux display-message -p "$fmt" 2>/dev/null)"
+    IFS=$'\037' read -r -a vals <<<"$(tmux display-message -p "$fmt" 2>/dev/null)"
     for i in "${!keys[@]}"; do
         COCKPIT_THM[${keys[$i]}]=${vals[$i]:-${defs[$i]}}
     done
