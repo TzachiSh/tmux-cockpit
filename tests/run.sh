@@ -10225,7 +10225,7 @@ fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's ar
     # stderr and what the suite server listed at that moment, not a count.
     [ -n "$(ls "$FZTD"/argv-"$tag"-"$$".* 2>/dev/null)" ] ||
         bad "$tag reaches fzf" "an argv file" \
-            "rc=$(cat "$FZTD/rc-$tag") stderr=[$(tail -c 200 "$FZTD/err-$tag" | tr '\n' ' ')] sessions=[$(tmux list-sessions -F '#{session_name}' 2>&1 | tr '\n' ' ')]"
+            "rc=$(cat "$FZTD/rc-$tag") stderr=[$(tail -c 200 "$FZTD/err-$tag" | tr '\n' ' ')] sessions=[$(tmux list-sessions -F '#{session_id}=#{session_name}' 2>&1 | tr '\n' ' ')]"
 }
 fzrun tm-attach "$DIR/scripts/tm"
 fzrun tm-kill   "$DIR/scripts/tm" -k
