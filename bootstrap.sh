@@ -174,18 +174,25 @@ fi
 
 # ----------------------------------------------------------------- config ----
 step "tmux config"
-CONF="$HOME/.tmux.conf"
-[ -r "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" ] && CONF="${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf"
+# Both candidates, not the first readable one: tmux loads both, so the
+# run-shell line in either wires the box (#96). install.sh --check agrees.
+CONF=''; wired=''
+for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
+    [ -r "$c" ] || continue
+    [ -n "$CONF" ] || CONF=$c
+    grep -q 'cockpit\.tmux' "$c" 2>/dev/null && { wired=$c; break; }
+done
+[ -n "$CONF" ] || CONF="$HOME/.tmux.conf"
 
-if [ ! -e "$CONF" ]; then
+if [ -n "$wired" ]; then
+    note "have   $wired already loads cockpit.tmux"
+    skipped+=("config: already wired")
+elif [ ! -e "$CONF" ]; then
     if ask "no tmux config; install the full example to $CONF?" y; then
         run "write $CONF" cp -- "$DIR/examples/full.tmux.conf" "$CONF"
     else
         skipped+=("config")
     fi
-elif grep -q 'cockpit\.tmux' "$CONF" 2>/dev/null; then
-    note "have   $CONF already loads cockpit.tmux"
-    skipped+=("config: already wired")
 else
     # Never rewrite a config someone has been editing for years. Appending the
     # one run-shell line is the smallest change that makes cockpit work, and it

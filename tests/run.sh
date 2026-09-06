@@ -2378,6 +2378,13 @@ printf '# edited since\n' >> "$BH/.tmux.conf"
 bsout=$(bs)
 is "a re-append keeps the FIRST backup" "# mine" "$(cat "$BH/.tmux.conf.bak" 2>/dev/null)"
 bssaid "and says the backup was kept" "(existing backup kept, not overwritten)" "$bsout"
+# tmux loads BOTH config files when both exist, so a box wired through
+# ~/.tmux.conf with an unrelated XDG tmux.conf is wired (#96). Before the fix
+# bootstrap graded the XDG file alone and appended a second run-shell to it.
+mkdir -p "$BH/.config/tmux"; printf '# xdg\n' > "$BH/.config/tmux/tmux.conf"
+bsout=$(bs)
+bssaid "an unrelated XDG tmux.conf beside a wired ~/.tmux.conf is already wired" "already loads cockpit.tmux" "$bsout"
+is "and the XDG file is left alone" "# xdg" "$(cat "$BH/.config/tmux/tmux.conf")"
 rm -rf "$BS"
 fi
 
