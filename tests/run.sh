@@ -9894,16 +9894,11 @@ is "two set tokens with gaps between them: no colour lands on its neighbour's ke
    "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
 "$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
 
-# The calling convention the freeze fixes: the theme first, the user's option
-# last. Asserted at the seam rather than through the fleet picker, which is
-# tmux-review's file and not this lane's.
-tmux set-option -g @cockpit_fleet_fzf_options "--color=fg+:red" 2>/dev/null
-fzlast=$( { env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$FZP" \
-                "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null
-            tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null; } \
-          | grep -- '--color=' | tail -1 )
-is "a user's own --color is the last one fzf sees" "--color=fg+:red" "$fzlast"
-tmux set-option -gu @cockpit_fleet_fzf_options 2>/dev/null
+# Read off tm's own argv, not composed here: nothing in scripts/ decided the
+# order in the composed form, so no production change could turn it red.
+fzlast=$(printf '%s\n' "$fzk" | grep -- '^--color=' | tail -1)
+is "the last --color fzf sees is the caller's, not the theme's" \
+   "--color=prompt:red,pointer:red,marker:red" "$fzlast"
 
 fzh=$(env -u TMUX "$DIR/scripts/tm" -h 2>&1)
 is "tm -h names the picker's ^X and no longer a k kill key" "yes no" \

@@ -597,9 +597,14 @@ rm -f "$conf"
 if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ]; then
     # shellcheck source=scripts/lib/fzf.sh
     . "$DIR/scripts/lib/fzf.sh" 2>/dev/null || true
-    tmux set-option -gq @cockpit_fzf_notice 1
-    if [ "$(cockpit_fzf_tier 2>/dev/null)" = plain ]; then
-        fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
-        tmux display-message "cockpit: fzf $fzf_v · styled pickers need 0.63, bootstrap.sh --full"
-    fi
+    # The guard holds the tier, not a 1, so `tmux show -gv @cockpit_fzf_notice`
+    # answers which tier this server's pickers are on. Unset when the lib is
+    # missing: there is nothing to say, and the next load can try again.
+    case "$(cockpit_fzf_tier 2>/dev/null)" in
+        plain)
+            tmux set-option -gq @cockpit_fzf_notice plain
+            fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
+            tmux display-message "cockpit: fzf $fzf_v · styled pickers need 0.63, bootstrap.sh --full" ;;
+        styled) tmux set-option -gq @cockpit_fzf_notice styled ;;
+    esac
 fi
