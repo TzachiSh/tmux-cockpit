@@ -299,7 +299,11 @@ PB="cockpit-pb-$$"; PBO="cockpit-pbo-$$"; SOCKS="$SOCKS $PB $PBO"; PBD=$(mktmpd)
 # The example conf loads ~/.tmux/plugins/tmux-cockpit, not this tree: rebind
 # from the plugin under test.
 "$TMUX_REAL" -L "$PB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-"$TMUX_REAL" -L "$PB" new-window -t t -c "$PBD/beta" 'exec sleep 300' >/dev/null 2>&1
+# A window is named after whatever its pane runs at creation, so this one can
+# read "tmux", which a bare "t" window target prefix-matches down to index 0
+# instead of session t. Pinned to the name that loses, so the colon is tested.
+"$TMUX_REAL" -L "$PB" rename-window -t t:0 tmux >/dev/null 2>&1
+"$TMUX_REAL" -L "$PB" new-window -t t: -c "$PBD/beta" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PBO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $PB attach -t t" >/dev/null 2>&1
 # Keys sent to the outer pane only reach the inner server once its client is
 # up, and one send-keys rather than two: the gap between two calls is wall time.
