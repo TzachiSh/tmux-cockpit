@@ -1868,12 +1868,18 @@ printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
-# restores on server start and tm never started one (#106). The stub's server
-# "restores" alpha once any session exists.
+# restores on server start and tm never started one (#106). The stub is a
+# server that hands the placeholder back at once but "restores" alpha only on
+# the SECOND list, so a tm that never waits cannot see it.
 cat > "$TMS/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
-  list-sessions) grep -q NEW "$TM_LOG" && printf 'alpha\n' ;;
+  list-sessions)
+    grep -q NEW "$TM_LOG" || exit 0
+    n=0; [ -s "$TM_LOG.polls" ] && read -r n < "$TM_LOG.polls"
+    printf '%s\n' "$((n + 1))" > "$TM_LOG.polls"
+    read -r ph < "$TM_LOG"; grep -q KILL "$TM_LOG" || printf '%s\n' "${ph##* -s }"
+    [ -n "${TM_RESTORE:-}" ] && [ "$n" -ge 1 ] && printf 'alpha\n' ;;
   show-option)   printf 'on\n' ;;
   new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
   kill-session)  printf 'KILL %s\n' "${*: -1}" >> "$TM_LOG" ;;
@@ -1882,10 +1888,13 @@ exit 0
 STUB
 mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
 : > "$TMS/log"
-env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
+env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
 is "a resurrect save starts the server, then drops the placeholder" \
    "NEW new-session -d -s _restore
 KILL _restore" "$(cat "$TMS/log")"
+# Three lists after the placeholder: the poll's first (placeholder only), its
+# second (alpha is back, break), and tm's re-read. No wait reads 1, no break 101.
+is "and it stopped polling as soon as the restore landed" "3" "$(cat "$TMS/log.polls")"
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="
