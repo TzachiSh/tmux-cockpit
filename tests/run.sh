@@ -1828,7 +1828,7 @@ echo "== tm: the kill picker and the name cleaner =="
 # unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
 # script with "unbound variable" instead of exiting quietly.
 TMS=$(mktmpd)
-for c in readlink bash; do ln -s "$(command -v $c)" "$TMS/$c"; done
+for c in readlink bash grep sleep; do ln -s "$(command -v $c)" "$TMS/$c"; done
 cat > "$TMS/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -1862,8 +1862,30 @@ esac
 exit 0
 STUB
 : > "$TMS/log"
-printf -- '-weird name\n' | env -u TMUX PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
+# HOME is the stub's: the real one may hold a resurrect save, which is the
+# next case, not this one.
+printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
+
+# After a reboot tm asked for a name although resurrect had a save: continuum
+# restores on server start and tm never started one (#106). The stub's server
+# "restores" alpha once any session exists.
+cat > "$TMS/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list-sessions) grep -q NEW "$TM_LOG" && printf 'alpha\n' ;;
+  show-option)   printf 'on\n' ;;
+  new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
+  kill-session)  printf 'KILL %s\n' "${*: -1}" >> "$TM_LOG" ;;
+esac
+exit 0
+STUB
+mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
+: > "$TMS/log"
+env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
+is "a resurrect save starts the server, then drops the placeholder" \
+   "NEW new-session -d -s _restore
+KILL _restore" "$(cat "$TMS/log")"
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="
