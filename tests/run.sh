@@ -9834,11 +9834,19 @@ EX="cockpit-ex103-$$"; SOCKS="$SOCKS $EX"
 # Before the conf: its run-shell line defaults every unset @thm_* to catppuccin
 # mocha, asynchronously, so a value set afterwards is a race.
 "$TMUX_REAL" -L "$EX" set -g @thm_red '#ff6b6b' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EX" set -g @thm_mauve '#cba6f7' >/dev/null 2>&1
 "$TMUX_REAL" -L "$EX" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 "$TMUX_REAL" -L "$EX" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$EX" set -w -t s:blkwin @cockpit_win_state needs-input >/dev/null 2>&1
 is "the portable tab renders the red ▲ from the keyword, not from a walk" \
    " blkwin #[fg=#ff6b6b]▲" \
+   "$("$TMUX_REAL" -L "$EX" display-message -p -t s:blkwin '#{E:@catppuccin_window_text}' 2>/dev/null)"
+# The ◔ gauge reads @thm_mauve, so it follows the user's theme like every other
+# glyph. It was hardcoded colour208 to survive an unsourced theme, which
+# cockpit.tmux's PALETTE defaults have made untrue (freeze amendment 2).
+"$TMUX_REAL" -L "$EX" set -p -t "$("$TMUX_REAL" -L "$EX" list-panes -t s:blkwin -F '#{pane_id}' | head -1)" @panestate_ctx 91 >/dev/null 2>&1
+is "the context gauge takes its colour from the theme, not from colour208" \
+   " blkwin #[fg=#ff6b6b]▲#[fg=#cba6f7] ◔91%" \
    "$("$TMUX_REAL" -L "$EX" display-message -p -t s:blkwin '#{E:@catppuccin_window_text}' 2>/dev/null)"
 "$TMUX_REAL" -L "$EX" kill-server >/dev/null 2>&1
 fi
