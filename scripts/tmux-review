@@ -41,6 +41,17 @@ LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$S
     vscode_open() { return 1; }
 }
 
+# The fzf theme, loaded from the picker arms only: --rows, --attach and the
+# preview re-exec this script on every keystroke, and none of them opens a
+# picker. Sourcing costs no fork; cockpit_fzf_tier's `fzf --version` does, once
+# per popup open.
+load_theme() {
+    # shellcheck source=lib/fzf.sh
+    . "$LIBDIR/fzf.sh" 2>/dev/null && return 0
+    tmux display-message "cockpit: the fzf theme is missing · reinstall from the repo" 2>/dev/null
+    return 1
+}
+
 # tmux runs bind/preview strings through sh, so every path inside one has to be
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
@@ -1169,6 +1180,14 @@ run_loop() {
         # command that exits at once is rendered to nobody.
         tmux display-message "cockpit: the review loop needs fzf" 2>/dev/null; exit 1;
     }
+    load_theme || exit 1
+    # One argv for every cockpit picker: --ansi (nothing in a row can be dimmed
+    # without it), --tabstop=1, the pointer, marker and ellipsis, and the
+    # user's own @thm_ colours. The per-picker flags below come after, and the
+    # user's options after those -- fzf takes the last occurrence of a flag.
+    local -a THEME=() CTHEME=()
+    mapfile -t THEME  < <(cockpit_fzf_args highlight-line)
+    mapfile -t CTHEME < <(cockpit_fzf_args highlight-line no-input)
 
     # The base this review diffs against: ^B's choice, remembered beside the
     # store so a resumed review keeps it; exported because --rows and --resnap
@@ -1255,9 +1274,9 @@ run_loop() {
         ndlv=""
         [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
         out=$(printf '%s\n' "$rows_out" \
-            | fzf --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --multi --ansi \
+            | fzf "${THEME[@]}" --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --multi \
                   --delimiter=$'\t' --with-nth=4 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 \
                   --bind "enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "alt-enter:execute-silent(${attach_cmd})+reload(${rows_cmd})+clear-query" \
                   --bind "ctrl-r:execute(${resnap_cmd})+reload(${rows_cmd})" \
@@ -1273,7 +1292,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin the typed comment   ⇥ mark   ^E edit   ^X delete   ^L list\n^Y copy file+diff   alt-c copy lines   alt-y copy all   ^R refresh\n^S deliver   ^A approve   esc leave   ^/ preview   alt-↑↓ scroll\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}$ndlv   ● pinned   ↺ last round")
+                  --header=$'↵ pin · ⇥ mark · ^E edit · ^X delete · ^L list\n^Y copy · alt-c lines · alt-y all · ^R refresh\n^S deliver · ^A approve · ^/ preview · esc leave\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}$ndlv   ● pinned   ↺ last round")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
@@ -1290,7 +1309,7 @@ run_loop() {
                 if [ -s "$store" ]; then
                     n=$(grep -c '^## ' "$store")
                     choice=$(printf 'leave — %d comment(s) stay pinned\nkeep reviewing\ndiscard %d comment(s)\n' "$n" "$n" \
-                        | fzf --reverse --no-info --prompt='esc? ' \
+                        | fzf "${CTHEME[@]}" --reverse --no-info --prompt='esc? ' \
                               --header="$n comment(s) are pinned and not delivered")
                     crc=$?
                     # The confirm picker's OWN exit code decides, not just what
@@ -1388,7 +1407,7 @@ run_loop() {
             # is not the name of the thing the batch would open in.
             case "$ed" in "$SELF"*) e="VS Code" ;; esac
             choice=$(printf 'deliver %d comment(s) to %s\nedit the batch in %s first\nkeep reviewing\n' "$n" "$to" "$e" \
-                | fzf --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
+                | fzf "${CTHEME[@]}" --reverse --no-info --prompt='^S? ' --header="deliver $n comment(s)?")
             case $? in 0) ;; *) rows_out=$(rows_mode "$dir" "$store"); continue ;; esac
             case "$choice" in
                 deliver*) exit 20 ;;
@@ -2235,6 +2254,17 @@ fleet_queue() {               # [preselect-pane]
         tmux display-message "cockpit: the fleet queue needs fzf" 2>/dev/null
         return 1
     }
+    load_theme || return 1
+    # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Both
+    # lines stay inside 48 columns, which is what a 70% popup draws at 80: the
+    # old legend reached column 94, so fzf's right-hand cut took the column
+    # names the line exists to give (#105).
+    local keys='↵ review · ^X kill window · ^/ preview · esc'
+    local ctx='◆ pending · ↵ unsent · state · title · where · ±'
+    local -a THEME=()
+    mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$keys")
+    # No --footer below the floor, so the keys ride the last --header line.
+    [ "$(cockpit_fzf_tier)" = styled ] || ctx="$ctx"$'\n'"$keys"
     local pre=${1:-}
     while :; do
         local rows
@@ -2292,10 +2322,10 @@ fleet_queue() {               # [preselect-pane]
         nrows=${#disp[@]}
         avail=$(tput lines 2>/dev/null || echo 24)
         lrows=$nrows; [ "$lrows" -gt 8 ] && lrows=8
-        # 6, not 5: this header is two lines now -- one line of it is 95 columns
-        # and the popup is 70% of the terminal, so fzf truncated the key hints off
-        # the right edge on anything narrower than 136 columns. Reserve the second
-        # row rather than taking it out of the list.
+        # 6, not 5: the picker spends two rows on chrome either way -- context
+        # and keys as two header lines below the fzf floor, context in the
+        # header and keys in the footer above it. Reserve the second row rather
+        # than taking it out of the list.
         psz=$(( avail - lrows - 6 ))
         [ "$psz" -lt 5 ] && psz=5
 
@@ -2329,14 +2359,14 @@ fleet_queue() {               # [preselect-pane]
         [ -n "$opt" ] && eval "extra=($opt)"
 
         out=$(printf '%s\n' "${disp[@]}" \
-            | fzf --delimiter=$'\t' --with-nth=2,3,4,5 \
-                  --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+            | fzf "${THEME[@]}" --delimiter=$'\t' --with-nth=2,3,4,5 \
+                  --reverse --info=inline-right --cycle --scroll-off=2 \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
                   --expect=ctrl-x \
                   --preview "$preview_cmd" \
                   --preview-window="down,$psz,border-top" \
                   --prompt='fleet> ' \
-                  --header=$'which agent needs you   [◆ review pending · ↵ pasted, unsent]  state · title · repo⑂branch · ±\n↵ review, or jump to a clean pane   ^/ preview   ^X kill window   esc cancel' \
+                  --header="$ctx" \
                   ${presel[@]+"${presel[@]}"} \
                   ${extra[@]+"${extra[@]}"})
         [ -n "$out" ] || return 0
