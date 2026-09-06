@@ -10211,10 +10211,21 @@ FZG=$(mktmpd)
 : > "$FZTD/clicked.txt"
 tmux set-option -p -t "$PANE" @cockpit_click_line "see $FZTD/clicked.txt:1" 2>/dev/null
 
-fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's argv
+# The suite server is what tm lists and what --pick reads the click line from;
+# a lost session here is the picker "not reaching fzf" three assertions later
+# (#128), so it is named before any picker runs.
+is "the suite server still holds its session before the pickers run" "suite" \
+   "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>&1)"
+fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's argv, rc and stderr
     local tag=$1; shift
     env -u TMUX -u TMUX_PANE PATH="$FZP" FZ_ARGV="$FZTD/argv-$tag-$$" \
-        FZ_VLOG="$FZTD/vlog-$tag" "$@" </dev/null >/dev/null 2>&1
+        FZ_VLOG="$FZTD/vlog-$tag" "$@" </dev/null >/dev/null 2>"$FZTD/err-$tag"
+    printf '%s\n' "$?" > "$FZTD/rc-$tag"
+    # Name the step when a picker never reaches fzf (#128): its exit code, its
+    # stderr and what the suite server listed at that moment, not a count.
+    [ -n "$(ls "$FZTD"/argv-"$tag"-"$$".* 2>/dev/null)" ] ||
+        bad "$tag reaches fzf" "an argv file" \
+            "rc=$(cat "$FZTD/rc-$tag") stderr=[$(tail -c 200 "$FZTD/err-$tag" | tr '\n' ' ')] sessions=[$(tmux list-sessions -F '#{session_id}=#{session_name}' 2>&1 | tr '\n' ' ')]"
 }
 fzrun tm-attach "$DIR/scripts/tm"
 fzrun tm-kill   "$DIR/scripts/tm" -k
@@ -10299,6 +10310,8 @@ fznofzf() {                   # fznofzf <tag> <cmd...> -- which stream got the p
         >"$FZTD/o-$tag" 2>"$FZTD/e-$tag"
     grep -qF "$FZWANT" "$FZTD/o-$tag" && o=out || o=""
     grep -qF "$FZWANT" "$FZTD/e-$tag" && e=err || e=""
+    # Neither stream carried the prompt: say what stderr did carry (#128).
+    [ -n "$o$e" ] || printf 'stderr=[%s]\n' "$(tail -c 200 "$FZTD/e-$tag" | tr '\n' ' ')"
     printf '%s%s\n' "$o" "$e"
 }
 FZWANT='Kill which session'
