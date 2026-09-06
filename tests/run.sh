@@ -4086,7 +4086,12 @@ FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
 # used to be swallowed and resurface three assertions later as a short count.
 "$TMUX_REAL" -L "$FC" -f /dev/null new-session -d -s a -x 80 -y 24 'exec -a claude sleep 300' >/dev/null
 "$TMUX_REAL" -L "$FC" new-session -d -s b 'exec -a claude sleep 300' >/dev/null
-"$TMUX_REAL" -L "$FC" new-window  -t b 'exec -a claude sleep 300' >/dev/null
+# A window is named after whatever its pane runs at creation, so under load
+# either of these reads "bash" until the exec lands, and a bare "b" window
+# target prefix-matches that name and resolves to index 0 instead of session b.
+"$TMUX_REAL" -L "$FC" rename-window -t a:0 bash >/dev/null
+"$TMUX_REAL" -L "$FC" rename-window -t b:0 bash >/dev/null
+"$TMUX_REAL" -L "$FC" new-window  -t b: 'exec -a claude sleep 300' >/dev/null
 "$TMUX_REAL" -L "$FC" set -g @cockpit_agents_glob '|claude|' >/dev/null
 "$TMUX_REAL" -L "$FC" set -g status-right '[#{agent_fleet}]' >/dev/null
 "$TMUX_REAL" -L "$FC" run-shell "$DIR/cockpit.tmux" >/dev/null
@@ -4123,7 +4128,7 @@ is "a quiet fleet renders nothing at all" "[]" "$(fleet)"
 # the fleet count would include it and never come back down. agent-state writes
 # @panestate regardless, but the precompute counts through the same glob guard,
 # so a shell pane never reaches the counter.
-"$TMUX_REAL" -L "$FC" new-window -t b 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FC" new-window -t b: 'sleep 300' >/dev/null 2>&1
 FCP4=$("$TMUX_REAL" -L "$FC" list-panes -t b:2 -F '#{pane_id}')
 asFC needs-input "$FCP4"
 is "a shell holding stale state is not counted" "[]" "$(fleet)"
