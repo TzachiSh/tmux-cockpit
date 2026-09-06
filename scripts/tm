@@ -215,7 +215,7 @@ if [ ${#sessions[@]} -eq 0 ] &&
      [ "$(tmux show-option -gqv @continuum-restore)" = on ]; then
     # Announced only once the option says a restore is coming: a resurrect
     # user who restores by hand was promised sessions that never arrived.
-    printf 'Restoring saved sessions...\n' >&2
+    printf 'cockpit: Restoring saved sessions...\n' >&2
     # -gt 1 because the placeholder is session one: two means a restore landed.
     for _ in {1..100}; do
       mapfile -t sessions < <(list); [ ${#sessions[@]} -gt 1 ] && break; sleep 0.1
@@ -232,7 +232,7 @@ fi
 
 # 3b. Still nothing: force a named session.
 if [ ${#sessions[@]} -eq 0 ]; then
-  printf 'No tmux sessions running.\n' >&2
+  printf 'cockpit: No tmux sessions running.\n' >&2
   go "$(ask_name)"
   exit
 fi

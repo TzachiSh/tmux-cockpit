@@ -89,11 +89,13 @@ fixer_alive() {               # <sess>
 # (split-window -d) so nothing about this popup's lifetime touches the fixer.
 spawn_fixer() {               # <main-pane>
     local pane=$1 job guard sess f root dl fp marker srv
-    case "$pane" in %[0-9]*) ;; *) printf 'tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
-    sess=$("$REVIEW" --sess "$pane") || { tmux display-message "tmux-fixer: pane $pane is gone" 2>/dev/null; exit 1; }
+    # This one goes to stderr, not the status line: three scripts now say
+    # cockpit:, and a log line has room to say which of them exited 2.
+    case "$pane" in %[0-9]*) ;; *) printf 'cockpit: tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
+    sess=$("$REVIEW" --sess "$pane") || { tmux display-message "cockpit: pane $pane is gone" 2>/dev/null; exit 1; }
     f="$sess/fixer"
     if fixer_alive "$sess"; then
-        tmux display-message "tmux-fixer: a side fix is already running for $pane: $(cat -- "$f/reason" 2>/dev/null) (pane $(cat -- "$f/pane" 2>/dev/null))" 2>/dev/null
+        tmux display-message "cockpit: a side fix is already running for $pane: $(cat -- "$f/reason" 2>/dev/null) (pane $(cat -- "$f/pane" 2>/dev/null))" 2>/dev/null
         exit 1
     fi
     if [ -t 0 ]; then
@@ -103,10 +105,10 @@ spawn_fixer() {               # <main-pane>
     job=${job//[$'\001'-$'\037']/}; guard=${guard//[$'\001'-$'\037']/}
     [ -n "$job" ] || exit 0
     root=$(git -C "$("$REVIEW" --dir "$pane")" rev-parse --show-toplevel 2>/dev/null) || {
-        tmux display-message "tmux-fixer: $pane is not in a git repo" 2>/dev/null; exit 1; }
+        tmux display-message "cockpit: $pane is not in a git repo" 2>/dev/null; exit 1; }
     dl=$(tmux show-option -gqv @cockpit_fixer_deadline); case "$dl" in ''|*[!0-9]*) dl=300 ;; esac
     rm -rf -- "$f" "$sess/handover"            # a stale record and its unconsumed handover
-    (umask 077; mkdir -- "$f") 2>/dev/null || { tmux display-message "tmux-fixer: a side fix is already running for $pane" 2>/dev/null; exit 1; }
+    (umask 077; mkdir -- "$f") 2>/dev/null || { tmux display-message "cockpit: a side fix is already running for $pane" 2>/dev/null; exit 1; }
     printf '%s\n' "$job" > "$f/reason"; printf '%s\n' "$guard" > "$f/guard"
     printf '%s\n' $(( $(date +%s) + dl )) > "$f/deadline"; printf 'pending\n' > "$f/pane"
     # ponytail: strips the outer C-quotes git wraps around a path with a
@@ -122,9 +124,9 @@ spawn_fixer() {               # <main-pane>
     (umask 077; printf '%s\n' "$sess" > "$marker")
     fp=$(tmux split-window -d -v -l 40% -t "$pane" -c "$root" -P -F '#{pane_id}' \
         "$(shq "$SELF") --run $(shq "$pane") $(shq "$sess") $(shq "$job")") || {
-        rm -rf -- "$f" "$marker"; tmux display-message "tmux-fixer: could not open the fixer pane" 2>/dev/null; exit 1; }
+        rm -rf -- "$f" "$marker"; tmux display-message "cockpit: could not open the fixer pane" 2>/dev/null; exit 1; }
     printf '%s\n' "$fp" > "$f/pane"
-    tmux display-message "side fix running in $fp: $job — $pane is held at its next stop until it finishes${guard:+; commands matching /$guard/ are held off}" 2>/dev/null
+    tmux display-message "cockpit: side fix running in $fp: $job — $pane is held at its next stop until it finishes${guard:+; commands matching /$guard/ are held off}" 2>/dev/null
     exit 0
 }
 

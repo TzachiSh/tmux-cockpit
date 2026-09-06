@@ -143,7 +143,7 @@ that stalls is a silent no-op within a bounded read, the same contract
 A `statusLine` fully replaces any other one you have configured, so it is not
 wired by default — see the commented `_statusline_comment` stanza in
 `examples/claude-hooks.json` for the setting to add. Once wired,
-`examples/tmux.conf` shows a `◔NN%` warning on a window's tab once its active
+both example configs show a `◔NN%` warning on a window's tab once its active
 pane crosses 80% fill, ahead of the compaction that would otherwise land
 unannounced.
 
