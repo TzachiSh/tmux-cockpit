@@ -90,14 +90,20 @@ _cockpit_fzf_color() {
 
 # cockpit_fzf_args [flag...] -- one fzf argument per line, for mapfile.
 #
+#   COCKPIT_FZF_TIER=$(cockpit_fzf_tier)     # warm the memo in THIS shell
 #   mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$KEYS")
 #   fzf "${THEME[@]}" --prompt=... "${user_options[@]}"
 #
+# The warm-up line is part of the convention: the process substitution is a
+# subshell, and a memo filled there dies with it, one fzf --version per call.
 # Each argument names a styled-tier flag WITHOUT its leading dashes, with an
 # optional =value; on the plain tier they are dropped and the caller puts its
-# key hints in the last --header line instead. The user's own options go after
-# this call: fzf takes the last occurrence of a flag and merges --color per
-# key, so appending is what makes an override an override.
+# key hints in the last --header line instead. A value is ONE line: a footer
+# with a newline arrives as two arguments and fzf rejects the second. Callers
+# append a multi-line footer themselves (tmux-review, tmux-open-path do).
+# The user's own options go after this call: fzf takes the last occurrence
+# of a flag and merges --color per key, so appending is what makes an
+# override an override.
 cockpit_fzf_args() {
     local f
     _cockpit_fzf_color                    # also fills COCKPIT_FZF_TIER
