@@ -24,7 +24,25 @@ SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE
 NEW_LABEL='+ new session'
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-command -v tmux >/dev/null || die "tmux is not installed"
+command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
+
+# Key hints, one order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc.
+# Both fit in 48 columns, which is what survives a 70% popup at 80 columns.
+K_ATTACH='↵ attach · ^X kill · ^/ preview · esc cancel'
+K_KILL='↵ kill · ⇥ mark · esc cancel'
+
+# The theme lib sits beside the REAL script; install.sh links this file into
+# ~/bin by its absolute path, so one readlink hop is the whole resolution.
+# Called from the picker arms only: --rows and --kill-one exit before them and
+# run on every fzf reload, where a readlink per keystroke buys nothing.
+load_theme() {
+  local d
+  d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+  d=${d:-$SELF}
+  # shellcheck source=lib/fzf.sh
+  . "${d%/*}/lib/fzf.sh" \
+    || die "cockpit: the fzf theme is missing · reinstall from the repo"
+}
 
 usage() {
   cat >&2 <<'USAGE'
@@ -34,8 +52,7 @@ tm — tmux session launcher.
   tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
   tm -l            list sessions
   tm -h            this help
-In the picker: ↵ attach   k kill   / search   esc cancel
-  (after /, k types instead of killing)
+In the picker: ↵ attach · ^X kill · ^/ preview · esc cancel
 USAGE
 }
 
@@ -80,7 +97,7 @@ go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
     # In the popup $PWD is the OLD session's start dir; the session's active
     # pane ($TMUX ends in the session id) is where the human is (#41).
     [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
-    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "could not create session '$name'"
+    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "cockpit: could not create session '$name'"
   fi
   if in_client; then
     tmux switch-client -t "=$name"
@@ -122,20 +139,27 @@ case "${1:-}" in
       exit 0
     fi
     mapfile -t sessions < <(list)
-    [ ${#sessions[@]} -eq 0 ] && die "No tmux sessions to kill."
+    [ ${#sessions[@]} -eq 0 ] && die "cockpit: no tmux sessions to kill"
     # Declared before either picker runs. `select` leaves its variable unset on
     # Ctrl-D, and under `set -u` the ${#doomed[@]} below then aborted the script
     # mid-case -- printing "unbound variable" and falling through to the ATTACH
     # picker, so cancelling a kill offered to attach instead.
     doomed=()
     if command -v fzf >/dev/null; then
+      load_theme
+      # One probe per open: the process substitution below inherits the cache.
+      COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
+      mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
+      # No --footer below the floor, so the keys ride the last --header line.
+      [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$K_KILL")
       # Red chrome on the destructive picker: it used to render in exactly the
-      # same colours as the benign attach list.
+      # same colours as the benign attach list. It carries no base scheme and
+      # comes AFTER the theme, the only order in which fzf lets it win.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
-        | fzf --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
-              --color=16,prompt:red,pointer:red,marker:red,border:8,scrollbar:8 --marker='✗' \
-              --prompt='kill session> ' \
-              --header='↵ kill   tab mark several   esc cancel')
+        | fzf "${THEME[@]}" \
+              --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
+              --color=prompt:red,pointer:red,marker:red --marker='✗' \
+              --prompt='kill session> ')
     else
       printf 'Kill which session?\n' >&2
       select s in "${sessions[@]}"; do doomed=("${s:-}"); break; done
@@ -143,7 +167,7 @@ case "${1:-}" in
     [ ${#doomed[@]} -eq 0 ] && exit 0
     for s in "${doomed[@]}"; do [ -n "$s" ] && kill_one "$s"; done
     exit 0 ;;
-  -*) die "unknown option: $1  (try: tm -h)" ;;
+  -*) die "cockpit: unknown option: $1 · try tm -h" ;;
 esac
 
 # 1. Name given on the command line.
@@ -207,14 +231,20 @@ HEIGHT=${TM_HEIGHT:-40%}
 # and "which of my agents needs me" is exactly a session-picker question.
 PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
+  load_theme
+  # One probe per open: the process substitution below inherits the cache.
+  COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
+  mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_ATTACH")
+  [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$K_ATTACH")
   choice=$(list_rows | { cat; printf '%s\t%s\n' "$NEW_LABEL" "$NEW_LABEL"; } \
-    | fzf --height="$HEIGHT" --reverse --no-multi --color=16,border:8,scrollbar:8 --info=inline-right --cycle --scroll-off=2 \
+    | fzf "${THEME[@]}" \
+          --height="$HEIGHT" --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \
           --delimiter=$'\t' --with-nth=2 \
           --prompt='session> ' \
-          --header='↵ attach   ^X kill   esc cancel' \
           --preview="tmux list-windows -t \"=\$(echo {1}):\" -F '$PVFMT' 2>/dev/null" \
           --preview-label=' windows ' --preview-label-pos=2 \
           --preview-window='down,50%,border-top' \
+          --bind 'ctrl-/:toggle-preview' \
           --bind "ctrl-x:execute-silent('$SELF' --kill-one {1})+reload('$SELF' --rows; printf '%s\t%s\n' '$NEW_LABEL' '$NEW_LABEL')") || exit 0
   choice=${choice%%$'\t'*}
 else

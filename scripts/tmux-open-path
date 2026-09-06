@@ -439,6 +439,30 @@ PICK=0 DRY=0 BROWSE=0
 
 note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
 
+# One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Both lines
+# stay under 48 columns, which is what a 70% popup shows at 80 columns.
+K_OPEN='↵ open · ⇥ mark · ^O as-is · esc cancel'
+K_BROWSE='↵ enter · ⇥ mark · ^O as-is · esc cancel'
+K_VERBS='^G diff · ^F content · ^/ preview · alt-c copy'
+# The lib sits beside the REAL script; install.sh links this file into ~/bin by
+# its absolute path, so one readlink hop is the whole resolution. Resolved here
+# rather than at the top because the editor, --dry-run and open_single paths
+# never reach a picker, and some of them run on a PATH with no readlink at all.
+op_theme() {                  # op_theme <first key line> -- fills the THEME array
+    local d
+    d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+    if [ -n "$d" ]; then d=${d%/*}
+    else d=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
+    # shellcheck source=lib/fzf.sh
+    . "$d/lib/fzf.sh" \
+      || { note "cockpit: the fzf theme is missing · reinstall from the repo"; exit 1; }
+    # One probe per open: the process substitution below inherits the cache.
+    COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
+    mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$1"$'\n'"$K_VERBS")
+    # No --footer below the floor, so the keys ride the last --header line.
+    [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$1"$'\n'"$K_VERBS")
+}
+
 if [ "$BROWSE" -eq 1 ]; then
     dir=${1:-$PWD}; line=""; pane=""
     win=$(tmux display-message -p '#{window_id}' 2>/dev/null)
@@ -458,7 +482,7 @@ else
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
 fi
 
-[ "$BROWSE" -eq 1 ] || [ -n "$line" ] || { note "no line under the click"; exit 0; }
+[ "$BROWSE" -eq 1 ] || [ -n "$line" ] || { note "cockpit: no line under the click · click a line that names a path"; exit 0; }
 
 # --- candidates ---------------------------------------------------------------
 # Every token on the line that resolves to something on disk, in the order they
@@ -596,7 +620,7 @@ open_one() {
         # enough that another plugin could reasonably want it.
         editor=$(tmux show-options -gqv @open-editor)
         [ -n "$editor" ] && tmux display-message \
-            "tmux-cockpit: @open-editor has been renamed @cockpit_editor"
+            "cockpit: @open-editor renamed @cockpit_editor · update your tmux.conf"
     fi
     # VS Code stays the default, but only where it is actually installed --
     # either as code(1) on PATH, or as the remote shim under ~/.vscode-server
@@ -629,7 +653,7 @@ open_one() {
         else
             tmux run-shell -b "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
         fi
-        note "opened ${file/#$H/\~}${ln:+:$ln}"
+        note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
     # Remote-SSH and Coder: VS Code is right there, but its CLI is not on the
@@ -642,12 +666,12 @@ open_one() {
         else
             tmux run-shell -b "$(shq "$0") --vscode --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1"
         fi
-        note "opened ${file/#$H/\~}${ln:+:$ln}"
+        note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
     # Saying "opened" for a command that was never found is worse than doing
     # nothing: it sends you looking for the bug anywhere but here.
-    note "no editor found -- set @cockpit_editor, or \$VISUAL/\$EDITOR, or install code"
+    note "cockpit: no editor · set @cockpit_editor, \$VISUAL or install code"
 }
 
 if [ "$DRY" -eq 1 ]; then
@@ -660,7 +684,7 @@ fi
 if [ "$BROWSE" -eq 0 ] && [ ${#FILES[@]} -eq 0 ]; then
     # A popup you have to dismiss is the wrong answer to "there was nothing
     # there" -- the status line says it and gets out of the way.
-    note "no file on that line"
+    note "cockpit: no file on that line · nothing there resolved on disk"
     exit 0
 fi
 
@@ -717,6 +741,7 @@ tail3() {
 browse() {
     local dir=$1 out key sel
     dir=$(cd "$dir" 2>/dev/null && pwd) || return 0
+    op_theme "$K_BROWSE"
     while :; do
         # -A: the dotfiles this audience most wants (.claude/, .gitignore)
         # were unreachable; .git/ alone is filtered as noise. load:down starts
@@ -725,7 +750,8 @@ browse() {
         # alt-c's prefix is $PWD, not $dir: the cd below makes them the same
         # directory, and skipping the quoting layer keeps a backslash in a name.
         out=$( cd "$dir" && { printf '../\n'; ls -1Ap 2>/dev/null | grep -vx '\.git/'; } \
-            | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+            | fzf "${THEME[@]}" \
+                  --reverse --info=inline-right --cycle --scroll-off=2 \
                   --multi --expect=ctrl-o \
                   --bind 'load:down' \
                   --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
@@ -733,8 +759,6 @@ browse() {
                   --bind "ctrl-f:change-preview($(shq "$0") --preview {})+change-preview-label( content )" \
                   --bind 'alt-c:execute-silent(for f in {+}; do printf "%s/%s\n" "$PWD" "$f"; done | tmux load-buffer -w -)' \
                   --prompt="$(tail3 "$dir")/ " \
-                  --header='↵ open / enter dir   tab mark   ^O as-is
-^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                   --preview="$(shq "$0") --preview {}" \
                   --preview-label=' content ' --preview-label-pos=2 \
                   --preview-window='down,65%,border-top') || return 0
@@ -757,12 +781,13 @@ browse() {
 }
 
 if [ "$BROWSE" -eq 1 ]; then
-    command -v fzf >/dev/null || { note "the folder browser needs fzf"; exit 0; }
+    command -v fzf >/dev/null || { note "cockpit: the folder browser needs fzf · bootstrap.sh installs it"; exit 0; }
     browse "$dir"
     exit 0
 fi
 
 if command -v fzf >/dev/null; then
+    op_theme "$K_OPEN"
     # Size the split from the popup fzf actually lives in, not from a fixed
     # percentage: 85% was right at 40 rows and starved the list to ONE row at
     # 17. The list gets the rows it has (capped), the preview gets the rest.
@@ -783,7 +808,8 @@ if command -v fzf >/dev/null; then
                esac
                printf '%s\t%s\t%s\t%s%s\n' "$i" "${FILES[$i]/#$H/\~}" "${LINES[$i]}" \
                       "$disp" "${LINES[$i]:+:${LINES[$i]}}"
-           done | fzf --reverse --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+           done | fzf "${THEME[@]}" \
+                      --reverse --info=inline-right --cycle --scroll-off=2 \
                       --delimiter=$'\t' --with-nth=4 --multi --keep-right \
                       --expect=ctrl-o \
                       --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
@@ -791,8 +817,6 @@ if command -v fzf >/dev/null; then
                       --bind "ctrl-f:change-preview($(shq "$0") --preview {2} {3})+change-preview-label( content )" \
                       --bind 'alt-c:execute-silent(printf "%s\n" {+2} | sed "s|^~|$HOME|" | tmux load-buffer -w -)' \
                       --prompt='open> ' \
-                      --header='↵ open (folder: browse)   tab mark   ^O as-is
-^G diff   ^F content   alt-c copy path   ^/ preview   esc cancel' \
                       --preview="$(shq "$0") --preview {2} {3}" \
                       --preview-label=' content ' --preview-label-pos=2 \
                       --preview-window="down,$pshare,border-top")
@@ -831,8 +855,10 @@ if command -v fzf >/dev/null; then
         open_one "${FILES[$i]}" "${LINES[$i]}" "${COLS[$i]}"
     done <<<"$picks"
 else
-    # No fzf: a numbered menu still beats no picker at all.
-    printf 'Open which path?\n'
+    # No fzf: a numbered menu still beats no picker at all. On stderr, where
+    # `select` writes its own menu and prompt: split across two streams, one
+    # redirect separates the question from its answers.
+    printf 'Open which path?\n' >&2
     select f in "${FILES[@]}"; do [ -n "${f:-}" ] && break; done
     [ -n "${f:-}" ] || exit 0
     i=0

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Jump to the next pane whose agent is waiting on you, across every session.
-# Bound to prefix J by cockpit.tmux (@cockpit_jump_key overrides; "off" unbinds).
+# Bound to prefix u by cockpit.tmux (@cockpit_jump_key overrides; "off" unbinds).
 # One-shot: runs only on the keypress, so a status redraw still costs no shell.
 set -u
 
@@ -47,14 +47,14 @@ done < <(tmux list-panes -a -F '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{
 # ${pending[@]+"${pending[@]}"}, not a bare "${pending[@]}": bash before 4.4
 # treats an EMPTY array's expansion as an unset variable, so under `set -u` the
 # plain form aborts the script -- and empty is the common case, no unsent
-# review anywhere, which would make prefix J do nothing at all on those bashes.
+# review anywhere, which would make the jump key do nothing at all on those bashes.
 # The +alternate form expands to nothing when the array is empty and to the
 # quoted elements when it is not. Same idiom as tmux-review's fzf option array.
 blocked+=(${pending[@]+"${pending[@]}"})
 blocked+=(${review_pending[@]+"${review_pending[@]}"})
 
 if [ ${#blocked[@]} -eq 0 ]; then
-    tmux display-message "no agent needs you" 2>/dev/null
+    tmux display-message "cockpit: no agent needs you" 2>/dev/null
     exit 0
 fi
 

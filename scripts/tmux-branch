@@ -60,13 +60,13 @@ DIR="${DIR:-$PWD}"
 pause() { printf '\n[any key]'; read -rsn1; }
 fail()  { printf '%s\n' "$*" >&2; pause; exit 1; }
 
-cd "$DIR" 2>/dev/null || fail "no such directory: $DIR"
+cd "$DIR" 2>/dev/null || fail "cockpit: no such directory: $DIR"
 
 # tmux only knows the LOCAL cwd, so a pane sitting in ssh would hand us this
 # machine's repo — and switching a branch you cannot see is worse than refusing.
-[ "$PANE_CMD" = ssh ] && fail "this pane is inside ssh; $DIR is local, not the host you are looking at"
+[ "$PANE_CMD" = ssh ] && fail "cockpit: this pane is inside ssh · $DIR is local, not that host"
 
-git rev-parse --git-dir >/dev/null 2>&1 || fail "not a git repository: $DIR"
+git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: $DIR"
 
 # Redraw the status bar now instead of waiting for the next status-interval tick.
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
@@ -122,7 +122,7 @@ route() {
     elif git show-ref --quiet --verify "refs/remotes/$name"; then
         switch_remote "$name"
     else
-        fail "no such branch: $name"
+        fail "cockpit: no such branch: $name"
     fi
 }
 
@@ -191,11 +191,13 @@ while IFS=$'\t' read -r ref age; do
     printf -v row '%s %-32s %-16s %s' "$m" "$ref" "($age)" "${wt[$ref]:-}"
     disps+=("$row")
 done < <(list_branches)
-[ ${#refs[@]} -eq 0 ] && fail "no branches yet in $DIR"
+[ ${#refs[@]} -eq 0 ] && fail "cockpit: no branches yet in $DIR"
 
 if ! command -v fzf >/dev/null; then
-    # No fzf: a numbered menu still beats no picker at all.
-    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}"
+    # No fzf: a numbered menu still beats no picker at all. On stderr, where
+    # `select` writes its own menu and prompt: split across two streams, one
+    # redirect separates the question from its answers.
+    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}" >&2
     select row in "${disps[@]}"; do
         [ -n "${row:-}" ] || exit 0
         break
@@ -227,17 +229,39 @@ psz=$(( avail - lrows - 5 ))
 # "[any key]" and making you reopen the picker and retype. The failure paths
 # are the normal case -- a dirty tree, a branch held by a worktree -- and each
 # already showed git's own message; now it costs a keypress, not the flow.
+# The theme lib sits beside the REAL script; install.sh links this file into
+# ~/bin by its absolute path, so one readlink hop is the whole resolution.
+LIBD=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+if [ -n "$LIBD" ]; then LIBD=${LIBD%/*}
+else LIBD=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
+# shellcheck source=lib/fzf.sh
+. "$LIBD/lib/fzf.sh" \
+  || fail "cockpit: the fzf theme is missing · reinstall from the repo"
+
+# One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. 46 columns,
+# under the 48 a 70% popup shows at an 80-column terminal.
+KEYS='↵ switch · alt-↵ new branch · ^/ preview · esc'
+CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
+# Head-ellipsis: the directory tail is the half that says where you are.
+[ ${#CTX} -gt 48 ] && CTX="…${CTX: -47}"
+# One probe per open: the process substitution below inherits the cache.
+COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
+mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border "footer=$KEYS")
+# No --footer below the floor, so the keys ride the last --header line.
+if [ "$COCKPIT_FZF_TIER" = styled ]; then THEME+=("--header=$CTX")
+else THEME+=("--header=$CTX"$'\n'"$KEYS"); fi
+
 query=""
 while :; do
     out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
-        | fzf --print-query --expect=alt-enter --query="$query" \
-              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 --color=16,border:8,scrollbar:8 \
+        | fzf "${THEME[@]}" \
+              --print-query --expect=alt-enter --query="$query" \
+              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \
               --delimiter=$'\t' --with-nth=2 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --prompt="switch> " \
-              --header="↵ switch   alt-↵ new branch from what you typed   ^/ preview   esc cancel
-on ${current:-detached HEAD} · $(tail3 "$DIR")" \
               --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
+              --preview-label=' log ' --preview-label-pos=2 \
               --preview-window="down,$psz,border-top")
     rc=$?
     # fzf's exit codes matter here: 0 = a row accepted, 1 = NO MATCH -- which is
