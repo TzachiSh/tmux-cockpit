@@ -842,7 +842,11 @@ rows_mode() {
 # ponytail: length() is bytes under LC_ALL=C; a non-ASCII path pads a column
 # or two short.
 mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <rows-file>
-    LC_ALL=C awk -F'\t' -v OFS='\t' -v cap="$CAP_SENTINEL" '
+    # The popup's own width: this runs inside display-popup -E, and inside
+    # fzf's reload() ncurses still reads the tty even with stdout on a pipe.
+    local cols; cols=$(tput cols 2>/dev/null || echo 80)
+    case $cols in ''|*[!0-9]*) cols=80 ;; esac
+    LC_ALL=C awk -F'\t' -v OFS='\t' -v cap="$CAP_SENTINEL" -v cols="$cols" '
         FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
         FILENAME == ARGV[2] { if (substr($0, 1, 3) == "## ") d[$0]++; next }
         NF == 0 { next }
@@ -864,8 +868,14 @@ mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <r
         }
         END {
             # Padded to the widest path:line so the signs make one column;
-            # a wider one keeps its tail (the file name), capped at 48.
-            if (w > 48) w = 48
+            # a wider one keeps its tail (the file name). The cap is a SHARE
+            # of the screen, not the constant 48 it was: at 80 columns that
+            # left the diff text 13 to 21 columns and the metadata won the
+            # row (#105 defect 6). 35% keeps 40+ columns of code at 80.
+            pcap = int(cols * 35 / 100)
+            if (pcap > 48) pcap = 48
+            if (pcap < 18) pcap = 18
+            if (w > pcap) w = pcap
             for (i = 1; i <= r; i++) {
                 # The cap row is a notice, not an anchor: rebuilding it would
                 # invent a "(diff too large):0" file nothing can be pinned to.
@@ -965,16 +975,16 @@ attach() {
 load_store() {                # <store>; callers guard [ -s ] first, or a stale .bak beside an empty store would fire this
     parse_store "$1"
     [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
-        || tmux display-message "tmux-review: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
+        || tmux display-message "cockpit: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
 }
 
 detach() {                    # <store> <path> <line-with-sign>
     local store=$1 path=$2 line=$3 sign=+ num i j=0 k
     [ -n "$path" ] && [ -n "$line" ] || return 0
-    [ -s "$store" ] || { tmux display-message "tmux-review: nothing pinned on this row" 2>/dev/null; return 0; }
+    [ -s "$store" ] || { tmux display-message "cockpit: nothing pinned on this row" 2>/dev/null; return 0; }
     case "$line" in -*) sign=-; num=${line#-} ;; *) num=$line ;; esac
     # shellcheck source=lib/review-store.sh
-    . "$LIBDIR/review-store.sh" || { tmux display-message "tmux-review: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
+    . "$LIBDIR/review-store.sh" || { tmux display-message "cockpit: cannot find $LIBDIR/review-store.sh" 2>/dev/null; return 1; }
     declare -A STORE=() OUT=(); STORE_N=0
     load_store "$store"
     # A store that fails to parse is moved aside to .bak and STORE_N comes
@@ -991,7 +1001,7 @@ detach() {                    # <store> <path> <line-with-sign>
         done
         j=$((j + 1))
     done
-    [ "$j" -lt "$STORE_N" ] || { tmux display-message "tmux-review: nothing pinned on this row" 2>/dev/null; return 0; }
+    [ "$j" -lt "$STORE_N" ] || { tmux display-message "cockpit: nothing pinned on this row" 2>/dev/null; return 0; }
     STORE=(); for k in "${!OUT[@]}"; do STORE[$k]=${OUT[$k]}; done; STORE_N=$j
     format_store "$store"
 }
@@ -1157,7 +1167,7 @@ run_loop() {
     command -v fzf >/dev/null 2>&1 || {
         # display-message, not stderr: inside display-popup -E stderr of a
         # command that exits at once is rendered to nobody.
-        tmux display-message "tmux-review: the review loop needs fzf" 2>/dev/null; exit 1;
+        tmux display-message "cockpit: the review loop needs fzf" 2>/dev/null; exit 1;
     }
 
     # The base this review diffs against: ^B's choice, remembered beside the
@@ -1196,12 +1206,12 @@ run_loop() {
     # The cap row copies nothing, and `printf '' | tmux load-buffer -w -` exits 0
     # while LEAVING the old buffer -- so an ungated bind flashes "copied" over
     # whatever was already there. Gate the load and the message on real output.
-    copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: file + diff copied'"
-    copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'tmux-review: the whole diff copied'"
+    copy_cmd="out=\$($(shq "$SELF") --copy $(shq "$dir") {1}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'cockpit: file + diff copied'"
+    copy_all_cmd="$(shq "$SELF") --copy $(shq "$dir") | tmux load-buffer -w - && tmux display-message 'cockpit: the whole diff copied'"
     # {+1} {+2}: the path and line of every ⇥-marked row, or of the cursor row
     # when none is marked. fzf placeholders: they must reach --bind literally,
     # unexpanded. Same output gate as ^Y: the cap row yields nothing.
-    copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'tmux-review: line(s) copied'"
+    copy_lines_cmd="out=\$($(shq "$SELF") --copy-lines $(shq "$dir") {+1} {+2}); [ -n \"\$out\" ] && printf '%s\n' \"\$out\" | tmux load-buffer -w - && tmux display-message 'cockpit: line(s) copied'"
 
     # Build the initial list ONCE and take the row count from it, rather than
     # running lines_mode a second time just to `wc -l` it: the parse (git diff
@@ -1216,12 +1226,12 @@ run_loop() {
     if [ -n "$store" ] && [ -s "$store" ]; then
         local nres nstale
         nres=$(grep -c '^## ' -- "$store"); nstale=$(stale_keys "$store" "$store.rows" | grep -c '^## ')
-        tmux display-message "tmux-review: resumed $nres pinned comment(s)$([ "$nstale" -gt 0 ] && printf ', %s no longer anchor (^R lists them)' "$nstale")" 2>/dev/null
+        tmux display-message "cockpit: resumed $nres pinned comment(s)$([ "$nstale" -gt 0 ] && printf ' · %s no longer anchor, ^R lists' "$nstale")" 2>/dev/null
     fi
     rows_out=$(rows_mode "$dir" "$store")
     nrows=$(printf '%s\n' "$rows_out" | grep -c .)
     if [ "$nrows" -eq 0 ]; then
-        tmux display-message "tmux-review: no uncommitted changes in $dir" 2>/dev/null
+        tmux display-message "cockpit: no uncommitted changes in $dir" 2>/dev/null
         drop_store "$store"
         exit 0
     fi
@@ -1301,7 +1311,7 @@ run_loop() {
                             # end of, so it stays and gets named.
                             drop_rows "$store"
                             tmux display-message \
-                                "tmux-review: could not ask about the pinned comments$(keep_hint "" "$store")" \
+                                "cockpit: could not ask about the pinned comments$(keep_hint "" "$store")" \
                                 2>/dev/null
                             exit 0 ;;
                     esac
@@ -1341,7 +1351,7 @@ run_loop() {
             snapshot "$dir" "$store"
             rows_out=$(rows_mode "$dir" "$store")
             [ "$(printf '%s\n' "$rows_out" | grep -c .)" -gt 0 ] || \
-                tmux display-message "tmux-review: nothing to review against $label" 2>/dev/null
+                tmux display-message "cockpit: nothing to review against $label" 2>/dev/null
             continue
         fi
         if [ "$key" = ctrl-a ]; then
@@ -1352,16 +1362,16 @@ run_loop() {
                 # needs this refresh or the next fzf launch shows a stale,
                 # unmarked list. The other two exits below genuinely change
                 # nothing about the rows, so they skip it.
-                tmux display-message "tmux-review: deliver or discard the $(grep -c '^## ' "$store") pinned comment(s) first" 2>/dev/null
+                tmux display-message "cockpit: deliver or discard the $(grep -c '^## ' "$store") pinned comment(s) first" 2>/dev/null
                 rows_out=$(rows_mode "$dir" "$store"); continue
             fi
             if ! git -C "$dir" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
-                tmux display-message "tmux-review: nothing to approve against before the first commit" 2>/dev/null
+                tmux display-message "cockpit: nothing to approve against before the first commit" 2>/dev/null
                 continue
             fi
             if approve "$dir"; then exit 21; fi
             abr=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null); abr=${abr:-HEAD}
-            tmux display-message "tmux-review: could not write refs/cockpit/reviewed/$abr — a stale ref may block it: git update-ref -d refs/cockpit/reviewed/$abr" 2>/dev/null
+            tmux display-message "cockpit: could not mark $abr reviewed · a stale ref may block it" 2>/dev/null
             continue
         fi
         if [ "$key" = ctrl-s ]; then
@@ -1370,7 +1380,7 @@ run_loop() {
             # batch to $EDITOR first (a comment edited as text -- the grammar
             # is forgiving, compose is cat).
             n=$(grep -c '^## ' "$store")
-            [ "$n" -gt 0 ] || { tmux display-message "tmux-review: nothing pinned" 2>/dev/null; continue; }
+            [ "$n" -gt 0 ] || { tmux display-message "cockpit: nothing pinned" 2>/dev/null; continue; }
             local to ed e
             to="the agent"; [ -n "$REVIEW_PANE_ID" ] && to=$(pane_label "$REVIEW_PANE_ID")
             ed=$(editor_cmd); e=${ed%% *}; e=${e##*/}
@@ -1511,7 +1521,7 @@ deliver() {
     case "$pane" in
         %[0-9]*) ;;
         *) tmux display-message \
-               "tmux-review: not a pane id, refusing to deliver$(keep_hint "$pane" "$store")" \
+               "cockpit: not a pane id, refusing to deliver$(keep_hint "$pane" "$store")" \
                2>/dev/null; return 1 ;;
     esac
 
@@ -1521,13 +1531,13 @@ deliver() {
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
-            "tmux-review: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")" \
+            "cockpit: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")" \
             2>/dev/null
         return 1
     }
 
     [ -n "$store" ] && [ -s "$store" ] || {
-        tmux display-message "tmux-review: nothing to deliver" 2>/dev/null
+        tmux display-message "cockpit: nothing to deliver" 2>/dev/null
         return 1
     }
 
@@ -1543,7 +1553,7 @@ deliver() {
     local spool="$store.deliver"
     if ! (umask 077; [ ! -L "$spool" ] && printf '%s' "$payload" > "$spool"); then
         tmux display-message \
-            "tmux-review: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")" \
+            "cockpit: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")" \
             2>/dev/null
         return 1
     fi
@@ -1570,7 +1580,7 @@ deliver() {
         runtime=${XDG_RUNTIME_DIR:-/tmp}
         file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
             tmux display-message \
-                "tmux-review: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")" \
+                "cockpit: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")" \
                 2>/dev/null
             return 1
         }
@@ -1588,7 +1598,7 @@ deliver() {
     bufname="cockpit-review-${pane#%}-$$"
     if ! printf '%s' "$payload" | tmux load-buffer -b "$bufname" -; then
         tmux display-message \
-            "tmux-review: could not stage the review, refusing to deliver" \
+            "cockpit: could not stage the review, refusing to deliver" \
             2>/dev/null
         return 1
     fi
@@ -1658,10 +1668,18 @@ deliver() {
     # review-gate only ever runs from an agent's own hook.
     tmux set-option -p -t "$pane" @cockpit_review_spool "$spool" 2>/dev/null
 
+    # The jump key is read, never spelled: it has been u since #43 and this
+    # notice still said J (#105 defect 1). `off` unbinds the key, so that arm
+    # drops the whole clause rather than pointing at nothing. Both notices are
+    # inside the 72 columns an 80-column client draws, which is what cost the
+    # pane id here -- $where already names the session, window and its name.
+    local jump='#{?#{==:#{@cockpit_jump_key},off},, · prefix #{?#{@cockpit_jump_key},#{@cockpit_jump_key},u} jumps}'
+    local notice_paste="cockpit: review pasted into $where · ↵ sends it$jump"
+    local notice_queue="cockpit: review queued for $where · it lands when the agent stops"
     tmux if-shell -F -t "$pane" \
         "#{&&:#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{&&:#{!=:#{@panestate},running},#{!=:#{@panestate},needs-input}}}" \
-        "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 'review pasted into $where ($pane) — press Enter there to send; prefix J walks there'" \
-        "delete-buffer -b $bufname ; display-message -d 0 'review queued for $where ($pane) — it lands when the agent next stops'"
+        "set-option -pu -t $pane @cockpit_review_spool ; set-option -p -t $pane @cockpit_review sent ; paste-buffer -p -r -d -b $bufname -t $pane ; display-message -d 0 '$notice_paste'" \
+        "delete-buffer -b $bufname ; display-message -d 0 '$notice_queue'"
 
     # The idle arm disarms the option as it pastes, so an empty option here
     # means the paste happened and nobody will ever read this spool -- the
@@ -1702,25 +1720,34 @@ fleet_rows() {
     # a fresh quoted string are separate WORDS to tmux, not one concatenated
     # format -- list-panes then sees four positional arguments and refuses
     # them ("too many arguments"). Reproduced live before this fix.
-    local fmt raw
-    fmt='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'$'\t'
-    fmt="${fmt}"'#{pane_id}'$'\t'
-    # NOT a bare #{@panestate}: tab is an IFS *whitespace* character, so
-    # `read` with IFS=$'\t' collapses a RUN of tabs into one delimiter -- an
-    # unset @panestate emitted \t\t, the field vanished, and every field after
-    # it shifted left (path came out empty and the pane was dropped from the
-    # queue entirely). Measured against a pane with no state set. The same
-    # trap, with spaces, is why tmux-jump:21 places its own guard. A sentinel
-    # keeps the field non-empty on the wire; it is turned back into "unset"
-    # the moment it has been read.
-    fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'$'\t'
+    #
+    # US (\037), not a tab, between the fields: pane_current_path and
+    # @cockpit_dir are the two values that can legally carry a tab, and one
+    # in a cwd truncated the path field and shifted @cockpit_dir into it
+    # (#105 defect 15). pane_dir() already reads its own pair this way.
+    local fmt raw sep=$'\037'
+    # Both path fields are sanitised on the wire with LITERAL characters, the
+    # only spelling #{s/…} understands: `\n` there matches the letter n and a
+    # POSIX class ends the substitution at its first `]` (both measured on
+    # 3.7c). The newline arm closes the record-framing hole; the other two
+    # keep a path out of the delimiter's business.
+    local safe="#{s/$sep/ /:#{s/"$'\t'"/ /:#{s/"$'\n'"/ /:"
+    fmt='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'"$sep"
+    fmt="${fmt}"'#{pane_id}'"$sep"
+    # NOT a bare #{@panestate}: this was tab-separated, and tab is an IFS
+    # *whitespace* character, so `read` collapsed a RUN of them into one
+    # delimiter -- an unset @panestate emitted two, the field vanished, and
+    # every field after it shifted left (the pane was dropped from the queue
+    # entirely). US is not IFS whitespace and no longer collapses, but the
+    # sentinel stays: `-` is what tells "unset" from a value further down.
+    fmt="${fmt}"'#{?#{@panestate},#{@panestate},-}'"$sep"
     # Same sentinel, same reason: @cockpit_review is unset on most panes.
-    fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'$'\t'
-    fmt="${fmt}"'#{session_name}:#{window_index} '"$AGENT_TITLE_FMT"$'\t'
+    fmt="${fmt}"'#{?#{@cockpit_review},#{@cockpit_review},-}'"$sep"
+    fmt="${fmt}"'#{session_name}:#{window_index} '"$AGENT_TITLE_FMT""$sep"
     # Sentinelled too now that it is not the last field (an unset cwd shifted
     # @cockpit_dir into it). The option: pane_dir()'s rule off this one call.
-    fmt="${fmt}"'#{?#{pane_current_path},#{pane_current_path},-}'$'\t'
-    fmt="${fmt}"'#{?#{@cockpit_dir},#{@cockpit_dir},-}'
+    fmt="${fmt}"'#{?#{pane_current_path},'"$safe"'#{pane_current_path}}}},-}'"$sep"
+    fmt="${fmt}"'#{?#{@cockpit_dir},'"$safe"'#{@cockpit_dir}}}},-}'
     raw=$(tmux list-panes -a -F "$fmt" 2>/dev/null)
     [ -n "$raw" ] || return 0
 
@@ -1746,7 +1773,7 @@ fleet_rows() {
     # phase 2 below dedups.
     local isagent id state review title path wt n=0 cap=${COCKPIT_FLEET_PARALLEL:-8}
     local -a pids=() pane_id=() pane_state=() pane_review=() pane_title=() pane_root=()
-    while IFS=$'\t' read -r isagent id state review title path wt; do
+    while IFS=$sep read -r isagent id state review title path wt; do
         [ "$isagent" = 1 ] || continue
         [ "$path" != - ] || continue
         [ "$wt" != - ] && [ -d "$wt" ] && path=$wt
@@ -1939,7 +1966,7 @@ review_pane() {
     # path is derivable (session_dir() is a pane id and a root's cksum), so a
     # planted symlink must be refused here too, not just followed.
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
-        tmux display-message "tmux-review: could not create $sess" 2>/dev/null
+        tmux display-message "cockpit: could not create $sess" 2>/dev/null
         return 1
     }
     REVIEW_PANE_ID=$pane "$SELF" --loop "$dir" "$store"
@@ -1981,7 +2008,7 @@ review_pane() {
         tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
         "$(dirname "$SELF")/agent-state" recount "$pane"
         clear_sess "$sess"
-        tmux display-message "review approved — the next one shows only what changes from here" 2>/dev/null
+        tmux display-message "cockpit: review approved · the next one shows only what changed" 2>/dev/null
     else
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
     fi
@@ -2156,12 +2183,24 @@ pad_field() {                 # <width> <string>
     printf '%-*s' "$(( w + ${#2} - c ))" "$2"
 }
 
+# Cut a field TO a column width; pad_field only ever pads, so an over-cap
+# field used to overflow and drag every column right of it (#105 defect 5).
+# head=1 keeps the tail: in repo⑂branch the branch is the half you do not
+# already know.
+fit_field() {                 # <width> <string> [head]
+    local w=$1 s=$2
+    [ "${#s}" -le "$w" ] && { printf '%s' "$s"; return; }
+    [ "$w" -lt 2 ] && { printf '%s' "${s:0:$w}"; return; }
+    if [ -n "${3:-}" ]; then printf '…%s' "${s: -$(( w - 1 ))}"
+    else printf '%s…' "${s:0:$(( w - 1 ))}"; fi
+}
+
 kill_window() {               # <pane>  the row's window, after a y/N in the popup
     local pane=$1 where nwin npane ans
     case $pane in %[0-9]*) ;; *) return 0 ;; esac
     # #{?pane_id,...}: a pane gone since the list was built reads ": ", not empty.
     where=$(tmux display-message -p -t "$pane" '#{?pane_id,#{session_windows} #{window_panes} #{session_name}:#{window_index} #{window_name},}' 2>/dev/null)
-    [ -n "$where" ] || { tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null; return 0; }
+    [ -n "$where" ] || { tmux display-message "cockpit: pane $pane is gone" 2>/dev/null; return 0; }
     nwin=${where%% *}; where=${where#* }; npane=${where%% *}; where=${where#* }
     if [ "$nwin" = 1 ]; then printf 'kill session %s (last window' "${where%%:*}"
     else printf 'kill window %s' "$where"; fi
@@ -2193,7 +2232,7 @@ kill_window() {               # <pane>  the row's window, after a y/N in the pop
 # you are done with the fleet.
 fleet_queue() {               # [preselect-pane]
     command -v fzf >/dev/null 2>&1 || {
-        tmux display-message "tmux-review: the fleet queue needs fzf" 2>/dev/null
+        tmux display-message "cockpit: the fleet queue needs fzf" 2>/dev/null
         return 1
     }
     local pre=${1:-}
@@ -2201,30 +2240,51 @@ fleet_queue() {               # [preselect-pane]
         local rows
         rows=$(fleet_rows)
         if [ -z "$rows" ]; then
-            tmux display-message "tmux-review: no pane runs an agent named in @cockpit_agents_glob" 2>/dev/null
+            tmux display-message "cockpit: no pane runs an agent named in @cockpit_agents_glob" 2>/dev/null
             return 0
         fi
 
         # Column widths, capped: one 200-character pane title should not push
         # repo⑂branch and the ± count off the right edge for every other row.
-        # A field over its cap simply overflows its column instead of being
-        # truncated -- losing the end of a title is worse than one ragged row.
         local f_pane f_state f_title f_loc f_stat
-        local w_state=0 w_title=0 w_loc=0
+        local w_state=0 w_title=0 w_loc=0 w_stat=0
         while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
             [ -n "$f_pane" ] || continue
             [ "${#f_state}" -gt "$w_state" ] && w_state=${#f_state}
             [ "${#f_title}" -gt "$w_title" ] && w_title=${#f_title}
             [ "${#f_loc}"   -gt "$w_loc"   ] && w_loc=${#f_loc}
+            [ "${#f_stat}"  -gt "$w_stat"  ] && w_stat=${#f_stat}
         done <<<"$rows"
-        [ "$w_state" -gt 12 ] && w_state=12
+        [ "$w_state" -gt 13 ] && w_state=13     # "◆ needs-input", the widest state there is
         [ "$w_title" -gt 40 ] && w_title=40
-        [ "$w_loc"   -gt 32 ] && w_loc=32
+        [ "$w_loc"   -gt 40 ] && w_loc=40
+
+        # Then shed until the row fits the popup, in one order every time:
+        # repo⑂branch gives way first (down to 12), then the title (down to
+        # 16). The ± column is what the queue exists to compare down the
+        # list, so it never gives way -- and it was the first thing cut on
+        # the old 8-column tabstop grid, on any terminal under ~150 columns
+        # (#105 defect 5). fzf keeps 2 columns for its pointer, and each
+        # delimiter is one column under --tabstop=1.
+        local cols cut shed
+        cols=$(tput cols 2>/dev/null || echo 80)
+        case $cols in ''|*[!0-9]*) cols=80 ;; esac
+        cut=$(( w_state + w_title + w_loc + w_stat + 3 - (cols - 2) ))
+        if [ "$cut" -gt 0 ]; then
+            shed=$(( w_loc - 12 )); [ "$shed" -lt 0 ] && shed=0
+            [ "$shed" -gt "$cut" ] && shed=$cut
+            w_loc=$(( w_loc - shed )); cut=$(( cut - shed ))
+        fi
+        if [ "$cut" -gt 0 ]; then
+            shed=$(( w_title - 16 )); [ "$shed" -lt 0 ] && shed=0
+            [ "$shed" -gt "$cut" ] && shed=$cut
+            w_title=$(( w_title - shed ))
+        fi
 
         local -a disp=()
         while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
             [ -n "$f_pane" ] || continue
-            disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$f_state")"$'\t'"$(pad_field "$w_title" "$f_title")"$'\t'"$(pad_field "$w_loc" "$f_loc")"$'\t'"$f_stat")
+            disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$(fit_field "$w_state" "$f_state")")"$'\t'"$(pad_field "$w_title" "$(fit_field "$w_title" "$f_title")")"$'\t'"$(pad_field "$w_loc" "$(fit_field "$w_loc" "$f_loc" head)")"$'\t'"$f_stat")
         done <<<"$rows"
         [ ${#disp[@]} -gt 0 ] || return 0
 
@@ -2306,7 +2366,7 @@ fleet_queue() {               # [preselect-pane]
         esac
         dir=$(pane_dir "$pane")
         if [ -z "$dir" ]; then
-            tmux display-message "tmux-review: pane $pane is gone" 2>/dev/null
+            tmux display-message "cockpit: pane $pane is gone" 2>/dev/null
             continue
         fi
         review_pane "$pane" "$(git_root "$dir")"
@@ -2384,7 +2444,7 @@ case "${1:-}" in
         # this very script instead of a comment buffer.
         [ $# -gt 0 ] || exit 1
         vscode_open "$@" || {
-            tmux display-message "tmux-review: no VS Code window reachable, using ${EDITOR:-vi}" 2>/dev/null
+            tmux display-message "cockpit: no VS Code window reachable, using ${EDITOR:-vi}" 2>/dev/null
             "${EDITOR:-vi}" "${@: -1}"
         } ;;
     --loop)

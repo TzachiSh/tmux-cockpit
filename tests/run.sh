@@ -10259,6 +10259,276 @@ is "and a 0.63+ fzf is never told about the tier at all" "0" \
    "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'styled pickers')"
 "$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
 rm -rf "$FZTD" "$FZG"
+# --- #105 review rows ---------------------------------------------------------
+# Width-aware review and fleet rows, the tab-safe pane record, and the delivery
+# notice that names the configured jump key. Every width here comes from a FAKE
+# tput, so a column count is a fixture rather than whatever terminal the suite
+# happens to run in.
+echo "== #105: the review row's path column is a share of the width, not a constant 48 =="
+RRB="$STATE/rr-bin-$$"; mkdir -p "$RRB"
+cat > "$RRB/tput" <<'RRTPUT'
+#!/bin/sh
+case "$1" in
+    cols)  printf '%s\n' "${RR_COLS:-80}" ;;
+    lines) printf '%s\n' "${RR_LINES:-30}" ;;
+    *)     exit 1 ;;
+esac
+RRTPUT
+chmod +x "$RRB/tput"
+
+RRDIR=$(mktmpd)
+(
+  cd "$RRDIR" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .
+  mkdir -p scripts/lib
+  printf 'a\n' > scripts/lib/very_long_module_name_here.sh
+  git add -A; git commit -q -m init
+  printf 'a\nb changed to something quite long indeed\n' > scripts/lib/very_long_module_name_here.sh
+) >/dev/null 2>&1
+# Field 4 is the only field fzf draws. Its gutter is mark + space + path + two
+# spaces + sign + space, and the diff text starts at a sentence that appears
+# nowhere else in the row. The review loop is --multi, so fzf keeps 4 of the
+# popup's columns for its own pointer and marker.
+# Columns, not bytes and not characters-if-the-locale-happens-to-be-UTF-8:
+# the rows carry …, ◆ and ⑂, and awk's length() and bash's ${#s} both count
+# bytes under the C locale a CI box may well be in. Dropping the UTF-8
+# continuation bytes leaves one count per character, in any locale.
+rr_esc=$(printf '\033')
+rr_ncols() {                  # <string> -> the columns it draws in
+    printf '%s' "$1" | LC_ALL=C sed "s/${rr_esc}\\[[0-9;]*m//g" \
+        | LC_ALL=C tr -d '\200-\277' | LC_ALL=C wc -c | tr -d ' '
+}
+rr_row() {                    # <cols> -> the display field of the long-path row
+    RR_COLS=$1 PATH="$RRB:$PATH" "$DIR/scripts/tmux-review" --rows "$RRDIR" /dev/null \
+        | awk -F'\t' '$1 ~ /very_long_module/ { print $4; exit }'
+}
+rr_gutter() {                 # <cols> -> columns spent before the diff text, -1 if the row is missing
+    local row pre
+    row=$(rr_row "$1"); pre=${row%%b changed to*}
+    { [ -n "$row" ] && [ "$pre" != "$row" ]; } || { printf '%s' -1; return; }
+    rr_ncols "$pre"
+}
+rr_g80=$(rr_gutter 80)
+is "at 80 columns the diff text keeps at least 40 of them" "yes" \
+   "$( [ "${rr_g80:-0}" -gt 0 ] && [ $(( 80 - 4 - rr_g80 )) -ge 40 ] && echo yes || echo "no: a $rr_g80-column gutter leaves $(( 80 - 4 - ${rr_g80:-0} ))" )"
+# The head-ellipsis at :873 is the mechanism the cap is supposed to reach: at
+# 80 the 42-column path:line no longer fits, so it loses its head, not the
+# file name at its tail.
+rr_row80=$(rr_row 80)
+case "$rr_row80" in
+    *"…"*"module_name_here.sh:2"*) ok "and the path loses its head, keeping the file name" ;;
+    *) bad "and the path loses its head, keeping the file name" "…<tail>module_name_here.sh:2" "$rr_row80" ;;
+esac
+# A wide terminal must not truncate what already fits.
+rr_g200=$(rr_gutter 200)
+is "at 200 columns the whole path:line is spelled out" "yes" \
+   "$( [ "${rr_g200:-0}" -gt "${rr_g80:-0}" ] && echo yes || echo "no: gutter $rr_g80 at 80, $rr_g200 at 200" )"
+
+echo "== #105: the fleet's ± column survives a narrow popup and repo⑂branch gives way first =="
+if need_tmux "#105 fleet widths"; then :; else
+RRF="cockpit-rrf-$$"; SOCKS="$SOCKS $RRF"
+RRW=$(mktmpd)
+rr_git() {                    # rr_git <dir> <branch>  a repo with one uncommitted line
+    mkdir -p "$1"
+    (
+      cd "$1" || exit
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b "$2" .
+      printf 'a\n' > f; git add -A; git commit -q -m init
+      printf 'b\n' >> f
+    ) >/dev/null 2>&1
+}
+rr_trim() { local s=$1; printf '%s' "${s%"${s##*[! ]}"}"; }
+# The owner's own worktree name: the 37-column loc field the mobile lane
+# measured as needing 100 columns today (#97 verified.md, inventory claim 4).
+rr_git "$RRW/research-mobile-97" research/mobile-97
+# A fake fzf: it records the rows it was handed and its own argv, then exits
+# 130 (esc) so the queue's loop returns instead of waiting for a human.
+cat > "$RRB/fzf" <<'RRFZF'
+#!/bin/sh
+n=$(cat "$RR_CAP.n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$RR_CAP.n"
+for a in "$@"; do printf '%s\n' "$a"; done > "$RR_CAP.argv.$n"
+cat > "$RR_CAP.stdin.$n"
+[ -f "$RR_CAP.out.$n" ] && cat "$RR_CAP.out.$n"
+exit "$(cat "$RR_CAP.rc.$n" 2>/dev/null || echo 130)"
+RRFZF
+chmod +x "$RRB/fzf"
+
+"$TMUX_REAL" -L "$RRF" -f /dev/null new-session -d -s t -x 200 -y 40 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RRF" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RRCTL=$("$TMUX_REAL" -L "$RRF" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$RRF" new-window -t t: -n review-rows-fixture -c "$RRW/research-mobile-97" \
+    'exec -a claude bash' >/dev/null 2>&1
+RRAG=$("$TMUX_REAL" -L "$RRF" list-panes -t t:1 -F '#{pane_id}')
+rr_cmds() { "$TMUX_REAL" -L "$RRF" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude ' rr_cmds
+# The widest shape the queue really renders: "◆ needs-input" is 13 columns.
+"$TMUX_REAL" -L "$RRF" set-option -p -t "$RRAG" @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$RRF" set-option -p -t "$RRAG" @cockpit_review pending >/dev/null 2>&1
+
+rr_queue() {                  # rr_queue <cols>  -> $RRW/cap-<cols>.stdin.1 holds the rows
+    local cap="$RRW/cap-$1"
+    rm -f "$cap".*
+    "$TMUX_REAL" -L "$RRF" send-keys -t "$RRCTL" \
+        "PATH='$RRB':\$PATH RR_COLS=$1 RR_CAP='$cap' '$DIR/scripts/tmux-review' -p $RRCTL; echo rr-done > '$cap.done'" Enter
+    until_file "$cap.done" '*rr-done*'
+}
+rr_field() { awk -F'\t' -v n="$2" 'NR == 1 { print $n; exit }' "$1"; }
+rr_queue 100; RRC100="$RRW/cap-100.stdin.1"
+rr_queue 60;  RRC60="$RRW/cap-60.stdin.1"
+if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
+    rr_stat100=$(rr_field "$RRC100" 5); rr_stat60=$(rr_field "$RRC60" 5)
+    rr_loc100=$(rr_field "$RRC100" 4); rr_loc60=$(rr_field "$RRC60" 4)
+    is "the ± field reads the same at 60 columns as at 100: it never gives way" "$rr_stat100" "$rr_stat60"
+    is "and at 100 it is the tree's real diff stat" "+1 -0" "$rr_stat100"
+    is "repo⑂branch is whole at 100" "research-mobile-97⑂research/mobile-97" "$(rr_trim "$rr_loc100")"
+    is "repo⑂branch is the field that gives way at 60" "yes" \
+       "$( [ "$(rr_ncols "$rr_loc60")" -lt "$(rr_ncols "$rr_loc100")" ] && echo yes \
+            || echo "no: $(rr_ncols "$rr_loc60") columns at 60, $(rr_ncols "$rr_loc100") at 100" )"
+    # The point of a width-aware row: it fits. fzf keeps 2 columns for its
+    # pointer, and --tabstop=1 makes each delimiter exactly one column.
+    rr_w60=0
+    while IFS= read -r rr_f; do rr_w60=$(( rr_w60 + $(rr_ncols "$rr_f") + 1 )); done \
+        <<<"$(cut -f2- "$RRC60" | head -1 | tr '\t' '\n')"
+    rr_w60=$(( rr_w60 - 1 ))
+    is "the whole row fits the 58 columns fzf has at 60" "yes" \
+       "$( [ "${rr_w60:-999}" -le 58 ] && echo yes || echo "no: $rr_w60 columns" )"
+else
+    bad "the fleet queue hands its rows to fzf under a fake tput" "a capture at 60 and at 100" \
+        "100:[$(cat "$RRC100" 2>/dev/null)] 60:[$(cat "$RRC60" 2>/dev/null)]"
+fi
+"$TMUX_REAL" -L "$RRF" kill-server >/dev/null 2>&1
+fi
+
+echo "== #105: a cwd carrying a tab or a newline still renders one fleet row, @cockpit_dir intact =="
+if need_tmux "#105 fleet field framing"; then :; else
+RRS="cockpit-rrs-$$"; SOCKS="$SOCKS $RRS"
+RRSW=$(mktmpd)
+rr_git2() {                   # this block's own fixture builder
+    mkdir -p "$1"
+    (
+      cd "$1" || exit
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b "$2" .
+      printf 'a\n' > f; git add -A; git commit -q -m init
+      printf 'b\n' >> f
+    ) >/dev/null 2>&1
+}
+rr_git2 "$RRSW/tabtree" main
+rr_git2 "$RRSW/nltree"  main
+RRTABCWD="$RRSW/plain/sub"$'\t'"dir"
+RRNLCWD="$RRSW/plain/sub"$'\n'"dir"
+mkdir -p "$RRTABCWD" "$RRNLCWD"
+"$TMUX_REAL" -L "$RRS" -f /dev/null new-session -d -s t -x 200 -y 40 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RRS" set -g @cockpit_agents_glob \
+    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+RRSCTL=$("$TMUX_REAL" -L "$RRS" list-panes -t t:0 -F '#{pane_id}')
+"$TMUX_REAL" -L "$RRS" new-window -t t: -n tabpane -c "$RRTABCWD" 'exec -a claude bash' >/dev/null 2>&1
+RRTABP=$("$TMUX_REAL" -L "$RRS" list-panes -t t:1 -F '#{pane_id}')
+"$TMUX_REAL" -L "$RRS" new-window -t t: -n nlpane -c "$RRNLCWD" 'exec -a claude bash' >/dev/null 2>&1
+RRNLP=$("$TMUX_REAL" -L "$RRS" list-panes -t t:2 -F '#{pane_id}')
+rr_cmds2() { "$TMUX_REAL" -L "$RRS" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
+until_out 'bash claude claude ' rr_cmds2
+# The tree each agent really works in (#49). The option is the LAST field on
+# the wire, so it is the field a tab in the cwd shifts into.
+"$TMUX_REAL" -L "$RRS" set-option -p -t "$RRTABP" @cockpit_dir "$RRSW/tabtree" >/dev/null 2>&1
+"$TMUX_REAL" -L "$RRS" set-option -p -t "$RRNLP"  @cockpit_dir "$RRSW/nltree"  >/dev/null 2>&1
+RRSOUT="$RRSW/fleet.out"
+"$TMUX_REAL" -L "$RRS" send-keys -t "$RRSCTL" \
+    "'$DIR/scripts/tmux-review' --fleet > '$RRSOUT' 2>&1; echo rr-done > '$RRSW/fleet.done'" Enter
+until_file "$RRSW/fleet.done" '*rr-done*'
+is "two agent panes, two rows: the newline in a cwd splits no record" "2" \
+   "$(grep -c '^%' "$RRSOUT" 2>/dev/null)"
+is "the tab-cwd pane reads its @cockpit_dir tree, not a path cut at the tab" "tabtree⑂main" \
+   "$(awk -F'\t' -v p="$RRTABP" '$1 == p { print $4; exit }' "$RRSOUT")"
+is "and its ± comes from that tree" "+1 -0" \
+   "$(awk -F'\t' -v p="$RRTABP" '$1 == p { print $5; exit }' "$RRSOUT")"
+is "the newline-cwd pane reads its @cockpit_dir tree too" "nltree⑂main" \
+   "$(awk -F'\t' -v p="$RRNLP" '$1 == p { print $4; exit }' "$RRSOUT")"
+"$TMUX_REAL" -L "$RRS" kill-server >/dev/null 2>&1
+fi
+
+echo "== #105: the delivery notice names the configured jump key and fits 72 columns =="
+if need_tmux "#105 jump key notice"; then :; else
+RRJ="cockpit-rrj-$$"; SOCKS="$SOCKS $RRJ"
+"$TMUX_REAL" -L "$RRJ" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
+# Rendered by tmux itself, not read: a format that looks right in a grep can
+# still expand to the wrong text -- which is exactly defect 1.
+RRJFMT=$(sed -n "s/^ *local jump='\(.*\)'\$/\1/p" "$DIR/scripts/tmux-review" | head -1)
+RRJMSG=$(sed -n 's/^ *local notice_paste="\(.*\)"$/\1/p' "$DIR/scripts/tmux-review" | head -1)
+if [ -z "$RRJFMT" ] || [ -z "$RRJMSG" ]; then
+    bad "the notice builds its jump clause from a format" "local jump=... and local notice_paste=..." \
+        "jump:[$RRJFMT] notice:[$RRJMSG]"
+else
+    rr_notice() {             # rr_notice <key-or-unset> -> the notice as a client sees it
+        if [ "$1" = unset ]; then "$TMUX_REAL" -L "$RRJ" set -gu @cockpit_jump_key >/dev/null 2>&1
+        else "$TMUX_REAL" -L "$RRJ" set -g @cockpit_jump_key "$1" >/dev/null 2>&1; fi
+        local m=${RRJMSG//\$jump/$RRJFMT}
+        "$TMUX_REAL" -L "$RRJ" display-message -p "${m//\$where/work:2 api}"
+    }
+    case "$(rr_notice x)" in
+        *"prefix x"*) ok "with @cockpit_jump_key x the notice says prefix x" ;;
+        *) bad "with @cockpit_jump_key x the notice says prefix x" "prefix x" "$(rr_notice x)" ;;
+    esac
+    case "$(rr_notice off)" in
+        *prefix*) bad "with the key off the clause drops out rather than naming an unbound key" \
+                      "no prefix clause" "$(rr_notice off)" ;;
+        *) ok "with the key off the clause drops out rather than naming an unbound key" ;;
+    esac
+    case "$(rr_notice unset)" in
+        *"prefix u"*) ok "unset, it names the shipped default u, never the pre-#43 J" ;;
+        *) bad "unset, it names the shipped default u, never the pre-#43 J" "prefix u" "$(rr_notice unset)" ;;
+    esac
+    is "and the whole notice fits the 72 columns an 80-column client shows" "yes" \
+       "$( [ "$(rr_notice unset | wc -m)" -le 73 ] && echo yes || echo "no: $(rr_notice unset | wc -m) columns" )"
+fi
+"$TMUX_REAL" -L "$RRJ" kill-server >/dev/null 2>&1
+fi
+
+echo "== #105: one message prefix, and the popup refusals speak through tmux =="
+# On this theme a display-message is welded into status-right with no
+# separator, so there is one prefix for the whole plugin. The CLI entry paths
+# keep printing their own name to stderr: there stderr is the right stream.
+# Continuations joined first, then the -p queries dropped: what is left is
+# every message this script draws on a status line.
+rr_old=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ta}' "$DIR/scripts/tmux-review" \
+    | grep 'display-message' | grep -v 'display-message -p' | grep -c 'tmux-review:')
+is "no status-line message still says tmux-review:" "0" "$rr_old"
+rr_cli=$(grep -c "printf 'tmux-review:" "$DIR/scripts/tmux-review")
+is "the CLI paths still name the program on stderr" "yes" \
+   "$( [ "$rr_cli" -ge 4 ] && echo yes || echo "no: $rr_cli" )"
+# printf >&2 inside display-popup -E renders to nobody. These two refusals are
+# the only ones that fire from inside the popup with no fzf there to draw them.
+rr_nofzf() {                  # rr_nofzf <args...> -> the tmux calls the script made
+    local d="$STATE/rr-nofzf-$$"
+    rm -rf "$d"; mkdir -p "$d/bin"
+    cat > "$d/bin/tmux" <<RRNOFZF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$d/log"
+exit 0
+RRNOFZF
+    chmod +x "$d/bin/tmux"
+    # Everything the script reaches before the refusal, and nothing else:
+    # `command -v fzf` has to come up empty, and only PATH decides that.
+    local t bp
+    for t in bash sh basename dirname cat sed awk grep git mktemp readlink id tput; do
+        bp=$(command -v "$t") && ln -sf "$bp" "$d/bin/$t"
+    done
+    ( PATH="$d/bin"; export PATH; "$DIR/scripts/tmux-review" "$@" >/dev/null 2>&1 )
+    cat "$d/log" 2>/dev/null
+    rm -rf "$d"
+}
+case "$(rr_nofzf --loop "$RRDIR" "$STATE/rr-nofzf-store")" in
+    *"display-message cockpit: "*) ok "the review loop's no-fzf refusal is a prefixed display-message" ;;
+    *) bad "the review loop's no-fzf refusal is a prefixed display-message" "display-message cockpit: ..." \
+         "$(rr_nofzf --loop "$RRDIR" "$STATE/rr-nofzf-store")" ;;
+esac
+case "$(rr_nofzf -p %0)" in
+    *"display-message cockpit: "*) ok "so is the fleet queue's" ;;
+    *) bad "so is the fleet queue's" "display-message cockpit: ..." "$(rr_nofzf -p %0)" ;;
+esac
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
