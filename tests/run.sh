@@ -1868,12 +1868,11 @@ printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
-# restores on server start and tm never started one (#106). The stub is a
-# server that hands the placeholder back at once but "restores" alpha only on
-# the SECOND list, so a tm that never waits cannot see it.
-# /bin/sh, not bash: the cap case below forks this stub a hundred times.
+# restores on server start and tm never started one (#106). The stub brings
+# alpha back only on the SECOND list, so a tm that never waits cannot see it.
 cat > "$TMS/tmux" <<'STUB'
 #!/bin/sh
+# sh, not bash: the cap case forks this a hundred times.
 case "$1" in
   list-sessions)
     grep -q NEW "$TM_LOG" || exit 0
