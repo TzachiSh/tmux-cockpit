@@ -1965,7 +1965,7 @@ mkdir -p "$TMS/empty-dir"; mv "$TMS/moved-away" "$TMS/.local/share/tmux/resurrec
 err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$TMS/empty-dir" TM_RESTORE=1 \
       TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
 case "$err" in
-    *Restoring*|*'cockpit:'*) bad "an empty @resurrect-dir promises nothing" \
+    *Restoring*|*'no restore after'*) bad "an empty @resurrect-dir promises nothing" \
                                   "no restore line" "$err" ;;
     *'No tmux sessions running.'*) ok "an empty @resurrect-dir promises nothing" ;;
     *) bad "an empty @resurrect-dir promises nothing" "the name prompt" "$err" ;;
@@ -1980,7 +1980,7 @@ mkdir -p "$TMS/.tmux/resurrect"          # exists and empty: now THE default
 err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" \
       "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
 case "$err" in
-    *Restoring*|*'cockpit:'*) bad "an empty default directory waits for nothing" \
+    *Restoring*|*'no restore after'*) bad "an empty default directory waits for nothing" \
                                   "no restore line" "$err" ;;
     *'No tmux sessions running.'*) ok "an empty default directory waits for nothing" ;;
     *) bad "an empty default directory waits for nothing" "the name prompt" "$err" ;;
@@ -10731,6 +10731,101 @@ is "and the keys ride the last --header line" "1" \
 # at all: fzf 0.44.1 exits 2 on an option it does not know.
 is "and no --header-border below the floor" "0" \
    "$(grep -c '^--header-border' "$RRP/plain.argv.1" 2>/dev/null)"
+
+# --- #124 config leftovers ---
+echo "== the full example config renders the context gauge too (#124) =="
+# examples/tmux.conf grew the ◔NN% gauge in #103 and full.tmux.conf, the file
+# the owner actually loads, did not (#58 defect C3's other half). Same source
+# option, same glyph, same place, so the two files read alike.
+if need_tmux "full config gauge"; then :; else
+GG="cockpit-gg124-$$"; SOCKS="$SOCKS $GG"
+"$TMUX_REAL" -L "$GG" -f /dev/null new-session -d -s s -n blkwin -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+# After the source, not before: this file sets @thm_* itself, so a pin laid
+# first loses. cockpit.tmux's async PALETTE only fills what is unset, so a pin
+# laid afterwards is not a race the way it is for the portable file.
+"$TMUX_REAL" -L "$GG" set -g @thm_red '#ff6b6b' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -g @thm_mauve '#cba6f7' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -w -t s:blkwin @cockpit_win_state needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -p -t "$("$TMUX_REAL" -L "$GG" list-panes -t s:blkwin -F '#{pane_id}' | head -1)" @panestate_ctx 91 >/dev/null 2>&1
+for ggo in @catppuccin_window_text @catppuccin_window_current_text; do
+    is "full.tmux.conf's $ggo carries the gauge on the theme's mauve" \
+       " blkwin #[fg=#ff6b6b]▲#[fg=#cba6f7] ◔91%" \
+       "$("$TMUX_REAL" -L "$GG" display-message -p -t s:blkwin "#{E:$ggo}" 2>/dev/null)"
+done
+"$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
+fi
+
+echo "== the action menu drops a row whose key is off (#124) =="
+# Both picker rows replay the plugin's key, so with the key off the menu sent
+# the prefix and swallowed the keystroke: a row that does nothing. tmux expands
+# each row's NAME as a format and skips the item outright when the result is
+# empty (measured on 3.7c), so one #{?} around the label is the whole fix.
+mrow() {                      # <file> <option> ; prints that row's name format
+    sed -n "/send-keys -K '#{?#{$2}/{s/^ *\"\([^\"]*\)\".*/\1/p;q;}" "$1"
+}
+mo_row() {                    # <socket> <option> <label>
+    local fmt
+    fmt=$(mrow "$DIR/examples/full.tmux.conf" "$2")
+    "$TMUX_REAL" -L "$1" set -g "$2" off >/dev/null 2>&1
+    is "the $3 row is absent when $2 is off" "" \
+       "$("$TMUX_REAL" -L "$1" display-message -p "$fmt" 2>/dev/null)"
+    "$TMUX_REAL" -L "$1" set -g "$2" q >/dev/null 2>&1
+    is "and present when $2 names a key" "$3" \
+       "$("$TMUX_REAL" -L "$1" display-message -p "$fmt" 2>/dev/null)"
+    "$TMUX_REAL" -L "$1" set -gu "$2" >/dev/null 2>&1
+    is "and present when $2 is unset" "$3" \
+       "$("$TMUX_REAL" -L "$1" display-message -p "$fmt" 2>/dev/null)"
+}
+if need_tmux "menu off rows"; then :; else
+MO="cockpit-mo124-$$"; SOCKS="$SOCKS $MO"
+"$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s s -x 200 -y 50 >/dev/null 2>&1
+mo_row "$MO" @cockpit_sessions_key 'Sessions...'
+mo_row "$MO" @cockpit_move_key 'Move window...'
+"$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1
+fi
+
+echo "== a window titled after the host still gets the tab ladder (#124) =="
+# The agent-title arm went through @cockpit_tab_w in #103; its sibling -- an
+# agent pane that never set a title, so pane_title is still the host -- handed
+# the window name to the tab at full length and blew the same budget.
+if need_tmux "host-title tab ladder"; then :; else
+HT="cockpit-ht124-$$"; SOCKS="$SOCKS $HT"
+HTN=abcdefghijabcdefghijabcdefghij      # 30 columns, over the 19 an 80-column
+                                        # client affords and under the 34 cap
+"$TMUX_REAL" -L "$HT" -f /dev/null new-session -d -s s -n "$HTN" -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+htp=$("$TMUX_REAL" -L "$HT" list-panes -t s: -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$HT" select-pane -t "$htp" -T "$("$TMUX_REAL" -L "$HT" display-message -p '#{host_short}')" >/dev/null 2>&1
+read -r htc htf htpid <<<"$(cw_open "$HT" s)"
+if [ -z "${htc:-}" ]; then skip_ "the host-title tab ladder (no control client)"; else
+for f in tmux.conf full.tmux.conf; do
+    "$TMUX_REAL" -L "$HT" source-file "$DIR/examples/$f" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$HT" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+    cw_size "$HT" "$htc" 80
+    is "$f: an 80-column client cuts the host-titled tab to its budget" " abcdefghijabcdefghi… " \
+       "$("$TMUX_REAL" -L "$HT" display-message -p -c "$htc" -t s: '#{E:@catppuccin_window_text}' 2>/dev/null | plain)"
+    cw_size "$HT" "$htc" 160
+    is "$f: a 160-column client draws the whole name" " $HTN " \
+       "$("$TMUX_REAL" -L "$HT" display-message -p -c "$htc" -t s: '#{E:@catppuccin_window_text}' 2>/dev/null | plain)"
+done
+fi
+cw_close "${htpid:-}" "${htf:-}"
+"$TMUX_REAL" -L "$HT" kill-server >/dev/null 2>&1
+fi
+
+echo "== every tm and tmux-fixer notice says which plugin is talking (#124) =="
+# Freeze 1's cockpit: prefix. #107's two tm notices and every tmux-fixer
+# message predate it, and a status line naming tmux-fixer sends the reader
+# looking for a plugin by that name.
+is "no tmux-fixer status message is missing the prefix" "0" \
+   "$(grep -o 'display-message "[^"]*' "$DIR/scripts/tmux-fixer" | grep -vc 'display-message "cockpit: ')"
+is "and the script's own name is gone from its messages" "0" \
+   "$(grep -c 'tmux-fixer: ' "$DIR/scripts/tmux-fixer")"
+is "tm announces the restore under the prefix" "1" \
+   "$(grep -c "printf 'cockpit: Restoring saved sessions" "$DIR/scripts/tm")"
+is "and says who found no sessions" "1" \
+   "$(grep -c "printf 'cockpit: No tmux sessions running" "$DIR/scripts/tm")"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
