@@ -2630,12 +2630,14 @@ echo "== the picker fires even where the app owns the mouse =="
 # must win.
 if need_tmux "mouse-mode pane"; then :; else
 GO="cockpit-go-$$"; GI="cockpit-gi-$$"; SOCKS="$SOCKS $GO $GI"
-"$TMUX_REAL" -L "$GI" -f /dev/null new-session -d -s t -x 80 -y 24 >/dev/null 2>&1
+# No prompt in the pane, and mouse reporting on exactly as Claude Code does it.
+# An interactive shell prints the cwd, and a long checkout path wraps that
+# prompt, pushing MARK off the row the click below aims at.
+"$TMUX_REAL" -L "$GI" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    "printf 'MARK README.md\\n\\033[?1000h'; sleep 300" >/dev/null 2>&1
 "$TMUX_REAL" -L "$GI" set -g mouse on >/dev/null 2>&1
 "$TMUX_REAL" -L "$GI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 GP=$("$TMUX_REAL" -L "$GI" list-panes -t t -F '#{pane_id}' | head -1)
-# Turn on mouse reporting in the pane, exactly what Claude Code does.
-"$TMUX_REAL" -L "$GI" send-keys -t "$GP" "echo MARK README.md; printf '\\e[?1000h'" Enter >/dev/null 2>&1
 until_out 1 "$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{mouse_any_flag}'
 is "the pane really reports mouse mode" "1" \
    "$("$TMUX_REAL" -L "$GI" display-message -p -t "$GP" '#{mouse_any_flag}')"
@@ -2652,11 +2654,11 @@ GSEQ='1b 5b 3c 31 36 3b 33 3b 31 4d 1b 5b 3c 31 36 3b 33 3b 31 6d'
 "$TMUX_REAL" -L "$GO" send-keys -t "$GOP" -H $GSEQ $GSEQ >/dev/null 2>&1
 for i in $(seq 1 40); do
     ggot=$("$TMUX_REAL" -L "$GI" show-options -p -t "$GP" -qv @cockpit_click_line)
-    case "$ggot" in *README.md*) break ;; esac
+    case "$ggot" in *"MARK README.md"*) break ;; esac
     sleep 0.1
 done
 case "$ggot" in
-    *README.md*) ok "ctrl+double-click fires in a mouse-mode pane" ;;
+    *"MARK README.md"*) ok "ctrl+double-click fires in a mouse-mode pane" ;;
     *) bad "ctrl+double-click fires in a mouse-mode pane" "the clicked line" "$ggot" ;;
 esac
 "$TMUX_REAL" -L "$GO" kill-server >/dev/null 2>&1
