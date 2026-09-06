@@ -89,7 +89,9 @@ fixer_alive() {               # <sess>
 # (split-window -d) so nothing about this popup's lifetime touches the fixer.
 spawn_fixer() {               # <main-pane>
     local pane=$1 job guard sess f root dl fp marker srv
-    case "$pane" in %[0-9]*) ;; *) printf 'cockpit: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
+    # This one goes to stderr, not the status line: three scripts now say
+    # cockpit:, and a log line has room to say which of them exited 2.
+    case "$pane" in %[0-9]*) ;; *) printf 'cockpit: tmux-fixer: not a pane id: %s\n' "$pane" >&2; exit 2 ;; esac
     sess=$("$REVIEW" --sess "$pane") || { tmux display-message "cockpit: pane $pane is gone" 2>/dev/null; exit 1; }
     f="$sess/fixer"
     if fixer_alive "$sess"; then

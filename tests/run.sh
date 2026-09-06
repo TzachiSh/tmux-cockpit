@@ -10750,7 +10750,7 @@ GG="cockpit-gg124-$$"; SOCKS="$SOCKS $GG"
 "$TMUX_REAL" -L "$GG" set -w -t s:blkwin @cockpit_win_state needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$GG" set -p -t "$("$TMUX_REAL" -L "$GG" list-panes -t s:blkwin -F '#{pane_id}' | head -1)" @panestate_ctx 91 >/dev/null 2>&1
 for ggo in @catppuccin_window_text @catppuccin_window_current_text; do
-    is "full.tmux.conf's $ggo carries the gauge on the theme's mauve" \
+    is "full.tmux.conf's $ggo carries the gauge on @thm_mauve" \
        " blkwin #[fg=#ff6b6b]▲#[fg=#cba6f7] ◔91%" \
        "$("$TMUX_REAL" -L "$GG" display-message -p -t s:blkwin "#{E:$ggo}" 2>/dev/null)"
 done
@@ -10787,9 +10787,9 @@ mo_row "$MO" @cockpit_move_key 'Move window...'
 fi
 
 echo "== a window titled after the host still gets the tab ladder (#124) =="
-# The agent-title arm went through @cockpit_tab_w in #103; its sibling -- an
-# agent pane that never set a title, so pane_title is still the host -- handed
-# the window name to the tab at full length and blew the same budget.
+# The agent-title arm went through @cockpit_tab_w in #103. Its sibling, the arm
+# an agent pane takes when it never set a title and pane_title is still the
+# host, handed the window name to the tab at full length and blew that budget.
 if need_tmux "host-title tab ladder"; then :; else
 HT="cockpit-ht124-$$"; SOCKS="$SOCKS $HT"
 HTN=abcdefghijabcdefghijabcdefghij      # 30 columns, over the 19 an 80-column
@@ -10820,8 +10820,8 @@ echo "== every tm and tmux-fixer notice says which plugin is talking (#124) =="
 # looking for a plugin by that name.
 is "no tmux-fixer status message is missing the prefix" "0" \
    "$(grep -o 'display-message "[^"]*' "$DIR/scripts/tmux-fixer" | grep -vc 'display-message "cockpit: ')"
-is "and the script's own name is gone from its messages" "0" \
-   "$(grep -c 'tmux-fixer: ' "$DIR/scripts/tmux-fixer")"
+is "and no status message still names the script" "0" \
+   "$(grep -c 'display-message "[^"]*tmux-fixer: ' "$DIR/scripts/tmux-fixer")"
 is "tm announces the restore under the prefix" "1" \
    "$(grep -c "printf 'cockpit: Restoring saved sessions" "$DIR/scripts/tm")"
 is "and says who found no sessions" "1" \
