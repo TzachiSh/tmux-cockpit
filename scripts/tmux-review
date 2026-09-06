@@ -853,9 +853,13 @@ rows_mode() {
 # ponytail: length() is bytes under LC_ALL=C; a non-ASCII path pads a column
 # or two short.
 mark_rows() {                 # <store-or-/dev/null> <delivered-or-/dev/null> <rows-file>
-    # The popup's own width: this runs inside display-popup -E, and inside
-    # fzf's reload() ncurses still reads the tty even with stdout on a pipe.
-    local cols; cols=$(tput cols 2>/dev/null || echo 80)
+    # The popup's own width. run_loop exports it, because this function runs
+    # again on every fzf reload -- once per pinned comment -- and a tput fork
+    # there measured +5ms a call on a 4000-row diff. The fork is the fallback
+    # for a bare --rows outside the loop; ncurses still reads the tty there
+    # even with stdout on a pipe.
+    local cols=${COCKPIT_REVIEW_COLS:-}
+    [ -n "$cols" ] || cols=$(tput cols 2>/dev/null || echo 80)
     case $cols in ''|*[!0-9]*) cols=80 ;; esac
     LC_ALL=C awk -F'\t' -v OFS='\t' -v cap="$CAP_SENTINEL" -v cols="$cols" '
         FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") c[$0]++; next }
@@ -1181,6 +1185,10 @@ run_loop() {
         tmux display-message "cockpit: the review loop needs fzf" 2>/dev/null; exit 1;
     }
     load_theme || exit 1
+    # Read once, here, and inherited by every --rows re-exec through fzf, the
+    # same reason COCKPIT_REVIEW_BASE below is exported. The popup is modal, so
+    # its width cannot move under the review.
+    COCKPIT_REVIEW_COLS=$(tput cols 2>/dev/null || echo 80); export COCKPIT_REVIEW_COLS
     # One argv for every cockpit picker: --ansi (nothing in a row can be dimmed
     # without it), --tabstop=1, the pointer, marker and ellipsis, and the
     # user's own @thm_ colours. The per-picker flags below come after, and the
