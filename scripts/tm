@@ -160,7 +160,10 @@ mapfile -t sessions < <(list)
 # After a reboot the old branch below read as "your sessions are gone" (#106).
 if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
      [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect/last" ]; }; then
-  if tmux new-session -d -s _restore 2>/dev/null &&
+  # The pid keeps the name off any save: resurrect restores a session it can
+  # already see into that one, and the kill below would take its windows too.
+  placeholder="_restore$$"
+  if tmux new-session -d -s "$placeholder" 2>/dev/null &&
      [ "$(tmux show-option -gqv @continuum-restore)" = on ]; then
     # Announced only once the option says a restore is coming: a resurrect
     # user who restores by hand was promised sessions that never arrived.
@@ -174,7 +177,7 @@ if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
     [ ${#sessions[@]} -gt 1 ] ||
       printf 'cockpit: no restore after 10s · prefix+^r restores by hand\n' >&2
   fi
-  tmux kill-session -t _restore 2>/dev/null
+  tmux kill-session -t "$placeholder" 2>/dev/null
   mapfile -t sessions < <(list)
 fi
 
