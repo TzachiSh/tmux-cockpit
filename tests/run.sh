@@ -1828,7 +1828,7 @@ echo "== tm: the kill picker and the name cleaner =="
 # unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
 # script with "unbound variable" instead of exiting quietly.
 TMS=$(mktmpd)
-for c in readlink bash; do ln -s "$(command -v $c)" "$TMS/$c"; done
+for c in readlink bash grep sleep; do ln -s "$(command -v $c)" "$TMS/$c"; done
 cat > "$TMS/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -1862,8 +1862,51 @@ esac
 exit 0
 STUB
 : > "$TMS/log"
-printf -- '-weird name\n' | env -u TMUX PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
+# HOME is the stub's: the real one may hold a resurrect save, which is the
+# next case, not this one.
+printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
+
+# After a reboot tm asked for a name although resurrect had a save: continuum
+# restores on server start and tm never started one (#106). The stub brings
+# alpha back only on the SECOND list, so a tm that never waits cannot see it.
+cat > "$TMS/tmux" <<'STUB'
+#!/bin/sh
+# sh, not bash: the cap case forks this a hundred times.
+case "$1" in
+  list-sessions)
+    grep -q NEW "$TM_LOG" || exit 0
+    n=0; [ -s "$TM_LOG.polls" ] && read -r n < "$TM_LOG.polls"
+    printf '%s\n' "$((n + 1))" > "$TM_LOG.polls"
+    read -r ph < "$TM_LOG"; grep -q KILL "$TM_LOG" || printf '%s\n' "${ph##* -s }"
+    [ -n "${TM_RESTORE:-}" ] && [ "$n" -ge 1 ] && printf 'alpha\n' ;;
+  show-option)   printf 'on\n' ;;
+  new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
+  kill-session)  for a in "$@"; do t=$a; done; printf 'KILL %s\n' "$t" >> "$TM_LOG" ;;
+esac
+exit 0
+STUB
+mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
+: > "$TMS/log"
+env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
+# The placeholder carries tm's pid, so the assertion cannot name it literally.
+is "a resurrect save starts the server, then drops the placeholder" \
+   "NEW new-session -d -s _restore#
+KILL =_restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
+# Three lists after the placeholder: the poll's first (placeholder only), its
+# second (alpha is back, break), and tm's re-read. No wait reads 1, no break 101.
+is "and it stopped polling as soon as the restore landed" "3" "$(cat "$TMS/log.polls")"
+
+# The restore can simply never come: @continuum-restore being on is not the
+# whole of continuum's gate. Without TM_RESTORE the stub never brings alpha
+# back, and sleep is a no-op so the hundred naps cost the suite nothing.
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+ln -sf "$(type -P true)" "$TMS/sleep"   # -P: command -v would hand back the builtin
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *'cockpit: no restore after 10s'*) ok "a restore that never lands says so" ;;
+    *) bad "a restore that never lands says so" "a cockpit: line" "$err" ;;
+esac
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="
