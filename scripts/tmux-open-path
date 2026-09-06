@@ -439,24 +439,25 @@ PICK=0 DRY=0 BROWSE=0
 
 note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
 
-# The theme lib sits beside the REAL script; install.sh links this file into
-# ~/bin by its absolute path, so one readlink hop is the whole resolution.
-# Below the --preview arms, which exit above: they re-run on every arrow key.
-OPSELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}"
-# shellcheck source=lib/fzf.sh
-. "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null \
-     || printf '%s' "$OPSELF")")/lib/fzf.sh" \
-  || { note "cockpit: the fzf theme is missing · reinstall from the repo"; exit 1; }
-
 # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Both lines
 # stay under 48 columns, which is what a 70% popup shows at 80 columns.
 K_OPEN='↵ open · ⇥ mark · ^O as-is · esc cancel'
 K_BROWSE='↵ enter · ⇥ mark · ^O as-is · esc cancel'
 K_VERBS='^G diff · ^F content · ^/ preview · alt-c copy'
-# The keys ride the last --header line below the floor, where there is no
-# --footer to put them in.
-op_theme() {                  # op_theme <first key line> -> the THEME array
+# The lib sits beside the REAL script; install.sh links this file into ~/bin by
+# its absolute path, so one readlink hop is the whole resolution. Resolved here
+# rather than at the top because the editor, --dry-run and open_single paths
+# never reach a picker, and some of them run on a PATH with no readlink at all.
+op_theme() {                  # op_theme <first key line> -- fills the THEME array
+    local d
+    d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+    if [ -n "$d" ]; then d=${d%/*}
+    else d=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
+    # shellcheck source=lib/fzf.sh
+    . "$d/lib/fzf.sh" \
+      || { note "cockpit: the fzf theme is missing · reinstall from the repo"; exit 1; }
     mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$1"$'\n'"$K_VERBS")
+    # No --footer below the floor, so the keys ride the last --header line.
     [ "$(cockpit_fzf_tier)" = styled ] || THEME+=("--header=$1"$'\n'"$K_VERBS")
 }
 
@@ -617,7 +618,7 @@ open_one() {
         # enough that another plugin could reasonably want it.
         editor=$(tmux show-options -gqv @open-editor)
         [ -n "$editor" ] && tmux display-message \
-            "cockpit: @open-editor is now @cockpit_editor · rename it in your conf"
+            "cockpit: @open-editor renamed @cockpit_editor · update your tmux.conf"
     fi
     # VS Code stays the default, but only where it is actually installed --
     # either as code(1) on PATH, or as the remote shim under ~/.vscode-server

@@ -3043,9 +3043,9 @@ printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$DBLOG" > "$DBED"; chmod +x "$DBED"
 "$TMUX_REAL" -L "$DB" set -g @cockpit_editor "$DBED" >/dev/null 2>&1
 DP=$("$TMUX_REAL" -L "$DB" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$DB" send-keys -t "$DP" "'$DIR/scripts/tmux-open-path' --browse '$DIR'" Enter
-until_cap "$DB" "$DP" '*enter dir*'
+until_cap "$DB" "$DP" '*↵ enter*'
 case "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP")" in
-    *"enter dir"*) ok "--browse opens the browser at the dir" ;;
+    *"↵ enter"*) ok "--browse opens the browser at the dir" ;;
     *) bad "--browse opens the browser at the dir" "the browse header" \
          "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP" | head -3)" ;;
 esac
@@ -3189,9 +3189,9 @@ BP=$("$TMUX_REAL" -L "$BR" list-panes -t t -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$BR" send-keys -t "$BP" "'$DIR/scripts/tmux-open-path' --pick '$BP'" Enter
 until_cap "$BR" "$BP" '*open>*'
 "$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter          # the one candidate is a dir
-until_cap "$BR" "$BP" '*enter dir*'
+until_cap "$BR" "$BP" '*↵ enter*'
 case "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP")" in
-    *"enter dir"*) ok "enter on a folder opens the browser, not the editor" ;;
+    *"↵ enter"*) ok "enter on a folder opens the browser, not the editor" ;;
     *) bad "enter on a folder opens the browser, not the editor" "the browse header" \
          "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP" | head -3)" ;;
 esac
@@ -9857,6 +9857,19 @@ fzti=$(printf '%s\n' "$fzk" | grep -n -- '^--color=16,fg:' | head -1 | cut -d: -
 fzui=$(printf '%s\n' "$fzk" | grep -n -- 'prompt:red' | head -1 | cut -d: -f1)
 is "the kill picker's red --color lands after the theme's, so it wins" "yes" \
    "$([ -n "$fzti" ] && [ -n "$fzui" ] && [ "$fzui" -gt "$fzti" ] 2>/dev/null && echo yes || echo no)"
+
+# The styled tier has no fzf on this box that could render it (Debian ships
+# 0.44.1), so it is read off the same fake: the argv a 0.63+ fzf would be
+# handed, not a screen anyone has looked at.
+fzfake "$FZP" "0.74.3 (15f64c49)"
+fzrun styled "$DIR/scripts/tm"
+fzs=$(cat "$FZTD"/argv-styled-"$$".* 2>/dev/null)
+fzhas() { printf '%s\n' "$fzs" | grep -q -- "$1" && printf yes || printf no; }
+is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
+   "yes yes no yes" \
+   "$(fzhas '^--highlight-line$'; printf ' '; fzhas '^--footer=↵ attach'
+      printf ' '; fzhas '^--header='; printf ' '; fzhas '^--color=16,.*selected-bg:')"
+fzfake "$FZP" "0.44.1 (debian)"
 
 # The calling convention the freeze fixes: the theme first, the user's option
 # last. Asserted at the seam rather than through the fleet picker, which is

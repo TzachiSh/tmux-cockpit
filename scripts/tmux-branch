@@ -231,10 +231,11 @@ psz=$(( avail - lrows - 5 ))
 # already showed git's own message; now it costs a keypress, not the flow.
 # The theme lib sits beside the REAL script; install.sh links this file into
 # ~/bin by its absolute path, so one readlink hop is the whole resolution.
-SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${BASH_SOURCE[0]##*/}"
+LIBD=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+if [ -n "$LIBD" ]; then LIBD=${LIBD%/*}
+else LIBD=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
 # shellcheck source=lib/fzf.sh
-. "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null \
-     || printf '%s' "$SELF")")/lib/fzf.sh" \
+. "$LIBD/lib/fzf.sh" \
   || fail "cockpit: the fzf theme is missing · reinstall from the repo"
 
 # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. 46 columns,

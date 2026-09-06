@@ -36,9 +36,11 @@ K_KILL='↵ kill · ⇥ mark · esc cancel'
 # Called from the picker arms only: --rows and --kill-one exit before them and
 # run on every fzf reload, where a readlink per keystroke buys nothing.
 load_theme() {
+  local d
+  d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
+  d=${d:-$SELF}
   # shellcheck source=lib/fzf.sh
-  . "$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null \
-       || printf '%s' "$SELF")")/lib/fzf.sh" \
+  . "${d%/*}/lib/fzf.sh" \
     || die "cockpit: the fzf theme is missing · reinstall from the repo"
 }
 
