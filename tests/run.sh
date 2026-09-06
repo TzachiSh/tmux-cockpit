@@ -1924,20 +1924,22 @@ case "$err" in
 esac
 
 # The save need not be in either default directory: resurrect reads
-# @resurrect-dir, and tm asks the placeholder server for it (#110).
+# @resurrect-dir, and tm asks the placeholder server for it (#110). The option
+# is quoted, not expanded, because expanding it is tm's job, like resurrect's.
 mkdir -p "$TMS/elsewhere"; : > "$TMS/elsewhere/last"
 mv "$TMS/.local/share/tmux/resurrect/last" "$TMS/moved-away"
-: > "$TMS/log"; rm -f "$TMS/log.polls"
-err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$TMS/elsewhere" TM_RESTORE=1 \
-      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
-case "$err" in
-    # The restored session in the picker, which is what the user came for.
-    *'1) alpha'*)                  ok "@resurrect-dir names the save tm waits for" ;;
-    *'No tmux sessions running.'*) bad "@resurrect-dir names the save tm waits for" \
-                                       "the restored picker" "$err" ;;
-    *) bad "@resurrect-dir names the save tm waits for" "the restored picker" "$err" ;;
-esac
-is "and it waited for it" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
+for rdir in '$HOME/elsewhere' '~/elsewhere'; do
+  : > "$TMS/log"; rm -f "$TMS/log.polls"
+  err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$rdir" TM_RESTORE=1 \
+        TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+  case "$err" in
+      # The restored session in the picker, which is what the user came for.
+      *'1) alpha'*) ok "@resurrect-dir $rdir names the save tm waits for" ;;
+      *) bad "@resurrect-dir $rdir names the save tm waits for" \
+             "the restored picker" "$err" ;;
+  esac
+  is "and it waited for it ($rdir)" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
+done
 
 # That option REPLACES the defaults, it does not add to them: continuum will
 # read only it, so a stale save in a default directory promises nothing.
