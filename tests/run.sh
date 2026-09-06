@@ -10308,11 +10308,20 @@ rm -rf "$FZTD" "$FZG"
 # tput, so a column count is a fixture rather than whatever terminal the suite
 # happens to run in.
 echo "== #105: the review row's path column is a share of the width, not a constant 48 =="
-RRB="$STATE/rr-bin-$$"; mkdir -p "$RRB"
 rr_has() {                    # rr_has <argv-file> <flag> <what>
     if grep -qxF -- "$2" "$1" 2>/dev/null; then ok "$3 is given $2"
     else bad "$3 is given $2" "$2 in its argv" "$(tr '\n' ' ' < "$1" 2>/dev/null)"; fi
 }
+# Both fakes, and the dir they live in, for every block below that drives a
+# picker. A FUNCTION, not three blocks sharing one $RRB: tests/par.sh gives a
+# block its own shard carrying the prelude and the top-level functions and
+# nothing else, so the shared variable was unbound there and the theme block
+# went 20 red under `make check-par` while serial `make check` stayed green
+# (#120). Idempotent, so the second and third callers cost one `[ -x ]`.
+rr_fakebin() {                # -> $RRB, a bin dir whose tput and fzf are fakes
+    RRB="$STATE/rr-bin-$$"
+    [ -x "$RRB/fzf" ] && return 0
+    mkdir -p "$RRB"
 cat > "$RRB/tput" <<'RRTPUT'
 #!/bin/sh
 case "$1" in
@@ -10321,18 +10330,44 @@ case "$1" in
     *)     exit 1 ;;
 esac
 RRTPUT
-chmod +x "$RRB/tput"
+# A fake fzf: it records the rows it was handed and its own argv, then exits
+# 130 (esc) so a picker loop returns instead of waiting for a human.
+cat > "$RRB/fzf" <<'RRFZF'
+#!/bin/sh
+# The theme lib probes the version before it builds an argv, and that probe
+# must not read the picker's stdin -- it swallowed the next typed line.
+case "$1" in --version)
+    [ -n "${RR_VLOG:-}" ] && printf 'v\n' >> "$RR_VLOG"
+    printf '%s\n' "${RR_FZF_VERSION:-0.74.3 (devel)}"; exit 0 ;;
+esac
+n=$(cat "$RR_CAP.n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$RR_CAP.n"
+for a in "$@"; do printf '%s\n' "$a"; done > "$RR_CAP.argv.$n"
+cat > "$RR_CAP.stdin.$n"
+[ -f "$RR_CAP.out.$n" ] && cat "$RR_CAP.out.$n"
+exit "$(cat "$RR_CAP.rc.$n" 2>/dev/null || echo 130)"
+RRFZF
+    chmod +x "$RRB/tput" "$RRB/fzf"
+}
+rr_fakebin
 
-RRDIR=$(mktmpd)
-(
-  cd "$RRDIR" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  mkdir -p scripts/lib
-  printf 'a\n' > scripts/lib/very_long_module_name_here.sh
-  git add -A; git commit -q -m init
-  printf 'a\nb changed to something quite long indeed\n' > scripts/lib/very_long_module_name_here.sh
-) >/dev/null 2>&1
+# Keyed on a fixed path, not on whether $RRDIR is already set: another block
+# in the same shard uses that name for a repo of its own, and returning early
+# on it would hand this one a tree with no long path in it.
+rr_repo() {                   # -> $RRDIR, a repo whose one changed file has a long path
+    RRDIR="$STATE/rr-repo-$$"
+    [ -d "$RRDIR/.git" ] && return 0
+    mkdir -p "$RRDIR"
+    (
+      cd "$RRDIR" || exit
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main .
+      mkdir -p scripts/lib
+      printf 'a\n' > scripts/lib/very_long_module_name_here.sh
+      git add -A; git commit -q -m init
+      printf 'a\nb changed to something quite long indeed\n' > scripts/lib/very_long_module_name_here.sh
+    ) >/dev/null 2>&1
+}
+rr_repo
 # Field 4 is the only field fzf draws. Its gutter is mark + space + path + two
 # spaces + sign + space, and the diff text starts at a sentence that appears
 # nowhere else in the row. The review loop is --multi, so fzf keeps 4 of the
@@ -10402,23 +10437,7 @@ rr_trim() { local s=$1; printf '%s' "${s%"${s##*[! ]}"}"; }
 # The owner's own worktree name: the 37-column loc field the mobile lane
 # measured as needing 100 columns today (#97 verified.md, inventory claim 4).
 rr_git "$RRW/research-mobile-97" research/mobile-97
-# A fake fzf: it records the rows it was handed and its own argv, then exits
-# 130 (esc) so the queue's loop returns instead of waiting for a human.
-cat > "$RRB/fzf" <<'RRFZF'
-#!/bin/sh
-# The theme lib probes the version before it builds an argv, and that probe
-# must not read the picker's stdin -- it swallowed the next typed line.
-case "$1" in --version)
-    [ -n "${RR_VLOG:-}" ] && printf 'v\n' >> "$RR_VLOG"
-    printf '%s\n' "${RR_FZF_VERSION:-0.74.3 (devel)}"; exit 0 ;;
-esac
-n=$(cat "$RR_CAP.n" 2>/dev/null || echo 0); n=$((n + 1)); printf '%s\n' "$n" > "$RR_CAP.n"
-for a in "$@"; do printf '%s\n' "$a"; done > "$RR_CAP.argv.$n"
-cat > "$RR_CAP.stdin.$n"
-[ -f "$RR_CAP.out.$n" ] && cat "$RR_CAP.out.$n"
-exit "$(cat "$RR_CAP.rc.$n" 2>/dev/null || echo 130)"
-RRFZF
-chmod +x "$RRB/fzf"
+rr_fakebin
 
 "$TMUX_REAL" -L "$RRF" -f /dev/null new-session -d -s t -x 200 -y 40 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RRF" set -g @cockpit_agents_glob \
@@ -10606,6 +10625,7 @@ RRNOFZF
     cat "$d/log" 2>/dev/null
     rm -rf "$d"
 }
+rr_repo
 case "$(rr_nofzf --loop "$RRDIR" "$STATE/rr-nofzf-store")" in
     *"display-message cockpit: "*) ok "the review loop's no-fzf refusal is a prefixed display-message" ;;
     *) bad "the review loop's no-fzf refusal is a prefixed display-message" "display-message cockpit: ..." \
@@ -10620,6 +10640,7 @@ echo "== #105: the review loop and both confirm pickers carry the shared theme =
 # The confirm dialogs used to pass no --color at all, so they rendered in
 # fzf's opaque default scheme next to transparent siblings: the review's own
 # yes/no looked like a different program (#105 defect 7).
+rr_fakebin
 RRP=$(mktmpd)
 (
   cd "$RRP" || exit
