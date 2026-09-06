@@ -1902,7 +1902,7 @@ is "and it stopped polling as soon as the restore landed" "3" "$(cat "$TMS/log.p
 # whole of continuum's gate. Without TM_RESTORE the stub never brings alpha
 # back, and sleep is a no-op so the hundred naps cost the suite nothing.
 : > "$TMS/log"; rm -f "$TMS/log.polls"
-ln -sf "$(command -v true)" "$TMS/sleep"   # -f replaces the link, never writes through it
+ln -sf "$(type -P true)" "$TMS/sleep"   # -P: command -v would hand back the builtin
 err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
 case "$err" in
     *'cockpit: no restore after 10s'*) ok "a restore that never lands says so" ;;
