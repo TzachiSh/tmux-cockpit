@@ -109,11 +109,14 @@ mktmpd() { local d; d=$(mktemp -d) || return 1; printf '%s\n' "$d" >> "$TMPS"; p
 mktmpf() { local f; f=$(mktemp)    || return 1; printf '%s\n' "$f" >> "$TMPS"; printf '%s' "$f"; }
 # Polled, not slept for. A fixed sleep guesses how long a keystroke takes to
 # land; these wait for the thing the next assertion reads and give up after
-# 4 s. PATTERN is a case-pattern with NO embedded quotes -- a quote in an
+# $POLLS x 0.1 s. The cap is a hang guard only a red run pays for; 40 (4 s)
+# lost the ^O-to-editor chain under five concurrent suites (#117).
+# PATTERN is a case-pattern with NO embedded quotes -- a quote in an
 # expanded pattern is a literal character: until_cap "$S" "$P" '*review>*'
+POLLS=100
 until_cap() {                 # <socket> <pane> <pattern>
     local i
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254  # $3 is meant as a glob, not a literal
         case "$("$TMUX_REAL" -L "$1" capture-pane -p -J -t "$2" 2>/dev/null)" in $3) return 0 ;; esac
         sleep 0.1
@@ -127,7 +130,7 @@ review_enter() {              # <socket> <ctl-pane>  the queue opens preselected
 }
 until_file() {                # <file> <pattern>
     local i
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254  # $2 is meant as a glob, not a literal
         case "$(cat -- "$1" 2>/dev/null)" in $2) return 0 ;; esac
         sleep 0.1
@@ -139,7 +142,7 @@ until_file() {                # <file> <pattern>
 # case-pattern with NO embedded quotes.
 until_out() {                 # <pattern> <cmd...>
     local pat=$1 i; shift
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254  # $pat is meant as a glob, not a literal
         case "$("$@" 2>/dev/null)" in $pat) return 0 ;; esac
         sleep 0.1
@@ -7609,30 +7612,36 @@ for i in $(seq 1 40); do
 done
 FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
 
-FP_SLOWGIT=$(mktmpd)
+# Graded as a COUNT, not a clock (#117): each shimmed git call records how
+# many siblings are live with it. Serial dispatch never sees more than 1; the
+# capped parallel path sees up to 8 and never more.
+FP_SLOWGIT=$(mktmpd); FP_LIVE=$(mktmpd)
 FP_REALGIT=$(command -v git)
 cat > "$FP_SLOWGIT/git" <<SHIMEOF
 #!/bin/sh
+: > "$FP_LIVE/\$\$"
+ls "$FP_LIVE" | wc -l >> "$FP_LIVE.n"
 sleep 0.1
-exec "$FP_REALGIT" "\$@"
+"$FP_REALGIT" "\$@"; rc=\$?
+rm -f "$FP_LIVE/\$\$"
+exit \$rc
 SHIMEOF
 chmod +x "$FP_SLOWGIT/git"
 
-fp_t0=$(date +%s%N)
 timeout 15 env TMUX="$FP_SOCKPATH,0,0" PATH="$FP_SLOWGIT:$PATH" \
     "$DIR/scripts/tmux-review" --fleet > "$STATE/fp-out" 2>&1
 fp_rc=$?
-fp_t1=$(date +%s%N)
-fp_ms=$(( (fp_t1 - fp_t0) / 1000000 ))
+fp_peak=$(sort -n "$FP_LIVE.n" 2>/dev/null | tail -1)
 
 if [ "$fp_rc" -ne 0 ]; then
     bad "the fleet queue gathers 50 panes' git state" "exit 0" "exit $fp_rc"
-elif [ "$fp_ms" -lt 5000 ]; then
-    ok "the fleet queue gathers 50 panes' git state well under the old serial time ($fp_ms ms)"
+elif [ "${fp_peak:-0}" -ge 2 ] && [ "$fp_peak" -le 8 ]; then
+    ok "the fleet queue gathers 50 panes' git state in parallel, capped at 8 (peak $fp_peak in flight)"
 else
-    bad "the fleet queue gathers 50 panes' git state well under the old serial time" \
-        "< 5000 ms" "$fp_ms ms"
+    bad "the fleet queue gathers 50 panes' git state in parallel, capped at 8" \
+        "2..8 git calls in flight at the peak" "${fp_peak:-0}"
 fi
+rm -rf "$FP_LIVE" "$FP_LIVE.n"
 fp_rows=$(grep -c . "$STATE/fp-out" || true)
 is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 
