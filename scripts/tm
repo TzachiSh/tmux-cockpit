@@ -177,7 +177,7 @@ if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
     [ ${#sessions[@]} -gt 1 ] ||
       printf 'cockpit: no restore after 10s · prefix+^r restores by hand\n' >&2
   fi
-  tmux kill-session -t "$placeholder" 2>/dev/null
+  tmux kill-session -t "=$placeholder" 2>/dev/null
   mapfile -t sessions < <(list)
 fi
 

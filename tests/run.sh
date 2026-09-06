@@ -1893,7 +1893,7 @@ env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts
 # The placeholder carries tm's pid, so the assertion cannot name it literally.
 is "a resurrect save starts the server, then drops the placeholder" \
    "NEW new-session -d -s _restore#
-KILL _restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
+KILL =_restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
 # Three lists after the placeholder: the poll's first (placeholder only), its
 # second (alpha is back, break), and tm's re-read. No wait reads 1, no break 101.
 is "and it stopped polling as soon as the restore landed" "3" "$(cat "$TMS/log.polls")"
