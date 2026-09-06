@@ -24,7 +24,7 @@ SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE
 NEW_LABEL='+ new session'
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
-command -v tmux >/dev/null || die "tmux is not installed"
+command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
 
 # Key hints, one order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc.
 # Both fit in 48 columns, which is what survives a 70% popup at 80 columns.
@@ -97,7 +97,7 @@ go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
     # In the popup $PWD is the OLD session's start dir; the session's active
     # pane ($TMUX ends in the session id) is where the human is (#41).
     [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
-    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "could not create session '$name'"
+    tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "cockpit: could not create session '$name'"
   fi
   if in_client; then
     tmux switch-client -t "=$name"
@@ -139,7 +139,7 @@ case "${1:-}" in
       exit 0
     fi
     mapfile -t sessions < <(list)
-    [ ${#sessions[@]} -eq 0 ] && die "No tmux sessions to kill."
+    [ ${#sessions[@]} -eq 0 ] && die "cockpit: no tmux sessions to kill"
     # Declared before either picker runs. `select` leaves its variable unset on
     # Ctrl-D, and under `set -u` the ${#doomed[@]} below then aborted the script
     # mid-case -- printing "unbound variable" and falling through to the ATTACH
@@ -167,7 +167,7 @@ case "${1:-}" in
     [ ${#doomed[@]} -eq 0 ] && exit 0
     for s in "${doomed[@]}"; do [ -n "$s" ] && kill_one "$s"; done
     exit 0 ;;
-  -*) die "unknown option: $1  (try: tm -h)" ;;
+  -*) die "cockpit: unknown option: $1 · try tm -h" ;;
 esac
 
 # 1. Name given on the command line.
