@@ -263,14 +263,16 @@ echo "== the shipped menu's Switch branch names the pane it was opened on =="
 # window's), and a bare display-message inside it can come back empty. The
 # prefix b bind passes -p '#{pane_id}' since d64e409; the action menu's
 # "Switch branch" did not, and showed the first window's tree from any window.
+# It now REPLAYS prefix b instead of defining a second popup (#103), so the
+# pane id comes from the one bind -- and a duplicate can no longer drift.
 if need_tmux "shipped menu passes the pane id"; then :; else
 SM="cockpit-menu-$$"; SOCKS="$SOCKS $SM"
 "$TMUX_REAL" -L "$SM" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$SM" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
 smk=$("$TMUX_REAL" -L "$SM" list-keys -T prefix 2>/dev/null | awk '$4=="m"')
 case "$smk" in
-    *"tmux-branch -p #{pane_id}"*) ok "the menu's Switch branch passes -p #{pane_id}" ;;
-    *) bad "the menu's Switch branch passes -p #{pane_id}" "tmux-branch -p #{pane_id} in the m menu" "$(printf '%s' "$smk" | grep -o 'Switch branch[^"]*"[^"]*"' | cut -c1-120)" ;;
+    *"send-keys -K b"*) ok "the menu's Switch branch replays prefix b, which carries the pane id" ;;
+    *) bad "the menu's Switch branch replays prefix b, which carries the pane id" "send-keys -K b in the m menu" "$(printf '%s' "$smk" | grep -o 'Switch branch[^"]*"[^"]*"' | cut -c1-120)" ;;
 esac
 "$TMUX_REAL" -L "$SM" kill-server >/dev/null 2>&1
 fi
@@ -334,7 +336,7 @@ menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
 for bad_sub in "-c '#{pane_current_path}'" "-F '#{window_index}" "switch branch · #{b:" "-I '#W'" "window #W?" "-I '#S'" "session #S?" "pane #P?"; do
     case "$menu" in *"$bad_sub"*) bad "menu re-expands a format singly: $bad_sub" "no single #{ here" "present" ;; *) ok "menu does not re-expand singly: $bad_sub" ;; esac
 done
-for good_sub in "-c '##{pane_current_path}'" "##{pane_title}" "switch branch · ##{b:" "-I '##W'" "window ##W?" "-I '##S'" "session ##S?" "pane ##P?"; do
+for good_sub in "-c '##{pane_current_path}'" "##{pane_title}" "-I '##W'" "window ##W?" "-I '##S'" "session ##S?" "pane ##P?"; do
     case "$menu" in *"$good_sub"*) ok "menu doubles the format: $good_sub" ;; *) bad "menu doubles the format: $good_sub" "$good_sub present" "missing" ;; esac
 done
 "$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MI" kill-server >/dev/null 2>&1
@@ -9785,6 +9787,232 @@ is "and a desktop TERM still writes column 131 (xterm-ghostty)" "131" \
 "$TMUX_REAL" -L "$PTS2" kill-server >/dev/null 2>&1
 rm -rf "$PTD"
 fi
+# --- #103 example configs ---
+# A client with a chosen width, without a pty: control mode attaches over a
+# fifo opened read-write by this shell, so nothing has to feed it and there is
+# no writer process to reap. refresh-client -C is all #{client_width} needs.
+cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pid>"
+    local s=$1 t=$2 f c i
+    f=$(mktemp -u) || return 1
+    mkfifo "$f" || return 1
+    "$TMUX_REAL" -L "$s" -C attach -t "$t" <> "$f" >/dev/null 2>&1 &
+    local pid=$!
+    for i in $(seq 1 40); do
+        c=$("$TMUX_REAL" -L "$s" list-clients -F '#{client_name}' 2>/dev/null | head -1)
+        [ -n "$c" ] && { printf '%s %s %s' "$c" "$f" "$pid"; return 0; }
+        sleep 0.1
+    done
+    # Nothing is printed on failure, so the caller gets no pid and no path:
+    # the half-built client and its fifo have to be reaped right here.
+    kill "$pid" >/dev/null 2>&1; rm -f "$f"
+    return 1
+}
+# NEVER `kill "${pid:-0}"`: an empty pid becomes 0, and kill 0 signals the
+# whole process group -- the suite itself. Guard, do not default.
+cw_close() {                  # <pid> <fifo> ; either may be empty
+    [ -n "${1:-}" ] && kill "$1" >/dev/null 2>&1
+    [ -n "${2:-}" ] && rm -f "$2"
+    return 0
+}
+cw_size() {                   # <socket> <client> <cols>
+    "$TMUX_REAL" -L "$1" refresh-client -C "${3}x30" -t "$2" >/dev/null 2>&1
+    until_out "$3" "$TMUX_REAL" -L "$1" display-message -p -c "$2" '#{client_width}'
+}
+
+# group: ex103
+echo "== the portable example config reads the precomputed window state (#103) =="
+# examples/tmux.conf is the block the README tells people to copy, and its tab
+# markers were still deriving state with five #{P:} pane walks per tab per
+# redraw -- the largest remaining redraw cost in the repo (#58 defect 2, R1).
+# full.tmux.conf was ported to the @cockpit_win_state keyword in A6; this pins
+# the portable file to the same keyword and to no #{P:} walk anywhere in it.
+is "examples/tmux.conf walks no panes on the redraw path" "0" \
+   "$(grep '^set ' "$DIR/examples/tmux.conf" | grep -c '#{P:')"
+if need_tmux "portable window state"; then :; else
+EX="cockpit-ex103-$$"; SOCKS="$SOCKS $EX"
+"$TMUX_REAL" -L "$EX" -f /dev/null new-session -d -s s -n blkwin -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+# Before the conf: its run-shell line defaults every unset @thm_* to catppuccin
+# mocha, asynchronously, so a value set afterwards is a race.
+"$TMUX_REAL" -L "$EX" set -g @thm_red '#ff6b6b' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EX" set -g @thm_mauve '#cba6f7' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EX" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$EX" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EX" set -w -t s:blkwin @cockpit_win_state needs-input >/dev/null 2>&1
+is "the portable tab renders the red ▲ from the keyword, not from a walk" \
+   " blkwin #[fg=#ff6b6b]▲" \
+   "$("$TMUX_REAL" -L "$EX" display-message -p -t s:blkwin '#{E:@catppuccin_window_text}' 2>/dev/null)"
+# The ◔ gauge reads @thm_mauve, so it follows the user's theme like every other
+# glyph. It was hardcoded colour208 to survive an unsourced theme, which
+# cockpit.tmux's PALETTE defaults have made untrue (freeze amendment 2).
+"$TMUX_REAL" -L "$EX" set -p -t "$("$TMUX_REAL" -L "$EX" list-panes -t s:blkwin -F '#{pane_id}' | head -1)" @panestate_ctx 91 >/dev/null 2>&1
+is "the context gauge takes its colour from the theme, not from colour208" \
+   " blkwin #[fg=#ff6b6b]▲#[fg=#cba6f7] ◔91%" \
+   "$("$TMUX_REAL" -L "$EX" display-message -p -t s:blkwin '#{E:@catppuccin_window_text}' 2>/dev/null)"
+"$TMUX_REAL" -L "$EX" kill-server >/dev/null 2>&1
+fi
+
+echo "== the border question is cut to fit the pane it is drawn on (#103) =="
+# full.tmux.conf rendered "NEEDS YOU" with no question at all (#58 defect 3),
+# while examples/tmux.conf's fixed 48 columns pushed the [z] and [x] buttons
+# off a 60-column pane border (#97). One width-aware budget in both: 24 under
+# 80 columns, 48 at or above it.
+if need_tmux "border question ladder"; then :; else
+BQ="cockpit-bq103-$$"; BQN="cockpit-bq103n-$$"; SOCKS="$SOCKS $BQ $BQN"
+MSG="Should I force-push the rebased branch to origin and open the PR now"
+for pair in "$BQ 200" "$BQN 60"; do
+    set -- $pair
+    "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s s -x "$2" -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$1" split-window -d -t s: 'exec -a claude sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$1" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$1" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+done
+bqp() { "$TMUX_REAL" -L "$1" list-panes -t s: -F '#{pane_id}' | sed -n '2p'; }
+for s in "$BQ" "$BQN"; do
+    p=$(bqp "$s")
+    "$TMUX_REAL" -L "$s" set -p -t "$p" @panestate needs-input >/dev/null 2>&1
+    "$TMUX_REAL" -L "$s" set -p -t "$p" @panestate_msg "$MSG" >/dev/null 2>&1
+done
+is "a wide pane border carries 48 columns of the question" \
+   "─ NEEDS YOU Should I force-push the rebased branch to origin…" \
+   "$("$TMUX_REAL" -L "$BQ" display-message -p -t "$(bqp "$BQ")" '#{E:pane-border-format}' 2>/dev/null | plain | sed 's/#\[align=right\].*//;s/\[z\].*//' | sed 's/ *$//')"
+is "a narrow pane border keeps room for the [z] and [x] buttons" \
+   "─ NEEDS YOU Should I force-push the …" \
+   "$("$TMUX_REAL" -L "$BQN" display-message -p -t "$(bqp "$BQN")" '#{E:pane-border-format}' 2>/dev/null | plain | sed 's/#\[align=right\].*//;s/\[z\].*//' | sed 's/ *$//')"
+"$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$BQN" kill-server >/dev/null 2>&1
+fi
+
+echo "== both example configs put the fleet counter first in status-right (#103) =="
+# #{agent_fleet} is the only alert that speaks for a session you are NOT
+# looking at, and neither example rendered it (#58 defect 4). Leftmost, because
+# it renders nothing at all while nothing waits, so it costs zero columns quiet.
+# cockpit.tmux rewrites the token into #{E:@cockpit_fleet} asynchronously, so
+# either spelling counts -- the assertion is the position, not the spelling.
+if need_tmux "fleet token first"; then :; else
+FL="cockpit-fl103-$$"; SOCKS="$SOCKS $FL"
+"$TMUX_REAL" -L "$FL" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+for f in tmux.conf full.tmux.conf; do
+    "$TMUX_REAL" -L "$FL" source-file "$DIR/examples/$f" >/dev/null 2>&1
+    sr=$("$TMUX_REAL" -L "$FL" show-option -gv status-right 2>/dev/null)
+    case "$sr" in
+        '#{agent_fleet}'*|'#{E:@cockpit_fleet}'*) ok "$f leads status-right with the fleet counter" ;;
+        *) bad "$f leads status-right with the fleet counter" '#{agent_fleet} first' "$sr" ;;
+    esac
+done
+"$TMUX_REAL" -L "$FL" kill-server >/dev/null 2>&1
+fi
+
+echo "== the directory segment drops off a narrow client (#103) =="
+# Proposal 6: under 100 columns the path segment is the first thing to go --
+# at 80 columns tmux was cutting status-right from the left with no ellipsis,
+# so the window tabs vanished entirely (#97). Measured against a real client,
+# because #{client_width} has no value without one.
+if need_tmux "directory ladder"; then :; else
+DL="cockpit-dl103-$$"; SOCKS="$SOCKS $DL"
+"$TMUX_REAL" -L "$DL" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+read -r dlc dlf dlpid <<<"$(cw_open "$DL" s)"
+if [ -z "${dlc:-}" ]; then skip_ "the directory ladder (no control client)"; else
+for f in tmux.conf full.tmux.conf; do
+    "$TMUX_REAL" -L "$DL" source-file "$DIR/examples/$f" >/dev/null 2>&1
+    # The segment's own contents are the theme's; a marker stands in for them,
+    # so what is measured is the wrapper and not whether catppuccin is present.
+    "$TMUX_REAL" -L "$DL" set -g @catppuccin_status_directory DIRSEG >/dev/null 2>&1
+    for w in 80 120; do
+        cw_size "$DL" "$dlc" "$w"
+        r=$("$TMUX_REAL" -L "$DL" display-message -p -c "$dlc" '#{E:#{status-right}}' 2>/dev/null | plain)
+        case "$r" in
+            *DIRSEG*) got=present ;;
+            *) got=absent ;;
+        esac
+        [ "$w" = 80 ] && want=absent || want=present
+        is "$f: the directory segment is $want at $w columns" "$want" "$got"
+    done
+done
+fi
+cw_close "${dlpid:-}" "${dlf:-}"
+"$TMUX_REAL" -L "$DL" kill-server >/dev/null 2>&1
+fi
+
+echo "== a window tab gets the width it can afford, not a fixed 16 (#103) =="
+# @cockpit_tab_w = clamp((client_width - 61) / session_windows, 10, 34); 61 is
+# status-left ~9 plus status-right ~52 (chrome.md §3). Stored as a FORMAT and
+# expanded with #{E:}: two clients on one session can be two widths.
+if need_tmux "tab width ladder"; then :; else
+TW="cockpit-tw103-$$"; SOCKS="$SOCKS $TW"
+"$TMUX_REAL" -L "$TW" -f /dev/null new-session -d -s s -n t -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TW" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TW" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
+twp=$("$TMUX_REAL" -L "$TW" list-panes -t s: -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$TW" select-pane -t "$twp" -T topic >/dev/null 2>&1
+"$TMUX_REAL" -L "$TW" set -p -t "$twp" @cockpit_title review-the-ui-audit-ladder-xyz >/dev/null 2>&1
+read -r twc twf twpid <<<"$(cw_open "$TW" s)"
+if [ -z "${twc:-}" ]; then skip_ "the tab width ladder (no control client)"; else
+cw_size "$TW" "$twc" 80
+is "an 80-column client cuts the tab title with an ellipsis" " review-the-ui-audit… " \
+   "$("$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t '#{E:@catppuccin_window_text}' 2>/dev/null | plain)"
+cw_size "$TW" "$twc" 160
+is "a 160-column client draws the whole tab title" " review-the-ui-audit-ladder-xyz " \
+   "$("$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t '#{E:@catppuccin_window_text}' 2>/dev/null | plain)"
+# The floor, which is where every phone-width client lands: 80 columns over
+# three windows is (80-61)/3 = 6 by tmux's truncating division, clamped to 10.
+for twn in 2 3; do "$TMUX_REAL" -L "$TW" new-window -d -t s: -n "w$twn" 'exec -a claude sleep 300' >/dev/null 2>&1; done
+cw_size "$TW" "$twc" 80
+is "three windows at 80 columns clamp to the floor, not to 6" "10" \
+   "$("$TMUX_REAL" -L "$TW" display-message -p -c "$twc" '#{E:@cockpit_tab_w}' 2>/dev/null)"
+fi
+cw_close "${twpid:-}" "${twf:-}"
+"$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
+fi
+
+echo "== the action menu replays the plugin's keys instead of its own paths (#103) =="
+# Two rows hardcoded ~/.local/bin with their own popup geometry (#58 defect
+# 11): a second definition of the plugin's popup drifts from it, and a rebound
+# key stops working from the menu. Pure file check, no server needed.
+is "full.tmux.conf hardcodes no ~/.local/bin path" "0" \
+   "$(grep -c '~/.local/bin' "$DIR/examples/full.tmux.conf")"
+menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
+case "$menu" in
+    *'@cockpit_sessions_key'*) ok "the menu replays the plugin's session key" ;;
+    *) bad "the menu replays the plugin's session key" '@cockpit_sessions_key' "no replay" ;;
+esac
+
+echo "== the popup frame is set in both example configs (#103) =="
+# Proposal 4: nothing set popup-style or popup-border-*, so every cockpit popup
+# got tmux's stock square border in the default foreground.
+if need_tmux "popup chrome"; then :; else
+PC="cockpit-pc103-$$"; SOCKS="$SOCKS $PC"
+"$TMUX_REAL" -L "$PC" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+for f in tmux.conf full.tmux.conf; do
+    "$TMUX_REAL" -L "$PC" source-file "$DIR/examples/$f" >/dev/null 2>&1
+    is "$f rounds the popup border" "rounded" \
+       "$("$TMUX_REAL" -L "$PC" show-option -gv popup-border-lines 2>/dev/null)"
+    is "$f tints the popup border with the theme" "fg=#5b6272" \
+       "$("$TMUX_REAL" -L "$PC" set -g @thm_overlay_0 '#5b6272' \; display-message -p '#{E:#{popup-border-style}}' 2>/dev/null)"
+    # tmux rejects an empty style outright, so the portable file -- which never
+    # sets @thm_bg -- must still expand to something tmux will parse.
+    ps=$("$TMUX_REAL" -L "$PC" display-message -p '#{E:#{popup-style}}' 2>/dev/null)
+    case "$ps" in
+        bg=?*,fg=?*) ok "$f paints both halves of the popup, not just the background" ;;
+        *) bad "$f paints both halves of the popup, not just the background" 'bg=<x>,fg=<y>' "$ps" ;;
+    esac
+done
+"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1
+fi
+
+echo "== full.tmux.conf drops the pane-focus-in hook and keeps the other three (#103) =="
+# pane-focus-in fires on every terminal focus change, so alt-tabbing back
+# re-ran both status shell jobs (#58 defect 12, R2) for a line that is at most
+# status-interval stale. The other three are worth their redraw.
+if need_tmux "focus hook"; then :; else
+PH="cockpit-ph103-$$"; SOCKS="$SOCKS $PH"
+"$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PH" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+is "the focus hook no longer re-runs the status jobs on every terminal focus" "pane-focus-in" \
+   "$("$TMUX_REAL" -L "$PH" show-hooks -g pane-focus-in 2>/dev/null)"
+is "and the three hooks that are worth their redraw stay" "after-select-pane[0] refresh-client -S" \
+   "$("$TMUX_REAL" -L "$PH" show-hooks -g after-select-pane 2>/dev/null)"
+"$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
+fi
+
 
 # --- #104 fzf theme ---------------------------------------------------------
 echo "== the shared fzf theme: version tier, one argv, key hints (#104) =="
