@@ -10169,7 +10169,7 @@ fzfake() {                    # fzfake <dir> <version string>
 case "\${1:-}" in --version) [ -n "\${FZ_VLOG:-}" ] && printf 'v\n' >> "\$FZ_VLOG"
     printf '%s\n' '$2'; exit 0 ;; esac
 cat >/dev/null
-[ -n "\${FZ_ARGV:-}" ] && printf '%s\n' "\$@" > "\$FZ_ARGV.\$\$"
+[ -n "\${FZ_ARGV:-}" ] && { printf '%s\n' "\$@" > "\$FZ_ARGV.\$\$"; printf '%s\n' "\$#" > "\$FZ_ARGV"n."\$\$"; }
 exit 130
 EOS
     chmod +x "$1/fzf"
@@ -10246,6 +10246,13 @@ is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
    "yes yes no yes" \
    "$(fzhas '^--highlight-line$'; printf ' '; fzhas '^--footer=↵ attach'
       printf ' '; fzhas '^--header='; printf ' '; fzhas '^--color=16,.*selected-bg:')"
+# The open picker's two key lines must be ONE --footer argument (#116): the
+# lib prints one argument per line, so a footer asked of it with a newline
+# arrives as two, and fzf rejects the second as an unknown option (exit 2).
+# Lines minus argc is the count of embedded newlines the fake was handed.
+fzrun styled-open "$DIR/scripts/tmux-open-path" --pick "$PANE"
+is "styled: the open picker's two key lines are one --footer argument" "1" \
+   "$(( $(cat "$FZTD"/argv-styled-open-"$$".* 2>/dev/null | wc -l) - $(cat "$FZTD"/argv-styled-open-"$$"n.* 2>/dev/null || echo 0) ))"
 fzfake "$FZP" "0.44.1 (debian)"
 
 # A gapped palette is the DEFAULT install: cockpit.tmux's PALETTE sets four of

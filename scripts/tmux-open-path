@@ -458,9 +458,12 @@ op_theme() {                  # op_theme <first key line> -- fills the THEME arr
       || { note "cockpit: the fzf theme is missing · reinstall from the repo"; exit 1; }
     # One probe per open: the process substitution below inherits the cache.
     COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
-    mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$1"$'\n'"$K_VERBS")
+    mapfile -t THEME < <(cockpit_fzf_args highlight-line)
+    # Appended, not asked of cockpit_fzf_args: it prints one argument per line,
+    # so the second key line would reach fzf as a stray argument (#116).
     # No --footer below the floor, so the keys ride the last --header line.
-    [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$1"$'\n'"$K_VERBS")
+    if [ "$COCKPIT_FZF_TIER" = styled ]; then THEME+=("--footer=$1"$'\n'"$K_VERBS")
+    else THEME+=("--header=$1"$'\n'"$K_VERBS"); fi
 }
 
 if [ "$BROWSE" -eq 1 ]; then
