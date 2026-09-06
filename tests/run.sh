@@ -1888,19 +1888,18 @@ case "$1" in
 esac
 exit 0
 STUB
-mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
-
-# A box without resurrect has no save to find, and finding that out costs a
-# whole tmux config load, about a second on the reviewer's box.
+# Neither a save nor resurrect on disk: starting a server to discover that
+# costs a whole tmux config load, about a second on this box.
 : > "$TMS/log"; rm -f "$TMS/log.polls"
 err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
       TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
-is "no resurrect installed means no server at all" "" "$(cat "$TMS/log")"
+is "nothing on disk means no server at all" "" "$(cat "$TMS/log")"
 case "$err" in
     *'No tmux sessions running.'*) ok "and the name prompt comes straight away" ;;
     *) bad "and the name prompt comes straight away" "the name prompt" "$err" ;;
 esac
 
+mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
 mkdir -p "$TMS/.tmux/plugins/tmux-resurrect"   # from here on, resurrect is installed
 : > "$TMS/log"
 env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
@@ -1977,6 +1976,19 @@ env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" \
     "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
 is "the XDG plugin path counts as installed" "NEW new-session -d -s _restore#
 KILL =_restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
+
+# TPM can be pointed anywhere, and that user keeps a save where resurrect
+# looks like everyone else. Not restoring them is #106 with no message.
+rmdir "$TMS/.tmux/resurrect"; rm -rf "$TMS/.config"
+mkdir -p "$TMS/dotfiles/tmux/plugins/tmux-resurrect"   # a TPM path nobody probes
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *'1) alpha'*) ok "a save in the default directory counts as installed" ;;
+    *) bad "a save in the default directory counts as installed" \
+           "the restored picker" "$err" ;;
+esac
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="

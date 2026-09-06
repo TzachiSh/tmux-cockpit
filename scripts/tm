@@ -200,11 +200,13 @@ fi
 # 2. No name: what exists?
 mapfile -t sessions < <(list)
 
-# 3. Nothing exists and resurrect is installed: the server is just down. Only a
-# running server restores (#106) or knows @resurrect-dir (#110), and only an
-# installed resurrect makes that server worth a whole config load, ~1s here.
+# 3. Nothing exists, and a save or resurrect is on disk: the server is just
+# down. Only a running server restores (#106) or knows @resurrect-dir (#110),
+# and nothing else is worth ~1s of config load. TPM's own path can be anywhere,
+# so the save is the surer witness of the two.
 if [ ${#sessions[@]} -eq 0 ] &&
-   { [ -d ~/.tmux/plugins/tmux-resurrect ] ||
+   { [ -e "$(default_dir)/last" ] ||
+     [ -d ~/.tmux/plugins/tmux-resurrect ] ||
      [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins/tmux-resurrect" ]; }; then
   # The pid keeps the name off any save: resurrect restores a session it can
   # already see into that one, and the kill below would take its windows too.
