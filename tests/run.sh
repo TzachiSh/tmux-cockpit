@@ -1866,7 +1866,8 @@ STUB
 : > "$TMS/log"
 # HOME is the stub's: the real one may hold a resurrect save, which is the
 # next case, not this one.
-printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
+printf -- '-weird name\n' | env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" \
+    TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
@@ -1882,13 +1883,26 @@ case "$1" in
     printf '%s\n' "$((n + 1))" > "$TM_LOG.polls"
     read -r ph < "$TM_LOG"; grep -q KILL "$TM_LOG" || printf '%s\n' "${ph##* -s }"
     [ -n "${TM_RESTORE:-}" ] && [ "$n" -ge 1 ] && printf 'alpha\n' ;;
-  show-option)   printf 'on\n' ;;
+  show-option)
+    if [ "$3" = @resurrect-dir ]; then printf '%s\n' "${TM_RDIR:-}"; else printf 'on\n'; fi ;;
   new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
   kill-session)  for a in "$@"; do t=$a; done; printf 'KILL %s\n' "$t" >> "$TM_LOG" ;;
 esac
 exit 0
 STUB
+# Neither a save nor resurrect on disk: starting a server to discover that
+# costs a whole tmux config load, about a second on this box.
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+is "nothing on disk means no server at all" "" "$(cat "$TMS/log")"
+case "$err" in
+    *'No tmux sessions running.'*) ok "and the name prompt comes straight away" ;;
+    *) bad "and the name prompt comes straight away" "the name prompt" "$err" ;;
+esac
+
 mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
+mkdir -p "$TMS/.tmux/plugins/tmux-resurrect"   # from here on, resurrect is installed
 : > "$TMS/log"
 env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
 # The placeholder carries tm's pid, so the assertion cannot name it literally.
@@ -1908,6 +1922,74 @@ err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" </
 case "$err" in
     *'cockpit: no restore after 10s'*) ok "a restore that never lands says so" ;;
     *) bad "a restore that never lands says so" "a cockpit: line" "$err" ;;
+esac
+
+# The save need not be in either default directory: resurrect reads
+# @resurrect-dir, and tm asks the placeholder server for it (#110). The option
+# is quoted, not expanded, because expanding it is tm's job, like resurrect's.
+mkdir -p "$TMS/elsewhere"; : > "$TMS/elsewhere/last"
+mv "$TMS/.local/share/tmux/resurrect/last" "$TMS/moved-away"
+for rdir in '$HOME/elsewhere' '~/elsewhere'; do
+  : > "$TMS/log"; rm -f "$TMS/log.polls"
+  err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$rdir" TM_RESTORE=1 \
+        TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+  case "$err" in
+      # The restored session in the picker, which is what the user came for.
+      *'1) alpha'*) ok "@resurrect-dir $rdir names the save tm waits for" ;;
+      *) bad "@resurrect-dir $rdir names the save tm waits for" \
+             "the restored picker" "$err" ;;
+  esac
+  is "and it waited for it ($rdir)" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
+done
+
+# That option REPLACES the defaults, it does not add to them: continuum will
+# read only it, so a stale save in a default directory promises nothing.
+mkdir -p "$TMS/empty-dir"; mv "$TMS/moved-away" "$TMS/.local/share/tmux/resurrect/last"
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$TMS/empty-dir" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *Restoring*|*'cockpit:'*) bad "an empty @resurrect-dir promises nothing" \
+                                  "no restore line" "$err" ;;
+    *'No tmux sessions running.'*) ok "an empty @resurrect-dir promises nothing" ;;
+    *) bad "an empty @resurrect-dir promises nothing" "the name prompt" "$err" ;;
+esac
+# One list after the placeholder, tm's own re-read: the poll never ran.
+is "and it never polled" "1" "$(cat "$TMS/log.polls" 2>/dev/null)"
+
+# resurrect reads ONE default directory, ~/.tmux/resurrect when it exists and
+# the XDG path otherwise, so an empty one hides a save under the other.
+mkdir -p "$TMS/.tmux/resurrect"          # exists and empty: now THE default
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" \
+      "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *Restoring*|*'cockpit:'*) bad "an empty default directory waits for nothing" \
+                                  "no restore line" "$err" ;;
+    *'No tmux sessions running.'*) ok "an empty default directory waits for nothing" ;;
+    *) bad "an empty default directory waits for nothing" "the name prompt" "$err" ;;
+esac
+
+# TPM under the XDG layout keeps the plugin elsewhere, and that user has a
+# save like anyone else.
+rm -rf "$TMS/.tmux/plugins"; mkdir -p "$TMS/.config/tmux/plugins/tmux-resurrect"
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" \
+    "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
+is "the XDG plugin path counts as installed" "NEW new-session -d -s _restore#
+KILL =_restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
+
+# TPM can be pointed anywhere, and that user keeps a save where resurrect
+# looks like everyone else. Not restoring them is #106 with no message.
+rmdir "$TMS/.tmux/resurrect"; rm -rf "$TMS/.config"
+mkdir -p "$TMS/dotfiles/tmux/plugins/tmux-resurrect"   # a TPM path nobody probes
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *'1) alpha'*) ok "a save in the default directory counts as installed" ;;
+    *) bad "a save in the default directory counts as installed" \
+           "the restored picker" "$err" ;;
 esac
 rm -rf "$TMS"
 
