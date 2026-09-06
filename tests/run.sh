@@ -1864,11 +1864,9 @@ STUB
 : > "$TMS/log"
 # HOME is the stub's: the real one may hold a resurrect save, which is the
 # next case, not this one.
-printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
-# The placeholder comes first now: with no server there is nobody to ask for
-# @resurrect-dir, so tm starts one before it can know there is no save (#110).
-is "a leading dash never reaches tmux" "NEW new-session -d -s _restore#
-NEW new-session -d -s weird_name -c $PWD" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
+printf -- '-weird name\n' | env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" \
+    TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
+is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
 # restores on server start and tm never started one (#106). The stub brings
@@ -1891,6 +1889,19 @@ esac
 exit 0
 STUB
 mkdir -p "$TMS/.local/share/tmux/resurrect"; : > "$TMS/.local/share/tmux/resurrect/last"
+
+# A box without resurrect has no save to find, and finding that out costs a
+# whole tmux config load, about a second on the reviewer's box.
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+is "no resurrect installed means no server at all" "" "$(cat "$TMS/log")"
+case "$err" in
+    *'No tmux sessions running.'*) ok "and the name prompt comes straight away" ;;
+    *) bad "and the name prompt comes straight away" "the name prompt" "$err" ;;
+esac
+
+mkdir -p "$TMS/.tmux/plugins/tmux-resurrect"   # from here on, resurrect is installed
 : > "$TMS/log"
 env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
 # The placeholder carries tm's pid, so the assertion cannot name it literally.
@@ -1942,6 +1953,15 @@ case "$err" in
 esac
 # One list after the placeholder, tm's own re-read: the poll never ran.
 is "and it never polled" "1" "$(cat "$TMS/log.polls" 2>/dev/null)"
+
+# TPM under the XDG layout keeps the plugin elsewhere, and that user has a
+# save like anyone else.
+rm -rf "$TMS/.tmux/plugins"; mkdir -p "$TMS/.config/tmux/plugins/tmux-resurrect"
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" \
+    "$DIR/scripts/tm" </dev/null >/dev/null 2>&1
+is "the XDG plugin path counts as installed" "NEW new-session -d -s _restore#
+KILL =_restore#" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="

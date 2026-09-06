@@ -193,10 +193,12 @@ fi
 # 2. No name: what exists?
 mapfile -t sessions < <(list)
 
-# 3. Nothing exists: the server may just be down with a save on disk. continuum
-# restores on server START, never before, so start one and wait (#106). Finding
-# the save needs that server too, since only it knows @resurrect-dir (#110).
-if [ ${#sessions[@]} -eq 0 ]; then
+# 3. Nothing exists and resurrect is installed: the server is just down. Only a
+# running server restores (#106) or knows @resurrect-dir (#110), and only an
+# installed resurrect makes that server worth a whole config load, ~1s here.
+if [ ${#sessions[@]} -eq 0 ] &&
+   { [ -d ~/.tmux/plugins/tmux-resurrect ] ||
+     [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins/tmux-resurrect" ]; }; then
   # The pid keeps the name off any save: resurrect restores a session it can
   # already see into that one, and the kill below would take its windows too.
   placeholder="_restore$$"
