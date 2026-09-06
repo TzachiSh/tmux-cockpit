@@ -7582,9 +7582,7 @@ echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
 # measured) 100 panes blanked the popup for ~32s, on every prefix+r from a
 # non-agent pane. A fixed-latency git shim stands in for that cold filesystem
 # here: real git still runs behind it, so this measures the serial-vs-parallel
-# SHAPE, not a fabricated number. 50 panes x 2 calls x 100ms serial = ~10s;
-# verified against the pre-fix script directly (11.16s, unbounded). Bounded
-# parallel dispatch should land well under that.
+# SHAPE, not a fabricated number: the pre-fix script ran them one at a time.
 if need_tmux "tmux-review --fleet parallel git"; then :; else
 FP="cockpit-fp-$$"; SOCKS="$SOCKS $FP"
 FP_DIR=$(mktmpd)
@@ -7606,7 +7604,7 @@ while [ "$i" -le 50 ]; do
     "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude sleep 3600' >/dev/null 2>&1
     i=$((i + 1))
 done
-for i in $(seq 1 40); do
+for i in $(seq 1 "$POLLS"); do
     [ "$("$TMUX_REAL" -L "$FP" list-panes -a -F '#{pane_current_command}' | grep -c '^claude$')" -eq 50 ] && break
     sleep 0.1
 done
@@ -7615,12 +7613,12 @@ FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
 # Graded as a COUNT, not a clock (#117): each shimmed git call records how
 # many siblings are live with it. Serial dispatch never sees more than 1; the
 # capped parallel path sees up to 8 and never more.
-FP_SLOWGIT=$(mktmpd); FP_LIVE=$(mktmpd)
+FP_SLOWGIT=$(mktmpd); FP_LIVE=$(mktmpd); FP_LIVEN=$(mktmpf)
 FP_REALGIT=$(command -v git)
 cat > "$FP_SLOWGIT/git" <<SHIMEOF
 #!/bin/sh
 : > "$FP_LIVE/\$\$"
-ls "$FP_LIVE" | wc -l >> "$FP_LIVE.n"
+ls "$FP_LIVE" | wc -l >> "$FP_LIVEN"
 sleep 0.1
 "$FP_REALGIT" "\$@"; rc=\$?
 rm -f "$FP_LIVE/\$\$"
@@ -7631,7 +7629,7 @@ chmod +x "$FP_SLOWGIT/git"
 timeout 15 env TMUX="$FP_SOCKPATH,0,0" PATH="$FP_SLOWGIT:$PATH" \
     "$DIR/scripts/tmux-review" --fleet > "$STATE/fp-out" 2>&1
 fp_rc=$?
-fp_peak=$(sort -n "$FP_LIVE.n" 2>/dev/null | tail -1)
+fp_peak=$(sort -n "$FP_LIVEN" 2>/dev/null | tail -1)
 
 if [ "$fp_rc" -ne 0 ]; then
     bad "the fleet queue gathers 50 panes' git state" "exit 0" "exit $fp_rc"
@@ -7641,7 +7639,7 @@ else
     bad "the fleet queue gathers 50 panes' git state in parallel, capped at 8" \
         "2..8 git calls in flight at the peak" "${fp_peak:-0}"
 fi
-rm -rf "$FP_LIVE" "$FP_LIVE.n"
+rm -rf "$FP_LIVE" "$FP_LIVEN"
 fp_rows=$(grep -c . "$STATE/fp-out" || true)
 is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
 
