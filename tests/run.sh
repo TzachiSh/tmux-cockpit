@@ -1871,8 +1871,9 @@ is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD
 # restores on server start and tm never started one (#106). The stub is a
 # server that hands the placeholder back at once but "restores" alpha only on
 # the SECOND list, so a tm that never waits cannot see it.
+# /bin/sh, not bash: the cap case below forks this stub a hundred times.
 cat > "$TMS/tmux" <<'STUB'
-#!/usr/bin/env bash
+#!/bin/sh
 case "$1" in
   list-sessions)
     grep -q NEW "$TM_LOG" || exit 0
@@ -1882,7 +1883,7 @@ case "$1" in
     [ -n "${TM_RESTORE:-}" ] && [ "$n" -ge 1 ] && printf 'alpha\n' ;;
   show-option)   printf 'on\n' ;;
   new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
-  kill-session)  printf 'KILL %s\n' "${*: -1}" >> "$TM_LOG" ;;
+  kill-session)  for a in "$@"; do t=$a; done; printf 'KILL %s\n' "$t" >> "$TM_LOG" ;;
 esac
 exit 0
 STUB
