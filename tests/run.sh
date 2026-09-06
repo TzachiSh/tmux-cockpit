@@ -9799,11 +9799,20 @@ cw_open() {                   # <socket> <session> ; prints "<client> <fifo> <pi
     local pid=$!
     for i in $(seq 1 40); do
         c=$("$TMUX_REAL" -L "$s" list-clients -F '#{client_name}' 2>/dev/null | head -1)
-        [ -n "$c" ] && break
+        [ -n "$c" ] && { printf '%s %s %s' "$c" "$f" "$pid"; return 0; }
         sleep 0.1
     done
-    [ -n "$c" ] || return 1
-    printf '%s %s %s' "$c" "$f" "$pid"
+    # Nothing is printed on failure, so the caller gets no pid and no path:
+    # the half-built client and its fifo have to be reaped right here.
+    kill "$pid" >/dev/null 2>&1; rm -f "$f"
+    return 1
+}
+# NEVER `kill "${pid:-0}"`: an empty pid becomes 0, and kill 0 signals the
+# whole process group -- the suite itself. Guard, do not default.
+cw_close() {                  # <pid> <fifo> ; either may be empty
+    [ -n "${1:-}" ] && kill "$1" >/dev/null 2>&1
+    [ -n "${2:-}" ] && rm -f "$2"
+    return 0
 }
 cw_size() {                   # <socket> <client> <cols>
     "$TMUX_REAL" -L "$1" refresh-client -C "${3}x30" -t "$2" >/dev/null 2>&1
@@ -9911,15 +9920,14 @@ for f in tmux.conf full.tmux.conf; do
     done
 done
 fi
-kill "${dlpid:-0}" >/dev/null 2>&1; rm -f "${dlf:-/nonexistent}"
+cw_close "${dlpid:-}" "${dlf:-}"
 "$TMUX_REAL" -L "$DL" kill-server >/dev/null 2>&1
 fi
 
 echo "== a window tab gets the width it can afford, not a fixed 16 (#103) =="
-# @cockpit_tab_w = clamp((client_width - 61) / session_windows, 10, 34): 61 is
-# the fixed chrome status-left and status-right take. The budget is stored as a
-# FORMAT and expanded with #{E:} at render time -- a session option cannot hold
-# a client-dependent value, because the two clients of one session differ.
+# @cockpit_tab_w = clamp((client_width - 61) / session_windows, 10, 34); 61 is
+# status-left ~9 plus status-right ~52 (chrome.md §3). Stored as a FORMAT and
+# expanded with #{E:}: two clients on one session can be two widths.
 if need_tmux "tab width ladder"; then :; else
 TW="cockpit-tw103-$$"; SOCKS="$SOCKS $TW"
 "$TMUX_REAL" -L "$TW" -f /dev/null new-session -d -s s -n t -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
@@ -9936,24 +9944,36 @@ is "an 80-column client cuts the tab title with an ellipsis" " review-the-ui-aud
 cw_size "$TW" "$twc" 160
 is "a 160-column client draws the whole tab title" " review-the-ui-audit-ladder-xyz " \
    "$("$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t '#{E:@catppuccin_window_text}' 2>/dev/null | plain)"
+# The floor, which is where every phone-width client lands: 80 columns over
+# three windows is (80-61)/3 = 6 by tmux's truncating division, clamped to 10.
+for twn in 2 3; do "$TMUX_REAL" -L "$TW" new-window -d -t s: -n "w$twn" 'exec -a claude sleep 300' >/dev/null 2>&1; done
+cw_size "$TW" "$twc" 80
+is "three windows at 80 columns clamp to the floor, not to 6" "10" \
+   "$("$TMUX_REAL" -L "$TW" display-message -p -c "$twc" '#{E:@cockpit_tab_w}' 2>/dev/null)"
 fi
-kill "${twpid:-0}" >/dev/null 2>&1; rm -f "${twf:-/nonexistent}"
+cw_close "${twpid:-}" "${twf:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
-echo "== the popup frame, the replayed menu keys and the dropped focus hook (#103) =="
-# Popup chrome (proposal 4) was never set, so every cockpit popup got tmux's
-# stock square border in the default foreground. The menu hardcoded
-# ~/.local/bin paths with their own geometry (#58 defect 11) instead of
-# replaying the plugin's keys, and pane-focus-in re-ran both status shell jobs
-# on every terminal focus change (defect 12, R2).
+echo "== the action menu replays the plugin's keys instead of its own paths (#103) =="
+# Two rows hardcoded ~/.local/bin with their own popup geometry (#58 defect
+# 11): a second definition of the plugin's popup drifts from it, and a rebound
+# key stops working from the menu. Pure file check, no server needed.
 is "full.tmux.conf hardcodes no ~/.local/bin path" "0" \
    "$(grep -c '~/.local/bin' "$DIR/examples/full.tmux.conf")"
+menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
+case "$menu" in
+    *'@cockpit_sessions_key'*) ok "the menu replays the plugin's session key" ;;
+    *) bad "the menu replays the plugin's session key" '@cockpit_sessions_key' "no replay" ;;
+esac
+
+echo "== the popup frame is set in both example configs (#103) =="
+# Proposal 4: nothing set popup-style or popup-border-*, so every cockpit popup
+# got tmux's stock square border in the default foreground.
 if need_tmux "popup chrome"; then :; else
 PC="cockpit-pc103-$$"; SOCKS="$SOCKS $PC"
 "$TMUX_REAL" -L "$PC" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
 for f in tmux.conf full.tmux.conf; do
-    "$TMUX_REAL" -L "$PC" -f /dev/null kill-session -t junk >/dev/null 2>&1
     "$TMUX_REAL" -L "$PC" source-file "$DIR/examples/$f" >/dev/null 2>&1
     is "$f rounds the popup border" "rounded" \
        "$("$TMUX_REAL" -L "$PC" show-option -gv popup-border-lines 2>/dev/null)"
@@ -9963,20 +9983,26 @@ for f in tmux.conf full.tmux.conf; do
     # sets @thm_bg -- must still expand to something tmux will parse.
     ps=$("$TMUX_REAL" -L "$PC" display-message -p '#{E:#{popup-style}}' 2>/dev/null)
     case "$ps" in
-        bg=?*) ok "$f gives the popup a background tmux can parse" ;;
-        *) bad "$f gives the popup a background tmux can parse" 'bg=<something>' "$ps" ;;
+        bg=?*,fg=?*) ok "$f paints both halves of the popup, not just the background" ;;
+        *) bad "$f paints both halves of the popup, not just the background" 'bg=<x>,fg=<y>' "$ps" ;;
     esac
 done
-is "the focus hook no longer re-runs the status jobs on every terminal focus" "pane-focus-in" \
-   "$("$TMUX_REAL" -L "$PC" show-hooks -g pane-focus-in 2>/dev/null)"
-is "and the three hooks that are worth their redraw stay" "after-select-pane[0] refresh-client -S" \
-   "$("$TMUX_REAL" -L "$PC" show-hooks -g after-select-pane 2>/dev/null)"
-menu=$(sed -n '/^bind m display-menu/,/^$/p' "$DIR/examples/full.tmux.conf")
-case "$menu" in
-    *'@cockpit_sessions_key'*) ok "the menu replays the plugin's session key" ;;
-    *) bad "the menu replays the plugin's session key" '@cockpit_sessions_key' "no replay" ;;
-esac
 "$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1
+fi
+
+echo "== full.tmux.conf drops the pane-focus-in hook and keeps the other three (#103) =="
+# pane-focus-in fires on every terminal focus change, so alt-tabbing back
+# re-ran both status shell jobs (#58 defect 12, R2) for a line that is at most
+# status-interval stale. The other three are worth their redraw.
+if need_tmux "focus hook"; then :; else
+PH="cockpit-ph103-$$"; SOCKS="$SOCKS $PH"
+"$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s s -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PH" source-file "$DIR/examples/full.tmux.conf" >/dev/null 2>&1
+is "the focus hook no longer re-runs the status jobs on every terminal focus" "pane-focus-in" \
+   "$("$TMUX_REAL" -L "$PH" show-hooks -g pane-focus-in 2>/dev/null)"
+is "and the three hooks that are worth their redraw stay" "after-select-pane[0] refresh-client -S" \
+   "$("$TMUX_REAL" -L "$PH" show-hooks -g after-select-pane 2>/dev/null)"
+"$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
 fi
 
 

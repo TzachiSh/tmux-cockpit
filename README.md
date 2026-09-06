@@ -154,7 +154,9 @@ git clone <this repo> ~/.tmux/plugins/tmux-cockpit
 ~/.tmux/plugins/tmux-cockpit/install.sh    # symlinks tm and the two tmux-* commands into ~/.local/bin
 ```
 
-Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block):
+Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block; its
+`status-right` directory and branch segments read catppuccin's
+`@catppuccin_status_*` options, so without that theme they render nothing):
 
 ```tmux
 run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
@@ -199,7 +201,8 @@ See [docs/tui.md](docs/tui.md).
 It is a normal tpm plugin — an executable `*.tmux` at the repo root — so:
 
 ```tmux
-set -g @plugin 'catppuccin/tmux'          # if you use it: declare it FIRST
+set -g @plugin 'catppuccin/tmux'          # declare it FIRST; the example
+                                          # block's status-right needs it
 set -g @plugin '<owner>/tmux-cockpit'
 run '~/.tmux/plugins/tpm/tpm'             # last
 ```
