@@ -69,7 +69,7 @@ clean() {
 list() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
 
 # Where resurrect kept the save: @resurrect-dir when the user set it, else the
-# two directories resurrect falls back to. Only a live server answers the
+# one directory resurrect falls back to. Only a live server answers the
 # option, so this runs after the placeholder below, never before it.
 saved() {
   local dir
@@ -77,9 +77,14 @@ saved() {
   # The same three substitutions resurrect's sed does, in bash: no fork, and
   # nothing on PATH to find.
   dir=${dir//'$HOME'/$HOME}; dir=${dir//'$HOSTNAME'/${HOSTNAME:-}}; dir=${dir//\~/$HOME}
-  [ -n "$dir" ] && { [ -e "$dir/last" ]; return; }
-  [ -e ~/.tmux/resurrect/last ] ||
-    [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect/last" ]
+  # One default, not both: resurrect takes ~/.tmux/resurrect only when that
+  # directory exists, XDG otherwise. Accepting either waits the full ten
+  # seconds on a save the directory continuum reads does not hold.
+  if [ -z "$dir" ]; then
+    dir=${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect
+    [ -d ~/.tmux/resurrect ] && dir=~/.tmux/resurrect
+  fi
+  [ -e "$dir/last" ]
 }
 
 ask_name() {

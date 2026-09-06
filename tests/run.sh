@@ -1954,6 +1954,19 @@ esac
 # One list after the placeholder, tm's own re-read: the poll never ran.
 is "and it never polled" "1" "$(cat "$TMS/log.polls" 2>/dev/null)"
 
+# resurrect reads ONE default directory, ~/.tmux/resurrect when it exists and
+# the XDG path otherwise, so an empty one hides a save under the other.
+mkdir -p "$TMS/.tmux/resurrect"          # exists and empty: now THE default
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RESTORE=1 TM_LOG="$TMS/log" \
+      "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *Restoring*|*'cockpit:'*) bad "an empty default directory waits for nothing" \
+                                  "no restore line" "$err" ;;
+    *'No tmux sessions running.'*) ok "an empty default directory waits for nothing" ;;
+    *) bad "an empty default directory waits for nothing" "the name prompt" "$err" ;;
+esac
+
 # TPM under the XDG layout keeps the plugin elsewhere, and that user has a
 # save like anyone else.
 rm -rf "$TMS/.tmux/plugins"; mkdir -p "$TMS/.config/tmux/plugins/tmux-resurrect"
