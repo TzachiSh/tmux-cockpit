@@ -10309,6 +10309,10 @@ rm -rf "$FZTD" "$FZG"
 # happens to run in.
 echo "== #105: the review row's path column is a share of the width, not a constant 48 =="
 RRB="$STATE/rr-bin-$$"; mkdir -p "$RRB"
+rr_has() {                    # rr_has <argv-file> <flag> <what>
+    if grep -qxF -- "$2" "$1" 2>/dev/null; then ok "$3 is given $2"
+    else bad "$3 is given $2" "$2 in its argv" "$(tr '\n' ' ' < "$1" 2>/dev/null)"; fi
+}
 cat > "$RRB/tput" <<'RRTPUT'
 #!/bin/sh
 case "$1" in
@@ -10362,6 +10366,23 @@ esac
 rr_g200=$(rr_gutter 200)
 is "at 200 columns the whole path:line is spelled out" "yes" \
    "$( [ "${rr_g200:-0}" -gt "${rr_g80:-0}" ] && echo yes || echo "no: gutter $rr_g80 at 80, $rr_g200 at 200" )"
+
+echo "== #105: fit_field cuts whole characters, whatever the locale is =="
+# ${s:i:n} counts BYTES unless the locale is UTF-8, so under C the head cut
+# fell through the ⑂ and left a lone continuation byte the terminal draws as a
+# replacement glyph. Run against the real function, on the owner's own
+# 37-column repo⑂branch, in the locale that breaks it.
+RRFIT="$STATE/rr-fit-$$.sh"
+sed -n '/^fit_field() {/,/^}/p' "$DIR/scripts/tmux-review" > "$RRFIT"
+rr_fit() { LC_ALL=C bash -c '. "$1"; shift; fit_field "$@"' _ "$RRFIT" "$@"; }
+RRLOC='research-mobile-97⑂research/mobile-97'
+is "a head cut landing inside the ⑂ drops it rather than half of it" \
+   "…research/mobile-97" "$(rr_fit 20 "$RRLOC" head)"
+is "a head cut clearing the ⑂ keeps it whole" \
+   "…⑂research/mobile-97" "$(rr_fit 22 "$RRLOC" head)"
+is "a tail cut leaves no half character either" \
+   "research-mobile-97…" "$(rr_fit 19 "$RRLOC")"
+is "and a field that fits is returned untouched" "$RRLOC" "$(rr_fit 40 "$RRLOC" head)"
 
 echo "== #105: the fleet's ± column survives a narrow popup and repo⑂branch gives way first =="
 if need_tmux "#105 fleet widths"; then :; else
@@ -10456,6 +10477,9 @@ if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
     # that line the fleet queue paid two, and the review loop three.
     is "one fleet queue open probes fzf --version exactly once" "1" \
        "$(grep -c . "$RRW/cap-100.vlog" 2>/dev/null)"
+    # The footer draws its own rule; --header-border=bottom is the matching one
+    # above the list. Two rules, zero boxes (pickers.md §6).
+    rr_has "$rr_argv" --header-border=bottom "the fleet picker"
 else
     bad "the fleet queue hands its rows to fzf under a fake tput" "a capture at 60 and at 100" \
         "100:[$(cat "$RRC100" 2>/dev/null)] 60:[$(cat "$RRC60" 2>/dev/null)]"
@@ -10543,7 +10567,8 @@ else
         *) bad "unset, it names the shipped default u, never the pre-#43 J" "prefix u" "$(rr_notice unset)" ;;
     esac
     is "and the whole notice fits the 72 columns an 80-column client shows" "yes" \
-       "$( [ "$(rr_notice unset | wc -m)" -le 73 ] && echo yes || echo "no: $(rr_notice unset | wc -m) columns" )"
+       "$( [ "$(ncols "$(rr_notice unset)")" -le 72 ] && echo yes \
+            || echo "no: $(ncols "$(rr_notice unset)") columns" )"
 fi
 "$TMUX_REAL" -L "$RRJ" kill-server >/dev/null 2>&1
 fi
@@ -10613,10 +10638,6 @@ rr_loop() {                   # rr_loop <cap> <store> <loop-stdout> <loop-rc> <c
         "$DIR/scripts/tmux-review" --loop "$RRP" "$2" >/dev/null 2>&1
     rc=$?; printf '%s' "$rc"
 }
-rr_has() {                    # rr_has <argv-file> <flag> <what>
-    if grep -qxF -- "$2" "$1" 2>/dev/null; then ok "$3 is given $2"
-    else bad "$3 is given $2" "$2 in its argv" "$(tr '\n' ' ' < "$1" 2>/dev/null)"; fi
-}
 # esc on a store with one pinned comment: the loop, then the esc-confirm.
 is "esc with a comment pinned asks, and discarding leaves cleanly" "0" \
    "$(rr_loop "$RRP/esc" "$RRP/esc-store" "" 130 "discard 1 comment(s)")"
@@ -10646,6 +10667,7 @@ is "carrying all three lines" "1" \
    "$(grep -cxF '^S deliver · ^A approve · ^/ preview · esc leave' "$RRP/esc.argv.1" 2>/dev/null)"
 is "and the header is the context alone" "1" \
    "$(grep -c '^--header=● pinned' "$RRP/esc.argv.1" 2>/dev/null)"
+rr_has "$RRP/esc.argv.1" --header-border=bottom "the review loop"
 # Below it there is no --footer at all, so the keys ride the header instead.
 # 0.44.1 is what Debian 13 and Ubuntu 24.04 ship, which is most people.
 is "esc still leaves cleanly on the plain tier" "0" \
@@ -10654,6 +10676,10 @@ is "below the floor no --footer is passed at all" "0" \
    "$(grep -c '^--footer' "$RRP/plain.argv.1" 2>/dev/null)"
 is "and the keys ride the last --header line" "1" \
    "$(grep -cxF '^S deliver · ^A approve · ^/ preview · esc leave' "$RRP/plain.argv.1" 2>/dev/null)"
+# --header-border is a styled-tier flag, so below the floor it must not appear
+# at all: fzf 0.44.1 exits 2 on an option it does not know.
+is "and no --header-border below the floor" "0" \
+   "$(grep -c '^--header-border' "$RRP/plain.argv.1" 2>/dev/null)"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

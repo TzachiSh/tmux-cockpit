@@ -602,9 +602,9 @@ blocked pane is listed even with a clean tree, and its `±` column reads `—`
 rather than `+0 -0`, because there is nothing to review there — only someone to
 unblock.
 
-Each row is `state · title · repo⑂branch · ±`, in aligned columns. The
-`repo⑂branch` field is what tells two worktrees of the same repo apart, which
-`s:w claude` alone cannot:
+Each row is `state · title · where · ±`, in aligned columns. The `where`
+field is `repo⑂branch`, and it is what tells two worktrees of the same repo
+apart, which `s:w claude` alone cannot:
 
 ```text
 needs-input     main:2 claude    cockpit⑂feat/review-p0     —

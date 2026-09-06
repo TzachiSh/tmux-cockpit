@@ -1200,7 +1200,7 @@ run_loop() {
     # user's own @thm_ colours. The per-picker flags below come after, and the
     # user's options after those -- fzf takes the last occurrence of a flag.
     local -a THEME=() CTHEME=()
-    mapfile -t THEME  < <(cockpit_fzf_args highlight-line)
+    mapfile -t THEME  < <(cockpit_fzf_args highlight-line header-border=bottom)
     mapfile -t CTHEME < <(cockpit_fzf_args highlight-line no-input)
     # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Each
     # line is inside 48 columns, which is what a 70% popup draws at 80.
@@ -2237,11 +2237,35 @@ pad_field() {                 # <width> <string>
 # head=1 keeps the tail: in repo⑂branch the branch is the half you do not
 # already know.
 fit_field() {                 # <width> <string> [head]
-    local w=$1 s=$2
+    local w=$1 s=$2 mb='…' i
     [ "${#s}" -le "$w" ] && { printf '%s' "$s"; return; }
     [ "$w" -lt 2 ] && { printf '%s' "${s:0:$w}"; return; }
-    if [ -n "${3:-}" ]; then printf '…%s' "${s: -$(( w - 1 ))}"
-    else printf '%s…' "${s:0:$(( w - 1 ))}"; fi
+    # ${s:i:n} counts BYTES unless the locale is UTF-8, so under C the cut
+    # lands inside a multibyte character and leaves an orphan the terminal
+    # draws as a replacement glyph -- measured on the owner's own
+    # repo⑂branch, where the head cut fell through the ⑂. ${#mb} is 1 in a
+    # UTF-8 locale and 3 in a byte one, which is the only way to ask from
+    # inside bash. pad_field below carries the same trap in its own form.
+    if [ -n "${3:-}" ]; then
+        s=${s: -$(( w - 1 ))}
+        # A leading continuation byte is the tail of a character we cut
+        # through; dropping it can never remove a whole one, since no
+        # character starts with one.
+        [ "${#mb}" -eq 1 ] || for i in 1 2 3; do
+            case $s in [$'\200'-$'\277']*) s=${s#?} ;; *) break ;; esac
+        done
+        printf '…%s' "$s"
+    else
+        s=${s:0:$(( w - 1 ))}
+        # The tail is the mirror, and a byte locale cannot tell a complete
+        # character at the end from half of one, so drop the last character
+        # whole. One column narrower than it could be, in a field that
+        # already says … , and never a broken edge.
+        [ "${#mb}" -eq 1 ] || { for i in 1 2 3; do
+            case $s in *[$'\200'-$'\277']) s=${s%?} ;; *) break ;; esac
+        done; case $s in *[$'\302'-$'\364']) s=${s%?} ;; esac; }
+        printf '%s…' "$s"
+    fi
 }
 
 kill_window() {               # <pane>  the row's window, after a y/N in the popup
@@ -2292,7 +2316,7 @@ fleet_queue() {               # [preselect-pane]
     local keys='↵ review · ^X kill window · ^/ preview · esc'
     local ctx='◆ pending · ↵ unsent · state · title · where · ±'
     local -a THEME=()
-    mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$keys")
+    mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border=bottom "footer=$keys")
     # No --footer below the floor, so the keys ride the last --header line.
     [ "$COCKPIT_FZF_TIER" = styled ] || ctx="$ctx"$'\n'"$keys"
     local pre=${1:-}
@@ -2344,7 +2368,11 @@ fleet_queue() {               # [preselect-pane]
         local -a disp=()
         while IFS=$'\t' read -r f_pane f_state f_title f_loc f_stat; do
             [ -n "$f_pane" ] || continue
-            disp+=("$f_pane"$'\t'"$(pad_field "$w_state" "$(fit_field "$w_state" "$f_state")")"$'\t'"$(pad_field "$w_title" "$(fit_field "$w_title" "$f_title")")"$'\t'"$(pad_field "$w_loc" "$(fit_field "$w_loc" "$f_loc" head)")"$'\t'"$f_stat")
+            disp+=("$f_pane"$'\t'\
+"$(pad_field "$w_state" "$(fit_field "$w_state" "$f_state")")"$'\t'\
+"$(pad_field "$w_title" "$(fit_field "$w_title" "$f_title")")"$'\t'\
+"$(pad_field "$w_loc"   "$(fit_field "$w_loc"   "$f_loc" head)")"$'\t'\
+"$f_stat")
         done <<<"$rows"
         [ ${#disp[@]} -gt 0 ] || return 0
 
