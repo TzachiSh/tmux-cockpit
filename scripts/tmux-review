@@ -1196,6 +1196,15 @@ run_loop() {
     local -a THEME=() CTHEME=()
     mapfile -t THEME  < <(cockpit_fzf_args highlight-line)
     mapfile -t CTHEME < <(cockpit_fzf_args highlight-line no-input)
+    # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Each
+    # line is inside 48 columns, which is what a 70% popup draws at 80.
+    local keys tier
+    keys=$'↵ pin · ⇥ mark · ^E edit · ^X delete · ^L list\n^Y copy · alt-c lines · alt-y all · ^R refresh\n^S deliver · ^A approve · ^/ preview · esc leave'
+    tier=$(cockpit_fzf_tier)
+    # Appended, not asked of cockpit_fzf_args: that prints one argument per
+    # line for mapfile, so a footer carrying newlines would arrive as three
+    # array elements and the last two would reach fzf as stray arguments.
+    [ "$tier" = styled ] && THEME+=("--footer=$keys")
 
     # The base this review diffs against: ^B's choice, remembered beside the
     # store so a resumed review keeps it; exported because --rows and --resnap
@@ -1277,10 +1286,17 @@ run_loop() {
     # The picker runs in a LOOP now: a cancel with comments pinned asks first,
     # and "keep reviewing" has to land back in the same list rather than in
     # the caller.
-    local out rc key n choice crc ndlv abr
+    local out rc key n choice crc ndlv abr ctx
     while :; do
         ndlv=""
-        [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv="   ↺ $(grep -c '^## ' "${store%/*}/delivered.md") delivered earlier"
+        [ -n "$store" ] && [ -f "${store%/*}/delivered.md" ] && ndlv=$(grep -c '^## ' "${store%/*}/delivered.md")
+        # The legend that explains column 1 comes FIRST and the root last:
+        # fzf cuts a header on the right, and of these the root is the one
+        # part a reader can reconstruct from the pane they are sitting in.
+        # The delivered count rides the ↺ it belongs to instead of a clause
+        # of its own (#105).
+        ctx="● pinned · ↺${ndlv:+ $ndlv} sent · base $label${nxt:+ (^B → $nxt)} · ${dir/#"$HOME/"/\~/}"
+        [ "$tier" = styled ] || ctx="$ctx"$'\n'"$keys"
         out=$(printf '%s\n' "$rows_out" \
             | fzf "${THEME[@]}" --print-query --expect=ctrl-s,ctrl-b,ctrl-a --disabled --multi \
                   --delimiter=$'\t' --with-nth=4 \
@@ -1300,7 +1316,7 @@ run_loop() {
                   --preview-window="down,55%,border-top,+{5}-/2" \
                   --prompt='review> ' \
                   --header-first \
-                  --header=$'↵ pin · ⇥ mark · ^E edit · ^X delete · ^L list\n^Y copy · alt-c lines · alt-y all · ^R refresh\n^S deliver · ^A approve · ^/ preview · esc leave\n'"root: ${dir/#"$HOME/"/\~/}   base: $label${nxt:+ (^B → $nxt)}$ndlv   ● pinned   ↺ last round")
+                  --header="$ctx")
         rc=$?
 
         # fzf's own exit codes (tmux-branch:228-231): 0 = an --expect key
