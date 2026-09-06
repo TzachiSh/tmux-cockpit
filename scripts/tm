@@ -147,9 +147,11 @@ case "${1:-}" in
     doomed=()
     if command -v fzf >/dev/null; then
       load_theme
+      # One probe per open: the process substitution below inherits the cache.
+      COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
       mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
       # No --footer below the floor, so the keys ride the last --header line.
-      [ "$(cockpit_fzf_tier)" = styled ] || THEME+=("--header=$K_KILL")
+      [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$K_KILL")
       # Red chrome on the destructive picker: it used to render in exactly the
       # same colours as the benign attach list. It carries no base scheme and
       # comes AFTER the theme, the only order in which fzf lets it win.
@@ -230,8 +232,10 @@ HEIGHT=${TM_HEIGHT:-40%}
 PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
   load_theme
+  # One probe per open: the process substitution below inherits the cache.
+  COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
   mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_ATTACH")
-  [ "$(cockpit_fzf_tier)" = styled ] || THEME+=("--header=$K_ATTACH")
+  [ "$COCKPIT_FZF_TIER" = styled ] || THEME+=("--header=$K_ATTACH")
   choice=$(list_rows | { cat; printf '%s\t%s\n' "$NEW_LABEL" "$NEW_LABEL"; } \
     | fzf "${THEME[@]}" \
           --height="$HEIGHT" --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \

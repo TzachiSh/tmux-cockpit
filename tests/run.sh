@@ -9795,7 +9795,8 @@ fzfake() {                    # fzfake <dir> <version string>
     mkdir -p "$1"
     cat > "$1/fzf" <<EOS
 #!/bin/sh
-case "\${1:-}" in --version) printf '%s\n' '$2'; exit 0 ;; esac
+case "\${1:-}" in --version) [ -n "\${FZ_VLOG:-}" ] && printf 'v\n' >> "\$FZ_VLOG"
+    printf '%s\n' '$2'; exit 0 ;; esac
 cat >/dev/null
 [ -n "\${FZ_ARGV:-}" ] && printf '%s\n' "\$@" > "\$FZ_ARGV.\$\$"
 exit 130
@@ -9835,7 +9836,7 @@ tmux set-option -p -t "$PANE" @cockpit_click_line "see $FZTD/clicked.txt:1" 2>/d
 fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's argv
     local tag=$1; shift
     env -u TMUX -u TMUX_PANE PATH="$FZP" FZ_ARGV="$FZTD/argv-$tag-$$" \
-        "$@" </dev/null >/dev/null 2>&1
+        FZ_VLOG="$FZTD/vlog-$tag" "$@" </dev/null >/dev/null 2>&1
 }
 fzrun tm-attach "$DIR/scripts/tm"
 fzrun tm-kill   "$DIR/scripts/tm" -k
@@ -9849,6 +9850,11 @@ for f in "$FZTD"/argv-*-"$$".*; do
     grep -qx -- '--ansi' "$f" && grep -qx -- '--tabstop=1' "$f" && fzboth=$((fzboth+1))
 done
 is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
+
+# Both caches are real, so the tier is probed once and read back after that.
+# Through $(...) they would fill in a subshell and die with it: three forks.
+is "one picker open probes fzf --version exactly once" "1" \
+   "$(grep -c . "$FZTD/vlog-tm-attach" 2>/dev/null)"
 
 # fzf merges --color per key and the last occurrence wins, so an override is
 # only an override if it is appended after the theme.

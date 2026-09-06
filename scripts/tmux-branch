@@ -244,9 +244,11 @@ KEYS='↵ switch · alt-↵ new branch · ^/ preview · esc'
 CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
 # Head-ellipsis: the directory tail is the half that says where you are.
 [ ${#CTX} -gt 48 ] && CTX="…${CTX: -47}"
+# One probe per open: the process substitution below inherits the cache.
+COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
 mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border "footer=$KEYS")
 # No --footer below the floor, so the keys ride the last --header line.
-if [ "$(cockpit_fzf_tier)" = styled ]; then THEME+=("--header=$CTX")
+if [ "$COCKPIT_FZF_TIER" = styled ]; then THEME+=("--header=$CTX")
 else THEME+=("--header=$CTX"$'\n'"$KEYS"); fi
 
 query=""

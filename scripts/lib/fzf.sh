@@ -13,8 +13,10 @@ COCKPIT_FZF_MIN=0063000
 # reads ${v#*.} as the minor, which on 0.74.3 is "74.3" -- not an integer, so
 # it grades every modern fzf as 0. install.sh and scripts/tui-fetch carry this
 # same parser; neither of them is sourceable from here.
-cockpit_fzf_tier() {          # -> plain | styled
-    if [ -z "${COCKPIT_FZF_TIER:-}" ]; then
+cockpit_fzf_tier() {          # -> plain | styled, and caches it in COCKPIT_FZF_TIER
+    # A case, not a -z test: a caller may pre-set the variable, and anything
+    # that is not one of the two words is junk to be probed over, not honoured.
+    case "${COCKPIT_FZF_TIER:-}" in plain|styled) ;; *)
         local v a b c IFS=.
         v=$(fzf --version 2>/dev/null); v=${v%% *}; v=${v#v}
         # shellcheck disable=SC2086  # splitting on the dots is the point
@@ -27,12 +29,13 @@ cockpit_fzf_tier() {          # -> plain | styled
         else
             COCKPIT_FZF_TIER=plain
         fi
-    fi
+    ;; esac
     printf '%s\n' "$COCKPIT_FZF_TIER"
 }
 
 # -g, not a bare declare: a caller that sources this lib from inside one of its
-# own functions would otherwise get a LOCAL cache that dies with that call.
+# own functions (tmux-open-path's op_theme does) would otherwise get a LOCAL
+# cache that dies with that call.
 declare -gA COCKPIT_THM=()
 # One tmux round-trip for the whole palette, not one per colour key: this runs
 # on every popup open, and the theme touches eleven @thm_ tokens. Defaults are
@@ -56,8 +59,12 @@ _cockpit_fzf_thm() {
     done
 }
 
+# Sets COCKPIT_FZF_COLOR rather than printing it: called through $(...) the
+# two caches above would fill in a subshell and die with it, which is three
+# fzf --version forks per picker open instead of one.
 _cockpit_fzf_color() {
     _cockpit_fzf_thm
+    cockpit_fzf_tier >/dev/null
     local c="16,fg:${COCKPIT_THM[fg]}"
     c="$c,hl:${COCKPIT_THM[peach]},fg+:${COCKPIT_THM[fg]}"
     c="$c,bg+:${COCKPIT_THM[surface_0]},hl+:${COCKPIT_THM[peach]}"
@@ -70,7 +77,7 @@ _cockpit_fzf_color() {
     c="$c,label:${COCKPIT_THM[overlay_1]},gutter:-1"
     c="$c,scrollbar:${COCKPIT_THM[surface_2]},query:${COCKPIT_THM[fg]}"
     c="$c,disabled:${COCKPIT_THM[overlay_0]}"
-    if [ "$(cockpit_fzf_tier)" = styled ]; then
+    if [ "$COCKPIT_FZF_TIER" = styled ]; then
         c="$c,selected-fg:${COCKPIT_THM[fg]}"
         c="$c,selected-bg:${COCKPIT_THM[surface_2]}"
         c="$c,selected-hl:${COCKPIT_THM[green]}"
@@ -78,7 +85,7 @@ _cockpit_fzf_color() {
         c="$c,footer:${COCKPIT_THM[overlay_2]}"
         c="$c,footer-border:${COCKPIT_THM[surface_1]}"
     fi
-    printf '%s' "$c"
+    COCKPIT_FZF_COLOR=$c
 }
 
 # cockpit_fzf_args [flag...] -- one fzf argument per line, for mapfile.
@@ -93,8 +100,9 @@ _cockpit_fzf_color() {
 # key, so appending is what makes an override an override.
 cockpit_fzf_args() {
     local f
+    _cockpit_fzf_color                    # also fills COCKPIT_FZF_TIER
     printf '%s\n' --ansi --tabstop=1 --pointer=▌ --marker=◆ --ellipsis=… \
-                  "--color=$(_cockpit_fzf_color)"
-    [ "$(cockpit_fzf_tier)" = styled ] || return 0
+                  "--color=$COCKPIT_FZF_COLOR"
+    [ "$COCKPIT_FZF_TIER" = styled ] || return 0
     for f in "$@"; do printf -- '--%s\n' "$f"; done
 }
