@@ -7449,15 +7449,12 @@ is "same-rank rows sort by real churn: +5 tracked outranks +1 tracked + 3 untrac
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @panestate running >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-# Polled, not slept for: the row we are waiting on is the blocked pane's, and
-# its absence is also the RED failure -- so the loop bounds the wait rather
-# than deciding the outcome.
-fqout2=""
-for i in $(seq 1 20); do
-    fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-    case "$fqout2" in *"$CLEAN_PANE"$'\t'*) break ;; esac
-    sleep 0.1
-done
+# until_cap, not a hand-rolled 20 x 0.1 s: 2 s of re-render lost the row under
+# the audit's back-to-back server teardowns and the three assertions below read
+# the PREVIOUS render (#125). The cap is a hang guard only a red run pays for,
+# so it belongs on the suite's shared POLLS (#117).
+until_cap "$FQ" "$CTL" "*$CLEAN_PANE$(printf '\t')*"
+fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
 is "its state is in the row" "needs-input" \
@@ -8694,7 +8691,10 @@ Q='"'
 } >> "$PARROOT/tests/run.sh"
 
 EXPECT_BLOCKS=$(grep -c '^echo "== ' "$PARROOT/tests/run.sh")
-PAROUT=$(J=3 "$PARROOT/tests/par.sh" 2>&1); PARRC=$?
+# -u PAR_BLOCKS: the ordinals that selected THIS block are still in the
+# environment (tests/changed.sh, tests/par.sh --each), and the sandbox has four
+# blocks, so the inherited set selected none of them and par.sh printed nothing.
+PAROUT=$(env -u PAR_BLOCKS J=3 "$PARROOT/tests/par.sh" 2>&1); PARRC=$?
 is "a red shard makes par.sh exit non-zero" "1" "$PARRC"
 SUMMARY=$(printf '%s\n' "$PAROUT" | grep -oE '[0-9]+ passed, [0-9]+ failed, [0-9]+ skipped' | tail -1)
 COUNTED=$(printf '%s\n' "$SUMMARY" | grep -oE '[0-9]+' | awk '{s+=$1} END{print s+0}')
@@ -10846,6 +10846,110 @@ is "tm announces the restore under the prefix" "1" \
    "$(grep -c "printf 'cockpit: Restoring saved sessions" "$DIR/scripts/tm")"
 is "and says who found no sessions" "1" \
    "$(grep -c "printf 'cockpit: No tmux sessions running" "$DIR/scripts/tm")"
+
+# --- #125 suite leftovers ---------------------------------------------------
+echo "== #125: a killed fleet scan takes its temp dir with it =="
+# fleet_rows() mktemps a directory for its root-N/scan-N/idx.PID files and
+# removed it only where it RETURNS. The popup is killed far more often than it
+# returns, so a suite run left two of those dirs in /tmp every time.
+if need_tmux "the fleet scan's temp dir"; then :; else
+LKD=$(mktmpd)                     # the run's own TMPDIR, so the count is ours
+LKB=$(mktmpd)                     # shims: a private tmux, a git that blocks
+LKG=$(mktmpd)                     # somewhere for the panes to sit
+LKGO="$LKB/go"
+LKS="cockpit-leak-$$"; SOCKS="$SOCKS $LKS"
+"$TMUX_REAL" -L "$LKS" -f /dev/null new-session -d -s lk -c "$LKG" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$LKS" split-window -d -t lk -c "$LKG" \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$LKS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$LKS" > "$LKB/tmux"
+# git blocks until the block says go, which is what holds the scan open long
+# enough to kill it. A poll, not a sleep: nothing here grades the box. The
+# 30s ceiling is a hang guard and nothing reads it -- without one, a shim
+# whose go file went away with the suite's own cleanup spins forever.
+printf '#!/bin/sh\ni=0\nwhile [ ! -e "$LK_GO" ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 0.1; done\nexec %s "$@"\n' \
+    "$(command -v git)" > "$LKB/git"
+chmod +x "$LKB/tmux" "$LKB/git"
+lkdirs() { find "$LKD" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
+until_out '*claude*claude*' "$TMUX_REAL" -L "$LKS" list-panes -a -F '#{pane_current_command}'
+TMPDIR="$LKD" LK_GO="$LKGO" PATH="$LKB:$PATH" \
+    "$DIR/scripts/tmux-review" --fleet >/dev/null 2>&1 &
+LKPID=$!
+lkseen=1; until_out '1' lkdirs || lkseen=0
+# Twice, the shape tmux uses when a pane goes. Two signals sent back to back
+# from here are coalesced, so this does NOT pin the handler's self-disarm --
+# that one is measured at suite level, one surviving directory a run before it
+# and none in three runs after.
+kill -TERM "$LKPID" 2>/dev/null; kill -TERM "$LKPID" 2>/dev/null
+# Polled, and the -9 only AFTER it: a signal handler that cleans up but forgets
+# to exit leaves the scan running, and a bare `wait` on that hangs the suite.
+lkgone=1; until_out '0' lkdirs || lkgone=0
+kill -9 "$LKPID" 2>/dev/null
+wait "$LKPID" 2>/dev/null
+: > "$LKGO"                       # release the blocked git shims
+is "the scan's temp dir is there to kill, and gone once it is killed" "1 1" \
+   "$lkseen $lkgone"
+"$TMUX_REAL" -L "$LKS" kill-server >/dev/null 2>&1
+fi
+
+echo "== #125: prefix m's agents popup lists every pane with its state =="
+# Defect 14's untested surface. The row's command is a display-popup over one
+# tmux list-panes; display-menu expands the item once as a format, which is
+# what turns its ##{...} into the #{...} list-panes then reads.
+AGC="$DIR/examples/full.tmux.conf"
+is "the What-is-each-agent-doing row opens a popup over tmux list-panes -a" "1 1" \
+   "$(grep -c '"What is each agent doing?" t' "$AGC") $(grep -c 'display-popup -E .*tmux list-panes -a -F' "$AGC")"
+AGF=$(sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p" "$AGC" | sed 's/##{/#{/g')
+if need_tmux "the agents popup"; then :; else
+AGS="cockpit-agents-$$"; SOCKS="$SOCKS $AGS"
+"$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T alpha >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set-option -p -t ag:0 @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set-option -p -t ag:1 @panestate running >/dev/null 2>&1
+until_out '*claude*claude*sleep*' "$TMUX_REAL" -L "$AGS" list-panes -a -F '#{pane_current_command}'
+# The third pane is not an agent, so its state column is the row's own `-`
+# sentinel and not a blank that would slide the title one column left.
+is "two agent panes with their state, the plain pane with the sentinel" \
+   "0 needs-input alpha|1 running bravo|2 - plain" \
+   "$("$TMUX_REAL" -L "$AGS" list-panes -a -F "$AGF" 2>/dev/null \
+      | tr -s ' ' ' ' | paste -sd'|' -)"
+"$TMUX_REAL" -L "$AGS" kill-server >/dev/null 2>&1
+fi
+
+echo "== #125: ^G shows the diff and ^F the content, in both open-path pickers =="
+# The other half of defect 14. Both fzf calls in tmux-open-path carry the pair;
+# the argv is read off a fake fzf, the same shape the #104 block uses.
+OPD=$(mktmpd)
+fzfake "$OPD/bin" "0.44.1 (debian)"
+: > "$OPD/opened.txt"
+OPWAS=$(tmux show-option -pqv -t "$PANE" @cockpit_click_line 2>/dev/null)
+tmux set-option -p -t "$PANE" @cockpit_click_line "see $OPD/opened.txt:1" 2>/dev/null
+oprun() {                     # oprun <tag> <tmux-open-path args...>
+    local tag=$1; shift
+    env -u TMUX -u TMUX_PANE PATH="$OPD/bin:$PATH" FZ_ARGV="$OPD/argv-$tag" \
+        "$DIR/scripts/tmux-open-path" "$@" </dev/null >/dev/null 2>&1
+}
+opkeys() {                    # opkeys <tag> -> "<ctrl-g binds> <ctrl-f binds>"
+    local a; a=$(cat "$OPD"/argv-"$1".* 2>/dev/null)
+    printf '%s %s' \
+        "$(printf '%s\n' "$a" | grep -c '^ctrl-g:change-preview(.*change-preview-label( diff )$')" \
+        "$(printf '%s\n' "$a" | grep -c '^ctrl-f:change-preview(.*change-preview-label( content )$')"
+}
+oprun browse --browse "$OPD"
+oprun pick   --pick "$PANE"
+is "the folder browser binds ^G to the diff preview and ^F back to content" "1 1" \
+   "$(opkeys browse)"
+is "and so does the open picker"                                            "1 1" \
+   "$(opkeys pick)"
+if [ -n "$OPWAS" ]; then tmux set-option -p -t "$PANE" @cockpit_click_line "$OPWAS" 2>/dev/null
+else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
