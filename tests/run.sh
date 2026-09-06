@@ -1865,7 +1865,10 @@ STUB
 # HOME is the stub's: the real one may hold a resurrect save, which is the
 # next case, not this one.
 printf -- '-weird name\n' | env -u TMUX HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
-is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
+# The placeholder comes first now: with no server there is nobody to ask for
+# @resurrect-dir, so tm starts one before it can know there is no save (#110).
+is "a leading dash never reaches tmux" "NEW new-session -d -s _restore#
+NEW new-session -d -s weird_name -c $PWD" "$(sed 's/_restore[0-9]*/_restore#/' "$TMS/log")"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
 # restores on server start and tm never started one (#106). The stub brings
@@ -1880,7 +1883,8 @@ case "$1" in
     printf '%s\n' "$((n + 1))" > "$TM_LOG.polls"
     read -r ph < "$TM_LOG"; grep -q KILL "$TM_LOG" || printf '%s\n' "${ph##* -s }"
     [ -n "${TM_RESTORE:-}" ] && [ "$n" -ge 1 ] && printf 'alpha\n' ;;
-  show-option)   printf 'on\n' ;;
+  show-option)
+    if [ "$3" = @resurrect-dir ]; then printf '%s\n' "${TM_RDIR:-}"; else printf 'on\n'; fi ;;
   new-session)   printf 'NEW %s\n' "$*" >> "$TM_LOG" ;;
   kill-session)  for a in "$@"; do t=$a; done; printf 'KILL %s\n' "$t" >> "$TM_LOG" ;;
 esac
@@ -1907,6 +1911,37 @@ case "$err" in
     *'cockpit: no restore after 10s'*) ok "a restore that never lands says so" ;;
     *) bad "a restore that never lands says so" "a cockpit: line" "$err" ;;
 esac
+
+# The save need not be in either default directory: resurrect reads
+# @resurrect-dir, and tm asks the placeholder server for it (#110).
+mkdir -p "$TMS/elsewhere"; : > "$TMS/elsewhere/last"
+mv "$TMS/.local/share/tmux/resurrect/last" "$TMS/moved-away"
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$TMS/elsewhere" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    # The restored session in the picker, which is what the user came for.
+    *'1) alpha'*)                  ok "@resurrect-dir names the save tm waits for" ;;
+    *'No tmux sessions running.'*) bad "@resurrect-dir names the save tm waits for" \
+                                       "the restored picker" "$err" ;;
+    *) bad "@resurrect-dir names the save tm waits for" "the restored picker" "$err" ;;
+esac
+is "and it waited for it" "3" "$(cat "$TMS/log.polls" 2>/dev/null)"
+
+# That option REPLACES the defaults, it does not add to them: continuum will
+# read only it, so a stale save in a default directory promises nothing.
+mkdir -p "$TMS/empty-dir"; mv "$TMS/moved-away" "$TMS/.local/share/tmux/resurrect/last"
+: > "$TMS/log"; rm -f "$TMS/log.polls"
+err=$(env -u TMUX HOME="$TMS" PATH="$TMS" TM_RDIR="$TMS/empty-dir" TM_RESTORE=1 \
+      TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
+case "$err" in
+    *Restoring*|*'cockpit:'*) bad "an empty @resurrect-dir promises nothing" \
+                                  "no restore line" "$err" ;;
+    *'No tmux sessions running.'*) ok "an empty @resurrect-dir promises nothing" ;;
+    *) bad "an empty @resurrect-dir promises nothing" "the name prompt" "$err" ;;
+esac
+# One list after the placeholder, tm's own re-read: the poll never ran.
+is "and it never polled" "1" "$(cat "$TMS/log.polls" 2>/dev/null)"
 rm -rf "$TMS"
 
 echo "== cockpit.tmux: every option carrying a token is interpolated =="

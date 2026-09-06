@@ -68,6 +68,20 @@ clean() {
 
 list() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
 
+# Where resurrect kept the save: @resurrect-dir when the user set it, else the
+# two directories resurrect falls back to. Only a live server answers the
+# option, so this runs after the placeholder below, never before it.
+saved() {
+  local dir
+  dir=$(tmux show-option -gqv @resurrect-dir)
+  # The same three substitutions resurrect's sed does, in bash: no fork, and
+  # nothing on PATH to find.
+  dir=${dir//'$HOME'/$HOME}; dir=${dir//'$HOSTNAME'/${HOSTNAME:-}}; dir=${dir//\~/$HOME}
+  [ -n "$dir" ] && { [ -e "$dir/last" ]; return; }
+  [ -e ~/.tmux/resurrect/last ] ||
+    [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect/last" ]
+}
+
 ask_name() {
   # Empty is a cancel, not an error loop: the old prompt had no way out short
   # of Ctrl-C, and Escape+Enter tried to create a session named ESC.
@@ -179,15 +193,14 @@ fi
 # 2. No name: what exists?
 mapfile -t sessions < <(list)
 
-# 3. Nothing exists but a resurrect save does: the server is just not up.
-# continuum restores on server START, never before, so start one and wait.
-# After a reboot the old branch below read as "your sessions are gone" (#106).
-if [ ${#sessions[@]} -eq 0 ] && { [ -e ~/.tmux/resurrect/last ] ||
-     [ -e "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect/last" ]; }; then
+# 3. Nothing exists: the server may just be down with a save on disk. continuum
+# restores on server START, never before, so start one and wait (#106). Finding
+# the save needs that server too, since only it knows @resurrect-dir (#110).
+if [ ${#sessions[@]} -eq 0 ]; then
   # The pid keeps the name off any save: resurrect restores a session it can
   # already see into that one, and the kill below would take its windows too.
   placeholder="_restore$$"
-  if tmux new-session -d -s "$placeholder" 2>/dev/null &&
+  if tmux new-session -d -s "$placeholder" 2>/dev/null && saved &&
      [ "$(tmux show-option -gqv @continuum-restore)" = on ]; then
     # Announced only once the option says a restore is coming: a resurrect
     # user who restores by hand was promised sessions that never arrived.
