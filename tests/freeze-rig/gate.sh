@@ -24,7 +24,7 @@
 # pane visited by a #{P:} walk.
 #
 # Exit 0 = PASS, 1 = FAIL, 2 = could not measure. Zero pane visits is a PASS
-# (formats with no #{P:} left), not a failed measurement -- see the arm below.
+# (formats with no #{P:} left), not a failed measurement. See the arm below.
 set -u
 
 CONF=${1:-}
@@ -188,15 +188,11 @@ mv_ctl=$(move_cost s1:0 refresh-client)
 # inside `$( )` ends the SUBSHELL and the gate would carry on with the message
 # as the number.
 #
-# Unless the redraw on the same server walked nothing either. Formats holding
-# no #{P:} at all -- examples/tmux.conf since #108 reads a precomputed option
-# instead -- cost zero visits by construction, and there is no walk left for a
-# move to fail to resolve into. That config was ungradeable, exit 2, rather
-# than the clean pass it is (#125).
-#
-# Zero is only an answer while the rig can still SEE a visit, so it has to
-# earn it: a #{P:} walk planted in window-status-format, measured the same way
-# on the same server. Planted LAST, after every number above is taken.
+# Unless the redraw walked nothing either. Formats with no #{P:} at all, which
+# examples/tmux.conf has had since #108, cost zero by construction: no walk is
+# left for a move to fail to resolve into, so exit 2 was wrong (#125). Zero is
+# still earned, by a #{P:} walk planted in window-status-format and measured
+# the same way on the same server, last of all.
 if [ "$min" -eq 0 ]; then
     srv set -g window-status-format '#{P:#{pane_id}}' 2>/dev/null
     probe=$(move_cost s1:0 refresh-client)

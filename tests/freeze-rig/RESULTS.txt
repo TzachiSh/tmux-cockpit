@@ -18,10 +18,13 @@ probe read 37 visits here, which is what tells a config with nothing to walk
 from a rig that measured nothing at all.
 
 current-example.conf is regenerated from examples/tmux.conf by hand when those
-formats move: the mouse/glob/@thm_* lines cockpit.tmux would have set, then the
+formats move. Lines 1 to 9 are the palette gate.sh's own self-test sets (its
+lines 74 to 78, #ff6b6b and friends, NOT cockpit.tmux's #f38ba8) plus
+@thm_mauve from full.tmux.conf:219. Lines 10 to 18 come from examples/tmux.conf:
 pane-border-{status,style,format}, pane-active-border-style, @cockpit_tab_w and
-window-{,active-}style lines verbatim, then @catppuccin_window_text and
+window-{,active-}style verbatim, then @catppuccin_window_text and
 @catppuccin_window_current_text renamed to window-status-{,current-}format.
+Colours change no visit count, so the palette's source does not move a number.
 
 === 2026-08-26: phase 3 -- @cockpit_title in the tab, ◆N in the fleet string: no new walk ===
 gate.sh at 6056ca4 (REPS=3 SETTLE=0.5), twice, after three green make check runs
