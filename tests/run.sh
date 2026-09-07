@@ -7005,12 +7005,24 @@ else
 fi
 
 # A real delivery -- the buffer is consumed, so the same check reports RC=0.
+# Seen red once at load 8 (#127) and never reproduced: "1" only says the buffer
+# survived. The refusal arm records the command the gate saw, in the same queue
+# item, since a read after the client returns can already say claude again.
 printf 'NEW-OK\n' | "$TMUX_REAL" -L "$RG" load-buffer -b rg-newok -
 "$TMUX_REAL" -L "$RG" if-shell -F -t "$APG" \
     '#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}' \
     "paste-buffer -p -r -d -b rg-newok -t $APG ; display-message pasted" \
-    "display-message 'tmux-review: $APG is no longer an agent — not delivered'"
-is "a real delivery still reports RC=0" "0" "$(rc_from_buffer rg-newok)"
+    "set -p -t $APG -F @rg_seen '#{pane_current_command}' ; \
+display-message 'tmux-review: $APG is no longer an agent — not delivered'"
+rg_bufs=$("$TMUX_REAL" -L "$RG" list-buffers -F '#{buffer_name}' 2>/dev/null | tr '\n' ' ')
+rg_seen=$("$TMUX_REAL" -L "$RG" show -pqv -t "$APG" @rg_seen 2>/dev/null)
+rg_cmd=$("$TMUX_REAL" -L "$RG" display -p -t "$APG" '#{pane_current_command}' 2>/dev/null)
+rg_scr=$(gcap "$APG" | grep -v "^$" | tail -3)
+case "$(rc_from_buffer rg-newok)" in
+    0) ok "a real delivery still reports RC=0" ;;
+    *) bad "a real delivery still reports RC=0" "0" \
+         "1 (buffers [$rg_bufs] pane $APG saw [$rg_seen] now [$rg_cmd] screen [$rg_scr])" ;;
+esac
 
 "$TMUX_REAL" -L "$RG" kill-server >/dev/null 2>&1
 fi
