@@ -13,6 +13,9 @@
 #   make uninstall    remove only the symlinks pointing back here
 #   make bootstrap    full setup from nothing: packages, plugins, config, hooks
 #
+#   tests/par.sh --each   every block group alone: the audit for a block that
+#                         only passes beside a neighbour whose variable it reads
+#
 # Everything here is shell except tui/, and `check` never touches that: a box
 # with no cargo must still be able to run the suite.
 
@@ -27,7 +30,7 @@ SOURCES := cockpit.tmux install.sh bootstrap.sh tests/run.sh tests/only.sh tests
 all: help
 
 help:
-	@sed -n '2,14p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
+	@sed -n '2,17p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
 
 test:
 	@tests/run.sh

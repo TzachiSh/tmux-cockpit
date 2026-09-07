@@ -17,7 +17,12 @@
 # it finishes.  No cost table to keep in sync and no static split to unbalance.
 set -u
 
-EACH=""; [ "${1:-}" = --each ] && EACH=1
+EACH=""
+case "${1:-}" in
+    "")     ;;
+    --each) EACH=1 ;;
+    *)      echo "usage: tests/par.sh [--each]" >&2; exit 2 ;;
+esac
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 J="${J:-$(nproc 2>/dev/null || echo 4)}"
 WORK=$(mktemp -d) || exit 1
@@ -65,11 +70,9 @@ done < "$WORK/groups.tsv"
 
 [ -s "$WORK/groups.tsv" ] || { echo "  nothing selected"; exit 0; }
 
-# The audit. A block that reads a variable one of its neighbours set passes
-# under `make test-par` -- its shard carries the neighbour -- and goes red the
-# moment anything selects it alone (#120, #125). One run per GROUP, not per
-# block: blocks sharing a `# group:` are ALLOWED to share fixtures, and the
-# PAR_BLOCKS filter above already keeps a group whole.
+# The audit. A block reading a variable a neighbour set passes under `make
+# test-par`, whose shard carries that neighbour, and goes red alone (#120,
+# #125). One run per GROUP: blocks sharing a `# group:` may share fixtures.
 if [ -n "$EACH" ]; then
     each_red=""; each_n=0
     for f in "$WORK"/list/*; do
