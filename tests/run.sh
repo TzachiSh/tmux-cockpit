@@ -1885,6 +1885,13 @@ STUB
 printf -- '-weird name\n' | env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" \
     TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
 is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
+# Cancelling the prompt used to create a session named "": ask_name's exit
+# only left its $(...) subshell, so go ran with an empty name (#132).
+: > "$TMS/log"
+env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_LOG="$TMS/log" \
+    "$DIR/scripts/tm" </dev/null >/dev/null 2>&1; tmrc=$?
+is "a cancelled name prompt creates nothing" "" "$(cat "$TMS/log")"
+is "and exits 0" "0" "$tmrc"
 
 # After a reboot tm asked for a name although resurrect had a save: continuum
 # restores on server start and tm never started one (#106). The stub brings

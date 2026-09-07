@@ -92,10 +92,12 @@ saved() {
 ask_name() {
   # Empty is a cancel, not an error loop: the old prompt had no way out short
   # of Ctrl-C, and Escape+Enter tried to create a session named ESC.
+  # Called through $(...), so an exit here only leaves the subshell; the
+  # empty name is what go() reads as the cancel (#132).
   local n
-  read -r -p "New session name (empty cancels): " n || exit 0
+  read -r -p "New session name (empty cancels): " n || return 0
   n=$(clean "$n")
-  [ -n "$n" ] || exit 0
+  [ -n "$n" ] || return 0
   printf '%s' "$n"
 }
 
@@ -114,6 +116,7 @@ in_client() {
 
 go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
   local name=$1 dir=""
+  [ -n "$name" ] || exit 0    # a cancelled prompt, or a name clean() emptied
   if ! tmux has-session -t "=$name" 2>/dev/null; then
     # In the popup $PWD is the OLD session's start dir; the session's active
     # pane ($TMUX ends in the session id) is where the human is (#41).
