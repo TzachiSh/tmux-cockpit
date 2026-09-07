@@ -7480,13 +7480,9 @@ FQ_NOREPO=$(mktmpd)
 NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:5 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-# Polled on the row we assert about, same reason as the loop above.
-fqout3=""
-for i in $(seq 1 20); do
-    fqout3=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-    case "$fqout3" in *"$NOREPO_PANE"$'\t'*) break ;; esac
-    sleep 0.1
-done
+# Polled on the row we assert about, same reason and same helper as above.
+until_cap "$FQ" "$CTL" "*$NOREPO_PANE$(printf '\t')*"
+fqout3=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 nrrow=$(printf '%s\n' "$fqout3" | awk -F'\t' -v p="$NOREPO_PANE" '$1 == p { print; exit }')
 is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?" \
    "$(printf '%s\n' "$nrrow" | cut -f4)"
@@ -7507,12 +7503,8 @@ FQ_AHEAD=$(mktmpd)                                   # agent, clean tree, commit
 "$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_AHEAD" 'exec -a claude bash' >/dev/null 2>&1
 AHEAD_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:6 -F '#{pane_id}')
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-fqout4=""
-for i in $(seq 1 20); do
-    fqout4=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-    case "$fqout4" in *"$AHEAD_PANE"$'\t'*) break ;; esac
-    sleep 0.1
-done
+until_cap "$FQ" "$CTL" "*$AHEAD_PANE$(printf '\t')*"
+fqout4=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 case "$fqout4" in
     *"$AHEAD_PANE"*"+1 -0"*) ok "an agent that committed on its branch is still in the queue, with its branch churn" ;;
     *) bad "an agent that committed on its branch is still in the queue, with its branch churn" "$AHEAD_PANE with +1 -0" "$fqout4" ;;
@@ -7559,12 +7551,8 @@ WT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:8 -F '#{pane_id}')
 # A dangling @cockpit_dir (the worktree was removed since) falls back to the cwd.
 "$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @cockpit_dir "$FQ_CLEAN/gone" >/dev/null 2>&1
 "$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-fqout5=""
-for i in $(seq 1 20); do
-    fqout5=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-    case "$fqout5" in *"$WT_PANE"$'\t'*) break ;; esac
-    sleep 0.1
-done
+until_cap "$FQ" "$CTL" "*$WT_PANE$(printf '\t')*"
+fqout5=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 wtrow=$(printf '%s\n' "$fqout5" | awk -F'\t' -v p="$WT_PANE" '$1 == p { print; exit }')
 is "@cockpit_dir: the row names the worktree and its branch, not the cwd's" "$(basename "$FQ_WT")⑂feat" \
    "$(printf '%s\n' "$wtrow" | cut -f4)"
