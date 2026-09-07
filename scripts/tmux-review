@@ -1810,6 +1810,12 @@ fleet_rows() {
     # another.
     local tmpdir
     tmpdir=$(mktemp -d) || return 0
+    # Killed far more often than it finishes, and the rm at the end never runs
+    # then. The handler exits rather than returning, since a returning handler
+    # drops back into the interrupted wait, and it ignores its own signals first
+    # so the EXIT trap's rm inherits SIG_IGN and survives tmux's second hangup.
+    trap 'rm -rf -- "$tmpdir"' EXIT
+    trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
     local TREE_DIFF_TMP=$tmpdir      # tree_diff's index copies live here too
 
     # --- Phase 1: one pane list, one root each -------------------------------
@@ -1839,7 +1845,7 @@ fleet_rows() {
         fi
     done <<<"$raw"
     wait 2>/dev/null
-    [ "$n" -gt 0 ] || { rm -rf "$tmpdir"; return 0; }
+    [ "$n" -gt 0 ] || { rm -rf "$tmpdir"; trap - EXIT HUP INT TERM; return 0; }
 
     # Group panes by their resolved root. A pane whose cwd was not inside a
     # git repo at all resolves to an empty root; every such pane's git calls
@@ -1895,9 +1901,7 @@ fleet_rows() {
         rows+=("$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' \
             "$rank" "$churn" "$id" "$glyph${state:-—}" "$title" "${repo:-?}⑂${branch:-?}" "$stat")")
     done
-    # The OS tmpdir is the only GC here, same call as deliver()'s mktemp --
-    # a killed popup takes its children with it, but not necessarily this rm.
-    rm -rf "$tmpdir"
+    rm -rf "$tmpdir"; trap - EXIT HUP INT TERM
     [ ${#rows[@]} -gt 0 ] || return 0
 
     # Rank ascending, then churn descending inside the rank: who needs me

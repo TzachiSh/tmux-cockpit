@@ -23,7 +23,8 @@
 # comes from tmux's own -vv log, which prints one "pane loop: %N" line per
 # pane visited by a #{P:} walk.
 #
-# Exit 0 = PASS, 1 = FAIL, 2 = could not measure.
+# Exit 0 = PASS, 1 = FAIL, 2 = could not measure. Zero pane visits is a PASS
+# (formats with no #{P:} left), not a failed measurement. See the arm below.
 set -u
 
 CONF=${1:-}
@@ -186,11 +187,26 @@ mv_ctl=$(move_cost s1:0 refresh-client)
 # pass. The guard lives out here, not before move_cost's printf: an `exit`
 # inside `$( )` ends the SUBSHELL and the gate would carry on with the message
 # as the number.
-for nv in "project->project:$mv_proj" "agent->terminal:$mv_term" \
-          "pane->pane:$mv_pane" "redraw control:$mv_ctl"; do
-    [ "${nv##*:}" -gt 0 ] || {
-        echo "gate: ${nv%%:*} measured 0 pane visits -- its target did not resolve"; exit 2; }
-done
+#
+# Unless the redraw walked nothing either. Formats with no #{P:} at all, which
+# examples/tmux.conf has had since #108, cost zero by construction: no walk is
+# left for a move to fail to resolve into, so exit 2 was wrong (#125). Zero is
+# still earned, by a #{P:} walk planted in window-status-format and measured
+# the same way on the same server, last of all.
+if [ "$min" -eq 0 ]; then
+    srv set -g window-status-format '#{P:#{pane_id}}' 2>/dev/null
+    probe=$(move_cost s1:0 refresh-client)
+    [ "${probe:-0}" -gt 0 ] || {
+        echo "gate: a planted #{P:} walk measured 0 pane visits too -- nothing was measured"
+        exit 2; }
+    echo "gate: no #{P:} walk in these formats (a planted one on this server costs $probe)"
+else
+    for nv in "project->project:$mv_proj" "agent->terminal:$mv_term" \
+              "pane->pane:$mv_pane" "redraw control:$mv_ctl"; do
+        [ "${nv##*:}" -gt 0 ] || {
+            echo "gate: ${nv%%:*} measured 0 pane visits -- its target did not resolve"; exit 2; }
+    done
+fi
 
 budget=$(awk -v p="$total" -v r="$BUDGET_RATIO" 'BEGIN{printf "%d", p*r}')
 printf 'pane visits per status redraw: %s   (%s panes on the server, budget %s = %sx a full walk)\n' \

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Run tests/run.sh's blocks across J parallel shards.  make test-par [J=12]
 #
+#   tests/par.sh            every block, J shards at a time
+#   tests/par.sh --each     the audit: every GROUP alone, one run apiece
+#
 # Reuses tests/only.sh's extraction -- prelude, every top-level function, the
 # chosen blocks -- but selects blocks by ORDINAL instead of by title pattern,
 # so a title carrying regex metacharacters cannot pick up the wrong block.
@@ -14,6 +17,12 @@
 # it finishes.  No cost table to keep in sync and no static split to unbalance.
 set -u
 
+EACH=""
+case "${1:-}" in
+    "")     ;;
+    --each) EACH=1 ;;
+    *)      echo "usage: tests/par.sh [--each]" >&2; exit 2 ;;
+esac
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 J="${J:-$(nproc 2>/dev/null || echo 4)}"
 WORK=$(mktemp -d) || exit 1
@@ -60,6 +69,24 @@ while IFS=$'\t' read -r id n g; do
 done < "$WORK/groups.tsv"
 
 [ -s "$WORK/groups.tsv" ] || { echo "  nothing selected"; exit 0; }
+
+# The audit. A block reading a variable a neighbour set passes under `make
+# test-par`, whose shard carries that neighbour, and goes red alone (#120,
+# #125). One run per GROUP: blocks sharing a `# group:` may share fixtures.
+if [ -n "$EACH" ]; then
+    each_red=""; each_n=0
+    for f in "$WORK"/list/*; do
+        sel=$(tr '\n' ',' < "$f"); sel=${sel%,}
+        each_n=$((each_n + 1))
+        PAR_BLOCKS="$sel" "$DIR/tests/par.sh" > "$WORK/each.log" 2>&1 && continue
+        each_red="$each_red $sel"
+        printf '== red alone: %s ==\n' "$sel"
+        sed 's/^/  /' "$WORK/each.log"
+    done
+    printf '  %d groups run alone, red alone:%s\n' "$each_n" "${each_red:- none}"
+    [ -z "$each_red" ] || exit 1
+    exit 0
+fi
 
 for f in "$WORK"/list/*; do
     id=${f##*/}

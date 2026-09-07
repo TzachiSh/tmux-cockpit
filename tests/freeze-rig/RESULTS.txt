@@ -1,5 +1,31 @@
 tmux-cockpit freeze rig -- raw results. tmux 3.7c, 12-core Linux.
 
+=== 2026-09-06: zero pane visits is a PASS, not "could not measure" (#125) ===
+The move guard read a 0 as "the target did not resolve" and exited 2, so the
+formats we actually ship could not be graded at all. current-example.conf is
+those formats, extracted from examples/tmux.conf the way fixed-example.conf was
+extracted one generation earlier; it holds no #{P:} at all (#108 moved the
+window dot onto a precomputed option).
+
+  gate.sh current-example.conf  before  exit 2, "project->project measured 0 pane visits"
+                                after   exit 0, PASS, redraw 0, moves 0/0/0 on 120/121 panes
+  gate.sh (default self-test)   before and after  exit 1, redraw 696, moves 706/712/706
+  gate.sh fixed-example.conf    before and after  exit 1, redraw 120, moves 125/125/125
+
+Zero has to earn it. Before it prints a zero verdict the gate plants a #{P:}
+walk in window-status-format and measures the same forced redraw again. That
+probe read 37 visits here, which is what tells a config with nothing to walk
+from a rig that measured nothing at all.
+
+current-example.conf is regenerated from examples/tmux.conf by hand when those
+formats move. Lines 1 to 9 are the palette gate.sh's own self-test sets (its
+lines 74 to 78, #ff6b6b and friends, NOT cockpit.tmux's #f38ba8) plus
+@thm_mauve from full.tmux.conf:219. Lines 10 to 18 come from examples/tmux.conf:
+pane-border-{status,style,format}, pane-active-border-style, @cockpit_tab_w and
+window-{,active-}style verbatim, then @catppuccin_window_text and
+@catppuccin_window_current_text renamed to window-status-{,current-}format.
+Colours change no visit count, so the palette's source does not move a number.
+
 === 2026-08-26: phase 3 -- @cockpit_title in the tab, ◆N in the fleet string: no new walk ===
 gate.sh at 6056ca4 (REPS=3 SETTLE=0.5), twice, after three green make check runs
 (745/0): redraw 696 on 120 panes, project->project 706, agent->terminal 712,
