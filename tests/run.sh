@@ -10839,12 +10839,12 @@ is "and says who found no sessions" "1" \
 echo "== #125: a killed fleet scan takes its temp dir with it =="
 # fleet_rows() mktemps a directory for its root-N/scan-N/idx.PID files and
 # removed it only where it RETURNS. The popup is killed far more often than it
-# returns, so a suite run left two of those dirs in /tmp every time.
+# returns, so a suite run left one of those dirs in /tmp every time.
 if need_tmux "the fleet scan's temp dir"; then :; else
 LKD=$(mktmpd)                     # the run's own TMPDIR, so the count is ours
 LKB=$(mktmpd)                     # shims: a private tmux, a git that blocks
 LKG=$(mktmpd)                     # somewhere for the panes to sit
-LKGO="$LKB/go"
+LKGO="$LKB/go"; LKSIG="$LKD/sig"
 LKS="cockpit-leak-$$"; SOCKS="$SOCKS $LKS"
 "$TMUX_REAL" -L "$LKS" -f /dev/null new-session -d -s lk -c "$LKG" \
     'exec -a claude sleep 300' >/dev/null 2>&1
@@ -10852,23 +10852,26 @@ LKS="cockpit-leak-$$"; SOCKS="$SOCKS $LKS"
     'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$LKS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$LKS" > "$LKB/tmux"
-# git blocks until the block says go, which is what holds the scan open long
-# enough to kill it. A poll, not a sleep: nothing here grades the box. The
-# 30s ceiling is a hang guard and nothing reads it -- without one, a shim
-# whose go file went away with the suite's own cleanup spins forever.
-printf '#!/bin/sh\ni=0\nwhile [ ! -e "$LK_GO" ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 0.1; done\nexec %s "$@"\n' \
-    "$(command -v git)" > "$LKB/git"
-chmod +x "$LKB/tmux" "$LKB/git"
+# git blocks until the block says go, which holds the scan open long enough to
+# kill it. The 30s ceiling is a hang guard nothing reads: without one a shim
+# whose go file went with the suite's own cleanup spins forever. Seen once.
+{ printf '#!/bin/sh\ni=0\n'
+  printf 'while [ ! -e "$LK_GO" ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 0.1; done\n'
+  printf 'exec %s "$@"\n' "$(command -v git)"; } > "$LKB/git"
+# The EXIT trap's rm records the signals it inherited, which is the only place
+# the handler's self-disarm is visible: both codes remove the directory.
+{ printf '#!/bin/sh\n'
+  printf 'grep SigIgn /proc/self/status >> "$LK_SIG"\n'
+  printf 'exec %s "$@"\n' "$(command -v rm)"; } > "$LKB/rm"
+chmod +x "$LKB/tmux" "$LKB/git" "$LKB/rm"
 lkdirs() { find "$LKD" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
 until_out '*claude*claude*' "$TMUX_REAL" -L "$LKS" list-panes -a -F '#{pane_current_command}'
-TMPDIR="$LKD" LK_GO="$LKGO" PATH="$LKB:$PATH" \
+TMPDIR="$LKD" LK_GO="$LKGO" LK_SIG="$LKSIG" PATH="$LKB:$PATH" \
     "$DIR/scripts/tmux-review" --fleet >/dev/null 2>&1 &
 LKPID=$!
 lkseen=1; until_out '1' lkdirs || lkseen=0
-# Twice, the shape tmux uses when a pane goes. Two signals sent back to back
-# from here are coalesced, so this does NOT pin the handler's self-disarm --
-# that one is measured at suite level, one surviving directory a run before it
-# and none in three runs after.
+# Twice, the shape tmux uses when a pane goes. Two signals sent from here are
+# coalesced, so what pins the self-disarm is the mask below, not this.
 kill -TERM "$LKPID" 2>/dev/null; kill -TERM "$LKPID" 2>/dev/null
 # Polled, and the -9 only AFTER it: a signal handler that cleans up but forgets
 # to exit leaves the scan running, and a bare `wait` on that hangs the suite.
@@ -10878,16 +10881,30 @@ wait "$LKPID" 2>/dev/null
 : > "$LKGO"                       # release the blocked git shims
 is "the scan's temp dir is there to kill, and gone once it is killed" "1 1" \
    "$lkseen $lkgone"
+# 0x4003 is HUP|INT|TERM. Without the handler's disarm this reads 0 while the
+# directory still goes, which is why the assertion above cannot see it.
+lksig() {                     # the mask the rm inherited, 0 if it recorded none
+    local m; m=$(awk '{print $2}' "$LKSIG" 2>/dev/null | head -1)
+    printf '%x' $(( 0x${m:-0} & 0x4003 ))
+}
+is "the EXIT trap's rm runs with HUP, INT and TERM ignored" "4003" "$(lksig)"
 "$TMUX_REAL" -L "$LKS" kill-server >/dev/null 2>&1
 fi
 
 echo "== #125: prefix m's agents popup lists every pane with its state =="
 # Defect 14's untested surface. The row's command is a display-popup over one
-# tmux list-panes; display-menu expands the item once as a format, which is
-# what turns its ##{...} into the #{...} list-panes then reads.
+# tmux list-panes, and display-menu expands the item once as a format, which is
+# what turns its ##{...} into the #{...} list-panes then reads. The sed applies
+# that pass here, so this pins the FORMAT resolving on a server, not the row
+# reaching display-popup.
 AGC="$DIR/examples/full.tmux.conf"
+agc_has() { grep -c "$1" "$AGC"; }
+# Two statements, not one wrapped argument: a line continuation inside double
+# quotes leaves the newline in the value, which reads as a second field.
+AGROW=$(agc_has '"What is each agent doing?" t')
+AGPOP=$(agc_has 'display-popup -E .*tmux list-panes -a -F')
 is "the What-is-each-agent-doing row opens a popup over tmux list-panes -a" "1 1" \
-   "$(grep -c '"What is each agent doing?" t' "$AGC") $(grep -c 'display-popup -E .*tmux list-panes -a -F' "$AGC")"
+   "$AGROW $AGPOP"
 AGF=$(sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p" "$AGC" | sed 's/##{/#{/g')
 if need_tmux "the agents popup"; then :; else
 AGS="cockpit-agents-$$"; SOCKS="$SOCKS $AGS"
@@ -10927,8 +10944,8 @@ oprun() {                     # oprun <tag> <tmux-open-path args...>
 opkeys() {                    # opkeys <tag> -> "<ctrl-g binds> <ctrl-f binds>"
     local a; a=$(cat "$OPD"/argv-"$1".* 2>/dev/null)
     printf '%s %s' \
-        "$(printf '%s\n' "$a" | grep -c '^ctrl-g:change-preview(.*change-preview-label( diff )$')" \
-        "$(printf '%s\n' "$a" | grep -c '^ctrl-f:change-preview(.*change-preview-label( content )$')"
+        "$(printf '%s\n' "$a" | grep -c '^ctrl-g:.*change-preview-label( diff )$')" \
+        "$(printf '%s\n' "$a" | grep -c '^ctrl-f:.*change-preview-label( content )$')"
 }
 oprun browse --browse "$OPD"
 oprun pick   --pick "$PANE"
