@@ -2409,7 +2409,8 @@ echo "== notify's deadline covers the whole read, not each line =="
 # A per-line timeout is not a bound: a writer emitting a line a second keeps the
 # hook alive forever, and the contract is that a hook never blocks its agent.
 # Graded by the writer's progress, not a clock: once notify exits the pipe has
-# no reader, so the next printf fails and the drip stops short of 8 (#135).
+# no reader, so the next printf dies of SIGPIPE, or fails where that signal is
+# ignored, and the drip stops short of 8 (#135).
 DL=$(mktmpf)
 ( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" || break; echo "$i" >> "$DL"; sleep 1; done ) \
     | "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1
