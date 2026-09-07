@@ -8457,10 +8457,14 @@ printf 'TOP\na\nb\nCHANGED\n' > "$RRDIR/src.go"
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" "still here"
 until_cap "$RR" "$RRP" '*still here*'
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" C-u    # readline: clear the typed text again
-case "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" in
-    *"● src.go:3 "*) ok "until ^R the list is the snapshot: the mark stays where it was pinned" ;;
-    *) bad "until ^R the list is the snapshot: the mark stays where it was pinned" "● src.go:3 " "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")" ;;
-esac
+# ^R's reload empties fzf's list until --rows answers, and any typing in that
+# gap blanks the rows, so under load a one-shot capture reads the header (#131).
+if until_cap "$RR" "$RRP" '*● src.go:3 *'; then
+    ok "until ^R the list is the snapshot: the mark stays where it was pinned"
+else
+    bad "until ^R the list is the snapshot: the mark stays where it was pinned" "● src.go:3 " \
+        "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"
+fi
 "$TMUX_REAL" -L "$RR" send-keys -t "$RRP" C-r
 if until_cap "$RR" "$RRP" '*no longer anchor*## src.go:3 (+)*'; then ok "^R names the comment the agent moved"
 else bad "^R names the comment the agent moved" "no longer anchor ... ## src.go:3 (+)" "$("$TMUX_REAL" -L "$RR" capture-pane -p -t "$RRP")"; fi
