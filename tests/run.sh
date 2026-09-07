@@ -2408,12 +2408,15 @@ rm -rf "$HU"
 echo "== notify's deadline covers the whole read, not each line =="
 # A per-line timeout is not a bound: a writer emitting a line a second keeps the
 # hook alive forever, and the contract is that a hook never blocks its agent.
-start=$SECONDS
-( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i"; sleep 1; done ) \
+# Graded by the writer's progress, not a clock: once notify exits the pipe has
+# no reader, so the next printf dies of SIGPIPE, or fails where that signal is
+# ignored, and the drip stops short of 8 (#135).
+DL=$(mktmpf)
+( for i in 1 2 3 4 5 6 7 8; do printf 'drip %s\n' "$i" || break; echo "$i" >> "$DL"; sleep 1; done ) \
     | "$DIR/scripts/agent-state" notify %999999 >/dev/null 2>&1
-took=$((SECONDS - start))
-if [ "$took" -le 4 ]; then ok "a slow drip does not hold the hook open"
-else bad "a slow drip does not hold the hook open" "<=4s" "${took}s"; fi
+rc=${PIPESTATUS[1]}; n=$(wc -l < "$DL")
+if [ "$rc" = 0 ] && [ "$n" -lt 8 ]; then ok "a slow drip does not hold the hook open"
+else bad "a slow drip does not hold the hook open" "rc 0, fewer than 8 lines drained" "rc $rc, $n lines"; fi
 
 echo "== the branch picker must not hijack ctrl-n =="
 # ctrl-n is fzf's own move-down. As an --expect key it instead EXITS fzf, so
