@@ -126,7 +126,10 @@ go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
   if in_client; then
     tmux switch-client -t "=$name"
   else
-    tmux attach-session -t "=$name"
+    # -d: the newest attach takes the session. Without it clients accumulate and
+    # nothing ever removes them -- on a Coder workspace the agent runs with
+    # --no-reap, so a closed browser tab leaves its client attached for days (#145).
+    tmux attach-session -d -t "=$name"
   fi
 }
 

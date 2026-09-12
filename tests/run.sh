@@ -1226,6 +1226,27 @@ until_out '?*' "$TMUX_REAL" -L "$TC" list-clients -F '#{client_name}'
 ( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" timeout 3 "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
 is "tm from a popup moves the real client to the session" "made" \
    "$("$TMUX_REAL" -L "$TC" list-clients -F '#{session_name}' 2>/dev/null | head -1)"
+
+# An attach that does not displace the old client leaves it attached forever and
+# nothing reaps it: on a Coder workspace a closed tab held one for 41 hours (#145).
+# Asserted through a fake tmux on PATH, the same way the styled picker tiers are:
+# two live clients on one session cannot be built reliably inside the suite.
+TMF=$(mktmpd)
+cat > "$TMF/tmux" <<'FAKETMUX'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TMF_LOG"
+case "$1" in
+  has-session)     exit 0 ;;   # the session already exists, so go() skips creation
+  display-message) echo 1; exit 0 ;;
+  *)               exit 0 ;;
+esac
+FAKETMUX
+chmod +x "$TMF/tmux"
+TMF_LOG="$TMF/log"; export TMF_LOG
+env -u TMUX -u TMUX_PANE TMF_LOG="$TMF_LOG" PATH="$TMF:$PATH" "$DIR/scripts/tm" target >/dev/null 2>&1
+tmfline=$(grep '^attach-session' "$TMF_LOG" 2>/dev/null | head -1)
+is "tm attaches with -d so the newest client takes the session" "attach-session -d -t =target" "$tmfline"
+rm -rf "$TMF"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
 fi
