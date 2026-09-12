@@ -2237,6 +2237,8 @@ dc() {                        # dc <PATH> -- the doctor's output on the fake box
 # every rewording a red suite.
 dcrows() { sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p'; }
 dcrow() { printf '%s\n' "$1" | dcrows | grep -c -x "$2"; }
+# The formats row's count, anchored to the column so rewording the rest is free.
+dcfound() { printf '%s\n' "$1" | grep -cF "] formats        $2"; }
 
 # vnum is install.sh's own copy of the parser in scripts/tui-fetch (neither
 # script can source the other). Lifted out whole, so these assert the numbers
@@ -2304,7 +2306,7 @@ printf '%s\n' \
 dcout=$(dc "$DCP"); dcrc=$?
 is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn formats")"
 # The count, not the prose around it: dcrow exists a few lines up for that reason.
-is "and it counts them" "1" "$(printf '%s\n' "$dcout" | grep -cE '\] formats +2 ')"
+is "and it counts them" "1" "$(dcfound "$dcout" '2 formats ')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
@@ -2320,11 +2322,17 @@ mkdir -p "$DH/.config/tmux"
 printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
 is "a walk in the unwired XDG config is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
-rm -rf "$DH/.config"
+is "and one walk reads as one format" "1" "$(dcfound "$dcout" '1 format ')"
+# A dotfiles checkout symlinks the two paths together, and counting the file
+# twice would report two walks for the one line it has.
+rm -f "$DH/.config/tmux/tmux.conf"; ln -s "$DH/.tmux.conf" "$DH/.config/tmux/tmux.conf"
+printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a symlinked config pair counts its walk once" "1" "$(dcfound "$dcout" '1 format ')"
+rm -rf "$DH/.config"; cp "$DC/conf.bak" "$DH/.tmux.conf"
 # tmux joins a trailing backslash before expanding, so a wrapped format hides its
 # walk from anything reading physical lines.
-printf '%s\n' 'set -g pane-border-format "#{?pane_active,,\\' '#{P:#{@panestate} }}"' \
-  >> "$DH/.tmux.conf"
+printf 'set -g pane-border-format "#{?pane_active,,\\\n#{P:#{@panestate} }}"\n' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
 is "a walk on a continuation line is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
 cp "$DC/conf.bak" "$DH/.tmux.conf"

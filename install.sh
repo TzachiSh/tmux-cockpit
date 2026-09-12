@@ -171,6 +171,9 @@ if [ "$check" -eq 1 ]; then
     if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
     else
         walk=0
+        # A dotfiles checkout symlinks one onto the other, and counting a file
+        # twice would report two walks for one line.
+        [ "$cxdg" -ef "$chome" ] && chome=''
         # Both files, like the row above, and the unwired one is not the harmless
         # half: tmux applies XDG second, so its walk is the value that survives.
         for c in "$cxdg" "$chome"; do
@@ -190,8 +193,10 @@ set*\ @catppuccin_window_current_text\ *)
             done < "$c"
         done
         if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
-        else row warn formats "$walk formats walk panes" \
-                 "recopy them from $DIR/examples/tmux.conf"
+        else
+            if [ "$walk" -eq 1 ]; then nf=format; else nf=formats; fi
+            row warn formats "$walk $nf walk panes" \
+                "recopy them from $DIR/examples/tmux.conf"
         fi
     fi
 
