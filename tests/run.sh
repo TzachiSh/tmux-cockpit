@@ -2279,6 +2279,35 @@ mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/
 dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
 rm -rf "$DH/.config"
+
+# The freeze arrives as a config that predates the precompute change: the dot and
+# the NEEDS YOU banner still derived at redraw time. tests/freeze-rig/gate.sh puts
+# that at 336 pane visits per redraw against a 120 budget, 0 once they read the
+# precomputed options, so the doctor names it instead of leaving a freeze as the
+# only symptom.
+cp "$DH/.tmux.conf" "$DC/conf.bak"
+dcout=$(dc "$DCP")
+is "a config with no redraw formats is an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
+# By name, not by line number: the point is the lines we actually ship.
+shipped=$(grep -cE '^set -g (pane-border-format|@catppuccin_window(_current)?_text) ' \
+          "$DIR/examples/tmux.conf")
+is "examples/tmux.conf still ships the three redraw formats" "3" "$shipped"
+grep -E '^set -g (pane-border-format|@catppuccin_window(_current)?_text) ' \
+     "$DIR/examples/tmux.conf" >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "and they are an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# Five #{P:} walks per tab for the dot, and the banner as #{S:#{W:#{P:}}}, which
+# is a whole-server walk per visible pane. Both shapes, one row.
+printf '%s\n' \
+  'set -g @catppuccin_window_text " #{?#{m:*needs-input*,#{P:#{@panestate} }},A,}"' \
+  'set -g pane-border-format "#{?#{!=:#{S:#{W:#{?#{m:*needs-input*,#{P:#{@panestate} }},x,}}},},NEEDS YOU,}"' \
+  >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP"); dcrc=$?
+is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn formats")"
+is "and it counts them" "1" "$(printf '%s\n' "$dcout" | grep -c '2 format(s) walk every pane')"
+is "and that warning exits 1" "1" "$dcrc"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
 case "$dcout" in

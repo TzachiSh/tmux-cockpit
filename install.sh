@@ -164,6 +164,26 @@ if [ "$check" -eq 1 ]; then
     else row fail config 'no tmux config' "$wire_fix"
     fi
 
+    # tmux re-expands these formats once per visible pane per status redraw, and
+    # every agent title forces a redraw, so a #{P:} walk here IS the freeze: a
+    # config predating the precompute measured 336 visits against a 120 budget.
+    if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
+    else
+        walk=0
+        while read -r l || [ -n "$l" ]; do
+            case "$l" in
+                set*pane-border-format*|set*window-status-format*|\
+set*window-status-current-format*|set*catppuccin_window_text*|\
+set*catppuccin_window_current_text*)
+                    case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
+            esac
+        done < "$conf"
+        if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
+        else row warn formats "$walk format(s) walk every pane" \
+                 "recopy them from $DIR/examples/tmux.conf"
+        fi
+    fi
+
     if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'
     elif ! command -v jq >/dev/null 2>&1; then row skip hooks 'jq missing'
     else
