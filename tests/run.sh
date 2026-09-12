@@ -2308,6 +2308,13 @@ is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn f
 is "and it counts them" "1" "$(printf '%s\n' "$dcout" | grep -c '2 format(s) walk every pane')"
 is "and that warning exits 1" "1" "$dcrc"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
+# The option name has to be a whole word. Without that the glob fires on any
+# option whose name merely ends in one of these, and the row cries over a
+# #{P:} walk the redraw path never sees.
+printf '%s\n' 'set -g @my-window-status-format "#{P:#{@panestate} }"' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "an unrelated option ending in a format name stays ok" "1" "$(dcrow "$dcout" "ok formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
 case "$dcout" in

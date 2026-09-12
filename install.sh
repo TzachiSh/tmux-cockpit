@@ -172,9 +172,9 @@ if [ "$check" -eq 1 ]; then
         walk=0
         while read -r l || [ -n "$l" ]; do
             case "$l" in
-                set*pane-border-format*|set*window-status-format*|\
-set*window-status-current-format*|set*catppuccin_window_text*|\
-set*catppuccin_window_current_text*)
+                set*\ pane-border-format\ *|set*\ window-status-format\ *|\
+set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
+set*\ @catppuccin_window_current_text\ *)
                     case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
             esac
         done < "$conf"
