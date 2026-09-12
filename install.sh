@@ -149,7 +149,8 @@ if [ "$check" -eq 1 ]; then
     conf=''; wired=0
     # Both candidates, not the first readable one: tmux loads both, so the
     # run-shell line in either wires the box.
-    for c in "${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf" "${HOME:-}/.tmux.conf"; do
+    cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
+    for c in "$cxdg" "$chome"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
         # read, not grep: this row still has to answer on a PATH with nothing on it.
@@ -170,16 +171,26 @@ if [ "$check" -eq 1 ]; then
     if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
     else
         walk=0
-        while read -r l || [ -n "$l" ]; do
-            case "$l" in
-                set*\ pane-border-format\ *|set*\ window-status-format\ *|\
+        # Both files, like the row above, and the unwired one is not the harmless
+        # half: tmux applies XDG second, so its walk is the value that survives.
+        for c in "$cxdg" "$chome"; do
+            [ -r "$c" ] || continue
+            acc=''
+            while read -r l || [ -n "$l" ]; do
+                # tmux joins a trailing backslash before expanding, so a format
+                # wrapped across lines has to be rejoined to be seen at all.
+                case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
+                l="$acc$l"; acc=''
+                case "$l" in
+                    set*\ pane-border-format\ *|set*\ window-status-format\ *|\
 set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
 set*\ @catppuccin_window_current_text\ *)
-                    case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
-            esac
-        done < "$conf"
+                        case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
+                esac
+            done < "$c"
+        done
         if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
-        else row warn formats "$walk format(s) walk every pane" \
+        else row warn formats "$walk formats walk panes" \
                  "recopy them from $DIR/examples/tmux.conf"
         fi
     fi

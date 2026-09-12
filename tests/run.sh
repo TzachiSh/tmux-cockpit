@@ -2280,11 +2280,9 @@ dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
 rm -rf "$DH/.config"
 
-# The freeze arrives as a config that predates the precompute change: the dot and
-# the NEEDS YOU banner still derived at redraw time. tests/freeze-rig/gate.sh puts
-# that at 336 pane visits per redraw against a 120 budget, 0 once they read the
-# precomputed options, so the doctor names it instead of leaving a freeze as the
-# only symptom.
+# A config predating the precompute derives the dot and the banner at redraw time.
+# tests/freeze-rig/gate.sh puts that at 336 pane visits against a 120 budget, so
+# the doctor names it rather than leaving a freeze as the only symptom.
 cp "$DH/.tmux.conf" "$DC/conf.bak"
 dcout=$(dc "$DCP")
 is "a config with no redraw formats is an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
@@ -2305,8 +2303,8 @@ printf '%s\n' \
   >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP"); dcrc=$?
 is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn formats")"
-is "and it counts them" "1" "$(printf '%s\n' "$dcout" | grep -c '2 format(s) walk every pane')"
-is "and that warning exits 1" "1" "$dcrc"
+# The count, not the prose around it: dcrow exists a few lines up for that reason.
+is "and it counts them" "1" "$(printf '%s\n' "$dcout" | grep -cE '\] formats +2 ')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
@@ -2314,6 +2312,21 @@ cp "$DC/conf.bak" "$DH/.tmux.conf"
 printf '%s\n' 'set -g @my-window-status-format "#{P:#{@panestate} }"' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
 is "an unrelated option ending in a format name stays ok" "1" "$(dcrow "$dcout" "ok formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# tmux applies the XDG file second, so a walk there is the value that survives
+# even when the wired file is the clean one. Reading only the wired file called
+# this layout ok while the freeze was live.
+mkdir -p "$DH/.config/tmux"
+printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' > "$DH/.config/tmux/tmux.conf"
+dcout=$(dc "$DCP")
+is "a walk in the unwired XDG config is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
+rm -rf "$DH/.config"
+# tmux joins a trailing backslash before expanding, so a wrapped format hides its
+# walk from anything reading physical lines.
+printf '%s\n' 'set -g pane-border-format "#{?pane_active,,\\' '#{P:#{@panestate} }}"' \
+  >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a walk on a continuation line is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
