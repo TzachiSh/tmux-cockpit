@@ -194,8 +194,8 @@ set*\ @catppuccin_window_current_text\ *)
         done
         if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
         else
-            if [ "$walk" -eq 1 ]; then nf=format; else nf=formats; fi
-            row warn formats "$walk $nf walk panes" \
+            if [ "$walk" -eq 1 ]; then nf='format walks'; else nf='formats walk'; fi
+            row warn formats "$walk $nf panes" \
                 "recopy them from $DIR/examples/tmux.conf"
         fi
     fi

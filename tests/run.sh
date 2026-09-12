@@ -2238,7 +2238,9 @@ dc() {                        # dc <PATH> -- the doctor's output on the fake box
 dcrows() { sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p'; }
 dcrow() { printf '%s\n' "$1" | dcrows | grep -c -x "$2"; }
 # The formats row's count, anchored to the column so rewording the rest is free.
-dcfound() { printf '%s\n' "$1" | grep -cF "] formats        $2"; }
+# The run of spaces is a + rather than a literal: the row helper's width is not
+# this assertion's business.
+dcfound() { printf '%s\n' "$1" | grep -cE "\] formats +$2"; }
 
 # vnum is install.sh's own copy of the parser in scripts/tui-fetch (neither
 # script can source the other). Lifted out whole, so these assert the numbers
