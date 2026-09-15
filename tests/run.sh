@@ -222,7 +222,7 @@ if [ -n "$rp" ]; then
         *) bad "repo config guards against stale state" "pane_current_command" "absent" ;;
     esac
     # A stray co-client at a different width makes tmux over-draw the narrower
-    # one; smallest sizes the window to the smallest client so none is (#145).
+    # one; smallest sizes the window to the smallest client so none is (#144, #145).
     is "repo config sets window-size smallest" "smallest" \
        "$(tmux -L "$SOCK" show-options -gv window-size 2>/dev/null)"
 else
