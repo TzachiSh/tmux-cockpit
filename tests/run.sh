@@ -221,8 +221,12 @@ if [ -n "$rp" ]; then
         *pane_current_command*) ok "repo config guards against stale state" ;;
         *) bad "repo config guards against stale state" "pane_current_command" "absent" ;;
     esac
+    # A stray co-client at a different width makes tmux over-draw the narrower
+    # one; smallest sizes the window to the smallest client so none is (#145).
+    is "repo config sets window-size smallest" "smallest" \
+       "$(tmux -L "$SOCK" show-options -gv window-size 2>/dev/null)"
 else
-    for i in 1 2 3 4 5 6; do skip_ "repo config (no scratch server)"; done
+    for i in 1 2 3 4 5 6 7; do skip_ "repo config (no scratch server)"; done
 fi
 tmux -L "$SOCK" kill-server >/dev/null 2>&1
 fi
