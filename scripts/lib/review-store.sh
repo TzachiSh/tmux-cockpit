@@ -18,7 +18,8 @@
 #            "<i>.frag" "<i>.body"; end and frag exist only when present
 #   STORE_N  record count
 # parse_store FILE  fills them. A file that breaks the grammar is moved to
-#                   FILE.bak and the state is blank; it never fails (a hook
+#                   a fresh FILE.bak.XXXXXX (in STORE_BAK) and the state is
+#                   blank; it never fails (a hook
 #                   or a popup must not die on a bad store). Missing = blank.
 # format_store FILE writes them back -- to a 0600 temp beside FILE, then one
 #                   mv, so a reader never sees half a store.
@@ -26,7 +27,7 @@
 
 parse_store() {
     local file=$1 line hdr loc i=-1 frag=0 body=0 bad=0
-    STORE=(); STORE_N=0
+    STORE=(); STORE_N=0; STORE_BAK=
     [ -f "$file" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
@@ -67,8 +68,9 @@ parse_store() {
     done < "$file"
     if [ $bad = 1 ]; then
         STORE=(); STORE_N=0
-        mv -f -- "$file" "$file.bak" 2>/dev/null
-        printf 'review-store: %s does not parse; set aside as %s.bak\n' "$file" "$file" >&2
+        # A fresh name: a second bad store must not overwrite the first one's backup.
+        STORE_BAK=$(mktemp "$file.bak.XXXXXX") && mv -f -- "$file" "$STORE_BAK" 2>/dev/null
+        printf 'review-store: %s does not parse; set aside as %s\n' "$file" "$STORE_BAK" >&2
         return 0
     fi
     STORE_N=$((i+1))

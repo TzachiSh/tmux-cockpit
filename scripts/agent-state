@@ -7,6 +7,7 @@ set -u
 
 state="${1:-off}"
 pane="${2:-${TMUX_PANE:-}}"
+idle=""
 # Must be a pane id. tmux resolves -t by prefix-matching session names too, so a
 # stray argument like "pstes" happily resolves to session "pstest" and we would
 # write state onto someone else's pane. Callers only ever pass %N.
@@ -15,86 +16,36 @@ case "$pane" in
     *) exit 0 ;;
 esac
 
-# --- one tmux process per STEP, not per option --------------------------------
-# Every transition used to spend a separate `tmux` process on every option it
-# touched -- measured: 12 invocations for `running`, 10 for `done`, 12 for
-# `needs-input`. `running` fires on UserPromptSubmit and on EVERY PreToolUse and
-# PostToolUse (examples/claude-hooks.json), and a hook has to return before the
-# tool call proceeds, so each one of those was a fork plus a server round-trip
-# sitting on the agent's critical path.
-#
-# tmux takes a whole command LIST in one invocation when the commands are
-# separated by a bare `;` argument: it runs them in order, each one sees what
-# the ones before it wrote, and each one's output goes to the same stdout. So a
-# read-decide-write step collapses to one process. Queue with tq, run with
-# tflush; three steps remain (read the state, write it and derive the counters
-# from what was written, write the counters that actually changed).
-#
-# Only values from a CLOSED set are ever queued -- the validated state keyword,
-# the ranked window keyword, the counter template. tmux's own argv parsing
-# treats a bare `;` as a separator and strips a trailing one, so the one
-# untrusted string here (the ask line pulled out of the hook payload) is
-# deliberately kept out of these lists and written by a call of its own.
-tq_cmds=()
-tq() {                                  # queue one command for the next flush
-    [ "${#tq_cmds[@]}" -gt 0 ] && tq_cmds+=(';')
-    tq_cmds+=("$@")
-}
-# Fail-open, exactly as the single calls were: a hook must never block the agent
-# that fired it. tmux does abandon the rest of a list when one command fails,
-# but every command here targets the same pane -- if one fails the pane is gone
-# and the separate calls would all have failed too.
-#
-# The emptiness test is not decoration: bash before 4.4 (macOS ships 3.2, and
-# this script has no bash-4 floor -- it is the hook every transition runs) reads
-# an EMPTY array's "${a[@]}" as an unset variable and aborts under `set -u`.
-# Every expansion below is therefore guarded by a count first. Same hazard
-# tmux-jump documents at its own array append.
-tflush() {
-    [ "${#tq_cmds[@]}" -gt 0 ] || return 0
-    tmux "${tq_cmds[@]}" >/dev/null 2>&1 || true
-    tq_cmds=()
-}
-
 # State lives in a per-pane tmux option, not a file. tmux evaluates it directly
 # inside status/border formats, so a redraw costs zero shell spawns -- and the
 # option dies with the pane, so there is nothing to garbage collect.
-current=$(tmux show-option -pqv -t "$pane" @panestate 2>/dev/null || true)
+#
+# The whole transition -- read the state, decide, write it, re-derive the
+# counters -- is ONE tmux command (an `if -F` whose body is the writes). The
+# server runs a command list without interleaving another client's, so hooks
+# firing in parallel cannot write counters from a stale read; and the no-op
+# path (twice per tool call) is that one call with a false condition.
 
 case "$state" in
 notify)
     # Pressing ESC to cancel fires NO Claude Code hook -- not Stop, not
     # SessionEnd -- so a cancelled pane would sit on "running" forever. Claude
     # does emit a Notification once it goes idle, which lets us recover.
-    # Bounded read, not `cat`. cat waits for EOF, and the writer can hold the
-    # pipe open without sending anything -- which wedges the hook, and a wedged
-    # hook blocks the agent that fired it. read -t gives up instead; the partial
-    # line survives in $chunk, so a payload arriving without a trailing newline
-    # is still seen.
-    # One deadline for the WHOLE read, not per line: a writer emitting a line
-    # every second would keep a per-line timeout alive forever, and the contract
-    # here is that a hook never blocks the agent that fired it.
-    payload="" chunk="" deadline=$(( SECONDS + 2 ))
-    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
-        # Keep the newline read stripped. Without it the lines fuse, so a
-        # message wrapped across two lines ("Claude needs your" / "permission
-        # to use Bash") never matches the pattern and the alert is lost -- and
-        # two unrelated lines can fuse into a spurious match the other way.
-        IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-        payload="$payload$chunk
-"; chunk=""
-    done
-    case "$payload" in
-        *'waiting for your input'*)
-            # Claude emits this while it is BLOCKED on a permission prompt too,
-            # so clearing here would wipe the alert precisely because you have
-            # not answered yet. Only a "running" pane is genuinely idle now.
-            # Both clear when work resumes: UserPromptSubmit / PostToolUse
-            # overwrite the state. Switching windows must NOT clear them --
-            # scanning the tabs is exactly when you need the flags to survive.
-            case "$current" in needs-input|error|done) exit 0 ;; esac
-            state=off ;;
-        *'needs your permission'*) state=needs-input ;;
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+    read_payload false
+    # Claude Code names the kind; the English text match is for older versions
+    # that send no notification_type.
+    json_str notification_type
+    case "$REPLY" in
+        permission_prompt|agent_needs_input|elicitation_dialog) state=needs-input ;;
+        idle_prompt) state=off idle=1 ;;
+        '') case "$payload" in
+                *'waiting for your input'*) state=off idle=1 ;;
+                *'needs your permission'*) state=needs-input ;;
+                *) exit 0 ;;
+            esac ;;
         *) exit 0 ;;                        # unrelated notification: ignore
     esac
     # The ask itself, for the border: knowing WHAT is asked separates a one-key
@@ -110,23 +61,11 @@ notify)
     # if this write waited for that guard, the newer ask text would be
     # silently dropped exactly when it matters most.
     if [ "$state" = needs-input ]; then
-        # An escaped quote inside the message value truncates it early --
-        # this is not meant to be a JSON parser, just enough to pull one
-        # field out of Claude's own hook payload.
-        case "$payload" in
-            *'"message"'*)
-                msg=${payload#*\"message\"}
-                msg=${msg#*:}
-                msg=${msg#*\"}
-                msg=${msg%%\"*}
-                # A hook payload is not to be trusted blindly -- this reaches
-                # a tmux format string next -- so strip control chars and cap
-                # the length before it is ever written.
-                msg=${msg//[$'\001'-$'\037']/}
-                msg=${msg:0:120}
-                ;;
-            *) msg="" ;;
-        esac
+        json_str message
+        # A hook payload is not to be trusted blindly -- this reaches a tmux
+        # format string next -- so strip control chars and cap the length.
+        msg=${REPLY//[$'\001'-$'\037']/}
+        msg=${msg:0:120}
         # An empty extraction must still clear, not skip: skipping left the
         # PREVIOUS pane's ask standing on the border, so a brand-new blocked
         # pane with no text of its own displayed someone else's old question.
@@ -148,7 +87,6 @@ wake)
     # TeammateIdle: a teammate's idle notification wakes the lead with no hook
     # of its own, so the pane stayed `done` until its first tool call. Any other
     # state is already truthful; the notification queues behind a prompt.
-    case "$current" in done|'') state=running ;; *) exit 0 ;; esac
     ;;
 esac
 
@@ -158,11 +96,8 @@ esac
 # recount writes no state -- it re-derives the counters below from what the
 # options already say (review-gate and tmux-review call it after touching
 # @cockpit_review).
-case "$state" in
-    running|needs-input|error|done|off|recount) ;;
-    *) exit 0 ;;
-esac
-
+#
+# `when` is the transition's guard on the current @panestate, as a tmux format.
 # Only needs-input and error are STICKY: they must survive a Stop that fires
 # while a permission prompt is still open, which used to demote a red alert to
 # green. Work resuming (running) or an explicit off always clears them.
@@ -172,11 +107,21 @@ esac
 #
 # The two sticky states are ordered: needs-input outranks error, because a
 # permission prompt still on screen is the thing actually blocking you.
-case "$current" in
-    needs-input)
-        case "$state" in running|off|recount) ;; *) exit 0 ;; esac ;;
-    error)
-        case "$state" in running|off|needs-input|recount) ;; *) exit 0 ;; esac ;;
+# An unchanged state is refused too: every set-option forces a redraw.
+cur='#{@panestate}'
+case "$state" in
+    running)     when="#{!=:$cur,running}" ;;
+    needs-input) when="#{!=:$cur,needs-input}" ;;
+    error)       when="#{?#{m/r:^(error|needs-input)\$,$cur},0,1}" ;;
+    done)        when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
+    wake)        when="#{?$cur,#{==:$cur,done},1}" ;;
+    # Claude emits idle while it is BLOCKED on a permission prompt too, so
+    # clearing there would wipe the alert precisely because you have not
+    # answered yet; switching windows must not clear done either.
+    off)         when=1
+                 [ -n "$idle" ] && when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
+    recount)     when=1 ;;
+    *) exit 0 ;;
 esac
 
 # @panestate is written ONLY here, and that is load-bearing for the banner. The
@@ -195,31 +140,28 @@ if [ "$state" = off ]; then
     # own guard below skips the write once the ○ is present, and no high-frequency
     # caller passes `off` (only SessionStart/SessionEnd, once each), so falling
     # through costs one redraw the first time an idle agent appears, nothing after.
-    [ -n "$current" ] && tq set-option -pu -t "$pane" @panestate
+    body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
     # A session that ends takes its review attention with it: a pending mark
-    # or a queued spool on a pane whose agent is gone would count forever.
-    tq set-option -pu -t "$pane" @cockpit_review
-    tq set-option -pu -t "$pane" @cockpit_review_spool
+    # or a queued spool on a pane whose agent is gone would count forever. An
+    # idle agent has not ended, and a review queued or sent into it still waits.
+    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool"
 elif [ "$state" = recount ]; then
-    :                                       # nothing to write; derive below
+    body=""                                 # nothing to write; derive below
 else
-    [ "$current" = "$state" ] && exit 0     # unchanged: skip the redraw (and
-                                            # nothing is queued yet, so there is
-                                            # nothing to flush on the way out)
-    tq set-option -p -t "$pane" @panestate "$state"
+    [ "$state" = wake ] && state=running
+    body="set-option -p -t $pane @panestate $state"
     # A review pasted into this pane but never sent is a pane STATE (set by
     # tmux-review --deliver, walked to by tmux-jump). The human pressing Enter
     # to send it is what fires this hook with `running`, so the transition
     # INTO running is exactly when the mark stops being true.
     #
-    # Inside this arm on purpose, below the unchanged-state early exit above:
-    # `running` arrives on UserPromptSubmit AND on every PreToolUse/PostToolUse
-    # (examples/claude-hooks.json), so anything hoisted above that exit pays a
-    # tmux round-trip per tool call. Known gap that buys: a review delivered
+    # Inside the guarded body on purpose: `running` arrives on UserPromptSubmit
+    # AND on every PreToolUse/PostToolUse (examples/claude-hooks.json), so it
+    # only runs on a real transition. Known gap that buys: a review delivered
     # into a pane that is ALREADY running keeps its mark until the next real
     # transition (done -> running), so the jump key can walk to it once more.
     # Not on wake: nobody pressed Enter, a pending ◆ is still true.
-    [ "$state" = running ] && [ "$1" != wake ] && tq set-option -pu -t "$pane" @cockpit_review
+    [ "$state" = running ] && [ "$1" != wake ] && body="$body ; set-option -pu -t $pane @cockpit_review"
 fi
 
 # Placed here, not in the notify arm above, so it also covers running/off
@@ -228,7 +170,7 @@ fi
 # already refuses to let done overwrite needs-input, and a done pane shows no
 # border alert to read the message on.
 case "$state" in
-    running|off) tq set-option -pu -t "$pane" @panestate_msg ;;
+    running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
 # --- cross-window NEEDS YOU banner, precomputed here, off the redraw path ------
@@ -314,64 +256,31 @@ fmt_ne='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?#{m:*|#{pane_current_com
 # waiting on you (▲) or dead (✕) outranks one waiting to be read.
 fmt_nr='#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
 
-# --- all three derivations, and the three values they are compared against, in
-# --- ONE round-trip, queued behind the writes above ---------------------------
-# This was six separate `tmux` processes: three display-message walks (the
-# banner boolean, the ranked dot, and TWO fleet counts) plus three show-option
-# reads of what is already stored. They are one format now, the fields joined by
-# a US byte (0x1f) -- a byte no state keyword, no window keyword and no counter
-# template can contain, unlike a tab, which bash's own IFS splitting would then
-# collapse and lose the empty fields that mean "unset".
-#
-# It rides in the SAME invocation as the pane writes queued above, and tmux runs
-# a command list in order, so the walk still sees the post-transition state --
-# which is the whole contract these counters have (the banner and the dot must
-# reflect what this transition just wrote, not what was there before it).
-#
-# The three stored values come back through the format (#{@cockpit_win_needs},
-# #{@cockpit_win_state}, #{@cockpit_fleet}) rather than through show-option.
-# A format resolves a user option up the pane -> window -> session -> global
-# chain, and these three live at exactly one level each and are written from
-# here alone, so the value is the same one show-option -w/-g returned -- and
-# #{@x} inserts it literally, without re-expanding, so @cockpit_fleet's #{...}
-# colour tokens survive the read and still compare equal to what was stored.
-sep=$'\037'
-tq display-message -p -t "$pane" \
-    "$fmt_needs$sep"'#{@cockpit_win_needs}'"$sep$fmt_state$sep"'#{@cockpit_win_state}'"$sep$fmt_nb$sep$fmt_ne$sep$fmt_nr$sep"'#{@cockpit_fleet}'"$sep"'#{@cockpit_tui_pid}'
-# Not tflush: this one hands its output back. Same fail-open -- a dead server
-# yields an empty string, every field then reads empty, and empty fields ask for
-# no writes at all, which is what the separate reads did when they failed too.
-pre=$(tmux "${tq_cmds[@]}" 2>/dev/null || true); tq_cmds=()
-win_needs=${pre%%"$sep"*};     pre=${pre#*"$sep"}
-win_cur=${pre%%"$sep"*};       pre=${pre#*"$sep"}
-win_state=${pre%%"$sep"*};     pre=${pre#*"$sep"}
-win_state_cur=${pre%%"$sep"*}; pre=${pre#*"$sep"}
-nb=${pre%%"$sep"*};            pre=${pre#*"$sep"}
-ne=${pre%%"$sep"*};            pre=${pre#*"$sep"}
-nr=${pre%%"$sep"*};            pre=${pre#*"$sep"}
-fleet_cur=${pre%%"$sep"*};     pre=${pre#*"$sep"}
-tui_pid=$pre
+# The fleet string, built by tmux itself so it is counted in the same command
+# as the writes. Escaped so set -F stores the colour tokens, not their values:
+# ##{...#} yields a literal #{...}, ###, a literal #, -- what #{E:} needs later.
+fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=##{@thm_red#}###,bold]▲$fmt_nb#[default] ,}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=##{@thm_peach#}]✕$fmt_ne#[default] ,}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=##{@thm_sky#}]◆$fmt_nr#[default] ,}"
 
-# The compare-then-set guards, unchanged in substance: a counter that did not
-# move writes nothing, because every set-option -- even -p with the same value
-# -- forces a server-wide redraw. What changed is that the writes that DO fire
-# leave together, in one process, in this order.
-if [ "$win_needs" = 1 ]; then
-    [ "$win_cur" = 1 ] || tq set-option -w -t "$pane" @cockpit_win_needs 1
-else
-    [ -z "$win_cur" ] || tq set-option -wu -t "$pane" @cockpit_win_needs
-fi
-if [ -n "$win_state" ]; then
-    [ "$win_state_cur" = "$win_state" ] || tq set-option -w -t "$pane" @cockpit_win_state "$win_state"
-else
-    [ -z "$win_state_cur" ] || tq set-option -wu -t "$pane" @cockpit_win_state
-fi
-fleet=""
-case "$nb" in ''|0|*[!0-9]*) ;; *) fleet="#[fg=#{@thm_red}#,bold]▲$nb#[default] " ;; esac
-case "$ne" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_peach}]✕$ne#[default] " ;; esac
-case "$nr" in ''|0|*[!0-9]*) ;; *) fleet="$fleet#[fg=#{@thm_sky}]◆$nr#[default] " ;; esac
-[ "$fleet" = "$fleet_cur" ] || tq set-option -gq @cockpit_fleet "$fleet"
-tflush
+# --- the derivations ride in the transition's own command ----------------------
+# tmux runs the body in order, so the walks see the post-transition state -- the
+# whole contract these counters have. Each compare-then-set is an `if -F` on the
+# stored value: a counter that did not move writes nothing, because every
+# set-option -- even -p with the same value -- forces a server-wide redraw.
+# #{@cockpit_fleet} inserts the stored value without re-expanding it, so its
+# colour tokens compare equal to what the escaped format yields.
+#
+# Only values from a CLOSED set reach this command string -- the validated pane
+# id and state keyword and the fixed formats above; the one untrusted string
+# (the ask line) was written by a call of its own.
+body="$body ; if -F -t $pane '$fmt_needs' { if -F -t $pane '#{!=:#{@cockpit_win_needs},1}' { set-option -w -t $pane @cockpit_win_needs 1 } } { if -F -t $pane '#{@cockpit_win_needs}' { set-option -wu -t $pane @cockpit_win_needs } }"
+body="$body ; if -F -t $pane '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t $pane '$fmt_state' { set-option -wF -t $pane @cockpit_win_state '$fmt_state' } { set-option -wu -t $pane @cockpit_win_state } }"
+body="$body ; if -F -t $pane '#{!=:$fmt_fleet,#{@cockpit_fleet}}' { set-option -gqF -t $pane @cockpit_fleet '$fmt_fleet' }"
+body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
+# Fail-open: a hook must never block the agent that fired it, and a dead pane or
+# server just yields no pid.
+tui_pid=$(tmux if-shell -F -t "$pane" "$when" "${body# ; }" 2>/dev/null || true)
 
 # --- the push channel: tell cockpit-tui to look now ---------------------------
 # The name check is not optional: a published pid outlives its process (SIGKILL

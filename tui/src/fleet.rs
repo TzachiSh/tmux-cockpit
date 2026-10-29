@@ -3,7 +3,7 @@
 //! There is no ratatui list here and there will not be one: `prefix r` stays
 //! fzf, which gives fuzzy filter, multi-select and the wheel for free. The
 //! width profiles stay because `--rows` consumers size columns from them.
-use crate::data::{Pane, fmt_dur};
+use crate::data::{Pane, State, fmt_dur};
 use crate::theme::Theme;
 
 /// The glyph pair: status glyph + review mark, the two leading columns.
@@ -76,11 +76,11 @@ pub fn rows_text(ps: &[Pane], th: &Theme) -> String {
         .map(|p| {
             format!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                th.glyph(&p.state).0,
+                th.glyph(p.state).0,
                 p.id,
                 p.wher,
                 p.label(),
-                if p.state == "needs-input" { &p.msg } else { &p.doing },
+                if p.state == State::NeedsInput { &p.msg } else { &p.doing },
                 p.since.map(fmt_dur).unwrap_or_default(),
                 p.loc,
                 p.pm
@@ -95,7 +95,7 @@ pub fn rows_json(ps: &[Pane]) -> String {
         .iter()
         .map(|p| {
             serde_json::json!({
-                "id": p.id, "where": p.wher, "state": p.state, "title": p.label(),
+                "id": p.id, "where": p.wher, "state": p.state.as_str(), "title": p.label(),
                 "doing": p.doing, "said": p.said, "asked": p.asked, "msg": p.msg,
                 "since": p.since, "loc": p.loc, "diff": p.pm, "review": p.review,
                 "session": p.sess, "path": p.path,

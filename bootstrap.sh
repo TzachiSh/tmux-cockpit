@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tmux-cockpit bootstrap -- a working tmux on a machine that has nothing.
 #
-#   ./bootstrap.sh             ask before each step
+#   ./bootstrap.sh             ask before each step (fetches fzf if below 0.63)
 #   ./bootstrap.sh --yes       take every default, ask nothing
 #   ./bootstrap.sh --full      also fetch the pinned fzf, gum and bat into $BIN
 #   ./bootstrap.sh --full --latest   the same, at each project's newest tag
@@ -22,11 +22,7 @@ DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
 [ -d "$HOME/.tmux/plugins" ] && PLUGINS="$HOME/.tmux/plugins"
 
-# tmux 3.3 is the real floor (display-popup -T). 3.7 adds MouseDown1Control1 and
-# #[range=control|N]; below it the Ctrl+click features are gated off and the
-# rest works. Both numbers are measured, not guessed -- see cockpit.tmux.
-TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=3
-TMUX_CLICK_MAJ=3 TMUX_CLICK_MIN=7
+TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
 
 USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--full [--latest]] [--check]'
 assume_yes=0 dry=0 full=0 latest=0 check=0
@@ -100,7 +96,7 @@ fi
 PACKAGES=(
     "git:git:cloning the plugins"
     "tmux:tmux:the whole point"
-    "fzf:fzf:the tm session picker (falls back to a numbered menu)"
+    "fzf:fzf:the pickers (0.63+; an older one is fetched below)"
     "bat:batcat:syntax-coloured file previews (falls back to plain text)"
     "jq:jq:merging the Claude Code hooks"
 )
@@ -125,21 +121,38 @@ else
 fi
 
 # ------------------------------------------------------------------- tmux ----
+# tmux ships only a source tarball, so a distro below the floor builds it.
+build_tmux() {
+    local deps tmp
+    case "$PKG" in
+        apt)    deps="build-essential pkg-config bison libevent-dev libncurses-dev curl" ;;
+        dnf)    deps="gcc make pkgconf-pkg-config bison libevent-devel ncurses-devel curl" ;;
+        pacman) deps="base-devel libevent ncurses curl" ;;
+        zypper) deps="gcc make pkg-config bison libevent-devel ncurses-devel curl" ;;
+        *)      deps="" ;;
+    esac
+    [ -n "$deps" ] &&{ run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || return 1; }
+    [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf "$tmp"' RETURN
+    printf '  note:  tmux publishes no checksums; TLS only\n'
+    run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
+        "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
+    run "build tmux $TMUX_BUILD into ~/.local" bash -c "cd '$tmp' && tar xzf t.tgz && cd tmux-$TMUX_BUILD \
+        && ./configure --prefix='$HOME/.local' && make -j\$(nproc 2>/dev/null || echo 2) && make install"
+}
+
 step "tmux version"
-if ! have tmux; then
-    note "tmux is still not installed; the rest of this will not do much"
-    failed+=("tmux missing")
+v=$(tmux -V 2>/dev/null)
+note "found  ${v:-no tmux}"
+if [ -n "$v" ] && ver_ge "$v" "$TMUX_FLOOR_MAJ" "$TMUX_FLOOR_MIN"; then :
+elif [ "$PKG" = brew ]; then
+    run "upgrade tmux" brew upgrade tmux
+elif ask "tmux-cockpit needs tmux $TMUX_BUILD; build it into ~/.local/bin?" y && build_tmux; then
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "add ~/.local/bin to PATH, before /usr/bin" ;; esac
+    hash -r
 else
-    v=$(tmux -V 2>/dev/null)
-    note "found  $v"
-    if ! ver_ge "$v" "$TMUX_FLOOR_MAJ" "$TMUX_FLOOR_MIN"; then
-        note "below the ${TMUX_FLOOR_MAJ}.${TMUX_FLOOR_MIN} floor -- display-popup -T is missing, so the popups will not work"
-        failed+=("tmux older than ${TMUX_FLOOR_MAJ}.${TMUX_FLOOR_MIN}")
-    elif ! ver_ge "$v" "$TMUX_CLICK_MAJ" "$TMUX_CLICK_MIN"; then
-        # Not a failure. cockpit.tmux gates these; everything else works.
-        note "below ${TMUX_CLICK_MAJ}.${TMUX_CLICK_MIN}: Ctrl+click on the branch and the click-to-open picker stay off"
-        skipped+=("ctrl+click features (tmux < ${TMUX_CLICK_MAJ}.${TMUX_CLICK_MIN})")
-    fi
+    failed+=("tmux $TMUX_BUILD")
 fi
 
 # ---------------------------------------------------------------- plugins ----
@@ -236,9 +249,13 @@ fi
 
 # ----------------------------------------------------------- latest tools ----
 # Opt-in and pinned, the way fzf's own installer pins. Debian ships fzf 0.44.1,
-# below the 0.63 floor the styled pickers need, and shadowing it in $BIN is the
-# only clean way up: never over a distro binary, never with sudo.
+# below the 0.63 the pickers need, so that one is fetched even without --full:
+# shadowing it in $BIN is the only clean way up, never over a distro binary,
+# never with sudo.
 FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
+fzf_old=0
+fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
+[ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 63 && fzf_old=1
 
 # The releases redirect, not the API: no token and no 60-per-hour quota.
 latest_tag() {                # latest_tag <owner/repo> <pin>
@@ -289,8 +306,10 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     printf '  ok:    %s -> %s %s\n' "$name" "$BIN/$name" "$ver"
 }
 
-if [ "$full" -eq 1 ]; then
+if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
     step "latest tools"
+    tools="fzf $FZF, gum $GUM and bat $BAT"
+    [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.63+)"
     BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
     G="${COCKPIT_GITHUB:-https://github.com}"
     fz='' gu='' ba=''
@@ -309,7 +328,9 @@ if [ "$full" -eq 1 ]; then
     elif [ "$(uname -s)" = Darwin ] && have brew; then
         # brew already owns these on macOS; a fetched copy would shadow the one
         # it upgrades, and only one of the two would ever move again.
-        if ask "install fzf, gum and bat with brew?" y; then
+        if [ "$full" -eq 0 ] && ask "upgrade fzf $fzf_have with brew?" y; then
+            run "brew upgrade fzf" brew upgrade fzf
+        elif [ "$full" -eq 1 ] && ask "install fzf, gum and bat with brew?" y; then
             run "brew install fzf bat gum" brew install fzf bat gum
         else
             skipped+=("latest tools")
@@ -317,7 +338,7 @@ if [ "$full" -eq 1 ]; then
     elif ! have curl; then
         note "curl is missing; nothing to fetch with"
         skipped+=("latest tools: no curl")
-    elif ask "fetch fzf $FZF, gum $GUM and bat $BAT into $BIN?" y; then
+    elif ask "fetch $tools into $BIN?" y; then
         # Not in a dry run: a preview opens no connection, and the redirect is one.
         if [ "$latest" -eq 1 ] && [ "$dry" -eq 0 ]; then
             FZF=$(latest_tag junegunn/fzf "$FZF")
@@ -332,11 +353,11 @@ if [ "$full" -eq 1 ]; then
             "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
             "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
             fzf || failed+=("fetch fzf")
-        fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
+        [ "$full" -eq 0 ] || fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
             "$G/charmbracelet/gum/releases/download/v$GUM/gum_${GUM}_$gu.tar.gz" \
             "$G/charmbracelet/gum/releases/download/v$GUM/checksums.txt" \
             "gum_${GUM}_$gu/gum" || failed+=("fetch gum")
-        fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
+        [ "$full" -eq 0 ] || fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
             "$G/sharkdp/bat/releases/download/v$BAT/bat-v$BAT-$ba.tar.gz" - \
             "bat-v$BAT-$ba/bat" || failed+=("fetch bat")
     else

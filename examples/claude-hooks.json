@@ -20,6 +20,9 @@
     "green `done` until the lead's first tool call. wake flips done -> running",
     "and leaves a blocked or errored lead alone.",
     "",
+    "SessionStart -> off matches startup|resume|clear, not compact: a",
+    "compaction mid-work must not clear the pane's review mark or queue.",
+    "",
     "PreToolUse fires BEFORE the permission decision, so it cannot clear a",
     "needs-input flag raised by the prompt that follows it. PostToolUse is what",
     "clears the red, once the approved tool has run.",
@@ -73,7 +76,7 @@
   ],
   "hooks": {
     "SessionStart": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
+      { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
       { "matcher": "", "hooks": [ { "type": "command", "command": "jq -Rs '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:.}}' \"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/skills/unslop/SKILL.md 2>/dev/null" } ] }
     ],
     "UserPromptSubmit": [
