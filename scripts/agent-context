@@ -15,14 +15,15 @@ command -v jq >/dev/null 2>&1 || exit 0
 # .context_window.used_percentage is the field a live run actually sends
 # (captured in tests/fixtures/statusline.json); the fallback recomputes the
 # same ratio from the raw token counts in case a future CC version drops the
-# precomputed percentage but keeps the counts.
-pct=$(jq -r '
-    (.context_window.used_percentage
+# precomputed percentage but keeps the counts. Input tokens only, as the
+# statusline docs define used_percentage: output_tokens are not counted.
+# One jq for both fields: line 1 the percentage, line 2 the model.
+out=$(jq -r '
+    ([(.context_window.used_percentage
      // (if (.context_window.context_window_size? and .context_window.current_usage?)
          then ((.context_window.current_usage.input_tokens
                 + (.context_window.current_usage.cache_creation_input_tokens // 0)
-                + (.context_window.current_usage.cache_read_input_tokens // 0)
-                + (.context_window.current_usage.output_tokens // 0))
+                + (.context_window.current_usage.cache_read_input_tokens // 0))
                / .context_window.context_window_size * 100)
          else empty end)
      // empty) | floor
@@ -30,8 +31,10 @@ pct=$(jq -r '
      # that can legitimately overshoot context_window_size, and a future CC
      # version could send used_percentage > 100 outright. Nothing downstream
      # -- the tmux tab suffix included -- expects more than two digits.
-     | if . > 100 then 100 else . end' 2>/dev/null <<<"$payload") || exit 0
-model=$(jq -r '.model.display_name // empty' 2>/dev/null <<<"$payload")
+     | if . > 100 then 100 else . end][0] // ""),
+    (.model.display_name // "")' 2>/dev/null <<<"$payload") || exit 0
+pct=${out%%$'\n'*}
+model=${out#*$'\n'}
 
 case "$pct" in
     ''|*[!0-9]*) exit 0 ;;
@@ -39,10 +42,10 @@ case "$pct" in
         # Claude Code calls this every render, most of the time with an
         # unchanged pct. A `set-option`, even -p on an unchanged value, forces
         # a full server-wide redraw regardless -- measured: 5 identical writes,
-        # 5 redraws. The read is free (0 redraws), so check first and skip the
-        # write entirely when nothing changed. Same guard as agent-state:130.
-        cur=$(tmux show-option -pqv -t "$pane" @panestate_ctx 2>/dev/null)
-        [ "$cur" = "$pct" ] || tmux set-option -p -t "$pane" @panestate_ctx "$pct" 2>/dev/null
+        # 5 redraws. So the write is guarded by a compare, in the same tmux
+        # call. $pane and $pct are validated digits, safe in a command string.
+        tmux if-shell -F -t "$pane" "#{!=:#{@panestate_ctx},$pct}" \
+            "set-option -p -t $pane @panestate_ctx $pct" 2>/dev/null
         ;;
 esac
 printf '%s · ctx %s%%\n' "${model:-claude}" "$pct"

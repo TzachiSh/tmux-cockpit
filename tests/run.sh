@@ -444,6 +444,55 @@ is "but a real pane id still works" "error" "$(sv)"
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 
 fi
+echo "== notify: notification_type picks the state, the text only without it (#157) =="
+if need_tmux "notify notification_type"; then :; else
+# <type> <message> <state before> -> the state after
+nt() { tmux set -p -t "$PANE" @panestate "$3" >/dev/null 2>&1
+    printf '{"message":"%s","notification_type":"%s"}' "$2" "$1" | st notify "$PANE"; sv; }
+is "permission_prompt -> needs-input"    "needs-input" "$(nt permission_prompt 'Claude a besoin de votre permission' running)"
+is "agent_needs_input -> needs-input"    "needs-input" "$(nt agent_needs_input 'x' running)"
+is "elicitation_dialog -> needs-input"   "needs-input" "$(nt elicitation_dialog 'x' running)"
+is "idle_prompt clears running"          ""            "$(nt idle_prompt 'Claude attend votre saisie' running)"
+is "idle_prompt keeps done"              "done"        "$(nt idle_prompt 'x' done)"
+is "idle_prompt keeps needs-input"       "needs-input" "$(nt idle_prompt 'x' needs-input)"
+is "idle_prompt keeps error"             "error"       "$(nt idle_prompt 'x' error)"
+is "an unknown type is ignored"          "running"     "$(nt auth_success 'x' running)"
+# The type wins over the text: English words in a typed payload decide nothing.
+is "a typed payload ignores the old text" "running" \
+   "$(nt agent_completed 'Claude needs your permission' running)"
+is "the typed ask is stored beside the alert" "Claude a besoin de votre permission" \
+   "$(nt permission_prompt 'Claude a besoin de votre permission' running >/dev/null
+      tmux show-option -pqv -t "$PANE" @panestate_msg)"
+# Older Claude Code sends no notification_type: the text still classifies.
+tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
+echo '{"message":"Claude needs your permission"}' | st notify "$PANE"
+is "no type: the permission text still raises needs-input" "needs-input" "$(sv)"
+tmux set -p -t "$PANE" @panestate running >/dev/null 2>&1
+echo '{"message":"Claude is waiting for your input"}' | st notify "$PANE"
+is "no type: the idle text still clears running" "" "$(sv)"
+# A review queued (spool) or sent into an ESC-cancelled pane outlives the idle
+# notification about 60 s later; only a session that ends takes it along.
+tmux set -p -t "$PANE" @cockpit_review sent >/dev/null 2>&1
+tmux set -p -t "$PANE" @cockpit_review_spool /nonexistent >/dev/null 2>&1
+is "idle_prompt on a cancelled pane clears it" "" "$(nt idle_prompt 'Claude is waiting for your input' running)"
+is "but keeps a sent review" "sent" "$(tmux show-option -pqv -t "$PANE" @cockpit_review)"
+is "and a queued one" "/nonexistent" "$(tmux show-option -pqv -t "$PANE" @cockpit_review_spool)"
+st off "$PANE"
+is "while a session end still clears them" "" \
+   "$(tmux show-option -pqv -t "$PANE" @cockpit_review)$(tmux show-option -pqv -t "$PANE" @cockpit_review_spool)"
+tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
+fi
+
+echo "== SessionStart runs off on startup, resume and clear, never on compact (#157) =="
+# Claude Code matches the SessionStart source against the matcher as a regex;
+# compaction mid-work used to run `off` and drop the pane's review mark.
+ssm() { jq -r --arg s "$1" '[.hooks.SessionStart[]
+        | select(.hooks[].command | test("agent-state off"))
+        | select((.matcher // "") as $m | $m == "" or ($s | test("^(" + $m + ")$")))] | length' \
+        "$DIR/examples/claude-hooks.json"; }
+is "SessionStart off fires on startup, resume and clear" "1 1 1" "$(ssm startup) $(ssm resume) $(ssm clear)"
+is "but not on compact" "0" "$(ssm compact)"
+
 # tests: cockpit.tmux
 echo "== stale state is disbelieved =="
 if need_tmux "stale state"; then :; else
@@ -563,7 +612,7 @@ is "no pane id and no TMUX_PANE writes nothing" "" "$(sv)"
 # Per-pane options die with the pane, so stale state cannot outlive a pane and
 # there is no sweep that could delete a live one.
 
-echo "== agent-state: a hook transition costs at most four tmux round-trips =="
+echo "== agent-state: a hook transition costs one tmux round-trip =="
 # `running` fires on UserPromptSubmit and on EVERY PreToolUse/PostToolUse
 # (examples/claude-hooks.json), and the hook has to return before the tool call
 # proceeds -- so every extra `tmux` here is a fork plus a server round-trip on
@@ -596,10 +645,8 @@ rtcall() { : > "$RTLOG"
     wc -l < "$RTLOG" | tr -d ' '; }
 rtrun=$(rtcall running)
 rtdone=$(rtcall done)
-if [ "${rtrun:-99}" -le 4 ]; then ok "running costs at most 4 tmux invocations"
-else bad "running costs at most 4 tmux invocations" "<=4" "$rtrun"; fi
-if [ "${rtdone:-99}" -le 4 ]; then ok "done costs at most 4 tmux invocations"
-else bad "done costs at most 4 tmux invocations" "<=4" "$rtdone"; fi
+is "running costs one tmux invocation" "1" "$rtrun"
+is "done costs one tmux invocation" "1" "$rtdone"
 # Batching must not buy the count with correctness: every option the unbatched
 # version wrote is still written, with the same value.
 is "the pane state still lands" "done" \
@@ -607,29 +654,30 @@ is "the pane state still lands" "done" \
 is "the window dot still ranks it" "done" \
    "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_state)"
 rtneeds=$(rtcall needs-input)
-if [ "${rtneeds:-99}" -le 4 ]; then ok "needs-input costs at most 4 tmux invocations"
-else bad "needs-input costs at most 4 tmux invocations" "<=4" "$rtneeds"; fi
+is "needs-input costs one tmux invocation" "1" "$rtneeds"
 is "the banner boolean still flips" "1" \
    "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_needs)"
 is "the fleet counter still counts" '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
    "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
-# An unchanged state still costs exactly one round-trip: the read that decides
-# nothing changed, and no writes at all.
+# The writes happen inside one tmux command now, so a server hook is what sees
+# them. Not -b: the hook's shell finishes before the hook's client returns.
+RTSETS="$RTS/sets"; : > "$RTSETS"
+"$TMUX_REAL" -L "$RT" set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> $RTSETS'" >/dev/null 2>&1
+# An unchanged state still costs exactly one round-trip and writes nothing.
 rtsame=$(rtcall needs-input)
-is "an unchanged state costs one read and no writes" "1" "$rtsame"
-# The fleet string is now read back through the same batched format rather than
-# through show-option, and it carries #{...} colour tokens. If the format
-# re-expanded them the compare-then-set guard would never match and every
-# transition on the server would rewrite the global -- a server-wide redraw
-# apiece. A second agent pane whose transition leaves the count at 1 must write
-# nothing to @cockpit_fleet.
+is "an unchanged state costs one call and no writes" "1 0" "$rtsame $(wc -l < "$RTSETS" | tr -d ' ')"
+# The stored fleet string carries #{...} colour tokens. If the compare
+# re-expanded them the guard would never match and every transition on the
+# server would rewrite the global -- a server-wide redraw apiece. A second agent
+# pane whose transition leaves the count at 1 must write nothing to it.
 "$TMUX_REAL" -L "$RT" new-window -t t: 'exec -a claude bash' >/dev/null 2>&1
 RTP2=$("$TMUX_REAL" -L "$RT" list-panes -t t:1 -F '#{pane_id}')
-: > "$RTLOG"
 PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
     running "$RTP2" >/dev/null 2>&1
+is "the hook sees the transition's own writes" "1" "$(grep -c '@panestate running' "$RTSETS")"
 is "an unchanged fleet count is never rewritten" "0" \
-   "$(grep -c '@cockpit_fleet ' "$RTLOG")"
+   "$(grep -c '@cockpit_fleet' "$RTSETS")"
 is "and the stored count still carries its colour tokens" \
    '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
    "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
@@ -642,7 +690,7 @@ echo "== agent-state: a transition wakes cockpit-tui, and never a pid that is no
 # terminate -- so an unverified kill shoots a stranger's process, as one probe
 # already did on the live server.
 # Known gap, no code: a second ask on an ALREADY-blocked pane exits at the
-# sticky needs-input guard (scripts/agent-state:176) before reaching the sender,
+# sticky needs-input guard (scripts/agent-state) before reaching the sender,
 # so that question reaches the board on its 1 s poll rather than on a push.
 if need_tmux "agent-state push sender"; then :; else
 PS="cockpit-push-$$"; SOCKS="$SOCKS $PS"
@@ -672,14 +720,13 @@ PSMARK="$PSD/woke"
 "$PSD/cockpit-tui" -c 'trap "printf woke > \"$1\"; exit 0" USR1; sleep 30 & wait' _ "$PSMARK" &
 PSPID=$!
 "$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSPID" >/dev/null 2>&1
-# running, not done: needs-input is sticky and a done would exit before the
-# batch (scripts/agent-state:175-180), so no transition would happen to push.
+# running, not done: needs-input is sticky and a done would fail the
+# transition's guard, so no transition would happen to push.
 pstrans running
 if until_file "$PSMARK" '*woke*'; then ok "a transition signals the running cockpit-tui"
 else bad "a transition signals the running cockpit-tui" "woke" "$(cat "$PSMARK" 2>/dev/null)"; fi
-# An exact count, not the "<= 4" the block above uses: the pid rides a
-# round-trip the transition already pays for, and a `tmux show-option` of its
-# own lands at 4 and would slip through that ceiling unnoticed. The ps shim
+# An exact count: the pid rides the one round-trip the transition already pays
+# for, so a `tmux show-option` of its own would show up as 2. The ps shim
 # beside it pins the other half -- the verify must stay a builtin.
 PSC=$(mktmpd); PSCLOG="$PSC/calls"; PSPSLOG="$PSC/pscalls"; PSERR="$PSC/err"
 cat > "$PSC/tmux" <<SHIMEOF
@@ -697,23 +744,59 @@ pscount() { : > "$PSCLOG"; : > "$PSPSLOG"; : > "$PSERR"
     PATH="$PSC:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
         "$1" "$PSP" >/dev/null 2>"$PSERR"
     wc -l < "$PSCLOG" | tr -d ' '; }
-is "a transition with the view up still costs 3 tmux round-trips" "3" "$(pscount needs-input)"
+is "a transition with the view up still costs 1 tmux round-trip" "1" "$(pscount needs-input)"
 kill "$PSPID" 2>/dev/null; wait "$PSPID" 2>/dev/null
 # An empty option is the common case (no TUI running) and must cost nothing and
 # signal nobody -- `kill -USR1 ''` would be an error on every hook in the world.
 "$TMUX_REAL" -L "$PS" set -gu @cockpit_tui_pid >/dev/null 2>&1
 is "with no pid published the transition still succeeds" "0" "$(pstrans running; echo $?)"
-is "and still costs the same 3 round-trips" "3" "$(pscount needs-input)"
+is "and still costs the same 1 round-trip" "1" "$(pscount needs-input)"
 # The state the guard exists for: a pid nobody unpublished, because SIGKILL, a
 # crash and a power cut all leave @cockpit_tui_pid standing. It is absent from
 # /proc, which is where a `read || ps` fallback forked ps on every transition
 # and leaked bash's redirect failure onto the hook's real stderr.
 sleep 0 & PSDEAD=$!; wait "$PSDEAD" 2>/dev/null
 "$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSDEAD" >/dev/null 2>&1
-is "a dead published pid still costs 3 round-trips" "3" "$(pscount running)"
+is "a dead published pid still costs 1 round-trip" "1" "$(pscount running)"
 is "and forks no ps to ask about it" "" "$(cat "$PSPSLOG")"
 is "and says nothing on the hook's stderr" "" "$(cat "$PSERR")"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-state: 20 transitions in parallel leave the fleet counter exact =="
+# Hooks run in parallel. A read in one tmux call and the counter write in
+# another let a stale count land last; the transition is one command now.
+if need_tmux "agent-state parallel transitions"; then :; else
+PT="cockpit-par-$$"; SOCKS="$SOCKS $PT"
+"$TMUX_REAL" -L "$PT" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for i in $(seq 2 20); do
+    "$TMUX_REAL" -L "$PT" new-window -d -t t: 'exec -a claude sleep 300' >/dev/null 2>&1
+done
+PTPANES=$("$TMUX_REAL" -L "$PT" list-panes -a -F '#{pane_id}')
+until_out '*claude*' "$TMUX_REAL" -L "$PT" display-message -p -t "t:19" '#{pane_current_command}' >/dev/null
+ptall() {                     # <state>: every pane at once, then wait for all
+    local p pids=""
+    for p in $PTPANES; do
+        TMUX="$SOCKDIR/$PT,0,0" "$DIR/scripts/agent-state" "$1" "$p" >/dev/null 2>&1 &
+        pids="$pids $!"
+    done
+    wait $pids                # only ours: the suite may have other jobs running
+}
+ptall needs-input
+is "20 panes blocking at once count ▲20" '#[fg=#{@thm_red}#,bold]▲20#[default] ' \
+   "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
+is "and every window's banner boolean is set" "20" \
+   "$("$TMUX_REAL" -L "$PT" list-windows -F '#{@cockpit_win_needs}' | grep -c '^1$')"
+ptall error
+ptall running
+ptall error
+is "20 panes erroring at once after a resume count ✕20" '#[fg=#{@thm_peach}]✕20#[default] ' \
+   "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
+ptall off
+is "and 20 ending at once clear it" "" "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
+"$TMUX_REAL" -L "$PT" kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-state recount: ◆N counts panes with a pending review, off clears them =="
@@ -4204,9 +4287,16 @@ esac
 # context_window_size (1900/1000 here) -- the write must still clamp to the
 # promised 0-100, not the raw ratio.
 "$TMUX_REAL" -L "$CX" set-option -pu -t "$CXP" @panestate_ctx >/dev/null 2>&1
-TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
-    < "$DIR/tests/fixtures/statusline-overshoot.json" >/dev/null
+is "the model and the percent come from the one parse" "Fable 5 · ctx 100%" \
+   "$(TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" \
+        < "$DIR/tests/fixtures/statusline-overshoot.json")"
 is "an overshooting fallback ratio clamps to 100" "100" \
+   "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)"
+# used_percentage counts input tokens only (the statusline docs); the fallback
+# must too, or 300 in + 500 out of 1000 reads 80% instead of 30%.
+printf '%s' '{"context_window":{"context_window_size":1000,"current_usage":{"input_tokens":100,"output_tokens":500,"cache_creation_input_tokens":100,"cache_read_input_tokens":100}}}' \
+    | TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null
+is "the fallback counts input tokens, not output" "30" \
    "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @panestate_ctx)"
 # Garbage must write nothing and still exit 0 -- a statusline that errors
 # would spam the agent's own UI.
@@ -4239,19 +4329,20 @@ echo "== the statusline shim skips the write when context fill is unchanged =="
 # on an unchanged value, forces a full server-wide redraw (measured: 5
 # identical writes to @panestate_ctx -> 5 redraws; the read that agent-state
 # already does for @panestate costs 0). Two calls with the SAME payload must
-# issue exactly one set-option, not two. A tmux shim ahead of the suite's own
-# on PATH logs every set-option call it sees while still forwarding to the
-# real binary, so the pane's state stays correct and the count is honest.
+# issue exactly one set-option, not two. The compare and the write are one tmux
+# call, so a server hook counts the writes and a PATH shim counts the calls.
 if need_tmux "agent-context write guard"; then :; else
 CX2="cockpit-cx2-$$"; SOCKS="$SOCKS $CX2"
 "$TMUX_REAL" -L "$CX2" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
 CXP2=$("$TMUX_REAL" -L "$CX2" list-panes -t t -F '#{pane_id}')
 CXTMUX2="$SOCKDIR/$CX2,0,0"
 CXS=$(mktmpd)
-CXLOG="$CXS/setlog"; : > "$CXLOG"
+CXLOG="$CXS/setlog"; : > "$CXLOG"; CXCALLS="$CXS/calls"; : > "$CXCALLS"
+"$TMUX_REAL" -L "$CX2" set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> $CXLOG'" >/dev/null 2>&1
 cat > "$CXS/tmux" <<SHIMEOF
 #!/bin/sh
-[ "\$1" = "set-option" ] && printf '%s\n' "\$*" >> "$CXLOG"
+printf '%s\n' "\$*" >> "$CXCALLS"
 exec "$TMUX_REAL" "\$@"
 SHIMEOF
 chmod +x "$CXS/tmux"
@@ -4261,6 +4352,7 @@ is "the first call writes the new value" "1" "$(wc -l < "$CXLOG")"
 PATH="$CXS:$PATH" TMUX="$CXTMUX2" TMUX_PANE="$CXP2" "$DIR/scripts/agent-context" \
     < "$DIR/tests/fixtures/statusline.json" >/dev/null
 is "a second call with the same value writes nothing" "1" "$(wc -l < "$CXLOG")"
+is "and each call is one tmux invocation" "2" "$(wc -l < "$CXCALLS")"
 is "the stored value is still correct" "4" \
    "$("$TMUX_REAL" -L "$CX2" show-option -pqv -t "$CXP2" @panestate_ctx)"
 "$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
