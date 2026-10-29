@@ -8,6 +8,29 @@ STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
 
+# A private HOME. The example configs load ~/.tmux/plugins/{tmux-cockpit,tmux}
+# by path, so the suite saw whatever this box had installed: no plugin and no
+# catppuccin turned 50 render blocks red, and a tpm plugin that prepends to
+# status-right made #142 a coin flip. The sandbox holds this tree as the plugin
+# and a pinned catppuccin, and nothing else; a pane's shell skips the user's rc.
+CATPPUCCIN_REF=v2.3.2
+CATPPUCCIN="$DIR/tests/.cache/catppuccin-$CATPPUCCIN_REF"
+if [ ! -d "$CATPPUCCIN" ]; then
+    # Shards start together: clone aside, then rename, and the loser discards.
+    mkdir -p "$DIR/tests/.cache"
+    ct=$(mktemp -d "$DIR/tests/.cache/.clone.XXXXXX") && {
+        git -c advice.detachedHead=false clone -q --depth 1 --branch "$CATPPUCCIN_REF" \
+            https://github.com/catppuccin/tmux "$ct/c" >/dev/null 2>&1 \
+            && mv -T "$ct/c" "$CATPPUCCIN" 2>/dev/null
+        rm -rf "$ct"
+    }
+fi
+export HOME="$STATE/home"
+mkdir -p "$HOME/.tmux/plugins"
+ln -s "$DIR" "$HOME/.tmux/plugins/tmux-cockpit"
+[ -d "$CATPPUCCIN" ] && ln -s "$CATPPUCCIN" "$HOME/.tmux/plugins/tmux" \
+    || echo "  note: catppuccin $CATPPUCCIN_REF not fetched; the theme blocks will fail" >&2
+
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" "$2" "$3"; }
