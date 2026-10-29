@@ -2,7 +2,7 @@
 //! tmux translates outward per attached client (truecolor is what gets
 //! downgraded, 256 survives any 256-colour client), so there is no 16 tier and
 //! nothing here ever queries the terminal.
-use crate::data::tmux;
+use crate::data::{State, tmux};
 use ratatui::style::Color;
 use ratatui::symbols::border;
 use unicode_width::UnicodeWidthStr;
@@ -100,13 +100,13 @@ impl Theme {
     }
 
     /// Per-state glyph and colour. chrome.md §1's urgency ramp.
-    pub fn glyph(&self, state: &str) -> (&'static str, Color) {
+    pub fn glyph(&self, state: State) -> (&'static str, Color) {
         match state {
-            "needs-input" => (self.g.needs, self.needs),
-            "error" => (self.g.error, self.error),
-            "running" => (self.g.running, self.running),
-            "done" => (self.g.done, self.done),
-            _ => (self.g.idle, self.meta),
+            State::NeedsInput => (self.g.needs, self.needs),
+            State::Error => (self.g.error, self.error),
+            State::Running => (self.g.running, self.running),
+            State::Done => (self.g.done, self.done),
+            State::Unknown => (self.g.idle, self.meta),
         }
     }
 

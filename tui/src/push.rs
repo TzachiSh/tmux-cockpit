@@ -107,11 +107,7 @@ impl Push {
             return Self;
         }
         let mut own: Vec<CString> = tmux_argv().iter().filter_map(|s| CString::new(s.as_str()).ok()).collect();
-        own.extend(
-            ["set-option", "-gu", "@cockpit_tui_pid"]
-                .iter()
-                .filter_map(|s| CString::new(*s).ok()),
-        );
+        own.extend(unpublish_args().iter().filter_map(|s| CString::new(s.as_str()).ok()));
         let mut ptrs: Vec<*const libc::c_char> = own.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(std::ptr::null());
         let _ = UNPUBLISH.set(Argv { ptrs, _own: own });
@@ -141,7 +137,19 @@ pub fn cleanup() {
     if DONE.swap(true, Ordering::SeqCst) {
         return;
     }
-    tmux_set(&["set-option", "-gu", "@cockpit_tui_pid"]);
+    let a = unpublish_args();
+    tmux_set(&a.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+/// The option is global, so a second board may own it by now: unset it only
+/// while it still names us, in one tmux command so nothing lands in between.
+pub fn unpublish_args() -> [String; 4] {
+    [
+        "if-shell".into(),
+        "-F".into(),
+        format!("#{{==:#{{@cockpit_tui_pid}},{}}}", std::process::id()),
+        "set-option -gu @cockpit_tui_pid".into(),
+    ]
 }
 
 impl Drop for Push {

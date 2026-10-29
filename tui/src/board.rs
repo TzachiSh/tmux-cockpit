@@ -2,7 +2,7 @@
 //! preview. Sorted needs-first so page one is always the triage page. `render`
 //! is pure over `&[Pane]` — it reads no tmux and no clock; `run` is the only
 //! impure entry and returns one action line.
-use crate::data::{Pane, fmt_dur, hash_rows, list_panes, log, preview};
+use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
 use ansi_to_tui::IntoText;
@@ -12,6 +12,8 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
+use std::collections::HashMap;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
@@ -39,16 +41,6 @@ pub struct View<'a> {
 
 // ------------------------------------------------------------------ ordering
 
-pub fn rank(state: &str) -> u8 {
-    match state {
-        "needs-input" => 0,
-        "error" => 1,
-        "running" => 2,
-        "done" => 3,
-        _ => 4,
-    }
-}
-
 fn pane_num(id: &str) -> u64 {
     id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
 }
@@ -57,7 +49,7 @@ fn pane_num(id: &str) -> u64 {
 /// event-driven, ages tick every second and would reorder tiles as you read.
 pub fn order(ps: &[Pane]) -> Vec<usize> {
     let mut o: Vec<usize> = (0..ps.len()).collect();
-    o.sort_by_key(|&i| (rank(&ps[i].state), pane_num(&ps[i].id)));
+    o.sort_by_key(|&i| (ps[i].state, pane_num(&ps[i].id)));
     o
 }
 
@@ -125,7 +117,7 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
 
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     let th = v.th;
-    let needs = v.panes.iter().filter(|p| p.state == "needs-input").count();
+    let needs = v.panes.iter().filter(|p| p.state == State::NeedsInput).count();
     let mut left = vec![Span::styled(
         format!(" board {} {n} agent{}", th.g.dot, if n == 1 { "" } else { "s" }),
         Style::new().fg(th.label),
@@ -225,8 +217,8 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
     }
 }
 
-fn dimmed(state: &str) -> bool {
-    rank(state) >= 3
+fn dimmed(state: State) -> bool {
+    state >= State::Done
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,13 +229,13 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         return;
     }
     let g = &th.g;
-    let needs = p.state == "needs-input";
-    let (gl, gl_c) = th.glyph(&p.state);
+    let needs = p.state == State::NeedsInput;
+    let (gl, gl_c) = th.glyph(p.state);
     let (rv, rv_c) = th.review_mark(&p.review);
 
     let border_c = if needs {
         th.needs
-    } else if p.state == "error" {
+    } else if p.state == State::Error {
         th.error
     } else if focused {
         th.accent
@@ -258,7 +250,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     let sep = format!(" {} ", g.dot);
     let title_w = inner_w.saturating_sub(fixed + wher.width() + sep.width() + 1);
 
-    let title_c = if dimmed(&p.state) { th.meta } else { th.value };
+    let title_c = if dimmed(p.state) { th.meta } else { th.value };
     let mut top = vec![
         Span::styled(if active { g.active } else { " " }, Style::new().fg(th.accent)),
         Span::styled(n, Style::new().fg(if focused { th.accent } else { th.meta })),
@@ -305,7 +297,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         Some(None) => Paragraph::new(Line::from(Span::styled("capture failed", Style::new().fg(th.error)))),
         None => return,
     };
-    if dimmed(&p.state) {
+    if dimmed(p.state) {
         // expressed twice: a terminal that ignores DIM still gets the meta title
         para = para.style(Style::new().add_modifier(Modifier::DIM));
     }
@@ -348,7 +340,7 @@ fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<
         out.push(Line::from(vec![
             Span::styled(
                 pad(doing, text_w),
-                Style::new().fg(if dimmed(&p.state) { th.meta } else { th.value }),
+                Style::new().fg(if dimmed(p.state) { th.meta } else { th.value }),
             ),
             rail,
         ]));
@@ -718,7 +710,7 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::Tile(t) => (t.max(1) as usize - 1).min(last),
         Act::NextNeeds => (1..=n)
             .map(|d| (sel + d) % n)
-            .find(|&k| rank(&ps[ord[k]].state) == 0)
+            .find(|&k| ps[ord[k]].state == State::NeedsInput)
             .unwrap_or(sel),
         Act::PageUp => sel.saturating_sub(g.cols * g.rows_shown),
         Act::PageDown => (sel + g.cols * g.rows_shown).min(last),
@@ -748,10 +740,74 @@ fn follow(sel: usize, top: usize, g: &Grid) -> usize {
     }
 }
 
+/// Clamp the selection and viewport to a pane count; the worker and the key
+/// loop both call it, so they agree on which tiles are visible.
+fn fit(area: Rect, n: usize, sel: usize, top: usize) -> (usize, usize, Grid) {
+    let sel = sel.min(n.saturating_sub(1));
+    let g = grid(area, n);
+    // the same ceiling moved() pages to, or `]` snaps back within a second
+    (sel, follow(sel, top.min(g.rows.saturating_sub(1)), &g), g)
+}
+
 const DRAW_BUDGET: u8 = 5;
 
 fn transient(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
+}
+
+/// What the worker needs from the key loop to capture the visible tiles.
+#[derive(Clone, Copy)]
+struct Want {
+    area: Rect,
+    sel: usize,
+    top: usize,
+}
+
+struct Snapshot {
+    panes: Vec<Pane>,
+    /// visible tiles only, by pane id
+    pvs: Vec<(String, Option<String>)>,
+    took: Duration,
+}
+
+/// The fetch costs hundreds of ms of forks, so it runs here and never on the
+/// thread that reads keys. A wake during a fetch queues one more, not many.
+fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
+    let mut panes: Vec<Pane> = vec![];
+    loop {
+        let t0 = Instant::now();
+        // None is "tmux did not answer"; keep the last good tile list rather
+        // than blanking the board on one failed read
+        if let Some(ps) = list_panes() {
+            panes = ps;
+        }
+        let (_, top, g) = fit(want.area, panes.len(), want.sel, want.top);
+        let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
+        let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
+        let ord = order(&panes);
+        // visible tiles only: crmux runs one capture-pane exec per tile on
+        // every ~50 ms loop tick, forever, whether anything changed or not
+        let pvs = (top * g.cols..panes.len().min((top + g.rows_shown) * g.cols))
+            .map(|k| {
+                let id = &panes[ord[k]].id;
+                (id.clone(), preview(id, rows))
+            })
+            .collect();
+        let snap = Snapshot {
+            panes: panes.clone(),
+            pvs,
+            took: t0.elapsed(),
+        };
+        if tx.send(snap).is_err() {
+            return;
+        }
+        let due = Instant::now() + Duration::from_secs(1);
+        match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
+            Ok(w) => want = rx.try_iter().last().unwrap_or(w),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 pub fn run() -> Option<String> {
@@ -778,59 +834,77 @@ pub fn run() -> Option<String> {
         }
     };
     let (mut panes, mut pvs) = (Vec::<Pane>::new(), Vec::<Option<String>>::new());
-    let (mut sel, mut top, mut help_open) = (0usize, 0usize, false);
+    // previews survive between snapshots, so a tile scrolled into view shows
+    // its last capture instead of a false "capture failed"
+    let mut seen: HashMap<String, Option<String>> = HashMap::new();
+    let (mut sel, mut top, mut help_open, mut loaded) = (0usize, 0usize, false, false);
     let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
-    let mut tick = Instant::now().checked_sub(Duration::from_secs(2)).unwrap_or_else(Instant::now);
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let mut action_line = None;
+    let area = |s: ratatui::layout::Size| Rect::new(0, 0, s.width, s.height);
 
-    // before the first tick, not after: the fetch below is measured at ~600 ms
-    // on three panes and the popup would be a blank rectangle for all of it
-    let _ = term.draw(|f| loading(f, f.area(), &th));
+    let (want_tx, want_rx) = mpsc::channel::<Want>();
+    let (snap_tx, snap_rx) = mpsc::channel::<Snapshot>();
+    let first = Want {
+        area: area(term.size().unwrap_or_default()),
+        sel,
+        top,
+    };
+    std::thread::spawn(move || worker(want_rx, snap_tx, first));
+    // a failed send means the worker is gone, which the snapshot arm notices
+    let ask = |a: Rect, sel: usize, top: usize| {
+        let _ = want_tx.send(Want { area: a, sel, top });
+    };
 
     loop {
-        // a push pulls the next tick forward, it never replaces it, so a missed
-        // signal costs one second and never a hang
+        // a push only pulls the next fetch forward, so a missed signal costs
+        // one second and never a hang
         if push.pending() {
-            tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick);
+            ask(area(term.size().unwrap_or_default()), sel, top);
         }
         if note.as_ref().is_some_and(|(_, t)| t.elapsed() >= Duration::from_secs(2)) {
             note = None;
             dirty = true;
         }
-        if tick.elapsed() >= Duration::from_secs(1) {
-            let t0 = Instant::now();
-            let size = term.size().unwrap_or_default();
-            // None is "tmux did not answer"; keep the last good tile list rather
-            // than blanking the board on one failed read
-            if let Some(ps) = list_panes() {
-                panes = ps;
+        match snap_rx.try_recv() {
+            Ok(s) => {
+                let t0 = Instant::now();
+                let s = snap_rx.try_iter().last().unwrap_or(s);
+                panes = s.panes;
+                seen.retain(|id, _| panes.iter().any(|p| &p.id == id));
+                seen.extend(s.pvs);
+                // never fetched draws as an empty body, not as a failed capture
+                pvs = panes
+                    .iter()
+                    .map(|p| seen.get(&p.id).cloned().unwrap_or(Some(String::new())))
+                    .collect();
+                (sel, top, _) = fit(area(term.size().unwrap_or_default()), panes.len(), sel, top);
+                let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
+                if h != last_hash || !loaded {
+                    last_hash = h;
+                    dirty = true;
+                }
+                loaded = true;
+                log(&format!(
+                    "board tick {} tiles fetch {:?} apply {:?} redraw={}",
+                    panes.len(),
+                    s.took,
+                    t0.elapsed(),
+                    dirty
+                ));
             }
-            sel = sel.min(panes.len().saturating_sub(1));
-            let area = Rect::new(0, 0, size.width, size.height);
-            let g = grid(area, panes.len());
-            // the same ceiling moved() pages to, or `]` snaps back within a second
-            top = follow(sel, top.min(g.rows.saturating_sub(1)), &g);
-            let tile_h = (size.height.saturating_sub(2) as usize) / g.rows_shown;
-            let ord = order(&panes);
-            // visible tiles only: crmux runs one capture-pane exec per tile on
-            // every ~50 ms loop tick, forever, whether anything changed or not
-            let mut fresh: Vec<Option<String>> = vec![None; panes.len()];
-            for k in top * g.cols..panes.len().min((top + g.rows_shown) * g.cols) {
-                let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
-                fresh[ord[k]] = preview(&panes[ord[k]].id, rows);
-            }
-            pvs = fresh;
-            let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
-            if h != last_hash {
-                last_hash = h;
-                dirty = true;
-            }
-            log(&format!("board tick {} tiles {:?} redraw={}", panes.len(), t0.elapsed(), dirty));
-            tick = Instant::now();
+            Err(TryRecvError::Empty) => {}
+            Err(TryRecvError::Disconnected) => break,
         }
-        if dirty {
+        if dirty && !loaded {
+            // the first fetch can take most of a second, and a popup that is a
+            // blank rectangle until it returns reads as a hang
+            if term.draw(|f| loading(f, f.area(), &th)).is_ok() {
+                dirty = false;
+            }
+        }
+        if dirty && loaded {
             let v = View {
                 panes: &panes,
                 pvs: &pvs,
@@ -858,7 +932,8 @@ pub fn run() -> Option<String> {
             }
         }
 
-        let ev = match event::poll(Duration::from_millis(100)) {
+        // short, because this poll is also how soon a finished fetch is drawn
+        let ev = match event::poll(Duration::from_millis(50)) {
             Ok(true) => match event::read() {
                 Ok(e) => Some(e),
                 Err(e) if transient(&e) => None,
@@ -871,7 +946,7 @@ pub fn run() -> Option<String> {
         // a resize is the same request as USR1: look again. It costs nothing to
         // honour, and it means a real terminal resize refreshes the data too.
         if let Some(Event::Resize(..)) = &ev {
-            tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick);
+            ask(area(term.size().unwrap_or_default()), sel, top);
             dirty = true;
         }
         let Some(Event::Key(k)) = ev else { continue };
@@ -892,14 +967,14 @@ pub fn run() -> Option<String> {
             continue;
         }
         let ord = order(&panes);
-        let size = term.size().unwrap_or_default();
-        let g = grid(Rect::new(0, 0, size.width, size.height), panes.len());
+        let here = area(term.size().unwrap_or_default());
+        let g = grid(here, panes.len());
         let p = &panes[ord[sel]];
         let id = p.id.clone();
         match a {
             Act::Quit => break,
             Act::Help => help_open = true,
-            Act::Refresh => tick = tick.checked_sub(Duration::from_secs(1)).unwrap_or(tick),
+            Act::Refresh => ask(here, sel, top),
             Act::Jump => {
                 action_line = Some(format!("jump {id}"));
                 break;
@@ -917,7 +992,7 @@ pub fn run() -> Option<String> {
                 break;
             }
             // phase 1: `a` on a blocked tile is a jump; the inline reply is L7
-            Act::Ask if p.state == "needs-input" => {
+            Act::Ask if p.state == State::NeedsInput => {
                 action_line = Some(format!("jump {id}"));
                 break;
             }
@@ -928,7 +1003,14 @@ pub fn run() -> Option<String> {
                 );
                 note = Some((msg, Instant::now()));
             }
-            _ => (sel, top) = moved(a, sel, panes.len(), &g, top, &panes, &ord),
+            _ => {
+                let was = top;
+                (sel, top) = moved(a, sel, panes.len(), &g, top, &panes, &ord);
+                // newly visible tiles need a capture now, not at the next second
+                if top != was {
+                    ask(here, sel, top);
+                }
+            }
         }
     }
     ratatui::restore();

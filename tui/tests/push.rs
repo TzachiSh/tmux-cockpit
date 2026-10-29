@@ -80,13 +80,13 @@ impl Drop for Rig {
     }
 }
 
-#[test]
-fn a_signal_wakes_it_and_sigterm_unpublishes_the_pid() {
+/// A private server and a `push_hold` child publishing into it; `None` without tmux.
+fn rig(tag: &str) -> Option<(Rig, PathBuf)> {
     if Command::new("tmux").arg("-V").output().is_err() {
         eprintln!("no tmux on PATH -- skipping");
-        return;
+        return None;
     }
-    let sock = format!("cockpit-tui-push-{}", std::process::id());
+    let sock = format!("cockpit-tui-{tag}-{}", std::process::id());
     let dir = std::env::temp_dir().join(&sock);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -112,7 +112,12 @@ fn a_signal_wakes_it_and_sigterm_unpublishes_the_pid() {
         sock,
         dir,
     };
+    Some((rig, log))
+}
 
+#[test]
+fn a_signal_wakes_it_and_sigterm_unpublishes_the_pid() {
+    let Some((rig, log)) = rig("push") else { return };
     let pid = rig.child.id().to_string();
     assert!(until(|| rig.published() == pid), "the pid was never published");
 
@@ -126,4 +131,46 @@ fn a_signal_wakes_it_and_sigterm_unpublishes_the_pid() {
 
     rig.signal(libc::SIGTERM);
     assert!(until(|| rig.published().is_empty()), "SIGTERM left @cockpit_tui_pid published");
+}
+
+/// The option is global: a second board that opened later owns it, and the
+/// first one quitting must not take the second one's push away.
+#[test]
+fn quitting_leaves_another_boards_pid_published() {
+    let Some((mut rig, _)) = rig("push2") else { return };
+    let pid = rig.child.id().to_string();
+    assert!(until(|| rig.published() == pid), "the pid was never published");
+
+    rig.tmux(&["set-option", "-g", "@cockpit_tui_pid", "999999"]);
+    rig.signal(libc::SIGTERM);
+    assert!(
+        until(|| rig.child.try_wait().ok().flatten().is_some()),
+        "SIGTERM did not end the child"
+    );
+    assert_eq!(rig.published(), "999999", "the exit unpublished a pid that was not its own");
+}
+
+/// The `q` half, in-process: `Drop` runs `cleanup()`, not the signal arm.
+#[test]
+fn q_unpublishes_its_own_pid_and_only_its_own() {
+    let Some((rig, _)) = rig("push3") else { return };
+    // the child publishes once at start; let that land before ours does
+    let child = rig.child.id().to_string();
+    assert!(until(|| rig.published() == child), "the child never published");
+    // SAFETY: the only test in this binary that reads COCKPIT_* in-process.
+    unsafe {
+        std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
+        std::env::remove_var("COCKPIT_READONLY");
+    }
+    let me = std::process::id().to_string();
+
+    let p = cockpit_tui::push::Push::start();
+    assert_eq!(rig.published(), me);
+    drop(p);
+    assert_eq!(rig.published(), "", "q left its own pid published");
+
+    let p = cockpit_tui::push::Push::start();
+    rig.tmux(&["set-option", "-g", "@cockpit_tui_pid", "999999"]);
+    drop(p);
+    assert_eq!(rig.published(), "999999", "q unpublished another board's pid");
 }
