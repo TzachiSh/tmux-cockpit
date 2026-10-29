@@ -253,13 +253,11 @@ tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pan
 # Each block leaves its effective key in a lowercase variable (empty = off)
 # for the agents menu further down, which replays them.
 
-# Session picker in the same popup chrome. g (goto session) is unbound in
-# stock tmux and in examples/full.tmux.conf; TM_HEIGHT=100% because inside a
-# popup the popup is the frame and fzf's inline 40%% would leave the bottom
-# half empty.
+# Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
+# TM_HEIGHT=100%: inside a popup, fzf's inline 40% leaves half of it empty.
 Q_TM=$(sq "$DIR/scripts/tm")
 SK=$(tmux show-option -gqv @cockpit_sessions_key)
-case "$SK" in off) sk= ;; "") sk=g ;; *) sk=$SK ;; esac
+case "$SK" in off) sk= ;; "") sk=s ;; *) sk=$SK ;; esac
 [ -z "$sk" ] || tmux bind-key "$sk" display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
 
 # Jump to the pane that needs you; press again to cycle through all of them.
