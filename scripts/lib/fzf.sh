@@ -9,21 +9,15 @@
 # styled set landed earlier, so one floor covers the whole list.
 COCKPIT_FZF_MIN=0063000
 
-# fzf is 0.x, so the THIRD component decides. cockpit.tmux's version_at_least
-# reads ${v#*.} as the minor, which on 0.74.3 is "74.3" -- not an integer, so
-# it grades every modern fzf as 0. install.sh and scripts/tui-fetch carry this
-# same parser; neither of them is sourceable from here.
+# shellcheck source=vnum.sh
+. "${BASH_SOURCE[0]%/*}/vnum.sh"
+
 cockpit_fzf_tier() {          # -> plain | styled, and caches it in COCKPIT_FZF_TIER
     # A case, not a -z test: a caller may pre-set the variable, and anything
     # that is not one of the two words is junk to be probed over, not honoured.
     case "${COCKPIT_FZF_TIER:-}" in plain|styled) ;; *)
-        local v a b c IFS=.
-        v=$(fzf --version 2>/dev/null); v=${v%% *}; v=${v#v}
-        # shellcheck disable=SC2086  # splitting on the dots is the point
-        set -- $v
-        a=${1:-0}; b=${2:-0}; c=${3:-0}
-        a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
-        v=$(printf '%d%03d%03d' "${a:-0}" "${b:-0}" "${c:-0}" 2>/dev/null)
+        local v
+        v=$(vnum "$(fzf --version 2>/dev/null)" 2>/dev/null)
         if [ "${v:-0}" -ge "$COCKPIT_FZF_MIN" ] 2>/dev/null; then
             COCKPIT_FZF_TIER=styled
         else

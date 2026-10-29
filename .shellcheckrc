@@ -1,6 +1,9 @@
 # tmux-cockpit shellcheck settings.
 shell=bash
 
+# `# shellcheck source=lib/x.sh` is beside the script, not under the cwd.
+source-path=SCRIPTDIR
+
 # SC2086 - unquoted $var. Deliberate in the few places it appears: splitting a
 #          space-separated pid list, and expanding a token list where globbing
 #          is already disabled with `set -f`.

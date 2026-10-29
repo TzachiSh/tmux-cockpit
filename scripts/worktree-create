@@ -4,12 +4,12 @@
 # takes the LAST stdout line as the path; git's chatter goes to stderr.
 # Never removes anything: that is worktree-remove's job, on claude's call.
 set -u
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/hook.sh
+. "${d%/*}/lib/hook.sh" || exit 1
 payload=$(cat)
-name=""
-case "$payload" in
-    *'"name"'*) name=${payload#*'"name"'}; name=${name#*:}; name=${name#*'"'}; name=${name%%'"'*} ;;
-esac
-name=${name//[$'\001'-$'\037']/}
+json_str name
+name=${REPLY//[$'\001'-$'\037']/}
 # check-ref-format is git's own word on a branch name (no @{, ~, ^, :, ?, *,
 # [, no . segments, no control bytes); the case adds what is only a PATH
 # hazard here: a leading dash, a backslash, a space, a . or .. segment.

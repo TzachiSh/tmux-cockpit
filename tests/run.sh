@@ -2260,10 +2260,9 @@ dc() {                        # dc <PATH> -- the doctor's output on the fake box
 dcrows() { sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p'; }
 dcrow() { printf '%s\n' "$1" | dcrows | grep -c -x "$2"; }
 
-# vnum is install.sh's own copy of the parser in scripts/tui-fetch (neither
-# script can source the other). Lifted out whole, so these assert the numbers
-# rather than a row's verdict.
-eval "$(sed -n '/^vnum() {/,/^}/p' "$DIR/install.sh")"
+# The parser install.sh grades with, so these assert the numbers rather than a
+# row's verdict.
+. "$DIR/scripts/lib/vnum.sh"
 dcge() { [ "$(vnum "$1" 2>/dev/null)" -ge "$(vnum "$2" 2>/dev/null)" ] 2>/dev/null \
          && echo yes || echo no; }
 is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/dev/null)"
@@ -9047,8 +9046,8 @@ echo "== cockpit-tui: tui-fetch verifies before it installs, and never breaks a 
 # which is exactly the check a checksum cannot make.
 if ! command -v curl >/dev/null 2>&1; then skip_ "tui-fetch (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum)"; else
-TF=$(mktmpd); mkdir -p "$TF/plugin/scripts" "$TF/build" "$TF/curlshim" "$TF/shim"
-cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"
+TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
+cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"; cp "$DIR/scripts/lib/vnum.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"; TFGONE="file://$TF/no-such-host"
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" > "$TF/curlshim/curl"

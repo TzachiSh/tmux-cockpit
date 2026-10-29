@@ -66,24 +66,10 @@ notify)
     # Pressing ESC to cancel fires NO Claude Code hook -- not Stop, not
     # SessionEnd -- so a cancelled pane would sit on "running" forever. Claude
     # does emit a Notification once it goes idle, which lets us recover.
-    # Bounded read, not `cat`. cat waits for EOF, and the writer can hold the
-    # pipe open without sending anything -- which wedges the hook, and a wedged
-    # hook blocks the agent that fired it. read -t gives up instead; the partial
-    # line survives in $chunk, so a payload arriving without a trailing newline
-    # is still seen.
-    # One deadline for the WHOLE read, not per line: a writer emitting a line
-    # every second would keep a per-line timeout alive forever, and the contract
-    # here is that a hook never blocks the agent that fired it.
-    payload="" chunk="" deadline=$(( SECONDS + 2 ))
-    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
-        # Keep the newline read stripped. Without it the lines fuse, so a
-        # message wrapped across two lines ("Claude needs your" / "permission
-        # to use Bash") never matches the pattern and the alert is lost -- and
-        # two unrelated lines can fuse into a spurious match the other way.
-        IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-        payload="$payload$chunk
-"; chunk=""
-    done
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+    read_payload false
     case "$payload" in
         *'waiting for your input'*)
             # Claude emits this while it is BLOCKED on a permission prompt too,
@@ -110,23 +96,11 @@ notify)
     # if this write waited for that guard, the newer ask text would be
     # silently dropped exactly when it matters most.
     if [ "$state" = needs-input ]; then
-        # An escaped quote inside the message value truncates it early --
-        # this is not meant to be a JSON parser, just enough to pull one
-        # field out of Claude's own hook payload.
-        case "$payload" in
-            *'"message"'*)
-                msg=${payload#*\"message\"}
-                msg=${msg#*:}
-                msg=${msg#*\"}
-                msg=${msg%%\"*}
-                # A hook payload is not to be trusted blindly -- this reaches
-                # a tmux format string next -- so strip control chars and cap
-                # the length before it is ever written.
-                msg=${msg//[$'\001'-$'\037']/}
-                msg=${msg:0:120}
-                ;;
-            *) msg="" ;;
-        esac
+        json_str message
+        # A hook payload is not to be trusted blindly -- this reaches a tmux
+        # format string next -- so strip control chars and cap the length.
+        msg=${REPLY//[$'\001'-$'\037']/}
+        msg=${msg:0:120}
         # An empty extraction must still clear, not skip: skipping left the
         # PREVIOUS pane's ask standing on the border, so a brand-new blocked
         # pane with no text of its own displayed someone else's old question.
