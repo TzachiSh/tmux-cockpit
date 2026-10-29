@@ -51,17 +51,8 @@ esac; done
 
 
 # ---------------------------------------------------------------- doctor ----
-# vnum: 0.74.3 -> 0074003, 3.7c -> 3007000. The twin is in scripts/tui-fetch;
-# neither script can source the other. Never cockpit.tmux's version_at_least,
-# which reads ${v#*.} as the minor and grades 0.74.3 as 0.
-vnum() {
-    local v=${1%% *}; v=${v#v}; local IFS=.
-    # shellcheck disable=SC2086  # split on the dots is the point
-    set -- $v
-    local a=${1:-0} b=${2:-0} c=${3:-0}
-    a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
-    printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"
-}
+# shellcheck source=scripts/lib/vnum.sh
+. "$DIR/scripts/lib/vnum.sh" || exit 1
 
 # Each tool names its version in its own field. A builtin, not awk: the fail
 # rows still have to be right on a PATH with nothing on it.
@@ -94,10 +85,8 @@ if [ "$check" -eq 1 ]; then
     printf 'tmux-cockpit doctor\n\n'
 
     v=$(tmux -V 2>/dev/null); v=${v#tmux }
-    if [ -z "$v" ]; then row fail tmux 'not found' 'install tmux >= 3.3'
-    elif [ "$(vnum "$v")" -lt "$(vnum 3.3)" ]; then row fail tmux "$v" 'install tmux >= 3.3'
-    elif [ "$(vnum "$v")" -lt "$(vnum 3.7)" ]; then
-        row warn tmux "$v" 'ctrl+click features off below 3.7'
+    if [ -z "$v" ]; then row fail tmux 'not found' 'bootstrap.sh builds tmux 3.8'
+    elif [ "$(vnum "$v")" -lt "$(vnum 3.8)" ]; then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
     else row ok tmux "$v"
     fi
 
@@ -111,7 +100,7 @@ if [ "$check" -eq 1 ]; then
     if [ -z "$v" ]; then
         row warn fzf 'not found' 'bootstrap.sh --full (pickers fall back to a menu)'
     elif [ "$(vnum "$v")" -lt "$(vnum 0.63.0)" ]; then
-        row warn fzf "$v" 'bootstrap.sh --full (styled pickers)'
+        row fail fzf "$v" 'the pickers need 0.63+; bootstrap.sh fetches it'
     else row ok fzf "$v"
     fi
 
@@ -149,7 +138,8 @@ if [ "$check" -eq 1 ]; then
     conf=''; wired=0
     # Both candidates, not the first readable one: tmux loads both, so the
     # run-shell line in either wires the box.
-    for c in "${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf" "${HOME:-}/.tmux.conf"; do
+    cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
+    for c in "$cxdg" "$chome"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
         # read, not grep: this row still has to answer on a PATH with nothing on it.
@@ -162,6 +152,41 @@ if [ "$check" -eq 1 ]; then
     if [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"
+    fi
+
+    # tmux re-expands these formats once per visible pane per status redraw, and
+    # every agent title forces a redraw, so a #{P:} walk here IS the freeze: a
+    # config predating the precompute measured 336 visits against a 120 budget.
+    if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
+    else
+        walk=0
+        # A dotfiles checkout symlinks one onto the other, and counting a file
+        # twice would report two walks for one line.
+        [ "$cxdg" -ef "$chome" ] && chome=''
+        # Both files, like the row above, and the unwired one is not the harmless
+        # half: tmux applies XDG second, so its walk is the value that survives.
+        for c in "$cxdg" "$chome"; do
+            [ -r "$c" ] || continue
+            acc=''
+            while read -r l || [ -n "$l" ]; do
+                # tmux joins a trailing backslash before expanding, so a format
+                # wrapped across lines has to be rejoined to be seen at all.
+                case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
+                l="$acc$l"; acc=''
+                case "$l" in
+                    set*\ pane-border-format\ *|set*\ window-status-format\ *|\
+set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
+set*\ @catppuccin_window_current_text\ *)
+                        case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
+                esac
+            done < "$c"
+        done
+        if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
+        else
+            if [ "$walk" -eq 1 ]; then nf='format walks'; else nf='formats walk'; fi
+            row warn formats "$walk $nf panes" \
+                "recopy them from $DIR/examples/tmux.conf"
+        fi
     fi
 
     if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'

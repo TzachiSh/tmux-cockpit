@@ -4,8 +4,8 @@
 //!
 //! Nothing below changes without a comment on #61; other lanes change bodies only.
 //!
-//! **`Pane`** — `id, wher, name, cmd, state, title, msg, sess, path, root, spool,
-//! pinned, delivered, pid, review, hold, doing, said, asked, loc, pm,
+//! **`Pane`** — `id, wher, name, cmd, state: State, title, msg, sess, path, root,
+//! spool, pinned, delivered, pid, review, hold, doing, said, asked, loc, pm,
 //! since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>`.
 //! Derives `Default, Clone, Hash, PartialEq`; the durations are `u64` and not
 //! `Duration` so the struct can `Hash` (the redraw gate hashes rows).
@@ -22,8 +22,9 @@
 //! `glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc \t diff`.
 //!
 //! **Options written:** `@cockpit_tui_pid` (published at start, unset on q,
-//! SIGHUP, SIGTERM and the panic path), `@cockpit_tui_version` (written by the
-//! fetch, read by the binding), `@cockpit_board_window`, `@cockpit_board_key`.
+//! SIGHUP, SIGTERM and the panic path while it still holds our pid),
+//! `@cockpit_tui_version` (written by the fetch, read by the binding),
+//! `@cockpit_board_window`, `@cockpit_board_key`.
 //! **Read only, owned by bash:** `@cockpit_session, @cockpit_dir, @panestate,
 //! @panestate_msg, @cockpit_review, @cockpit_review_spool, @cockpit_title,
 //! @cockpit_hold, @thm_*`.
@@ -42,12 +43,14 @@
 //! not a tty), `2` usage error. `[]` with exit 0 is "no agents"; exit 1 with no
 //! stdout is "no tmux" -- a wrapper must be able to tell them apart.
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::process::Command;
-use std::time::{Duration, SystemTime};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
 pub fn tmux_argv() -> Vec<String> {
     std::env::var("COCKPIT_TMUX")
@@ -91,13 +94,64 @@ pub fn log(s: &str) {
     }
 }
 
+/// Declared in rank order, so the derived `Ord` is the sort: the fleet exists
+/// to answer "which one needs me".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum State {
+    NeedsInput,
+    Error,
+    Running,
+    Done,
+    #[default]
+    Unknown,
+}
+
+impl State {
+    /// The `--json` spelling; `Unknown` is `""`, never a word.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            State::NeedsInput => "needs-input",
+            State::Error => "error",
+            State::Running => "running",
+            State::Done => "done",
+            State::Unknown => "",
+        }
+    }
+}
+
+impl std::str::FromStr for State {
+    type Err = std::convert::Infallible;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "needs-input" => State::NeedsInput,
+            "error" => State::Error,
+            "running" => State::Running,
+            "done" => State::Done,
+            _ => State::Unknown,
+        })
+    }
+}
+
+impl From<&str> for State {
+    fn from(s: &str) -> Self {
+        let Ok(st) = s.parse();
+        st
+    }
+}
+
+impl PartialEq<&str> for State {
+    fn eq(&self, o: &&str) -> bool {
+        self.as_str() == *o
+    }
+}
+
 #[derive(Default, Clone, PartialEq)]
 pub struct Pane {
     pub id: String,
     pub wher: String,
     pub name: String,
     pub cmd: String,
-    pub state: String,
+    pub state: State,
     pub title: String,
     pub msg: String,
     pub sess: String,
@@ -154,10 +208,10 @@ impl Hash for Pane {
             idle_since: _,
         } = self;
         [
-            id, wher, name, cmd, state, title, msg, sess, path, root, spool, pid, review, hold, doing, said, asked, loc, pm,
+            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, hold, doing, said, asked, loc, pm,
         ]
         .hash(h);
-        (pinned, delivered).hash(h);
+        (state, pinned, delivered).hash(h);
     }
 }
 
@@ -240,8 +294,8 @@ struct Facts {
     at: Option<SystemTime>,
     user_at: Option<SystemTime>,
     newest: Option<SystemTime>,
-    /// needs-input / running / done, or empty when the tail said nothing
-    state: String,
+    /// `Unknown` when the tail said nothing
+    state: State,
 }
 
 thread_local! {
@@ -386,13 +440,12 @@ fn parse(lines: Vec<String>) -> Facts {
     // An open question outranks a finished turn: the interrupt that ended the
     // turn left the picker's tool_use open, and the human still owes an answer.
     fa.state = match () {
-        _ if !asks.is_empty() => "needs-input",
+        _ if !asks.is_empty() => State::NeedsInput,
         // rule 78: an unknown state is unknown, never idle
-        _ if !saw => "",
-        _ if turn_over => "done",
-        _ => "running",
-    }
-    .into();
+        _ if !saw => State::Unknown,
+        _ if turn_over => State::Done,
+        _ => State::Running,
+    };
     fa
 }
 
@@ -404,7 +457,7 @@ fn read_transcript(p: &mut Pane) {
     let fa = read_facts(&transcript_path(&p.sess, &p.path));
     // Rule 78: never re-derive what the hooks already wrote. @panestate wins;
     // the transcript only speaks for panes cockpit's hooks never touched.
-    if p.state.is_empty() {
+    if p.state == State::Unknown {
         p.state = fa.state;
     }
     p.doing = fa.tool;
@@ -556,43 +609,162 @@ fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> Strin
     tree(pid, t).iter().find_map(|p| agents.get(p).cloned()).unwrap_or_default()
 }
 
-/// repo⑂branch and the working-tree diff, one pair of git calls per unique path.
-fn git_facts(path: &str) -> (String, String, String) {
-    let top = Command::new("git")
-        .args([
-            "-C",
-            path,
-            "--no-optional-locks",
-            "rev-parse",
-            "--show-toplevel",
-            "--abbrev-ref",
-            "HEAD",
-        ])
-        .output()
+/// The board runs git in every agent's repo, and the agent owns that repo's
+/// config: nothing it planted there may run as the user.
+const SAFE: [&str; 5] = ["--no-optional-locks", "-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"];
+
+fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> String {
+    let mut c = Command::new("git");
+    c.arg("-C")
+        .arg(dir)
+        .args(SAFE)
+        .args(extra)
+        .args(args)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(i) = index {
+        c.env("GIT_INDEX_FILE", i);
+    }
+    c.output()
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    let mut it = top.lines();
-    let (Some(root), Some(branch)) = (it.next(), it.next()) else {
-        return (String::new(), String::new(), String::new());
-    };
-    let repo = root.rsplit('/').next().unwrap_or(root);
-    let numstat = Command::new("git")
-        .args(["-C", path, "--no-optional-locks", "diff", "--numstat", "HEAD"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-        .unwrap_or_default();
-    let (mut add, mut del) = (0u64, 0u64);
-    for l in numstat.lines() {
+        .unwrap_or_default()
+}
+
+/// Filter drivers are named in config, so each one the repo defines is blanked
+/// by name; `required=false` keeps a blank one from failing the diff.
+fn no_filters(root: &str) -> Vec<String> {
+    let out = git(root, &[], None, &["config", "-z", "--get-regexp", r"^filter\."]);
+    let mut names: Vec<&str> = out
+        .split('\0')
+        .filter_map(|r| r.split('\n').next()?.strip_prefix("filter.")?.rsplit_once('.').map(|(n, _)| n))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
+        .iter()
+        .flat_map(|n| ["clean=", "smudge=", "process=", "required=false"].map(|k| ["-c".to_string(), format!("filter.{n}.{k}")]))
+        .flatten()
+        .collect()
+}
+
+/// tmux-review's BIGCAP: past this a file is never hashed, only reported.
+const BIGCAP: u64 = 32 * 1024 * 1024;
+
+static IDX_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+/// tmux-review's `tree_diff` against HEAD: one diff over a copy of the index that
+/// `add -N -A` extended with every untracked file, so `prefix r` and the board
+/// print the same `+A -D  ?N new`. The copy keeps its mtime, or git's racy
+/// check trusts a same-second edit as clean.
+fn tree_stat(root: &str, gitdir: &str) -> String {
+    let filters = no_filters(root);
+    let listed = git(root, &[], None, &["ls-files", "-o", "-m", "--exclude-standard", "-z"]);
+    let big: Vec<&str> = listed
+        .split('\0')
+        .filter(|f| !f.is_empty())
+        .filter(|f| std::fs::metadata(Path::new(root).join(f)).is_ok_and(|m| m.is_file() && m.len() > BIGCAP))
+        .collect();
+    let n = IDX_SEQ.fetch_add(1, Ordering::Relaxed);
+    let idx = std::env::temp_dir().join(format!("cockpit-tui-idx.{}.{n}", std::process::id()));
+    let src = Path::new(gitdir).join("index");
+    let copied = std::fs::copy(&src, &idx).is_ok()
+        && std::fs::metadata(&src)
+            .and_then(|m| m.modified())
+            .and_then(|t| File::options().write(true).open(&idx)?.set_modified(t))
+            .is_ok();
+    if !copied {
+        let _ = std::fs::remove_file(&idx);
+    }
+    git(root, &filters, Some(&idx), &["add", "-N", "-A"]);
+    let mut args = vec![
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--numstat",
+        "--summary",
+        "HEAD",
+        "--",
+    ];
+    let ex: Vec<String> = big.iter().map(|b| format!(":(exclude,literal){b}")).collect();
+    args.extend(ex.iter().map(String::as_str));
+    if ex.is_empty() {
+        args.pop();
+    }
+    let out = git(root, &filters, Some(&idx), &args);
+    let _ = std::fs::remove_file(&idx);
+    let (mut add, mut del, mut new) = (0u64, 0u64, 0u64);
+    for l in out.lines() {
+        if l.starts_with(" create mode ") {
+            new += 1;
+            continue;
+        }
         let mut f = l.split('\t');
         add += f.next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
         del += f.next().and_then(|x| x.parse::<u64>().ok()).unwrap_or(0);
     }
-    let pm = if add == 0 && del == 0 {
-        "clean".to_string()
-    } else {
-        format!("+{add} -{del}")
+    if out.trim().is_empty() && big.is_empty() {
+        return "clean".into();
+    }
+    let mut pm = format!("+{add} -{del}");
+    if new > 0 {
+        pm.push_str(&format!("  ?{new} new"));
+    }
+    pm
+}
+
+/// repo⑂branch, the `±` string and the repo root, for one path.
+pub fn git_facts(path: &str) -> (String, String, String) {
+    let top = git(
+        path,
+        &[],
+        None,
+        &["rev-parse", "--show-toplevel", "--absolute-git-dir", "--abbrev-ref", "HEAD"],
+    );
+    let mut it = top.lines();
+    let (Some(root), Some(gitdir), Some(branch)) = (it.next(), it.next(), it.next()) else {
+        return (String::new(), String::new(), String::new());
     };
-    (format!("{repo}⑂{branch}"), pm, root.to_string())
+    let repo = root.rsplit('/').next().unwrap_or(root);
+    (format!("{repo}⑂{branch}"), tree_stat(root, gitdir), root.to_string())
+}
+
+const GIT_TTL: Duration = Duration::from_secs(10);
+
+#[derive(Default)]
+struct GitCache {
+    /// by path
+    facts: HashMap<String, (Instant, (String, String, String))>,
+    /// each pane's state at the last fetch, by pane id
+    seen: HashMap<String, State>,
+}
+
+thread_local! {
+    /// Five git forks per repo are worth paying every 10 s, not every tick;
+    /// a pane changing state is when its diff most likely moved, so it refetches.
+    static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
+}
+
+fn fill_git(ps: &mut [Pane]) {
+    GIT.with(|c| {
+        let GitCache { facts, seen } = &mut *c.borrow_mut();
+        let stale: HashSet<String> = ps
+            .iter()
+            .filter(|p| seen.get(&p.id) != Some(&p.state))
+            .map(|p| p.path.clone())
+            .collect();
+        *seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
+        facts.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
+        for path in stale {
+            facts.remove(&path);
+        }
+        for p in ps.iter_mut() {
+            let (_, (loc, pm, root)) = facts.entry(p.path.clone()).or_insert_with(|| (Instant::now(), git_facts(&p.path)));
+            (p.loc, p.pm, p.root) = (loc.clone(), pm.clone(), root.clone());
+        }
+    });
 }
 
 /// The review spool's two counts, straight off the directory.
@@ -667,7 +839,6 @@ fn unsentinel(s: &str) -> String {
 pub fn list_panes() -> Option<Vec<Pane>> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
     let (mut agents, mut procs_t) = (None, None);
-    let mut git: HashMap<String, (String, String, String)> = HashMap::new();
     let mut ps = vec![];
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
@@ -676,11 +847,11 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         }
         // A pane carrying @panestate counts whatever it runs: the hooks are the
         // source of truth, and a wrapper hides `claude` behind its own argv0.
-        let state = unsentinel(f[4]);
+        let raw = unsentinel(f[4]);
         // Rule 72: @panestate is the hooks' own answer, the name is a fast path
         // that skips the `ps` fork when tmux already says agent, and the process
         // tree is the one that actually decides.
-        let agent = !state.is_empty() || agentish(f[3]) || {
+        let agent = !raw.is_empty() || agentish(f[3]) || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
         };
@@ -692,7 +863,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
             wher: f[1].into(),
             name: f[2].into(),
             cmd: f[3].into(),
-            state,
+            state: raw.as_str().into(),
             title: unsentinel(f[5]),
             msg: unsentinel(f[6]),
             sess: unsentinel(f[7]),
@@ -708,22 +879,11 @@ pub fn list_panes() -> Option<Vec<Pane>> {
             p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
         }
         read_transcript(&mut p);
-        let (loc, pm, root) = git.entry(p.path.clone()).or_insert_with(|| git_facts(&p.path)).clone();
-        p.loc = loc;
-        p.root = root;
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        p.pm = pm;
         ps.push(p);
     }
-    // needs-input first, then running, then the rest; the fleet exists to answer
-    // "which one needs me", so rank is not a sort option.
-    ps.sort_by_key(|p| match p.state.as_str() {
-        "needs-input" => 0,
-        "error" => 1,
-        "running" => 2,
-        "done" => 3,
-        _ => 4,
-    });
+    fill_git(&mut ps);
+    ps.sort_by_key(|p| p.state);
     Some(ps)
 }
 

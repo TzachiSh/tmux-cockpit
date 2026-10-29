@@ -4,11 +4,14 @@
 # Plain `worktree remove` and `branch -d` refuse a dirty tree or an unmerged
 # branch, which is claude's own rule for the trees it makes itself.
 set -u
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/hook.sh
+. "${d%/*}/lib/hook.sh" || exit 0
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 0
 payload=$(cat)
-path=""
-case "$payload" in
-    *'"worktree_path"'*) path=${payload#*'"worktree_path"'}; path=${path#*:}; path=${path#*'"'}; path=${path%%'"'*} ;;
-esac
+json_str worktree_path
+path=$REPLY
 case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=$HOME/.cache ;; esac
 # Only our own trees: anything outside the cache dir, the main checkout
 # included, is claude's to handle and not this hook's.

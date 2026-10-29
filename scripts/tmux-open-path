@@ -30,6 +30,9 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 1
 
 # Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
 # run-shell from a stripped environment, or a systemd-launched tmux. tmux-where
@@ -38,15 +41,12 @@ H=${HOME:-/nonexistent}
 
 # --- vscode -------------------------------------------------------------------
 # Sourced on demand, not at startup: --preview below is re-run by fzf on every
-# arrow key, and it must not pay a readlink for a lib it never touches. $0 is
-# the ~/.local/bin symlink install.sh made; lib/ sits beside the REAL script,
-# and ${x%/*} is dirname without the second fork.
+# arrow key, and it must not pay a readlink for a lib it never touches. lib/
+# sits beside the REAL script; install.sh links it by absolute path.
 vscode_lib() {
-    local real
-    real=$(readlink -f "$0" 2>/dev/null) || real=$0
-    [ -n "$real" ] || real=$0
+    local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/vscode.sh
-    . "${real%/*}/lib/vscode.sh" 2>/dev/null && return 0
+    . "${d%/*}/lib/vscode.sh" 2>/dev/null && return 0
     # A half-installed copy (scripts/ without lib/) must still open files the
     # ordinary ways rather than die on an undefined function.
     vscode_shim() { return 1; }
@@ -187,7 +187,8 @@ if [ "${1:-}" = --preview-diff ]; then
     cdir="${XDG_RUNTIME_DIR:-/tmp}/tmux-cockpit-preview-$(id -u)"
     cache_ok=0
     if [ -n "$ckey" ]; then
-        ( umask 077; mkdir -p "$cdir" ) 2>/dev/null
+        # Not -p: never recreate a vanished XDG_RUNTIME_DIR (#136).
+        ( umask 077; mkdir "$cdir" ) 2>/dev/null
         if [ ! -L "$cdir" ] && [ -d "$cdir" ]; then
             dstat=$(stat -c '%u %a' "$cdir" 2>/dev/null || stat -f '%u %Lp' "$cdir" 2>/dev/null)
             [ "$dstat" = "$(id -u) 700" ] && cache_ok=1
@@ -444,26 +445,19 @@ note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
 K_OPEN='↵ open · ⇥ mark · ^O as-is · esc cancel'
 K_BROWSE='↵ enter · ⇥ mark · ^O as-is · esc cancel'
 K_VERBS='^G diff · ^F content · ^/ preview · alt-c copy'
-# The lib sits beside the REAL script; install.sh links this file into ~/bin by
-# its absolute path, so one readlink hop is the whole resolution. Resolved here
-# rather than at the top because the editor, --dry-run and open_single paths
-# never reach a picker, and some of them run on a PATH with no readlink at all.
+# lib/ sits beside the REAL script; install.sh links it by absolute path.
+# Resolved here rather than at the top because the editor, --dry-run and
+# open_single paths never reach a picker, and some of them run on a PATH with
+# no readlink at all.
 op_theme() {                  # op_theme <first key line> -- fills the THEME array
-    local d
-    d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
-    if [ -n "$d" ]; then d=${d%/*}
-    else d=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
+    local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/fzf.sh
-    . "$d/lib/fzf.sh" \
+    . "${d%/*}/lib/fzf.sh" \
       || { note "cockpit: the fzf theme is missing · reinstall from the repo"; exit 1; }
-    # One probe per open: the process substitution below inherits the cache.
-    COCKPIT_FZF_TIER=$(cockpit_fzf_tier)
     mapfile -t THEME < <(cockpit_fzf_args highlight-line)
     # Appended, not asked of cockpit_fzf_args: it prints one argument per line,
     # so the second key line would reach fzf as a stray argument (#116).
-    # No --footer below the floor, so the keys ride the last --header line.
-    if [ "$COCKPIT_FZF_TIER" = styled ]; then THEME+=("--footer=$1"$'\n'"$K_VERBS")
-    else THEME+=("--header=$1"$'\n'"$K_VERBS"); fi
+    THEME+=("--footer=$1"$'\n'"$K_VERBS")
 }
 
 if [ "$BROWSE" -eq 1 ]; then

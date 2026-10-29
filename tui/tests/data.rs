@@ -1,7 +1,7 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
-use cockpit_tui::data::{Pane, list_panes, preview};
+use cockpit_tui::data::{Pane, git_facts, list_panes, preview};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -367,3 +367,104 @@ fn an_open_question_further_back_than_64k_is_still_found() {
 
 const BASH_ROW: &str = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:01.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
      \"content\":[{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"Bash\",\"input\":{\"command\":\"echo one\"}}]}}\n";
+
+/// A real repo under $TMPDIR, with the ENV lock held so no Rig's git shim is
+/// on PATH, and the box's own git config kept out.
+struct Repo {
+    dir: PathBuf,
+    _env: Env,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl Repo {
+    fn new(tag: &str) -> Repo {
+        let lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let env = Env::set(&[("GIT_CONFIG_GLOBAL", "/dev/null".into()), ("GIT_CONFIG_NOSYSTEM", "1".into())]);
+        let dir = std::env::temp_dir().join(format!("cockpit-tui-git-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let r = Repo {
+            dir,
+            _env: env,
+            _lock: lock,
+        };
+        r.git(&["init", "-q", "-b", "main", "."]);
+        r.write("f", "a\n");
+        r.git(&["add", "-A"]);
+        r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "init"]);
+        r
+    }
+
+    fn git(&self, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&self.dir)
+            .args(args)
+            .output()
+            .unwrap()
+    }
+
+    fn write(&self, name: &str, body: &str) {
+        std::fs::write(self.dir.join(name), body).unwrap();
+    }
+
+    fn path(&self) -> String {
+        self.dir.display().to_string()
+    }
+}
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// `prefix r`'s fleet test fixture (tests/run.sh, "+4 -0  ?3 new"): one tracked
+/// line plus three one-line untracked files, the files counted once as new.
+#[test]
+fn the_diff_counts_untracked_files_like_prefix_r() {
+    let r = Repo::new("stat");
+    let name = r.dir.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(git_facts(&r.path()), (format!("{name}⑂main"), "clean".into(), r.path()));
+
+    r.write("f", "a\nb\n");
+    r.write("new1.txt", "x\n");
+    r.write("new2.txt", "y\n");
+    r.write("new3.txt", "z\n");
+    assert_eq!(git_facts(&r.path()).1, "+4 -0  ?3 new");
+    let st = String::from_utf8_lossy(&r.git(&["status", "--porcelain"]).stdout).into_owned();
+    assert!(st.contains("?? new1.txt"), "the stat touched the real index: {st}");
+}
+
+/// The agent owns its repo's config, and the board runs git in it: a planted
+/// fsmonitor hook or filter driver must never run.
+#[test]
+fn planted_git_config_never_runs() {
+    let r = Repo::new("plant");
+    let marker = r.dir.join("../cockpit-tui-pwned-".to_string() + &std::process::id().to_string());
+    let m = marker.display().to_string();
+    write_exec(&r.dir.join(".git/fsmon"), &format!("#!/bin/sh\necho fsmonitor >> '{m}'\n"));
+    r.git(&["config", "core.fsmonitor", &r.dir.join(".git/fsmon").display().to_string()]);
+    r.git(&["config", "filter.evil.clean", &format!("sh -c 'echo filter >> \"{m}\"; cat'")]);
+    r.git(&["config", "filter.evil.required", "true"]);
+    r.write(".gitattributes", "f filter=evil\n");
+    r.write("f", "a\nb\n");
+
+    // the control: plain git does run both, so the plant is live
+    r.git(&["diff", "--numstat", "HEAD"]);
+    let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        ran.contains("fsmonitor") && ran.contains("filter"),
+        "the plant never fired: {ran:?}"
+    );
+    std::fs::remove_file(&marker).unwrap();
+
+    let (_, pm, _) = git_facts(&r.path());
+    assert!(
+        !marker.exists(),
+        "a fetch ran planted config: {:?}",
+        std::fs::read_to_string(&marker)
+    );
+    // f gains a line, and the untracked .gitattributes is the one new file
+    assert_eq!(pm, "+2 -0  ?1 new", "the hardened diff still measures the tree");
+}
