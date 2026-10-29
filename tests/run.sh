@@ -7666,8 +7666,9 @@ is "same-rank rows sort by real churn: +5 tracked outranks +1 tracked + 3 untrac
 # until_cap, not a hand-rolled 20 x 0.1 s: 2 s of re-render lost the row under
 # the audit's back-to-back server teardowns and the three assertions below read
 # the PREVIOUS render (#125). The cap is a hang guard only a red run pays for,
-# so it belongs on the suite's shared POLLS (#117).
-until_cap "$FQ" "$CTL" "*$CLEAN_PANE$(printf '\t')*"
+# so it belongs on the suite's shared POLLS (#117). The first render already
+# shows the bare row, so wait for its new state.
+until_cap "$FQ" "$CTL" "*$CLEAN_PANE$(printf '\t')needs-input*"
 fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
 is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
    "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
