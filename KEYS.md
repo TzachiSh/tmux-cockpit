@@ -34,6 +34,7 @@ of the example's `prefix m` menu).
 | Review its diff | `r` |
 | Side fix beside it | `f` |
 | Pane info | `i` |
+| Board of every agent | `w` |
 | Full screen (hide the chrome) | `e` |
 | Switch branch | `b` |
 | Move window to a session... | `m` |
@@ -52,7 +53,9 @@ Each row presses the key it names, so rebinding a key moves its row and
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
-Plain clicks, wheel and drag are never touched.
+Plain clicks, wheel and drag are never touched. `Ctrl`+click focuses the pane
+instead of tmux's swap-pane; `set -g @cockpit_keep_swap_pane on` keeps the swap
+and loses the picker.
 
 ## The example config, `examples/full.tmux.conf`
 
@@ -78,7 +81,7 @@ Set the option before the plugin's `run-shell` line. `off` disables the key
 
 ```sh
 set -g @cockpit_ai_key        a    # n if you never use next-window
-set -g @cockpit_jump_key      u    # was J before #43
+set -g @cockpit_jump_key      u
 set -g @cockpit_sessions_key  g    # was S before #43
 set -g @cockpit_board_key     w    # the board; off keeps stock tmux
 set -g @cockpit_review_key    r

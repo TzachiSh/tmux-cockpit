@@ -5,7 +5,7 @@
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
 #
 # The tmux side needs no install: one run-shell line in ~/.tmux.conf loads
-# cockpit.tmux, which binds its own keys. This script exists for the two scripts
+# cockpit.tmux, which binds its own keys. This script exists for the scripts
 # you also type by name, since a plugin directory is not on $PATH.
 set -uo pipefail
 
