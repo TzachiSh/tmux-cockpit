@@ -1309,9 +1309,11 @@ is "remote-only branch tracks"      "origin/remote-only" \
 git -C "$BR" switch -q main 2>/dev/null
 WT=$(mktmpd); rm -rf "$WT"
 git -C "$BR" worktree add -q "$WT" feature/one 2>/dev/null
+# Match the path, not the wording: git 2.42 says "already used by worktree at",
+# 2.39 "already checked out at", and both name the worktree.
 case "$(git -C "$BR" switch feature/one 2>&1)" in
-    *"already used by worktree"*) ok "worktree conflict names the worktree" ;;
-    *) bad "worktree conflict names the worktree" "already used by worktree" "$(git -C "$BR" switch feature/one 2>&1)" ;;
+    *"$WT"*) ok "worktree conflict names the worktree" ;;
+    *) bad "worktree conflict names the worktree" "a message naming $WT" "$(git -C "$BR" switch feature/one 2>&1)" ;;
 esac
 git -C "$BR" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$BR" "$RM"
