@@ -593,7 +593,7 @@ real window (`new-window -n review`) instead, if you would rather keep the
 fleet's borders and window tabs visible while you read.
 
 The order is that question's answer, and it is deliberately **not** churn.
-Agent state ranks first — `needs-input`, then `done`, `error`, `running`, then
+Agent state ranks first — `needs-input`, then `error`, `running`, `done`, then
 panes with no state at all — and churn only breaks ties inside a rank. An
 agent parked on a permission prompt is the one actually waiting on you, and it
 usually has nothing at all to diff; sorting by churn listed it last, or (with a

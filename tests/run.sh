@@ -5334,7 +5334,11 @@ is "fzf's trimmed fragment is the de-indented 156-byte tail" "156" "${#ifrag}"
 "$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 3 "$ifrag" "indented" "$RVLONG"
 is "an indented line is stored whole, indentation and all" \
    "> $INDENTED" "$(sed -n 6p "$RVLS")"
-rm -rf "$RVLONG" "$RVLS"
+# A store planted as a symlink is refused, not appended through.
+RVCAN=$(mktmpf); printf 'canary\n' > "$RVCAN"; ln -sf "$RVCAN" "$RVLONG/linked.md"
+"$DIR/scripts/tmux-review" --attach "$RVLONG/linked.md" f.txt 2 "$frag" "via link" "$RVLONG"; rvrc=$?
+is "a symlinked store is refused, and its target is untouched" "1 canary" "$rvrc $(cat "$RVCAN")"
+rm -rf "$RVLONG" "$RVLS" "$RVCAN"
 
 echo "== tmux-review --detach: a row with nothing pinned says so instead of doing nothing in silence =="
 RXN=$(mktmpd)
@@ -5749,8 +5753,12 @@ is "revdiff's records parse: no fragment key when there was no fragment line" "u
 printf 'garbage before any header\n## src.go:3 (+)\nfine\n' > "$RSF.bad"
 parse_store "$RSF.bad" 2>/dev/null; rsrc=$?
 is "a corrupted store parses to a blank state and returns 0" "0/0" "$rsrc/$STORE_N"
-is "and the corrupted file is set aside as .bak" "garbage before any header" "$(head -1 "$RSF.bad.bak" 2>/dev/null)"
+is "and the corrupted file is set aside as .bak" "garbage before any header" "$(head -1 "$STORE_BAK" 2>/dev/null)"
 is "and the original path is gone" "gone" "$([ -e "$RSF.bad" ] && echo present || echo gone)"
+rsbak1=$STORE_BAK
+printf 'second garbage\n' > "$RSF.bad"; parse_store "$RSF.bad" 2>/dev/null
+is "a second bad store gets its own backup" "second garbage" "$(head -1 "$STORE_BAK" 2>/dev/null)"
+is "and the first backup is untouched" "garbage before any header" "$(head -1 "$rsbak1" 2>/dev/null)"
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
 is "a header with a non-numeric line is corruption" "0" "$STORE_N"
 parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
@@ -5759,7 +5767,7 @@ RSATT="$RSD/att"; "$DIR/scripts/tmux-review" --attach "$RSATT" src.go 3 'x := 1'
 parse_store "$RSATT"; is "attach()'s store parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
 # The boundary: nothing but comments may say tmux or git in the pure module.
 is "the library touches neither tmux nor git" "0" "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
-unset -f store_set store_dump; unset STORE STORE_N
+unset -f store_set store_dump; unset STORE STORE_N STORE_BAK
 
 echo "== tmux-review --compose: header + blocks verbatim, ?? passes through untouched =="
 RV3STORE=$(mktemp)
@@ -6510,6 +6518,40 @@ is "and nothing is written into it either" "0" \
    "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
 rm -rf "$HC"
 
+echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
+# The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
+# the pane into an if-shell command string. Every entry point refuses it.
+PWD_SHIM=$(mktmpd); PWN='%1;display-message PWNED'
+cat > "$PWD_SHIM/tmux" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >> "$TMUX_LOG"; exit 0
+STUB
+chmod +x "$PWD_SHIM/tmux"; printf '## a:1 (+)\nx\n\n' > "$PWD_SHIM/store"
+pwrun() { PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" "$@" >/dev/null 2>&1; printf '%s ' "$?"; }
+pwrcs=$(pwrun --deliver "$PWN" "$PWD_SHIM/store" "$PWD_SHIM"; pwrun --request "$PWN"; pwrun -p "$PWN" --info
+        pwrun --delta "$PWN"; pwrun --sess "$PWN"; pwrun -p "$PWN")
+is "deliver, request, -p --info, delta, sess and -p all refuse it" "1 2 2 1 1 2 " "$pwrcs"
+is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/dev/null || true)"
+is "--dir prints nothing for it" "" "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir "$PWN" 2>/dev/null)"
+rm -rf "$PWD_SHIM"; unset -f pwrun
+
+echo "== tmux-review: a temp git index is removed when the run is killed =="
+# tree_diff's mktemp index outlives a TERM unless a trap removes it. The git
+# shim TERMs the script mid-add, once the index copy exists.
+TDK=$(mktmpd); mkdir -p "$TDK/repo" "$TDK/tmp" "$TDK/bin"
+( cd "$TDK/repo" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'b\n' >> f ) >/dev/null 2>&1
+cat > "$TDK/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" add "*) kill -TERM "\$PPID"; exit 0 ;; esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$TDK/bin/git"
+PATH="$TDK/bin:$PATH" TMPDIR="$TDK/tmp" "$DIR/scripts/tmux-review" --copy "$TDK/repo" >/dev/null 2>&1; tdrc=$?
+is "the run was killed mid-diff (exit 143)" "143" "$tdrc"
+is "and its temp index is gone" "" "$(ls -A "$TDK/tmp")"
+rm -rf "$TDK"
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
@@ -6817,6 +6859,20 @@ case "$bigpaneafter" in
     *) ok "the full review text never reaches the pane itself" ;;
 esac
 rm -f "$BIGFILE" "$OLDPATH" "$CANARY"
+
+# A new spill keeps this pane's two newest older ones and deletes the rest;
+# another pane's file is not ours to touch.
+for t in 1 2 3; do
+    : > "$RUNDIR/tmux-cockpit-review-${AP#%}-old00$t"; touch -t "20200101000$t" "$RUNDIR/tmux-cockpit-review-${AP#%}-old00$t"
+done
+: > "$RUNDIR/tmux-cockpit-review-99999-old001"; touch -t 202001010001 "$RUNDIR/tmux-cockpit-review-99999-old001"
+"$TMUX_REAL" -L "$RDS" send-keys -t "$AP" C-u >/dev/null 2>&1
+rundeliver "$AP" "$BIGSTORE"
+is "a new spill deletes the oldest of this pane's earlier ones" "gone" \
+   "$([ -e "$RUNDIR/tmux-cockpit-review-${AP#%}-old001" ] && echo kept || echo gone)"
+is "and keeps the two newest, and another pane's" "kept kept kept" \
+   "$(for f in "${AP#%}-old002" "${AP#%}-old003" 99999-old001; do [ -e "$RUNDIR/tmux-cockpit-review-$f" ] && printf 'kept ' || printf 'gone '; done | sed 's/ $//')"
+rm -f "$RUNDIR"/tmux-cockpit-review-*
 
 "$TMUX_REAL" -L "$RDS" kill-server >/dev/null 2>&1
 fi
@@ -7662,6 +7718,27 @@ rm -rf -- "$wtsess" "$cwdsess"
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG" "$FQ_WT" "$FQ_MAIN"
 fi
 
+echo "== tmux-review --fleet: ranks needs-input, error, running, done, then no state =="
+if need_tmux "tmux-review --fleet rank"; then :; else
+FO="cockpit-fo-$$"; SOCKS="$SOCKS $FO"; FOD=$(mktmpd)
+"$TMUX_REAL" -L "$FO" -f /dev/null new-session -d -s t -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1
+for _ in 1 2 3 4; do "$TMUX_REAL" -L "$FO" new-window -t t: -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1; done
+"$TMUX_REAL" -L "$FO" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+fo_cmds() { "$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_current_command}' | tr '\n' ' '; }
+until_out 'claude claude claude claude claude ' fo_cmds
+# Created in an order that matches no ranking, so only the sort can produce the expected one.
+mapfile -t fo_p < <("$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_id}')
+fo_i=0
+for s in done running '' error needs-input; do
+    [ -z "$s" ] || "$TMUX_REAL" -L "$FO" set-option -p -t "${fo_p[fo_i]}" @panestate "$s" >/dev/null 2>&1
+    fo_i=$((fo_i + 1))
+done
+is "the queue's state column reads in the chosen order" "needs-input error running done —" \
+   "$("$TMUX_REAL" -L "$FO" run-shell "'$DIR/scripts/tmux-review' --fleet" 2>/dev/null | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
+"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1
+rm -rf "$FOD"; unset fo_i fo_p; unset -f fo_cmds
+fi
+
 echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
 # fleet_rows() used to run each pane's git status+numstat SERIALLY, one pane
 # after the next -- ~2 git calls/pane. On a cold filesystem (150ms/git,
@@ -8427,7 +8504,7 @@ RXBADORIG=$(cat "$RXBAD")
 is "--detach still exits 0 when the store fails to parse" "0" "$rxbadrc"
 is "and does not recreate the original path with an empty store" \
    "gone" "$([ -e "$RXBAD" ] && echo present || echo gone)"
-is "the original content survives untouched in .bak" "$RXBADORIG" "$(cat "$RXBAD.bak" 2>/dev/null)"
+is "the original content survives untouched in .bak" "$RXBADORIG" "$(cat "$RXBAD".bak.* 2>/dev/null)"
 : > "$RXSTORE"
 "$TMUX_REAL" -L "$RX" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 RXP=$("$TMUX_REAL" -L "$RX" list-panes -t t: -F '#{pane_id}')
