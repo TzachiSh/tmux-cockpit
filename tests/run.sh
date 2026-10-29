@@ -2282,8 +2282,8 @@ is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
 is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolor")"
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
-if [ "$(dcge "$dctv" 3.7)" = no ]; then
-    skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.7)"
+if [ "$(dcge "$dctv" 3.8)" = no ]; then
+    skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
     is "and the whole run exits 0"          "0" "$dcrc"
 fi
@@ -9590,7 +9590,7 @@ is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
 "$TMUX_REAL" -L "$TJ" kill-server >/dev/null 2>&1
 fi
 
-echo "== prefix w: the board binds, off keeps stock, 3.6 refuses, and one action line reaches one script =="
+echo "== prefix w: the board binds, off keeps stock, below 3.8 refuses, and one action line reaches one script =="
 # Every script cockpit.tmux names has to be in the tree. The fetch assertions
 # below write a stub over their copy, so a deleted scripts/tui-fetch would sail
 # through them; a binding pointing at nothing fails only in the user's hands.
@@ -9714,48 +9714,17 @@ case "$(bkey "$B6" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window 
 esac
 "$TMUX_REAL" -L "$B6" kill-server >/dev/null 2>&1
 
-# --- the 3.7 floor -------------------------------------------------------------
-# 3.7 fixed "popup window gets overwritten by background updates" (#4920) and a
-# hook-driven cockpit repaints constantly, so below it the board tears.
-B4="cockpit-bw4-$$"; SOCKS="$SOCKS $B4"; bshim "$BD/s4" "$B4" 3.6; rm -f "$BD/argv"
+# --- the 3.8 floor -------------------------------------------------------------
+B4="cockpit-bw4-$$"; SOCKS="$SOCKS $B4"; bshim "$BD/s4" "$B4" 3.7; rm -f "$BD/argv"
 PATH="$BD/s4:$PATH" "$TMUX_REAL" -L "$B4" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B4"
-case "$(bkey "$B4" w)" in *cockpit-board*) bad "tmux 3.6 does not bind the board" \
-        "no cockpit-board in the binding" "$(bkey "$B4" w)" ;;
-    *) ok "tmux 3.6 does not bind the board" ;;
-esac
-case "$(cat "$BD/argv" 2>/dev/null)" in *'the board (prefix w) needs tmux 3.7 (found 3.6)'*)
-        ok "and it refuses by name instead of leaving a dead key" ;;
-    *) bad "and it refuses by name instead of leaving a dead key" \
-         "display-message ... the board (prefix w) needs tmux 3.7 (found 3.6)" \
+"$TMUX_REAL" -L "$B4" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1
+is "tmux 3.7 binds nothing" "" "$(grep -c 'bind-key' "$BD/argv" 2>/dev/null | grep -v '^0$')"
+case "$(cat "$BD/argv" 2>/dev/null)" in *'tmux-cockpit needs tmux 3.8 or newer (found 3.7)'*)
+        ok "and says which tmux it needs" ;;
+    *) bad "and says which tmux it needs" "needs tmux 3.8 or newer (found 3.7)" \
          "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
 esac
 "$TMUX_REAL" -L "$B4" kill-server >/dev/null 2>&1
-
-B7="cockpit-bw7-$$"; SOCKS="$SOCKS $B7"; bshim "$BD/s7" "$B7" 3.6
-PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$B7" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B7" set -g @cockpit_board_window on >/dev/null 2>&1
-"$TMUX_REAL" -L "$B7" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B7"
-case "$(bkey "$B7" w)" in *new-window*cockpit-board*) ok "but a parked window still binds on 3.6: #4920 is a popup bug" ;;
-    *) bad "but a parked window still binds on 3.6: #4920 is a popup bug" \
-         "a new-window running cockpit-board" "$(bkey "$B7" w)" ;;
-esac
-"$TMUX_REAL" -L "$B7" kill-server >/dev/null 2>&1
-
-# A client has ONE message slot, so a second display-message replaces the
-# first: both 3.7 casualties have to arrive in the same line or the branch
-# warning that was there first is never seen.
-B5="cockpit-bw5-$$"; SOCKS="$SOCKS $B5"; bshim "$BD/s5" "$B5" 3.6; rm -f "$BD/argv"
-PATH="$BD/s5:$PATH" "$TMUX_REAL" -L "$B5" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B5" set -g status-right '#[range=control|1]x#[norange]' >/dev/null 2>&1
-"$TMUX_REAL" -L "$B5" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B5"
-case "$(cat "$BD/argv" 2>/dev/null)" in *'clicking the branch and the board (prefix w) needs tmux 3.7'*)
-        ok "and a config that also marks a click range loses neither warning" ;;
-    *) bad "and a config that also marks a click range loses neither warning" \
-         "one display-message naming both" "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
-esac
-is "and it is ONE message, not two" "1" "$(grep -c 'display-message tmux-cockpit:.*3\.7' "$BD/argv" 2>/dev/null)"
-"$TMUX_REAL" -L "$B5" kill-server >/dev/null 2>&1
 
 # --- the wrapper: one action line, one script ----------------------------------
 # Every script the wrapper can reach is a stub that records its argv, and tmux
