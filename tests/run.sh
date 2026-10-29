@@ -6373,8 +6373,6 @@ is "and a repeat render is served FROM that entry, not re-rendered" \
 sed -i '1001s/.*/ALSO/' "$PV/big.txt"
 case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
     *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
-# #136: a preview still running when the suite swept its $STATE used to
-# `mkdir -p` the cache dir and so resurrect the swept parent as an orphan.
 pvgone="$RTD/swept"
 XDG_RUNTIME_DIR="$pvgone" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" >/dev/null 2>&1
 is "a vanished XDG_RUNTIME_DIR is not recreated by the cache (#136)" "" \
