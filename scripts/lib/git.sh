@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Sourced, never run. Shadows git: an agent can write its repo's config, and
+# fsmonitor, filters, textconv, external diff and hooks there run as the user.
+
+GIT_SAFE=(-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false)
+
+git() {
+    local i=1 n=$# dir=. a
+    while [ "$i" -le "$n" ]; do
+        a=${!i}
+        case $a in
+            -C) i=$((i + 1)); dir=${!i} ;;
+            -c) i=$((i + 1)) ;;
+            -*) ;;
+            *) break ;;
+        esac
+        i=$((i + 1))
+    done
+    local drv=()
+    case ${!i-} in
+        # These never read the worktree, so they cannot reach a filter.
+        rev-parse|symbolic-ref|for-each-ref|show-ref|config|log|show|cat-file|merge-base|rev-list|ls-tree|describe|name-rev|update-ref|branch|worktree) ;;
+        # Anything else might; the repo names the driver, so neutralise it by name.
+        *)
+            if [ "${_git_dir-}" != "$dir" ]; then
+                _git_dir=$dir _git_drv=()
+                local k
+                while read -r k _; do
+                    case $k in
+                        *.clean|*.smudge) _git_drv+=(-c "$k=cat") ;;
+                        *) _git_drv+=(-c "$k=") ;;
+                    esac
+                done < <(command git -C "$dir" config --get-regexp '^filter\..*\.(clean|smudge|process|required)$' 2>/dev/null)
+            fi
+            drv=(${_git_drv[@]+"${_git_drv[@]}"}) ;;
+    esac
+    case ${!i-} in
+        diff|log|show) set -- "${@:1:i}" --no-ext-diff --no-textconv "${@:i+1}" ;;
+    esac
+    command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@"
+}

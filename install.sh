@@ -51,17 +51,8 @@ esac; done
 
 
 # ---------------------------------------------------------------- doctor ----
-# vnum: 0.74.3 -> 0074003, 3.7c -> 3007000. The twin is in scripts/tui-fetch;
-# neither script can source the other. Never cockpit.tmux's version_at_least,
-# which reads ${v#*.} as the minor and grades 0.74.3 as 0.
-vnum() {
-    local v=${1%% *}; v=${v#v}; local IFS=.
-    # shellcheck disable=SC2086  # split on the dots is the point
-    set -- $v
-    local a=${1:-0} b=${2:-0} c=${3:-0}
-    a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
-    printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"
-}
+# shellcheck source=scripts/lib/vnum.sh
+. "$DIR/scripts/lib/vnum.sh" || exit 1
 
 # Each tool names its version in its own field. A builtin, not awk: the fail
 # rows still have to be right on a PATH with nothing on it.

@@ -6,12 +6,10 @@ set -u
 pane="${TMUX_PANE:-}"
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac   # same guard as agent-state
 
-# Bounded whole-read, the agent-state pattern: a hook must never hang its agent.
-payload="" chunk="" deadline=$(( SECONDS + 2 ))
-while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ]; do
-    IFS= read -r -t "$left" chunk || { payload="$payload$chunk"; break; }
-    payload="$payload$chunk"; chunk=""
-done
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/hook.sh
+. "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+read_payload false
 
 command -v jq >/dev/null 2>&1 || exit 0
 # .context_window.used_percentage is the field a live run actually sends

@@ -225,22 +225,24 @@ tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pan
 # sends, so a Shift-letter chord dies under Caps Lock or a non-Latin layout.
 # Each block leaves its effective key in a lowercase variable (empty = off)
 # for the agents menu further down, which replays them.
+key() {                       # <option> <default> -> the key, empty when off
+    local k; k=$(tmux show-option -gqv "$1")
+    case "$k" in off) ;; "") printf '%s' "$2" ;; *) printf '%s' "$k" ;; esac
+}
 
 # Session picker in the same popup chrome. g (goto session) is unbound in
 # stock tmux and in examples/full.tmux.conf; TM_HEIGHT=100% because inside a
 # popup the popup is the frame and fzf's inline 40%% would leave the bottom
 # half empty.
 Q_TM=$(sq "$DIR/scripts/tm")
-SK=$(tmux show-option -gqv @cockpit_sessions_key)
-case "$SK" in off) sk= ;; "") sk=g ;; *) sk=$SK ;; esac
+sk=$(key @cockpit_sessions_key g)
 [ -z "$sk" ] || tmux bind-key "$sk" display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
 
 # Jump to the pane that needs you; press again to cycle through all of them.
 # u as in unblock; j is pane-down in the example config.
-JK=$(tmux show-option -gqv @cockpit_jump_key)
 # run-shell expands #{pane_id} but sets no $TMUX_PANE, so the pane goes in
 # as an argument: without it the cycle never knew where it stood (#45).
-case "$JK" in off) jk= ;; "") jk=u ;; *) jk=$JK ;; esac
+jk=$(key @cockpit_jump_key u)
 [ -z "$jk" ] || tmux bind-key "$jk" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'"
 
 # Review an agent's diff. The popup passes -p $SRC_PANE so the script sees
@@ -264,24 +266,21 @@ else
     R_OPEN=(display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ')
     R_CMD="$Q_REVIEW -p $SRC_PANE"
 fi
-RK=$(tmux show-option -gqv @cockpit_review_key)
-case "$RK" in off) rk= ;; "") rk=r ;; *) rk=$RK ;; esac
+rk=$(key @cockpit_review_key r)
 [ -z "$rk" ] || tmux bind-key "$rk" "${R_OPEN[@]}" "$R_CMD"
 
 # prefix i: what this pane is, waits on, and holds -- state, review, base,
 # session id, review dir. Replaces stock i (window info) because it IS the
 # window info you want on an agent pane; @cockpit_info_key rebinds, off keeps
 # stock. `read` is POSIX, so the popup's sh can wait for ↵ itself.
-IK=$(tmux show-option -gqv @cockpit_info_key)
-case "$IK" in off) ik= ;; "") ik=i ;; *) ik=$IK ;; esac
+ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
 # prefix f: a side fix beside a busy agent -- two lines, a fenced claude -p in
 # its own pane, the agent's suite command held off and its next Stop held
 # until one handover line. Stock f is find-window; @cockpit_fixer_key off keeps it.
 Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
-FK=$(tmux show-option -gqv @cockpit_fixer_key)
-case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
+fk=$(key @cockpit_fixer_key f)
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
 # prefix w: the board -- every agent pane as a live tile. Stock w is
@@ -290,8 +289,7 @@ case "$FK" in off) fk= ;; "") fk=f ;; *) fk=$FK ;; esac
 # Wider than the pickers' $PW and only wider: a 70% popup on a 120-column
 # terminal is an 84-column board, which is one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
-BK=$(tmux show-option -gqv @cockpit_board_key)
-case "$BK" in off) bk= ;; "") bk=w ;; *) bk=$BK ;; esac
+bk=$(key @cockpit_board_key w)
 # Bound whether or not bin/cockpit-tui exists: the binary arrives by a gesture,
 # so the wrapper says "not installed" at press time rather than the key
 # appearing only after the next reload.
@@ -350,8 +348,7 @@ trap 'rm -f "$rlconf"' EXIT HUP INT TERM
     set +f
     IFS=$old_ifs
     [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
-    RLK=$(tmux show-option -gqv @cockpit_reload_key)
-    case "$RLK" in off) rlk= ;; "") rlk=R ;; *) rlk=$RLK ;; esac
+    rlk=$(key @cockpit_reload_key R)
     [ -z "$rlk" ] || printf 'bind-key %s {\n' "$(sq "$rlk")"
     if [ -n "$rlk" ]; then
         for f in "$@"; do
@@ -394,13 +391,8 @@ rm -f "$rlconf"
 # window REPLACE its placeholder shell. The if-shell guard is for an empty
 # name: 3.7 makes a session with no name instead of refusing (a name of
 # exactly 0 is refused too; tmux numbers sessions from 0, so it is taken).
-MK=$(tmux show-option -gqv @cockpit_move_key)
-case "$MK" in
-    off) ;;                          # explicitly disabled
-    "")  mk=M ;;
-    *)   mk=$MK ;;
-esac
-if [ "$MK" != off ]; then
+mk=$(key @cockpit_move_key M)
+if [ -n "$mk" ]; then
     mvconf=$(mktemp) || exit 1
     trap 'rm -f "$mvconf"' EXIT HUP INT TERM
     {
@@ -419,8 +411,7 @@ fi
 # prefix e: hide the status line and pane borders for THIS session and window.
 # The flag IS the state, so a config that already hides the status line is not
 # read as a restore; unsetting inherits whatever the config says, no stash.
-FSK=$(tmux show-option -gqv @cockpit_fullscreen_key)
-case "$FSK" in off) fsk= ;; "") fsk=e ;; *) fsk=$FSK ;; esac
+fsk=$(key @cockpit_fullscreen_key e)
 if [ -n "$fsk" ]; then
     fsconf=$(mktemp) || exit 1
     trap 'rm -f "$fsconf"' EXIT HUP INT TERM
@@ -448,8 +439,7 @@ fi
 # definition per action, a rebound key moves its row, an off key drops it.
 # Stock a is unbound; @cockpit_ai_key rebinds (n if you never use
 # next-window), off disables.
-AK=$(tmux show-option -gqv @cockpit_ai_key)
-case "$AK" in off) ak= ;; "") ak=a ;; *) ak=$AK ;; esac
+ak=$(key @cockpit_ai_key a)
 if [ -n "$ak" ]; then
     rows=()
     row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }

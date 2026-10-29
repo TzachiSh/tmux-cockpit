@@ -15,6 +15,9 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 1
 
 # Under `set -u` a bare $HOME aborts the script wherever HOME is unset -- a tmux
 # server started by systemd or launchd. The other two scripts already guard it.
@@ -229,13 +232,10 @@ psz=$(( avail - lrows - 5 ))
 # "[any key]" and making you reopen the picker and retype. The failure paths
 # are the normal case -- a dirty tree, a branch held by a worktree -- and each
 # already showed git's own message; now it costs a keypress, not the flow.
-# The theme lib sits beside the REAL script; install.sh links this file into
-# ~/bin by its absolute path, so one readlink hop is the whole resolution.
-LIBD=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
-if [ -n "$LIBD" ]; then LIBD=${LIBD%/*}
-else LIBD=$(cd -P "${BASH_SOURCE[0]%/*}" 2>/dev/null && pwd); fi
+# lib/ sits beside the REAL script; install.sh links it by absolute path.
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/fzf.sh
-. "$LIBD/lib/fzf.sh" \
+. "${d%/*}/lib/fzf.sh" \
   || fail "cockpit: the fzf theme is missing · reinstall from the repo"
 
 # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. 46 columns,
@@ -260,7 +260,7 @@ while :; do
               --delimiter=$'\t' --with-nth=2 \
               --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
               --prompt="switch> " \
-              --preview='git log --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
+              --preview='git -c core.fsmonitor=false -c log.showSignature=false log --no-ext-diff --no-textconv --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
               --preview-label=' log ' --preview-label-pos=2 \
               --preview-window="down,$psz,border-top")
     rc=$?

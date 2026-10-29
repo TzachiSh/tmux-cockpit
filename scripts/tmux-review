@@ -31,10 +31,13 @@ fi
 # (fzf's reload/execute-silent binds run in a fresh subshell of their own).
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 OPENPATH="$(dirname "$SELF")/tmux-open-path"
-# The lib sits beside the SCRIPT. install.sh links each script into ~/bin by
-# its absolute path, so one readlink hop is the whole resolution; a plain
-# run (no link) has nothing to read and keeps $SELF's own directory.
-LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$SELF")")/lib"
+# lib/ sits beside the REAL script; install.sh links it by absolute path.
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+LIBDIR=${d%/*}/lib
+# shellcheck source=lib/fixer.sh
+. "$LIBDIR/fixer.sh"
+# shellcheck source=lib/git.sh
+. "$LIBDIR/git.sh" || exit 1
 # shellcheck source=lib/vscode.sh
 . "$LIBDIR/vscode.sh" 2>/dev/null || {
     vscode_shim() { return 1; }        # a half-installed copy: no shim, plain vi
@@ -61,6 +64,9 @@ load_theme() {
 # tmux runs bind/preview strings through sh, so every path inside one has to be
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
+
+# %<digits> and nothing else: a pane id reaches tmux command strings and paths.
+is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
 
 # lines_mode's own "diff too large" row (below) is not a real anchor -- no
 # file, no line -- so it shares this one string with attach(), which refuses
@@ -98,6 +104,7 @@ git_root() {
 # else the cwd. A dangling option (tree removed since) falls back to the cwd.
 pane_dir() {                  # <pane> -> a directory; empty when the pane is gone
     local out wt cwd
+    is_pane "$1" || return 0
     out=$(tmux display-message -p -t "$1" '#{@cockpit_dir}'$'\037''#{pane_current_path}' 2>/dev/null)
     wt=${out%%$'\037'*}; cwd=${out#*$'\037'}
     if [ -n "$wt" ] && [ -d "$wt" ]; then printf '%s\n' "$wt"; else printf '%s\n' "$cwd"; fi
@@ -190,7 +197,8 @@ tree_diff() {
     # dir it already owns, and the copy is named by PID and dies with that
     # dir: mktemp + rm per root were 40 of the fleet's forks.
     if [ -n "${TREE_DIFF_TMP:-}" ]; then idx=$TREE_DIFF_TMP/idx.$BASHPID
-    else idx=$(mktemp) || return 1; fi
+    else idx=$(mktemp) || return 1
+        trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM; fi
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
     # Keep the big files away from git rather than filter them afterwards: the
@@ -220,7 +228,7 @@ tree_diff() {
     # them: a binary file's numstat is "-\t-\tpath". Without it a tree whose
     # only change is a big file reads CLEAN to --delta and to the fleet scan.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
-    [ -n "${TREE_DIFF_TMP:-}" ] || rm -f -- "$idx"
+    [ -n "${TREE_DIFF_TMP:-}" ] || { rm -f -- "$idx"; trap - EXIT HUP INT TERM; }
 }
 
 # --- which base ---------------------------------------------------------------
@@ -737,12 +745,13 @@ stale_keys() {                # <store> <rows-file>  -> stale headers, one per l
 approve() {                   # <dir>
     local dir=$1 idx gd br tree
     idx=$(mktemp) || return 1
-    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; return 1; }
+    trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
+    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; trap - EXIT HUP INT TERM; return 1; }
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
     tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A 2>/dev/null \
            && GIT_INDEX_FILE=$idx git -C "$dir" write-tree 2>/dev/null)
-    rm -f -- "$idx"
+    rm -f -- "$idx"; trap - EXIT HUP INT TERM
     [ -n "$tree" ] && git -C "$dir" update-ref "refs/cockpit/reviewed/${br:-HEAD}" "$tree" 2>/dev/null
 }
 
@@ -973,6 +982,7 @@ attach() {
         [ -n "$full" ] && [ "${ft#"$gt"}" != "$ft" ] || full=""
     fi
     [ -n "$full" ] && fragment=$full
+    [ ! -L "$store" ] || { tmux display-message "cockpit: ${store##*/} is a symlink, refusing to write" 2>/dev/null; return 1; }
     {
         printf '## %s:%s (%s)\n' "$path" "$num" "$sign"
         printf '> %s\n' "$fragment"
@@ -993,10 +1003,10 @@ attach() {
 # parse_store sets a store that does not parse aside as .bak and says so on
 # stderr only; ^X and ^E run under execute-silent, which eats stderr, so the
 # marks vanished without a word (#22). The lib stays tmux-free; this says it.
-load_store() {                # <store>; callers guard [ -s ] first, or a stale .bak beside an empty store would fire this
+load_store() {                # <store>
     parse_store "$1"
-    [ "$STORE_N" -gt 0 ] || [ -s "$1" ] || [ ! -e "$1.bak" ] \
-        || tmux display-message "cockpit: ${1##*/} does not parse; set aside as .bak" 2>/dev/null || true
+    [ -z "$STORE_BAK" ] \
+        || tmux display-message "cockpit: ${1##*/} does not parse; set aside as ${STORE_BAK##*/}" 2>/dev/null || true
 }
 
 detach() {                    # <store> <path> <line-with-sign>
@@ -1567,12 +1577,10 @@ keep_hint() {
 deliver() {
     local pane=$1 store=$2 root=$3
 
-    case "$pane" in
-        %[0-9]*) ;;
-        *) tmux display-message \
-               "cockpit: not a pane id, refusing to deliver$(keep_hint "$pane" "$store")" \
-               2>/dev/null; return 1 ;;
-    esac
+    is_pane "$pane" || {
+        tmux display-message \
+            "cockpit: not a pane id, refusing to deliver$(keep_hint '' "$store")" \
+            2>/dev/null; return 1; }
 
     local is_agent
     is_agent=$(tmux display-message -p -t "$pane" \
@@ -1622,8 +1630,7 @@ deliver() {
     # anything after them, unlike GNU's more permissive "keep a literal
     # suffix after the trailing X run" -- the pointer sentence below already
     # names the exact path, so the extension carried no weight anyway. The
-    # agent deletes nothing -- the file outlives the pane on purpose; the OS
-    # tmpdir is the only GC.
+    # agent deletes nothing -- the file outlives the pane on purpose.
     if [ "$bytes" -gt 2048 ]; then
         local runtime file
         runtime=${XDG_RUNTIME_DIR:-/tmp}
@@ -1634,6 +1641,15 @@ deliver() {
             return 1
         }
         printf '%s' "$payload" > "$file"
+        # Nothing else deletes these. Keep this pane's two newest older ones: an
+        # earlier pointer may still sit unsent in the prompt.
+        local f i; local -a by=()
+        for f in "$runtime/tmux-cockpit-review-${pane#%}-"??????; do
+            [ "$f" != "$file" ] && [ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] || continue
+            for ((i = ${#by[@]}; i > 0; i--)); do [ "$f" -nt "${by[i-1]}" ] || break; by[i]=${by[i-1]}; done
+            by[i]=$f
+        done
+        [ "${#by[@]}" -le 2 ] || rm -f -- "${by[@]:2}"
         payload="Read and address every comment in $file — a code review from the human; ?? comments are questions."
     fi
 
@@ -1753,7 +1769,7 @@ deliver() {
 # permission prompt is the one that actually needs a human, and it usually has
 # nothing at all to diff -- churn-first ordering listed it last, or (with a
 # clean tree) not at all, and answered "who typed most" instead of "who needs
-# me". So @panestate ranks first -- needs-input, done, error, running, then
+# me". So @panestate ranks first -- needs-input, error, running, done, then
 # unset -- and churn only breaks ties inside a rank. A needs-input pane is
 # listed even with a clean tree; its ± column reads —, not "+0 -0", because
 # there is nothing to review there, only someone to unblock.
@@ -1889,9 +1905,9 @@ fleet_rows() {
         IFS=$'\t' read -r _dirty repo branch stat churn < "$tmpdir/scan-${root_idx[$key]}"
         case "$state" in
             needs-input) rank=0 ;;
-            done)        rank=1 ;;
-            error)       rank=2 ;;
-            running)     rank=3 ;;
+            error)       rank=1 ;;
+            running)     rank=2 ;;
+            done)        rank=3 ;;
             *)           rank=4 ;;
         esac
         # The review mark rides the state column: ◆ the gate flagged a finished
@@ -2083,7 +2099,7 @@ review_pane() {
 # again resumes the pinned comments, so the recovery is "run it again".
 request() {                   # <pane>
     local pane=$1 dir root sess store pw ph rc t
-    case "$pane" in %[0-9]*) ;; *) usage; exit 2 ;; esac
+    is_pane "$pane" || { usage; exit 2; }
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
         printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
         exit 1
@@ -2210,7 +2226,7 @@ info_mode() {                 # <pane>
         fpane=$(cat -- "$sess/fixer/pane" 2>/dev/null)
         fdl=$(cat -- "$sess/fixer/deadline" 2>/dev/null)
         fguard=$(cat -- "$sess/fixer/guard" 2>/dev/null)
-        if [ "$fpane" = pending ] || tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$fpane"; then
+        if { [ "$fpane" = pending ] || is_pane "$fpane"; } && fixer_pane_alive "$fpane"; then
             falive=alive
         else
             falive=gone
@@ -2274,7 +2290,7 @@ fit_field() {                 # <width> <string> [head]
 
 kill_window() {               # <pane>  the row's window, after a y/N in the popup
     local pane=$1 where nwin npane ans
-    case $pane in %[0-9]*) ;; *) return 0 ;; esac
+    is_pane "$pane" || return 0
     # #{?pane_id,...}: a pane gone since the list was built reads ": ", not empty.
     where=$(tmux display-message -p -t "$pane" '#{?pane_id,#{session_windows} #{window_panes} #{session_name}:#{window_index} #{window_name},}' 2>/dev/null)
     [ -n "$where" ] || { tmux display-message "cockpit: pane $pane is gone" 2>/dev/null; return 0; }
@@ -2508,6 +2524,7 @@ while [ $# -gt 0 ]; do
         *)  break ;;
     esac
 done
+[ -z "$REVIEW_PANE_ID" ] || is_pane "$REVIEW_PANE_ID" || { usage; exit 2; }
 
 case "${1:-}" in
     --fleet)

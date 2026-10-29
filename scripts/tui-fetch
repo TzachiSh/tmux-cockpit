@@ -61,13 +61,8 @@ esac
 # fetch: the URL is built from the tag as written.
 norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
-# 0.74.3 -> 0074003, "1.85.0 (abc)" -> 1085000. Never version_at_least
-# (cockpit.tmux): ${v#*.} of a three-component version fails its own digit
-# test and reads as 0, so 1.85 and 1.88 would compare equal.
-vnum() { local v=${1%% *}; v=${v#v}; local IFS=.; set -- $v
-    local a=${1:-0} b=${2:-0} c=${3:-0}
-    a=${a%%[!0-9]*}; b=${b%%[!0-9]*}; c=${c%%[!0-9]*}
-    printf '%d%03d%03d\n' "${a:-0}" "${b:-0}" "${c:-0}"; }
+# shellcheck source=lib/vnum.sh
+. "$DIR/scripts/lib/vnum.sh" || exit 1
 
 case "$(uname -s):$(uname -m)" in
     Linux:x86_64|Linux:amd64)    TARGET=x86_64-unknown-linux-musl ;;
