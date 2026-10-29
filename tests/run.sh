@@ -1509,10 +1509,13 @@ is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-op
 # The target line carries a real marker column: bat's own highlight band
 # measured 1.4:1 against dark themes -- found by counting rows, not looking.
 mk=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+# The marker column is the bat path's; without bat the target is reverse video.
+if command -v batcat >/dev/null 2>&1 || command -v bat >/dev/null 2>&1; then
 case "$(printf '%s' "$mk" | sed -n 2p)" in
     "▸"*) ok "the target line starts with the marker" ;;
     *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
 esac
+else skip_ "the target line starts with the marker (no bat)"; fi
 case "$(printf '%s' "$mk" | sed -n 1p)" in
     " "*) ok "and its neighbours keep alignment" ;;
     *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
@@ -2950,8 +2953,10 @@ case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" 
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
+# Stock, not empty: tmux 3.8 binds prefix g itself (the floating-pane move table).
+pg_stock=$(pk g)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_sessions_key off binds nothing" "" "$(pk g)"
+is "@cockpit_sessions_key off leaves tmux's own prefix g" "$pg_stock" "$(pk g)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 
