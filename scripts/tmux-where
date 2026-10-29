@@ -1,10 +1,8 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Right-hand status: where this pane actually is.
-# /bin/bash, not env: this runs twice per status refresh, env's PATH search is
-# a measured 0.48ms of that, and the script hard-requires bash 4 anyway.
 #
-#   tmux-where path   <pane_pid> <pane_id>            -- production: cockpit.tmux's #() job
-#   tmux-where branch <pane_pid> <pane_id>
+#   tmux-where path   <pane_pid> <pane_id>            -- cockpit.tmux's #() job, ssh panes only
+#   tmux-where branch <pane_pid> <path> -              -- cockpit.tmux's #() job, non-ssh panes
 #   tmux-where path   <pane_pid> <path> <command>      -- direct call: tests, manual use
 #   tmux-where branch <pane_pid> <path> <command>
 #
@@ -13,88 +11,23 @@
 # that belong to this machine, not the one you are looking at. Detect ssh and say
 # so instead of reporting something confidently wrong.
 #
-# The THIRD arg tells the two forms apart: %[0-9]* is the only shape #{pane_id}
-# ever expands to, and no real path starts with it. cockpit.tmux's #() job uses
-# the pane_id form ONLY -- pane_current_path/pane_current_command are read below
-# from /proc via pane_pid (one tmux call as the fallback), as DATA, never again as text
-# embedded in the job's command string. tmux expands #{...} tokens INSIDE that
-# string before sh ever parses it, so a value containing a shell metacharacter
-# used to run as a command on every redraw; #{q:} escapes quotes/$()/backticks
-# but passes newline and tab straight through (a command separator and a word
-# separator to sh), so it was not enough either. pane_pid and pane_id are the
-# only values still passed on the #() job's command line -- both are closed
-# forms (digits, or % plus digits) that can never carry a shell metacharacter.
-# A direct call (this suite's tests) hands path/command straight through
-# instead: that was never the vulnerable step -- a bash argv element is not
-# re-parsed as shell syntax the way a #() job's command string is.
+# The THIRD arg tells the forms apart: %[0-9]* is the only shape #{pane_id}
+# ever expands to, and no real path starts with it. tmux expands #{...} tokens
+# INSIDE a #() job's command string before sh parses it, so cockpit.tmux passes
+# the path only single-quoted with every ' rewritten, and the ssh job only
+# pane_pid and pane_id, closed forms that can never carry a shell metacharacter.
 set -u
-
-# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
-# silent and wrong rather than loud: `declare -A` errors, then the same
-# assignment quietly creates an INDEXED array with an arithmetic subscript.
-if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
-    printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
-           "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
-    exit 1
-fi
 
 mode="${1:-path}"
 pid="${2:-}"
 arg3="${3:-}"
 arg4="${4:-}"
+home=${HOME:-/nonexistent} tilde="~"   # bash 3.2: no ${HOME} nested in ${path/#}, and a \~ keeps its \
 
-# %[0-9]* is the only shape #{pane_id} ever expands to, and no real path
-# starts with it -- so arg3 unambiguously tells the two callers apart.
-# cockpit.tmux's #() job passes ONLY pid and pane_id now (see its own
-# comment): pane_current_path/_command are fetched HERE, off the pane, as
-# DATA -- never again as text embedded in the job's command string, which is
-# what let a directory name run code on every redraw (single-quote, then
-# newline/tab once #{q:} closed the first hole). A direct call -- every path
-# and branch test in this suite -- still hands path/cmd straight through:
-# that was never the vulnerable step, since a bash argv element is not
-# re-parsed as shell syntax the way a #() job's command string is.
 path=""
 cmd=""                # #{pane_current_command}, tmux's view of the foreground proc
 case "$arg3" in
-    %[0-9]*)
-        # Read both from /proc the way tmux computes them (osdep-linux.c:
-        # tcgetpgrp of the pty, then /proc/<pgrp>/cwd and cmdline); tpgid is
-        # the 6th field after the ")" in /proc/<pane_pid>/stat. No command
-        # client: the two display-message calls this replaces ran on every
-        # status tick and filled the 1000-entry message log in minutes, so
-        # show-messages could not diagnose anything on a live server (#24).
-        if [ -n "$pid" ] && read -r line 2>/dev/null < "/proc/$pid/stat"; then
-            # After the ")": state ppid pgrp session tty tpgid. The positional
-            # params are free, $1-$4 are already in mode/pid/arg3/arg4.
-            # shellcheck disable=SC2086
-            set -- ${line##*) }; sess=${4:-}; tp=${6:-}
-            # The chdir is deliberate and is not undone: everything below
-            # takes an absolute path. cd -P through the magic link SUCCEEDS
-            # on a deleted directory and leaves PWD as the link itself, so
-            # that shape is rejected and falls through to tmux, which says
-            # "... (deleted)". tmux retries with the tty's session leader when
-            # the pgrp's cwd is unreadable (a pane parked in sudo); same here.
-            for d in "$tp" "$sess"; do
-                cd -P "/proc/$d/cwd" 2>/dev/null || continue   # unreadable: try the leader
-                [ "$PWD" != "/proc/$d/cwd" ] && path=$PWD      # deleted: leave it to tmux
-                break                                          # not the leader's cwd
-            done
-            if [ -n "$path" ]; then
-                IFS= read -r -d '' cmd 2>/dev/null < "/proc/$tp/cmdline"
-                # tmux's parse_window_name() without its "exec " strip and
-                # trailing-char trim, which no live argv[0] carries: drop
-                # leading "-"/spaces, first word, basename if absolute.
-                cmd=${cmd#"${cmd%%[! -]*}"}; cmd=${cmd%% *}
-                case "$cmd" in /*) cmd=${cmd##*/} ;; esac
-            fi
-        fi
-        # No /proc (macOS, BSD) or a pane whose process is gone: ask tmux,
-        # both values in ONE call.
-        if [ -z "$path" ] || [ -z "$cmd" ]; then
-            out=$(tmux display-message -p -t "$arg3" $'#{pane_current_path}\037#{pane_current_command}' 2>/dev/null)
-            path=${out%%$'\037'*}; cmd=${out#*$'\037'}
-        fi
-        ;;
+    %[0-9]*) cmd=ssh ;;   # cockpit.tmux runs this form only when tmux says ssh
     *)
         path="$arg3"
         cmd="$arg4"
@@ -149,7 +82,8 @@ git_label() {
         *)
             # Detached: HEAD holds the object id itself. --abbrev-ref would print
             # the literal word "HEAD" here, which reads as a branch of that name.
-            br=$(git -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0
+            # The repo is the agent's: its config must not get to run a command.
+            br=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0
             [ -n "$br" ] || return 0
             br="@$br" ;;
     esac
@@ -166,7 +100,7 @@ git_label() {
 # case for every pane, almost always, on every redraw.
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
-        path)   printf ' %s' "${path/#${HOME:-/nonexistent}/\~}" ;;
+        path)   printf ' %s' "${path/#"$home"/$tilde}" ;;
         branch) git_label ;;
     esac
     exit 0
@@ -178,8 +112,8 @@ fi
 # dominated the cost of the whole status line.
 ssh_cmd() {
     [ -n "$pid" ] || return 1
-    local d c kids next ppid line
-    declare -A KIDS
+    local d c kids next ppid line a
+    local -a KIDS seen    # indexed by pid: sparse, and bash 3.2 has no -A
     for d in /proc/[0-9]*; do
         c=${d#/proc/}
         [ -r "$d/stat" ] || continue
@@ -189,14 +123,13 @@ ssh_cmd() {
         line=${line##*) }
         set -- $line                      # $1=state $2=ppid
         ppid=$2
-        KIDS[$ppid]="${KIDS[$ppid]:-} $c"
+        KIDS[ppid]="${KIDS[$ppid]:-} $c"
     done
     # Walk to the bottom rather than a fixed depth: the parent->child map is
     # already built, so extra levels are nearly free, and an ssh one level too
     # deep produced exactly the confidently-wrong local path this script exists
     # to prevent. seen[] guards against a cycle.
     kids="$pid"
-    declare -A seen
     while [ -n "${kids// /}" ]; do
         next=""
         for c in $kids; do
@@ -205,7 +138,8 @@ ssh_cmd() {
             # ("-o ProxyCommand=ssh -W %h:%p jump"), and flattening turned that
             # single argv element into five tokens, so the jump host was read as
             # the destination.
-            mapfile -d '' -t ARGV < "/proc/$c/cmdline" 2>/dev/null || continue
+            ARGV=()
+            while IFS= read -r -d '' a; do ARGV+=("$a"); done 2>/dev/null < "/proc/$c/cmdline"
             [ ${#ARGV[@]} -gt 0 ] || continue
             case "${ARGV[0]}" in
                 ssh|*/ssh) return 0 ;;
@@ -215,7 +149,7 @@ ssh_cmd() {
         kids=""
         for c in $next; do
             [ -n "${seen[$c]:-}" ] && continue
-            seen[$c]=1; kids="$kids $c"
+            seen[c]=1; kids="$kids $c"
         done
     done
     return 1
@@ -259,7 +193,7 @@ ssh_target() {
 
 if ssh_cmd; then
     case "$mode" in
-        path)   printf ' 󰢹 %s' "$(ssh_target)" ;;
+        path)   printf ' 󰢹 '; ssh_target ;;
         branch) printf '' ;;                # local branch is meaningless here
     esac
     exit 0
@@ -284,7 +218,7 @@ fi
 
 case "$mode" in
     path)
-        printf ' %s' "${path/#${HOME:-/nonexistent}/\~}"
+        printf ' %s' "${path/#"$home"/$tilde}"
         ;;
     branch) git_label ;;
 esac

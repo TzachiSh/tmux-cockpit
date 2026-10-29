@@ -1106,31 +1106,13 @@ is "a normal pane still shows its path" " /tmp/x" \
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
 
 echo "== tmux-where: the pane_id form opens no command client =="
-# The #() job runs twice per status tick, and each display-message it made
-# landed in show-messages: 120 entries a minute, the 1000-entry log spanning
-# eight minutes, no click diagnosable after the fact (issue #24). The values
-# come from /proc now; the count of display-message entries must not move.
+# The #() job runs on every status tick, and each display-message it made
+# landed in show-messages: the 1000-entry log spanned minutes and no click was
+# diagnosable after the fact (issue #24). It now runs for ssh panes only.
 if [ -d "/proc/$$" ]; then
-    WD=$(mktmpd)
-    tmux new-window -d -c "$WD" -n wherepane 'exec -a claude sleep 30'
-    WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
-    WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
     # The serial runner shares one server: past 1000 entries each show-messages
     # evicts an old line and could shift the count below by itself.
     tmux set -g message-limit 100000
-    before=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "path comes from /proc"          " $WD" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
-    is "branch is empty outside a repo" ""     "$("$DIR/scripts/tmux-where" branch "$WPID" "$WP" | plain)"
-    after=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "neither call reached tmux" "$before" "$after"
-    # cd -P through /proc/<pid>/cwd SUCCEEDS on a deleted directory and leaves
-    # PWD as the link itself; that must never reach the status line.
-    rmdir "$WD"
-    is "a deleted cwd falls back to tmux's answer" " $WD (deleted)" \
-       "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
-    after2=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "with one tmux call" "$((after + 1))" "$after2"
-    tmux kill-window -t wherepane
     # argv[0] is what tmux reports as pane_current_command, so a process
     # exec'd under the name ssh must still take the ssh walk (which then reads
     # its first bare argument, 30, as the destination).
@@ -1140,17 +1122,65 @@ if [ -d "/proc/$$" ]; then
     for _ in $(seq 20); do              # sh -c may not have exec'd yet
         IFS= read -r -d '' a0 2>/dev/null < "/proc/$WPID/cmdline"; [ "$a0" = ssh ] && break; sleep 0.1
     done
+    before=$(tmux show-messages | grep -c 'display-message -p -t')
     is "an ssh pane is recognised from /proc" " 󰢹 30" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
+    is "and has no branch" "" "$("$DIR/scripts/tmux-where" branch "$WPID" "$WP" | plain)"
     tmux kill-window -t wherepane
-    # A pane whose process is gone falls back to tmux: one call, not two.
     # pid_max+1 cannot be alive; 999999 can, and would read a stranger's /proc.
     DEADPID=$(( $(cat /proc/sys/kernel/pid_max) + 1 ))
-    before=$(tmux show-messages | grep -c 'display-message -p -t')
-    "$DIR/scripts/tmux-where" path "$DEADPID" "$PANE" >/dev/null
+    is "a dead pid fails closed to ssh" " 󰢹 ssh" "$("$DIR/scripts/tmux-where" path "$DEADPID" "$PANE" | plain)"
     after=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "a dead pid asks tmux once" "$((before + 1))" "$after"
+    is "none of it reached tmux" "$before" "$after"
 else
     skip_ "tmux-where /proc read (no /proc)"
+fi
+
+echo "== status path and branch render the same for every kind of pane =="
+# Only an ssh pane runs tmux-where now; every other pane renders the path from
+# a native format. These are the strings the all-#() version drew.
+if need_tmux "status path/branch rendering"; then :; else
+RW=$(mktmpd); mkdir -p "$HOME/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd" "$RW/plain" "$RW/gone"
+(
+  cd "$RW" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in repo det; do
+      git init -q -b main "$r"; c=$(git -C "$r" commit-tree "$(git -C "$r" write-tree)" -m init)
+      git -C "$r" update-ref refs/heads/main "$c"
+  done
+  git -C det checkout -q --detach main
+) >/dev/null 2>&1
+RWO="cockpit-where-outer-$$"; RWI="cockpit-where-inner-$$"; SOCKS="$SOCKS $RWO $RWI"
+tmux -L "$RWI" -f /dev/null new-session -d -s s -n home -x 200 -y 24 -c "$HOME" 'exec -a claude sleep 300' >/dev/null 2>&1
+tmux -L "$RWI" new-window -d -n deep -c "$HOME/aaaaaaaaaa/bbbbbbbbbb/cccccccccc/dddddddddd" 'exec -a claude sleep 300'
+tmux -L "$RWI" new-window -d -n plain -c "$RW/plain" 'exec -a claude sleep 300'
+tmux -L "$RWI" new-window -d -n repo -c "$RW/repo" 'exec -a claude sleep 300'
+tmux -L "$RWI" new-window -d -n det -c "$RW/det" 'exec -a claude sleep 300'
+tmux -L "$RWI" new-window -d -n ssh -c "$RW/repo" 'exec -a ssh sleep 300'
+tmux -L "$RWI" new-window -d -n gone -c "$RW/gone" 'exec -a claude sleep 300'
+rmdir "$RW/gone"
+tmux -L "$RWI" set -g status-right-length 200 >/dev/null 2>&1
+tmux -L "$RWI" set -g status-right "<#{=/30/…:#{agent_where_path}}|#{agent_where_branch}>" >/dev/null 2>&1
+tmux -L "$RWI" set -g status-interval 1 >/dev/null 2>&1
+tmux -L "$RWI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+tmux -L "$RWO" -f /dev/null new-session -d -s o -x 200 -y 24 \
+    "$TMUX_REAL -L $RWI attach -t s" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$RWI" list-clients -F '#{client_name}'
+sha=$(git -C "$RW/det" rev-parse --short HEAD)
+for c in "home|< ~|>" \
+         "deep|< ~/aaaaaaaaaa/bbbbbbbbbb/ccccc…|>" \
+         "plain|< $RW/plain|>" \
+         "repo|< $RW/repo| main>" \
+         "det|< $RW/det| @$sha>" \
+         "ssh|< 󰢹 300|>" \
+         "gone|<$(g=" $RW/gone (deleted)"; printf '%s' "${g:0:30}…")|>"; do
+    w=${c%%|*}; want=${c#*|}
+    tmux -L "$RWI" select-window -t "s:$w" >/dev/null 2>&1
+    if until_cap "$RWO" o "*$want*"; then ok "$w pane: $want"
+    else bad "$w pane: $want" "$want" "$("$TMUX_REAL" -L "$RWO" capture-pane -p -t o | tail -1)"; fi
+done
+tmux -L "$RWO" kill-server >/dev/null 2>&1
+tmux -L "$RWI" kill-server >/dev/null 2>&1
+rm -rf "$HOME/aaaaaaaaaa"
 fi
 
 
@@ -2083,7 +2113,7 @@ OUTER="cockpit-rce-outer-$$"; INNER="cockpit-rce-inner-$$"
 SOCKS="$SOCKS $OUTER $INNER"
 tmux -L "$INNER" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL" \
     'exec -a claude sleep 300' >/dev/null 2>&1
-tmux -L "$INNER" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER" set -g status-right "#{agent_where_path}#{agent_where_branch}" >/dev/null 2>&1
 tmux -L "$INNER" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER" -f /dev/null new-session -d -s o -x 100 -y 24 \
@@ -2102,24 +2132,25 @@ fi
 tmux -L "$OUTER" kill-server >/dev/null 2>&1
 tmux -L "$INNER" kill-server >/dev/null 2>&1
 
-# A normal cwd must still render, not just fail to execute.
-D2=$(mktmpd)
+# A normal cwd must still render, not just fail to execute. A repo, so the
+# branch -- the #() job a non-ssh pane still runs -- proves the job fires.
+D2=$(mktmpd); git init -q -b main "$D2" >/dev/null 2>&1
 OUTER2="cockpit-rce-outer2-$$"; INNER2="cockpit-rce-inner2-$$"
 SOCKS="$SOCKS $OUTER2 $INNER2"
 tmux -L "$INNER2" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$D2" \
     'exec -a claude sleep 300' >/dev/null 2>&1
-tmux -L "$INNER2" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER2" set -g status-right "#{agent_where_path}#{agent_where_branch}" >/dev/null 2>&1
 tmux -L "$INNER2" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER2" -f /dev/null new-session -d -s o -x 100 -y 24 \
     "$TMUX_REAL -L $INNER2 attach -t s" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$INNER2" list-clients -F '#{client_name}'
 tmux -L "$INNER2" refresh-client >/dev/null 2>&1
-until_cap "$OUTER2" o "*$D2*"
+until_cap "$OUTER2" o "*$D2 main*"
 scr=$(tmux -L "$OUTER2" capture-pane -p -t o)
 case "$scr" in
-    *"$D2"*) ok "a normal cwd still renders its path" ;;
-    *) bad "a normal cwd still renders its path" "$D2 on the status line" "$scr" ;;
+    *"$D2 main"*) ok "a normal cwd still renders its path and branch" ;;
+    *) bad "a normal cwd still renders its path and branch" "$D2 main on the status line" "$scr" ;;
 esac
 tmux -L "$OUTER2" kill-server >/dev/null 2>&1
 tmux -L "$INNER2" kill-server >/dev/null 2>&1
@@ -2145,7 +2176,7 @@ OUTER3="cockpit-rce-outer3-$$"; INNER3="cockpit-rce-inner3-$$"
 SOCKS="$SOCKS $OUTER3 $INNER3"
 tmux -L "$INNER3" -f /dev/null new-session -d -s s -x 100 -y 24 -c "$MAL2" \
     'exec -a claude sleep 300' >/dev/null 2>&1
-tmux -L "$INNER3" set -g status-right "#{agent_where_path}" >/dev/null 2>&1
+tmux -L "$INNER3" set -g status-right "#{agent_where_path}#{agent_where_branch}" >/dev/null 2>&1
 tmux -L "$INNER3" set -g status-interval 1 >/dev/null 2>&1
 tmux -L "$INNER3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 tmux -L "$OUTER3" -f /dev/null new-session -d -s o -x 100 -y 24 \
