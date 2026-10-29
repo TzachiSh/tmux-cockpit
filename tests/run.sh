@@ -7798,8 +7798,9 @@ is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
 # busy one. The 50-pane block above keeps the wall-clock bar (1818 ms against
 # 5000 ms); this one stopped timing itself, see the top of the block.
 fd_git_calls=$(grep -c . "$FD_LOG" || true)
-is "one fork per pane and five per dirty root, no more" "1" \
-   "$([ "$fd_git_calls" -le $((20 + 19 * 5)) ] && echo 1 || echo "$fd_git_calls")"
+# The sixth is lib/git.sh reading the repo's filter drivers once.
+is "one fork per pane and six per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 6)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
