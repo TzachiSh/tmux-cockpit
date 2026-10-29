@@ -8,15 +8,11 @@ STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
 
-# A private HOME. The example configs load ~/.tmux/plugins/{tmux-cockpit,tmux}
-# by path, so the suite saw whatever this box had installed: no plugin and no
-# catppuccin turned 50 render blocks red, and a tpm plugin that prepends to
-# status-right made #142 a coin flip. The sandbox holds this tree as the plugin
-# and a pinned catppuccin, and nothing else; a pane's shell skips the user's rc.
+# Private HOME: the example configs load ~/.tmux/plugins/* by path.
 CATPPUCCIN_REF=v2.3.2
 CATPPUCCIN="$DIR/tests/.cache/catppuccin-$CATPPUCCIN_REF"
 if [ ! -d "$CATPPUCCIN" ]; then
-    # Shards start together: clone aside, then rename, and the loser discards.
+    # Parallel shards: clone aside, then an atomic rename.
     mkdir -p "$DIR/tests/.cache"
     ct=$(mktemp -d "$DIR/tests/.cache/.clone.XXXXXX") && {
         git -c advice.detachedHead=false clone -q --depth 1 --branch "$CATPPUCCIN_REF" \
@@ -1309,8 +1305,7 @@ is "remote-only branch tracks"      "origin/remote-only" \
 git -C "$BR" switch -q main 2>/dev/null
 WT=$(mktmpd); rm -rf "$WT"
 git -C "$BR" worktree add -q "$WT" feature/one 2>/dev/null
-# Match the path, not the wording: git 2.42 says "already used by worktree at",
-# 2.39 "already checked out at", and both name the worktree.
+# git's wording differs across versions; the path does not.
 case "$(git -C "$BR" switch feature/one 2>&1)" in
     *"$WT"*) ok "worktree conflict names the worktree" ;;
     *) bad "worktree conflict names the worktree" "a message naming $WT" "$(git -C "$BR" switch feature/one 2>&1)" ;;
@@ -1509,7 +1504,6 @@ is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-op
 # The target line carries a real marker column: bat's own highlight band
 # measured 1.4:1 against dark themes -- found by counting rows, not looking.
 mk=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
-# The marker column is the bat path's; without bat the target is reverse video.
 if command -v batcat >/dev/null 2>&1 || command -v bat >/dev/null 2>&1; then
 case "$(printf '%s' "$mk" | sed -n 2p)" in
     "▸"*) ok "the target line starts with the marker" ;;
@@ -2953,7 +2947,7 @@ case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" 
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
-# Stock, not empty: tmux 3.8 binds prefix g itself (the floating-pane move table).
+# tmux 3.8 binds prefix g itself.
 pg_stock=$(pk g)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_sessions_key off leaves tmux's own prefix g" "$pg_stock" "$(pk g)"

@@ -22,8 +22,6 @@ cd "$DIR" || exit 1
 # --git-dir is its own .git/worktrees/<name>.
 # ponytail: a plain `cp -r` of a worktree inherits its .git file and so its
 # stamp. Harmless -- a wrong key only costs a re-run -- but that is the ceiling.
-# No git dir must not mean "/": an empty rev-parse left STAMP=/cockpit-green,
-# whose parent always exists, so the fallback below never ran.
 gd=$(git rev-parse --git-dir 2>/dev/null)
 STAMP="$gd/cockpit-green"
 [ -n "$gd" ] && [ -d "$gd" ] || STAMP="$DIR/tests/.cache/green"
@@ -67,8 +65,7 @@ changed)
     # Files whose content differs from the stamp. With no stamp, fall back to
     # git: everything modified or untracked relative to HEAD.
     if [ -r "$STAMP" ]; then
-        # [0-9a-f]+, not {64}: Debian's default awk is mawk, which has no
-        # interval expressions and matched nothing, so test-changed ran nothing.
+        # No {64}: mawk has no interval expressions.
         manifest | diff - "$STAMP" | awk '/^[<>] [0-9a-f]+ /{print $3}' | sort -u
     else
         { git diff --name-only HEAD 2>/dev/null
