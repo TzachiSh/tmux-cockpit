@@ -2259,6 +2259,10 @@ dc() {                        # dc <PATH> -- the doctor's output on the fake box
 # every rewording a red suite.
 dcrows() { sed -n 's/^\[ *\([a-z]*\) *\] *\([^ ]*\).*/\1 \2/p'; }
 dcrow() { printf '%s\n' "$1" | dcrows | grep -c -x "$2"; }
+# The formats row's count, anchored to the column so rewording the rest is free.
+# The run of spaces is a + rather than a literal: the row helper's width is not
+# this assertion's business.
+dcfound() { printf '%s\n' "$1" | grep -cE "\] formats +$2"; }
 
 # The parser install.sh grades with, so these assert the numbers rather than a
 # row's verdict.
@@ -2303,6 +2307,61 @@ mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/
 dcout=$(dc "$DCP")
 is "an XDG config beside a wired ~/.tmux.conf is still ok" "1" "$(dcrow "$dcout" "ok config")"
 rm -rf "$DH/.config"
+
+# A config predating the precompute derives the dot and the banner at redraw time.
+# tests/freeze-rig/gate.sh puts that at 336 pane visits against a 120 budget, so
+# the doctor names it rather than leaving a freeze as the only symptom.
+cp "$DH/.tmux.conf" "$DC/conf.bak"
+dcout=$(dc "$DCP")
+is "a config with no redraw formats is an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
+# By name, not by line number: the point is the lines we actually ship.
+shipped=$(grep -cE '^set -g (pane-border-format|@catppuccin_window(_current)?_text) ' \
+          "$DIR/examples/tmux.conf")
+is "examples/tmux.conf still ships the three redraw formats" "3" "$shipped"
+grep -E '^set -g (pane-border-format|@catppuccin_window(_current)?_text) ' \
+     "$DIR/examples/tmux.conf" >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "and they are an ok formats row" "1" "$(dcrow "$dcout" "ok formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# Five #{P:} walks per tab for the dot, and the banner as #{S:#{W:#{P:}}}, which
+# is a whole-server walk per visible pane. Both shapes, one row.
+printf '%s\n' \
+  'set -g @catppuccin_window_text " #{?#{m:*needs-input*,#{P:#{@panestate} }},A,}"' \
+  'set -g pane-border-format "#{?#{!=:#{S:#{W:#{?#{m:*needs-input*,#{P:#{@panestate} }},x,}}},},NEEDS YOU,}"' \
+  >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP"); dcrc=$?
+is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn formats")"
+# The count, not the prose around it: dcrow exists a few lines up for that reason.
+is "and it counts them" "1" "$(dcfound "$dcout" '2 formats ')"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# The option name has to be a whole word. Without that the glob fires on any
+# option whose name merely ends in one of these, and the row cries over a
+# #{P:} walk the redraw path never sees.
+printf '%s\n' 'set -g @my-window-status-format "#{P:#{@panestate} }"' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "an unrelated option ending in a format name stays ok" "1" "$(dcrow "$dcout" "ok formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# tmux applies the XDG file second, so a walk there is the value that survives
+# even when the wired file is the clean one. Reading only the wired file called
+# this layout ok while the freeze was live.
+mkdir -p "$DH/.config/tmux"
+printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' > "$DH/.config/tmux/tmux.conf"
+dcout=$(dc "$DCP")
+is "a walk in the unwired XDG config is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
+is "and one walk reads as one format" "1" "$(dcfound "$dcout" '1 format ')"
+# A dotfiles checkout symlinks the two paths together, and counting the file
+# twice would report two walks for the one line it has.
+rm -f "$DH/.config/tmux/tmux.conf"; ln -s "$DH/.tmux.conf" "$DH/.config/tmux/tmux.conf"
+printf '%s\n' 'set -g pane-border-format "#{P:#{@panestate} }"' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a symlinked config pair counts its walk once" "1" "$(dcfound "$dcout" '1 format ')"
+rm -rf "$DH/.config"; cp "$DC/conf.bak" "$DH/.tmux.conf"
+# tmux joins a trailing backslash before expanding, so a wrapped format hides its
+# walk from anything reading physical lines.
+printf 'set -g pane-border-format "#{?pane_active,,\\\n#{P:#{@panestate} }}"\n' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a walk on a continuation line is still a warn row" "1" "$(dcrow "$dcout" "warn formats")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 dcout=$(env -u TMUX HOME="$DH" "$DIR/install.sh" --check --hooks 2>&1); dcrc=$?
 is "--check runs alone: with --hooks it exits 2" "2" "$dcrc"
 case "$dcout" in

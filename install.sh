@@ -138,7 +138,8 @@ if [ "$check" -eq 1 ]; then
     conf=''; wired=0
     # Both candidates, not the first readable one: tmux loads both, so the
     # run-shell line in either wires the box.
-    for c in "${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf" "${HOME:-}/.tmux.conf"; do
+    cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
+    for c in "$cxdg" "$chome"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
         # read, not grep: this row still has to answer on a PATH with nothing on it.
@@ -151,6 +152,41 @@ if [ "$check" -eq 1 ]; then
     if [ "$wired" -eq 1 ]; then row ok config "$conf loads cockpit"
     elif [ -n "$conf" ];    then row fail config "$conf" "$wire_fix"
     else row fail config 'no tmux config' "$wire_fix"
+    fi
+
+    # tmux re-expands these formats once per visible pane per status redraw, and
+    # every agent title forces a redraw, so a #{P:} walk here IS the freeze: a
+    # config predating the precompute measured 336 visits against a 120 budget.
+    if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
+    else
+        walk=0
+        # A dotfiles checkout symlinks one onto the other, and counting a file
+        # twice would report two walks for one line.
+        [ "$cxdg" -ef "$chome" ] && chome=''
+        # Both files, like the row above, and the unwired one is not the harmless
+        # half: tmux applies XDG second, so its walk is the value that survives.
+        for c in "$cxdg" "$chome"; do
+            [ -r "$c" ] || continue
+            acc=''
+            while read -r l || [ -n "$l" ]; do
+                # tmux joins a trailing backslash before expanding, so a format
+                # wrapped across lines has to be rejoined to be seen at all.
+                case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
+                l="$acc$l"; acc=''
+                case "$l" in
+                    set*\ pane-border-format\ *|set*\ window-status-format\ *|\
+set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
+set*\ @catppuccin_window_current_text\ *)
+                        case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
+                esac
+            done < "$c"
+        done
+        if [ "$walk" -eq 0 ]; then row ok formats 'no pane walk on redraw'
+        else
+            if [ "$walk" -eq 1 ]; then nf='format walks'; else nf='formats walk'; fi
+            row warn formats "$walk $nf panes" \
+                "recopy them from $DIR/examples/tmux.conf"
+        fi
     fi
 
     if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'
