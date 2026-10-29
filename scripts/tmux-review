@@ -36,6 +36,8 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 LIBDIR=${d%/*}/lib
 # shellcheck source=lib/fixer.sh
 . "$LIBDIR/fixer.sh"
+# shellcheck source=lib/git.sh
+. "$LIBDIR/git.sh" || exit 1
 # shellcheck source=lib/vscode.sh
 . "$LIBDIR/vscode.sh" 2>/dev/null || {
     vscode_shim() { return 1; }        # a half-installed copy: no shim, plain vi

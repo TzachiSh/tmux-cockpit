@@ -30,6 +30,9 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 1
 
 # Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
 # run-shell from a stripped environment, or a systemd-launched tmux. tmux-where

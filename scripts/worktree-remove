@@ -7,6 +7,8 @@ set -u
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" || exit 0
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 0
 payload=$(cat)
 json_str worktree_path
 path=$REPLY
