@@ -8,6 +8,25 @@ STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
 
+# Private HOME: the example configs load ~/.tmux/plugins/* by path.
+CATPPUCCIN_REF=v2.3.2
+CATPPUCCIN="$DIR/tests/.cache/catppuccin-$CATPPUCCIN_REF"
+if [ ! -d "$CATPPUCCIN" ]; then
+    # Parallel shards: clone aside, then an atomic rename.
+    mkdir -p "$DIR/tests/.cache"
+    ct=$(mktemp -d "$DIR/tests/.cache/.clone.XXXXXX") && {
+        git -c advice.detachedHead=false clone -q --depth 1 --branch "$CATPPUCCIN_REF" \
+            https://github.com/catppuccin/tmux "$ct/c" >/dev/null 2>&1 \
+            && mv -T "$ct/c" "$CATPPUCCIN" 2>/dev/null
+        rm -rf "$ct"
+    }
+fi
+export HOME="$STATE/home"
+mkdir -p "$HOME/.tmux/plugins"
+ln -s "$DIR" "$HOME/.tmux/plugins/tmux-cockpit"
+[ -d "$CATPPUCCIN" ] && ln -s "$CATPPUCCIN" "$HOME/.tmux/plugins/tmux" \
+    || echo "  note: catppuccin $CATPPUCCIN_REF not fetched; the theme blocks will fail" >&2
+
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
 bad()  { fail=$((fail+1)); printf '  \033[31mFAIL\033[0m %s\n     want [%s]\n     got  [%s]\n' "$1" "$2" "$3"; }
@@ -1286,9 +1305,10 @@ is "remote-only branch tracks"      "origin/remote-only" \
 git -C "$BR" switch -q main 2>/dev/null
 WT=$(mktmpd); rm -rf "$WT"
 git -C "$BR" worktree add -q "$WT" feature/one 2>/dev/null
+# git's wording differs across versions; the path does not.
 case "$(git -C "$BR" switch feature/one 2>&1)" in
-    *"already used by worktree"*) ok "worktree conflict names the worktree" ;;
-    *) bad "worktree conflict names the worktree" "already used by worktree" "$(git -C "$BR" switch feature/one 2>&1)" ;;
+    *"$WT"*) ok "worktree conflict names the worktree" ;;
+    *) bad "worktree conflict names the worktree" "a message naming $WT" "$(git -C "$BR" switch feature/one 2>&1)" ;;
 esac
 git -C "$BR" worktree remove --force "$WT" >/dev/null 2>&1
 rm -rf "$BR" "$RM"
@@ -1484,10 +1504,12 @@ is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-op
 # The target line carries a real marker column: bat's own highlight band
 # measured 1.4:1 against dark themes -- found by counting rows, not looking.
 mk=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
+if command -v batcat >/dev/null 2>&1 || command -v bat >/dev/null 2>&1; then
 case "$(printf '%s' "$mk" | sed -n 2p)" in
     "▸"*) ok "the target line starts with the marker" ;;
     *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
 esac
+else skip_ "the target line starts with the marker (no bat)"; fi
 case "$(printf '%s' "$mk" | sed -n 1p)" in
     " "*) ok "and its neighbours keep alignment" ;;
     *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
@@ -2925,8 +2947,10 @@ case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" 
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
+# tmux 3.8 binds prefix g itself.
+pg_stock=$(pk g)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_sessions_key off binds nothing" "" "$(pk g)"
+is "@cockpit_sessions_key off leaves tmux's own prefix g" "$pg_stock" "$(pk g)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 

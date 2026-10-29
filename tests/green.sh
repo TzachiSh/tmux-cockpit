@@ -22,8 +22,9 @@ cd "$DIR" || exit 1
 # --git-dir is its own .git/worktrees/<name>.
 # ponytail: a plain `cp -r` of a worktree inherits its .git file and so its
 # stamp. Harmless -- a wrong key only costs a re-run -- but that is the ceiling.
-STAMP=$(git rev-parse --git-dir 2>/dev/null)/cockpit-green
-[ -d "${STAMP%/*}" ] || STAMP="$DIR/tests/.cache/green"
+gd=$(git rev-parse --git-dir 2>/dev/null)
+STAMP="$gd/cockpit-green"
+[ -n "$gd" ] && [ -d "$gd" ] || STAMP="$DIR/tests/.cache/green"
 
 manifest() {
     # tests/fixtures/review/* is in the list because the tests READ it: the
@@ -64,7 +65,8 @@ changed)
     # Files whose content differs from the stamp. With no stamp, fall back to
     # git: everything modified or untracked relative to HEAD.
     if [ -r "$STAMP" ]; then
-        manifest | diff - "$STAMP" | awk '/^[<>] [0-9a-f]{64} /{print $3}' | sort -u
+        # No {64}: mawk has no interval expressions.
+        manifest | diff - "$STAMP" | awk '/^[<>] [0-9a-f]+ /{print $3}' | sort -u
     else
         { git diff --name-only HEAD 2>/dev/null
           git ls-files -o --exclude-standard 2>/dev/null; } | sort -u
