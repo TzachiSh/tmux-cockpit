@@ -3099,12 +3099,9 @@ case "$out" in *"renamed @cockpit_editor"*) ok "and says it has been renamed" ;;
                *) bad "and says it has been renamed" "a rename notice" "$out" ;; esac
 rm -rf "$RN" "$RT"
 
-echo "== prefix g opens the session picker, prefix u jumps (#43) =="
-# Shift-letter chords bind the CHARACTER the terminal sends, so S and J were
-# dead under Caps Lock or a non-Latin layout. g (goto session) and u
-# (unblock) are free in stock tmux and after examples/full.tmux.conf; the old
-# letters come back through the options.
-if need_tmux "prefix g / u"; then :; else
+echo "== prefix s opens the session picker, prefix u jumps (#43) =="
+# Lowercase keys: a Shift chord dies under Caps Lock or a non-Latin layout.
+if need_tmux "prefix s / u"; then :; else
 PS="cockpit-ps-$$"; SOCKS="$SOCKS $PS"
 pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4==k'; }
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
@@ -3112,10 +3109,12 @@ pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4
 # the script exits, and cockpit.tmux's own source-file lands with it (probed
 # 10/10 -- the binding is queryable the instant run-shell returns).
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(pk g)" in
-    *sessions*) ok "prefix g is bound to the sessions popup" ;;
-    *) bad "prefix g is bound to the sessions popup" "a display-popup running tm" "$(pk g)" ;;
+case "$(pk s)" in
+    *sessions*) ok "prefix s is bound to the sessions popup" ;;
+    *) bad "prefix s is bound to the sessions popup" "a display-popup running tm" "$(pk s)" ;;
 esac
+case "$(pk g)" in *sessions*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
+    *) ok "and g is left to tmux" ;; esac
 is "and S is no longer taken" "" "$(pk S)"
 case "$(pk u)" in
     *tmux-jump*) ok "prefix u is bound to jump" ;;
@@ -3132,10 +3131,9 @@ case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" 
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key off >/dev/null 2>&1
-# tmux 3.8 binds prefix g itself.
-pg_stock=$(pk g)
+ps_stock=$(pk s)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_sessions_key off leaves tmux's own prefix g" "$pg_stock" "$(pk g)"
+is "@cockpit_sessions_key off keeps stock prefix s" "$ps_stock" "$(pk s)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
 fi
 
@@ -3152,7 +3150,7 @@ case "$(ak)" in
     *display-menu*) ok "prefix a opens a menu" ;;
     *) bad "prefix a opens a menu" "a display-menu" "$(ak)" ;;
 esac
-for key in u r f i b M g; do
+for key in u r f i b M s; do
     case "$(ak)" in
         *"send-keys -K $key"*|*"send-keys -K '$key'"*) ok "the menu replays prefix $key" ;;
         *) bad "the menu replays prefix $key" "send-keys -K $key" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;

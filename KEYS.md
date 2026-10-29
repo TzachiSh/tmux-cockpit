@@ -17,7 +17,7 @@ layout.
 | `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane. |
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |
 | `prefix b` | branch picker for this pane's repo. |
-| `prefix g` | session picker (`tm`), with each session's agents previewed. |
+| `prefix s` | session picker (`tm`), with each session's agents previewed. Replaces stock `choose-tree`. |
 | `prefix w` | the board: every agent pane as a live tile, blocked first. Needs the optional `cockpit-tui` binary. |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
@@ -82,7 +82,7 @@ Set the option before the plugin's `run-shell` line. `off` disables the key
 ```sh
 set -g @cockpit_ai_key        a    # n if you never use next-window
 set -g @cockpit_jump_key      u
-set -g @cockpit_sessions_key  g    # was S before #43
+set -g @cockpit_sessions_key  s    # off keeps stock choose-tree
 set -g @cockpit_board_key     w    # the board; off keeps stock tmux
 set -g @cockpit_review_key    r
 set -g @cockpit_info_key      i
