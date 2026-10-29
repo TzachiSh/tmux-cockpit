@@ -55,19 +55,17 @@ interpolate() {
     # status tokens run "sh: /home/my: not found" on every redraw -- rendering
     # nothing, reporting nothing.
     local w; w=$(sq "$DIR/scripts/tmux-where")
-    # Only #{pane_pid} and #{pane_id} go into this command string -- both are
-    # closed forms (digits, or a % plus digits) that can never carry a shell
-    # metacharacter, so tmux-where can fetch pane_current_path/_command itself
-    # (from /proc via pane_pid; one tmux call as the fallback) as DATA, never
-    # as text sh re-parses.
-    # #{q:} looked like the fix (man tmux: "q: will escape sh(1) special
-    # characters") and was tried first, but it escapes quotes/$()/backticks
-    # and passes NEWLINE and TAB straight through -- a command separator and a
-    # word separator to sh -- so a cwd built on either still ran arbitrary
-    # commands on every status redraw with #{q:} in place. Verified: #{q:@x}
-    # on "a\nb\tc" comes back "a\nb\tc" (0a and 09 both raw, no backslash).
-    local r_path="#($w path #{pane_pid} #{pane_id})"
-    local r_brch="#($w branch #{pane_pid} #{pane_id})"
+    # tmux-where only differs from tmux for an ssh pane, so every other pane
+    # renders natively; a #() in the untaken #{?} branch never runs.
+    local ssh='#{==:#{pane_current_command},ssh}'
+    # The ssh job gets only #{pane_pid} and #{pane_id}, closed forms that can
+    # never carry a shell metacharacter. The branch job needs the path: it goes
+    # single-quoted with each ' made '\'', the one quoting a newline or tab in
+    # a cwd cannot break out of (#{q:} leaves sh line continuations behind).
+    local qp="'#{s|'|'\\\\''|:pane_current_path}'"
+    # exec: dash forks before running the job's one command otherwise.
+    local r_path="#{?$ssh,#(exec $w path #{pane_pid} #{pane_id}), #{s|^#{@cockpit_home_re}|~|:pane_current_path}}"
+    local r_brch="#{?$ssh,,#(exec $w branch #{pane_pid} $qp -)}"
 
     # #{agent_fleet} now reads a precomputed option, not a live count. The inline
     # form was #{n:#{S:#{W:#{P:}}}} -- one x per blocked/errored agent pane across
@@ -87,7 +85,7 @@ interpolate() {
     local r_fleet="#{E:@cockpit_fleet}"
 
     s="${s//'#{agent_where_path}'/$r_path}"
-    s="${s//'#{agent_where_branch}'/$r_brch}"
+    s="${s//'#{agent_where_branch}'/"$r_brch"}"   # quoted: bash 5.2 eats its \\
     s="${s//'#{agent_fleet}'/$r_fleet}"
     printf '%s' "$s"
 }
@@ -147,6 +145,9 @@ tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null   # the pre-rename name
 # status-right; those were never visited, so anyone following the README got the
 # literal "#{agent_where_path}" printed in their status bar. update_option skips
 # anything without a token, so listing an option costs nothing.
+# $HOME as a regex for the native path's ~; an option, so no character in it
+# can break the format around it.
+tmux set-option -gq @cockpit_home_re "$(printf '%s' "${HOME:-/nonexistent}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
 for opt in status-left status-right \
            window-status-format window-status-current-format \
            @catppuccin_directory_text @catppuccin_gitmux_text; do
