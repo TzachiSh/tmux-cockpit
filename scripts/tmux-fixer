@@ -68,6 +68,8 @@ You are a SIDE TASK running beside another agent that is working in this reposit
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/fixer.sh
 . "${d%/*}/lib/fixer.sh" || exit 1
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 1
 
 # --- -p: the popup ---------------------------------------------------------------
 # Two lines from the human (the job; the command pattern to hold off, ↵ for

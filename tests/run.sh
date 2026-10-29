@@ -6398,6 +6398,30 @@ case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV
     *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
 rm -rf "$PV"
 
+echo "== repo git config cannot run commands through a review or preview =="
+GH=$(mktmpd); GHM="$GH/marker"
+for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
+    printf '#!/bin/sh\necho %s >> %s\ncat\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+done
+( cd "$GH" && mkdir r && cd r && git init -q -b main . \
+  && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
+  && git add -A && git -c user.name=t -c user.email=t@t commit -qm i && printf 'b\n' >> f.txt \
+  && mkdir -p hk && printf '#!/bin/sh\necho hook >> %s\n' "$GHM" > hk/post-checkout && chmod +x hk/post-checkout \
+  && git config core.fsmonitor "$GH/fsmon" && git config diff.evil.textconv "$GH/textconv" \
+  && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
+  && git config filter.evil.clean "$GH/clean" && git config log.showSignature true \
+  && git config gpg.program "$GH/gpg" && git config core.hooksPath hk && git config core.pager "$GH/pager" ) >/dev/null 2>&1
+git -C "$GH/r" diff HEAD >/dev/null 2>&1
+case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
+    *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
+rm -f "$GHM"
+"$DIR/scripts/tmux-review" --lines "$GH/r" >/dev/null 2>&1
+XDG_RUNTIME_DIR="$GH" "$DIR/scripts/tmux-open-path" --preview-diff "$GH/r/f.txt" >/dev/null 2>&1
+"$DIR/scripts/tmux-open-path" --preview "$GH/r/f.txt" 1 >/dev/null 2>&1
+is "and nothing it names runs under tmux-review or the previews" "" "$(cat "$GHM" 2>/dev/null)"
+case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
+    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
+
 echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
 # The key used to be path+HEAD+mtime+size, with "path" whatever the caller
 # passed -- and every caller cd's into the review target first and hands a
@@ -7798,8 +7822,9 @@ is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
 # busy one. The 50-pane block above keeps the wall-clock bar (1818 ms against
 # 5000 ms); this one stopped timing itself, see the top of the block.
 fd_git_calls=$(grep -c . "$FD_LOG" || true)
-is "one fork per pane and five per dirty root, no more" "1" \
-   "$([ "$fd_git_calls" -le $((20 + 19 * 5)) ] && echo 1 || echo "$fd_git_calls")"
+# The sixth is lib/git.sh reading the repo's filter drivers once.
+is "one fork per pane and six per dirty root, no more" "1" \
+   "$([ "$fd_git_calls" -le $((20 + 19 * 6)) ] && echo 1 || echo "$fd_git_calls")"
 
 "$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
 for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
