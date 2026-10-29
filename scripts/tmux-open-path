@@ -187,7 +187,8 @@ if [ "${1:-}" = --preview-diff ]; then
     cdir="${XDG_RUNTIME_DIR:-/tmp}/tmux-cockpit-preview-$(id -u)"
     cache_ok=0
     if [ -n "$ckey" ]; then
-        ( umask 077; mkdir -p "$cdir" ) 2>/dev/null
+        # Not -p: never recreate a vanished XDG_RUNTIME_DIR (#136).
+        ( umask 077; mkdir "$cdir" ) 2>/dev/null
         if [ ! -L "$cdir" ] && [ -d "$cdir" ]; then
             dstat=$(stat -c '%u %a' "$cdir" 2>/dev/null || stat -f '%u %Lp' "$cdir" 2>/dev/null)
             [ "$dstat" = "$(id -u) 700" ] && cache_ok=1
