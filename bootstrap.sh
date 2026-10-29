@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tmux-cockpit bootstrap -- a working tmux on a machine that has nothing.
 #
-#   ./bootstrap.sh             ask before each step
+#   ./bootstrap.sh             ask before each step (fetches fzf if below 0.63)
 #   ./bootstrap.sh --yes       take every default, ask nothing
 #   ./bootstrap.sh --full      also fetch the pinned fzf, gum and bat into $BIN
 #   ./bootstrap.sh --full --latest   the same, at each project's newest tag
@@ -96,7 +96,7 @@ fi
 PACKAGES=(
     "git:git:cloning the plugins"
     "tmux:tmux:the whole point"
-    "fzf:fzf:the tm session picker (falls back to a numbered menu)"
+    "fzf:fzf:the pickers (0.63+; an older one is fetched below)"
     "bat:batcat:syntax-coloured file previews (falls back to plain text)"
     "jq:jq:merging the Claude Code hooks"
 )
@@ -249,9 +249,13 @@ fi
 
 # ----------------------------------------------------------- latest tools ----
 # Opt-in and pinned, the way fzf's own installer pins. Debian ships fzf 0.44.1,
-# below the 0.63 floor the styled pickers need, and shadowing it in $BIN is the
-# only clean way up: never over a distro binary, never with sudo.
+# below the 0.63 the pickers need, so that one is fetched even without --full:
+# shadowing it in $BIN is the only clean way up, never over a distro binary,
+# never with sudo.
 FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
+fzf_old=0
+fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
+[ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 63 && fzf_old=1
 
 # The releases redirect, not the API: no token and no 60-per-hour quota.
 latest_tag() {                # latest_tag <owner/repo> <pin>
@@ -302,8 +306,10 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     printf '  ok:    %s -> %s %s\n' "$name" "$BIN/$name" "$ver"
 }
 
-if [ "$full" -eq 1 ]; then
+if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
     step "latest tools"
+    tools="fzf $FZF, gum $GUM and bat $BAT"
+    [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.63+)"
     BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
     G="${COCKPIT_GITHUB:-https://github.com}"
     fz='' gu='' ba=''
@@ -322,7 +328,9 @@ if [ "$full" -eq 1 ]; then
     elif [ "$(uname -s)" = Darwin ] && have brew; then
         # brew already owns these on macOS; a fetched copy would shadow the one
         # it upgrades, and only one of the two would ever move again.
-        if ask "install fzf, gum and bat with brew?" y; then
+        if [ "$full" -eq 0 ] && ask "upgrade fzf $fzf_have with brew?" y; then
+            run "brew upgrade fzf" brew upgrade fzf
+        elif [ "$full" -eq 1 ] && ask "install fzf, gum and bat with brew?" y; then
             run "brew install fzf bat gum" brew install fzf bat gum
         else
             skipped+=("latest tools")
@@ -330,7 +338,7 @@ if [ "$full" -eq 1 ]; then
     elif ! have curl; then
         note "curl is missing; nothing to fetch with"
         skipped+=("latest tools: no curl")
-    elif ask "fetch fzf $FZF, gum $GUM and bat $BAT into $BIN?" y; then
+    elif ask "fetch $tools into $BIN?" y; then
         # Not in a dry run: a preview opens no connection, and the redirect is one.
         if [ "$latest" -eq 1 ] && [ "$dry" -eq 0 ]; then
             FZF=$(latest_tag junegunn/fzf "$FZF")
@@ -345,11 +353,11 @@ if [ "$full" -eq 1 ]; then
             "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
             "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
             fzf || failed+=("fetch fzf")
-        fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
+        [ "$full" -eq 0 ] || fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
             "$G/charmbracelet/gum/releases/download/v$GUM/gum_${GUM}_$gu.tar.gz" \
             "$G/charmbracelet/gum/releases/download/v$GUM/checksums.txt" \
             "gum_${GUM}_$gu/gum" || failed+=("fetch gum")
-        fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
+        [ "$full" -eq 0 ] || fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
             "$G/sharkdp/bat/releases/download/v$BAT/bat-v$BAT-$ba.tar.gz" - \
             "bat-v$BAT-$ba/bat" || failed+=("fetch bat")
     else

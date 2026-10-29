@@ -1233,7 +1233,7 @@ is "tm from a popup moves the real client to the session" "made" \
 
 # An attach that does not displace the old client leaves it attached forever and
 # nothing reaps it: on a Coder workspace a closed tab held one for 41 hours (#145).
-# Asserted through a fake tmux on PATH, the same way the styled picker tiers are:
+# Asserted through a fake tmux on PATH, the same way the pickers' fzf argv is:
 # two live clients on one session cannot be built reliably inside the suite.
 TMF=$(mktmpd)
 cat > "$TMF/tmux" <<'FAKETMUX'
@@ -2265,11 +2265,14 @@ if [ "$(dcge "$dctv" 3.8)" = no ]; then
 else
     is "and the whole run exits 0"          "0" "$dcrc"
 fi
-# Debian ships 0.44.1, below the 0.63 floor the styled pickers need: a warning,
-# never a failure -- it is today's shipped experience.
+# Debian ships 0.44.1, below the 0.63 the pickers need.
 dcout=$(dc "$DOLD:$DCP"); dcrc=$?
-is "an fzf below the floor is a warn row"   "1" "$(dcrow "$dcout" "warn fzf")"
-is "and warnings exit 1"                    "1" "$dcrc"
+is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"
+is "and it exits 2"                         "2" "$dcrc"
+mkdir -p "$DC/oldgum"; dshim gum "gum version v1.0.0 (a1)" "$DC/oldgum"
+dcout=$(dc "$DC/oldgum:$DCP"); dcrc=$?
+is "an optional tool below its floor is a warn row" "1" "$(dcrow "$dcout" "warn gum")"
+[ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
 is "and a failure exits 2"                  "2" "$dcrc"
@@ -2367,6 +2370,16 @@ is "and the run exits 0" "0" "$bsrc"
 # $BIN here, and probing PATH would re-download all three on every run.
 bsout=$(bs --full)
 is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c 'already current')"
+
+# Without --full the 0.44.1 on PATH is below the pickers' 0.63: fzf alone.
+bsclear
+bsout=$(bs); bsrc=$?
+is "without --full an fzf below 0.63 fetches fzf alone" "fzf" \
+   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+is "and the run exits 0" "0" "$bsrc"
+bsout=$(BPATH="$BB:$BPATH" bs)
+case "$bsout" in *"latest tools"*) bad "an fzf at 0.63+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
+    *) ok "an fzf at 0.63+ first on PATH fetches nothing" ;; esac
 
 bsclear; mkrel flip
 bsout=$(bs --full); bsrc=$?
@@ -5381,7 +5394,7 @@ echo "== tmux-review --loop: the legend fits an 80-column popup (#22 item 3) =="
 #
 # Old: "legend line N fits 76 cells", measured inside the single --header
 # literal. New: "key line N fits 48 columns", measured on the keys string the
-# footer and the plain tier's last header line both take. 76 was this popup's
+# footer takes. 76 was this popup's
 # own inner width; 48 is what survives a 70% popup on an 80-column terminal,
 # which is the width the freeze holds every hint and context line to.
 #
@@ -5403,15 +5416,10 @@ while IFS= read -r l; do
     if [ "$w" -le 48 ]; then ok "key line $i fits 48 columns ($w)"; else bad "key line $i fits 48 columns" "<= 48" "$w: $l"; fi
 done <<<"$(printf '%b' "$RLK")"
 is "three key lines" "3" "$i"
-# Above the fzf floor the keys are a footer, below it they ride the last
-# --header line. Counted across BOTH pickers, the review loop and the fleet
-# queue: one apiece, so this reads 1 if either of them stops doing it. The
-# plain tier is asserted too, because it is what Debian 13 and Ubuntu 24.04
-# actually ship.
+# The keys are a footer. Counted across BOTH pickers, the review loop and the
+# fleet queue: one apiece, so this reads 1 if either of them stops doing it.
 RLF=$(grep -c 'footer=\$keys' "$DIR/scripts/tmux-review")
-is "both pickers put their keys in --footer above the fzf floor" "2" "$RLF"
-RLP=$(grep -c 'ctx=\"\$ctx\"\$.\\n.\"\$keys\"' "$DIR/scripts/tmux-review")
-is "and on the last --header line below it" "2" "$RLP"
+is "both pickers put their keys in --footer" "2" "$RLF"
 RLC=$(grep -o 'ctx="● pinned.*' "$DIR/scripts/tmux-review" | head -1)
 case "$RLC" in
     'ctx="● pinned'*) ok "the context line leads with the legend that explains column 1" ;;
@@ -10195,7 +10203,7 @@ fi
 
 
 # --- #104 fzf theme ---------------------------------------------------------
-echo "== the shared fzf theme: version tier, one argv, key hints (#104) =="
+echo "== the shared fzf theme: one argv, key hints (#104) =="
 FZTD=$(mktmpd)
 FZLIB="$DIR/scripts/lib/fzf.sh"
 # A fake fzf: answers --version, then records its argv one argument per line and
@@ -10213,23 +10221,12 @@ exit 130
 EOS
     chmod +x "$1/fzf"
 }
-fznew="$FZTD/new"; fzold="$FZTD/old"; fzfloor="$FZTD/floor"; fznone="$FZTD/none"
+fznew="$FZTD/new"; fzold="$FZTD/old"
 fzfake "$fznew" "0.74.3 (15f64c49)"
 fzfake "$fzold" "0.44.1 (debian)"
-fzfake "$fzfloor" "0.63.0"
-mkdir -p "$fznone"
-
-fztier() {                    # fztier <dir to put on PATH> -- the lib's verdict
-    env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$1" \
-        "$BASH" -c '. "$1" && cockpit_fzf_tier' _ "$FZLIB" 2>/dev/null
-}
-is "fzf 0.74.3 is the styled tier"        "styled" "$(fztier "$fznew")"
-is "the Debian 0.44.1 is the plain tier"  "plain"  "$(fztier "$fzold")"
-is "0.63.0 is the floor, not below it"    "styled" "$(fztier "$fzfloor")"
-is "no fzf at all is the plain tier"      "plain"  "$(fztier "$fznone")"
 
 # Every picker this lane owns, driven to the point where it hands off to fzf.
-FZP="$FZTD/bin"; fzfake "$FZP" "0.44.1 (debian)"
+FZP="$FZTD/bin"; fzfake "$FZP" "0.74.3 (15f64c49)"
 FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
 for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename; do
     p=$(command -v "$c" 2>/dev/null) || continue
@@ -10272,10 +10269,8 @@ for f in "$FZTD"/argv-*-"$$".*; do
 done
 is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
 
-# Both caches are real, so the tier is probed once and read back after that.
-# Through $(...) they would fill in a subshell and die with it: three forks.
-is "one picker open probes fzf --version exactly once" "1" \
-   "$(grep -c . "$FZTD/vlog-tm-attach" 2>/dev/null)"
+is "a picker open never probes fzf --version" "0" \
+   "$(cat "$FZTD/vlog-tm-attach" 2>/dev/null | grep -c .)"
 
 # fzf merges --color per key and the last occurrence wins, so an override is
 # only an override if it is appended after the theme.
@@ -10285,10 +10280,7 @@ fzui=$(printf '%s\n' "$fzk" | grep -n -- 'prompt:red' | head -1 | cut -d: -f1)
 is "the kill picker's red --color lands after the theme's, so it wins" "yes" \
    "$([ -n "$fzti" ] && [ -n "$fzui" ] && [ "$fzui" -gt "$fzti" ] 2>/dev/null && echo yes || echo no)"
 
-# The styled tier has no fzf on this box that could render it (Debian ships
-# 0.44.1), so it is read off the same fake: the argv a 0.63+ fzf would be
-# handed, not a screen anyone has looked at.
-fzfake "$FZP" "0.74.3 (15f64c49)"
+# Read off the same fake: the argv fzf would be handed.
 fzrun styled "$DIR/scripts/tm"
 fzs=$(cat "$FZTD"/argv-styled-"$$".* 2>/dev/null)
 fzhas() { printf '%s\n' "$fzs" | grep -q -- "$1" && printf yes || printf no; }
@@ -10303,7 +10295,6 @@ is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
 fzrun styled-open "$DIR/scripts/tmux-open-path" --pick "$PANE"
 is "styled: the open picker's two key lines are one --footer argument" "1" \
    "$(( $(cat "$FZTD"/argv-styled-open-"$$".* 2>/dev/null | wc -l) - $(cat "$FZTD"/argv-styled-open-"$$"n.* 2>/dev/null || echo 0) ))"
-fzfake "$FZP" "0.44.1 (debian)"
 
 # A gapped palette is the DEFAULT install: cockpit.tmux's PALETTE sets four of
 # the eleven tokens the theme reads. With a whitespace separator the gaps
@@ -10315,7 +10306,7 @@ FZGS="cockpit-fzfgap-$$"; SOCKS="$SOCKS $FZGS"
 FZGB="$FZTD/gapbin"; mkdir -p "$FZGB"
 printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$FZGS" > "$FZGB/tmux"
 chmod +x "$FZGB/tmux"; ln -sf "$FZP/fzf" "$FZGB/fzf"
-fzc=$(env -u TMUX -u TMUX_PANE -u COCKPIT_FZF_TIER PATH="$FZGB" \
+fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
         "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
 is "two set tokens with gaps between them: no colour lands on its neighbour's key" \
    "fg:#cdd6f4 hl:#ff9838 bg+:#313244 prompt:#c9a2ff" \
@@ -10364,17 +10355,17 @@ FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'styled pickers')
+fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -cF "fzf 0.44.1 found; tmux-cockpit's pickers need 0.63+, bootstrap.sh fetches it")
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'styled pickers')
-is "the plain-tier notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
+fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'pickers need 0.63+')
+is "the old-fzf notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
 "$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
 FZNS2="cockpit-fzfquiet-$$"; SOCKS="$SOCKS $FZNS2"
 env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "and a 0.63+ fzf is never told about the tier at all" "0" \
-   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'styled pickers')"
+is "and a 0.63+ fzf is never told anything" "0" \
+   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.63+')"
 "$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
 rm -rf "$FZTD" "$FZG"
 # --- #105 review rows ---------------------------------------------------------
@@ -10565,12 +10556,8 @@ if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
     is "and one --color, the shared theme's" "1" "$(grep -c '^--color=' "$rr_argv" 2>/dev/null)"
     is "the user's own options still come last, so they win" "yes" \
        "$( [ "$(grep -n '^--color=' "$rr_argv" | cut -d: -f1)" -lt "$(grep -c . "$rr_argv")" ] && echo yes || echo no )"
-    # cockpit_fzf_tier memoises, but every consumer here reads it from inside a
-    # process substitution or a $( ), and a subshell's memo dies with it. Warmed
-    # once in load_theme, a picker open probes `fzf --version` once; without
-    # that line the fleet queue paid two, and the review loop three.
-    is "one fleet queue open probes fzf --version exactly once" "1" \
-       "$(grep -c . "$RRW/cap-100.vlog" 2>/dev/null)"
+    is "a fleet queue open never probes fzf --version" "0" \
+       "$(cat "$RRW/cap-100.vlog" 2>/dev/null | grep -c .)"
     # The footer draws its own rule; --header-border=bottom is the matching one
     # above the list. Two rules, zero boxes (pickers.md §6).
     rr_has "$rr_argv" --header-border=bottom "the fleet picker"
@@ -10757,25 +10744,13 @@ is "the deliver confirm carries one --color too" "1" "$(grep -c '^--color=' "$RR
 # The footer is three lines in ONE argument: cockpit_fzf_args prints one
 # argument per line for mapfile, so a footer asked of it would arrive as three
 # and the last two would reach fzf as stray arguments.
-is "above the fzf floor the review loop's keys are one --footer argument" "1" \
+is "the review loop's keys are one --footer argument" "1" \
    "$(grep -c '^--footer=↵ pin' "$RRP/esc.argv.1" 2>/dev/null)"
 is "carrying all three lines" "1" \
    "$(grep -cxF '^S deliver · ^A approve · ^/ preview · esc leave' "$RRP/esc.argv.1" 2>/dev/null)"
 is "and the header is the context alone" "1" \
    "$(grep -c '^--header=● pinned' "$RRP/esc.argv.1" 2>/dev/null)"
 rr_has "$RRP/esc.argv.1" --header-border=bottom "the review loop"
-# Below it there is no --footer at all, so the keys ride the header instead.
-# 0.44.1 is what Debian 13 and Ubuntu 24.04 ship, which is most people.
-is "esc still leaves cleanly on the plain tier" "0" \
-   "$(rr_loop "$RRP/plain" "$RRP/plain-store" "" 130 "discard 1 comment(s)" "0.44.1 (debian)")"
-is "below the floor no --footer is passed at all" "0" \
-   "$(grep -c '^--footer' "$RRP/plain.argv.1" 2>/dev/null)"
-is "and the keys ride the last --header line" "1" \
-   "$(grep -cxF '^S deliver · ^A approve · ^/ preview · esc leave' "$RRP/plain.argv.1" 2>/dev/null)"
-# --header-border is a styled-tier flag, so below the floor it must not appear
-# at all: fzf 0.44.1 exits 2 on an option it does not know.
-is "and no --header-border below the floor" "0" \
-   "$(grep -c '^--header-border' "$RRP/plain.argv.1" 2>/dev/null)"
 
 # --- #124 config leftovers ---
 echo "== the full example config renders the context gauge too (#124) =="
