@@ -31,10 +31,11 @@ fi
 # (fzf's reload/execute-silent binds run in a fresh subshell of their own).
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 OPENPATH="$(dirname "$SELF")/tmux-open-path"
-# The lib sits beside the SCRIPT. install.sh links each script into ~/bin by
-# its absolute path, so one readlink hop is the whole resolution; a plain
-# run (no link) has nothing to read and keeps $SELF's own directory.
-LIBDIR="$(dirname "$(readlink "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "$SELF")")/lib"
+# lib/ sits beside the REAL script; install.sh links it by absolute path.
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+LIBDIR=${d%/*}/lib
+# shellcheck source=lib/fixer.sh
+. "$LIBDIR/fixer.sh"
 # shellcheck source=lib/vscode.sh
 . "$LIBDIR/vscode.sh" 2>/dev/null || {
     vscode_shim() { return 1; }        # a half-installed copy: no shim, plain vi
@@ -2210,7 +2211,7 @@ info_mode() {                 # <pane>
         fpane=$(cat -- "$sess/fixer/pane" 2>/dev/null)
         fdl=$(cat -- "$sess/fixer/deadline" 2>/dev/null)
         fguard=$(cat -- "$sess/fixer/guard" 2>/dev/null)
-        if [ "$fpane" = pending ] || tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$fpane"; then
+        if fixer_pane_alive "$fpane"; then
             falive=alive
         else
             falive=gone

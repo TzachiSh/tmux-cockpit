@@ -31,14 +31,11 @@ command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmu
 K_ATTACH='↵ attach · ^X kill · ^/ preview · esc cancel'
 K_KILL='↵ kill · ⇥ mark · esc cancel'
 
-# The theme lib sits beside the REAL script; install.sh links this file into
-# ~/bin by its absolute path, so one readlink hop is the whole resolution.
+# lib/ sits beside the REAL script; install.sh links it by absolute path.
 # Called from the picker arms only: --rows and --kill-one exit before them and
 # run on every fzf reload, where a readlink per keystroke buys nothing.
 load_theme() {
-  local d
-  d=$(readlink "${BASH_SOURCE[0]}" 2>/dev/null)
-  d=${d:-$SELF}
+  local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
   # shellcheck source=lib/fzf.sh
   . "${d%/*}/lib/fzf.sh" \
     || die "cockpit: the fzf theme is missing · reinstall from the repo"

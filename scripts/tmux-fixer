@@ -65,26 +65,14 @@ You are a SIDE TASK running beside another agent that is working in this reposit
     exit 0
 }
 
-# --- liveness ------------------------------------------------------------------
-# The fixer is alive iff its record exists, no handover has been written, the
-# deadline has not passed, and its pane still exists (or is still "pending",
-# the milliseconds between the record and the split). No pid, no lock: a dead
-# process cannot leave a live pane. Mirrored in review-gate on purpose.
-fixer_alive() {               # <sess>
-    local f="$1/fixer" p dl
-    [ -d "$f" ] || return 1
-    [ -f "$1/handover" ] && return 1
-    dl=$(cat -- "$f/deadline" 2>/dev/null); case "$dl" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$(date +%s)" -lt "$dl" ] || return 1
-    p=$(cat -- "$f/pane" 2>/dev/null)
-    [ "$p" = pending ] && return 0
-    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$p"
-}
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/fixer.sh
+. "${d%/*}/lib/fixer.sh" || exit 1
 
 # --- -p: the popup ---------------------------------------------------------------
 # Two lines from the human (the job; the command pattern to hold off, ↵ for
 # none), then: the fence, the RECORD (mkdir; a stale record is freed first --
-# what refuses a second spawn is the fixer_alive check above, not the mkdir),
+# what refuses a second spawn is the fixer_alive check, not the mkdir),
 # the marker the gate stats, then the pane, spawned by the tmux SERVER
 # (split-window -d) so nothing about this popup's lifetime touches the fixer.
 spawn_fixer() {               # <main-pane>
