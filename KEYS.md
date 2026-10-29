@@ -40,14 +40,14 @@ of the example's `prefix m` menu).
 | Sessions... | `s` |
 
 Each row presses the key it names, so rebinding a key moves its row and
-`off` drops it. Needs tmux 3.4.
+`off` drops it.
 
 ## Mouse
 
 | gesture | does |
 |---------|------|
-| click the branch segment | branch picker (tmux 3.7) |
-| click the directory segment | browse the pane's working directory (tmux 3.7) |
+| click the branch segment | branch picker |
+| click the directory segment | browse the pane's working directory |
 | `Ctrl`+double-click a line | path picker for the paths on that line |
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |

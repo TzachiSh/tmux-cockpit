@@ -55,12 +55,7 @@ prerequisite for a plugin that is otherwise shell.
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 does not touch it; that script manages only its symlinks in `~/.local/bin`.
 
-Requires **tmux >= 3.7** for the board *popup*. 3.7 fixed "popup window gets
-overwritten by background updates" (#4920), and a hook-driven cockpit repaints
-constantly, so below 3.7 the popup tears. On an older tmux the binding prints a
-message and does not bind — unless `@cockpit_board_window on` is set, which
-parks the board in a window that repaints like any other and binds down to the
-plugin's own 3.3 floor.
+`@cockpit_board_window on` parks the board in a window instead of the popup.
 
 ## Keys
 
