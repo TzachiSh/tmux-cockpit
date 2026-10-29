@@ -547,17 +547,13 @@ rm -f "$conf"
 # ship 0.44.1, and a nag on every config reload is what makes people stop
 # reading them. `command -v` first because fzf is optional -- every picker
 # falls back to a numbered menu, and an fzf-less user has nothing to upgrade.
-if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ]; then
-    # shellcheck source=scripts/lib/fzf.sh
-    . "$DIR/scripts/lib/fzf.sh" 2>/dev/null || true
-    # The guard holds the tier, not a 1, so `tmux show -gv @cockpit_fzf_notice`
-    # answers which tier this server's pickers are on. Unset when the lib is
-    # missing: there is nothing to say, and the next load can try again.
-    case "$(cockpit_fzf_tier 2>/dev/null)" in
-        plain)
-            tmux set-option -gq @cockpit_fzf_notice plain
-            fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
-            tmux display-message "cockpit: fzf $fzf_v · styled pickers need 0.63, bootstrap.sh --full" ;;
-        styled) tmux set-option -gq @cockpit_fzf_notice styled ;;
-    esac
+# shellcheck source=scripts/lib/vnum.sh
+if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ] &&
+        . "$DIR/scripts/lib/vnum.sh" 2>/dev/null; then
+    # Below 0.63 the keys stay bound: only the pickers need it, nothing else does.
+    fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
+    tmux set-option -gq @cockpit_fzf_notice "${fzf_v:-?}"
+    if [ "$(vnum "$fzf_v")" -lt "$(vnum 0.63.0)" ]; then
+        tmux display-message "fzf $fzf_v found; tmux-cockpit's pickers need 0.63+, bootstrap.sh fetches it"
+    fi
 fi

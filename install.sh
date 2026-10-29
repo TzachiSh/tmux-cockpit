@@ -100,7 +100,7 @@ if [ "$check" -eq 1 ]; then
     if [ -z "$v" ]; then
         row warn fzf 'not found' 'bootstrap.sh --full (pickers fall back to a menu)'
     elif [ "$(vnum "$v")" -lt "$(vnum 0.63.0)" ]; then
-        row warn fzf "$v" 'bootstrap.sh --full (styled pickers)'
+        row fail fzf "$v" 'the pickers need 0.63+; bootstrap.sh fetches it'
     else row ok fzf "$v"
     fi
 
