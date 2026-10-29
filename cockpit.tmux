@@ -29,6 +29,15 @@ set -u
 # at /scripts/... and exported a bogus TMUX_COCKPIT_DIR, all with status 0.
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
+# tpm hides plugin output, so an old tmux only hears this message.
+tmux_version=$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')
+vmaj=${tmux_version%%.*} vmin=${tmux_version#*.}
+case "$vmin" in ''|*[!0-9]*) vmin=0 ;; esac
+if [ -n "$vmaj" ] && { [ "$vmaj" -lt 3 ] || { [ "$vmaj" -eq 3 ] && [ "$vmin" -lt 8 ]; }; }; then
+    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
+    exit 0
+fi
+
 # Shell-quote a path for the command strings tmux hands to sh. SINGLE quotes,
 # not printf %q: the bindings below embed their path inside a tmux
 # double-quoted string, where tmux processes backslash escapes and would eat
@@ -157,28 +166,6 @@ Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
 # '#{pane_id}' here was literal text and scripts fell back to $PWD (#38).
 SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
 
-# Version gate. Measured against real 3.4 and 3.7c binaries, not guessed:
-#
-#   3.4  per-pane pane-border-style with a format WORKS, #{m/r:} with an option
-#        as the pattern works, display-popup -T works. The README used to claim
-#        3.5 was the floor because the border "silently does nothing" on 3.4 --
-#        it does not; that claim was wrong.
-#   3.3  display-popup -T (the popup titles) first appears here. This is the
-#        real floor.
-#   3.7  MouseDown1Control1 and #[range=control|N] first appear. Below this,
-#        binding it fails with "unknown key" and the range marker is ignored,
-#        so clicking the branch segment cannot work. Everything else does.
-#
-# The message matters because tpm discards plugin stdout AND stderr, so a bare
-# "unknown key" line would vanish and the user would just have a dead segment.
-tmux_version=$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')
-version_at_least() {           # version_at_least <major> <minor>
-    local maj=${tmux_version%%.*} min=${tmux_version#*.}
-    [ -n "$maj" ] || return 0                     # unparseable: assume modern
-    case "$min" in ''|*[!0-9]*) min=0 ;; esac
-    [ "$maj" -gt "$1" ] || { [ "$maj" -eq "$1" ] && [ "$min" -ge "$2" ]; }
-}
-
 # The palette. These are catppuccin's variable names, and a catppuccin user
 # already has them -- but the example config reads them unconditionally, and a
 # user WITHOUT that theme got no colour at all: tmux rejects the resulting
@@ -211,10 +198,6 @@ fi
 PW=$(tmux show-option -gqv @cockpit_popup_width);  PW=${PW:-70%}
 PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
 
-if ! version_at_least 3 3; then
-    tmux display-message "tmux-cockpit needs tmux 3.3 or newer (found ${tmux_version:-unknown})"
-fi
-
 # Branch picker. The click half needs the status bar to mark a range -- the
 # plugin cannot inject into a status-right it does not own. See the README.
 # Same geometry and title style as the path picker: the two popups are siblings
@@ -223,25 +206,15 @@ fi
 #
 # -p $SRC_PANE: inside a popup $TMUX_PANE is the popup's own pseudo-pane, so
 # the script cannot ask "what pane am I on" itself.
-# tmux keeps ONE message slot per client, so a second display-message replaces
-# the first: every 3.7 casualty travels in one line, printed after the last of
-# them is known.
-v37=
-if version_at_least 3 7; then
-    tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
-    # Clicking the DIRECTORY segment browses the pane's working dir -- the same
-    # popup the path picker descends into, entered from the top. Wired to
-    # range=control|2 in status-right, the slot beside the branch's control|1.
-    # -d is a format (the shell-command is not, see SRC_PANE): the popup
-    # starts in the pane's directory and --browse takes its $PWD.
-    tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
-        -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
-        "$Q_OPEN --browse"
-elif tmux show-option -gqv status-right | grep -q 'range=control|'; then
-    # Their config marks a click range this tmux cannot deliver. Say so, or the
-    # segment is simply dead with no explanation.
-    v37='clicking the branch'
-fi
+tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
+# Clicking the DIRECTORY segment browses the pane's working dir -- the same
+# popup the path picker descends into, entered from the top. Wired to
+# range=control|2 in status-right, the slot beside the branch's control|1.
+# -d is a format (the shell-command is not, see SRC_PANE): the popup starts in
+# the pane's directory and --browse takes its $PWD.
+tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
+    -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
+    "$Q_OPEN --browse"
 # tmux keeps its drag flag set when a popup or menu eats the release, then
 # rewrites the NEXT press anywhere into MouseDragEnd1<where> (#21, 3.7c): a
 # tab click was silently lost. Stock leaves this key unbound.
@@ -329,18 +302,10 @@ if [ -n "$bk" ]; then
     # expands #{pane_id} on the source pane instead (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
         tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
-    elif version_at_least 3 7; then
-        tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
     else
-        # 3.7 fixed #4920, "popup window gets overwritten by background
-        # updates", and a hook-driven cockpit repaints constantly. It is a
-        # POPUP bug: @cockpit_board_window on repaints like any other window
-        # and binds all the way down to the plugin's own 3.3 floor.
-        v37="${v37:+$v37 and }the board (prefix $bk)"
+        tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
-
-[ -z "$v37" ] || tmux display-message "tmux-cockpit: $v37 needs tmux 3.7 (found ${tmux_version:-unknown}); prefix+b and prefix r still work"
 
 # The binary is optional, and nothing here downloads it. tpm's `prefix U`
 # re-runs every *.tmux -- but so does every plain `source-file ~/.tmux.conf`,
@@ -479,13 +444,13 @@ EOF
 fi
 
 # prefix a: the agents menu, every cockpit action as a row with its letter on
-# screen. A row replays the key the action is bound to (send-keys -K, 3.4):
-# one definition per action, a rebound key moves its row, an off key drops
-# it. Stock a is unbound; @cockpit_ai_key rebinds (n if you never use
+# screen. A row replays the key the action is bound to (send-keys -K): one
+# definition per action, a rebound key moves its row, an off key drops it.
+# Stock a is unbound; @cockpit_ai_key rebinds (n if you never use
 # next-window), off disables.
 AK=$(tmux show-option -gqv @cockpit_ai_key)
 case "$AK" in off) ak= ;; "") ak=a ;; *) ak=$AK ;; esac
-if [ -n "$ak" ] && version_at_least 3 4; then
+if [ -n "$ak" ]; then
     rows=()
     row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
     row 'Jump to the pane that needs you' u "$jk"
@@ -499,8 +464,6 @@ if [ -n "$ak" ] && version_at_least 3 4; then
     row 'Move window to a session...'     m "$mk"
     row 'Sessions...'                     s "$sk"
     tmux bind-key "$ak" display-menu -T ' agents ' -x C -y C "${rows[@]}"
-elif [ -n "$ak" ]; then
-    tmux display-message "tmux-cockpit: the prefix+$ak menu needs tmux 3.4 (found ${tmux_version:-unknown}); the keys still work"
 fi
 
 # Click a line of output to pick a path off it. -F is load-bearing: without it

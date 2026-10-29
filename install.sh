@@ -94,10 +94,8 @@ if [ "$check" -eq 1 ]; then
     printf 'tmux-cockpit doctor\n\n'
 
     v=$(tmux -V 2>/dev/null); v=${v#tmux }
-    if [ -z "$v" ]; then row fail tmux 'not found' 'install tmux >= 3.3'
-    elif [ "$(vnum "$v")" -lt "$(vnum 3.3)" ]; then row fail tmux "$v" 'install tmux >= 3.3'
-    elif [ "$(vnum "$v")" -lt "$(vnum 3.7)" ]; then
-        row warn tmux "$v" 'ctrl+click features off below 3.7'
+    if [ -z "$v" ]; then row fail tmux 'not found' 'bootstrap.sh builds tmux 3.8'
+    elif [ "$(vnum "$v")" -lt "$(vnum 3.8)" ]; then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
     else row ok tmux "$v"
     fi
 

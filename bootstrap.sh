@@ -22,11 +22,7 @@ DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
 [ -d "$HOME/.tmux/plugins" ] && PLUGINS="$HOME/.tmux/plugins"
 
-# tmux 3.3 is the real floor (display-popup -T). 3.7 adds MouseDown1Control1 and
-# #[range=control|N]; below it the Ctrl+click features are gated off and the
-# rest works. Both numbers are measured, not guessed -- see cockpit.tmux.
-TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=3
-TMUX_CLICK_MAJ=3 TMUX_CLICK_MIN=7
+TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
 
 USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--full [--latest]] [--check]'
 assume_yes=0 dry=0 full=0 latest=0 check=0
@@ -125,21 +121,38 @@ else
 fi
 
 # ------------------------------------------------------------------- tmux ----
+# tmux ships only a source tarball, so a distro below the floor builds it.
+build_tmux() {
+    local deps tmp
+    case "$PKG" in
+        apt)    deps="build-essential pkg-config bison libevent-dev libncurses-dev curl" ;;
+        dnf)    deps="gcc make pkgconf-pkg-config bison libevent-devel ncurses-devel curl" ;;
+        pacman) deps="base-devel libevent ncurses curl" ;;
+        zypper) deps="gcc make pkg-config bison libevent-devel ncurses-devel curl" ;;
+        *)      deps="" ;;
+    esac
+    [ -n "$deps" ] &&{ run "install the tmux build deps" bash -c "$PKG_INSTALL $deps" || return 1; }
+    [ "$dry" -eq 1 ] && { printf '  would: build tmux %s into ~/.local\n' "$TMUX_BUILD"; return 0; }
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf "$tmp"' RETURN
+    printf '  note:  tmux publishes no checksums; TLS only\n'
+    run "download tmux $TMUX_BUILD" curl -fsSL --retry 2 --max-time 120 -o "$tmp/t.tgz" \
+        "${COCKPIT_GITHUB:-https://github.com}/tmux/tmux/releases/download/$TMUX_BUILD/tmux-$TMUX_BUILD.tar.gz" || return 1
+    run "build tmux $TMUX_BUILD into ~/.local" bash -c "cd '$tmp' && tar xzf t.tgz && cd tmux-$TMUX_BUILD \
+        && ./configure --prefix='$HOME/.local' && make -j\$(nproc 2>/dev/null || echo 2) && make install"
+}
+
 step "tmux version"
-if ! have tmux; then
-    note "tmux is still not installed; the rest of this will not do much"
-    failed+=("tmux missing")
+v=$(tmux -V 2>/dev/null)
+note "found  ${v:-no tmux}"
+if [ -n "$v" ] && ver_ge "$v" "$TMUX_FLOOR_MAJ" "$TMUX_FLOOR_MIN"; then :
+elif [ "$PKG" = brew ]; then
+    run "upgrade tmux" brew upgrade tmux
+elif ask "tmux-cockpit needs tmux $TMUX_BUILD; build it into ~/.local/bin?" y && build_tmux; then
+    case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) note "add ~/.local/bin to PATH, before /usr/bin" ;; esac
+    hash -r
 else
-    v=$(tmux -V 2>/dev/null)
-    note "found  $v"
-    if ! ver_ge "$v" "$TMUX_FLOOR_MAJ" "$TMUX_FLOOR_MIN"; then
-        note "below the ${TMUX_FLOOR_MAJ}.${TMUX_FLOOR_MIN} floor -- display-popup -T is missing, so the popups will not work"
-        failed+=("tmux older than ${TMUX_FLOOR_MAJ}.${TMUX_FLOOR_MIN}")
-    elif ! ver_ge "$v" "$TMUX_CLICK_MAJ" "$TMUX_CLICK_MIN"; then
-        # Not a failure. cockpit.tmux gates these; everything else works.
-        note "below ${TMUX_CLICK_MAJ}.${TMUX_CLICK_MIN}: Ctrl+click on the branch and the click-to-open picker stay off"
-        skipped+=("ctrl+click features (tmux < ${TMUX_CLICK_MAJ}.${TMUX_CLICK_MIN})")
-    fi
+    failed+=("tmux $TMUX_BUILD")
 fi
 
 # ---------------------------------------------------------------- plugins ----
