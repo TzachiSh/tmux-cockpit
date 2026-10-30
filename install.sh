@@ -3,19 +3,11 @@
 #   ./install.sh            symlink the commands into ~/.local/bin
 #   ./install.sh --uninstall  remove only the symlinks that point back here
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
-#
-# The tmux side needs no install: one run-shell line in ~/.tmux.conf loads
-# cockpit.tmux, which binds its own keys. This script exists for the scripts
-# you also type by name, since a plugin directory is not on $PATH.
+#   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into ~/.claude/settings.json
 set -uo pipefail
 
-# -P so DIR is the RESOLVED path. The uninstall guard below compares it against
-# readlink -f of the link; with a logical path those never match when the plugin
-# is reached through a symlink (a dotfiles checkout linked into ~/.tmux/plugins
-# is the usual way), and --uninstall then removed nothing and said nothing.
+# Resolved (-P), so the uninstall guard matches links made through a symlinked checkout.
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# ${HOME:-}, not a bare $HOME: under `set -u` an unset HOME aborted here with
-# a raw "HOME: unbound variable" instead of a message that says what's wrong.
 BIN="${XDG_BIN_HOME:-${HOME:-}/.local/bin}"
 if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
     printf 'HOME is not set and XDG_BIN_HOME is not set; cannot pick an install directory\n' >&2
@@ -32,21 +24,12 @@ for a in "$@"; do case "$a" in
     --check)     check=1 ;;
     --hooks)     hooks=1 ;;
     --dry-run)   dry=1 ;;
-    # A typo used to install silently. "./install.sh --uninstal" removing
-    # nothing while reporting nothing is the worst possible answer.
     *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
-# --check reports and changes nothing, so pairing it with a flag that writes
-# would mean one of the two was silently ignored.
+# Flag combinations that would silently ignore one half are refused.
 [ "$check" -eq 1 ] && [ $((uninstall + hooks + dry)) -gt 0 ] && {
     printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
-# --dry-run only means something as a preview of --hooks; alone it previews
-# nothing and silently doing so would look like a no-op success.
 [ "$dry" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--dry-run needs --hooks\n' >&2; exit 2; }
-# --uninstall does NOT touch hooks (see the usage comment up top). Letting
-# --hooks ride along and silently merging anyway would be exactly the
-# silent-wrong-answer this script refuses everywhere else -- a hard error is
-# the honest answer here, not a quiet no-op.
 [ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 
@@ -54,11 +37,10 @@ esac; done
 # shellcheck source=scripts/lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
 
-# Each tool names its version in its own field. A builtin, not awk: the fail
-# rows still have to be right on a PATH with nothing on it.
+# A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
     local n=$1 i=1 w
-    # shellcheck disable=SC2086  # ditto, on whitespace
+    # shellcheck disable=SC2086  # splitting on whitespace is the point
     set -- $2
     for w in "$@"; do
         [ "$i" -eq "$n" ] && { printf '%s\n' "$w"; return 0; }
@@ -66,9 +48,8 @@ fld() {                       # fld <field> <version line>
     done
 }
 
-# The exit is the worst row: 0 ok or skip, 1 warn, 2 fail. skip is 0 on
-# purpose -- a bare shell cannot answer the last two rows, and a doctor that
-# cried failure over that would be ignored the way brew doctor warns it can be.
+# The exit is the worst row: 0 ok or skip, 1 warn, 2 fail. skip is 0 because a
+# bare shell cannot answer some rows.
 worst=0
 row() {                       # row <ok|skip|warn|fail> <what> <found> [fix]
     local m
@@ -104,8 +85,7 @@ if [ "$check" -eq 1 ]; then
     else row ok fzf "$v"
     fi
 
-    # Debian names it batcat, and the path matters here: which one won is the
-    # answer to "the preview is still plain text".
+    # Debian names it batcat; the path shows which one won.
     bp=$(command -v bat 2>/dev/null) || bp=$(command -v batcat 2>/dev/null) || bp=''
     if [ -n "$bp" ]; then row ok bat "$(fld 2 "$("$bp" --version 2>/dev/null)") @ $bp"
     else row warn bat 'not found' 'optional; bootstrap.sh --full'
@@ -117,8 +97,7 @@ if [ "$check" -eq 1 ]; then
     else row ok gum "$v"
     fi
 
-    # Order, not just presence: a fetched fzf in $BIN does nothing for anyone
-    # if apt's copy still answers first.
+    # Order, not just presence: a fetched fzf in $BIN is useless if apt's answers first.
     case ":$PATH:" in
         *":$BIN:"*)
             shadow=''; sdir=''
@@ -136,13 +115,11 @@ if [ "$check" -eq 1 ]; then
     esac
 
     conf=''; wired=0
-    # Both candidates, not the first readable one: tmux loads both, so the
-    # run-shell line in either wires the box.
+    # tmux loads both, so the run-shell line in either wires the box.
     cxdg="${XDG_CONFIG_HOME:-${HOME:-}/.config}/tmux/tmux.conf"; chome="${HOME:-}/.tmux.conf"
     for c in "$cxdg" "$chome"; do
         [ -r "$c" ] || continue
         [ -n "$conf" ] || conf="$c"        # the first readable one names a fail row
-        # read, not grep: this row still has to answer on a PATH with nothing on it.
         while read -r l || [ -n "$l" ]; do
             case "$l" in *cockpit.tmux*) wired=1; conf="$c"; break ;; esac
         done < "$c"
@@ -154,23 +131,17 @@ if [ "$check" -eq 1 ]; then
     else row fail config 'no tmux config' "$wire_fix"
     fi
 
-    # tmux re-expands these formats once per visible pane per status redraw, and
-    # every agent title forces a redraw, so a #{P:} walk here IS the freeze: a
-    # config predating the precompute measured 336 visits against a 120 budget.
+    # These formats re-expand per pane on every redraw, so a #{P:} walk in them freezes tmux.
     if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
     else
         walk=0
-        # A dotfiles checkout symlinks one onto the other, and counting a file
-        # twice would report two walks for one line.
+        # A symlink of one onto the other must not count twice.
         [ "$cxdg" -ef "$chome" ] && chome=''
-        # Both files, like the row above, and the unwired one is not the harmless
-        # half: tmux applies XDG second, so its walk is the value that survives.
         for c in "$cxdg" "$chome"; do
             [ -r "$c" ] || continue
             acc=''
             while read -r l || [ -n "$l" ]; do
-                # tmux joins a trailing backslash before expanding, so a format
-                # wrapped across lines has to be rejoined to be seen at all.
+                # tmux joins a trailing backslash before expanding.
                 case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
                 l="$acc$l"; acc=''
                 case "$l" in
@@ -228,42 +199,22 @@ set*\ @catppuccin_window_current_text\ *)
 fi
 
 rc=0
-# Not on --uninstall (nothing gets created there) and not on --dry-run (a
-# preview must not create anything either -- see the symlink step below).
 if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
     mkdir -p "$BIN" || { printf 'cannot create %s\n' "$BIN" >&2; exit 1; }
 fi
 
-# BSD readlink had no -f until macOS 12.3, where it returns empty and prints
-# "illegal option". Empty then compares unequal to every target, so the guards
-# below would refuse to touch our OWN links and uninstall would remove nothing
-# -- silently, with status 0. Only one level of link is ever needed here: the
-# question is just "did we make this".
+# No -f: BSD readlink lacks it, and one level answers "did we make this".
 link_target() { readlink "$1" 2>/dev/null; }
 
-# --dry-run only ever previews --hooks (enforced above); it must not touch the
-# symlinks at all. This used to run unconditionally, so "--hooks --dry-run" on
-# a fresh $HOME still created three links and then reported "dry-run: nothing
-# written" underneath them.
-# One link, created or -- on --uninstall -- removed, but only ever one that is
-# ours. A function, not the loop body it used to be, because the skill link
-# below lives outside $BIN and outside the COMMANDS loop and needs exactly
-# these guards. `return`, not the `continue` this read as inside the loop: a
-# `continue` in a function is a no-op with a warning on stderr, in bash even
-# when the caller is a loop.
+# Creates, or on --uninstall removes, one link, and only ever one that points here.
 link_one() {                  # <link> <target>
     local link=$1 target=$2
 
     if [ "$uninstall" -eq 1 ]; then
-        # Only ever remove a link that points back into this plugin. Deleting
-        # whatever happens to sit at that name would take someone else's tool
-        # with it.
         if [ -L "$link" ] && [ "$(link_target "$link")" = "$target" ]; then
             if rm -- "$link"; then
                 printf 'removed  %s\n' "$link"
             else
-                # A read-only $BIN made rm fail silently before this: exit 0,
-                # nothing printed, the link still there.
                 printf 'FAILED   %s (cannot remove the link)\n' "$link" >&2
                 rc=1
             fi
@@ -275,16 +226,11 @@ link_one() {                  # <link> <target>
         printf 'SKIP     %s already exists and is not a symlink\n' "$link" >&2
         return 0
     fi
-    # A symlink of the same name that points somewhere else belongs to another
-    # tool -- "tm" is a name plenty of things want. Overwriting it silently is
-    # bad enough; --uninstall would then delete it too, leaving neither.
+    # A same-named link pointing elsewhere belongs to another tool ("tm" is popular).
     if [ -L "$link" ] && [ "$(link_target "$link")" != "$target" ]; then
         printf 'SKIP     %s is a symlink to %s, not ours\n' "$link" "$(link_target "$link")" >&2
         return 0
     fi
-    # Reporting "linked" after ln failed is worse than failing: a read-only bin
-    # directory produced three permission errors and three success lines, and
-    # exited 0.
     if ln -sfn "$target" "$link" 2>/dev/null; then
         printf 'linked   %-24s -> %s\n' "$link" "$target"
     else
@@ -295,8 +241,7 @@ link_one() {                  # <link> <target>
 
 if [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
-# Every skills/* dir, for Claude Code -- only where Claude Code is installed
-# (~/.claude exists), so a plain shell box gets no stray dir.
+# Skills only where Claude Code is installed, so a plain shell box gets no stray dir.
 if [ -d "${HOME:-}/.claude" ]; then
     [ "$uninstall" -eq 0 ] && mkdir -p "${HOME}/.claude/skills" 2>/dev/null
     for s in "$DIR"/skills/*/; do    # [ -d ]: an empty skills/ leaves the glob unexpanded
@@ -312,14 +257,11 @@ if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
     have_diff=1
     command -v diff >/dev/null 2>&1 || have_diff=0
-    # Claude Code's settings.json has no XDG override, unlike $BIN above --
-    # $HOME is required here, and must be checked before it is dereferenced.
+    # settings.json has no XDG override, so $HOME is required here.
     [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
 
-    # readlink -f is GNU-only (the same BSD caveat documented above for
-    # link_target), so resolve a symlink chain by hand, with the cd -P
-    # discipline DIR itself uses at the top of this script.
+    # readlink -f is GNU-only, so the chain is resolved by hand.
     resolve_link() {
         local p="$1" d b
         while [ -L "$p" ]; do
@@ -330,55 +272,37 @@ if [ "$hooks" -eq 1 ]; then
     }
 
     if [ -e "$settings" ]; then
-        # A valid symlink (settings.json tracked by chezmoi, home-manager, or
-        # by hand) must still be a symlink afterward -- writing AT the link
-        # itself, which is the atomic-rename idiom's usual behavior (and
-        # `sed -i`'s default, Debian #323850), would replace the tracked
-        # dotfiles source with a plain file; the next chezmoi/home-manager
-        # apply then restores the symlink and drops the merged hooks for
-        # good. Resolve the chain and write at $real instead.
+        # Write at the resolved target: replacing a dotfiles-managed symlink with
+        # a plain file loses the merge on the manager's next apply.
         real=$(resolve_link "$settings")
         orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
     elif [ -L "$settings" ]; then
-        # A dangling symlink passes neither "read what's there" (there's
-        # nothing) nor "seed a fresh file" safely -- the seed write below
-        # follows a symlink, so it would land wherever the link points,
-        # outside ~/.claude entirely.
+        # Seeding would follow the link to wherever it points, outside ~/.claude.
         printf 'refusing to follow the dangling symlink %s\n' "$settings" >&2
         exit 1
     else
         orig='{}'
         real="$settings"
-        # A preview must not create ~/.claude or seed settings.json either --
-        # the diff below is computed against $orig directly, without a file.
         if [ "$dry" -eq 0 ]; then
             mkdir -p "${settings%/*}" || exit 1
             printf '%s\n' "$orig" > "$settings"
         fi
     fi
 
-    # Additive, never destructive: their hooks stay; ours are appended per
-    # event, skipping any entry already present. index() does jq's generic
-    # (order-insensitive, deep) equality, so reformatting the file -- jq -S,
-    # or Claude Code rewriting its own settings -- no longer makes every
-    # cockpit hook look new and get appended a second time.
-    # norm papers over the one difference deep equality is too honest about:
-    # "matcher" is optional and "" when absent, so a live entry carrying
-    # matcher:"" and a shipped one without it are the same hook. Measured:
-    # exactly that shape mismatch on the Stop event made every --hooks run
-    # append one more duplicate, forever, while the other ten events held.
-    # review-gate's own Stop entry changes shape across versions (timeout 5 ->
-    # 330, the hold added) -- additive alone would keep the old one forever
-    # beside the new. Drop any of THEIRS whose command ENDS in
-    # /scripts/review-gate or /scripts/review-gate --pretool first (anchored
-    # -- an unanchored substring test would also delete a foreign hook that
-    # merely logs to a path containing that text), so an upgrade replaces
-    # cockpit's own entries instead of piling a second one on.
+    # Additive: their hooks stay, ours are appended unless a deep-equal entry
+    # exists. norm makes an absent matcher equal "".
+    # Cockpit entries whose shape changes across versions are replaced, not kept
+    # beside the new one: review-gate, and a SessionStart `agent-state off` whose
+    # matcher differs. Both tests are anchored, so a foreign hook naming the path survives.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
+        def runs($re): (.command // "") | test($re);
         .[0].hooks as $mine | .[1] as $theirs
-        | ($theirs.hooks // {} | with_entries(.value |=
-            (map(.hooks |= map(select(((.command // "") | test("/scripts/review-gate( --pretool)?\"?$")) | not)))
+        | ([$mine.SessionStart[]? | select(any(.hooks[]?; runs("/scripts/agent-state off\"?$"))) | .matcher // ""] | first) as $offm
+        | ($theirs.hooks // {} | with_entries(.key as $k | .value |=
+            (map(if $k == "SessionStart" and $offm != null and (.matcher // "") != $offm
+                 then .hooks |= map(select(runs("/scripts/agent-state off\"?$") | not)) else . end)
+             | map(.hooks |= map(select(runs("/scripts/review-gate( --pretool)?\"?$") | not)))
              | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
             $h + ($mine | with_entries(
@@ -389,12 +313,7 @@ if [ "$hooks" -eq 1 ]; then
           ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
         || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
 
-    # Compare only .hooks, structurally (jq -S -c, sorted and compact) --
-    # comparing the whole file as text rewrote (and I2-clobbered) the backup
-    # on every formatting-only difference, even when cockpit's hooks were
-    # already fully present. Computed once, up front: a dry-run must predict
-    # the same "already merged" outcome the real run would report, not just
-    # an empty diff plus "nothing written".
+    # Only .hooks, structurally, so a formatting-only difference is not a change.
     if [ "$(printf '%s' "$merged" | jq -S -c '.hooks // {}')" = "$(printf '%s' "$orig" | jq -S -c '.hooks // {}')" ]; then
         already_merged=1
     else
@@ -405,13 +324,9 @@ if [ "$hooks" -eq 1 ]; then
         if [ "$already_merged" -eq 1 ]; then
             printf 'hooks     already merged, nothing to do\n'
         elif [ "$have_diff" -eq 1 ]; then
-            # -L names both sides with the real path instead of the process
-            # substitution's /dev/fd/NN, which a plain diff -u would print.
             diff -u -L "$settings" -L "$settings (merged)" <(printf '%s\n' "$orig") <(printf '%s\n' "$merged")
             rc_diff=$?
-            # 1 just means "they differ", which is the expected case here.
-            # Anything higher is a real diff failure and must not silently
-            # look like a clean preview.
+            # 1 means "they differ"; only above that is diff failing.
             [ "$rc_diff" -le 1 ] || printf 'diff failed; merged result would be:\n%s\n' "$merged"
         else
             printf 'diff not found; merged result would be:\n%s\n' "$merged"
@@ -420,47 +335,22 @@ if [ "$hooks" -eq 1 ]; then
     elif [ "$already_merged" -eq 1 ]; then
         printf 'hooks     already merged, nothing to do\n'
     else
-        # $orig was read once, up front (before the jq merge and the .hooks
-        # diff above -- real wall time), and $merged was computed from that
-        # one read. Claude Code rewrites its own settings.json, unlocked, on
-        # every permission approval; measured window here is ~54ms, plenty
-        # for a live session's write to land while this script is still
-        # merging and then get silently overwritten by content computed from
-        # the stale $orig -- reported as a successful merge. Re-read right
-        # before touching anything and abort rather than clobber if it
-        # moved: the concurrent write is real data nobody asked us to
-        # discard, and it is never lost -- it is simply left as the current
-        # content of $real, and a second --hooks run re-reads it fresh and
-        # merges cleanly on top.
+        # Claude Code rewrites settings.json unlocked on every approval: abort
+        # rather than clobber a write that landed while this was merging.
         now=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
         if [ "$now" != "$orig" ]; then
             printf '%s changed since this run started (a concurrent writer raced the merge); nothing written -- re-run --hooks to merge the current content\n' "$settings" >&2
             exit 1
         fi
-        # Preserve the FIRST backup only. Overwriting it on every modifying
-        # run would replace a user's pre-existing settings.json.bak, or -- on
-        # a second modifying run -- replace the pristine original with
-        # content that already has our hooks merged in. And say so plainly:
-        # reporting "(backup: ...)" when an existing .bak was kept, not
-        # written, would point at a rollback that isn't actually one.
+        # Only the first backup is kept: a later one would hold our hooks already.
         if [ -e "$settings.bak" ]; then
             bak_note=' (existing backup kept, not overwritten)'
         else
             cp -- "$settings" "$settings.bak" || exit 1
             bak_note=" (backup: $settings.bak)"
         fi
-        # `printf > "$real"` truncates before it writes a single byte, so a
-        # SIGXFSZ or any other interrupted write (reproduced with
-        # ulimit -f 1) leaves a truncated, invalid settings.json -- and the
-        # rollback above never runs, because by then the file has already
-        # been destroyed. Write to a sibling temp file instead and rename it
-        # over the resolved target: rename() is atomic, so $real is either
-        # the old content or the new content, never a half-written file
-        # between. The temp file is created AT $real (not at $settings), so
-        # a symlinked settings.json still resolves onto one filesystem and
-        # the rename stays atomic; cp -p carries the original's mode onto it
-        # first, since mktemp's own 0600 would otherwise silently tighten
-        # settings.json's permissions on every merge.
+        # A sibling temp file renamed over $real, so an interrupted write never
+        # truncates it; cp -p keeps the mode mktemp would tighten to 0600.
         tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
         trap 'rm -f -- "$tmp"' EXIT
         cp -p -- "$real" "$tmp" && printf '%s\n' "$merged" > "$tmp" && mv -- "$tmp" "$real" \
@@ -477,11 +367,7 @@ case ":$PATH:" in
     *) printf '\nNOTE: %s is not on your $PATH.\n' "$BIN" >&2 ;;
 esac
 
-# Both locations, and say it even when neither exists -- a user with no tmux
-# config got no instruction at all, which is exactly the user who needs one.
-# HOME may legitimately be unset here (only XDG_BIN_HOME was needed for the
-# symlink step above), so this whole check degrades to the DIR-only message
-# instead of dereferencing an unset $HOME.
+# HOME may be unset here, since only XDG_BIN_HOME was needed above.
 if [ -z "${HOME:-}" ]; then
     printf '\nHOME is not set; add this to your tmux config by hand:\n  run-shell %s/cockpit.tmux\n' "$DIR" >&2
 else

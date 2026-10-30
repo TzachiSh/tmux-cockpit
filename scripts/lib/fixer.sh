@@ -2,10 +2,8 @@
 # The side fixer's liveness, for tmux-fixer, review-gate and tmux-review.
 # Sourced, never run.
 
-# Alive iff its record exists, no handover has been written, the deadline has
-# not passed, and its pane still exists (or is still "pending", the
-# milliseconds between the record and the split). No pid, no lock: a dead
-# process cannot leave a live pane.
+# Alive iff recorded, not handed over, before its deadline, and its pane exists
+# ("pending" until the split). No pid or lock: a dead process leaves no live pane.
 fixer_alive() {               # <sess>
     local f="$1/fixer" p dl
     [ -d "$f" ] || return 1

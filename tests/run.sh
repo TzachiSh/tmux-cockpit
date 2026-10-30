@@ -3989,6 +3989,26 @@ case "$(cat "$HKG/.claude/settings.json")" in
          "mywrap --log /scripts/review-gate-audit.log still present" "$(cat "$HKG/.claude/settings.json")" ;;
 esac
 rm -rf "$HKG"
+# The pre-#166 SessionStart `agent-state off` had an empty matcher, so it also ran
+# on compact; an upgrade must replace it, not keep it beside the new one.
+HKS=$(mktmpd); mkdir -p "$HKS/.claude"
+cat > "$HKS/.claude/settings.json" <<'EOF'
+{ "hooks": {
+    "SessionStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "my-session-start" } ] }
+    ],
+    "SessionEnd": [ { "matcher": "", "hooks": [ { "type": "command", "command": "my-session-end" } ] } ] } }
+EOF
+HOME="$HKS" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "an upgrade replaces the empty-matcher SessionStart agent-state off" "1 startup|resume|clear" \
+   "$(jq -r '[.hooks.SessionStart[] | select(any(.hooks[]; .command | test("/scripts/agent-state off$")))]
+             | "\(length) \(map(.matcher) | join(","))"' "$HKS/.claude/settings.json")"
+is "and the user's own SessionStart and SessionEnd hooks are untouched" "1 1" \
+   "$(jq -r '[ ([.hooks.SessionStart[] | select(. == {matcher: "", hooks: [{type: "command", command: "my-session-start"}]})] | length),
+             ([.hooks.SessionEnd[] | select(. == {matcher: "", hooks: [{type: "command", command: "my-session-end"}]})] | length) ] | join(" ")' \
+       "$HKS/.claude/settings.json")"
+rm -rf "$HKS"
 # dry-run: shows the diff, writes nothing
 HK2=$(mktmpd); mkdir -p "$HK2/.claude"; printf '{}' > "$HK2/.claude/settings.json"
 out=$(HOME="$HK2" "$DIR/install.sh" --hooks --dry-run 2>&1)
