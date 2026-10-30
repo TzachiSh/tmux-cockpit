@@ -6,9 +6,6 @@
 # border. `16` stays the base so an unset key degrades to the terminal's own.
 # fzf 0.63+ is required (--footer is the newest flag used); cockpit.tmux warns.
 
-# tmux-review still reads a tier; there is only one now.
-cockpit_fzf_tier() { printf 'styled\n'; }
-
 # -g, not a bare declare: a caller that sources this lib from inside one of its
 # own functions (tmux-open-path's op_theme does) would otherwise get a LOCAL
 # cache that dies with that call.
