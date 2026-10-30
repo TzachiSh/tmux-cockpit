@@ -264,9 +264,6 @@ black rectangle while `claude agents --json` takes its measured 380 ms.
 ╰ q close ───────────────────────────────────────────────────╯
 ```
 
-A braille spinner appears only after 1 s of waiting, prefixed to that line. It
-is the only animation in the binary.
-
 **No transcript for a pane:** the tile still renders, the preview is the
 fallback. `doing` reads `—`, `said` is omitted rather than printed empty. Never
 the word "unknown".
@@ -396,8 +393,70 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
 - **Pin a count or poll a condition. Never a clock, never a `sleep`.** Five
   issues (#18, #32, #36, #44, #47) were wall-clock gates measuring this box
   under peer load; `tests/run.sh` already has `until_cap` and `until_file`.
-- **Comments are 2 to 3 lines**, carrying one fact the code cannot say: a
-  measurement, a constraint, a trap.
+- **Comments are at most 2 lines** of why the code cannot say: a constraint or
+  a trap. History and measurements go in the commit message.
+
+## Contracts
+
+The data contract (`Pane`, `--json`, `--rows`, the action file, exit codes) is
+[the freeze](#the-freeze) above; the options and variables are in
+[Options](#options) and [Environment](#environment).
+
+### Modules
+
+The module list is frozen with the rest: no lane adds, removes or renames a
+module without a comment on #61. `lib.rs` re-exports and nothing else; no
+workspace, no crate split.
+
+| module | owns |
+|--------|------|
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` |
+| `data` | every tmux and transcript read, `Pane`, the truncation helpers |
+| `board` | the tile grid and its event loop |
+| `fleet` | the headless `--rows` / `--json` formatters and the list widths |
+| `theme` | the `@thm_*` colour roles and the glyph tiers |
+| `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+
+Every mutating action stays a shell script: the binary prints
+`<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
+binary present.
+
+### Push wakeups
+
+A hook says "look now" with `kill -USR1 $(tmux show-option -gqv
+@cockpit_tui_pid)` instead of the board finding out on its next tick. The
+signals carry no payload and need none: the board reads the truth from tmux, it
+only needs to be told when.
+
+The hook must confirm the pid is ours before signalling (`scripts/agent-state`
+reads `/proc/$pid/comm`, or `ps -o comm=` where there is no `/proc`): a
+published pid outlives SIGKILL, and SIGUSR1's default action on a recycled pid
+is *terminate*. The board unpublishes on every exit path, signal handlers
+included.
+
+### The VS16 backend shim
+
+The Crossterm backend in ratatui-crossterm 0.1.2 emits an absolute `MoveTo`
+only when the next changed cell is not `prev.x + 1`
+(`ratatui-crossterm-0.1.2/src/lib.rs:241-247`); it tracks position, never
+width. For an ordinary wide grapheme `Buffer::diff` skips the covered column,
+so the next cell lands at `x + 2` and a `MoveTo` follows: CJK and
+emoji-modifier sequences are safe. For an emoji presentation sequence (U+FE0F)
+the diff deliberately re-emits the covered trailing column at `x + 1`
+(`ratatui-core-0.1.2/src/buffer/diff.rs:158-165`). That is contiguous, so no
+`MoveTo` is emitted, and on a terminal that draws the glyph two cells wide
+everything after it shifts one column. Agent panes carry emoji, so this fires in
+practice.
+
+The shim fabricates nothing: when a changed cell lands on a column the
+preceding VS16 glyph covers, the batch is flushed and that cell starts a fresh
+delegated `draw`, so the backend emits an absolute `MoveTo` while the cell keeps
+its real symbol and style.
+
+The upstream fix is ratatui#2721. Delete `backend.rs` once a ratatui-crossterm
+newer than 0.1.2 ships. Do not add a CJK `suppress_until` branch: it is unreachable
+given the diff above, and would silently drop a real cell if it ever were
+reached.
 
 ## Troubleshooting
 

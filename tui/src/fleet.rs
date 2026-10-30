@@ -1,8 +1,5 @@
-//! The fleet's two headless forms and the widths a row is drawn at.
-//!
-//! There is no ratatui list here and there will not be one: `prefix r` stays
-//! fzf, which gives fuzzy filter, multi-select and the wheel for free. The
-//! width profiles stay because `--rows` consumers size columns from them.
+//! The fleet's two headless forms and the widths a row is drawn at. `prefix r`
+//! stays fzf; the widths stay because `--rows` consumers size columns from them.
 use crate::data::{Pane, State, fmt_dur};
 use crate::theme::Theme;
 
@@ -20,8 +17,8 @@ pub struct Profile {
     pub pm: u16,
 }
 
-/// R is the list's inner width. The caps come from the terminal, never from a
-/// constant: fixed caps are what made the old row overflow and silently drop ±.
+/// R is the list's inner width. The caps come from the terminal, never a
+/// constant, or a row overflows and silently drops ±.
 pub fn profile(r: u16) -> Profile {
     if r >= 100 {
         Profile {

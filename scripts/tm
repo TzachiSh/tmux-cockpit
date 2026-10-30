@@ -7,33 +7,27 @@
 #   tm -h            this help
 set -uo pipefail
 
-# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
-# silent and wrong rather than loud: `declare -A` errors, then the same
-# assignment quietly creates an INDEXED array with an arithmetic subscript.
+# mapfile needs bash 4; macOS still ships 3.2.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
 
-# Not readlink -f: BSD readlink had no -f until macOS 12.3, where it prints an
-# error and returns nothing. SELF would then be empty and the fzf binding became
-# execute-silent('' --kill-one {}) -- pressing k in the picker did nothing at
-# all, forever, with no error. cd -P resolves the directory portably.
+# Not readlink -f: BSD readlink lacks -f before macOS 12.3, which would leave
+# SELF empty and the ^X binding silently dead.
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 NEW_LABEL='+ new session'
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
 
-# Key hints, one order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc.
-# Both fit in 48 columns, which is what survives a 70% popup at 80 columns.
+# At most 48 columns: what a 70% popup shows at an 80-column terminal.
 K_ATTACH='↵ attach · ^X kill · ^/ preview · esc cancel'
 K_KILL='↵ kill · ⇥ mark · esc cancel'
 
-# lib/ sits beside the REAL script; install.sh links it by absolute path.
-# Called from the picker arms only: --rows and --kill-one exit before them and
-# run on every fzf reload, where a readlink per keystroke buys nothing.
+# lib/ sits beside the real script, not the install symlink. Loaded lazily:
+# --rows and --kill-one run on every fzf reload.
 load_theme() {
   local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
   # shellcheck source=lib/fzf.sh
@@ -53,9 +47,7 @@ In the picker: ↵ attach · ^X kill · ^/ preview · esc cancel
 USAGE
 }
 
-# tmux forbids '.' and ':' in session names; spaces are just annoying. A leading
-# '-' is worse than either: tmux reads it as an option, so `new-session -s -x`
-# fails as a usage error and the session cannot be created at all.
+# tmux forbids '.' and ':' in session names, and reads a leading '-' as an option.
 clean() {
   local n="${1//[.: ]/_}"
   n=${n//[$'\001'-$'\037'$'\177']/}     # an Escape pressed at the prompt is a byte, not a cancel
@@ -65,32 +57,25 @@ clean() {
 
 list() { tmux list-sessions -F '#{session_name}' 2>/dev/null; }
 
-# One default, not both: resurrect takes ~/.tmux/resurrect only when that
-# directory exists, XDG otherwise. Accepting either waits the full ten seconds
-# on a save the directory continuum reads does not hold.
+# Resurrect's own choice: ~/.tmux/resurrect only when it exists, XDG otherwise.
 default_dir() {
   [ -d ~/.tmux/resurrect ] && { printf '%s' ~/.tmux/resurrect; return; }
   printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/tmux/resurrect"
 }
 
-# Where resurrect kept the save: @resurrect-dir when the user set it, else the
-# default above. Only a live server answers the option, so this runs after the
-# placeholder below, never before it.
+# Needs a live server to read @resurrect-dir, so call it after the placeholder.
 saved() {
   local dir
   dir=$(tmux show-option -gqv @resurrect-dir)
-  # The same three substitutions resurrect's sed does, in bash: no fork, and
-  # nothing on PATH to find.
+  # The same three substitutions resurrect's sed does.
   dir=${dir//'$HOME'/$HOME}; dir=${dir//'$HOSTNAME'/${HOSTNAME:-}}; dir=${dir//\~/$HOME}
   [ -n "$dir" ] || dir=$(default_dir)
   [ -e "$dir/last" ]
 }
 
 ask_name() {
-  # Empty is a cancel, not an error loop: the old prompt had no way out short
-  # of Ctrl-C, and Escape+Enter tried to create a session named ESC.
-  # Called through $(...), so an exit here only leaves the subshell; the
-  # empty name is what go() reads as the cancel (#132).
+  # Runs in $(...), where exit only leaves the subshell: an empty name is the
+  # cancel go() reads.
   local n
   read -r -p "New session name (empty cancels): " n || return 0
   n=$(clean "$n")
@@ -98,11 +83,8 @@ ask_name() {
   printf '%s' "$n"
 }
 
-# True only when this shell really drives a tmux client. $TMUX alone does not
-# prove it: anything launched from a pane inherits it, so a terminal opened
-# inside tmux keeps $TMUX after the session is detached. Calling switch-client
-# from such a shell either fails ("no current client") or, worse, hijacks some
-# other terminal's client, because tmux then falls back to any client it finds.
+# $TMUX survives detach, and switch-client from a detached shell hijacks some
+# other terminal's client.
 in_client() {
   [ -n "${TMUX:-}" ] || return 1
   local n
@@ -111,21 +93,18 @@ in_client() {
   [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
 }
 
-go() {  # attach to <name>, creating it if needed. Works inside or outside tmux.
+go() {
   local name=$1 dir=""
   [ -n "$name" ] || exit 0    # a cancelled prompt, or a name clean() emptied
   if ! tmux has-session -t "=$name" 2>/dev/null; then
-    # In the popup $PWD is the OLD session's start dir; the session's active
-    # pane ($TMUX ends in the session id) is where the human is (#41).
+    # In a popup $PWD is the session's start dir, not the active pane's (#41).
     [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
     tmux new-session -d -s "$name" -c "${dir:-$PWD}" || die "cockpit: could not create session '$name'"
   fi
   if in_client; then
     tmux switch-client -t "=$name"
   else
-    # -d: the newest attach takes the session. Without it clients accumulate and
-    # nothing ever removes them -- on a Coder workspace the agent runs with
-    # --no-reap, so a closed browser tab leaves its client attached for days (#145).
+    # -d: detach stale clients, which a --no-reap host never removes (#145).
     tmux attach-session -d -t "=$name"
   fi
 }
@@ -136,7 +115,6 @@ kill_one() {  # also called by the fzf ctrl-x binding
   tmux kill-session -t "=$name" 2>/dev/null && printf 'killed: %s\n' "$name" >&2
 }
 
-# --- argument handling -------------------------------------------------------
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   -l|--list) list; exit 0 ;;
@@ -144,15 +122,8 @@ case "${1:-}" in
     tmux list-sessions -F '#{session_name}	#{session_name}#{?session_attached, (attached),}' 2>/dev/null; exit 0 ;;
   --kill-one)
     shift; name="${1:-}"; name=${name%% (attached)*}
-    # Only the picker calls this, and in the picker the attached session is
-    # nearly always the one YOU are sitting in -- killing it takes the picker,
-    # the pane and every agent in the session with it, on one keystroke. It
-    # stays in the reloaded list, visibly not dead. `tm -k <name>` still kills
-    # anything, deliberately and by name.
-    # "=$name:" -- the trailing colon makes it a session:window target, which
-    # display-message resolves; a bare "=$name" comes back EMPTY, and empty
-    # failed the -gt guard, so the guard guarded nothing and the attached
-    # session died anyway. Found by tracing exactly that.
+    # The picker never kills an attached session (usually your own); tm -k can.
+    # The trailing ':' matters: display-message resolves a bare "=$name" to empty.
     att=$(tmux display-message -p -t "=$name:" '#{session_attached}' 2>/dev/null)
     [ "${att:-0}" -gt 0 ] 2>/dev/null && exit 0
     kill_one "$name"; exit 0 ;;
@@ -164,17 +135,12 @@ case "${1:-}" in
     fi
     mapfile -t sessions < <(list)
     [ ${#sessions[@]} -eq 0 ] && die "cockpit: no tmux sessions to kill"
-    # Declared before either picker runs. `select` leaves its variable unset on
-    # Ctrl-D, and under `set -u` the ${#doomed[@]} below then aborted the script
-    # mid-case -- printing "unbound variable" and falling through to the ATTACH
-    # picker, so cancelling a kill offered to attach instead.
+    # Set before the pickers: Ctrl-D in `select` leaves it unset under set -u.
     doomed=()
     if command -v fzf >/dev/null; then
       load_theme
       mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
-      # Red chrome on the destructive picker: it used to render in exactly the
-      # same colours as the benign attach list. It carries no base scheme and
-      # comes AFTER the theme, the only order in which fzf lets it win.
+      # The red --color must come after the theme for fzf to let it win.
       mapfile -t doomed < <(printf '%s\n' "${sessions[@]}" \
         | fzf "${THEME[@]}" \
               --multi --height="${TM_HEIGHT:-40%}" --reverse --info=inline-right --cycle --scroll-off=2 \
@@ -190,38 +156,30 @@ case "${1:-}" in
   -*) die "cockpit: unknown option: $1 · try tm -h" ;;
 esac
 
-# 1. Name given on the command line.
 if [ $# -gt 0 ] && [ -n "$1" ]; then
   go "$(clean "$1")"
   exit
 fi
 
-# 2. No name: what exists?
 mapfile -t sessions < <(list)
 
-# 3. Nothing exists, and a save or resurrect is on disk: the server is just
-# down. Only a running server restores (#106) or knows @resurrect-dir (#110),
-# and nothing else is worth ~1s of config load. TPM's own path can be anywhere,
-# so the save is the surer witness of the two.
+# No sessions but a resurrect save or plugin on disk: start a server so
+# continuum can restore (#106) and @resurrect-dir can be read (#110).
 if [ ${#sessions[@]} -eq 0 ] &&
    { [ -e "$(default_dir)/last" ] ||
      [ -d ~/.tmux/plugins/tmux-resurrect ] ||
      [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/plugins/tmux-resurrect" ]; }; then
-  # The pid keeps the name off any save: resurrect restores a session it can
-  # already see into that one, and the kill below would take its windows too.
+  # A unique name: resurrect restores into a session it can see, and the kill
+  # below would take those windows too.
   placeholder="_restore$$"
   if tmux new-session -d -s "$placeholder" 2>/dev/null && saved &&
      [ "$(tmux show-option -gqv @continuum-restore)" = on ]; then
-    # Announced only once the option says a restore is coming: a resurrect
-    # user who restores by hand was promised sessions that never arrived.
     printf 'cockpit: Restoring saved sessions...\n' >&2
-    # -gt 1 because the placeholder is session one: two means a restore landed.
     for _ in {1..100}; do
       mapfile -t sessions < <(list); [ ${#sessions[@]} -gt 1 ] && break; sleep 0.1
     done
-    # The option on is not continuum's whole gate: it also wants no halt file,
-    # no other tmux process and a young server. Silence here plus the old
-    # prompt below reads as "your sessions are gone", which is #106 again.
+    # continuum has more gates than the option (halt file, server age), so
+    # say so rather than let the prompt below imply the sessions are gone.
     [ ${#sessions[@]} -gt 1 ] ||
       printf 'cockpit: no restore after 10s · prefix+^r restores by hand\n' >&2
   fi
@@ -229,29 +187,17 @@ if [ ${#sessions[@]} -eq 0 ] &&
   mapfile -t sessions < <(list)
 fi
 
-# 3b. Still nothing: force a named session.
 if [ ${#sessions[@]} -eq 0 ]; then
   printf 'cockpit: No tmux sessions running.\n' >&2
   go "$(ask_name)"
   exit
 fi
 
-# 4. Pick one, create another, or ctrl-x to kill under the cursor.
-# Typing FILTERS, like every other picker here. It used to be a command mode:
-# a bare "k" -- the first key of filtering to "kanban" -- killed the highlighted
-# session instantly, including the one you were attached to, taking the picker
-# and every agent in it along. Kill lives on ^X now, matching the ^-chord
-# vocabulary of the other pickers, and the attached session is labelled and
-# refuses to die from here (tm -k <name> still can, deliberately).
 list_rows() {  # field 1 = the bare name for the machine, field 2 = the display
   tmux list-sessions -F '#{session_name}	#{session_name}#{?session_attached, (attached),}' 2>/dev/null
 }
-# 40% of the shell is right when tm runs inline; inside the cockpit's popup the
-# popup IS the frame, so the binding passes TM_HEIGHT=100%.
+# The popup binding passes TM_HEIGHT=100%; 40% suits an inline run.
 HEIGHT=${TM_HEIGHT:-40%}
-# Each session previews as its windows, with the cockpit state beside every
-# agent pane -- the one view the status bar cannot give you is ACROSS sessions,
-# and "which of my agents needs me" is exactly a session-picker question.
 PVFMT='#{window_index}: #{window_name}#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},  [#{?#{==:#{@panestate},},idle,#{@panestate}}],}}'
 if command -v fzf >/dev/null; then
   load_theme

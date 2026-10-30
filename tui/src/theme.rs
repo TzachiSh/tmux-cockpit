@@ -1,7 +1,5 @@
-//! The colour roles of screens.md §0 and the glyph tier, read once at startup.
-//! tmux translates outward per attached client (truecolor is what gets
-//! downgraded, 256 survives any 256-colour client), so there is no 16 tier and
-//! nothing here ever queries the terminal.
+//! The colour roles and the glyph tier, read once at startup. tmux downgrades
+//! colour per attached client, so there is no 16 tier and no terminal query.
 use crate::data::{State, tmux};
 use ratatui::style::Color;
 use ratatui::symbols::border;
@@ -18,7 +16,7 @@ pub struct Theme {
     pub error: Color,
     pub running: Color,
     pub done: Color,
-    /// the review mark: ◆ must not share "working" yellow with ● (chrome.md C1)
+    /// the review mark: ◆ must not share "working" yellow with ●
     pub sky: Color,
     pub g: Glyphs,
 }
@@ -92,14 +90,13 @@ impl Theme {
         Self::from_roles(c)
     }
 
-    /// NO_COLOR, honoured in-app: crossterm's own support emits an empty SGR
-    /// that also drops bold, dim and reverse — the three attributes the
-    /// colourless fallback is built on (p2pmux tui/terminal.rs:79-99).
+    /// NO_COLOR, honoured in-app: crossterm's own support emits an empty SGR that
+    /// also drops bold, dim and reverse, which the colourless fallback relies on.
     pub fn no_color() -> Self {
         Self::from_roles([Color::Reset; 9])
     }
 
-    /// Per-state glyph and colour. chrome.md §1's urgency ramp.
+    /// Per-state glyph and colour, on an urgency ramp.
     pub fn glyph(&self, state: State) -> (&'static str, Color) {
         match state {
             State::NeedsInput => (self.g.needs, self.needs),
@@ -119,9 +116,8 @@ impl Theme {
     }
 }
 
-/// The glyph tier. `COCKPIT_GLYPHS=ascii` swaps glyphs *and* border sets,
-/// because `BorderType::Plain` is box-drawing; the ellipsis goes from one cell
-/// to three, which every width budget has to subtract.
+/// The glyph tier. `ascii` swaps borders too, since `BorderType::Plain` is
+/// box-drawing; its ellipsis is three cells, which every budget subtracts.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Glyphs {
     pub needs: &'static str,
@@ -260,9 +256,8 @@ impl Glyphs {
     }
 }
 
-/// Longest prefix whose display width fits `w`. Measured on the whole prefix,
-/// never by summing char widths: `⌨` is 1 and U+FE0F is 0, but the pair is 2.
-/// ponytail: O(w²) since width() rescans, and w is a tile title.
+/// Longest prefix whose display width fits `w`, measured on the whole prefix:
+/// `⌨` is 1 and U+FE0F is 0, but the pair is 2. O(w²), fine for a title.
 fn head(s: &str, w: usize) -> String {
     let mut end = 0;
     for (i, c) in s.char_indices() {

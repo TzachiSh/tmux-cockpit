@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 # Jump to the next pane whose agent is waiting on you, across every session.
-# Bound to prefix u by cockpit.tmux (@cockpit_jump_key overrides; "off" unbinds).
-# One-shot: runs only on the keypress, so a status redraw still costs no shell.
 set -u
 
 # The bind passes the pane: run-shell sets no $TMUX_PANE (#45).
@@ -9,21 +7,9 @@ cur="${1:-${TMUX_PANE:-}}"
 blocked=()
 pending=()
 review_pending=()
-# Sorted so the cycle order is stable between presses. @panestate can outlive
-# the agent that set it -- a hand-set option, or a shell reused after the
-# agent exited -- so the format guards it with the same glob-on-current-command
-# check #{agent_fleet} and the borders use; a shell holding stale state must
-# never be jumped to. @cockpit_review (a review pasted in but not yet sent,
-# written by tmux-review --deliver) carries the SAME staleness risk and so gets
-# the SAME guard: a shell that stopped being an agent while holding the mark
-# must not be jumped to either.
-#
-# Read the raw line and cut it by position rather than `read -r id state review`:
-# both trailing fields can be empty, and default-IFS word splitting collapses
-# the run of spaces, so "%3  sent" (no @panestate, review sent) would parse as
-# state=sent -- a pane holding an unsent review mistaken for one whose agent
-# state is the literal string "sent". IFS= keeps the line, and parameter
-# expansion keeps empty fields.
+# Sorted for a stable cycle. The agent-glob guard skips stale marks left on a
+# pane that is no longer an agent.
+# Cut by position, not `read id state review`: IFS splitting drops empty fields.
 while IFS= read -r line; do
     id=${line%% *}
     rest=${line#* }
@@ -38,18 +24,8 @@ while IFS= read -r line; do
     fi
 done < <(tmux list-panes -a -F '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@cockpit_review},}' 2>/dev/null | sort -t% -k2 -n)
 
-# Blocked agents first, then panes holding a review that was pasted and never
-# sent: an agent stopped dead waiting on you is the more urgent stop, and
-# appending leaves the existing blocked-pane cycle order byte-for-byte unchanged.
-# Last, the panes review-gate flagged (@cockpit_review pending): a finished
-# diff nobody has read yet is a stop you owe the agent, not one it owes you.
-#
-# ${pending[@]+"${pending[@]}"}, not a bare "${pending[@]}": bash before 4.4
-# treats an EMPTY array's expansion as an unset variable, so under `set -u` the
-# plain form aborts the script -- and empty is the common case, no unsent
-# review anywhere, which would make the jump key do nothing at all on those bashes.
-# The +alternate form expands to nothing when the array is empty and to the
-# quoted elements when it is not. Same idiom as tmux-review's fzf option array.
+# Order of urgency: blocked agents, unsent reviews, then unread diffs.
+# The +alternate form: bash < 4.4 reads an empty array as unset under set -u.
 blocked+=(${pending[@]+"${pending[@]}"})
 blocked+=(${review_pending[@]+"${review_pending[@]}"})
 
@@ -58,8 +34,6 @@ if [ ${#blocked[@]} -eq 0 ]; then
     exit 0
 fi
 
-# Cycle: from a blocked pane, go to the NEXT one (wrapping); from anywhere
-# else, go to the first. Repeated presses therefore visit every blocked pane.
 next=${blocked[0]}
 for i in "${!blocked[@]}"; do
     if [ "${blocked[$i]}" = "$cur" ]; then
@@ -68,8 +42,7 @@ for i in "${!blocked[@]}"; do
     fi
 done
 
-# switch-client needs a client and fails detached (tests, control mode); the
-# window/pane selection below still retargets the session, so it is not fatal.
+# switch-client fails without a client; the selection below still applies.
 tmux switch-client -t "$next" 2>/dev/null || true
 tmux select-window -t "$next" 2>/dev/null
 tmux select-pane   -t "$next" 2>/dev/null

@@ -1,26 +1,5 @@
-//! A backend shim for one measured bug in ratatui-crossterm 0.1.2.
-//!
-//! The Crossterm backend emits an absolute `MoveTo` only when the next changed
-//! cell is not `prev.x + 1` (`ratatui-crossterm-0.1.2/src/lib.rs:241-247`;
-//! position is tracked, width never is). For an ordinary wide grapheme
-//! `Buffer::diff` skips the covered column, so the next cell lands at `x + 2`,
-//! the contiguity test fails and a `MoveTo` is emitted — CJK and emoji-modifier
-//! sequences are safe. For an **emoji presentation sequence** (U+FE0F) the diff
-//! deliberately re-emits the covered trailing column at `x + 1`
-//! (`ratatui-core-0.1.2/src/buffer/diff.rs:158-165`, the "some terminals do not
-//! clear the trailing cell" workaround); that *is* contiguous, no `MoveTo` is
-//! emitted, and on a terminal drawing the glyph two cells wide everything after
-//! it shifts one column. Agent panes carry emoji, so this fires in practice.
-//!
-//! The fix fabricates nothing: when a changed cell lands on a column the
-//! preceding VS16 glyph covers, the current batch is flushed and that cell
-//! begins a fresh delegated `draw`, so the backend emits an absolute `MoveTo`
-//! for it while its real symbol and style are preserved.
-//!
-//! Upstream is ratatui#2721 (merged 2026-08-24, in no published crate). Delete
-//! this module when ratatui-crossterm > 0.1.2 ships. Do not add zeroclaw's CJK
-//! `suppress_until` branch: it is unreachable given the diff above, and would
-//! silently drop a real cell if it ever were reached.
+//! Works around ratatui-crossterm 0.1.2 misplacing cells after a VS16 emoji
+//! (ratatui#2721); delete once a newer crate ships. See docs/tui.md, "Contracts".
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::Terminal;
@@ -190,9 +169,8 @@ mod tests {
 
     #[test]
     fn vs16_trailing_cell_gets_an_absolute_move_and_keeps_its_style() {
-        // ⌨️ (U+2328 U+FE0F, width 2) at x=0 covers x=0..=1. The real changed
-        // cell at x=1 carries a non-space symbol and bold, so a fabricated
-        // Print(" ") would be visible in the bytes.
+        // ⌨️ (width 2) at x=0 covers x=1, where the changed cell is bold and
+        // non-space, so a fabricated Print(" ") would show in the bytes.
         let glyph = "\u{2328}\u{FE0F}";
         let mut z = cell("z");
         z.modifier = Modifier::BOLD;

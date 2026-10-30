@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
-# Right-hand status: where this pane actually is.
-#
+# Right-hand status: the pane's path and branch, or its ssh host instead.
 #   tmux-where path   <pane_pid> <pane_id>            -- cockpit.tmux's #() job, ssh panes only
 #   tmux-where branch <pane_pid> <path> -              -- cockpit.tmux's #() job, non-ssh panes
 #   tmux-where path   <pane_pid> <path> <command>      -- direct call: tests, manual use
 #   tmux-where branch <pane_pid> <path> <command>
-#
-# tmux only knows the LOCAL cwd. When a pane is sitting in ssh, pane_current_path
-# is still the local directory, so the stock modules show a path and a git branch
-# that belong to this machine, not the one you are looking at. Detect ssh and say
-# so instead of reporting something confidently wrong.
-#
-# The THIRD arg tells the forms apart: %[0-9]* is the only shape #{pane_id}
-# ever expands to, and no real path starts with it. tmux expands #{...} tokens
-# INSIDE a #() job's command string before sh parses it, so cockpit.tmux passes
-# the path only single-quoted with every ' rewritten, and the ssh job only
-# pane_pid and pane_id, closed forms that can never carry a shell metacharacter.
 set -u
 
 mode="${1:-path}"
@@ -26,6 +14,8 @@ home=${HOME:-/nonexistent} tilde="~"   # bash 3.2: no ${HOME} nested in ${path/#
 
 path=""
 cmd=""                # #{pane_current_command}, tmux's view of the foreground proc
+# tmux expands #{...} inside a #() command before sh parses it, so the ssh job
+# passes only pane_id, which no path can look like.
 case "$arg3" in
     %[0-9]*) cmd=ssh ;;   # cockpit.tmux runs this form only when tmux says ssh
     *)
@@ -35,25 +25,11 @@ case "$arg3" in
 esac
 
 
-# Branch, plus the worktree name when this path is a linked worktree.
-#   normal repo   ->  " main"
-#   linked wt     ->  " main ⑂feat-x"
-#
-# Read .git directly rather than forking git. This runs once per pane on every
-# status redraw and the git call was the only fork left on that path; HEAD is a
-# one-line file, so the shell can answer without starting a process. git is
-# still asked for the two shapes a plain read cannot settle: a detached HEAD,
-# whose short-hash width git decides from the repo size, and anything whose
-# HEAD is not a simple symref.
-#
-# One deliberate difference from `git rev-parse`: this ignores safe.directory.
-# For a status bar that is the wanted behaviour -- it labels the directory you
-# are actually sitting in, rather than blanking out on a repo git declines to
-# touch on ownership grounds.
+# " main", or " main ⑂feat-x" in a linked worktree. Reads .git without forking,
+# since this runs per pane on every redraw; it ignores safe.directory on purpose.
 git_label() {
     local d=$path gd head br wt
 
-    # Walk up for the .git of the containing repo. Terminates at / either way.
     while [ -n "$d" ] && [ "$d" != / ]; do
         [ -e "$d/.git" ] && break
         d=${d%/*}
@@ -63,8 +39,7 @@ git_label() {
     if [ -d "$d/.git" ]; then
         gd=$d/.git
     else
-        # A linked worktree and a submodule both point out with "gitdir: <path>",
-        # and that path may be relative to the worktree.
+        # "gitdir: <path>", possibly relative (worktree or submodule).
         read -r _ gd < "$d/.git" 2>/dev/null || return 0
         gd=${gd%$'\r'}                       # a repo checked out on Windows
         [ -n "$gd" ] || return 0
@@ -72,17 +47,15 @@ git_label() {
     fi
     [ -r "$gd/HEAD" ] || return 0
     read -r head < "$gd/HEAD" 2>/dev/null || return 0
-    # read strips spaces and tabs, never \r. A CRLF HEAD put a raw carriage
-    # return straight into the status line; the git call this replaced did not.
+    # read never strips \r, which would land raw in the status line.
     head=${head%$'\r'}
 
     case "$head" in
         'ref: refs/heads/'*) br=${head#ref: refs/heads/} ;;
         'ref: '*)            br=${head#ref: } ;;
         *)
-            # Detached: HEAD holds the object id itself. --abbrev-ref would print
-            # the literal word "HEAD" here, which reads as a branch of that name.
-            # The repo is the agent's: its config must not get to run a command.
+            # Detached: git picks the short-hash width. The repo is the agent's,
+            # so its config must not get to run a command.
             br=$(git -c core.fsmonitor= -c core.hooksPath=/dev/null -C "$path" rev-parse --short HEAD 2>/dev/null) || return 0
             [ -n "$br" ] || return 0
             br="@$br" ;;
@@ -95,9 +68,6 @@ git_label() {
     esac
 }
 
-# Fast path: tmux already knows the pane's foreground command. If it is not ssh,
-# there is nothing to find and we skip the /proc walk entirely -- which is the
-# case for every pane, almost always, on every redraw.
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
         path)   printf ' %s' "${path/#"$home"/$tilde}" ;;
@@ -106,10 +76,7 @@ if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     exit 0
 fi
 
-# Walk the pane's process tree looking for ssh.
-# Builds a parent->children map from /proc in ONE pass, then descends it. The
-# previous version called pgrep per child (~15ms each, up to 4 levels), which
-# dominated the cost of the whole status line.
+# Is ssh anywhere under the pane? One /proc pass builds the child map.
 ssh_cmd() {
     [ -n "$pid" ] || return 1
     local d c kids next ppid line a
@@ -117,27 +84,20 @@ ssh_cmd() {
     for d in /proc/[0-9]*; do
         c=${d#/proc/}
         [ -r "$d/stat" ] || continue
-        # stat: "pid (comm) state ppid ..."; comm may contain spaces and parens,
-        # so slice past the LAST ')' before splitting.
+        # comm may contain spaces and parens: split after the last ')'.
         read -r line < "$d/stat" 2>/dev/null || continue
         line=${line##*) }
         set -- $line                      # $1=state $2=ppid
         ppid=$2
         KIDS[ppid]="${KIDS[$ppid]:-} $c"
     done
-    # Walk to the bottom rather than a fixed depth: the parent->child map is
-    # already built, so extra levels are nearly free, and an ssh one level too
-    # deep produced exactly the confidently-wrong local path this script exists
-    # to prevent. seen[] guards against a cycle.
+    # No depth limit; seen[] guards against a cycle.
     kids="$pid"
     while [ -n "${kids// /}" ]; do
         next=""
         for c in $kids; do
             [ -r "/proc/$c/cmdline" ] || continue
-            # NUL-delimited, NOT space-joined: an -o value may contain spaces
-            # ("-o ProxyCommand=ssh -W %h:%p jump"), and flattening turned that
-            # single argv element into five tokens, so the jump host was read as
-            # the destination.
+            # Keep argv elements whole: an -o value may contain spaces.
             ARGV=()
             while IFS= read -r -d '' a; do ARGV+=("$a"); done 2>/dev/null < "/proc/$c/cmdline"
             [ ${#ARGV[@]} -gt 0 ] || continue
@@ -155,12 +115,8 @@ ssh_cmd() {
     return 1
 }
 
-# ssh [options] destination [command ...]
-# The destination is the FIRST non-flag argument. Taking the last one breaks on
-# "ssh host cmd arg", where the trailing token belongs to the remote command.
-# Short flags bundle, and a bundle can end in an option that takes a value:
-# "-nNp 2222 host". Matching only "-x" treats -nNp as a bare flag and then reads
-# 2222 as the destination, so inspect the whole bundle rather than one letter.
+# The destination is the first non-option word. A flag bundle can end in an
+# option that takes a value ("-nNp 2222 host").
 ssh_target() {
     local tok bundle rest c
     local takes_value='BbcDEeFIiJLlmOoPpQRSWw'   # -B bind_interface included
@@ -199,15 +155,8 @@ if ssh_cmd; then
     exit 0
 fi
 
-# The walk did not find an ssh process -- but tmux already told us the pane's
-# foreground command IS ssh, and that is the more reliable witness. The walk can
-# fail for reasons that say nothing about the pane: no /proc at all (macOS,
-# BSD), or a pid that has since exited.
-#
-# Fail closed. Falling through to the local path here is precisely the
-# confidently-wrong answer this script exists to prevent: it would label a pane
-# sitting on another machine with THIS machine's directory and git branch. Say
-# ssh without a destination instead -- less information, none of it false.
+# No /proc (macOS) or the pid exited, but tmux says ssh: never fall back to
+# this machine's path and branch.
 if [ "$cmd" = ssh ]; then
     case "$mode" in
         path)   printf ' 󰢹 ssh' ;;

@@ -1,7 +1,5 @@
-//! The board: a grid of tiles, one per agent pane, each a live capture-pane
-//! preview. Sorted needs-first so page one is always the triage page. `render`
-//! is pure over `&[Pane]` — it reads no tmux and no clock; `run` is the only
-//! impure entry and returns one action line.
+//! The board: one live-preview tile per agent pane, needs-first. `render` is pure
+//! over `&[Pane]` (no tmux, no clock); `run` is the only impure entry.
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
@@ -17,8 +15,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
 
-/// 48 = the narrowest useful tile: two header lines carry the meaning, so it
-/// survives half the width crmux needs for a bare pane tail.
+/// The narrowest tile whose two header lines still carry the meaning.
 const MIN_TILE_W: u16 = 48;
 /// The elapsed rail. A 6-column duration loses its leading digit.
 const RAIL_W: usize = 5;
@@ -39,8 +36,6 @@ pub struct View<'a> {
     pub help: bool,
 }
 
-// ------------------------------------------------------------------ ordering
-
 fn pane_num(id: &str) -> u64 {
     id.trim_start_matches('%').parse().unwrap_or(u64::MAX)
 }
@@ -53,8 +48,6 @@ pub fn order(ps: &[Pane]) -> Vec<usize> {
     o
 }
 
-// -------------------------------------------------------------------- layout
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Grid {
     pub cols: usize,
@@ -63,9 +56,8 @@ pub struct Grid {
     pub full: bool,
 }
 
-/// The density ladder. Tile height is `avail / rows_shown`, never fitted to the
-/// tiles that happen to be on screen, so scrolling to a half-empty last row
-/// renders a normal tile and blank space.
+/// The density ladder. Tile height is `avail / rows_shown`, so a half-empty last
+/// row renders normal tiles and blank space.
 pub fn grid(area: Rect, n: usize) -> Grid {
     let cols = ((area.width / MIN_TILE_W) as usize).clamp(1, 3).min(n.max(1));
     let rows = n.div_ceil(cols).max(1);
@@ -78,8 +70,6 @@ pub fn grid(area: Rect, n: usize) -> Grid {
         full: avail / rows_shown >= 7,
     }
 }
-
-// -------------------------------------------------------------------- render
 
 /// Below this the tiles are narrower than a pane name, so a row would lie about
 /// which agent it names. fleet.rs refuses at the same width.
@@ -180,9 +170,8 @@ pub fn footer_text(g: &Glyphs, w: usize) -> String {
     String::new()
 }
 
-/// The redraw gate's extra input. `hash_rows` leaves the age fields out so an
-/// idle server never repaints; the rail is rendered text, so hash what it
-/// renders and `32s -> 33s` still redraws while `12m0s -> 12m1s` does not.
+/// The redraw gate's extra input: `hash_rows` skips the ages, so hash the rail's
+/// rendered text, which changes only when the printed age does.
 pub fn gate_extra(ps: &[Pane], pvs: &[Option<String>]) -> String {
     let mut out: String = pvs.iter().map(|p| p.as_deref().unwrap_or("\u{1}")).collect();
     out.extend(ps.iter().filter_map(|p| p.since).map(fmt_dur));
@@ -194,9 +183,7 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
     for (r, row) in rows.iter().enumerate() {
         let cells = Layout::horizontal(vec![Constraint::Ratio(1, g.cols as u32); g.cols]).split(*row);
         for (c, cell) in cells.iter().enumerate() {
-            // the printed number is absolute: ux.md §1.7 labels the last
-            // page's lone tile `5` beside a `5-5 of 5` header, and Act::Tile
-            // resolves to the same number
+            // the printed number is absolute, the one Act::Tile resolves
             let k = (v.top + r) * g.cols + c;
             let Some(&i) = ord.get(k) else { continue };
             // a short pvs is "not fetched yet" and draws nothing; a stored
@@ -406,8 +393,6 @@ fn fold(s: &str, first_w: usize, rest_w: usize, rows: usize, g: &Glyphs) -> Vec<
     out
 }
 
-// ------------------------------------------------------------------ overlays
-
 fn narrow(f: &mut Frame, area: Rect, th: &Theme) {
     let block = Block::bordered()
         .border_set(th.g.round)
@@ -429,7 +414,7 @@ fn narrow(f: &mut Frame, area: Rect, th: &Theme) {
     );
 }
 
-/// A centred card: the shape ux.md §4's states share.
+/// A centred card, the shape every state screen shares.
 fn card(f: &mut Frame, area: Rect, th: &Theme, body: &[&str], foot: Option<(&str, &str)>) {
     let g = &th.g;
     let w = 62.min(area.width);
@@ -471,9 +456,8 @@ fn empty(f: &mut Frame, area: Rect, th: &Theme) {
     );
 }
 
-/// Drawn once before the first fetch: `claude agents --json` alone measures
-/// 380 ms, and a popup that is a black rectangle until it returns reads as a
-/// hang (ux.md §4).
+/// Drawn before the first fetch, which is slow enough that a black popup reads
+/// as a hang.
 pub fn loading(f: &mut Frame, area: Rect, th: &Theme) {
     card(f, area, th, &["", " reading the fleet \u{2026}", ""], None);
 }
@@ -525,8 +509,6 @@ fn help(f: &mut Frame, area: Rect, th: &Theme) {
     f.render_widget(Paragraph::new(right), b);
 }
 
-// ------------------------------------------------------------------- the keymap
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Act {
     Left,
@@ -565,8 +547,7 @@ pub struct Key {
     pub acts: &'static [Act],
 }
 
-/// One table feeds `action` and the `?` overlay. A second key list is how a
-/// help screen ends up describing a key that was renamed two releases ago.
+/// One table feeds `action` and the `?` overlay, so the help cannot drift.
 pub const KEYS: &[Key] = &[
     Key {
         keys: "h l  ← →",
@@ -689,8 +670,6 @@ pub fn action(k: KeyEvent) -> Option<Act> {
     })
 }
 
-// ---------------------------------------------------------------------- run
-
 /// Move the selection and pull the viewport after it. Index arithmetic, never
 /// a neighbour graph: the grid is uniform except for a short last row.
 pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], ord: &[usize]) -> (usize, usize) {
@@ -717,8 +696,8 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         _ => sel,
     };
     let top = match a {
-        // a literal screenful, stopping on the last row rather than on the last
-        // full page: ux.md §1.7 wants `5-5 of 5 ▲4`, one tile at its normal size
+        // a literal screenful, stopping on the last row rather than the last
+        // full page, so a lone last tile keeps its normal size
         Act::PageUp => top.saturating_sub(g.rows_shown),
         Act::PageDown => (top + g.rows_shown).min(g.rows.saturating_sub(1)),
         _ => top,
@@ -726,9 +705,8 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
     (sel, follow(sel, top, g))
 }
 
-/// Pull the viewport to the selection. Also runs on every tick, because the
-/// terminal can shrink between frames and leave the focused tile off-screen
-/// with nothing to point at it — focus is border weight, not a colour.
+/// Pull the viewport to the selection. Also runs every tick: the terminal can
+/// shrink between frames and leave the focused tile off-screen.
 fn follow(sel: usize, top: usize, g: &Grid) -> usize {
     let row = sel / g.cols;
     if row < top {
@@ -770,8 +748,8 @@ struct Snapshot {
     took: Duration,
 }
 
-/// The fetch costs hundreds of ms of forks, so it runs here and never on the
-/// thread that reads keys. A wake during a fetch queues one more, not many.
+/// The fetch is fork-heavy, so it runs here and never on the key thread. A wake
+/// during a fetch queues one more, not many.
 fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
     let mut panes: Vec<Pane> = vec![];
     loop {
@@ -785,8 +763,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
         let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
         let ord = order(&panes);
-        // visible tiles only: crmux runs one capture-pane exec per tile on
-        // every ~50 ms loop tick, forever, whether anything changed or not
+        // visible tiles only: each capture is a fork
         let pvs = (top * g.cols..panes.len().min((top + g.rows_shown) * g.cols))
             .map(|k| {
                 let id = &panes[ord[k]].id;
@@ -811,9 +788,8 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
 }
 
 pub fn run() -> Option<String> {
-    // crossterm builds its event reader on the first poll and caches a failure
-    // forever (no controlling terminal, fd exhaustion). Probe before init claims
-    // the terminal, or a hook-spawned run paints a TUI that ignores every key.
+    // crossterm caches a failed event-reader init forever: probe before init, or
+    // a run with no controlling terminal paints a TUI that ignores every key.
     if let Err(e) = event::poll(Duration::ZERO) {
         eprintln!("cockpit-tui: no usable terminal: {e}");
         std::process::exit(1);
@@ -915,9 +891,8 @@ pub fn run() -> Option<String> {
                 note: note.as_ref().map(|(s, _)| s.as_str()),
                 help: help_open,
             };
-            // size() errors are ENOTTY/ENOENT/EBADF and never Interrupted, and
-            // the errno is read after a tput fallback exec, so it names the
-            // fallback and not the terminal: count failures instead of printing
+            // size() errno can name its tput fallback rather than the terminal,
+            // so count failures instead of printing them
             match term.draw(|f| render(f, f.area(), &v)) {
                 Ok(_) => {
                     draw_fails = 0;
@@ -943,8 +918,7 @@ pub fn run() -> Option<String> {
             Err(e) if transient(&e) => None,
             Err(_) => break,
         };
-        // a resize is the same request as USR1: look again. It costs nothing to
-        // honour, and it means a real terminal resize refreshes the data too.
+        // a resize is the same request as USR1: look again
         if let Some(Event::Resize(..)) = &ev {
             ask(area(term.size().unwrap_or_default()), sel, top);
             dirty = true;
@@ -991,7 +965,7 @@ pub fn run() -> Option<String> {
                 action_line = Some(format!("info {id}"));
                 break;
             }
-            // phase 1: `a` on a blocked tile is a jump; the inline reply is L7
+            // `a` on a blocked tile jumps; there is no inline reply yet
             Act::Ask if p.state == State::NeedsInput => {
                 action_line = Some(format!("jump {id}"));
                 break;
