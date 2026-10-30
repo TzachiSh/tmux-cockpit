@@ -28,6 +28,8 @@ function note(arr, line,   i, n, S) {
     if (line ~ /cockpit\.tmux/)  arr["cockpit.tmux"] = 1
     if (line ~ /install\.sh/)    arr["install.sh"] = 1
     if (line ~ /review-store/)   arr["scripts/lib/review-store.sh"] = 1
+    # the libs tmux-review sources: run.sh greps some of them by path
+    if (match(line, /scripts\/lib\/review-[a-z]+\.sh/)) arr[substr(line, RSTART, RLENGTH)] = 1
     if (line ~ /examples\//)     arr["examples"] = 1
 }
 FNR == NR {                                       # pass 1: the top-level helpers

@@ -5559,11 +5559,15 @@ case "$(cat "$RXN/log" 2>/dev/null)" in
     *) bad "^X on a store that does not parse says so on the status line" "display-message ... set aside as" "$(cat "$RXN/log" 2>/dev/null)" ;;
 esac
 
+# tmux-review's source: the dispatcher and the libs it sources.
+rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-picker.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
+
 echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
 for f in tm tmux-branch tmux-open-path tmux-review; do
+    if [ "$f" = tmux-review ]; then src=$(rv_src); else src=$(cat "$DIR/scripts/$f"); fi
     is "$f: every --color=16 carries border:8" \
-       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16')" \
-       "$(grep -v '^ *#' "$DIR/scripts/$f" | grep -c -- '--color=16,[^ ]*border:8')"
+       "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16')" \
+       "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16,[^ ]*border:8')"
 done
 
 echo "== tmux-review --copy: the file as it is now, then its diff; no path: the whole review's diff =="
@@ -5616,7 +5620,7 @@ echo "== tmux-review --loop: the legend fits an 80-column popup (#22 item 3) =="
 #
 # Columns, not cells: these lines are mostly multibyte, and `wc -m` counts
 # bytes under the C locale, which is what let a 45-column line read as 60.
-RLK=$(sed -n "s/^ *keys=\$'\(.*\)'\$/\1/p" "$DIR/scripts/tmux-review" | head -1)
+RLK=$(sed -n "s/^ *keys=\$'\(.*\)'\$/\1/p" "$DIR/scripts/lib/review-picker.sh" | head -1)
 i=0
 while IFS= read -r l; do
     [ -n "$l" ] || continue
@@ -5626,9 +5630,9 @@ done <<<"$(printf '%b' "$RLK")"
 is "three key lines" "3" "$i"
 # The keys are a footer. Counted across BOTH pickers, the review loop and the
 # fleet queue: one apiece, so this reads 1 if either of them stops doing it.
-RLF=$(grep -c 'footer=\$keys' "$DIR/scripts/tmux-review")
+RLF=$(rv_src | grep -c 'footer=\$keys')
 is "both pickers put their keys in --footer" "2" "$RLF"
-RLC=$(grep -o 'ctx="● pinned.*' "$DIR/scripts/tmux-review" | head -1)
+RLC=$(grep -o 'ctx="● pinned.*' "$DIR/scripts/lib/review-picker.sh" | head -1)
 case "$RLC" in
     'ctx="● pinned'*) ok "the context line leads with the legend that explains column 1" ;;
     *) bad "the context line leads with the legend that explains column 1" 'ctx="● pinned ...' "$RLC" ;;
@@ -10760,7 +10764,7 @@ echo "== #105: fit_field cuts whole characters, whatever the locale is =="
 # replacement glyph. Run against the real function, on the owner's own
 # 37-column repo⑂branch, in the locale that breaks it.
 RRFIT="$STATE/rr-fit-$$.sh"
-sed -n '/^fit_field() {/,/^}/p' "$DIR/scripts/tmux-review" > "$RRFIT"
+sed -n '/^fit_field() {/,/^}/p' "$DIR/scripts/lib/review-fleet.sh" > "$RRFIT"
 rr_fit() { LC_ALL=C bash -c '. "$1"; shift; fit_field "$@"' _ "$RRFIT" "$@"; }
 RRLOC='research-mobile-97⑂research/mobile-97'
 is "a head cut landing inside the ⑂ drops it rather than half of it" \
@@ -10908,8 +10912,8 @@ RRJ="cockpit-rrj-$$"; SOCKS="$SOCKS $RRJ"
 "$TMUX_REAL" -L "$RRJ" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
 # Rendered by tmux itself, not read: a format that looks right in a grep can
 # still expand to the wrong text -- which is exactly defect 1.
-RRJFMT=$(sed -n "s/^ *local jump='\(.*\)'\$/\1/p" "$DIR/scripts/tmux-review" | head -1)
-RRJMSG=$(sed -n 's/^ *local notice_paste="\(.*\)"$/\1/p' "$DIR/scripts/tmux-review" | head -1)
+RRJFMT=$(sed -n "s/^ *local jump='\(.*\)'\$/\1/p" "$DIR/scripts/lib/review-deliver.sh" | head -1)
+RRJMSG=$(sed -n 's/^ *local notice_paste="\(.*\)"$/\1/p' "$DIR/scripts/lib/review-deliver.sh" | head -1)
 if [ -z "$RRJFMT" ] || [ -z "$RRJMSG" ]; then
     bad "the notice builds its jump clause from a format" "local jump=... and local notice_paste=..." \
         "jump:[$RRJFMT] notice:[$RRJMSG]"
@@ -10946,10 +10950,10 @@ echo "== #105: one message prefix, and the popup refusals speak through tmux =="
 # keep printing their own name to stderr: there stderr is the right stream.
 # Continuations joined first, then the -p queries dropped: what is left is
 # every message this script draws on a status line.
-rr_old=$(sed -e ':a' -e '/\\$/{N;s/\\\n//;ta}' "$DIR/scripts/tmux-review" \
+rr_old=$(rv_src | sed -e ':a' -e '/\\$/{N;s/\\\n//;ta}' \
     | grep 'display-message' | grep -v 'display-message -p' | grep -c 'tmux-review:')
 is "no status-line message still says tmux-review:" "0" "$rr_old"
-rr_cli=$(grep -c "printf 'tmux-review:" "$DIR/scripts/tmux-review")
+rr_cli=$(rv_src | grep -c "printf 'tmux-review:")
 is "the CLI paths still name the program on stderr" "yes" \
    "$( [ "$rr_cli" -ge 4 ] && echo yes || echo "no: $rr_cli" )"
 # printf >&2 inside display-popup -E renders to nobody. These two refusals are
