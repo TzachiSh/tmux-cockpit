@@ -2,9 +2,7 @@
 # Sourced, never run. A builtin only: install.sh's fail rows must still be
 # right on a PATH with nothing on it.
 
-# 0.74.3 -> 0074003, 3.7c -> 3007000, "1.85.0 (abc)" -> 1085000. Never
-# cockpit.tmux's version_at_least, which reads ${v#*.} as the minor and grades
-# 0.74.3 as 0.
+# 0.74.3 -> 0074003, 3.7c -> 3007000, "1.85.0 (abc)" -> 1085000.
 vnum() {
     local v=${1%% *}; v=${v#v}; local IFS=.
     # shellcheck disable=SC2086  # split on the dots is the point

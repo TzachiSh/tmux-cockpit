@@ -1,11 +1,8 @@
-//! The CLI. Phase 0 shipped the two headless forms; phase 1 adds `board`
-//! (workflow.md §3). Every mutating action stays a shell script: this process
-//! prints `<verb> <pane-id>` and a wrapper runs it, so the 1000-assertion bash
-//! suite keeps working with no binary present.
+//! The CLI. It never mutates: it prints `<verb> <pane-id>` and a shell wrapper
+//! runs it.
 use cockpit_tui::{board, data, fleet, theme};
 
-/// `[]` and exit 0 is "no agents"; exit 1 and no stdout is "no tmux". A wrapper
-/// has to be able to tell those apart, which is what exit 1 is specified for.
+/// Exit 1 with no stdout is "no tmux", so a wrapper can tell it from `[]`.
 fn panes() -> Vec<data::Pane> {
     match data::list_panes() {
         Some(ps) => ps,
@@ -43,9 +40,7 @@ fn main() {
             std::process::exit(2);
         }
     };
-    // ratatui draws to stdout, so a wrapper reading the action with $(...) would
-    // swallow the whole UI and render a blank popup. COCKPIT_ACTION names a file
-    // instead; without it the line still goes to stdout, for a plain shell.
+    // ratatui draws to stdout, where $(...) would swallow the UI: use a file.
     if let Some(a) = action {
         match std::env::var("COCKPIT_ACTION") {
             Ok(f) if !f.is_empty() => {

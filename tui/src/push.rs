@@ -1,13 +1,5 @@
-//! Push wakeups and the pid that makes them addressable. A hook says "look
-//! now" with `kill -USR1 $(tmux show-option -gqv @cockpit_tui_pid)` instead of
-//! the screen finding out on its next second. Signals only: neither USR1 nor
-//! WINCH carries a payload, and neither needs to -- the screen reads the truth
-//! from tmux anyway, it only needs to be told when.
-//!
-//! The hook must confirm the pid is ours before signalling (`scripts/agent-state`
-//! reads `/proc/$pid/comm`, or `ps -o comm=` where there is no /proc): a
-//! published pid outlives SIGKILL, and SIGUSR1's default action on a recycled
-//! pid is *terminate*.
+//! SIGUSR1 wakeups and the published pid; contract in docs/tui.md, "Contracts".
+//! A hook must verify the pid before signalling: SIGUSR1 kills a recycled pid.
 use crate::data::{log, readonly, tmux_argv, tmux_set};
 use std::ffi::CString;
 use std::sync::OnceLock;
@@ -16,10 +8,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 static SIGNALLED: AtomicBool = AtomicBool::new(false);
 static DONE: AtomicBool = AtomicBool::new(true);
 
-/// The unpublish command, resolved and NUL-terminated before any signal can
-/// arrive, so the handler only forks and execs. `Command::output()` allocates
-/// and locks, which is why `pkill` used to leave a dead pid behind on a wedged
-/// loop.
+/// The unpublish command, built before any signal can arrive so the handler only
+/// forks and execs: `Command::output()` allocates and locks.
 struct Argv {
     ptrs: Vec<*const libc::c_char>,
     _own: Vec<CString>,
@@ -35,9 +25,8 @@ static COOKED: OnceLock<libc::termios> = OnceLock::new();
 
 extern "C" fn on_usr1(_: libc::c_int) {
     SIGNALLED.store(true, Ordering::Relaxed);
-    // crossterm retries its poll on EINTR, so a bare flag is not noticed until
-    // the poll times out -- measured 68 ms median against SIGWINCH's 25 ms.
-    // SIGWINCH is the one signal it turns into an event, which ends the wait.
+    // crossterm retries its poll on EINTR, so a bare flag waits out the timeout;
+    // SIGWINCH is the one signal it turns into an event.
     unsafe { libc::raise(libc::SIGWINCH) };
 }
 
@@ -70,9 +59,8 @@ unsafe fn unpublish_now() {
     }
 }
 
-/// Leave the alternate screen and show the cursor, then hand the terminal back
-/// in the mode it was found in. `write` and `tcsetattr` are async-signal-safe;
-/// ratatui::restore() is not.
+/// Hand the terminal back using only async-signal-safe calls (`write`,
+/// `tcsetattr`); ratatui::restore() is not.
 unsafe fn restore_now() {
     const OUT: &[u8] = b"\x1b[?1049l\x1b[?25h";
     unsafe {
@@ -120,9 +108,8 @@ impl Push {
     /// refetch, because the flag is a bool and not a queue.
     pub fn pending(&self) -> bool {
         let woke = SIGNALLED.swap(false, Ordering::Relaxed);
-        // The only place that can tell a pushed refresh from the 1 s one, and
-        // "did my hook actually reach it?" is the first question anyone
-        // debugging the channel asks. Costs an open() per wake, never per tick.
+        // The only place a pushed refresh is distinguishable from the 1 s tick,
+        // so log it for whoever debugs the channel.
         if woke {
             log("push wake");
         }
@@ -130,9 +117,8 @@ impl Push {
     }
 }
 
-/// The one unpublish, reached from `q`, from the panic hook and from the signal
-/// arm; whichever gets there first wins. COCKPIT_READONLY never published a pid,
-/// so DONE starts true and this is a no-op.
+/// The one unpublish, from `q`, the panic hook or the signal arm; first wins.
+/// DONE starts true, so under COCKPIT_READONLY this is a no-op.
 pub fn cleanup() {
     if DONE.swap(true, Ordering::SeqCst) {
         return;

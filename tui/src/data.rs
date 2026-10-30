@@ -1,47 +1,4 @@
-//! tmux and transcript reads.
-//!
-//! # The frozen data contract (issue #61, workflow.md §3)
-//!
-//! Nothing below changes without a comment on #61; other lanes change bodies only.
-//!
-//! **`Pane`** — `id, wher, name, cmd, state: State, title, msg, sess, path, root,
-//! spool, pinned, delivered, pid, review, hold, doing, said, asked, loc, pm,
-//! since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>`.
-//! Derives `Default, Clone, Hash, PartialEq`; the durations are `u64` and not
-//! `Duration` so the struct can `Hash` (the redraw gate hashes rows).
-//!
-//! **`--json`** — one object per agent pane, never a non-agent pane, with
-//! exactly these 14 keys **in this order**:
-//! `id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
-//! session, path`. `where` is `sess:idx`, the window name is the separate
-//! `name` field; `title` falls back to the pane name then `(no title)`;
-//! `since` is seconds or `null`; `diff` is the `±` string for every state;
-//! `state` ∈ `needs-input | running | done | error | ""`.
-//!
-//! **`--rows`** — tab-separated, 8 fields, no header:
-//! `glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc \t diff`.
-//!
-//! **Options written:** `@cockpit_tui_pid` (published at start, unset on q,
-//! SIGHUP, SIGTERM and the panic path while it still holds our pid),
-//! `@cockpit_tui_version` (written by the fetch, read by the binding),
-//! `@cockpit_board_window`, `@cockpit_board_key`.
-//! **Read only, owned by bash:** `@cockpit_session, @cockpit_dir, @panestate,
-//! @panestate_msg, @cockpit_review, @cockpit_review_spool, @cockpit_title,
-//! @cockpit_hold, @thm_*`.
-//!
-//! **Env:** `COCKPIT_ACTION` (file the action line is written to; unset means
-//! stdout), `COCKPIT_TMUX` (override the tmux argv; unset follows `$TMUX`),
-//! `COCKPIT_LOG` (append target), `COCKPIT_READONLY` (any non-empty value:
-//! never write to a tmux server, the pid included), `COCKPIT_GLYPHS=ascii`.
-//!
-//! **Action lines** — exactly one `\n`-terminated line, nothing else ever
-//! written to `$COCKPIT_ACTION`: `jump %N` · `review %N` · `fix %N` ·
-//! `info %N` · `deliver %N` (reserved for L7). The verb is `[a-z]+`; the binary
-//! executes nothing.
-//!
-//! **Exit codes:** `0` normal, `1` runtime failure (tmux unreachable, terminal
-//! not a tty), `2` usage error. `[]` with exit 0 is "no agents"; exit 1 with no
-//! stdout is "no tmux" -- a wrapper must be able to tell them apart.
+//! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -60,8 +17,7 @@ pub fn tmux_argv() -> Vec<String> {
         .collect()
 }
 
-/// `None` when tmux cannot be spawned or exits non-zero, so "no agents" and
-/// "no tmux" stay distinguishable all the way out to the exit code.
+/// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
 pub fn tmux(args: &[&str]) -> Option<String> {
     let c = tmux_argv();
     let out = Command::new(&c[0]).args(&c[1..]).args(args).output().ok()?;
@@ -72,9 +28,7 @@ pub fn readonly() -> bool {
     std::env::var_os("COCKPIT_READONLY").is_some_and(|v| !v.is_empty())
 }
 
-/// The only write path to a tmux server, so `COCKPIT_READONLY` needs one guard
-/// and not one per call site. A screenshot run without it already left a dead
-/// `@cockpit_tui_pid` on the owner's live server.
+/// The only tmux write path, so `COCKPIT_READONLY` needs a single guard.
 pub fn tmux_set(args: &[&str]) {
     if readonly() {
         return;
@@ -94,8 +48,7 @@ pub fn log(s: &str) {
     }
 }
 
-/// Declared in rank order, so the derived `Ord` is the sort: the fleet exists
-/// to answer "which one needs me".
+/// Declared in rank order: the derived `Ord` is the fleet sort.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum State {
     NeedsInput,
@@ -171,14 +124,12 @@ pub struct Pane {
     /// seconds since the newest assistant row; not Duration, so the type can Hash
     pub since: Option<u64>,
     pub asked_since: Option<u64>,
-    /// age of the newest transcript event of any kind: "how long since this
-    /// session did anything", the number the state row wants
+    /// age of the newest transcript event of any kind
     pub idle_since: Option<u64>,
 }
 
-/// Everything except the three ages, which `age()` recomputes against `now`
-/// every tick and would leave the redraw gate dirty on every tick. Destructured
-/// on purpose: a new field is a compile error until it is placed on one side.
+/// Skips the three ages, which change every tick and would defeat the redraw
+/// gate. Destructured so a new field fails to compile until it is placed.
 impl Hash for Pane {
     fn hash<H: Hasher>(&self, h: &mut H) {
         let Pane {
@@ -232,13 +183,11 @@ pub fn hash_rows(ps: &[Pane], extra: &str) -> u64 {
     h.finish()
 }
 
-/// `~/.claude/projects/<slug>/<uuid>.jsonl`. The slug maps every byte outside
-/// `[A-Za-z0-9-]` to `-` (reproduces 23/23 directories on this box). The
-/// sibling `<uuid>/subagents/` is never opened: every row there is a sidechain.
+/// `~/.claude/projects/<slug>/<uuid>.jsonl`; the slug maps every byte outside
+/// `[A-Za-z0-9-]` to `-`. `<uuid>/subagents/` holds only sidechains.
 fn transcript_path(sess: &str, path: &str) -> String {
     let home = std::env::var("HOME").unwrap_or_default();
-    // Per BYTE, not per char: a two-byte glyph in the cwd becomes two dashes,
-    // and a char-wise slug is one short of the directory that actually exists.
+    // Per byte, not per char: a two-byte glyph in the cwd becomes two dashes.
     let slug: String = path
         .bytes()
         .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
@@ -246,10 +195,8 @@ fn transcript_path(sess: &str, path: &str) -> String {
     format!("{home}/.claude/projects/{slug}/{sess}.jsonl")
 }
 
-/// The last `cap` bytes as whole rows, decoded lossily -- the window can open
-/// mid-codepoint, and `read_to_string` would drop the entire tail on that. The
-/// leading partial row is dropped unless the window began just after a newline,
-/// so every line returned is a complete record.
+/// The last `cap` bytes as whole rows, decoded lossily: the window can open
+/// mid-codepoint. Every line returned is a complete record.
 fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
     let off = len.saturating_sub(cap);
     if f.seek(SeekFrom::Start(off.saturating_sub(1))).is_err() {
@@ -272,7 +219,7 @@ fn tail(f: &mut File, len: u64, cap: u64) -> Vec<String> {
 }
 
 /// The one place doing/said/asked are built, so the one place to sanitise them:
-/// a Bash tool_use whose command held a TAB split `--rows` into 10 fields.
+/// a control character such as TAB would split a `--rows` record.
 fn first_line(s: &str) -> String {
     let one = s.trim().lines().next().unwrap_or("");
     one.chars()
@@ -289,8 +236,7 @@ struct Facts {
     tool: String,
     text: String,
     user: String,
-    /// the newest assistant row, which is what "how long has it been thinking"
-    /// means; the newest row of any type is `newest`
+    /// the newest assistant row; `newest` is the newest row of any type
     at: Option<SystemTime>,
     user_at: Option<SystemTime>,
     newest: Option<SystemTime>,
@@ -299,15 +245,13 @@ struct Facts {
 }
 
 thread_local! {
-    /// Keyed on (len, mtime), so an idle session costs one stat a tick instead
-    /// of a parse. The path is resolved fresh every tick because `/compact` and
-    /// `--resume` rotate the file out from under the key.
+    /// Keyed on (len, mtime). The path is re-resolved every tick because
+    /// `/compact` and `--resume` rotate the file.
     static TAILS: std::cell::RefCell<HashMap<String, (u64, SystemTime, Facts)>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
-/// A single row can be 750 KB, and at 64 KB a busy session buried its own open
-/// question behind its padding.
+/// One row can be hundreds of KB, which a small window would read past.
 const TAIL_FIRST: u64 = 256 * 1024;
 const TAIL_MAX: u64 = 2 * 1024 * 1024;
 
@@ -325,9 +269,8 @@ fn read_facts(path: &str) -> Facts {
         return fa;
     }
     let mut fa = parse(tail(&mut f, len, TAIL_FIRST));
-    // ponytail: escalating on "no rows at all" misses a session that writes
-    // >256 KB after an open ask -- it finds *a* row, so it never grows. Rule 69
-    // accepts that; upgrade to "no open ask and no end_turn" if it ever bites.
+    // Known gap: over 256 KB written after an open ask still finds a row, so
+    // the window never grows to reach the ask.
     if fa.tool.is_empty() && fa.text.is_empty() && len > TAIL_FIRST {
         fa = parse(tail(&mut f, len, TAIL_MAX));
     }
@@ -335,8 +278,7 @@ fn read_facts(path: &str) -> Facts {
     fa
 }
 
-/// Rule 22's documented set, in preference order: the concrete argument first,
-/// the prose last, so a Bash row reads as its command and a Task as its brief.
+/// In preference order: the concrete argument first, the prose last.
 const DOING: [&str; 8] = [
     "command",
     "file_path",
@@ -348,22 +290,19 @@ const DOING: [&str; 8] = [
     "subject",
 ];
 
-/// Ends the turn without closing anything, so it is neither a prompt nor an
-/// answer. It arrives as a `text` block in the array form: 32 of 32 rows over
-/// all 105 transcripts here, none as a string.
+/// Ends the turn without closing anything: neither a prompt nor an answer.
+/// It arrives as a `text` block in the array form.
 const INTERRUPT: &str = "[Request interrupted by user";
 
 fn parse(lines: Vec<String>) -> Facts {
     let mut fa = Facts::default();
-    // Rule 66: an AskUserQuestion is open until a later user row carries a
-    // tool_result with its id -- an answer, a dismissal and a denial all write
-    // one, an interrupt does not.
+    // An AskUserQuestion is open until a user row carries its tool_result:
+    // answers, dismissals and denials write one, an interrupt does not.
     let mut asks: Vec<String> = vec![];
     let (mut turn_over, mut saw) = (false, false);
     for raw in lines {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
-        // A belt against a future version inlining subagent rows: today all of
-        // them live under <uuid>/subagents/, which transcript_path never names.
+        // In case a future version inlines subagent rows.
         if v["isSidechain"].as_bool() == Some(true) || !v["agentId"].is_null() {
             continue;
         }
@@ -379,8 +318,7 @@ fn parse(lines: Vec<String>) -> Facts {
                     // a tool_result arrives as an array, a human turn as a string
                     Some(t) if t.starts_with(INTERRUPT) => turn_over = true,
                     // <task-notification, <command-name, <local-command-*: the
-                    // harness wrote these, nobody typed them (330 of 1831
-                    // string rows here), so not a new turn and not `asked`.
+                    // harness wrote these, so not a new turn and not `asked`.
                     Some(t) if t.starts_with('<') => {}
                     Some(t) => {
                         fa.user = first_line(t);
@@ -393,8 +331,7 @@ fn parse(lines: Vec<String>) -> Facts {
                             if let Some(id) = b["tool_use_id"].as_str() {
                                 asks.retain(|a| a != id);
                             }
-                            // safe beside the tool_results: not one of the
-                            // 7208 here carries a `text` key.
+                            // safe beside the tool_results: they carry no `text`
                             interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
                         }
                         turn_over = interrupted;
@@ -404,9 +341,8 @@ fn parse(lines: Vec<String>) -> Facts {
             Some("assistant") => {
                 saw = true;
                 fa.at = ts.or(fa.at);
-                // Rule 67: in a main transcript end_turn is reliable and rides
-                // the text row; attachment and custom-title rows land after it
-                // and must not reopen the turn, so only these two arms move it.
+                // end_turn rides the text row; attachment and custom-title rows
+                // land after it and must not reopen the turn.
                 turn_over = v["message"]["stop_reason"].as_str() == Some("end_turn");
                 let Some(blocks) = v["message"]["content"].as_array() else {
                     continue;
@@ -441,7 +377,7 @@ fn parse(lines: Vec<String>) -> Facts {
     // turn left the picker's tool_use open, and the human still owes an answer.
     fa.state = match () {
         _ if !asks.is_empty() => State::NeedsInput,
-        // rule 78: an unknown state is unknown, never idle
+        // an unknown state is unknown, never idle
         _ if !saw => State::Unknown,
         _ if turn_over => State::Done,
         _ => State::Running,
@@ -455,8 +391,7 @@ fn read_transcript(p: &mut Pane) {
         return;
     }
     let fa = read_facts(&transcript_path(&p.sess, &p.path));
-    // Rule 78: never re-derive what the hooks already wrote. @panestate wins;
-    // the transcript only speaks for panes cockpit's hooks never touched.
+    // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
     }
@@ -492,13 +427,8 @@ fn rfc3339(t: &str) -> Option<SystemTime> {
 }
 
 thread_local! {
-    /// `claude agents --json` costs ~380 ms, an order of magnitude more than
-    /// the rest of a tick. It is only the fallback for panes whose
-    /// @cockpit_session the hooks never set, and it changes only when a session
-    /// starts or ends.
-    /// ponytail: 60 s TTL, so a brand-new pane on the fallback path waits up to
-    /// a minute for its transcript rows. Watch the sessions directory instead if
-    /// that ever matters.
+    /// `claude agents --json` dwarfs the rest of a tick and changes only when a
+    /// session starts or ends; a new pane on this path waits up to the TTL.
     static AGENTS: std::cell::RefCell<Option<(std::time::Instant, HashMap<String, String>)>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -543,9 +473,8 @@ struct Procs {
     comm: HashMap<String, String>,
 }
 
-/// `-axww`, not `-eo`: macOS truncates to the terminal width even into a pipe,
-/// and a truncated `comm` misses the agent. `comm` is the last column and may
-/// hold spaces, so only the two leading numeric fields are tokenised.
+/// `-axww`: macOS truncates to the terminal width even into a pipe. `comm` may
+/// hold spaces, so only the two leading numeric fields are split.
 fn procs() -> Procs {
     let out = Command::new("ps")
         .args(["-axww", "-o", "pid=,ppid=,comm="])
@@ -569,9 +498,7 @@ fn procs() -> Procs {
     t
 }
 
-/// Depth-first (`Vec::pop`): only membership matters, not order. Cap and seen
-/// set are both load-bearing -- `ps` really does report a process as its own
-/// parent, and the previous uncapped walk queued that row forever.
+/// Capped, with a seen set: `ps` can report a process as its own parent.
 const MAX_DEPTH: usize = 8;
 
 fn tree(pid: &str, t: &Procs) -> Vec<String> {
@@ -593,8 +520,7 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
 }
 
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
-/// agent names too. The list stays @cockpit_agents_glob, one source, so the
-/// user's edit reaches the tree walk as well as the pane name.
+/// agent names too.
 fn agentish(comm: &str) -> bool {
     let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
     is_agent_cmd(&b) || version_shaped(&b)
@@ -652,10 +578,8 @@ const BIGCAP: u64 = 32 * 1024 * 1024;
 
 static IDX_SEQ: AtomicUsize = AtomicUsize::new(0);
 
-/// tmux-review's `tree_diff` against HEAD: one diff over a copy of the index that
-/// `add -N -A` extended with every untracked file, so `prefix r` and the board
-/// print the same `+A -D  ?N new`. The copy keeps its mtime, or git's racy
-/// check trusts a same-second edit as clean.
+/// tmux-review's `tree_diff`, so `prefix r` and the board agree. The index copy
+/// keeps its mtime, or git's racy check trusts a same-second edit as clean.
 fn tree_stat(root: &str, gitdir: &str) -> String {
     let filters = no_filters(root);
     let listed = git(root, &[], None, &["ls-files", "-o", "-m", "--exclude-standard", "-z"]);
@@ -795,11 +719,8 @@ pub fn one_pane(id: &str) -> Option<Pane> {
 }
 
 thread_local! {
-    /// `cockpit.tmux` already precomputes `|claude|codex|…|` into
-    /// @cockpit_agents_glob from the public @cockpit_agents, so reading it keeps
-    /// one list instead of a second copy here that drifts when the user edits
-    /// theirs. Empty (plugin not loaded) leaves @panestate as the only test,
-    /// which is the hooks' own answer anyway.
+    /// `|claude|codex|…|` from cockpit.tmux, so the user's list is the only copy.
+    /// Empty (plugin not loaded) leaves @panestate as the only test.
     static AGENT_GLOB: String = tmux(&["show-option", "-gqv", "@cockpit_agents_glob"]).unwrap_or_default().trim().to_string();
 }
 
@@ -809,13 +730,9 @@ fn is_agent_cmd(cmd: &str) -> bool {
 
 const SEP: char = '\u{1f}';
 
-/// One `-F` argument, one `list-panes -a` a tick. The separator is `\037`, not
-/// a tab: a tab in a cwd shifts every later field, and `mkdir $'a\tb'`
-/// reproduces it against today's rows. tmux protects neither -- format output
-/// is never octal-escaped -- so the free-form fields strip NL, TAB and US
-/// in-format, which also closes the newline-splits-a-record hole. `#{q:}` is
-/// worse: it escapes spaces and passes every control character through raw.
-/// The `-` sentinels keep the field list diffable against `scripts/tmux-review:1708`.
+/// Split on `\037`, not tab: a tab in a cwd shifts every later field. tmux never
+/// escapes format output, so free-form fields strip NL, TAB and US in-format;
+/// `#{q:}` would pass control characters raw.
 const FIELDS: &str = concat!(
     "#{pane_id}\u{1f}#{session_name}:#{window_index}\u{1f}#{window_name}\u{1f}#{pane_current_command}",
     "\u{1f}#{?#{@panestate},#{@panestate},-}",
@@ -848,9 +765,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         // A pane carrying @panestate counts whatever it runs: the hooks are the
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let raw = unsentinel(f[4]);
-        // Rule 72: @panestate is the hooks' own answer, the name is a fast path
-        // that skips the `ps` fork when tmux already says agent, and the process
-        // tree is the one that actually decides.
+        // The name is a fast path that skips the `ps` fork; the tree decides.
         let agent = !raw.is_empty() || agentish(f[3]) || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
@@ -904,8 +819,7 @@ pub fn preview(id: &str, n: usize) -> Option<String> {
     Some(text[snap(&text, text.len().saturating_sub(PREVIEW_MAX))..].to_string())
 }
 
-/// Pane text is valid UTF-8 but rarely ASCII, and slicing a byte offset that
-/// lands inside a glyph panics; agents-in-a-box shipped that crash twice.
+/// Pane text is rarely ASCII, and slicing a byte offset inside a glyph panics.
 fn snap(s: &str, mut at: usize) -> usize {
     while at < s.len() && !s.is_char_boundary(at) {
         at += 1;
@@ -913,10 +827,8 @@ fn snap(s: &str, mut at: usize) -> usize {
     at
 }
 
-/// The 5-column right rail of screens.md §0: 32s, 7m12s, 1h04m, 3d. Never more
-/// than 5 columns, which is why seconds are dropped past ten minutes and
-/// minutes past ten hours: "10m05s" and "23h59m" are six and would be clipped
-/// by the rail, losing the leading digit and lying about the age.
+/// The 5-column right rail: 32s, 7m12s, 1h04m, 3d. Seconds drop past ten
+/// minutes and minutes past ten hours so a clipped digit never lies.
 pub fn fmt_dur(s: u64) -> String {
     match s {
         0..60 => format!("{s}s"),
@@ -930,8 +842,7 @@ pub fn fmt_dur(s: u64) -> String {
     }
 }
 
-/// Truncate right to `n` display columns, `…` per screens.md §0. Counts chars,
-/// not bytes.
+/// Truncate right to `n` display columns with `…`. Counts chars, not bytes.
 pub fn trunc(s: &str, n: usize) -> String {
     let c: Vec<char> = s.chars().collect();
     if c.len() <= n {

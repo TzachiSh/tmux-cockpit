@@ -1,29 +1,9 @@
 #!/usr/bin/env bash
-# The one module that knows what "## path:line (+)" means. Sourced, never
-# run; pure -- no tmux, no git (tests/run.sh keeps it that way). Bash 4+.
-#
-#   ## <path>:<line>[-<end>] (+|-)     one record per comment
-#   ## <path> (file-level)             a comment on the whole file
-#   > <fragment>                       optional: the anchored line, verbatim
-#   <body lines>                       a body line that starts "## " is
-#                                      written " ## " so it cannot read as
-#                                      a header; parse strips that space
-#   <blank>                            record separator
-#
-# This is revdiff's grammar plus the fragment line, so a store round-trips
-# through `revdiff --annotations` unchanged and pastes into an agent as-is.
-#
-# State lives in two globals the caller owns:
-#   STORE    assoc array, keys "<i>.path" "<i>.line" "<i>.end" "<i>.side"
-#            "<i>.frag" "<i>.body"; end and frag exist only when present
-#   STORE_N  record count
-# parse_store FILE  fills them. A file that breaks the grammar is moved to
-#                   a fresh FILE.bak.XXXXXX (in STORE_BAK) and the state is
-#                   blank; it never fails (a hook
-#                   or a popup must not die on a bad store). Missing = blank.
-# format_store FILE writes them back -- to a 0600 temp beside FILE, then one
-#                   mv, so a reader never sees half a store.
-# Invariant the suite pins: format(parse(format(x))) is byte-identical.
+# Review store: revdiff's annotation grammar plus a fragment line. Sourced; pure.
+#   "## <path>:<line>[-<end>] (+|-)" or "## <path> (file-level)", an optional
+#   "> <fragment>", body lines (a body "## " is stored " ## "), a blank line.
+# parse_store FILE fills STORE ("<i>.path|line|end|side|frag|body") and STORE_N;
+# it never fails: a bad file is set aside as STORE_BAK. format_store writes back.
 
 parse_store() {
     local file=$1 line hdr loc i=-1 frag=0 body=0 bad=0

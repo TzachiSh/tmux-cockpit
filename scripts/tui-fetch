@@ -2,29 +2,8 @@
 # tui-fetch — put the optional cockpit-tui binary in the plugin's own bin/.
 #
 #   scripts/tui-fetch [--version <tag>]
-#
-# Run it from `prefix U` (tpm re-runs every *.tmux of a plugin it updates),
-# never from a plain config load: a dead network on the tmux startup path
-# makes every `source-file ~/.tmux.conf` pay the full curl timeout.
-#
-# The tag comes from --version, else @cockpit_tui_version, else the pin below.
-# The checksum manifest is fetched BEFORE the tarball: "could not verify" is
-# not "verified", and a name missing from the manifest means "no binary for
-# this platform", not a failed download. Nothing is installed unless the
-# extracted binary also reports the version its tag claims.
-#
-# Anything short of a verified binary leaves whatever is already in bin/ alone
-# and exits 0 -- the binary is additive, and `prefix r` is the fleet view with
-# or without it. Only a checksum or a version mismatch exits non-zero.
-#
-# The repository is private (#84): its release URLs 404 without credentials,
-# so downloads ride the user's own `gh` login when `gh auth token` finds one --
-# the plugin never carries a token. A gh failure falls back to the plain URL.
-#
-# Never ~/.local/bin (install.sh owns its symlinks there), never sudo.
-# COCKPIT_TUI_RELEASES overrides the release host, and an explicit URL is
-# curl's alone -- the suite points it at a file:// tree gh could not serve.
-# COCKPIT_TUI_REPO overrides the owner/repo gh downloads from.
+# Run from prefix U, never on config load, where a dead network stalls startup.
+# Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh).
 set -u
 
 PIN=cockpit-tui-v0.1.0
@@ -34,10 +13,8 @@ RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releas
 
 say() { printf 'tui-fetch: %s\n' "$1"; }
 
-# Which credentials a download would ride (#84). `gh auth token` reads the local
-# config; `gh auth status` would validate against api.github.com, and the
-# tmux-review tui row asks this on a keypress. An expired token is no worse: the
-# download fails and fetch() falls to curl.
+# The repo is private, so releases need the user's gh login (#84). `gh auth
+# token` stays local; `gh auth status` would hit the network on a keypress.
 auth_path() {
     if [ -z "${COCKPIT_TUI_RELEASES:-}" ] && command -v gh >/dev/null 2>&1 &&
        gh auth token >/dev/null 2>&1
@@ -56,9 +33,7 @@ esac
 [ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
 [ -n "$TAG" ] || TAG=$PIN
 
-# The tag carries the package name because axotag wants `<package>-v<ver>`.
-# Stripping the pre-#79 `tui-` form only makes such a pin COMPARE equal, never
-# fetch: the URL is built from the tag as written.
+# Tags are `<package>-v<ver>` for axotag; an old `tui-` pin still compares equal.
 norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
 # shellcheck source=lib/vnum.sh
@@ -76,18 +51,13 @@ esac
 sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 fetch() {                     # <asset> <dest>
-    # gh first when logged in; a gh failure falls to the plain URL, never
-    # straight to a source build -- checksum-first order is the same either way.
     if [ "$VIA" = 'via gh' ]; then
         gh release download -R "$REPO" "$TAG" -p "$1" -O "$2" >/dev/null 2>&1 && return 0
     fi
     curl -fsL --max-time 30 -o "$2" "$RELEASES/$TAG/$1"
 }
 
-# 2 and 3 both mean "no binary installed", but they are opposite facts: 2 is
-# settled (this release has nothing for this platform, so build from source and
-# remember it), 3 is a box that could not ask (offline, no tools) and must be
-# free to ask again on the next press.
+# 2 is settled (remembered, build from source); 3 is transient (ask again).
 download() {                  # 0 installed · 1 refused · 2 nothing for this platform · 3 could not ask
     local tmp asset line bin got
     asset="cockpit-tui-$TARGET.tar.gz"
@@ -96,19 +66,14 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
         say "skip: neither sha256sum nor shasum is installed to verify with"; return 3; }
     tmp=$(mktemp -d) || return 3
     trap 'rm -rf "$tmp"' RETURN
-    # -fsL, not -fsSL: a tag that has not been cut yet is the ordinary case
-    # before the first release, and curl's own "(22) ... 404" beside the line
-    # below reads like a fault. Unauthenticated, the private repo 404s the
-    # same way (#84), so that line names the likelier of the two.
+    # Checksums before the tarball: "could not verify" is not "verified".
     fetch sha256.sum "$tmp/sums" || {
         case $VIA in
             'via gh') say "skip: no release $TAG via gh (or offline)" ;;
             *)        say "skip: no release $TAG (private repository, or offline)" ;;
         esac
         return 3; }
-    # cargo-dist writes one sha256sum line per asset, so a name that is not
-    # there was never built for this platform -- a settled answer, unlike a
-    # download that failed.
+    # cargo-dist lists every asset, so a missing name was never built.
     line=$(grep -E " \*?${asset//./\\.}\$" "$tmp/sums") || {
         say "no binary for this platform in $TAG ($TARGET)"; return 2; }
     fetch "$asset" "$tmp/$asset" || {
@@ -116,25 +81,18 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     ( cd "$tmp" && printf '%s\n' "$line" | sha_c ) >/dev/null 2>&1 || {
         say "REFUSED: $asset does not match its published checksum -- nothing installed" >&2; return 1; }
     tar -xzf "$tmp/$asset" -C "$tmp" 2>/dev/null || { say "could not extract $asset" >&2; return 1; }
-    # Measured on dist 0.32.0: the archive is a cockpit-tui-<target>/ directory
-    # holding the binary next to LICENSE and README, not a flat one. Look the
-    # binary up rather than pinning either layout, and install only it.
+    # Found, not assumed: the archive layout varies across cargo-dist versions.
     bin=$(find "$tmp" -type f -name cockpit-tui 2>/dev/null | head -1)
     [ -n "$bin" ] || { say "$asset holds no cockpit-tui" >&2; return 1; }
     chmod +x "$bin"
-    # Only if it is actually there: `xattr -d` on a file with no quarantine
-    # attribute exits 1 and prints, and curl+tar do not set one anyway.
+    # `xattr -d` fails loudly on a file without the attribute.
     if [ "$(uname -s)" = Darwin ] && command -v xattr >/dev/null 2>&1 &&
        xattr -p com.apple.quarantine "$bin" >/dev/null 2>&1; then
         xattr -d com.apple.quarantine "$bin" 2>/dev/null
     fi
-    # fzf's installer earned this one: a checksum says the bytes arrived
-    # intact, not that they are the version the tag names. Run it in the temp
-    # dir so a wrong answer never displaces the binary already installed.
+    # A checksum proves the bytes, not the version. Silence means it cannot run
+    # here (build from source); another version means a broken release.
     got=$("$bin" --version 2>/dev/null)
-    # Two different answers. Saying nothing at all is this box's problem (wrong
-    # libc, wrong arch) and source is the way out; running and naming another
-    # version is a broken release, and installing it anyway is not.
     [ -n "$got" ] || { say "the $TAG build for $TARGET does not run here"; return 2; }
     [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
         say "the $TAG tarball reports '$got' -- nothing installed" >&2; return 1; }
@@ -146,17 +104,13 @@ build() {                     # 0 built · 2 skipped
     local floor rv log
     [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
-    # Read, never hardcoded: the floor lives in Cargo.toml and a second copy
-    # here would drift. Debian 13 ships 1.85 against ratatui's 1.88, so the
-    # refusal below is the common case, not the corner.
     floor=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" | head -1)
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
     if [ -n "$floor" ] && [ "$(vnum "$rv")" -lt "$(vnum "$floor")" ]; then
         say "cockpit-tui needs Rust >= $floor to build from source (found ${rv:-none}); install rustup and press prefix U again"
         return 2
     fi
-    # Captured, not streamed: this runs from a keypress, and a screenful of
-    # rustc diagnostics past the popup is not the answer to "why no binary".
+    # Captured: only the tail of rustc's output fits the popup.
     log=$(mktemp) || return 2
     trap 'rm -f "$log"' RETURN
     cargo build --release --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
@@ -176,8 +130,7 @@ if [ "$VIA" = 'via gh' ]; then
     REPO=${COCKPIT_TUI_REPO:-}
     if [ -z "$REPO" ]; then
         REPO=$(git -C "$DIR" remote get-url origin 2>/dev/null)
-        # git@github.com:o/r.git and https://github.com/o/r reduce the same
-        # way: strip through github.com, one [:/] separator, then .git.
+        # Both git@github.com:o/r.git and https://github.com/o/r.
         case $REPO in
             *github.com*) REPO=${REPO#*github.com}; REPO=${REPO#[:/]}; REPO=${REPO%.git} ;;
             *)            REPO= ;;
@@ -185,11 +138,8 @@ if [ "$VIA" = 'via gh' ]; then
     fi
     REPO=${REPO:-TzachiSh/tmux-cockpit}
 fi
-# The marker records a fact about the RELEASE -- this tag published nothing for
-# this platform -- so it skips the download and never the source build. An
-# unreachable host and a checksum refusal deliberately leave no marker: the
-# first is transient and the second must shout on every press, and a marker
-# would silence both until someone found a dotfile to delete.
+# .tried marks a tag with no build for this platform. Network failures and
+# checksum refusals leave none: one is transient, the other must repeat.
 if [ "$(cat "$BIN/.tried" 2>/dev/null)" = "$TAG" ]; then
     say "$TAG has no release build for $TARGET"
     rc=2

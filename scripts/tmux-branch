@@ -1,15 +1,9 @@
 #!/usr/bin/env bash
 # tmux-branch — switch the git branch of a directory.
 #   tmux-branch [-c pane_command] [-p pane_id] [dir]   dir defaults to $PWD
-#
-# Bound to a left-click on the branch segment of the tmux status bar, which is
-# why every failure ends in a "press a key" pause: a popup that exits instantly
-# would take its error message with it.
 set -uo pipefail
 
-# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
-# silent and wrong rather than loud: `declare -A` errors, then the same
-# assignment quietly creates an INDEXED array with an arithmetic subscript.
+# bash 4 for declare -A: on 3.2 it silently becomes an indexed array.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
@@ -19,8 +13,7 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
 
-# Under `set -u` a bare $HOME aborts the script wherever HOME is unset -- a tmux
-# server started by systemd or launchd. The other two scripts already guard it.
+# HOME can be unset under a systemd- or launchd-started server.
 H=${HOME:-/nonexistent}
 
 PANE_CMD=""
@@ -36,16 +29,8 @@ while [ $# -gt 0 ]; do
 done
 
 DIR="${1:-}"
-# A popup is not a pane: it does not inherit the pane's cwd, and $TMUX_PANE inside
-# it is not the pane you clicked from. Ask tmux which pane the client is actually
-# on instead of trusting $PWD.
-#
-# Bare `display-message -p` (no -t) has no client of its own to resolve
-# from inside a popup -- it falls back to whichever attached client was most
-# recently active, which is often a DIFFERENT session than the one the popup
-# was opened from, and $PWD is the SESSION's start directory, the first
-# window's. -p pane_id (every bind and menu entry passes it) pins the query
-# to the pane the popup came from; without it we fall back to best effort.
+# A popup's $PWD is the session's start dir, and a bare display-message picks
+# the most recently active client. -p pins the pane the popup came from.
 if [ -z "$DIR" ] && [ -n "${TMUX:-}" ]; then
     if [ -n "$PANE_ID" ]; then
         DIR=$(tmux display-message -p -t "$PANE_ID" '#{pane_current_path}' 2>/dev/null)
@@ -57,27 +42,22 @@ if [ -z "$DIR" ] && [ -n "${TMUX:-}" ]; then
 fi
 DIR="${DIR:-$PWD}"
 
-# --- output helpers ----------------------------------------------------------
-# A popup dies the moment this script returns, so anything worth reading has to
-# hold the window open itself.
+# The popup closes when this script exits, taking any error with it.
 pause() { printf '\n[any key]'; read -rsn1; }
 fail()  { printf '%s\n' "$*" >&2; pause; exit 1; }
 
 cd "$DIR" 2>/dev/null || fail "cockpit: no such directory: $DIR"
 
-# tmux only knows the LOCAL cwd, so a pane sitting in ssh would hand us this
-# machine's repo — and switching a branch you cannot see is worse than refusing.
+# tmux only knows the local cwd, so an ssh pane would name this machine's repo.
 [ "$PANE_CMD" = ssh ] && fail "cockpit: this pane is inside ssh · $DIR is local, not that host"
 
 git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: $DIR"
 
-# Redraw the status bar now instead of waiting for the next status-interval tick.
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
-# Last three path components; the leaf is what identifies the repo, and it was
-# the part the header's truncation threw away.
+# Last three path components: the leaf identifies the repo.
 tail3() {
     local p=${1/#$H/\~} a b c r
     r=$p; c=${r##*/}; r=${r%/*}
@@ -92,10 +72,8 @@ tail3() {
     fi
 }
 
-# --- switching ---------------------------------------------------------------
-# Checkout failures are the normal case, not the exception: a dirty tree, or a
-# branch already checked out in another worktree. git's own message names the
-# files or the worktree, so show it rather than a summary of it.
+# Failures are common (dirty tree, branch held by a worktree); git's own message
+# names the cause, so show it verbatim.
 switch_to() {
     local target=$1 out
     if [ "$target" = "$current" ]; then
@@ -115,9 +93,7 @@ switch_remote() {  # origin/foo -> local foo tracking it
     printf '%s\n' "$out" >&2; pause; return 1
 }
 
-# Ask git what the name IS; never infer it from the shape of the string. A local
-# branch is very often called "feature/one", so routing on a slash sent local
-# branches down the remote path and created a stray "one" tracking branch.
+# Ask git what the name is: a slash does not mean remote ("feature/one").
 route() {
     local name=$1
     if git show-ref --quiet --verify "refs/heads/$name"; then
@@ -131,8 +107,7 @@ route() {
 
 create() {
     local name=$1 out
-    # git's own ref rules, not a hand-rolled character class. Pause-and-return
-    # rather than exit: the caller loops back into the picker.
+    # Return, not exit: the caller loops back into the picker.
     if ! git check-ref-format --branch "$name" >/dev/null 2>&1; then
         printf 'invalid branch name: %s\n' "$name" >&2; pause; return 1
     fi
@@ -142,9 +117,7 @@ create() {
     printf '%s\n' "$out" >&2; pause; return 1
 }
 
-# --- the list ----------------------------------------------------------------
-# Most-recently-committed first: the branch you want is nearly always one of the
-# top few, which alphabetical order buries. Each row is "<branch>\t<relative age>".
+# Rows are "<branch>\t<relative age>", most recently committed first.
 list_branches() {
     local ref age name
     declare -A have=()
@@ -153,9 +126,7 @@ list_branches() {
         printf '%s\t%s\n' "$ref" "$age"
     done < <(git for-each-ref --sort=-committerdate \
                  --format='%(refname:short)%09%(committerdate:relative)' refs/heads)
-    # Remotes that have no local branch of the same name yet. Skipping the ones
-    # that do keeps every row a distinct destination. The lookup is an array, not
-    # a grep per row: this list is rebuilt on every click.
+    # Only remotes with no local branch of the same name.
     while IFS=$'\t' read -r ref age; do
         case "$ref" in */HEAD) continue ;; esac
         name=${ref#*/}
@@ -165,13 +136,7 @@ list_branches() {
                  --format='%(refname:short)%09%(committerdate:relative)' refs/remotes)
 }
 
-# Two parallel arrays: refs for the machine, display rows for the eye. The
-# display marks the branch you are ON with ● -- the header said it, the list
-# did not, and the current branch looked like a normal destination. No column
-# dependency: the display pads itself.
-# Which branches are checked out in a LINKED worktree: git refuses to switch to
-# those, and the picker used to let you walk into that error blind. One
-# git worktree list per open -- off the redraw path, so the cost is nothing.
+# Branches checked out in a linked worktree, which git refuses to switch to.
 declare -A wt=()
 wtpath="" 
 while IFS= read -r wl; do
@@ -188,18 +153,14 @@ row=""
 while IFS=$'\t' read -r ref age; do
     if [ "$ref" = "$current" ]; then m='●'; else m=' '; fi
     refs+=("$ref")
-    # printf -v formats in the running shell instead of forking a subshell per
-    # branch -- 5000 branches: 16.9s forked, ~1s in-process (for-each-ref
-    # itself is 0.12s; the fork was 99% of the old cost).
+    # printf -v, not $(...): a fork per branch dominates on large repos.
     printf -v row '%s %-32s %-16s %s' "$m" "$ref" "($age)" "${wt[$ref]:-}"
     disps+=("$row")
 done < <(list_branches)
 [ ${#refs[@]} -eq 0 ] && fail "cockpit: no branches yet in $DIR"
 
 if ! command -v fzf >/dev/null; then
-    # No fzf: a numbered menu still beats no picker at all. On stderr, where
-    # `select` writes its own menu and prompt: split across two streams, one
-    # redirect separates the question from its answers.
+    # stderr, where `select` writes its menu, so one redirect moves both.
     printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}" >&2
     select row in "${disps[@]}"; do
         [ -n "${row:-}" ] || exit 0
@@ -210,36 +171,17 @@ if ! command -v fzf >/dev/null; then
     exit
 fi
 
-# --print-query puts whatever was typed on line 1, so the create key can name a
-# branch from a search that matched nothing. --expect reports the key on line 2;
-# fzf 0.44 has no print() action, and --expect works everywhere.
-#
-# alt-enter, NOT ctrl-n. ctrl-n is fzf's own move-down (verified: one ctrl-n in a
-# three-row list accepts the SECOND row), and an --expect key exits fzf the
-# moment it is pressed -- so binding create to it meant anyone navigating with
-# emacs keys created a branch named by their filter, or hit "type a name before
-# ^N", which closes the popup and loses their place. alt-enter is the fzf idiom
-# for "act on the literal query" and collides with nothing.
-# Size the split from the real popup height: a fixed 65% preview hid branches
-# while leaving blank preview rows, and this is the picker that most often has
-# a long list.
 avail=$(tput lines 2>/dev/null || echo 24)
 lrows=${#refs[@]}; maxl=$(( avail / 3 )); [ "$lrows" -gt "$maxl" ] && lrows=$maxl
 psz=$(( avail - lrows - 5 ))
 [ "$psz" -lt 5 ] && psz=5
 
-# A failed switch RETURNS here with the query preserved, instead of dying at
-# "[any key]" and making you reopen the picker and retype. The failure paths
-# are the normal case -- a dirty tree, a branch held by a worktree -- and each
-# already showed git's own message; now it costs a keypress, not the flow.
-# lib/ sits beside the REAL script; install.sh links it by absolute path.
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/fzf.sh
 . "${d%/*}/lib/fzf.sh" \
   || fail "cockpit: the fzf theme is missing · reinstall from the repo"
 
-# One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. 46 columns,
-# under the 48 a 70% popup shows at an 80-column terminal.
+# At most 48 columns: what a 70% popup shows at an 80-column terminal.
 KEYS='↵ switch · alt-↵ new branch · ^/ preview · esc'
 CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
 # Head-ellipsis: the directory tail is the half that says where you are.
@@ -247,6 +189,8 @@ CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
 mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border "footer=$KEYS")
 THEME+=("--header=$CTX")
 
+# --expect, not print(): fzf 0.44 lacks print(). Create is alt-enter because
+# ctrl-n is fzf's move-down, and an --expect key exits fzf at once.
 query=""
 while :; do
     out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
@@ -260,10 +204,7 @@ while :; do
               --preview-label=' log ' --preview-label-pos=2 \
               --preview-window="down,$psz,border-top")
     rc=$?
-    # fzf's exit codes matter here: 0 = a row accepted, 1 = NO MATCH -- which is
-    # exactly the state alt-enter creates a branch from, since the new name
-    # matches nothing -- and 130 = esc/ctrl-c. Treating 1 as a cancel silently
-    # swallowed every create of a genuinely new name.
+    # fzf exits 1 on no match, which is exactly when alt-enter creates a branch.
     case "$rc" in
         0|1) ;;
         *)   exit 0 ;;
