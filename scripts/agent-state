@@ -1,42 +1,27 @@
 #!/bin/bash
-# Record a tmux pane's agent state. Called from Claude Code hooks and tmux hooks.
+# Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
-# State is a per-pane tmux option, so it dies with the pane.
+# Every @panestate write must go through here, or the window/fleet counters go stale.
 set -u
 
 state="${1:-off}"
 pane="${2:-${TMUX_PANE:-}}"
 idle=""
-# Must be a pane id. tmux resolves -t by prefix-matching session names too, so a
-# stray argument like "pstes" happily resolves to session "pstest" and we would
-# write state onto someone else's pane. Callers only ever pass %N.
+# -t prefix-matches session names too, so anything but a %N id could hit another pane.
 case "$pane" in
     %[0-9]*) ;;
     *) exit 0 ;;
 esac
 
-# State lives in a per-pane tmux option, not a file. tmux evaluates it directly
-# inside status/border formats, so a redraw costs zero shell spawns -- and the
-# option dies with the pane, so there is nothing to garbage collect.
-#
-# The whole transition -- read the state, decide, write it, re-derive the
-# counters -- is ONE tmux command (an `if -F` whose body is the writes). The
-# server runs a command list without interleaving another client's, so hooks
-# firing in parallel cannot write counters from a stale read; and the no-op
-# path (twice per tool call) is that one call with a false condition.
-
 case "$state" in
 notify)
-    # Pressing ESC to cancel fires NO Claude Code hook -- not Stop, not
-    # SessionEnd -- so a cancelled pane would sit on "running" forever. Claude
-    # does emit a Notification once it goes idle, which lets us recover.
+    # ESC-cancel fires no hook at all; the idle Notification is the only way out of running.
     d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
     read_payload false
-    # Claude Code names the kind; the English text match is for older versions
-    # that send no notification_type.
+    # The English text match covers Claude versions that send no notification_type.
     json_str notification_type
     case "$REPLY" in
         permission_prompt|agent_needs_input|elicitation_dialog) state=needs-input ;;
@@ -46,36 +31,16 @@ notify)
                 *'needs your permission'*) state=needs-input ;;
                 *) exit 0 ;;
             esac ;;
-        *) exit 0 ;;                        # unrelated notification: ignore
+        *) exit 0 ;;
     esac
-    # The ask itself, for the border: knowing WHAT is asked separates a one-key
-    # approval from a decision, without switching panes. Parsed with bash
-    # parameter expansion, not jq or sed: the payload is small, the schema is
-    # one string field, and jq is not a dependency here -- and a subprocess
-    # per call is exactly what the perf gate below rules out.
-    #
-    # Written HERE, inside the notify arm, rather than beside the @panestate
-    # write below: a pane already stuck on needs-input can be asked something
-    # ELSE while still blocked, and the sticky-state guard below deliberately
-    # refuses to rewrite @panestate for that case (see its own comment) -- so
-    # if this write waited for that guard, the newer ask text would be
-    # silently dropped exactly when it matters most.
+    # Written here, not after the sticky guard below: a pane already on needs-input
+    # can be asked something new, and that newer text must still land.
     if [ "$state" = needs-input ]; then
         json_str message
-        # A hook payload is not to be trusted blindly -- this reaches a tmux
-        # format string next -- so strip control chars and cap the length.
+        # Untrusted text bound for a tmux format: strip control chars and cap it.
         msg=${REPLY//[$'\001'-$'\037']/}
         msg=${msg:0:120}
-        # An empty extraction must still clear, not skip: skipping left the
-        # PREVIOUS pane's ask standing on the border, so a brand-new blocked
-        # pane with no text of its own displayed someone else's old question.
-        #
-        # NOT queued into the batch below, on purpose: this is the only value
-        # in the script that comes from outside, and tmux splits a command list
-        # on an argument that is a bare `;` (and eats a trailing one), so a
-        # message ending in a semicolon would swallow the command after it.
-        # Notify fires once per permission prompt, never per tool call, so the
-        # extra round-trip is not on any hot path.
+        # A call of its own, never in the batch: tmux splits a command list on a bare `;`.
         if [ -n "$msg" ]; then
             tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
         else
@@ -84,30 +49,12 @@ notify)
     fi
     ;;
 wake)
-    # TeammateIdle: a teammate's idle notification wakes the lead with no hook
-    # of its own, so the pane stayed `done` until its first tool call. Any other
-    # state is already truthful; the notification queues behind a prompt.
+    # TeammateIdle wakes the lead with no hook of its own, so lift done back to running.
     ;;
 esac
 
-# Reject anything that is not a real state. Without this an unknown argument --
-# a typo, or a mode removed from the config but still referenced somewhere --
-# is written to the option verbatim and every reader then sees garbage.
-# recount writes no state -- it re-derives the counters below from what the
-# options already say (review-gate and tmux-review call it after touching
-# @cockpit_review).
-#
-# `when` is the transition's guard on the current @panestate, as a tmux format.
-# Only needs-input and error are STICKY: they must survive a Stop that fires
-# while a permission prompt is still open, which used to demote a red alert to
-# green. Work resuming (running) or an explicit off always clears them.
-#
-# running is deliberately NOT sticky -- running -> done is how every agent
-# finishes, and blocking it meant green could never appear at all.
-#
-# The two sticky states are ordered: needs-input outranks error, because a
-# permission prompt still on screen is the thing actually blocking you.
-# An unchanged state is refused too: every set-option forces a redraw.
+# `when` guards the transition on the current @panestate. needs-input and error are
+# sticky against Stop/idle; an unchanged state is refused because every set redraws.
 cur='#{@panestate}'
 case "$state" in
     running)     when="#{!=:$cur,running}" ;;
@@ -115,182 +62,64 @@ case "$state" in
     error)       when="#{?#{m/r:^(error|needs-input)\$,$cur},0,1}" ;;
     done)        when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
     wake)        when="#{?$cur,#{==:$cur,done},1}" ;;
-    # Claude emits idle while it is BLOCKED on a permission prompt too, so
-    # clearing there would wipe the alert precisely because you have not
-    # answered yet; switching windows must not clear done either.
+    # Claude goes idle while blocked on a prompt too, so idle must not clear an alert.
     off)         when=1
                  [ -n "$idle" ] && when="#{?#{m/r:^(done|needs-input|error)\$,$cur},0,1}" ;;
     recount)     when=1 ;;
     *) exit 0 ;;
 esac
 
-# @panestate is written ONLY here, and that is load-bearing for the banner. The
-# cross-window banner reads a per-window @cockpit_win_needs that the block below
-# derives from @panestate on each transition; the "never reads low" safety
-# rests on every state change flowing through this script so that derivation
-# runs. A raw `tmux set-option -p @panestate needs-input` somewhere else would
-# set the state but leave @cockpit_win_needs unset -- measured: the banner then
-# renders empty, SILENTLY hiding a real alert. Route all writes through here.
 if [ "$state" = off ]; then
-    # Unset @panestate only when it is actually set -- but do NOT exit early when
-    # it is already clear. A freshly started agent fires SessionStart -> `off`
-    # before it has any real state, and the window dot below must still light its
-    # idle ○ for that bare agent pane, exactly as the pre-precompute live walk
-    # drew it. Unsetting an already-unset option is free (0 redraws), the dot's
-    # own guard below skips the write once the ○ is present, and no high-frequency
-    # caller passes `off` (only SessionStart/SessionEnd, once each), so falling
-    # through costs one redraw the first time an idle agent appears, nothing after.
+    # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
-    # A session that ends takes its review attention with it: a pending mark
-    # or a queued spool on a pane whose agent is gone would count forever. An
-    # idle agent has not ended, and a review queued or sent into it still waits.
+    # An ended session takes its review marks with it; an idle one keeps them.
     [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool"
 elif [ "$state" = recount ]; then
-    body=""                                 # nothing to write; derive below
+    body=""
 else
     [ "$state" = wake ] && state=running
     body="set-option -p -t $pane @panestate $state"
-    # A review pasted into this pane but never sent is a pane STATE (set by
-    # tmux-review --deliver, walked to by tmux-jump). The human pressing Enter
-    # to send it is what fires this hook with `running`, so the transition
-    # INTO running is exactly when the mark stops being true.
-    #
-    # Inside the guarded body on purpose: `running` arrives on UserPromptSubmit
-    # AND on every PreToolUse/PostToolUse (examples/claude-hooks.json), so it
-    # only runs on a real transition. Known gap that buys: a review delivered
-    # into a pane that is ALREADY running keeps its mark until the next real
-    # transition (done -> running), so the jump key can walk to it once more.
-    # Not on wake: nobody pressed Enter, a pending ◆ is still true.
+    # Entering running means the human pressed Enter, so a delivered-but-unsent review is gone.
+    # Not on wake: nobody pressed Enter.
     [ "$state" = running ] && [ "$1" != wake ] && body="$body ; set-option -pu -t $pane @cockpit_review"
 fi
 
-# Placed here, not in the notify arm above, so it also covers running/off
-# passed directly (agent-state running $PANE from a hook), which never goes
-# through the notify arm at all. Not cleared on done: the sticky guard above
-# already refuses to let done overwrite needs-input, and a done pane shows no
-# border alert to read the message on.
 case "$state" in
     running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
-# --- cross-window NEEDS YOU banner, precomputed here, off the redraw path ------
-# The active pane's border names any OTHER window that has a blocked agent. Read
-# live, that is a whole-server #{S:#{W:#{P:}}} pane walk re-run for every visible
-# pane on every status redraw -- and an agent emitting an OSC-2 title forces a
-# status redraw on every keystroke, so under load it walks every pane on the
-# server continuously. Measured on the freeze rig it was the dominant per-redraw
-# cost (nicm's own guidance, tmux#2774/#3352: precompute into an option).
-#
-# So the walk moves HERE, to transition time: this records ONE per-window boolean
-# @cockpit_win_needs -- does THIS pane's window hold a blocked agent -- and the
-# border format walks WINDOWS (not panes), reads the boolean, and renders the
-# live window_index:window_name itself. A window loop reads no pane, so a redraw
-# no longer walks the server; the rendered banner is byte-for-byte unchanged.
-#
-# display-message evaluates a format WITHOUT forcing a redraw, so this read is
-# free; only the guarded set-option below costs one, and only when the window's
-# blocked-status actually flips. #{P:} here is scoped to this pane's window by
-# the -t target, the same guarded glob+state test the border and fleet use. The
-# option is WINDOW-scoped (set -w), like @panestate is pane-scoped: it dies with
-# the window, so destroying a window (kill-window, last pane closed) leaves no
-# stale banner entry for free -- tmux garbage-collects it.
-#
-# STALENESS BOUND (accepted, documented): a window's entry refreshes only when a
-# pane IN that window transitions through this script. The common exits are all
-# covered: examples/claude-hooks.json wires SessionEnd (and SessionStart) to
-# `agent-state off`, so a normally-ending agent fires a transition that clears
-# its window's entry, and a whole window closing drops the option with it. The
-# ONLY residual is a still-blocked agent hard-killed inside a still-living window
-# with no hook (kill -9, tmux kill-pane) -- that window stays listed until the
-# next transition in it. The live walk had zero staleness; this is the narrow,
-# bounded trade the freeze fix makes, and it only ever reads HIGH, never low, so
-# a banner that needs you is never hidden -- only a cleared one can linger.
+# Window and fleet summaries are precomputed here so status redraws walk no panes
+# (tmux#2774/#3352). They refresh only on a transition in that window.
 fmt_needs='#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }}'
 
-# --- catppuccin window-tab dot: the same precompute, same reason ---------------
-# full.tmux.conf draws a per-window marker (▲ blocked, ✕ error, ● running, ✓ done,
-# ○ idle) coloured by the WORST agent state among that window's panes. Read live
-# it was the catppuccin window-status-format's #{P:} walk, run once per window on
-# every status redraw, and up to five times per window before the ranked #{?}
-# chain short-circuited -- the freeze rig's residual after the banner and fleet
-# fixes landed (gate: 360 pane visits per redraw on full.tmux.conf, ~3 walks).
-#
-# So the ranking moves HERE, to transition time: this records ONE per-window
-# keyword @cockpit_win_state -- the worst state in this pane's window -- and the
-# window-status-format reads that keyword and maps it to the glyph+colour itself.
-# Reading an option walks no pane, so a redraw no longer walks the window; the
-# rendered marker is byte-for-byte unchanged (verified against the live walk over
-# every state combination and the idle/non-agent cases).
-#
-# The ranking is the format's own, reproduced exactly: needs-input > error >
-# running > done > idle (an agent pane whose state is none of those), and empty
-# when the window holds no agent at all. The state tests substring-match the same
-# space-joined #{P:} of every agent pane's @panestate; the idle case tests the
-# same "A" sentinel the format used, so a live agent with no state still dots ○.
-#
-# WINDOW-scoped (set -w), like @cockpit_win_needs: it dies with the window, so a
-# closed window leaves no stale dot -- tmux garbage-collects the option. Same
-# staleness bound as the banner: a window's dot refreshes on the next transition
-# in it (SessionEnd fires `agent-state off`; a closing window drops the option),
-# and the only residual is a still-active agent hard-killed inside a still-living
-# window with no hook. Guarded no-op skip so an unchanged dot costs no redraw.
+# Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
 fmt_state='#{?#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},A,}}},idle,}}}}}'
 
-# --- fleet counter, the same precompute for the same reason -------------------
-# #{agent_fleet} in status-right counts blocked, errored and pending-review
-# agent panes across every session. Each count is a whole-server
-# #{S:#{W:#{P:}}} walk, and the format named each count TWICE -- a ">0" test and the number itself -- so a
-# redraw ran up to four whole-server walks, the freeze rig's second-worst
-# offender (gate: 360 pane visits per redraw with it enabled). Counted here, the
-# format reads one option (#{E:@cockpit_fleet}) and walks nothing.
-#
-# The colours stay as TOKENS in the stored string, resolved by that #{E:} at
-# render time, so a theme sourced after the plugin still wins -- the exact
-# contract the live walk had. An empty string (nothing waiting) renders nothing.
 fmt_nb='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
 fmt_ne='#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
-
-# ◆N: agent panes whose review-gate flagged a finished, unreviewed diff
-# (@cockpit_review = pending). Same walk, same guard, same batch -- one more
-# #{n:} in the read below, one more glyph in the string. Ranked last: an agent
-# waiting on you (▲) or dead (✕) outranks one waiting to be read.
 fmt_nr='#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}'
 
-# The fleet string, built by tmux itself so it is counted in the same command
-# as the writes. Escaped so set -F stores the colour tokens, not their values:
-# ##{...#} yields a literal #{...}, ###, a literal #, -- what #{E:} needs later.
+# ##{...#} and ### store literal colour tokens, so #{E:} resolves them at render and
+# a theme sourced after the plugin still wins.
 fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=##{@thm_red#}###,bold]▲$fmt_nb#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=##{@thm_peach#}]✕$fmt_ne#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=##{@thm_sky#}]◆$fmt_nr#[default] ,}"
 
-# --- the derivations ride in the transition's own command ----------------------
-# tmux runs the body in order, so the walks see the post-transition state -- the
-# whole contract these counters have. Each compare-then-set is an `if -F` on the
-# stored value: a counter that did not move writes nothing, because every
-# set-option -- even -p with the same value -- forces a server-wide redraw.
-# #{@cockpit_fleet} inserts the stored value without re-expanding it, so its
-# colour tokens compare equal to what the escaped format yields.
-#
-# Only values from a CLOSED set reach this command string -- the validated pane
-# id and state keyword and the fixed formats above; the one untrusted string
-# (the ask line) was written by a call of its own.
+# One command list, so parallel hooks cannot interleave a stale read. Every write is
+# compare-then-set, since even an identical set-option forces a redraw.
+# Only closed-set values reach this string; the untrusted ask text was written above.
 body="$body ; if -F -t $pane '$fmt_needs' { if -F -t $pane '#{!=:#{@cockpit_win_needs},1}' { set-option -w -t $pane @cockpit_win_needs 1 } } { if -F -t $pane '#{@cockpit_win_needs}' { set-option -wu -t $pane @cockpit_win_needs } }"
 body="$body ; if -F -t $pane '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t $pane '$fmt_state' { set-option -wF -t $pane @cockpit_win_state '$fmt_state' } { set-option -wu -t $pane @cockpit_win_state } }"
 body="$body ; if -F -t $pane '#{!=:$fmt_fleet,#{@cockpit_fleet}}' { set-option -gqF -t $pane @cockpit_fleet '$fmt_fleet' }"
 body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
-# Fail-open: a hook must never block the agent that fired it, and a dead pane or
-# server just yields no pid.
+# Fail-open: a hook must never block the agent that fired it.
 tui_pid=$(tmux if-shell -F -t "$pane" "$when" "${body# ; }" 2>/dev/null || true)
 
-# --- the push channel: tell cockpit-tui to look now ---------------------------
-# The name check is not optional: a published pid outlives its process (SIGKILL
-# unpublishes nothing), pids get recycled, and SIGUSR1's default action is
-# terminate -- a probe already shot a stranger's process on the live server.
+# A published pid outlives its process and SIGUSR1 terminates by default, so verify
+# the name before signalling (see AGENTS.md).
 if [ -n "$tui_pid" ]; then
     tui_comm=""
-    # -r first, not `read || ps`: a pid nobody unpublished is absent from /proc,
-    # so the || forked ps on every transition. 2>/dev/null before the input
-    # redirect, or bash reports its failure before that redirect applies.
+    # -r first: the stale pid is the one absent from /proc, so `read || ps` would fork ps every time.
     if [ -r "/proc/$tui_pid/comm" ]; then
         read -r tui_comm 2>/dev/null < "/proc/$tui_pid/comm"
     elif [ ! -d /proc/self ]; then
@@ -300,10 +129,3 @@ if [ -n "$tui_pid" ]; then
         kill -USR1 "$tui_pid" 2>/dev/null || true
     fi
 fi
-
-# No refresh-client here, deliberately. set-option already repaints everything
-# that reads the option -- measured: the border, the tab marker and even the
-# cross-window banner all update within 50ms of the set, with status-interval
-# parked at an hour. refresh-client -S added 19.6ms per transition and, unlike
-# the set's own repaint, re-ran the two #() status jobs -- two extra shells per
-# state change for nothing.

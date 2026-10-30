@@ -2,10 +2,8 @@
 # The hooks' stdin payload. Sourced, never run; no forks, and bash 3.2 safe:
 # agent-state has no bash-4 floor.
 
-# Bounded read, not `cat`: Claude Code can hold the pipe open past the payload,
-# and a hook must never block the agent that fired it. One deadline for the
-# whole read, the partial last line kept, and the newline `read` strips put
-# back so two lines cannot fuse into a match that was never sent.
+# Bounded read, not `cat`: Claude Code can hold the pipe open past the payload.
+# Newlines are put back so two lines cannot fuse into a match never sent.
 read_payload() {              # <stop-cmd...>: ends the read early once it succeeds
     payload="" chunk=""
     local deadline=$(( SECONDS + 2 )) left

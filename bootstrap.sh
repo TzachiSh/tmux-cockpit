@@ -8,14 +8,7 @@
 #   ./bootstrap.sh --check     run install.sh --check (the doctor) and exit
 #   ./bootstrap.sh --dry-run   print what would happen, change nothing
 #   ./bootstrap.sh --help
-#
-# install.sh is the small one: link the commands, merge the hooks, for a machine
-# that already runs tmux. This is the large one -- packages, plugins, config,
-# commands, hooks -- and it CALLS install.sh rather than copying it, so there is
-# one implementation of the linking rules and one of the hook merge.
-#
-# Every step is skippable and every step is idempotent: running this twice must
-# be as safe as running it once, because the second run is how you upgrade.
+# Lines 2-11 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
 set -uo pipefail
 
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,15 +27,10 @@ for a in "$@"; do case "$a" in
     --check)   check=1 ;;
     --dry-run) dry=1 ;;
     --help|-h) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    # A typo must not install a different set of things than the user asked for.
     *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
-# --latest is an opt-in on top of --full, never instead of it: alone it would
-# resolve three tags for a fetch that never runs.
 [ "$latest" -eq 1 ] && [ "$full" -eq 0 ] && {
     printf -- '--latest needs --full\n\n%s\n' "$USAGE" >&2; exit 2; }
-# One implementation of the doctor, in install.sh; this is only the name people
-# reach for first, and it reports rather than doing any of the rest.
 [ "$check" -eq 1 ] && [ $((full + latest + dry + assume_yes)) -gt 0 ] && {
     printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
 [ "$check" -eq 1 ] && exec "$DIR/install.sh" --check
@@ -57,9 +45,7 @@ run() {  # run <description> <command...>
     else failed+=("$what"); printf '  FAIL:  %s\n' "$what" >&2; return 1; fi
 }
 
-# Default is the answer taken by --yes and by a non-interactive shell (a pipe,
-# a CI job). Asking a question nobody can answer and then hanging is the worst
-# outcome, so absence of a tty means "take the default", never "wait".
+# With no tty the default is taken: a question nobody can answer must not hang.
 ask() {  # ask <question> <default y|n>
     local q=$1 def=${2:-y} reply
     if [ "$assume_yes" -eq 1 ] || [ ! -t 0 ]; then [ "$def" = y ]; return; fi
@@ -79,9 +65,7 @@ ver_ge() {  # ver_ge <have> <maj> <min>
 }
 
 # ---------------------------------------------------------------- packages ---
-# One installer per distro, resolved once. An unknown package manager is not an
-# error: everything after this step still works, the user just installs the
-# handful of tools by hand, so say which ones and carry on.
+# An unknown package manager is not an error: the user installs the missing tools by hand.
 PKG="" PKG_INSTALL=""
 if   have apt-get; then PKG=apt;    PKG_INSTALL="sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq"
 elif have dnf;     then PKG=dnf;    PKG_INSTALL="sudo dnf install -y -q"
@@ -90,9 +74,7 @@ elif have zypper;  then PKG=zypper; PKG_INSTALL="sudo zypper -n install"
 elif have brew;    then PKG=brew;   PKG_INSTALL="brew install"
 fi
 
-# name:command:why -- command is what we test for, because the package name and
-# the binary disagree often enough (bat ships as batcat on Debian) that testing
-# the package name would reinstall something already present on every run.
+# name:command:why -- the command is tested, since names differ (Debian's batcat).
 PACKAGES=(
     "git:git:cloning the plugins"
     "tmux:tmux:the whole point"
@@ -113,8 +95,7 @@ elif [ -z "$PKG" ]; then
     note "no known package manager; install by hand: ${missing[*]}"
     skipped+=("packages: no package manager")
 elif ask "install ${missing[*]} with $PKG?" y; then
-    # Deliberately one call, not a loop: apt resolves the set together, and a
-    # per-package loop turns one password prompt into five.
+    # One call, so the set resolves together behind one password prompt.
     run "install ${missing[*]}" bash -c "$PKG_INSTALL ${missing[*]}"
 else
     skipped+=("packages")
@@ -175,9 +156,7 @@ elif ask "clone the ${#TPM_PLUGINS[@]} plugins into $PLUGINS?" y; then
     [ "$dry" -eq 1 ] || mkdir -p "$PLUGINS"
     for p in "${TPM_PLUGINS[@]}"; do
         d=${p%%:*}; url=${p#*:}
-        # An existing checkout is left exactly as it is. Pulling would discard
-        # a pinned revision the user chose, and this script has no business
-        # deciding that a plugin should move.
+        # Never pulled: that would discard a revision the user pinned.
         if [ -d "$PLUGINS/$d/.git" ]; then note "have   $d"; continue; fi
         run "clone $d" git clone -q --depth 1 "$url" "$PLUGINS/$d"
     done
@@ -187,8 +166,7 @@ fi
 
 # ----------------------------------------------------------------- config ----
 step "tmux config"
-# Both candidates, not the first readable one: tmux loads both, so the
-# run-shell line in either wires the box (#96). install.sh --check agrees.
+# tmux loads both, so the run-shell line in either wires the box.
 CONF=''; wired=''
 for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
     [ -r "$c" ] || continue
@@ -207,17 +185,13 @@ elif [ ! -e "$CONF" ]; then
         skipped+=("config")
     fi
 else
-    # Never rewrite a config someone has been editing for years. Appending the
-    # one run-shell line is the smallest change that makes cockpit work, and it
-    # is a line they can delete. The full example stays available to copy from.
+    # Never rewrite an existing config; one appended line is the smallest change.
     note "$CONF exists and does not load cockpit"
     if ask "append the run-shell line to it? (a backup is kept)" y; then
         if [ "$dry" -eq 1 ]; then
             printf '  would: append run-shell to %s\n' "$CONF"
         else
-            # Keep the FIRST backup: this step runs again whenever the
-            # run-shell line was removed, and the second copy would already
-            # carry cockpit's own edit. install.sh guards its .bak the same way.
+            # Only the first backup is kept: a later one would carry our edit.
             bak_ok=1; bak_note=" (backup: $CONF.bak)"
             if [ -e "$CONF.bak" ]; then
                 bak_note=' (existing backup kept, not overwritten)'
@@ -248,10 +222,8 @@ else
 fi
 
 # ----------------------------------------------------------- latest tools ----
-# Opt-in and pinned, the way fzf's own installer pins. Debian ships fzf 0.44.1,
-# below the 0.63 the pickers need, so that one is fetched even without --full:
-# shadowing it in $BIN is the only clean way up, never over a distro binary,
-# never with sudo.
+# Pinned, into $BIN, never over a distro binary or with sudo. An fzf below the
+# pickers' 0.63 is fetched even without --full.
 FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
 fzf_old=0
 fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
@@ -270,9 +242,7 @@ latest_tag() {                # latest_tag <owner/repo> <pin>
     esac
 }
 
-# Checksums first, then the asset: "could not verify" is not "verified", so an
-# unreachable sums file fails closed while an unreachable asset is only a skip.
-# Same order as scripts/tui-fetch.
+# An unreachable sums file fails closed; an unreachable asset is only a skip.
 fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
     local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 tmp a depth
     if [ "$dry" -eq 1 ]; then printf '  would: fetch %s %s\n' "$name" "$ver"; return 0; fi
@@ -290,8 +260,7 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     if ! curl -fsSL --retry 2 --max-time 120 -o "$tmp/a.tgz" "$asset"; then
         printf '  skip:  %s (download failed -- offline?)\n' "$name" >&2; return 0
     fi
-    # Rewrite the published name onto the temp file, so sha256sum -c checks the
-    # bytes that arrived rather than a name that is not on disk.
+    # The published name is rewritten so sha256sum -c checks the bytes that arrived.
     if [ "$sums" != - ] && ! ( cd "$tmp" && grep -E " \*?${a//./\\.}\$" sums |
             sed -E "s| \*?${a//./\\.}\$| a.tgz|" | sha_c ) >/dev/null 2>&1; then
         printf '  FAIL:  %s checksum mismatch -- NOT installed\n' "$name" >&2; return 1
@@ -326,8 +295,7 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
         note "no prebuilt binaries for $(uname -s)/$(uname -m), use your package manager"
         skipped+=("latest tools: no prebuilt binaries")
     elif [ "$(uname -s)" = Darwin ] && have brew; then
-        # brew already owns these on macOS; a fetched copy would shadow the one
-        # it upgrades, and only one of the two would ever move again.
+        # A fetched copy would shadow the one brew upgrades.
         if [ "$full" -eq 0 ] && ask "upgrade fzf $fzf_have with brew?" y; then
             run "brew upgrade fzf" brew upgrade fzf
         elif [ "$full" -eq 1 ] && ask "install fzf, gum and bat with brew?" y; then
@@ -347,8 +315,7 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
         elif [ "$latest" -eq 1 ]; then
             note "would: resolve the latest tags first; the pins are shown"
         fi
-        # The probe is "$BIN/<tool>", never PATH: with a distro fzf ahead of
-        # $BIN, a PATH probe re-downloads everything on every run.
+        # Probe "$BIN/<tool>", not PATH, where a distro copy may answer first.
         fetch_tool fzf "$FZF" "$("$BIN/fzf" --version 2>/dev/null | awk '{print $1}')" \
             "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
             "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
@@ -374,9 +341,6 @@ elif ! have jq; then
     note "jq is required for the merge; the manual block is in the README"
     skipped+=("hooks: no jq")
 elif ask "merge the agent-state hooks into ~/.claude/settings.json?" y; then
-    # NOT install.sh --hooks --dry-run: that flag only previews the hook merge,
-    # and the linking loop above it still runs and creates symlinks. A --dry-run
-    # that writes to disk is worse than no --dry-run at all.
     if [ "$dry" -eq 1 ]; then printf '  would: merge hooks into ~/.claude/settings.json\n'
     else "$DIR/install.sh" --hooks && did+=("merged hooks") || failed+=("hook merge"); fi
 else
@@ -390,8 +354,7 @@ for x in "${did[@]:-}";     do [ -n "$x" ] && printf '  done     %s\n' "$x"; don
 for x in "${skipped[@]:-}"; do [ -n "$x" ] && printf '  skipped  %s\n' "$x"; done
 for x in "${failed[@]:-}";  do [ -n "$x" ] && printf '  FAILED   %s\n' "$x" >&2; done
 
-# --full ends by showing the state it left behind. Advisory, like brew doctor:
-# its exit grades the box, not this run, so it never becomes ours.
+# Advisory: the doctor grades the box, not this run, so its exit is not ours.
 if [ "$full" -eq 1 ] && [ "$dry" -eq 0 ]; then
     printf '\n'
     "$DIR/install.sh" --check || :
