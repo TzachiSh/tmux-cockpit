@@ -11280,3 +11280,43 @@ else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
+
+echo "== tmux-fixer context: the side agent's prompt carries the main agent's recent steps, the popup says what main is on =="
+FC=$(mktmpd); cp -r "$DIR/scripts" "$FC/"; cp "$DIR/tests/fixtures/fixer-context/transcript.sh" "$FC/scripts/lib/transcript.sh"
+FCSESS="$FC/sess"; mkdir -p "$FCSESS/fixer"; printf 'fix the tests\n' > "$FCSESS/fixer/reason"; : > "$FCSESS/fixer/fence"
+FCBIN=$(mktmpd); ln -s "$DIR/tests/fixtures/fake-claude" "$FCBIN/claude"
+fc_run() {                    # <args-file> <env: NAME=VALUE ...>; the prompt is the first line after -p
+    env -u TMUX -u TMUX_PANE PATH="$FCBIN:$PATH" FAKE_CLAUDE_ARGS="$1" ${2:-} "$FC/scripts/tmux-fixer" --run %99 "$FCSESS" fix the tests >/dev/null 2>"$1.err" </dev/null
+}
+FCON=$(mktmpf); FCOFF=$(mktmpf)
+fc_run "$FCON" FC_ON=1; fc_run "$FCOFF" FC_ON=0
+is "with a transcript the prompt gets the heading" "1" "$(grep -c '^What the other agent has been doing$' "$FCON")"
+is "and the tail's tool line" "1" "$(grep -c '^TOOL Bash: run the suite$' "$FCON")"
+is "and the job still follows the context" "1" "$(grep -c '^fix the tests$' "$FCON")"
+is "without one the prompt has no heading" "0" "$(grep -c 'What the other agent has been doing' "$FCOFF")"
+# Today's prompt, byte for byte: the job, a blank line, the SIDE TASK paragraph.
+FCWANT=$(printf 'fix the tests\n\nYou are a SIDE TASK running beside')
+is "without one the prompt starts exactly as today" "$FCWANT" "$(sed -n '2,4p' "$FCOFF" | head -c "${#FCWANT}")"
+is "the argv line before the prompt is -p" "-p" "$(sed -n 1p "$FCOFF")"
+is "a stub transcript writes nothing to stderr" "0" "$(wc -c < "$FCOFF.err")"
+is "a stub transcript still hands over" "HANDOVER: fixed the thing; suite 118s → 8s; re-read tests/" "$(cat "$FCSESS/handover")"
+# The popup line, through the real -p: an empty job cancels right after the line is printed.
+if need_tmux "tmux-fixer context popup line"; then :; else
+FCS="cockpit-fc-$$"; SOCKS="$SOCKS $FCS"; FCST=$(mktmpd); FCD=$(mktmpd)
+env -u TMUX -u TMUX_PANE "$TMUX_REAL" -L "$FCS" -f /dev/null new-session -d -s t -x 120 -y 40 -c "$FCD" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FCS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+FCAP=$("$TMUX_REAL" -L "$FCS" list-panes -t t: -F '#{pane_id}')
+fc_line() {                   # <FC_ON> <FC_AGE>
+    "$TMUX_REAL" -L "$FCS" run-shell "cd $(printf '%q' "$FCD") && printf '\\n\\n' | FC_ON=$1 FC_AGE='$2' XDG_STATE_HOME=$(printf '%q' "$FCST") '$FC/scripts/tmux-fixer' -p $FCAP; echo SRC=\$?" > "$FCST/out" 2>&1
+    cat "$FCST/out"
+}
+is "main-is-on: tool, description, age" "main is on: Bash: run the suite, 4m12s
+SRC=0" "$(fc_line 1 252)"
+is "an age under a minute is seconds" "main is on: Bash: run the suite, 45s
+SRC=0" "$(fc_line 1 45)"
+is "an empty age drops the comma" "main is on: Bash: run the suite
+SRC=0" "$(fc_line 1 '')"
+is "stubs print no main-is-on line and the popup still runs" "SRC=0" "$(fc_line 0 252)"
+"$TMUX_REAL" -L "$FCS" kill-server >/dev/null 2>&1
+fi
+rm -rf "$FC" "$FCBIN"; unset -f fc_run fc_line 2>/dev/null

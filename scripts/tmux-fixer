@@ -33,7 +33,17 @@ run_fixer() {                 # <main-pane> <sess> <job…>
     local -a deny=()
     while IFS= read -r p; do [ -n "$p" ] && deny+=("Edit(./$p)"); done < "$f/fence"
     for g in commit push checkout switch stash reset rebase merge restore clean; do deny+=("Bash(git $g *)"); done
-    out=$(claude -p "$job
+    # What the main agent has been doing, from its transcript; nothing (and the
+    # prompt as it was) when the transcript is unreadable.
+    local ctx="" tf
+    if tf=$(transcript_file "$pane" 2>/dev/null) && [ -n "$tf" ]; then
+        ctx=$(transcript_tail "$tf" 4096 2>/dev/null) || ctx=""
+    fi
+    [ -n "$ctx" ] && ctx="What the other agent has been doing
+$ctx
+
+"
+    out=$(claude -p "$ctx$job
 
 You are a SIDE TASK running beside another agent that is working in this repository right now. Do only this job. Do not touch these files, they are the other agent's live edits: ${fence:-none}. Do not commit. When you are done, your final message must be exactly ONE line that starts with 'HANDOVER: ' and states what changed and the observable delta (for example 'HANDOVER: tests fixed; suite 118s -> 8s; re-read any test file you had open'). No reasoning, no summary, one line." \
         --output-format json --permission-mode acceptEdits --max-turns 60 --session-id "$sid" \
@@ -58,6 +68,28 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/fixer.sh" || exit 1
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
+# shellcheck source=lib/transcript.sh
+. "${d%/*}/lib/transcript.sh" || exit 1
+
+# 252 -> 4m12s, 45 -> 45s, 3720 -> 1h02m.
+fixer_age() {                 # <seconds>
+    local s=$1
+    if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+    elif [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60))
+    else printf '%ds' "$s"; fi
+}
+# One line for the popup: what the main agent is in the middle of. Nothing when unknown.
+main_is_on() {                # <main-pane>
+    local tf rows row tool age
+    tf=$(transcript_file "$1" 2>/dev/null) && [ -n "$tf" ] || return 0
+    rows=$(transcript_doing "$tf" 2>/dev/null) || return 0
+    row=$(printf '%s\n' "$rows" | awk -F'\t' '$1 == "doing" { print; exit }')
+    [ -n "$row" ] || return 0
+    tool=$(printf '%s' "$row" | cut -f2); age=$(printf '%s' "$row" | cut -f3)
+    [ -n "$tool" ] || return 0
+    case "$age" in ''|*[!0-9]*) age="" ;; *) age=", $(fixer_age "$age")" ;; esac
+    printf 'main is on: %s%s\n' "$tool" "$age"
+}
 
 # --- -p: the popup ---------------------------------------------------------------
 # fixer_alive, not the mkdir, refuses a second spawn. The server spawns the pane
@@ -71,6 +103,7 @@ spawn_fixer() {               # <main-pane>
         tmux display-message "cockpit: a side fix is already running for $pane: $(cat -- "$f/reason" 2>/dev/null) (pane $(cat -- "$f/pane" 2>/dev/null))" 2>/dev/null
         exit 1
     fi
+    main_is_on "$pane"
     if [ -t 0 ]; then
         read -r -p 'side fix (one line, ↵ alone cancels): ' job
         read -r -p 'hold off commands matching (ERE, ↵ for none): ' guard
