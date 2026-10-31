@@ -8392,6 +8392,14 @@ esac
 idrows=$(grep -c '^\(doing\|said\|asked\) ' <<<"$idout")
 [ "$idrows" = 3 ] && ok "info shows exactly the three transcript rows" || bad "info shows exactly the three transcript rows" 3 "$idrows"
 case "$idout" in *"state     "*"doing     "*"review    "*) ok "the rows sit under the state row" ;; *) bad "the rows sit under the state row" "state, doing, review in order" "$idout" ;; esac
+# stdout and stderr of the screen into separate files (outside the tree under test).
+rm -rf "$IDTREE/scripts"; cp -r "$DIR/scripts" "$IDTREE/scripts"
+cp "$DIR/tests/fixtures/info-doing/transcript-noisy.sh" "$IDTREE/scripts/lib/transcript.sh"
+"$TMUX_REAL" -L "$ID" run-shell "XDG_STATE_HOME=$(printf '%q' "$IDSTATE") '$IDTREE/scripts/tmux-review' -p $IDAP --info >'$IDSTATE/out' 2>'$IDSTATE/err'" >/dev/null 2>&1
+[ ! -s "$IDSTATE/err" ] && ok "a reader that writes to stderr leaves the screen's stderr empty" || bad "a reader that writes to stderr leaves the screen's stderr empty" "empty" "$(cat "$IDSTATE/err")"
+case "$(cat "$IDSTATE/out")" in *noise*) bad "reader stderr is not on the screen" "no noise" "$(cat "$IDSTATE/out")" ;; *) ok "reader stderr is not on the screen" ;; esac
+case "$(cat "$IDSTATE/out")" in *$'\033'*) bad "an ESC in a transcript field never reaches the screen" "no ESC byte" "$(cat -v "$IDSTATE/out")" ;; *) ok "an ESC in a transcript field never reaches the screen" ;; esac
+grep -q 'said      red \[31mtext\[0m end' "$IDSTATE/out" && ok "the text around the ESC survives" || bad "the text around the ESC survives" "said      red [31mtext[0m end" "$(cat -v "$IDSTATE/out")"
 idp=$(id_screen transcript-partial.sh "$IDAP")
 case "$idp" in
     *"doing     Read: a file"*) ok "a doing row with no age has no since" ;;

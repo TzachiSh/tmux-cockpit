@@ -399,13 +399,12 @@ age_short() {                 # <seconds>
 
 # The doing / said / asked rows and the /btw pointer, for an agent pane. The
 # transcript reader fails quietly (status 1, no output): then no rows, no error.
-info_doing_rows() {           # <pane>
-    local pane=$1 is_agent file kind a b age
-    is_agent=$(tmux display-message -p -t "$pane" \
-        '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
-    [ "$is_agent" = 1 ] || return 0
+info_doing_rows() {           # <pane> <is-agent 1|0>
+    local pane=$1 file kind a b age
+    [ "$2" = 1 ] || return 0
     if file=$(transcript_file "$pane" 2>/dev/null) && [ -n "$file" ]; then
         while IFS=$'\t' read -r kind a b; do
+            a=${a//[[:cntrl:]]/}          # a transcript is not trusted with the terminal
             case $kind in
                 doing) age=$(age_short "$b") && age=" (since $age)"
                        printf 'doing     %s%s\n' "$a" "$age" ;;
@@ -425,9 +424,9 @@ info_doing_rows() {           # <pane>
 # (agent-state's idiom -- tab would collapse the empty fields that mean
 # "unset").
 info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f id where cmd path wt state msg review spool sid title hold root sess b n1 n2
+    local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}' 2>/dev/null)
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}'"$sep"'#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
     id=${f%%"$sep"*};     f=${f#*"$sep"}
     # display-message does NOT fail on a pane id that does not exist -- it
     # expands every format to the empty string and exits 0 (measured on 3.7c),
@@ -444,7 +443,8 @@ info_mode() {                 # <pane>
     review=${f%%"$sep"*}; f=${f#*"$sep"}
     spool=${f%%"$sep"*};  f=${f#*"$sep"}
     sid=${f%%"$sep"*};    f=${f#*"$sep"}
-    title=${f%%"$sep"*};  hold=${f#*"$sep"}
+    title=${f%%"$sep"*};  f=${f#*"$sep"}
+    hold=${f%%"$sep"*};   agent=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
     # The root is the tree prefix r diffs; an agent editing another tree
@@ -457,7 +457,7 @@ info_mode() {                 # <pane>
     root=$(git_root "$path")
     printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
-    info_doing_rows "$id"
+    info_doing_rows "$id" "$agent"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
     printf 'hold      %s\n' "${hold:-—}"
     sess=$(session_dir "$id" "$root")
