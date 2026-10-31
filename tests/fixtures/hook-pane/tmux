@@ -1,0 +1,4 @@
+#!/bin/sh
+# Records one line per call in $HP_TMUXLOG and does nothing else.
+printf '%s\n' "$*" >> "${HP_TMUXLOG:-/dev/null}"
+exit 0

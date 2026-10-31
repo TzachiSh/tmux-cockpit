@@ -1,0 +1,13 @@
+#!/bin/sh
+# A macOS-shaped ps over a table: $HP_PSDIR/<pid>.ppid and <pid>.cmd hold what ps would print.
+#   ps -o ppid= -p <pid>        ps eww -o command= -p <pid>
+# One line per call in $HP_PSLOG; like the real one it exits 1 for a pid it does not know.
+printf '%s\n' "$*" >> "${HP_PSLOG:-/dev/null}"
+for pid; do :; done
+case "$*" in
+    *ppid=*)   f="$HP_PSDIR/$pid.ppid" ;;
+    *command=*) f="$HP_PSDIR/$pid.cmd" ;;
+    *) exit 2 ;;
+esac
+[ -r "$f" ] || exit 1
+cat "$f"

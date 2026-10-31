@@ -70,6 +70,9 @@ chmod +x "$SHIM/tmux"
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
+# Nor may a hook under test find the pane of the claude this suite runs inside: find_pane
+# walks the ancestors (#174). The hook-pane blocks switch it back on for themselves.
+export COCKPIT_NO_PANE_WALK=1
 PATH="$SHIM:$PATH"; export PATH
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
@@ -11277,6 +11280,198 @@ is "and so does the open picker"                                            "1 1
    "$(opkeys pick)"
 if [ -n "$OPWAS" ]; then tmux set-option -p -t "$PANE" @cockpit_click_line "$OPWAS" 2>/dev/null
 else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
+
+echo "== hook-pane: find_pane takes the nearest ancestor's pane and socket (#174) =="
+# Claude Code 2.1.316 runs the turn in a daemon worker whose environment has no TMUX and no
+# TMUX_PANE; the daemon above it and the front end above that still do. find_pane walks up
+# from a pid and adopts the pair from the first ancestor that has a pane. These rows drive it
+# over a fake /proc (COCKPIT_PROC_DIR) and a fake ps, so the chain is exactly what each row says.
+hp_proc() {                   # hp_proc <root> <pid> <ppid> <comm> [NAME=value ...]
+    local root=$1 pid=$2 ppid=$3 comm=$4 kv; shift 4
+    mkdir -p "$root/$pid"
+    printf '%s (%s) S %s 0 0 0\n' "$pid" "$comm" "$ppid" > "$root/$pid/stat"
+    { for kv in "$@"; do printf '%s\0' "$kv"; done; } > "$root/$pid/environ"
+}
+hp_find() {                   # hp_find <root> <pid> [NAME=value ...] -> "<TMUX_PANE>|<TMUX>"
+    local root=$1 pid=$2; shift 2
+    env -u TMUX -u TMUX_PANE -u COCKPIT_NO_PANE_WALK COCKPIT_PROC_DIR="$root" "$@" \
+        bash -c '. "$0/scripts/lib/hook.sh" && find_pane "$1"
+                 printf "%s|%s" "${TMUX_PANE:-}" "${TMUX:-}"' \
+        "$DIR" "$pid" 2>&1
+}
+HPD=$(mktmpd)
+HPR="$HPD/p"; mkdir -p "$HPR"
+hp_proc "$HPR" 400 300 worker
+hp_proc "$HPR" 300 200 daemon TMUX=/tmp/s,1,0 TMUX_PANE=%3
+hp_proc "$HPR" 200 100 front TMUX=/tmp/far,9,9 TMUX_PANE=%9
+hp_proc "$HPR" 100 1 shell
+is "the nearest ancestor with a pane wins, and brings its socket" \
+   "%3|/tmp/s,1,0" "$(hp_find "$HPR" 400)"
+is "a start pid that has the pane itself is adopted" "%3|/tmp/s,1,0" "$(hp_find "$HPR" 300)"
+is "a chain with no pane yields nothing" "|" "$(hp_find "$HPR" 100)"
+# comm is free text: spaces and a closing paren must not shift the ppid field.
+hp_proc "$HPR" 410 300 'a b) c'
+is "a comm with spaces and a paren still gives the right parent" "%3|/tmp/s,1,0" \
+   "$(hp_find "$HPR" 410)"
+hp_proc "$HPR" 420 300 w TMUX=/stale/socket,1,1
+is "a stale TMUX in the worker is not mixed with the ancestor's pane" "%3|/tmp/s,1,0" \
+   "$(hp_find "$HPR" 420 TMUX=/stale/socket,1,1)"
+hp_proc "$HPR" 500 1 lone TMUX_PANE=%4
+hp_proc "$HPR" 510 500 child
+is "an ancestor with a pane and no socket leaves TMUX unset, not the stale one" "%4|" \
+   "$(hp_find "$HPR" 510 TMUX=/stale/socket,1,1)"
+# Only a real pane id is adopted; a lookalike name or a malformed value is walked past.
+hp_proc "$HPR" 600 300 child NOT_TMUX_PANE=%7 TMUX_PANEL=%7 TMUX_PANE=
+hp_proc "$HPR" 610 600 child TMUX_PANE=3 TMUX=/bad,1,1
+hp_proc "$HPR" 620 610 child TMUX_PANE=%x TMUX=/bad,1,1
+is "lookalike names, a bare number and %x are skipped for the real pane above" \
+   "%3|/tmp/s,1,0" "$(hp_find "$HPR" 620)"
+# One container holding a real value and decoys: the real one is taken.
+hp_proc "$HPR" 630 1 mixed NOT_TMUX_PANE=%7 TMUX_PANE=%5 TMUX=/mixed,2,0 NOT_TMUX=/decoy,1,1
+is "one environ holding decoys and the real pair gives the real pair" "%5|/mixed,2,0" \
+   "$(hp_find "$HPR" 630)"
+# The last environ entry has no trailing NUL when a process rewrote its argv area.
+mkdir -p "$HPR/640"; printf '640 (c) S 1 0\n' > "$HPR/640/stat"
+printf 'A=b\0TMUX=/tail,3,0\0TMUX_PANE=%%6' > "$HPR/640/environ"
+is "an unterminated last entry is still read" "%6|/tail,3,0" "$(hp_find "$HPR" 640)"
+# An unreadable environ (another user's process) is walked past, not fatal.
+hp_proc "$HPR" 650 300 child
+rm -f "$HPR/650/environ"; mkdir "$HPR/650/environ"
+is "an unreadable environ is skipped and the walk goes on" "%3|/tmp/s,1,0" "$(hp_find "$HPR" 650)"
+# pid 1 is where the walk stops: its environ is never read.
+hp_proc "$HPR" 1 0 init TMUX_PANE=%1
+hp_proc "$HPR" 660 1 child
+is "the walk stops at pid 1 without reading it" "|" "$(hp_find "$HPR" 660)"
+# Cap: 12 hops. The start pid is hop 1; a pane on hop 12 is found, one on hop 13 is not.
+hp_chain() {                  # hp_chain <root> <pane-hop> -> 14 links, 1001 -> 1002 -> ... -> 1
+    local root=$1 at=$2 i
+    mkdir -p "$root"
+    for i in $(seq 1 14); do
+        if [ "$i" = "$at" ]; then hp_proc "$root" $((1000 + i)) $((1001 + i)) link TMUX_PANE=%12
+        else hp_proc "$root" $((1000 + i)) $((1001 + i)) link; fi
+    done
+    hp_proc "$root" 1014 1 link
+}
+hp_chain "$HPD/cap12" 12; hp_chain "$HPD/cap13" 13
+is "a pane on the 12th hop is found" "%12|" "$(hp_find "$HPD/cap12" 1001)"
+is "a pane on the 13th hop is not" "|" "$(hp_find "$HPD/cap13" 1001)"
+# A parent loop cannot spin: the cap ends it.
+hp_proc "$HPR" 700 701 loopa; hp_proc "$HPR" 701 700 loopb
+is "a ppid cycle ends at the cap with nothing" "|" "$(hp_find "$HPR" 700)"
+is "COCKPIT_NO_PANE_WALK=1 turns the walk off" "|" "$(hp_find "$HPR" 400 COCKPIT_NO_PANE_WALK=1)"
+is "a start pid that is not a number finds nothing" "|" "$(hp_find "$HPR" 'x y')"
+# Without /proc (macOS): ps supplies both the parent and the environment.
+HPPS="$HPD/ps"; mkdir -p "$HPPS"
+printf '   300\n' > "$HPPS/400.ppid"; printf '/usr/bin/worker --flag\n' > "$HPPS/400.cmd"
+printf '  200\n' > "$HPPS/300.ppid"
+printf '/usr/bin/daemon run NOT_TMUX_PANE=%%7 NOT_TMUX=/decoy,1,1 %s\n' \
+    'TMUX=/tmp/m,5,0 TMUX_PANE=%3 HOME=/h' > "$HPPS/300.cmd"
+printf '1\n' > "$HPPS/200.ppid"; printf 'zsh TMUX_PANE=%%9\n' > "$HPPS/200.cmd"
+HPB=$(mktmpd); ln -s "$DIR/tests/fixtures/hook-pane/ps" "$HPB/ps"
+is "without /proc, ps eww yields the ancestor's pane and socket" "%3|/tmp/m,5,0" \
+   "$(hp_find "$HPD/no-proc" 400 PATH="$HPB:$PATH" HP_PSDIR="$HPPS")"
+is "without /proc, a chain with no pane yields nothing" "|" \
+   "$(hp_find "$HPD/no-proc" 410 PATH="$HPB:$PATH" HP_PSDIR="$HPPS")"
+printf 'top\n' > "$HPPS/410.cmd"; printf '1\n' > "$HPPS/410.ppid"
+is "without /proc, the walk ends at pid 1 unread" "|" \
+   "$(hp_find "$HPD/no-proc" 410 PATH="$HPB:$PATH" HP_PSDIR="$HPPS")"
+
+echo "== hook-pane: a hook in a daemon worker writes its pane's state (#174) =="
+if need_tmux "hook-pane"; then :; else
+HPS="cockpit-hp-$$"; SOCKS="$SOCKS $HPS"
+"$TMUX_REAL" -L "$HPS" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$HPS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+HPP=$("$TMUX_REAL" -L "$HPS" list-panes -t t -F '#{pane_id}')
+HPT="$SOCKDIR/$HPS,0,0"
+HPST=$(mktmpd)
+hpo() { "$TMUX_REAL" -L "$HPS" show-option -pqv -t "$HPP" "$1"; }
+# The parent holds the pane pair, the child that runs the hook has neither: the worker's shape.
+hp_worker() {                 # hp_worker [NAME=value...] -- <script> [args]; stdin passes on
+    local envs=()
+    while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+    env TMUX="$HPT" TMUX_PANE="$HPP" XDG_STATE_HOME="$HPST" ${envs[@]+"${envs[@]}"} \
+        bash -c 'env -u TMUX -u TMUX_PANE -u COCKPIT_NO_PANE_WALK "$@"; exit $?' hp-worker "$@"
+}
+hp_worker -- "$DIR/scripts/agent-state" running </dev/null >/dev/null 2>&1
+is "agent-state running lands on the ancestor's pane, on its socket" "running" "$(hpo @panestate)"
+hp_worker -- "$DIR/scripts/agent-state" needs-input </dev/null >/dev/null 2>&1
+is "agent-state needs-input does too" "needs-input" "$(hpo @panestate)"
+hp_worker -- "$DIR/scripts/agent-state" off </dev/null >/dev/null 2>&1
+is "and a later off clears it: nothing stays on needs-input" "" "$(hpo @panestate)"
+printf '%s' '{"notification_type":"permission_prompt","message":"ok?"}' \
+    | hp_worker -- "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+is "notify (which reads the payload) lands too" "needs-input" "$(hpo @panestate)"
+is "...with its ask text" "ok?" "$(hpo @panestate_msg)"
+hp_worker -- "$DIR/scripts/agent-state" off </dev/null >/dev/null 2>&1
+hp_worker -- "$DIR/scripts/agent-context" >/dev/null 2>&1 \
+    < "$DIR/tests/fixtures/statusline-overshoot.json"
+is "agent-context records the fill on the ancestor's pane" "100" "$(hpo @panestate_ctx)"
+printf '%s' '{"session_id":"sid-174","transcript_path":"/nonexistent/t.jsonl"}' \
+    | hp_worker -- "$DIR/scripts/review-gate" >/dev/null 2>&1
+is "review-gate Stop flags the ancestor's pane with its session id" "sid-174" \
+   "$(hpo @cockpit_session)"
+hp_worker -- "$DIR/scripts/review-gate" --concede "stuck on 174" </dev/null >/dev/null 2>&1
+hpsrv=${HPT%%,*}; hpsrv=${hpsrv//_/__}; hpkey="${hpsrv//\//_.}-${HPP#%}"
+is "review-gate --concede keys the concession by the ancestor's socket and pane" "stuck on 174" \
+   "$(cat "$HPST/tmux-cockpit/review/concede-$hpkey" 2>/dev/null)"
+# The same, on a box without /proc: ps does the walking (procps accepts the BSD spelling).
+hp_worker COCKPIT_PROC_DIR="$HPD/no-proc" -- "$DIR/scripts/agent-state" running \
+    </dev/null >/dev/null 2>&1
+is "with /proc absent, real ps finds the pane too" "running" "$(hpo @panestate)"
+hp_worker -- "$DIR/scripts/agent-state" off </dev/null >/dev/null 2>&1
+
+# No ancestor has a pane: exit 0, and tmux is never called.
+HPN=$(mktmpd); ln -s "$DIR/tests/fixtures/hook-pane/tmux" "$HPN/tmux"
+HPLOG="$HPN/calls"; : > "$HPLOG"
+hp_none() {                   # hp_none <script> [args] -> "<rc> <tmux calls>"
+    env -u TMUX -u TMUX_PANE -u COCKPIT_NO_PANE_WALK COCKPIT_PROC_DIR="$HPD/empty-proc" \
+        PATH="$HPN:$PATH" HP_TMUXLOG="$HPLOG" XDG_STATE_HOME="$HPST" "$@" </dev/null >/dev/null 2>&1
+    printf '%s %s' "$?" "$(wc -l < "$HPLOG" | tr -d ' ')"
+}
+mkdir -p "$HPD/empty-proc"
+is "agent-state with no pane anywhere exits 0 and calls no tmux" "0 0" \
+   "$(hp_none "$DIR/scripts/agent-state" running)"
+is "agent-state notify with no pane anywhere exits 0 and calls no tmux" "0 0" \
+   "$(hp_none "$DIR/scripts/agent-state" notify)"
+is "review-gate with no pane anywhere exits 0 and calls no tmux" "0 0" \
+   "$(hp_none "$DIR/scripts/review-gate")"
+is "review-gate --pretool with no pane anywhere exits 0 and calls no tmux" "0 0" \
+   "$(hp_none "$DIR/scripts/review-gate" --pretool)"
+is "agent-context with no pane anywhere exits 0 and calls no tmux" "0 0" \
+   "$(hp_none "$DIR/scripts/agent-context")"
+is "review-gate --concede with no pane anywhere still refuses (exit 1)" "1 0" \
+   "$(hp_none "$DIR/scripts/review-gate" --concede why)"
+
+# Unchanged: a TMUX_PANE in the environment (or a pane argument) wins and nothing is walked.
+# The fake ps counts every fork the walk would make; the fast path must make none.
+HPQ=$(mktmpd); ln -s "$DIR/tests/fixtures/hook-pane/ps" "$HPQ/ps"
+HPPL="$HPQ/ps.log"; : > "$HPPL"
+printf '1\n' > "$HPPS/2000.ppid"; printf 'x TMUX=/other,1,1 TMUX_PANE=%%77\n' > "$HPPS/2000.cmd"
+hp_fast() {                   # hp_fast <env NAME=value...> -- <script> [args] -> the pane tmux saw
+    local envs=()
+    while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+    : > "$HPLOG"; : > "$HPPL"
+    env -u TMUX -u TMUX_PANE -u COCKPIT_NO_PANE_WALK COCKPIT_PROC_DIR="$HPD/no-proc" \
+        PATH="$HPN:$HPQ:$PATH" HP_TMUXLOG="$HPLOG" HP_PSLOG="$HPPL" HP_PSDIR="$HPPS" \
+        ${envs[@]+"${envs[@]}"} "$@" </dev/null >/dev/null 2>&1
+    grep -o -m1 -e '-t %[0-9]*' "$HPLOG" | head -1
+}
+is "TMUX_PANE set: that pane is the target" "-t %5" \
+   "$(hp_fast TMUX_PANE=%5 TMUX=/mine,1,1 -- "$DIR/scripts/agent-state" running)"
+is "TMUX_PANE set: ps is never run" "0" "$(wc -l < "$HPPL" | tr -d ' ')"
+is "a pane argument beats TMUX_PANE and the walk" "-t %6" \
+   "$(hp_fast TMUX_PANE=%5 -- "$DIR/scripts/agent-state" running %6)"
+is "a pane argument: ps is never run" "0" "$(wc -l < "$HPPL" | tr -d ' ')"
+hp_fast TMUX_PANE=%5 -- "$DIR/scripts/agent-context" >/dev/null
+is "TMUX_PANE set in agent-context: ps is never run" "0" "$(wc -l < "$HPPL" | tr -d ' ')"
+hp_fast TMUX_PANE=%5 -- "$DIR/scripts/review-gate" --pretool >/dev/null
+is "TMUX_PANE set in review-gate: ps is never run" "0" "$(wc -l < "$HPPL" | tr -d ' ')"
+hp_fast -- "$DIR/scripts/agent-state" running >/dev/null
+is "an unset pane in a hook does walk (the ps log is the proof)" "yes" \
+   "$([ -s "$HPPL" ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$HPS" kill-server >/dev/null 2>&1
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

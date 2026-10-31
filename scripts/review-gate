@@ -6,6 +6,14 @@
 # Fail-open everywhere: a hook must never block the agent that fired it.
 set -u
 pane=${TMUX_PANE:-}
+if [ -z "$pane" ]; then
+    # A hook outside the pane's environment (a daemon worker, #174): ask the ancestors.
+    # Before $TMUX is read below: the recovered socket belongs in the key.
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+    find_pane; pane=${TMUX_PANE:-}
+fi
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # Pane ids are per-server, so the socket joins the key (#88). Prefix-free encoding,
 # no fork. Duplicated in tmux-fixer, which writes the fixer- marker this reads.

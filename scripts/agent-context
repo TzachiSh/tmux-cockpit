@@ -3,11 +3,12 @@
 # then prints a minimal statusline. Bad input is a silent no-op, never an error.
 set -u
 pane="${TMUX_PANE:-}"
-case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac   # same guard as agent-state
-
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+# A statusline outside the pane's environment (a daemon worker, #174): ask the ancestors.
+[ -n "$pane" ] || { find_pane; pane="${TMUX_PANE:-}"; }
+case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac   # same guard as agent-state
 read_payload false
 
 command -v jq >/dev/null 2>&1 || exit 0

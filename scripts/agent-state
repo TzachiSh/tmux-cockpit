@@ -1,13 +1,21 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
-# The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
+# The pane defaults to $TMUX_PANE, else the nearest ancestor's (find_pane); tmux hooks have
+# neither, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
 set -u
 
 state="${1:-off}"
 pane="${2:-${TMUX_PANE:-}}"
 idle=""
+if [ -z "$pane" ]; then
+    # A hook outside the pane's environment (a daemon worker, #174): ask the ancestors.
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
+    find_pane; pane=${TMUX_PANE:-}
+fi
 # -t prefix-matches session names too, so anything but a %N id could hit another pane.
 case "$pane" in
     %[0-9]*) ;;
