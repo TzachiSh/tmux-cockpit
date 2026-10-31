@@ -173,7 +173,7 @@ case "${1:-}" in
     --loop)                     need review-diff.sh review-picker.sh review-deliver.sh ;;
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
-    --info)                     need review-diff.sh review-fleet.sh
+    --info)                     need review-diff.sh review-fleet.sh transcript.sh
                                 # shellcheck source=lib/fixer.sh
                                 . "$LIBDIR/fixer.sh" ;;
     --fleet)                    need review-diff.sh review-fleet.sh ;;

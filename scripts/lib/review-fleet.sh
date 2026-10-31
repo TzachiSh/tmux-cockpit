@@ -394,6 +394,35 @@ tui_row() {
 # session, the review dir. Read in ONE display-message, split on a US byte
 # (agent-state's idiom -- tab would collapse the empty fields that mean
 # "unset").
+# Seconds as the shortest human reading: 45s, 4m12s, 1h3m. Not a number: nothing.
+age_short() {                 # <seconds>
+    case $1 in ''|*[!0-9]*) return 1 ;; esac
+    if [ "$1" -ge 3600 ]; then printf '%sh%sm' $(( $1 / 3600 )) $(( $1 % 3600 / 60 ))
+    elif [ "$1" -ge 60 ]; then printf '%sm%ss' $(( $1 / 60 )) $(( $1 % 60 ))
+    else printf '%ss' "$1"; fi
+}
+
+# The doing / said / asked rows and the /btw pointer, for an agent pane. The
+# transcript reader fails quietly (status 1, no output): then no rows, no error.
+info_doing_rows() {           # <pane>
+    local pane=$1 is_agent file kind a b age
+    is_agent=$(tmux display-message -p -t "$pane" \
+        '#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
+    [ "$is_agent" = 1 ] || return 0
+    if file=$(transcript_file "$pane" 2>/dev/null) && [ -n "$file" ]; then
+        while IFS=$'\t' read -r kind a b; do
+            case $kind in
+                doing) age=$(age_short "$b") && age=" (since $age)"
+                       printf 'doing     %s%s\n' "$a" "$age" ;;
+                said)  printf 'said      %s\n' "$a" ;;
+                asked) age=$(age_short "$b") && age=" ($age)"
+                       printf 'asked     %s%s\n' "$a" "$age" ;;
+            esac
+        done < <(transcript_doing "$file" 2>/dev/null)
+    fi
+    printf 'ask it    /btw <question> in the pane (answers while it works)\n'
+}
+
 info_mode() {                 # <pane>
     local pane=$1 sep=$'\037' f id where cmd path wt state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
@@ -427,6 +456,7 @@ info_mode() {                 # <pane>
     root=$(git_root "$path")
     printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
+    info_doing_rows "$id"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
     printf 'hold      %s\n' "${hold:-—}"
     sess=$(session_dir "$id" "$root")
