@@ -11386,6 +11386,11 @@ printf '#!/bin/sh\necho '"'"'[{"pid":%d,"sessionId":"sid-aaa"}]'"'"'\n' "$$" > "
 is "an agents entry outside the pane's process tree is not joined" "1" "$(trfile "$TRP")"
 printf '#!/bin/sh\necho garbage\n' > "$TRBIN/claude"
 is "garbage from claude agents: nothing, status 1" "1" "$(trfile "$TRP")"
+printf '#!/bin/sh\necho "$1" > "%s/bound"; shift; exec "$@"\n' "$TRBIN" > "$TRBIN/timeout"
+printf '#!/bin/sh\necho "[]"\n' > "$TRBIN/claude"; chmod +x "$TRBIN/timeout"
+trfile "$TRP" >/dev/null
+is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/null)"
+rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

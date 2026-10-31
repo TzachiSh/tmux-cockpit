@@ -72,6 +72,13 @@ _tr_descends() {              # <pid> <ancestor-pid>
     return 1
 }
 
+# `claude agents --json` takes about 0.4 s and could hang, so it is bounded to 2 s
+# when timeout exists. Only reached when the pane has no @cockpit_session.
+_tr_agents() {
+    if command -v timeout >/dev/null 2>&1; then timeout 2 claude agents --json 2>/dev/null
+    else claude agents --json 2>/dev/null; fi
+}
+
 # The transcript of a pane's session: @cockpit_session, else `claude agents --json`
 # joined on the pane's process tree. Prints the .jsonl path, or nothing (status 1).
 transcript_file() {           # <pane-id>
@@ -85,7 +92,7 @@ transcript_file() {           # <pane-id>
         while IFS=$'\t' read -r pid sid; do
             _tr_descends "$pid" "$pp" && break
             sid=
-        done < <(timeout 5 claude agents --json 2>/dev/null \
+        done < <(_tr_agents \
                  | jq -r '.[] | select((.pid | type) == "number"
                                         and (.sessionId | type) == "string")
                           | [.pid, .sessionId] | join("\t")' 2>/dev/null)
