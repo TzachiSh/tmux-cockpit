@@ -12,12 +12,23 @@
 # Text fields (tool, description, assistant text, prompt) are the first non-blank line,
 # control characters stripped, at most 160 characters.
 
-# The jq program is a shared head plus one body per mode. The input is the last lines
-# of a transcript, slurped raw, so a line that is not JSON is skipped instead of
-# failing the lot.
+# The jq program is a shared head plus one body per mode ($mode is "doing" or "tail").
+# The input is the last lines of a transcript, slurped raw, so a line that is not JSON
+# is skipped instead of failing the lot.
+#
+# Head: text cleaning, the version gate, and $t, the user and assistant lines.
+# clean: first non-blank line, TAB to a space, C0 (and DEL) and C1 controls dropped,
+# 160 chars. prompt: a user string, minus what the harness injected (a <task-notification>,
+# <system-reminder>, <local-command-... or <command-... prefix gives ""), and a
+# <pasted_content ...> prompt shown as [pasted text].
 _TR_JQ_HEAD='
 def clean: split("\n") | map(select(test("\\S"))) | (.[0] // "")
-    | explode | map(select(. >= 32 and . != 127)) | implode | sub("^\\s+"; "") | .[0:160];
+    | explode | map(if . == 9 then 32 else . end)
+    | map(select(. >= 32 and (. < 127 or . > 159))) | implode
+    | sub("^\\s+"; "") | .[0:160];
+def prompt: if test("^\\s*<pasted_content") then "[pasted text]"
+    elif test("^\\s*<(task-notification|system-reminder|local-command-|command-)") then ""
+    else clean end;
 def secs: try ((.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
     | now - $t | floor | if . < 0 then 0 else . end) catch "";
 def desc: first(.input.description?, .input.command?, .input.file_path?, .input.pattern?,
@@ -25,22 +36,27 @@ def desc: first(.input.description?, .input.command?, .input.file_path?, .input.
 def tlabel: desc as $d | ((.name | strings) // "") as $n
     | (if $d == "" then $n else $n + ": " + $d end) | clean;
 def items: .message.content | arrays | .[];
+def human: select(.type == "user" and (.isMeta // false | not)
+    and (.message.content | type) == "string");
+def ver: try capture("^(?<a>[0-9]+)(\\.(?<b>[0-9]+))?(\\.(?<c>[0-9]+))?")
+    | [.a, (.b // "0"), (.c // "0")] | map(tonumber);
 
 [split("\n")[] | fromjson? | select(type == "object")] as $all
-| ([$all[] | .version? | strings] | last) as $v
-| if $v != null and (($v | split(".") | map(tonumber? // 0)) < [2, 1, 246]) then empty else
+| ([$all[] | .version? | strings | ver] | last) as $v
+| if $v != null and $v < [2, 1, 246] then empty else
   [$all[] | select(.type == "assistant" or .type == "user")] as $t |'
 
 # Body, tail mode: one line per turn, oldest first.
 _TR_JQ_TAIL='
   $t[] | if .type == "user" then
-      (.message.content | strings | clean) | select(. != "") | "USER: " + .
+      (human | .message.content | prompt) | select(. != "") | "USER: " + .
     else items | if .type == "text" then
         (.text | strings | clean) | select(. != "") | "AGENT: " + .
       elif .type == "tool_use" then "TOOL " + tlabel
       else empty end end'
 
-# Body, doing mode: the doing, said and asked rows.
+# Body, doing mode: the doing, said and asked rows. The doing row is the last assistant
+# tool_use, when no tool_result carries its id.
 _TR_JQ_DOING='
   ([$t[] | select(.type == "user") | items | select(.type == "tool_result")
       | .tool_use_id]) as $closed
@@ -48,9 +64,7 @@ _TR_JQ_DOING='
       | select(.type == "tool_use") | . + {timestamp: $ts}] | last) as $tu
   | ([$t[] | select(.type == "assistant") | items | select(.type == "text")
       | .text | strings | clean | select(. != "")] | last) as $said
-  | ([$t[] | select(.type == "user" and (.isMeta // false | not)
-        and (.message.content | type) == "string")
-      | {text: (.message.content | clean), timestamp}
+  | ([$t[] | human | {text: (.message.content | prompt), timestamp}
       | select(.text != "")] | last) as $asked
   | (if $tu != null and ($closed | index($tu.id) | not)
       then ["doing", ($tu | tlabel), ($tu | secs | tostring)] | join("\t") else empty end),

@@ -11333,6 +11333,39 @@ is "a zero-argument call: status 1, no output" "1:1:1:" \
 printf 'not json at all\n{"half":\n' > "$TRL"
 is "a transcript that is not JSON: status 1, no output" "1:" "$(transcript_doing "$TRL" 2>&1; echo -n "$?:")"
 
+trver() { sed "s/2\.1\.316/$1/" "$TRF/open.jsonl" > "$TRL"
+          transcript_doing "$TRL" 2>/dev/null | cut -f1 | tr '\n' ' '; }
+is "version 2.1.99 is older than 2.1.246 (numeric compare): refused" "" "$(trver 2.1.99)"
+is "version 2.1.1000 is newer than 2.1.246 (numeric compare): read" "doing said asked " "$(trver 2.1.1000)"
+is "version 2.1.250-beta compares on its leading x.y.z: read" "doing said asked " "$(trver 2.1.250-beta)"
+is "version 2.1 counts as 2.1.0: refused" "" "$(trver 2.1)"
+trpr() {                      # <content> [isMeta]: a real prompt, then this one
+    { jq -nc '{type:"user",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",message:{content:"real prompt"}}'
+      jq -nc --arg c "$1" --argjson m "${2:-false}" '{type:"user",version:"2.1.316",isMeta:$m,
+          timestamp:"2026-01-01T10:00:05Z",message:{content:$c}}'; } > "$TRL"; }
+for c in '<task-notification>done' '<system-reminder>hook' '<local-command-stdout>x' '<command-name>/x'; do
+    trpr "$c"
+    is "a prompt starting $c is harness-injected: asked and USER skip it" \
+       "real prompt|USER: real prompt" "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
+done
+trpr "meta text" true
+is "an isMeta prompt is skipped by asked and by the tail" \
+   "real prompt|USER: real prompt" "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
+trpr '<pasted_content id="1">a long paste'
+is "a <pasted_content> prompt shows as [pasted text] in asked and in the tail" \
+   "[pasted text]|USER: real prompt"$'\n'"USER: [pasted text]" \
+   "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
+trsay() { jq -nc --arg t "$1" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
+              message:{content:[{type:"text",text:$t}]}}' > "$TRL"; }
+trsay $'a\u0085b\u009bc'
+is "C1 controls (U+0080-U+009F) are stripped" "abc" "$(trrow "$TRL" said 2)"
+trsay $'a\tb'
+is "a TAB inside a text field becomes a space" "a b" "$(trrow "$TRL" said 2)"
+{ echo '{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:00Z","message":{"content":[{"type":"tool_use","id":"far","name":"Bash","input":{"description":"too old to see"}}]}}'
+  for _ in $(seq 350); do echo '{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:01Z","message":{"content":"p"}}'; done; } > "$TRL"
+is "only the last 300 lines are read: an open tool_use 350 lines back gives no doing row" \
+   "" "$(trrow "$TRL" doing 2)"
+
 echo "== transcript reader: tail (#176) =="
 is "the tail is USER/AGENT/TOOL lines, oldest first" \
    $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests' \
@@ -11385,6 +11418,15 @@ tmux_tr set-option -p -t "$TRP" @cockpit_session sid-gone 2>/dev/null
 is "a session id with no transcript file: nothing, status 1" "1" "$(trfile "$TRP")"
 tmux_tr set-option -p -t "$TRP" @cockpit_session '../*' 2>/dev/null
 is "a session id carrying glob or path characters is refused" "1" "$(trfile "$TRP")"
+tmux_tr set-option -pu -t "$TRP" @cockpit_session 2>/dev/null
+tmux_tr set-option -p -t "$TRP" @cockpit_session 'sid-*' 2>/dev/null
+is "a session id of sid-* (two matching files) is refused, not globbed" "1" "$(trfile "$TRP")"
+touch "$TRH/.claude/projects/outside.jsonl"
+tmux_tr set-option -p -t "$TRP" @cockpit_session '../outside' 2>/dev/null
+is "a session id that climbs out of its project directory is refused" "1" "$(trfile "$TRP")"
+tmux_tr set-option -p -t "$TRP" @cockpit_session sid-aaa 2>/dev/null
+is "jq off PATH on the @cockpit_session path: nothing, status 1" "1" \
+   "$( ( tmux() { tmux_tr "$@"; }; HOME="$TRH" PATH=/nonexistent transcript_file "$TRP" 2>&1; echo -n "$?" ) )"
 tmux_tr set-option -pu -t "$TRP" @cockpit_session 2>/dev/null
 printf '#!/bin/sh\necho '"'"'[{"pid":%d,"sessionId":"sid-aaa"}]'"'"'\n' "$$" > "$TRBIN/claude"   # a live pid that is not under the pane
 is "an agents entry outside the pane's process tree is not joined" "1" "$(trfile "$TRP")"
