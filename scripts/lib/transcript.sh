@@ -12,10 +12,10 @@
 # Text fields (tool, description, assistant text, prompt) are the first non-blank line,
 # control characters stripped, at most 160 characters.
 
-# One jq program for both readers. $mode is "doing" or "tail". The input is the
-# last lines of a transcript, slurped raw, so a line that is not JSON is skipped
-# instead of failing the lot.
-_TR_JQ='
+# The jq program is a shared head plus one body per mode. The input is the last lines
+# of a transcript, slurped raw, so a line that is not JSON is skipped instead of
+# failing the lot.
+_TR_JQ_HEAD='
 def clean: split("\n") | map(select(test("\\S"))) | (.[0] // "")
     | explode | map(select(. >= 32 and . != 127)) | implode | sub("^\\s+"; "") | .[0:160];
 def secs: try ((.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
@@ -29,39 +29,43 @@ def items: .message.content | arrays | .[];
 [split("\n")[] | fromjson? | select(type == "object")] as $all
 | ([$all[] | .version? | strings] | last) as $v
 | if $v != null and (($v | split(".") | map(tonumber? // 0)) < [2, 1, 246]) then empty else
-  [$all[] | select(.type == "assistant" or .type == "user")] as $t
-  | if $mode == "tail" then
-      $t[] | if .type == "user" then
-          (.message.content | strings | clean) | select(. != "") | "USER: " + .
-        else items | if .type == "text" then
-            (.text | strings | clean) | select(. != "") | "AGENT: " + .
-          elif .type == "tool_use" then "TOOL " + tlabel
-          else empty end end
-    else
-      ([$t[] | select(.type == "user") | items | select(.type == "tool_result")
-          | .tool_use_id]) as $closed
-      | ([$t[] | select(.type == "assistant") | .timestamp as $ts | items
-          | select(.type == "tool_use") | . + {timestamp: $ts}] | last) as $tu
-      | ([$t[] | select(.type == "assistant") | items | select(.type == "text")
-          | .text | strings | clean | select(. != "")] | last) as $said
-      | ([$t[] | select(.type == "user" and (.isMeta // false | not)
-            and (.message.content | type) == "string")
-          | {text: (.message.content | clean), timestamp}
-          | select(.text != "")] | last) as $asked
-      | (if $tu != null and ($closed | index($tu.id) | not)
-          then ["doing", ($tu | tlabel), ($tu | secs | tostring)] | join("\t") else empty end),
-        (if $said != null then ["said", $said] | join("\t") else empty end),
-        (if $asked != null then ["asked", $asked.text, ($asked | secs | tostring)] | join("\t")
-          else empty end)
-    end end'
+  [$all[] | select(.type == "assistant" or .type == "user")] as $t |'
 
-# Run the program over the last 300 lines of <jsonl>; status 1 when it prints nothing.
+# Body, tail mode: one line per turn, oldest first.
+_TR_JQ_TAIL='
+  $t[] | if .type == "user" then
+      (.message.content | strings | clean) | select(. != "") | "USER: " + .
+    else items | if .type == "text" then
+        (.text | strings | clean) | select(. != "") | "AGENT: " + .
+      elif .type == "tool_use" then "TOOL " + tlabel
+      else empty end end'
+
+# Body, doing mode: the doing, said and asked rows.
+_TR_JQ_DOING='
+  ([$t[] | select(.type == "user") | items | select(.type == "tool_result")
+      | .tool_use_id]) as $closed
+  | ([$t[] | select(.type == "assistant") | .timestamp as $ts | items
+      | select(.type == "tool_use") | . + {timestamp: $ts}] | last) as $tu
+  | ([$t[] | select(.type == "assistant") | items | select(.type == "text")
+      | .text | strings | clean | select(. != "")] | last) as $said
+  | ([$t[] | select(.type == "user" and (.isMeta // false | not)
+        and (.message.content | type) == "string")
+      | {text: (.message.content | clean), timestamp}
+      | select(.text != "")] | last) as $asked
+  | (if $tu != null and ($closed | index($tu.id) | not)
+      then ["doing", ($tu | tlabel), ($tu | secs | tostring)] | join("\t") else empty end),
+    (if $said != null then ["said", $said] | join("\t") else empty end),
+    (if $asked != null then ["asked", $asked.text, ($asked | secs | tostring)] | join("\t")
+      else empty end)'
+
+# Run head + body over the last 300 lines of <jsonl>; status 1 when it prints nothing.
 _tr_run() {                   # <mode> <jsonl-path>
-    local out
+    local out body
     command -v jq >/dev/null 2>&1 || return 1
     [ -f "${2:-}" ] || return 1
+    case $1 in doing) body=$_TR_JQ_DOING ;; tail) body=$_TR_JQ_TAIL ;; *) return 1 ;; esac
     out=$(tail -n 300 -- "$2" 2>/dev/null \
-          | jq -Rrs --arg mode "$1" "$_TR_JQ" 2>/dev/null) || return 1
+          | jq -Rrs "$_TR_JQ_HEAD $body end" 2>/dev/null) || return 1
     [ -n "$out" ] || return 1
     printf '%s\n' "$out"
 }
