@@ -71,10 +71,10 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/transcript.sh
 . "${d%/*}/lib/transcript.sh" || exit 1
 
-# 252 -> 4m12s, 45 -> 45s, 3720 -> 1h02m.
+# 252 -> 4m12s, 45 -> 45s, 3780 -> 1h3m.
 fixer_age() {                 # <seconds>
     local s=$1
-    if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s / 3600)) $((s % 3600 / 60))
+    if [ "$s" -ge 3600 ]; then printf '%dh%dm' $((s / 3600)) $((s % 3600 / 60))
     elif [ "$s" -ge 60 ]; then printf '%dm%02ds' $((s / 60)) $((s % 60))
     else printf '%ds' "$s"; fi
 }

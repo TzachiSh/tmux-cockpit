@@ -11314,6 +11314,8 @@ is "main-is-on: tool, description, age" "main is on: Bash: run the suite, 4m12s
 SRC=0" "$(fc_line 1 252)"
 is "an age under a minute is seconds" "main is on: Bash: run the suite, 45s
 SRC=0" "$(fc_line 1 45)"
+is "an hour or more is hours and unpadded minutes, no seconds" "main is on: Bash: run the suite, 1h3m
+SRC=0" "$(fc_line 1 3785)"
 is "an empty age drops the comma" "main is on: Bash: run the suite
 SRC=0" "$(fc_line 1 '')"
 is "stubs print no main-is-on line and the popup still runs" "SRC=0" "$(fc_line 0 252)"
