@@ -84,6 +84,11 @@ first 120 characters of the ask itself — Claude's `Notification` hook payload,
 not a guess. It clears whenever the pane resumes work or goes idle, and is
 left alone by `done` since a done pane has no border alert to read it on.
 
+Going `needs-input` also says so out loud. Unless you are already in that
+pane, tmux shows a 4-second message naming the window and the ask, and the
+terminal bell rings. `set -g @cockpit_needs_popup on` adds a popup as well. It
+is off by default, since a popup takes the keyboard.
+
 ### State ranking
 
 `needs-input` > `error` > `running` > `done`
@@ -287,6 +292,14 @@ over earlier, `prefix r` included.
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the optional `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 | `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
+
+`prefix + i` also shows up to three rows read from the agent's transcript:
+`doing` (the tool in flight and its age), `said` (its last sentence) and
+`asked` (your last prompt). No model is called and it takes about 0.1 s. The
+transcript is Claude Code's internal format, so if it changes the rows vanish
+quietly; versions older than 2.1.246 show none. To put a side question to the
+agent while it works, type `/btw <question>` in its pane. A plain message
+typed mid-turn is queued into the turn instead.
 
 Every key on one page, a line each: [KEYS.md](KEYS.md).
 
@@ -1016,6 +1029,11 @@ The flow, five lines:
    `@cockpit_fixer_deadline` set at or above that is unsupported (Claude
    Code kills the hook mid-hold before the deadline it is waiting on ever
    arrives), so keep it comfortably below `330`.
+
+The side agent's prompt starts with the main agent's recent steps: your last
+prompt, its last sentences and its last tool calls, capped at 4 KB. The popup
+shows `main is on: <tool>: <description>, <age>` so you can see what the
+agent is doing before you hand off a job.
 
 ```sh
 set -g @cockpit_fixer_key      f       # off restores stock find-window

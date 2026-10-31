@@ -13,8 +13,8 @@ layout.
 | `prefix a` | the agents menu below. Every row has its letter on screen. |
 | `prefix u` | jump to the pane that needs you; again for the next one. |
 | `prefix r` | review an agent's uncommitted diff, blocked agents first. |
-| `prefix i` | one screen about this pane: cwd, git root, state, review, hold. |
-| `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane. |
+| `prefix i` | one screen about this pane: cwd, git root, state, review, hold, and what the agent is doing, said and was asked. `/btw <question>` in the pane asks it aside. |
+| `prefix f` | a side fix beside a busy agent: a fenced `claude -p` in its own pane, primed with the main agent's recent steps. |
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |
 | `prefix b` | branch picker for this pane's repo. |
 | `prefix s` | session picker (`tm`), with each session's agents previewed. Replaces stock `choose-tree`. |
@@ -90,4 +90,5 @@ set -g @cockpit_fixer_key     f
 set -g @cockpit_fullscreen_key e    # hide the chrome; off keeps stock tmux
 set -g @cockpit_move_key      M
 set -g @cockpit_reload_key    R
+set -g @cockpit_needs_popup   off  # on: a popup when a pane needs you; it takes the keyboard
 ```
