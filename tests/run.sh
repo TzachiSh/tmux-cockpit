@@ -11310,6 +11310,10 @@ for n in 160 161 300; do
         message:{content:[{type:"text",text:([range($n)|"x"]|join(""))}]}}' > "$TRL"
     is "a $n-char text is said as 160 chars" 160 "$(trrow "$TRL" said 2 | tr -d '\n' | wc -m | tr -d ' ')"
 done
+jq -nc '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",message:{content:[
+    {type:"tool_use",id:"t9",name:"Ba\u0007sh",input:{description:([range(300)|"d"]|join(""))}}]}}' > "$TRL"
+is "the doing row's tool name and description are stripped and capped at 160 together" \
+   "160 Bash" "$(trrow "$TRL" doing 2 | awk '{ print length($0), substr($0, 1, 4) }')"
 is "a version older than 2.1.246 is refused: status 1, no output" \
    "1:" "$(transcript_doing "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
 is "a version newer than any known one is still read" \

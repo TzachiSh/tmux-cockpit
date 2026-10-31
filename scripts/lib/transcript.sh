@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # What an agent is doing, read from its Claude Code transcript. Sourced, never run.
-# The transcript format is internal to Claude Code, so every reader fails quietly:
-# no output and status 1, never an error on stderr.
-#
+# The transcript format is internal to Claude Code, so every reader obeys one contract:
+#   - no output on stderr, ever;
+#   - never non-zero from a pipeline the function does not own;
+#   - jq missing means status 1 and no output;
+#   - at most the last 300 lines of the transcript are read (`tail -n 300`);
+#   - any parse failure means no output and status 1.
 # Format gate: transcript lines carry a `version` (the Claude Code version). The
 # fields read here were checked on 2.1.316; a version older than 2.1.246 is
-# refused, a newer one is still tried and fails quietly if a field is gone.
+# refused (status 1), a newer one is still tried and fails quietly if a field is gone.
+# Text fields (tool, description, assistant text, prompt) are the first non-blank line,
+# control characters stripped, at most 160 characters.
 
 # One jq program for both readers. $mode is "doing" or "tail". The input is the
 # last lines of a transcript, slurped raw, so a line that is not JSON is skipped
@@ -17,7 +22,8 @@ def secs: try ((.timestamp | sub("\\.[0-9]+"; "") | fromdateiso8601) as $t
     | now - $t | floor | if . < 0 then 0 else . end) catch "";
 def desc: first(.input.description?, .input.command?, .input.file_path?, .input.pattern?,
     .input.url? | select(type == "string" and test("\\S")) | clean) // "";
-def tlabel: desc as $d | if $d == "" then .name else .name + ": " + $d end;
+def tlabel: desc as $d | ((.name | strings) // "") as $n
+    | (if $d == "" then $n else $n + ": " + $d end) | clean;
 def items: .message.content | arrays | .[];
 
 [split("\n")[] | fromjson? | select(type == "object")] as $all
@@ -80,7 +86,9 @@ _tr_agents() {
 }
 
 # The transcript of a pane's session: @cockpit_session, else `claude agents --json`
-# joined on the pane's process tree. Prints the .jsonl path, or nothing (status 1).
+# joined on the pane's process tree (a pid that is the pane's shell or its descendant).
+# The file is found by globbing ~/.claude/projects/*/<sid>.jsonl, no slug derivation.
+# Status 0 with the path printed, 1 and nothing when the session or the file is unknown.
 transcript_file() {           # <pane-id>
     local pane=${1:-} sid pp pid f
     command -v jq >/dev/null 2>&1 || return 1
@@ -110,6 +118,10 @@ transcript_file() {           # <pane-id>
 #   doing<TAB><tool>: <description><TAB><seconds since the tool started, or empty>
 #   said<TAB><last assistant text, first line, at most 160 chars>
 #   asked<TAB><last string prompt, first line, at most 160 chars><TAB><seconds since>
+# "since" for doing is the last assistant tool_use with no tool_result after it; with
+# no such open tool_use there is no doing row. The doing text, tool name and
+# description together, is cut and stripped like the others.
+# Status 0 when any row is printed, 1 when none is.
 transcript_doing() {          # <jsonl-path>
     _tr_run doing "${1:-}"
 }
@@ -117,6 +129,7 @@ transcript_doing() {          # <jsonl-path>
 # The transcript tail reduced to lines another agent can read, oldest first:
 #   USER: <prompt> | AGENT: <text> | TOOL <name>: <description>
 # Capped at <max-bytes> (default 4096), cut at a line boundary from the top.
+# Status 0 when any line is printed, 1 otherwise (including a cap below the newest line).
 transcript_tail() {           # <jsonl-path> [max-bytes]
     local max=${2:-4096} out lines i keep=0 used=0 n
     case $max in ''|*[!0-9]*) return 1 ;; esac
