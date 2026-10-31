@@ -8409,6 +8409,8 @@ idn=$(id_screen transcript.sh "$IDNP")
 case "$idn" in *"doing     "*|*"/btw"*) bad "a non-agent pane shows neither rows nor /btw" "neither" "$idn" ;; *) ok "a non-agent pane shows neither rows nor /btw" ;; esac
 idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>/dev/null; for t in 45 252 3780 0 x ""; do printf '[%s]' "$(age_short "$t")"; done )
 [ "$idages" = "[45s][4m12s][1h3m][0s][][]" ] && ok "ages read 45s, 4m12s, 1h3m" || bad "ages read 45s, 4m12s, 1h3m" "[45s][4m12s][1h3m][0s][][]" "$idages"
+idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>&1; for t in 0100 090 1234567890 1e3 -5; do printf '[%s]' "$(age_short "$t")"; done )
+[ "$idages" = "[1m40s][1m30s][][][]" ] && ok "ages are base 10 and capped at 9 digits" || bad "ages are base 10 and capped at 9 digits" "[1m40s][1m30s][][][]" "$idages"
 "$TMUX_REAL" -L "$ID" kill-server >/dev/null 2>&1
 fi
 

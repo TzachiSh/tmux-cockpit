@@ -390,10 +390,11 @@ tui_row() {
 
 # Seconds as 45s, 4m12s or 1h3m; nothing for a non-number.
 age_short() {                 # <seconds>
-    case $1 in ''|*[!0-9]*) return 1 ;; esac
-    if [ "$1" -ge 3600 ]; then printf '%sh%sm' $(( $1 / 3600 )) $(( $1 % 3600 / 60 ))
-    elif [ "$1" -ge 60 ]; then printf '%sm%ss' $(( $1 / 60 )) $(( $1 % 60 ))
-    else printf '%ss' "$1"; fi
+    case $1 in ''|*[!0-9]*|??????????*) return 1 ;; esac
+    local n=$((10#$1))        # 0100 is a hundred, not an octal error
+    if [ "$n" -ge 3600 ]; then printf '%sh%sm' $(( n / 3600 )) $(( n % 3600 / 60 ))
+    elif [ "$n" -ge 60 ]; then printf '%sm%ss' $(( n / 60 )) $(( n % 60 ))
+    else printf '%ss' "$n"; fi
 }
 
 # The doing / said / asked rows and the /btw pointer, for an agent pane. The
