@@ -388,13 +388,7 @@ tui_row() {
     fi
 }
 
-# --- --info: one screen for prefix i -------------------------------------------
-# What the plugin knows about one pane, in the order you ask it: who, what it
-# waits on, the review state, whether a side fix holds it, the base, the
-# session, the review dir. Read in ONE display-message, split on a US byte
-# (agent-state's idiom -- tab would collapse the empty fields that mean
-# "unset").
-# Seconds as the shortest human reading: 45s, 4m12s, 1h3m. Not a number: nothing.
+# Seconds as 45s, 4m12s or 1h3m; nothing for a non-number.
 age_short() {                 # <seconds>
     case $1 in ''|*[!0-9]*) return 1 ;; esac
     if [ "$1" -ge 3600 ]; then printf '%sh%sm' $(( $1 / 3600 )) $(( $1 % 3600 / 60 ))
@@ -423,6 +417,12 @@ info_doing_rows() {           # <pane>
     printf 'ask it    /btw <question> in the pane (answers while it works)\n'
 }
 
+# --- --info: one screen for prefix i -------------------------------------------
+# What the plugin knows about one pane, in the order you ask it: who, what it
+# waits on, the review state, whether a side fix holds it, the base, the
+# session, the review dir. Read in ONE display-message, split on a US byte
+# (agent-state's idiom -- tab would collapse the empty fields that mean
+# "unset").
 info_mode() {                 # <pane>
     local pane=$1 sep=$'\037' f id where cmd path wt state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
