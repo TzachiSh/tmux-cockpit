@@ -419,10 +419,9 @@ info_doing_rows() {           # <pane> <is-agent 1|0>
 
 # --- --info: one screen for prefix i -------------------------------------------
 # What the plugin knows about one pane, in the order you ask it: who, what it
-# waits on, the review state, the base, the
-# session, the review dir. Read in ONE display-message, split on a US byte
-# (agent-state's idiom -- tab would collapse the empty fields that mean
-# "unset").
+# waits on, the review state, the base, the session, the review dir. Read in
+# ONE display-message, split on a US byte (agent-state's idiom -- tab would
+# collapse the empty fields that mean "unset").
 info_mode() {                 # <pane>
     local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
