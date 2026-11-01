@@ -10245,6 +10245,40 @@ is "a text that starts with - is pasted as text, not read as a flag" \
    "$(pact 'paste %5' '-n hi')"
 fi
 
+echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
+# crossterm rereads a hung-up tty forever, so a panel whose server died spun at
+# 80% CPU and shrugged off SIGTERM. Pids are named before anything acts on them.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "a dead server ends the panel (no bin/cockpit-tui; run make tui)"
+elif [ ! -d /proc/self ]; then
+    skip_ "a dead server ends the panel (no /proc to check pids by name)"
+elif need_tmux "a dead server ends the panel"; then :; else
+for oscreen in panel board; do
+    OR="cockpit-orph-$oscreen-$$"; SOCKS="$SOCKS $OR"
+    "$TMUX_REAL" -L "$OR" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+    ora=$("$TMUX_REAL" -L "$OR" list-panes -F '#{pane_id}' | head -1)
+    oarg=$ora; [ "$oscreen" = board ] && oarg=
+    orb=$("$TMUX_REAL" -L "$OR" new-window -d -P -F '#{pane_id}' -t t: \
+        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $DIR/bin/cockpit-tui $oscreen $oarg")
+    until_cap "$OR" "$orb" '*[a-z]*' || bad "the $oscreen draws before its server dies" "a frame" "$("$TMUX_REAL" -L "$OR" capture-pane -p -t "$orb")"
+    orp=$("$TMUX_REAL" -L "$OR" display -p -t "$orb" '#{pane_pid}')
+    ocomm=''
+    [ -r "/proc/$orp/comm" ] && read -r ocomm 2>/dev/null < "/proc/$orp/comm"
+    if [ "$ocomm" != cockpit-tui ]; then
+        bad "the $oscreen runs as the pane's own process" "cockpit-tui" "${ocomm:-gone}"
+        continue
+    fi
+    "$TMUX_REAL" -L "$OR" kill-server >/dev/null 2>&1
+    if pn_dead "$orp"; then
+        ok "the $oscreen exits once its tmux server is gone"
+    else
+        bad "the $oscreen exits once its tmux server is gone" "pid $orp gone" "still running"
+        ocomm=''; [ -r "/proc/$orp/comm" ] && read -r ocomm 2>/dev/null < "/proc/$orp/comm"
+        [ "$ocomm" = cockpit-tui ] && kill -KILL "$orp"
+    fi
+done
+fi
+
 echo "== the example configs ship the phone wrap override (#99) =="
 # A phone terminal that wraps at the last cell scrolls the screen on every
 # full-width status repaint (#97), so the override has to be IN the shipped

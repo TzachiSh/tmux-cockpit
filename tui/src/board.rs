@@ -810,6 +810,8 @@ pub fn run() -> Option<String> {
             std::process::exit(1);
         }
     };
+    // the SIGHUP arm usually wins; this covers a hangup that brings no signal
+    crate::backend::exit_on_hangup(crate::push::cleanup);
     let (mut panes, mut pvs) = (Vec::<Pane>::new(), Vec::<Option<String>>::new());
     // previews survive between snapshots, so a tile scrolled into view shows
     // its last capture instead of a false "capture failed"

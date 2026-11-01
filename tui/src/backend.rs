@@ -127,6 +127,33 @@ pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
     Terminal::new(WideCellBackend::new(stdout()))
 }
 
+/// Exits the process once the terminal hangs up. crossterm 0.29 rereads a hung-up
+/// tty forever (EOF and EIO are neither WouldBlock nor EINTR), so the loop never runs again.
+pub fn exit_on_hangup(cleanup: fn()) {
+    std::thread::spawn(move || {
+        // crossterm reads stdin when it is a tty, else /dev/tty: watch the same one.
+        // SAFETY: isatty only inspects the descriptor.
+        let tty = (unsafe { libc::isatty(libc::STDIN_FILENO) } != 1).then(|| std::fs::File::open("/dev/tty"));
+        let fd = match &tty {
+            None => libc::STDIN_FILENO,
+            Some(Ok(f)) => std::os::fd::AsRawFd::as_raw_fd(f),
+            Some(Err(_)) => return,
+        };
+        // events 0: poll reports only POLLHUP, POLLERR and POLLNVAL, never input
+        let mut p = libc::pollfd { fd, events: 0, revents: 0 };
+        // SAFETY: one live pollfd, and the fd stays open for as long as `tty` does.
+        while unsafe { libc::poll(&mut p, 1, -1) } <= 0 {
+            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                return;
+            }
+        }
+        crate::data::log("the terminal hung up: exiting");
+        cleanup();
+        // SAFETY: nothing is left to flush to a terminal that is gone.
+        unsafe { libc::_exit(0) };
+    });
+}
+
 /// `ratatui::restore()`, plus the bracketed paste `init(true)` turned on.
 pub fn restore(paste: bool) {
     if paste {

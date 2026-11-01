@@ -530,6 +530,11 @@ initialises the terminal and prints one line instead. Reproduced with `setsid`,
 with `</dev/null`, and with a non-tty stdin; a real `display-popup -E` has a pty
 and is fine.
 
+**A panel outlives its tmux server.** crossterm 0.29 rereads a hung-up tty
+forever, so a loop blocked in `event::read` never sees its signal flag again.
+The board and the panel each run a thread that `poll`s the tty for `POLLHUP`
+and exits when it comes; the action file is left unwritten.
+
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log`, on by default, and
