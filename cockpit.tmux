@@ -165,6 +165,11 @@ give_back() {
     if [ "$1" = f ]; then tmux bind-key -T prefix f command-prompt 'find-window -Z "%%"'
     else tmux unbind-key -T prefix "$1"; fi
 }
+# The retired side fix's bindings outlive it on a server that only reloads.
+tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
+    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
+    | while IFS= read -r k; do give_back "$k"; done
+
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 pk=$(key @cockpit_panel_key f)
 # A reload that turns the key off or moves it must take the old binding back.

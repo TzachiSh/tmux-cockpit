@@ -10130,6 +10130,12 @@ pn_stock_f() {                # <label>  f is tmux's own find-window prompt agai
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1; pn_load
 pn_stock_f "turning the panel off on f gives f back to stock find-window"
+# Bindings the retired side fix left on a server that only reloads.
+"$TMUX_REAL" -L "$PN" bind-key -T prefix g display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" bind-key -T prefix f display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
+pn_load
+is "a reload drops a dead tmux-fixer binding on another key" "" "$(pn_keys g)"
+pn_stock_f "and gives f back to stock find-window"
 unset -f pn_keys pn_load pn_stock_f
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
