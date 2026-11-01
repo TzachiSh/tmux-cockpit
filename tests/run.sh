@@ -10059,8 +10059,8 @@ is "and the paste buffer is gone afterwards" "" \
    "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
 is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
 
-# A popup torn down mid-call (SIGTERM), or a binary killed outright (SIGKILL),
-# must not leave its claude running. The pid is checked before any signal.
+# A popup torn down mid-call (SIGTERM, SIGHUP as its pty goes) or a binary killed
+# outright (SIGKILL) must not leave its claude running. Pids are checked first.
 pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
@@ -10089,7 +10089,7 @@ pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
 if [ ! -d /proc/self ]; then
     skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
 else
-    for sig in TERM KILL; do
+    for sig in TERM KILL HUP; do
         pc=$(pn_hang "$sig")
         if [ -z "$pc" ]; then
             bad "SIG$sig on the panel kills its claude" "a running fake claude under cockpit-tui" "none"
@@ -10167,6 +10167,7 @@ unset -f pn_keys pn_load pn_stock_f
 # The wrapper's grammar, with a stub binary and a tmux that only records.
 mkdir -p "$PND/p/scripts" "$PND/p/bin" "$PND/rec"
 cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
+cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 # `display -p` answers what the pane runs now, from a file the case sets.
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
@@ -10178,6 +10179,8 @@ if [ "\$1" = capture-pane ]; then
     wc -l < "$PND/caps"; exit 0
 fi
 printf '%s\n' "\$*" >> "$PND/pargv"
+# With $PND/fail-<cmd> present that command fails the way a gone server does.
+[ -e "$PND/fail-\$1" ] && { echo "boom \$1" >&2; exit 1; }
 [ "\$1" = load-buffer ] && { cat; echo; } >> "$PND/pargv"
 exit 0
 PNREC
@@ -10201,9 +10204,24 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
-is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;" "$(pact 'send %5' hi)"
-is "paste %5 is the same without Enter" "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' hi)"
+is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
+   "$(pact 'send %5' hi)"
+is "paste %5 is the same without Enter, and says how much went in" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "$(pact 'paste %5' hi)"
+: > "$PND/tui.log"; touch "$PND/fail-load-buffer"
+is "a failed load-buffer pastes nothing and says so" \
+   "load-buffer -b B -;display-message -t %5 cockpit: could not load the paste buffer; nothing sent to %5;" \
+   "$(pact 'paste %5' hi)"
+rm -f "$PND/fail-load-buffer"
+is "and logs tmux's error" "1" "$(grep -c 'load-buffer failed for %5: boom load-buffer' "$PND/tui.log")"
+: > "$PND/tui.log"; touch "$PND/fail-paste-buffer"
+is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 cockpit: could not paste into %5; nothing sent;" \
+   "$(pact 'send %5' hi)"
+rm -f "$PND/fail-paste-buffer"
+is "and logs tmux's error" "1" "$(grep -c 'paste-buffer failed for %5: boom paste-buffer' "$PND/tui.log")"
 is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
 is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
 is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
@@ -10219,10 +10237,12 @@ rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND
 is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
    "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
 : > "$PND/tui.log"
-is "COCKPIT_READONLY runs the panel and writes nothing to the pane" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
+is "COCKPIT_READONLY runs the panel, writes nothing to the pane and says so" \
+   "display-message -t %5 cockpit: readonly, nothing sent to %5;" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
-   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
+   "$(pact 'paste %5' '-n hi')"
 fi
 
 echo "== the example configs ship the phone wrap override (#99) =="
