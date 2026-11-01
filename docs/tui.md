@@ -231,8 +231,10 @@ a scrollbar.
 The panel is built down to 28x7, the floor measured over every view: under 28
 columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
 rows Explain's heading leaves no body row. Below it the panel draws one card,
-`make the window larger or rotate` and `esc closes`, and only `esc`, `q` and `^C`
-act: a key whose effect nobody can see is dropped.
+`make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
+they do on the view under the card (an Answer still asks first, Compose keeps its
+draft, only Home closes), `^C` quits, and any other key is dropped: nobody can
+see what it would do.
 
 At 40x12 (a phone in portrait), Steps:
 
