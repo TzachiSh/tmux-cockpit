@@ -387,19 +387,24 @@ impl App {
 
     /// A paste is only bracketed when the program asked for it, so a multi-line
     /// insert into anything else can run line one: that goes through a confirm.
+    /// An open menu takes typed text as its answer, so that confirms too.
     fn insert(&mut self, text: String, back: View) {
-        if self.line_warning(&text).is_some() {
-            let warn = self.warnings(&text);
-            self.view = View::Confirm {
-                text,
-                send: false,
-                warn,
-                back: Box::new(back),
-                scroll: 0,
-            };
+        if self.line_warning(&text).is_some() || self.session == Some(Session::WaitingChoice) {
+            self.confirm(text, false, back);
         } else {
             self.act("paste", text, back);
         }
+    }
+
+    fn confirm(&mut self, text: String, send: bool, back: View) {
+        let warn = self.warnings(&text, send);
+        self.view = View::Confirm {
+            text,
+            send,
+            warn,
+            back: Box::new(back),
+            scroll: 0,
+        };
     }
 
     /// `back` is the view the action was taken from, kept for a resume.
@@ -905,19 +910,12 @@ impl App {
                 self.insert(text, back);
             }
             KeyCode::Char('s') => {
-                let warn = self.warnings(&text);
-                let back = Box::new(View::Result {
+                let back = View::Result {
                     label,
                     text: text.clone(),
                     scroll,
-                });
-                self.view = View::Confirm {
-                    text,
-                    send: true,
-                    warn,
-                    back,
-                    scroll: 0,
                 };
+                self.confirm(text, true, back);
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
@@ -940,8 +938,14 @@ impl App {
         }
     }
 
-    pub fn warnings(&self, text: &str) -> Vec<String> {
-        let mut w: Vec<String> = self.line_warning(text).into_iter().collect();
+    /// What the confirm says before an insert (`send` false) or a send.
+    pub fn warnings(&self, text: &str, send: bool) -> Vec<String> {
+        let mut w: Vec<String> = match self.session {
+            Some(Session::WaitingChoice) => vec!["⚠ Claude Code is waiting on a menu choice: typing now answers that menu".into()],
+            Some(Session::Working) if send => vec!["Claude Code is still working; the prompt waits in its input".into()],
+            _ => vec![],
+        };
+        w.extend(self.line_warning(text));
         if let Some(r) = risky(text) {
             w.push(format!("⚠ risky: {r}"));
         }
@@ -960,14 +964,7 @@ impl App {
                 if c == 'i' {
                     return self.insert(cmd, here);
                 }
-                let warn = self.warnings(&cmd);
-                return self.view = View::Confirm {
-                    text: cmd,
-                    send: true,
-                    warn,
-                    back: Box::new(here),
-                    scroll: 0,
-                };
+                return self.confirm(cmd, true, here);
             }
             KeyCode::Char('r') => return self.retry_from(View::Steps { label, items, sel }),
             KeyCode::Esc => return self.leave(),
@@ -1032,21 +1029,7 @@ impl App {
                 let Some(text) = ready else {
                     return self.say(Level::Info, "no prompt for the agent in this answer");
                 };
-                let mut warn = Vec::new();
-                match self.session {
-                    Some(Session::WaitingChoice) => {
-                        warn.push("⚠ Claude Code is waiting on a menu choice: typing now answers that menu".into())
-                    }
-                    Some(Session::Working) if c == 's' => warn.push("Claude Code is still working; the prompt waits in its input".into()),
-                    _ => {}
-                }
-                self.view = View::Confirm {
-                    text,
-                    send: c == 's',
-                    warn,
-                    back: Box::new(View::Answer { scroll, armed: false }),
-                    scroll: 0,
-                };
+                self.confirm(text, c == 's', View::Answer { scroll, armed: false });
             }
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {

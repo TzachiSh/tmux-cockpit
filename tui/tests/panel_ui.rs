@@ -1206,3 +1206,60 @@ fn golden_error_long_wraps() {
     ))));
     goldens("error-long", &a, 0);
 }
+
+const MENU: &str = "● Edit config.py?\nDo you want to make this edit to config.py?\n❯ 1. Yes\n  2. No";
+
+fn menu_warned(a: &App) -> bool {
+    matches!(&a.view, View::Confirm { warn, .. } if warn.iter().any(|w| w.contains("menu choice")))
+}
+
+#[test]
+fn an_open_menu_is_warned_on_every_insert_and_send() {
+    let mut a = app("claude", "claude", MENU);
+    writing(&mut a, "x");
+    a.reply(Ok("<prompt>go on</prompt>".into()));
+    ch(&mut a, 'i');
+    assert!(menu_warned(&a), "result insert confirms: {:?}", a.view);
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 's');
+    assert!(menu_warned(&a), "result send");
+    key(&mut a, KeyCode::Esc);
+
+    a.reply(Ok("<steps><step><note>n</note><cmd>ls</cmd></step></steps>".into()));
+    ch(&mut a, 'i');
+    assert!(menu_warned(&a), "step insert");
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 's');
+    assert!(menu_warned(&a), "step run");
+
+    let mut a = app("claude", "claude", MENU);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Compose).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    typ(&mut a, "one line");
+    ctrl(&mut a, 't');
+    assert!(menu_warned(&a), "compose ^T, one line or not");
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("waiting on a menu choice"), "the confirm shows it\n{f}");
+}
+
+#[test]
+fn a_working_session_warns_a_send_and_lets_an_insert_through() {
+    let busy = "● Reading files\n✻ Thinking… (esc to interrupt)";
+    let mut a = app("claude", "claude", busy);
+    assert_eq!(a.session, Some(cockpit_tui::panel::capture::Session::Working));
+    writing(&mut a, "x");
+    a.reply(Ok("<prompt>go on</prompt>".into()));
+    ch(&mut a, 's');
+    assert!(
+        matches!(&a.view, View::Confirm { warn, .. } if warn.iter().any(|w| w.contains("still working"))),
+        "{:?}",
+        a.view
+    );
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 'i');
+    assert_eq!(
+        a.action.as_ref().map(|x| x.verb),
+        Some("paste"),
+        "an insert only waits in the input"
+    );
+}
