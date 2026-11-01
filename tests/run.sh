@@ -9230,8 +9230,6 @@ sf_spawn 'second job' '' "FAKE_CLAUDE_SLEEP=2"
 case "$(cat "$SFSTATE/out")" in *SRC=0*) ok "a finished fixer's record does not block a new spawn" ;; *) bad "a finished fixer's record does not block a new spawn" "SRC=0" "$(cat "$SFSTATE/out")" ;; esac
 is "the new job replaced the old record" "second job" "$(cat "$SFSESS/fixer/reason" 2>/dev/null)"
 is "and the old handover was not carried over" "absent" "$([ -e "$SFSESS/handover" ] && echo present || echo absent)"
-"$TMUX_REAL" -L "$SF" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$SF" list-keys -T prefix 2>/dev/null | awk '$4=="f"')" in *tmux-fixer*) ok "prefix f is bound to the side-fix popup" ;; *) bad "prefix f is bound to the side-fix popup" "display-popup … tmux-fixer" "$("$TMUX_REAL" -L "$SF" list-keys -T prefix | awk '$4=="f"')" ;; esac
 unset -f sf_spawn
 "$TMUX_REAL" -L "$SF" kill-server >/dev/null 2>&1; rm -rf "$SFBIN"
 fi
@@ -10245,10 +10243,13 @@ case "$(cat "$PND/tui.log" 2>/dev/null)" in *"now runs [sleep], not [sh]; nothin
     *) bad "and the log says why" "now runs [sleep], not [sh]" "$(tail -3 "$PND/tui.log" 2>/dev/null)" ;;
 esac
 
-# The binding: off unless asked for, and the wrapper with the pressed pane when set.
+# The binding: f by default, and the wrapper with the pressed pane.
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "@cockpit_panel_key unset binds no panel key" "" \
-   "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
+case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
+    *display-popup*cockpit-panel*' -p '*) ok "@cockpit_panel_key unset binds the panel to f" ;;
+    *) bad "@cockpit_panel_key unset binds the panel to f" "display-popup ... cockpit-panel -p" \
+         "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" ;;
+esac
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key F9 >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
@@ -10256,17 +10257,12 @@ case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
     *) bad "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" "display-popup ... cockpit-panel -p" \
          "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" ;;
 esac
+is "moving the key takes f back" "0" \
+   "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null | grep -c cockpit-panel)"
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "turning the key off on a reload takes the old binding back" "0:" \
    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null | grep -c cockpit-panel):$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_panel_bound)"
-"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1
-"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
-    *tmux-fixer*) ok "a panel key equal to the side-fix key is refused, and f stays the fixer" ;;
-    *) bad "a panel key equal to the side-fix key is refused, and f stays the fixer" "tmux-fixer on f" \
-         "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" ;;
-esac
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
 # The wrapper's grammar, with a stub binary and a tmux that only records.
