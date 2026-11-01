@@ -1487,3 +1487,19 @@ fn an_answer_box_with_no_conversation_stays_put() {
         assert_eq!((a.view.clone(), a.pending), (v, false), "{kind:?}");
     }
 }
+
+#[test]
+fn busy_counts_the_screen_apart_from_the_conversation() {
+    let mut a = app("w", "bash", "$ ls\nghp_abcdefghijABCDEFGHIJ12");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>which key?</question>".into()));
+    ch(&mut a, 'o');
+    typ(&mut a, "use sk-abcdefghijklmnopqrst1 and sk-abcdefghijklmnopqrst2");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    let f = frame(&a, 100, 20, 0);
+    assert!(
+        f.contains("sent: screen 2 lines, 1 hidden, 2 more in the conversation · write (auto)"),
+        "{f}"
+    );
+}

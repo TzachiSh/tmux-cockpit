@@ -176,7 +176,16 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 Style::new().fg(th.running),
             ));
             b.lines.push(plain(""));
-            let sent = format!("sent: screen {} lines, {} hidden {d} {flow}", app.screen_lines(), app.hidden);
+            // the envelope's count also covers the conversation turns: they are not screen
+            let talk = match app.hidden.saturating_sub(app.screen_hidden) {
+                0 => String::new(),
+                n => format!(", {n} more in the conversation"),
+            };
+            let sent = format!(
+                "sent: screen {} lines, {} hidden{talk} {d} {flow}",
+                app.screen_lines(),
+                app.screen_hidden
+            );
             b.lines.extend(many(&sent, w, "", meta));
             b.lines.extend(many(&format!("model {model}: {why}"), w, "", meta));
             if !app.timeout.is_zero() {

@@ -180,7 +180,7 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
-    /// Secrets the last call's envelope hid, and the screen's own at capture.
+    /// Secrets the last call's envelope hid (screen and turns), and the screen's alone.
     pub hidden: usize,
     pub screen_hidden: usize,
     /// The call's limit, from [`Call`] at launch; zero until a call goes out.
