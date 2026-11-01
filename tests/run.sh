@@ -913,6 +913,8 @@ held=$( { printf '{"worktree_path":"/nonexistent/x"}\n'; sleep 3; } | ( XDG_CACH
 is "worktree-remove returns while claude holds stdin open" "rc=0" "$held"
 is "worktree-remove with HOME unset is a quiet no-op, not a bash error" "0:" \
    "$(printf '{"worktree_path":"/x/cockpit-wt/a"}' | env -u HOME -u XDG_CACHE_HOME "$DIR/scripts/worktree-remove" 2>&1; echo "$?:")"
+is "worktree-remove of a tree with no .repo sidecar is quiet, not a bash error" "0:" \
+   "$(printf '{"worktree_path":"%s"}' "$WCCACHE/cockpit-wt/nosidecar" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>&1; echo "$?:")"
 
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
 if need_tmux "review-gate"; then :; else
@@ -2328,6 +2330,11 @@ case "$d" in
     *"@${sha:0:7}"*) ok "detached HEAD shows a hash, not the word HEAD" ;;
     *) bad "detached HEAD shows a hash, not the word HEAD" "@${sha:0:7}" "$d" ;;
 esac
+# A redirect's error goes to stderr unless 2>/dev/null comes before it.
+mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/locked/.git"
+is "an unreadable .git file is quiet, not a bash error" "" \
+   "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
+chmod 600 "$DH/locked/.git"
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"

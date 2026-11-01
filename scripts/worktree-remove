@@ -19,7 +19,7 @@ case "$cache" in /*) ;; *) exit 0 ;; esac
 # Only our own trees: anything outside the cache dir, the main checkout
 # included, is claude's to handle and not this hook's.
 case "$path" in "$cache/cockpit-wt/"?*) ;; *) exit 0 ;; esac
-read -r repo < "$path.repo" 2>/dev/null || exit 0
+read -r repo 2>/dev/null < "$path.repo" || exit 0
 [ -d "$repo" ] || exit 0
 # -C: claude runs this with its cwd inside the directory it just deleted.
 branch=${path#"$cache/cockpit-wt/"}
