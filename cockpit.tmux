@@ -164,6 +164,11 @@ Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 fk=$(key @cockpit_fixer_key f)
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
+# Off until phase 3 moves it to f: stock T is select-pane -T. Needs bin/cockpit-tui.
+Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
+pk=$(key @cockpit_panel_key "")
+[ -z "$pk" ] || tmux bind-key "$pk" display-popup -E -w 94% -h 90% -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
+
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 bk=$(key @cockpit_board_key w)
