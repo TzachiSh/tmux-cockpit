@@ -10424,7 +10424,17 @@ def once(how):
                 out += os.read(m, 65536)
             except OSError:
                 break
-    os.write(m, send.get(how, b''))
+    # a tap within 300 ms of a new view is dropped (the double-tap guard): repeat until it ends the panel
+    for _ in range(40 if how == 'tap-close' else 0):
+        os.write(m, send['tap-close'])
+        while select.select([m], [], [], 0.25)[0]:
+            try:
+                out += os.read(m, 65536)
+            except OSError:
+                break
+        if p.poll() is not None or b'?1049l' in out:
+            break
+    os.write(m, b'' if how == 'tap-close' else send.get(how, b''))
     if how in ('term', 'hup'):
         if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':   # named before it is signalled
             p.send_signal(signal.SIGTERM if how == 'term' else signal.SIGHUP)
@@ -10496,24 +10506,30 @@ tp_at() {                     # <label> <M|m> [button]  presses (M) or releases 
     "$TMUX_REAL" -L "$TO" send-keys -t o -l "$(printf '\033[<%s;%s;%s%s' "${3:-0}" "$x" "$y" "$2")"
 }
 tp_tap() { tp_at "$1" M && tp_at "$1" m; }
+# A tap within 300 ms of a new view is dropped (the double-tap guard), and no
+# clock says when that ends: tap until the pattern shows, 0.5 s a try.
+tp_tap_until() {              # <label> <socket> <pane> <pattern>
+    local i POLLS=5
+    for i in $(seq 1 20); do
+        tp_tap "$1"
+        until_cap "$2" "$3" "$4" && return 0
+    done
+    return 1
+}
 tp_cap() { "$TMUX_REAL" -L "$TO" capture-pane -p -t o; }
 until_cap "$TO" o '*will send*' || bad "the tablet panel opens in the popup" "will send" "$(tp_cap)"
-tp_tap Compose
-until_cap "$TO" o '*type: auto*' || bad "a tap on the Compose tile opens it" "type: auto" "$(tp_cap)"
+tp_tap_until Compose "$TO" o '*type: auto*' || bad "a tap on the Compose tile opens it" "type: auto" "$(tp_cap)"
 "$TMUX_REAL" -L "$TO" send-keys -t o -l 'say hi'
-tp_tap '[ write ]'
-if until_cap "$TO" o '*copied by tap*[ copy ]*'; then ok "a tap on [ write ] sends the draft to claude"
+if tp_tap_until '[ write ]' "$TO" o '*copied by tap*[ copy ]*'; then ok "a tap on [ write ] sends the draft to claude"
 else bad "a tap on [ write ] sends the draft to claude" "copied by tap" "$(tp_cap)"; fi
-# a release alone is no tap: insert would close the popup and paste
+tp_tap_until '[ copy ]' "$TO" o '*sent 13 chars to the clipboard*' || bad "x says what it copied" "sent 13 chars" "$(tp_cap)"
+# past the guard now: a release alone is no tap, or insert would close the popup and paste
 tp_at '[ insert ]' m
-tp_tap '[ copy ]'
-until_cap "$TO" o '*copied 13 chars*' || bad "x says what it copied" "copied 13 chars" "$(tp_cap)"
 is "a release alone does nothing: the result is still open" "1" "$(tp_cap | grep -c -F '[ insert ]')"
 is "the copy reaches tmux as OSC 52 (set-clipboard on)" "copied by tap" \
    "$("$TMUX_REAL" -L "$TI" show-buffer 2>/dev/null)"
 is "and the outer terminal is handed it too" "copied by tap" "$("$TMUX_REAL" -L "$TO" show-buffer 2>/dev/null)"
-tp_tap '[ insert ]'
-until_cap "$TI" "$tpa" '*copied by tap*' || bad "a tap on [ insert ] pastes into the pane" "copied by tap" \
+tp_tap_until '[ insert ]' "$TI" "$tpa" '*copied by tap*' || bad "a tap on [ insert ] pastes into the pane" "copied by tap" \
     "$("$TMUX_REAL" -L "$TI" capture-pane -p -t "$tpa")"
 is "one tap pastes once" "1" "$("$TMUX_REAL" -L "$TI" capture-pane -p -t "$tpa" | grep -c 'copied by tap')"
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
