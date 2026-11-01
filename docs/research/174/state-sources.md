@@ -54,7 +54,7 @@ so cockpit can show blocked, running or idle for it without a hook that knows it
 | measurement | n | conditions | result |
 |---|---|---|---|
 | wall per `claude agents --json` | 5 | 4 sessions, WSL2, live box | 276, 364, 376, 381, 383 ms; median 376 ms |
-| real/user/sys | 3 | same | real about 0.27 s; user about 0.20 s; sys 0.07-0.09 s |
+| real/user/sys | 3 | same | real 0.29-0.32 s; user about 0.20 s; sys 0.07-0.09 s; user+sys about 0.27 s |
 | poller at 2 s | derived | linear from CPU | about 13% of a core |
 | poller at 10 s | derived | same | about 3% of a core |
 

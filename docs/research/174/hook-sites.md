@@ -35,11 +35,13 @@ worker            .../versions/2.1.316 --session-id <uuid> ...   (or claude bg-s
 |---|---|---|---|---|
 | front end | set | `%3` | unset | |
 | supervisor | set | `%3` | unset | `CLAUDE_CODE_ENTRYPOINT=cli` |
-| pty host | unset | unset | `bg` | `CLAUDE_BG_BACKEND=daemon`, `CLAUDE_JOB_DIR`, `CLAUDE_BG_RENDEZVOUS_SOCK` |
+| pty host | unset | unset | `bg` | `CLAUDE_BG_BACKEND=daemon`; the review's re-check saw `CLAUDE_BG_SOCKET_TOKENS_PATH` (value not read) |
 | worker | unset | unset | `bg` | same |
-| worker's MCP child | unset | unset | unset | `CLAUDE_CODE_SESSION_ID=<worker's session>`, `CLAUDECODE=1` |
+| worker's MCP child | unset | unset | unset | `CLAUDE_CODE_SESSION_ID=<worker's session>`, `CLAUDE_JOB_DIR`, `CLAUDECODE=1` |
 
-## Case (a): `claude` directly in a pane (E)
+## Case (a): `claude -p` directly in a pane (E)
+
+Interactive `claude` was not run; this case is print mode.
 
 Private server `tmux -L r174hooks<pid> -f /dev/null`; `claude -p --model haiku --max-turns 2
 --settings <temp>` started with `send-keys` in pane `%0`; prompt: run `echo hi`, reply "ok".
