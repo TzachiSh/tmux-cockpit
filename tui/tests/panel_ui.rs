@@ -224,6 +224,19 @@ fn the_compose_box_edits_and_q_is_text_there() {
 }
 
 #[test]
+fn ctrl_w_steps_over_multi_byte_whitespace() {
+    for (sep, name) in [('\u{a0}', "no-break space"), ('\u{3000}', "ideographic space")] {
+        let mut a = app("w", "zsh", "$ ");
+        ch(&mut a, '2');
+        typ(&mut a, &format!("one{sep}two"));
+        ctrl(&mut a, 'w');
+        assert_eq!(a.draft, format!("one{sep}"), "{name}");
+        ctrl(&mut a, 'w');
+        assert_eq!(a.draft, "", "{name}");
+    }
+}
+
+#[test]
 fn an_empty_draft_sends_nothing() {
     let mut a = app("w", "zsh", "$ ");
     ch(&mut a, '2');

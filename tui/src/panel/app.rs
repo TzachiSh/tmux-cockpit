@@ -856,7 +856,11 @@ fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) {
         }
         KeyCode::Char('w') if ctrl => {
             let t = text.trim_end_matches(char::is_whitespace).len();
-            let w = text[..t].rfind(char::is_whitespace).map_or(0, |i| i + 1);
+            // Past the whole separator: U+00A0 and U+3000 are more than one byte.
+            let w = text[..t]
+                .char_indices()
+                .rfind(|(_, c)| c.is_whitespace())
+                .map_or(0, |(i, c)| i + c.len_utf8());
             text.truncate(w);
         }
         KeyCode::Char('u') if ctrl => text.clear(),
