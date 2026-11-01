@@ -7956,7 +7956,8 @@ is "--dir: the tree the pane works in" "$FQ_WT" \
 # The store a review of the pane uses: tmux-review's own functions, lifted out
 # rather than respelled, applied the way review_pane and --info apply them.
 FQSD=$(mktmpf)
-{ sed -n '/^is_pane() {.*}$/p; /^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
+{ cat "$DIR/scripts/lib/pane.sh"
+  sed -n '/^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
   printf '%s\n' 'session_dir "$1" "$(git_root "$(pane_dir "$1")")"'; } > "$FQSD"
 wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
 "$TMUX_REAL" -L "$FQ" set-option -pu -t "$WT_PANE" @cockpit_dir >/dev/null 2>&1
