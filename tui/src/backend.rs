@@ -127,25 +127,52 @@ pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
     Terminal::new(WideCellBackend::new(stdout()))
 }
 
+/// The fd crossterm reads keys from: stdin when it is a tty, else /dev/tty,
+/// held open by the returned file.
+fn input_fd() -> Option<(Option<std::fs::File>, libc::c_int)> {
+    // SAFETY: isatty only inspects the descriptor.
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
+        return Some((None, libc::STDIN_FILENO));
+    }
+    let f = std::fs::File::open("/dev/tty").ok()?;
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+    Some((Some(f), fd))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Watch {
+    HungUp,
+    /// POLLNVAL: Darwin's poll(2) does not take devices, so no watch is possible.
+    Unwatchable,
+    Failed,
+}
+
+/// Blocks until `fd` hangs up. events 0: poll wakes only for POLLHUP, POLLERR or POLLNVAL.
+pub fn wait_hangup(fd: libc::c_int) -> Watch {
+    let mut p = libc::pollfd { fd, events: 0, revents: 0 };
+    loop {
+        // SAFETY: one live pollfd on the stack.
+        let r = unsafe { libc::poll(&mut p, 1, -1) };
+        if r < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return Watch::Failed;
+        }
+        if p.revents & libc::POLLNVAL != 0 {
+            return Watch::Unwatchable;
+        }
+        if p.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
+            return Watch::HungUp;
+        }
+    }
+}
+
 /// Exits the process once the terminal hangs up. crossterm 0.29 rereads a hung-up
 /// tty forever (EOF and EIO are neither WouldBlock nor EINTR), so the loop never runs again.
 pub fn exit_on_hangup(cleanup: fn()) {
     std::thread::spawn(move || {
-        // crossterm reads stdin when it is a tty, else /dev/tty: watch the same one.
-        // SAFETY: isatty only inspects the descriptor.
-        let tty = (unsafe { libc::isatty(libc::STDIN_FILENO) } != 1).then(|| std::fs::File::open("/dev/tty"));
-        let fd = match &tty {
-            None => libc::STDIN_FILENO,
-            Some(Ok(f)) => std::os::fd::AsRawFd::as_raw_fd(f),
-            Some(Err(_)) => return,
-        };
-        // events 0: poll reports only POLLHUP, POLLERR and POLLNVAL, never input
-        let mut p = libc::pollfd { fd, events: 0, revents: 0 };
-        // SAFETY: one live pollfd, and the fd stays open for as long as `tty` does.
-        while unsafe { libc::poll(&mut p, 1, -1) } <= 0 {
-            if io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
-                return;
-            }
+        let Some((_keep, fd)) = input_fd() else { return };
+        match wait_hangup(fd) {
+            Watch::HungUp => {}
+            w => return crate::data::log(&format!("no hangup watch on the terminal: {w:?}")),
         }
         crate::data::log("the terminal hung up: exiting");
         cleanup();
@@ -204,6 +231,36 @@ mod tests {
 
     fn contains(hay: &[u8], needle: &str) -> bool {
         count(hay, needle) > 0
+    }
+
+    #[test]
+    fn the_watch_fires_on_a_hangup_and_never_on_an_fd_it_cannot_poll() {
+        let mut fds = [0; 2];
+        // SAFETY: a fresh pipe; both ends are closed below.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
+        let rd = fds[0];
+        let w = std::thread::spawn(move || wait_hangup(rd));
+        // SAFETY: the write end is ours; closing it hangs up the read end.
+        unsafe { libc::close(fds[1]) };
+        assert_eq!(w.join().unwrap(), Watch::HungUp);
+        // SAFETY: as above.
+        unsafe { libc::close(rd) };
+        // far past any open fd, so no parallel test can own it: POLLNVAL, like a tty on Darwin
+        assert_eq!(wait_hangup(999_999), Watch::Unwatchable);
+    }
+
+    #[test]
+    fn a_pty_whose_master_closes_hangs_up() {
+        let (mut m, mut s) = (0, 0);
+        // SAFETY: openpty writes two fds; the null name, termios and size are allowed.
+        let r = unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), std::ptr::null()) };
+        assert_eq!(r, 0);
+        let w = std::thread::spawn(move || wait_hangup(s));
+        // SAFETY: the master is ours.
+        unsafe { libc::close(m) };
+        assert_eq!(w.join().unwrap(), Watch::HungUp);
+        // SAFETY: as above.
+        unsafe { libc::close(s) };
     }
 
     #[test]
