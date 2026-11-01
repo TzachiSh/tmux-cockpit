@@ -195,6 +195,33 @@ fn a_users_prompt_file_wins_over_the_shipped_one() {
     assert!(write.ends_with("<examples>\n<example>only mine</example>\n</examples>"), "{write}");
 }
 
+#[test]
+fn a_broken_prompt_file_falls_back_and_says_why() {
+    let e = Env::new("broken", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let d = e.dir.join("cfg/tmux-cockpit/prompts");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("fix.txt"), b"bad \xff byte").unwrap();
+    let (fix, note) = prompts::fix_noted();
+    assert!(
+        fix.starts_with("You correct a draft"),
+        "invalid UTF-8 keeps the shipped text: {fix}"
+    );
+    assert!(note.as_deref().is_some_and(|n| n.contains("fix.txt")), "{note:?}");
+
+    let p = d.join("explain.txt");
+    std::fs::write(&p, "Mine").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads a mode-000 file anyway; a directory fails for everyone.
+    if std::fs::read(&p).is_ok() {
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+    }
+    let (explain, note) = prompts::explain_noted();
+    assert!(explain.starts_with("You help a user understand"), "{explain}");
+    assert!(note.as_deref().is_some_and(|n| n.contains("explain.txt")), "{note:?}");
+    assert_eq!(prompts::write_noted(&Ctx::default()).1, None, "an absent override is no note");
+}
+
 fn fake_tmux(e: &Env, display: &str) {
     let body = format!(
         "case \"$1\" in\ndisplay) printf '{display}' ;;\ncapture-pane) echo \"$@\" > $D/args; printf 'line1\\n\\nline2\\n  \\n\\n' ;;\n*) exit 1 ;;\nesac"
