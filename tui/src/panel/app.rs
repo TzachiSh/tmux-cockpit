@@ -165,19 +165,22 @@ impl App {
         }
     }
 
-    /// The ★ tile first: what this window most likely wants.
-    pub fn tiles(&self) -> [(Tile, &'static str, &'static str); 4] {
+    /// The ★ tile first: what this window most likely wants. When that is
+    /// Compose itself, it is not listed twice.
+    pub fn tiles(&self) -> Vec<(Tile, &'static str, &'static str)> {
+        const COMPOSE: (Tile, &str, &str) = (Tile::Compose, "Compose", "type once: fix spelling, write, or insert");
         let star = match window_kind(&self.cap.name, &self.cap.cmd) {
-            "claude" => (Tile::WritePrompt, "Write a prompt", "a task for Claude Code from your rough words"),
-            "shell" => (Tile::WriteCommand, "Write a command", "describe it, Claude writes the command"),
-            _ => (Tile::Compose, "Compose", "type once: fix spelling, write, or insert"),
+            "claude" => Some((Tile::WritePrompt, "Write a prompt", "a task for Claude Code from your rough words")),
+            "shell" => Some((Tile::WriteCommand, "Write a command", "describe it, Claude writes the command")),
+            _ => None,
         };
-        [
-            star,
-            (Tile::Compose, "Compose", "type once: fix spelling, write, or insert"),
+        let mut t: Vec<_> = star.into_iter().collect();
+        t.extend([
+            COMPOSE,
             (Tile::Explain, "Explain", "what is on this screen, and what next"),
             (Tile::Close, "Close", ""),
-        ]
+        ]);
+        t
     }
 
     pub fn screen_lines(&self) -> usize {

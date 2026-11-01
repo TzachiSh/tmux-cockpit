@@ -126,7 +126,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.lines.push(plain(""));
             b.lines
                 .push(styled(format!("{} {d} {} {d} {}", app.cap.name, app.cap.cmd, app.cap.path), meta));
-            b.footer = format!("will send: screen {} lines {d} 1-4 pick {d} q close", app.screen_lines());
+            b.footer = format!(
+                "will send: screen {} lines {d} 1-{} pick {d} q close",
+                app.screen_lines(),
+                app.tiles().len()
+            );
         }
         View::Compose => {
             let r = app.write_route();

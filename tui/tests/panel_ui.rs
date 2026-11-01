@@ -1,6 +1,6 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{Action, App, InputKind, View, risky, sanitize, write_action};
+use cockpit_tui::panel::app::{Action, App, InputKind, Tile, View, risky, sanitize, write_action};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::request::Call;
@@ -70,7 +70,8 @@ fn ch(a: &mut App, c: char) {
 
 /// Compose, a draft, then ^S: the app is busy with a pending Write call.
 fn writing(a: &mut App, draft: &str) {
-    ch(a, '2');
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Compose).unwrap();
+    ch(a, char::from(b'1' + i as u8));
     typ(a, draft);
     ctrl(a, 's');
     assert_eq!(a.view, View::Busy);
@@ -171,7 +172,12 @@ fn home_suggests_by_window_and_numbers_pick_tiles() {
     ch(&mut a, '1');
     assert_eq!((a.view.clone(), a.out), (View::Compose, OutType::Command));
     assert_eq!(app("claude", "claude", "").tiles()[0].1, "Write a prompt");
-    assert_eq!(app("w", "htop", "").tiles()[0].1, "Compose");
+    let other = app("w", "htop", "").tiles();
+    assert_eq!(
+        other.iter().map(|t| t.1).collect::<Vec<_>>(),
+        ["Compose", "Explain", "Close"],
+        "Compose is not listed twice"
+    );
 
     let mut a = app("w", "zsh", "$ ");
     ch(&mut a, '3');
