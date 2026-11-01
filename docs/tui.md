@@ -371,8 +371,8 @@ The wrapper ends every action in one `display-message` on the pane:
 `cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
 `send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
 `cockpit: could not paste into %N; nothing sent` when tmux refuses (tmux's
-error goes to the log), and `cockpit: readonly, nothing sent to %N` under
-`COCKPIT_READONLY`.
+error goes to the log). Under `COCKPIT_READONLY` it runs no tmux command at
+all and only logs what it would have sent.
 
 **Signatures.** Frozen; each lane changes bodies only.
 

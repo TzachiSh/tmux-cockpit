@@ -10238,8 +10238,7 @@ rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND
 is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
    "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
 : > "$PND/tui.log"
-is "COCKPIT_READONLY runs the panel, writes nothing to the pane and says so" \
-   "display-message -t %5 cockpit: readonly, nothing sent to %5;" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
+is "COCKPIT_READONLY runs the panel and sends tmux nothing, not even a message" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \

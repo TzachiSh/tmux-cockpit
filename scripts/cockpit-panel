@@ -64,7 +64,6 @@ fi
 # Screenshots and probes: the whole panel runs, and the pane is never written.
 if [ -n "${COCKPIT_READONLY:-}" ]; then
     log "readonly, not sent: $verb $target"
-    tmux "${say[@]}" "cockpit: readonly, nothing sent to $target" 2>/dev/null
     exit 0
 fi
 # The answer was written for what the pane ran at capture time; a Claude Code
