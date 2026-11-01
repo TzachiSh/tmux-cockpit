@@ -866,11 +866,20 @@ impl App {
         self.busy(View::Question { sel: 0 });
     }
 
-    /// Out of the question rounds, to where the flow began.
-    fn leave(&mut self) {
+    /// Where [`App::leave`] goes, named for the footer and the `?` overlay.
+    pub fn leave_to(&self) -> &'static str {
         let answered = self.run.as_ref().is_some_and(|r| r.log.iter().any(|(you, _)| !you));
         match self.run.as_ref().map(|r| &r.flow) {
-            Some(Flow::Explain) if answered => {
+            Some(Flow::Explain) if answered => "answer",
+            Some(Flow::Explain) | None => "home",
+            Some(_) => "draft",
+        }
+    }
+
+    /// Out of the question rounds, to where the flow began.
+    fn leave(&mut self) {
+        match self.leave_to() {
+            "answer" => {
                 if let Some(r) = self.run.as_mut() {
                     r.qstack.clear();
                 }
@@ -879,11 +888,11 @@ impl App {
                     armed: false,
                 };
             }
-            Some(Flow::Explain) | None => {
+            "home" => {
                 self.run = None;
                 self.view = View::Home { sel: 0 };
             }
-            Some(_) => {
+            _ => {
                 self.run = None;
                 self.view = View::Compose;
             }
@@ -1045,6 +1054,7 @@ impl App {
         match k.code {
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
+            KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < items.len() => sel = c as usize - '1' as usize,
             KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let here = View::Steps { label, items, sel, done };
@@ -1121,6 +1131,8 @@ impl App {
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {
                 self.say(Level::Warn, "esc or q again to discard this conversation");
+                // the note takes a body row: a view on the last line stays on it
+                let scroll = if scroll >= self.bottom { usize::MAX } else { scroll };
                 self.view = View::Answer { scroll, armed: true };
             }
             _ if esc => {
