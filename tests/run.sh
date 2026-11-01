@@ -1633,6 +1633,11 @@ case "$(printf '%s' "$mk" | sed -n 2p)" in
     *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
 esac
 else skip_ "the target line starts with the marker (no bat)"; fi
+# Debian's batcat is often an older bat than one installed by hand: bat wins.
+PVB=$(mktmpd)
+for b in bat batcat; do printf '#!/bin/sh\necho %s\n' "$b" > "$PVB/$b"; chmod +x "$PVB/$b"; done
+is "the preview runs bat over batcat when both exist" " bat" \
+   "$(PATH="$PVB:$PATH" "$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null)"
 case "$(printf '%s' "$mk" | sed -n 1p)" in
     " "*) ok "and its neighbours keep alignment" ;;
     *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
