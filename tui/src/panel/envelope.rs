@@ -57,16 +57,18 @@ pub fn unesc(s: &str) -> String {
     s.replace("<\\/", "</")
 }
 
-/// Only the screen is redacted: the draft is the user's own text, and Fix
-/// types its answer back, so a blanked draft would come back blanked.
+/// The draft is not redacted: Fix types its answer back, so a blanked draft
+/// would come back blanked. Turns are, since an answer may carry a secret.
 pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> String {
     let screen = esc(&redact(&cap.screen).0);
     let (name, cmd) = (esc(&cap.name), esc(&cap.cmd));
+    // A `"` in a window name would end the attribute early.
+    let window = format!("{name} · {cmd}").replace('"', "&quot;");
     let mut parts = Vec::new();
     match flow {
         Flow::Write { draft, out } => {
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
-            parts.push(format!("<screen window=\"{name} · {cmd}\">\n{shown}\n</screen>"));
+            parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
             parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&cap.path)));
             parts.push(format!("<request>{}</request>", esc(draft)));
             if *out != OutType::Auto {
@@ -74,11 +76,11 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
             }
         }
         Flow::Fix { draft } => {
-            parts.push(format!("<screen window=\"{name} · {cmd}\">\n{screen}\n</screen>"));
+            parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             parts.push(format!("<text>{}</text>", esc(draft)));
         }
         Flow::Explain => {
-            parts.push(format!("<screen window=\"{name} · {cmd}\">\n{screen}\n</screen>"));
+            parts.push(format!("<screen window=\"{window}\">\n{screen}\n</screen>"));
             if let Some(st) = session_state(&cap.screen, &cap.name, &cap.cmd) {
                 parts.push(format!(
                     "<session app=\"claude-code\" state=\"{}\">The window runs Claude Code; it {}.</session>",
@@ -93,7 +95,7 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
             .iter()
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
-                format!("<turn role=\"{role}\">{}</turn>", esc(&t.text))
+                format!("<turn role=\"{role}\">{}</turn>", esc(&redact(&t.text).0))
             })
             .collect();
         parts.push(format!("<conversation>\n{}\n</conversation>", lines.join("\n")));

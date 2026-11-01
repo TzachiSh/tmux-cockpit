@@ -137,6 +137,27 @@ fn explain_on_a_claude_window_names_the_session_state() {
 }
 
 #[test]
+fn a_quote_in_the_window_name_cannot_end_the_attribute_and_turns_are_redacted() {
+    let turns = [Turn {
+        role: Role::User,
+        text: "use password: hunter22".into(),
+    }];
+    let got = build(
+        &Flow::Fix {
+            draft: "password: hunter22".into(),
+        },
+        &cap("my \"w\"", "bash", ""),
+        &turns,
+        1,
+    );
+    assert_eq!(
+        got,
+        "<screen window=\"my &quot;w&quot; · bash\">\n\n</screen>\n\n<text>password: hunter22</text>\n\n\
+         <conversation>\n<turn role=\"user\">use password: [hidden]</turn>\n</conversation>"
+    );
+}
+
+#[test]
 fn the_session_is_read_off_its_own_screen() {
     let st = |s: &str| session_state(s, "claude", "node");
     assert_eq!(session_state("● hi?", "w", "bash"), None, "not a Claude window");
