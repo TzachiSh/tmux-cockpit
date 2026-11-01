@@ -17,7 +17,7 @@ cd "$DIR" || exit 1
 TBL=$(mktemp) || exit 1
 trap 'rm -f -- "$TBL"' EXIT
 
-SCRIPTS='agent-context agent-state cockpit-board review-gate tm tmux-branch tmux-fixer tmux-jump tmux-open-path tmux-review tmux-where tui-fetch worktree-create worktree-remove'
+SCRIPTS='agent-context agent-state cockpit-board cockpit-panel review-gate tm tmux-branch tmux-jump tmux-open-path tmux-review tmux-where tui-fetch worktree-create worktree-remove'
 
 # ordinal <TAB> title <TAB> files-it-uses
 awk -v scripts="$SCRIPTS" '

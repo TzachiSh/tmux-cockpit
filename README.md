@@ -227,7 +227,9 @@ Wire the hooks into `~/.claude/settings.json`:
 It merges additively — your own hooks are never touched, cockpit's are appended
 per event only where missing, and re-running after an upgrade only adds what's
 new (a reformatted settings.json, e.g. from `jq -S` or Claude Code rewriting
-its own file, is still recognized and never re-appended). A `settings.json.bak`
+its own file, is still recognized and never re-appended). Re-run
+`install.sh --hooks` after every plugin update: it also removes hooks a newer
+version no longer ships, such as the old PreToolUse `review-gate --pretool`. A `settings.json.bak`
 is written before the first change (an existing `.bak` is never overwritten).
 `--hooks --dry-run` previews the merge without writing or creating anything,
 even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
@@ -245,9 +247,8 @@ from `examples/claude-hooks.json` by hand:
 | `SubagentStart` | `running` |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
-| `PreToolUse` (`Bash`) | `review-gate --pretool` — while a side fix runs, denies the command pattern the human named; one stat otherwise |
 | `Stop` | `done` |
-| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; while a side fix is alive for this pane, holds here first (`@cockpit_hold`) and hands over a one-line result when it ends; then hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
+| `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
@@ -282,8 +283,8 @@ over earlier, `prefix r` included.
 | `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + s` | the session picker, replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
-| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, hold and any live side fix, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
-| `prefix + f` | a side fix beside a busy agent: two lines, a fenced `claude -p` in its own pane — see [Side fixes](#side-fixes) below; replaces stock `find-window`, `@cockpit_fixer_key` rebinds, `off` restores stock |
+| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
+| `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](#the-panel-cockpit-tui) below; needs the optional `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` restores stock |
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the optional `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 | `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
@@ -545,7 +546,7 @@ names another. An agent that made its worktree by hand (`git worktree add`
 from the main checkout) keeps its process, and so its cwd, in the main
 checkout and drives the tree with `git -C`; its row would read clean master.
 One line from the agent fixes that, and every reader (the queue, `--delta`
-for the Stop hook's ◆, `prefix + i`, side fixes) follows it:
+for the Stop hook's ◆, `prefix + i`) follows it:
 
 ```sh
 tmux set-option -p -t "$TMUX_PANE" @cockpit_dir ~/.cache/cockpit-wt/my-branch
@@ -978,96 +979,37 @@ script the keys already use.
 Keys, options, the screens, the states and the engineering rules:
 [docs/tui.md](docs/tui.md).
 
-## Side fixes
+## The panel (cockpit-tui)
 
-`prefix + f` spawns a *separate* headless `claude -p` beside a busy agent, for
-an orthogonal job — fix the tests, regenerate a fixture — instead of
-interrupting the agent's own turn to ask for it.
+The panel asks a text-only `claude -p` about the pane you are in and pastes
+the answer back into it. It is a port of type-panel. It runs with
+`--tools ""`, so it reads the screen and writes nothing to disk.
 
-The flow, five lines:
+- **Compose**: type rough words. `^S` writes a prompt, command, steps,
+  text or hint from them, `^F` fixes the spelling, `^T` inserts them as
+  typed. `⇥` picks the output type and `^N` the model.
+- **Explain**: what the pane is doing, what should happen next, or your
+  own question. When the next step is a message to a Claude Code agent,
+  the answer ends with that message, ready to insert or send.
+- Claude may ask up to 3 multiple-choice questions first (6 for Explain):
+  `1`-`4` picks, `o` types your own answer, `g` tells it to guess.
+- On a result, `i` inserts it into the pane without Enter, and `s` sends it
+  with Enter after a confirm. The paste is bracketed only when the program
+  asked for that, so a multi-line insert into a program that may run each
+  line (python3, sh, psql) asks first too. The confirm also flags risky
+  commands such as `rm` or `sudo`.
 
-1. `prefix + f` on the busy pane opens a small popup, two prompts: the job
-   (one line, `↵` alone cancels) and a command pattern to hold off (an ERE,
-   `↵` for none).
-2. Every path the main pane has dirty right now — tracked and untracked,
-   `git status --porcelain` — becomes the fixer's **fence**: denied to `Edit`.
-   Mutating git (`commit`, `push`, `checkout`, `switch`, `stash`, `reset`,
-   `rebase`, `merge`, `restore`, `clean`) is denied outright.
-3. The record lands first: `mkdir` (atomic — a second `prefix + f` on the
-   same pane refuses while this one lives) under the pane's review session
-   dir, then a per-pane marker so the `PreToolUse`/`Stop` hooks can find it
-   with one `stat`, no tmux, no git, when nothing is running.
-4. Only then does the pane open — a 40%-height split below the agent,
-   running `claude -p` headless (`--permission-mode acceptEdits`, so a
-   prompt nobody can answer never stalls it) with the fence as
-   `--disallowedTools`.
-5. The **guard**: a `Bash` command matching the ERE from step 1 is denied
-   for the main agent while the fixer lives — a suite the fixer is mid-fix
-   on stays un-run rather than reporting a false red. The main agent's next
-   `Stop` **holds** until the fixer's pane is gone (deadline: `300`s,
-   `@cockpit_fixer_deadline`, unless it finishes sooner — visible on the
-   pane as `@cockpit_hold` and in `prefix + i`), then hands over **one**
-   `HANDOVER: …` line — never the fixer's transcript — ahead of any pending
-   review. A pane gone with no handover, or one past its deadline, opens the
-   hold anyway with a one-line warning instead of the handover — the guard
-   opens at the same moment, since a past deadline clears the same record
-   both read; the
-   `review-gate` Stop hook's own `timeout` is `330`s to cover the wait — a
-   `@cockpit_fixer_deadline` set at or above that is unsupported (Claude
-   Code kills the hook mid-hold before the deadline it is waiting on ever
-   arrives), so keep it comfortably below `330`.
+Secrets on the screen are blanked before anything is sent. `prefix + f`
+opens it on the pane you are in, and `f` on a board tile opens it on that
+tile's pane. The key replaces stock `find-window`:
 
 ```sh
-set -g @cockpit_fixer_key      f       # off restores stock find-window
-set -g @cockpit_fixer_deadline 300     # seconds the Stop hold waits before giving up
+set -g @cockpit_panel_key f    # the default; off restores stock find-window
 ```
 
-What this deliberately does **not** do, and why:
-
-- **Not a review channel.** The handover is one line, not a diff; read the
-  fixer's own work the normal way, with `prefix + r`.
-- **Not a subagent, not Agent Teams.** It is a second, independent `claude
-  -p` process in its own pane — the main agent never spawns it, sees its
-  tool calls, or shares its context.
-- **The fence covers `Edit`, not the shell.** `--disallowedTools` denies the
-  `Edit` tool on the fenced paths; git's own mutating subcommands are denied
-  the same way. A fixer that writes a fenced file through `Bash` (`echo >
-  file`, `sed -i`) is not blocked by the fence — the prompt tells it not to,
-  and does not enforce it.
-- **A failed fixer keeps its pane open** — the output stays on screen and
-  `↵` closes it — rather than vanishing the one clue to what went wrong; a
-  fallback handover line is still written first, so the main agent is never
-  left holding forever on a fixer that crashed.
-
-Measured by hand against a real Claude Code (2.1.246, Haiku 4.5 in the main
-pane) on a scratch repo and a private tmux server:
-
-- A fixer spawned 3 s into a busy turn (`bash slow.sh`, 40 s) did not interrupt
-  it; the agent answered, then held 55 s at its `Stop`, with `@cockpit_hold`
-  carrying the job text and `prefix + i` reading `hold` and `side fix … pane %3
-  (alive) deadline in 255s guard //`. The handover arrived on that same turn as
-  Stop hook feedback, and the record and the marker were gone after it.
-- `Esc` pressed 3 s into a hold ended the turn (`Interrupted · What should
-  Claude do instead?`) and left `@cockpit_hold` set for the next 212 s; the
-  fixer pane ran on to completion and wrote its handover. The next turn's
-  `Stop` cleared the leaked option and delivered the line.
-- With the guard `bash tests.sh` set, the agent's `bash tests.sh` was denied
-  and the deny reason reached it verbatim (`the side fix "…" is repairing this
-  right now (pane %5); this run would give invalid results …`); the turn ended
-  on the deny with no second attempt and no `sh tests.sh`, the `Stop` that
-  followed held 92 s, and the agent resumed with `HANDOVER: c-scenario waited
-  for the suite`.
-- A real job ("make tests.sh finish instantly without changing its output") ran
-  in its own pane and closed it 25 s after the spawn, writing ``HANDOVER:
-  removed `sleep 2` from tests.sh; still prints `ok` exit 0, runtime 2.0s ->
-  0.003s, exec bit intact, nothing committed.``; `tests.sh` measured 2.00 s
-  before and 0.00 s after, and the line landed at the idle pane's next `Stop`.
-  A spawn on the same pane with `tests.sh` modified passed `--disallowedTools
-  Edit(./tests.sh) Edit(./.omc/)` plus the nine `Bash(git … *)` denials — 11
-  deny arguments read off the running `claude -p`.
-- Twice, a fixer whose `claude` ended its run without a `HANDOVER:` line (it
-  backgrounded the command it had been asked to wait for) left the wrapper's
-  fallback line, and the main agent resumed on that instead.
+It needs the `cockpit-tui` binary, like the board. The binary only prints
+`paste %N` or `send %N`; `scripts/cockpit-panel` does the paste. Options,
+variables and the action file are in [docs/tui.md](docs/tui.md).
 
 ## A goal that will not be met
 
@@ -1116,7 +1058,7 @@ Both replay the key, so they follow `@cockpit_move_key`.
 ## prefix + a — the agents menu
 
 Every cockpit action as a row with its letter on screen: jump `u`, review
-`r`, side fix `f`, pane info `i`, full screen `e`, branch `b`, move window
+`r`, panel `f`, pane info `i`, full screen `e`, branch `b`, move window
 `m`, sessions `s`.
 A row replays the key the action is bound to, so a rebound key moves its row
 and an `off` key drops it. `@cockpit_ai_key` rebinds,

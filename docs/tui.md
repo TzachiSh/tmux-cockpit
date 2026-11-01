@@ -72,7 +72,7 @@ Inside the board:
 | `[` `]` `PgUp` `PgDn` | scroll a screenful, only when rows are hidden |
 | `↵` | jump to the selected pane, close the board |
 | `r` | review its diff (`tmux-review`) |
-| `f` | side fix from it (`tmux-fixer`) |
+| `f` | the panel for it (`cockpit-panel`) |
 | `i` | info for the selected pane |
 | `a` | ask this agent. Phase 1 jumps; phase 2 opens the reply overlay |
 | `?` | help overlay, generated from the key table itself |
@@ -98,6 +98,8 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_tui_fetch` | `off` | `on` lets `prefix U` run `scripts/tui-fetch`. Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
+| `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
+| `@cockpit_panel_bound` | (state) | the key the last load bound the panel to, so a reload that turns it off or moves it unbinds the old one |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
@@ -111,7 +113,7 @@ sender checks `/proc/$pid/comm` first, because a published pid outlives a
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
-`@cockpit_hold`, `@thm_*`.
+`@thm_*`.
 
 ## Environment
 
@@ -120,8 +122,12 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
-| `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included |
+| `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
 | `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier |
+| `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
+| `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
+| `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
+| `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
 a popup.
@@ -167,7 +173,7 @@ area, not the terminal's.
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
- ↵ jump   a ask   r review   f fix   i info   ? help   q close
+ ↵ jump   a ask   r review   f panel   i info   ? help   q close
 ```
 
 Tile 1 is blocked: red border, the question in place of the doing line, and
@@ -194,7 +200,7 @@ a scrollbar.
 │ h l  ← →   column             ↵    jump to this pane, close the board  │
 │ j k  ↑ ↓   row                a    answer / ask this agent             │
 │ ⇥ ⇧⇥       next / previous    r    review its diff                     │
-│ 1-9        tile by number     f    side fix from it                    │
+│ 1-9        tile by number     f    panel for this pane                 │
 │ g G        first / last       i    info for this pane                  │
 │ u          next blocked                                                │
 │ [ ]        page               view                                     │
@@ -298,7 +304,7 @@ is agreed; changing any of it takes a comment on
 
 ```
 id, wher, name, cmd, state, title, msg, sess, path, root, spool, pinned,
-delivered, pid, review, hold, doing, said, asked, loc, pm,
+delivered, pid, review, doing, said, asked, loc, pm,
 since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
 ```
 
@@ -328,11 +334,14 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 `$COCKPIT_ACTION` on exit. Nothing else is ever written there:
 
 ```
-jump %N · review %N · fix %N · info %N · deliver %N   (deliver reserved for phase 2)
+jump %N · review %N · panel %N · info %N · deliver %N   (deliver reserved for phase 2)
+paste %N · send %N                                      (the panel)
 ```
 
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
-nothing.
+nothing. `paste` and `send` carry text, which goes to `$COCKPIT_ACTION.text`,
+mode 0600, control characters stripped; with `COCKPIT_ACTION` unset the panel
+refuses them and exits 1.
 
 **Signatures.** Frozen; each lane changes bodies only.
 
@@ -345,9 +354,9 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | fleet | info %N | ask %N | --rows | --json |
---version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
-`board`.
+**CLI:** `cockpit-tui board | fleet | info %N | ask %N | panel %N | --rows |
+--json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
+`board`; `panel %N` ships with the panel UI.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.
@@ -385,7 +394,9 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
 - **Honour `NO_COLOR` in-app**, every role set to `Reset`, and leave crossterm's
   own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
   and reverse, the three attributes the colourless fallback is built on.
-- **Actions are printed, never executed.**
+- **Actions are printed, never executed.** The panel's `claude -p` fork is a
+  read only because it runs with `--tools ""`: adding a tool breaks this rule.
+  Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
 - **Tests run on private `-L` sockets**, registered in `SOCKS`, killed after.
@@ -416,6 +427,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
