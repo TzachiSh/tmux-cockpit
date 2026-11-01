@@ -4005,12 +4005,11 @@ case "$(trk --arm "$(trid here)")" in
     *execute-silent*) bad "a second ^X on your own session still refuses" "no kill" "a kill" ;;
     *) ok "a second ^X on your own session still refuses" ;;
 esac
-# A pane moved to another session keeps the $TMUX it was born with: your own
-# session is the pane's, so the refusal holds (review of #210).
+# A leaked $TMUX_PANE names some other pane (#212): $TMUX's session is yours.
 trmv=$(trt list-panes -t busy: -F '#{pane_id}')
-case "$(env TMUX_PANE="$trmv" TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" --arm "$(trid busy)" | nosgr)" in
-    *"is this session"*) ok "a pane's own session refuses even when \$TMUX names another" ;;
-    *) bad "a pane's own session refuses even when \$TMUX names another" "is this session" "armed" ;;
+case "$(env TMUX_PANE="$trmv" TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" --arm "$(trid here)" | nosgr)" in
+    *"is this session"*) ok "a leaked \$TMUX_PANE does not move your own session" ;;
+    *) bad "a leaked \$TMUX_PANE does not move your own session" "is this session" "armed" ;;
 esac
 : > "$TRK/armed"
 trs busy needs-input 'ok?'
@@ -4274,6 +4273,46 @@ is "Enter on a row switches the popup's own client, and nests nothing" "$tqc two
 "$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
 else
   skip_ "Enter on a row switches the popup's own client, and nests nothing (needs fzf 0.73+)"
+fi
+fi
+
+echo "== tm: a plain display-popup with a leaked TMUX_PANE still knows your session =="
+# A user's own "display-popup -E tm" binding, on a server whose start env
+# leaked a $TMUX_PANE that names a pane in ANOTHER session: that session must
+# not become "here", and yours must not become killable (re-review of #210).
+if need_tmux "tm in a plain popup"; then :; else
+if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
+   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
+TLI="cockpit-tmli-$$"; TLO="cockpit-tmlo-$$"; SOCKS="$SOCKS $TLI $TLO"
+# real gets %0 and other %1, the pane the leak names.
+TMUX_PANE=%1 "$TMUX_REAL" -L "$TLI" -f /dev/null new-session -d -s real -x 120 -y 30 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TLI" new-session -d -s other 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TLI" set -g @cockpit_touch off
+"$TMUX_REAL" -L "$TLO" -f /dev/null new-session -d -s o -x 120 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TLI attach -t real" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$TLI" list-clients -F '#{client_name}'
+tlc=$("$TMUX_REAL" -L "$TLI" list-clients -F '#{client_name}')
+"$TMUX_REAL" -L "$TLI" display-popup -c "$tlc" -w 100 -h 28 -E "$DIR/scripts/tm" >/dev/null 2>&1 &
+until_cap "$TLO" o: '*session>*2 sessions*'
+"$TMUX_REAL" -L "$TLO" send-keys -t o: '^real$'
+until_cap "$TLO" o: '*session> ^real$*1/2*'
+case "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | grep ' real ')" in
+    *"(here)"*) ok "the popup's own session is the one marked (here)" ;;
+    *) bad "the popup's own session is the one marked (here)" "real (here)" \
+           "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | grep ' real ')" ;;
+esac
+"$TMUX_REAL" -L "$TLO" send-keys -t o: C-x
+if until_cap "$TLO" o: '*real is this session*'; then
+    ok "and ^X on it refuses"
+else
+    bad "and ^X on it refuses" "real is this session" "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | tail -4)"
+fi
+"$TMUX_REAL" -L "$TLO" send-keys -t o: Escape
+"$TMUX_REAL" -L "$TLO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TLI" kill-server >/dev/null 2>&1
+else
+  skip_ "the popup's own session is the one marked (here) (needs fzf 0.73+)"
+  skip_ "and ^X on it refuses (needs fzf 0.73+)"
 fi
 fi
 
