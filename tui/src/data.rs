@@ -1,4 +1,6 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+pub mod transcript;
+
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};

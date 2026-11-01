@@ -1,0 +1,2 @@
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:00Z","message":{"content":"run both"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:05Z","message":{"content":[{"type":"tool_use","id":"p1","name":"Bash","input":{"description":"first parallel"}},{"type":"tool_use","id":"p2","name":"Bash","input":{"description":"second parallel"}}]}}

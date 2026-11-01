@@ -1,0 +1,3 @@
+USER: fix the widget
+AGENT: Looking at the widget now.
+TOOL Bash: Run the widget tests
