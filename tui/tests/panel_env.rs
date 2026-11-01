@@ -196,6 +196,28 @@ fn a_users_prompt_file_wins_over_the_shipped_one() {
 }
 
 #[test]
+fn termux_is_named_by_either_variable() {
+    let termux = |v: Option<&str>, p: Option<&str>| {
+        let _e = Env::new(
+            "termux",
+            &[("TERMUX_VERSION", v.map(String::from)), ("PREFIX", p.map(String::from))],
+        );
+        (cockpit_tui::panel::is_termux(), prompts::platform())
+    };
+    for (v, p) in [(Some("0.118.0"), None), (None, Some("/data/data/com.termux/files/usr"))] {
+        let (on, platform) = termux(v, p);
+        assert!(on, "{v:?} {p:?}");
+        assert!(
+            platform.starts_with("an Android tablet or phone running Termux (tmux;"),
+            "{platform}"
+        );
+    }
+    let (on, platform) = termux(Some(""), Some("/usr"));
+    assert!(!on);
+    assert!(!platform.contains("Termux"), "{platform}");
+}
+
+#[test]
 fn a_broken_prompt_file_falls_back_and_says_why() {
     let e = Env::new("broken", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
     let d = e.dir.join("cfg/tmux-cockpit/prompts");

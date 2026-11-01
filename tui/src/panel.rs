@@ -20,6 +20,11 @@ fn xdg(var: &str, fallback: &str) -> PathBuf {
     }
 }
 
+/// Android under Termux: TERMUX_VERSION is set, or PREFIX is Termux's own tree.
+pub fn is_termux() -> bool {
+    std::env::var_os("TERMUX_VERSION").is_some_and(|v| !v.is_empty()) || std::env::var("PREFIX").is_ok_and(|p| p.contains("com.termux"))
+}
+
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }

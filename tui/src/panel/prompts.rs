@@ -68,8 +68,14 @@ pub fn fix() -> String {
 }
 
 pub fn platform() -> String {
-    let os = if cfg!(target_os = "macos") { "macOS" } else { "Linux" };
-    format!("a {os} terminal (tmux; windows run Claude Code, shells, editors and ssh sessions)")
+    let what = if super::is_termux() {
+        "an Android tablet or phone running Termux"
+    } else if cfg!(target_os = "macos") {
+        "a macOS terminal"
+    } else {
+        "a Linux terminal"
+    };
+    format!("{what} (tmux; windows run Claude Code, shells, editors and ssh sessions)")
 }
 
 const ABOUT_USER: &str = "The user may type fast, so expect typos and missing words.";
