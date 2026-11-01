@@ -1,12 +1,12 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
-use super::capture::{Capture, Session, session_state, window_kind};
+use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
 use super::envelope::{Flow, OutType, Role, Turn, build};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::request::{Call, Fail, Request};
 use super::route::{Route, route};
-use super::{boundary_at, boundary_before};
+use super::{boundary_at, boundary_before, ci};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -14,12 +14,13 @@ use std::path::Path;
 use std::time::Instant;
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
-pub const OUT_CYCLE: [OutType; 6] = [
+pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Auto,
     OutType::Prompt,
     OutType::Command,
     OutType::Steps,
     OutType::Text,
+    OutType::Format,
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
@@ -37,11 +38,9 @@ pub const QUICK: [(&str, &str); 4] = [
     ),
 ];
 
-/// Programs that take a bracketed paste as one block; anywhere else each line
-/// of a multi-line paste may run as its own command.
-const BRACKETED_OK: [&str; 11] = [
-    "bash", "zsh", "fish", "claude", "node", "ssh", "coder", "proot", "tmux", "vim", "nvim",
-];
+/// Programs that take a bracketed paste as one block, with [`SSH_LIKE`]: the
+/// remote shell gets it. Anywhere else each line of a paste may run alone.
+const BRACKETED_OK: [&str; 8] = ["bash", "zsh", "fish", "claude", "node", "tmux", "vim", "nvim"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -123,7 +122,9 @@ pub struct Run {
     /// Explain's transcript: `(true, text)` is the user, `false` Claude.
     pub log: Vec<(bool, String)>,
     pub ready: Option<String>,
-    pub route: Route,
+    /// The model the call goes to, and the rule or choice that picked it.
+    pub model: String,
+    pub why: String,
     /// The last turn and log entry were added for the call in flight.
     pub pending_turn: bool,
     /// The rounds before a best guess, so a cancelled guess can be undone.
@@ -214,7 +215,7 @@ impl App {
     /// The multi-line hazard of pasting `text` into this pane, if any.
     pub fn line_warning(&self, text: &str) -> Option<String> {
         let n = text.trim_end_matches('\n').split('\n').count();
-        (n > 1 && !BRACKETED_OK.contains(&self.cap.cmd.as_str())).then(|| format!("⚠ {n} lines – '{}' may run each line", self.cap.cmd))
+        (n > 1 && !bracketed_ok(&self.cap.cmd)).then(|| format!("⚠ {n} lines – '{}' may run each line", self.cap.cmd))
     }
 
     pub fn key(&mut self, k: KeyEvent) {
@@ -233,48 +234,33 @@ impl App {
         if !typing && k.code == KeyCode::Char('q') {
             return self.exit();
         }
-        match self.view.clone() {
-            View::Home { sel } => self.home_key(k, sel),
+        // the views that own text are moved out, never cloned: each handler puts its view back
+        match &self.view {
+            View::Home { sel } => self.home_key(k, *sel),
             View::Compose => self.compose_key(k, ctrl),
             View::Busy => {
                 if k.code == KeyCode::Esc {
                     self.cancel();
                 }
             }
-            View::Question { sel } => self.question_key(k, sel),
-            View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
-            View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
-            View::Steps { label, items, sel } => self.steps_key(k, label, items, sel),
-            View::ExplainAsk { sel } => self.explain_ask_key(k, sel),
-            View::Answer { scroll, armed } => self.answer_key(k, scroll, armed),
-            View::Confirm {
-                text,
-                send,
-                back,
-                scroll,
-                warn,
-            } => match k.code {
-                KeyCode::Char('y') => self.act(if send { "send" } else { "paste" }, text),
-                KeyCode::Enter if needs_y(&text, send) => {
-                    self.note = Some("press y to send this: Enter does not confirm a risky or multi-line send".into())
+            View::Question { sel } => self.question_key(k, *sel),
+            View::ExplainAsk { sel } => self.explain_ask_key(k, *sel),
+            View::Answer { scroll, armed } => self.answer_key(k, *scroll, *armed),
+            View::Input { .. } | View::Result { .. } | View::Steps { .. } | View::Confirm { .. } => {
+                match std::mem::replace(&mut self.view, View::Busy) {
+                    View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
+                    View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
+                    View::Steps { label, items, sel } => self.steps_key(k, label, items, sel),
+                    View::Confirm {
+                        text,
+                        send,
+                        back,
+                        scroll,
+                        warn,
+                    } => self.confirm_key(k, text, send, warn, back, scroll),
+                    _ => unreachable!("matched above"),
                 }
-                KeyCode::Enter => self.act(if send { "send" } else { "paste" }, text),
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => {
-                    self.note = None;
-                    self.view = *back
-                }
-                _ => {
-                    if let Some(scroll) = self.scrolled(k.code, scroll) {
-                        self.view = View::Confirm {
-                            text,
-                            send,
-                            warn,
-                            back,
-                            scroll,
-                        };
-                    }
-                }
-            },
+            }
             View::Error { .. } => match k.code {
                 KeyCode::Char('r') => self.retry(),
                 KeyCode::Esc => {
@@ -354,13 +340,37 @@ impl App {
                 scroll: 0,
             };
         } else {
-            self.act("paste", text);
+            self.act("paste", text, back);
         }
     }
 
-    fn act(&mut self, verb: &'static str, text: String) {
+    /// `back` is the view the action was taken from, kept for a resume.
+    fn act(&mut self, verb: &'static str, text: String, back: View) {
+        self.view = back;
         self.action = Some(Action { verb, text });
         self.exit();
+    }
+
+    fn confirm_key(&mut self, k: KeyEvent, text: String, send: bool, warn: Vec<String>, back: Box<View>, scroll: usize) {
+        let verb = if send { "send" } else { "paste" };
+        match k.code {
+            KeyCode::Char('y') => return self.act(verb, text, *back),
+            KeyCode::Enter if !needs_y(&text, send) => return self.act(verb, text, *back),
+            KeyCode::Esc | KeyCode::Char('n' | 'q') => {
+                self.note = None;
+                return self.view = *back;
+            }
+            KeyCode::Enter => self.note = Some("press y to send this: Enter does not confirm a risky or multi-line send".into()),
+            _ => {}
+        }
+        let scroll = self.scrolled(k.code, scroll).unwrap_or(scroll);
+        self.view = View::Confirm {
+            text,
+            send,
+            warn,
+            back,
+            scroll,
+        };
     }
 
     fn home_key(&mut self, k: KeyEvent, sel: usize) {
@@ -452,7 +462,7 @@ impl App {
     }
 
     fn start(&mut self, flow: Flow, turns: Vec<Turn>, log: Vec<(bool, String)>, max: usize, back: View) {
-        let route = route(&flow, MODELS[self.model]);
+        let Route { model, why, .. } = route(&flow, MODELS[self.model]);
         self.run = Some(Run {
             flow,
             turns,
@@ -463,7 +473,8 @@ impl App {
             options: vec![],
             log,
             ready: None,
-            route,
+            model,
+            why,
             pending_turn: false,
             guessed_from: None,
         });
@@ -483,14 +494,13 @@ impl App {
         let system = match &r.flow {
             Flow::Write { out, .. } => prompts::write(&Ctx {
                 out: *out,
-                guess: OutType::Auto,
                 window: window_kind(&self.cap.name, &self.cap.cmd),
             }),
             Flow::Fix { .. } => prompts::fix(),
             Flow::Explain => prompts::explain(),
         };
         let prompt = build(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds));
-        Some((system, prompt, r.route.model.clone()))
+        Some((system, prompt, r.model.clone()))
     }
 
     /// Forks the pending call, if there is one.
@@ -764,23 +774,22 @@ impl App {
             }
             KeyCode::Enter => {
                 let t = text.trim().to_string();
-                if t.is_empty() {
-                    return;
-                }
-                return match kind {
-                    InputKind::Other => self.pick(t),
-                    InputKind::Explain => self.explain(&t, &t, back),
-                    InputKind::FollowUp => {
-                        if let Some(r) = self.run.as_mut() {
-                            r.log.push((true, t.clone()));
-                            r.turns.push(Turn { role: Role::User, text: t });
-                            r.rounds = 0;
-                            r.qstack.clear();
-                            r.pending_turn = true;
+                if !t.is_empty() {
+                    return match kind {
+                        InputKind::Other => self.pick(t),
+                        InputKind::Explain => self.explain(&t, &t, back),
+                        InputKind::FollowUp => {
+                            if let Some(r) = self.run.as_mut() {
+                                r.log.push((true, t.clone()));
+                                r.turns.push(Turn { role: Role::User, text: t });
+                                r.rounds = 0;
+                                r.qstack.clear();
+                                r.pending_turn = true;
+                            }
+                            self.busy(back);
                         }
-                        self.busy(back);
-                    }
-                };
+                    };
+                }
             }
             _ => self.note = cap_note(edit(&mut text, k, ctrl, false)),
         }
@@ -827,13 +836,15 @@ impl App {
                 self.view = View::Compose;
             }
             KeyCode::Esc => self.leave(),
-            _ => {}
+            _ => self.view = View::Result { label, text, scroll },
         }
     }
 
     fn retry_from(&mut self, here: View) {
         if self.run.is_some() {
             self.busy(here);
+        } else {
+            self.view = here;
         }
     }
 
@@ -845,37 +856,32 @@ impl App {
         w
     }
 
-    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, sel: usize) {
+    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, mut sel: usize) {
         let last = items.len().saturating_sub(1);
-        let here = |sel| View::Steps {
-            label: label.clone(),
-            items: items.clone(),
-            sel,
-        };
+        let cmd = items.get(sel).map(|s| s.cmd.clone()).unwrap_or_default();
         match k.code {
-            KeyCode::Up | KeyCode::Char('k') => self.view = here(sel.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.view = here((sel + 1).min(last)),
+            KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
+            KeyCode::Char('i' | 's') if cmd.is_empty() => self.note = Some("this step is done outside the terminal".into()),
             KeyCode::Char(c @ ('i' | 's')) => {
-                let cmd = items.get(sel).map(|s| s.cmd.clone()).unwrap_or_default();
-                if cmd.is_empty() {
-                    self.note = Some("this step is done outside the terminal".into());
-                } else if c == 'i' {
-                    self.insert(cmd, here(sel));
-                } else {
-                    let warn = self.warnings(&cmd);
-                    self.view = View::Confirm {
-                        text: cmd,
-                        send: true,
-                        warn,
-                        back: Box::new(here(sel)),
-                        scroll: 0,
-                    };
+                let here = View::Steps { label, items, sel };
+                if c == 'i' {
+                    return self.insert(cmd, here);
                 }
+                let warn = self.warnings(&cmd);
+                return self.view = View::Confirm {
+                    text: cmd,
+                    send: true,
+                    warn,
+                    back: Box::new(here),
+                    scroll: 0,
+                };
             }
-            KeyCode::Char('r') => self.retry_from(here(sel)),
-            KeyCode::Esc => self.leave(),
+            KeyCode::Char('r') => return self.retry_from(View::Steps { label, items, sel }),
+            KeyCode::Esc => return self.leave(),
             _ => {}
         }
+        self.view = View::Steps { label, items, sel };
     }
 
     fn explain_ask_key(&mut self, k: KeyEvent, sel: usize) {
@@ -1007,6 +1013,10 @@ fn pasted(s: &str, multi: bool) -> String {
     if multi { t } else { t.split('\n').collect::<Vec<_>>().join(" ") }
 }
 
+pub fn bracketed_ok(cmd: &str) -> bool {
+    BRACKETED_OK.contains(&cmd) || SSH_LIKE.contains(&cmd)
+}
+
 /// A send that runs something risky, or more than one line, wants a `y`: an
 /// Enter held over from the last view must not fire it.
 pub fn needs_y(text: &str, send: bool) -> bool {
@@ -1042,11 +1052,6 @@ pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::
         &format!("{}\n", sanitize(cmd).replace('\n', " ")),
     )?;
     fresh(path, &format!("{} {pane}\n", a.verb))
-}
-
-fn ci(s: &str, i: usize, lit: &str) -> Option<usize> {
-    let b = s.as_bytes().get(i..i + lit.len())?;
-    b.eq_ignore_ascii_case(lit.as_bytes()).then_some(i + lit.len())
 }
 
 fn ws(s: &str, i: usize, min: usize) -> Option<usize> {

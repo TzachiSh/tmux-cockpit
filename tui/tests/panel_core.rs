@@ -312,7 +312,6 @@ fn the_examples_follow_the_picked_type_then_the_window() {
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
-            guess: OutType::Auto,
             window: "claude"
         }),
         want
@@ -320,19 +319,9 @@ fn the_examples_follow_the_picked_type_then_the_window() {
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
-            guess: OutType::Auto,
             window: "other"
         }),
         want
-    );
-    assert_eq!(
-        picked(Ctx {
-            out: OutType::Auto,
-            guess: OutType::Command,
-            window: "other"
-        }),
-        want,
-        "a guess picks too"
     );
 }
 

@@ -159,7 +159,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         }
         View::Busy => {
             let frames: &[&str] = if ascii(th) { &SPIN_ASCII } else { &SPIN };
-            let model = run.map_or("", |r| r.route.model.as_str());
+            let model = run.map_or("", |r| r.model.as_str());
             let what = match run.map(|r| &r.flow) {
                 Some(Flow::Write { .. }) => "writing",
                 Some(Flow::Fix { .. }) => "fixing the spelling",

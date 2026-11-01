@@ -11,12 +11,10 @@ pub const FIX: &str = include_str!("../../prompts/fix.txt");
 const SENT: usize = 9;
 const EXTRA: usize = 2;
 
-/// What the write examples are picked by. `guess` is a local type guess, or
-/// `Auto` when there is none.
+/// What the write examples are picked by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ctx {
     pub out: OutType,
-    pub guess: OutType,
     pub window: &'static str,
 }
 
@@ -173,7 +171,6 @@ pub fn examples(pool_text: &str, ctx: &Ctx) -> String {
         .collect();
     let want: Vec<String> = [
         (ctx.out != OutType::Auto).then(|| format!("out:{}", ctx.out.as_str())),
-        Some(format!("guess:{}", ctx.guess.as_str())),
         Some(format!("window:{}", ctx.window)),
     ]
     .into_iter()

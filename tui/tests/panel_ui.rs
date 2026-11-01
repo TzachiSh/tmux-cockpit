@@ -1,6 +1,6 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{Action, App, InputKind, Tile, View, risky, sanitize, write_action};
+use cockpit_tui::panel::app::{Action, App, InputKind, Tile, View, bracketed_ok, risky, sanitize, write_action};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::request::Call;
@@ -229,14 +229,14 @@ fn the_compose_box_edits_and_q_is_text_there() {
     assert_eq!(a.draft, "");
     typ(&mut a, &"x".repeat(8010));
     assert_eq!(a.draft.chars().count(), 8000, "the draft caps at 8000");
-    let seen: Vec<OutType> = (0..6)
+    let seen: Vec<OutType> = (0..7)
         .map(|_| {
             key(&mut a, KeyCode::Tab);
             a.out
         })
         .collect();
     use OutType::*;
-    assert_eq!(seen, [Prompt, Command, Steps, Text, Hint, Auto]);
+    assert_eq!(seen, [Prompt, Command, Steps, Text, Format, Hint, Auto]);
     ctrl(&mut a, 'n');
     ctrl(&mut a, 'n');
     assert_eq!(a.write_route().model, "sonnet");
@@ -988,4 +988,80 @@ fn esc_out_of_a_one_line_box_clears_its_cap_note() {
     assert!(a.note.is_some());
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::Answer { .. }) && a.note.is_none(), "{:?}", a.note);
+}
+
+#[test]
+fn the_programs_that_take_a_paste_whole_include_every_ssh_like_one() {
+    for (cmd, whole) in [
+        ("bash", true),
+        ("claude", true),
+        ("nvim", true),
+        ("ssh", true),
+        ("mosh", true),
+        ("mosh-client", true),
+        ("autossh", true),
+        ("coder", true),
+        ("proot", true),
+        ("python3", false),
+        ("cat", false),
+        ("", false),
+    ] {
+        let a = app("w", cmd, "");
+        assert_eq!(a.line_warning("a\nb").is_none(), whole, "{cmd}");
+        assert_eq!(bracketed_ok(cmd), whole, "{cmd}");
+    }
+    for cmd in cockpit_tui::panel::capture::SSH_LIKE {
+        assert!(bracketed_ok(cmd), "{cmd} is ssh-like, so its remote shell takes the paste");
+    }
+}
+
+/// Keys a view ignores leave it exactly as it was: the views are moved out
+/// while a key is handled, so a branch that forgot to put one back would show.
+#[test]
+fn an_ignored_key_keeps_every_view_that_owns_text() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>hello</text>".into()));
+    let v = a.view.clone();
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "result");
+
+    a.reply(Ok(
+        "<steps><step><note>n</note><cmd>ls</cmd></step><step><note>tap it</note></step></steps>".into(),
+    ));
+    let v = a.view.clone();
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "steps");
+    key(&mut a, KeyCode::Down);
+    ch(&mut a, 'i');
+    assert!(
+        matches!(a.view, View::Steps { sel: 1, .. }),
+        "a step with no command stays: {:?}",
+        a.view
+    );
+
+    key(&mut a, KeyCode::Up);
+    ch(&mut a, 's');
+    let v = a.view.clone();
+    assert!(matches!(v, View::Confirm { .. }));
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "confirm");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>which?</question>".into()));
+    ch(&mut a, 'o');
+    let v = a.view.clone();
+    assert!(matches!(v, View::Input { .. }));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, v, "an empty answer is not sent and the box stays");
+
+    let mut a = app("w", "bash", "$ ");
+    a.view = View::Result {
+        label: "Text".into(),
+        text: "t".into(),
+        scroll: 0,
+    };
+    ch(&mut a, 'r');
+    assert!(matches!(a.view, View::Result { .. }), "r with nothing to retry keeps the result");
 }
