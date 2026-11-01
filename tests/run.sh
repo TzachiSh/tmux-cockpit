@@ -6766,8 +6766,8 @@ STUB
 chmod +x "$PWD_SHIM/tmux"; printf '## a:1 (+)\nx\n\n' > "$PWD_SHIM/store"
 pwrun() { PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" "$@" >/dev/null 2>&1; printf '%s ' "$?"; }
 pwrcs=$(pwrun --deliver "$PWN" "$PWD_SHIM/store" "$PWD_SHIM"; pwrun --request "$PWN"; pwrun -p "$PWN" --info
-        pwrun --delta "$PWN"; pwrun --sess "$PWN"; pwrun -p "$PWN")
-is "deliver, request, -p --info, delta, sess and -p all refuse it" "1 2 2 1 1 2 " "$pwrcs"
+        pwrun --delta "$PWN"; pwrun -p "$PWN")
+is "deliver, request, -p --info, delta and -p all refuse it" "1 2 2 1 2 " "$pwrcs"
 is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/dev/null || true)"
 is "--dir prints nothing for it" "" "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir "$PWN" 2>/dev/null)"
 rm -rf "$PWD_SHIM"; unset -f pwrun
@@ -7945,12 +7945,16 @@ is "--delta: the Stop hook sees the worktree's change through @cockpit_dir" "D=0
    "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $WT_PANE; echo D=\$?" 2>/dev/null | tail -1)"
 is "--dir: the tree the pane works in" "$FQ_WT" \
    "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --dir $WT_PANE" 2>/dev/null | tail -1)"
-wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --sess $WT_PANE" 2>/dev/null | tail -1)
+# The store a review of the pane uses: tmux-review's own functions, lifted out
+# rather than respelled, applied the way review_pane and --info apply them.
+FQSD=$(mktmpf)
+{ sed -n '/^is_pane() {.*}$/p; /^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
+  printf '%s\n' 'session_dir "$1" "$(git_root "$(pane_dir "$1")")"'; } > "$FQSD"
+wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
 "$TMUX_REAL" -L "$FQ" set-option -pu -t "$WT_PANE" @cockpit_dir >/dev/null 2>&1
-cwdsess=$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --sess $WT_PANE" 2>/dev/null | tail -1)
-is "--sess: the worktree review keeps its own store, not the main checkout's" "1" \
-   "$([ -n "$wtsess" ] && [ "$wtsess" != "$cwdsess" ] && echo 1 || echo "$wtsess = $cwdsess")"
-rm -rf -- "$wtsess" "$cwdsess"
+cwdsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
+is "the worktree review keeps its own store, not the main checkout's" "1" \
+   "$(case "$wtsess" in */tmux-cockpit/review/"${WT_PANE#%}"-[0-9]*) [ "$wtsess" != "$cwdsess" ] && echo 1 ;; esac || echo "$wtsess = $cwdsess")"
 
 "$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
 rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG" "$FQ_WT" "$FQ_MAIN"
