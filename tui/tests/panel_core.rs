@@ -230,9 +230,6 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("math", "solve 3x+5"),
         ("message", "tell the team"),
         ("json", "json for user"),
-        ("edit", "make history 100k"),
-        ("delete", "remove the debug line"),
-        ("ssh-host", "add host 10.0.0.5"),
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
         ("command", "the 10 biggest files"),
@@ -244,7 +241,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
 
 #[test]
 fn the_core_examples_always_go_and_the_fill_order_tops_up() {
-    let core = ["crash", "investigate", "message", "edit", "which-file", "unclear", "steps"];
+    let core = ["crash", "investigate", "message", "which-file", "unclear", "steps"];
     let got = picked(Ctx {
         window: "shell",
         ..Ctx::default()
@@ -257,7 +254,7 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
             "plan",
             "math",
             "message",
-            "edit",
+            "json",
             "which-file",
             "unclear",
             "steps"
@@ -268,62 +265,41 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
 
 #[test]
 fn the_examples_follow_the_picked_type_then_the_window() {
-    let got = picked(Ctx {
-        out: OutType::Command,
-        guess: OutType::Auto,
-        window: "claude",
-    });
+    let want = [
+        "crash",
+        "investigate",
+        "plan",
+        "math",
+        "message",
+        "which-file",
+        "unclear",
+        "command",
+        "steps",
+    ];
     assert_eq!(
-        got,
-        [
-            "crash",
-            "investigate",
-            "plan",
-            "message",
-            "edit",
-            "which-file",
-            "unclear",
-            "command",
-            "steps"
-        ]
+        picked(Ctx {
+            out: OutType::Command,
+            guess: OutType::Auto,
+            window: "claude"
+        }),
+        want
     );
-    let got = picked(Ctx {
-        out: OutType::Format,
-        guess: OutType::Auto,
-        window: "other",
-    });
     assert_eq!(
-        got,
-        [
-            "crash",
-            "investigate",
-            "plan",
-            "message",
-            "json",
-            "edit",
-            "which-file",
-            "unclear",
-            "steps"
-        ]
+        picked(Ctx {
+            out: OutType::Command,
+            guess: OutType::Auto,
+            window: "other"
+        }),
+        want
     );
-    let got = picked(Ctx {
-        out: OutType::Auto,
-        guess: OutType::Hint,
-        window: "other",
-    });
     assert_eq!(
-        got,
-        [
-            "crash",
-            "investigate",
-            "plan",
-            "math",
-            "message",
-            "edit",
-            "which-file",
-            "unclear",
-            "steps"
-        ]
+        picked(Ctx {
+            out: OutType::Auto,
+            guess: OutType::Command,
+            window: "other"
+        }),
+        want,
+        "a guess picks too"
     );
 }
 

@@ -166,6 +166,20 @@ fn the_shipped_prompts_render_without_a_placeholder_left() {
 }
 
 #[test]
+fn the_shipped_write_prompt_never_asks_for_a_file_edit() {
+    let _e = Env::new("no-edit", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    for out in [OutType::Auto, OutType::Command, OutType::Format, OutType::Hint] {
+        for window in ["claude", "shell", "ssh", "other"] {
+            let w = prompts::write(&Ctx { out, guess: out, window });
+            assert!(
+                !w.contains("<edit") && !w.contains("<need_file") && !w.contains("<file"),
+                "{out:?} {window}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_users_prompt_file_wins_over_the_shipped_one() {
     let e = Env::new("override", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
     let d = e.dir.join("cfg/tmux-cockpit/prompts");

@@ -1,7 +1,6 @@
-<!-- Example pool for prompts/write.txt. The panel sends the 7 "core" examples, then up to 2 more whose
+<!-- Example pool for prompts/write.txt. The panel sends the 6 "core" examples, then up to 2 more whose
      "when" matches the request (first match wins, in this order: out = the output type picked in the panel,
-     ssh-config = an ssh config is open, guess = the panel's own type guess, file = a file is given,
-     window = claude/shell/editor/ssh), and
+     guess = the panel's own type guess, window = claude/shell/ssh), and
      fills any free place from the "fill" order. {{home}} becomes the user's home folder. This comment and
      the attributes are removed before sending. -->
 <example id="crash" core="1"><screen>$ net-proxy
@@ -28,25 +27,6 @@ Help me plan moving the Coder workspace to the new server without downtime; it r
 **x = 5, y = 6** (check: 3·5 + 5 = 20 and 2·5 − 6 = 4)</hint></reply></example>
 <example id="message" core="1"><screen>(empty)</screen><request>tell the team im late 10 min, train stuck</request><reply><text>Hi team, I'm running about 10 minutes late, my train is stuck. Sorry!</text></reply></example>
 <example id="json" when="out:format guess:format" fill="3"><screen>(empty)</screen><request>json for user alice admin true and roles dev ops</request><reply><format lang="json">{"user": "alice", "admin": true, "roles": ["dev", "ops"]}</format></reply></example>
-<example id="edit" core="1"><file path="{{home}}/.tmux.conf">set -g mouse on
-set -g history-limit 50000
-</file><request>make history 100k</request><reply><edit path="{{home}}/.tmux.conf">
-<change><old>set -g history-limit 50000</old><new>set -g history-limit 100000</new></change>
-<summary>Raise the tmux scrollback limit from 50000 to 100000 lines.</summary>
-</edit></reply></example>
-<example id="delete" when="out:edit file window:editor"><file path="{{home}}/bin/sync.sh">#!/bin/bash
-echo "debug: start"
-rsync -a src/ dst/
-</file><request>remove the debug line</request><reply><edit path="{{home}}/bin/sync.sh">
-<change><old>echo "debug: start"
-</old><new></new></change>
-<summary>Remove the debug echo line.</summary>
-</edit></reply></example>
-<example id="ssh-host" when="ssh-config"><file path="{{home}}/.ssh/config">Host *
-    ServerAliveInterval 30
-</file><request>add host 10.0.0.5 user bob</request><questions_left>3</questions_left><reply><question>What short name should the new host get?</question>
-<option recommended="true">bob</option>
-<option>10.0.0.5</option></reply></example>
 <example id="which-file" core="1"><screen>● I updated ~/bin/net-proxy and ~/bin/clip-helper.</screen><request>change the timeout there to 30</request><questions_left>3</questions_left><reply><question>Which file should I change?</question>
 <option>~/bin/net-proxy</option>
 <option>~/bin/clip-helper</option>
