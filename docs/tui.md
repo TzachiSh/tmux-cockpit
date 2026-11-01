@@ -113,7 +113,7 @@ sender checks `/proc/$pid/comm` first, because a published pid outlives a
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
-`@cockpit_hold`, `@thm_*`.
+`@thm_*`.
 
 ## Environment
 
@@ -304,7 +304,7 @@ is agreed; changing any of it takes a comment on
 
 ```
 id, wher, name, cmd, state, title, msg, sess, path, root, spool, pinned,
-delivered, pid, review, hold, doing, said, asked, loc, pm,
+delivered, pid, review, doing, said, asked, loc, pm,
 since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
 ```
 
