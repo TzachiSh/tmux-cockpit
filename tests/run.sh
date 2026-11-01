@@ -8367,6 +8367,61 @@ esac
 "$TMUX_REAL" -L "$IN" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review --info: doing, said and asked rows and the /btw pointer =="
+if need_tmux "tmux-review --info doing"; then :; else
+ID="cockpit-id-$$"; SOCKS="$SOCKS $ID"; IDSTATE=$(mktmpd); IDDIR=$(mktmpd); IDTREE=$(mktmpd)
+"$TMUX_REAL" -L "$ID" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$IDDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$ID" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+IDAP=$("$TMUX_REAL" -L "$ID" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$ID" new-window -d -t t: -c "$IDDIR" 'exec -a vim bash' >/dev/null 2>&1
+IDNP=$("$TMUX_REAL" -L "$ID" list-panes -t t:1 -F '#{pane_id}')
+# A copy of the tree whose transcript.sh is the fixture: the real reader is another lane's.
+id_screen() {                 # <fixture or ""> <pane>  -> stdout screen, stderr after a marker line
+    rm -rf "$IDTREE/scripts"; cp -r "$DIR/scripts" "$IDTREE/scripts"
+    [ -z "$1" ] || cp "$DIR/tests/fixtures/info-doing/$1" "$IDTREE/scripts/lib/transcript.sh"
+    "$TMUX_REAL" -L "$ID" run-shell "XDG_STATE_HOME=$(printf '%q' "$IDSTATE") '$IDTREE/scripts/tmux-review' -p $2 --info 2>&1" 2>&1
+}
+idout=$(id_screen transcript.sh "$IDAP")
+for want in "doing     Bash: run the suite (since 4m12s)" "said      all green so far" "asked     fix the parser (12s)"; do
+    case "$idout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$idout" ;; esac
+done
+case "$idout" in
+    *"ask it    /btw <question> in the pane (answers while it works)"*) ok "info points an agent pane at /btw" ;;
+    *) bad "info points an agent pane at /btw" "ask it    /btw ..." "$idout" ;;
+esac
+idrows=$(grep -c '^\(doing\|said\|asked\) ' <<<"$idout")
+[ "$idrows" = 3 ] && ok "info shows exactly the three transcript rows" || bad "info shows exactly the three transcript rows" 3 "$idrows"
+case "$idout" in *"state     "*"doing     "*"review    "*) ok "the rows sit under the state row" ;; *) bad "the rows sit under the state row" "state, doing, review in order" "$idout" ;; esac
+# stdout and stderr of the screen into separate files (outside the tree under test).
+rm -rf "$IDTREE/scripts"; cp -r "$DIR/scripts" "$IDTREE/scripts"
+cp "$DIR/tests/fixtures/info-doing/transcript-noisy.sh" "$IDTREE/scripts/lib/transcript.sh"
+"$TMUX_REAL" -L "$ID" run-shell "XDG_STATE_HOME=$(printf '%q' "$IDSTATE") '$IDTREE/scripts/tmux-review' -p $IDAP --info >'$IDSTATE/out' 2>'$IDSTATE/err'" >/dev/null 2>&1
+[ ! -s "$IDSTATE/err" ] && ok "a reader that writes to stderr leaves the screen's stderr empty" || bad "a reader that writes to stderr leaves the screen's stderr empty" "empty" "$(cat "$IDSTATE/err")"
+case "$(cat "$IDSTATE/out")" in *noise*) bad "reader stderr is not on the screen" "no noise" "$(cat "$IDSTATE/out")" ;; *) ok "reader stderr is not on the screen" ;; esac
+case "$(cat "$IDSTATE/out")" in *$'\033'*) bad "an ESC in a transcript field never reaches the screen" "no ESC byte" "$(cat -v "$IDSTATE/out")" ;; *) ok "an ESC in a transcript field never reaches the screen" ;; esac
+grep -q 'said      red \[31mtext\[0m end' "$IDSTATE/out" && ok "the text around the ESC survives" || bad "the text around the ESC survives" "said      red [31mtext[0m end" "$(cat -v "$IDSTATE/out")"
+idp=$(id_screen transcript-partial.sh "$IDAP")
+case "$idp" in
+    *"doing     Read: a file"*) ok "a doing row with no age has no since" ;;
+    *) bad "a doing row with no age has no since" "doing     Read: a file" "$idp" ;;
+esac
+case "$idp" in *"since"*|*said*|*asked*) bad "a row the reader left out is not shown" "no since/said/asked" "$idp" ;; *) ok "a row the reader left out is not shown" ;; esac
+# The stub (status 1): none of the rows, nothing on stderr, the rest of the screen intact.
+idstub=$(id_screen "" "$IDAP")
+idrows=$(grep -c '^\(doing\|said\|asked\) ' <<<"$idstub")
+[ "$idrows" = 0 ] && ok "a reader that returns 1 shows no transcript rows" || bad "a reader that returns 1 shows no transcript rows" 0 "$idrows"
+case "$idstub" in *"tmux-review:"*|*"command not found"*) bad "a reader that returns 1 prints no error" "no error" "$idstub" ;; *) ok "a reader that returns 1 prints no error" ;; esac
+case "$idstub" in *"pane      $IDAP"*"state     "*"review    "*"hold      "*) ok "the rest of the screen is unchanged" ;; *) bad "the rest of the screen is unchanged" "pane/state/review/hold" "$idstub" ;; esac
+# A pane that is not an agent: no rows, no pointer, even with a reader that has rows.
+idn=$(id_screen transcript.sh "$IDNP")
+case "$idn" in *"doing     "*|*"/btw"*) bad "a non-agent pane shows neither rows nor /btw" "neither" "$idn" ;; *) ok "a non-agent pane shows neither rows nor /btw" ;; esac
+idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>/dev/null; for t in 45 252 3780 0 x ""; do printf '[%s]' "$(age_short "$t")"; done )
+[ "$idages" = "[45s][4m12s][1h3m][0s][][]" ] && ok "ages read 45s, 4m12s, 1h3m" || bad "ages read 45s, 4m12s, 1h3m" "[45s][4m12s][1h3m][0s][][]" "$idages"
+idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>&1; for t in 0100 090 1234567890 1e3 -5; do printf '[%s]' "$(age_short "$t")"; done )
+[ "$idages" = "[1m40s][1m30s][][][]" ] && ok "ages are base 10 and capped at 9 digits" || bad "ages are base 10 and capped at 9 digits" "[1m40s][1m30s][][][]" "$idages"
+"$TMUX_REAL" -L "$ID" kill-server >/dev/null 2>&1
+fi
+
 echo "== prefix R sources every config file tmux loaded, not just the first =="
 # -f /dev/null above is single-entry #{config_files} -- it never exercised the
 # bug. A start with no -f is multi-entry (tmux tries /etc/tmux.conf, ~/.tmux.conf

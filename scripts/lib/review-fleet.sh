@@ -388,6 +388,35 @@ tui_row() {
     fi
 }
 
+# Seconds as 45s, 4m12s or 1h3m; nothing for a non-number.
+age_short() {                 # <seconds>
+    case $1 in ''|*[!0-9]*|??????????*) return 1 ;; esac
+    local n=$((10#$1))        # 0100 is a hundred, not an octal error
+    if [ "$n" -ge 3600 ]; then printf '%sh%sm' $(( n / 3600 )) $(( n % 3600 / 60 ))
+    elif [ "$n" -ge 60 ]; then printf '%sm%ss' $(( n / 60 )) $(( n % 60 ))
+    else printf '%ss' "$n"; fi
+}
+
+# The doing / said / asked rows and the /btw pointer, for an agent pane. The
+# transcript reader fails quietly (status 1, no output): then no rows, no error.
+info_doing_rows() {           # <pane> <is-agent 1|0>
+    local pane=$1 file kind a b age
+    [ "$2" = 1 ] || return 0
+    if file=$(transcript_file "$pane" 2>/dev/null) && [ -n "$file" ]; then
+        while IFS=$'\t' read -r kind a b; do
+            a=${a//[[:cntrl:]]/}          # a transcript is not trusted with the terminal
+            case $kind in
+                doing) age=$(age_short "$b") && age=" (since $age)"
+                       printf 'doing     %s%s\n' "$a" "$age" ;;
+                said)  printf 'said      %s\n' "$a" ;;
+                asked) age=$(age_short "$b") && age=" ($age)"
+                       printf 'asked     %s%s\n' "$a" "$age" ;;
+            esac
+        done < <(transcript_doing "$file" 2>/dev/null)
+    fi
+    printf 'ask it    /btw <question> in the pane (answers while it works)\n'
+}
+
 # --- --info: one screen for prefix i -------------------------------------------
 # What the plugin knows about one pane, in the order you ask it: who, what it
 # waits on, the review state, whether a side fix holds it, the base, the
@@ -395,9 +424,9 @@ tui_row() {
 # (agent-state's idiom -- tab would collapse the empty fields that mean
 # "unset").
 info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f id where cmd path wt state msg review spool sid title hold root sess b n1 n2
+    local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title hold root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}' 2>/dev/null)
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}'"$sep"'#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
     id=${f%%"$sep"*};     f=${f#*"$sep"}
     # display-message does NOT fail on a pane id that does not exist -- it
     # expands every format to the empty string and exits 0 (measured on 3.7c),
@@ -414,7 +443,8 @@ info_mode() {                 # <pane>
     review=${f%%"$sep"*}; f=${f#*"$sep"}
     spool=${f%%"$sep"*};  f=${f#*"$sep"}
     sid=${f%%"$sep"*};    f=${f#*"$sep"}
-    title=${f%%"$sep"*};  hold=${f#*"$sep"}
+    title=${f%%"$sep"*};  f=${f#*"$sep"}
+    hold=${f%%"$sep"*};   agent=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
     # The root is the tree prefix r diffs; an agent editing another tree
@@ -427,6 +457,7 @@ info_mode() {                 # <pane>
     root=$(git_root "$path")
     printf 'root      %s\n' "$root"
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
+    info_doing_rows "$id" "$agent"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
     printf 'hold      %s\n' "${hold:-—}"
     sess=$(session_dir "$id" "$root")
