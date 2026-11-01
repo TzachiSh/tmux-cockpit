@@ -3987,6 +3987,27 @@ trs quiet needs-input 'now me'
 trt new-session -d -s late 'exec sleep 300'
 tro2=$(trrows env FZF_COLUMNS=200 TM_DIR="$TRD" | sed 1d | cut -f3 | tr '\n' ' ')
 is "a reload keeps the first render's order, new sessions last" "${tro1}late " "$tro2"
+# The name column fits the longest name, so a long one is never cut and the
+# columns after it stay aligned (#210 design check).
+trt new-session -d -s a-name-of-exactly-thirty-five-chars 'exec sleep 300'
+for c in 110 200; do
+    trcol=$(trrows env FZF_COLUMNS=$c | sed 1d | cut -f2- | tr '\t' ' ')
+    is "a 35-character name at $c columns: whole, and every row's columns line up" "yes 1" \
+       "$(printf '%s\n' "$trcol" | grep -q 'a-name-of-exactly-thirty-five-chars ' && echo yes) $(printf '%s\n' "$trcol" | awk '{print index($0, " win")}' | sort -u | wc -l)"
+done
+trt kill-session -t =a-name-of-exactly-thirty-five-chars
+# Past the room it has, only that row sheds columns, age first, and ◉ moves up
+# beside the name: another device on it must stay visible.
+trt new-session -d -s this-session-name-is-fifty-characters-long-exactly 'exec sleep 300'
+TRL="cockpit-tmrowsl-$$"; SOCKS="$SOCKS $TRL"
+"$TMUX_REAL" -L "$TRL" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TR attach -t this-session-name-is-fifty-characters-long-exactly" >/dev/null 2>&1
+until_out '*fifty*' "$TMUX_REAL" -L "$TR" list-clients -F '#{session_name}'
+is "a 50-character name at 80 columns keeps ◉ and its counts, and drops its age" \
+   "this-session-name-is-fifty-characters-long-exactly	◉ —         1 win  " \
+   "$(trrows env FZF_COLUMNS=80 | grep 'fifty' | cut -f3-)"
+"$TMUX_REAL" -L "$TRL" kill-server >/dev/null 2>&1
+trt kill-session -t =this-session-name-is-fifty-characters-long-exactly
 # A garbled list never falls through to the name path: "tm --rows" once
 # created a session called "rows".
 TRG=$(mktmpd)

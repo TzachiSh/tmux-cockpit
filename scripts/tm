@@ -329,27 +329,47 @@ rows() {
   fi
 
   # The full name, never cut: fzf searches only what it shows, so a cut name
-  # would stop matching its own tail and ↵ would create a duplicate.
-  local i=0 age num g a here rest when ag wn ask
+  # would stop matching its own tail and ↵ would create a duplicate. The name
+  # column fits the longest name; past the room it has, that row alone sheds
+  # age, windows, agents.
+  local i=0 age num g a here hw=7 nw0 L=0 NW rest when ag wn ask k
+  [ "$LW" -ge 60 ] || hw=6
+  for r in "${recs[@]}"; do
+    IFS=$US read -r band _ _ _ _ _ _ _ name <<<"$r"
+    k=${#name}; [ "$band" = 9 ] && k=$((k + hw))
+    [ "$k" -le "$L" ] || L=$k
+  done
+  # 5 cells before the name, the tab inside NW, and fzf's pointer and gutter.
+  NW=$((L + 1))
+  if [ "$LW" -ge 60 ]; then clamp NW 22 $((LW - 33)); else clamp NW 24 $((LW - 9)); fi
   for r in "${recs[@]}"; do
     IFS=$US read -r band age id nw att st na wp name <<<"$r"
     i=$((i + 1)); num=' '; [ "$i" -le 9 ] && num=$i
     g="${C[$st]}${G[$st]}$R"
     a=' '; [ "$att" -gt 0 ] && a="${C[dim]}${G[att]}$R"
+    here=''; [ "$band" = 9 ] && { here=" (here)"; [ "$LW" -ge 60 ] || here="‹here›"; }
+    k=$((NW - 1 - ${#name} - ${#here}))
     if [ "$LW" -ge 60 ]; then
-      here=''; [ "$band" = 9 ] && here=" (here)"
-      # 22 cells for the name: the name, the tab fzf draws as one space, padding.
       if [ "$na" -gt 0 ]; then ag="$na agent"; [ "$na" = 1 ] || ag+=s; else ag='—'; fi
       wn="$nw win"; [ "$nw" = 1 ] || wn+=s
       when=''; [ "$band" = 9 ] || ago when "$age"
       fit ag "$ag" 10; fit wn "$wn" 7
-      printf -v rest '%s%*s%s%s %s  %s%4s%s' "${here:+${C[soft]}$here$R}" \
-        $((21 - ${#name} - ${#here} > 0 ? 21 - ${#name} - ${#here} : 1)) '' \
-        "$ag" "$wn" "$a" "${C[soft]}" "$when" "$R"
+      if [ "$k" -ge 0 ]; then
+        printf -v rest '%s%*s%s%s %s  %s%4s%s' "${here:+${C[soft]}$here$R}" "$k" '' \
+          "$ag" "$wn" "$a" "${C[soft]}" "$when" "$R"
+      else
+        # ◉ moves up beside the name; the columns go from the right until it fits.
+        nw0=$((LW - 3 - 5 - ${#name} - 1 - (${#here} ? ${#here} + 1 : 0) - 2))
+        printf -v when '  %s%4s%s' "${C[soft]}" "$when" "$R"
+        [ "$nw0" -ge 23 ] || when=''
+        [ "$nw0" -ge 17 ] || wn=''
+        [ "$nw0" -ge 10 ] || ag=''
+        rest="${here:+${C[soft]}$here$R }$a${ag:+ $ag$wn$when}"
+      fi
+    elif [ "$k" -ge 0 ]; then
+      printf -v rest '%s%*s%s' "${here:+${C[soft]}$here$R}" "$k" '' "$a"
     else
-      here=''; [ "$band" = 9 ] && here="‹here›"
-      printf -v rest '%s%*s%s' "${here:+${C[soft]}$here$R}" \
-        $((23 - ${#name} - ${#here} > 0 ? 23 - ${#name} - ${#here} : 1)) '' "$a"
+      rest="${here:+${C[soft]}$here$R }$a"
     fi
     if [ "$touch" = 1 ] && [ "$st" = needs-input ]; then
       # The ask sits under the name, inside the row so a tap on it selects it.
