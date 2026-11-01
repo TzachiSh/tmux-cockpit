@@ -195,10 +195,10 @@ glyphs() {
 # Fills C with one SGR per role. TM_SGR carries them to the reloads, so the
 # palette costs one tmux call per picker, not one per reload.
 palette() {
-  local roles=(needs-input error running done dim soft) v=() i k h s=''
+  local roles=(needs-input error running done dim soft fg) v=() i k h s=''
   if [ -z "${TM_SGR:-}" ]; then
     load_theme; _cockpit_fzf_thm
-    for k in red peach yellow green overlay_1 overlay_2; do
+    for k in red peach yellow green overlay_1 overlay_2 fg; do
       h=${COCKPIT_THM[$k]#\#}
       # Only #rrggbb becomes a colour; a named one leaves the role plain.
       [[ $h =~ ^[0-9a-fA-F]{6}$ ]] &&
@@ -427,27 +427,33 @@ preview() {  # preview SESSION_ID
 }
 
 # Touch buttons: each owns an equal share of the footer, its label centred in
-# it, so a tap anywhere in the share counts. Labels in the terminal's own fg.
-buttons() {  # buttons LABEL... -- the footer; a label starting with ! is a warning
+# it, so a tap anywhere in the share counts. shares() is the one geometry both
+# the drawing and the tap use; the cells left over are an outer margin.
+SHARE=0 MARGIN=0
+shares() {  # shares N
   listw
-  local w=$((LW - 3)) z l c t out=''
-  z=$((w / $#))
+  SHARE=$(( (LW - 3) / $1 )); MARGIN=$(( (LW - 3 - $1 * SHARE) / 2 ))
+}
+
+buttons() {  # buttons LABEL... -- the footer; a label starting with ! is a warning
+  shares $#
+  local l c t out
+  printf -v out '%*s' "$MARGIN" ''
   for l; do
-    c=$'\033[39m'; [ "${l:0:1}" = '!' ] && { c=${C[needs-input]}; l=${l:1}; }
-    trunc l "$l" $((z - 4))
-    t=$(( (z - ${#l} - 4) / 2 ))
+    c=${C[fg]}; [ "${l:0:1}" = '!' ] && { c=${C[needs-input]}; l=${l:1}; }
+    trunc l "$l" $((SHARE - 4))
+    t=$(( (SHARE - ${#l} - 4) / 2 ))
     printf -v out '%s%*s%s[ %s%s%s ]%s%*s' "$out" "$t" '' "${C[dim]}" "$c" "$l" "${C[dim]}" "$R" \
-      $((z - ${#l} - 4 - t)) ''
+      $((SHARE - ${#l} - 4 - t)) ''
   done
   printf '%s' "$out"
 }
 
-zone() {  # zone N -- which of N equal footer shares the tap fell in, or -1
-  listw
-  local c=${FZF_CLICK_FOOTER_COLUMN:-0} w=$((LW - 3)) z
-  num "$c" && [ "$c" -ge 1 ] || { printf -- -1; return; }
-  z=$(( (c - 1) * $1 / w )); [ "$z" -lt "$1" ] || z=$(($1 - 1))
-  printf '%s' "$z"
+zone() {  # zone N -- which of N shares the tap fell in, or -1 in the margin
+  shares "$1"
+  local c=${FZF_CLICK_FOOTER_COLUMN:-0}
+  num "$c" && [ "$c" -gt "$MARGIN" ] && [ "$c" -le $((MARGIN + $1 * SHARE)) ] || { printf -- -1; return; }
+  printf '%s' $(( (c - 1 - MARGIN) / SHARE ))
 }
 
 footer() {  # the resting footer for the list's width

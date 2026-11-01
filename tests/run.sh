@@ -4079,7 +4079,7 @@ case "$(FZF_MATCH_COUNT=2 FZF_QUERY=ne trk --result)" in
 esac
 # Touch: buttons share the footer evenly, the detail of a kill goes up top, and
 # a tap counts anywhere in its share.
-trkt() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" TM_TOUCH=1 FZF_COLUMNS=56 "$DIR/scripts/tm" "$@" | nosgr; }
+trkt() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" TM_TOUCH=1 FZF_COLUMNS="${TRKW:-56}" "$DIR/scripts/tm" "$@" | nosgr; }
 is "the touch footer: four buttons centred in equal shares" \
    "  [ + new ]    [ kill ]     [ view ]     [ close ]  " "$(trkt --footer)"
 trquiet=$(trid quiet)
@@ -4096,6 +4096,22 @@ is "a tap on close after the hint still closes" "change-header()+change-footer( 
 : > "$TRK/armed"
 is "+ new with a query creates it" "print(new)+accept" "$(FZF_QUERY=x FZF_CLICK_FOOTER_COLUMN=2 trkt --click "$trquiet")"
 is "a tap in the gap left of [ view ] is view's" "toggle-preview" "$(FZF_CLICK_FOOTER_COLUMN=28 trkt --click "$trquiet")"
+# Every column of every drawn button is that button: the tap and the drawing
+# share one geometry (#210 design check: the left edge of close toggled view).
+# A 56-column popup gives fzf 54, where the old split drifted a column.
+for trw in 54 56; do
+    trfoot=$(TRKW=$trw trkt --footer); trmiss=''
+    for trb in '+ new|change-footer:type a name' 'kill|change-header(kill quiet?' 'view|toggle-preview' 'close|abort'; do
+        trl=${trb%%|*}; trpre=${trfoot%%"[ $trl ]"*}
+        for c in $(seq $((${#trpre} + 1)) $((${#trpre} + ${#trl} + 4))); do
+            : > "$TRK/armed"
+            case "$(TRKW=$trw FZF_CLICK_FOOTER_COLUMN=$c trkt --click "$trquiet")" in
+                "${trb#*|}"*) ;; *) trmiss+=" $trl@$c" ;; esac
+        done
+    done
+    is "at $trw columns each drawn button answers at every one of its columns" "" "$trmiss"
+done
+: > "$TRK/armed"
 "$TMUX_REAL" -L "$TR" kill-server >/dev/null 2>&1
 fi
 
