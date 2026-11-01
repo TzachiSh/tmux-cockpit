@@ -345,9 +345,9 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | fleet | info %N | ask %N | --rows | --json |
---version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
-`board`.
+**CLI:** `cockpit-tui board | fleet | info %N | ask %N | panel %N | --rows |
+--json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
+`board`; `panel %N` comes with the panel UI, the next phase.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.
@@ -385,7 +385,9 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
 - **Honour `NO_COLOR` in-app**, every role set to `Reset`, and leave crossterm's
   own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
   and reverse, the three attributes the colourless fallback is built on.
-- **Actions are printed, never executed.**
+- **Actions are printed, never executed.** The panel's `claude -p` fork is a
+  read only because it runs with `--tools ""`: adding a tool breaks this rule.
+  Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
 - **Tests run on private `-L` sockets**, registered in `SOCKS`, killed after.
@@ -416,6 +418,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
