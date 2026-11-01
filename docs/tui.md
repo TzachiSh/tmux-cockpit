@@ -358,6 +358,19 @@ pane are different facts and a blank tile tells you which one it is.
 --json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
 `board`; `panel %N` ships with the panel UI.
 
+**Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
+tail <jsonl> [max]` is the transcript reader of `scripts/lib/transcript.sh`,
+byte-identical to the jq version (Freeze 1 on #54) with two #193 changes: a row
+whose `message` is not an object is skipped where jq failed the whole read, and
+`<bash-input>`, `<bash-stdout>` and `<bash-stderr>` prompts are dropped like the
+other harness tags. It also departs from jq in three declared places:
+- a content item that would raise a jq runtime error is skipped, not fatal;
+- JSON only jq accepts (NaN, leading zeros, nesting deeper than 128) skips the line;
+- `file` sorts project directories in byte order, not the locale's.
+
+Its exit-code rule overrides the one below: every failure, a usage error
+included, is no output, status 1 and nothing on stderr.
+
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.
 

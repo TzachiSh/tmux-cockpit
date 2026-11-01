@@ -33,3 +33,8 @@ unified-checksum = true
 unix-archive = ".tar.gz"
 # A prefix git tags must include for dist to care about them
 tag-namespace = "cockpit-tui"
+
+# dist 0.32.0 picks macos-14 for this target; GitHub retires that image on
+# 2026-11-02 and its brownouts cancel the job (runner-images#13518).
+[dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"

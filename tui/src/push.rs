@@ -91,7 +91,8 @@ impl Push {
             cleanup();
             prev(i);
         }));
-        if readonly() {
+        // A blank COCKPIT_TMUX publishes nothing, and argv[0] would be "set-option".
+        if readonly() || tmux_argv().is_empty() {
             return Self;
         }
         let mut own: Vec<CString> = tmux_argv().iter().filter_map(|s| CString::new(s.as_str()).ok()).collect();

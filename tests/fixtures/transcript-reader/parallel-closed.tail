@@ -1,0 +1,3 @@
+USER: run both
+TOOL Bash: first parallel
+TOOL Bash: second parallel

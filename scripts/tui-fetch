@@ -6,7 +6,7 @@
 # Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh).
 set -u
 
-PIN=cockpit-tui-v0.1.0
+PIN=cockpit-tui-v0.2.0
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BIN="$DIR/bin"
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
