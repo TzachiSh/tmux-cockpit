@@ -5,6 +5,7 @@ pub mod envelope;
 pub mod parse;
 pub mod prompts;
 pub mod redact;
+pub mod request;
 pub mod route;
 
 use std::path::PathBuf;
