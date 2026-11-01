@@ -3431,17 +3431,16 @@ echo "== the tint never fires at the pane you are on =="
 # The blocked-pane tint is an alert. Painting it onto the pane the user is
 # focused on -- with the permission prompt already in front of them and the
 # border already red -- is noise, and was reported as exactly that. The
-# explicit bg=default on window-active-style is load-bearing: left unset, the
-# active pane INHERITS window-style and the tint comes back (verified: 6 tinted
-# rows unset, 4 with the explicit default).
+# window-active-style must be explicit, or the active pane INHERITS window-style.
+# Only what a client draws shows it: on 3.8 bg=default still inherits the tint.
 if need_tmux "focused-pane tint"; then :; else
-TS="cockpit-tint-$$"; SOCKS="$SOCKS $TS"
-"$TMUX_REAL" -L "$TS" -f /dev/null new-session -d -s t -x 60 -y 14 'exec -a claude sleep 300' >/dev/null 2>&1
+TS="cockpit-tint-$$"; TSO="cockpit-tinto-$$"; SOCKS="$SOCKS $TS $TSO"
+"$TMUX_REAL" -L "$TS" -f /dev/null new-session -d -s t -x 60 -y 14 "bash -c 'printf PASSIVE; exec -a claude sleep 300'" >/dev/null 2>&1
 for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
     "$TMUX_REAL" -L "$TS" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
 done
 "$TMUX_REAL" -L "$TS" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
-"$TMUX_REAL" -L "$TS" split-window -t t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TS" split-window -t t "bash -c 'printf FOCUSED; exec -a claude sleep 300'" >/dev/null 2>&1
 TP1=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')
 TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')
 "$TMUX_REAL" -L "$TS" set -p -t "$TP1" @panestate needs-input >/dev/null 2>&1
@@ -3449,10 +3448,17 @@ TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk
 "$TMUX_REAL" -L "$TS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "a blocked pane you are NOT on still tints" "bg=#52303a" \
    "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP1" '#{E:window-style}')"
-is "the pane you are on never tints"           "bg=default" \
-   "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP2" '#{E:window-active-style}')"
+"$TMUX_REAL" -L "$TSO" -f /dev/null new-session -d -s o -x 60 -y 16 "TERM=xterm-256color exec $TMUX_REAL -L $TS attach -t t" >/dev/null 2>&1
+until_cap "$TSO" o '*FOCUSED*'
+# @cockpit_blocked_bg #52303a as the outer pane records it: RGB 82;48;58.
+tsrow() { "$TMUX_REAL" -L "$TSO" capture-pane -e -p -t o | grep "$1"; }
+case "$(tsrow PASSIVE)" in *'48;2;82;48;58m'*) ok "the client draws the tint on the pane you are not on" ;;
+    *) bad "the client draws the tint on the pane you are not on" "48;2;82;48;58m" "$(tsrow PASSIVE | cat -v)" ;; esac
+case "$(tsrow FOCUSED)" in *'48;2;82;48;58m'*) bad "the client draws no tint on the pane you are on" "no 48;2;82;48;58m" "$(tsrow FOCUSED | cat -v)" ;;
+    *) ok "the client draws no tint on the pane you are on" ;; esac
+"$TMUX_REAL" -L "$TSO" kill-server >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$TS" show-option -gv window-active-style)" in
-    *@panestate*) bad "window-active-style carries no state format" "bg=default" "a @panestate conditional" ;;
+    *@panestate*) bad "window-active-style carries no state format" "bg=terminal" "a @panestate conditional" ;;
     *) ok "window-active-style carries no state format" ;;
 esac
 "$TMUX_REAL" -L "$TS" kill-server >/dev/null 2>&1
