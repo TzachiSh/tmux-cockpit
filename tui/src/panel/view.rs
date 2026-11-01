@@ -140,8 +140,9 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.lines
                 .push(styled(format!("{} {d} {} {d} {}", app.cap.name, app.cap.cmd, app.cap.path), meta));
             b.footer = format!(
-                "will send: screen {} lines {d} 1-{} pick {d} q close",
+                "will send: screen {} lines, {} hidden {d} 1-{} pick {d} q close",
                 app.screen_lines(),
+                app.screen_hidden,
                 app.tiles().len()
             );
         }
@@ -163,17 +164,29 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         }
         View::Busy => {
             let frames: &[&str] = if ascii(th) { &SPIN_ASCII } else { &SPIN };
-            let model = run.map_or("", |r| r.model.as_str());
-            let what = match run.map(|r| &r.flow) {
-                Some(Flow::Write { .. }) => "writing",
-                Some(Flow::Fix { .. }) => "fixing the spelling",
-                _ => "reading the screen",
+            let (model, why) = run.map_or(("", ""), |r| (r.model.as_str(), r.why.as_str()));
+            let (what, flow) = match run.map(|r| &r.flow) {
+                Some(Flow::Write { out, .. }) => ("writing", format!("write ({})", out.as_str())),
+                Some(Flow::Fix { .. }) => ("fixing the spelling", "fix spelling".into()),
+                _ => ("reading the screen", "explain".into()),
             };
             let spin = frames[(tick as usize) % frames.len()];
             b.lines.push(styled(
                 format!("{spin} {what} {d} {model} {d} {}s", tick / 10),
                 Style::new().fg(th.running),
             ));
+            b.lines.push(plain(""));
+            let sent = format!("sent: screen {} lines, {} hidden {d} {flow}", app.screen_lines(), app.hidden);
+            b.lines.extend(many(&sent, w, "", meta));
+            b.lines.extend(many(&format!("model {model}: {why}"), w, "", meta));
+            if !app.timeout.is_zero() {
+                b.lines.push(styled(format!("times out at {} s", app.timeout.as_secs()), meta));
+            }
+            // tick is tenths of a second, so 300 is 30 s
+            if tick >= 300 {
+                b.lines
+                    .push(styled(format!("still working{}", th.g.ellipsis), Style::new().fg(th.needs)));
+            }
             b.footer = "esc cancel".into();
         }
         View::Question { sel } => {

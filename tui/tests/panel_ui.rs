@@ -119,9 +119,38 @@ fn golden_compose() {
 
 #[test]
 fn golden_busy() {
-    let mut a = app("work", "bash", "$ ls");
+    let mut a = app("work", "bash", "$ ls\nexport T=ghp_abcdefghijABCDEFGHIJ12");
     writing(&mut a, "list big files");
+    a.timeout = Duration::from_secs(120);
     goldens("busy", &a, 37);
+}
+
+#[test]
+fn golden_busy_still_working() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Explain).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    a.timeout = Duration::from_secs(90);
+    goldens("busy-slow", &a, 312);
+}
+
+#[test]
+fn busy_echoes_what_was_sent_and_its_limit() {
+    let mut a = app("work", "bash", "$ ls\nsk-abcdefghijklmnopqrst1 ghp_abcdefghijABCDEFGHIJ12");
+    assert_eq!(a.screen_hidden, 2);
+    assert!(frame(&a, 80, 20, 0).contains("will send: screen 2 lines, 2 hidden"));
+    writing(&mut a, "x");
+    assert_eq!(a.hidden, 2, "the envelope's own count");
+    let f = frame(&a, 80, 20, 299);
+    assert!(f.contains("sent: screen 2 lines, 2 hidden · write (auto)"), "{f}");
+    assert!(f.contains("model haiku: short request"), "{f}");
+    assert!(!f.contains("times out"), "no call has gone out, so no limit is known");
+    assert!(!f.contains("still working"), "29.9 s is not yet slow");
+    a.timeout = Duration::from_secs(45);
+    let f = frame(&a, 80, 20, 300);
+    assert!(f.contains("times out at 45 s") && f.contains("still working…"), "{f}");
 }
 
 #[test]

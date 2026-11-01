@@ -1,9 +1,10 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
 use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
-use super::envelope::{Flow, OutType, Role, Turn, build};
+use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
+use super::redact::redact;
 use super::request::{Call, Fail, Request};
 use super::route::{Route, route};
 use super::{boundary_at, boundary_before, ci};
@@ -160,6 +161,9 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
+    /// Secrets the last call's envelope hid, and the screen's own at capture.
+    pub hidden: usize,
+    pub screen_hidden: usize,
     /// The call's limit, from [`Call`] at launch; zero until a call goes out.
     pub timeout: Duration,
     pub busy_back: Option<View>,
@@ -175,6 +179,7 @@ pub struct App {
 
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
+        let screen_hidden = redact(&cap.screen).1;
         App {
             pane: pane.into(),
             session: session_state(&cap.screen, &cap.name, &cap.cmd),
@@ -187,6 +192,8 @@ impl App {
             pending: false,
             req: None,
             started: None,
+            hidden: 0,
+            screen_hidden,
             timeout: Duration::ZERO,
             busy_back: None,
             note: None,
@@ -543,21 +550,30 @@ impl App {
         self.view = View::Busy;
         self.pending = true;
         self.note = None;
+        self.hidden = self.run.as_ref().map_or(0, |r| self.envelope(r).1);
+    }
+
+    fn envelope(&self, r: &Run) -> (String, usize) {
+        build_counted(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds))
     }
 
     /// The system prompt, the user prompt and the model for the pending call.
     pub fn request_parts(&self) -> Option<(String, String, String)> {
+        self.request_noted().map(|(parts, _)| parts)
+    }
+
+    /// [`App::request_parts`], and why a prompt override was not used.
+    fn request_noted(&self) -> Option<((String, String, String), Option<String>)> {
         let r = self.run.as_ref()?;
-        let system = match &r.flow {
-            Flow::Write { out, .. } => prompts::write(&Ctx {
+        let (system, note) = match &r.flow {
+            Flow::Write { out, .. } => prompts::write_noted(&Ctx {
                 out: *out,
                 window: window_kind(&self.cap.name, &self.cap.cmd),
             }),
-            Flow::Fix { .. } => prompts::fix(),
-            Flow::Explain => prompts::explain(),
+            Flow::Fix { .. } => prompts::fix_noted(),
+            Flow::Explain => prompts::explain_noted(),
         };
-        let prompt = build(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds));
-        Some((system, prompt, r.model.clone()))
+        Some(((system, self.envelope(r).0, r.model.clone()), note))
     }
 
     /// Forks the pending call, if there is one.
@@ -565,7 +581,10 @@ impl App {
         if !std::mem::take(&mut self.pending) {
             return;
         }
-        if let Some((system, prompt, model)) = self.request_parts() {
+        if let Some(((system, prompt, model), note)) = self.request_noted() {
+            if let Some(n) = note {
+                self.say(Level::Warn, n);
+            }
             self.timeout = call.timeout;
             self.req = Some(Request::spawn(call, &system, &prompt, &model));
             self.started = Some(Instant::now());
