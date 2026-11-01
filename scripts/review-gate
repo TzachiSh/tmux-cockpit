@@ -6,6 +6,9 @@
 # Fail-open everywhere: a hook must never block the agent that fired it.
 set -u
 pane=${TMUX_PANE:-}
+# An agent-view background worker has no pane; its front end relays what matters (#174).
+# --concede is the agent's own call, not a hook, and still says it recorded nothing.
+[ "${1:-}" != --concede ] && [ -z "$pane" ] && [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && exit 0
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # Pane ids are per-server, so the socket joins the key (#88). Prefix-free encoding,
 # no fork. Duplicated in tmux-fixer, which writes the fixer- marker this reads.

@@ -1,0 +1,13 @@
+[
+  {
+    "pid": 11,
+    "id": "aa",
+    "cwd": "/x",
+    "kind": "background",
+    "startedAt": 1,
+    "sessionId": "s-aa",
+    "name": "bad\u001b[31m\nnamexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "status": "idle",
+    "state": "blocked"
+  }
+]

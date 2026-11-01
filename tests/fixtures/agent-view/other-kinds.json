@@ -1,0 +1,1 @@
+[{"pid":21,"id":"dd","cwd":"/x","kind":"interactive","startedAt":1,"sessionId":"s-dd","name":"front","status":"idle","state":"blocked"},{"pid":13,"id":"cc","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-cc","name":"gamma","status":"idle","state":"done"}]

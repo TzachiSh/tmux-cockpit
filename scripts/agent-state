@@ -1,13 +1,25 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
+#          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
 set -u
 
 state="${1:-off}"
-pane="${2:-${TMUX_PANE:-}}"
+poll=""
+if [ "$state" = poll ]; then
+    # poll <state> <pane> [ask]: the agent-view poller's write (#174). It owns the state, so
+    # the stickiness below does not apply, and it may only write a closed set of values.
+    poll=1; state="${2:-}"; pane="${3:-}"
+    case "$state" in needs-input|running|error|done|off) ;; *) exit 0 ;; esac
+else
+    pane="${2:-${TMUX_PANE:-}}"
+fi
 idle=""
+# An agent-view background worker has no pane: its front end relays what matters. Already
+# true of the empty-pane exit below; stated first so it does not depend on that guard.
+[ -z "$pane" ] && [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && exit 0
 # -t prefix-matches session names too, so anything but a %N id could hit another pane.
 case "$pane" in
     %[0-9]*) ;;
@@ -23,8 +35,12 @@ notify)
     read_payload false
     # The English text match covers Claude versions that send no notification_type.
     json_str notification_type
+    view=""
     case "$REPLY" in
-        permission_prompt|agent_needs_input|elicitation_dialog) state=needs-input ;;
+        permission_prompt|elicitation_dialog) state=needs-input ;;
+        # The front end relays these for an agent view (#174): the pane is then the poller's.
+        agent_needs_input) state=needs-input view=1 ;;
+        agent_completed) view=1 ;;
         idle_prompt) state=off idle=1 ;;
         '') case "$payload" in
                 *'waiting for your input'*) state=off idle=1 ;;
@@ -33,6 +49,11 @@ notify)
             esac ;;
         *) exit 0 ;;
     esac
+    if [ -n "$view" ]; then
+        mark_agentview "$pane" "${d%/*}"
+        # No state of its own: the poller reads the sessions and writes the pane.
+        [ "$state" = notify ] && exit 0
+    fi
     # Written here, not after the sticky guard below: a pane already on needs-input
     # can be asked something new, and that newer text must still land.
     if [ "$state" = needs-input ]; then
@@ -69,6 +90,24 @@ case "$state" in
     *) exit 0 ;;
 esac
 
+if [ -n "$poll" ]; then
+    # compare-then-set only: every set redraws, and nothing is sticky for the poller.
+    case "$state" in
+        off) when="#{?$cur,1,0}"; idle=1 ;;
+        *)   when="#{!=:$cur,$state}" ;;
+    esac
+    # The ask is untrusted text for a tmux option: strip control chars, cap it, and write it
+    # in a call of its own (a bare `;` argument splits a command list). Read first so an
+    # unchanged ask costs no redraw.
+    if [ "$state" = needs-input ]; then
+        msg=${4:-}; msg=${msg//[$'\001'-$'\037']/}; msg=${msg:0:120}
+        have=$(tmux show-option -pqv -t "$pane" @panestate_msg 2>/dev/null)
+        if [ -n "$msg" ] && [ "$have" != "$msg" ]; then
+            tmux set-option -p -t "$pane" @panestate_msg "$msg" 2>/dev/null
+        fi
+    fi
+fi
+
 if [ "$state" = off ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
@@ -81,11 +120,14 @@ else
     body="set-option -p -t $pane @panestate $state"
     # Entering running means the human pressed Enter, so a delivered-but-unsent review is gone.
     # Not on wake: nobody pressed Enter.
-    [ "$state" = running ] && [ "$1" != wake ] && body="$body ; set-option -pu -t $pane @cockpit_review"
+    [ "$state" = running ] && [ "$1" != wake ] && [ -z "$poll" ] \
+        && body="$body ; set-option -pu -t $pane @cockpit_review"
 fi
 
 case "$state" in
     running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
+    # The poller's done/error follow a needs-input whose ask would otherwise stay.
+    done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
 # Window and fleet summaries are precomputed here so status redraws walk no panes
