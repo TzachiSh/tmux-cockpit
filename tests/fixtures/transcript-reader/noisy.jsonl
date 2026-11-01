@@ -1,0 +1,2 @@
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:00.000Z","message":{"role":"user","content":"first\u0007 bell\nsecond line"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_02","name":"Read","input":{"file_path":"/tmp/x"}}]}}
