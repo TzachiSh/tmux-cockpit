@@ -1026,16 +1026,18 @@ and `scripts/cockpit-panel` does the paste and says what it did. Options,
 variables and the action file are in [docs/tui.md](docs/tui.md).
 
 `x` on a result, a step or an answer copies it to the clipboard with OSC 52
-and says `copied N chars`. Inside tmux that needs `set -g set-clipboard on`;
-the default, `external`, drops it.
+and says `sent N chars to the clipboard`. Inside tmux that needs
+`set -g set-clipboard on`; the default, `external`, drops it.
 
 ### On a tablet
 
 Under Termux the panel opens in tablet mode: big tiles, a row of tap buttons
 in place of the `^S` `^F` `^T` `⇥` `^N` keys, and a big yes and no on the
-confirm. A tap is a press, so it acts once; the wheel or a swipe scrolls. A
-risky or multi-line send still needs the yes button, which is `y`, never
-Enter. Keys keep working.
+confirm, drawn at the top, away from the button that opened it. A tap is a
+press, so it acts once, and a tap in the first 300 ms of a new screen is
+dropped, so a double tap never confirms; the wheel or a swipe scrolls. A risky
+or multi-line send still needs the yes button, which is `y`, never Enter. Keys
+keep working.
 
 ```sh
 set -g @cockpit_panel_mode auto    # the default; pc or tablet forces one

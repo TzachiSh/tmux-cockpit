@@ -294,8 +294,9 @@ In tablet mode:
   nothing, so crossterm #1104 (a wedged parser on an unknown report) cannot
   trigger. tmux 3.8 asks the outer terminal for the mouse whenever the popup
   does, with `mouse` on or off, and hands the popup popup-relative coordinates.
-- **A tap is a left press.** The release, drags, the right button and motion do
-  nothing, so one tap is one action and no tap guard is needed. The wheel is
+- **A tap is a bare left press.** The release, drags, the right button, motion,
+  and a press with Shift, Ctrl or Alt held (a click meant for the terminal) do
+  nothing, so a press and its release are one action. The wheel is
   `↑`/`↓`: it scrolls Result, Answer, Confirm and `?`, and moves the selection
   on Home, Question, Explain and Steps. In Compose and the one-line boxes it does
   nothing.
@@ -312,15 +313,31 @@ In tablet mode:
   `[ verb ]` button on the bottom rows (Compose: write, fix spelling, insert as
   typed, type, model, keys, home), wrapped to more rows when narrow. Ranges and
   arrows (`1-5`, `↑↓`) become no button. Keys keep working in both modes.
-- **Confirm** gets a big `yes` and `no` pair over the buttons, 3 rows tall
-  while the body keeps half the rows. `yes` is `y`, never Enter, so a risky or
-  multi-line send still takes an explicit yes. An armed Answer offers
-  `[ discard it ]` (`esc`) and `[ keep it ]` (`n`).
+- **Confirm** gets a big `yes` and `no` pair at the top, 3 rows tall while the
+  body keeps half the rows. `yes` is `y`, never Enter, so a risky or multi-line
+  send still takes an explicit yes. An armed Answer gets a big `discard it`
+  (`esc`) and `keep it` (`n`) at the top, and its `[ home ]` button becomes
+  `[ keep it ]` in place; its note says "tap discard it, or esc again".
+- **A double tap never confirms.** Two defences, as in type-panel, whose tap
+  guard was there for the same reason:
+  - Layout: every button that opens a Confirm or arms a discard is a bottom
+    button, and what confirms is drawn at the top, so the second tap of a
+    double tap lands on no confirming cell. A property test checks every size
+    from 28x7 to 120x40 for each such button (Steps, Result and Answer send and
+    insert, Answer home, Compose insert as typed).
+  - Guard: a tap within 300 ms of a frame that shows a new view (another view,
+    the Answer armed, `?` opened or closed) is dropped. Keys are never dropped.
+    The selection moving is not a new view. The loop passes its clock in, like
+    `tick`, so the tests set the time and read no clock. The first frame starts
+    the guard too: a steps resume opens a new process under the same finger.
 
 At 40x20, a phone in portrait, a risky send:
 
 ```
 ╭ panel · %3 · work ───────────────────╮
+│ ╭───────────────╮ ╭────────────────╮ │
+│ │   yes, send   │ │       no       │ │
+│ ╰───────────────╯ ╰────────────────╯ │
 │ ⚠ risky: rm                          │
 │ send this to %3 (bash) and press     │
 │ Enter?                               │
@@ -335,19 +352,20 @@ At 40x20, a phone in portrait, a risky send:
 │                                      │
 │                                      │
 │                                      │
-│ ╭───────────────╮ ╭────────────────╮ │
-│ │   yes, send   │ │       no       │ │
-│ ╰───────────────╯ ╰────────────────╯ │
 │ [ keys ]                             │
 ╰──────────────────────────────────────╯
 ```
 
 **Copy, in both modes.** `x` on a Result copies it, on Steps the selected
 step's command (its note when it has none), on an Answer the prompt for the
-agent (the last answer when there is none), and says `copied N chars`. `y` was
-not free: it is Confirm's yes. The panel writes OSC 52 (`ESC ] 52 ; c ; <base64>
-BEL`) to its own tty; nothing is run, no termux-* binary is needed, and a
-failed write is a warn note, never an exit. Inside tmux it needs:
+agent (the last answer when there is none). `y` was not free: it is Confirm's
+yes. The text is cleaned like a paste (control characters out, tabs and
+newlines kept): an ESC copied out would be a keystroke wherever it is pasted.
+The panel writes OSC 52 (`ESC ] 52 ; c ; <base64> BEL`) to its own tty; nothing
+is run, no termux-* binary is needed, and a failed write is a warn note, never
+an exit. The terminal never answers an OSC 52, so the note says only what is
+known: `sent N chars to the clipboard (needs tmux set-clipboard on)`. Inside
+tmux it needs:
 
 ```sh
 set -g set-clipboard on    # the default, external, drops an app's OSC 52
@@ -358,6 +376,13 @@ on`, the text lands in a tmux buffer and is passed on to the outer terminal;
 with `external` (the default) or `off`, nowhere. `allow-passthrough` is not
 needed, since the sequence is not wrapped. The outer terminal must accept OSC 52
 too (Termux does).
+
+**Size.** tmux 3.8 drops an OSC string longer than `input-buffer-size`
+(default 1048576) without a word: measured, 786,000 bytes of text (1,048,000 of
+base64) landed and 786,432 did not. Over 768,000 bytes the panel copies nothing
+and says `too long to copy: N chars`. Termux's emulator is said to cut OSC
+strings near 8 KB; that is unconfirmed, so under Termux a copy over 6,000 bytes
+is still sent, with a warn note that it may be cut.
 
 **Termux.** `examples/termux.properties` has an extra-keys row with a key that
 sends `prefix + f`.
@@ -376,6 +401,8 @@ sends `prefix + f`.
 - Home has one more tile, `Tablet mode` / `PC mode`, before `Close`, so Close's
   digit moves up by one (`4` to `5` on a Claude Code or shell pane).
 - `x` is a new key on Result, Steps and Answer.
+- `App::tap(t, now)` and `App::frame(now)` take the loop's clock in ms; a tap
+  within 300 ms of a new view is dropped. `view::mouse()` takes `now` too.
 
 ### The triage overlay
 
