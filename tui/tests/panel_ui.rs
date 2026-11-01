@@ -1435,5 +1435,10 @@ fn a_state_file_is_refused_unless_it_is_exactly_ours() {
     std::os::unix::fs::symlink(&p, &link).unwrap();
     assert!(read_state(&link, "%3").is_err(), "never followed");
     assert!(read_state(&dir, "%3").is_err(), "a directory");
+    let fifo = dir.join("fifo");
+    let c = std::ffi::CString::new(fifo.display().to_string()).unwrap();
+    // SAFETY: a valid C path; mkfifo only creates the node.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    assert!(read_state(&fifo, "%3").is_err(), "a FIFO is refused without blocking on its open");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1260,13 +1260,17 @@ pub fn write_state(path: &Path, pane: &str, cmd: &str, r: &Resume) -> std::io::R
 /// a small regular file of this version, for this very pane.
 pub fn read_state(path: &Path, pane: &str) -> Result<(String, Resume), String> {
     use std::io::Read;
+    let small = |m: std::fs::Metadata| m.is_file() && m.len() <= STATE_MAX;
+    // checked before the open, which a FIFO would block, and again on the fd itself
+    if !std::fs::symlink_metadata(path).is_ok_and(small) {
+        return Err("not a small regular file".into());
+    }
     let f = std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|e| e.to_string())?;
-    let m = f.metadata().map_err(|e| e.to_string())?;
-    if !m.is_file() || m.len() > STATE_MAX {
+    if !f.metadata().is_ok_and(small) {
         return Err("not a small regular file".into());
     }
     let mut body = String::new();

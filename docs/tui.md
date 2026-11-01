@@ -383,7 +383,8 @@ cockpit-tui panel %N --resume <state> --last ok|failed:<why>
 `failed:<why>` shows why as an error note and marks nothing. The loop ends when
 the binary exits with no action, or with one taken anywhere but Steps. The
 binary reads the file back strictly: no symlink, a regular file of at most
-64 KiB, version 1, at most 64 steps, every line in its place, and the pane must
+64 KiB (checked before the open, which is non-blocking, and again on the open
+file), version 1, at most 64 steps, every line in its place, and the pane must
 be the one it was opened on, or it opens on Home with an error note. The
 command written back is the captured one, so the wrapper's pane guard still
 compares against what the steps were written for. The binary still executes
