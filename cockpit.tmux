@@ -171,7 +171,9 @@ tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
     | while IFS= read -r k; do give_back "$k"; done
 
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
-pk=$(key @cockpit_panel_key f)
+# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
+pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
+pk=$(key @cockpit_panel_key "$pdef")
 # A reload that turns the key off or moves it must take the old binding back.
 pprev=$(tmux show-option -gqv @cockpit_panel_bound)
 if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then

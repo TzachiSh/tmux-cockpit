@@ -10136,6 +10136,13 @@ pn_stock_f "turning the panel off on f gives f back to stock find-window"
 pn_load
 is "a reload drops a dead tmux-fixer binding on another key" "" "$(pn_keys g)"
 pn_stock_f "and gives f back to stock find-window"
+# @cockpit_fixer_key off was how a user kept stock f; the panel honours it.
+"$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_key >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" set -g @cockpit_fixer_key off >/dev/null 2>&1; pn_load
+pn_stock_f "@cockpit_fixer_key off with no panel key keeps stock f"
+is "and binds no panel key" "" "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
+is "an explicit @cockpit_panel_key still wins over it" "1" "$(pn_keys f | grep -c cockpit-panel)"
 unset -f pn_keys pn_load pn_stock_f
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
