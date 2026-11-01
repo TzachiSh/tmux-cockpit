@@ -225,8 +225,11 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
         }
-        // q in a confirm is "no", not "close": a reflex q must not lose the answer
-        let typing = matches!(self.view, View::Compose | View::Input { .. } | View::Confirm { .. });
+        // q in a confirm is "no" and on an answer is esc: a reflex q must not lose the answer
+        let typing = matches!(
+            self.view,
+            View::Compose | View::Input { .. } | View::Confirm { .. } | View::Answer { .. }
+        );
         if !typing && k.code == KeyCode::Char('q') {
             return self.exit();
         }
@@ -306,6 +309,14 @@ impl App {
     /// The offset after a scroll key, or `None` for any other key.
     fn scrolled(&self, code: KeyCode, scroll: usize) -> Option<usize> {
         let scroll = scroll.min(self.bottom);
+        if self.room == 0 {
+            // no body rows on screen: an offset that moved would show nothing
+            return matches!(
+                code,
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Char('j' | 'k')
+            )
+            .then_some(scroll);
+        }
         let page = self.room.saturating_sub(1).max(1);
         let s = match code {
             KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
@@ -747,7 +758,10 @@ impl App {
 
     fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, back: View) {
         match k.code {
-            KeyCode::Esc => return self.view = back,
+            KeyCode::Esc => {
+                self.note = None;
+                return self.view = back;
+            }
             KeyCode::Enter => {
                 let t = text.trim().to_string();
                 if t.is_empty() {
@@ -896,7 +910,8 @@ impl App {
 
     fn answer_key(&mut self, k: KeyEvent, scroll: usize, armed: bool) {
         let ready = self.run.as_ref().and_then(|r| r.ready.clone());
-        if armed && k.code != KeyCode::Esc {
+        let esc = matches!(k.code, KeyCode::Esc | KeyCode::Char('q'));
+        if armed && !esc {
             self.note = None;
             self.view = View::Answer { scroll, armed: false };
         }
@@ -935,12 +950,12 @@ impl App {
                     scroll: 0,
                 };
             }
-            // the transcript is paid-for calls with no way back: one Esc only arms
-            KeyCode::Esc if !armed => {
-                self.note = Some("esc again to discard this conversation".into());
+            // the transcript is paid-for calls with no way back: one esc or q only arms
+            _ if esc && !armed => {
+                self.note = Some("esc or q again to discard this conversation".into());
                 self.view = View::Answer { scroll, armed: true };
             }
-            KeyCode::Esc => {
+            _ if esc => {
                 self.note = None;
                 self.run = None;
                 self.view = View::Home { sel: 0 };

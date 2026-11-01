@@ -274,7 +274,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 b.footer = "f follow up  ↑↓ scroll  esc home".into();
             }
             if *armed {
-                b.footer = "esc again discards it  any other key keeps it".into();
+                b.footer = "esc or q again discards it  any other key keeps it".into();
             }
             b.scroll = *scroll;
             b.count = true;
@@ -335,7 +335,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
     let cut = b.more && room > 1 && top + room < total;
     let last = top + if cut { room - 1 } else { room.min(total - top) };
     // the board's "N-M of T" (board.rs header), arrows only where it can go
-    if b.count && (top > 0 || last < total) {
+    if b.count && room > 0 && (top > 0 || last < total) {
         let mut n = format!(" {}-{last} of {total} ", top + 1);
         if top > 0 {
             n.push_str(&format!("{}{top} ", th.g.up));
@@ -393,6 +393,8 @@ pub fn run(app: &mut App) {
     let mut term = match crate::backend::init(true) {
         Ok(t) => t,
         Err(e) => {
+            // init may fail after raw mode and the paste mode are already on
+            crate::backend::restore(true);
             eprintln!("cockpit-tui: {e}");
             std::process::exit(1);
         }

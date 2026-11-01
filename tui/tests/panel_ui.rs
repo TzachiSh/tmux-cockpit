@@ -890,8 +890,8 @@ fn esc_on_an_answer_asks_before_it_drops_the_conversation() {
     let mut a = explained();
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::Answer { armed: true, .. }), "{:?}", a.view);
-    assert!(a.run.is_some() && a.note.as_deref() == Some("esc again to discard this conversation"));
-    assert!(frame(&a, 80, 20, 0).contains("esc again discards it"));
+    assert!(a.run.is_some() && a.note.as_deref() == Some("esc or q again to discard this conversation"));
+    assert!(frame(&a, 80, 20, 0).contains("esc or q again discards it"));
     key(&mut a, KeyCode::Up);
     assert!(
         matches!(a.view, View::Answer { armed: false, .. }) && a.note.is_none(),
@@ -947,4 +947,45 @@ fn the_draft_cap_says_what_it_left_out() {
     );
     key(&mut a, KeyCode::Backspace);
     assert!(a.note.is_none());
+}
+
+#[test]
+fn q_on_an_answer_is_esc_and_never_quits() {
+    let mut a = explained();
+    ch(&mut a, 'q');
+    assert!(matches!(a.view, View::Answer { armed: true, .. }) && !a.quit, "{:?}", a.view);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.run.is_none() && !a.quit, "the second q goes home, not out");
+
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 }, "esc then q discards too");
+    let mut a = explained();
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "Ctrl-C stays a hard quit");
+}
+
+#[test]
+fn no_body_rows_means_no_position_and_no_scroll() {
+    let mut a = long_answer(40);
+    let f = shown(&mut a, 60, 2);
+    assert_eq!(a.room, 0);
+    assert!(!f.contains(" of "), "{f}");
+    let at = scroll_of(&a);
+    for k in [KeyCode::Down, KeyCode::PageDown, KeyCode::Up] {
+        key(&mut a, k);
+        assert_eq!(scroll_of(&a), at, "{k:?}");
+    }
+}
+
+#[test]
+fn esc_out_of_a_one_line_box_clears_its_cap_note() {
+    let mut a = explained();
+    ch(&mut a, 'f');
+    a.paste(&"x".repeat(8001));
+    assert!(a.note.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { .. }) && a.note.is_none(), "{:?}", a.note);
 }
