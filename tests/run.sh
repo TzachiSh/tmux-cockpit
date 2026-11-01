@@ -2392,9 +2392,9 @@ dcfound() { printf '%s\n' "$1" | grep -cE "\] formats +$2"; }
 dcge() { [ "$(vnum "$1" 2>/dev/null)" -ge "$(vnum "$2" 2>/dev/null)" ] 2>/dev/null \
          && echo yes || echo no; }
 is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/dev/null)"
-is "vnum: 0.63.0 is not below itself" "yes" "$(dcge 0.63.0 0.63.0)"
-is "vnum: the debian fzf is below the 0.63.0 floor, and only that way" "no yes" \
-   "$(dcge '0.44.1 (debian)' 0.63.0) $(dcge 0.63.0 '0.44.1 (debian)')"
+is "vnum: 0.73.0 is not below itself" "yes" "$(dcge 0.73.0 0.73.0)"
+is "vnum: the debian fzf is below the 0.73.0 floor, and only that way" "no yes" \
+   "$(dcge '0.44.1 (debian)' 0.73.0) $(dcge 0.73.0 '0.44.1 (debian)')"
 
 DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
 before=$(find "$DH" "$DBIN" | sort)
@@ -2413,7 +2413,7 @@ if [ "$(dcge "$dctv" 3.8)" = no ]; then
 else
     is "and the whole run exits 0"          "0" "$dcrc"
 fi
-# Debian ships 0.44.1, below the 0.63 the pickers need.
+# Debian ships 0.44.1, below the 0.73 the pickers need.
 dcout=$(dc "$DOLD:$DCP"); dcrc=$?
 is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"
 is "and it exits 2"                         "2" "$dcrc"
@@ -2574,15 +2574,15 @@ is "and the run exits 0" "0" "$bsrc"
 bsout=$(bs --full)
 is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c 'already current')"
 
-# Without --full the 0.44.1 on PATH is below the pickers' 0.63: fzf alone.
+# Without --full the 0.44.1 on PATH is below the pickers' 0.73: fzf alone.
 bsclear
 bsout=$(bs); bsrc=$?
-is "without --full an fzf below 0.63 fetches fzf alone" "fzf" \
+is "without --full an fzf below 0.73 fetches fzf alone" "fzf" \
    "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
 is "and the run exits 0" "0" "$bsrc"
 bsout=$(BPATH="$BB:$BPATH" bs)
-case "$bsout" in *"latest tools"*) bad "an fzf at 0.63+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
-    *) ok "an fzf at 0.63+ first on PATH fetches nothing" ;; esac
+case "$bsout" in *"latest tools"*) bad "an fzf at 0.73+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
+    *) ok "an fzf at 0.73+ first on PATH fetches nothing" ;; esac
 
 bsclear; mkrel flip
 bsout=$(bs --full); bsrc=$?
@@ -11002,17 +11002,17 @@ FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -cF "fzf 0.44.1 found; tmux-cockpit's pickers need 0.63+, bootstrap.sh fetches it")
+fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -cF "fzf 0.44.1 found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it")
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'pickers need 0.63+')
+fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')
 is "the old-fzf notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
 "$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
 FZNS2="cockpit-fzfquiet-$$"; SOCKS="$SOCKS $FZNS2"
 env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "and a 0.63+ fzf is never told anything" "0" \
-   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.63+')"
+is "and a 0.73+ fzf is never told anything" "0" \
+   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')"
 "$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
 rm -rf "$FZTD" "$FZG"
 # --- #105 review rows ---------------------------------------------------------

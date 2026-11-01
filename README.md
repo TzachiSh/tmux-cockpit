@@ -188,7 +188,7 @@ come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
 gum and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
 project publishes checksums, and shadows a distro copy rather than replacing
 it. Without `--full` it still fetches fzf alone when the one it finds is below
-0.63. No sudo, and nothing is downloaded when tmux loads the plugin or when you
+0.73. No sudo, and nothing is downloaded when tmux loads the plugin or when you
 press a key. Add `--latest` for each project's newest tag instead of the pins.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
 match installs nothing. On macOS with brew it runs `brew install fzf bat gum`.
@@ -265,11 +265,12 @@ over earlier, `prefix r` included.
   builds 3.8 into `~/.local/bin` when the distro's tmux is older.
 - **Rust >= 1.88** only to build the board with `make tui`;
   the fetched binary needs neither Rust nor cargo.
-- **fzf >= 0.63** for the pickers. Debian and Ubuntu ship 0.44.1, so
-  `bootstrap.sh` fetches 0.74.3 into `~/.local/bin` when it finds an older
-  one, and `install.sh --check` fails below 0.63. `bat`
-  (`batcat` on Debian) and `gum` are optional; `jq` is needed by
-  `install.sh --hooks` and the review gate.
+- **fzf >= 0.73** for the pickers. Debian 13 ships 0.60.3, Ubuntu 24.04
+  0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
+  0.74.3 into `~/.local/bin` when it finds an older one, and
+  `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) and
+  `gum` are optional; `jq` is needed by `install.sh --hooks` and the review
+  gate.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 
