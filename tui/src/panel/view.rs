@@ -344,7 +344,7 @@ pub fn run(app: &mut App) {
         libc::signal(libc::SIGHUP, on_stop as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
     }
-    let mut term = match crate::backend::init() {
+    let mut term = match crate::backend::init(true) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("cockpit-tui: {e}");
@@ -385,5 +385,6 @@ pub fn run(app: &mut App) {
     if !app.quit || STOP.load(Ordering::SeqCst) {
         app.stop();
     }
-    ratatui::restore();
+    // the SIGHUP/SIGTERM path breaks out of the loop above and lands here too
+    crate::backend::restore(true);
 }

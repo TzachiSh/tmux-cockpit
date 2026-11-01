@@ -800,7 +800,8 @@ pub fn run() -> Option<String> {
         .trim()
         .to_string();
     let push = Push::start();
-    let mut term = match crate::backend::init() {
+    // no text box to paste into: the board keeps the input it always had
+    let mut term = match crate::backend::init(false) {
         Ok(t) => t,
         Err(e) => {
             // Push::start() already published the pid and exit() skips Drop

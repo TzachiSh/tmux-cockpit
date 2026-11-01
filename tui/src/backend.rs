@@ -1,5 +1,6 @@
-//! Works around ratatui-crossterm 0.1.2 misplacing cells after a VS16 emoji
-//! (ratatui#2721); delete once a newer crate ships. See docs/tui.md, "Contracts".
+//! Works around ratatui-crossterm 0.1.2 misplacing cells after a VS16 emoji (ratatui#2721);
+//! delete the shim once a newer crate ships, but keep `init`/`restore`. See docs/tui.md, "Contracts".
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::Terminal;
@@ -110,17 +111,28 @@ impl<W: Write> Backend for WideCellBackend<W> {
     }
 }
 
-/// `ratatui::init()` with our backend in place. The panic hook runs before
-/// `panic = "abort"` takes the process down, which is why no Drop guard exists.
-pub fn init() -> io::Result<Terminal<WideCellBackend<Stdout>>> {
+/// `ratatui::init()` with our backend; its panic hook runs before `panic = "abort"`, hence no
+/// Drop guard. `paste` turns on bracketed paste, so a paste arrives as one event, not as keys.
+pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        ratatui::restore();
+        restore(paste);
         hook(info);
     }));
     enable_raw_mode()?;
     execute!(stdout(), EnterAlternateScreen)?;
+    if paste {
+        execute!(stdout(), EnableBracketedPaste)?;
+    }
     Terminal::new(WideCellBackend::new(stdout()))
+}
+
+/// `ratatui::restore()`, plus the bracketed paste `init(true)` turned on.
+pub fn restore(paste: bool) {
+    if paste {
+        let _ = execute!(stdout(), DisableBracketedPaste);
+    }
+    ratatui::restore();
 }
 
 #[cfg(test)]

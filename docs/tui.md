@@ -434,7 +434,7 @@ workspace, no crate split.
 
 | module | owns |
 |--------|------|
-| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` |
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` / `restore()` with the panel's bracketed paste |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
@@ -478,8 +478,9 @@ preceding VS16 glyph covers, the batch is flushed and that cell starts a fresh
 delegated `draw`, so the backend emits an absolute `MoveTo` while the cell keeps
 its real symbol and style.
 
-The upstream fix is ratatui#2721. Delete `backend.rs` once a ratatui-crossterm
-newer than 0.1.2 ships. Do not add a CJK `suppress_until` branch: it is unreachable
+The upstream fix is ratatui#2721. Delete the shim (`WideCellBackend`) once a
+ratatui-crossterm newer than 0.1.2 ships; `init()` and `restore()` stay, since
+they also own the panel's bracketed paste. Do not add a CJK `suppress_until` branch: it is unreachable
 given the diff above, and would silently drop a real cell if it ever were
 reached.
 
