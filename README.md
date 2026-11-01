@@ -398,6 +398,10 @@ set -g @cockpit_popup_height 50%
 Anything `display-popup` accepts works, absolute columns/rows included. The
 path picker re-reads them on every click, so changing them needs no reload.
 
+The session picker (`prefix + s`) reads them as **ceilings**, not sizes: it
+shrinks to fit its sessions, at most 70% of the client on a desktop, 90% wide
+below 160 columns, and full width in touch mode.
+
 ### The snippet
 
 The preview pane is the reason to look before you leap, so it shows the thing
@@ -1119,7 +1123,7 @@ the cost of the override, and it is the only one.
 
 ## tm — session launcher
 
-`prefix + s` opens it in a popup.
+`prefix + s` opens it in a popup sized to its sessions: no empty half-screen.
 
 ```sh
 tm <name>     attach to <name>, creating it if missing

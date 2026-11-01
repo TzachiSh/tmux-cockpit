@@ -139,7 +139,8 @@ sid_of() {  # sid_of NAME -- that session's id, empty when there is none
 
 enter() {  # enter SESSION_ID
   if in_client; then
-    tmux switch-client -t "$1"
+    # -c: the client that pressed prefix+s, not another device on the same session.
+    tmux switch-client ${TM_CLIENT:+-c "$TM_CLIENT"} -t "$1"
   else
     # -d: detach stale clients, which a --no-reap host never removes (#145).
     tmux attach-session -d -t "$1"
@@ -166,8 +167,8 @@ kill_one() {  # kill_one NAME
   [ -n "$id" ] && tmux kill-session -t "$id" 2>/dev/null && printf 'killed: %s\n' "$1" >&2
 }
 
-# Your own session is the pane's, since a pane moved to another session keeps
-# the $TMUX it was born with. pick() exports it for the reloads.
+# Your own session: the popup passes it in; in a pane it is the pane's, since a
+# pane moved to another session keeps the $TMUX it was born with.
 own() {
   [ -n "${TM_SID:-}" ] && return 0
   [ -n "${TMUX_PANE:-}" ] && TM_SID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null)
@@ -520,6 +521,63 @@ click() {  # click ID -- a tap on the touch footer
   esac
 }
 
+# prefix+s runs this, as display-popup takes a size, not a format. The client
+# and its session come from the binding: the popup itself knows neither.
+popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
+  local client=$1 sid=$2 cw=$3 ch=$4 needs=${5:-} st='#{W:#{@cockpit_win_state} }'
+  local n nwait nneed touch pw ph t=0 rows w h hmax pv spec=''
+  num "$cw" && num "$ch" || die "cockpit: tm --popup needs the client's width and height"
+  IFS=$US read -r n nwait nneed touch pw ph < <(tmux display-message -p \
+    "#{server_sessions}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,}}}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,#{?#{m:*error*,$st},x,}}}}$US#{@cockpit_touch}$US#{@cockpit_popup_width}$US#{@cockpit_popup_height}")
+  num "$n" && num "$nwait" && num "$nneed" || die "cockpit: tm --popup could not count the sessions"
+  case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cw" -lt 100 ] && t=1 ;; esac
+  rows=$n; [ -n "$needs" ] && [ "$nneed" -gt 0 ] && rows=$nneed
+  # 7 = the popup border, prompt, rule, header line, footer rule and footer.
+  if [ "$t" = 1 ]; then
+    w=$cw; ceiling w "$pw" "$cw"
+    h=$((2 * rows + nwait + 7)); clamp h 12 "$ch"; ceiling h "$ph" "$ch"
+  else
+    w=$((cw * 70 / 100)); [ "$cw" -ge 160 ] || w=$((cw * 90 / 100))
+    # The user's size options are ceilings, not sizes.
+    ceiling w "$pw" "$cw"
+    hmax=$((ch * 70 / 100)); ceiling hmax "$ph" "$ch"
+    if [ $(((w - 2) / 2)) -ge 60 ]; then
+      # fzf puts the preview on the right; the list sets the height.
+      h=$((rows + 7)); clamp h 18 "$hmax"
+    else
+      # Below: the list gets its rows first, the preview what is left, up to
+      # 12 lines and its rule. Under 5 it starts hidden, and ^/ still shows it.
+      pv=$((hmax - rows - 8)); [ "$pv" -le 12 ] || pv=12
+      if [ "$pv" -ge 5 ]; then
+        h=$((rows + 8 + pv)); spec="down,$pv,border-top"
+      else
+        h=$((rows + 7)); clamp h 12 "$hmax"; spec='hidden,down,50%,border-top'
+      fi
+    fi
+  fi
+  local cmd
+  printf -v cmd 'TM_POPUP=1 TM_TOUCH=%s TM_SID=%q TM_CLIENT=%q TM_PREVIEW=%q %s%s' \
+    "$t" "$sid" "$client" "$spec" "$QSELF" "${needs:+ --needs}"
+  tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' -E "$cmd"
+}
+
+clamp() {  # clamp VAR LOW HIGH -- HIGH wins when the two cross
+  local v=${!1}
+  [ "$v" -ge "$2" ] || v=$2
+  [ "$v" -le "$3" ] || v=$3
+  printf -v "$1" '%d' "$v"
+}
+
+ceiling() {  # ceiling VAR OPTION WHOLE -- OPTION as N% of WHOLE or N cells
+  local c
+  case $2 in
+    *[!0-9%]*|'') return 0 ;;
+    *%) c=$((${2%\%} * $3 / 100)) ;;
+    *)  c=$2 ;;
+  esac
+  [ "${!1}" -le "$c" ] || printf -v "$1" '%d' "$c"
+}
+
 pick() {
   local cols t glyph touch
   load_theme
@@ -564,7 +622,7 @@ pick() {
   else
     args+=(--bind "every(2):$(act reload-sync "$QSELF --rows")+refresh-preview"
            --bind "result:transform:[ \"\$FZF_MATCH_COUNT\" != 0 ] && [ ! -s \"\$TM_DIR/armed\" ] || $QSELF --result"
-           --preview-window='right,50%,border-left,<60(down,12,border-top)')
+           --preview-window="${TM_PREVIEW:-right,50%,border-left,<60(down,12,border-top)}")
   fi
 
   local out rc query line
@@ -598,6 +656,7 @@ case "${1:-}" in
     armed; : > "$TM_DIR/armed"
     [ "${ARMED:0:1}" != = ] || tmux kill-session -t "${ARMED#=}" 2>/dev/null
     exit 0 ;;
+  --popup)   shift; popup "$@"; exit ;;
   --needs)   export TM_NEEDS=1; shift ;;
   -k|--kill)
     shift

@@ -136,11 +136,11 @@ key() {                       # <option> <default> -> the key, empty when off
 }
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
-# TM_POPUP=1: tm fills the popup, where fzf's inline 40% would leave half of
-# it empty, and skips the restore a login shell needs.
+# tm --popup opens the popup itself: its height follows the session count,
+# which a display-popup size cannot express.
 Q_TM=$(sq "$DIR/scripts/tm")
 sk=$(key @cockpit_sessions_key s)
-[ -z "$sk" ] || tmux bind-key "$sk" display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_POPUP=1 $Q_TM"
+[ -z "$sk" ] || tmux bind-key "$sk" run-shell -b "$Q_TM --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
 jk=$(key @cockpit_jump_key u)

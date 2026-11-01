@@ -3123,11 +3123,14 @@ pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4
 # the script exits, and cockpit.tmux's own source-file lands with it (probed
 # 10/10 -- the binding is queryable the instant run-shell returns).
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+# tm --popup opens the popup itself, sized to the sessions, on the pressing
+# client and in its session.
 case "$(pk s)" in
-    *sessions*) ok "prefix s is bound to the sessions popup" ;;
-    *) bad "prefix s is bound to the sessions popup" "a display-popup running tm" "$(pk s)" ;;
+    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"*)
+        ok "prefix s is bound to the sessions popup" ;;
+    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h>" "$(pk s)" ;;
 esac
-case "$(pk g)" in *sessions*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
+case "$(pk g)" in *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
     *) ok "and g is left to tmux" ;; esac
 is "and S is no longer taken" "" "$(pk S)"
 case "$(pk u)" in
@@ -3138,7 +3141,7 @@ is "and J is no longer taken" "" "$(pk J)"
 "$TMUX_REAL" -L "$PS" set -g @cockpit_sessions_key S >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_jump_key J >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(pk S)" in *sessions*) ok "@cockpit_sessions_key S brings the old key back" ;;
+case "$(pk S)" in *--popup*) ok "@cockpit_sessions_key S brings the old key back" ;;
     *) bad "@cockpit_sessions_key S brings the old key back" "the popup on S" "$(pk S)" ;; esac
 case "$(pk J)" in *tmux-jump*) ok "@cockpit_jump_key J brings the old key back" ;;
     *) bad "@cockpit_jump_key J brings the old key back" "tmux-jump on J" "$(pk J)" ;; esac
@@ -4076,7 +4079,7 @@ is "a tap in the gap left of [ view ] is view's" "toggle-preview" "$(FZF_CLICK_F
 "$TMUX_REAL" -L "$TR" kill-server >/dev/null 2>&1
 fi
 
-echo "== tm: a name tmux cannot target =="
+echo "== tm: a name tmux cannot target, and the popup's own client =="
 # tmux reads "=\$5x" as a session id, so every -t "=NAME" missed such a session
 # and tm made a duplicate (review of #210). A fake tmux logs what tm asks for.
 TF=$(mktmpd)
@@ -4096,7 +4099,63 @@ is "tm \$5x attaches the existing session by id, creating nothing" "attach-sessi
    "$(grep '^attach' "$TF/log")|$(grep -c '^new-session' "$TF/log")"
 tfrun env -u TMUX "$DIR/scripts/tm" -k '$5x'
 is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/log")"
+# From the popup, the switch names the client that pressed prefix+s: a phone
+# on the same session must not be the one that moves.
+tfrun env TMUX=/tmp/fake,1,8 TM_CLIENT=/dev/pts/9 "$DIR/scripts/tm" plain
+is "the popup's switch goes to its own client" "switch-client -c /dev/pts/9 -t \$8" "$(grep '^switch' "$TF/log")"
 
+echo "== tm --popup: shrink-to-fit, the user's size options are ceilings =="
+# A fake tmux answers the one display-message --popup asks and logs the popup.
+# Fields: sessions, waiting, needs-you band, @cockpit_touch, width, height.
+TP=$(mktmpd)
+cat > "$TP/tmux" <<'STUB'
+#!/bin/sh
+case "$1" in
+  display-message) printf '%s\n' "$TP_ANSWER" ;;
+  display-popup)   shift; printf '%s\n' "$*" >> "$TP_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$TP/tmux"
+tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W -h H"
+    local a=$1; shift
+    : > "$TP/log"
+    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
+        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
+    sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
+}
+tpspec() { sed -n 's/.*TM_PREVIEW=\([^ ]*\) .*/\1/p' "$TP/log" | tr -d '\\'; }
+is "desktop: 70% wide, rows + 7 under the 18-line floor" "-w 140 -h 18" "$(tpsize '7|2|3||||' 200 50)"
+is "desktop: many sessions stop at 70% of the height" "-w 140 -h 35" "$(tpsize '40|0|0||||' 200 50)"
+# The preview lands where fzf puts it: right while half the list is 60+
+# columns, below otherwise, whatever the client's tier (review of #210).
+is "165 columns: 70% is too narrow for a right preview, so it goes below and every row fits" "-w 115 -h 34" "$(tpsize '14|0|0||||' 165 50)"
+is "140 columns: the preview is on the right, so no lines are kept for it" "-w 126 -h 18" "$(tpsize '7|2|3||||' 140 50)"
+is "a 60% ceiling at 200 drops the preview below, and the rows still fit" "-w 120 -h 27 down,12,border-top" \
+   "$(tpsize '7|2|3||60%||' 200 50) $(tpspec)"
+is "tablet: 90% wide, with 12 preview lines and their rule below" "-w 99 -h 27" "$(tpsize '7|2|3||||' 110 40)"
+# The rows come first; the preview gets what is left, and under 5 lines it
+# starts hidden (#210 design check: 110x24 showed one row).
+is "a short tablet keeps the rows and starts the preview hidden" "-w 99 -h 14 hidden,down,50%,border-top" \
+   "$(tpsize '7|2|3||||' 110 24) $(tpspec)"
+is "@cockpit_touch off on a phone: a 6-line preview below the rows" "-w 50 -h 21 down,6,border-top" \
+   "$(tpsize '7|2|3|off|||' 56 30) $(tpspec)"
+is "touch below 100 columns: full width, two lines a row, one more per ask" "-w 56 -h 23" "$(tpsize '7|2|3||||' 56 30)"
+is "touch keeps a 12-line floor" "-w 56 -h 12" "$(tpsize '2|0|0||||' 56 30)"
+is "@cockpit_touch on at a desktop width" "-w 200 -h 23" "$(tpsize '7|2|3|on|||' 200 50)"
+is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7|2|3||60%|10|' 200 50)"
+is "and never floors" "-w 140 -h 18" "$(tpsize '7|2|3||90%|40|' 200 50)"
+is "--needs sizes for the needs-you band" "-w 56 -h 17" "$(tpsize '7|2|4||||' 56 30 --needs)"
+tpsize '7|2|3||||' 200 50 >/dev/null
+case "$(cat "$TP/log")" in
+    "-c /dev/pts/9 -t \$3 -w 140 -h 18 -T  sessions  -E TM_POPUP=1 TM_TOUCH=0 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PREVIEW='' "*/tm) ok "the popup goes to that client, in its session, with the tier" ;;
+    *) bad "the popup goes to that client, in its session, with the tier" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9" "$(cat "$TP/log")" ;;
+esac
+tpsize '7|2|3||||' 56 30 --needs >/dev/null
+case "$(cat "$TP/log")" in
+    *"TM_TOUCH=1 "*"/tm --needs") ok "--needs rides into the popup" ;;
+    *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
+esac
 
 echo "== tm: the picker, driven: type-to-create, alt-enter, 1-9, ^X twice =="
 # Real fzf in a private pane. A real client on the server, so switch-client
@@ -4187,6 +4246,34 @@ else
            "alt-Enter creates the query even when a row matches" "2 on an empty query switches to row 2" \
            "one ^X kills nothing" "the second ^X kills the highlighted session" \
            "your own session refuses to die from the picker"; do skip_ "$t (needs fzf 0.73+)"; done
+fi
+fi
+
+echo "== tm: Enter in the prefix+s popup switches the client =="
+# The real path: tm --popup opens the picker, Enter picks a row. The server
+# starts with a leaked $TMUX_PANE, as one launched from inside tmux does (#212).
+if need_tmux "tm popup Enter"; then :; else
+if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
+   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
+TQI="cockpit-tmqi-$$"; TQO="cockpit-tmqo-$$"; SOCKS="$SOCKS $TQI $TQO"
+TMUX_PANE=%99 "$TMUX_REAL" -L "$TQI" -f /dev/null new-session -d -s one 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQI" new-session -d -s two 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQO" -f /dev/null new-session -d -s o -x 120 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TQI attach -t one" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}'
+tqc=$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}')
+"$TMUX_REAL" -L "$TQI" run-shell -b "$DIR/scripts/tm --popup '$tqc' '$("$TMUX_REAL" -L "$TQI" display-message -p -t one: '#{session_id}')' 120 30"
+until_cap "$TQO" o: '*session>*(here)*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: two
+until_cap "$TQO" o: '*session> two*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: Enter
+until_out "$tqc two" "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}'
+is "Enter on a row switches the popup's own client, and nests nothing" "$tqc two" \
+   "$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}' 2>/dev/null)"
+"$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
+else
+  skip_ "Enter on a row switches the popup's own client, and nests nothing (needs fzf 0.73+)"
 fi
 fi
 
