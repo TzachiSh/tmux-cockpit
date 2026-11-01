@@ -488,7 +488,7 @@ workspace, no crate split.
 
 | module | owns |
 |--------|------|
-| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` / `restore()` with the panel's bracketed paste |
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
@@ -556,7 +556,8 @@ and is fine.
 **A panel outlives its tmux server.** crossterm 0.29 rereads a hung-up tty
 forever, so a loop blocked in `event::read` never sees its signal flag again.
 The board and the panel each run a thread that `poll`s the tty for `POLLHUP`
-and exits when it comes; the action file is left unwritten.
+or `POLLERR` and exits when it comes; the action file is left unwritten. A
+`POLLNVAL` (Darwin's `poll` takes no devices) leaves the process unwatched.
 
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at

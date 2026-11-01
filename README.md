@@ -1002,7 +1002,8 @@ file and the answer to a private temp file for the paste.
   commands such as `rm` or `sudo`, and a risky or multi-line send takes
   `y`, not Enter. `n`, `q` or `esc` cancels it.
 - On steps, `i` or `s` runs one step and the panel comes back on the
-  steps with that one marked `✓ sent`, so you can go on to the next.
+  steps with that one marked `✓ sent` (`+ sent` with `COCKPIT_GLYPHS=ascii`),
+  so you can go on to the next.
 - `↑↓` and `PgUp` `PgDn` scroll a long result, answer or confirm. `esc` or `q`
   on an Explain answer asks once before it drops the conversation.
 
