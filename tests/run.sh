@@ -10235,6 +10235,7 @@ cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
 printf '%s\n' "\$*" >> "$PND/bargv"
+[ -e "$PND/crash" ] && exit 3
 # A state file only on the first run: the resumed one leaves without a way back.
 [ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
 exit 0
@@ -10300,6 +10301,12 @@ rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
 is "COCKPIT_READONLY reruns it too, saying nothing was sent" "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
    "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
 rm -f "$PND/state"
+touch "$PND/crash"; : > "$PND/tui.log"
+is "a panel that exits non-zero is reported on the pane" "display-message -t %5 cockpit: the panel exited 3 — see $PND/tui.log;" \
+   "$(pact 'paste %5' hi)"
+is "and under COCKPIT_READONLY only logged" "" "$(COCKPIT_READONLY=1 pact 'paste %5' hi)"
+is "the log says what it would have said" "1" "$(grep -c 'readonly, not said: cockpit: the panel exited 3' "$PND/tui.log")"
+rm -f "$PND/crash"
 fi
 
 echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
