@@ -9854,9 +9854,10 @@ is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
 
 # F4: the agent command list is @cockpit_agents_glob, which cockpit.tmux
 # precomputes -- never a second copy compiled into the binary.
-TJZ=$(mktmpd); ln -sf "$(command -v sleep)" "$TJZ/zzz"
+# bash, not sleep: a multicall coreutils (uutils) refuses to run as "zzz".
+TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz 3600" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
 TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do "$TMUX_REAL" -L "$TJ" display-message -p -t "$i" '#{pane_current_command}'; done | sort -u | tr '\n' ' ')
