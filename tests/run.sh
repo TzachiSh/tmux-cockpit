@@ -11495,6 +11495,8 @@ is "only the last 300 lines are read: an open tool_use 350 lines back gives no d
    "" "$(trrow "$TRL" doing 2)"
 
 echo "== transcript reader: tail (#176) =="
+TRF="$DIR/tests/fixtures/transcript-reader"
+. "$DIR/scripts/lib/transcript.sh"
 is "the tail is USER/AGENT/TOOL lines, oldest first" \
    $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests' \
    "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null)"
@@ -11513,6 +11515,7 @@ is "a non-numeric cap prints nothing, status 1" "1:" \
    "$(transcript_tail "$TRF/open.jsonl" many 2>&1; echo -n "$?:")"
 
 echo "== transcript reader: which transcript (#176) =="
+. "$DIR/scripts/lib/transcript.sh"
 TRH="$(mktmpd)"; mkdir -p "$TRH/.claude/projects/-some-proj"
 : > "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl"
 : > "$TRH/.claude/projects/-some-proj/sid-bbb.jsonl"
