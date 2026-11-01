@@ -2,6 +2,7 @@
 //! request and reply parsing. No view here; the UI lands in the next phase.
 pub mod capture;
 pub mod envelope;
+pub mod parse;
 pub mod prompts;
 pub mod redact;
 pub mod route;
