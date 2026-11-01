@@ -982,8 +982,10 @@ Keys, options, the screens, the states and the engineering rules:
 ## The panel (cockpit-tui)
 
 The panel asks a text-only `claude -p` about the pane you are in and pastes
-the answer back into it. It is a port of type-panel. It runs with
-`--tools ""`, so it reads the screen and writes nothing to disk.
+the answer back into it. It is a port of type-panel. Claude runs with
+`--tools ""`, so it sees only the screen text it is sent and can neither edit a
+file nor run a command. The panel itself writes its system prompt to a cache
+file and the answer to a private temp file for the paste.
 
 - **Compose**: type rough words. `^S` writes a prompt, command, steps,
   text or hint from them, `^F` fixes the spelling, `^T` inserts them as
@@ -1007,8 +1009,9 @@ tile's pane. The key replaces stock `find-window`:
 set -g @cockpit_panel_key f    # the default; off restores stock find-window
 ```
 
-It needs the `cockpit-tui` binary, like the board. The binary only prints
-`paste %N` or `send %N`; `scripts/cockpit-panel` does the paste. Options,
+It needs the `cockpit-tui` binary, like the board. The binary never writes to
+the pane: it leaves `paste %N` or `send %N` and the text in the action files,
+and `scripts/cockpit-panel` does the paste and says what it did. Options,
 variables and the action file are in [docs/tui.md](docs/tui.md).
 
 ## A goal that will not be met
