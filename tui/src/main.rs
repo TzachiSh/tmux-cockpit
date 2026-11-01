@@ -39,6 +39,7 @@ fn panel(args: &[String]) {
     };
     let mut a = app::App::new(pane, cap);
     if let Some((f, last)) = resume {
+        a.reopened = true;
         match app::read_state(std::path::Path::new(f), pane) {
             Ok((cmd, r)) => a.resumed(cmd, r, last),
             Err(e) => {

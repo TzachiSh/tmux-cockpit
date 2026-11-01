@@ -139,6 +139,14 @@ fn input_fd() -> Option<(Option<std::fs::File>, libc::c_int)> {
     Some((Some(f), fd))
 }
 
+/// Drops every key typed but not yet read. Best effort: no tty, nothing to drop.
+pub fn flush_input() {
+    if let Some((_keep, fd)) = input_fd() {
+        // SAFETY: tcflush only discards the descriptor's queued input.
+        unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Watch {
     HungUp,

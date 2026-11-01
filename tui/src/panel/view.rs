@@ -410,6 +410,10 @@ fn transient(e: &std::io::Error) -> bool {
 
 /// The panel's event loop; what to paste or send is left in `app.action`.
 pub fn run(app: &mut App) {
+    if app.reopened {
+        // before the probe: its first poll already reads the tty into crossterm's queue
+        crate::backend::flush_input();
+    }
     // crossterm caches a failed event-reader init forever: probe before init.
     if let Err(e) = event::poll(Duration::ZERO) {
         eprintln!("cockpit-tui: no usable terminal: {e}");
@@ -448,6 +452,13 @@ pub fn run(app: &mut App) {
             break;
         }
         app.fit(page.0, page.1);
+        if std::mem::take(&mut app.reopened) {
+            // a key typed before this first frame was shown is dropped, crossterm's queue too
+            crate::backend::flush_input();
+            while matches!(event::poll(Duration::ZERO), Ok(true)) {
+                let _ = event::read();
+            }
+        }
         // Ticking only while a call is out, so an idle panel costs no wakeups.
         let ev = if app.req.is_some() {
             match event::poll(Duration::from_millis(100)) {

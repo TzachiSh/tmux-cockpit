@@ -190,6 +190,9 @@ pub struct App {
     /// Counts [`App::say`] calls, so a key can tell a note it set from an old one.
     said: u64,
     pub action: Option<Action>,
+    /// Opened again by the wrapper after an action: keys typed during the
+    /// handover were meant for a screen not yet drawn.
+    pub reopened: bool,
     /// Set with an action taken from Steps: what `<action>.state` carries.
     pub resume: Option<Resume>,
     pub quit: bool,
@@ -221,6 +224,7 @@ impl App {
             said: 0,
             action: None,
             resume: None,
+            reopened: false,
             quit: false,
             room: 0,
             bottom: 0,

@@ -10142,6 +10142,23 @@ until_cap "$PN" "$PNB" '*will send*'
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" q
 if pn_gone "$PNB"; then ok "leaving without an action ends the loop"; else bad "leaving without an action ends the loop" "the popup gone" "$(pn_cap)"; fi
 
+# Keys typed while the wrapper pastes were aimed at a panel not yet on screen:
+# a reflex `s` Enter must not run the next step unseen.
+printf '<steps><step><note>one</note><cmd>echo uno</cmd></step><step><note>two</note><cmd>echo dos</cmd></step></steps>' > "$PND/reply"
+pn_go 'exec cat' 'two more' || bad "the panel reaches its steps (type-ahead)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+until_cap "$PN" "$PNB" '*confirm*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+until_cap "$PN" "$PNB" '*step 1 sent*' || bad "the panel comes back after the send (type-ahead)" "step 1 sent" "$(pn_cap)"
+# a sent line shows twice in cat: the echo, then its output
+is "keys typed during the handover are dropped, so step 2 never runs" "0:2" \
+   "$(pn_count "$PNA" 'echo dos'):$(pn_count "$PNA" 'echo uno')"
+case "$(pn_cap)" in *confirm*) bad "and no confirm opened from them" "the steps" "$(pn_cap)" ;; *) ok "and no confirm opened from them" ;; esac
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" q
+pn_gone "$PNB"
+
 # The binding: f by default, and the wrapper with the pressed pane.
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
