@@ -1,25 +1,27 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
-use super::capture::{Capture, Session, session_state, window_kind};
-use super::envelope::{Flow, OutType, Role, Turn, build};
+use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
+use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
+use super::redact::redact;
 use super::request::{Call, Fail, Request};
 use super::route::{Route, route};
-use super::{boundary_at, boundary_before};
+use super::{boundary_at, boundary_before, ci};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
-pub const OUT_CYCLE: [OutType; 6] = [
+pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Auto,
     OutType::Prompt,
     OutType::Command,
     OutType::Steps,
     OutType::Text,
+    OutType::Format,
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
@@ -37,11 +39,9 @@ pub const QUICK: [(&str, &str); 4] = [
     ),
 ];
 
-/// Programs that take a bracketed paste as one block; anywhere else each line
-/// of a multi-line paste may run as its own command.
-const BRACKETED_OK: [&str; 11] = [
-    "bash", "zsh", "fish", "claude", "node", "ssh", "coder", "proot", "tmux", "vim", "nvim",
-];
+/// Programs that take a bracketed paste as one block, with [`SSH_LIKE`]: the
+/// remote shell gets it. Anywhere else each line of a paste may run alone.
+const BRACKETED_OK: [&str; 8] = ["bash", "zsh", "fish", "claude", "node", "tmux", "vim", "nvim"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tile {
@@ -83,6 +83,8 @@ pub enum View {
         label: String,
         items: Vec<Step>,
         sel: usize,
+        /// One per step: inserted or sent in an earlier round of this popup.
+        done: Vec<bool>,
     },
     ExplainAsk {
         sel: usize,
@@ -101,7 +103,23 @@ pub enum View {
     },
     Error {
         line: String,
+        /// One line on what to do about it, when the failure is a known one.
+        hint: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+/// One line above the body; it lasts until the view changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub level: Level,
+    pub text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +128,23 @@ pub struct Action {
     pub verb: &'static str,
     pub text: String,
 }
+
+/// The Steps view across a paste: the wrapper runs the action and opens the
+/// panel again on this, in the same popup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resume {
+    pub label: String,
+    pub items: Vec<Step>,
+    /// The step the action was taken on.
+    pub sel: usize,
+    pub done: Vec<bool>,
+    pub verb: &'static str,
+}
+
+const STATE_HEAD: &str = "cockpit-panel-state 1";
+/// Far over any real reply: write.txt asks for a handful of steps.
+const STATE_MAX: u64 = 64 * 1024;
+const STATE_STEPS: usize = 64;
 
 /// One request's conversation: the question rounds and, for Explain, the log.
 pub struct Run {
@@ -123,7 +158,9 @@ pub struct Run {
     /// Explain's transcript: `(true, text)` is the user, `false` Claude.
     pub log: Vec<(bool, String)>,
     pub ready: Option<String>,
-    pub route: Route,
+    /// The model the call goes to, and the rule or choice that picked it.
+    pub model: String,
+    pub why: String,
     /// The last turn and log entry were added for the call in flight.
     pub pending_turn: bool,
     /// The rounds before a best guess, so a cancelled guess can be undone.
@@ -143,9 +180,21 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
+    /// Secrets the last call's envelope hid (screen and turns), and the screen's alone.
+    pub hidden: usize,
+    pub screen_hidden: usize,
+    /// The call's limit, from [`Call`] at launch; zero until a call goes out.
+    pub timeout: Duration,
     pub busy_back: Option<View>,
-    pub note: Option<String>,
+    pub note: Option<Note>,
+    /// Counts [`App::say`] calls, so a key can tell a note it set from an old one.
+    said: u64,
     pub action: Option<Action>,
+    /// Opened again by the wrapper after an action: keys typed during the
+    /// handover were meant for a screen not yet drawn.
+    pub reopened: bool,
+    /// Set with an action taken from Steps: what `<action>.state` carries.
+    pub resume: Option<Resume>,
     pub quit: bool,
     /// Body rows on screen and the furthest scroll, from the last frame.
     pub room: usize,
@@ -154,6 +203,7 @@ pub struct App {
 
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
+        let screen_hidden = redact(&cap.screen).1;
         App {
             pane: pane.into(),
             session: session_state(&cap.screen, &cap.name, &cap.cmd),
@@ -166,13 +216,51 @@ impl App {
             pending: false,
             req: None,
             started: None,
+            hidden: 0,
+            screen_hidden,
+            timeout: Duration::ZERO,
             busy_back: None,
             note: None,
+            said: 0,
             action: None,
+            resume: None,
+            reopened: false,
             quit: false,
             room: 0,
             bottom: 0,
         }
+    }
+
+    /// Back on the Steps a resume file carried, after the wrapper ran its
+    /// action. `last` is `ok`, or `failed:<why>` from the wrapper.
+    pub fn resumed(&mut self, cmd: String, r: Resume, last: &str) {
+        // the steps were written for this command: the wrapper's guard checks it
+        self.cap.cmd = cmd;
+        self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
+        let Resume {
+            label,
+            items,
+            mut sel,
+            mut done,
+            verb,
+        } = r;
+        let n = sel + 1;
+        match last.strip_prefix("failed:") {
+            None if last == "ok" => {
+                done[sel] = true;
+                let what = if verb == "send" { "sent" } else { "inserted" };
+                self.say(Level::Info, format!("step {n} {what}"));
+                if let Some(next) = (sel + 1..items.len()).find(|&i| !done[i] && !items[i].cmd.is_empty()) {
+                    sel = next;
+                }
+            }
+            Some(why) => {
+                let why: String = sanitize(why).replace('\n', " ").chars().take(200).collect();
+                self.say(Level::Error, format!("step {n} was not sent: {why}"));
+            }
+            None => self.say(Level::Error, format!("step {n}: no word on how it went")),
+        }
+        self.view = View::Steps { label, items, sel, done };
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -214,13 +302,41 @@ impl App {
     /// The multi-line hazard of pasting `text` into this pane, if any.
     pub fn line_warning(&self, text: &str) -> Option<String> {
         let n = text.trim_end_matches('\n').split('\n').count();
-        (n > 1 && !BRACKETED_OK.contains(&self.cap.cmd.as_str())).then(|| format!("⚠ {n} lines – '{}' may run each line", self.cap.cmd))
+        (n > 1 && !bracketed_ok(&self.cap.cmd)).then(|| format!("⚠ {n} lines – '{}' may run each line", self.cap.cmd))
     }
 
     pub fn key(&mut self, k: KeyEvent) {
         if k.kind != KeyEventKind::Press {
             return;
         }
+        let (was, said) = (std::mem::discriminant(&self.view), self.said);
+        self.handle(k);
+        self.settle(was, said);
+    }
+
+    /// A note belongs to the view it was said on: a move to another view
+    /// drops it, unless the move itself said something.
+    fn settle(&mut self, was: std::mem::Discriminant<View>, said: u64) {
+        if std::mem::discriminant(&self.view) != was && self.said == said {
+            self.note = None;
+        }
+    }
+
+    pub fn say(&mut self, level: Level, text: impl Into<String>) {
+        self.note = Some(Note { level, text: text.into() });
+        self.said += 1;
+    }
+
+    /// The MAX_DRAFT cap's note, or none when nothing was turned away.
+    fn cap_note(&mut self, dropped: usize) {
+        if dropped > 0 {
+            self.say(Level::Warn, format!("the box holds {MAX_DRAFT} characters: {dropped} left out"));
+        } else {
+            self.note = None;
+        }
+    }
+
+    fn handle(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
@@ -233,48 +349,33 @@ impl App {
         if !typing && k.code == KeyCode::Char('q') {
             return self.exit();
         }
-        match self.view.clone() {
-            View::Home { sel } => self.home_key(k, sel),
+        // the views that own text are moved out, never cloned: each handler puts its view back
+        match &self.view {
+            View::Home { sel } => self.home_key(k, *sel),
             View::Compose => self.compose_key(k, ctrl),
             View::Busy => {
                 if k.code == KeyCode::Esc {
                     self.cancel();
                 }
             }
-            View::Question { sel } => self.question_key(k, sel),
-            View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
-            View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
-            View::Steps { label, items, sel } => self.steps_key(k, label, items, sel),
-            View::ExplainAsk { sel } => self.explain_ask_key(k, sel),
-            View::Answer { scroll, armed } => self.answer_key(k, scroll, armed),
-            View::Confirm {
-                text,
-                send,
-                back,
-                scroll,
-                warn,
-            } => match k.code {
-                KeyCode::Char('y') => self.act(if send { "send" } else { "paste" }, text),
-                KeyCode::Enter if needs_y(&text, send) => {
-                    self.note = Some("press y to send this: Enter does not confirm a risky or multi-line send".into())
+            View::Question { sel } => self.question_key(k, *sel),
+            View::ExplainAsk { sel } => self.explain_ask_key(k, *sel),
+            View::Answer { scroll, armed } => self.answer_key(k, *scroll, *armed),
+            View::Input { .. } | View::Result { .. } | View::Steps { .. } | View::Confirm { .. } => {
+                match std::mem::replace(&mut self.view, View::Busy) {
+                    View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
+                    View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
+                    View::Steps { label, items, sel, done } => self.steps_key(k, label, items, sel, done),
+                    View::Confirm {
+                        text,
+                        send,
+                        back,
+                        scroll,
+                        warn,
+                    } => self.confirm_key(k, text, send, warn, back, scroll),
+                    _ => unreachable!("matched above"),
                 }
-                KeyCode::Enter => self.act(if send { "send" } else { "paste" }, text),
-                KeyCode::Esc | KeyCode::Char('n' | 'q') => {
-                    self.note = None;
-                    self.view = *back
-                }
-                _ => {
-                    if let Some(scroll) = self.scrolled(k.code, scroll) {
-                        self.view = View::Confirm {
-                            text,
-                            send,
-                            warn,
-                            back,
-                            scroll,
-                        };
-                    }
-                }
-            },
+            }
             View::Error { .. } => match k.code {
                 KeyCode::Char('r') => self.retry(),
                 KeyCode::Esc => {
@@ -289,11 +390,12 @@ impl App {
     /// A bracketed paste: the Compose box takes it whole, a one-line box joins
     /// its lines with spaces. Anywhere else it is dropped, never read as keys.
     pub fn paste(&mut self, s: &str) {
-        match &mut self.view {
-            View::Compose => self.note = cap_note(append(&mut self.draft, &pasted(s, true))),
-            View::Input { text, .. } => self.note = cap_note(append(text, &pasted(s, false))),
-            _ => {}
-        }
+        let dropped = match &mut self.view {
+            View::Compose => append(&mut self.draft, &pasted(s, true)),
+            View::Input { text, .. } => append(text, &pasted(s, false)),
+            _ => return,
+        };
+        self.cap_note(dropped);
     }
 
     /// The last frame's body rows and line count, so a stored offset is always
@@ -331,6 +433,7 @@ impl App {
     /// Out with no action, the call killed: a hangup, or a loop that broke.
     pub fn stop(&mut self) {
         self.action = None;
+        self.resume = None;
         self.exit();
     }
 
@@ -343,24 +446,70 @@ impl App {
 
     /// A paste is only bracketed when the program asked for it, so a multi-line
     /// insert into anything else can run line one: that goes through a confirm.
+    /// An open menu takes typed text as its answer, so that confirms too.
     fn insert(&mut self, text: String, back: View) {
-        if self.line_warning(&text).is_some() {
-            let warn = self.warnings(&text);
-            self.view = View::Confirm {
-                text,
-                send: false,
-                warn,
-                back: Box::new(back),
-                scroll: 0,
-            };
+        if self.line_warning(&text).is_some() || self.session == Some(Session::WaitingChoice) {
+            self.confirm(text, false, back);
         } else {
-            self.act("paste", text);
+            self.act("paste", text, back);
         }
     }
 
-    fn act(&mut self, verb: &'static str, text: String) {
+    fn confirm(&mut self, text: String, send: bool, back: View) {
+        let warn = self.warnings(&text, send);
+        self.view = View::Confirm {
+            text,
+            send,
+            warn,
+            back: Box::new(back),
+            scroll: 0,
+        };
+    }
+
+    /// `back` is the view the action was taken from, kept for a resume.
+    fn act(&mut self, verb: &'static str, text: String, back: View) {
+        if let View::Steps { label, items, sel, done } = &back {
+            let r = Resume {
+                label: label.clone(),
+                items: items.clone(),
+                sel: *sel,
+                done: done.clone(),
+                verb,
+            };
+            if state_body(&self.pane, &self.cap.cmd, &r).is_some() {
+                self.resume = Some(r);
+            } else {
+                eprintln!("cockpit-tui: the steps are too long to keep open");
+            }
+        }
+        self.view = back;
         self.action = Some(Action { verb, text });
         self.exit();
+    }
+
+    fn confirm_key(&mut self, k: KeyEvent, text: String, send: bool, warn: Vec<String>, back: Box<View>, scroll: usize) {
+        let verb = if send { "send" } else { "paste" };
+        match k.code {
+            KeyCode::Char('y') => return self.act(verb, text, *back),
+            KeyCode::Enter if !needs_y(&text, send) => return self.act(verb, text, *back),
+            KeyCode::Esc | KeyCode::Char('n' | 'q') => {
+                self.note = None;
+                return self.view = *back;
+            }
+            KeyCode::Enter => self.say(
+                Level::Warn,
+                "press y to send this: Enter does not confirm a risky or multi-line send",
+            ),
+            _ => {}
+        }
+        let scroll = self.scrolled(k.code, scroll).unwrap_or(scroll);
+        self.view = View::Confirm {
+            text,
+            send,
+            warn,
+            back,
+            scroll,
+        };
     }
 
     fn home_key(&mut self, k: KeyEvent, sel: usize) {
@@ -405,7 +554,7 @@ impl App {
             KeyCode::Char('f') if ctrl => self.fix(),
             KeyCode::Char('t') if ctrl => {
                 if self.draft.trim().is_empty() {
-                    self.note = Some("nothing to insert yet".into());
+                    self.say(Level::Warn, "nothing to insert yet");
                 } else {
                     self.insert(self.draft.clone(), View::Compose);
                 }
@@ -415,14 +564,17 @@ impl App {
                 let i = OUT_CYCLE.iter().position(|o| *o == self.out).unwrap_or(0);
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
             }
-            _ => self.note = cap_note(edit(&mut self.draft, k, ctrl, true)),
+            _ => {
+                let n = edit(&mut self.draft, k, ctrl, true);
+                self.cap_note(n)
+            }
         }
     }
 
     fn need_draft(&mut self) -> bool {
         let empty = self.draft.trim().is_empty();
         if empty {
-            self.note = Some("type something first".into());
+            self.say(Level::Warn, "type something first");
         }
         !empty
     }
@@ -452,7 +604,7 @@ impl App {
     }
 
     fn start(&mut self, flow: Flow, turns: Vec<Turn>, log: Vec<(bool, String)>, max: usize, back: View) {
-        let route = route(&flow, MODELS[self.model]);
+        let Route { model, why, .. } = route(&flow, MODELS[self.model]);
         self.run = Some(Run {
             flow,
             turns,
@@ -463,7 +615,8 @@ impl App {
             options: vec![],
             log,
             ready: None,
-            route,
+            model,
+            why,
             pending_turn: false,
             guessed_from: None,
         });
@@ -475,22 +628,30 @@ impl App {
         self.view = View::Busy;
         self.pending = true;
         self.note = None;
+        self.hidden = self.run.as_ref().map_or(0, |r| self.envelope(r).1);
+    }
+
+    fn envelope(&self, r: &Run) -> (String, usize) {
+        build_counted(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds))
     }
 
     /// The system prompt, the user prompt and the model for the pending call.
     pub fn request_parts(&self) -> Option<(String, String, String)> {
+        self.request_noted().map(|(parts, _)| parts)
+    }
+
+    /// [`App::request_parts`], and why a prompt override was not used.
+    fn request_noted(&self) -> Option<((String, String, String), Option<String>)> {
         let r = self.run.as_ref()?;
-        let system = match &r.flow {
-            Flow::Write { out, .. } => prompts::write(&Ctx {
+        let (system, note) = match &r.flow {
+            Flow::Write { out, .. } => prompts::write_noted(&Ctx {
                 out: *out,
-                guess: OutType::Auto,
                 window: window_kind(&self.cap.name, &self.cap.cmd),
             }),
-            Flow::Fix { .. } => prompts::fix(),
-            Flow::Explain => prompts::explain(),
+            Flow::Fix { .. } => prompts::fix_noted(),
+            Flow::Explain => prompts::explain_noted(),
         };
-        let prompt = build(&r.flow, &self.cap, &r.turns, r.max.saturating_sub(r.rounds));
-        Some((system, prompt, r.route.model.clone()))
+        Some(((system, self.envelope(r).0, r.model.clone()), note))
     }
 
     /// Forks the pending call, if there is one.
@@ -498,7 +659,11 @@ impl App {
         if !std::mem::take(&mut self.pending) {
             return;
         }
-        if let Some((system, prompt, model)) = self.request_parts() {
+        if let Some(((system, prompt, model), note)) = self.request_noted() {
+            if let Some(n) = note {
+                self.say(Level::Warn, n);
+            }
+            self.timeout = call.timeout;
             self.req = Some(Request::spawn(call, &system, &prompt, &model));
             self.started = Some(Instant::now());
         }
@@ -519,7 +684,7 @@ impl App {
         }
         self.pending = false;
         self.drop_pending();
-        self.note = Some("cancelled".into());
+        self.say(Level::Info, "cancelled");
         self.view = self.busy_back.take().unwrap_or(View::Home { sel: 0 });
     }
 
@@ -550,9 +715,18 @@ impl App {
         let out = match a {
             Ok(o) => o,
             Err(f) => {
-                let line: String = f.to_string().chars().take(80).collect();
+                eprintln!("cockpit-tui: claude failed: {f}");
+                let line = match f {
+                    Fail::Timeout if !self.timeout.is_zero() => format!("claude took longer than {} s", self.timeout.as_secs()),
+                    _ => {
+                        let t = f.to_string();
+                        let cut = if t.chars().count() > 160 { "..." } else { "" };
+                        format!("claude failed: {}{cut}", t.chars().take(160).collect::<String>())
+                    }
+                };
                 self.view = View::Error {
-                    line: format!("claude failed: {line}"),
+                    line,
+                    hint: hint(&f).map(String::from),
                 };
                 return;
             }
@@ -561,18 +735,20 @@ impl App {
         r.pending_turn = false;
         r.guessed_from = None;
         let (rounds, max) = (r.rounds, r.max);
+        let mut cut = None;
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
                 let p = parse::write(&out, *want);
-                if let Some(t) = p.cut_off {
-                    self.note = Some(format!("the reply looks cut off (no </{t}>): check it, or r retries"));
-                }
+                cut = p.cut_off;
                 p.reply
             }
             Flow::Fix { .. } => parse::fix(&out),
             Flow::Explain => parse::explain(&out),
         };
         let explain = matches!(r.flow, Flow::Explain);
+        if let Some(t) = cut {
+            self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
+        }
         match reply {
             Reply::Question { text, options } if rounds < max => self.ask(text, options),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
@@ -580,6 +756,7 @@ impl App {
             Reply::Question { text, .. } => {
                 self.view = View::Error {
                     line: format!("no questions left, and Claude still asks: {text}"),
+                    hint: Some("esc goes back: add what it asks to the draft and write again".into()),
                 };
             }
             Reply::Answer { text, ready } => self.answer(out.trim().into(), text, ready),
@@ -602,16 +779,30 @@ impl App {
                 } else {
                     format!("Steps ({lang})")
                 };
-                self.view = View::Steps {
+                let r = Resume {
                     label,
+                    done: vec![false; steps.len()],
                     items: steps,
                     sel: 0,
+                    verb: "paste",
+                };
+                // said here, while it can be read: the panel closes on the action
+                if state_body(&self.pane, &self.cap.cmd, &r).is_none() {
+                    self.say(Level::Warn, "steps too long to keep open: the panel closes after one");
+                }
+                self.view = View::Steps {
+                    label: r.label,
+                    items: r.items,
+                    sel: 0,
+                    done: r.done,
                 };
             }
             Reply::Untagged(t) => self.result("Result (unlabelled)", t),
             Reply::Unsupported(tag) => {
+                eprintln!("cockpit-tui: claude answered with <{tag}>");
                 self.view = View::Error {
-                    line: format!("claude failed: claude answered with <{tag}>: file edits are not supported yet"),
+                    line: "file edits are not supported in the panel".into(),
+                    hint: Some("ask for a command or a prompt for Claude Code instead, or r retries".into()),
                 };
             }
         }
@@ -764,25 +955,26 @@ impl App {
             }
             KeyCode::Enter => {
                 let t = text.trim().to_string();
-                if t.is_empty() {
-                    return;
-                }
-                return match kind {
-                    InputKind::Other => self.pick(t),
-                    InputKind::Explain => self.explain(&t, &t, back),
-                    InputKind::FollowUp => {
-                        if let Some(r) = self.run.as_mut() {
-                            r.log.push((true, t.clone()));
-                            r.turns.push(Turn { role: Role::User, text: t });
-                            r.rounds = 0;
-                            r.qstack.clear();
-                            r.pending_turn = true;
+                // an answer or a follow-up with no conversation to join: the box stays
+                let joins = kind == InputKind::Explain || self.run.is_some();
+                if !t.is_empty() && joins {
+                    return match kind {
+                        InputKind::Other => self.pick(t),
+                        InputKind::Explain => self.explain(&t, &t, back),
+                        InputKind::FollowUp => {
+                            if let Some(r) = self.run.as_mut() {
+                                r.log.push((true, t.clone()));
+                                r.turns.push(Turn { role: Role::User, text: t });
+                                r.rounds = 0;
+                                r.qstack.clear();
+                                r.pending_turn = true;
+                            }
+                            self.busy(back);
                         }
-                        self.busy(back);
-                    }
-                };
+                    };
+                }
             }
-            _ => self.note = cap_note(edit(&mut text, k, ctrl, false)),
+            _ => self.cap_note(edit(&mut text, k, ctrl, false)),
         }
         self.view = View::Input {
             kind,
@@ -805,77 +997,67 @@ impl App {
                 self.insert(text, back);
             }
             KeyCode::Char('s') => {
-                let warn = self.warnings(&text);
-                let back = Box::new(View::Result {
+                let back = View::Result {
                     label,
                     text: text.clone(),
                     scroll,
-                });
-                self.view = View::Confirm {
-                    text,
-                    send: true,
-                    warn,
-                    back,
-                    scroll: 0,
                 };
+                self.confirm(text, true, back);
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
                 self.draft.clear();
-                self.note = cap_note(append(&mut self.draft, &text));
+                let n = append(&mut self.draft, &text);
+                self.cap_note(n);
                 self.run = None;
                 self.view = View::Compose;
             }
             KeyCode::Esc => self.leave(),
-            _ => {}
+            _ => self.view = View::Result { label, text, scroll },
         }
     }
 
     fn retry_from(&mut self, here: View) {
         if self.run.is_some() {
             self.busy(here);
+        } else {
+            self.view = here;
         }
     }
 
-    pub fn warnings(&self, text: &str) -> Vec<String> {
-        let mut w: Vec<String> = self.line_warning(text).into_iter().collect();
+    /// What the confirm says before an insert (`send` false) or a send.
+    pub fn warnings(&self, text: &str, send: bool) -> Vec<String> {
+        let mut w: Vec<String> = match self.session {
+            Some(Session::WaitingChoice) => vec!["⚠ Claude Code is waiting on a menu choice: typing now answers that menu".into()],
+            Some(Session::Working) if send => vec!["Claude Code is still working; the prompt waits in its input".into()],
+            _ => vec![],
+        };
+        w.extend(self.line_warning(text));
         if let Some(r) = risky(text) {
             w.push(format!("⚠ risky: {r}"));
         }
         w
     }
 
-    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, sel: usize) {
+    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, mut sel: usize, done: Vec<bool>) {
         let last = items.len().saturating_sub(1);
-        let here = |sel| View::Steps {
-            label: label.clone(),
-            items: items.clone(),
-            sel,
-        };
+        let cmd = items.get(sel).map(|s| s.cmd.clone()).unwrap_or_default();
         match k.code {
-            KeyCode::Up | KeyCode::Char('k') => self.view = here(sel.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.view = here((sel + 1).min(last)),
+            KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
+            KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
-                let cmd = items.get(sel).map(|s| s.cmd.clone()).unwrap_or_default();
-                if cmd.is_empty() {
-                    self.note = Some("this step is done outside the terminal".into());
-                } else if c == 'i' {
-                    self.insert(cmd, here(sel));
-                } else {
-                    let warn = self.warnings(&cmd);
-                    self.view = View::Confirm {
-                        text: cmd,
-                        send: true,
-                        warn,
-                        back: Box::new(here(sel)),
-                        scroll: 0,
-                    };
+                let here = View::Steps { label, items, sel, done };
+                if c == 'i' {
+                    return self.insert(cmd, here);
                 }
+                return self.confirm(cmd, true, here);
             }
-            KeyCode::Char('r') => self.retry_from(here(sel)),
-            KeyCode::Esc => self.leave(),
+            KeyCode::Char('r') => return self.retry_from(View::Steps { label, items, sel, done }),
+            KeyCode::Esc => return self.leave(),
             _ => {}
         }
+        self.view = View::Steps { label, items, sel, done };
     }
 
     fn explain_ask_key(&mut self, k: KeyEvent, sel: usize) {
@@ -932,27 +1114,13 @@ impl App {
             }
             KeyCode::Char(c @ ('i' | 's')) => {
                 let Some(text) = ready else {
-                    return self.note = Some("no prompt for the agent in this answer".into());
+                    return self.say(Level::Info, "no prompt for the agent in this answer");
                 };
-                let mut warn = Vec::new();
-                match self.session {
-                    Some(Session::WaitingChoice) => {
-                        warn.push("⚠ Claude Code is waiting on a menu choice: typing now answers that menu".into())
-                    }
-                    Some(Session::Working) if c == 's' => warn.push("Claude Code is still working; the prompt waits in its input".into()),
-                    _ => {}
-                }
-                self.view = View::Confirm {
-                    text,
-                    send: c == 's',
-                    warn,
-                    back: Box::new(View::Answer { scroll, armed: false }),
-                    scroll: 0,
-                };
+                self.confirm(text, c == 's', View::Answer { scroll, armed: false });
             }
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {
-                self.note = Some("esc or q again to discard this conversation".into());
+                self.say(Level::Warn, "esc or q again to discard this conversation");
                 self.view = View::Answer { scroll, armed: true };
             }
             _ if esc => {
@@ -996,15 +1164,33 @@ fn append(text: &mut String, s: &str) -> usize {
     s.chars().count().saturating_sub(room)
 }
 
-fn cap_note(dropped: usize) -> Option<String> {
-    (dropped > 0).then(|| format!("the box holds {MAX_DRAFT} characters: {dropped} left out"))
-}
-
 /// A bracketed paste, cleaned like the action file. Terminals send a pasted
 /// newline as CR, so a lone `\r` is a line break too.
 fn pasted(s: &str, multi: bool) -> String {
     let t = sanitize(&s.replace("\r\n", "\n").replace('\r', "\n"));
     if multi { t } else { t.split('\n').collect::<Vec<_>>().join(" ") }
+}
+
+pub fn bracketed_ok(cmd: &str) -> bool {
+    BRACKETED_OK.contains(&cmd) || SSH_LIKE.contains(&cmd)
+}
+
+/// What to do about a failure the panel knows; claude's own words stay on the line above.
+pub fn hint(f: &Fail) -> Option<&'static str> {
+    let t = match f {
+        Fail::Timeout => return Some("r retries; COCKPIT_PANEL_TIMEOUT=<seconds> gives it longer"),
+        Fail::Failed(t) => t.to_ascii_lowercase(),
+    };
+    let has = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    if has(&["not logged in", "/login", "invalid api key", "authentication", "oauth"]) {
+        Some("log in: run claude in a terminal and use /login, then r retries")
+    } else if has(&["rate limit", "rate_limit", "usage limit", "429", "overloaded"]) {
+        Some("a usage or rate limit: wait a minute, then r retries")
+    } else if !t.starts_with("cannot write") && t.contains("(os error 2)") {
+        Some("claude is not installed here: install Claude Code, or set COCKPIT_CLAUDE to its path")
+    } else {
+        None
+    }
 }
 
 /// A send that runs something risky, or more than one line, wants a `y`: an
@@ -1027,15 +1213,6 @@ pub fn sanitize(s: &str) -> String {
 /// `<path>.cmd` is the command the pane ran when it was captured, for the
 /// wrapper to check it still runs before the paste lands.
 pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::Result<()> {
-    let fresh = |p: &Path, body: &str| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(p)?;
-        f.write_all(body.as_bytes())
-    };
     fresh(Path::new(&format!("{}.text", path.display())), &sanitize(&a.text))?;
     fresh(
         Path::new(&format!("{}.cmd", path.display())),
@@ -1044,9 +1221,144 @@ pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::
     fresh(path, &format!("{} {pane}\n", a.verb))
 }
 
-fn ci(s: &str, i: usize, lit: &str) -> Option<usize> {
-    let b = s.as_bytes().get(i..i + lit.len())?;
-    b.eq_ignore_ascii_case(lit.as_bytes()).then_some(i + lit.len())
+fn fresh(p: &Path, body: &str) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(p)?;
+    f.write_all(body.as_bytes())
+}
+
+fn state_esc(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn state_unesc(s: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            _ => return Err("a bad escape".into()),
+        }
+    }
+    Ok(out)
+}
+
+/// `<path>.state`, for the wrapper to hand back with `--resume`: written before
+/// the action line, created fresh and never followed, like the other two.
+pub fn write_state(path: &Path, pane: &str, cmd: &str, r: &Resume) -> std::io::Result<()> {
+    let b = state_body(pane, cmd, r).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidInput, "steps too long to keep"))?;
+    fresh(Path::new(&format!("{}.state", path.display())), &b)
+}
+
+/// The state file's text, or `None` when [`read_state`] would refuse it.
+pub fn state_body(pane: &str, cmd: &str, r: &Resume) -> Option<String> {
+    if r.items.len() > STATE_STEPS {
+        return None;
+    }
+    let mut b = format!(
+        "{STATE_HEAD}\npane {pane}\ncmd {}\nlabel {}\nsel {}\nverb {}\n",
+        state_esc(cmd),
+        state_esc(&r.label),
+        r.sel,
+        r.verb
+    );
+    for (s, d) in r.items.iter().zip(&r.done) {
+        let f = [&s.lang, &s.note, &s.cmd].map(|x| state_esc(x));
+        b.push_str(&format!("step {}\t{}\t{}\t{}\n", u8::from(*d), f[0], f[1], f[2]));
+    }
+    (b.len() as u64 <= STATE_MAX).then_some(b)
+}
+
+/// The command and the steps a [`write_state`] file holds, refused unless it is
+/// a small regular file of this version, for this very pane.
+pub fn read_state(path: &Path, pane: &str) -> Result<(String, Resume), String> {
+    use std::io::Read;
+    let small = |m: std::fs::Metadata| m.is_file() && m.len() <= STATE_MAX;
+    // checked before the open, which a FIFO would block, and again on the fd itself
+    if !std::fs::symlink_metadata(path).is_ok_and(small) {
+        return Err("not a small regular file".into());
+    }
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    if !f.metadata().is_ok_and(small) {
+        return Err("not a small regular file".into());
+    }
+    let mut body = String::new();
+    f.take(STATE_MAX).read_to_string(&mut body).map_err(|e| e.to_string())?;
+    let Some(body) = body.strip_suffix('\n') else {
+        return Err("cut short".into());
+    };
+    let mut lines = body.split('\n');
+    if lines.next() != Some(STATE_HEAD) {
+        return Err("not a version 1 state file".into());
+    }
+    let mut field = |key: &str| -> Result<String, String> {
+        let l = lines.next().ok_or(format!("no {key} line"))?;
+        let v = l
+            .strip_prefix(key)
+            .and_then(|v| v.strip_prefix(' '))
+            .ok_or(format!("{key} expected"))?;
+        state_unesc(v)
+    };
+    if field("pane")? != pane {
+        return Err(format!("it is for another pane, not {pane}"));
+    }
+    let cmd = field("cmd")?;
+    let label = field("label")?;
+    let sel: usize = field("sel")?.parse().map_err(|_| "a bad sel".to_string())?;
+    let verb = match field("verb")?.as_str() {
+        "paste" => "paste",
+        "send" => "send",
+        _ => return Err("a bad verb".into()),
+    };
+    let (mut items, mut done) = (vec![], vec![]);
+    for l in lines {
+        let rest = l.strip_prefix("step ").ok_or("a line that is not a step")?;
+        let f: Vec<&str> = rest.split('\t').collect();
+        let [d, lang, note, cmd] = f[..] else {
+            return Err("a step needs four fields".into());
+        };
+        done.push(match d {
+            "0" => false,
+            "1" => true,
+            _ => return Err("a bad done mark".into()),
+        });
+        items.push(Step {
+            lang: state_unesc(lang)?,
+            note: state_unesc(note)?,
+            cmd: state_unesc(cmd)?,
+        });
+    }
+    if items.is_empty() || items.len() > STATE_STEPS || sel >= items.len() {
+        return Err("no step to come back to".into());
+    }
+    Ok((
+        cmd,
+        Resume {
+            label,
+            items,
+            sel,
+            done,
+            verb,
+        },
+    ))
 }
 
 fn ws(s: &str, i: usize, min: usize) -> Option<usize> {

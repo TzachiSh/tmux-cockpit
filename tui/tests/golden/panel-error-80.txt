@@ -1,7 +1,7 @@
 "╭ panel · %3 · work ───────────────────────────────────────────────────────────╮"
 "│ claude failed: Error: not logged in · run claude /login                      │"
 "│                                                                              │"
-"│                                                                              │"
+"│ log in: run claude in a terminal and use /login, then r retries              │"
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"

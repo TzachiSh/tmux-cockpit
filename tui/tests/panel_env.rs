@@ -170,7 +170,7 @@ fn the_shipped_write_prompt_never_asks_for_a_file_edit() {
     let _e = Env::new("no-edit", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
     for out in [OutType::Auto, OutType::Command, OutType::Format, OutType::Hint] {
         for window in ["claude", "shell", "ssh", "other"] {
-            let w = prompts::write(&Ctx { out, guess: out, window });
+            let w = prompts::write(&Ctx { out, window });
             assert!(
                 !w.contains("<edit") && !w.contains("<need_file") && !w.contains("<file"),
                 "{out:?} {window}"
@@ -283,4 +283,27 @@ fn a_dead_pane_captures_nothing() {
     unsafe { std::env::set_var("COCKPIT_TMUX", t) };
     assert_eq!(capture("%7"), None);
     assert!(!Path::new(&e.dir.join("args")).exists());
+}
+
+#[test]
+fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
+    use cockpit_tui::panel::app::{App, Level, View};
+    use cockpit_tui::panel::capture::Capture;
+    let e = Env::new("noted", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    // a directory where the file should be: it exists, and reading it fails
+    std::fs::create_dir_all(e.dir.join("cfg/tmux-cockpit/prompts/explain.txt")).unwrap();
+    let call = Call {
+        claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
+        timeout: Duration::from_secs(77),
+        dir: e.dir.join("cache"),
+    };
+    let mut a = App::new("%3", Capture::default());
+    a.view = View::ExplainAsk { sel: 0 };
+    a.key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+    a.launch(&call);
+    let n = a.note.clone().expect("a note");
+    assert_eq!(n.level, Level::Warn);
+    assert!(n.text.contains("explain.txt") && n.text.contains("shipped prompt"), "{}", n.text);
+    assert_eq!(a.timeout, Duration::from_secs(77), "the limit comes from the call");
+    a.stop();
 }

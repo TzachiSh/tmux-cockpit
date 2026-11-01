@@ -367,6 +367,29 @@ differ (a Claude Code that exited would take the answer as shell input), it
 pastes nothing, logs it, and says
 `cockpit: the pane now runs <now>, not <then>; nothing sent`.
 
+**Steps stay open.** An action taken from the Steps view also leaves
+`$COCKPIT_ACTION.state`, written before the action line, created new with
+`O_NOFOLLOW`, mode 0600. It holds what the view needs to come back: a
+`cockpit-panel-state 1` head, the pane, the captured command, the label, the
+step the action was for, the verb, then one `step <done 0|1>\t<lang>\t<note>\t<cmd>`
+line per step (`\\`, `\n`, `\r`, `\t` escaped). After running the action the
+wrapper moves it aside and runs the binary again in the same popup:
+
+```
+cockpit-tui panel %N --resume <state> --last ok|failed:<why>
+```
+
+`ok` marks that step `✓ sent` and selects the next one with a command;
+`failed:<why>` shows why as an error note and marks nothing. The loop ends when
+the binary exits with no action, or with one taken anywhere but Steps. The
+binary reads the file back strictly: no symlink, a regular file of at most
+64 KiB (checked before the open, which is non-blocking, and again on the open
+file), version 1, at most 64 steps, every line in its place, and the pane must
+be the one it was opened on, or it opens on Home with an error note. The
+command written back is the captured one, so the wrapper's pane guard still
+compares against what the steps were written for. The binary still executes
+nothing: every paste and Enter is the wrapper's.
+
 The wrapper ends every action in one `display-message` on the pane:
 `cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
 `send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
@@ -385,8 +408,8 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | panel %N | transcript ... | --rows | --json |
---version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
+**CLI:** `cockpit-tui board | panel %N [--resume <state> --last <how>] |
+transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
 board reaches those through the action file and the shell scripts.
 
 **Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
@@ -465,7 +488,7 @@ workspace, no crate split.
 
 | module | owns |
 |--------|------|
-| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` / `restore()` with the panel's bracketed paste |
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
@@ -529,6 +552,12 @@ answers nothing. The binary probes with `event::poll(Duration::ZERO)` before it
 initialises the terminal and prints one line instead. Reproduced with `setsid`,
 with `</dev/null`, and with a non-tty stdin; a real `display-popup -E` has a pty
 and is fine.
+
+**A panel outlives its tmux server.** crossterm 0.29 rereads a hung-up tty
+forever, so a loop blocked in `event::read` never sees its signal flag again.
+The board and the panel each run a thread that `poll`s the tty for `POLLHUP`
+or `POLLERR` and exits when it comes; the action file is left unwritten. A
+`POLLNVAL` (Darwin's `poll` takes no devices) leaves the process unwatched.
 
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at

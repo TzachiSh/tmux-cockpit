@@ -10120,6 +10120,45 @@ case "$(cat "$PND/tui.log" 2>/dev/null)" in *"now runs [sleep], not [sh]; nothin
     *) bad "and the log says why" "now runs [sleep], not [sh]" "$(tail -3 "$PND/tui.log" 2>/dev/null)" ;;
 esac
 
+# Steps stay open: the wrapper runs each action and reopens the panel on them.
+printf '<steps><step><note>one</note><cmd>echo first</cmd></step><step><note>two</note><cmd>echo second</cmd></step></steps>' > "$PND/reply"
+pn_go 'exec cat' 'two steps' || bad "the panel reaches its steps" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+until_cap "$PN" "$PNA" '*echo first*'
+if until_cap "$PN" "$PNB" '*step 1 inserted*1 one*sent*'; then
+    ok "after an insert the panel comes back on the steps, the step marked sent"
+else
+    bad "after an insert the panel comes back on the steps, the step marked sent" "step 1 inserted ... sent" "$(pn_cap)"
+fi
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+until_cap "$PN" "$PNB" '*confirm*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+# cat holds the inserted line, so the sent step lands after it and Enter echoes both
+until_cap "$PN" "$PNA" '*echo firstecho second*echo firstecho second*'
+is "the next step, sent from the reopened panel, lands once with its Enter" "2" "$(pn_count "$PNA" 'echo firstecho second')"
+until_cap "$PN" "$PNB" '*step 2 sent*' && ok "and it comes back again, saying so" || bad "and it comes back again, saying so" "step 2 sent" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Escape
+until_cap "$PN" "$PNB" '*will send*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" q
+if pn_gone "$PNB"; then ok "leaving without an action ends the loop"; else bad "leaving without an action ends the loop" "the popup gone" "$(pn_cap)"; fi
+
+# Keys typed while the wrapper pastes were aimed at a panel not yet on screen:
+# a reflex `s` Enter must not run the next step unseen.
+printf '<steps><step><note>one</note><cmd>echo uno</cmd></step><step><note>two</note><cmd>echo dos</cmd></step></steps>' > "$PND/reply"
+pn_go 'exec cat' 'two more' || bad "the panel reaches its steps (type-ahead)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+until_cap "$PN" "$PNB" '*confirm*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+until_cap "$PN" "$PNB" '*step 1 sent*' || bad "the panel comes back after the send (type-ahead)" "step 1 sent" "$(pn_cap)"
+# a sent line shows twice in cat: the echo, then its output
+is "keys typed during the handover are dropped, so step 2 never runs" "0:2" \
+   "$(pn_count "$PNA" 'echo dos'):$(pn_count "$PNA" 'echo uno')"
+case "$(pn_cap)" in *confirm*) bad "and no confirm opened from them" "the steps" "$(pn_cap)" ;; *) ok "and no confirm opened from them" ;; esac
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" q
+pn_gone "$PNB"
+
 # The binding: f by default, and the wrapper with the pressed pane.
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
@@ -10195,6 +10234,10 @@ printf evil > "\$COCKPIT_ACTION.clean"
 cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
+printf '%s\n' "\$*" >> "$PND/bargv"
+[ -e "$PND/crash" ] && exit 3
+# A state file only on the first run: the resumed one leaves without a way back.
+[ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
 exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
@@ -10243,6 +10286,99 @@ is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
    "$(pact 'paste %5' '-n hi')"
+rm -f "$PND/bargv"; pact 'paste %5' hi >/dev/null
+is "with no state file the binary runs once" "panel %5" "$(cat "$PND/bargv")"
+touch "$PND/state"; rm -f "$PND/bargv"
+is "a state file beside the action reruns the binary on it, after the paste" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "$(pact 'paste %5' hi)"
+is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
+   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
+is "or why nothing was sent" "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
+is "COCKPIT_READONLY reruns it too, saying nothing was sent" "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/state"
+touch "$PND/crash"; : > "$PND/tui.log"
+is "a panel that exits non-zero is reported on the pane" "display-message -t %5 cockpit: the panel exited 3 — see $PND/tui.log;" \
+   "$(pact 'paste %5' hi)"
+is "and under COCKPIT_READONLY only logged" "" "$(COCKPIT_READONLY=1 pact 'paste %5' hi)"
+is "the log says what it would have said" "1" "$(grep -c 'readonly, not said: cockpit: the panel exited 3' "$PND/tui.log")"
+rm -f "$PND/crash"
+fi
+
+echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
+# crossterm rereads a hung-up tty forever, so a panel whose server died spun at
+# 80% CPU and shrugged off SIGTERM. Pids are named before anything acts on them.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "a dead server ends the panel (no bin/cockpit-tui; run make tui)"
+elif [ ! -d /proc/self ]; then
+    skip_ "a dead server ends the panel (no /proc to check pids by name)"
+elif need_tmux "a dead server ends the panel"; then :; else
+for oscreen in panel board; do
+    OR="cockpit-orph-$oscreen-$$"; SOCKS="$SOCKS $OR"
+    "$TMUX_REAL" -L "$OR" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+    ora=$("$TMUX_REAL" -L "$OR" list-panes -F '#{pane_id}' | head -1)
+    oarg=$ora; [ "$oscreen" = board ] && oarg=
+    orb=$("$TMUX_REAL" -L "$OR" new-window -d -P -F '#{pane_id}' -t t: \
+        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $DIR/bin/cockpit-tui $oscreen $oarg")
+    until_cap "$OR" "$orb" '*[a-z]*' || bad "the $oscreen draws before its server dies" "a frame" "$("$TMUX_REAL" -L "$OR" capture-pane -p -t "$orb")"
+    orp=$("$TMUX_REAL" -L "$OR" display -p -t "$orb" '#{pane_pid}')
+    ocomm=''
+    [ -r "/proc/$orp/comm" ] && read -r ocomm 2>/dev/null < "/proc/$orp/comm"
+    if [ "$ocomm" != cockpit-tui ]; then
+        bad "the $oscreen runs as the pane's own process" "cockpit-tui" "${ocomm:-gone}"
+        continue
+    fi
+    "$TMUX_REAL" -L "$OR" kill-server >/dev/null 2>&1
+    if pn_dead "$orp"; then
+        ok "the $oscreen exits once its tmux server is gone"
+    else
+        bad "the $oscreen exits once its tmux server is gone" "pid $orp gone" "still running"
+        ocomm=''; [ -r "/proc/$orp/comm" ] && read -r ocomm 2>/dev/null < "/proc/$orp/comm"
+        [ "$ocomm" = cockpit-tui ] && kill -KILL "$orp"
+    fi
+done
+fi
+
+echo "== cockpit-panel: a hangup with no SIGHUP still ends the panel and the board =="
+# In a session of its own the binary has no controlling tty, so closing the pty
+# master sends no SIGHUP: only the hangup watch can end it.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "a hangup with no SIGHUP (no bin/cockpit-tui; run make tui)"
+elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+    skip_ "a hangup with no SIGHUP (needs /proc and python3)"
+elif need_tmux "a hangup with no SIGHUP"; then :; else
+NH="cockpit-nohup-$$"; SOCKS="$SOCKS $NH"; NHPY=$(mktmpf)
+"$TMUX_REAL" -L "$NH" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+cat > "$NHPY" <<'NHPY'
+import os, pty, select, subprocess, sys, time
+tmux, sock, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+m, s = pty.openpty()
+env = dict(os.environ, COCKPIT_READONLY='1', COCKPIT_ACTION='/nonexistent/act')
+env['TMUX'] = subprocess.check_output([tmux, '-L', sock, 'display', '-p', '#{socket_path},#{pid},0']).decode().strip()
+p = subprocess.Popen(args, stdin=s, stdout=s, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+os.close(s)
+for _ in range(100):                      # polled: until it has drawn something
+    if select.select([m], [], [], 0.1)[0] and os.read(m, 65536):
+        break
+os.close(m)
+for _ in range(100):
+    if p.poll() is not None:
+        print('exited'); sys.exit(0)
+    time.sleep(0.1)
+comm = open(f'/proc/{p.pid}/comm').read().strip()
+print(f'survived {comm}')
+if comm == 'cockpit-tui':                 # named before it is signalled
+    p.kill()
+NHPY
+nha=$("$TMUX_REAL" -L "$NH" list-panes -F '#{pane_id}' | head -1)
+is "the panel exits on a hangup that brings no signal" "exited" \
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" panel "$nha" 2>&1)"
+is "the board exits on a hangup that brings no signal" "exited" \
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" board 2>&1)"
 fi
 
 echo "== the example configs ship the phone wrap override (#99) =="

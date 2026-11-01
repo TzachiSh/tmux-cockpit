@@ -14,11 +14,19 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board | panel %N | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
 
 /// Never publishes @cockpit_tui_pid: that pid is the board's, for its wakeups.
-fn panel(pane: Option<&str>) {
-    let Some(pane) = pane.filter(|p| {
+fn panel(args: &[String]) {
+    let resume = match args.get(1..).unwrap_or_default() {
+        [] => None,
+        [r, f, l, last] if r == "--resume" && l == "--last" => Some((f.as_str(), last.as_str())),
+        _ => {
+            eprintln!("cockpit-tui: panel takes a pane id, then only --resume <state> --last <how>\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    let Some(pane) = args.first().map(String::as_str).filter(|p| {
         p.strip_prefix('%')
             .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
     }) else {
@@ -30,6 +38,16 @@ fn panel(pane: Option<&str>) {
         std::process::exit(1);
     };
     let mut a = app::App::new(pane, cap);
+    if let Some((f, last)) = resume {
+        a.reopened = true;
+        match app::read_state(std::path::Path::new(f), pane) {
+            Ok((cmd, r)) => a.resumed(cmd, r, last),
+            Err(e) => {
+                eprintln!("cockpit-tui: cannot resume from {f}: {e}");
+                a.say(app::Level::Error, format!("could not reopen the steps: {e}"));
+            }
+        }
+    }
     view::run(&mut a);
     let Some(act) = a.action else { return };
     // The text needs a file beside the action line; stdout has nowhere to put it.
@@ -37,7 +55,14 @@ fn panel(pane: Option<&str>) {
         eprintln!("cockpit-tui: {} needs COCKPIT_ACTION to carry its text; nothing was sent", act.verb);
         std::process::exit(1);
     };
-    if let Err(e) = app::write_action(std::path::Path::new(&f), pane, &a.cap.cmd, &act) {
+    let f = std::path::Path::new(&f);
+    if let Some(r) = &a.resume
+        && let Err(e) = app::write_state(f, pane, &a.cap.cmd, r)
+    {
+        // the action still goes: only the way back to the steps is lost
+        eprintln!("cockpit-tui: cannot write the steps to resume: {e}");
+    }
+    if let Err(e) = app::write_action(f, pane, &a.cap.cmd, &act) {
         eprintln!("cockpit-tui: cannot write the action: {e}");
         std::process::exit(1);
     }
@@ -49,7 +74,7 @@ fn main() {
         Some("board") => board::run(),
         Some("transcript") => std::process::exit(data::transcript::main(&args[1..])),
         Some("panel") => {
-            panel(args.get(1).map(String::as_str));
+            panel(&args[1..]);
             None
         }
         Some("--rows") => {
