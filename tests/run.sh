@@ -10120,6 +10120,28 @@ case "$(cat "$PND/tui.log" 2>/dev/null)" in *"now runs [sleep], not [sh]; nothin
     *) bad "and the log says why" "now runs [sleep], not [sh]" "$(tail -3 "$PND/tui.log" 2>/dev/null)" ;;
 esac
 
+# Steps stay open: the wrapper runs each action and reopens the panel on them.
+printf '<steps><step><note>one</note><cmd>echo first</cmd></step><step><note>two</note><cmd>echo second</cmd></step></steps>' > "$PND/reply"
+pn_go 'exec cat' 'two steps' || bad "the panel reaches its steps" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+until_cap "$PN" "$PNA" '*echo first*'
+if until_cap "$PN" "$PNB" '*step 1 inserted*1 one*sent*'; then
+    ok "after an insert the panel comes back on the steps, the step marked sent"
+else
+    bad "after an insert the panel comes back on the steps, the step marked sent" "step 1 inserted ... sent" "$(pn_cap)"
+fi
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+until_cap "$PN" "$PNB" '*confirm*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+# cat holds the inserted line, so the sent step lands after it and Enter echoes both
+until_cap "$PN" "$PNA" '*echo firstecho second*echo firstecho second*'
+is "the next step, sent from the reopened panel, lands once with its Enter" "2" "$(pn_count "$PNA" 'echo firstecho second')"
+until_cap "$PN" "$PNB" '*step 2 sent*' && ok "and it comes back again, saying so" || bad "and it comes back again, saying so" "step 2 sent" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Escape
+until_cap "$PN" "$PNB" '*will send*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" q
+if pn_gone "$PNB"; then ok "leaving without an action ends the loop"; else bad "leaving without an action ends the loop" "the popup gone" "$(pn_cap)"; fi
+
 # The binding: f by default, and the wrapper with the pressed pane.
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
@@ -10195,6 +10217,9 @@ printf evil > "\$COCKPIT_ACTION.clean"
 cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
+printf '%s\n' "\$*" >> "$PND/bargv"
+# A state file only on the first run: the resumed one leaves without a way back.
+[ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
 exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
@@ -10243,6 +10268,21 @@ is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
    "$(pact 'paste %5' '-n hi')"
+rm -f "$PND/bargv"; pact 'paste %5' hi >/dev/null
+is "with no state file the binary runs once" "panel %5" "$(cat "$PND/bargv")"
+touch "$PND/state"; rm -f "$PND/bargv"
+is "a state file beside the action reruns the binary on it, after the paste" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "$(pact 'paste %5' hi)"
+is "and tells it the paste went in" "panel %5;panel %5 --resume */resume --last ok;" \
+   "$(tr '\n' ';' < "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/bargv"; pact 'send %5' hi '' claude zsh >/dev/null
+is "or why nothing was sent" "panel %5 --resume */resume --last failed:the pane now runs zsh, not claude" \
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/bargv"; COCKPIT_READONLY=1 pact 'send %5' hi >/dev/null
+is "COCKPIT_READONLY reruns it too, saying nothing was sent" "panel %5 --resume */resume --last failed:COCKPIT_READONLY is set; nothing sent" \
+   "$(sed -n 2p "$PND/bargv" | sed 's| --resume [^ ]*/resume| --resume */resume|')"
+rm -f "$PND/state"
 fi
 
 echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="

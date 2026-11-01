@@ -227,7 +227,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.count = true;
             b.footer = "i insert  s send  r retry  c edit  ↑↓ scroll  esc back".into();
         }
-        View::Steps { label: l, items, sel } => {
+        View::Steps {
+            label: l,
+            items,
+            sel,
+            done,
+        } => {
             b.head.push(styled(l.clone(), heading));
             b.head.push(plain(""));
             let mut at = 0;
@@ -240,7 +245,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 } else {
                     s.note.clone()
                 };
-                b.lines.push(tile(th, i == *sel, i + 1, note, ""));
+                let mut row = tile(th, i == *sel, i + 1, note, "");
+                if done.get(i) == Some(&true) {
+                    row.spans
+                        .push(Span::styled(format!("  {} sent", th.g.done), Style::new().fg(th.done)));
+                }
+                b.lines.push(row);
                 if !s.cmd.is_empty() {
                     for c in s.cmd.split('\n') {
                         b.lines.extend(many(c, w, "     $ ", value));

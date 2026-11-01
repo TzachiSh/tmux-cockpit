@@ -83,6 +83,8 @@ pub enum View {
         label: String,
         items: Vec<Step>,
         sel: usize,
+        /// One per step: inserted or sent in an earlier round of this popup.
+        done: Vec<bool>,
     },
     ExplainAsk {
         sel: usize,
@@ -126,6 +128,23 @@ pub struct Action {
     pub verb: &'static str,
     pub text: String,
 }
+
+/// The Steps view across a paste: the wrapper runs the action and opens the
+/// panel again on this, in the same popup.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resume {
+    pub label: String,
+    pub items: Vec<Step>,
+    /// The step the action was taken on.
+    pub sel: usize,
+    pub done: Vec<bool>,
+    pub verb: &'static str,
+}
+
+const STATE_HEAD: &str = "cockpit-panel-state 1";
+/// Far over any real reply: write.txt asks for a handful of steps.
+const STATE_MAX: u64 = 64 * 1024;
+const STATE_STEPS: usize = 64;
 
 /// One request's conversation: the question rounds and, for Explain, the log.
 pub struct Run {
@@ -171,6 +190,8 @@ pub struct App {
     /// Counts [`App::say`] calls, so a key can tell a note it set from an old one.
     said: u64,
     pub action: Option<Action>,
+    /// Set with an action taken from Steps: what `<action>.state` carries.
+    pub resume: Option<Resume>,
     pub quit: bool,
     /// Body rows on screen and the furthest scroll, from the last frame.
     pub room: usize,
@@ -199,10 +220,43 @@ impl App {
             note: None,
             said: 0,
             action: None,
+            resume: None,
             quit: false,
             room: 0,
             bottom: 0,
         }
+    }
+
+    /// Back on the Steps a resume file carried, after the wrapper ran its
+    /// action. `last` is `ok`, or `failed:<why>` from the wrapper.
+    pub fn resumed(&mut self, cmd: String, r: Resume, last: &str) {
+        // the steps were written for this command: the wrapper's guard checks it
+        self.cap.cmd = cmd;
+        self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
+        let Resume {
+            label,
+            items,
+            mut sel,
+            mut done,
+            verb,
+        } = r;
+        let n = sel + 1;
+        match last.strip_prefix("failed:") {
+            None if last == "ok" => {
+                done[sel] = true;
+                let what = if verb == "send" { "sent" } else { "inserted" };
+                self.say(Level::Info, format!("step {n} {what}"));
+                if let Some(next) = (sel + 1..items.len()).find(|&i| !done[i] && !items[i].cmd.is_empty()) {
+                    sel = next;
+                }
+            }
+            Some(why) => {
+                let why: String = sanitize(why).replace('\n', " ").chars().take(200).collect();
+                self.say(Level::Error, format!("step {n} was not sent: {why}"));
+            }
+            None => self.say(Level::Error, format!("step {n}: no word on how it went")),
+        }
+        self.view = View::Steps { label, items, sel, done };
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -307,7 +361,7 @@ impl App {
                 match std::mem::replace(&mut self.view, View::Busy) {
                     View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
                     View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
-                    View::Steps { label, items, sel } => self.steps_key(k, label, items, sel),
+                    View::Steps { label, items, sel, done } => self.steps_key(k, label, items, sel, done),
                     View::Confirm {
                         text,
                         send,
@@ -375,6 +429,7 @@ impl App {
     /// Out with no action, the call killed: a hangup, or a loop that broke.
     pub fn stop(&mut self) {
         self.action = None;
+        self.resume = None;
         self.exit();
     }
 
@@ -409,6 +464,15 @@ impl App {
 
     /// `back` is the view the action was taken from, kept for a resume.
     fn act(&mut self, verb: &'static str, text: String, back: View) {
+        if let View::Steps { label, items, sel, done } = &back {
+            self.resume = Some(Resume {
+                label: label.clone(),
+                items: items.clone(),
+                sel: *sel,
+                done: done.clone(),
+                verb,
+            });
+        }
         self.view = back;
         self.action = Some(Action { verb, text });
         self.exit();
@@ -708,6 +772,7 @@ impl App {
                 };
                 self.view = View::Steps {
                     label,
+                    done: vec![false; steps.len()],
                     items: steps,
                     sel: 0,
                 };
@@ -952,7 +1017,7 @@ impl App {
         w
     }
 
-    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, mut sel: usize) {
+    fn steps_key(&mut self, k: KeyEvent, label: String, items: Vec<Step>, mut sel: usize, done: Vec<bool>) {
         let last = items.len().saturating_sub(1);
         let cmd = items.get(sel).map(|s| s.cmd.clone()).unwrap_or_default();
         match k.code {
@@ -960,17 +1025,17 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
             KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
-                let here = View::Steps { label, items, sel };
+                let here = View::Steps { label, items, sel, done };
                 if c == 'i' {
                     return self.insert(cmd, here);
                 }
                 return self.confirm(cmd, true, here);
             }
-            KeyCode::Char('r') => return self.retry_from(View::Steps { label, items, sel }),
+            KeyCode::Char('r') => return self.retry_from(View::Steps { label, items, sel, done }),
             KeyCode::Esc => return self.leave(),
             _ => {}
         }
-        self.view = View::Steps { label, items, sel };
+        self.view = View::Steps { label, items, sel, done };
     }
 
     fn explain_ask_key(&mut self, k: KeyEvent, sel: usize) {
@@ -1126,21 +1191,139 @@ pub fn sanitize(s: &str) -> String {
 /// `<path>.cmd` is the command the pane ran when it was captured, for the
 /// wrapper to check it still runs before the paste lands.
 pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::Result<()> {
-    let fresh = |p: &Path, body: &str| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .custom_flags(libc::O_NOFOLLOW)
-            .mode(0o600)
-            .open(p)?;
-        f.write_all(body.as_bytes())
-    };
     fresh(Path::new(&format!("{}.text", path.display())), &sanitize(&a.text))?;
     fresh(
         Path::new(&format!("{}.cmd", path.display())),
         &format!("{}\n", sanitize(cmd).replace('\n', " ")),
     )?;
     fresh(path, &format!("{} {pane}\n", a.verb))
+}
+
+fn fresh(p: &Path, body: &str) -> std::io::Result<()> {
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(p)?;
+    f.write_all(body.as_bytes())
+}
+
+fn state_esc(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
+fn state_unesc(s: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('\\') => out.push('\\'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            _ => return Err("a bad escape".into()),
+        }
+    }
+    Ok(out)
+}
+
+/// `<path>.state`, for the wrapper to hand back with `--resume`: written before
+/// the action line, created fresh and never followed, like the other two.
+pub fn write_state(path: &Path, pane: &str, cmd: &str, r: &Resume) -> std::io::Result<()> {
+    let mut b = format!(
+        "{STATE_HEAD}\npane {pane}\ncmd {}\nlabel {}\nsel {}\nverb {}\n",
+        state_esc(cmd),
+        state_esc(&r.label),
+        r.sel,
+        r.verb
+    );
+    for (s, d) in r.items.iter().zip(&r.done) {
+        let f = [&s.lang, &s.note, &s.cmd].map(|x| state_esc(x));
+        b.push_str(&format!("step {}\t{}\t{}\t{}\n", u8::from(*d), f[0], f[1], f[2]));
+    }
+    fresh(Path::new(&format!("{}.state", path.display())), &b)
+}
+
+/// The command and the steps a [`write_state`] file holds, refused unless it is
+/// a small regular file of this version, for this very pane.
+pub fn read_state(path: &Path, pane: &str) -> Result<(String, Resume), String> {
+    use std::io::Read;
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    let m = f.metadata().map_err(|e| e.to_string())?;
+    if !m.is_file() || m.len() > STATE_MAX {
+        return Err("not a small regular file".into());
+    }
+    let mut body = String::new();
+    f.take(STATE_MAX).read_to_string(&mut body).map_err(|e| e.to_string())?;
+    let Some(body) = body.strip_suffix('\n') else {
+        return Err("cut short".into());
+    };
+    let mut lines = body.split('\n');
+    if lines.next() != Some(STATE_HEAD) {
+        return Err("not a version 1 state file".into());
+    }
+    let mut field = |key: &str| -> Result<String, String> {
+        let l = lines.next().ok_or(format!("no {key} line"))?;
+        let v = l
+            .strip_prefix(key)
+            .and_then(|v| v.strip_prefix(' '))
+            .ok_or(format!("{key} expected"))?;
+        state_unesc(v)
+    };
+    if field("pane")? != pane {
+        return Err(format!("it is for another pane, not {pane}"));
+    }
+    let cmd = field("cmd")?;
+    let label = field("label")?;
+    let sel: usize = field("sel")?.parse().map_err(|_| "a bad sel".to_string())?;
+    let verb = match field("verb")?.as_str() {
+        "paste" => "paste",
+        "send" => "send",
+        _ => return Err("a bad verb".into()),
+    };
+    let (mut items, mut done) = (vec![], vec![]);
+    for l in lines {
+        let rest = l.strip_prefix("step ").ok_or("a line that is not a step")?;
+        let f: Vec<&str> = rest.split('\t').collect();
+        let [d, lang, note, cmd] = f[..] else {
+            return Err("a step needs four fields".into());
+        };
+        done.push(match d {
+            "0" => false,
+            "1" => true,
+            _ => return Err("a bad done mark".into()),
+        });
+        items.push(Step {
+            lang: state_unesc(lang)?,
+            note: state_unesc(note)?,
+            cmd: state_unesc(cmd)?,
+        });
+    }
+    if items.is_empty() || items.len() > STATE_STEPS || sel >= items.len() {
+        return Err("no step to come back to".into());
+    }
+    Ok((
+        cmd,
+        Resume {
+            label,
+            items,
+            sel,
+            done,
+            verb,
+        },
+    ))
 }
 
 fn ws(s: &str, i: usize, min: usize) -> Option<usize> {

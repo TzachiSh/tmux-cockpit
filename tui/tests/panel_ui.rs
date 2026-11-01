@@ -1,8 +1,11 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{Action, App, InputKind, Level, Tile, View, bracketed_ok, risky, sanitize, write_action};
+use cockpit_tui::panel::app::{
+    Action, App, InputKind, Level, Resume, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
+};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
+use cockpit_tui::panel::parse::Step;
 use cockpit_tui::panel::request::Call;
 use cockpit_tui::panel::view::render;
 use cockpit_tui::theme::Theme;
@@ -1262,4 +1265,175 @@ fn a_working_session_warns_a_send_and_lets_an_insert_through() {
         Some("paste"),
         "an insert only waits in the input"
     );
+}
+
+const THREE_STEPS: &str = "<steps><step><note>update</note><cmd>apt update</cmd></step>\
+<step><note>tap Allow in the app</note></step>\
+<step><note>install</note><cmd>apt install jq</cmd></step></steps>";
+
+fn stepped() -> App {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(THREE_STEPS.into()));
+    a
+}
+
+fn resume_of(a: &App) -> Resume {
+    a.resume.clone().expect("a resume")
+}
+
+#[test]
+fn an_action_from_steps_carries_the_steps_to_resume() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("paste"));
+    let r = resume_of(&a);
+    assert_eq!((r.sel, r.verb, r.done.clone(), r.items.len()), (0, "paste", vec![false; 3], 3));
+    assert_eq!(r.label, "Steps (bash)");
+
+    let mut a = stepped();
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    ch(&mut a, 's');
+    key(&mut a, KeyCode::Enter);
+    let r = resume_of(&a);
+    assert_eq!((r.sel, r.verb), (2, "send"), "through the confirm too");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>hi</text>".into()));
+    ch(&mut a, 'i');
+    assert!(a.action.is_some() && a.resume.is_none(), "a Result closes the panel as before");
+
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    a.stop();
+    assert!(a.resume.is_none(), "a hangup leaves no way back");
+}
+
+#[test]
+fn a_resume_marks_the_step_and_moves_to_the_next_command() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let r = resume_of(&a);
+    let mut b = app("w", "zsh", "$ apt update\n");
+    b.resumed("bash".into(), r.clone(), "ok");
+    assert_eq!(b.cap.cmd, "bash", "the guard compares against what the steps were written for");
+    let View::Steps { sel, done, .. } = &b.view else {
+        panic!("{:?}", b.view)
+    };
+    assert_eq!((*sel, done.clone()), (2, vec![true, false, false]), "the tap step is skipped");
+    assert_eq!((note(&b), level(&b)), (Some("step 1 inserted"), Some(Level::Info)));
+    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent"));
+
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r.clone(), "failed:the pane now runs vim, not bash\u{1b}[2J");
+    let View::Steps { sel, done, .. } = &b.view else { panic!() };
+    assert_eq!((*sel, done.clone()), (0, vec![false; 3]));
+    assert_eq!(level(&b), Some(Level::Error));
+    assert_eq!(note(&b), Some("step 1 was not sent: the pane now runs vim, not bash[2J"));
+
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r, "maybe");
+    assert_eq!(level(&b), Some(Level::Error), "an unknown answer is not taken as ok");
+
+    let mut last = stepped();
+    last.view = View::Steps {
+        label: "Steps".into(),
+        items: vec![Step {
+            note: "n".into(),
+            cmd: "ls".into(),
+            lang: "bash".into(),
+        }],
+        sel: 0,
+        done: vec![false],
+    };
+    ch(&mut last, 's');
+    key(&mut last, KeyCode::Enter);
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&last), "ok");
+    assert!(matches!(&b.view, View::Steps { sel: 0, .. }), "the last step stays selected");
+    assert_eq!(note(&b), Some("step 1 sent"));
+}
+
+#[test]
+fn golden_steps_resumed() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ apt update\n");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    goldens("steps-resumed", &b, 0);
+}
+
+fn state_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cockpit-panel-state-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn the_state_file_round_trips_and_is_private() {
+    let dir = state_dir("rt");
+    let r = Resume {
+        label: "Steps (bash)".into(),
+        items: vec![
+            Step {
+                note: "a\ttab and a \\ slash".into(),
+                cmd: "printf 'x\\n'\nline two\r".into(),
+                lang: "bash".into(),
+            },
+            Step {
+                note: "tap it".into(),
+                cmd: String::new(),
+                lang: String::new(),
+            },
+        ],
+        sel: 1,
+        done: vec![true, false],
+        verb: "send",
+    };
+    write_state(&dir.join("act"), "%3", "zsh", &r).unwrap();
+    let p = dir.join("act.state");
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read_state(&p, "%3"), Ok(("zsh".to_string(), r.clone())));
+    assert!(
+        write_state(&dir.join("act"), "%3", "zsh", &r).is_err(),
+        "an existing state file is refused"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_state_file_is_refused_unless_it_is_exactly_ours() {
+    let dir = state_dir("bad");
+    let good = "cockpit-panel-state 1\npane %3\ncmd bash\nlabel L\nsel 0\nverb paste\nstep 0\tbash\tn\tls\n";
+    let p = dir.join("s");
+    let try_ = |body: &str, pane: &str| {
+        std::fs::write(&p, body).unwrap();
+        read_state(&p, pane)
+    };
+    assert!(try_(good, "%3").is_ok());
+    for (body, why) in [
+        (good.replace("state 1", "state 2"), "another version"),
+        (good.trim_end().to_string(), "cut short"),
+        (good.replace("sel 0", "sel 1"), "sel past the steps"),
+        (good.replace("verb paste", "verb run"), "an unknown verb"),
+        (good.replace("step 0\t", "step 2\t"), "a bad done mark"),
+        (good.replace("\tls\n", "\tls\textra\n"), "a fifth field"),
+        (good.replace("\tls\n", "\tl\\qs\n"), "a bad escape"),
+        (good.replace("label L\n", ""), "a missing line"),
+        (good.replace("step 0\tbash\tn\tls\n", ""), "no steps"),
+        (format!("{good}junk\n"), "a stray line"),
+        (format!("{good}{}", "step 0\tbash\tn\tls\n".repeat(64)), "too many steps"),
+        (format!("{good}{}", "x".repeat(70 * 1024)), "too big"),
+    ] {
+        assert!(try_(&body, "%3").is_err(), "{why}");
+    }
+    assert!(try_(good, "%4").unwrap_err().contains("another pane"));
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&p, &link).unwrap();
+    assert!(read_state(&link, "%3").is_err(), "never followed");
+    assert!(read_state(&dir, "%3").is_err(), "a directory");
+    let _ = std::fs::remove_dir_all(&dir);
 }
