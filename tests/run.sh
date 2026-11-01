@@ -11733,6 +11733,27 @@ is "a poller told to stop by the option leaves by itself" "yes" "$AVLEFT"
 is "...and signals nothing on the way out" "0" "$(grep -c '^+* kill ' "$AVTR")"
 is "...after running its exit trap" "1" "$(grep -c '^+* release$' "$AVTR")"
 av_tm set-option -g @cockpit_bg_poll 1
+# A signal can land after `sleep &` has forked and before `sleeper=$!` has saved the pid. A DEBUG
+# trap (set -T carries it into the sourced script) makes that moment exact: it sends the poller
+# its own TERM just before that assignment.
+# The sleep (a shim that records its pid) must not outlive the poller.
+AVSP="$AVREC/sleep.pid"; rm -f "$AVSP"
+AVSLB=$(mktmpd); ln -s "$AVF/sleep-pid" "$AVSLB/sleep"
+av_tm set-option -g @cockpit_bg_poll 3600
+av_tm set-option -gu @cockpit_poll_pid
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVSLB:$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    AV_SLEEPPID="$AVSP" AV_REALSLEEP="$(command -v sleep)" \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" \
+    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && kill -TERM $$' </dev/null >/dev/null 2>&1 &
+AVA=$!
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a TERM between the fork and the saved pid still ends the poller" "yes" "$AVLEFT"
+AVSC=$(cat "$AVSP" 2>/dev/null)
+is "...the sleep it had started was reached" "yes" "$([ -n "$AVSC" ] && echo yes || echo no)"
+av_wait "av_gone ${AVSC:-0}" && AVLEFT=yes || AVLEFT=no
+[ -z "$AVSC" ] || av_gone "$AVSC" || kill "$AVSC" 2>/dev/null
+is "...and did not outlive it" "yes" "$AVLEFT"
+av_tm set-option -g @cockpit_bg_poll 1
 # Two starts at once: one poller is left, and it holds the slot. From here the tick is an
 # hour, so only a signal can end a poller and only release can end its sleep.
 av_tm set-option -g @cockpit_bg_poll 3600

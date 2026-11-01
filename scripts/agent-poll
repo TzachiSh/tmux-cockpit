@@ -38,6 +38,9 @@ claim() {
 release() {
     tmux if-shell -F "#{==:#{@cockpit_poll_pid},$$}" "set-option -gu @cockpit_poll_pid" 2>/dev/null
     [ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null
+    # A signal between `sleep &` and `sleeper=$!` leaves the pid unsaved; the sleep is still a
+    # live job of ours. A loop, not `kill $(jobs -p)`: with no job that would still run kill.
+    local j; for j in $(jobs -p); do kill "$j" 2>/dev/null; done
     return 0
 }
 
