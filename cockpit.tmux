@@ -164,10 +164,22 @@ Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
 fk=$(key @cockpit_fixer_key f)
 [ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
 
-# Off until phase 3 moves it to f: stock T is select-pane -T. Needs bin/cockpit-tui.
+# No default key until phase 3 gives the panel f; every free letter is a guess.
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 pk=$(key @cockpit_panel_key "")
-[ -z "$pk" ] || tmux bind-key "$pk" display-popup -E -w 94% -h 90% -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
+# A reload that turns the key off or moves it must take the old binding back,
+# unless the fixer has just been bound there.
+pprev=$(tmux show-option -gqv @cockpit_panel_bound)
+if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then
+    [ "$pprev" = "$fk" ] || tmux unbind-key "$pprev"
+    tmux set-option -gu @cockpit_panel_bound
+fi
+if [ -n "$pk" ] && [ "$pk" = "$fk" ]; then
+    tmux display-message "cockpit: @cockpit_panel_key $pk is the side-fix key; the panel is not bound"
+elif [ -n "$pk" ]; then
+    tmux bind-key "$pk" display-popup -E -w 94% -h 90% -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
+    tmux set-option -g @cockpit_panel_bound "$pk"
+fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")

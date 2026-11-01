@@ -77,8 +77,10 @@ fn styled(s: impl Into<String>, st: Style) -> Line<'static> {
     Line::from(Span::styled(s.into(), st))
 }
 
+/// Tabs become 4 spaces first: a tab's width is the terminal's choice, and the
+/// widget would count it as one column.
 fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
-    wrap(text, w.saturating_sub(indent.chars().count()))
+    wrap(&text.replace('\t', "    "), w.saturating_sub(indent.chars().count()))
         .into_iter()
         .map(|l| styled(format!("{indent}{l}"), st))
         .collect()

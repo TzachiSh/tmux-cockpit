@@ -10147,7 +10147,7 @@ until_cap "$PN" "$PNA" '*panel says hi*'
 # cat echoes a pasted line once and prints it again only after Enter.
 is "i inserts the answer into the target pane without Enter" "1" "$(pn_count "$PNA" 'panel says hi')"
 
-pn_go 'exec cat' 'say hi'
+pn_go 'exec cat' 'say hi' || bad "the panel reaches its result view (send)" "i insert" "$(pn_cap)"
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
 until_cap "$PN" "$PNB" '*confirm*'
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
@@ -10158,7 +10158,7 @@ is "s, after its confirm, sends the answer and presses Enter" "2" "$(pn_count "$
 # A target that turns bracketed paste on shows the markers through the tty's
 # echo, so one paste carrying both lines is visible as one 200~ ... 201~ pair.
 printf '<text>line one\nline two</text>' > "$PND/reply"
-pn_go "printf '\\033[?2004h'; exec cat" 'two lines'
+pn_go "printf '\\033[?2004h'; exec cat" 'two lines' || bad "the panel reaches its result view (two lines)" "i insert" "$(pn_cap)"
 # cat is not a program known to take a paste whole, so Insert confirms first.
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
 until_cap "$PN" "$PNB" '*may run each line*confirm*' || bad "a multi-line insert into cat asks first" "may run each line" "$(pn_cap)"
@@ -10172,7 +10172,7 @@ else
 fi
 
 printf '<text>ab\033[31mcd\007ef</text>' > "$PND/reply"
-pn_go 'exec cat' 'colour'
+pn_go 'exec cat' 'colour' || bad "the panel reaches its result view (colour)" "i insert" "$(pn_cap)"
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
 pn_gone "$PNB"
 until_cap "$PN" "$PNA" '*cdef*'
@@ -10254,6 +10254,17 @@ case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
     *) bad "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" "display-popup ... cockpit-panel -p" \
          "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" ;;
 esac
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "turning the key off on a reload takes the old binding back" "0:" \
+   "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null | grep -c cockpit-panel):$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_panel_bound)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
+    *tmux-fixer*) ok "a panel key equal to the side-fix key is refused, and f stays the fixer" ;;
+    *) bad "a panel key equal to the side-fix key is refused, and f stays the fixer" "tmux-fixer on f" \
+         "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" ;;
+esac
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
 # The wrapper's grammar, with a stub binary and a tmux that only records.
@@ -10310,6 +10321,9 @@ is "send waits for the paste to show before Enter: one capture before, one after
 rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"
 is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
    "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
+: > "$PND/tui.log"
+is "COCKPIT_READONLY runs the panel and writes nothing to the pane" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
+is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
 fi

@@ -166,6 +166,15 @@ fn golden_error() {
 // ---------------------------------------------------------------- home and compose
 
 #[test]
+fn tabs_are_expanded_before_the_wrap() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>a\tb</text>".into()));
+    let f = frame(&a, 40, 8, 0);
+    assert!(f.contains("│ a    b"), "{f}");
+}
+
+#[test]
 fn home_suggests_by_window_and_numbers_pick_tiles() {
     let mut a = app("w", "zsh", "$ ");
     assert_eq!(a.tiles()[0].1, "Write a command");
@@ -348,6 +357,9 @@ fn best_guess_ends_the_rounds_and_back_pops_one() {
     let r = a.run.as_ref().unwrap();
     assert_eq!(r.rounds, r.max);
     assert!(r.turns.last().unwrap().text.contains("best guess"));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.run.as_ref().unwrap().rounds, 1, "a cancelled best guess gives the rounds back");
+    ch(&mut a, 'g');
     a.reply(Ok(q(3)));
     assert!(
         matches!(a.view, View::Result { .. }),
@@ -401,6 +413,10 @@ fn esc_cancels_a_busy_request_and_kills_it() {
     assert!(a.req.is_none() && !a.pending);
     assert_eq!(a.view, View::Compose, "back to where it was sent from");
     assert_eq!(a.draft, "slow");
+    if !Path::new("/proc/self").exists() {
+        eprintln!("skipped the reap check: no /proc here");
+        return;
+    }
     let reaped = (0..1000).any(|_| {
         let gone = !Path::new(&format!("/proc/{pid}")).exists();
         if !gone {

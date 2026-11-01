@@ -123,6 +123,8 @@ pub struct Run {
     pub route: Route,
     /// The last turn and log entry were added for the call in flight.
     pub pending_turn: bool,
+    /// The rounds before a best guess, so a cancelled guess can be undone.
+    pub guessed_from: Option<usize>,
 }
 
 pub struct App {
@@ -385,6 +387,7 @@ impl App {
             ready: None,
             route,
             pending_turn: false,
+            guessed_from: None,
         });
         self.busy(back);
     }
@@ -451,6 +454,9 @@ impl App {
             if r.log.last().is_some_and(|(you, _)| *you) {
                 r.log.pop();
             }
+            if let Some(n) = r.guessed_from.take() {
+                r.rounds = n;
+            }
         }
     }
 
@@ -473,6 +479,7 @@ impl App {
         };
         let Some(r) = self.run.as_mut() else { return };
         r.pending_turn = false;
+        r.guessed_from = None;
         let (rounds, max) = (r.rounds, r.max);
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
@@ -625,6 +632,7 @@ impl App {
             }
             KeyCode::Char('g') => {
                 if let Some(r) = self.run.as_mut() {
+                    r.guessed_from = Some(r.rounds);
                     r.rounds = r.max;
                 }
                 self.pick(BEST_GUESS.into());

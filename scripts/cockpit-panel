@@ -57,6 +57,12 @@ if [ -n "$bad" ]; then
 fi
 
 [ -s "$f.text" ] || exit 0
+# Screenshots and probes: the whole panel runs, and the pane is never written.
+if [ -n "${COCKPIT_READONLY:-}" ]; then
+    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-panel: readonly, not sent: %s %s\n' "$ts" "$verb" "$target" >> "$LOG"
+    exit 0
+fi
 # The answer was written for what the pane ran at capture time; a Claude Code
 # that exited since would take the prose as shell input.
 want='' now=''
