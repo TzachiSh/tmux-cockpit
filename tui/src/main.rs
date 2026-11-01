@@ -48,6 +48,7 @@ fn panel(args: &[String]) {
     };
     let mut a = app::App::new(pane, cap);
     a.tablet = tablet;
+    a.termux = cockpit_tui::panel::is_termux();
     if let Some((f, last)) = resume {
         a.reopened = true;
         match app::read_state(std::path::Path::new(f), pane) {

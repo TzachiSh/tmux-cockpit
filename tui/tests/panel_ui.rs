@@ -2045,7 +2045,14 @@ fn golden_tablet_confirm() {
     tablet_goldens("confirm", &a);
 }
 
+/// Past any tap guard: no test frame stamps the clock unless it means to.
+const LATER: u64 = 1_000_000;
+
 fn at(a: &mut App, x: u16, y: u16, kind: MouseEventKind, hits: &[Hit]) {
+    at_with(a, x, y, kind, hits, KeyModifiers::NONE, LATER);
+}
+
+fn at_with(a: &mut App, x: u16, y: u16, kind: MouseEventKind, hits: &[Hit], modifiers: KeyModifiers, now: u64) {
     mouse(
         a,
         hits,
@@ -2053,8 +2060,9 @@ fn at(a: &mut App, x: u16, y: u16, kind: MouseEventKind, hits: &[Hit]) {
             kind,
             column: x,
             row: y,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
         },
+        now,
     );
 }
 
@@ -2270,7 +2278,10 @@ fn result_buttons_insert_send_copy_and_edit() {
     assert_eq!(a.action.as_ref().map(|x| x.verb), Some("paste"));
     let mut a = res();
     tap(&mut a, "[ copy ]");
-    assert_eq!((a.copy.as_deref(), note(&a)), (Some("ls -la"), Some("copied 6 chars")));
+    assert_eq!(
+        (a.copy.as_deref(), note(&a)),
+        (Some("ls -la"), Some("sent 6 chars to the clipboard (needs tmux set-clipboard on)"))
+    );
     assert!(matches!(a.view, View::Result { .. }) && a.action.is_none());
     tap(&mut a, "[ send ]");
     assert!(matches!(a.view, View::Confirm { send: true, .. }));
@@ -2339,7 +2350,7 @@ fn answer_buttons_follow_up_copy_and_discard_after_asking() {
     tap(&mut a, "[ keep it ]");
     assert!(matches!(a.view, View::Answer { armed: false, .. }) && a.run.is_some());
     tap(&mut a, "[ home ]");
-    tap(&mut a, "[ discard it ]");
+    tap(&mut a, "discard it  ");
     assert!(a.view == View::Home { sel: 0 } && a.run.is_none());
     let mut a = tablet(explained());
     tap(&mut a, "[ follow up ]");
@@ -2424,4 +2435,203 @@ fn every_tablet_view_fits_its_buttons_at_the_floor() {
             assert!(h.at.y < MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
         }
     }
+}
+
+// ---------------------------------------------------------------- touch safety
+
+fn hits_of(a: &App, w: u16, h: u16) -> Vec<Hit> {
+    drawn(a, w, h, &Theme::fixed(), 0).2
+}
+
+fn k(c: char) -> Tap {
+    Tap::Key(KeyEvent::from(KeyCode::Char(c)))
+}
+
+/// A button that opens a Confirm or arms a discard, and the tap that then
+/// confirms: at no size from 28x7 to 120x40 may a second tap on the opener's
+/// cells be that tap. One app for the whole grid, back to the opener with n.
+fn never_under(name: &str, mut a: App, open: Tap, yes: Tap) {
+    let mut checked = 0;
+    for w in 28..=120u16 {
+        for h in 7..=40u16 {
+            let Some(o) = hits_of(&a, w, h).into_iter().find(|x| x.tap == open) else {
+                continue;
+            };
+            a.tap(open, LATER);
+            assert!(
+                matches!(a.view, View::Confirm { .. } | View::Answer { armed: true, .. }),
+                "{name} at {w}x{h} opened {:?}",
+                a.view
+            );
+            for c in hits_of(&a, w, h).into_iter().filter(|x| x.tap == yes) {
+                assert!(
+                    o.at.intersection(c.at).is_empty(),
+                    "{name} at {w}x{h}: the opener {:?} lies under the confirm {:?}:\n{}",
+                    o.at,
+                    c.at,
+                    frame(&a, w, h, 0)
+                );
+            }
+            checked += 1;
+            ch(&mut a, 'n');
+            assert!(
+                !matches!(a.view, View::Confirm { .. } | View::Answer { armed: true, .. }),
+                "{name}: n goes back"
+            );
+        }
+    }
+    assert!(checked > 2_000, "{name}: only {checked} sizes had the opener on screen");
+}
+
+fn multi_result() -> App {
+    let mut a = tabbed("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>rm -rf target\nls</text>".into()));
+    a
+}
+
+#[test]
+fn no_double_tap_on_steps_send_confirms() {
+    never_under("steps send", tablet_steps(), k('s'), k('y'));
+}
+
+#[test]
+fn no_double_tap_on_result_send_or_insert_confirms() {
+    never_under("result send", multi_result(), k('s'), k('y'));
+    never_under("result insert", multi_result(), k('i'), k('y'));
+}
+
+#[test]
+fn no_double_tap_on_answer_send_or_insert_confirms() {
+    never_under("answer send", tablet(explained()), k('s'), k('y'));
+    never_under("answer insert", tablet(explained()), k('i'), k('y'));
+}
+
+#[test]
+fn no_double_tap_on_answer_home_discards() {
+    let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
+    never_under("answer home", tablet(explained()), esc, esc);
+}
+
+#[test]
+fn no_double_tap_on_insert_as_typed_confirms() {
+    let mut a = tabbed("py", "python3", ">>> ");
+    tap(&mut a, "Compose");
+    typ(&mut a, "one\ntwo");
+    let ctrl_t = Tap::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL));
+    never_under("compose insert as typed", a, ctrl_t, k('y'));
+}
+
+#[test]
+fn a_tap_within_the_guard_of_a_new_view_is_dropped_and_keys_never_are() {
+    use cockpit_tui::panel::app::TAP_GUARD_MS;
+    let mut a = tablet_steps();
+    a.frame(1_000);
+    let send = hits_of(&a, 40, 20).into_iter().find(|h| h.tap == k('s')).unwrap();
+    a.tap(send.tap, 1_000 + TAP_GUARD_MS - 1);
+    assert!(matches!(a.view, View::Steps { .. }), "the first frame starts the guard too");
+    a.tap(send.tap, 1_000 + TAP_GUARD_MS);
+    assert!(matches!(a.view, View::Confirm { .. }));
+    a.frame(2_000);
+    a.tap(k('y'), 2_120);
+    assert!(
+        a.action.is_none() && matches!(a.view, View::Confirm { .. }),
+        "120 ms after the confirm opened"
+    );
+    ch(&mut a, 'y');
+    assert!(a.action.is_some(), "a key is never guarded");
+
+    // the selection moving is no new view: the guard does not restart
+    let mut a = tablet_steps();
+    a.frame(0);
+    a.tap(Tap::Select(1), 500);
+    a.frame(510);
+    a.tap(Tap::Select(2), 520);
+    assert!(matches!(a.view, View::Steps { sel: 2, .. }));
+}
+
+/// The verifier's D1 and D3: two presses 120 ms apart on one cell, at 40x20.
+#[test]
+fn a_double_tap_never_confirms_a_send_or_discards_an_answer() {
+    let press = |a: &mut App, x: u16, y: u16, now: u64| {
+        let hits = hits_of(a, 40, 20);
+        at_with(a, x, y, MouseEventKind::Down(MouseButton::Left), &hits, KeyModifiers::NONE, now);
+        a.frame(now + 16);
+    };
+    let mut a = tablet_steps();
+    a.frame(0);
+    let s = hits_of(&a, 40, 20).into_iter().find(|h| h.tap == k('s')).unwrap().at;
+    for (i, now) in [1_000, 1_120, 1_500, 2_000].into_iter().enumerate() {
+        press(&mut a, s.x, s.y, now);
+        assert!(a.action.is_none(), "press {i} at {now} ms on [ send ]");
+    }
+    assert!(matches!(a.view, View::Confirm { .. } | View::Steps { .. }));
+
+    let mut a = tablet(explained());
+    a.frame(0);
+    let home = hits_of(&a, 40, 20)
+        .into_iter()
+        .find(|h| h.tap == Tap::Key(KeyEvent::from(KeyCode::Esc)))
+        .unwrap()
+        .at;
+    for now in [1_000, 1_120, 1_500, 2_000] {
+        press(&mut a, home.x, home.y, now);
+        assert!(a.run.is_some(), "the answer survives a press at {now} ms on [ home ]");
+    }
+}
+
+#[test]
+fn a_click_with_shift_ctrl_or_alt_is_no_tap() {
+    for m in [KeyModifiers::SHIFT, KeyModifiers::CONTROL, KeyModifiers::ALT] {
+        let mut a = tabbed("w", "zsh", "$ ");
+        let hits = hits_of(&a, 80, 24);
+        let close = hits.iter().find(|h| h.tap == Tap::Pick(4)).unwrap().at;
+        at_with(&mut a, close.x, close.y, MouseEventKind::Down(MouseButton::Left), &hits, m, LATER);
+        assert!(!a.quit && a.view == View::Home { sel: 0 }, "{m:?}");
+    }
+}
+
+#[test]
+fn a_copy_is_cleaned_like_a_paste_and_capped() {
+    use cockpit_tui::panel::app::{COPY_MAX, COPY_TERMUX};
+    let res = |t: &str| {
+        let mut a = tabbed("w", "zsh", "$ ");
+        writing(&mut a, "x");
+        a.reply(Ok("<text>x</text>".into()));
+        if let View::Result { text, .. } = &mut a.view {
+            *text = t.into();
+        }
+        a
+    };
+    let mut a = res("a\tb\nc\x1b[201~d\x07e\u{9b}f");
+    ch(&mut a, 'x');
+    assert_eq!(
+        a.copy.as_deref(),
+        Some("a\tb\nc[201~def"),
+        "tabs and newlines stay, control characters go"
+    );
+    assert_eq!(note(&a), Some("sent 13 chars to the clipboard (needs tmux set-clipboard on)"));
+
+    let mut a = res(&"y".repeat(COPY_MAX + 1));
+    ch(&mut a, 'x');
+    assert_eq!((a.copy.as_deref(), level(&a)), (None, Some(Level::Warn)));
+    assert_eq!(note(&a), Some(format!("too long to copy: {} chars", COPY_MAX + 1).as_str()));
+
+    let mut a = res(&"y".repeat(COPY_TERMUX + 1));
+    a.termux = true;
+    ch(&mut a, 'x');
+    assert!(a.copy.is_some() && level(&a) == Some(Level::Warn), "{:?}", note(&a));
+    assert!(note(&a).unwrap().ends_with("Termux may cut it near 8 KB"));
+    a.termux = false;
+    ch(&mut a, 'x');
+    assert_eq!(level(&a), Some(Level::Info), "only Termux is warned at that size");
+}
+
+#[test]
+fn the_armed_note_says_tap_in_tablet_mode() {
+    let mut a = tablet(explained());
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(note(&a), Some("tap discard it, or esc again, to drop this conversation"));
+    let f = frame(&a, 80, 24, 0);
+    assert!(f.contains("discard it") && f.contains("[ keep it ]"), "{f}");
 }

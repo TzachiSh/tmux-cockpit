@@ -209,11 +209,14 @@ fn tap_of(k: &str) -> Option<Tap> {
     Some(Tap::Key(KeyEvent::from(code)))
 }
 
-/// Tablet mode's button rows, `w` wide: Confirm's big yes and no, then a chip
-/// per footer hint that names a key. Hits are relative to the rows' top left.
-fn buttons(th: &Theme, b: &Body, w: usize, big_tall: bool) -> (Vec<Line<'static>>, Vec<Hit>) {
+fn rect(x: usize, y: usize, w: usize, h: usize) -> Rect {
+    Rect::new(x as u16, y as u16, w as u16, h as u16)
+}
+
+/// The big pair, `w` wide, for the top rows: the buttons that open them sit at
+/// the bottom, so a double tap never lands on yes. Hits are relative to its top left.
+fn bigs(th: &Theme, b: &Body, w: usize, big_tall: bool) -> (Vec<Line<'static>>, Vec<Hit>) {
     let (mut lines, mut hits) = (vec![], vec![]);
-    let rect = |x: usize, y: usize, cw: usize, h: usize| Rect::new(x as u16, y as u16, cw as u16, h as u16);
     if !b.big.is_empty() {
         let n = b.big.len();
         let each = w.saturating_sub(n - 1) / n;
@@ -247,6 +250,13 @@ fn buttons(th: &Theme, b: &Body, w: usize, big_tall: bool) -> (Vec<Line<'static>
         }
         lines.extend(rows);
     }
+    (lines, hits)
+}
+
+/// A `[ verb ]` chip per footer hint that names a key, wrapped to `w`, for the
+/// bottom rows. Hits are relative to the rows' top left.
+fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
+    let (mut lines, mut hits) = (vec![], vec![]);
     let mut row: Vec<Span<'static>> = vec![];
     let mut x = 0;
     for (k, v) in &b.footer {
@@ -554,8 +564,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.footer = pills(&[("f", "follow up"), ("↑↓", "scroll"), help, ("esc", "home")]);
             }
             if *armed && app.tablet {
-                // "any other key" is no button: n is one Answer leaves unbound
-                b.footer = pills(&[("esc", "discard it"), ("n", "keep it")]);
+                // the esc chip becomes keep it in place, so a second tap on home keeps;
+                // n is a key Answer leaves unbound, and discard is up top, away from it
+                for p in b.footer.iter_mut().filter(|p| p.0 == "esc") {
+                    *p = ("n".into(), "keep it".into());
+                }
+                let k = |c| Tap::Key(KeyEvent::from(c));
+                b.big = vec![("discard it".into(), k(KeyCode::Esc)), ("keep it".into(), k(KeyCode::Char('n')))];
             } else if *armed {
                 b.footer = pills(&[("esc q", "again discards it"), ("any other key", "keeps it")]);
             }
@@ -611,10 +626,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             b.footer = pills(&[("r", "retry"), help, ("esc", "back")]);
         }
     }
-    let copies = matches!(
-        app.view,
-        View::Result { .. } | View::Steps { .. } | View::Answer { armed: false, .. }
-    );
+    let copies = matches!(app.view, View::Result { .. } | View::Steps { .. } | View::Answer { .. });
     if app.tablet && copies {
         b.footer.insert(2.min(b.footer.len()), ("x".into(), "copy".into()));
     }
@@ -883,22 +895,22 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
     let d = th.g.dot;
     let w = area.width.saturating_sub(4) as usize;
     let all = (area.height as usize).saturating_sub(2);
-    // the buttons go first: big ones only while the body keeps half the rows
+    // the buttons go first: the big pair 3 rows tall only while the body keeps half the rows
     let pad = |b: &Body| {
         if !app.tablet {
-            return (vec![], vec![]);
+            return ((vec![], vec![]), (vec![], vec![]));
         }
-        let flat = buttons(th, b, w, false).0.len();
-        buttons(th, b, w, flat + 2 <= all / 2)
+        let low = chips(th, b, w);
+        (bigs(th, b, w, low.0.len() + 3 <= all / 2), low)
     };
     let mut b = body(app, th, w, tick, app.tablet);
-    let mut btn = pad(&b);
+    let (mut up, mut btn) = pad(&b);
     // tall tiles only while every row of the view fits: never a scroll they caused
-    if app.tablet && b.head.len() + b.lines.len() + btn.0.len() > all {
+    if app.tablet && b.head.len() + b.lines.len() + up.0.len() + btn.0.len() > all {
         b = body(app, th, w, tick, false);
-        btn = pad(&b);
+        (up, btn) = pad(&b);
     }
-    let rows = all.saturating_sub(btn.0.len());
+    let rows = all.saturating_sub(btn.0.len() + up.0.len());
     // short of a body row: the head's spacer goes, then the head scrolls with the body
     if b.head.len() >= rows && b.head.last().is_some_and(|l| l.width() == 0) {
         b.head.pop();
@@ -951,6 +963,17 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         width: inner.width.saturating_sub(2),
         ..inner
     };
+    let (tops, top_hits) = up;
+    let high = Rect {
+        height: (tops.len() as u16).min(inner.height),
+        ..inner
+    };
+    f.render_widget(Paragraph::new(tops), high);
+    let inner = Rect {
+        y: inner.y + high.height,
+        height: inner.height - high.height,
+        ..inner
+    };
     let head = b.head.len();
     let mut lines = b.head;
     lines.extend(b.lines.into_iter().skip(top).take(last - top));
@@ -988,17 +1011,19 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
             });
         }
     }
-    hits.extend(pad_hits.into_iter().map(|h| {
-        Hit {
+    let place = |hs: Vec<Hit>, r: Rect| {
+        hs.into_iter().map(move |h| Hit {
             at: Rect {
-                x: low.x + h.at.x,
-                y: low.y + h.at.y,
+                x: r.x + h.at.x,
+                y: r.y + h.at.y,
                 ..h.at
             }
-            .intersection(low),
+            .intersection(r),
             ..h
-        }
-    }));
+        })
+    };
+    hits.extend(place(top_hits, high));
+    hits.extend(place(pad_hits, low));
     hits.retain(|h| app.tablet && !h.at.is_empty());
     (total, room, hits)
 }
@@ -1009,13 +1034,14 @@ pub fn hit(hits: &[Hit], x: u16, y: u16) -> Option<Tap> {
     hits.iter().find(|h| h.at.contains(p)).map(|h| h.tap)
 }
 
-/// A mouse event in tablet mode: a left press taps, the wheel scrolls. The
-/// release is ignored, so one tap is one action.
-pub fn mouse(app: &mut App, hits: &[Hit], m: MouseEvent) {
+/// A mouse event in tablet mode: a bare left press taps, the wheel scrolls.
+/// The release is ignored, so one tap is one action; `now` feeds the tap guard.
+/// Shift, Ctrl or Alt held is no tap: a click meant for the terminal.
+pub fn mouse(app: &mut App, hits: &[Hit], m: MouseEvent, now: u64) {
     match m.kind {
-        MouseEventKind::Down(MouseButton::Left) => {
+        MouseEventKind::Down(MouseButton::Left) if m.modifiers.is_empty() => {
             if let Some(t) = hit(hits, m.column, m.row) {
-                app.tap(t);
+                app.tap(t, now);
             }
         }
         MouseEventKind::ScrollUp => app.wheel(true),
@@ -1069,6 +1095,8 @@ pub fn run(app: &mut App) {
         }
     };
     let call = Call::from_env();
+    let born = std::time::Instant::now();
+    let ms = || born.elapsed().as_millis() as u64;
     loop {
         if STOP.load(Ordering::SeqCst) {
             break;
@@ -1088,6 +1116,7 @@ pub fn run(app: &mut App) {
             break;
         }
         app.shrunk(tiny);
+        app.frame(ms());
         // the floor message shows no body: fitting to it would lose the scroll
         if !tiny {
             app.fit(page.0, page.1);
@@ -1112,7 +1141,7 @@ pub fn run(app: &mut App) {
         match ev {
             Ok(Some(Event::Key(k))) => app.key(k),
             Ok(Some(Event::Paste(s))) => app.paste(&s),
-            Ok(Some(Event::Mouse(m))) if app.tablet => mouse(app, &page.2, m),
+            Ok(Some(Event::Mouse(m))) if app.tablet => mouse(app, &page.2, m, ms()),
             Ok(_) => {}
             Err(e) if transient(&e) => {}
             Err(_) => break,

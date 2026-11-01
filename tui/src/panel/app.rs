@@ -25,6 +25,13 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
+/// (1 MiB): 786,000 bytes landed, 786,432 did not. Kept under it.
+pub const COPY_MAX: usize = 768_000;
+/// Termux is said to cut an OSC string near 8 KB (unconfirmed): warned, not refused.
+pub const COPY_TERMUX: usize = 6_000;
+/// A tap this soon after the view changed is the second half of a double tap.
+pub const TAP_GUARD_MS: u64 = 300;
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -223,6 +230,11 @@ pub struct App {
     pub tablet: bool,
     /// Text for the event loop to put on the clipboard (OSC 52).
     pub copy: Option<String>,
+    /// Under Termux, whose OSC limit is lower: see [`COPY_TERMUX`].
+    pub termux: bool,
+    /// What the last frame showed and when, in the loop's milliseconds, for the tap guard.
+    seen: Option<(std::mem::Discriminant<View>, bool, bool)>,
+    seen_at: u64,
 }
 
 impl App {
@@ -257,6 +269,9 @@ impl App {
             tiny: false,
             tablet: false,
             copy: None,
+            termux: false,
+            seen: None,
+            seen_at: 0,
         }
     }
 
@@ -352,7 +367,12 @@ impl App {
 
     /// A tap on a hit rect: the key it stands for, or an entry by index. The
     /// selection moves first, so a `Pick` is the Enter the keys would press.
-    pub fn tap(&mut self, t: Tap) {
+    /// Dropped within [`TAP_GUARD_MS`] of a new view: the cell under the finger
+    /// may now hold the confirming button. `now` is the loop's clock, like `tick`.
+    pub fn tap(&mut self, t: Tap, now: u64) {
+        if now.saturating_sub(self.seen_at) < TAP_GUARD_MS {
+            return;
+        }
         let i = match t {
             Tap::Key(k) => return self.key(k),
             Tap::Pick(i) | Tap::Select(i) => i,
@@ -370,6 +390,16 @@ impl App {
         }
     }
 
+    /// Called after each frame is drawn: a view that differs from the last
+    /// frame's starts the tap guard. The selection moving is not a new view.
+    pub fn frame(&mut self, now: u64) {
+        let armed = matches!(self.view, View::Answer { armed: true, .. });
+        let seen = Some((std::mem::discriminant(&self.view), armed, self.help.is_some()));
+        if seen != self.seen {
+            (self.seen, self.seen_at) = (seen, now);
+        }
+    }
+
     /// The wheel is Up and Down, except in a text box, where those keys do nothing
     /// but drop the note.
     pub fn wheel(&mut self, up: bool) {
@@ -380,12 +410,24 @@ impl App {
     }
 
     /// Queues `text` for the clipboard; the event loop writes it and says so.
+    /// Cleaned like a paste: an ESC copied out would be a keystroke wherever it lands.
     fn copy_out(&mut self, text: &str) {
+        let text = sanitize(text);
+        let n = text.chars().count();
         if text.is_empty() {
             return self.say(Level::Info, "nothing to copy here");
         }
-        self.say(Level::Info, format!("copied {} chars", text.chars().count()));
-        self.copy = Some(text.to_string());
+        if text.len() > COPY_MAX {
+            return self.say(Level::Warn, format!("too long to copy: {n} chars"));
+        }
+        // the terminal never answers an OSC 52: sent is all that is known
+        let sent = format!("sent {n} chars to the clipboard (needs tmux set-clipboard on)");
+        if self.termux && text.len() > COPY_TERMUX {
+            self.say(Level::Warn, format!("{sent}; Termux may cut it near 8 KB"));
+        } else {
+            self.say(Level::Info, sent);
+        }
+        self.copy = Some(text);
     }
 
     /// A note belongs to the view it was said on: a move to another view
@@ -1275,7 +1317,12 @@ impl App {
             }
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {
-                self.say(Level::Warn, "esc or q again to discard this conversation");
+                let again = if self.tablet {
+                    "tap discard it, or esc again, to drop this conversation"
+                } else {
+                    "esc or q again to discard this conversation"
+                };
+                self.say(Level::Warn, again);
                 // the note takes a body row: a view on the last line stays on it
                 let scroll = if scroll >= self.bottom { usize::MAX } else { scroll };
                 self.view = View::Answer { scroll, armed: true };
