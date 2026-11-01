@@ -1,6 +1,6 @@
 //! Secrets blanked before a screen leaves the box. Hand-matched so the crate
 //! takes no regex dependency; each matcher mirrors one of type-panel's patterns.
-use super::{boundary_at, boundary_before};
+use super::{boundary_at, boundary_before, ci, skip_ws};
 
 pub const HIDDEN: &str = "[hidden]";
 
@@ -145,11 +145,11 @@ fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
     if !boundary_before(s, i) {
         return None;
     }
-    let keep = if let Some(j) = word_ci(s, i, "bearer") {
+    let keep = if let Some(j) = ci(s, i, "bearer") {
         let k = skip_ws(s, j);
         (k > j).then_some(k)?
     } else {
-        let j = KEYS.iter().find_map(|k| word_ci(s, i, k))?;
+        let j = KEYS.iter().find_map(|k| ci(s, i, k))?;
         let j = skip_ws(s, j);
         if !s[j..].starts_with(['=', ':']) {
             return None;
@@ -161,26 +161,4 @@ fn key_value(s: &str, i: usize) -> Option<(usize, usize)> {
         .take_while(|c| !c.is_whitespace())
         .fold((0, 0), |(n, l), c| (n + 1, l + c.len_utf8()));
     (chars >= 4).then_some((keep, keep + len))
-}
-
-/// Case-insensitive literal at `i`; `?` stands for an optional `_` or `-`.
-fn word_ci(s: &str, i: usize, pat: &str) -> Option<usize> {
-    let b = s.as_bytes();
-    let mut j = i;
-    for p in pat.bytes() {
-        if p == b'?' {
-            if matches!(b.get(j), Some(b'_' | b'-')) {
-                j += 1;
-            }
-        } else if b.get(j).is_some_and(|c| c.eq_ignore_ascii_case(&p)) {
-            j += 1;
-        } else {
-            return None;
-        }
-    }
-    Some(j)
-}
-
-fn skip_ws(s: &str, i: usize) -> usize {
-    i + s[i..].chars().take_while(|c| c.is_whitespace()).map(char::len_utf8).sum::<usize>()
 }
