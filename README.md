@@ -978,6 +978,36 @@ script the keys already use.
 Keys, options, the screens, the states and the engineering rules:
 [docs/tui.md](docs/tui.md).
 
+## The panel (cockpit-tui)
+
+The panel asks a text-only `claude -p` about the pane you are in and pastes
+the answer back into it. It is a port of type-panel. It runs with
+`--tools ""`, so it reads the screen and writes nothing to disk.
+
+- **Compose**: type rough words. `^S` writes a prompt, command, steps,
+  text or hint from them, `^F` fixes the spelling, `^T` inserts them as
+  typed. `⇥` picks the output type and `^N` the model.
+- **Explain**: what the pane is doing, what should happen next, or your
+  own question. When the next step is a message to a Claude Code agent,
+  the answer ends with that message, ready to insert or send.
+- Claude may ask up to 3 multiple-choice questions first (6 for Explain):
+  `1`-`4` picks, `o` types your own answer, `g` tells it to guess.
+- On a result, `i` inserts it into the pane as one bracketed paste without
+  Enter, and `s` sends it with Enter after a confirm. The confirm flags a
+  multi-line paste into a program that may run each line, and risky
+  commands such as `rm` or `sudo`.
+
+Secrets on the screen are blanked before anything is sent. The key is off
+by default; bind it with:
+
+```sh
+set -g @cockpit_panel_key P    # stock tmux leaves prefix P unbound
+```
+
+It needs the `cockpit-tui` binary, like the board. The binary only prints
+`paste %N` or `send %N`; `scripts/cockpit-panel` does the paste. Options,
+variables and the action file are in [docs/tui.md](docs/tui.md).
+
 ## Side fixes
 
 `prefix + f` spawns a *separate* headless `claude -p` beside a busy agent, for

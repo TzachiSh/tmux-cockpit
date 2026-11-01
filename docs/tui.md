@@ -98,6 +98,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_tui_fetch` | `off` | `on` lets `prefix U` run `scripts/tui-fetch`. Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
+| `@cockpit_panel_key` | `off` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. Off until it moves to `f` |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
@@ -122,6 +123,10 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included |
 | `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier |
+| `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
+| `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
+| `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
+| `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
 a popup.
@@ -329,10 +334,13 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 
 ```
 jump %N · review %N · fix %N · info %N · deliver %N   (deliver reserved for phase 2)
+paste %N · send %N                                    (the panel)
 ```
 
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
-nothing.
+nothing. `paste` and `send` carry text, which goes to `$COCKPIT_ACTION.text`,
+mode 0600, control characters stripped; with `COCKPIT_ACTION` unset the panel
+refuses them and exits 1.
 
 **Signatures.** Frozen; each lane changes bodies only.
 
@@ -347,7 +355,7 @@ pane are different facts and a blank tile tells you which one it is.
 
 **CLI:** `cockpit-tui board | fleet | info %N | ask %N | panel %N | --rows |
 --json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
-`board`; `panel %N` comes with the panel UI, the next phase.
+`board`; `panel %N` ships with the panel UI.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.
