@@ -10399,48 +10399,55 @@ elif need_tmux "the mouse is off on every exit"; then :; else
 MX="cockpit-mouse-$$"; SOCKS="$SOCKS $MX"; MXPY=$(mktmpf); MXD=$(mktmpd)
 "$TMUX_REAL" -L "$MX" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
 cat > "$MXPY" <<'MXPY'
-import fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
+import collections, fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
 tmux, sock, act, binary, pane, mode, how = sys.argv[1:8]
-m, s = pty.openpty()
-fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+runs = int(sys.argv[8]) if len(sys.argv) > 8 else 1
 env = dict(os.environ, COCKPIT_ACTION=act, COCKPIT_PANEL_MODE=mode)
 env['TMUX'] = subprocess.check_output([tmux, '-L', sock, 'display', '-p', '#{socket_path},#{pid},0']).decode().strip()
-p = subprocess.Popen([binary, 'panel', pane], stdin=s, stdout=s, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
-os.close(s)
-out = b''
-def read(until, cap=10.0):
-    global out
-    end = time.time() + cap
-    while time.time() < end and not until():
+send = {
+    'q': b'q', 'esc': b'\x1b', 'ctrl-c': b'\x03',
+    # 4 tall tiles on an 80x24 tty: the button row is the last inside the border
+    'tap-close': b'\x1b[<0;13;23M\x1b[<0;13;23m',
+    'flip-then-q': b'3q',
+    'action': b'1hi\x14',
+}
+def once(how):
+    m, s = pty.openpty()
+    fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+    p = subprocess.Popen([binary, 'panel', pane], stdin=s, stdout=s, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+    os.close(s)
+    out = b''
+    end = time.time() + 10                # a hang guard only: the loop polls for the first frame
+    while b'will send' not in out and time.time() < end:
         if select.select([m], [], [], 0.1)[0]:
             try:
                 out += os.read(m, 65536)
             except OSError:
-                return
-read(lambda: b'will send' in out)
-send = {
-    'q': [b'q'], 'esc': [b'\x1b'], 'ctrl-c': [b'\x03'],
-    # 4 tall tiles on an 80x24 tty: the button row is the last inside the border
-    'tap-close': [b'\x1b[<0;13;23M', b'\x1b[<0;13;23m'],
-    'flip-then-q': [b'3', b'q'],
-    'action': [b'1', b'hi', b'\x14'],
-}
-for k in send.get(how, []):
-    os.write(m, k)
-    time.sleep(0.05)                    # one read each: Esc is not mistaken for an Alt prefix
-if how in ('term', 'hup'):
-    comm = open(f'/proc/{p.pid}/comm').read().strip()
-    if comm == 'cockpit-tui':           # named before it is signalled
-        p.send_signal(signal.SIGTERM if how == 'term' else signal.SIGHUP)
-read(lambda: p.poll() is not None)
-read(lambda: False, 0.3)                # what the exit wrote after the last frame
-if p.poll() is None:
-    if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':
-        p.kill()
-    print('still running'); sys.exit(0)
-on = out.rfind(b'\x1b[?1000h')
-tail = out[on:] if on >= 0 else b''
-print(f"on={int(on >= 0)} off={int(b'[?1000l' in tail and b'[?1006l' in tail)}")
+                break
+    os.write(m, send.get(how, b''))
+    if how in ('term', 'hup'):
+        if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':   # named before it is signalled
+            p.send_signal(signal.SIGTERM if how == 'term' else signal.SIGHUP)
+    # EIO once the slave is closed: all output is in, though the process may still be exiting
+    while select.select([m], [], [], 10)[0]:
+        try:
+            chunk = os.read(m, 65536)
+        except OSError:
+            break
+        out += chunk
+    os.close(m)
+    # the slave closing is not the exit: a thread can still be on its way out (#4 flake)
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':
+            p.kill()
+        return 'still running'
+    on = out.rfind(b'\x1b[?1000h')
+    tail = out[on:] if on >= 0 else b''
+    return f"on={int(on >= 0)} off={int(b'[?1000l' in tail and b'[?1006l' in tail)}"
+got = collections.Counter(once(how) for _ in range(runs))
+print(' '.join(k if runs == 1 else f'{n}x {k}' for k, n in sorted(got.items())))
 MXPY
 mxa=$("$TMUX_REAL" -L "$MX" list-panes -F '#{pane_id}' | head -1)
 mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$DIR/bin/cockpit-tui" "$mxa" "$@" 2>&1; }
@@ -10451,6 +10458,10 @@ is "and the action still goes" "paste $mxa" "$(mx tablet action >/dev/null; cat 
 is "pc mode never turns the mouse on" "on=0 off=0" "$(mx pc q)"
 is "the Home tile turns it on in pc mode, and q turns it off" "on=1 off=1" "$(mx pc flip-then-q)"
 mxe=$(COCKPIT_PANEL_MODE=Tablet "$DIR/bin/cockpit-tui" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
+# a signal exit that was read as "still running" 1 run in 30: 50 in a row, both signals
+is "50 SIGTERM exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet term 50)"
+is "50 SIGHUP exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet hup 50)"
+is "and 50 in pc mode never turn it on" "50x on=0 off=0" "$(mx pc term 50)"
 is "a mode that is not auto, pc or tablet is refused" "2 cockpit-tui: COCKPIT_PANEL_MODE is \"Tablet\": use auto, pc or tablet" "$mxr $mxe"
 "$TMUX_REAL" -L "$MX" kill-server >/dev/null 2>&1
 fi
