@@ -615,8 +615,9 @@ fn the_action_file_carries_the_verb_and_a_private_clean_text() {
         verb: "send",
         text: "a\u{1b}[31mb\r\nc\td\u{9b}e\u{7}".into(),
     };
-    write_action(&f, "%7", &a).unwrap();
+    write_action(&f, "%7", "zsh", &a).unwrap();
     assert_eq!(std::fs::read_to_string(&f).unwrap(), "send %7\n");
+    assert_eq!(std::fs::read_to_string(dir.join("act.cmd")).unwrap(), "zsh\n");
     let text = dir.join("act.text");
     assert_eq!(std::fs::read_to_string(&text).unwrap(), "a[31mb\nc\tde");
     assert_eq!(std::fs::metadata(&text).unwrap().permissions().mode() & 0o777, 0o600);
@@ -624,12 +625,12 @@ fn the_action_file_carries_the_verb_and_a_private_clean_text() {
     // somebody else's: the write fails rather than reuse it.
     let (f2, planted) = (dir.join("again"), dir.join("again.text"));
     std::os::unix::fs::symlink(dir.join("elsewhere"), &planted).unwrap();
-    assert!(write_action(&f2, "%7", &a).is_err());
+    assert!(write_action(&f2, "%7", "zsh", &a).is_err());
     assert!(
         !dir.join("elsewhere").exists() && !f2.exists(),
         "nothing followed the link, no action line"
     );
-    assert!(write_action(&f, "%7", &a).is_err(), "an existing text file is refused");
+    assert!(write_action(&f, "%7", "zsh", &a).is_err(), "an existing text file is refused");
     assert_eq!(sanitize("x\u{0}y\u{7f}z\n"), "xyz\n");
     let _ = std::fs::remove_dir_all(&dir);
 }

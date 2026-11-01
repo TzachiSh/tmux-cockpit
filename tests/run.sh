@@ -10130,6 +10130,7 @@ pn_go() {                     # <target-cmd> <draft>  -> PNA target, PNB panel, 
     until_cap "$PN" "$PNB" '*i insert*'
 }
 pn_count() { "$TMUX_REAL" -L "$PN" capture-pane -p -t "$1" | grep -cxF "$2"; }
+pn_cap() { "$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNB" 2>/dev/null; }
 
 printf '<text>panel says hi</text>' > "$PND/reply"
 pn_go 'exec cat' 'say hi' || bad "the panel reaches its result view" "i insert" "$("$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNB")"
@@ -10151,7 +10152,10 @@ is "s, after its confirm, sends the answer and presses Enter" "2" "$(pn_count "$
 # echo, so one paste carrying both lines is visible as one 200~ ... 201~ pair.
 printf '<text>line one\nline two</text>' > "$PND/reply"
 pn_go "printf '\\033[?2004h'; exec cat" 'two lines'
+# cat is not a program known to take a paste whole, so Insert confirms first.
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+until_cap "$PN" "$PNB" '*may run each line*confirm*' || bad "a multi-line insert into cat asks first" "may run each line" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
 pn_gone "$PNB"
 if until_cap "$PN" "$PNA" '*200~line one*line two*201~*'; then
     ok "a multi-line answer arrives as one bracketed paste, its lines in order"
@@ -10172,6 +10176,21 @@ is "and the paste buffer is gone afterwards" "" \
    "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
 is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
 
+# The answer is held while you read it, and the pane can move on meanwhile.
+printf '<text>panel says hi</text>' > "$PND/reply"
+pn_go "sh -c 'cat; exec sleep 300'" 'say hi' || bad "the panel reaches its result view (pane moves on)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNA" C-d
+for i in $(seq 1 "$POLLS"); do
+    [ "$("$TMUX_REAL" -L "$PN" display -p -t "$PNA" '#{pane_current_command}')" = sleep ] && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+pn_gone "$PNB"
+is "a pane that stopped running what was captured gets nothing" "0" "$(pn_count "$PNA" 'panel says hi')"
+case "$(cat "$PND/tui.log" 2>/dev/null)" in *"now runs [sleep], not [sh]; nothing sent"*) ok "and the log says why" ;;
+    *) bad "and the log says why" "now runs [sleep], not [sh]" "$(tail -3 "$PND/tui.log" 2>/dev/null)" ;;
+esac
+
 # The binding: off unless asked for, and the wrapper with the pressed pane when set.
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_panel_key unset binds no panel key" "" \
@@ -10188,7 +10207,14 @@ esac
 # The wrapper's grammar, with a stub binary and a tmux that only records.
 mkdir -p "$PND/p/scripts" "$PND/p/bin" "$PND/rec"
 cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/pargv\n[ "$1" = load-buffer ] && { cat; echo; } >> %s/pargv\nexit 0\n' "$PND" "$PND" > "$PND/rec/tmux"
+# `display -p` answers what the pane runs now, from a file the case sets.
+cat > "$PND/rec/tmux" <<PNREC
+#!/bin/sh
+[ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+printf '%s\n' "\$*" >> "$PND/pargv"
+[ "\$1" = load-buffer ] && { cat; echo; } >> "$PND/pargv"
+exit 0
+PNREC
 # The stub plays an attacker too: a .clean planted beside the action file must
 # never be what gets pasted.
 cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
@@ -10198,12 +10224,14 @@ dir=\${COCKPIT_ACTION%/*}
 printf evil > "\$COCKPIT_ACTION.clean"
 cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
+cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
 exit 0
 PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
 pact() {                      # <action-line> <text> [notext] -> every tmux argv the wrapper produced
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
+    printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
@@ -10217,6 +10245,8 @@ is "a third field pastes nothing" "" "$(pact 'paste %5 x' hi)"
 is "a file planted beside the action file is never pasted" "" "$(pact 'paste %5' '')"
 is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev/null; cat "$PND/dmode")"
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
+is "a pane that runs something else by now gets nothing, and is told why" \
+   "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
 fi

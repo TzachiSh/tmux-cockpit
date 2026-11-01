@@ -37,7 +37,7 @@ fn panel(pane: Option<&str>) {
         eprintln!("cockpit-tui: {} needs COCKPIT_ACTION to carry its text; nothing was sent", act.verb);
         std::process::exit(1);
     };
-    if let Err(e) = app::write_action(std::path::Path::new(&f), pane, &act) {
+    if let Err(e) = app::write_action(std::path::Path::new(&f), pane, &a.cap.cmd, &act) {
         eprintln!("cockpit-tui: cannot write the action: {e}");
         std::process::exit(1);
     }

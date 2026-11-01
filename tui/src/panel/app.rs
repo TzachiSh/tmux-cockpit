@@ -910,7 +910,9 @@ pub fn sanitize(s: &str) -> String {
 
 /// `<path>.text` first, then the action line, so the wrapper never reads a
 /// line whose text is not there yet. Both are created fresh, never followed.
-pub fn write_action(path: &Path, pane: &str, a: &Action) -> std::io::Result<()> {
+/// `<path>.cmd` is the command the pane ran when it was captured, for the
+/// wrapper to check it still runs before the paste lands.
+pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::Result<()> {
     let fresh = |p: &Path, body: &str| -> std::io::Result<()> {
         let mut f = std::fs::OpenOptions::new()
             .write(true)
@@ -921,6 +923,10 @@ pub fn write_action(path: &Path, pane: &str, a: &Action) -> std::io::Result<()> 
         f.write_all(body.as_bytes())
     };
     fresh(Path::new(&format!("{}.text", path.display())), &sanitize(&a.text))?;
+    fresh(
+        Path::new(&format!("{}.cmd", path.display())),
+        &format!("{}\n", sanitize(cmd).replace('\n', " ")),
+    )?;
     fresh(path, &format!("{} {pane}\n", a.verb))
 }
 

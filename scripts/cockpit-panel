@@ -57,6 +57,17 @@ if [ -n "$bad" ]; then
 fi
 
 [ -s "$f.text" ] || exit 0
+# The answer was written for what the pane ran at capture time; a Claude Code
+# that exited since would take the prose as shell input.
+want='' now=''
+read -r want 2>/dev/null < "$f.cmd"
+now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
+if [ -z "$want" ] || [ "$now" != "$want" ]; then
+    tmux display-message -t "$target" "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" 2>/dev/null
+    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-panel: %s now runs [%s], not [%s]; nothing sent\n' "$ts" "$target" "$now" "$want" >> "$LOG"
+    exit 0
+fi
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" | tmux load-buffer -b "$buf" - 2>/dev/null || exit 0
 # -p brackets the paste when the program asked for it; -d drops the buffer after.
