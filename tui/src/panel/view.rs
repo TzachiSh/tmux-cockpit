@@ -102,6 +102,11 @@ fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// A picker's number keys, from its real count.
+fn digits(n: usize) -> String {
+    if n <= 1 { "1".into() } else { format!("1-{}", n.min(9)) }
+}
+
 fn pills(xs: &[(&str, &str)]) -> Vec<(String, String)> {
     xs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
@@ -187,13 +192,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 "",
                 meta,
             ));
-            let n = format!("1-{}", app.tiles().len());
+            let n = digits(app.tiles().len());
             b.footer = pills(&[(&n, "pick"), help, ("esc", "close")]);
         }
         View::Compose => {
             let r = app.write_route();
-            b.head
-                .push(styled(format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]), label));
+            let head = format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]);
+            b.head.push(styled(th.g.trunc(&head, w), label));
             b.lines = many(&format!("{}▏", app.draft), w, "", value);
             // the cursor's line, over the route lines under it
             b.sel = Some((b.lines.len() - 1, b.lines.len()));
@@ -254,9 +259,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 b.lines
                     .push(styled(format!("still working{}", th.g.ellipsis), Style::new().fg(th.needs)));
             }
+            b.more = true;
             b.footer = pills(&[help, ("esc", "cancel")]);
         }
-        View::Question { sel } => {
+        View::Question { sel, scroll } => {
             let Some(r) = run else { return b };
             // in the body, not the head: a long question must not push the options off
             b.lines.extend(many(&r.question, w, "", bold));
@@ -274,10 +280,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.lines.push(plain(""));
             b.lines
                 .extend(many(&format!("question {} of at most {}", r.rounds, r.max), w, "", meta));
-            let n = match r.options.len() {
-                0 | 1 => "1".to_string(),
-                n => format!("1-{}", n.min(4)),
-            };
+            if let Some(s) = scroll {
+                (b.scroll, b.sel) = (*s, None);
+            }
+            b.count = true;
+            let n = digits(r.options.len().min(4));
             b.footer = pills(&[
                 (&n, "pick"),
                 ("o", "other"),
@@ -331,7 +338,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 let note = if s.note.is_empty() { "(run this)" } else { s.note.as_str() };
                 let mut rows = tile(th, i == *sel, i + 1, "", note, "", w);
                 if done.get(i) == Some(&true) {
-                    let mark = format!("  {} sent", th.g.done);
+                    // the verb is known for the step this run resumed on; earlier ones only as done
+                    let what = match app.last_step {
+                        Some((at, "send")) if at == i => "sent",
+                        Some((at, _)) if at == i => "inserted",
+                        _ => "done",
+                    };
+                    let mark = format!("  {} {what}", th.g.done);
                     let last = rows.last_mut().expect("wrap returns a line");
                     if last.width() + mark.width() > w {
                         rows.push(plain("    "));
@@ -366,7 +379,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 Some(s) => format!("Claude Code here {}", s.text()),
                 None => format!("{} {d} {}", app.cap.name, app.cap.cmd),
             };
-            b.head.push(styled("what do you want to know?", bold));
+            b.head.push(styled(th.g.trunc("what do you want to know?", w), bold));
             b.head.extend(many(&what, w, "", meta));
             b.head.push(plain(""));
             let words = "In your own words";
@@ -376,7 +389,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                     b.sel = Some(t);
                 }
             }
-            let n = format!("1-{}", QUICK.len() + 1);
+            let n = digits(QUICK.len() + 1);
             b.footer = pills(&[(&n, "pick"), ("↵", "ask"), help, ("esc", "home")]);
         }
         View::Answer { scroll, armed } => {
@@ -448,6 +461,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 b.lines.push(plain(""));
                 b.lines.extend(many(h, w, "", value));
             }
+            b.more = true;
             b.footer = pills(&[("r", "retry"), help, ("esc", "back")]);
         }
     }
@@ -543,8 +557,8 @@ fn named(v: Option<&View>) -> &'static str {
 
 /// Every key of the view on screen, `(keys, what)`, for the `?` overlay. Each
 /// esc row names where it goes, so the way back to home reads off the chain.
-pub fn keys(app: &App) -> Vec<(&'static str, String)> {
-    let s = |k: &'static str, v: &str| (k, v.to_string());
+pub fn keys(app: &App) -> Vec<(String, String)> {
+    let s = |k: &str, v: &str| (k.to_string(), v.to_string());
     let left = match app.leave_to() {
         "home" => "back to home".to_string(),
         x => format!("back to the {x}"),
@@ -557,7 +571,7 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
         View::Home { .. } => vec![
             move_,
             s("↵", "open the selected tile"),
-            s("1-9", "open a tile by number"),
+            s(&digits(app.tiles().len()), "open a tile by number"),
             help,
             s("esc q ^C", "close the panel"),
         ],
@@ -568,7 +582,7 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
             s("⇥", "next output type"),
             s("^N", "next model"),
             s("↵", "new line"),
-            s("^W ^U", "delete a word, the box"),
+            s("⌫ ^W ^U", "delete a char, a word, all"),
             s("F1", "this help"),
             s("esc", "back to home"),
             s("^C", "close the panel"),
@@ -581,17 +595,18 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
         View::Question { .. } => vec![
             move_,
             s("↵", "answer the selected option"),
-            s("1-4", "answer by number"),
+            s(&digits(app.run.as_ref().map_or(0, |r| r.options.len()).min(4)), "answer by number"),
             s("o", "type your own answer"),
             s("g", "let Claude guess"),
             s("⌫ ←", "the previous question"),
+            s("PgUp PgDn", "scroll the question"),
             help,
             s("esc", &left),
             quit,
         ],
         View::Input { back, .. } => vec![
             s("↵", "send"),
-            s("^W ^U", "delete a word, the box"),
+            s("⌫ ^W ^U", "delete a char, a word, all"),
             s("F1", "this help"),
             s("esc", &format!("back to {}", named(Some(back)))),
             s("^C", "close the panel"),
@@ -607,9 +622,9 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
             s("esc", &left),
             quit,
         ],
-        View::Steps { .. } => vec![
+        View::Steps { items, .. } => vec![
             s("↑↓ j k", "pick a step"),
-            s("1-9", "pick a step by number"),
+            s(&digits(items.len()), "pick a step by number"),
             s("i", "insert the step, no Enter"),
             s("s", "send the step with Enter"),
             s("r", "ask again"),
@@ -620,7 +635,7 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
         View::ExplainAsk { .. } => vec![
             move_,
             s("↵", "ask the selected question"),
-            s("1-5", "ask by number, 5 in your words"),
+            s(&digits(QUICK.len() + 1), "ask by number, 5 in your words"),
             help,
             s("esc", "back to home"),
             quit,
@@ -669,10 +684,11 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usi
     let close = if top > 0 || last < ks.len() {
         let n = format!(" {}-{last} of {} ", top + 1, ks.len());
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
-        " ↑↓ scroll  any other key closes "
+        "↑↓ scroll  any other key closes"
     } else {
-        " any key closes "
+        "any key closes"
     };
+    let close = format!(" {} ", th.g.trunc(close, (area.width as usize).saturating_sub(4)));
     block = block.title_bottom(Line::from(Span::styled(close, Style::new().fg(th.meta))));
     let inner = block.inner(area);
     let inner = Rect {
@@ -831,7 +847,7 @@ pub fn run(app: &mut App) {
         if drawn.is_err() {
             break;
         }
-        app.tiny = tiny;
+        app.shrunk(tiny);
         // the floor message shows no body: fitting to it would lose the scroll
         if !tiny {
             app.fit(page.0, page.1);

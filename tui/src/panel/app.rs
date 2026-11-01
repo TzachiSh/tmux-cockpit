@@ -68,6 +68,8 @@ pub enum View {
     Busy,
     Question {
         sel: usize,
+        /// `None` follows the selection; PgUp lets the question's start be read.
+        scroll: Option<usize>,
     },
     Input {
         kind: InputKind,
@@ -196,6 +198,8 @@ pub struct App {
     /// Set with an action taken from Steps: what `<action>.state` carries.
     pub resume: Option<Resume>,
     pub quit: bool,
+    /// The step this run was resumed for, and its verb: the mark says what was done.
+    pub last_step: Option<(usize, &'static str)>,
     /// Body rows on screen and the furthest scroll, from the last frame.
     pub room: usize,
     pub bottom: usize,
@@ -231,6 +235,7 @@ impl App {
             resume: None,
             reopened: false,
             quit: false,
+            last_step: None,
             room: 0,
             bottom: 0,
             help: None,
@@ -255,6 +260,7 @@ impl App {
         match last.strip_prefix("failed:") {
             None if last == "ok" => {
                 done[sel] = true;
+                self.last_step = Some((sel, verb));
                 let what = if verb == "send" { "sent" } else { "inserted" };
                 self.say(Level::Info, format!("step {n} {what}"));
                 if let Some(next) = (sel + 1..items.len()).find(|&i| !done[i] && !items[i].cmd.is_empty()) {
@@ -357,8 +363,9 @@ impl App {
             return;
         }
         // esc and q act as on the view under the card, so nothing is lost unasked;
-        // a key whose effect nobody can see is dropped
-        if self.tiny && !matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
+        // a key whose effect nobody can see is dropped, q typed into a box too
+        let boxed = matches!(self.view, View::Compose | View::Input { .. });
+        if self.tiny && !(k.code == KeyCode::Esc || (k.code == KeyCode::Char('q') && !boxed)) {
             return;
         }
         // q in a confirm is "no" and on an answer is esc: a reflex q must not lose the answer
@@ -370,7 +377,6 @@ impl App {
             return self.exit();
         }
         // `?` is text in a box, so F1 opens the overlay everywhere
-        let boxed = matches!(self.view, View::Compose | View::Input { .. });
         if k.code == KeyCode::F(1) || (!boxed && k.code == KeyCode::Char('?')) {
             self.help = Some(0);
             return;
@@ -384,7 +390,7 @@ impl App {
                     self.cancel();
                 }
             }
-            View::Question { sel } => self.question_key(k, *sel),
+            View::Question { sel, scroll } => self.question_key(k, *sel, *scroll),
             View::ExplainAsk { sel } => self.explain_ask_key(k, *sel),
             View::Answer { scroll, armed } => self.answer_key(k, *scroll, *armed),
             View::Input { .. } | View::Result { .. } | View::Steps { .. } | View::Confirm { .. } => {
@@ -416,6 +422,9 @@ impl App {
     /// A bracketed paste: the Compose box takes it whole, a one-line box joins
     /// its lines with spaces. Anywhere else it is dropped, never read as keys.
     pub fn paste(&mut self, s: &str) {
+        if self.tiny {
+            return;
+        }
         let dropped = match &mut self.view {
             View::Compose => append(&mut self.draft, &pasted(s, true)),
             View::Input { text, .. } => append(text, &pasted(s, false)),
@@ -434,6 +443,18 @@ impl App {
         }
         if let View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } = &mut self.view {
             *scroll = (*scroll).min(self.bottom);
+        }
+        if let View::Question { scroll: Some(s), .. } = &mut self.view {
+            *s = (*s).min(self.bottom);
+        }
+    }
+
+    /// The last frame's size against the floor. The card hides the overlay, so it
+    /// closes: the card's esc must go back, not close what nobody can see.
+    pub fn shrunk(&mut self, tiny: bool) {
+        self.tiny = tiny;
+        if tiny {
+            self.help = None;
         }
     }
 
@@ -879,7 +900,7 @@ impl App {
         r.qstack.push((text.clone(), options.clone(), r.turns.clone()));
         r.question = text;
         r.options = options;
-        self.view = View::Question { sel: 0 };
+        self.view = View::Question { sel: 0, scroll: None };
     }
 
     fn pick(&mut self, answer: String) {
@@ -892,7 +913,7 @@ impl App {
             text: answer,
         });
         r.pending_turn = true;
-        self.busy(View::Question { sel: 0 });
+        self.busy(View::Question { sel: 0, scroll: None });
     }
 
     /// Where [`App::leave`] goes, named for the footer and the `?` overlay.
@@ -928,18 +949,30 @@ impl App {
         }
     }
 
-    fn question_key(&mut self, k: KeyEvent, sel: usize) {
+    fn question_key(&mut self, k: KeyEvent, sel: usize, scroll: Option<usize>) {
         let n = self.run.as_ref().map_or(0, |r| r.options.len());
+        let page = self.room.saturating_sub(1).max(1);
         match k.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.view = View::Question {
                     sel: sel.saturating_sub(1),
+                    scroll: None,
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 self.view = View::Question {
                     sel: (sel + 1).min(n.saturating_sub(1)),
+                    scroll: None,
                 }
+            }
+            // from the selection, PgUp goes to the question's start: it is what was cut
+            KeyCode::PageUp => {
+                let scroll = Some(scroll.map_or(0, |s| s.saturating_sub(page)));
+                self.view = View::Question { sel, scroll }
+            }
+            KeyCode::PageDown => {
+                let scroll = scroll.map(|s| (s + page).min(self.bottom));
+                self.view = View::Question { sel, scroll }
             }
             KeyCode::Char(c @ '1'..='4') if (c as usize - '1' as usize) < n => self.pick_option(c as usize - '1' as usize),
             KeyCode::Enter if n > 0 => self.pick_option(sel.min(n - 1)),
@@ -947,7 +980,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::Other,
                     text: String::new(),
-                    back: Box::new(View::Question { sel }),
+                    back: Box::new(View::Question { sel, scroll: None }),
                 }
             }
             KeyCode::Char('g') => {
@@ -979,7 +1012,7 @@ impl App {
                 r.options = opts;
                 r.turns = turns;
                 r.rounds = r.qstack.len();
-                self.view = View::Question { sel: 0 };
+                self.view = View::Question { sel: 0, scroll: None };
             }
             None => self.leave(),
         }

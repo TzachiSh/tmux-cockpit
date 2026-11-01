@@ -1,6 +1,6 @@
 "╭ keys ────────────────────────────────╮"
 "│ ↑↓ j k  pick a step                  │"
-"│ 1-9     pick a step by number        │"
+"│ 1-3     pick a step by number        │"
 "│ i       insert the step, no Enter    │"
 "│ s       send the step with Enter     │"
 "│ r       ask again                    │"

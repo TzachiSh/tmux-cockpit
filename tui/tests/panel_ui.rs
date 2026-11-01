@@ -359,7 +359,7 @@ fn write_asks_at_most_three_rounds() {
     writing(&mut a, "do it");
     for n in 1..=3 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '1');
         let (_, prompt, _) = a.request_parts().unwrap();
         assert!(prompt.contains(&format!("<questions_left>{}</questions_left>", 3 - n)), "{prompt}");
@@ -400,7 +400,7 @@ fn fix_never_asks_and_explain_asks_six_times() {
     ch(&mut a, '1');
     for n in 1..=6 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '2');
     }
     a.reply(Ok(q(7)));
@@ -1327,7 +1327,10 @@ fn a_resume_marks_the_step_and_moves_to_the_next_command() {
     };
     assert_eq!((*sel, done.clone()), (2, vec![true, false, false]), "the tap step is skipped");
     assert_eq!((note(&b), level(&b)), (Some("step 1 inserted"), Some(Level::Info)));
-    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent"));
+    assert!(
+        frame(&b, 80, 20, 0).contains("update  ✓ inserted"),
+        "the mark says what the note says"
+    );
 
     let mut b = app("w", "bash", "$ ");
     b.resumed("bash".into(), r.clone(), "failed:the pane now runs vim, not bash\u{1b}[2J");
@@ -1670,7 +1673,7 @@ fn help_lists_every_key_of_the_view_and_any_key_closes_it() {
     assert_eq!(a.help, Some(0));
     let f = shown(&mut a, 60, 16);
     for k in [
-        "1-9",
+        "1-3",
         "pick a step by number",
         "send the step with Enter",
         "back to the draft",
@@ -1837,4 +1840,150 @@ fn arming_esc_at_the_bottom_keeps_the_last_line() {
         f.contains("run the last step"),
         "the note takes a row from the top, not the end:\n{f}"
     );
+}
+
+// ---------------------------------------------------------------- verifier round
+
+#[test]
+fn under_the_floor_q_in_a_box_is_dropped_not_typed() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert_eq!((a.draft.as_str(), a.quit), ("", false), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert!(matches!(&a.view, View::Input { text, .. } if text.is_empty()) && !a.quit, "input");
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::ExplainAsk { .. }), "esc still goes back from a box");
+}
+
+#[test]
+fn under_the_floor_a_paste_is_dropped() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    a.paste("rm -rf ~");
+    assert_eq!(a.draft, "");
+    a.tiny = false;
+    a.paste("ls");
+    assert_eq!(a.draft, "ls");
+}
+
+#[test]
+fn going_under_the_floor_closes_the_overlay() {
+    let mut a = explained();
+    ch(&mut a, '?');
+    assert!(a.help.is_some());
+    a.shrunk(true);
+    assert_eq!(a.help, None);
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }),
+        "the card's esc goes back, it arms"
+    );
+}
+
+fn long_question() -> App {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    let long = (1..=12).map(|i| format!("part{i}")).collect::<Vec<_>>().join(" ");
+    a.reply(Ok(format!(
+        "<question>START {long}</question><option>first</option><option>second</option>"
+    )));
+    a
+}
+
+#[test]
+fn a_long_question_shows_its_position_and_scrolls_to_its_start() {
+    let mut a = long_question();
+    let f = shown(&mut a, 30, 7);
+    assert!(
+        f.contains("▎1   first") && !f.contains("START") && f.contains(" of "),
+        "options and a count:\n{f}"
+    );
+    key(&mut a, KeyCode::PageUp);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("START") && f.contains(" 1-"), "PgUp reads the start:\n{f}");
+    key(&mut a, KeyCode::Down);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎2   second"), "a move follows the selection again:\n{f}");
+}
+
+#[test]
+fn heads_and_the_overlay_footer_end_in_an_ellipsis_when_cut() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    let f = shown(&mut a, 28, 12);
+    assert!(f.contains("│ type: command   model: … │"), "{f}");
+    let a = asking();
+    let f = frame(&a, 28, 12, 0);
+    assert!(f.contains("│ what do you want to kno… │"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 28, 8);
+    let last = f.lines().last().unwrap();
+    assert!(last.contains("any other ke… ╯"), "{last}");
+}
+
+#[test]
+fn a_cut_error_or_busy_says_how_much_is_left() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("word ".repeat(80))));
+    let f = shown(&mut a, 30, 8);
+    assert!(f.contains("more lines"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.timeout = Duration::from_secs(120);
+    let f = frame(&a, 30, 8, 400);
+    assert!(f.contains("more line"), "{f}");
+}
+
+#[test]
+fn the_overlay_lists_backspace_and_real_digit_ranges() {
+    let mut a = app("w", "htop", "$ ");
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && !f.contains("1-9"), "three tiles:\n{f}");
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "input");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>a</option><option>b</option><option>c</option>".into(),
+    ));
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && f.contains("answer by number"), "{f}");
+}
+
+#[test]
+fn a_resumed_step_says_inserted_or_sent_in_both_tiers() {
+    let mut a = stepped();
+    ch(&mut a, 's');
+    ch(&mut a, 'y');
+    let r = resume_of(&a);
+    assert_eq!(r.verb, "send");
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r, "ok");
+    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent") && note(&b) == Some("step 1 sent"));
+    let mut th = Theme::fixed();
+    th.g = cockpit_tui::theme::Glyphs::ascii();
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} sent", th.g.done)));
+
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} inserted", th.g.done)));
 }
