@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
 pub const OUT_CYCLE: [OutType; 7] = [
@@ -100,6 +100,8 @@ pub enum View {
     },
     Error {
         line: String,
+        /// One line on what to do about it, when the failure is a known one.
+        hint: Option<String>,
     },
 }
 
@@ -158,6 +160,8 @@ pub struct App {
     pub pending: bool,
     pub req: Option<Request>,
     pub started: Option<Instant>,
+    /// The call's limit, from [`Call`] at launch; zero until a call goes out.
+    pub timeout: Duration,
     pub busy_back: Option<View>,
     pub note: Option<Note>,
     /// Counts [`App::say`] calls, so a key can tell a note it set from an old one.
@@ -183,6 +187,7 @@ impl App {
             pending: false,
             req: None,
             started: None,
+            timeout: Duration::ZERO,
             busy_back: None,
             note: None,
             said: 0,
@@ -561,6 +566,7 @@ impl App {
             return;
         }
         if let Some((system, prompt, model)) = self.request_parts() {
+            self.timeout = call.timeout;
             self.req = Some(Request::spawn(call, &system, &prompt, &model));
             self.started = Some(Instant::now());
         }
@@ -612,9 +618,18 @@ impl App {
         let out = match a {
             Ok(o) => o,
             Err(f) => {
-                let line: String = f.to_string().chars().take(80).collect();
+                eprintln!("cockpit-tui: claude failed: {f}");
+                let line = match f {
+                    Fail::Timeout if !self.timeout.is_zero() => format!("claude took longer than {} s", self.timeout.as_secs()),
+                    _ => {
+                        let t = f.to_string();
+                        let cut = if t.chars().count() > 160 { "..." } else { "" };
+                        format!("claude failed: {}{cut}", t.chars().take(160).collect::<String>())
+                    }
+                };
                 self.view = View::Error {
-                    line: format!("claude failed: {line}"),
+                    line,
+                    hint: hint(&f).map(String::from),
                 };
                 return;
             }
@@ -644,6 +659,7 @@ impl App {
             Reply::Question { text, .. } => {
                 self.view = View::Error {
                     line: format!("no questions left, and Claude still asks: {text}"),
+                    hint: Some("esc goes back: add what it asks to the draft and write again".into()),
                 };
             }
             Reply::Answer { text, ready } => self.answer(out.trim().into(), text, ready),
@@ -674,8 +690,10 @@ impl App {
             }
             Reply::Untagged(t) => self.result("Result (unlabelled)", t),
             Reply::Unsupported(tag) => {
+                eprintln!("cockpit-tui: claude answered with <{tag}>");
                 self.view = View::Error {
-                    line: format!("claude failed: claude answered with <{tag}>: file edits are not supported yet"),
+                    line: "file edits are not supported in the panel".into(),
+                    hint: Some("ask for a command or a prompt for Claude Code instead, or r retries".into()),
                 };
             }
         }
@@ -1066,6 +1084,24 @@ fn pasted(s: &str, multi: bool) -> String {
 
 pub fn bracketed_ok(cmd: &str) -> bool {
     BRACKETED_OK.contains(&cmd) || SSH_LIKE.contains(&cmd)
+}
+
+/// What to do about a failure the panel knows; claude's own words stay on the line above.
+pub fn hint(f: &Fail) -> Option<&'static str> {
+    let t = match f {
+        Fail::Timeout => return Some("r retries; COCKPIT_PANEL_TIMEOUT=<seconds> gives it longer"),
+        Fail::Failed(t) => t.to_ascii_lowercase(),
+    };
+    let has = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
+    if has(&["not logged in", "/login", "invalid api key", "authentication", "oauth"]) {
+        Some("log in: run claude in a terminal and use /login, then r retries")
+    } else if has(&["rate limit", "rate_limit", "usage limit", "429", "overloaded"]) {
+        Some("a usage or rate limit: wait a minute, then r retries")
+    } else if !t.starts_with("cannot write") && t.contains("(os error 2)") {
+        Some("claude is not installed here: install Claude Code, or set COCKPIT_CLAUDE to its path")
+    } else {
+        None
+    }
 }
 
 /// A send that runs something risky, or more than one line, wants a `y`: an

@@ -310,8 +310,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 "↵ y confirm  ↑↓ scroll  esc n cancel".into()
             };
         }
-        View::Error { line } => {
+        View::Error { line, hint } => {
             b.lines = many(line, w, "", Style::new().fg(th.error));
+            if let Some(h) = hint {
+                b.lines.push(plain(""));
+                b.lines.extend(many(h, w, "", value));
+            }
             b.footer = "r retry  esc back".into();
         }
     }

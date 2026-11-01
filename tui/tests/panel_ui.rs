@@ -331,11 +331,10 @@ fn write_asks_at_most_three_rounds() {
         assert!(prompt.contains(&format!("<turn role=\"user\">a{n}</turn>")));
     }
     a.reply(Ok(q(4)));
-    assert_eq!(
-        a.view,
-        View::Error {
-            line: "no questions left, and Claude still asks: Q4?".into()
-        }
+    assert!(
+        matches!(&a.view, View::Error { line, hint: Some(_) } if line == "no questions left, and Claude still asks: Q4?"),
+        "{:?}",
+        a.view
     );
 }
 
@@ -347,7 +346,7 @@ fn fix_never_asks_and_explain_asks_six_times() {
     ctrl(&mut a, 'f');
     a.reply(Ok(q(1)));
     assert!(
-        matches!(&a.view, View::Error { line } if line.contains("Claude still asks: Q1?")),
+        matches!(&a.view, View::Error { line, .. } if line.contains("Claude still asks: Q1?")),
         "{:?}",
         a.view
     );
@@ -466,16 +465,19 @@ fn a_failure_shows_one_line_and_retries_or_goes_back() {
     assert_eq!(
         a.view,
         View::Error {
-            line: format!("claude failed: {}", "e".repeat(80))
+            line: format!("claude failed: {}...", "e".repeat(160)),
+            hint: None,
         }
     );
     ch(&mut a, 'r');
     assert_eq!((a.view.clone(), a.pending), (View::Busy, true));
+    a.timeout = Duration::from_secs(120);
     a.reply(Err(cockpit_tui::panel::request::Fail::Timeout));
     assert_eq!(
         a.view,
         View::Error {
-            line: "claude failed: took too long".into()
+            line: "claude took longer than 120 s".into(),
+            hint: Some("r retries; COCKPIT_PANEL_TIMEOUT=<seconds> gives it longer".into()),
         }
     );
     key(&mut a, KeyCode::Esc);
@@ -1122,4 +1124,56 @@ fn a_note_shows_its_glyph_in_both_tiers() {
         th.g = cockpit_tui::theme::Glyphs::ascii();
         assert!(framed(&a, 60, 10, &th, 0).0.contains(asc), "{lv:?} ascii");
     }
+}
+
+#[test]
+fn a_known_failure_says_what_to_do() {
+    use cockpit_tui::panel::app::hint;
+    use cockpit_tui::panel::request::Fail::{Failed, Timeout};
+    for (f, want) in [
+        (Failed("Error: not logged in · run claude /login".into()), Some("log in")),
+        (Failed("Invalid API key · Please run /login".into()), Some("log in")),
+        (Failed("API Error: 429 rate_limit_error".into()), Some("rate limit")),
+        (Failed("Claude AI usage limit reached|1767225600".into()), Some("rate limit")),
+        (Failed("API Error: 529 Overloaded".into()), Some("rate limit")),
+        (
+            Failed("claude: No such file or directory (os error 2)".into()),
+            Some("not installed"),
+        ),
+        (
+            Failed("cannot write the system prompt: No such file or directory (os error 2)".into()),
+            None,
+        ),
+        (Timeout, Some("COCKPIT_PANEL_TIMEOUT")),
+        (Failed("Error: something else".into()), None),
+    ] {
+        let got = hint(&f);
+        match want {
+            Some(w) => assert!(got.is_some_and(|g| g.contains(w)), "{f:?}: {got:?}"),
+            None => assert_eq!(got, None, "{f:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_file_edit_is_unsupported_without_blaming_claude() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<edit path=\"a\">x</edit>".into()));
+    let View::Error { line, hint } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(line, "file edits are not supported in the panel");
+    assert!(hint.is_some());
+}
+
+#[test]
+fn golden_error_long_wraps() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed(format!(
+        "API Error: 429 {{\"type\":\"error\",\"error\":{{\"type\":\"rate_limit_error\",\"message\":\"{}\"}}}}",
+        "This request would exceed the rate limit for your organization. ".repeat(2)
+    ))));
+    goldens("error-long", &a, 0);
 }
