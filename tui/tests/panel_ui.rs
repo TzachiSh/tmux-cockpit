@@ -475,6 +475,55 @@ fn a_result_inserts_sends_after_a_confirm_or_goes_back_to_compose() {
 }
 
 #[test]
+fn a_multi_line_insert_where_lines_may_run_asks_first() {
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    ch(&mut a, 'i');
+    let View::Confirm { warn, send, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert!(!*send && warn[0].contains("may run each line"), "{warn:?}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.action,
+        Some(Action {
+            verb: "paste",
+            text: "one\ntwo".into()
+        })
+    );
+
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<steps><step><note>n</note><cmd>a = 1\nb = 2</cmd></step></steps>".into()));
+    ch(&mut a, 'i');
+    assert!(matches!(&a.view, View::Confirm { send: false, .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Steps { .. }));
+
+    let mut a = app("py", "python3", ">>> ");
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Compose).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    typ(&mut a, "x = 1\ny = 2");
+    ctrl(&mut a, 't');
+    assert!(matches!(&a.view, View::Confirm { send: false, .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Compose);
+    typ(&mut a, "");
+    ctrl(&mut a, 'u');
+    typ(&mut a, "one line");
+    ctrl(&mut a, 't');
+    assert_eq!(
+        a.action,
+        Some(Action {
+            verb: "paste",
+            text: "one line".into()
+        }),
+        "one line needs no confirm"
+    );
+}
+
+#[test]
 fn a_risky_step_is_flagged_before_it_runs() {
     let mut a = app("w", "bash", "$ ");
     writing(&mut a, "x");

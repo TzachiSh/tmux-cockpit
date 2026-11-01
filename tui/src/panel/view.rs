@@ -219,6 +219,9 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                         b.lines.extend(many(c, w, "     $ ", value));
                     }
                 }
+                if let Some(x) = app.line_warning(&s.cmd) {
+                    b.lines.push(styled(format!("     {x}"), Style::new().fg(th.error)));
+                }
                 if let Some(r) = risky(&s.cmd) {
                     let mark = if ascii(th) { "!" } else { "⚠" };
                     b.lines.push(styled(format!("     {mark} risky: {r}"), Style::new().fg(th.error)));

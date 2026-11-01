@@ -992,9 +992,10 @@ the answer back into it. It is a port of type-panel. It runs with
   the answer ends with that message, ready to insert or send.
 - Claude may ask up to 3 multiple-choice questions first (6 for Explain):
   `1`-`4` picks, `o` types your own answer, `g` tells it to guess.
-- On a result, `i` inserts it into the pane as one bracketed paste without
-  Enter, and `s` sends it with Enter after a confirm. The confirm flags a
-  multi-line paste into a program that may run each line, and risky
+- On a result, `i` inserts it into the pane without Enter, and `s` sends it
+  with Enter after a confirm. The paste is bracketed only when the program
+  asked for that, so a multi-line insert into a program that may run each
+  line (python3, sh, psql) asks first too. The confirm also flags risky
   commands such as `rm` or `sudo`.
 
 Secrets on the screen are blanked before anything is sent. The key is off

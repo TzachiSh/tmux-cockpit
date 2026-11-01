@@ -256,6 +256,22 @@ impl App {
         self.quit = true;
     }
 
+    /// A paste is only bracketed when the program asked for it, so a multi-line
+    /// insert into anything else can run line one: that goes through a confirm.
+    fn insert(&mut self, text: String, back: View) {
+        if self.line_warning(&text).is_some() {
+            let warn = self.warnings(&text);
+            self.view = View::Confirm {
+                text,
+                send: false,
+                warn,
+                back: Box::new(back),
+            };
+        } else {
+            self.act("paste", text);
+        }
+    }
+
     fn act(&mut self, verb: &'static str, text: String) {
         self.action = Some(Action { verb, text });
         self.exit();
@@ -305,7 +321,7 @@ impl App {
                 if self.draft.trim().is_empty() {
                     self.note = Some("nothing to insert yet".into());
                 } else {
-                    self.act("paste", self.draft.clone());
+                    self.insert(self.draft.clone(), View::Compose);
                 }
             }
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
@@ -697,7 +713,14 @@ impl App {
                     scroll: scroll + 10,
                 }
             }
-            KeyCode::Char('i') => self.act("paste", text),
+            KeyCode::Char('i') => {
+                let back = View::Result {
+                    label,
+                    text: text.clone(),
+                    scroll,
+                };
+                self.insert(text, back);
+            }
             KeyCode::Char('s') => {
                 let warn = self.warnings(&text);
                 let back = Box::new(View::Result {
@@ -752,7 +775,7 @@ impl App {
                 if cmd.is_empty() {
                     self.note = Some("this step is done outside the terminal".into());
                 } else if c == 'i' {
-                    self.act("paste", cmd);
+                    self.insert(cmd, here(sel));
                 } else {
                     let warn = self.warnings(&cmd);
                     self.view = View::Confirm {
