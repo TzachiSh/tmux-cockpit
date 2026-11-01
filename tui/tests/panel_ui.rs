@@ -1604,27 +1604,43 @@ fn golden_small() {
 }
 
 #[test]
-fn under_the_floor_only_esc_q_and_ctrl_c_act() {
+fn under_the_floor_esc_and_q_act_as_on_the_view_underneath() {
     let mut a = app("w", "zsh", "$ ");
     ch(&mut a, '2');
+    typ(&mut a, "keep me");
     a.tiny = true;
-    typ(&mut a, "hi");
+    ch(&mut a, 'x');
     ctrl(&mut a, 's');
     assert_eq!(
-        (a.view.clone(), a.draft.as_str(), a.quit),
-        (View::Compose, "", false),
+        (a.view.clone(), a.draft.as_str()),
+        (View::Compose, "keep me"),
         "unseen keys are dropped"
     );
     key(&mut a, KeyCode::Esc);
-    assert!(a.quit && a.action.is_none(), "esc closes, as the message says");
+    assert_eq!(
+        (a.view.clone(), a.draft.as_str(), a.quit),
+        (View::Home { sel: 0 }, "keep me", false),
+        "esc goes home"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(a.quit && a.action.is_none(), "only Home closes");
+
+    let mut a = explained();
+    a.tiny = true;
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && a.run.is_some(),
+        "an answer arms first"
+    );
     let mut a = explained();
     a.tiny = true;
     ch(&mut a, 'q');
-    assert!(a.quit, "q closes, even where q is otherwise esc");
-    let mut a = explained();
-    a.tiny = true;
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && !a.quit,
+        "q is esc on an answer"
+    );
     ctrl(&mut a, 'c');
-    assert!(a.quit);
+    assert!(a.quit, "^C is the hard quit");
 }
 
 #[test]
@@ -1697,6 +1713,21 @@ fn a_short_help_scrolls() {
     assert!(f.contains("4-10 of 10") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
+}
+
+#[test]
+fn an_overscrolled_help_moves_back_at_once() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    shown(&mut a, 40, 9);
+    for _ in 0..20 {
+        key(&mut a, KeyCode::Down);
+        shown(&mut a, 40, 9);
+    }
+    assert_eq!(a.help, Some(3), "10 keys in 7 rows: 3 is the last offset");
+    key(&mut a, KeyCode::Up);
+    assert!(shown(&mut a, 40, 9).contains("3-9 of 10"), "the first Up moves");
 }
 
 #[test]

@@ -523,7 +523,7 @@ fn small(f: &mut Frame, area: Rect, th: &Theme) {
     f.render_widget(block, area);
     let w = inner.width as usize;
     let mut lines = many("make the window larger or rotate", w, "", Style::new().fg(th.needs));
-    lines.extend(many("esc closes", w, "", Style::new().fg(th.meta)));
+    lines.extend(many("esc goes back", w, "", Style::new().fg(th.meta)));
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -655,9 +655,10 @@ pub fn keys(app: &App) -> Vec<(&'static str, String)> {
 
 /// The `?` overlay over the whole panel: the popup is small enough that a
 /// card inside it would clip the very rows it exists to show.
-fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) {
+/// Returns the key count and rows, for [`App::fit`] to clamp the scroll by.
+fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usize, usize) {
     let ks = keys(app);
-    let rows = (area.height as usize).saturating_sub(2);
+    let (total, rows) = (ks.len(), (area.height as usize).saturating_sub(2));
     let top = top.min(ks.len().saturating_sub(rows));
     let mut block = Block::new()
         .borders(Borders::ALL)
@@ -694,10 +695,11 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), inner);
+    (total, rows)
 }
 
 /// `tick` is tenths of a second since the call went out, so a golden never reads
-/// the clock. Returns the body's line count and rows, for [`App::fit`].
+/// the clock. Returns the line count and rows, for [`App::fit`]: the overlay's while open.
 pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (usize, usize) {
     if too_small(area) {
         small(f, area, th);
@@ -763,7 +765,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
     }
     f.render_widget(Paragraph::new(lines), inner);
     if let Some(top) = app.help {
-        overlay(f, area, app, th, top);
+        return overlay(f, area, app, th, top);
     }
     (total, room)
 }

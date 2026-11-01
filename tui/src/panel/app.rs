@@ -199,8 +199,8 @@ pub struct App {
     /// Body rows on screen and the furthest scroll, from the last frame.
     pub room: usize,
     pub bottom: usize,
-    /// The `?` overlay's first row while it is open: arrows scroll it, any
-    /// other key only closes it.
+    /// The `?` overlay's first row while open, measured by [`App::fit`]: arrows
+    /// scroll it, any other key only closes it.
     pub help: Option<usize>,
     /// The last frame was under the panel's floor: only esc, q and ^C act.
     pub tiny: bool,
@@ -349,19 +349,16 @@ impl App {
             return self.exit();
         }
         if let Some(top) = self.help.take() {
-            let last = super::view::keys(self).len().saturating_sub(1);
             self.help = match k.code {
                 KeyCode::Up | KeyCode::Char('k') => Some(top.saturating_sub(1)),
-                KeyCode::Down | KeyCode::Char('j') => Some((top + 1).min(last)),
+                KeyCode::Down | KeyCode::Char('j') => Some((top + 1).min(self.bottom)),
                 _ => None,
             };
             return;
         }
-        // the floor message says esc closes; a key nobody can see act is dropped
-        if self.tiny {
-            if matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
-                self.exit();
-            }
+        // esc and q act as on the view under the card, so nothing is lost unasked;
+        // a key whose effect nobody can see is dropped
+        if self.tiny && !matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
             return;
         }
         // q in a confirm is "no" and on an answer is esc: a reflex q must not lose the answer
@@ -432,6 +429,9 @@ impl App {
     pub fn fit(&mut self, total: usize, room: usize) {
         self.room = room;
         self.bottom = total.saturating_sub(room);
+        if let Some(top) = &mut self.help {
+            return *top = (*top).min(self.bottom);
+        }
         if let View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } = &mut self.view {
             *scroll = (*scroll).min(self.bottom);
         }
