@@ -1,14 +1,13 @@
 #!/bin/bash
 # review-gate: the second Stop hook beside `agent-state done`. Hands over a review
-# or side-fix result queued while the agent was busy, and flags the pane ◆ when its
-# diff is unreviewed.  --pretool: PreToolUse guard while a side fixer is alive.
+# queued while the agent was busy, and flags the pane ◆ when its diff is unreviewed.
 #   --concede <line>: end the agent's next turn, giving up the active /goal (#52).
 # Fail-open everywhere: a hook must never block the agent that fired it.
 set -u
 pane=${TMUX_PANE:-}
 state="${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/review"
 # Pane ids are per-server, so the socket joins the key (#88). Prefix-free encoding,
-# no fork. Duplicated in tmux-fixer, which writes the fixer- marker this reads.
+# no fork.
 srv=${TMUX:-}; srv=${srv%%,*}; srv=${srv//_/__}; key="${srv//\//_.}-${pane#%}"
 
 # --- --concede: /goal rewakes on every unmet Stop with no cap or way out ---------
@@ -29,13 +28,11 @@ case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
-# shellcheck source=lib/fixer.sh
-. "${d%/*}/lib/fixer.sh" 2>/dev/null || exit 0
 
 # shellcheck disable=SC2329  # called by read_payload
 have_fields() {
     case $payload in
-        *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*|*'"tool_input"'*) return 0 ;;
+        *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*) return 0 ;;
     esac
     return 1
 }
@@ -56,23 +53,6 @@ json() {                            # <text> -> the JSON string body
     printf '%s' "${s//[$'\001'-$'\037']/}"
 }
 
-# --- --pretool: the gate (PreToolUse, matcher Bash) ----------------------------
-# Fires on every Bash call, so with no side fixer it must cost one stat and no fork.
-# A deny ends the turn, so the agent cannot route around the fix.
-marker="$state/fixer-$key"
-if [ "${1:-}" = --pretool ]; then
-    [ -f "$marker" ] || exit 0
-    sess=$(cat -- "$marker" 2>/dev/null)
-    # Only reads the marker: delivery or a re-spawn owns removing it.
-    fixer_alive "$sess" || exit 0
-    guard=$(cat -- "$sess/fixer/guard" 2>/dev/null); [ -n "$guard" ] || exit 0
-    read_payload have_fields
-    cmd=$(field command)
-    printf '%s' "$cmd" | grep -Eq -- "$guard" || exit 0
-    reason="the side fix \"$(cat -- "$sess/fixer/reason")\" is repairing this right now (pane $(cat -- "$sess/fixer/pane")); this run would give invalid results — skip it and continue with your task; you will get a one-line handover when it finishes."
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"%s"}}\n' "$(json "$reason")"
-    exit 0
-fi
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Stops at the fields it needs: Claude Code keeps stdin open past the payload.
@@ -119,7 +99,6 @@ loop="$state/loop-$key"
 concede="$state/concede-$key"
 end_turn() {                                # <reason>  ends the turn, exit 0
     rm -f -- "$loop" "$concede"
-    tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null   # a hold leaked by a killed poll
     flag_pane >/dev/null 2>&1
     printf '{"continue":false,"stopReason":"%s"}\n' "$(json "cockpit: $1")"
     exit 0
@@ -142,31 +121,6 @@ else
     [ ! -e "$loop" ] || rm -f -- "$loop"
 fi
 
-# --- the hold: wait in this one invocation while a side fix is alive ------------
-# The marker is the only way to find sess; only delivery below removes it, so a
-# fixer that finished between two Stops is still found.
-ctx=""
-sess=""; [ -f "$marker" ] && sess=$(cat -- "$marker" 2>/dev/null)
-if [ -n "$sess" ] && [ "$active" != true ] && [ -d "$sess/fixer" ]; then
-    reason=$(cat -- "$sess/fixer/reason" 2>/dev/null); reason=${reason//[$'\001'-$'\037']/}
-    if fixer_alive "$sess"; then
-        tmux set-option -p -t "$pane" @cockpit_hold "$reason" 2>/dev/null
-        tmux display-message "held: $reason (side fix in $(cat -- "$sess/fixer/pane" 2>/dev/null)) — $pane resumes when it finishes" 2>/dev/null
-        while fixer_alive "$sess"; do sleep 1; done
-    fi
-    # Outside the branch: a hook killed mid-poll leaves @cockpit_hold set for the next Stop to clear.
-    tmux set-option -pu -t "$pane" @cockpit_hold 2>/dev/null
-    { [ -f "$sess/handover" ] && [ ! -L "$sess/handover" ]; } || ctx="a side task (\"$reason\") was running and did not finish; earlier results may be stale."
-fi
-if [ -n "$sess" ] && [ -f "$sess/handover" ] && [ ! -L "$sess/handover" ]; then
-    ctx=$(head -c 400 -- "$sess/handover"); ctx=${ctx//[$'\001'-$'\037']/}
-    rm -f -- "$sess/handover"
-fi
-if [ -n "$ctx" ]; then
-    ctx="$ctx"$'\n'"Continue with your task."
-    rm -rf -- "$sess/fixer" "$marker"            # delivered: the record and the gate's marker end here
-fi
-
 # --- the drain -----------------------------------------------------------------
 spool=$(tmux show-option -pqv -t "$pane" @cockpit_review_spool 2>/dev/null)
 review=""
@@ -178,13 +132,12 @@ if [ -n "$spool" ] && [ -f "$spool" ] && [ ! -L "$spool" ]; then
     rm -f -- "$spool"
     rmdir -- "${spool%/*}" 2>/dev/null
 fi
-if [ -n "$ctx" ] || [ -n "$review" ]; then
+if [ -n "$review" ]; then
     # The sibling hook just wrote `done`, but additionalContext starts another turn.
     # Muted: stdout is the JSON channel from here on.
     "$here/agent-state" running "$pane" >/dev/null 2>&1
-    sep=""; [ -n "$ctx" ] && [ -n "$review" ] && sep=$'\n\n'
     printf '{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"%s"}}\n' \
-        "$(json "$ctx$sep$review")"
+        "$(json "$review")"
     exit 0
 fi
 

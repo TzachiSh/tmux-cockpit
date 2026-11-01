@@ -11,9 +11,8 @@
     "PreToolUse runs before the permission prompt, so PostToolUse clears needs-input.",
     "",
     "Stop also runs review-gate: it flags an unreviewed diff (◆), hands over a queued",
-    "review or side-fix result, holds while a side fixer is alive (hence 330 s), and",
-    "caps a /goal rewake chain at @cockpit_rewake_cap. PreToolUse runs its --pretool",
-    "guard, which denies a command matching a live side fixer's pattern.",
+    "review, and caps a /goal rewake chain at @cockpit_rewake_cap. It never waits",
+    "on anything, so 5 s is its timeout.",
     "",
     "WorktreeCreate/WorktreeRemove put claude's worktrees under",
     "~/.cache/cockpit-wt/<name>, so the cockpit reads the tree the agent works in.",
@@ -44,8 +43,7 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state needs-input" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate --pretool", "timeout": 5 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
     ],
     "PostToolUse": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
@@ -67,7 +65,7 @@
     ],
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 330, "statusMessage": "cockpit: review-gate (holding for a side fix if one is running)" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
     ],
     "WorktreeCreate": [
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }

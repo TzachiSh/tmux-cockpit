@@ -419,14 +419,14 @@ info_doing_rows() {           # <pane> <is-agent 1|0>
 
 # --- --info: one screen for prefix i -------------------------------------------
 # What the plugin knows about one pane, in the order you ask it: who, what it
-# waits on, the review state, whether a side fix holds it, the base, the
+# waits on, the review state, the base, the
 # session, the review dir. Read in ONE display-message, split on a US byte
 # (agent-state's idiom -- tab would collapse the empty fields that mean
 # "unset").
 info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title hold root sess b n1 n2
+    local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title root sess b n1 n2
     f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{@cockpit_hold}'"$sep"'#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
+        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
     id=${f%%"$sep"*};     f=${f#*"$sep"}
     # display-message does NOT fail on a pane id that does not exist -- it
     # expands every format to the empty string and exits 0 (measured on 3.7c),
@@ -443,8 +443,7 @@ info_mode() {                 # <pane>
     review=${f%%"$sep"*}; f=${f#*"$sep"}
     spool=${f%%"$sep"*};  f=${f#*"$sep"}
     sid=${f%%"$sep"*};    f=${f#*"$sep"}
-    title=${f%%"$sep"*};  f=${f#*"$sep"}
-    hold=${f%%"$sep"*};   agent=${f#*"$sep"}
+    title=${f%%"$sep"*};  agent=${f#*"$sep"}
     printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
     printf 'cwd       %s\n' "$path"
     # The root is the tree prefix r diffs; an agent editing another tree
@@ -459,7 +458,6 @@ info_mode() {                 # <pane>
     printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
     info_doing_rows "$id" "$agent"
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
-    printf 'hold      %s\n' "${hold:-—}"
     sess=$(session_dir "$id" "$root")
     if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
         # The mode ^B chose for THIS review, as run_loop reads it -- passed as
@@ -471,23 +469,6 @@ info_mode() {                 # <pane>
     printf 'session   %s\n' "${sid:-—}"
     printf 'title     %s\n' "${title:-—}"
     printf 'tui       %s\n' "$(tui_row)"
-    if [ -d "$sess/fixer" ]; then
-        # tmux-fixer/review-gate's own record, read the same way they read it
-        # -- no fixer_alive() call here, this reports the raw facts (reason,
-        # pane, deadline, guard) rather than the pass/fail liveness verdict.
-        local freason fpane fdl fguard falive fleft
-        freason=$(cat -- "$sess/fixer/reason" 2>/dev/null)
-        fpane=$(cat -- "$sess/fixer/pane" 2>/dev/null)
-        fdl=$(cat -- "$sess/fixer/deadline" 2>/dev/null)
-        fguard=$(cat -- "$sess/fixer/guard" 2>/dev/null)
-        if { [ "$fpane" = pending ] || is_pane "$fpane"; } && fixer_pane_alive "$fpane"; then
-            falive=alive
-        else
-            falive=gone
-        fi
-        case "$fdl" in ''|*[!0-9]*) fleft=0 ;; *) fleft=$(( fdl - $(date +%s) )); [ "$fleft" -lt 0 ] && fleft=0 ;; esac
-        printf 'side fix  %s  pane %s (%s)  deadline in %ss  guard /%s/\n' "$freason" "$fpane" "$falive" "$fleft" "$fguard"
-    fi
     if [ -d "$sess" ]; then
         n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
         printf 'review dir %s\n           %s pinned · %s delivered · ^A removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
