@@ -3,7 +3,17 @@
 use cockpit_tui::panel::request::{Call, Fail, Request, prompt_file};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
+
+/// A fork made while another test holds a fake open for writing carries that fd
+/// to its exec, and the fake then fails ETXTBSY: writes and spawns take turns.
+static FORK: Mutex<()> = Mutex::new(());
+
+fn spawn(call: &Call, system: &str, prompt: &str, model: &str) -> Request {
+    let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
+    Request::spawn(call, system, prompt, model)
+}
 
 /// Polled, never slept for: gives up after 10 s.
 fn until(mut f: impl FnMut() -> bool) -> bool {
@@ -46,6 +56,7 @@ impl Rig {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("claude");
         let body = script.replace("$D", &dir.display().to_string());
+        let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
         std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         Rig { dir }
@@ -92,7 +103,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
         "argv",
         "printf '%s\\n' \"$@\" > $D/argv\ncat > $D/stdin\npwd > $D/cwd\necho 'the reply'",
     );
-    let mut req = Request::spawn(&rig.call(30), "SYS", "hello </x>\n", "sonnet");
+    let mut req = spawn(&rig.call(30), "SYS", "hello </x>\n", "sonnet");
     assert_eq!(answer(&mut req), Ok("the reply\n".into()));
     assert_eq!(req.poll(), None, "the answer comes once");
 
@@ -121,7 +132,7 @@ fn the_argv_stdin_and_cwd_follow_the_contract() {
 #[test]
 fn the_default_model_sends_no_model_flag() {
     let rig = Rig::new("default", "printf '%s\\n' \"$@\" > $D/argv\necho ok");
-    let mut req = Request::spawn(&rig.call(30), "S", "p", "default");
+    let mut req = spawn(&rig.call(30), "S", "p", "default");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     assert_eq!(rig.read("argv").lines().take(2).collect::<Vec<_>>(), ["-p", "--system-prompt-file"]);
 }
@@ -129,24 +140,24 @@ fn the_default_model_sends_no_model_flag() {
 #[test]
 fn a_failed_call_reports_the_first_stderr_line() {
     let rig = Rig::new("stderr", "echo partial\necho 'boom: bad model' >&2\necho more >&2\nexit 3");
-    let mut req = Request::spawn(&rig.call(30), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(30), "S", "p", "haiku");
     assert_eq!(answer(&mut req), Err(Fail::Failed("boom: bad model".into())));
 }
 
 #[test]
 fn a_failed_call_with_only_stdout_reports_stdout() {
     let rig = Rig::new("stdout", "echo\necho 'Error: not logged in'\nexit 1");
-    let mut req = Request::spawn(&rig.call(30), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(30), "S", "p", "haiku");
     assert_eq!(answer(&mut req), Err(Fail::Failed("Error: not logged in".into())));
 }
 
 #[test]
 fn an_empty_answer_is_a_failure_even_on_exit_0() {
     let rig = Rig::new("empty", "cat >/dev/null\necho '  '");
-    let mut req = Request::spawn(&rig.call(30), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(30), "S", "p", "haiku");
     assert_eq!(answer(&mut req), Err(Fail::Failed("no answer".into())));
     let rig = Rig::new("empty-warn", "echo 'warn: quota' >&2");
-    let mut req = Request::spawn(&rig.call(30), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(30), "S", "p", "haiku");
     assert_eq!(answer(&mut req), Err(Fail::Failed("warn: quota".into())));
 }
 
@@ -157,7 +168,7 @@ fn a_missing_binary_fails_through_poll() {
         timeout: Duration::from_secs(5),
         dir: std::env::temp_dir().join("cockpit-panel-missing"),
     };
-    let mut req = Request::spawn(&call, "S", "p", "haiku");
+    let mut req = spawn(&call, "S", "p", "haiku");
     assert_eq!(req.pid(), None);
     match answer(&mut req) {
         Err(Fail::Failed(s)) => assert!(s.starts_with("/nonexistent/claude: "), "{s}"),
@@ -168,7 +179,7 @@ fn a_missing_binary_fails_through_poll() {
 #[test]
 fn the_timeout_kills_the_whole_process_group() {
     let rig = Rig::new("timeout", "sleep 1000 &\necho $! > $D/kid\nexec sleep 1000");
-    let mut req = Request::spawn(&rig.call(1), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(1), "S", "p", "haiku");
     let pid = req.pid().unwrap();
     assert!(until(|| rig.pid_file("kid").is_some()), "the fake never started");
     let kid = rig.pid_file("kid").unwrap();
@@ -181,7 +192,7 @@ fn the_timeout_kills_the_whole_process_group() {
 #[test]
 fn cancel_kills_and_reaps_and_silences_poll() {
     let rig = Rig::new("cancel", "echo $$ > $D/pid\nexec sleep 1000");
-    let mut req = Request::spawn(&rig.call(120), "S", "p", "haiku");
+    let mut req = spawn(&rig.call(120), "S", "p", "haiku");
     assert!(until(|| rig.pid_file("pid").is_some()), "the fake never started");
     let pid = req.pid().unwrap();
     assert_eq!(rig.pid_file("pid"), Some(pid), "the spawned pid is the group leader");
@@ -193,7 +204,7 @@ fn cancel_kills_and_reaps_and_silences_poll() {
 #[test]
 fn dropping_a_request_kills_its_claude() {
     let rig = Rig::new("drop", "echo $$ > $D/pid\nexec sleep 1000");
-    let req = Request::spawn(&rig.call(120), "S", "p", "haiku");
+    let req = spawn(&rig.call(120), "S", "p", "haiku");
     assert!(until(|| rig.pid_file("pid").is_some()), "the fake never started");
     let pid = req.pid().unwrap();
     drop(req);
