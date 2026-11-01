@@ -10343,6 +10343,44 @@ for oscreen in panel board; do
 done
 fi
 
+echo "== cockpit-panel: a hangup with no SIGHUP still ends the panel and the board =="
+# In a session of its own the binary has no controlling tty, so closing the pty
+# master sends no SIGHUP: only the hangup watch can end it.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "a hangup with no SIGHUP (no bin/cockpit-tui; run make tui)"
+elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+    skip_ "a hangup with no SIGHUP (needs /proc and python3)"
+elif need_tmux "a hangup with no SIGHUP"; then :; else
+NH="cockpit-nohup-$$"; SOCKS="$SOCKS $NH"; NHPY=$(mktmpf)
+"$TMUX_REAL" -L "$NH" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+cat > "$NHPY" <<'NHPY'
+import os, pty, select, subprocess, sys, time
+tmux, sock, args = sys.argv[1], sys.argv[2], sys.argv[3:]
+m, s = pty.openpty()
+env = dict(os.environ, COCKPIT_READONLY='1', COCKPIT_ACTION='/nonexistent/act')
+env['TMUX'] = subprocess.check_output([tmux, '-L', sock, 'display', '-p', '#{socket_path},#{pid},0']).decode().strip()
+p = subprocess.Popen(args, stdin=s, stdout=s, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+os.close(s)
+for _ in range(100):                      # polled: until it has drawn something
+    if select.select([m], [], [], 0.1)[0] and os.read(m, 65536):
+        break
+os.close(m)
+for _ in range(100):
+    if p.poll() is not None:
+        print('exited'); sys.exit(0)
+    time.sleep(0.1)
+comm = open(f'/proc/{p.pid}/comm').read().strip()
+print(f'survived {comm}')
+if comm == 'cockpit-tui':                 # named before it is signalled
+    p.kill()
+NHPY
+nha=$("$TMUX_REAL" -L "$NH" list-panes -F '#{pane_id}' | head -1)
+is "the panel exits on a hangup that brings no signal" "exited" \
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" panel "$nha" 2>&1)"
+is "the board exits on a hangup that brings no signal" "exited" \
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" board 2>&1)"
+fi
+
 echo "== the example configs ship the phone wrap override (#99) =="
 # A phone terminal that wraps at the last cell scrolls the screen on every
 # full-width status repaint (#97), so the override has to be IN the shipped

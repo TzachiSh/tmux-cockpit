@@ -128,23 +128,24 @@ pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
 }
 
 /// The fd crossterm reads keys from: stdin when it is a tty, else /dev/tty,
-/// held open by the returned file.
-fn input_fd() -> Option<(Option<std::fs::File>, libc::c_int)> {
+/// held open by the returned file. A tty that already hung up fails isatty, so
+/// with no /dev/tty either it is stdin still.
+fn input_fd() -> (Option<std::fs::File>, libc::c_int) {
     // SAFETY: isatty only inspects the descriptor.
-    if unsafe { libc::isatty(libc::STDIN_FILENO) } == 1 {
-        return Some((None, libc::STDIN_FILENO));
+    if unsafe { libc::isatty(libc::STDIN_FILENO) } != 1
+        && let Ok(f) = std::fs::File::open("/dev/tty")
+    {
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
+        return (Some(f), fd);
     }
-    let f = std::fs::File::open("/dev/tty").ok()?;
-    let fd = std::os::fd::AsRawFd::as_raw_fd(&f);
-    Some((Some(f), fd))
+    (None, libc::STDIN_FILENO)
 }
 
 /// Drops every key typed but not yet read. Best effort: no tty, nothing to drop.
 pub fn flush_input() {
-    if let Some((_keep, fd)) = input_fd() {
-        // SAFETY: tcflush only discards the descriptor's queued input.
-        unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
-    }
+    let (_keep, fd) = input_fd();
+    // SAFETY: tcflush only discards the descriptor's queued input.
+    unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -175,9 +176,11 @@ pub fn wait_hangup(fd: libc::c_int) -> Watch {
 
 /// Exits the process once the terminal hangs up. crossterm 0.29 rereads a hung-up
 /// tty forever (EOF and EIO are neither WouldBlock nor EINTR), so the loop never runs again.
+/// Call it early: the fd is picked here, before the thread starts.
 pub fn exit_on_hangup(cleanup: fn()) {
+    let (keep, fd) = input_fd();
     std::thread::spawn(move || {
-        let Some((_keep, fd)) = input_fd() else { return };
+        let _keep = keep;
         match wait_hangup(fd) {
             Watch::HungUp => {}
             w => return crate::data::log(&format!("no hangup watch on the terminal: {w:?}")),

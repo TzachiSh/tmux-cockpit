@@ -428,6 +428,8 @@ pub fn run(app: &mut App) {
         eprintln!("cockpit-tui: no usable terminal: {e}");
         std::process::exit(1);
     }
+    // a dead tty writes no action; the claude child goes with us by PDEATHSIG
+    crate::backend::exit_on_hangup(|| {});
     let th = Theme::load();
     // SAFETY: on_stop only stores an atomic and raises a signal.
     unsafe {
@@ -443,8 +445,6 @@ pub fn run(app: &mut App) {
             std::process::exit(1);
         }
     };
-    // a dead tty writes no action; the claude child goes with us by PDEATHSIG
-    crate::backend::exit_on_hangup(|| {});
     let call = Call::from_env();
     loop {
         if STOP.load(Ordering::SeqCst) {
