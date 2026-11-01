@@ -1,7 +1,7 @@
 //! Claude's reply, read back into what the panel shows. A hand-written tag
 //! scanner: the reply regexes it replaces need no lookaround.
-use super::boundary_at;
 use super::envelope::{OutType, unesc};
+use super::{boundary_at, skip_ws};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opt {
@@ -57,10 +57,6 @@ struct Tag {
     start: usize,
     end: usize,
     attr: Option<String>,
-}
-
-fn skip_ws(s: &str, i: usize) -> usize {
-    i + s[i..].chars().take_while(|c| c.is_whitespace()).map(char::len_utf8).sum::<usize>()
 }
 
 /// `<name(\s+key="v")?\s*/?>`; `need` makes the attribute required and non-empty.

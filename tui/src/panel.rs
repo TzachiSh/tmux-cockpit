@@ -32,3 +32,26 @@ fn boundary_before(s: &str, i: usize) -> bool {
 fn boundary_at(s: &str, i: usize) -> bool {
     !s[i..].chars().next().is_some_and(is_word)
 }
+
+fn skip_ws(s: &str, i: usize) -> usize {
+    i + s[i..].chars().take_while(|c| c.is_whitespace()).map(char::len_utf8).sum::<usize>()
+}
+
+/// ASCII case-insensitive `pat` at `i`, and the index past it; `?` in `pat`
+/// stands for an optional `_` or `-`.
+fn ci(s: &str, i: usize, pat: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut j = i;
+    for p in pat.bytes() {
+        if p == b'?' {
+            if matches!(b.get(j), Some(b'_' | b'-')) {
+                j += 1;
+            }
+        } else if b.get(j).is_some_and(|c| c.eq_ignore_ascii_case(&p)) {
+            j += 1;
+        } else {
+            return None;
+        }
+    }
+    Some(j)
+}
