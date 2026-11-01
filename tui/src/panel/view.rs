@@ -1,8 +1,9 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y, risky};
+use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
 use super::envelope::Flow;
 use super::request::Call;
+use super::risky::risky;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;

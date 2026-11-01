@@ -1,12 +1,12 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{
-    Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
-};
+use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
+use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::parse::Step;
 use cockpit_tui::panel::request::Call;
+use cockpit_tui::panel::risky::risky;
 use cockpit_tui::panel::view::{Hit, mouse, render};
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};

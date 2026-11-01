@@ -729,7 +729,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
-| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files, `panel::risky` the risky-command matcher |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
