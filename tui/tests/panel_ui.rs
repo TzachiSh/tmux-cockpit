@@ -1,8 +1,11 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{Action, App, InputKind, Tile, View, risky, sanitize, write_action};
+use cockpit_tui::panel::app::{
+    Action, App, InputKind, Level, Resume, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
+};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
+use cockpit_tui::panel::parse::Step;
 use cockpit_tui::panel::request::Call;
 use cockpit_tui::panel::view::render;
 use cockpit_tui::theme::Theme;
@@ -25,13 +28,28 @@ fn golden(name: &str, got: &str) {
 }
 
 fn frame(app: &App, w: u16, h: u16, tick: u64) -> String {
-    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| render(f, f.area(), app, &Theme::fixed(), tick)).unwrap();
-    t.backend().to_string()
+    framed(app, w, h, &Theme::fixed(), tick).0
 }
 
-/// One golden per width, the two widths the popup meets most.
+fn framed(app: &App, w: u16, h: u16, th: &Theme, tick: u64) -> (String, (usize, usize)) {
+    let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut page = (0, 0);
+    t.draw(|f| page = render(f, f.area(), app, th, tick)).unwrap();
+    (t.backend().to_string(), page)
+}
+
+/// A frame as the event loop draws it: the offsets are fitted after it.
+fn shown(a: &mut App, w: u16, h: u16) -> String {
+    let (f, (total, room)) = framed(a, w, h, &Theme::fixed(), 0);
+    a.fit(total, room);
+    f
+}
+
+/// The two widths the popup meets most, and two small screens: a phone in
+/// portrait and a split pane.
 fn goldens(name: &str, app: &App, tick: u64) {
+    golden(&format!("panel-{name}-40"), &frame(app, 40, 12, tick));
+    golden(&format!("panel-{name}-60"), &frame(app, 60, 16, tick));
     golden(&format!("panel-{name}-80"), &frame(app, 80, 20, tick));
     golden(&format!("panel-{name}-120"), &frame(app, 120, 24, tick));
 }
@@ -62,6 +80,14 @@ fn typ(a: &mut App, s: &str) {
             key(a, KeyCode::Char(c));
         }
     }
+}
+
+fn note(a: &App) -> Option<&str> {
+    a.note.as_ref().map(|n| n.text.as_str())
+}
+
+fn level(a: &App) -> Option<Level> {
+    a.note.as_ref().map(|n| n.level)
 }
 
 fn ch(a: &mut App, c: char) {
@@ -99,9 +125,38 @@ fn golden_compose() {
 
 #[test]
 fn golden_busy() {
-    let mut a = app("work", "bash", "$ ls");
+    let mut a = app("work", "bash", "$ ls\nexport T=ghp_abcdefghijABCDEFGHIJ12");
     writing(&mut a, "list big files");
+    a.timeout = Duration::from_secs(120);
     goldens("busy", &a, 37);
+}
+
+#[test]
+fn golden_busy_still_working() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Explain).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    a.timeout = Duration::from_secs(90);
+    goldens("busy-slow", &a, 312);
+}
+
+#[test]
+fn busy_echoes_what_was_sent_and_its_limit() {
+    let mut a = app("work", "bash", "$ ls\nsk-abcdefghijklmnopqrst1 ghp_abcdefghijABCDEFGHIJ12");
+    assert_eq!(a.screen_hidden, 2);
+    assert!(frame(&a, 80, 20, 0).contains("will send: screen 2 lines, 2 hidden"));
+    writing(&mut a, "x");
+    assert_eq!(a.hidden, 2, "the envelope's own count");
+    let f = frame(&a, 80, 20, 299);
+    assert!(f.contains("sent: screen 2 lines, 2 hidden · write (auto)"), "{f}");
+    assert!(f.contains("model haiku: short request"), "{f}");
+    assert!(!f.contains("times out"), "no call has gone out, so no limit is known");
+    assert!(!f.contains("still working"), "29.9 s is not yet slow");
+    a.timeout = Duration::from_secs(45);
+    let f = frame(&a, 80, 20, 300);
+    assert!(f.contains("times out at 45 s") && f.contains("still working…"), "{f}");
 }
 
 #[test]
@@ -217,14 +272,14 @@ fn the_compose_box_edits_and_q_is_text_there() {
     assert_eq!(a.draft, "");
     typ(&mut a, &"x".repeat(8010));
     assert_eq!(a.draft.chars().count(), 8000, "the draft caps at 8000");
-    let seen: Vec<OutType> = (0..6)
+    let seen: Vec<OutType> = (0..7)
         .map(|_| {
             key(&mut a, KeyCode::Tab);
             a.out
         })
         .collect();
     use OutType::*;
-    assert_eq!(seen, [Prompt, Command, Steps, Text, Hint, Auto]);
+    assert_eq!(seen, [Prompt, Command, Steps, Text, Format, Hint, Auto]);
     ctrl(&mut a, 'n');
     ctrl(&mut a, 'n');
     assert_eq!(a.write_route().model, "sonnet");
@@ -304,7 +359,7 @@ fn write_asks_at_most_three_rounds() {
     writing(&mut a, "do it");
     for n in 1..=3 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '1');
         let (_, prompt, _) = a.request_parts().unwrap();
         assert!(prompt.contains(&format!("<questions_left>{}</questions_left>", 3 - n)), "{prompt}");
@@ -312,7 +367,7 @@ fn write_asks_at_most_three_rounds() {
     }
     a.reply(Ok(q(4)));
     assert!(
-        matches!(&a.view, View::Result { text, .. } if text == "(Claude still asks: Q4?)"),
+        matches!(&a.view, View::Error { line, hint: Some(_) } if line == "no questions left, and Claude still asks: Q4?"),
         "{:?}",
         a.view
     );
@@ -326,17 +381,26 @@ fn fix_never_asks_and_explain_asks_six_times() {
     ctrl(&mut a, 'f');
     a.reply(Ok(q(1)));
     assert!(
-        matches!(&a.view, View::Result { text, .. } if text.starts_with("(Claude still asks")),
+        matches!(&a.view, View::Error { line, .. } if line.contains("Claude still asks: Q1?")),
         "{:?}",
         a.view
     );
+    for c in ['i', 's', 'c'] {
+        ch(&mut a, c);
+    }
+    assert!(
+        a.action.is_none() && matches!(a.view, View::Error { .. }),
+        "a leftover question is never inserted"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert_eq!((a.view.clone(), a.draft.as_str()), (View::Compose, "teh"));
 
     let mut a = app("claude", "claude", CLAUDE_SCREEN);
     ch(&mut a, '3');
     ch(&mut a, '1');
     for n in 1..=6 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '2');
     }
     a.reply(Ok(q(7)));
@@ -362,8 +426,8 @@ fn best_guess_ends_the_rounds_and_back_pops_one() {
     ch(&mut a, 'g');
     a.reply(Ok(q(3)));
     assert!(
-        matches!(a.view, View::Result { .. }),
-        "a question after the best guess is shown as text"
+        matches!(a.view, View::Error { .. }),
+        "a question after the best guess is an error, never a pasteable result"
     );
 }
 
@@ -433,14 +497,22 @@ fn a_failure_shows_one_line_and_retries_or_goes_back() {
     let mut a = app("w", "zsh", "$ ");
     writing(&mut a, "x");
     a.reply(Err(cockpit_tui::panel::request::Fail::Failed("e".repeat(200))));
-    assert!(matches!(&a.view, View::Error { line } if line.chars().count() == 80));
+    assert_eq!(
+        a.view,
+        View::Error {
+            line: format!("claude failed: {}...", "e".repeat(160)),
+            hint: None,
+        }
+    );
     ch(&mut a, 'r');
     assert_eq!((a.view.clone(), a.pending), (View::Busy, true));
+    a.timeout = Duration::from_secs(120);
     a.reply(Err(cockpit_tui::panel::request::Fail::Timeout));
     assert_eq!(
         a.view,
         View::Error {
-            line: "took too long".into()
+            line: "claude took longer than 120 s".into(),
+            hint: Some("r retries; COCKPIT_PANEL_TIMEOUT=<seconds> gives it longer".into()),
         }
     );
     key(&mut a, KeyCode::Esc);
@@ -649,4 +721,1269 @@ fn the_action_file_carries_the_verb_and_a_private_clean_text() {
     assert!(write_action(&f, "%7", "zsh", &a).is_err(), "an existing text file is refused");
     assert_eq!(sanitize("x\u{0}y\u{7f}z\n"), "xyz\n");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- scrolling
+
+/// An Explain answer of `n` numbered lines, long enough to scroll.
+fn long_answer(n: usize) -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    ch(&mut a, '1');
+    let body: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
+    a.reply(Ok(body.join("\n")));
+    a
+}
+
+fn scroll_of(a: &App) -> usize {
+    match &a.view {
+        View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } => *scroll,
+        v => panic!("{v:?}"),
+    }
+}
+
+#[test]
+fn up_at_the_end_of_an_answer_moves_at_once() {
+    let mut a = long_answer(40);
+    shown(&mut a, 60, 12);
+    let bottom = scroll_of(&a);
+    assert!(bottom > 0 && bottom < 100, "the bottom is a real offset: {bottom}");
+    key(&mut a, KeyCode::Up);
+    assert_eq!(scroll_of(&a), bottom - 1, "one Up is one line");
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains(&format!(" {bottom}-42 of 43 ")), "{f}");
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    assert_eq!(scroll_of(&a), bottom, "Down stops at the bottom");
+}
+
+#[test]
+fn page_keys_move_an_answer_by_a_screen() {
+    let mut a = long_answer(40);
+    shown(&mut a, 60, 12);
+    let (bottom, page) = (scroll_of(&a), a.room - 1);
+    key(&mut a, KeyCode::PageUp);
+    assert_eq!(scroll_of(&a), bottom - page);
+    key(&mut a, KeyCode::PageDown);
+    key(&mut a, KeyCode::PageDown);
+    assert_eq!(scroll_of(&a), bottom);
+    for _ in 0..20 {
+        key(&mut a, KeyCode::PageUp);
+    }
+    assert_eq!(scroll_of(&a), 0);
+}
+
+#[test]
+fn a_result_never_scrolls_past_its_end() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let body: Vec<String> = (1..=30).map(|i| format!("r{i}")).collect();
+    a.reply(Ok(format!("<text>{}</text>", body.join("\n"))));
+    shown(&mut a, 60, 12);
+    for _ in 0..50 {
+        key(&mut a, KeyCode::Down);
+    }
+    let bottom = scroll_of(&a);
+    assert_eq!(bottom, a.bottom);
+    key(&mut a, KeyCode::Up);
+    assert_eq!(scroll_of(&a), bottom - 1);
+}
+
+#[test]
+fn the_position_shows_where_it_can_move() {
+    let mut a = long_answer(40);
+    let f = shown(&mut a, 60, 12);
+    let total = 40 + 3;
+    let (top, room) = (a.bottom, a.room);
+    let at_end = format!(" {}-{total} of {total} ▲{top} ", top + 1);
+    assert!(f.contains(&at_end), "want {at_end:?}:\n{f}");
+    assert!(!f.contains('▼'), "nothing below the end:\n{f}");
+    for _ in 0..100 {
+        key(&mut a, KeyCode::Up);
+    }
+    let f = shown(&mut a, 60, 12);
+    let at_top = format!(" 1-{room} of {total} ▼{} ", total - room);
+    assert!(f.contains(&at_top) && !f.contains('▲'), "want {at_top:?}:\n{f}");
+
+    let th = Theme {
+        g: cockpit_tui::theme::Glyphs::ascii(),
+        ..Theme::fixed()
+    };
+    let f = framed(&a, 60, 12, &th, 0).0;
+    assert!(
+        f.contains(&format!(" 1-{room} of {total} v{} ", total - room)),
+        "ascii arrows:\n{f}"
+    );
+    assert!(!frame(&explained(), 80, 20, 0).contains(" of "), "a body that fits shows none");
+}
+
+#[test]
+fn steps_show_the_position_too() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let steps: String = (1..=12)
+        .map(|i| format!("<step><note>step {i}</note><cmd>echo {i}</cmd></step>"))
+        .collect();
+    a.reply(Ok(format!("<steps>{steps}</steps>")));
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("1-8 of 24 ▼16"), "{f}");
+}
+
+// ---------------------------------------------------------------- confirm
+
+#[test]
+fn a_risky_or_multi_line_send_needs_y_not_enter() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<steps><step><note>n</note><cmd>sudo rm -rf /tmp/x</cmd></step></steps>".into()));
+    ch(&mut a, 's');
+    assert!(shown(&mut a, 80, 20).contains("y confirm  ↑↓ scroll  ↵ is off: risky or multi-line"));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.action.is_none() && !a.quit, "Enter does not fire a risky send");
+    assert!(matches!(a.view, View::Confirm { .. }) && note(&a).unwrap_or("").contains("press y"));
+    ch(&mut a, 'y');
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("send"));
+
+    // bash takes the paste whole, so no line warning: it is the send that runs both
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>make\nmake install</text>".into()));
+    ch(&mut a, 's');
+    key(&mut a, KeyCode::Enter);
+    assert!(a.action.is_none(), "Enter does not fire a multi-line send");
+    ch(&mut a, 'y');
+    assert_eq!(
+        a.action,
+        Some(Action {
+            verb: "send",
+            text: "make\nmake install".into()
+        })
+    );
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls -la</text>".into()));
+    ch(&mut a, 's');
+    assert!(shown(&mut a, 80, 20).contains("↵ y confirm"));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.action.as_ref().map(|x| x.verb),
+        Some("send"),
+        "a plain one-liner still takes Enter"
+    );
+}
+
+#[test]
+fn q_in_a_confirm_cancels_and_keeps_the_panel() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls</text>".into()));
+    ch(&mut a, 's');
+    ch(&mut a, 'q');
+    assert!(!a.quit && a.action.is_none());
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    ch(&mut a, 'q');
+    assert!(a.quit, "q outside a confirm still closes");
+}
+
+fn long_confirm() -> App {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let body: Vec<String> = (1..=40).map(|i| format!("echo step {i}")).collect();
+    a.reply(Ok(format!("<text>{}</text>", body.join("\n"))));
+    ch(&mut a, 's');
+    a
+}
+
+#[test]
+fn a_long_confirm_scrolls_and_says_what_is_cut() {
+    let mut a = long_confirm();
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("echo step 1 ") && f.contains("… 33 more lines"), "{f}");
+    for _ in 0..100 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("echo step 40") && !f.contains("more line"), "{f}");
+    assert!(matches!(a.view, View::Confirm { .. }));
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls</text>".into()));
+    a.pane = format!("%3 {}", "x".repeat(70));
+    ch(&mut a, 's');
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("(bash) and press Enter?"), "the question wraps:\n{f}");
+}
+
+#[test]
+fn golden_confirm_scrolled() {
+    for (w, h) in [(40u16, 12u16), (60, 16), (80, 20), (120, 24)] {
+        let mut a = long_confirm();
+        shown(&mut a, w, h);
+        for _ in 0..5 {
+            key(&mut a, KeyCode::Down);
+        }
+        golden(&format!("panel-confirm-scroll-{w}"), &frame(&a, w, h, 0));
+    }
+}
+
+// ---------------------------------------------------------------- esc on an answer
+
+#[test]
+fn esc_on_an_answer_asks_before_it_drops_the_conversation() {
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { armed: true, .. }), "{:?}", a.view);
+    assert!(a.run.is_some() && note(&a) == Some("esc or q again to discard this conversation"));
+    assert!(frame(&a, 80, 20, 0).contains("esc q again discards it"));
+    key(&mut a, KeyCode::Up);
+    assert!(
+        matches!(a.view, View::Answer { armed: false, .. }) && a.note.is_none(),
+        "any other key keeps it"
+    );
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.run.is_none() && a.note.is_none() && !a.quit);
+}
+
+// ---------------------------------------------------------------- bracketed paste
+
+#[test]
+fn a_paste_into_compose_is_taken_whole() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    typ(&mut a, "> ");
+    a.paste("a\tb\r\nc\rd\u{1b}[31m\u{7}e\nq");
+    assert_eq!(a.draft, "> a\tb\nc\nd[31me\nq", "tabs and newlines kept, control characters out");
+    assert!(!a.quit && a.view == View::Compose, "a pasted q is text");
+    assert!(a.note.is_none());
+}
+
+#[test]
+fn a_paste_into_a_one_line_box_joins_its_lines() {
+    let mut a = explained();
+    ch(&mut a, 'f');
+    a.paste("why\r\nthat\none?\u{7}");
+    let View::Input { text, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(text, "why that one?", "a pasted newline does not send");
+
+    let mut a = explained();
+    a.paste("ignored");
+    assert!(matches!(a.view, View::Answer { .. }) && a.run.as_ref().unwrap().log.len() == 2);
+}
+
+#[test]
+fn the_draft_cap_says_what_it_left_out() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.paste(&"x".repeat(8010));
+    assert_eq!(a.draft.chars().count(), 8000);
+    assert_eq!(note(&a), Some("the box holds 8000 characters: 10 left out"));
+    assert!(frame(&a, 80, 20, 0).contains("10 left out"));
+    ch(&mut a, 'y');
+    assert_eq!(
+        note(&a),
+        Some("the box holds 8000 characters: 1 left out"),
+        "typing at the cap says so too"
+    );
+    key(&mut a, KeyCode::Backspace);
+    assert!(a.note.is_none());
+}
+
+#[test]
+fn q_on_an_answer_is_esc_and_never_quits() {
+    let mut a = explained();
+    ch(&mut a, 'q');
+    assert!(matches!(a.view, View::Answer { armed: true, .. }) && !a.quit, "{:?}", a.view);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.run.is_none() && !a.quit, "the second q goes home, not out");
+
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 }, "esc then q discards too");
+    let mut a = explained();
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "Ctrl-C stays a hard quit");
+}
+
+#[test]
+fn no_body_rows_means_no_position_and_no_scroll() {
+    let mut a = long_answer(40);
+    let f = shown(&mut a, 60, 2);
+    assert_eq!(a.room, 0);
+    assert!(!f.contains(" of "), "{f}");
+    let at = scroll_of(&a);
+    for k in [KeyCode::Down, KeyCode::PageDown, KeyCode::Up] {
+        key(&mut a, k);
+        assert_eq!(scroll_of(&a), at, "{k:?}");
+    }
+}
+
+#[test]
+fn esc_out_of_a_one_line_box_clears_its_cap_note() {
+    let mut a = explained();
+    ch(&mut a, 'f');
+    a.paste(&"x".repeat(8001));
+    assert!(a.note.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { .. }) && a.note.is_none(), "{:?}", a.note);
+}
+
+#[test]
+fn the_programs_that_take_a_paste_whole_include_every_ssh_like_one() {
+    for (cmd, whole) in [
+        ("bash", true),
+        ("claude", true),
+        ("nvim", true),
+        ("ssh", true),
+        ("mosh", true),
+        ("mosh-client", true),
+        ("autossh", true),
+        ("coder", true),
+        ("proot", true),
+        ("python3", false),
+        ("cat", false),
+        ("", false),
+    ] {
+        let a = app("w", cmd, "");
+        assert_eq!(a.line_warning("a\nb").is_none(), whole, "{cmd}");
+        assert_eq!(bracketed_ok(cmd), whole, "{cmd}");
+    }
+    for cmd in cockpit_tui::panel::capture::SSH_LIKE {
+        assert!(bracketed_ok(cmd), "{cmd} is ssh-like, so its remote shell takes the paste");
+    }
+}
+
+/// Keys a view ignores leave it exactly as it was: the views are moved out
+/// while a key is handled, so a branch that forgot to put one back would show.
+#[test]
+fn an_ignored_key_keeps_every_view_that_owns_text() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>hello</text>".into()));
+    let v = a.view.clone();
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "result");
+
+    a.reply(Ok(
+        "<steps><step><note>n</note><cmd>ls</cmd></step><step><note>tap it</note></step></steps>".into(),
+    ));
+    let v = a.view.clone();
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "steps");
+    key(&mut a, KeyCode::Down);
+    ch(&mut a, 'i');
+    assert!(
+        matches!(a.view, View::Steps { sel: 1, .. }),
+        "a step with no command stays: {:?}",
+        a.view
+    );
+
+    key(&mut a, KeyCode::Up);
+    ch(&mut a, 's');
+    let v = a.view.clone();
+    assert!(matches!(v, View::Confirm { .. }));
+    ch(&mut a, 'x');
+    assert_eq!(a.view, v, "confirm");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>which?</question>".into()));
+    ch(&mut a, 'o');
+    let v = a.view.clone();
+    assert!(matches!(v, View::Input { .. }));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, v, "an empty answer is not sent and the box stays");
+
+    let mut a = app("w", "bash", "$ ");
+    a.view = View::Result {
+        label: "Text".into(),
+        text: "t".into(),
+        scroll: 0,
+    };
+    ch(&mut a, 'r');
+    assert!(matches!(a.view, View::Result { .. }), "r with nothing to retry keeps the result");
+}
+
+#[test]
+fn notes_have_a_level_and_go_with_the_view_they_were_said_on() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(
+        (note(&a), level(&a)),
+        (Some("cancelled"), Some(Level::Info)),
+        "a cancel is not an error"
+    );
+    assert_eq!(a.view, View::Compose, "the note survives the move that said it");
+    typ(&mut a, "y");
+    assert!(a.note.is_none(), "compose clears it on the next key");
+
+    ctrl(&mut a, 'u');
+    ctrl(&mut a, 't');
+    assert_eq!(level(&a), Some(Level::Warn));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.note.is_none(), "leaving the view drops its note");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<steps><step><note>tap it</note></step><step><note>n</note><cmd>ls</cmd></step></steps>".into(),
+    ));
+    ch(&mut a, 'i');
+    assert_eq!(level(&a), Some(Level::Info));
+    key(&mut a, KeyCode::Down);
+    assert!(a.note.is_some(), "moving within the same view keeps it");
+    ch(&mut a, 's');
+    assert!(matches!(a.view, View::Confirm { .. }) && a.note.is_none(), "{:?}", a.note);
+}
+
+#[test]
+fn a_note_shows_its_glyph_in_both_tiers() {
+    let mut a = app("w", "bash", "$ ");
+    for (lv, uni, asc) in [
+        (Level::Info, "○ hi", ". hi"),
+        (Level::Warn, "▲ hi", "! hi"),
+        (Level::Error, "✕ hi", "x hi"),
+    ] {
+        a.say(lv, "hi");
+        assert!(frame(&a, 60, 10, 0).contains(uni), "{lv:?}");
+        let mut th = Theme::fixed();
+        th.g = cockpit_tui::theme::Glyphs::ascii();
+        assert!(framed(&a, 60, 10, &th, 0).0.contains(asc), "{lv:?} ascii");
+    }
+}
+
+#[test]
+fn a_known_failure_says_what_to_do() {
+    use cockpit_tui::panel::app::hint;
+    use cockpit_tui::panel::request::Fail::{Failed, Timeout};
+    for (f, want) in [
+        (Failed("Error: not logged in · run claude /login".into()), Some("log in")),
+        (Failed("Invalid API key · Please run /login".into()), Some("log in")),
+        (Failed("API Error: 429 rate_limit_error".into()), Some("rate limit")),
+        (Failed("Claude AI usage limit reached|1767225600".into()), Some("rate limit")),
+        (Failed("API Error: 529 Overloaded".into()), Some("rate limit")),
+        (
+            Failed("claude: No such file or directory (os error 2)".into()),
+            Some("not installed"),
+        ),
+        (
+            Failed("cannot write the system prompt: No such file or directory (os error 2)".into()),
+            None,
+        ),
+        (Timeout, Some("COCKPIT_PANEL_TIMEOUT")),
+        (Failed("Error: something else".into()), None),
+    ] {
+        let got = hint(&f);
+        match want {
+            Some(w) => assert!(got.is_some_and(|g| g.contains(w)), "{f:?}: {got:?}"),
+            None => assert_eq!(got, None, "{f:?}"),
+        }
+    }
+}
+
+#[test]
+fn a_file_edit_is_unsupported_without_blaming_claude() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<edit path=\"a\">x</edit>".into()));
+    let View::Error { line, hint } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(line, "file edits are not supported in the panel");
+    assert!(hint.is_some());
+}
+
+#[test]
+fn golden_error_long_wraps() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed(format!(
+        "API Error: 429 {{\"type\":\"error\",\"error\":{{\"type\":\"rate_limit_error\",\"message\":\"{}\"}}}}",
+        "This request would exceed the rate limit for your organization. ".repeat(2)
+    ))));
+    goldens("error-long", &a, 0);
+}
+
+const MENU: &str = "● Edit config.py?\nDo you want to make this edit to config.py?\n❯ 1. Yes\n  2. No";
+
+fn menu_warned(a: &App) -> bool {
+    matches!(&a.view, View::Confirm { warn, .. } if warn.iter().any(|w| w.contains("menu choice")))
+}
+
+#[test]
+fn an_open_menu_is_warned_on_every_insert_and_send() {
+    let mut a = app("claude", "claude", MENU);
+    writing(&mut a, "x");
+    a.reply(Ok("<prompt>go on</prompt>".into()));
+    ch(&mut a, 'i');
+    assert!(menu_warned(&a), "result insert confirms: {:?}", a.view);
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 's');
+    assert!(menu_warned(&a), "result send");
+    key(&mut a, KeyCode::Esc);
+
+    a.reply(Ok("<steps><step><note>n</note><cmd>ls</cmd></step></steps>".into()));
+    ch(&mut a, 'i');
+    assert!(menu_warned(&a), "step insert");
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 's');
+    assert!(menu_warned(&a), "step run");
+
+    let mut a = app("claude", "claude", MENU);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Compose).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    typ(&mut a, "one line");
+    ctrl(&mut a, 't');
+    assert!(menu_warned(&a), "compose ^T, one line or not");
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("waiting on a menu choice"), "the confirm shows it\n{f}");
+}
+
+#[test]
+fn a_working_session_warns_a_send_and_lets_an_insert_through() {
+    let busy = "● Reading files\n✻ Thinking… (esc to interrupt)";
+    let mut a = app("claude", "claude", busy);
+    assert_eq!(a.session, Some(cockpit_tui::panel::capture::Session::Working));
+    writing(&mut a, "x");
+    a.reply(Ok("<prompt>go on</prompt>".into()));
+    ch(&mut a, 's');
+    assert!(
+        matches!(&a.view, View::Confirm { warn, .. } if warn.iter().any(|w| w.contains("still working"))),
+        "{:?}",
+        a.view
+    );
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 'i');
+    assert_eq!(
+        a.action.as_ref().map(|x| x.verb),
+        Some("paste"),
+        "an insert only waits in the input"
+    );
+}
+
+const THREE_STEPS: &str = "<steps><step><note>update</note><cmd>apt update</cmd></step>\
+<step><note>tap Allow in the app</note></step>\
+<step><note>install</note><cmd>apt install jq</cmd></step></steps>";
+
+fn stepped() -> App {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(THREE_STEPS.into()));
+    a
+}
+
+fn resume_of(a: &App) -> Resume {
+    a.resume.clone().expect("a resume")
+}
+
+#[test]
+fn an_action_from_steps_carries_the_steps_to_resume() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("paste"));
+    let r = resume_of(&a);
+    assert_eq!((r.sel, r.verb, r.done.clone(), r.items.len()), (0, "paste", vec![false; 3], 3));
+    assert_eq!(r.label, "Steps (bash)");
+
+    let mut a = stepped();
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    ch(&mut a, 's');
+    key(&mut a, KeyCode::Enter);
+    let r = resume_of(&a);
+    assert_eq!((r.sel, r.verb), (2, "send"), "through the confirm too");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>hi</text>".into()));
+    ch(&mut a, 'i');
+    assert!(a.action.is_some() && a.resume.is_none(), "a Result closes the panel as before");
+
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    a.stop();
+    assert!(a.resume.is_none(), "a hangup leaves no way back");
+}
+
+#[test]
+fn a_resume_marks_the_step_and_moves_to_the_next_command() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let r = resume_of(&a);
+    let mut b = app("w", "zsh", "$ apt update\n");
+    b.resumed("bash".into(), r.clone(), "ok");
+    assert_eq!(b.cap.cmd, "bash", "the guard compares against what the steps were written for");
+    let View::Steps { sel, done, .. } = &b.view else {
+        panic!("{:?}", b.view)
+    };
+    assert_eq!((*sel, done.clone()), (2, vec![true, false, false]), "the tap step is skipped");
+    assert_eq!((note(&b), level(&b)), (Some("step 1 inserted"), Some(Level::Info)));
+    assert!(
+        frame(&b, 80, 20, 0).contains("update  ✓ inserted"),
+        "the mark says what the note says"
+    );
+
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r.clone(), "failed:the pane now runs vim, not bash\u{1b}[2J");
+    let View::Steps { sel, done, .. } = &b.view else { panic!() };
+    assert_eq!((*sel, done.clone()), (0, vec![false; 3]));
+    assert_eq!(level(&b), Some(Level::Error));
+    assert_eq!(note(&b), Some("step 1 was not sent: the pane now runs vim, not bash[2J"));
+
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r, "maybe");
+    assert_eq!(level(&b), Some(Level::Error), "an unknown answer is not taken as ok");
+
+    let mut last = stepped();
+    last.view = View::Steps {
+        label: "Steps".into(),
+        items: vec![Step {
+            note: "n".into(),
+            cmd: "ls".into(),
+            lang: "bash".into(),
+        }],
+        sel: 0,
+        done: vec![false],
+    };
+    ch(&mut last, 's');
+    key(&mut last, KeyCode::Enter);
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&last), "ok");
+    assert!(matches!(&b.view, View::Steps { sel: 0, .. }), "the last step stays selected");
+    assert_eq!(note(&b), Some("step 1 sent"));
+}
+
+#[test]
+fn golden_steps_resumed() {
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ apt update\n");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    goldens("steps-resumed", &b, 0);
+}
+
+fn state_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("cockpit-panel-state-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn the_state_file_round_trips_and_is_private() {
+    let dir = state_dir("rt");
+    let r = Resume {
+        label: "Steps (bash)".into(),
+        items: vec![
+            Step {
+                note: "a\ttab and a \\ slash".into(),
+                cmd: "printf 'x\\n'\nline two\r".into(),
+                lang: "bash".into(),
+            },
+            Step {
+                note: "tap it".into(),
+                cmd: String::new(),
+                lang: String::new(),
+            },
+        ],
+        sel: 1,
+        done: vec![true, false],
+        verb: "send",
+    };
+    write_state(&dir.join("act"), "%3", "zsh", &r).unwrap();
+    let p = dir.join("act.state");
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(read_state(&p, "%3"), Ok(("zsh".to_string(), r.clone())));
+    assert!(
+        write_state(&dir.join("act"), "%3", "zsh", &r).is_err(),
+        "an existing state file is refused"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_state_file_is_refused_unless_it_is_exactly_ours() {
+    let dir = state_dir("bad");
+    let good = "cockpit-panel-state 1\npane %3\ncmd bash\nlabel L\nsel 0\nverb paste\nstep 0\tbash\tn\tls\n";
+    let p = dir.join("s");
+    let try_ = |body: &str, pane: &str| {
+        std::fs::write(&p, body).unwrap();
+        read_state(&p, pane)
+    };
+    assert!(try_(good, "%3").is_ok());
+    for (body, why) in [
+        (good.replace("state 1", "state 2"), "another version"),
+        (good.trim_end().to_string(), "cut short"),
+        (good.replace("sel 0", "sel 1"), "sel past the steps"),
+        (good.replace("verb paste", "verb run"), "an unknown verb"),
+        (good.replace("step 0\t", "step 2\t"), "a bad done mark"),
+        (good.replace("\tls\n", "\tls\textra\n"), "a fifth field"),
+        (good.replace("\tls\n", "\tl\\qs\n"), "a bad escape"),
+        (good.replace("label L\n", ""), "a missing line"),
+        (good.replace("step 0\tbash\tn\tls\n", ""), "no steps"),
+        (format!("{good}junk\n"), "a stray line"),
+        (format!("{good}{}", "step 0\tbash\tn\tls\n".repeat(64)), "too many steps"),
+        (format!("{good}{}", "x".repeat(70 * 1024)), "too big"),
+    ] {
+        assert!(try_(&body, "%3").is_err(), "{why}");
+    }
+    assert!(try_(good, "%4").unwrap_err().contains("another pane"));
+    let link = dir.join("link");
+    std::os::unix::fs::symlink(&p, &link).unwrap();
+    assert!(read_state(&link, "%3").is_err(), "never followed");
+    assert!(read_state(&dir, "%3").is_err(), "a directory");
+    let fifo = dir.join("fifo");
+    let c = std::ffi::CString::new(fifo.display().to_string()).unwrap();
+    // SAFETY: a valid C path; mkfifo only creates the node.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    assert!(read_state(&fifo, "%3").is_err(), "a FIFO is refused without blocking on its open");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn steps_too_long_to_keep_say_so_and_leave_no_state() {
+    for reply in [
+        format!("<steps>{}</steps>", "<step><note>n</note><cmd>ls</cmd></step>".repeat(65)),
+        format!("<steps><step><note>n</note><cmd>{}</cmd></step></steps>", "x".repeat(70 * 1024)),
+    ] {
+        let mut a = app("w", "bash", "$ ");
+        writing(&mut a, "x");
+        a.reply(Ok(reply));
+        assert!(matches!(a.view, View::Steps { .. }));
+        assert_eq!(note(&a), Some("steps too long to keep open: the panel closes after one"));
+        ch(&mut a, 'i');
+        key(&mut a, KeyCode::Enter);
+        assert!(a.action.is_some() && a.resume.is_none(), "the action goes, with no state behind it");
+    }
+    let a = stepped();
+    assert!(a.note.is_none(), "three steps fit");
+    let dir = state_dir("long");
+    let r = Resume {
+        label: "L".into(),
+        items: vec![Step::default(); 65],
+        sel: 0,
+        done: vec![false; 65],
+        verb: "paste",
+    };
+    assert!(write_state(&dir.join("act"), "%3", "bash", &r).is_err());
+    assert!(!dir.join("act.state").exists(), "nothing written that a resume would refuse");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_answer_box_with_no_conversation_stays_put() {
+    for kind in [InputKind::Other, InputKind::FollowUp] {
+        let mut a = app("w", "bash", "$ ");
+        a.view = View::Input {
+            kind,
+            text: "hi".into(),
+            back: Box::new(View::Home { sel: 0 }),
+        };
+        let v = a.view.clone();
+        key(&mut a, KeyCode::Enter);
+        assert_eq!((a.view.clone(), a.pending), (v, false), "{kind:?}");
+    }
+}
+
+#[test]
+fn busy_counts_the_screen_apart_from_the_conversation() {
+    let mut a = app("w", "bash", "$ ls\nghp_abcdefghijABCDEFGHIJ12");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>which key?</question>".into()));
+    ch(&mut a, 'o');
+    typ(&mut a, "use sk-abcdefghijklmnopqrst1 and sk-abcdefghijklmnopqrst2");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    let f = frame(&a, 100, 20, 0);
+    assert!(
+        f.contains("sent: screen 2 lines, 1 hidden, 2 more in the conversation · write (auto)"),
+        "{f}"
+    );
+}
+
+// ---------------------------------------------------------------- small screens
+
+fn asking() -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    a
+}
+
+#[test]
+fn golden_explain_ask() {
+    let mut a = asking();
+    key(&mut a, KeyCode::Down);
+    goldens("explain-ask", &a, 0);
+}
+
+#[test]
+fn golden_input() {
+    let mut a = asking();
+    ch(&mut a, '5');
+    typ(&mut a, "why is the build red");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Explain,
+            ..
+        }
+    ));
+    goldens("input", &a, 0);
+}
+
+/// Every view, with the text that is its heading and a line of its body.
+fn every_view() -> Vec<(&'static str, App, &'static str, &'static str)> {
+    let mut v = vec![("home", app("claude", "claude", CLAUDE_SCREEN), "panel", "Write a prompt")];
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    typ(&mut a, "fix the flaky test");
+    v.push(("compose", a, "type: ", "flaky"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    v.push(("busy", a, "writing", "writing"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question><option>one</option><option>two</option>".into()));
+    v.push(("question", a, "Which file?", "one"));
+    let mut a = asking();
+    ch(&mut a, '5');
+    v.push(("input", a, "what do you", "▏"));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>users = {\n    \"alice\": 1,\n}</text>".into()));
+    v.push(("result", a, "Text", "users"));
+    v.push(("steps", stepped(), "Steps (bash)", "update"));
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    v.push(("steps-resumed", b, "Steps (bash)", "install"));
+    v.push(("explain-ask", asking(), "what do you want", "What is it doing?"));
+    v.push(("answer", explained(), "panel", "parser"));
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    v.push(("answer-armed", a, "discard", "parser"));
+    v.push(("confirm", long_confirm(), "Enter?", "echo step"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Timeout));
+    v.push(("error", a, "claude", "claude"));
+    v
+}
+
+fn fits(f: &str, head: &str, body: &str) -> bool {
+    let last = f.lines().last().unwrap_or("");
+    f.contains(head) && f.contains(body) && last.contains("esc") && !f.contains("make the window larger")
+}
+
+#[test]
+fn every_view_fits_at_the_floor() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    for (name, mut a, head, body) in every_view() {
+        let f = shown(&mut a, MIN_W, MIN_H);
+        assert!(fits(&f, head, body), "{name} at the floor:\n{f}");
+        assert!(a.room >= 1, "{name}: a body row");
+        for (w, h) in [(MIN_W - 1, 40), (200, MIN_H - 1)] {
+            let f = shown(&mut a, w, h);
+            assert!(f.contains("make the window larger"), "{name} at {w}x{h}:\n{f}");
+        }
+    }
+}
+
+#[test]
+fn golden_small() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    let a = app("claude", "claude", CLAUDE_SCREEN);
+    golden("panel-small", &frame(&a, MIN_W - 1, MIN_H, 0));
+}
+
+#[test]
+fn under_the_floor_esc_and_q_act_as_on_the_view_underneath() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    typ(&mut a, "keep me");
+    a.tiny = true;
+    ch(&mut a, 'x');
+    ctrl(&mut a, 's');
+    assert_eq!(
+        (a.view.clone(), a.draft.as_str()),
+        (View::Compose, "keep me"),
+        "unseen keys are dropped"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(
+        (a.view.clone(), a.draft.as_str(), a.quit),
+        (View::Home { sel: 0 }, "keep me", false),
+        "esc goes home"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(a.quit && a.action.is_none(), "only Home closes");
+
+    let mut a = explained();
+    a.tiny = true;
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && a.run.is_some(),
+        "an answer arms first"
+    );
+    let mut a = explained();
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && !a.quit,
+        "q is esc on an answer"
+    );
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "^C is the hard quit");
+}
+
+#[test]
+fn footers_drop_whole_hints_and_keep_esc_and_help() {
+    for (name, mut a, ..) in every_view() {
+        for w in [28u16, 30, 40, 60, 80, 120] {
+            let f = shown(&mut a, w, 16);
+            let last = f.lines().last().unwrap();
+            assert!(last.contains("esc"), "{name} at {w}: {last}");
+            if !matches!(a.view, View::Answer { armed: true, .. }) {
+                assert!(last.contains("? keys") || last.contains("F1 keys"), "{name} at {w}: {last}");
+            }
+            // every hint shown is one the view's full footer has, never a cut one
+            assert!(!last.contains('…'), "{name} at {w}: {last}");
+        }
+    }
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("╰ ^S write  F1 keys  esc home ─"), "{f}");
+}
+
+#[test]
+fn help_lists_every_key_of_the_view_and_any_key_closes_it() {
+    let mut a = stepped();
+    ch(&mut a, '?');
+    assert_eq!(a.help, Some(0));
+    let f = shown(&mut a, 60, 16);
+    for k in [
+        "1-3",
+        "pick a step by number",
+        "send the step with Enter",
+        "back to the draft",
+        "any key closes",
+    ] {
+        assert!(f.contains(k), "{k}:\n{f}");
+    }
+    let view = a.view.clone();
+    ch(&mut a, 's');
+    assert_eq!((a.help, &a.view, a.quit), (None, &view, false), "the key only closes it");
+
+    // ? is text in a box: F1 is the way in there, and the overlay names ^N, ⇥ and F2
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    ch(&mut a, '?');
+    assert_eq!((a.help, a.draft.as_str()), (None, "?"));
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 60, 16);
+    for k in ["^N", "next model", "⇥", "^S F2", "back to home"] {
+        assert!(f.contains(k), "{k}:\n{f}");
+    }
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "^C still closes the panel under the overlay");
+}
+
+#[test]
+fn a_short_help_scrolls() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 40, 9);
+    assert!(
+        f.contains("1-7 of 10") && f.contains("any other key closes") && !f.contains("close the panel"),
+        "{f}"
+    );
+    for _ in 0..5 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 40, 9);
+    assert!(f.contains("4-10 of 10") && f.contains("close the panel"), "{f}");
+    key(&mut a, KeyCode::Char('x'));
+    assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
+}
+
+#[test]
+fn an_overscrolled_help_moves_back_at_once() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    shown(&mut a, 40, 9);
+    for _ in 0..20 {
+        key(&mut a, KeyCode::Down);
+        shown(&mut a, 40, 9);
+    }
+    assert_eq!(a.help, Some(3), "10 keys in 7 rows: 3 is the last offset");
+    key(&mut a, KeyCode::Up);
+    assert!(shown(&mut a, 40, 9).contains("3-9 of 10"), "the first Up moves");
+}
+
+#[test]
+fn golden_help() {
+    let mut a = stepped();
+    ch(&mut a, '?');
+    goldens("help-steps", &a, 0);
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    goldens("help-compose", &a, 0);
+}
+
+#[test]
+fn home_tiles_drop_their_description_when_narrow() {
+    let a = app("claude", "claude", CLAUDE_SCREEN);
+    let f = frame(&a, 53, 12, 0);
+    assert!(!f.contains("type once"), "under 50 columns of text:\n{f}");
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("type once: fix spelling, write, …"), "cut with an ellipsis:\n{f}");
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    a.cap.path = format!("/home/u/{}", "deep/".repeat(20));
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("/home/u/deep/deep… │"), "the cap line ends in an ellipsis:\n{f}");
+}
+
+#[test]
+fn home_and_question_scroll_to_the_selection() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    for _ in 0..3 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 40, 8);
+    assert!(f.contains("▎4   Close"), "{f}");
+
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    let long = "Which of these files should I change, given that both hold a timeout? ".repeat(4);
+    a.reply(Ok(format!(
+        "<question>{long}</question><option>first</option><option>second</option><option>third</option>"
+    )));
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▎1   first"), "the options stay on screen:\n{f}");
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▎3   third"), "{f}");
+}
+
+#[test]
+fn a_long_option_wraps_under_itself() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>the configuration file in your home directory</option>".into(),
+    ));
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("│ ▎1   the configuration file in your  │"), "{f}");
+    assert!(f.contains("│      home directory"), "{f}");
+}
+
+#[test]
+fn digits_select_steps() {
+    let mut a = stepped();
+    ch(&mut a, '3');
+    assert!(matches!(a.view, View::Steps { sel: 2, .. }));
+    ch(&mut a, '9');
+    assert!(matches!(a.view, View::Steps { sel: 2, .. }), "no step 9: nothing moves");
+    let f = shown(&mut a, 80, 20);
+    assert!(f.contains("s send") && !f.contains("s run"), "{f}");
+}
+
+#[test]
+fn the_title_gives_way_before_the_count() {
+    let mut a = long_answer(60);
+    a.cap.name = "a-long-window-name-for-a-narrow-popup".into();
+    let top = |a: &mut App, w: u16| shown(a, w, 12).lines().next().unwrap().to_string();
+    let t = top(&mut a, 80);
+    assert!(t.contains("a-long-window-name") && t.contains(" of 63 "), "{t}");
+    key(&mut a, KeyCode::Up);
+    let t = top(&mut a, 40);
+    assert!(
+        t.contains("panel ·") && t.contains('…') && t.contains('▲') && t.contains('▼'),
+        "title cut first: {t}"
+    );
+    let t = top(&mut a, 32);
+    assert!(!t.contains('▲') && t.contains(" of "), "then the arrows go: {t}");
+    let n = t.find(" of ").unwrap();
+    assert!(
+        t[..n].trim_end().chars().last().unwrap().is_ascii_digit(),
+        "the count's start is whole: {t}"
+    );
+}
+
+#[test]
+fn arming_esc_at_the_bottom_keeps_the_last_line() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    ch(&mut a, '1');
+    let body: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+    a.reply(Ok(format!("{}\n<prompt>run the last step</prompt>", body.join("\n"))));
+    assert!(shown(&mut a, 60, 16).contains("run the last step"));
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { armed: true, .. }));
+    let f = shown(&mut a, 60, 16);
+    assert!(
+        f.contains("run the last step"),
+        "the note takes a row from the top, not the end:\n{f}"
+    );
+}
+
+// ---------------------------------------------------------------- verifier round
+
+#[test]
+fn under_the_floor_q_in_a_box_is_dropped_not_typed() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert_eq!((a.draft.as_str(), a.quit), ("", false), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert!(matches!(&a.view, View::Input { text, .. } if text.is_empty()) && !a.quit, "input");
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::ExplainAsk { .. }), "esc still goes back from a box");
+}
+
+#[test]
+fn under_the_floor_a_paste_is_dropped() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    a.paste("rm -rf ~");
+    assert_eq!(a.draft, "");
+    a.tiny = false;
+    a.paste("ls");
+    assert_eq!(a.draft, "ls");
+}
+
+#[test]
+fn going_under_the_floor_closes_the_overlay() {
+    let mut a = explained();
+    ch(&mut a, '?');
+    assert!(a.help.is_some());
+    a.shrunk(true);
+    assert_eq!(a.help, None);
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }),
+        "the card's esc goes back, it arms"
+    );
+}
+
+fn long_question() -> App {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    let long = (1..=12).map(|i| format!("part{i}")).collect::<Vec<_>>().join(" ");
+    a.reply(Ok(format!(
+        "<question>START {long}</question><option>first</option><option>second</option>"
+    )));
+    a
+}
+
+#[test]
+fn a_long_question_shows_its_position_and_scrolls_to_its_start() {
+    let mut a = long_question();
+    let f = shown(&mut a, 30, 7);
+    assert!(
+        f.contains("▎1   first") && !f.contains("START") && f.contains(" of "),
+        "options and a count:\n{f}"
+    );
+    key(&mut a, KeyCode::PageUp);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("START") && f.contains(" 1-"), "PgUp reads the start:\n{f}");
+    key(&mut a, KeyCode::Down);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎2   second"), "a move follows the selection again:\n{f}");
+}
+
+#[test]
+fn heads_and_the_overlay_footer_end_in_an_ellipsis_when_cut() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    let f = shown(&mut a, 28, 12);
+    assert!(f.contains("│ type: command   model: … │"), "{f}");
+    let a = asking();
+    let f = frame(&a, 28, 12, 0);
+    assert!(f.contains("│ what do you want to kno… │"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 28, 8);
+    let last = f.lines().last().unwrap();
+    assert!(last.contains("any other ke… ╯"), "{last}");
+}
+
+#[test]
+fn a_cut_error_or_busy_says_how_much_is_left() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("word ".repeat(80))));
+    let f = shown(&mut a, 30, 8);
+    assert!(f.contains("more lines"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.timeout = Duration::from_secs(120);
+    let f = frame(&a, 30, 8, 400);
+    assert!(f.contains("more line"), "{f}");
+}
+
+#[test]
+fn the_overlay_lists_backspace_and_real_digit_ranges() {
+    let mut a = app("w", "htop", "$ ");
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && !f.contains("1-9"), "three tiles:\n{f}");
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "input");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>a</option><option>b</option><option>c</option>".into(),
+    ));
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && f.contains("answer by number"), "{f}");
+}
+
+#[test]
+fn a_resumed_step_says_inserted_or_sent_in_both_tiers() {
+    let mut a = stepped();
+    ch(&mut a, 's');
+    ch(&mut a, 'y');
+    let r = resume_of(&a);
+    assert_eq!(r.verb, "send");
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r, "ok");
+    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent") && note(&b) == Some("step 1 sent"));
+    let mut th = Theme::fixed();
+    th.g = cockpit_tui::theme::Glyphs::ascii();
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} sent", th.g.done)));
+
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} inserted", th.g.done)));
 }

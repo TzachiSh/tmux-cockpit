@@ -170,7 +170,7 @@ fn the_shipped_write_prompt_never_asks_for_a_file_edit() {
     let _e = Env::new("no-edit", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
     for out in [OutType::Auto, OutType::Command, OutType::Format, OutType::Hint] {
         for window in ["claude", "shell", "ssh", "other"] {
-            let w = prompts::write(&Ctx { out, guess: out, window });
+            let w = prompts::write(&Ctx { out, window });
             assert!(
                 !w.contains("<edit") && !w.contains("<need_file") && !w.contains("<file"),
                 "{out:?} {window}"
@@ -193,6 +193,55 @@ fn a_users_prompt_file_wins_over_the_shipped_one() {
     );
     let write = prompts::write(&Ctx::default());
     assert!(write.ends_with("<examples>\n<example>only mine</example>\n</examples>"), "{write}");
+}
+
+#[test]
+fn termux_is_named_by_either_variable() {
+    let termux = |v: Option<&str>, p: Option<&str>| {
+        let _e = Env::new(
+            "termux",
+            &[("TERMUX_VERSION", v.map(String::from)), ("PREFIX", p.map(String::from))],
+        );
+        (cockpit_tui::panel::is_termux(), prompts::platform())
+    };
+    for (v, p) in [(Some("0.118.0"), None), (None, Some("/data/data/com.termux/files/usr"))] {
+        let (on, platform) = termux(v, p);
+        assert!(on, "{v:?} {p:?}");
+        assert!(
+            platform.starts_with("an Android tablet or phone running Termux (tmux;"),
+            "{platform}"
+        );
+    }
+    let (on, platform) = termux(Some(""), Some("/usr"));
+    assert!(!on);
+    assert!(!platform.contains("Termux"), "{platform}");
+}
+
+#[test]
+fn a_broken_prompt_file_falls_back_and_says_why() {
+    let e = Env::new("broken", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    let d = e.dir.join("cfg/tmux-cockpit/prompts");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("fix.txt"), b"bad \xff byte").unwrap();
+    let (fix, note) = prompts::fix_noted();
+    assert!(
+        fix.starts_with("You correct a draft"),
+        "invalid UTF-8 keeps the shipped text: {fix}"
+    );
+    assert!(note.as_deref().is_some_and(|n| n.contains("fix.txt")), "{note:?}");
+
+    let p = d.join("explain.txt");
+    std::fs::write(&p, "Mine").unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads a mode-000 file anyway; a directory fails for everyone.
+    if std::fs::read(&p).is_ok() {
+        std::fs::remove_file(&p).unwrap();
+        std::fs::create_dir(&p).unwrap();
+    }
+    let (explain, note) = prompts::explain_noted();
+    assert!(explain.starts_with("You help a user understand"), "{explain}");
+    assert!(note.as_deref().is_some_and(|n| n.contains("explain.txt")), "{note:?}");
+    assert_eq!(prompts::write_noted(&Ctx::default()).1, None, "an absent override is no note");
 }
 
 fn fake_tmux(e: &Env, display: &str) {
@@ -234,4 +283,27 @@ fn a_dead_pane_captures_nothing() {
     unsafe { std::env::set_var("COCKPIT_TMUX", t) };
     assert_eq!(capture("%7"), None);
     assert!(!Path::new(&e.dir.join("args")).exists());
+}
+
+#[test]
+fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
+    use cockpit_tui::panel::app::{App, Level, View};
+    use cockpit_tui::panel::capture::Capture;
+    let e = Env::new("noted", &[("XDG_CONFIG_HOME", Some("$D/cfg".into()))]);
+    // a directory where the file should be: it exists, and reading it fails
+    std::fs::create_dir_all(e.dir.join("cfg/tmux-cockpit/prompts/explain.txt")).unwrap();
+    let call = Call {
+        claude: e.exec("claude", "cat >/dev/null; exec sleep 1000"),
+        timeout: Duration::from_secs(77),
+        dir: e.dir.join("cache"),
+    };
+    let mut a = App::new("%3", Capture::default());
+    a.view = View::ExplainAsk { sel: 0 };
+    a.key(crossterm::event::KeyEvent::from(crossterm::event::KeyCode::Enter));
+    a.launch(&call);
+    let n = a.note.clone().expect("a note");
+    assert_eq!(n.level, Level::Warn);
+    assert!(n.text.contains("explain.txt") && n.text.contains("shipped prompt"), "{}", n.text);
+    assert_eq!(a.timeout, Duration::from_secs(77), "the limit comes from the call");
+    a.stop();
 }

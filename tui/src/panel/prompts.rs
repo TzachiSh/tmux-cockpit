@@ -11,38 +11,69 @@ pub const FIX: &str = include_str!("../../prompts/fix.txt");
 const SENT: usize = 9;
 const EXTRA: usize = 2;
 
-/// What the write examples are picked by. `guess` is a local type guess, or
-/// `Auto` when there is none.
+/// What the write examples are picked by.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Ctx {
     pub out: OutType,
-    pub guess: OutType,
     pub window: &'static str,
 }
 
-/// `name` is the file stem: write, write.examples, explain or fix.
-pub fn load(name: &str, shipped: &str) -> String {
+/// `name` is the file stem: write, write.examples, explain or fix. An override
+/// that exists but cannot be read falls back to `shipped`, and the note says why.
+pub fn load(name: &str, shipped: &str) -> (String, Option<String>) {
     let p = super::xdg("XDG_CONFIG_HOME", ".config").join(format!("tmux-cockpit/prompts/{name}.txt"));
-    let text = std::fs::read_to_string(p).unwrap_or_else(|_| shipped.to_string());
-    text.trim_end_matches('\n').to_string()
+    let (text, note) = match std::fs::read_to_string(&p) {
+        Ok(t) => (t, None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (shipped.to_string(), None),
+        Err(e) => {
+            let note = format!("cannot read {}: {e}; using the shipped prompt", p.display());
+            eprintln!("cockpit-tui: {note}");
+            (shipped.to_string(), Some(note))
+        }
+    };
+    (text.trim_end_matches('\n').to_string(), note)
+}
+
+/// The write prompt, and a note for each override that could not be read.
+pub fn write_noted(ctx: &Ctx) -> (String, Option<String>) {
+    let (pool, n1) = load("write.examples", WRITE_EXAMPLES);
+    let (template, n2) = load("write", WRITE);
+    let notes: Vec<String> = n2.into_iter().chain(n1).collect();
+    let note = (!notes.is_empty()).then(|| notes.join("; "));
+    (render(&template, Some(&examples(&pool, ctx))), note)
+}
+
+pub fn explain_noted() -> (String, Option<String>) {
+    let (t, note) = load("explain", EXPLAIN);
+    (render(&t, None), note)
+}
+
+pub fn fix_noted() -> (String, Option<String>) {
+    let (t, note) = load("fix", FIX);
+    (render(&t, None), note)
 }
 
 pub fn write(ctx: &Ctx) -> String {
-    let examples = examples(&load("write.examples", WRITE_EXAMPLES), ctx);
-    render(&load("write", WRITE), Some(&examples))
+    write_noted(ctx).0
 }
 
 pub fn explain() -> String {
-    render(&load("explain", EXPLAIN), None)
+    explain_noted().0
 }
 
 pub fn fix() -> String {
-    render(&load("fix", FIX), None)
+    fix_noted().0
 }
 
 pub fn platform() -> String {
-    let os = if cfg!(target_os = "macos") { "macOS" } else { "Linux" };
-    format!("a {os} terminal (tmux; windows run Claude Code, shells, editors and ssh sessions)")
+    let what = if super::is_termux() {
+        "an Android tablet or phone running Termux"
+    } else if cfg!(target_os = "macos") {
+        "a macOS terminal"
+    } else {
+        "a Linux terminal"
+    };
+    format!("{what} (tmux; windows run Claude Code, shells, editors and ssh sessions)")
 }
 
 const ABOUT_USER: &str = "The user may type fast, so expect typos and missing words.";
@@ -140,7 +171,6 @@ pub fn examples(pool_text: &str, ctx: &Ctx) -> String {
         .collect();
     let want: Vec<String> = [
         (ctx.out != OutType::Auto).then(|| format!("out:{}", ctx.out.as_str())),
-        Some(format!("guess:{}", ctx.guess.as_str())),
         Some(format!("window:{}", ctx.window)),
     ]
     .into_iter()

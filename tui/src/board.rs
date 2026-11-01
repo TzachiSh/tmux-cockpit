@@ -794,13 +794,16 @@ pub fn run() -> Option<String> {
         eprintln!("cockpit-tui: no usable terminal: {e}");
         std::process::exit(1);
     }
+    // the SIGHUP arm usually wins; this covers a hangup that brings no signal
+    crate::backend::exit_on_hangup(crate::push::cleanup);
     let th = Theme::load();
     let active = crate::data::tmux(&["display-message", "-p", "#{pane_id}"])
         .unwrap_or_default()
         .trim()
         .to_string();
     let push = Push::start();
-    let mut term = match crate::backend::init() {
+    // no text box to paste into: the board keeps the input it always had
+    let mut term = match crate::backend::init(false) {
         Ok(t) => t,
         Err(e) => {
             // Push::start() already published the pid and exit() skips Drop

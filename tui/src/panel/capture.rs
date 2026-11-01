@@ -162,13 +162,16 @@ fn errored(tail: &[&str]) -> bool {
     })
 }
 
+/// The commands that make a window an ssh session: a remote shell on the far side.
+pub const SSH_LIKE: [&str; 6] = ["ssh", "proot", "coder", "mosh", "mosh-client", "autossh"];
+
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {
     if is_claude(name, cmd) {
         "claude"
     } else if ["bash", "zsh", "fish", "sh"].contains(&cmd) {
         "shell"
-    } else if ["ssh", "proot", "coder", "mosh", "mosh-client", "autossh"].contains(&cmd) {
+    } else if SSH_LIKE.contains(&cmd) {
         "ssh"
     } else {
         "other"

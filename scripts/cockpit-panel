@@ -7,9 +7,14 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
+# shellcheck source=lib/pane.sh
+. "$DIR/scripts/lib/pane.sh" || exit 1
 
-# %<digits> only: the value reaches a tmux target or a script argument.
-is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+# $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
+log() {
+    local ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-panel: %s\n' "$ts" "$*" >> "$LOG"
+}
 
 PANE=
 case "${1:-}" in
@@ -18,12 +23,16 @@ case "${1:-}" in
 esac
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
+# The messages outside a paste; under COCKPIT_READONLY they go to the log only.
+tell() {
+    if [ -n "${COCKPIT_READONLY:-}" ]; then log "readonly, not said: $1"; else tmux "${say[@]}" "$1" 2>/dev/null; fi
+}
 
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: the panel needs cockpit-tui: prefix U fetches it" 2>/dev/null
+    tell "cockpit: the panel needs cockpit-tui: prefix U fetches it"
     exit 0
 fi
-is_pane "$PANE" || { tmux "${say[@]}" "cockpit: the panel needs a pane id, not [$PANE]" 2>/dev/null; exit 0; }
+is_pane "$PANE" || { tell "cockpit: the panel needs a pane id, not [$PANE]"; exit 0; }
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
@@ -33,59 +42,87 @@ f="$d/act"
 buf="cockpit-panel-$$"
 trap 'rm -rf "$d"' EXIT
 
-# CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" panel "$PANE" 2>>"$LOG" || {
-    rc=$?
-    tmux "${say[@]}" "cockpit: the panel exited $rc — see $LOG" 2>/dev/null
-    exit 0
+# The action, run the way the binary asked; `last` says how it went, for a resume.
+act() {
+    # One line, `<verb> <pane-id>`; see cockpit-board for why the read is shaped so.
+    local verb='' target='' rest='' bad='' want='' now='' before='' err n i
+    read -r verb target rest 2>/dev/null < "$f"
+    [ -n "$verb" ] || return 1
+    [ -z "$rest" ] || bad=1
+    case "$verb" in paste|send) ;; *) bad=1 ;; esac
+    is_pane "$target" || bad=1
+    # The binary only ever answers for the pane it was opened on.
+    [ "$target" = "$PANE" ] || bad=1
+    if [ -n "$bad" ]; then
+        log "ignored action line [$verb $target $rest]"
+        return 1
+    fi
+
+    [ -s "$f.text" ] || return 1
+    # Screenshots and probes: the whole panel runs, and the pane is never written.
+    if [ -n "${COCKPIT_READONLY:-}" ]; then
+        log "readonly, not sent: $verb $target"
+        last="failed:COCKPIT_READONLY is set; nothing sent"
+        return 0
+    fi
+    # The answer was written for what the pane ran at capture time; a Claude Code
+    # that exited since would take the prose as shell input.
+    read -r want 2>/dev/null < "$f.cmd"
+    now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
+    if [ -z "$want" ] || [ "$now" != "$want" ]; then
+        tmux display-message -t "$target" "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" 2>/dev/null
+        log "$target now runs [$now], not [$want]; nothing sent"
+        last="failed:the pane now runs ${now:-nothing}, not ${want:-?}"
+        return 0
+    fi
+    if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
+        log "load-buffer failed for $target: ${err:-no error text}"
+        tmux "${say[@]}" "cockpit: could not load the paste buffer; nothing sent to $target" 2>/dev/null
+        last="failed:could not load the paste buffer"
+        return 0
+    fi
+    # -p brackets the paste when the program asked for it; -d drops the buffer after.
+    [ "$verb" = send ] && before=$(tmux capture-pane -p -t "$target" 2>/dev/null)
+    if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
+        tmux delete-buffer -b "$buf" 2>/dev/null
+        log "paste-buffer failed for $target: ${err:-no error text}"
+        tmux "${say[@]}" "cockpit: could not paste into $target; nothing sent" 2>/dev/null
+        last="failed:could not paste into $target"
+        return 0
+    fi
+    last=ok
+    if [ "$verb" != send ]; then
+        n=$(strip | wc -m)
+        tmux "${say[@]}" "cockpit: inserted $((n)) chars into $target" 2>/dev/null
+        return 0
+    fi
+    # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
+    # paste, so wait for the paste to show first: at most 20 x 50 ms.
+    i=0
+    while [ "$i" -lt 20 ] && [ "$(tmux capture-pane -p -t "$target" 2>/dev/null)" = "$before" ]; do
+        sleep 0.05; i=$((i + 1))
+    done
+    tmux send-keys -t "$target" Enter 2>/dev/null
+    tmux "${say[@]}" "cockpit: sent to $target" 2>/dev/null
+    return 0
 }
-
-# One line, `<verb> <pane-id>`; see cockpit-board for why the read is shaped so.
-verb='' target='' rest=''
-read -r verb target rest 2>/dev/null < "$f"
-[ -n "$verb" ] || exit 0
-bad=
-[ -z "$rest" ] || bad=1
-case "$verb" in paste|send) ;; *) bad=1 ;; esac
-is_pane "$target" || bad=1
-# The binary only ever answers for the pane it was opened on.
-[ "$target" = "$PANE" ] || bad=1
-if [ -n "$bad" ]; then
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: ignored action line [%s]\n' "$ts" "$verb $target $rest" >> "$LOG"
-    exit 0
-fi
-
-[ -s "$f.text" ] || exit 0
-# Screenshots and probes: the whole panel runs, and the pane is never written.
-if [ -n "${COCKPIT_READONLY:-}" ]; then
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: readonly, not sent: %s %s\n' "$ts" "$verb" "$target" >> "$LOG"
-    exit 0
-fi
-# The answer was written for what the pane ran at capture time; a Claude Code
-# that exited since would take the prose as shell input.
-want='' now=''
-read -r want 2>/dev/null < "$f.cmd"
-now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
-if [ -z "$want" ] || [ "$now" != "$want" ]; then
-    tmux display-message -t "$target" "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" 2>/dev/null
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: %s now runs [%s], not [%s]; nothing sent\n' "$ts" "$target" "$now" "$want" >> "$LOG"
-    exit 0
-fi
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
-LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" | tmux load-buffer -b "$buf" - 2>/dev/null || exit 0
-# -p brackets the paste when the program asked for it; -d drops the buffer after.
-before=
-[ "$verb" = send ] && before=$(tmux capture-pane -p -t "$target" 2>/dev/null)
-tmux paste-buffer -p -d -b "$buf" -t "$target" 2>/dev/null || { tmux delete-buffer -b "$buf" 2>/dev/null; exit 0; }
-[ "$verb" = send ] || exit 0
-# Ink apps (Claude Code) can drop an Enter that lands in the same read as the
-# paste, so wait for the paste to show first: at most 20 x 50 ms.
-i=0
-while [ "$i" -lt 20 ] && [ "$(tmux capture-pane -p -t "$target" 2>/dev/null)" = "$before" ]; do
-    sleep 0.05; i=$((i + 1))
+strip() { LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text"; }
+
+# Steps stay open across actions: the binary leaves $f.state beside the action
+# line and is run again on it, in this same popup, until it exits with none.
+resume=() last=
+while :; do
+    rm -f "$f" "$f.text" "$f.cmd" "$f.state"
+    # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
+        rc=$?
+        tell "cockpit: the panel exited $rc — see $LOG"
+        exit 0
+    }
+    rm -f "$d/resume"
+    act || exit 0
+    [ -s "$f.state" ] || exit 0
+    mv -f "$f.state" "$d/resume" || exit 0
+    resume=(--resume "$d/resume" --last "$last")
 done
-tmux send-keys -t "$target" Enter 2>/dev/null
-exit 0

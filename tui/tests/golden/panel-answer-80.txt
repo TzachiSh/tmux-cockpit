@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ f follow up  i insert  s send  ↑↓ scroll  esc home ──────────────────────────╯"
+"╰ i insert  s send  f follow up  ↑↓ scroll  ? keys  esc home ──────────────────╯"

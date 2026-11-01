@@ -136,6 +136,22 @@ a popup.
 `@cockpit_tui_pid` on the owner's live server. Use it for screenshots and
 benchmarks.
 
+**The panel's prompts.** A file at
+`${XDG_CONFIG_HOME:-$HOME/.config}/tmux-cockpit/prompts/<name>.txt`, with
+`<name>` one of `write`, `write.examples`, `explain` or `fix`, replaces the
+shipped prompt of that name; the `{{platform}}`, `{{home}}`, `{{about_user}}`
+and `{{examples}}` placeholders are filled in it the same way. A missing file
+means the shipped prompt. A file that exists but cannot be read (permissions,
+invalid UTF-8) also falls back to the shipped prompt, and the reason goes to
+`tui.log`.
+
+**The panel's cache.** `claude -p` reads its system prompt from a file, so each
+distinct prompt is written once to
+`${XDG_CACHE_HOME:-$HOME/.cache}/tmux-cockpit/panel/prompts/<hash>.txt`, mode
+0600 in a 0700 directory. `tmux-cockpit/panel` is also the call's working
+directory. Nothing prunes it; a new file appears only when a prompt's text
+changes.
+
 ## The screens
 
 ### The board
@@ -209,6 +225,48 @@ a scrollbar.
 │                               q    close   ·   esc close overlay       │
 ╰ any key closes ────────────────────────────────────────────────────────╯
 ```
+
+### The panel on a small screen
+
+The panel is built down to 28x7, the floor measured over every view: under 28
+columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
+rows Explain's heading leaves no body row. Below it the panel draws one card,
+`make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
+they do on the view under the card (an Answer still asks first, Compose keeps its
+draft, only Home closes), `^C` quits. Any other key, `q` typed into a box and a
+paste are dropped: nobody can see what they would do. An open `?` closes.
+
+At 40x12 (a phone in portrait), Steps:
+
+```
+╭ panel · %3 · work ───────────────────╮
+│ Steps (bash)                         │
+│                                      │
+│  1 Remove the old build              │
+│      $ rm -rf target                 │
+│      ⚠ risky: rm                     │
+│ ▎2 Build again                       │
+│      $ cargo build --release         │
+│  3 Tap Allow in the app              │
+│                                      │
+│                                      │
+╰ i insert  s send  ? keys  esc draft ─╯
+```
+
+- **Footers drop whole hints**, lowest priority first, never cut one. `esc` and
+  the help key always stay, and `esc` names where it goes: `home`, `draft`,
+  `answer`, `back`, `cancel` or `close`.
+- **`?` lists every key of the view on screen**, `^N`, `⇥` and `F2` included,
+  and each `esc` row says where it leads, so the way back to Home reads off the
+  chain. In the Compose box and the one-line boxes `?` is text, so `F1` opens it
+  there (and everywhere else). Any key closes it; `↑↓` scroll it when it does not fit.
+- **Home, Question and Steps keep the selection on screen.** A long question
+  scrolls with its options, so the options never fall off the bottom; its
+  `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
+- **Tiles** drop their description under 50 columns of text and cut it with an
+  ellipsis above; a long option or step note wraps under itself.
+- **The top border** gives the title way first, with an ellipsis, then drops the
+  indicator's arrows; the `N-M of T` count is never cut, only dropped whole.
 
 ### The triage overlay
 
@@ -343,6 +401,45 @@ nothing. `paste` and `send` carry text, which goes to `$COCKPIT_ACTION.text`,
 mode 0600, control characters stripped; with `COCKPIT_ACTION` unset the panel
 refuses them and exits 1.
 
+Beside it, `$COCKPIT_ACTION.cmd` is one line: the pane's
+`#{pane_current_command}` when the panel captured it. Both files are written
+before the action line, each created new with `O_NOFOLLOW`. `scripts/cockpit-panel`
+reads the pane's current command again just before the paste; when the two
+differ (a Claude Code that exited would take the answer as shell input), it
+pastes nothing, logs it, and says
+`cockpit: the pane now runs <now>, not <then>; nothing sent`.
+
+**Steps stay open.** An action taken from the Steps view also leaves
+`$COCKPIT_ACTION.state`, written before the action line, created new with
+`O_NOFOLLOW`, mode 0600. It holds what the view needs to come back: a
+`cockpit-panel-state 1` head, the pane, the captured command, the label, the
+step the action was for, the verb, then one `step <done 0|1>\t<lang>\t<note>\t<cmd>`
+line per step (`\\`, `\n`, `\r`, `\t` escaped). After running the action the
+wrapper moves it aside and runs the binary again in the same popup:
+
+```
+cockpit-tui panel %N --resume <state> --last ok|failed:<why>
+```
+
+`ok` marks that step `✓ inserted` or `✓ sent`, by the verb (earlier rounds' steps `✓ done`:
+the state file keeps no verb per step), and selects the next one with a command;
+`failed:<why>` shows why as an error note and marks nothing. The loop ends when
+the binary exits with no action, or with one taken anywhere but Steps. The
+binary reads the file back strictly: no symlink, a regular file of at most
+64 KiB (checked before the open, which is non-blocking, and again on the open
+file), version 1, at most 64 steps, every line in its place, and the pane must
+be the one it was opened on, or it opens on Home with an error note. The
+command written back is the captured one, so the wrapper's pane guard still
+compares against what the steps were written for. The binary still executes
+nothing: every paste and Enter is the wrapper's.
+
+The wrapper ends every action in one `display-message` on the pane:
+`cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
+`send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
+`cockpit: could not paste into %N; nothing sent` when tmux refuses (tmux's
+error goes to the log). Under `COCKPIT_READONLY` it runs no tmux command at
+all and only logs what it would have sent.
+
 **Signatures.** Frozen; each lane changes bodies only.
 
 ```
@@ -354,9 +451,9 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | fleet | info %N | ask %N | panel %N | --rows |
---json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
-`board`; `panel %N` ships with the panel UI.
+**CLI:** `cockpit-tui board | panel %N [--resume <state> --last <how>] |
+transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
+board reaches those through the action file and the shell scripts.
 
 **Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
 tail <jsonl> [max]` is the transcript reader of `scripts/lib/transcript.sh`,
@@ -444,7 +541,7 @@ workspace, no crate split.
 
 | module | owns |
 |--------|------|
-| `backend` | the VS16 wide-glyph shim over the Crossterm backend, and `init()` |
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
@@ -488,8 +585,9 @@ preceding VS16 glyph covers, the batch is flushed and that cell starts a fresh
 delegated `draw`, so the backend emits an absolute `MoveTo` while the cell keeps
 its real symbol and style.
 
-The upstream fix is ratatui#2721. Delete `backend.rs` once a ratatui-crossterm
-newer than 0.1.2 ships. Do not add a CJK `suppress_until` branch: it is unreachable
+The upstream fix is ratatui#2721. Delete the shim (`WideCellBackend`) once a
+ratatui-crossterm newer than 0.1.2 ships; `init()` and `restore()` stay, since
+they also own the panel's bracketed paste. Do not add a CJK `suppress_until` branch: it is unreachable
 given the diff above, and would silently drop a real cell if it ever were
 reached.
 
@@ -507,6 +605,12 @@ answers nothing. The binary probes with `event::poll(Duration::ZERO)` before it
 initialises the terminal and prints one line instead. Reproduced with `setsid`,
 with `</dev/null`, and with a non-tty stdin; a real `display-popup -E` has a pty
 and is fine.
+
+**A panel outlives its tmux server.** crossterm 0.29 rereads a hung-up tty
+forever, so a loop blocked in `event::read` never sees its signal flag again.
+The board and the panel each run a thread that `poll`s the tty for `POLLHUP`
+or `POLLERR` and exits when it comes; the action file is left unwritten. A
+`POLLNVAL` (Darwin's `poll` takes no devices) leaves the process unwatched.
 
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at

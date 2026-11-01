@@ -7,9 +7,14 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
+# shellcheck source=lib/pane.sh
+. "$DIR/scripts/lib/pane.sh" || exit 1
 
-# %<digits> only: the value reaches a tmux target or a script argument.
-is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+# $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
+log() {
+    local ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-board: %s\n' "$ts" "$*" >> "$LOG"
+}
 
 PANE=
 case "${1:-}" in
@@ -48,10 +53,8 @@ bad=
 case "$verb" in *[!a-z]*) bad=1 ;; esac
 is_pane "$target" || bad=1
 # The binary ships on its own tag, so log grammar drift instead of ignoring it.
-# $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 if [ -n "$bad" ]; then
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-board: ignored action line [%s]\n' "$ts" "$verb $target $rest" >> "$LOG"
+    log "ignored action line [$verb $target $rest]"
     exit 0
 fi
 
@@ -69,8 +72,7 @@ case "$verb" in
     deliver) tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null ;;
     # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
     *)
-        ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-        printf '%s cockpit-board: unknown verb [%s]\n' "$ts" "$verb $target" >> "$LOG"
+        log "unknown verb [$verb $target]"
         tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null
         ;;
 esac

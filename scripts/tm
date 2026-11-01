@@ -88,8 +88,11 @@ ask_name() {
 in_client() {
   [ -n "${TMUX:-}" ] || return 1
   local n
-  # A popup has $TMUX but no $TMUX_PANE; its session id is $TMUX's last field (#45).
-  n=$(tmux display-message -p -t "${TMUX_PANE:-\$${TMUX##*,}}" '#{session_attached}' 2>/dev/null) || return 1
+  # $TMUX's last field is the session id, in a pane and in a popup (#45). A popup's
+  # $TMUX_PANE is inherited from the server's start env and names some other pane.
+  n=$(tmux display-message -p -t "\$${TMUX##*,}" '#{session_attached}' 2>/dev/null)
+  [ -n "$n" ] || [ -z "${TMUX_PANE:-}" ] \
+    || n=$(tmux display-message -p -t "$TMUX_PANE" '#{session_attached}' 2>/dev/null)
   [ -n "$n" ] && [ "$n" -gt 0 ] 2>/dev/null
 }
 
