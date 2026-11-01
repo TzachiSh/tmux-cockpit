@@ -9,6 +9,7 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/hook.sh" || exit 0
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 0
+# shellcheck disable=SC2317,SC2329  # called by read_payload
 has_path() { case $payload in *'"worktree_path"'*:*'"'*'"'*) return 0 ;; esac; return 1; }
 read_payload has_path
 json_str worktree_path

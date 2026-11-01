@@ -1,0 +1,19 @@
+name: shellcheck
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+      # make lint skips without shellcheck, so the --version above is what
+      # makes a failed install fail the job instead of linting nothing.
+      - run: make lint

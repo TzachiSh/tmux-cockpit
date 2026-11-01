@@ -32,7 +32,7 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/hook.sh
 . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
 
-# shellcheck disable=SC2329  # called by read_payload
+# shellcheck disable=SC2317,SC2329  # called by read_payload
 have_fields() {
     case $payload in
         *'"transcript_path"'*'"session_id"'*|*'"session_id"'*'"transcript_path"'*) return 0 ;;

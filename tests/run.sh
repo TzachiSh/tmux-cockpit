@@ -7975,6 +7975,7 @@ FO="cockpit-fo-$$"; SOCKS="$SOCKS $FO"; FOD=$(mktmpd)
 "$TMUX_REAL" -L "$FO" -f /dev/null new-session -d -s t -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1
 for _ in 1 2 3 4; do "$TMUX_REAL" -L "$FO" new-window -t t: -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1; done
 "$TMUX_REAL" -L "$FO" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+# shellcheck disable=SC2317,SC2329  # called by until_out
 fo_cmds() { "$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_current_command}' | tr '\n' ' '; }
 until_out 'claude claude claude claude claude ' fo_cmds
 # Created in an order that matches no ranking, so only the sort can produce the expected one.
@@ -10779,6 +10780,7 @@ for f in "$FZTD"/argv-*-"$$".*; do
 done
 is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
 
+# shellcheck disable=SC2002  # cat, so a missing log still counts 0
 is "a picker open never probes fzf --version" "0" \
    "$(cat "$FZTD/vlog-tm-attach" 2>/dev/null | grep -c .)"
 
@@ -11066,6 +11068,7 @@ if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
     is "and one --color, the shared theme's" "1" "$(grep -c '^--color=' "$rr_argv" 2>/dev/null)"
     is "the user's own options still come last, so they win" "yes" \
        "$( [ "$(grep -n '^--color=' "$rr_argv" | cut -d: -f1)" -lt "$(grep -c . "$rr_argv")" ] && echo yes || echo no )"
+    # shellcheck disable=SC2002  # cat, so a missing log still counts 0
     is "a fleet queue open never probes fzf --version" "0" \
        "$(cat "$RRW/cap-100.vlog" 2>/dev/null | grep -c .)"
     # The footer draws its own rule; --header-border=bottom is the matching one
@@ -11513,6 +11516,7 @@ is "a version newer than any known one is still read" \
    "future prompt" "$(trrow "$TRF/newer.jsonl" asked 2)"
 is "transcript_tail also refuses the old version" \
    "1:" "$(transcript_tail "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
+# shellcheck disable=SC2123  # emptying the search path is the test
 NOJQ=$(PATH=/nonexistent; for f in "transcript_doing $TRF/open.jsonl" "transcript_tail $TRF/open.jsonl" \
         "transcript_file %1"; do $f 2>&1; echo -n "$? "; done)
 is "with jq off PATH all three readers print nothing, even on stderr, and return 1" \
@@ -11593,7 +11597,7 @@ TRBIN="$(mktmpd)"
 TRKID=
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     TRKID=$(pgrep -P "$TRPID" sleep | head -1); [ -n "$TRKID" ] && break
-    read -t 0.2 <> <(:) 2>/dev/null
+    read -r -t 0.2 <> <(:) 2>/dev/null
 done
 cat > "$TRBIN/claude" <<FAKE
 #!/bin/sh
