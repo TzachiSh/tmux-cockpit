@@ -7,7 +7,7 @@
 set -u
 
 state="${1:-off}"
-poll=""
+poll="" view=""
 if [ "$state" = poll ]; then
     # poll <state> <pane> [ask]: the agent-view poller's write (#174). It owns the state, so
     # the stickiness below does not apply, and it may only write a closed set of values.
@@ -35,7 +35,6 @@ notify)
     read_payload false
     # The English text match covers Claude versions that send no notification_type.
     json_str notification_type
-    view=""
     case "$REPLY" in
         permission_prompt|elicitation_dialog) state=needs-input ;;
         # The front end relays these for an agent view (#174): the pane is then the poller's.
@@ -155,7 +154,17 @@ body="$body ; if -F -t $pane '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t
 body="$body ; if -F -t $pane '#{!=:$fmt_fleet,#{@cockpit_fleet}}' { set-option -gqF -t $pane @cockpit_fleet '$fmt_fleet' }"
 body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
 # Fail-open: a hook must never block the agent that fired it.
-tui_pid=$(tmux if-shell -F -t "$pane" "$when" "${body# ; }" 2>/dev/null || true)
+# A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
+# notification means the pane is a plain session again: the mark from an earlier agent-view
+# visit would have the poller overwrite its states every tick (#174). The same invocation, and
+# outside `when`, so a pane that is already in the state still loses it.
+unmark=()
+if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
+    unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
+        "set-option -pu -t $pane @cockpit_agentview" ';')
+fi
+tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} if-shell -F -t "$pane" "$when" "${body# ; }" \
+    2>/dev/null || true)
 
 # A published pid outlives its process and SIGUSR1 terminates by default, so verify
 # the name before signalling (see AGENTS.md).

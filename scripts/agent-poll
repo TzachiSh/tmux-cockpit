@@ -22,31 +22,43 @@ interval() {                  # -> seconds, or "off"
 }
 
 # One slot per server. The claim is a compare-and-set inside the tmux server, which runs one
-# command at a time, so two pollers racing for a stale slot cannot both win.
+# command at a time: the slot is taken only if it still holds what was read, whether that was
+# nothing or a dead poller's pid, so two pollers racing for it cannot both win. A poller also
+# rechecks the slot every tick (tick below), so a wrong answer from poll_alive costs one tick.
 claim() {
     local cur; cur=$(tmux show-option -gqv @cockpit_poll_pid 2>/dev/null)
     if [ -n "$cur" ] && [ "$cur" != "$$" ] && poll_alive "$cur"; then return 1; fi
-    case "$cur" in
-        ''|*[!0-9]*) tmux set-option -g @cockpit_poll_pid "$$" 2>/dev/null ;;
-        *) tmux if-shell -F "#{==:#{@cockpit_poll_pid},$cur}" \
-               "set-option -g @cockpit_poll_pid $$" 2>/dev/null ;;
-    esac
+    # Not a pid: clear it, then compete for the empty slot like everyone else.
+    case "$cur" in *[!0-9]*) tmux set-option -gu @cockpit_poll_pid 2>/dev/null; cur="" ;; esac
+    tmux if-shell -F "#{==:#{@cockpit_poll_pid},$cur}" \
+        "set-option -g @cockpit_poll_pid $$" 2>/dev/null
     [ "$(tmux show-option -gqv @cockpit_poll_pid 2>/dev/null)" = "$$" ]
 }
-release() {                   # only our own pid: a later poller's stays
+# Our own pid only (a later poller's stays), and the sleep child goes with us.
+release() {
     tmux if-shell -F "#{==:#{@cockpit_poll_pid},$$}" "set-option -gu @cockpit_poll_pid" 2>/dev/null
+    [ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null
     return 0
+}
+
+# Why the last read failed, in @cockpit_poll_err (cleared by a good one): without it a poller
+# that cannot run claude or jq is silent, and the stuck pane looks like #174 again.
+poll_err() {                  # <reason> | "" ; one tmux call per change
+    [ "$1" = "$lasterr" ] && return 0
+    if [ -n "$1" ]; then tmux set-option -g @cockpit_poll_err "$1" 2>/dev/null
+    else tmux set-option -gu @cockpit_poll_err 2>/dev/null; fi
+    lasterr=$1
 }
 
 # One tick. 0: carry on. 1: nothing left to serve (or no server): stop.
 tick() {
-    local rows live="" line pane isagent worst name out st
-    rows=$(tmux list-panes -a -f '#{==:#{@cockpit_agentview},1}' -F \
-        '#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null) \
-        || return 1
+    local rows live="" line pane isagent owner="" worst name out st
+    local fmt='#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'
+    rows=$(tmux list-panes -a -f '#{==:#{@cockpit_agentview},1}' \
+        -F "$fmt #{@cockpit_poll_pid}" 2>/dev/null) || return 1
     while IFS= read -r line; do
         [ -n "$line" ] || continue
-        pane=${line%% *}; isagent=${line##* }
+        pane=${line%% *}; line=${line#* }; isagent=${line%% *}; owner=${line#* }
         if [ "$isagent" = 1 ]; then live="$live $pane"
         else tmux set-option -pu -t "$pane" @cockpit_agentview 2>/dev/null   # claude left: not ours
         fi
@@ -54,11 +66,14 @@ tick() {
 $rows
 EOT
     [ -n "$live" ] || return 1
-    command -v jq >/dev/null 2>&1 || return 0
-    command -v claude >/dev/null 2>&1 || return 0
+    # Someone else holds the slot (it was taken over): leave it to them.
+    [ "$once" = 1 ] || [ "$owner" = "$$" ] || return 1
+    command -v jq >/dev/null 2>&1 || { poll_err "no jq on PATH"; return 0; }
+    command -v claude >/dev/null 2>&1 || { poll_err "no claude on PATH"; return 0; }
     # timeout is GNU coreutils; a box without it still polls, unbounded.
     local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 5"
-    out=$($to claude agents --json --all 2>/dev/null) || return 0
+    out=$($to claude agents --json --all 2>/dev/null) \
+        || { poll_err "claude agents failed"; return 0; }
     # Line 1 the worst state, line 2 the name of the first blocked session. An unknown state
     # (research preview) is in no bucket; anything but an array is an error, not "no sessions".
     out=$(jq -r '
@@ -73,12 +88,15 @@ EOT
         | $w, (if $w == "blocked"
                then (($bl[0].name // $bl[0].id // "session") | tostring
                      | gsub("[\u0000-\u001f]"; " "))
-               else "" end)' 2>/dev/null <<<"$out") || return 0
+               else "" end)' 2>/dev/null <<<"$out") \
+        || { poll_err "claude agents gave unreadable json"; return 0; }
     worst=${out%%$'\n'*}; name=${out#*$'\n'}
     case "$worst" in
         blocked) st=needs-input ;; failed) st=error ;; working) st=running ;;
-        done) st=done ;; idle) st=off ;; *) return 0 ;;
+        done) st=done ;; idle) st=off ;;
+        *) poll_err "claude agents gave unreadable json"; return 0 ;;
     esac
+    poll_err ""
     for pane in $live; do
         "$here/agent-state" poll "$st" "$pane" "$name needs you" >/dev/null 2>&1
     done
@@ -86,10 +104,11 @@ EOT
 }
 
 [ "$(interval)" = off ] && exit 0
+sleeper=""
+lasterr=$(tmux show-option -gqv @cockpit_poll_err 2>/dev/null)
 if [ "$once" = 1 ]; then tick; exit 0; fi
 
 claim || exit 0
-sleeper=""
 # Every exit path lets go of the slot; the signal handlers turn into exits so EXIT runs.
 trap 'release' EXIT
 trap 'exit 143' TERM
