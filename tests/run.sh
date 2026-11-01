@@ -1380,7 +1380,7 @@ cat > "$TMF/tmux" <<'FAKETMUX'
 #!/bin/sh
 printf '%s\n' "$*" >> "$TMF_LOG"
 case "$1" in
-  has-session)     exit 0 ;;   # the session already exists, so go() skips creation
+  list-sessions)   echo '$4 target' ;;   # the session already exists, so go() skips creation
   display-message) echo 1; exit 0 ;;
   *)               exit 0 ;;
 esac
@@ -1389,7 +1389,7 @@ chmod +x "$TMF/tmux"
 TMF_LOG="$TMF/log"; export TMF_LOG
 env -u TMUX -u TMUX_PANE TMF_LOG="$TMF_LOG" PATH="$TMF:$PATH" "$DIR/scripts/tm" target >/dev/null 2>&1
 tmfline=$(grep '^attach-session' "$TMF_LOG" 2>/dev/null | head -1)
-is "tm attaches with -d so the newest client takes the session" "attach-session -d -t =target" "$tmfline"
+is "tm attaches with -d so the newest client takes the session" "attach-session -d -t \$4" "$tmfline"
 rm -rf "$TMF"
 "$TMUX_REAL" -L "$TCO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TC" kill-server >/dev/null 2>&1
@@ -2010,9 +2010,8 @@ rm -rf "$DA" "$DB" "$NOCOLD"
 fi
 
 echo "== tm: the kill picker and the name cleaner =="
-# Without fzf the picker is a `select`, and Ctrl-D leaves the choice variable
-# unset. Under `set -u` the very next line -- ${#doomed[@]} -- aborted the
-# script with "unbound variable" instead of exiting quietly.
+# Without fzf the kill picker lists the sessions and reads a name. An empty
+# answer -- Ctrl-D, or no input at all -- must exit quietly under `set -u`.
 TMS=$(mktmpd)
 for c in readlink bash grep sleep; do ln -s "$(command -v $c)" "$TMS/$c"; done
 cat > "$TMS/tmux" <<'STUB'
@@ -2052,7 +2051,7 @@ STUB
 # next case, not this one.
 printf -- '-weird name\n' | env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" \
     TM_LOG="$TMS/log" "$DIR/scripts/tm" >/dev/null 2>&1
-is "a leading dash never reaches tmux" "NEW new-session -d -s weird_name -c $PWD" "$(cat "$TMS/log")"
+is "a leading dash never reaches tmux" "NEW new-session -d -P -F #{session_id} -s weird_name -c $PWD" "$(cat "$TMS/log")"
 # Cancelling the prompt used to create a session named "": ask_name's exit
 # only left its $(...) subshell, so go ran with an empty name (#132).
 : > "$TMS/log"
@@ -2126,7 +2125,7 @@ for rdir in '$HOME/elsewhere' '~/elsewhere'; do
         TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
   case "$err" in
       # The restored session in the picker, which is what the user came for.
-      *'1) alpha'*) ok "@resurrect-dir $rdir names the save tm waits for" ;;
+      *'Sessions:'*alpha*) ok "@resurrect-dir $rdir names the save tm waits for" ;;
       *) bad "@resurrect-dir $rdir names the save tm waits for" \
              "the restored picker" "$err" ;;
   esac
@@ -2178,7 +2177,7 @@ mkdir -p "$TMS/dotfiles/tmux/plugins/tmux-resurrect"   # a TPM path nobody probe
 err=$(env -u TMUX -u XDG_CONFIG_HOME HOME="$TMS" PATH="$TMS" TM_RESTORE=1 \
       TM_LOG="$TMS/log" "$DIR/scripts/tm" </dev/null 2>&1 >/dev/null)
 case "$err" in
-    *'1) alpha'*) ok "a save in the default directory counts as installed" ;;
+    *'Sessions:'*alpha*) ok "a save in the default directory counts as installed" ;;
     *) bad "a save in the default directory counts as installed" \
            "the restored picker" "$err" ;;
 esac
@@ -3882,53 +3881,285 @@ case "$(os_run always 'f.txt')" in
 esac
 fi
 
-echo "== tm: typing filters, ^X kills, the attached session survives =="
-# A bare "k" -- the first key of filtering to "kanban" -- used to kill the
-# highlighted session instantly, including the one you were attached to.
-if need_tmux "tm picker"; then :; else
+echo "== tm --rows and the kill rules: needs-you first, your own last, tiers by the list's width =="
+# Driven with $FZF_COLUMNS, the width fzf hands a reload. nosgr drops tm's own
+# colours only: an agent's escape has lost its ESC byte if tm stripped it.
+if need_tmux "tm rows"; then :; else
+TR="cockpit-tmrows-$$"; SOCKS="$SOCKS $TR"
+trt() { "$TMUX_REAL" -L "$TR" "$@"; }
+trt -f /dev/null new-session -d -s here -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+trt set -g @cockpit_agents_glob '|claude|'
+trt new-session -d -s quiet 'exec sleep 300'
+trt new-session -d -s busy 'exec -a claude sleep 300'
+trt new-session -d -s waits 'exec -a claude sleep 300'
+trt new-session -d -s broken 'exec -a claude sleep 300'
+trs() {                       # trs <session> <state> [ask] -- what agent-state leaves behind
+    trt set -p -t "$1:" @panestate "$2"; trt set -w -t "$1:" @cockpit_win_state "$2"
+    [ -z "${3:-}" ] || trt set -p -t "$1:" @panestate_msg "$3"
+}
+trid() { trt display-message -p -t "$1:" '#{session_id}'; }
+trs here idle; trs busy running; trs broken error 'API Error: 529'
+# Escapes, a tab and a newline: agent free text, as another writer could leave it.
+trs waits needs-input "$(printf 'Allow \033[31medit\tto src/a.rs?\nmore\177')"
+TRX="$SOCKDIR/$TR,0,$(trid here | tr -d '$')"
+TRSGR=$(printf '\037\037\037\037\037\037')
+nosgr() { sed $'s/\033\\[[0-9;]*m//g'; }
+trrows() { env TMUX="$TRX" TM_SGR="$TRSGR" "$@" "$DIR/scripts/tm" --rows | nosgr; }
+trw=$(trrows env FZF_COLUMNS=200)
+is "the header counts the sessions and the states worth a look" \
+   "	5 sessions · ▲1 · ✕1 · ●1" "$(printf '%s\n' "$trw" | head -1)"
+is "needs-you first, error second, your own session last" "waits broken here" \
+   "$(printf '%s\n' "$trw" | sed -n '2p;3p;6p' | cut -f3 | tr '\n' ' ' | sed 's/ $//')"
+is "field 1 is the session id, so a name tmux cannot target still works" "$(trid waits)" \
+   "$(printf '%s\n' "$trw" | sed -n 2p | cut -f1)"
+is "the jump numbers follow the rows" "1 2 3 4 5" \
+   "$(printf '%s\n' "$trw" | sed 1d | cut -f2 | cut -c1 | tr '\n' ' ' | sed 's/ $//')"
+is "a wide row: glyph, name, agents, windows, age" \
+   "1 ▲ 	waits	                1 agent   1 win       now" "$(printf '%s\n' "$trw" | sed -n 2p | cut -f2-)"
+is "your own row says (here) and has no age" \
+   "5 ○ 	here	 (here)          1 agent   1 win          " "$(printf '%s\n' "$trw" | sed -n 6p | cut -f2-)"
+case "$(printf '%s\n' "$trw" | grep '	quiet	')" in
+    *"	quiet	"*"—"*) ok "a session with no agent has a blank glyph and a dash" ;;
+    *) bad "a session with no agent has a blank glyph and a dash" "quiet ... —" "$(printf '%s\n' "$trw" | grep quiet)" ;;
+esac
+# The preview takes half from 120 columns on, and the list's half decides.
+is "120 columns leave a 60-column list: still the wide tier" "4" \
+   "$(trrows env FZF_COLUMNS=120 | grep -c 'agent')"
+is "below 60 the narrow tier drops the counts" "0 5 ○ 	here	‹here›              " \
+   "$(trrows env FZF_COLUMNS=59 | grep -c agent) $(trrows env FZF_COLUMNS=59 | grep '	here	' | cut -f2-)"
+# fzf searches only the fields it shows, so the whole name must be shown, or a
+# filter on its tail misses and ↵ creates a duplicate (review of #210).
+trt new-session -d -s my-very-long-project-name-number-2 'exec sleep 300'
 if command -v fzf >/dev/null 2>&1; then
+    is "a long name is shown whole, so its tail still matches" "my-very-long-project-name-number-2" \
+       "$(trrows env FZF_COLUMNS=200 | fzf --filter number-2 --delimiter='	' --with-nth=2.. --nth=2 --header-lines=1 | cut -f3)"
+else
+    skip_ "a long name is shown whole, so its tail still matches (no fzf)"
+fi
+trt kill-session -t =my-very-long-project-name-number-2
+# The ask is read on its own: a record separator inside it forges nothing, and
+# no field reaches arithmetic unchecked (review of #210: PWNED was created).
+trs waits needs-input "$(printf 'x\036$9\0371\0371\037$(touch %s/PWNED)\0371\037\037 needs-input \037forged' "$STATE")"
+trforge=$(trrows env FZF_COLUMNS=56)
+is "an ask holding the record separator forges no row and runs nothing" "6 no" \
+   "$(printf '%s\n' "$trforge" | wc -l) $([ -e "$STATE/PWNED" ] && echo yes || echo no)"
+trs waits needs-input 'Allow edit?'
+# The colour roles (#210 design check): the ○ glyph is dim, age and (here) soft.
+trroles=$(env TMUX="$TRX" TM_SGR="$(printf 'N\037E\037R\037D\037M\037S\037')" FZF_COLUMNS=200 "$DIR/scripts/tm" --rows)
+case "$(printf '%s\n' "$trroles" | grep '	here	')" in
+    *"M○"*"S (here)"*) ok "the idle glyph is dim and (here) is soft" ;;
+    *) bad "the idle glyph is dim and (here) is soft" "M○ ... S (here)" "$(printf '%s\n' "$trroles" | grep '	here	')" ;;
+esac
+case "$(printf '%s\n' "$trroles" | grep '	busy	')" in
+    *"S now"*) ok "the age is soft" ;;
+    *) bad "the age is soft" "S now" "$(printf '%s\n' "$trroles" | grep '	busy	')" ;;
+esac
+# --needs keeps the needs-you band; with nothing waiting it shows everything.
+trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
+is "--needs lists the waiting and the broken only" "	needs you · ▲1 ✕1|waits broken" \
+   "$(printf '%s\n' "$trn" | head -1)|$(printf '%s\n' "$trn" | sed 1d | cut -f3 | tr '\n' ' ' | sed 's/ $//')"
+trs waits running; trs broken done
+trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
+is "an empty band falls back to the full list, and says so" "	nothing needs you · 5 sessions · ●2 6" \
+   "$(printf '%s\n' "$trn" | head -1) $(printf '%s\n' "$trn" | wc -l)"
+# Your own session waiting is not a reason to open the band: you are there.
+trs here needs-input 'mine'
+trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
+is "only your own session waiting still falls back to the full list" "	nothing needs you · 5 sessions · ▲1 · ●2 6" \
+   "$(printf '%s\n' "$trn" | head -1) $(printf '%s\n' "$trn" | wc -l)"
+trs here idle
+# The order freezes: a later reload keeps the rows where they were, and a new
+# session goes last.
+TRD=$(mktmpd)
+tro1=$(trrows env FZF_COLUMNS=200 TM_DIR="$TRD" | sed 1d | cut -f3 | tr '\n' ' ')
+trs quiet needs-input 'now me'
+trt new-session -d -s late 'exec sleep 300'
+tro2=$(trrows env FZF_COLUMNS=200 TM_DIR="$TRD" | sed 1d | cut -f3 | tr '\n' ' ')
+is "a reload keeps the first render's order, new sessions last" "${tro1}late " "$tro2"
+# A garbled list never falls through to the name path: "tm --rows" once
+# created a session called "rows".
+TRG=$(mktmpd)
+printf '#!/bin/sh\ncase "$1" in list-sessions) printf %s ;; new-session) echo NEW >> "%s/log" ;; esac\nexit 0\n' \
+    "'\$((1/0))\\037x\\037y\\n'" "$TRG" > "$TRG/tmux"
+chmod +x "$TRG/tmux"
+env -u TMUX PATH="$TRG:$PATH" "$DIR/scripts/tm" --rows >/dev/null 2>&1
+is "a garbled session list creates nothing" "" "$(cat "$TRG/log" 2>/dev/null)"
+
+# ^X twice kills, never your own session; attached elsewhere is allowed. The
+# fzf bindings print actions, and the kill runs through --kill-armed.
+TRK=$(mktmpd); : > "$TRK/armed"
+trk() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" "$@" 2>/dev/null | nosgr; }
+is "^X on your own session refuses" "change-footer:here is this session · detach or use tm -k" "$(trk --arm "$(trid here)")"
+case "$(trk --arm "$(trid here)")" in
+    *execute-silent*) bad "a second ^X on your own session still refuses" "no kill" "a kill" ;;
+    *) ok "a second ^X on your own session still refuses" ;;
+esac
+# A pane moved to another session keeps the $TMUX it was born with: your own
+# session is the pane's, so the refusal holds (review of #210).
+trmv=$(trt list-panes -t busy: -F '#{pane_id}')
+case "$(env TMUX_PANE="$trmv" TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" --arm "$(trid busy)" | nosgr)" in
+    *"is this session"*) ok "a pane's own session refuses even when \$TMUX names another" ;;
+    *) bad "a pane's own session refuses even when \$TMUX names another" "is this session" "armed" ;;
+esac
+: > "$TRK/armed"
+trs busy needs-input 'ok?'
+is "the first ^X arms: the header names what you lose, the footer how to confirm" \
+   "change-header(kill busy? 1 waiting · 1 agent)+change-footer:^X again kills · any key cancels" "$(trk --arm "$(trid busy)")"
+trs busy running
+is "focus staying on the armed row keeps it armed" "" "$(trk --disarm "$(trid busy)")"
+trkout=$(trk --disarm "$(trid quiet)")
+case "$trkout" in
+    "change-header()+change-footer"?"↵ switch"*) ok "moving off the armed row disarms" ;;
+    *) bad "moving off the armed row disarms" "change-header()+change-footer(↵ switch ...)" "$trkout" ;;
+esac
+trk --arm "$(trid busy)" >/dev/null
+# A resize redraws the footer, so it must drop the armed kill with it.
+trkout=$(trk --resized)
+is "a resize disarms" "change-header()+ " "${trkout%%change-footer*} $(cat "$TRK/armed")"
+trk --arm "$(trid busy)" >/dev/null
+trkout=$(trk --arm "$(trid busy)")
+case "$trkout" in
+    execute-silent*--kill-armed*+change-header\(\)+change-footer*+reload-sync*) ok "the second ^X kills, then reloads last" ;;
+    *) bad "the second ^X kills, then reloads last" "execute-silent(...)+...+reload-sync(...)" "$trkout" ;;
+esac
+trbusy=$(trid busy)
+trk --kill-armed
+is "and --kill-armed kills the armed session" "no" \
+   "$(trt has-session -t "$trbusy" 2>/dev/null && echo yes || echo no)"
+# A client on another device: the confirm says so first, and the kill goes ahead.
+TRO="cockpit-tmrowso-$$"; SOCKS="$SOCKS $TRO"
+"$TMUX_REAL" -L "$TRO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TR attach -t late" >/dev/null 2>&1
+until_out '*late*' "$TMUX_REAL" -L "$TR" list-clients -F '#{session_name}'
+trlate=$(trid late)
+is "an attached session arms with 'attached elsewhere' first" \
+   "change-header(kill late? attached elsewhere · no agents)+change-footer:^X again kills · any key cancels" "$(trk --arm "$trlate")"
+trk --arm "$trlate" >/dev/null; trk --kill-armed
+is "and the confirmed kill takes it" "no" \
+   "$(trt has-session -t "$trlate" 2>/dev/null && echo yes || echo no)"
+"$TMUX_REAL" -L "$TRO" kill-server >/dev/null 2>&1
+# The no-match footer says ↵ creates the query, and goes once something matches.
+: > "$TRK/armed"
+is "a query nothing matches: the footer says ↵ creates it" 'change-footer:↵ create "new_one" · esc' \
+   "$(FZF_MATCH_COUNT=0 FZF_QUERY='new one' trk --result)"
+case "$(FZF_MATCH_COUNT=2 FZF_QUERY=ne trk --result)" in
+    "change-header()+change-footer"?"↵ switch"*) ok "and a match restores the footer" ;;
+    *) bad "and a match restores the footer" "the resting footer" "$(cat "$TRK/armed")" ;;
+esac
+"$TMUX_REAL" -L "$TR" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm: a name tmux cannot target =="
+# tmux reads "=\$5x" as a session id, so every -t "=NAME" missed such a session
+# and tm made a duplicate (review of #210). A fake tmux logs what tm asks for.
+TF=$(mktmpd)
+cat > "$TF/tmux" <<'STUB'
+#!/bin/sh
+printf '%s\n' "$*" >> "$TF_LOG"
+case "$1" in
+  list-sessions)   printf '%s\n' '$7 $5x' '$8 plain' ;;
+  display-message) echo 1 ;;
+esac
+exit 0
+STUB
+chmod +x "$TF/tmux"
+tfrun() { : > "$TF/log"; env -u TMUX_PANE TF_LOG="$TF/log" PATH="$TF:$PATH" "$@" >/dev/null 2>&1; }
+tfrun env -u TMUX "$DIR/scripts/tm" '$5x'
+is "tm \$5x attaches the existing session by id, creating nothing" "attach-session -d -t \$7|0" \
+   "$(grep '^attach' "$TF/log")|$(grep -c '^new-session' "$TF/log")"
+tfrun env -u TMUX "$DIR/scripts/tm" -k '$5x'
+is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/log")"
+
+
+echo "== tm: the picker, driven: type-to-create, alt-enter, 1-9, ^X twice =="
+# Real fzf in a private pane. A real client on the server, so switch-client
+# has someone to move and session_attached means something.
+if need_tmux "tm picker"; then :; else
+if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
+   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
 TK="cockpit-tk-$$"; TKO="cockpit-tko-$$"; SOCKS="$SOCKS $TK $TKO"
-"$TMUX_REAL" -L "$TK" -f /dev/null new-session -d -s alpha -x 90 -y 24 >/dev/null 2>&1
+# A bare shell: a login shell's banner can outlast every wait below.
+"$TMUX_REAL" -L "$TK" -f /dev/null new-session -d -s alpha -x 120 -y 30 'bash --norc --noprofile' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TK" set -g default-command 'bash --norc --noprofile'
+"$TMUX_REAL" -L "$TK" set -g @cockpit_touch off
 "$TMUX_REAL" -L "$TK" new-session -d -s beta >/dev/null 2>&1
-# session_attached needs a real CLIENT; a detached server has none, so the
-# attach comes through an outer pty server -- the same pattern as every other
-# picker test here.
-"$TMUX_REAL" -L "$TKO" -f /dev/null new-session -d -s o -x 90 -y 26 \
-    "$TMUX_REAL -L $TK attach -t alpha" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TK" new-session -d -s gamma >/dev/null 2>&1
+"$TMUX_REAL" -L "$TKO" -f /dev/null new-session -d -s o -x 120 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TK attach -t alpha" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$TK" list-clients -F '#{client_name}'
-KP2=$("$TMUX_REAL" -L "$TK" list-panes -t alpha -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "'$DIR/scripts/tm'" Enter
-until_cap "$TK" "$KP2" '*(attached)*'
+tkon() { "$TMUX_REAL" -L "$TK" list-clients -F '#{session_name}' 2>/dev/null | head -1; }
+tkopen() {                    # tkopen -- tm in the client's current pane; prints the pane
+    local p; p=$("$TMUX_REAL" -L "$TK" list-clients -F '#{pane_id}' | head -1)
+    "$TMUX_REAL" -L "$TK" send-keys -t "$p" "'$DIR/scripts/tm'" Enter
+    # Your own row is the last one drawn, so the list is complete once it shows.
+    until_cap "$TK" "$p" '*session>*sessions*(here)*'
+    printf '%s' "$p"
+}
+KP2=$(tkopen)
 case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
-    *"(attached)"*) ok "the attached session is labelled" ;;
-    *) bad "the attached session is labelled" "alpha (attached)" \
-         "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -4)" ;;
+    *"alpha"*"(here)"*) ok "your own session is labelled (here)" ;;
+    *) bad "your own session is labelled (here)" "alpha (here)" "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -8)" ;;
 esac
+until_cap "$TK" "$KP2" '*[a-z] · 1 window*no agent*'
 case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
-    *" windows "*) ok "sessions preview their windows" ;;
-    *) bad "sessions preview their windows" "the ' windows ' label" \
-         "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | grep -m1 '^─')" ;;
+    *[a-z]" · 1 window"*"no agent"*) ok "sessions preview their windows, named" ;;
+    *) bad "sessions preview their windows, named" "NAME · 1 window" "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -8)" ;;
 esac
-# typing must FILTER now, not execute: "bet" narrows to beta
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "bet"
-until_cap "$TK" "$KP2" '*session> bet*'
-is "typing filters instead of killing" "2" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
+# Typing filters; it never acts. A name nothing matches + Enter creates it.
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "zeta"
+until_cap "$TK" "$KP2" '*session> zeta*'
+is "typing filters instead of acting" "3" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Enter
+until_out zeta tkon
+is "Enter with no match creates the typed name and switches to it" "zeta" "$(tkon)"
+# alt-Enter creates even though "alp" matches alpha.
+KP2=$(tkopen)
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" alp
+until_cap "$TK" "$KP2" '*session> alp*'
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" M-Enter
+until_out alp tkon
+is "alt-Enter creates the query even when a row matches" "alp" "$(tkon)"
+# 2 with an empty query jumps to row 2; the order is the renderer's.
+KP2=$(tkopen)
+tkx="$SOCKDIR/$TK,0,$("$TMUX_REAL" -L "$TK" display-message -p -t alp: '#{session_id}' | tr -d '$')"
+tkwant=$(env TMUX="$tkx" FZF_COLUMNS=120 "$DIR/scripts/tm" --rows | sed -n 3p | cut -f3)
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" 2
+until_out "$tkwant" tkon
+is "2 on an empty query switches to row 2" "$tkwant" "$(tkon)"
+# ^X once arms and kills nothing; ^X again kills.
+KP2=$(tkopen)
+tkdoomed=$(env TMUX="$SOCKDIR/$TK,0,$("$TMUX_REAL" -L "$TK" display-message -p -t "$(tkon):" '#{session_id}' | tr -d '$')" \
+    FZF_COLUMNS=120 "$DIR/scripts/tm" --rows | sed -n 2p | cut -f3)
 "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
-until_out alpha "$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}'
-is "^X kills the highlighted session" "alpha" "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
-# and ^X on the attached one is refused. A refusal has no observable, so a
-# probe token after it does the waiting: fzf blocks on ctrl-x's execute-silent
-# and cannot paint tkq until that kill attempt has returned.
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-u C-x tkq
-until_cap "$TK" "$KP2" '*session> tkq*'
-is "the attached session refuses to die from the picker" "alpha" \
-   "$("$TMUX_REAL" -L "$TK" list-sessions -F '#{session_name}' 2>/dev/null | tr -d '\n')"
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Escape; sleep 0.5
+until_cap "$TK" "$KP2" '*again kills*'
+is "one ^X kills nothing" "5" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
+until_out 4 eval "\"$TMUX_REAL\" -L $TK list-sessions 2>/dev/null | wc -l"
+is "the second ^X kills the highlighted session" "no" \
+   "$("$TMUX_REAL" -L "$TK" has-session -t "=$tkdoomed" 2>/dev/null && echo yes || echo no)"
+# Your own row, found by an exact query: ^X there refuses, twice.
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "^$(tkon)\$"
+until_cap "$TK" "$KP2" "*session> ^$(tkon)\$*1/4*"
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
+# The second ^X only after the refusal shows: on any other row it would kill.
+if until_cap "$TK" "$KP2" '*is this session*'; then
+    "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
+    sleep 0.3
+    is "your own session refuses to die from the picker" "4" \
+       "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
+else
+    bad "your own session refuses to die from the picker" "the refusal footer" \
+        "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | tail -12)"
+fi
+"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Escape
 "$TMUX_REAL" -L "$TKO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TK" kill-server >/dev/null 2>&1
 else
-  skip_ "the attached session is labelled"; skip_ "typing filters instead of killing"
-  skip_ "^X kills the highlighted session"; skip_ "the attached session refuses to die from the picker"
+  for t in "your own session is labelled (here)" "sessions preview their windows, named" \
+           "typing filters instead of acting" "Enter with no match creates the typed name and switches to it" \
+           "alt-Enter creates the query even when a row matches" "2 on an empty query switches to row 2" \
+           "one ^X kills nothing" "the second ^X kills the highlighted session" \
+           "your own session refuses to die from the picker"; do skip_ "$t (needs fzf 0.73+)"; done
 fi
 fi
 
@@ -10881,7 +11112,7 @@ fzfake "$fzold" "0.44.1 (debian)"
 # Every picker this lane owns, driven to the point where it hands off to fzf.
 FZP="$FZTD/bin"; fzfake "$FZP" "0.74.3 (15f64c49)"
 FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
-for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename; do
+for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename mktemp rm; do
     p=$(command -v "$c" 2>/dev/null) || continue
     ln -sf "$p" "$FZP/$c"; ln -sf "$p" "$FZNB/$c"
 done
@@ -10940,7 +11171,7 @@ fzs=$(cat "$FZTD"/argv-styled-"$$".* 2>/dev/null)
 fzhas() { printf '%s\n' "$fzs" | grep -q -- "$1" && printf yes || printf no; }
 is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
    "yes yes no yes" \
-   "$(fzhas '^--highlight-line$'; printf ' '; fzhas '^--footer=↵ attach'
+   "$(fzhas '^--highlight-line$'; printf ' '; fzhas '^--footer=.*kill'
       printf ' '; fzhas '^--header='; printf ' '; fzhas '^--color=16,.*selected-bg:')"
 # The open picker's two key lines must be ONE --footer argument (#116): the
 # lib prints one argument per line, so a footer asked of it with a newline
