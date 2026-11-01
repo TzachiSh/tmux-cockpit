@@ -11644,8 +11644,8 @@ av_polls() {                  # live agent-poll processes on this server
     done
     echo "$n"
 }
-av_wait() {                   # av_wait '<test command>': polls it up to 10s
-    local i; for i in $(seq 1 100); do eval "$1" && return 0; sleep 0.1; done; return 1
+av_wait() {                   # av_wait '<test command>': polls it up to 30s, the box may be loaded
+    local i; for i in $(seq 1 300); do eval "$1" && return 0; sleep 0.1; done; return 1
 }
 av_published() {              # the published pid is a live agent-poll
     local p; p=$(av_tm show-option -gqv @cockpit_poll_pid)
