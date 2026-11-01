@@ -284,7 +284,7 @@ over earlier, `prefix r` included.
 | `prefix + s` | the session picker, replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock |
-| `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](#the-panel-cockpit-tui) below; needs the optional `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` binds nothing |
+| `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](#the-panel-cockpit-tui) below; needs the optional `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` restores stock |
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the optional `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
 | `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
@@ -1004,7 +1004,7 @@ opens it on the pane you are in, and `f` on a board tile opens it on that
 tile's pane. The key replaces stock `find-window`:
 
 ```sh
-set -g @cockpit_panel_key f    # the default; off binds nothing
+set -g @cockpit_panel_key f    # the default; off restores stock find-window
 ```
 
 It needs the `cockpit-tui` binary, like the board. The binary only prints

@@ -86,7 +86,7 @@ set -g @cockpit_sessions_key  s    # off keeps stock choose-tree
 set -g @cockpit_board_key     w    # the board; off keeps stock tmux
 set -g @cockpit_review_key    r
 set -g @cockpit_info_key      i
-set -g @cockpit_panel_key     f    # the panel; off binds nothing
+set -g @cockpit_panel_key     f    # the panel; off restores stock find-window
 set -g @cockpit_fullscreen_key e    # hide the chrome; off keeps stock tmux
 set -g @cockpit_move_key      M
 set -g @cockpit_reload_key    R
