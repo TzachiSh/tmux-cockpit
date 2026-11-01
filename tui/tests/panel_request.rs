@@ -251,3 +251,11 @@ fn threads_writing_one_prompt_do_not_collide() {
         "one file, no temp left behind"
     );
 }
+
+#[test]
+fn a_bad_byte_does_not_lose_the_answer() {
+    let rig = Rig::new("bytes", "printf 'caf\\351 ok\\n'");
+    let mut req = spawn(&rig.call(30), "S", "p", "haiku");
+    assert_eq!(answer(&mut req), Ok("caf\u{fffd} ok\n".into()));
+    assert_eq!(req.pid(), None, "a reaped child has no pid to hand out");
+}

@@ -98,8 +98,10 @@ impl Request {
         Some(a)
     }
 
+    /// `None` once reaped, when the number may already be someone else's.
+    /// Never signal it; [`Request::cancel`] is the only safe kill.
     pub fn pid(&self) -> Option<u32> {
-        self.pid
+        self.pid.filter(|_| !*lock(&self.reaped))
     }
 
     /// Kills the whole process group; the worker thread reaps it.
@@ -207,17 +209,19 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Se
             });
         }
         let mut err_pipe = child.stderr.take();
+        // Bytes, then lossy: read_to_string drops everything at the first bad byte.
         let errs = std::thread::spawn(move || {
-            let mut s = String::new();
+            let mut b = Vec::new();
             if let Some(e) = err_pipe.as_mut() {
-                let _ = e.read_to_string(&mut s);
+                let _ = e.read_to_end(&mut b);
             }
-            s
+            String::from_utf8_lossy(&b).into_owned()
         });
-        let mut out = String::new();
+        let mut b = Vec::new();
         if let Some(mut o) = child.stdout.take() {
-            let _ = o.read_to_string(&mut out);
+            let _ = o.read_to_end(&mut b);
         }
+        let out = String::from_utf8_lossy(&b).into_owned();
         let err = errs.join().unwrap_or_default();
         wait_unreaped(pid);
         let mut g = lock(&reaped);
