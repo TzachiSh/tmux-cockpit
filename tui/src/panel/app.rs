@@ -955,7 +955,9 @@ impl App {
             }
             KeyCode::Enter => {
                 let t = text.trim().to_string();
-                if !t.is_empty() {
+                // an answer or a follow-up with no conversation to join: the box stays
+                let joins = kind == InputKind::Explain || self.run.is_some();
+                if !t.is_empty() && joins {
                     return match kind {
                         InputKind::Other => self.pick(t),
                         InputKind::Explain => self.explain(&t, &t, back),

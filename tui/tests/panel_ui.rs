@@ -1472,3 +1472,18 @@ fn steps_too_long_to_keep_say_so_and_leave_no_state() {
     assert!(!dir.join("act.state").exists(), "nothing written that a resume would refuse");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_answer_box_with_no_conversation_stays_put() {
+    for kind in [InputKind::Other, InputKind::FollowUp] {
+        let mut a = app("w", "bash", "$ ");
+        a.view = View::Input {
+            kind,
+            text: "hi".into(),
+            back: Box::new(View::Home { sel: 0 }),
+        };
+        let v = a.view.clone();
+        key(&mut a, KeyCode::Enter);
+        assert_eq!((a.view.clone(), a.pending), (v, false), "{kind:?}");
+    }
+}
