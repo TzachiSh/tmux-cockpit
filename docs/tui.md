@@ -386,8 +386,8 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
   and reverse, the three attributes the colourless fallback is built on.
 - **Actions are printed, never executed.** The panel's `claude -p` fork is a
-  read, like `data`'s `claude agents` fork; pasting into a pane stays a printed
-  action that a wrapper runs.
+  read only because it runs with `--tools ""`: adding a tool breaks this rule.
+  Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
 - **Tests run on private `-L` sockets**, registered in `SOCKS`, killed after.
