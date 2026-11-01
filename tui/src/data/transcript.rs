@@ -354,6 +354,16 @@ fn turns(path: &Path) -> Option<Vec<Value>> {
     Some(all.into_iter().filter(ok).collect())
 }
 
+/// jq's `==`: numbers by value, so an id of 1 is closed by a tool_use_id of 1.0.
+fn jq_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| jq_eq(x, y)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, v)| y.get(k).is_some_and(|w| jq_eq(v, w))),
+        _ => a == b,
+    }
+}
+
 /// `doing\t<label>\t<secs>`, `said\t<text>`, `asked\t<prompt>\t<secs>`, each left
 /// out when unknown. Only the last tool_use counts, open parallel ones before it do not.
 pub fn doing(path: &Path) -> Option<String> {
@@ -384,7 +394,7 @@ pub fn doing(path: &Path) -> Option<String> {
         .rfind(|(p, _)| !p.is_empty());
     let mut out = String::new();
     if let Some((i, r)) = tu
-        && !closed.contains(&i.get("id").unwrap_or(&Value::Null))
+        && !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)))
     {
         out += &format!("doing\t{}\t{}\n", tlabel(i), secs(r, now));
     }

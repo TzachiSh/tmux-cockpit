@@ -11573,6 +11573,9 @@ tmux_tr kill-server 2>/dev/null
 echo "== cockpit-tui transcript: byte-identical to the jq reader on every fixture (#199) =="
 if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "cockpit-tui transcript parity (no bin/cockpit-tui; run make tui)"
+# A binary built before #199 calls `transcript` an unknown screen and exits 2.
+elif "$DIR/bin/cockpit-tui" transcript >/dev/null 2>&1; [ "$?" != 1 ]; then
+    skip_ "cockpit-tui transcript parity (bin/cockpit-tui predates the subcommand; run make tui)"
 else
 . "$DIR/scripts/lib/transcript.sh"
 TPB="$DIR/bin/cockpit-tui"; TPF="$DIR/tests/fixtures/transcript-reader"

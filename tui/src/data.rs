@@ -20,9 +20,10 @@ pub fn tmux_argv() -> Vec<String> {
 }
 
 /// `None` on a spawn failure or non-zero exit: "no tmux" is not "no agents".
+/// A blank COCKPIT_TMUX names no program, so it is a spawn failure too.
 pub fn tmux(args: &[&str]) -> Option<String> {
     let c = tmux_argv();
-    let out = Command::new(&c[0]).args(&c[1..]).args(args).output().ok()?;
+    let out = Command::new(c.first()?).args(&c[1..]).args(args).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 

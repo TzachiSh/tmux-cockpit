@@ -211,3 +211,19 @@ fn file_joins_claude_agents_on_the_pane_process_tree() {
     r.session("a-proj", "sid-aaa");
     assert_eq!(file("%1"), Some(want));
 }
+
+#[test]
+fn a_blank_cockpit_tmux_is_status_1_not_a_panic() {
+    for v in ["", " "] {
+        let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+            .args(["transcript", "file", "%1"])
+            .env("COCKPIT_TMUX", v)
+            .output()
+            .unwrap();
+        assert_eq!(
+            (o.status.code(), o.stdout.len(), o.stderr.len()),
+            (Some(1), 0, 0),
+            "COCKPIT_TMUX={v:?}"
+        );
+    }
+}
