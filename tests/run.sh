@@ -11344,19 +11344,24 @@ is "and so does the open picker"                                            "1 1
 if [ -n "$OPWAS" ]; then tmux set-option -p -t "$PANE" @cockpit_click_line "$OPWAS" 2>/dev/null
 else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
 
-echo "== agent-view: a background worker's hooks touch nothing (#174) =="
-# A hook in an agent-view background worker (CLAUDE_CODE_SESSION_KIND=bg) has no TMUX_PANE and
-# the pane belongs to the front end, which relays its own notifications. The worker's hook
-# exits 0 and never reaches tmux.
-AVF="$DIR/tests/fixtures/agent-view"
-AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
-AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
-cat > "$AVREC/tmux" <<SHIMEOF
+av_setup() {                  # the fixtures every agent-view block needs; each calls it first
+    [ -n "${AVBIN:-}" ] && return 0
+    AVF="$DIR/tests/fixtures/agent-view"
+    AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
+    AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
+    cat > "$AVREC/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$AVLOG"
 exec "$TMUX_REAL" "\$@"
 SHIMEOF
-chmod +x "$AVREC/tmux"
+    chmod +x "$AVREC/tmux"
+}
+
+echo "== agent-view: a background worker's hooks touch nothing (#174) =="
+av_setup
+# A hook in an agent-view background worker (CLAUDE_CODE_SESSION_KIND=bg) has no TMUX_PANE and
+# the pane belongs to the front end, which relays its own notifications. The worker's hook
+# exits 0 and never reaches tmux.
 av_bg() {                     # av_bg <script> [args] -> "<rc> <tmux calls>", payload on stdin
     : > "$AVLOG"
     env -u TMUX -u TMUX_PANE CLAUDE_CODE_SESSION_KIND=bg PATH="$AVREC:$PATH" \
@@ -11381,6 +11386,7 @@ is "review-gate --concede in a bg worker still refuses, with no tmux call" "1 0"
    "$(av_bg "$DIR/scripts/review-gate" --concede why </dev/null)"
 
 echo "== agent-view: agent-poll --once writes the worst background state (#174) =="
+av_setup
 av_srv() {                    # av_srv <tag>: a private server; sets AV AVT AVP
     AV="cockpit-av-$$-$1"; SOCKS="$SOCKS $AV"
     "$TMUX_REAL" -L "$AV" -f /dev/null new-session -d -s t -x 80 -y 24 \
@@ -11481,6 +11487,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: agent-state poll is compare-then-set and recomputes the counters (#174) =="
+av_setup
 if need_tmux "agent-view poll verb"; then :; else
 av_srv verb
 av_st() {
@@ -11508,6 +11515,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: agent_needs_input / agent_completed mark the pane, start one poller (#174) =="
+av_setup
 if need_tmux "agent-view hook" || [ ! -d /proc/self ]; then :; else
 av_srv hook
 # AV_RC=1: the poller's first tick fails, so only the hook's own writes show.
@@ -11581,6 +11589,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
+av_setup
 if need_tmux "agent-view poller" || [ ! -d /proc/self ]; then :; else
 av_srv life
 av_tm set-environment -g AV_JSON "$AVF/done.json"
@@ -11633,6 +11642,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: a plain session after an agent-view visit is not the poller's (#174) =="
+av_setup
 # The mark outlives the visit: the pane's next plain session would have its states overwritten
 # every tick. A hook of the pane's own session, other than the relayed agent_* notifications,
 # takes the mark away -- in the same tmux invocation, and even when the state would not change.
@@ -11686,6 +11696,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: the poller slot is a compare-and-set, rechecked each tick (#174) =="
+av_setup
 if need_tmux "agent-view slot" || [ ! -d /proc/self ]; then :; else
 av_srv slot
 av_tm set-environment -g AV_JSON "$AVF/done.json"
@@ -11786,6 +11797,7 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-view: a poller that cannot read the sessions leaves the reason (#174) =="
+av_setup
 if need_tmux "agent-view poll_err"; then :; else
 av_srv err
 av_tm set-option -p -t "$AVP" @cockpit_agentview 1
