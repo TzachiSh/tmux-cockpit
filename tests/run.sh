@@ -2824,6 +2824,29 @@ fi
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
 fi
 
+echo "== the click bindings survive a plugin path with a quote and a space =="
+# The bindings carry the script path shell-quoted, and inside a tmux "..." string
+# tmux eats the backslash of '\'' so the shell got ''' instead.
+if need_tmux "quoted plugin path"; then :; else
+QO="cockpit-qpo-$$"; QI="cockpit-qpi-$$"; SOCKS="$SOCKS $QO $QI"
+QPD="$(mktmpd)/it's a dir"; mkdir -p "$QPD"; QLOG=$(mktmpf)
+cp -R "$DIR/cockpit.tmux" "$DIR/scripts" "$QPD/"
+printf '#!/bin/sh\nprintf "OPEN %%s\\n" "$*" > "%s"\n' "$QLOG" > "$QPD/scripts/tmux-open-path"
+"$TMUX_REAL" -L "$QI" -f /dev/null new-session -d -s t -x 80 -y 24 'printf "MARK\n"; exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" set -g mouse on >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" run-shell "\"$QPD/cockpit.tmux\"" >/dev/null 2>&1
+QIP=$("$TMUX_REAL" -L "$QI" list-panes -t t -F '#{pane_id}')
+"$TMUX_REAL" -L "$QO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $QI attach -t t" >/dev/null 2>&1
+until_cap "$QO" o '*MARK*'
+# Ctrl+right-click on the MARK row: SGR button 2 plus the ctrl bit is 18.
+"$TMUX_REAL" -L "$QO" send-keys -t o -H 1b 5b 3c 31 38 3b 32 3b 31 4d >/dev/null 2>&1
+until_file "$QLOG" '*OPEN*'
+is "ctrl+right-click runs the picker from that path" "OPEN $QIP" "$(cat "$QLOG")"
+"$TMUX_REAL" -L "$QO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" kill-server >/dev/null 2>&1
+fi
+
 # tests: examples/tmux.conf cockpit.tmux
 echo "== a left click on a window tab selects it and draws nothing (#21) =="
 # Issue #21 saw a menu flash on a plain left click in the status line. Stock

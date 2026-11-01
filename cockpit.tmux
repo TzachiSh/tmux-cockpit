@@ -307,34 +307,21 @@ fi
 # (-F), since pane output is full of quotes that would tear a shell string apart.
 # No mouse-mode guard: agent TUIs keep mouse reporting on, so a guard would hand
 # these chorded clicks to the agent. Plain gestures are never bound.
-conf=$(mktemp) || exit 1
-trap 'rm -f "$conf"' EXIT HUP INT TERM
-{
-    # Stock swap-pane fires on the first press and moves the second click to another
-    # pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.
-    if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
-        printf 'bind-key -n C-MouseDown1Pane select-pane -t=\n'
-        printf 'bind-key -n C-DoubleClick1Pane {\n'
-        printf '    select-pane -t=\n'
-        printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
-        printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
-        printf '}\n'
-    fi
-    # Ctrl+right-click: no terminal link handler claims it, unlike Ctrl+left on an OSC 8 link.
-    printf 'bind-key -n C-MouseDown3Pane {\n'
-    printf '    select-pane -t=\n'
-    printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
-    printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
-    printf '}\n'
-    # Alt+click, for terminals that forward it (Ghostty strips Alt).
-    printf 'bind-key -n M-MouseDown1Pane {\n'
-    printf '    select-pane -t=\n'
-    printf '    set -pF -t= @cockpit_click_line "#{mouse_line}"\n'
-    printf '    run-shell -b "%s #{pane_id}"\n' "$Q_OPEN"
-    printf '}\n'
-} > "$conf"
-tmux source-file "$conf"
-rm -f "$conf"
+# Bound from argv, not a sourced file: in a tmux "..." string sq()'s '\'' loses its \.
+pick_on() {
+    tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
+        '\;' run-shell -b "$Q_OPEN #{pane_id}"
+}
+# Stock swap-pane fires on the first press and moves the second click to another
+# pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.
+if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
+    tmux bind-key -n C-MouseDown1Pane select-pane -t=
+    pick_on C-DoubleClick1Pane
+fi
+# Ctrl+right-click: no terminal link handler claims it, unlike Ctrl+left on an OSC 8 link.
+pick_on C-MouseDown3Pane
+# Alt+click, for terminals that forward it (Ghostty strips Alt).
+pick_on M-MouseDown1Pane
 
 # Last, so no later message overwrites it; once per server, not on every reload.
 # shellcheck source=scripts/lib/vnum.sh
