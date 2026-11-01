@@ -1,7 +1,7 @@
 //! The pure halves of the panel: redaction, the envelope, routing, examples and
 //! the session sniff. Nothing here sets the environment; panel_env.rs does.
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, esc, unesc};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
 use cockpit_tui::panel::redact::redact;
 use cockpit_tui::panel::route::{Route, model_argv, request_steps, route};
@@ -134,6 +134,18 @@ fn explain_on_a_claude_window_names_the_session_state() {
     );
     let shell = build(&Flow::Explain, &cap("w", "bash", "$ ls"), &[], 1);
     assert!(!shell.contains("<session"), "{shell}");
+}
+
+#[test]
+fn build_counted_says_how_many_secrets_the_screen_and_turns_lost() {
+    let turns = [Turn {
+        role: Role::User,
+        text: "use password: hunter22".into(),
+    }];
+    let c = cap("w", "bash", "token=abcdefgh\nAKIAABCDEFGHIJKLMNOP");
+    let (got, hidden) = build_counted(&Flow::Explain, &c, &turns, 1);
+    assert_eq!((got, hidden), (build(&Flow::Explain, &c, &turns, 1), 3));
+    assert_eq!(build_counted(&Flow::Explain, &cap("w", "bash", "$ ls"), &[], 1).1, 0);
 }
 
 #[test]

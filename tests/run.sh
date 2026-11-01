@@ -7956,7 +7956,8 @@ is "--dir: the tree the pane works in" "$FQ_WT" \
 # The store a review of the pane uses: tmux-review's own functions, lifted out
 # rather than respelled, applied the way review_pane and --info apply them.
 FQSD=$(mktmpf)
-{ sed -n '/^is_pane() {.*}$/p; /^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
+{ cat "$DIR/scripts/lib/pane.sh"
+  sed -n '/^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
   printf '%s\n' 'session_dir "$1" "$(git_root "$(pane_dir "$1")")"'; } > "$FQSD"
 wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
 "$TMUX_REAL" -L "$FQ" set-option -pu -t "$WT_PANE" @cockpit_dir >/dev/null 2>&1
@@ -7974,6 +7975,7 @@ FO="cockpit-fo-$$"; SOCKS="$SOCKS $FO"; FOD=$(mktmpd)
 "$TMUX_REAL" -L "$FO" -f /dev/null new-session -d -s t -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1
 for _ in 1 2 3 4; do "$TMUX_REAL" -L "$FO" new-window -t t: -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1; done
 "$TMUX_REAL" -L "$FO" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+# shellcheck disable=SC2317,SC2329  # called by until_out
 fo_cmds() { "$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_current_command}' | tr '\n' ' '; }
 until_out 'claude claude claude claude claude ' fo_cmds
 # Created in an order that matches no ranking, so only the sort can produce the expected one.
@@ -10058,8 +10060,8 @@ is "and the paste buffer is gone afterwards" "" \
    "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
 is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
 
-# A popup torn down mid-call (SIGTERM), or a binary killed outright (SIGKILL),
-# must not leave its claude running. The pid is checked before any signal.
+# A popup torn down mid-call (SIGTERM, SIGHUP as its pty goes) or a binary killed
+# outright (SIGKILL) must not leave its claude running. Pids are checked first.
 pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
     rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
     PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
@@ -10088,7 +10090,7 @@ pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
 if [ ! -d /proc/self ]; then
     skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
 else
-    for sig in TERM KILL; do
+    for sig in TERM KILL HUP; do
         pc=$(pn_hang "$sig")
         if [ -z "$pc" ]; then
             bad "SIG$sig on the panel kills its claude" "a running fake claude under cockpit-tui" "none"
@@ -10166,6 +10168,7 @@ unset -f pn_keys pn_load pn_stock_f
 # The wrapper's grammar, with a stub binary and a tmux that only records.
 mkdir -p "$PND/p/scripts" "$PND/p/bin" "$PND/rec"
 cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
+cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 # `display -p` answers what the pane runs now, from a file the case sets.
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
@@ -10177,6 +10180,8 @@ if [ "\$1" = capture-pane ]; then
     wc -l < "$PND/caps"; exit 0
 fi
 printf '%s\n' "\$*" >> "$PND/pargv"
+# With $PND/fail-<cmd> present that command fails the way a gone server does.
+[ -e "$PND/fail-\$1" ] && { echo "boom \$1" >&2; exit 1; }
 [ "\$1" = load-buffer ] && { cat; echo; } >> "$PND/pargv"
 exit 0
 PNREC
@@ -10200,9 +10205,24 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
-is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter" \
-   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;" "$(pact 'send %5' hi)"
-is "paste %5 is the same without Enter" "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' hi)"
+is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
+   "$(pact 'send %5' hi)"
+is "paste %5 is the same without Enter, and says how much went in" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 2 chars into %5;" \
+   "$(pact 'paste %5' hi)"
+: > "$PND/tui.log"; touch "$PND/fail-load-buffer"
+is "a failed load-buffer pastes nothing and says so" \
+   "load-buffer -b B -;display-message -t %5 cockpit: could not load the paste buffer; nothing sent to %5;" \
+   "$(pact 'paste %5' hi)"
+rm -f "$PND/fail-load-buffer"
+is "and logs tmux's error" "1" "$(grep -c 'load-buffer failed for %5: boom load-buffer' "$PND/tui.log")"
+: > "$PND/tui.log"; touch "$PND/fail-paste-buffer"
+is "a failed paste-buffer drops the buffer, sends no Enter and says so" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;delete-buffer -b B;display-message -t %5 cockpit: could not paste into %5; nothing sent;" \
+   "$(pact 'send %5' hi)"
+rm -f "$PND/fail-paste-buffer"
+is "and logs tmux's error" "1" "$(grep -c 'paste-buffer failed for %5: boom paste-buffer' "$PND/tui.log")"
 is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
 is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
 is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
@@ -10218,10 +10238,11 @@ rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND
 is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
    "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
 : > "$PND/tui.log"
-is "COCKPIT_READONLY runs the panel and writes nothing to the pane" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
+is "COCKPIT_READONLY runs the panel and sends tmux nothing, not even a message" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
 is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
 is "a text that starts with - is pasted as text, not read as a flag" \
-   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;display-message -t %5 cockpit: inserted 5 chars into %5;" \
+   "$(pact 'paste %5' '-n hi')"
 fi
 
 echo "== the example configs ship the phone wrap override (#99) =="
@@ -10758,6 +10779,7 @@ for f in "$FZTD"/argv-*-"$$".*; do
 done
 is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
 
+# shellcheck disable=SC2002  # cat, so a missing log still counts 0
 is "a picker open never probes fzf --version" "0" \
    "$(cat "$FZTD/vlog-tm-attach" 2>/dev/null | grep -c .)"
 
@@ -11045,6 +11067,7 @@ if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
     is "and one --color, the shared theme's" "1" "$(grep -c '^--color=' "$rr_argv" 2>/dev/null)"
     is "the user's own options still come last, so they win" "yes" \
        "$( [ "$(grep -n '^--color=' "$rr_argv" | cut -d: -f1)" -lt "$(grep -c . "$rr_argv")" ] && echo yes || echo no )"
+    # shellcheck disable=SC2002  # cat, so a missing log still counts 0
     is "a fleet queue open never probes fzf --version" "0" \
        "$(cat "$RRW/cap-100.vlog" 2>/dev/null | grep -c .)"
     # The footer draws its own rule; --header-border=bottom is the matching one
@@ -11492,6 +11515,7 @@ is "a version newer than any known one is still read" \
    "future prompt" "$(trrow "$TRF/newer.jsonl" asked 2)"
 is "transcript_tail also refuses the old version" \
    "1:" "$(transcript_tail "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
+# shellcheck disable=SC2123  # emptying the search path is the test
 NOJQ=$(PATH=/nonexistent; for f in "transcript_doing $TRF/open.jsonl" "transcript_tail $TRF/open.jsonl" \
         "transcript_file %1"; do $f 2>&1; echo -n "$? "; done)
 is "with jq off PATH all three readers print nothing, even on stderr, and return 1" \
@@ -11572,7 +11596,7 @@ TRBIN="$(mktmpd)"
 TRKID=
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     TRKID=$(pgrep -P "$TRPID" sleep | head -1); [ -n "$TRKID" ] && break
-    read -t 0.2 <> <(:) 2>/dev/null
+    read -r -t 0.2 <> <(:) 2>/dev/null
 done
 cat > "$TRBIN/claude" <<FAKE
 #!/bin/sh

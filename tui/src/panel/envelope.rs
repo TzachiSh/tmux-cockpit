@@ -60,7 +60,13 @@ pub fn unesc(s: &str) -> String {
 /// The draft is not redacted: Fix types its answer back, so a blanked draft
 /// would come back blanked. Turns are, since an answer may carry a secret.
 pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> String {
-    let screen = esc(&redact(&cap.screen).0);
+    build_counted(flow, cap, turns, questions_left).0
+}
+
+/// [`build`], and how many secrets the screen and the turns had hidden.
+pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> (String, usize) {
+    let (screen, mut hidden) = redact(&cap.screen);
+    let screen = esc(&screen);
     let (name, cmd) = (esc(&cap.name), esc(&cap.cmd));
     // A `"` in a window name would end the attribute early.
     let window = format!("{name} · {cmd}").replace('"', "&quot;");
@@ -95,7 +101,9 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
             .iter()
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
-                format!("<turn role=\"{role}\">{}</turn>", esc(&redact(&t.text).0))
+                let (text, n) = redact(&t.text);
+                hidden += n;
+                format!("<turn role=\"{role}\">{}</turn>", esc(&text))
             })
             .collect();
         parts.push(format!("<conversation>\n{}\n</conversation>", lines.join("\n")));
@@ -103,5 +111,5 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
     if !matches!(flow, Flow::Fix { .. }) {
         parts.push(format!("<questions_left>{questions_left}</questions_left>"));
     }
-    parts.join("\n\n")
+    (parts.join("\n\n"), hidden)
 }

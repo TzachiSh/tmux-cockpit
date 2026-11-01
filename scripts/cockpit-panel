@@ -7,9 +7,14 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
 BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
+# shellcheck source=lib/pane.sh
+. "$DIR/scripts/lib/pane.sh" || exit 1
 
-# %<digits> only: the value reaches a tmux target or a script argument.
-is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+# $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
+log() {
+    local ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+    printf '%s cockpit-panel: %s\n' "$ts" "$*" >> "$LOG"
+}
 
 PANE=
 case "${1:-}" in
@@ -51,16 +56,14 @@ is_pane "$target" || bad=1
 # The binary only ever answers for the pane it was opened on.
 [ "$target" = "$PANE" ] || bad=1
 if [ -n "$bad" ]; then
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: ignored action line [%s]\n' "$ts" "$verb $target $rest" >> "$LOG"
+    log "ignored action line [$verb $target $rest]"
     exit 0
 fi
 
 [ -s "$f.text" ] || exit 0
 # Screenshots and probes: the whole panel runs, and the pane is never written.
 if [ -n "${COCKPIT_READONLY:-}" ]; then
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: readonly, not sent: %s %s\n' "$ts" "$verb" "$target" >> "$LOG"
+    log "readonly, not sent: $verb $target"
     exit 0
 fi
 # The answer was written for what the pane ran at capture time; a Claude Code
@@ -70,17 +73,30 @@ read -r want 2>/dev/null < "$f.cmd"
 now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
 if [ -z "$want" ] || [ "$now" != "$want" ]; then
     tmux display-message -t "$target" "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" 2>/dev/null
-    ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
-    printf '%s cockpit-panel: %s now runs [%s], not [%s]; nothing sent\n' "$ts" "$target" "$now" "$want" >> "$LOG"
+    log "$target now runs [$now], not [$want]; nothing sent"
     exit 0
 fi
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
-LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" | tmux load-buffer -b "$buf" - 2>/dev/null || exit 0
+strip() { LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text"; }
+if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
+    log "load-buffer failed for $target: ${err:-no error text}"
+    tmux "${say[@]}" "cockpit: could not load the paste buffer; nothing sent to $target" 2>/dev/null
+    exit 0
+fi
 # -p brackets the paste when the program asked for it; -d drops the buffer after.
 before=
 [ "$verb" = send ] && before=$(tmux capture-pane -p -t "$target" 2>/dev/null)
-tmux paste-buffer -p -d -b "$buf" -t "$target" 2>/dev/null || { tmux delete-buffer -b "$buf" 2>/dev/null; exit 0; }
-[ "$verb" = send ] || exit 0
+if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
+    tmux delete-buffer -b "$buf" 2>/dev/null
+    log "paste-buffer failed for $target: ${err:-no error text}"
+    tmux "${say[@]}" "cockpit: could not paste into $target; nothing sent" 2>/dev/null
+    exit 0
+fi
+if [ "$verb" != send ]; then
+    n=$(strip | wc -m)
+    tmux "${say[@]}" "cockpit: inserted $((n)) chars into $target" 2>/dev/null
+    exit 0
+fi
 # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
 # paste, so wait for the paste to show first: at most 20 x 50 ms.
 i=0
@@ -88,4 +104,5 @@ while [ "$i" -lt 20 ] && [ "$(tmux capture-pane -p -t "$target" 2>/dev/null)" = 
     sleep 0.05; i=$((i + 1))
 done
 tmux send-keys -t "$target" Enter 2>/dev/null
+tmux "${say[@]}" "cockpit: sent to $target" 2>/dev/null
 exit 0

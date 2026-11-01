@@ -1,7 +1,7 @@
 //! Which model answers: a small rule table, the fast model unless a mistake
 //! costs more or the request is long.
 use super::envelope::{Flow, OutType};
-use super::{boundary_at, boundary_before};
+use super::{boundary_at, boundary_before, ci};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Route {
@@ -88,12 +88,9 @@ pub fn request_steps(draft: &str) -> usize {
 
 fn step_at(s: &str, i: usize) -> Option<usize> {
     let rest = &s[i..];
-    let b = rest.as_bytes();
-    let word = WORDS.iter().find_map(|w| {
-        let end = i + w.len();
-        (b.len() >= w.len() && b[..w.len()].eq_ignore_ascii_case(w.as_bytes()) && boundary_before(s, i) && boundary_at(s, end))
-            .then_some(end)
-    });
+    let word = WORDS
+        .iter()
+        .find_map(|w| ci(s, i, w).filter(|&end| boundary_before(s, i) && boundary_at(s, end)));
     if word.is_some() {
         return word;
     }

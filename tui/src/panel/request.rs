@@ -66,6 +66,8 @@ pub struct Request {
 
 impl Request {
     /// Never fails here: a spawn error arrives through [`Request::poll`].
+    /// Call it from the main thread: PR_SET_PDEATHSIG fires when the spawning
+    /// thread exits, so a short-lived thread would kill claude with it.
     pub fn spawn(call: &Call, system: &str, prompt: &str, model: &str) -> Request {
         let (tx, rx) = channel();
         let reaped = Arc::new(Mutex::new(false));
@@ -161,12 +163,20 @@ fn start(call: &Call, system: &str, model: &str) -> Result<std::process::Child, 
     // A panel killed past Drop (abort, a torn-down popup) must not leave claude
     // running. The signal follows the spawning thread, so spawn from the main one.
     #[cfg(target_os = "linux")]
-    // SAFETY: prctl is a plain syscall, async-signal-safe between fork and exec.
-    unsafe {
-        c.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
-            Ok(())
-        });
+    {
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: the closure runs between fork and exec and calls only prctl,
+        // getppid and _exit, all async-signal-safe; it allocates nothing.
+        unsafe {
+            c.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+                // A parent that died before the prctl sends no signal: we were reparented.
+                if libc::getppid() != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
     }
     c.spawn().map_err(|e| format!("{}: {e}", call.claude))
 }
@@ -183,13 +193,11 @@ pub fn prompt_file(dir: &Path, system: &str) -> std::io::Result<PathBuf> {
         // Threads of one process share the pid, so the counter keeps their temp names apart.
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let tmp = d.join(format!(".prompt.{}.{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?
-            .write_all(system.as_bytes())?;
-        std::fs::rename(&tmp, &path)?;
+        let mut f = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+        if let Err(e) = f.write_all(system.as_bytes()).and_then(|()| std::fs::rename(&tmp, &path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
     }
     Ok(path)
 }
@@ -249,6 +257,7 @@ fn wait_unreaped(pid: u32) {
     loop {
         // SAFETY: an all-zero siginfo_t is valid, and waitid only writes into it.
         let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is a live, writable siginfo_t; WNOWAIT reaps nothing.
         let r = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
         if r == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
             return;

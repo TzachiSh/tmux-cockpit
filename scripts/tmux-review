@@ -53,8 +53,8 @@ load_theme() {
 # shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
 
-# %<digits> and nothing else: a pane id reaches tmux command strings and paths.
-is_pane() { case "${1-}" in %*) case "${1#%}" in ''|*[!0-9]*) return 1 ;; esac ;; *) return 1 ;; esac; }
+# shellcheck source=lib/pane.sh
+. "$LIBDIR/pane.sh" || exit 1
 
 # lines_mode's own "diff too large" row (below) is not a real anchor -- no
 # file, no line -- so it shares this one string with attach(), which refuses

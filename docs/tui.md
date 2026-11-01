@@ -136,6 +136,22 @@ a popup.
 `@cockpit_tui_pid` on the owner's live server. Use it for screenshots and
 benchmarks.
 
+**The panel's prompts.** A file at
+`${XDG_CONFIG_HOME:-$HOME/.config}/tmux-cockpit/prompts/<name>.txt`, with
+`<name>` one of `write`, `write.examples`, `explain` or `fix`, replaces the
+shipped prompt of that name; the `{{platform}}`, `{{home}}`, `{{about_user}}`
+and `{{examples}}` placeholders are filled in it the same way. A missing file
+means the shipped prompt. A file that exists but cannot be read (permissions,
+invalid UTF-8) also falls back to the shipped prompt, and the reason goes to
+`tui.log`.
+
+**The panel's cache.** `claude -p` reads its system prompt from a file, so each
+distinct prompt is written once to
+`${XDG_CACHE_HOME:-$HOME/.cache}/tmux-cockpit/panel/prompts/<hash>.txt`, mode
+0600 in a 0700 directory. `tmux-cockpit/panel` is also the call's working
+directory. Nothing prunes it; a new file appears only when a prompt's text
+changes.
+
 ## The screens
 
 ### The board
@@ -343,6 +359,21 @@ nothing. `paste` and `send` carry text, which goes to `$COCKPIT_ACTION.text`,
 mode 0600, control characters stripped; with `COCKPIT_ACTION` unset the panel
 refuses them and exits 1.
 
+Beside it, `$COCKPIT_ACTION.cmd` is one line: the pane's
+`#{pane_current_command}` when the panel captured it. Both files are written
+before the action line, each created new with `O_NOFOLLOW`. `scripts/cockpit-panel`
+reads the pane's current command again just before the paste; when the two
+differ (a Claude Code that exited would take the answer as shell input), it
+pastes nothing, logs it, and says
+`cockpit: the pane now runs <now>, not <then>; nothing sent`.
+
+The wrapper ends every action in one `display-message` on the pane:
+`cockpit: inserted N chars into %N` for `paste`, `cockpit: sent to %N` for
+`send`, `cockpit: could not load the paste buffer; nothing sent to %N` or
+`cockpit: could not paste into %N; nothing sent` when tmux refuses (tmux's
+error goes to the log). Under `COCKPIT_READONLY` it runs no tmux command at
+all and only logs what it would have sent.
+
 **Signatures.** Frozen; each lane changes bodies only.
 
 ```
@@ -354,9 +385,9 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | fleet | info %N | ask %N | panel %N | --rows |
---json | --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
-`board`; `panel %N` ships with the panel UI.
+**CLI:** `cockpit-tui board | panel %N | transcript ... | --rows | --json |
+--version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
+board reaches those through the action file and the shell scripts.
 
 **Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
 tail <jsonl> [max]` is the transcript reader of `scripts/lib/transcript.sh`,
