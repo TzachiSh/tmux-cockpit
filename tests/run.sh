@@ -11569,5 +11569,53 @@ trfile "$TRP" >/dev/null
 is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/null)"
 rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
+echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
+# Skipped, not failed, with no binary: bin/cockpit-tui is still optional here.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui diffstat/git-flags parity (no bin/cockpit-tui; run make tui)"
+else
+DSB="$DIR/bin/cockpit-tui"
+# tree_diff's rows summed the way fleet_scan_root sums them, as diffstat's four
+# columns; review_base forced to HEAD, which is what diffstat with no --base reads.
+ds_shell() {
+    ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
+      COCKPIT_REVIEW_BASE=uncommitted tree_diff "$1" --numstat --summary ) \
+    | awk -F'\t' '/^ create mode /{n++; rows++; next}
+                  $1 != "" {rows++; a += ($1 ~ /^[0-9]+$/) ? $1 : 0; d += ($2 ~ /^[0-9]+$/) ? $2 : 0}
+                  END {pm = rows ? sprintf("+%d -%d", a, d) : "clean"; if (n) pm = pm "  ?" n " new"
+                       printf "%d\t%d\t%d\t%s\n", a, d, n, pm}'
+}
+for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
+    GD=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "$gf" "$GD" >/dev/null 2>&1
+    is "diffstat $gf: tree_diff's totals" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+    rm -rf "$GD"
+done
+GD=$(mktmpd); ( cd "$GD" && git init -q -b main . && printf 'a\nb\n' > x && printf 'c\n' > y ) >/dev/null 2>&1
+is "diffstat on an unborn HEAD: tree_diff's totals, not clean" "$(ds_shell "$GD")" "$("$DSB" diffstat "$GD")"
+is "diffstat on a dir that is not a repo: nothing, status 1" "1" \
+   "$(rm -rf "$GD/.git"; "$DSB" diffstat "$GD"; printf '%s' "$?")"
+rm -rf "$GD"
+
+# git.sh keeps a static copy of the list (a missing binary must not break the
+# worktree hook); this pins the copy to the binary.
+is "git-flags is git.sh's GIT_SAFE plus --no-optional-locks" \
+   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}")" "$("$DSB" git-flags)"
+# The filter overrides still differ until PR 5 moves git.sh onto the binary's:
+# git.sh sets clean/smudge=cat and a blank required, and only for the keys the
+# repo set; git-flags blanks all four keys of every driver, required=false.
+GD=$(mktmpd); git init -q "$GD/r" >/dev/null 2>&1
+git -C "$GD/r" config filter.evil.clean 'echo pwned'; git -C "$GD/r" config filter.evil.required true
+mkdir "$GD/bin"
+printf '#!/bin/sh\n[ "$3" = config ] && exec %s "$@"\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
+chmod +x "$GD/bin/git"
+is "git.sh's filter overrides today (PR 5 aligns them)" "filter.evil.clean=cat filter.evil.required=" \
+   "$( ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" status ) | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
+is "git-flags --filters blanks every key of the driver" \
+   "filter.evil.clean= filter.evil.smudge= filter.evil.process= filter.evil.required=false" \
+   "$("$DSB" git-flags --filters "$GD/r" | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$GD"
+unset -f ds_shell
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

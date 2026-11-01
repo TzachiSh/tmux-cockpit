@@ -1,6 +1,7 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
+use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
 use cockpit_tui::data::{Pane, git_facts, list_panes, preview};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
@@ -460,6 +461,7 @@ fn planted_git_config_never_runs() {
     std::fs::remove_file(&marker).unwrap();
 
     let (_, pm, _) = git_facts(&r.path());
+    assert_eq!(diffstat(&[&r.path()]).0, "2\t0\t1\t+2 -0  ?1 new\n");
     assert!(
         !marker.exists(),
         "a fetch ran planted config: {:?}",
@@ -467,4 +469,85 @@ fn planted_git_config_never_runs() {
     );
     // f gains a line, and the untracked .gitattributes is the one new file
     assert_eq!(pm, "+2 -0  ?1 new", "the hardened diff still measures the tree");
+}
+
+fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
+    tree_stat(&r.path(), &r.dir.join(".git").display().to_string(), base)
+}
+
+fn diffstat(args: &[&str]) -> (String, i32) {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .arg("diffstat")
+        .args(args)
+        .output()
+        .unwrap();
+    (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.code().unwrap_or(-1))
+}
+
+/// `git diff HEAD` fails on an unborn HEAD, and that failure used to read as
+/// "clean" for a tree full of new files.
+#[test]
+fn an_unborn_repo_with_new_files_is_not_clean() {
+    let r = Repo::new("unborn");
+    std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
+    r.git(&["init", "-q", "-b", "main", "."]);
+    r.write("g", "x\ny\n");
+    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+    assert_eq!(git_facts(&r.path()).1, "+3 -0  ?2 new");
+    // staged and otherwise untouched: only the index has it, tree_diff's --cached leg
+    r.git(&["add", "-A"]);
+    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+}
+
+/// Past BIGCAP a file is never hashed, but it is still a change.
+#[test]
+fn a_file_over_the_cap_counts_dirty() {
+    let r = Repo::new("big");
+    // sparse: the size is what the cap reads, and no 33 MB lands on disk
+    std::fs::File::create(r.dir.join("core"))
+        .unwrap()
+        .set_len(33 * 1024 * 1024)
+        .unwrap();
+    assert_eq!(stat(&r, None), Some((0, 0, 0, "+0 -0".into())));
+}
+
+#[test]
+fn base_picks_what_the_diff_is_against() {
+    let r = Repo::new("base");
+    r.write("f", "a\nb\n");
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qam", "two"]);
+    assert_eq!(stat(&r, None), Some((0, 0, 0, "clean".into())));
+    assert_eq!(stat(&r, Some("HEAD~1")), Some((1, 0, 0, "+1 -0".into())));
+    assert_eq!(stat(&r, Some("no-such-rev")), None, "a bad base is a failure, not clean");
+    assert_eq!(diffstat(&[&r.path(), "--base", "HEAD~1"]), ("1\t0\t0\t+1 -0\n".into(), 0));
+    assert_eq!(diffstat(&[&r.path(), "--base", "no-such-rev"]), (String::new(), 1));
+}
+
+/// The git dir is read off `.git`, which in a linked worktree is a file.
+#[test]
+fn diffstat_reads_a_linked_worktree_and_refuses_a_non_repo() {
+    let r = Repo::new("wt");
+    let wt = r.dir.join("wt");
+    r.git(&["worktree", "add", "-q", "-b", "side", &wt.display().to_string()]);
+    std::fs::write(wt.join("n"), "x\n").unwrap();
+    assert_eq!(diffstat(&[&wt.display().to_string()]), ("1\t0\t1\t+1 -0  ?1 new\n".into(), 0));
+    assert_eq!(diffstat(&[&r.dir.join(".git").display().to_string()]), (String::new(), 1));
+}
+
+/// git.sh keeps a static copy of SAFE, pinned to `cockpit-tui git-flags` by tests/run.sh.
+#[test]
+fn the_flag_lists() {
+    assert_eq!(
+        SAFE.join(" "),
+        "--no-optional-locks -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false"
+    );
+    let r = Repo::new("flags");
+    assert_eq!(no_filters(&r.path()), Vec::<String>::new());
+    r.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+    r.git(&["config", "filter.a.b.process", "x"]);
+    assert_eq!(
+        no_filters(&r.path()).join(" "),
+        "-c filter.a.b.clean= -c filter.a.b.smudge= -c filter.a.b.process= -c filter.a.b.required=false \
+         -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false"
+    );
 }

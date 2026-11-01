@@ -349,6 +349,16 @@ pane are different facts and a blank tile tells you which one it is.
 --version | -h`. Phase 0 ships `--rows --json --version -h`; phase 1 adds
 `board`.
 
+**Helper subcommands (#199).** Plain-text helpers for the shell, no tmux.
+
+- `cockpit-tui git-flags` prints the fixed git safety flags, one word per line,
+  without starting git. `git-flags --filters <dir>` prints the `-c` overrides
+  that blank every filter driver `<dir>`'s config names.
+- `cockpit-tui diffstat <root> [--base <rev>]` prints
+  `<add>\t<del>\t<new>\t<pm>`, the board's diff count against `<rev>` (default
+  HEAD; an unborn HEAD counts the tree as new). Exit 1 when `<root>` is not a
+  repo or the diff fails.
+
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.
 
