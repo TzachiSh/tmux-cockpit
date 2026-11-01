@@ -1,0 +1,11 @@
+USER: leading unicode blanks
+USER: second-line promptx
+USER: [pasted text]
+AGENT: 😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀
+TOOL Grep
+TOOL Web
+TOOL WebFetch: https://x.test/p
+TOOL Glob: **/*.rs
+AGENT: lone � low surrogate
+AGENT: raw lone � escape
+USER: no newline at EOF, Feb 31

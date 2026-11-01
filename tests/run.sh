@@ -11563,7 +11563,7 @@ echo "== transcript reader: which transcript (#176) =="
 TRH="$(mktmpd)"; mkdir -p "$TRH/.claude/projects/-some-proj"
 : > "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl"
 : > "$TRH/.claude/projects/-some-proj/sid-bbb.jsonl"
-TRSOCK="cockpit-trf-$$"
+TRSOCK="cockpit-trf-$$"; SOCKS="$SOCKS $TRSOCK"
 tmux_tr() { "$TMUX_REAL" -L "$TRSOCK" "$@"; }
 "$TMUX_REAL" -L "$TRSOCK" -f /dev/null new-session -d -s t 'sleep 600 & wait' >/dev/null 2>&1
 TRP=$(tmux_tr display-message -p -t t '#{pane_id}' 2>/dev/null)
@@ -11613,5 +11613,30 @@ trfile "$TRP" >/dev/null
 is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/null)"
 rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
+
+echo "== cockpit-tui transcript: byte-identical to the jq reader on every fixture (#199) =="
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui transcript parity (no bin/cockpit-tui; run make tui)"
+# A binary built before #199 calls `transcript` an unknown screen and exits 2.
+elif "$DIR/bin/cockpit-tui" transcript >/dev/null 2>&1; [ "$?" != 1 ]; then
+    skip_ "cockpit-tui transcript parity (bin/cockpit-tui predates the subcommand; run make tui)"
+else
+. "$DIR/scripts/lib/transcript.sh"
+TPB="$DIR/bin/cockpit-tui"; TPF="$DIR/tests/fixtures/transcript-reader"
+# The seconds field can tick between the two runs, so both sides read N.
+tpnorm() { awk -F'\t' -v OFS='\t' '($1=="doing"||$1=="asked") && $3 ~ /^[0-9]+$/ { $3="N" } 1'; }
+for f in "$TPF"/*.jsonl; do
+    n=${f##*/}
+    is "doing on $n matches the jq reader" \
+       "$(transcript_doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")" \
+       "$("$TPB" transcript doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")"
+    for cap in "" 80 5; do
+        is "tail ${cap:-4096} on $n matches the jq reader" \
+           "$(transcript_tail "$f" $cap 2>&1; echo "rc=$?")" \
+           "$("$TPB" transcript tail "$f" $cap 2>&1; echo "rc=$?")"
+    done
+done
+unset -f tpnorm
+fi
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
