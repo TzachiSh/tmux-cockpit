@@ -1,0 +1,13 @@
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:00.5Z","message":{"content":"　  leading unicode blanks"}}
+{"type":"user","version":"2.1.316","timestamp":"garbage","message":{"content":"\n  \n\tsecond-line prompt\u001cx"}}
+{"type":"user","version":"2.1.316","isMeta":0,"timestamp":"2026-01-01T10:00:00Z","message":{"content":"meta zero is truthy"}}
+{"type":"user","version":"2.1.316","isMeta":false,"timestamp":"2026-01-01T10:00:00Z","message":{"content":"  \n<system-reminder>injected after a newline"}}
+{"type":"user","version":"2.1.316","timestamp":"2026-1-1T1:2:3Z","message":{"content":"\n <pasted_content x>"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:00+02:00","message":{"content":[null,{"type":"text","text":"\u0007"},{"type":"text","text":"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"}]}}
+{"type":"assistant","version":"2.1.316","message":null}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:01Z","message":{"content":[{"type":"tool_use","id":"a","name":"Grep"},{"type":"tool_use","id":"b","name":"Web\nFetch","input":"not an object"},{"type":"tool_use","id":"c","name":"WebFetch","input":{"description":"  ","url":"https://x.test/p"}},{"type":"tool_use","name":"Glob","input":{"pattern":"**/*.rs"}}]}}
+{"type":"user","version":"2.1.316","message":{"content":[{"type":"tool_result","content":"no id"}]}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:02.999Z","message":{"content":[{"type":"text","text":"lone � low surrogate"}]}}
+{"type":"assistant","version":"2.1.316","message":{"content":[{"type":"text","text":"raw lone \udc00 escape"}]}}
+{"type":"system","version":"not-a-version"}
+{"type":"user","version":"2.1.316","timestamp":"2026-02-31T00:00:00Z","message":{"content":"no newline at EOF, Feb 31"}}

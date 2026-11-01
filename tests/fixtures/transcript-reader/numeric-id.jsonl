@@ -1,0 +1,3 @@
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:00Z","message":{"content":"numeric ids"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:05Z","message":{"content":[{"type":"tool_use","id":2,"name":"Bash","input":{"description":"still open"}},{"type":"tool_use","id":1,"name":"Bash","input":{"description":"closed by 1.0"}}]}}
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:06Z","message":{"content":[{"type":"tool_result","tool_use_id":1.0,"content":"ok"}]}}

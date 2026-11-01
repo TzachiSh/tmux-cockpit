@@ -1,0 +1,2 @@
+USER: a prompt with no timestamp
+TOOL Bash: make test

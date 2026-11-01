@@ -1,0 +1,2 @@
+{"type":"user","version":"2.1.316","message":{"content":"a prompt with no timestamp"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:00+02:00","message":{"content":[{"type":"tool_use","id":"u1","name":"Bash","input":{"command":"make test"}}]}}

@@ -120,9 +120,9 @@ impl Drop for Rig {
     }
 }
 
-/// One `list-panes -F` row: 13 `\037` fields, `-` where the option is unset.
+/// One `list-panes -F` row: 12 `\037` fields, `-` where the option is unset.
 fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str, path: &str) -> String {
-    [id, wher, "win", cmd, state, "-", "-", sess, path, pid, "-", "-", "-"].join("\u{1f}")
+    [id, wher, "win", cmd, state, "-", "-", sess, path, pid, "-", "-"].join("\u{1f}")
 }
 
 fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
