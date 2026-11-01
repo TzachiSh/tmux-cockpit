@@ -18,7 +18,9 @@ git() {
     done
     local drv=()
     case ${!i-} in
-        # These never read the worktree, so they cannot reach a filter.
+        # These never read the worktree, so they cannot reach a filter. `worktree add`
+        # checks out and so runs the repo's filters: accepted, since only claude's own hook calls it
+        # and neutralising would leave LFS pointer files in the tree.
         rev-parse|symbolic-ref|for-each-ref|show-ref|config|log|show|cat-file|merge-base|rev-list|ls-tree|describe|name-rev|update-ref|branch|worktree) ;;
         # Anything else might; the repo names the driver, so neutralise it by name.
         *)
