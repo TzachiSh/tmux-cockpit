@@ -3989,6 +3989,27 @@ case "$(cat "$HKG/.claude/settings.json")" in
          "mywrap --log /scripts/review-gate-audit.log still present" "$(cat "$HKG/.claude/settings.json")" ;;
 esac
 rm -rf "$HKG"
+# review-gate's PreToolUse entry is no longer shipped: an older install's
+# entry is removed, its emptied group with it, and nothing else in PreToolUse.
+HKP=$(mktmpd); mkdir -p "$HKP/.claude"
+cat > "$HKP/.claude/settings.json" <<'EOF'
+{ "hooks": { "PreToolUse": [
+    { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+    { "matcher": "Bash", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate --pretool", "timeout": 5 } ] },
+    { "matcher": "Bash", "hooks": [ { "type": "command", "command": "my-bash-guard" } ] }
+  ] } }
+EOF
+HOME="$HKP" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "an upgrade removes the old review-gate --pretool entry" "0" \
+   "$(jq '[.hooks[][].hooks[].command | select(test("review-gate --pretool"))] | length' "$HKP/.claude/settings.json")"
+is "and leaves agent-state running once, the user's Bash hook, and no empty group" "1 1 2" \
+   "$(jq -r '[ ([.hooks.PreToolUse[].hooks[].command | select(test("/scripts/agent-state running"))] | length),
+             ([.hooks.PreToolUse[] | select(. == {matcher: "Bash", hooks: [{type: "command", command: "my-bash-guard"}]})] | length),
+             (.hooks.PreToolUse | length) ] | join(" ")' "$HKP/.claude/settings.json")"
+before=$(cat "$HKP/.claude/settings.json")
+HOME="$HKP" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "and a second run changes nothing" "$before" "$(cat "$HKP/.claude/settings.json")"
+rm -rf "$HKP"
 # The pre-#166 SessionStart `agent-state off` had an empty matcher, so it also ran
 # on compact; an upgrade must replace it, not keep it beside the new one.
 HKS=$(mktmpd); mkdir -p "$HKS/.claude"
