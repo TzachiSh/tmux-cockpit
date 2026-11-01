@@ -9181,9 +9181,9 @@ RHPAY2=$(mktmpf); sed 's/"stop_hook_active":false/"stop_hook_active":true/' "$RH
 # one that scrolls in, so the count never climbs past n0 and rh_wait spins to
 # its ceiling on a command that actually finished at once.
 rh_n() { "$TMUX_REAL" -L "$RH" capture-pane -p -S - -J -t "$RHCTL" | grep -c 'HRC=[0-9]'; }
-rh_start() { "$TMUX_REAL" -L "$RH" send-keys -t "$RHCTL" "TMUX_PANE=$RHAP XDG_STATE_HOME=$(printf '%q' "$RHSTATE") '$DIR/scripts/review-gate' < $(printf '%q' "$1") > $(printf '%q' "$RHSTATE/out") 2>/dev/null; echo HRC=\$?" Enter; }
+rh_start() { "$TMUX_REAL" -L "$RH" send-keys -t "$RHCTL" "TMUX_PANE=$RHAP XDG_STATE_HOME=$(printf '%q' "$RHSTATE") '$DIR/scripts/review-gate' ${2:-} < $(printf '%q' "$1") > $(printf '%q' "$RHSTATE/out") 2>/dev/null; echo HRC=\$?" Enter; }
 rh_wait() { local i; for i in $(seq 1 100); do [ "$(rh_n)" -gt "$1" ] && return 0; sleep 0.1; done; return 1; }
-rh_run() { local n0; n0=$(rh_n); rh_start "$1"; rh_wait "$n0"; }
+rh_run() { local n0; n0=$(rh_n); rh_start "$1" "${2:-}"; rh_wait "$n0"; }
 rh_queue() {                  # the spool tmux-review --deliver leaves when the agent is busy
     mkdir -p "$RHSESS"; printf 'Code review from the human\n\n## f:1 (+)\n> a\nREVIEW-MARKER\n\n' > "$RHSESS/spool.md"
     "$TMUX_REAL" -L "$RH" set-option -p -t "$RHAP" @cockpit_review_spool "$RHSESS/spool.md" >/dev/null 2>&1
@@ -9201,6 +9201,14 @@ rh_queue; rh_run "$RHPAY2"
 case "$(cat "$RHSTATE/out")" in *'"additionalContext":"Code review from the human'*'REVIEW-MARKER"'*) ok "a stop_hook_active Stop delivers a queued review too" ;;
     *) bad "a stop_hook_active Stop delivers a queued review too" "the review as additionalContext" "$(cat "$RHSTATE/out")" ;; esac
 is "and drains it" "" "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool)"
+# An older install's PreToolUse hook still calls the retired --pretool: it must
+# not run the Stop path (drain, rewake count, ◆).
+RHPRE=$(mktmpf); printf '{"session_id":"s","transcript_path":"/nonexistent","cwd":"%s","hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"make test"}}\n' "$RHDIR" > "$RHPRE"
+RHLOOP="$RHSTATE/tmux-cockpit/review/loop-$(gate_key "$RH" "$RHAP")"
+rh_queue; printf 2 > "$RHLOOP"; rh_run "$RHPRE" --pretool
+is "review-gate --pretool prints nothing" "" "$(cat "$RHSTATE/out")"
+is "and leaves the spool option, the spool file and the loop count alone" "$RHSESS/spool.md present 2" \
+   "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool) $([ -e "$RHSESS/spool.md" ] && echo present || echo absent) $(cat "$RHLOOP" 2>/dev/null)"
 unset -f rh_n rh_start rh_wait rh_run rh_queue
 "$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
 fi

@@ -291,10 +291,8 @@ if [ "$hooks" -eq 1 ]; then
 
     # Additive: their hooks stay, ours are appended unless a deep-equal entry
     # exists. norm makes an absent matcher equal "".
-    # Cockpit entries whose shape changes across versions are replaced, not kept
-    # beside the new one: review-gate (and an old install's `--pretool`, no longer
-    # shipped), and a SessionStart `agent-state off` whose matcher differs. Both
-    # tests are anchored, so a foreign hook naming the path survives.
+    # Cockpit entries that change shape across versions are replaced (anchored): review-gate,
+    # an old `--pretool` (review-gate exits 0 on it), a SessionStart `agent-state off`.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         def runs($re): (.command // "") | test($re);

@@ -23,6 +23,9 @@ if [ "${1:-}" = --concede ]; then
     echo "concession recorded; your next turn ends here, with that line as the reason"
     exit 0
 fi
+# Retired, but settings.json from an older install still runs it on every Bash
+# call: without this it would run the Stop path below. install.sh drops it.
+[ "${1:-}" = --pretool ] && exit 0
 case "$pane" in %[0-9]*) ;; *) exit 0 ;; esac
 
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
