@@ -1,0 +1,5 @@
+{"type":"ai-title","title":"noise"}
+{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:00.000Z","message":{"role":"user","content":"fix the widget"}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the widget now.\nSecond line is dropped."}]}}
+{"type":"api-request-blob","version":"2.1.316","timestamp":"2026-01-01T10:00:06.000Z","message":{"content":[{"type":"text","text":"not a turn"}]}}
+{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:10.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"description":"Run the widget tests","command":"make test"}}]}}
