@@ -469,13 +469,18 @@ impl App {
     /// `back` is the view the action was taken from, kept for a resume.
     fn act(&mut self, verb: &'static str, text: String, back: View) {
         if let View::Steps { label, items, sel, done } = &back {
-            self.resume = Some(Resume {
+            let r = Resume {
                 label: label.clone(),
                 items: items.clone(),
                 sel: *sel,
                 done: done.clone(),
                 verb,
-            });
+            };
+            if state_body(&self.pane, &self.cap.cmd, &r).is_some() {
+                self.resume = Some(r);
+            } else {
+                eprintln!("cockpit-tui: the steps are too long to keep open");
+            }
         }
         self.view = back;
         self.action = Some(Action { verb, text });
@@ -774,11 +779,22 @@ impl App {
                 } else {
                     format!("Steps ({lang})")
                 };
-                self.view = View::Steps {
+                let r = Resume {
                     label,
                     done: vec![false; steps.len()],
                     items: steps,
                     sel: 0,
+                    verb: "paste",
+                };
+                // said here, while it can be read: the panel closes on the action
+                if state_body(&self.pane, &self.cap.cmd, &r).is_none() {
+                    self.say(Level::Warn, "steps too long to keep open: the panel closes after one");
+                }
+                self.view = View::Steps {
+                    label: r.label,
+                    items: r.items,
+                    sel: 0,
+                    done: r.done,
                 };
             }
             Reply::Untagged(t) => self.result("Result (unlabelled)", t),
@@ -1242,6 +1258,15 @@ fn state_unesc(s: &str) -> Result<String, String> {
 /// `<path>.state`, for the wrapper to hand back with `--resume`: written before
 /// the action line, created fresh and never followed, like the other two.
 pub fn write_state(path: &Path, pane: &str, cmd: &str, r: &Resume) -> std::io::Result<()> {
+    let b = state_body(pane, cmd, r).ok_or(std::io::Error::new(std::io::ErrorKind::InvalidInput, "steps too long to keep"))?;
+    fresh(Path::new(&format!("{}.state", path.display())), &b)
+}
+
+/// The state file's text, or `None` when [`read_state`] would refuse it.
+pub fn state_body(pane: &str, cmd: &str, r: &Resume) -> Option<String> {
+    if r.items.len() > STATE_STEPS {
+        return None;
+    }
     let mut b = format!(
         "{STATE_HEAD}\npane {pane}\ncmd {}\nlabel {}\nsel {}\nverb {}\n",
         state_esc(cmd),
@@ -1253,7 +1278,7 @@ pub fn write_state(path: &Path, pane: &str, cmd: &str, r: &Resume) -> std::io::R
         let f = [&s.lang, &s.note, &s.cmd].map(|x| state_esc(x));
         b.push_str(&format!("step {}\t{}\t{}\t{}\n", u8::from(*d), f[0], f[1], f[2]));
     }
-    fresh(Path::new(&format!("{}.state", path.display())), &b)
+    (b.len() as u64 <= STATE_MAX).then_some(b)
 }
 
 /// The command and the steps a [`write_state`] file holds, refused unless it is

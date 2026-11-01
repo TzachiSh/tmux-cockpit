@@ -1442,3 +1442,33 @@ fn a_state_file_is_refused_unless_it_is_exactly_ours() {
     assert!(read_state(&fifo, "%3").is_err(), "a FIFO is refused without blocking on its open");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn steps_too_long_to_keep_say_so_and_leave_no_state() {
+    for reply in [
+        format!("<steps>{}</steps>", "<step><note>n</note><cmd>ls</cmd></step>".repeat(65)),
+        format!("<steps><step><note>n</note><cmd>{}</cmd></step></steps>", "x".repeat(70 * 1024)),
+    ] {
+        let mut a = app("w", "bash", "$ ");
+        writing(&mut a, "x");
+        a.reply(Ok(reply));
+        assert!(matches!(a.view, View::Steps { .. }));
+        assert_eq!(note(&a), Some("steps too long to keep open: the panel closes after one"));
+        ch(&mut a, 'i');
+        key(&mut a, KeyCode::Enter);
+        assert!(a.action.is_some() && a.resume.is_none(), "the action goes, with no state behind it");
+    }
+    let a = stepped();
+    assert!(a.note.is_none(), "three steps fit");
+    let dir = state_dir("long");
+    let r = Resume {
+        label: "L".into(),
+        items: vec![Step::default(); 65],
+        sel: 0,
+        done: vec![false; 65],
+        verb: "paste",
+    };
+    assert!(write_state(&dir.join("act"), "%3", "bash", &r).is_err());
+    assert!(!dir.join("act.state").exists(), "nothing written that a resume would refuse");
+    let _ = std::fs::remove_dir_all(&dir);
+}
