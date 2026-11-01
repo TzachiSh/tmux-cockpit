@@ -116,7 +116,6 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --delta <pane>            exit 0 when <pane>'s tree differs from its review base
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, doing/said/asked, review, base, session, review dir (prefix i)
-  tmux-review --sess <pane>             the review session dir for <pane> (tmux-fixer, review-gate)
   tmux-review --dir <pane>              the tree <pane> works in: @cockpit_dir, else its cwd
 In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-c copy lines   alt-y copy all   ^/ preview   alt-↑↓ scroll   ^S deliver (asks first)   esc leave (asks first)
 (there is no accept-all: ↵ with nothing typed does nothing)
@@ -134,13 +133,6 @@ USAGE
 session_dir() {               # <pane-id> <root>
     printf '%s/tmux-cockpit/review/%s-%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
         "${1#%}" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
-}
-
-sess_mode() {                 # <pane> -> the review session dir for the pane's repo root, created 0700
-    local pane=$1 dir root sess
-    dir=$(pane_dir "$pane"); [ -n "$dir" ] || return 1
-    root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root")
-    (umask 077; mkdir -p -- "$sess") && printf '%s\n' "$sess"
 }
 
 # -p pane_id, parsed here so the dispatch below sees only the subcommand --
@@ -173,9 +165,7 @@ case "${1:-}" in
     --loop)                     need review-diff.sh review-picker.sh review-deliver.sh ;;
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
-    --info)                     need review-diff.sh review-fleet.sh transcript.sh
-                                # shellcheck source=lib/fixer.sh
-                                . "$LIBDIR/fixer.sh" ;;
+    --info)                     need review-diff.sh review-fleet.sh transcript.sh ;;
     --fleet)                    need review-diff.sh review-fleet.sh ;;
     "")                         need review-diff.sh review-deliver.sh review-fleet.sh ;;
 esac
@@ -235,8 +225,6 @@ case "${1:-}" in
         shift; request "${1:-}" ;;
     --info)
         info_mode "${REVIEW_PANE_ID:-}" ;;
-    --sess)
-        shift; sess_mode "${1:-}" ;;
     --dir)
         shift; pane_dir "${1:-}" ;;
     -h|--help)

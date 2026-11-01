@@ -160,23 +160,27 @@ rk=$(key @cockpit_review_key r)
 ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
-Q_FIXER=$(sq "$DIR/scripts/tmux-fixer")
-fk=$(key @cockpit_fixer_key f)
-[ -z "$fk" ] || tmux bind-key "$fk" display-popup -E -w "$PW" -h 6 -T ' side fix · #{pane_id} ' "$Q_FIXER -p $SRC_PANE"
+# A key the plugin lets go of: f gets stock find-window back, any other is unbound.
+give_back() {
+    if [ "$1" = f ]; then tmux bind-key -T prefix f command-prompt 'find-window -Z "%%"'
+    else tmux unbind-key -T prefix "$1"; fi
+}
+# The retired side fix's bindings outlive it on a server that only reloads.
+tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
+    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
+    | while IFS= read -r k; do give_back "$k"; done
 
-# No default key until phase 3 gives the panel f; every free letter is a guess.
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
-pk=$(key @cockpit_panel_key "")
-# A reload that turns the key off or moves it must take the old binding back,
-# unless the fixer has just been bound there.
+# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
+pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
+pk=$(key @cockpit_panel_key "$pdef")
+# A reload that turns the key off or moves it must take the old binding back.
 pprev=$(tmux show-option -gqv @cockpit_panel_bound)
 if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then
-    [ "$pprev" = "$fk" ] || tmux unbind-key "$pprev"
+    give_back "$pprev"
     tmux set-option -gu @cockpit_panel_bound
 fi
-if [ -n "$pk" ] && [ "$pk" = "$fk" ]; then
-    tmux display-message "cockpit: @cockpit_panel_key $pk is the side-fix key; the panel is not bound"
-elif [ -n "$pk" ]; then
+if [ -n "$pk" ]; then
     tmux bind-key "$pk" display-popup -E -w 94% -h 90% -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
     tmux set-option -g @cockpit_panel_bound "$pk"
 fi
@@ -279,7 +283,7 @@ if [ -n "$ak" ]; then
     row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
     row 'Jump to the pane that needs you' u "$jk"
     row 'Review its diff'                 r "$rk"
-    row 'Side fix beside it'              f "$fk"
+    row 'Panel for it'                    f "$pk"
     row 'Pane info'                       i "$ik"
     row 'Board of every agent'            w "$bk"
     row 'Full screen (hide the chrome)'   e "$fsk"

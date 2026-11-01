@@ -115,7 +115,6 @@ pub struct Pane {
     pub delivered: usize,
     pub pid: String,
     pub review: String,
-    pub hold: String,
     pub doing: String,
     pub said: String,
     pub asked: String,
@@ -148,7 +147,6 @@ impl Hash for Pane {
             delivered,
             pid,
             review,
-            hold,
             doing,
             said,
             asked,
@@ -159,7 +157,7 @@ impl Hash for Pane {
             idle_since: _,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, hold, doing, said, asked, loc, pm,
+            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm,
         ]
         .hash(h);
         (state, pinned, delivered).hash(h);
@@ -742,7 +740,6 @@ const FIELDS: &str = concat!(
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{pane_current_path}}}}",
     "\u{1f}#{pane_pid}",
     "\u{1f}#{?#{@cockpit_review},#{@cockpit_review},-}",
-    "\u{1f}#{?#{@cockpit_hold},#{@cockpit_hold},-}",
     "\u{1f}#{?#{@cockpit_review_spool},#{@cockpit_review_spool},-}",
 );
 
@@ -759,7 +756,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
     let mut ps = vec![];
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        if f.len() < 13 {
+        if f.len() < 12 {
             continue;
         }
         // A pane carrying @panestate counts whatever it runs: the hooks are the
@@ -785,8 +782,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
             path: f[8].into(),
             pid: f[9].into(),
             review: unsentinel(f[10]),
-            hold: unsentinel(f[11]),
-            spool: unsentinel(f[12]),
+            spool: unsentinel(f[11]),
             ..Default::default()
         };
         if p.sess.is_empty() {
