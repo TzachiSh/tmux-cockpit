@@ -7,6 +7,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -167,11 +168,12 @@ pub fn prompt_file(dir: &Path, system: &str) -> std::io::Result<PathBuf> {
     system.hash(&mut h);
     let path = d.join(format!("{:016x}.txt", h.finish()));
     if !path.exists() {
-        let tmp = d.join(format!(".prompt.{}.{:016x}", std::process::id(), h.finish()));
+        // Threads of one process share the pid, so the counter keeps their temp names apart.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let tmp = d.join(format!(".prompt.{}.{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed)));
         OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .mode(0o600)
             .open(&tmp)?
             .write_all(system.as_bytes())?;

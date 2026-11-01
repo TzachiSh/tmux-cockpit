@@ -229,3 +229,25 @@ fn the_system_prompt_is_written_once_per_text_and_private() {
         .collect();
     assert!(left.is_empty(), "no temp file is left behind");
 }
+
+#[test]
+fn threads_writing_one_prompt_do_not_collide() {
+    let rig = Rig::new("prompt-race", "true");
+    let dir = rig.dir.join("cache");
+    let paths: Vec<PathBuf> = (0..16)
+        .map(|_| {
+            let dir = dir.clone();
+            std::thread::spawn(move || prompt_file(&dir, "same text").unwrap())
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .map(|t| t.join().unwrap())
+        .collect();
+    assert!(paths.iter().all(|p| *p == paths[0]));
+    assert_eq!(std::fs::read_to_string(&paths[0]).unwrap(), "same text");
+    assert_eq!(
+        std::fs::read_dir(dir.join("prompts")).unwrap().count(),
+        1,
+        "one file, no temp left behind"
+    );
+}
