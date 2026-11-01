@@ -163,13 +163,19 @@ fn options(o: &str) -> Vec<Opt> {
     out
 }
 
-fn question(o: &str) -> Option<Reply> {
+/// A closed `<question>`, and where its tag starts.
+fn question_at(o: &str) -> Option<(usize, Reply)> {
     let t = find_open(o, 0, "question", "", false, false)?;
     let (b, _) = body(o, &t, "question", false)?;
-    Some(Reply::Question {
+    let q = Reply::Question {
         text: norm(b),
         options: options(o),
-    })
+    };
+    Some((t.start, q))
+}
+
+fn question(o: &str) -> Option<Reply> {
+    question_at(o).map(|(_, q)| q)
 }
 
 /// `- x`, `* x`, `• x`, `1. x`, `2) x` -> `x`.
@@ -277,21 +283,24 @@ fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
         find_open(o, 0, "steps", "", false, false).map(|t| (t, "steps")),
         find_open(o, 0, "command", "lang", false, false).map(|t| (t, "command")),
         find_open(o, 0, "hint", "", false, false).map(|t| (t, "hint")),
-        find_open(o, 0, "question", "", false, false)
-            .filter(|t| close(o, t.end, "question").is_some())
-            .map(|t| (t, "question")),
     ];
-    let Some((t, kind)) = found.into_iter().flatten().min_by_key(|(t, _)| t.start) else {
-        return match reply_question(o) {
-            Some(q) => q,
-            None if want == OutType::Hint && !o.is_empty() => Reply::Hint(unesc(o)),
-            None => Reply::Untagged(unesc(o)),
-        };
+    let first = found.into_iter().flatten().min_by_key(|(t, _)| t.start);
+    // A question counts only once closed, and only when no other tag comes first.
+    let (t, kind) = match (first, question_at(o)) {
+        (Some((t, _)), Some((at, q))) if at < t.start => return q,
+        (None, Some((_, q))) => return q,
+        (Some(f), _) => f,
+        (None, None) => {
+            return match legacy_question(o) {
+                Some(q) => q,
+                None if want == OutType::Hint && !o.is_empty() => Reply::Hint(unesc(o)),
+                None => Reply::Untagged(unesc(o)),
+            };
+        }
     };
     let (b, _) = body(o, &t, kind, true).unwrap_or_default();
     let lang = || t.attr.as_deref().unwrap_or("").to_lowercase();
     match kind {
-        "question" => question(o).expect("closed, checked above"),
         "edit" => Reply::Unsupported("edit"),
         "need_file" => Reply::Unsupported("need_file"),
         "prompt" => Reply::Prompt(unesc(b.trim())),
