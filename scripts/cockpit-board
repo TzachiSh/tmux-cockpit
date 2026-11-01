@@ -67,5 +67,11 @@ case "$verb" in
     panel)   "$DIR/scripts/cockpit-panel" -p "$target" ;;
     info)    "$DIR/scripts/tmux-review" -p "$target" --info; read -r _ ;;
     deliver) tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null ;;
+    # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
+    *)
+        ts=${EPOCHREALTIME:-}; ts=${ts/./}; [ -n "$ts" ] || ts="$(date +%s)000000"
+        printf '%s cockpit-board: unknown verb [%s]\n' "$ts" "$verb $target" >> "$LOG"
+        tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null
+        ;;
 esac
 exit 0
