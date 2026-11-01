@@ -1,6 +1,6 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, InputKind, MODELS, QUICK, View, needs_y, risky};
+use super::app::{App, InputKind, Level, MODELS, QUICK, View, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::theme::Theme;
@@ -107,7 +107,6 @@ fn tile(th: &Theme, sel: bool, n: usize, text: String, extra: &str) -> Line<'sta
 
 fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
     let star = if ascii(th) { "*" } else { "★" };
-    let warn = Style::new().fg(th.needs);
     let meta = Style::new().fg(th.meta);
     let label = Style::new().fg(th.label);
     let bold = Style::new().add_modifier(Modifier::BOLD);
@@ -123,7 +122,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         more: false,
     };
     if let Some(n) = &app.note {
-        b.head.push(styled(n.clone(), warn));
+        let (g, fg) = match n.level {
+            Level::Info => (th.g.idle, th.sky),
+            Level::Warn => (th.g.needs, th.needs),
+            Level::Error => (th.g.error, th.error),
+        };
+        b.head.extend(many(&format!("{g} {}", n.text), w, "", Style::new().fg(fg)));
     }
     let run = app.run.as_ref();
     match &app.view {

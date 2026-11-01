@@ -103,6 +103,20 @@ pub enum View {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Level {
+    Info,
+    Warn,
+    Error,
+}
+
+/// One line above the body; it lasts until the view changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Note {
+    pub level: Level,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Action {
     /// `paste` inserts; `send` inserts and presses Enter.
@@ -145,7 +159,9 @@ pub struct App {
     pub req: Option<Request>,
     pub started: Option<Instant>,
     pub busy_back: Option<View>,
-    pub note: Option<String>,
+    pub note: Option<Note>,
+    /// Counts [`App::say`] calls, so a key can tell a note it set from an old one.
+    said: u64,
     pub action: Option<Action>,
     pub quit: bool,
     /// Body rows on screen and the furthest scroll, from the last frame.
@@ -169,6 +185,7 @@ impl App {
             started: None,
             busy_back: None,
             note: None,
+            said: 0,
             action: None,
             quit: false,
             room: 0,
@@ -222,6 +239,34 @@ impl App {
         if k.kind != KeyEventKind::Press {
             return;
         }
+        let (was, said) = (std::mem::discriminant(&self.view), self.said);
+        self.handle(k);
+        self.settle(was, said);
+    }
+
+    /// A note belongs to the view it was said on: a move to another view
+    /// drops it, unless the move itself said something.
+    fn settle(&mut self, was: std::mem::Discriminant<View>, said: u64) {
+        if std::mem::discriminant(&self.view) != was && self.said == said {
+            self.note = None;
+        }
+    }
+
+    pub fn say(&mut self, level: Level, text: impl Into<String>) {
+        self.note = Some(Note { level, text: text.into() });
+        self.said += 1;
+    }
+
+    /// The MAX_DRAFT cap's note, or none when nothing was turned away.
+    fn cap_note(&mut self, dropped: usize) {
+        if dropped > 0 {
+            self.say(Level::Warn, format!("the box holds {MAX_DRAFT} characters: {dropped} left out"));
+        } else {
+            self.note = None;
+        }
+    }
+
+    fn handle(&mut self, k: KeyEvent) {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
@@ -275,11 +320,12 @@ impl App {
     /// A bracketed paste: the Compose box takes it whole, a one-line box joins
     /// its lines with spaces. Anywhere else it is dropped, never read as keys.
     pub fn paste(&mut self, s: &str) {
-        match &mut self.view {
-            View::Compose => self.note = cap_note(append(&mut self.draft, &pasted(s, true))),
-            View::Input { text, .. } => self.note = cap_note(append(text, &pasted(s, false))),
-            _ => {}
-        }
+        let dropped = match &mut self.view {
+            View::Compose => append(&mut self.draft, &pasted(s, true)),
+            View::Input { text, .. } => append(text, &pasted(s, false)),
+            _ => return,
+        };
+        self.cap_note(dropped);
     }
 
     /// The last frame's body rows and line count, so a stored offset is always
@@ -360,7 +406,10 @@ impl App {
                 self.note = None;
                 return self.view = *back;
             }
-            KeyCode::Enter => self.note = Some("press y to send this: Enter does not confirm a risky or multi-line send".into()),
+            KeyCode::Enter => self.say(
+                Level::Warn,
+                "press y to send this: Enter does not confirm a risky or multi-line send",
+            ),
             _ => {}
         }
         let scroll = self.scrolled(k.code, scroll).unwrap_or(scroll);
@@ -415,7 +464,7 @@ impl App {
             KeyCode::Char('f') if ctrl => self.fix(),
             KeyCode::Char('t') if ctrl => {
                 if self.draft.trim().is_empty() {
-                    self.note = Some("nothing to insert yet".into());
+                    self.say(Level::Warn, "nothing to insert yet");
                 } else {
                     self.insert(self.draft.clone(), View::Compose);
                 }
@@ -425,14 +474,17 @@ impl App {
                 let i = OUT_CYCLE.iter().position(|o| *o == self.out).unwrap_or(0);
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
             }
-            _ => self.note = cap_note(edit(&mut self.draft, k, ctrl, true)),
+            _ => {
+                let n = edit(&mut self.draft, k, ctrl, true);
+                self.cap_note(n)
+            }
         }
     }
 
     fn need_draft(&mut self) -> bool {
         let empty = self.draft.trim().is_empty();
         if empty {
-            self.note = Some("type something first".into());
+            self.say(Level::Warn, "type something first");
         }
         !empty
     }
@@ -529,7 +581,7 @@ impl App {
         }
         self.pending = false;
         self.drop_pending();
-        self.note = Some("cancelled".into());
+        self.say(Level::Info, "cancelled");
         self.view = self.busy_back.take().unwrap_or(View::Home { sel: 0 });
     }
 
@@ -571,18 +623,20 @@ impl App {
         r.pending_turn = false;
         r.guessed_from = None;
         let (rounds, max) = (r.rounds, r.max);
+        let mut cut = None;
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
                 let p = parse::write(&out, *want);
-                if let Some(t) = p.cut_off {
-                    self.note = Some(format!("the reply looks cut off (no </{t}>): check it, or r retries"));
-                }
+                cut = p.cut_off;
                 p.reply
             }
             Flow::Fix { .. } => parse::fix(&out),
             Flow::Explain => parse::explain(&out),
         };
         let explain = matches!(r.flow, Flow::Explain);
+        if let Some(t) = cut {
+            self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
+        }
         match reply {
             Reply::Question { text, options } if rounds < max => self.ask(text, options),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
@@ -791,7 +845,7 @@ impl App {
                     };
                 }
             }
-            _ => self.note = cap_note(edit(&mut text, k, ctrl, false)),
+            _ => self.cap_note(edit(&mut text, k, ctrl, false)),
         }
         self.view = View::Input {
             kind,
@@ -831,7 +885,8 @@ impl App {
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
                 self.draft.clear();
-                self.note = cap_note(append(&mut self.draft, &text));
+                let n = append(&mut self.draft, &text);
+                self.cap_note(n);
                 self.run = None;
                 self.view = View::Compose;
             }
@@ -862,7 +917,7 @@ impl App {
         match k.code {
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
-            KeyCode::Char('i' | 's') if cmd.is_empty() => self.note = Some("this step is done outside the terminal".into()),
+            KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let here = View::Steps { label, items, sel };
                 if c == 'i' {
@@ -938,7 +993,7 @@ impl App {
             }
             KeyCode::Char(c @ ('i' | 's')) => {
                 let Some(text) = ready else {
-                    return self.note = Some("no prompt for the agent in this answer".into());
+                    return self.say(Level::Info, "no prompt for the agent in this answer");
                 };
                 let mut warn = Vec::new();
                 match self.session {
@@ -958,7 +1013,7 @@ impl App {
             }
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {
-                self.note = Some("esc or q again to discard this conversation".into());
+                self.say(Level::Warn, "esc or q again to discard this conversation");
                 self.view = View::Answer { scroll, armed: true };
             }
             _ if esc => {
@@ -1000,10 +1055,6 @@ fn append(text: &mut String, s: &str) -> usize {
     let room = MAX_DRAFT.saturating_sub(text.chars().count());
     text.extend(s.chars().take(room));
     s.chars().count().saturating_sub(room)
-}
-
-fn cap_note(dropped: usize) -> Option<String> {
-    (dropped > 0).then(|| format!("the box holds {MAX_DRAFT} characters: {dropped} left out"))
 }
 
 /// A bracketed paste, cleaned like the action file. Terminals send a pasted

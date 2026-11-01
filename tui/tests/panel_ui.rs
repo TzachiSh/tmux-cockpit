@@ -1,6 +1,6 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{Action, App, InputKind, Tile, View, bracketed_ok, risky, sanitize, write_action};
+use cockpit_tui::panel::app::{Action, App, InputKind, Level, Tile, View, bracketed_ok, risky, sanitize, write_action};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::request::Call;
@@ -74,6 +74,14 @@ fn typ(a: &mut App, s: &str) {
             key(a, KeyCode::Char(c));
         }
     }
+}
+
+fn note(a: &App) -> Option<&str> {
+    a.note.as_ref().map(|n| n.text.as_str())
+}
+
+fn level(a: &App) -> Option<Level> {
+    a.note.as_ref().map(|n| n.level)
 }
 
 fn ch(a: &mut App, c: char) {
@@ -795,7 +803,7 @@ fn a_risky_or_multi_line_send_needs_y_not_enter() {
     assert!(shown(&mut a, 80, 20).contains("y confirm  (↵ is off: risky or multi-line)"));
     key(&mut a, KeyCode::Enter);
     assert!(a.action.is_none() && !a.quit, "Enter does not fire a risky send");
-    assert!(matches!(a.view, View::Confirm { .. }) && a.note.as_deref().unwrap_or("").contains("press y"));
+    assert!(matches!(a.view, View::Confirm { .. }) && note(&a).unwrap_or("").contains("press y"));
     ch(&mut a, 'y');
     assert_eq!(a.action.as_ref().map(|x| x.verb), Some("send"));
 
@@ -890,7 +898,7 @@ fn esc_on_an_answer_asks_before_it_drops_the_conversation() {
     let mut a = explained();
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::Answer { armed: true, .. }), "{:?}", a.view);
-    assert!(a.run.is_some() && a.note.as_deref() == Some("esc or q again to discard this conversation"));
+    assert!(a.run.is_some() && note(&a) == Some("esc or q again to discard this conversation"));
     assert!(frame(&a, 80, 20, 0).contains("esc or q again discards it"));
     key(&mut a, KeyCode::Up);
     assert!(
@@ -937,11 +945,11 @@ fn the_draft_cap_says_what_it_left_out() {
     ch(&mut a, '2');
     a.paste(&"x".repeat(8010));
     assert_eq!(a.draft.chars().count(), 8000);
-    assert_eq!(a.note.as_deref(), Some("the box holds 8000 characters: 10 left out"));
+    assert_eq!(note(&a), Some("the box holds 8000 characters: 10 left out"));
     assert!(frame(&a, 80, 20, 0).contains("10 left out"));
     ch(&mut a, 'y');
     assert_eq!(
-        a.note.as_deref(),
+        note(&a),
         Some("the box holds 8000 characters: 1 left out"),
         "typing at the cap says so too"
     );
@@ -1064,4 +1072,54 @@ fn an_ignored_key_keeps_every_view_that_owns_text() {
     };
     ch(&mut a, 'r');
     assert!(matches!(a.view, View::Result { .. }), "r with nothing to retry keeps the result");
+}
+
+#[test]
+fn notes_have_a_level_and_go_with_the_view_they_were_said_on() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(
+        (note(&a), level(&a)),
+        (Some("cancelled"), Some(Level::Info)),
+        "a cancel is not an error"
+    );
+    assert_eq!(a.view, View::Compose, "the note survives the move that said it");
+    typ(&mut a, "y");
+    assert!(a.note.is_none(), "compose clears it on the next key");
+
+    ctrl(&mut a, 'u');
+    ctrl(&mut a, 't');
+    assert_eq!(level(&a), Some(Level::Warn));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.note.is_none(), "leaving the view drops its note");
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<steps><step><note>tap it</note></step><step><note>n</note><cmd>ls</cmd></step></steps>".into(),
+    ));
+    ch(&mut a, 'i');
+    assert_eq!(level(&a), Some(Level::Info));
+    key(&mut a, KeyCode::Down);
+    assert!(a.note.is_some(), "moving within the same view keeps it");
+    ch(&mut a, 's');
+    assert!(matches!(a.view, View::Confirm { .. }) && a.note.is_none(), "{:?}", a.note);
+}
+
+#[test]
+fn a_note_shows_its_glyph_in_both_tiers() {
+    let mut a = app("w", "bash", "$ ");
+    for (lv, uni, asc) in [
+        (Level::Info, "○ hi", ". hi"),
+        (Level::Warn, "▲ hi", "! hi"),
+        (Level::Error, "✕ hi", "x hi"),
+    ] {
+        a.say(lv, "hi");
+        assert!(frame(&a, 60, 10, 0).contains(uni), "{lv:?}");
+        let mut th = Theme::fixed();
+        th.g = cockpit_tui::theme::Glyphs::ascii();
+        assert!(framed(&a, 60, 10, &th, 0).0.contains(asc), "{lv:?} ascii");
+    }
 }
