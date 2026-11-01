@@ -10005,7 +10005,7 @@ esac
 # thing did.
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/wargv\nexit 0\n' "$BD" > "$BD/rec/tmux"
 chmod +x "$BD/rec/tmux"
-for s in tmux-jump tmux-review tmux-fixer; do
+for s in tmux-jump tmux-review cockpit-panel; do
     printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
     chmod +x "$BD/p/scripts/$s"
 done
@@ -10024,7 +10024,8 @@ wact() {                      # <action-line> -> every argv the wrapper produced
 is "jump %9 goes to that pane and runs nothing else" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact 'jump %9')"
 is "review %1 runs tmux-review on it and nothing else" "tmux-review -p %1;" "$(wact 'review %1')"
-is "fix %1 runs tmux-fixer on it and nothing else"    "tmux-fixer -p %1;"  "$(wact 'fix %1')"
+is "panel %1 runs cockpit-panel on it and nothing else" "cockpit-panel -p %1;" "$(wact 'panel %1')"
+is "fix %1, the retired verb, runs nothing"             ""                     "$(wact 'fix %1')"
 is "info %1 runs the info screen and nothing else" "tmux-review -p %1 --info;" "$(wact 'info %1')"
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
     *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;

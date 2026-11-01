@@ -7,4 +7,4 @@
 "┃Do you want to proceed?                                               ┃"
 "┃❯ 1. Yes   2. Yes, don't ask again   3. No                            ┃"
 "┗ ↵ answer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-" ↵ jump   a ask   r review   f fix   i info   ? help   q close          "
+" ↵ jump   a ask   r review   f panel   i info   ? help   q close        "

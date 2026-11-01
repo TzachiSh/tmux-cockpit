@@ -64,7 +64,7 @@ case "$verb" in
         ;;
     # These draw in the board's popup: tmux allows one popup per client.
     review)  "$DIR/scripts/tmux-review" -p "$target" ;;
-    fix)     "$DIR/scripts/tmux-fixer"  -p "$target" ;;
+    panel)   "$DIR/scripts/cockpit-panel" -p "$target" ;;
     info)    "$DIR/scripts/tmux-review" -p "$target" --info; read -r _ ;;
     deliver) tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null ;;
 esac

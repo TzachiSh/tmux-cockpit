@@ -72,7 +72,7 @@ Inside the board:
 | `[` `]` `PgUp` `PgDn` | scroll a screenful, only when rows are hidden |
 | `↵` | jump to the selected pane, close the board |
 | `r` | review its diff (`tmux-review`) |
-| `f` | side fix from it (`tmux-fixer`) |
+| `f` | the panel for it (`cockpit-panel`) |
 | `i` | info for the selected pane |
 | `a` | ask this agent. Phase 1 jumps; phase 2 opens the reply overlay |
 | `?` | help overlay, generated from the key table itself |
@@ -173,7 +173,7 @@ area, not the terminal's.
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
- ↵ jump   a ask   r review   f fix   i info   ? help   q close
+ ↵ jump   a ask   r review   f panel   i info   ? help   q close
 ```
 
 Tile 1 is blocked: red border, the question in place of the doing line, and
@@ -200,7 +200,7 @@ a scrollbar.
 │ h l  ← →   column             ↵    jump to this pane, close the board  │
 │ j k  ↑ ↓   row                a    answer / ask this agent             │
 │ ⇥ ⇧⇥       next / previous    r    review its diff                     │
-│ 1-9        tile by number     f    side fix from it                    │
+│ 1-9        tile by number     f    panel for this pane                 │
 │ g G        first / last       i    info for this pane                  │
 │ u          next blocked                                                │
 │ [ ]        page               view                                     │
@@ -334,8 +334,8 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 `$COCKPIT_ACTION` on exit. Nothing else is ever written there:
 
 ```
-jump %N · review %N · fix %N · info %N · deliver %N   (deliver reserved for phase 2)
-paste %N · send %N                                    (the panel)
+jump %N · review %N · panel %N · info %N · deliver %N   (deliver reserved for phase 2)
+paste %N · send %N                                      (the panel)
 ```
 
 The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
