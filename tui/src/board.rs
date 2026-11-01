@@ -159,7 +159,7 @@ fn footer(f: &mut Frame, area: Rect, v: &View) {
 pub fn footer_text(g: &Glyphs, w: usize) -> String {
     let e = g.enter;
     for t in [
-        format!("{e} jump   a ask   r review   f fix   i info   ? help   q close"),
+        format!("{e} jump   a ask   r review   f panel   i info   ? help   q close"),
         format!("{e} jump   ? help   q close"),
         "? help".to_string(),
     ] {
@@ -526,7 +526,7 @@ pub enum Act {
     Jump,
     Ask,
     Review,
-    Fix,
+    Panel,
     Info,
     Help,
     Refresh,
@@ -611,9 +611,9 @@ pub const KEYS: &[Key] = &[
     },
     Key {
         keys: "f",
-        desc: "side fix from it",
+        desc: "panel for this pane",
         grp: Grp::Act,
-        acts: &[Act::Fix],
+        acts: &[Act::Panel],
     },
     Key {
         keys: "i",
@@ -662,7 +662,7 @@ pub fn action(k: KeyEvent) -> Option<Act> {
         C::Enter => Act::Jump,
         C::Char('a') => Act::Ask,
         C::Char('r') => Act::Review,
-        C::Char('f') => Act::Fix,
+        C::Char('f') => Act::Panel,
         C::Char('i') => Act::Info,
         C::Char('?') => Act::Help,
         C::Char('q') | C::Esc => Act::Quit,
@@ -957,8 +957,8 @@ pub fn run() -> Option<String> {
                 action_line = Some(format!("review {id}"));
                 break;
             }
-            Act::Fix => {
-                action_line = Some(format!("fix {id}"));
+            Act::Panel => {
+                action_line = Some(format!("panel {id}"));
                 break;
             }
             Act::Info => {

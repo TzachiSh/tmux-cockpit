@@ -21,4 +21,4 @@
 "│  ✓ pushed to origin/fix/left-click                                           │"
 "│  PR #28 opened                                                               │"
 "└──────────────────────────────────────────────────────────────────────────────┘"
-" ↵ jump   a ask   r review   f fix   i info   ? help   q close                  "
+" ↵ jump   a ask   r review   f panel   i info   ? help   q close                "

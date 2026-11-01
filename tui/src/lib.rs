@@ -4,5 +4,6 @@ pub mod backend;
 pub mod board;
 pub mod data;
 pub mod fleet;
+pub mod panel;
 pub mod push;
 pub mod theme;

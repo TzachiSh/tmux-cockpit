@@ -476,7 +476,7 @@ fn no_wrapping_and_no_terminal_queries() {
 #[test]
 fn footer_drops_whole_pills() {
     let g = Glyphs::unicode();
-    let full = "↵ jump   a ask   r review   f fix   i info   ? help   q close";
+    let full = "↵ jump   a ask   r review   f panel   i info   ? help   q close";
     let mid = "↵ jump   ? help   q close";
     let last = "? help";
     for w in 1..90usize {
