@@ -3385,6 +3385,38 @@ done
 "$TMUX_REAL" -L "$MV" kill-server >/dev/null 2>&1
 fi
 
+echo "== a session name is data in the move menu =="
+# display-menu expands each item's name as a format, so a session named #(cmd)
+# ran cmd as the menu opened: the name has to reach it with its # doubled.
+if need_tmux "move menu session name"; then :; else
+MH="cockpit-mh-$$"; MHO="cockpit-mho-$$"; SOCKS="$SOCKS $MH $MHO"; MHD=$(mktmpd)
+"$TMUX_REAL" -L "$MH" -f /dev/null new-session -d -s work -n editor -x 90 -y 24 >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" new-window -t work -n keeper >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" select-window -t work:editor >/dev/null 2>&1
+# new-session expands -s as a format itself: ## lands the literal #( name.
+"$TMUX_REAL" -L "$MH" new-session -d -s "##(touch $MHD/pwned)" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MHO" -f /dev/null new-session -d -s o -x 90 -y 26 \
+    "$TMUX_REAL -L $MH attach -t work" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$MH" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$MHO" send-keys -t o C-b M
+until_cap "$MHO" o '*new session...*'
+# An absence has no observable to poll: give the #() job time to run.
+sleep 1
+[ -e "$MHD/pwned" ] && bad "opening the menu runs nothing" "no file" "pwned created" \
+    || ok "opening the menu runs nothing"
+if until_cap "$MHO" o '*#(touch*'; then ok "the menu lists the session by its literal name"
+else bad "the menu lists the session by its literal name" "a #(touch row" \
+    "$("$TMUX_REAL" -L "$MHO" capture-pane -p -t o | grep -v '^$' | tail -6)"; fi
+"$TMUX_REAL" -L "$MHO" send-keys -t o Enter
+if until_out "#(touch $MHD/pwned):editor" "$TMUX_REAL" -L "$MH" list-clients -F '#{session_name}:#{window_name}'; then
+    ok "and the window moves into it"
+else bad "and the window moves into it" "#(touch $MHD/pwned):editor" \
+    "$("$TMUX_REAL" -L "$MH" list-clients -F '#{session_name}:#{window_name}')"; fi
+"$TMUX_REAL" -L "$MHO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" kill-server >/dev/null 2>&1
+fi
+
 echo "== clicking the directory segment browses the working dir =="
 # range=control|2 on the status bar's directory segment opens the folder
 # browser at the pane's cwd -- the same popup the path picker descends into,

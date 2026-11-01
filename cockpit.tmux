@@ -242,6 +242,7 @@ rm -f "$rlconf"
 # destroy it and detach the client. The source is pinned by id (#{S:} shadows it).
 # User text stays data: ##{window_name} expands in display-menu, and the typed name
 # goes through %%% once into an option, so #( never runs. Four # for two expansions.
+# A session name's # is doubled by backreference: on 3.8 a ## replacement comes out as nothing.
 mk=$(key @cockpit_move_key M)
 if [ -n "$mk" ]; then
     mvconf=$(mktemp) || exit 1
@@ -251,7 +252,7 @@ if [ -n "$mk" ]; then
         cat <<'EOF'
     set -gF @cockpit_move_src "#{window_id}"
     set -gF @cockpit_move_cwd "#{pane_current_path}"
-    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{qa:session_name} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
+    run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{s|(#)|\\1\\1|:#{qa:session_name}} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
     } > "$mvconf"
