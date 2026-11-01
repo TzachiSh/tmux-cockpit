@@ -199,6 +199,11 @@ pub struct App {
     /// Body rows on screen and the furthest scroll, from the last frame.
     pub room: usize,
     pub bottom: usize,
+    /// The `?` overlay's first row while it is open: arrows scroll it, any
+    /// other key only closes it.
+    pub help: Option<usize>,
+    /// The last frame was under the panel's floor: only esc, q and ^C act.
+    pub tiny: bool,
 }
 
 impl App {
@@ -228,6 +233,8 @@ impl App {
             quit: false,
             room: 0,
             bottom: 0,
+            help: None,
+            tiny: false,
         }
     }
 
@@ -341,6 +348,22 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
         }
+        if let Some(top) = self.help.take() {
+            let last = super::view::keys(self).len().saturating_sub(1);
+            self.help = match k.code {
+                KeyCode::Up | KeyCode::Char('k') => Some(top.saturating_sub(1)),
+                KeyCode::Down | KeyCode::Char('j') => Some((top + 1).min(last)),
+                _ => None,
+            };
+            return;
+        }
+        // the floor message says esc closes; a key nobody can see act is dropped
+        if self.tiny {
+            if matches!(k.code, KeyCode::Esc | KeyCode::Char('q')) {
+                self.exit();
+            }
+            return;
+        }
         // q in a confirm is "no" and on an answer is esc: a reflex q must not lose the answer
         let typing = matches!(
             self.view,
@@ -348,6 +371,12 @@ impl App {
         );
         if !typing && k.code == KeyCode::Char('q') {
             return self.exit();
+        }
+        // `?` is text in a box, so F1 opens the overlay everywhere
+        let boxed = matches!(self.view, View::Compose | View::Input { .. });
+        if k.code == KeyCode::F(1) || (!boxed && k.code == KeyCode::Char('?')) {
+            self.help = Some(0);
+            return;
         }
         // the views that own text are moved out, never cloned: each handler puts its view back
         match &self.view {

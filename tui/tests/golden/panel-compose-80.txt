@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  ^N model  esc back ───╯"
+"╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  F1 keys  esc home ────╯"

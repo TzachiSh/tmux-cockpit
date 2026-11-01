@@ -21,4 +21,4 @@
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"╰ i insert  s send  r retry  c edit  ↑↓ scroll  esc back ──────────────────────────────────────────────────────────────╯"
+"╰ i insert  s send  r retry  c edit  ↑↓ scroll  ? keys  esc draft ─────────────────────────────────────────────────────╯"

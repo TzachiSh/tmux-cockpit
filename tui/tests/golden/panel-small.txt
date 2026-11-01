@@ -1,0 +1,7 @@
+"╭ panel ──────────────────╮"
+"│ make the window larger  │"
+"│ or rotate               │"
+"│ esc closes              │"
+"│                         │"
+"│                         │"
+"╰─────────────────────────╯"

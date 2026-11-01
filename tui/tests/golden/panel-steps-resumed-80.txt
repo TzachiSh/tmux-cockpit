@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ ↑↓ pick  i insert  s run  r retry  esc back ─────────────────────────────────╯"
+"╰ i insert  s send  ↑↓ pick  r retry  ? keys  esc home ────────────────────────╯"
