@@ -2417,6 +2417,13 @@ fi
 dcout=$(dc "$DOLD:$DCP"); dcrc=$?
 is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"
 is "and it exits 2"                         "2" "$dcrc"
+# A server holds the PATH it started with, so its fzf is the one the pickers
+# run: an old one there fails even when this shell finds a new one first.
+DCS="env -u TMUX TMUX_TMPDIR=$DC/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
+$DCS new-session -d 'sleep 300' >/dev/null 2>&1
+$DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
+is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
+$DCS kill-server >/dev/null 2>&1
 mkdir -p "$DC/oldgum"; dshim gum "gum version v1.0.0 (a1)" "$DC/oldgum"
 dcout=$(dc "$DC/oldgum:$DCP"); dcrc=$?
 is "an optional tool below its floor is a warn row" "1" "$(dcrow "$dcout" "warn gum")"
