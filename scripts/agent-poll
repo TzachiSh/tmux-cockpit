@@ -111,12 +111,14 @@ sleeper=""
 lasterr=$(tmux show-option -gqv @cockpit_poll_err 2>/dev/null)
 if [ "$once" = 1 ]; then tick; exit 0; fi
 
-claim || exit 0
-# Every exit path lets go of the slot; the signal handlers turn into exits so EXIT runs.
+# Every exit path lets go of the slot; the signal handlers turn into exits so EXIT runs. In place
+# before the claim: a HUP just after it publishes our pid would otherwise leave that pid behind.
+# release only unsets a slot that holds our own pid, so running before any claim is harmless.
 trap 'release' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
+claim || exit 0
 while :; do
     tick || break
     every=$(interval); [ "$every" = off ] && break

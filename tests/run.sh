@@ -11881,6 +11881,21 @@ av_wait "av_gone ${AVSC:-0}" && AVLEFT=yes || AVLEFT=no
 [ -z "$AVSC" ] || av_gone "$AVSC" || kill "$AVSC" 2>/dev/null
 is "...and did not outlive it" "yes" "$AVLEFT"
 av_tm set-option -g @cockpit_bg_poll 1
+# A HUP that lands right after the claim has published the pid must not leave it there: the
+# traps are in place before the claim. The DEBUG trap sends it at the claim's read-back, the
+# first command after the set.
+AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv @cockpit_poll_pid"*)'
+AVHUP="$AVHUP kill -HUP \$\$ ;; esac"
+av_tm set-option -g @cockpit_bg_poll 3600
+av_tm set-option -gu @cockpit_poll_pid
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVHUP" \
+    </dev/null >/dev/null 2>&1 &
+AVA=$!
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a HUP right after the claim ends the poller" "yes" "$AVLEFT"
+is "...and the slot it had just taken is empty again" "" "$(av_pub)"
+av_tm set-option -g @cockpit_bg_poll 1
 # Two starts at once: one poller is left, and it holds the slot. From here the tick is an
 # hour, so only a signal can end a poller and only release can end its sleep.
 av_tm set-option -g @cockpit_bg_poll 3600
