@@ -11664,6 +11664,20 @@ av_tm set-option -g @cockpit_poll_pid 999999
 av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "a poller whose slot was taken over leaves by itself" "yes" "$AVLEFT"
 is "...without touching the new owner's pid" "999999" "$(av_pub)"
+# A poller that ends normally has no child to stop: its sleep was reaped by `wait`, and a kill
+# of that number would hit whatever the kernel handed it next (AGENTS.md). Traced with bash -x,
+# since kill is a builtin: after two full ticks the poller is told to stop by the option.
+AVTR="$AVREC/trace"; : > "$AVTR"
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTR" &
+AVA=$!
+av_wait '[ "$(grep -c "^+* tick\$" "$AVTR")" -ge 2 ]'
+av_tm set-option -g @cockpit_bg_poll off
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a poller told to stop by the option leaves by itself" "yes" "$AVLEFT"
+is "...and signals nothing on the way out" "0" "$(grep -c '^+* kill ' "$AVTR")"
+is "...after running its exit trap" "1" "$(grep -c '^+* release$' "$AVTR")"
+av_tm set-option -g @cockpit_bg_poll 1
 # Two starts at once: one poller is left, and it holds the slot. From here the tick is an
 # hour, so only a signal can end a poller and only release can end its sleep.
 av_tm set-option -g @cockpit_bg_poll 3600

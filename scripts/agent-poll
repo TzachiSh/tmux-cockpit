@@ -34,7 +34,7 @@ claim() {
         "set-option -g @cockpit_poll_pid $$" 2>/dev/null
     [ "$(tmux show-option -gqv @cockpit_poll_pid 2>/dev/null)" = "$$" ]
 }
-# Our own pid only (a later poller's stays), and the sleep child goes with us.
+# Our own pid only (a later poller's stays), and a sleep child still running goes with us.
 release() {
     tmux if-shell -F "#{==:#{@cockpit_poll_pid},$$}" "set-option -gu @cockpit_poll_pid" 2>/dev/null
     [ -n "$sleeper" ] && kill "$sleeper" 2>/dev/null
@@ -120,4 +120,5 @@ while :; do
     # A background sleep + wait, so a signal ends the poller now, not after the sleep.
     sleep "$every" & sleeper=$!
     wait "$sleeper" 2>/dev/null
+    sleeper=""      # reaped: release must not signal a number the kernel may have reused
 done
