@@ -71,6 +71,15 @@ fi
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
 LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" | tmux load-buffer -b "$buf" - 2>/dev/null || exit 0
 # -p brackets the paste when the program asked for it; -d drops the buffer after.
+before=
+[ "$verb" = send ] && before=$(tmux capture-pane -p -t "$target" 2>/dev/null)
 tmux paste-buffer -p -d -b "$buf" -t "$target" 2>/dev/null || { tmux delete-buffer -b "$buf" 2>/dev/null; exit 0; }
-[ "$verb" = send ] && tmux send-keys -t "$target" Enter 2>/dev/null
+[ "$verb" = send ] || exit 0
+# Ink apps (Claude Code) can drop an Enter that lands in the same read as the
+# paste, so wait for the paste to show first: at most 20 x 50 ms.
+i=0
+while [ "$i" -lt 20 ] && [ "$(tmux capture-pane -p -t "$target" 2>/dev/null)" = "$before" ]; do
+    sleep 0.05; i=$((i + 1))
+done
+tmux send-keys -t "$target" Enter 2>/dev/null
 exit 0

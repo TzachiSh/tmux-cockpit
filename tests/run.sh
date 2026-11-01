@@ -10211,6 +10211,12 @@ cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
 [ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# capture-pane counts its calls; "still" mode answers the same screen each time.
+if [ "\$1" = capture-pane ]; then
+    echo x >> "$PND/caps"
+    [ -e "$PND/still" ] && { echo same; exit 0; }
+    wc -l < "$PND/caps"; exit 0
+fi
 printf '%s\n' "\$*" >> "$PND/pargv"
 [ "\$1" = load-buffer ] && { cat; echo; } >> "$PND/pargv"
 exit 0
@@ -10247,6 +10253,11 @@ is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
    "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
+rm -f "$PND/caps"; pact 'send %5' hi >/dev/null
+is "send waits for the paste to show before Enter: one capture before, one after" "2" "$(wc -l < "$PND/caps" | tr -d ' ')"
+rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"
+is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
+   "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
 is "a text that starts with - is pasted as text, not read as a flag" \
    "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
 fi
