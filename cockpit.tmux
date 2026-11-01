@@ -160,12 +160,17 @@ rk=$(key @cockpit_review_key r)
 ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
+# A key the plugin lets go of: f gets stock find-window back, any other is unbound.
+give_back() {
+    if [ "$1" = f ]; then tmux bind-key -T prefix f command-prompt 'find-window -Z "%%"'
+    else tmux unbind-key -T prefix "$1"; fi
+}
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
 pk=$(key @cockpit_panel_key f)
 # A reload that turns the key off or moves it must take the old binding back.
 pprev=$(tmux show-option -gqv @cockpit_panel_bound)
 if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then
-    tmux unbind-key "$pprev"
+    give_back "$pprev"
     tmux set-option -gu @cockpit_panel_bound
 fi
 if [ -n "$pk" ]; then

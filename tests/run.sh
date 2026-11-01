@@ -10121,6 +10121,16 @@ is "moving the key takes f back" "0" \
 "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "turning the key off on a reload takes the old binding back" "0:" \
    "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null | grep -c cockpit-panel):$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_panel_bound)"
+pn_keys() { "$TMUX_REAL" -L "$PN" list-keys -T prefix "$1" 2>/dev/null; }
+pn_load() { "$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
+pn_stock_f() {                # <label>  f is tmux's own find-window prompt again
+    case "$(pn_keys f)" in *cockpit*) bad "$1" "command-prompt find-window" "$(pn_keys f)" ;;
+        *'command-prompt'*'find-window -Z'*) ok "$1" ;; *) bad "$1" "command-prompt find-window" "$(pn_keys f)" ;; esac
+}
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1; pn_load
+pn_stock_f "turning the panel off on f gives f back to stock find-window"
+unset -f pn_keys pn_load pn_stock_f
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
 # The wrapper's grammar, with a stub binary and a tmux that only records.
