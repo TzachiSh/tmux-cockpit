@@ -180,8 +180,15 @@ if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then
     give_back "$pprev"
     tmux set-option -gu @cockpit_panel_bound
 fi
+# Read at load like the key: a strict word, since the binary refuses any other.
+pmode=$(tmux show-option -gqv @cockpit_panel_mode)
+case "$pmode" in
+    ''|auto|pc|tablet) ;;
+    *) tmux display-message "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"; pmode=auto ;;
+esac
 if [ -n "$pk" ]; then
-    tmux bind-key "$pk" display-popup -E -w 94% -h 90% -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
+    tmux bind-key "$pk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
+        -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
     tmux set-option -g @cockpit_panel_bound "$pk"
 fi
 
