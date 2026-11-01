@@ -233,8 +233,8 @@ columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
 rows Explain's heading leaves no body row. Below it the panel draws one card,
 `make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
 they do on the view under the card (an Answer still asks first, Compose keeps its
-draft, only Home closes), `^C` quits, and any other key is dropped: nobody can
-see what it would do.
+draft, only Home closes), `^C` quits. Any other key, `q` typed into a box and a
+paste are dropped: nobody can see what they would do. An open `?` closes.
 
 At 40x12 (a phone in portrait), Steps:
 
@@ -261,7 +261,8 @@ At 40x12 (a phone in portrait), Steps:
   chain. In the Compose box and the one-line boxes `?` is text, so `F1` opens it
   there (and everywhere else). Any key closes it; `↑↓` scroll it when it does not fit.
 - **Home, Question and Steps keep the selection on screen.** A long question
-  scrolls with its options, so the options never fall off the bottom.
+  scrolls with its options, so the options never fall off the bottom; its
+  `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
 - **Tiles** drop their description under 50 columns of text and cut it with an
   ellipsis above; a long option or step note wraps under itself.
 - **The top border** gives the title way first, with an ellipsis, then drops the
@@ -420,7 +421,8 @@ wrapper moves it aside and runs the binary again in the same popup:
 cockpit-tui panel %N --resume <state> --last ok|failed:<why>
 ```
 
-`ok` marks that step `✓ sent` and selects the next one with a command;
+`ok` marks that step `✓ inserted` or `✓ sent`, by the verb (earlier rounds' steps `✓ done`:
+the state file keeps no verb per step), and selects the next one with a command;
 `failed:<why>` shows why as an error note and marks nothing. The loop ends when
 the binary exits with no action, or with one taken anywhere but Steps. The
 binary reads the file back strictly: no symlink, a regular file of at most
