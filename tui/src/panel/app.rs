@@ -49,7 +49,18 @@ pub enum Tile {
     WriteCommand,
     Compose,
     Explain,
+    /// Flips pc and tablet for this run of the panel.
+    Mode,
     Close,
+}
+
+/// What a tap on a recorded hit rect does: the key the element stands for, or
+/// an entry chosen by its index (`Pick` also presses Enter on it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tap {
+    Key(KeyEvent),
+    Pick(usize),
+    Select(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +219,10 @@ pub struct App {
     pub help: Option<usize>,
     /// The last frame was under the panel's floor: only esc, q and ^C act.
     pub tiny: bool,
+    /// Tablet presentation: mouse capture, tall tiles, tap buttons.
+    pub tablet: bool,
+    /// Text for the event loop to put on the clipboard (OSC 52).
+    pub copy: Option<String>,
 }
 
 impl App {
@@ -240,6 +255,8 @@ impl App {
             bottom: 0,
             help: None,
             tiny: false,
+            tablet: false,
+            copy: None,
         }
     }
 
@@ -285,10 +302,16 @@ impl App {
             "shell" => Some((Tile::WriteCommand, "Write a command", "describe it, Claude writes the command")),
             _ => None,
         };
+        let mode = if self.tablet {
+            (Tile::Mode, "PC mode", "keys only: the terminal selects text again")
+        } else {
+            (Tile::Mode, "Tablet mode", "big tiles, tap buttons, the mouse")
+        };
         let mut t: Vec<_> = star.into_iter().collect();
         t.extend([
             COMPOSE,
             (Tile::Explain, "Explain", "what is on this screen, and what next"),
+            mode,
             (Tile::Close, "Close", ""),
         ]);
         t
@@ -325,6 +348,44 @@ impl App {
         let (was, said) = (std::mem::discriminant(&self.view), self.said);
         self.handle(k);
         self.settle(was, said);
+    }
+
+    /// A tap on a hit rect: the key it stands for, or an entry by index. The
+    /// selection moves first, so a `Pick` is the Enter the keys would press.
+    pub fn tap(&mut self, t: Tap) {
+        let i = match t {
+            Tap::Key(k) => return self.key(k),
+            Tap::Pick(i) | Tap::Select(i) => i,
+        };
+        if self.help.is_some() || self.tiny {
+            return;
+        }
+        match &mut self.view {
+            View::Home { sel } | View::ExplainAsk { sel } | View::Steps { sel, .. } => *sel = i,
+            View::Question { sel, scroll } => (*sel, *scroll) = (i, None),
+            _ => return,
+        }
+        if matches!(t, Tap::Pick(_)) {
+            self.key(KeyEvent::from(KeyCode::Enter));
+        }
+    }
+
+    /// The wheel is Up and Down, except in a text box, where those keys do nothing
+    /// but drop the note.
+    pub fn wheel(&mut self, up: bool) {
+        if self.help.is_none() && matches!(self.view, View::Compose | View::Input { .. }) {
+            return;
+        }
+        self.key(KeyEvent::from(if up { KeyCode::Up } else { KeyCode::Down }));
+    }
+
+    /// Queues `text` for the clipboard; the event loop writes it and says so.
+    fn copy_out(&mut self, text: &str) {
+        if text.is_empty() {
+            return self.say(Level::Info, "nothing to copy here");
+        }
+        self.say(Level::Info, format!("copied {} chars", text.chars().count()));
+        self.copy = Some(text.to_string());
     }
 
     /// A note belongs to the view it was said on: a move to another view
@@ -586,6 +647,11 @@ impl App {
             Tile::WriteCommand => self.compose(OutType::Command),
             Tile::Compose => self.compose(OutType::Auto),
             Tile::Explain => self.view = View::ExplainAsk { sel: 0 },
+            Tile::Mode => {
+                self.tablet = !self.tablet;
+                let m = if self.tablet { "tablet" } else { "pc" };
+                self.say(Level::Info, format!("{m} mode until the panel closes"));
+            }
             Tile::Close => self.exit(),
         }
     }
@@ -1075,6 +1141,10 @@ impl App {
                 };
                 self.confirm(text, true, back);
             }
+            KeyCode::Char('x') => {
+                self.copy_out(&text);
+                self.view = View::Result { label, text, scroll };
+            }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
                 self.draft.clear();
@@ -1117,6 +1187,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
             KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < items.len() => sel = c as usize - '1' as usize,
+            KeyCode::Char('x') => {
+                let s = items.get(sel).map_or("", |s| if s.cmd.is_empty() { &s.note } else { &s.cmd });
+                self.copy_out(s);
+            }
             KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let here = View::Steps { label, items, sel, done };
@@ -1173,6 +1247,15 @@ impl App {
             return self.view = View::Answer { scroll, armed: false };
         }
         match k.code {
+            KeyCode::Char('x') => {
+                // the prompt is what gets pasted elsewhere; without one, the last answer
+                let last = self
+                    .run
+                    .as_ref()
+                    .and_then(|r| r.log.iter().rfind(|(you, _)| !you))
+                    .map(|l| l.1.clone());
+                self.copy_out(&ready.or(last).unwrap_or_default());
+            }
             KeyCode::Char('f') => {
                 let back = Box::new(View::Answer {
                     scroll: usize::MAX,

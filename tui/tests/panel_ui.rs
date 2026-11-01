@@ -1,15 +1,15 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
 use cockpit_tui::panel::app::{
-    Action, App, InputKind, Level, Resume, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
+    Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
 };
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::parse::Step;
 use cockpit_tui::panel::request::Call;
-use cockpit_tui::panel::view::render;
+use cockpit_tui::panel::view::{Hit, mouse, render};
 use cockpit_tui::theme::Theme;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::os::unix::fs::PermissionsExt;
@@ -32,10 +32,16 @@ fn frame(app: &App, w: u16, h: u16, tick: u64) -> String {
 }
 
 fn framed(app: &App, w: u16, h: u16, th: &Theme, tick: u64) -> (String, (usize, usize)) {
+    let (f, page, _) = drawn(app, w, h, th, tick);
+    (f, page)
+}
+
+/// A frame, its fit numbers, and its hit map.
+fn drawn(app: &App, w: u16, h: u16, th: &Theme, tick: u64) -> (String, (usize, usize), Vec<Hit>) {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    let mut page = (0, 0);
+    let mut page = (0, 0, vec![]);
     t.draw(|f| page = render(f, f.area(), app, th, tick)).unwrap();
-    (t.backend().to_string(), page)
+    (t.backend().to_string(), (page.0, page.1), page.2)
 }
 
 /// A frame as the event loop draws it: the offsets are fitted after it.
@@ -239,7 +245,7 @@ fn home_suggests_by_window_and_numbers_pick_tiles() {
     let other = app("w", "htop", "").tiles();
     assert_eq!(
         other.iter().map(|t| t.1).collect::<Vec<_>>(),
-        ["Compose", "Explain", "Close"],
+        ["Compose", "Explain", "Tablet mode", "Close"],
         "Compose is not listed twice"
     );
 
@@ -247,7 +253,7 @@ fn home_suggests_by_window_and_numbers_pick_tiles() {
     ch(&mut a, '3');
     assert_eq!(a.view, View::ExplainAsk { sel: 0 });
     key(&mut a, KeyCode::Esc);
-    ch(&mut a, '4');
+    ch(&mut a, '5');
     assert!(a.quit && a.action.is_none(), "Close exits with no action");
     for k in [KeyCode::Esc, KeyCode::Char('q')] {
         let mut a = app("w", "zsh", "$ ");
@@ -1760,11 +1766,11 @@ fn home_tiles_drop_their_description_when_narrow() {
 #[test]
 fn home_and_question_scroll_to_the_selection() {
     let mut a = app("claude", "claude", CLAUDE_SCREEN);
-    for _ in 0..3 {
+    for _ in 0..4 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 8);
-    assert!(f.contains("▎4   Close"), "{f}");
+    assert!(f.contains("▎5   Close"), "{f}");
 
     let mut a = app("work", "bash", "$ ");
     writing(&mut a, "x");
@@ -1948,7 +1954,7 @@ fn the_overlay_lists_backspace_and_real_digit_ranges() {
     let mut a = app("w", "htop", "$ ");
     ch(&mut a, '?');
     let f = shown(&mut a, 60, 16);
-    assert!(f.contains("1-3  ") && !f.contains("1-9"), "three tiles:\n{f}");
+    assert!(f.contains("1-4  ") && !f.contains("1-9"), "four tiles:\n{f}");
     key(&mut a, KeyCode::Esc);
     ch(&mut a, '1');
     key(&mut a, KeyCode::F(1));
@@ -1986,4 +1992,436 @@ fn a_resumed_step_says_inserted_or_sent_in_both_tiers() {
     let mut b = app("w", "bash", "$ ");
     b.resumed("bash".into(), resume_of(&a), "ok");
     assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} inserted", th.g.done)));
+}
+
+// ---------------------------------------------------------------- tablet mode
+
+fn tablet(mut a: App) -> App {
+    a.tablet = true;
+    a
+}
+
+/// A tablet in landscape, and a phone in portrait.
+fn tablet_goldens(name: &str, app: &App) {
+    golden(&format!("panel-tablet-{name}-80"), &frame(app, 80, 24, 0));
+    golden(&format!("panel-tablet-{name}-40"), &frame(app, 40, 20, 0));
+}
+
+#[test]
+fn golden_tablet_home() {
+    tablet_goldens("home", &tablet(app("claude", "claude", CLAUDE_SCREEN)));
+}
+
+#[test]
+fn golden_tablet_compose() {
+    let mut a = tablet(app("work", "bash", "$ make test\nFAIL tests/api.rs"));
+    ch(&mut a, '1');
+    typ(&mut a, "fix the flaky api test then rerun it");
+    tablet_goldens("compose", &a);
+}
+
+fn tablet_steps() -> App {
+    let mut a = tablet(app("work", "bash", "$ "));
+    writing(&mut a, "clean the build and reinstall");
+    a.reply(Ok(
+        "<steps>\n<step><note>Remove the old build</note><cmd lang=\"bash\">rm -rf target</cmd></step>\n\
+                <step><note>Build again</note><cmd lang=\"bash\">cargo build --release</cmd></step>\n\
+                <step>Tap Allow in the app</step>\n</steps>"
+            .into(),
+    ));
+    a
+}
+
+#[test]
+fn golden_tablet_steps() {
+    tablet_goldens("steps", &tablet_steps());
+}
+
+#[test]
+fn golden_tablet_confirm() {
+    let mut a = tablet_steps();
+    ch(&mut a, 's');
+    assert!(matches!(a.view, View::Confirm { .. }));
+    tablet_goldens("confirm", &a);
+}
+
+fn at(a: &mut App, x: u16, y: u16, kind: MouseEventKind, hits: &[Hit]) {
+    mouse(
+        a,
+        hits,
+        MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+}
+
+/// Draws a frame as the loop does, then presses the left button on the first
+/// cell of `label` as drawn: the hit map must match what is on screen.
+fn tap_on(a: &mut App, w: u16, h: u16, label: &str) -> Vec<Hit> {
+    let (f, (total, room), hits) = drawn(a, w, h, &Theme::fixed(), 0);
+    a.fit(total, room);
+    let (y, line) = f
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(label))
+        .unwrap_or_else(|| panic!("no {label:?} on screen:\n{f}"));
+    // the TestBackend line is quoted: one char of the line before column 0
+    let x = line[..line.find(label).unwrap()].chars().count() - 1;
+    at(a, x as u16, y as u16, MouseEventKind::Down(MouseButton::Left), &hits);
+    hits
+}
+
+fn tap(a: &mut App, label: &str) -> Vec<Hit> {
+    tap_on(a, 80, 24, label)
+}
+
+fn tabbed(name: &str, cmd: &str, screen: &str) -> App {
+    tablet(app(name, cmd, screen))
+}
+
+#[test]
+fn the_mode_comes_from_the_option_and_auto_follows_termux() {
+    use cockpit_tui::panel::tablet_mode;
+    for (v, termux, want) in [
+        (None, false, false),
+        (None, true, true),
+        (Some(""), true, true),
+        (Some("auto"), false, false),
+        (Some("auto"), true, true),
+        (Some("pc"), true, false),
+        (Some("tablet"), false, true),
+    ] {
+        assert_eq!(tablet_mode(v, termux), Ok(want), "{v:?} termux={termux}");
+    }
+    for bad in ["Tablet", "on", "touch", " pc"] {
+        assert!(tablet_mode(Some(bad), true).is_err(), "{bad:?} is refused");
+    }
+}
+
+#[test]
+fn the_home_tile_flips_the_mode_both_ways() {
+    let mut a = app("w", "zsh", "$ ");
+    assert!(!a.tablet);
+    let i = a.tiles().iter().position(|t| t.0 == Tile::Mode).unwrap();
+    ch(&mut a, char::from(b'1' + i as u8));
+    assert!(a.tablet && matches!(a.view, View::Home { .. }));
+    assert_eq!(note(&a), Some("tablet mode until the panel closes"));
+    assert_eq!(a.tiles()[i].1, "PC mode");
+    tap(&mut a, "PC mode");
+    assert!(!a.tablet, "a tap on the tile flips it back");
+    assert_eq!(note(&a), Some("pc mode until the panel closes"));
+}
+
+#[test]
+fn pc_mode_records_no_hits_and_ignores_the_mouse() {
+    let mut a = app("w", "zsh", "$ ");
+    let (_, _, hits) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    assert!(hits.is_empty());
+    at(&mut a, 5, 2, MouseEventKind::Down(MouseButton::Left), &hits);
+    assert_eq!(a.view, View::Home { sel: 0 });
+}
+
+#[test]
+fn a_tap_on_a_home_tile_opens_it_on_any_of_its_rows() {
+    let mut a = tabbed("w", "zsh", "$ ");
+    let (f, _, hits) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    assert!(f.contains("╭────"), "tall tiles at 80x24:\n{f}");
+    // row 4 is the second tile's top border
+    at(&mut a, 40, 4, MouseEventKind::Down(MouseButton::Left), &hits);
+    assert_eq!((a.view.clone(), a.out), (View::Compose, OutType::Auto));
+    let mut a = tabbed("w", "zsh", "$ ");
+    tap(&mut a, "Explain");
+    assert_eq!(a.view, View::ExplainAsk { sel: 0 });
+    let mut a = tabbed("w", "zsh", "$ ");
+    tap(&mut a, "[ close ]");
+    assert!(a.quit && a.action.is_none());
+}
+
+#[test]
+fn one_tap_is_one_action_the_release_does_nothing() {
+    let mut a = tabbed("w", "zsh", "$ ");
+    let hits = tap(&mut a, "Tablet mode".replace("Tablet", "PC").as_str());
+    assert!(!a.tablet);
+    // the release lands on the same tile, now reading "Tablet mode": it must not flip it back
+    let (_, _, now) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    assert!(now.is_empty(), "pc mode again");
+    let h = hits.iter().find(|h| h.tap == Tap::Pick(3)).unwrap();
+    for kind in [
+        MouseEventKind::Up(MouseButton::Left),
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Down(MouseButton::Right),
+        MouseEventKind::Moved,
+    ] {
+        at(&mut a, h.at.x, h.at.y, kind, &hits);
+        assert!(!a.tablet && a.view == View::Home { sel: 3 }, "{kind:?}");
+    }
+}
+
+#[test]
+fn a_tap_outside_every_hit_does_nothing() {
+    let mut a = tabbed("w", "zsh", "$ ");
+    let (_, _, hits) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    for (x, y) in [(0, 0), (79, 23), (40, 18)] {
+        at(&mut a, x, y, MouseEventKind::Down(MouseButton::Left), &hits);
+    }
+    assert!(a.view == View::Home { sel: 0 } && !a.quit);
+}
+
+#[test]
+fn compose_has_a_button_for_every_ctrl_chord() {
+    let mut a = tabbed("w", "zsh", "$ ");
+    tap(&mut a, "Compose");
+    typ(&mut a, "list files");
+    tap(&mut a, "[ type ]");
+    assert_eq!(a.out, OutType::Prompt);
+    tap(&mut a, "[ model ]");
+    assert_eq!(a.model, 1);
+    tap(&mut a, "[ write ]");
+    assert_eq!(a.view, View::Busy);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Compose);
+    tap(&mut a, "[ fix spelling ]");
+    assert!(a.view == View::Busy && matches!(a.run.as_ref().unwrap().flow, cockpit_tui::panel::envelope::Flow::Fix { .. }));
+    tap(&mut a, "[ cancel ]");
+    assert_eq!(a.view, View::Compose);
+    tap(&mut a, "[ keys ]");
+    assert!(a.help.is_some());
+    let (_, _, hits) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    at(&mut a, 3, 3, MouseEventKind::Down(MouseButton::Left), &hits);
+    assert_eq!(a.help, None, "a tap anywhere closes the overlay");
+    assert_eq!(a.draft, "list files", "and types nothing");
+    tap(&mut a, "[ insert as typed ]");
+    assert_eq!(
+        a.action,
+        Some(Action {
+            verb: "paste",
+            text: "list files".into()
+        })
+    );
+    let mut a = tabbed("w", "zsh", "$ ");
+    tap(&mut a, "Compose");
+    tap(&mut a, "[ home ]");
+    assert_eq!(a.view, View::Home { sel: 0 });
+}
+
+#[test]
+fn question_options_and_buttons_are_taps() {
+    let ask = || {
+        let mut a = tabbed("work", "bash", "$ ");
+        writing(&mut a, "x");
+        a.reply(Ok(
+            "<question>Which?</question><option>first</option><option>second</option><option>third</option>".into(),
+        ));
+        a
+    };
+    let mut a = ask();
+    tap(&mut a, "third");
+    assert_eq!(a.view, View::Busy, "a tap picks: it is the Enter on that option");
+    assert_eq!(a.run.as_ref().unwrap().turns.last().unwrap().text, "third");
+    let mut a = ask();
+    tap(&mut a, "[ other ]");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Other,
+            ..
+        }
+    ));
+    typ(&mut a, "mine");
+    tap(&mut a, "[ send ]");
+    assert_eq!(a.view, View::Busy);
+    let mut a = ask();
+    tap(&mut a, "[ best guess ]");
+    assert_eq!(a.view, View::Busy);
+    let mut a = ask();
+    tap(&mut a, "[ back ]");
+    assert_eq!(a.view, View::Compose);
+}
+
+#[test]
+fn explain_questions_are_taps() {
+    let mut a = tablet(asking());
+    tap(&mut a, "Is something wrong?");
+    assert_eq!(a.view, View::Busy);
+    let mut a = tablet(asking());
+    tap(&mut a, "In your own words");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Explain,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn result_buttons_insert_send_copy_and_edit() {
+    let res = || {
+        let mut a = tabbed("w", "zsh", "$ ");
+        writing(&mut a, "x");
+        a.reply(Ok("<text>ls -la</text>".into()));
+        a
+    };
+    let mut a = res();
+    tap(&mut a, "[ insert ]");
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("paste"));
+    let mut a = res();
+    tap(&mut a, "[ copy ]");
+    assert_eq!((a.copy.as_deref(), note(&a)), (Some("ls -la"), Some("copied 6 chars")));
+    assert!(matches!(a.view, View::Result { .. }) && a.action.is_none());
+    tap(&mut a, "[ send ]");
+    assert!(matches!(a.view, View::Confirm { send: true, .. }));
+    tap(&mut a, "no");
+    assert!(matches!(a.view, View::Result { .. }));
+    tap(&mut a, "[ edit ]");
+    assert_eq!((a.view.clone(), a.draft.as_str()), (View::Compose, "ls -la"));
+}
+
+#[test]
+fn a_risky_send_is_confirmed_by_the_yes_button_which_is_y() {
+    let mut a = tablet(stepped());
+    let mut b = tablet_steps();
+    tap(&mut b, "[ send ]");
+    let f = frame(&b, 80, 24, 0);
+    assert!(f.contains("yes, send") && f.contains("risky"), "{f}");
+    assert!(!f.contains("↵"), "no Enter hint where Enter does not confirm:\n{f}");
+    tap(&mut b, "yes, send");
+    assert_eq!(
+        b.action,
+        Some(Action {
+            verb: "send",
+            text: "rm -rf target".into()
+        })
+    );
+    // the button is y: a tap never goes through the Enter that a risky send refuses
+    let mut c = tablet_steps();
+    ch(&mut c, 's');
+    let (_, _, hits) = drawn(&c, 80, 24, &Theme::fixed(), 0);
+    let yes = Tap::Key(KeyEvent::from(KeyCode::Char('y')));
+    assert!(hits.iter().any(|h| h.tap == yes));
+    assert!(!hits.iter().any(|h| h.tap == Tap::Key(KeyEvent::from(KeyCode::Enter))));
+    tap(&mut a, "[ insert ]");
+    assert!(a.action.is_some());
+}
+
+#[test]
+fn a_tap_on_a_step_selects_it_and_copy_takes_its_command() {
+    let mut a = tablet_steps();
+    tap(&mut a, "cargo build --release");
+    assert!(matches!(a.view, View::Steps { sel: 1, .. }), "a tap on any line of the step");
+    assert!(a.action.is_none(), "a step tap only selects");
+    tap(&mut a, "[ copy ]");
+    assert_eq!(a.copy.as_deref(), Some("cargo build --release"));
+    tap(&mut a, "Tap Allow in the app");
+    tap(&mut a, "[ copy ]");
+    assert_eq!(
+        a.copy.as_deref(),
+        Some("Tap Allow in the app"),
+        "a step with no command copies its note"
+    );
+    tap(&mut a, "[ retry ]");
+    assert_eq!(a.view, View::Busy);
+}
+
+#[test]
+fn answer_buttons_follow_up_copy_and_discard_after_asking() {
+    let mut a = tablet(explained());
+    tap(&mut a, "[ copy ]");
+    assert_eq!(
+        a.copy.as_deref(),
+        Some("Add the fallback for empty lines and keep the parser as it is.")
+    );
+    tap(&mut a, "[ home ]");
+    assert!(matches!(a.view, View::Answer { armed: true, .. }));
+    tap(&mut a, "[ keep it ]");
+    assert!(matches!(a.view, View::Answer { armed: false, .. }) && a.run.is_some());
+    tap(&mut a, "[ home ]");
+    tap(&mut a, "[ discard it ]");
+    assert!(a.view == View::Home { sel: 0 } && a.run.is_none());
+    let mut a = tablet(explained());
+    tap(&mut a, "[ follow up ]");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::FollowUp,
+            ..
+        }
+    ));
+    let mut a = tablet(long_answer(3));
+    tap(&mut a, "[ copy ]");
+    assert_eq!(a.copy.as_deref(), Some("line 1\nline 2\nline 3"), "no prompt: the answer");
+}
+
+#[test]
+fn error_and_busy_buttons() {
+    let mut a = tabbed("w", "bash", "$ ");
+    writing(&mut a, "x");
+    tap(&mut a, "[ cancel ]");
+    assert_eq!(a.view, View::Compose);
+    tap(&mut a, "[ write ]");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("boom".into())));
+    tap(&mut a, "[ retry ]");
+    assert_eq!(a.view, View::Busy);
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("boom".into())));
+    tap(&mut a, "[ back ]");
+    assert_eq!(a.view, View::Compose);
+}
+
+#[test]
+fn under_the_floor_a_tap_is_esc() {
+    let mut a = tabbed("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    let (_, _, hits) = drawn(&a, 20, 5, &Theme::fixed(), 0);
+    a.shrunk(true);
+    at(&mut a, 3, 3, MouseEventKind::Down(MouseButton::Left), &hits);
+    assert_eq!(a.view, View::Home { sel: 0 });
+}
+
+#[test]
+fn the_wheel_scrolls_and_never_touches_a_box() {
+    let mut a = tablet(long_answer(60));
+    let _ = shown(&mut a, 80, 24);
+    let bottom = scroll_of(&a);
+    for _ in 0..3 {
+        at(&mut a, 10, 10, MouseEventKind::ScrollUp, &[]);
+    }
+    assert_eq!(scroll_of(&a), bottom - 3);
+    at(&mut a, 10, 10, MouseEventKind::ScrollDown, &[]);
+    assert_eq!(scroll_of(&a), bottom - 2);
+    let mut a = tabbed("w", "zsh", "$ ");
+    at(&mut a, 10, 10, MouseEventKind::ScrollDown, &[]);
+    assert_eq!(a.view, View::Home { sel: 1 }, "on a list the wheel moves the selection");
+    tap(&mut a, "Compose");
+    ctrl(&mut a, 't');
+    assert_eq!(note(&a), Some("nothing to insert yet"));
+    at(&mut a, 10, 10, MouseEventKind::ScrollUp, &[]);
+    assert_eq!((a.view.clone(), note(&a)), (View::Compose, Some("nothing to insert yet")));
+}
+
+#[test]
+fn tall_tiles_only_where_the_whole_view_fits() {
+    let tall = |a: &App, w, h| frame(a, w, h, 0).contains("╭───");
+    let a = tabbed("claude", "claude", CLAUDE_SCREEN);
+    // 5 tiles of 3 rows, a blank, 2 capture lines and a row of buttons: 19 rows inside the border
+    assert!(tall(&a, 80, 21) && !tall(&a, 80, 20));
+    assert!(!tall(&a, 40, 20), "a phone in portrait keeps one row a tile");
+    let a = tabbed("w", "htop", "");
+    assert!(tall(&a, 40, 20), "four tiles fit there");
+    assert!(!tall(&app("claude", "claude", CLAUDE_SCREEN), 80, 40), "pc mode never");
+}
+
+#[test]
+fn every_tablet_view_fits_its_buttons_at_the_floor() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    for (name, a, ..) in every_view() {
+        let a = tablet(a);
+        let (f, _, hits) = drawn(&a, MIN_W, MIN_H, &Theme::fixed(), 0);
+        assert!(!hits.is_empty(), "{name}: something to tap:\n{f}");
+        for h in &hits {
+            assert!(h.at.y < MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
+        }
+    }
 }
