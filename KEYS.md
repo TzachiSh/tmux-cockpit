@@ -19,6 +19,7 @@ layout.
 | `prefix b` | branch picker for this pane's repo. |
 | `prefix s` | session picker (`tm`), with each session's agents previewed. Replaces stock `choose-tree`. |
 | `prefix w` | the board: every agent pane as a live tile, blocked first. Needs the optional `cockpit-tui` binary. |
+| `@cockpit_panel_key` | the panel: Claude writes, fixes or explains for this pane and pastes the answer in. Off until you bind it; needs `cockpit-tui`. |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
 

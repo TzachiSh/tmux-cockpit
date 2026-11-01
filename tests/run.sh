@@ -10109,6 +10109,234 @@ is "and its name never runs" "no" "$([ -e "$BI/OWNED" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$BW_IN" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
+# The panel is the one wrapper that writes into a pane, so it is driven for real:
+# a fake claude, a target running cat, the panel in a second window, send-keys.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-panel end to end (no bin/cockpit-tui; run make tui)"
+elif need_tmux "cockpit-panel end to end"; then :; else
+PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
+mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
+# With $PND/hang present the fake records its pid and parent, then never answers.
+cat > "$PND/bin/claude" <<PNFAKE
+#!/bin/sh
+cat >/dev/null
+[ -e "$PND/hang" ] && { echo \$\$ > "$PND/cpid"; echo \$PPID > "$PND/ppid"; exec sleep 300; }
+cat "$PND/reply"
+PNFAKE
+chmod +x "$PND/bin/claude"
+"$TMUX_REAL" -L "$PN" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
+# The fake is found on PATH, as the real one would be; COCKPIT_CLAUDE would beat it.
+PNENV="env -u COCKPIT_CLAUDE 'PATH=$PND/bin:$SHIM:/usr/bin:/bin' XDG_CACHE_HOME=$PND/cache XDG_CONFIG_HOME=$PND/cfg COCKPIT_LOG=$PND/tui.log"
+pn_gone() {                   # <pane>  the wrapper has exited and its window with it
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$PN" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+pn_go() {                     # <target-cmd> <draft>  -> PNA target, PNB panel, at the result view
+    PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$1")
+    PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+    until_cap "$PN" "$PNB" '*will send*' || return 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l "$2"
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" C-s
+    until_cap "$PN" "$PNB" '*i insert*'
+}
+pn_count() { "$TMUX_REAL" -L "$PN" capture-pane -p -t "$1" | grep -cxF "$2"; }
+pn_cap() { "$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNB" 2>/dev/null; }
+
+printf '<text>panel says hi</text>' > "$PND/reply"
+pn_go 'exec cat' 'say hi' || bad "the panel reaches its result view" "i insert" "$("$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNB")"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+pn_gone "$PNB"
+until_cap "$PN" "$PNA" '*panel says hi*'
+# cat echoes a pasted line once and prints it again only after Enter.
+is "i inserts the answer into the target pane without Enter" "1" "$(pn_count "$PNA" 'panel says hi')"
+
+pn_go 'exec cat' 'say hi' || bad "the panel reaches its result view (send)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
+until_cap "$PN" "$PNB" '*confirm*'
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+pn_gone "$PNB"
+until_cap "$PN" "$PNA" '*panel says hi*panel says hi*'
+is "s, after its confirm, sends the answer and presses Enter" "2" "$(pn_count "$PNA" 'panel says hi')"
+
+# A target that turns bracketed paste on shows the markers through the tty's
+# echo, so one paste carrying both lines is visible as one 200~ ... 201~ pair.
+printf '<text>line one\nline two</text>' > "$PND/reply"
+pn_go "printf '\\033[?2004h'; exec cat" 'two lines' || bad "the panel reaches its result view (two lines)" "i insert" "$(pn_cap)"
+# cat is not a program known to take a paste whole, so Insert confirms first.
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+until_cap "$PN" "$PNB" '*may run each line*confirm*' || bad "a multi-line insert into cat asks first" "may run each line" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" Enter
+pn_gone "$PNB"
+if until_cap "$PN" "$PNA" '*200~line one*line two*201~*'; then
+    ok "a multi-line answer arrives as one bracketed paste, its lines in order"
+else
+    bad "a multi-line answer arrives as one bracketed paste, its lines in order" \
+        "^[[200~line one ... line two^[[201~" "$("$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNA")"
+fi
+
+printf '<text>ab\033[31mcd\007ef</text>' > "$PND/reply"
+pn_go 'exec cat' 'colour' || bad "the panel reaches its result view (colour)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+pn_gone "$PNB"
+until_cap "$PN" "$PNA" '*cdef*'
+# An ESC that got through would echo as ^[ and the BEL would vanish silently.
+is "control characters never reach the pane" "ab[31mcdef" \
+   "$("$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNA" | grep -F cdef)"
+is "and the paste buffer is gone afterwards" "" \
+   "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
+is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
+
+# A popup torn down mid-call (SIGTERM), or a binary killed outright (SIGKILL),
+# must not leave its claude running. The pid is checked before any signal.
+pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
+    rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
+    PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
+    PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+    until_cap "$PN" "$PNB" '*will send*' || return 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" C-s
+    until_file "$PND/ppid" '[0-9]*' || return 1
+    local tui comm=''
+    tui=$(cat "$PND/ppid")
+    [ -r "/proc/$tui/comm" ] && read -r comm 2>/dev/null < "/proc/$tui/comm"
+    [ "$comm" = cockpit-tui ] || return 1
+    kill "-$1" "$tui"
+    cat "$PND/cpid"
+}
+pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
+    local i st
+    for i in $(seq 1 "$POLLS"); do
+        st=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1)
+        case "$st" in ''|Z) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+if [ ! -d /proc/self ]; then
+    skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
+else
+    for sig in TERM KILL; do
+        pc=$(pn_hang "$sig")
+        if [ -z "$pc" ]; then
+            bad "SIG$sig on the panel kills its claude" "a running fake claude under cockpit-tui" "none"
+        elif pn_dead "$pc"; then
+            ok "SIG$sig on the panel kills its claude"
+        else
+            bad "SIG$sig on the panel kills its claude" "pid $pc gone" "still running"; kill "$pc" 2>/dev/null
+        fi
+        pn_gone "$PNB"
+    done
+    is "and a killed panel pastes nothing" "0" "$(pn_count "$PNA" 'hang')"
+fi
+rm -f "$PND/hang"
+
+# The answer is held while you read it, and the pane can move on meanwhile.
+printf '<text>panel says hi</text>' > "$PND/reply"
+pn_go "sh -c 'cat; exec sleep 300'" 'say hi' || bad "the panel reaches its result view (pane moves on)" "i insert" "$(pn_cap)"
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNA" C-d
+for i in $(seq 1 "$POLLS"); do
+    [ "$("$TMUX_REAL" -L "$PN" display -p -t "$PNA" '#{pane_current_command}')" = sleep ] && break
+    sleep 0.1
+done
+"$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
+pn_gone "$PNB"
+is "a pane that stopped running what was captured gets nothing" "0" "$(pn_count "$PNA" 'panel says hi')"
+case "$(cat "$PND/tui.log" 2>/dev/null)" in *"now runs [sleep], not [sh]; nothing sent"*) ok "and the log says why" ;;
+    *) bad "and the log says why" "now runs [sleep], not [sh]" "$(tail -3 "$PND/tui.log" 2>/dev/null)" ;;
+esac
+
+# The binding: off unless asked for, and the wrapper with the pressed pane when set.
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "@cockpit_panel_key unset binds no panel key" "" \
+   "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key F9 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" in
+    *display-popup*'-h "90%" -w "94%"'*cockpit-panel*' -p '*) ok "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" ;;
+    *) bad "@cockpit_panel_key F9 opens the panel in a popup on the pressed pane" "display-popup ... cockpit-panel -p" \
+         "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null)" ;;
+esac
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "turning the key off on a reload takes the old binding back" "0:" \
+   "$("$TMUX_REAL" -L "$PN" list-keys -T prefix F9 2>/dev/null | grep -c cockpit-panel):$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_panel_bound)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1
+"$TMUX_REAL" -L "$PN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" in
+    *tmux-fixer*) ok "a panel key equal to the side-fix key is refused, and f stays the fixer" ;;
+    *) bad "a panel key equal to the side-fix key is refused, and f stays the fixer" "tmux-fixer on f" \
+         "$("$TMUX_REAL" -L "$PN" list-keys -T prefix f 2>/dev/null)" ;;
+esac
+"$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
+
+# The wrapper's grammar, with a stub binary and a tmux that only records.
+mkdir -p "$PND/p/scripts" "$PND/p/bin" "$PND/rec"
+cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
+# `display -p` answers what the pane runs now, from a file the case sets.
+cat > "$PND/rec/tmux" <<PNREC
+#!/bin/sh
+[ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# capture-pane counts its calls; "still" mode answers the same screen each time.
+if [ "\$1" = capture-pane ]; then
+    echo x >> "$PND/caps"
+    [ -e "$PND/still" ] && { echo same; exit 0; }
+    wc -l < "$PND/caps"; exit 0
+fi
+printf '%s\n' "\$*" >> "$PND/pargv"
+[ "\$1" = load-buffer ] && { cat; echo; } >> "$PND/pargv"
+exit 0
+PNREC
+# The stub plays an attacker too: a .clean planted beside the action file must
+# never be what gets pasted.
+cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
+#!/bin/sh
+dir=\${COCKPIT_ACTION%/*}
+{ stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
+printf evil > "\$COCKPIT_ACTION.clean"
+cat "$PND/line" > "\$COCKPIT_ACTION"
+[ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
+cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
+exit 0
+PNSTUB
+chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
+pact() {                      # <action-line> <text> [notext] -> every tmux argv the wrapper produced
+    : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
+    [ "${3:-}" = notext ] && rm -f "$PND/text"
+    printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
+    tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
+}
+is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter" \
+   "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;" "$(pact 'send %5' hi)"
+is "paste %5 is the same without Enter" "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' hi)"
+is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
+is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
+is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
+is "a third field pastes nothing" "" "$(pact 'paste %5 x' hi)"
+is "a file planted beside the action file is never pasted" "" "$(pact 'paste %5' '')"
+is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev/null; cat "$PND/dmode")"
+is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
+is "a pane that runs something else by now gets nothing, and is told why" \
+   "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
+rm -f "$PND/caps"; pact 'send %5' hi >/dev/null
+is "send waits for the paste to show before Enter: one capture before, one after" "2" "$(wc -l < "$PND/caps" | tr -d ' ')"
+rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"
+is "and gives up after 20 polls, then still presses Enter" "21 Enter" \
+   "$(wc -l < "$PND/caps" | tr -d ' ') $(grep -c 'send-keys -t %5 Enter' "$PND/pargv" | sed 's/^1$/Enter/')"
+: > "$PND/tui.log"
+is "COCKPIT_READONLY runs the panel and writes nothing to the pane" "" "$(COCKPIT_READONLY=1 pact 'send %5' hi)"
+is "and logs what it would have done" "1" "$(grep -c 'readonly, not sent: send %5' "$PND/tui.log")"
+is "a text that starts with - is pasted as text, not read as a flag" \
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
+fi
+
 echo "== the example configs ship the phone wrap override (#99) =="
 # A phone terminal that wraps at the last cell scrolls the screen on every
 # full-width status repaint (#97), so the override has to be IN the shipped
