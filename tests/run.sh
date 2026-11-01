@@ -10189,10 +10189,21 @@ esac
 mkdir -p "$PND/p/scripts" "$PND/p/bin" "$PND/rec"
 cp "$DIR/scripts/cockpit-panel" "$PND/p/scripts/"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/pargv\n[ "$1" = load-buffer ] && { cat; echo; } >> %s/pargv\nexit 0\n' "$PND" "$PND" > "$PND/rec/tmux"
-printf '#!/bin/sh\ncat %s/line > "$COCKPIT_ACTION"\ncat %s/text > "$COCKPIT_ACTION.text"\n' "$PND" "$PND" > "$PND/p/bin/cockpit-tui"
+# The stub plays an attacker too: a .clean planted beside the action file must
+# never be what gets pasted.
+cat > "$PND/p/bin/cockpit-tui" <<PNSTUB
+#!/bin/sh
+dir=\${COCKPIT_ACTION%/*}
+{ stat -c %a "\$dir" 2>/dev/null || stat -f %Lp "\$dir"; } > "$PND/dmode"
+printf evil > "\$COCKPIT_ACTION.clean"
+cat "$PND/line" > "\$COCKPIT_ACTION"
+[ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
+exit 0
+PNSTUB
 chmod +x "$PND/rec/tmux" "$PND/p/bin/cockpit-tui"
-pact() {                      # <action-line> <text> -> every tmux argv the wrapper produced
+pact() {                      # <action-line> <text> [notext] -> every tmux argv the wrapper produced
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
+    [ "${3:-}" = notext ] && rm -f "$PND/text"
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
@@ -10203,6 +10214,11 @@ is "an empty text pastes nothing" "" "$(pact 'paste %5' '')"
 is "a line for another pane than the one opened on pastes nothing" "" "$(pact 'paste %9' hi)"
 is "a board verb pastes nothing" "" "$(pact 'jump %5' hi)"
 is "a third field pastes nothing" "" "$(pact 'paste %5 x' hi)"
+is "a file planted beside the action file is never pasted" "" "$(pact 'paste %5' '')"
+is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev/null; cat "$PND/dmode")"
+is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
+is "a text that starts with - is pasted as text, not read as a flag" \
+   "load-buffer -b B -;-n hi;paste-buffer -p -d -b B -t %5;" "$(pact 'paste %5' '-n hi')"
 fi
 
 echo "== the example configs ship the phone wrap override (#99) =="

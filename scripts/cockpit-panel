@@ -26,9 +26,12 @@ fi
 is_pane "$PANE" || { tmux "${say[@]}" "cockpit: the panel needs a pane id, not [$PANE]" 2>/dev/null; exit 0; }
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
-f=$(mktemp) || exit 1
+# A private 0700 directory: a name beside a mktemp file in a shared /tmp is
+# one another user can create first, and its text would be pasted.
+d=$(mktemp -d) || exit 1
+f="$d/act"
 buf="cockpit-panel-$$"
-trap 'rm -f "$f" "$f.text" "$f.clean"' EXIT
+trap 'rm -rf "$d"' EXIT
 
 # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
 env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" panel "$PANE" 2>>"$LOG" || {
@@ -53,11 +56,10 @@ if [ -n "$bad" ]; then
     exit 0
 fi
 
-# Stripped again here: the binary already did, but this is what reaches the pane.
-LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" > "$f.clean" 2>/dev/null
-[ -s "$f.clean" ] || exit 0
-# -p pastes bracketed, so a newline is not Enter; -d drops the buffer after.
-tmux load-buffer -b "$buf" - < "$f.clean" 2>/dev/null || exit 0
+[ -s "$f.text" ] || exit 0
+# Stripped again on the way: the binary already did, but this is what reaches the pane.
+LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text" | tmux load-buffer -b "$buf" - 2>/dev/null || exit 0
+# -p brackets the paste when the program asked for it; -d drops the buffer after.
 tmux paste-buffer -p -d -b "$buf" -t "$target" 2>/dev/null || { tmux delete-buffer -b "$buf" 2>/dev/null; exit 0; }
 [ "$verb" = send ] && tmux send-keys -t "$target" Enter 2>/dev/null
 exit 0

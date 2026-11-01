@@ -9,7 +9,7 @@ use super::route::{Route, route};
 use super::{boundary_at, boundary_before};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Instant;
 
@@ -882,18 +882,19 @@ pub fn sanitize(s: &str) -> String {
 }
 
 /// `<path>.text` first, then the action line, so the wrapper never reads a
-/// line whose text is not there yet.
+/// line whose text is not there yet. Both are created fresh, never followed.
 pub fn write_action(path: &Path, pane: &str, a: &Action) -> std::io::Result<()> {
-    let text = Path::new(&format!("{}.text", path.display())).to_path_buf();
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&text)?;
-    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    f.write_all(sanitize(&a.text).as_bytes())?;
-    std::fs::write(path, format!("{} {pane}\n", a.verb))
+    let fresh = |p: &Path, body: &str| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .mode(0o600)
+            .open(p)?;
+        f.write_all(body.as_bytes())
+    };
+    fresh(Path::new(&format!("{}.text", path.display())), &sanitize(&a.text))?;
+    fresh(path, &format!("{} {pane}\n", a.verb))
 }
 
 fn ci(s: &str, i: usize, lit: &str) -> Option<usize> {
