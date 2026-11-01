@@ -226,6 +226,48 @@ a scrollbar.
 ╰ any key closes ────────────────────────────────────────────────────────╯
 ```
 
+### The panel on a small screen
+
+The panel is built down to 28x7, the floor measured over every view: under 28
+columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
+rows Explain's heading leaves no body row. Below it the panel draws one card,
+`make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
+they do on the view under the card (an Answer still asks first, Compose keeps its
+draft, only Home closes), `^C` quits. Any other key, `q` typed into a box and a
+paste are dropped: nobody can see what they would do. An open `?` closes.
+
+At 40x12 (a phone in portrait), Steps:
+
+```
+╭ panel · %3 · work ───────────────────╮
+│ Steps (bash)                         │
+│                                      │
+│  1 Remove the old build              │
+│      $ rm -rf target                 │
+│      ⚠ risky: rm                     │
+│ ▎2 Build again                       │
+│      $ cargo build --release         │
+│  3 Tap Allow in the app              │
+│                                      │
+│                                      │
+╰ i insert  s send  ? keys  esc draft ─╯
+```
+
+- **Footers drop whole hints**, lowest priority first, never cut one. `esc` and
+  the help key always stay, and `esc` names where it goes: `home`, `draft`,
+  `answer`, `back`, `cancel` or `close`.
+- **`?` lists every key of the view on screen**, `^N`, `⇥` and `F2` included,
+  and each `esc` row says where it leads, so the way back to Home reads off the
+  chain. In the Compose box and the one-line boxes `?` is text, so `F1` opens it
+  there (and everywhere else). Any key closes it; `↑↓` scroll it when it does not fit.
+- **Home, Question and Steps keep the selection on screen.** A long question
+  scrolls with its options, so the options never fall off the bottom; its
+  `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
+- **Tiles** drop their description under 50 columns of text and cut it with an
+  ellipsis above; a long option or step note wraps under itself.
+- **The top border** gives the title way first, with an ellipsis, then drops the
+  indicator's arrows; the `N-M of T` count is never cut, only dropped whole.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -379,7 +421,8 @@ wrapper moves it aside and runs the binary again in the same popup:
 cockpit-tui panel %N --resume <state> --last ok|failed:<why>
 ```
 
-`ok` marks that step `✓ sent` and selects the next one with a command;
+`ok` marks that step `✓ inserted` or `✓ sent`, by the verb (earlier rounds' steps `✓ done`:
+the state file keeps no verb per step), and selects the next one with a command;
 `failed:<why>` shows why as an error note and marks nothing. The loop ends when
 the binary exits with no action, or with one taken anywhere but Steps. The
 binary reads the file back strictly: no symlink, a regular file of at most

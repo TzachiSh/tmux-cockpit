@@ -10125,10 +10125,10 @@ printf '<steps><step><note>one</note><cmd>echo first</cmd></step><step><note>two
 pn_go 'exec cat' 'two steps' || bad "the panel reaches its steps" "i insert" "$(pn_cap)"
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" i
 until_cap "$PN" "$PNA" '*echo first*'
-if until_cap "$PN" "$PNB" '*step 1 inserted*1 one*sent*'; then
-    ok "after an insert the panel comes back on the steps, the step marked sent"
+if until_cap "$PN" "$PNB" '*step 1 inserted*1 one*inserted*'; then
+    ok "after an insert the panel comes back on the steps, the step marked inserted"
 else
-    bad "after an insert the panel comes back on the steps, the step marked sent" "step 1 inserted ... sent" "$(pn_cap)"
+    bad "after an insert the panel comes back on the steps, the step marked inserted" "step 1 inserted ... inserted" "$(pn_cap)"
 fi
 "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" s
 until_cap "$PN" "$PNB" '*confirm*'

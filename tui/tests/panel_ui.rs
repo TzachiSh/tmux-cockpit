@@ -45,8 +45,11 @@ fn shown(a: &mut App, w: u16, h: u16) -> String {
     f
 }
 
-/// One golden per width, the two widths the popup meets most.
+/// The two widths the popup meets most, and two small screens: a phone in
+/// portrait and a split pane.
 fn goldens(name: &str, app: &App, tick: u64) {
+    golden(&format!("panel-{name}-40"), &frame(app, 40, 12, tick));
+    golden(&format!("panel-{name}-60"), &frame(app, 60, 16, tick));
     golden(&format!("panel-{name}-80"), &frame(app, 80, 20, tick));
     golden(&format!("panel-{name}-120"), &frame(app, 120, 24, tick));
 }
@@ -356,7 +359,7 @@ fn write_asks_at_most_three_rounds() {
     writing(&mut a, "do it");
     for n in 1..=3 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '1');
         let (_, prompt, _) = a.request_parts().unwrap();
         assert!(prompt.contains(&format!("<questions_left>{}</questions_left>", 3 - n)), "{prompt}");
@@ -397,7 +400,7 @@ fn fix_never_asks_and_explain_asks_six_times() {
     ch(&mut a, '1');
     for n in 1..=6 {
         a.reply(Ok(q(n)));
-        assert_eq!(a.view, View::Question { sel: 0 }, "round {n}");
+        assert_eq!(a.view, View::Question { sel: 0, scroll: None }, "round {n}");
         ch(&mut a, '2');
     }
     a.reply(Ok(q(7)));
@@ -834,7 +837,7 @@ fn a_risky_or_multi_line_send_needs_y_not_enter() {
     writing(&mut a, "x");
     a.reply(Ok("<steps><step><note>n</note><cmd>sudo rm -rf /tmp/x</cmd></step></steps>".into()));
     ch(&mut a, 's');
-    assert!(shown(&mut a, 80, 20).contains("y confirm  (↵ is off: risky or multi-line)"));
+    assert!(shown(&mut a, 80, 20).contains("y confirm  ↑↓ scroll  ↵ is off: risky or multi-line"));
     key(&mut a, KeyCode::Enter);
     assert!(a.action.is_none() && !a.quit, "Enter does not fire a risky send");
     assert!(matches!(a.view, View::Confirm { .. }) && note(&a).unwrap_or("").contains("press y"));
@@ -915,7 +918,7 @@ fn a_long_confirm_scrolls_and_says_what_is_cut() {
 
 #[test]
 fn golden_confirm_scrolled() {
-    for (w, h) in [(80u16, 20u16), (120, 24)] {
+    for (w, h) in [(40u16, 12u16), (60, 16), (80, 20), (120, 24)] {
         let mut a = long_confirm();
         shown(&mut a, w, h);
         for _ in 0..5 {
@@ -933,7 +936,7 @@ fn esc_on_an_answer_asks_before_it_drops_the_conversation() {
     key(&mut a, KeyCode::Esc);
     assert!(matches!(a.view, View::Answer { armed: true, .. }), "{:?}", a.view);
     assert!(a.run.is_some() && note(&a) == Some("esc or q again to discard this conversation"));
-    assert!(frame(&a, 80, 20, 0).contains("esc or q again discards it"));
+    assert!(frame(&a, 80, 20, 0).contains("esc q again discards it"));
     key(&mut a, KeyCode::Up);
     assert!(
         matches!(a.view, View::Answer { armed: false, .. }) && a.note.is_none(),
@@ -1324,7 +1327,10 @@ fn a_resume_marks_the_step_and_moves_to_the_next_command() {
     };
     assert_eq!((*sel, done.clone()), (2, vec![true, false, false]), "the tap step is skipped");
     assert_eq!((note(&b), level(&b)), (Some("step 1 inserted"), Some(Level::Info)));
-    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent"));
+    assert!(
+        frame(&b, 80, 20, 0).contains("update  ✓ inserted"),
+        "the mark says what the note says"
+    );
 
     let mut b = app("w", "bash", "$ ");
     b.resumed("bash".into(), r.clone(), "failed:the pane now runs vim, not bash\u{1b}[2J");
@@ -1502,4 +1508,482 @@ fn busy_counts_the_screen_apart_from_the_conversation() {
         f.contains("sent: screen 2 lines, 1 hidden, 2 more in the conversation · write (auto)"),
         "{f}"
     );
+}
+
+// ---------------------------------------------------------------- small screens
+
+fn asking() -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    a
+}
+
+#[test]
+fn golden_explain_ask() {
+    let mut a = asking();
+    key(&mut a, KeyCode::Down);
+    goldens("explain-ask", &a, 0);
+}
+
+#[test]
+fn golden_input() {
+    let mut a = asking();
+    ch(&mut a, '5');
+    typ(&mut a, "why is the build red");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Explain,
+            ..
+        }
+    ));
+    goldens("input", &a, 0);
+}
+
+/// Every view, with the text that is its heading and a line of its body.
+fn every_view() -> Vec<(&'static str, App, &'static str, &'static str)> {
+    let mut v = vec![("home", app("claude", "claude", CLAUDE_SCREEN), "panel", "Write a prompt")];
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    typ(&mut a, "fix the flaky test");
+    v.push(("compose", a, "type: ", "flaky"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    v.push(("busy", a, "writing", "writing"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question><option>one</option><option>two</option>".into()));
+    v.push(("question", a, "Which file?", "one"));
+    let mut a = asking();
+    ch(&mut a, '5');
+    v.push(("input", a, "what do you", "▏"));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>users = {\n    \"alice\": 1,\n}</text>".into()));
+    v.push(("result", a, "Text", "users"));
+    v.push(("steps", stepped(), "Steps (bash)", "update"));
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    v.push(("steps-resumed", b, "Steps (bash)", "install"));
+    v.push(("explain-ask", asking(), "what do you want", "What is it doing?"));
+    v.push(("answer", explained(), "panel", "parser"));
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    v.push(("answer-armed", a, "discard", "parser"));
+    v.push(("confirm", long_confirm(), "Enter?", "echo step"));
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Timeout));
+    v.push(("error", a, "claude", "claude"));
+    v
+}
+
+fn fits(f: &str, head: &str, body: &str) -> bool {
+    let last = f.lines().last().unwrap_or("");
+    f.contains(head) && f.contains(body) && last.contains("esc") && !f.contains("make the window larger")
+}
+
+#[test]
+fn every_view_fits_at_the_floor() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    for (name, mut a, head, body) in every_view() {
+        let f = shown(&mut a, MIN_W, MIN_H);
+        assert!(fits(&f, head, body), "{name} at the floor:\n{f}");
+        assert!(a.room >= 1, "{name}: a body row");
+        for (w, h) in [(MIN_W - 1, 40), (200, MIN_H - 1)] {
+            let f = shown(&mut a, w, h);
+            assert!(f.contains("make the window larger"), "{name} at {w}x{h}:\n{f}");
+        }
+    }
+}
+
+#[test]
+fn golden_small() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    let a = app("claude", "claude", CLAUDE_SCREEN);
+    golden("panel-small", &frame(&a, MIN_W - 1, MIN_H, 0));
+}
+
+#[test]
+fn under_the_floor_esc_and_q_act_as_on_the_view_underneath() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    typ(&mut a, "keep me");
+    a.tiny = true;
+    ch(&mut a, 'x');
+    ctrl(&mut a, 's');
+    assert_eq!(
+        (a.view.clone(), a.draft.as_str()),
+        (View::Compose, "keep me"),
+        "unseen keys are dropped"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(
+        (a.view.clone(), a.draft.as_str(), a.quit),
+        (View::Home { sel: 0 }, "keep me", false),
+        "esc goes home"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert!(a.quit && a.action.is_none(), "only Home closes");
+
+    let mut a = explained();
+    a.tiny = true;
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && a.run.is_some(),
+        "an answer arms first"
+    );
+    let mut a = explained();
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }) && !a.quit,
+        "q is esc on an answer"
+    );
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "^C is the hard quit");
+}
+
+#[test]
+fn footers_drop_whole_hints_and_keep_esc_and_help() {
+    for (name, mut a, ..) in every_view() {
+        for w in [28u16, 30, 40, 60, 80, 120] {
+            let f = shown(&mut a, w, 16);
+            let last = f.lines().last().unwrap();
+            assert!(last.contains("esc"), "{name} at {w}: {last}");
+            if !matches!(a.view, View::Answer { armed: true, .. }) {
+                assert!(last.contains("? keys") || last.contains("F1 keys"), "{name} at {w}: {last}");
+            }
+            // every hint shown is one the view's full footer has, never a cut one
+            assert!(!last.contains('…'), "{name} at {w}: {last}");
+        }
+    }
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("╰ ^S write  F1 keys  esc home ─"), "{f}");
+}
+
+#[test]
+fn help_lists_every_key_of_the_view_and_any_key_closes_it() {
+    let mut a = stepped();
+    ch(&mut a, '?');
+    assert_eq!(a.help, Some(0));
+    let f = shown(&mut a, 60, 16);
+    for k in [
+        "1-3",
+        "pick a step by number",
+        "send the step with Enter",
+        "back to the draft",
+        "any key closes",
+    ] {
+        assert!(f.contains(k), "{k}:\n{f}");
+    }
+    let view = a.view.clone();
+    ch(&mut a, 's');
+    assert_eq!((a.help, &a.view, a.quit), (None, &view, false), "the key only closes it");
+
+    // ? is text in a box: F1 is the way in there, and the overlay names ^N, ⇥ and F2
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    ch(&mut a, '?');
+    assert_eq!((a.help, a.draft.as_str()), (None, "?"));
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 60, 16);
+    for k in ["^N", "next model", "⇥", "^S F2", "back to home"] {
+        assert!(f.contains(k), "{k}:\n{f}");
+    }
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "^C still closes the panel under the overlay");
+}
+
+#[test]
+fn a_short_help_scrolls() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 40, 9);
+    assert!(
+        f.contains("1-7 of 10") && f.contains("any other key closes") && !f.contains("close the panel"),
+        "{f}"
+    );
+    for _ in 0..5 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 40, 9);
+    assert!(f.contains("4-10 of 10") && f.contains("close the panel"), "{f}");
+    key(&mut a, KeyCode::Char('x'));
+    assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
+}
+
+#[test]
+fn an_overscrolled_help_moves_back_at_once() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    shown(&mut a, 40, 9);
+    for _ in 0..20 {
+        key(&mut a, KeyCode::Down);
+        shown(&mut a, 40, 9);
+    }
+    assert_eq!(a.help, Some(3), "10 keys in 7 rows: 3 is the last offset");
+    key(&mut a, KeyCode::Up);
+    assert!(shown(&mut a, 40, 9).contains("3-9 of 10"), "the first Up moves");
+}
+
+#[test]
+fn golden_help() {
+    let mut a = stepped();
+    ch(&mut a, '?');
+    goldens("help-steps", &a, 0);
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    goldens("help-compose", &a, 0);
+}
+
+#[test]
+fn home_tiles_drop_their_description_when_narrow() {
+    let a = app("claude", "claude", CLAUDE_SCREEN);
+    let f = frame(&a, 53, 12, 0);
+    assert!(!f.contains("type once"), "under 50 columns of text:\n{f}");
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("type once: fix spelling, write, …"), "cut with an ellipsis:\n{f}");
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    a.cap.path = format!("/home/u/{}", "deep/".repeat(20));
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("/home/u/deep/deep… │"), "the cap line ends in an ellipsis:\n{f}");
+}
+
+#[test]
+fn home_and_question_scroll_to_the_selection() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    for _ in 0..3 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 40, 8);
+    assert!(f.contains("▎4   Close"), "{f}");
+
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    let long = "Which of these files should I change, given that both hold a timeout? ".repeat(4);
+    a.reply(Ok(format!(
+        "<question>{long}</question><option>first</option><option>second</option><option>third</option>"
+    )));
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▎1   first"), "the options stay on screen:\n{f}");
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▎3   third"), "{f}");
+}
+
+#[test]
+fn a_long_option_wraps_under_itself() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>the configuration file in your home directory</option>".into(),
+    ));
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("│ ▎1   the configuration file in your  │"), "{f}");
+    assert!(f.contains("│      home directory"), "{f}");
+}
+
+#[test]
+fn digits_select_steps() {
+    let mut a = stepped();
+    ch(&mut a, '3');
+    assert!(matches!(a.view, View::Steps { sel: 2, .. }));
+    ch(&mut a, '9');
+    assert!(matches!(a.view, View::Steps { sel: 2, .. }), "no step 9: nothing moves");
+    let f = shown(&mut a, 80, 20);
+    assert!(f.contains("s send") && !f.contains("s run"), "{f}");
+}
+
+#[test]
+fn the_title_gives_way_before_the_count() {
+    let mut a = long_answer(60);
+    a.cap.name = "a-long-window-name-for-a-narrow-popup".into();
+    let top = |a: &mut App, w: u16| shown(a, w, 12).lines().next().unwrap().to_string();
+    let t = top(&mut a, 80);
+    assert!(t.contains("a-long-window-name") && t.contains(" of 63 "), "{t}");
+    key(&mut a, KeyCode::Up);
+    let t = top(&mut a, 40);
+    assert!(
+        t.contains("panel ·") && t.contains('…') && t.contains('▲') && t.contains('▼'),
+        "title cut first: {t}"
+    );
+    let t = top(&mut a, 32);
+    assert!(!t.contains('▲') && t.contains(" of "), "then the arrows go: {t}");
+    let n = t.find(" of ").unwrap();
+    assert!(
+        t[..n].trim_end().chars().last().unwrap().is_ascii_digit(),
+        "the count's start is whole: {t}"
+    );
+}
+
+#[test]
+fn arming_esc_at_the_bottom_keeps_the_last_line() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    ch(&mut a, '1');
+    let body: Vec<String> = (1..=40).map(|i| format!("line {i}")).collect();
+    a.reply(Ok(format!("{}\n<prompt>run the last step</prompt>", body.join("\n"))));
+    assert!(shown(&mut a, 60, 16).contains("run the last step"));
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { armed: true, .. }));
+    let f = shown(&mut a, 60, 16);
+    assert!(
+        f.contains("run the last step"),
+        "the note takes a row from the top, not the end:\n{f}"
+    );
+}
+
+// ---------------------------------------------------------------- verifier round
+
+#[test]
+fn under_the_floor_q_in_a_box_is_dropped_not_typed() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert_eq!((a.draft.as_str(), a.quit), ("", false), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    a.tiny = true;
+    ch(&mut a, 'q');
+    assert!(matches!(&a.view, View::Input { text, .. } if text.is_empty()) && !a.quit, "input");
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::ExplainAsk { .. }), "esc still goes back from a box");
+}
+
+#[test]
+fn under_the_floor_a_paste_is_dropped() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.tiny = true;
+    a.paste("rm -rf ~");
+    assert_eq!(a.draft, "");
+    a.tiny = false;
+    a.paste("ls");
+    assert_eq!(a.draft, "ls");
+}
+
+#[test]
+fn going_under_the_floor_closes_the_overlay() {
+    let mut a = explained();
+    ch(&mut a, '?');
+    assert!(a.help.is_some());
+    a.shrunk(true);
+    assert_eq!(a.help, None);
+    key(&mut a, KeyCode::Esc);
+    assert!(
+        matches!(a.view, View::Answer { armed: true, .. }),
+        "the card's esc goes back, it arms"
+    );
+}
+
+fn long_question() -> App {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    let long = (1..=12).map(|i| format!("part{i}")).collect::<Vec<_>>().join(" ");
+    a.reply(Ok(format!(
+        "<question>START {long}</question><option>first</option><option>second</option>"
+    )));
+    a
+}
+
+#[test]
+fn a_long_question_shows_its_position_and_scrolls_to_its_start() {
+    let mut a = long_question();
+    let f = shown(&mut a, 30, 7);
+    assert!(
+        f.contains("▎1   first") && !f.contains("START") && f.contains(" of "),
+        "options and a count:\n{f}"
+    );
+    key(&mut a, KeyCode::PageUp);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("START") && f.contains(" 1-"), "PgUp reads the start:\n{f}");
+    key(&mut a, KeyCode::Down);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎2   second"), "a move follows the selection again:\n{f}");
+}
+
+#[test]
+fn heads_and_the_overlay_footer_end_in_an_ellipsis_when_cut() {
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    let f = shown(&mut a, 28, 12);
+    assert!(f.contains("│ type: command   model: … │"), "{f}");
+    let a = asking();
+    let f = frame(&a, 28, 12, 0);
+    assert!(f.contains("│ what do you want to kno… │"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    let f = shown(&mut a, 28, 8);
+    let last = f.lines().last().unwrap();
+    assert!(last.contains("any other ke… ╯"), "{last}");
+}
+
+#[test]
+fn a_cut_error_or_busy_says_how_much_is_left() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("word ".repeat(80))));
+    let f = shown(&mut a, 30, 8);
+    assert!(f.contains("more lines"), "{f}");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.timeout = Duration::from_secs(120);
+    let f = frame(&a, 30, 8, 400);
+    assert!(f.contains("more line"), "{f}");
+}
+
+#[test]
+fn the_overlay_lists_backspace_and_real_digit_ranges() {
+    let mut a = app("w", "htop", "$ ");
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && !f.contains("1-9"), "three tiles:\n{f}");
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "compose");
+    let mut a = asking();
+    ch(&mut a, '5');
+    key(&mut a, KeyCode::F(1));
+    assert!(shown(&mut a, 60, 16).contains("⌫ ^W ^U"), "input");
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>a</option><option>b</option><option>c</option>".into(),
+    ));
+    ch(&mut a, '?');
+    let f = shown(&mut a, 60, 16);
+    assert!(f.contains("1-3  ") && f.contains("answer by number"), "{f}");
+}
+
+#[test]
+fn a_resumed_step_says_inserted_or_sent_in_both_tiers() {
+    let mut a = stepped();
+    ch(&mut a, 's');
+    ch(&mut a, 'y');
+    let r = resume_of(&a);
+    assert_eq!(r.verb, "send");
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), r, "ok");
+    assert!(frame(&b, 80, 20, 0).contains("update  ✓ sent") && note(&b) == Some("step 1 sent"));
+    let mut th = Theme::fixed();
+    th.g = cockpit_tui::theme::Glyphs::ascii();
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} sent", th.g.done)));
+
+    let mut a = stepped();
+    ch(&mut a, 'i');
+    let mut b = app("w", "bash", "$ ");
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    assert!(framed(&b, 80, 20, &th, 0).0.contains(&format!("update  {} inserted", th.g.done)));
 }

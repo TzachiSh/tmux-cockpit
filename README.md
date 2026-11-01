@@ -1001,11 +1001,16 @@ file and the answer to a private temp file for the paste.
   line (python3, sh, psql) asks first too. The confirm also flags risky
   commands such as `rm` or `sudo`, and a risky or multi-line send takes
   `y`, not Enter. `n`, `q` or `esc` cancels it.
-- On steps, `i` or `s` runs one step and the panel comes back on the
-  steps with that one marked `✓ sent` (`+ sent` with `COCKPIT_GLYPHS=ascii`),
-  so you can go on to the next.
+- On steps, `1`-`9` or `↑↓` pick one, `i` inserts it and `s` sends it. The
+  panel comes back on the steps with that one marked `✓ inserted` or `✓ sent`
+  (`+` with `COCKPIT_GLYPHS=ascii`), so you can go on to the next.
 - `↑↓` and `PgUp` `PgDn` scroll a long result, answer or confirm. `esc` or `q`
   on an Explain answer asks once before it drops the conversation.
+- `?` lists every key of the screen you are on (`F1` inside a text box, where
+  `?` is text). `esc` steps back one screen, and the footer names where to:
+  Home, the draft, the answer. On Home it closes the panel.
+- Under 28x7 the panel asks for a larger window. `esc` and `q` still act as on
+  the screen underneath and `^C` quits; other keys are dropped.
 
 Secrets on the screen are blanked before anything is sent. `prefix + f`
 opens it on the pane you are in, and `f` on a board tile opens it on that
