@@ -10108,7 +10108,14 @@ if [ ! -x "$DIR/bin/cockpit-tui" ]; then
 elif need_tmux "cockpit-panel end to end"; then :; else
 PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
-printf '#!/bin/sh\ncat >/dev/null\ncat %s/reply\n' "$PND" > "$PND/bin/claude"; chmod +x "$PND/bin/claude"
+# With $PND/hang present the fake records its pid and parent, then never answers.
+cat > "$PND/bin/claude" <<PNFAKE
+#!/bin/sh
+cat >/dev/null
+[ -e "$PND/hang" ] && { echo \$\$ > "$PND/cpid"; echo \$PPID > "$PND/ppid"; exec sleep 300; }
+cat "$PND/reply"
+PNFAKE
+chmod +x "$PND/bin/claude"
 "$TMUX_REAL" -L "$PN" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
 # The fake is found on PATH, as the real one would be; COCKPIT_CLAUDE would beat it.
 PNENV="env -u COCKPIT_CLAUDE 'PATH=$PND/bin:$SHIM:/usr/bin:/bin' XDG_CACHE_HOME=$PND/cache XDG_CONFIG_HOME=$PND/cfg COCKPIT_LOG=$PND/tui.log"
@@ -10175,6 +10182,51 @@ is "control characters never reach the pane" "ab[31mcdef" \
 is "and the paste buffer is gone afterwards" "" \
    "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
 is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
+
+# A popup torn down mid-call (SIGTERM), or a binary killed outright (SIGKILL),
+# must not leave its claude running. The pid is checked before any signal.
+pn_hang() {                   # <signal>  -> the claude pid, or empty; kills the panel with <signal>
+    rm -f "$PND/cpid" "$PND/ppid"; touch "$PND/hang"
+    PNA=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
+    PNB=$("$TMUX_REAL" -L "$PN" new-window -d -P -F '#{pane_id}' -t t: "$PNENV $DIR/scripts/cockpit-panel -p $PNA")
+    until_cap "$PN" "$PNB" '*will send*' || return 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" 1
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" -l 'hang'
+    "$TMUX_REAL" -L "$PN" send-keys -t "$PNB" C-s
+    until_file "$PND/ppid" '[0-9]*' || return 1
+    local tui comm=''
+    tui=$(cat "$PND/ppid")
+    [ -r "/proc/$tui/comm" ] && read -r comm 2>/dev/null < "/proc/$tui/comm"
+    [ "$comm" = cockpit-tui ] || return 1
+    kill "-$1" "$tui"
+    cat "$PND/cpid"
+}
+pn_dead() {                   # <pid>  gone, or a zombie nobody waits for
+    local i st
+    for i in $(seq 1 "$POLLS"); do
+        st=$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -c1)
+        case "$st" in ''|Z) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+if [ ! -d /proc/self ]; then
+    skip_ "a killed panel takes its claude with it (no /proc to check pids by name)"
+else
+    for sig in TERM KILL; do
+        pc=$(pn_hang "$sig")
+        if [ -z "$pc" ]; then
+            bad "SIG$sig on the panel kills its claude" "a running fake claude under cockpit-tui" "none"
+        elif pn_dead "$pc"; then
+            ok "SIG$sig on the panel kills its claude"
+        else
+            bad "SIG$sig on the panel kills its claude" "pid $pc gone" "still running"; kill "$pc" 2>/dev/null
+        fi
+        pn_gone "$PNB"
+    done
+    is "and a killed panel pastes nothing" "0" "$(pn_count "$PNA" 'hang')"
+fi
+rm -f "$PND/hang"
 
 # The answer is held while you read it, and the pane can move on meanwhile.
 printf '<text>panel says hi</text>' > "$PND/reply"

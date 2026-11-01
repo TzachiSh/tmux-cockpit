@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
@@ -314,6 +315,16 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+static STOP: AtomicBool = AtomicBool::new(false);
+
+/// Only a flag and a raise, both async-signal-safe: the loop does the cancel
+/// and the restore, on its own thread.
+extern "C" fn on_stop(_: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+    // crossterm turns SIGWINCH into an event, which wakes a blocked read.
+    unsafe { libc::raise(libc::SIGWINCH) };
+}
+
 fn transient(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
 }
@@ -326,6 +337,11 @@ pub fn run(app: &mut App) {
         std::process::exit(1);
     }
     let th = Theme::load();
+    // SAFETY: on_stop only stores an atomic and raises a signal.
+    unsafe {
+        libc::signal(libc::SIGHUP, on_stop as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
+    }
     let mut term = match crate::backend::init() {
         Ok(t) => t,
         Err(e) => {
@@ -335,6 +351,9 @@ pub fn run(app: &mut App) {
     };
     let call = Call::from_env();
     loop {
+        if STOP.load(Ordering::SeqCst) {
+            break;
+        }
         app.launch(&call);
         app.poll();
         if app.quit {
@@ -360,6 +379,9 @@ pub fn run(app: &mut App) {
             Err(e) if transient(&e) => {}
             Err(_) => break,
         }
+    }
+    if !app.quit || STOP.load(Ordering::SeqCst) {
+        app.stop();
     }
     ratatui::restore();
 }

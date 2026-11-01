@@ -158,6 +158,16 @@ fn start(call: &Call, system: &str, model: &str) -> Result<std::process::Child, 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
+    // A panel killed past Drop (abort, a torn-down popup) must not leave claude
+    // running. The signal follows the spawning thread, so spawn from the main one.
+    #[cfg(target_os = "linux")]
+    // SAFETY: prctl is a plain syscall, async-signal-safe between fork and exec.
+    unsafe {
+        c.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+            Ok(())
+        });
+    }
     c.spawn().map_err(|e| format!("{}: {e}", call.claude))
 }
 

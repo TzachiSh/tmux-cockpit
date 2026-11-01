@@ -249,6 +249,12 @@ impl App {
         }
     }
 
+    /// Out with no action, the call killed: a hangup, or a loop that broke.
+    pub fn stop(&mut self) {
+        self.action = None;
+        self.exit();
+    }
+
     fn exit(&mut self) {
         if let Some(mut r) = self.req.take() {
             r.cancel();
