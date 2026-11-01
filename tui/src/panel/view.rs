@@ -454,9 +454,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
     b
 }
 
-/// The footer hints that fit `w`, whole: half a hint is not a smaller button,
-/// it is an unreadable one. The lowest-priority hint goes first; `esc` and the
-/// help key go last, so the way out and the way to every key always show.
+/// The hints that fit `w`, whole, lowest priority dropped first: half a hint is
+/// unreadable. `esc` and the help key go last, so the way out always shows.
 fn footer(th: &Theme, mut ps: Vec<(String, String)>, w: usize) -> Line<'static> {
     let keep = |k: &str| k.starts_with("esc") || k == "?" || k == "F1";
     let width = |ps: &[(String, String)]| ps.iter().map(|(k, v)| k.width() + v.width() + 3).sum::<usize>();
