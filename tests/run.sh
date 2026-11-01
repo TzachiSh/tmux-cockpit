@@ -11798,5 +11798,31 @@ for f in "$TPF"/*.jsonl; do
 done
 unset -f tpnorm
 fi
+
+echo "== tm: picking a session from a real popup switches the client =="
+# A server started from inside another tmux pane keeps that $TMUX_PANE in its
+# global environment, and every popup inherits it. It names no pane here, so
+# in_client() read no session and go() ran attach-session -d inside the popup:
+# a nested client that detached the real one. display-popup blocks until the
+# popup closes, hence the &.
+if need_tmux "tm from a popup"; then :; else
+TPI="cockpit-tmpopi-$$"; TPO="cockpit-tmpopo-$$"; SOCKS="$SOCKS $TPI $TPO"; TPD=$(mktmpd)
+TMUX_PANE=%99 "$TMUX_REAL" -L "$TPI" -f /dev/null new-session -d -s one 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TPI" new-session -d -s two 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TPO" -f /dev/null new-session -d -s o -x 100 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TPI attach -t one" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}'
+tpc=$("$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name}' 2>/dev/null)
+"$TMUX_REAL" -L "$TPI" display-popup -c "$tpc" -E "$DIR/scripts/tm two; touch $TPD/done" >/dev/null 2>&1 &
+until_out 1 sh -c "[ -e '$TPD/done' ] && echo 1"
+if [ -e "$TPD/done" ]; then ok "tm returned, so the popup closed"
+else bad "tm returned, so the popup closed" "$TPD/done" "tm still running: a nested attach"; fi
+until_out "$tpc two" "$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name} #{session_name}'
+is "the popup's own client moved to two and is the only client" "$tpc two" \
+   "$("$TMUX_REAL" -L "$TPI" list-clients -F '#{client_name} #{session_name}' 2>/dev/null)"
+"$TMUX_REAL" -L "$TPO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TPI" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
