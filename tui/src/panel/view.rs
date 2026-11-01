@@ -1,6 +1,6 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, InputKind, MODELS, QUICK, View, risky};
+use super::app::{App, InputKind, MODELS, QUICK, View, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::theme::Theme;
@@ -67,6 +67,10 @@ struct Body {
     /// `usize::MAX` pins the bottom.
     scroll: usize,
     footer: String,
+    /// Shows "N-M of T" when the lines do not fit.
+    count: bool,
+    /// A cut-off body ends in "… N more lines".
+    more: bool,
 }
 
 fn plain(s: impl Into<String>) -> Line<'static> {
@@ -115,6 +119,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         lines: vec![],
         scroll: 0,
         footer: String::new(),
+        count: false,
+        more: false,
     };
     if let Some(n) = &app.note {
         b.head.push(styled(n.clone(), warn));
@@ -201,6 +207,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.head.push(plain(""));
             b.lines = many(text, w, "", value);
             b.scroll = *scroll;
+            b.count = true;
             b.footer = "i insert  s send  r retry  c edit  ↑↓ scroll  esc back".into();
         }
         View::Steps { label: l, items, sel } => {
@@ -231,6 +238,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 }
             }
             b.scroll = at.saturating_sub(2);
+            b.count = true;
             b.footer = "↑↓ pick  i insert  s run  r retry  esc back".into();
         }
         View::ExplainAsk { sel } => {
@@ -248,7 +256,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                 .push(tile(th, *sel == QUICK.len(), QUICK.len() + 1, "In your own words".into(), ""));
             b.footer = "1-5 pick  ↵ ask  esc back".into();
         }
-        View::Answer { scroll } => {
+        View::Answer { scroll, armed } => {
             let Some(r) = run else { return b };
             for (you, t) in &r.log {
                 if *you {
@@ -265,9 +273,19 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             } else {
                 b.footer = "f follow up  ↑↓ scroll  esc home".into();
             }
+            if *armed {
+                b.footer = "esc again discards it  any other key keeps it".into();
+            }
             b.scroll = *scroll;
+            b.count = true;
         }
-        View::Confirm { text, send, warn: ws, .. } => {
+        View::Confirm {
+            text,
+            send,
+            warn: ws,
+            scroll,
+            ..
+        } => {
             for x in ws {
                 b.head.extend(many(x, w, "", Style::new().fg(th.error)));
             }
@@ -276,33 +294,57 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             } else {
                 format!("insert this into {} ({}), no Enter?", app.pane, app.cap.cmd)
             };
-            b.head.push(styled(ask, bold));
+            b.head.extend(many(&ask, w, "", bold));
             b.head.push(plain(""));
             b.lines = many(text, w, "  ", value);
-            b.footer = "↵ y confirm  esc n cancel".into();
+            b.scroll = *scroll;
+            b.count = true;
+            b.more = true;
+            b.footer = if needs_y(text, *send) {
+                "y confirm  (↵ is off: risky or multi-line)  ↑↓ scroll  esc n cancel".into()
+            } else {
+                "↵ y confirm  ↑↓ scroll  esc n cancel".into()
+            };
         }
         View::Error { line } => {
-            b.lines.push(styled(format!("claude failed: {line}"), Style::new().fg(th.error)));
+            b.lines = many(line, w, "", Style::new().fg(th.error));
             b.footer = "r retry  esc back".into();
         }
     }
     b
 }
 
-/// `tick` is tenths of a second since the call went out; a parameter, so a
-/// golden never reads the clock.
-pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) {
+/// `tick` is tenths of a second since the call went out, so a golden never reads
+/// the clock. Returns the body's line count and rows, for [`App::fit`].
+pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (usize, usize) {
     let d = th.g.dot;
     let w = area.width.saturating_sub(4) as usize;
     let b = body(app, th, w, tick);
     let title = format!(" panel {d} {} {d} {} ", app.pane, th.g.trunc(&app.cap.name, 30));
     let footer = format!(" {} ", th.g.trunc(&b.footer, w));
-    let block = Block::new()
+    let mut block = Block::new()
         .borders(Borders::ALL)
         .border_set(th.g.round)
         .border_style(Style::new().fg(th.label))
         .title(Line::from(Span::styled(title, Style::new().fg(th.accent))))
         .title_bottom(Line::from(Span::styled(footer, Style::new().fg(th.meta))));
+    let rows = (area.height as usize).saturating_sub(2);
+    let room = rows.saturating_sub(b.head.len());
+    let total = b.lines.len();
+    let top = b.scroll.min(total.saturating_sub(room));
+    let cut = b.more && room > 1 && top + room < total;
+    let last = top + if cut { room - 1 } else { room.min(total - top) };
+    // the board's "N-M of T" (board.rs header), arrows only where it can go
+    if b.count && (top > 0 || last < total) {
+        let mut n = format!(" {}-{last} of {total} ", top + 1);
+        if top > 0 {
+            n.push_str(&format!("{}{top} ", th.g.up));
+        }
+        if last < total {
+            n.push_str(&format!("{}{} ", th.g.down, total - last));
+        }
+        block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
+    }
     let inner = block.inner(area);
     f.render_widget(block, area);
     let inner = Rect {
@@ -310,11 +352,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) {
         width: inner.width.saturating_sub(2),
         ..inner
     };
-    let room = (inner.height as usize).saturating_sub(b.head.len());
-    let top = b.scroll.min(b.lines.len().saturating_sub(room));
     let mut lines = b.head;
-    lines.extend(b.lines.into_iter().skip(top).take(room));
+    lines.extend(b.lines.into_iter().skip(top).take(last - top));
+    if cut {
+        let n = total - last;
+        let s = if n == 1 { "" } else { "s" };
+        lines.push(styled(format!("{} {n} more line{s}", th.g.ellipsis), Style::new().fg(th.meta)));
+    }
     f.render_widget(Paragraph::new(lines), inner);
+    (total, room)
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -362,9 +408,11 @@ pub fn run(app: &mut App) {
             break;
         }
         let tick = app.started.map_or(0, |t| (t.elapsed().as_millis() / 100) as u64);
-        if term.draw(|f| render(f, f.area(), app, &th, tick)).is_err() {
+        let mut page = (0, 0);
+        if term.draw(|f| page = render(f, f.area(), app, &th, tick)).is_err() {
             break;
         }
+        app.fit(page.0, page.1);
         // Ticking only while a call is out, so an idle panel costs no wakeups.
         let ev = if app.req.is_some() {
             match event::poll(Duration::from_millis(100)) {
@@ -377,6 +425,7 @@ pub fn run(app: &mut App) {
         };
         match ev {
             Ok(Some(Event::Key(k))) => app.key(k),
+            Ok(Some(Event::Paste(s))) => app.paste(&s),
             Ok(_) => {}
             Err(e) if transient(&e) => {}
             Err(_) => break,
