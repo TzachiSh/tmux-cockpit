@@ -476,7 +476,7 @@ The git helpers keep the exit-code rule below:
 - `cockpit-tui diffstat <root> [--base <rev>]` prints
   `<add>\t<del>\t<new>\t<pm>`, the board's diff count against `<rev>` (default
   HEAD; an unborn HEAD counts the tree as new). Exit 1 when `<root>` is not a
-  repo or the diff fails, 2 on a usage error.
+  repo, the diff fails or the base starts with `-`; 2 on a usage error.
 
 **Log format:** one line per event, `<unix_micros> <text>`, append-only, only
 when `COCKPIT_LOG` is set. No rotation.

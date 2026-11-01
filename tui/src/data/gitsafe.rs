@@ -28,7 +28,9 @@ fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (boo
         .args(extra)
         .args(args)
         .stdin(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        // a partial clone's missing blob would run the repo's remote.*.uploadpack
+        .env("GIT_NO_LAZY_FETCH", "1");
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }
@@ -70,8 +72,12 @@ pub type Stat = (u64, u64, u64, String);
 /// keeps its mtime, or git's racy check trusts a same-second edit as clean.
 /// `base` None is HEAD; None back means git failed (a bad base, not a repo).
 pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
+    if base.is_some_and(|b| b.starts_with('-')) {
+        return None; // git would read it as an option: `--output=<file>` writes
+    }
     let filters = no_filters(root);
-    let listed = git(root, &[], None, &["ls-files", "-o", "-m", "--exclude-standard", "-z"]);
+    // -m re-hashes a touched tracked file, and hashing runs its clean filter
+    let listed = git(root, &filters, None, &["ls-files", "-o", "-m", "--exclude-standard", "-z"]);
     let big: Vec<&str> = listed
         .split('\0')
         .filter(|f| !f.is_empty())
@@ -109,8 +115,9 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
         run(root, &filters, Some(&idx), &args)
     };
     let (mut ok, mut out) = diff(Some(base.unwrap_or("HEAD")));
-    if !ok && base.is_none() {
-        // An unborn HEAD: tree_diff's no-branch path, the worktree then the index.
+    let unborn = || !run(root, &[], None, &["rev-parse", "--verify", "-q", "HEAD"]).0;
+    if !ok && base.is_none() && unborn() {
+        // tree_diff's no-branch path: the worktree, then the index.
         (ok, out) = diff(None);
         if ok && out.trim().is_empty() {
             (ok, out) = diff(Some("--cached"));

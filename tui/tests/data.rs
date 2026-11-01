@@ -444,31 +444,58 @@ fn planted_git_config_never_runs() {
     let r = Repo::new("plant");
     let marker = r.dir.join("../cockpit-tui-pwned-".to_string() + &std::process::id().to_string());
     let m = marker.display().to_string();
-    write_exec(&r.dir.join(".git/fsmon"), &format!("#!/bin/sh\necho fsmonitor >> '{m}'\n"));
-    r.git(&["config", "core.fsmonitor", &r.dir.join(".git/fsmon").display().to_string()]);
-    r.git(&["config", "filter.evil.clean", &format!("sh -c 'echo filter >> \"{m}\"; cat'")]);
+    let plant = |name: &str| {
+        let p = r.dir.join(".git").join(name);
+        write_exec(&p, &format!("#!/bin/sh\necho {name} >> '{m}'\ncat \"${{1:--}}\"\n"));
+        p.display().to_string()
+    };
+    r.write("t", "a\n");
+    r.write("g", "a\n");
+    r.git(&["add", "t", "g"]);
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "t"]);
+    r.git(&["config", "core.fsmonitor", &plant("fsmonitor")]);
+    r.git(&["config", "filter.evil.clean", &plant("filter")]);
     r.git(&["config", "filter.evil.required", "true"]);
-    r.write(".gitattributes", "f filter=evil\n");
+    r.git(&["config", "filter.proc.process", &plant("process")]);
+    r.git(&["config", "diff.evil.textconv", &plant("textconv")]);
+    r.git(&["config", "diff.external", &plant("external")]);
+    r.write(".gitattributes", "f filter=evil\nt filter=proc\ng diff=evil\n");
     r.write("f", "a\nb\n");
+    r.write("g", "b\n");
+    // a tracked file touched but not changed: only a re-hash can tell, and it runs t's filter
+    let touch = |secs: u64| {
+        let t = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(r.dir.join("t"))
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    };
+    touch(100);
 
-    // the control: plain git does run both, so the plant is live
+    // the control: plain git runs every plant, so each one is live
+    r.git(&["ls-files", "-m"]);
     r.git(&["diff", "--numstat", "HEAD"]);
+    // g alone: a patch of f would die in its required filter before reaching g
+    r.git(&["diff", "HEAD", "--", "g"]);
+    r.git(&["diff", "--no-ext-diff", "HEAD", "--", "g"]);
     let ran = std::fs::read_to_string(&marker).unwrap_or_default();
-    assert!(
-        ran.contains("fsmonitor") && ran.contains("filter"),
-        "the plant never fired: {ran:?}"
-    );
+    for p in ["fsmonitor", "filter", "process", "textconv", "external"] {
+        assert!(ran.contains(p), "the {p} plant never fired: {ran:?}");
+    }
     std::fs::remove_file(&marker).unwrap();
+    touch(200); // the control's diff may have refreshed the real index
 
     let (_, pm, _) = git_facts(&r.path());
-    assert_eq!(diffstat(&[&r.path()]).0, "2\t0\t1\t+2 -0  ?1 new\n");
+    assert_eq!(diffstat(&[&r.path()]).0, "5\t1\t1\t+5 -1  ?1 new\n");
     assert!(
         !marker.exists(),
         "a fetch ran planted config: {:?}",
         std::fs::read_to_string(&marker)
     );
-    // f gains a line, and the untracked .gitattributes is the one new file
-    assert_eq!(pm, "+2 -0  ?1 new", "the hardened diff still measures the tree");
+    // f gains a line, g changes one, and the untracked .gitattributes is the one new file
+    assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
 fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
@@ -521,6 +548,11 @@ fn base_picks_what_the_diff_is_against() {
     assert_eq!(stat(&r, Some("no-such-rev")), None, "a bad base is a failure, not clean");
     assert_eq!(diffstat(&[&r.path(), "--base", "HEAD~1"]), ("1\t0\t0\t+1 -0\n".into(), 0));
     assert_eq!(diffstat(&[&r.path(), "--base", "no-such-rev"]), (String::new(), 1));
+    // a base git would parse as an option is refused before git sees it
+    let out = r.dir.join("out");
+    let opt = format!("--output={}", out.display());
+    assert_eq!(diffstat(&[&r.path(), "--base", &opt]), (String::new(), 1));
+    assert!(!out.exists(), "--base reached git as an option");
 }
 
 /// The git dir is read off `.git`, which in a linked worktree is a file.
@@ -550,4 +582,43 @@ fn the_flag_lists() {
         "-c filter.a.b.clean= -c filter.a.b.smudge= -c filter.a.b.process= -c filter.a.b.required=false \
          -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false"
     );
+}
+
+/// A HEAD that resolves but cannot be diffed is a broken repo, not an unborn
+/// one: the unborn fallback would count the index and call that the diff.
+#[test]
+fn a_broken_head_is_a_failure_not_unborn() {
+    let r = Repo::new("broken");
+    r.write("f", "a\nb\n");
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    std::fs::remove_file(r.dir.join(".git/objects").join(&tree[..2]).join(&tree[2..])).unwrap();
+    assert_eq!(stat(&r, None), None);
+}
+
+/// A partial clone fetches a missing blob on demand, and the fetch runs the
+/// repo's own remote.origin.uploadpack.
+#[test]
+fn a_missing_blob_never_lazy_fetches() {
+    let r = Repo::new("lazy");
+    let marker = r.dir.join("../cockpit-tui-lazy-".to_string() + &std::process::id().to_string());
+    write_exec(
+        &r.dir.join(".git/up"),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    );
+    let blob = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD:f"]).stdout).trim().to_string();
+    std::fs::remove_file(r.dir.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    r.git(&["config", "core.repositoryformatversion", "1"]);
+    r.git(&["config", "extensions.partialClone", "origin"]);
+    r.git(&["config", "remote.origin.url", &r.dir.join("../nowhere").display().to_string()]);
+    r.git(&["config", "remote.origin.uploadpack", &r.dir.join(".git/up").display().to_string()]);
+    r.write("f", "b\n");
+
+    r.git(&["diff", "--numstat", "HEAD"]); // the control
+    assert!(marker.exists(), "the plant never fired");
+    std::fs::remove_file(&marker).unwrap();
+
+    assert_eq!(diffstat(&[&r.path()]), (String::new(), 1));
+    assert!(!marker.exists(), "diffstat ran the planted uploadpack");
 }
