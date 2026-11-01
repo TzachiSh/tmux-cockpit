@@ -9,10 +9,12 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/hook.sh" || exit 0
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 0
-payload=$(cat)
+has_path() { case $payload in *'"worktree_path"'*:*'"'*'"'*) return 0 ;; esac; return 1; }
+read_payload has_path
 json_str worktree_path
 path=$REPLY
-case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=$HOME/.cache ;; esac
+case "${XDG_CACHE_HOME:-}" in /*) cache=$XDG_CACHE_HOME ;; *) cache=${HOME:-}/.cache ;; esac
+case "$cache" in /*) ;; *) exit 0 ;; esac
 # Only our own trees: anything outside the cache dir, the main checkout
 # included, is claude's to handle and not this hook's.
 case "$path" in "$cache/cockpit-wt/"?*) ;; *) exit 0 ;; esac

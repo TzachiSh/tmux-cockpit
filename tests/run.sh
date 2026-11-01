@@ -908,6 +908,14 @@ is "a tree claude already removed still gets its merged branch deleted" "" "$(gi
 [ -e "$WCCACHE/cockpit-wt/feat-z.repo" ] && bad "and the sidecar goes with it" "gone" "still there" || ok "and the sidecar goes with it"
 wr_run "$WCREPO"; [ -d "$WCREPO/.git" ] && ok "the main checkout is never removed" || bad "the main checkout is never removed" "kept" "removed"
 git -C "$WCREPO" worktree prune >/dev/null 2>&1
+# Claude Code can hold the hook's stdin open past the payload; $(cat) waited for EOF forever.
+held=$( { printf '{"name":"held"}\n'; sleep 3; } | ( cd "$WCREPO" && XDG_CACHE_HOME="$WCCACHE" timeout 2 "$DIR/scripts/worktree-create" 2>/dev/null ); echo "rc=$?" )
+is "worktree-create returns while claude holds stdin open" "$WCCACHE/cockpit-wt/held
+rc=0" "$held"
+held=$( { printf '{"worktree_path":"/nonexistent/x"}\n'; sleep 3; } | ( XDG_CACHE_HOME="$WCCACHE" timeout 2 "$DIR/scripts/worktree-remove" 2>/dev/null ); echo "rc=$?" )
+is "worktree-remove returns while claude holds stdin open" "rc=0" "$held"
+is "worktree-remove with HOME unset is a quiet no-op, not a bash error" "0:" \
+   "$(printf '{"worktree_path":"/x/cockpit-wt/a"}' | env -u HOME -u XDG_CACHE_HOME "$DIR/scripts/worktree-remove" 2>&1; echo "$?:")"
 
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
 if need_tmux "review-gate"; then :; else
@@ -11963,6 +11971,8 @@ is "only the last 300 lines are read: an open tool_use 350 lines back gives no d
    "" "$(trrow "$TRL" doing 2)"
 
 echo "== transcript reader: tail (#176) =="
+TRF="$DIR/tests/fixtures/transcript-reader"
+. "$DIR/scripts/lib/transcript.sh"
 is "the tail is USER/AGENT/TOOL lines, oldest first" \
    $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests' \
    "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null)"
@@ -11981,6 +11991,7 @@ is "a non-numeric cap prints nothing, status 1" "1:" \
    "$(transcript_tail "$TRF/open.jsonl" many 2>&1; echo -n "$?:")"
 
 echo "== transcript reader: which transcript (#176) =="
+. "$DIR/scripts/lib/transcript.sh"
 TRH="$(mktmpd)"; mkdir -p "$TRH/.claude/projects/-some-proj"
 : > "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl"
 : > "$TRH/.claude/projects/-some-proj/sid-bbb.jsonl"

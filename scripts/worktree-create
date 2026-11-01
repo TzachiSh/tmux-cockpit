@@ -9,7 +9,8 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/hook.sh" || exit 1
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
-payload=$(cat)
+has_name() { case $payload in *'"name"'*:*'"'*'"'*) return 0 ;; esac; return 1; }
+read_payload has_name
 json_str name
 name=${REPLY//[$'\001'-$'\037']/}
 # check-ref-format vets the branch name; the case adds what is only a path hazard
