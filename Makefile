@@ -44,12 +44,12 @@ test-only:
 test-par:
 	@tests/par.sh
 
-# shellcheck is advisory here rather than required: this repo is cloned onto
-# whatever machine you happen to be on, and a missing linter must not be the
-# thing that stops you running the tests.
+# Advisory: a missing linter must not stop the tests. Extended analysis takes
+# 15+ GB on tests/run.sh and OOMs a CI runner, so it is off where supported.
 lint:
 	@if command -v shellcheck >/dev/null 2>&1; then \
-	    shellcheck $(SOURCES) && echo "shellcheck: clean"; \
+	    xa=; shellcheck --help 2>&1 | grep -q extended-analysis && xa=--extended-analysis=false; \
+	    shellcheck $$xa $(SOURCES) && echo "shellcheck: clean"; \
 	else \
 	    echo "shellcheck not installed - skipping (apt install shellcheck)"; \
 	fi
