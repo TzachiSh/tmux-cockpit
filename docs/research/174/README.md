@@ -29,9 +29,12 @@ hook that would clear it runs in the worker, which has no `TMUX`/`TMUX_PANE`, an
 
 ## Decisions (owner, 2026-11-01)
 
-1. An agent-view pane shows the worst state across all background sessions: blocked > failed > working > done.
-2. One poller per tmux server runs `claude agents --json --all` every 10 s, only while some pane is an agent view. The interval is an option, and `off` disables it.
-3. A hook inside a background worker exits 0 without touching tmux. PR #185 (parent walk) closed unmerged.
+1. An agent-view pane shows the worst state across all background sessions:
+   blocked > failed > working > done.
+2. One poller per tmux server runs `claude agents --json --all` every 10 s, only while some
+   pane is an agent view. The interval is an option, and `off` disables it.
+3. A hook inside a background worker exits 0 without touching tmux. PR #185 (parent walk)
+   closed unmerged.
 
 ## Rejected
 
@@ -45,4 +48,5 @@ hook that would clear it runs in the worker, which has no `TMUX`/`TMUX_PANE`, an
 ## History
 
 - 2026-10-31: #174 filed with the daemon-env cause; PR #185 (parent walk) opened.
-- 2026-11-01: review DO NOT MERGE on #185; cause corrected on #174; this research round; decisions answered; #185 closed.
+- 2026-11-01: review DO NOT MERGE on #185; cause corrected on #174; this research round;
+  decisions answered; #185 closed.

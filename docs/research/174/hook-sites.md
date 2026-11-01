@@ -80,4 +80,5 @@ doesn't report its status to your terminal."
 
 - In a plain pane, the pane comes straight from the hook env.
 - A hook run from a worker has no pane (inferred from process env).
-- An ancestor walk from a worker reaches the supervisor, which carries the first front end's pane for every session.
+- An ancestor walk from a worker reaches the supervisor, which carries the first front end's
+  pane for every session.
