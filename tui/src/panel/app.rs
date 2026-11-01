@@ -89,12 +89,15 @@ pub enum View {
     },
     Answer {
         scroll: usize,
+        /// One Esc pressed: the next drops the conversation.
+        armed: bool,
     },
     Confirm {
         text: String,
         send: bool,
         warn: Vec<String>,
         back: Box<View>,
+        scroll: usize,
     },
     Error {
         line: String,
@@ -144,6 +147,9 @@ pub struct App {
     pub note: Option<String>,
     pub action: Option<Action>,
     pub quit: bool,
+    /// Body rows on screen and the furthest scroll, from the last frame.
+    pub room: usize,
+    pub bottom: usize,
 }
 
 impl App {
@@ -164,6 +170,8 @@ impl App {
             note: None,
             action: None,
             quit: false,
+            room: 0,
+            bottom: 0,
         }
     }
 
@@ -217,7 +225,11 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
         }
-        let typing = matches!(self.view, View::Compose | View::Input { .. });
+        // q in a confirm is "no" and on an answer is esc: a reflex q must not lose the answer
+        let typing = matches!(
+            self.view,
+            View::Compose | View::Input { .. } | View::Confirm { .. } | View::Answer { .. }
+        );
         if !typing && k.code == KeyCode::Char('q') {
             return self.exit();
         }
@@ -234,11 +246,34 @@ impl App {
             View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
             View::Steps { label, items, sel } => self.steps_key(k, label, items, sel),
             View::ExplainAsk { sel } => self.explain_ask_key(k, sel),
-            View::Answer { scroll } => self.answer_key(k, scroll),
-            View::Confirm { text, send, back, .. } => match k.code {
-                KeyCode::Enter | KeyCode::Char('y') => self.act(if send { "send" } else { "paste" }, text),
-                KeyCode::Esc | KeyCode::Char('n') => self.view = *back,
-                _ => {}
+            View::Answer { scroll, armed } => self.answer_key(k, scroll, armed),
+            View::Confirm {
+                text,
+                send,
+                back,
+                scroll,
+                warn,
+            } => match k.code {
+                KeyCode::Char('y') => self.act(if send { "send" } else { "paste" }, text),
+                KeyCode::Enter if needs_y(&text, send) => {
+                    self.note = Some("press y to send this: Enter does not confirm a risky or multi-line send".into())
+                }
+                KeyCode::Enter => self.act(if send { "send" } else { "paste" }, text),
+                KeyCode::Esc | KeyCode::Char('n' | 'q') => {
+                    self.note = None;
+                    self.view = *back
+                }
+                _ => {
+                    if let Some(scroll) = self.scrolled(k.code, scroll) {
+                        self.view = View::Confirm {
+                            text,
+                            send,
+                            warn,
+                            back,
+                            scroll,
+                        };
+                    }
+                }
             },
             View::Error { .. } => match k.code {
                 KeyCode::Char('r') => self.retry(),
@@ -249,6 +284,48 @@ impl App {
                 _ => {}
             },
         }
+    }
+
+    /// A bracketed paste: the Compose box takes it whole, a one-line box joins
+    /// its lines with spaces. Anywhere else it is dropped, never read as keys.
+    pub fn paste(&mut self, s: &str) {
+        match &mut self.view {
+            View::Compose => self.note = cap_note(append(&mut self.draft, &pasted(s, true))),
+            View::Input { text, .. } => self.note = cap_note(append(text, &pasted(s, false))),
+            _ => {}
+        }
+    }
+
+    /// The last frame's body rows and line count, so a stored offset is always
+    /// one the screen can show: Up at the end moves at once.
+    pub fn fit(&mut self, total: usize, room: usize) {
+        self.room = room;
+        self.bottom = total.saturating_sub(room);
+        if let View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } = &mut self.view {
+            *scroll = (*scroll).min(self.bottom);
+        }
+    }
+
+    /// The offset after a scroll key, or `None` for any other key.
+    fn scrolled(&self, code: KeyCode, scroll: usize) -> Option<usize> {
+        let scroll = scroll.min(self.bottom);
+        if self.room == 0 {
+            // no body rows on screen: an offset that moved would show nothing
+            return matches!(
+                code,
+                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Char('j' | 'k')
+            )
+            .then_some(scroll);
+        }
+        let page = self.room.saturating_sub(1).max(1);
+        let s = match code {
+            KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => scroll + 1,
+            KeyCode::PageUp => scroll.saturating_sub(page),
+            KeyCode::PageDown => scroll + page,
+            _ => return None,
+        };
+        Some(s.min(self.bottom))
     }
 
     /// Out with no action, the call killed: a hangup, or a loop that broke.
@@ -274,6 +351,7 @@ impl App {
                 send: false,
                 warn,
                 back: Box::new(back),
+                scroll: 0,
             };
         } else {
             self.act("paste", text);
@@ -337,7 +415,7 @@ impl App {
                 let i = OUT_CYCLE.iter().position(|o| *o == self.out).unwrap_or(0);
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
             }
-            _ => edit(&mut self.draft, k, ctrl, true),
+            _ => self.note = cap_note(edit(&mut self.draft, k, ctrl, true)),
         }
     }
 
@@ -473,7 +551,9 @@ impl App {
             Ok(o) => o,
             Err(f) => {
                 let line: String = f.to_string().chars().take(80).collect();
-                self.view = View::Error { line };
+                self.view = View::Error {
+                    line: format!("claude failed: {line}"),
+                };
                 return;
             }
         };
@@ -496,7 +576,12 @@ impl App {
         match reply {
             Reply::Question { text, options } if rounds < max => self.ask(text, options),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
-            Reply::Question { text, .. } => self.result("Result (unlabelled)", format!("(Claude still asks: {text})")),
+            // a question is not text to paste: no Result, so no insert or send
+            Reply::Question { text, .. } => {
+                self.view = View::Error {
+                    line: format!("no questions left, and Claude still asks: {text}"),
+                };
+            }
             Reply::Answer { text, ready } => self.answer(out.trim().into(), text, ready),
             Reply::Prompt(t) => self.result("Prompt for Claude Code", t),
             Reply::Text(t) if matches!(self.run.as_ref().map(|r| &r.flow), Some(Flow::Fix { .. })) => self.result("Fixed text", t),
@@ -526,7 +611,7 @@ impl App {
             Reply::Untagged(t) => self.result("Result (unlabelled)", t),
             Reply::Unsupported(tag) => {
                 self.view = View::Error {
-                    line: format!("claude answered with <{tag}>: file edits are not supported yet"),
+                    line: format!("claude failed: claude answered with <{tag}>: file edits are not supported yet"),
                 };
             }
         }
@@ -552,7 +637,10 @@ impl App {
                 r.ready = ready;
             }
         }
-        self.view = View::Answer { scroll: usize::MAX };
+        self.view = View::Answer {
+            scroll: usize::MAX,
+            armed: false,
+        };
     }
 
     fn ask(&mut self, text: String, options: Vec<Opt>) {
@@ -595,7 +683,10 @@ impl App {
                 if let Some(r) = self.run.as_mut() {
                     r.qstack.clear();
                 }
-                self.view = View::Answer { scroll: usize::MAX };
+                self.view = View::Answer {
+                    scroll: usize::MAX,
+                    armed: false,
+                };
             }
             Some(Flow::Explain) | None => {
                 self.run = None;
@@ -667,7 +758,10 @@ impl App {
 
     fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, back: View) {
         match k.code {
-            KeyCode::Esc => return self.view = back,
+            KeyCode::Esc => {
+                self.note = None;
+                return self.view = back;
+            }
             KeyCode::Enter => {
                 let t = text.trim().to_string();
                 if t.is_empty() {
@@ -688,7 +782,7 @@ impl App {
                     }
                 };
             }
-            _ => edit(&mut text, k, ctrl, false),
+            _ => self.note = cap_note(edit(&mut text, k, ctrl, false)),
         }
         self.view = View::Input {
             kind,
@@ -698,35 +792,10 @@ impl App {
     }
 
     fn result_key(&mut self, k: KeyEvent, text: String, scroll: usize, label: String) {
+        if let Some(scroll) = self.scrolled(k.code, scroll) {
+            return self.view = View::Result { label, text, scroll };
+        }
         match k.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.view = View::Result {
-                    label,
-                    text,
-                    scroll: scroll.saturating_sub(1),
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.view = View::Result {
-                    label,
-                    text,
-                    scroll: scroll + 1,
-                }
-            }
-            KeyCode::PageUp => {
-                self.view = View::Result {
-                    label,
-                    text,
-                    scroll: scroll.saturating_sub(10),
-                }
-            }
-            KeyCode::PageDown => {
-                self.view = View::Result {
-                    label,
-                    text,
-                    scroll: scroll + 10,
-                }
-            }
             KeyCode::Char('i') => {
                 let back = View::Result {
                     label,
@@ -747,11 +816,13 @@ impl App {
                     send: true,
                     warn,
                     back,
+                    scroll: 0,
                 };
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
-                self.draft = text.chars().take(MAX_DRAFT).collect();
+                self.draft.clear();
+                self.note = cap_note(append(&mut self.draft, &text));
                 self.run = None;
                 self.view = View::Compose;
             }
@@ -797,6 +868,7 @@ impl App {
                         send: true,
                         warn,
                         back: Box::new(here(sel)),
+                        scroll: 0,
                     };
                 }
             }
@@ -836,21 +908,22 @@ impl App {
         }
     }
 
-    fn answer_key(&mut self, k: KeyEvent, scroll: usize) {
+    fn answer_key(&mut self, k: KeyEvent, scroll: usize, armed: bool) {
         let ready = self.run.as_ref().and_then(|r| r.ready.clone());
+        let esc = matches!(k.code, KeyCode::Esc | KeyCode::Char('q'));
+        if armed && !esc {
+            self.note = None;
+            self.view = View::Answer { scroll, armed: false };
+        }
+        if let Some(scroll) = self.scrolled(k.code, scroll) {
+            return self.view = View::Answer { scroll, armed: false };
+        }
         match k.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.view = View::Answer {
-                    scroll: scroll.saturating_sub(1),
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.view = View::Answer {
-                    scroll: scroll.saturating_add(1),
-                }
-            }
             KeyCode::Char('f') => {
-                let back = Box::new(View::Answer { scroll: usize::MAX });
+                let back = Box::new(View::Answer {
+                    scroll: usize::MAX,
+                    armed: false,
+                });
                 self.view = View::Input {
                     kind: InputKind::FollowUp,
                     text: String::new(),
@@ -873,10 +946,17 @@ impl App {
                     text,
                     send: c == 's',
                     warn,
-                    back: Box::new(View::Answer { scroll }),
+                    back: Box::new(View::Answer { scroll, armed: false }),
+                    scroll: 0,
                 };
             }
-            KeyCode::Esc => {
+            // the transcript is paid-for calls with no way back: one esc or q only arms
+            _ if esc && !armed => {
+                self.note = Some("esc or q again to discard this conversation".into());
+                self.view = View::Answer { scroll, armed: true };
+            }
+            _ if esc => {
+                self.note = None;
                 self.run = None;
                 self.view = View::Home { sel: 0 };
             }
@@ -885,8 +965,9 @@ impl App {
     }
 }
 
-/// The shared text-box keys. `multi` makes Enter a newline.
-fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) {
+/// The shared text-box keys. `multi` makes Enter a newline. Returns how many
+/// characters the MAX_DRAFT cap turned away.
+fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) -> usize {
     match k.code {
         KeyCode::Backspace => {
             text.pop();
@@ -901,16 +982,35 @@ fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) {
             text.truncate(w);
         }
         KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Enter if multi => push(text, '\n'),
-        KeyCode::Char(c) if !ctrl => push(text, c),
+        KeyCode::Enter if multi => return append(text, "\n"),
+        KeyCode::Char(c) if !ctrl => return append(text, c.encode_utf8(&mut [0; 4])),
         _ => {}
     }
+    0
 }
 
-fn push(text: &mut String, c: char) {
-    if text.chars().count() < MAX_DRAFT {
-        text.push(c);
-    }
+/// Appends what fits under MAX_DRAFT; returns the count left out.
+fn append(text: &mut String, s: &str) -> usize {
+    let room = MAX_DRAFT.saturating_sub(text.chars().count());
+    text.extend(s.chars().take(room));
+    s.chars().count().saturating_sub(room)
+}
+
+fn cap_note(dropped: usize) -> Option<String> {
+    (dropped > 0).then(|| format!("the box holds {MAX_DRAFT} characters: {dropped} left out"))
+}
+
+/// A bracketed paste, cleaned like the action file. Terminals send a pasted
+/// newline as CR, so a lone `\r` is a line break too.
+fn pasted(s: &str, multi: bool) -> String {
+    let t = sanitize(&s.replace("\r\n", "\n").replace('\r', "\n"));
+    if multi { t } else { t.split('\n').collect::<Vec<_>>().join(" ") }
+}
+
+/// A send that runs something risky, or more than one line, wants a `y`: an
+/// Enter held over from the last view must not fire it.
+pub fn needs_y(text: &str, send: bool) -> bool {
+    send && (risky(text).is_some() || text.trim_end_matches('\n').contains('\n'))
 }
 
 /// Control characters out, `\t` and `\n` kept, `\r\n` folded: a stray ESC or

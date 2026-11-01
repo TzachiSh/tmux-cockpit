@@ -25,9 +25,21 @@ fn golden(name: &str, got: &str) {
 }
 
 fn frame(app: &App, w: u16, h: u16, tick: u64) -> String {
+    framed(app, w, h, &Theme::fixed(), tick).0
+}
+
+fn framed(app: &App, w: u16, h: u16, th: &Theme, tick: u64) -> (String, (usize, usize)) {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| render(f, f.area(), app, &Theme::fixed(), tick)).unwrap();
-    t.backend().to_string()
+    let mut page = (0, 0);
+    t.draw(|f| page = render(f, f.area(), app, th, tick)).unwrap();
+    (t.backend().to_string(), page)
+}
+
+/// A frame as the event loop draws it: the offsets are fitted after it.
+fn shown(a: &mut App, w: u16, h: u16) -> String {
+    let (f, (total, room)) = framed(a, w, h, &Theme::fixed(), 0);
+    a.fit(total, room);
+    f
 }
 
 /// One golden per width, the two widths the popup meets most.
@@ -311,10 +323,11 @@ fn write_asks_at_most_three_rounds() {
         assert!(prompt.contains(&format!("<turn role=\"user\">a{n}</turn>")));
     }
     a.reply(Ok(q(4)));
-    assert!(
-        matches!(&a.view, View::Result { text, .. } if text == "(Claude still asks: Q4?)"),
-        "{:?}",
-        a.view
+    assert_eq!(
+        a.view,
+        View::Error {
+            line: "no questions left, and Claude still asks: Q4?".into()
+        }
     );
 }
 
@@ -326,10 +339,19 @@ fn fix_never_asks_and_explain_asks_six_times() {
     ctrl(&mut a, 'f');
     a.reply(Ok(q(1)));
     assert!(
-        matches!(&a.view, View::Result { text, .. } if text.starts_with("(Claude still asks")),
+        matches!(&a.view, View::Error { line } if line.contains("Claude still asks: Q1?")),
         "{:?}",
         a.view
     );
+    for c in ['i', 's', 'c'] {
+        ch(&mut a, c);
+    }
+    assert!(
+        a.action.is_none() && matches!(a.view, View::Error { .. }),
+        "a leftover question is never inserted"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert_eq!((a.view.clone(), a.draft.as_str()), (View::Compose, "teh"));
 
     let mut a = app("claude", "claude", CLAUDE_SCREEN);
     ch(&mut a, '3');
@@ -362,8 +384,8 @@ fn best_guess_ends_the_rounds_and_back_pops_one() {
     ch(&mut a, 'g');
     a.reply(Ok(q(3)));
     assert!(
-        matches!(a.view, View::Result { .. }),
-        "a question after the best guess is shown as text"
+        matches!(a.view, View::Error { .. }),
+        "a question after the best guess is an error, never a pasteable result"
     );
 }
 
@@ -433,14 +455,19 @@ fn a_failure_shows_one_line_and_retries_or_goes_back() {
     let mut a = app("w", "zsh", "$ ");
     writing(&mut a, "x");
     a.reply(Err(cockpit_tui::panel::request::Fail::Failed("e".repeat(200))));
-    assert!(matches!(&a.view, View::Error { line } if line.chars().count() == 80));
+    assert_eq!(
+        a.view,
+        View::Error {
+            line: format!("claude failed: {}", "e".repeat(80))
+        }
+    );
     ch(&mut a, 'r');
     assert_eq!((a.view.clone(), a.pending), (View::Busy, true));
     a.reply(Err(cockpit_tui::panel::request::Fail::Timeout));
     assert_eq!(
         a.view,
         View::Error {
-            line: "took too long".into()
+            line: "claude failed: took too long".into()
         }
     );
     key(&mut a, KeyCode::Esc);
@@ -649,4 +676,316 @@ fn the_action_file_carries_the_verb_and_a_private_clean_text() {
     assert!(write_action(&f, "%7", "zsh", &a).is_err(), "an existing text file is refused");
     assert_eq!(sanitize("x\u{0}y\u{7f}z\n"), "xyz\n");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- scrolling
+
+/// An Explain answer of `n` numbered lines, long enough to scroll.
+fn long_answer(n: usize) -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    ch(&mut a, '3');
+    ch(&mut a, '1');
+    let body: Vec<String> = (1..=n).map(|i| format!("line {i}")).collect();
+    a.reply(Ok(body.join("\n")));
+    a
+}
+
+fn scroll_of(a: &App) -> usize {
+    match &a.view {
+        View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } => *scroll,
+        v => panic!("{v:?}"),
+    }
+}
+
+#[test]
+fn up_at_the_end_of_an_answer_moves_at_once() {
+    let mut a = long_answer(40);
+    shown(&mut a, 60, 12);
+    let bottom = scroll_of(&a);
+    assert!(bottom > 0 && bottom < 100, "the bottom is a real offset: {bottom}");
+    key(&mut a, KeyCode::Up);
+    assert_eq!(scroll_of(&a), bottom - 1, "one Up is one line");
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains(&format!(" {bottom}-42 of 43 ")), "{f}");
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::Down);
+    assert_eq!(scroll_of(&a), bottom, "Down stops at the bottom");
+}
+
+#[test]
+fn page_keys_move_an_answer_by_a_screen() {
+    let mut a = long_answer(40);
+    shown(&mut a, 60, 12);
+    let (bottom, page) = (scroll_of(&a), a.room - 1);
+    key(&mut a, KeyCode::PageUp);
+    assert_eq!(scroll_of(&a), bottom - page);
+    key(&mut a, KeyCode::PageDown);
+    key(&mut a, KeyCode::PageDown);
+    assert_eq!(scroll_of(&a), bottom);
+    for _ in 0..20 {
+        key(&mut a, KeyCode::PageUp);
+    }
+    assert_eq!(scroll_of(&a), 0);
+}
+
+#[test]
+fn a_result_never_scrolls_past_its_end() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let body: Vec<String> = (1..=30).map(|i| format!("r{i}")).collect();
+    a.reply(Ok(format!("<text>{}</text>", body.join("\n"))));
+    shown(&mut a, 60, 12);
+    for _ in 0..50 {
+        key(&mut a, KeyCode::Down);
+    }
+    let bottom = scroll_of(&a);
+    assert_eq!(bottom, a.bottom);
+    key(&mut a, KeyCode::Up);
+    assert_eq!(scroll_of(&a), bottom - 1);
+}
+
+#[test]
+fn the_position_shows_where_it_can_move() {
+    let mut a = long_answer(40);
+    let f = shown(&mut a, 60, 12);
+    let total = 40 + 3;
+    let (top, room) = (a.bottom, a.room);
+    let at_end = format!(" {}-{total} of {total} ▲{top} ", top + 1);
+    assert!(f.contains(&at_end), "want {at_end:?}:\n{f}");
+    assert!(!f.contains('▼'), "nothing below the end:\n{f}");
+    for _ in 0..100 {
+        key(&mut a, KeyCode::Up);
+    }
+    let f = shown(&mut a, 60, 12);
+    let at_top = format!(" 1-{room} of {total} ▼{} ", total - room);
+    assert!(f.contains(&at_top) && !f.contains('▲'), "want {at_top:?}:\n{f}");
+
+    let th = Theme {
+        g: cockpit_tui::theme::Glyphs::ascii(),
+        ..Theme::fixed()
+    };
+    let f = framed(&a, 60, 12, &th, 0).0;
+    assert!(
+        f.contains(&format!(" 1-{room} of {total} v{} ", total - room)),
+        "ascii arrows:\n{f}"
+    );
+    assert!(!frame(&explained(), 80, 20, 0).contains(" of "), "a body that fits shows none");
+}
+
+#[test]
+fn steps_show_the_position_too() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let steps: String = (1..=12)
+        .map(|i| format!("<step><note>step {i}</note><cmd>echo {i}</cmd></step>"))
+        .collect();
+    a.reply(Ok(format!("<steps>{steps}</steps>")));
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("1-8 of 24 ▼16"), "{f}");
+}
+
+// ---------------------------------------------------------------- confirm
+
+#[test]
+fn a_risky_or_multi_line_send_needs_y_not_enter() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<steps><step><note>n</note><cmd>sudo rm -rf /tmp/x</cmd></step></steps>".into()));
+    ch(&mut a, 's');
+    assert!(shown(&mut a, 80, 20).contains("y confirm  (↵ is off: risky or multi-line)"));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.action.is_none() && !a.quit, "Enter does not fire a risky send");
+    assert!(matches!(a.view, View::Confirm { .. }) && a.note.as_deref().unwrap_or("").contains("press y"));
+    ch(&mut a, 'y');
+    assert_eq!(a.action.as_ref().map(|x| x.verb), Some("send"));
+
+    // bash takes the paste whole, so no line warning: it is the send that runs both
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>make\nmake install</text>".into()));
+    ch(&mut a, 's');
+    key(&mut a, KeyCode::Enter);
+    assert!(a.action.is_none(), "Enter does not fire a multi-line send");
+    ch(&mut a, 'y');
+    assert_eq!(
+        a.action,
+        Some(Action {
+            verb: "send",
+            text: "make\nmake install".into()
+        })
+    );
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls -la</text>".into()));
+    ch(&mut a, 's');
+    assert!(shown(&mut a, 80, 20).contains("↵ y confirm"));
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(
+        a.action.as_ref().map(|x| x.verb),
+        Some("send"),
+        "a plain one-liner still takes Enter"
+    );
+}
+
+#[test]
+fn q_in_a_confirm_cancels_and_keeps_the_panel() {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls</text>".into()));
+    ch(&mut a, 's');
+    ch(&mut a, 'q');
+    assert!(!a.quit && a.action.is_none());
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    ch(&mut a, 'q');
+    assert!(a.quit, "q outside a confirm still closes");
+}
+
+fn long_confirm() -> App {
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    let body: Vec<String> = (1..=40).map(|i| format!("echo step {i}")).collect();
+    a.reply(Ok(format!("<text>{}</text>", body.join("\n"))));
+    ch(&mut a, 's');
+    a
+}
+
+#[test]
+fn a_long_confirm_scrolls_and_says_what_is_cut() {
+    let mut a = long_confirm();
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("echo step 1 ") && f.contains("… 33 more lines"), "{f}");
+    for _ in 0..100 {
+        key(&mut a, KeyCode::Down);
+    }
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("echo step 40") && !f.contains("more line"), "{f}");
+    assert!(matches!(a.view, View::Confirm { .. }));
+
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>ls</text>".into()));
+    a.pane = format!("%3 {}", "x".repeat(70));
+    ch(&mut a, 's');
+    let f = shown(&mut a, 60, 12);
+    assert!(f.contains("(bash) and press Enter?"), "the question wraps:\n{f}");
+}
+
+#[test]
+fn golden_confirm_scrolled() {
+    for (w, h) in [(80u16, 20u16), (120, 24)] {
+        let mut a = long_confirm();
+        shown(&mut a, w, h);
+        for _ in 0..5 {
+            key(&mut a, KeyCode::Down);
+        }
+        golden(&format!("panel-confirm-scroll-{w}"), &frame(&a, w, h, 0));
+    }
+}
+
+// ---------------------------------------------------------------- esc on an answer
+
+#[test]
+fn esc_on_an_answer_asks_before_it_drops_the_conversation() {
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { armed: true, .. }), "{:?}", a.view);
+    assert!(a.run.is_some() && a.note.as_deref() == Some("esc or q again to discard this conversation"));
+    assert!(frame(&a, 80, 20, 0).contains("esc or q again discards it"));
+    key(&mut a, KeyCode::Up);
+    assert!(
+        matches!(a.view, View::Answer { armed: false, .. }) && a.note.is_none(),
+        "any other key keeps it"
+    );
+    key(&mut a, KeyCode::Esc);
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.run.is_none() && a.note.is_none() && !a.quit);
+}
+
+// ---------------------------------------------------------------- bracketed paste
+
+#[test]
+fn a_paste_into_compose_is_taken_whole() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    typ(&mut a, "> ");
+    a.paste("a\tb\r\nc\rd\u{1b}[31m\u{7}e\nq");
+    assert_eq!(a.draft, "> a\tb\nc\nd[31me\nq", "tabs and newlines kept, control characters out");
+    assert!(!a.quit && a.view == View::Compose, "a pasted q is text");
+    assert!(a.note.is_none());
+}
+
+#[test]
+fn a_paste_into_a_one_line_box_joins_its_lines() {
+    let mut a = explained();
+    ch(&mut a, 'f');
+    a.paste("why\r\nthat\none?\u{7}");
+    let View::Input { text, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(text, "why that one?", "a pasted newline does not send");
+
+    let mut a = explained();
+    a.paste("ignored");
+    assert!(matches!(a.view, View::Answer { .. }) && a.run.as_ref().unwrap().log.len() == 2);
+}
+
+#[test]
+fn the_draft_cap_says_what_it_left_out() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    a.paste(&"x".repeat(8010));
+    assert_eq!(a.draft.chars().count(), 8000);
+    assert_eq!(a.note.as_deref(), Some("the box holds 8000 characters: 10 left out"));
+    assert!(frame(&a, 80, 20, 0).contains("10 left out"));
+    ch(&mut a, 'y');
+    assert_eq!(
+        a.note.as_deref(),
+        Some("the box holds 8000 characters: 1 left out"),
+        "typing at the cap says so too"
+    );
+    key(&mut a, KeyCode::Backspace);
+    assert!(a.note.is_none());
+}
+
+#[test]
+fn q_on_an_answer_is_esc_and_never_quits() {
+    let mut a = explained();
+    ch(&mut a, 'q');
+    assert!(matches!(a.view, View::Answer { armed: true, .. }) && !a.quit, "{:?}", a.view);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 });
+    assert!(a.run.is_none() && !a.quit, "the second q goes home, not out");
+
+    let mut a = explained();
+    key(&mut a, KeyCode::Esc);
+    ch(&mut a, 'q');
+    assert_eq!(a.view, View::Home { sel: 0 }, "esc then q discards too");
+    let mut a = explained();
+    ctrl(&mut a, 'c');
+    assert!(a.quit, "Ctrl-C stays a hard quit");
+}
+
+#[test]
+fn no_body_rows_means_no_position_and_no_scroll() {
+    let mut a = long_answer(40);
+    let f = shown(&mut a, 60, 2);
+    assert_eq!(a.room, 0);
+    assert!(!f.contains(" of "), "{f}");
+    let at = scroll_of(&a);
+    for k in [KeyCode::Down, KeyCode::PageDown, KeyCode::Up] {
+        key(&mut a, k);
+        assert_eq!(scroll_of(&a), at, "{k:?}");
+    }
+}
+
+#[test]
+fn esc_out_of_a_one_line_box_clears_its_cap_note() {
+    let mut a = explained();
+    ch(&mut a, 'f');
+    a.paste(&"x".repeat(8001));
+    assert!(a.note.is_some());
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Answer { .. }) && a.note.is_none(), "{:?}", a.note);
 }

@@ -997,7 +997,10 @@ the answer back into it. It is a port of type-panel. It runs with
   with Enter after a confirm. The paste is bracketed only when the program
   asked for that, so a multi-line insert into a program that may run each
   line (python3, sh, psql) asks first too. The confirm also flags risky
-  commands such as `rm` or `sudo`.
+  commands such as `rm` or `sudo`, and a risky or multi-line send takes
+  `y`, not Enter. `n`, `q` or `esc` cancels it.
+- `↑↓` and `PgUp` `PgDn` scroll a long result, answer or confirm. `esc` or `q`
+  on an Explain answer asks once before it drops the conversation.
 
 Secrets on the screen are blanked before anything is sent. `prefix + f`
 opens it on the pane you are in, and `f` on a board tile opens it on that
