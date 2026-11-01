@@ -4313,7 +4313,7 @@ else
 fi
 fi
 
-echo "== tm: a plain display-popup with a leaked TMUX_PANE still knows your session =="
+echo "== tm: your own session, from a plain display-popup and from a moved pane =="
 # A user's own "display-popup -E tm" binding, on a server whose start env
 # leaked a $TMUX_PANE that names a pane in ANOTHER session: that session must
 # not become "here", and yours must not become killable (re-review of #210).
@@ -4345,11 +4345,23 @@ else
     bad "and ^X on it refuses" "real is this session" "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | tail -4)"
 fi
 "$TMUX_REAL" -L "$TLO" send-keys -t o: Escape
+# And a pane moved to another session: its $TMUX still names the one it was
+# born in, but its tty is the pane's, so the session it now sits in is yours.
+TLD=$(mktmpd); : > "$TLD/armed"
+"$TMUX_REAL" -L "$TLI" new-window -d -t real: 'bash --norc --noprofile' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TLI" move-window -s real:1 -t other:5 >/dev/null 2>&1
+tlo=$("$TMUX_REAL" -L "$TLI" display-message -p -t other: '#{session_id}')
+"$TMUX_REAL" -L "$TLI" send-keys -t other:5 \
+    "TM_DIR=$TLD TM_SGR=\$(printf '\\037\\037\\037\\037\\037\\037') '$DIR/scripts/tm' --arm '$tlo' > $TLD/out" Enter
+until_file "$TLD/out" '*session*'
+is "a pane moved to another session refuses ^X on its new one" \
+   "change-footer:other is this session · detach or use tm -k" "$(sed $'s/\033\\[[0-9;]*m//g' "$TLD/out")"
 "$TMUX_REAL" -L "$TLO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TLI" kill-server >/dev/null 2>&1
 else
   skip_ "the popup's own session is the one marked (here) (needs fzf 0.73+)"
   skip_ "and ^X on it refuses (needs fzf 0.73+)"
+  skip_ "a pane moved to another session refuses ^X on its new one (needs fzf 0.73+)"
 fi
 fi
 

@@ -167,13 +167,16 @@ kill_one() {  # kill_one NAME
   [ -n "$id" ] && tmux kill-session -t "$id" 2>/dev/null && printf 'killed: %s\n' "$1" >&2
 }
 
-# Your own session: the popup passes it in, else $TMUX's, as in_client() reads
-# it. A popup's $TMUX_PANE can be leaked from the server's start env (#212).
+# Yours: the popup's, else $TMUX_PANE's when its tty is ours (a moved pane keeps
+# its birth $TMUX; a popup inherits a leaked $TMUX_PANE, #212), else $TMUX's.
 own() {
   [ -n "${TM_SID:-}" ] && return 0
-  [ -n "${TMUX:-}" ] && TM_SID=$(tmux display-message -p -t "\$${TMUX##*,}" '#{session_id}' 2>/dev/null)
-  [ -n "${TM_SID:-}" ] || { [ -n "${TMUX_PANE:-}" ] &&
-    TM_SID=$(tmux display-message -p -t "$TMUX_PANE" '#{session_id}' 2>/dev/null); }
+  local t p s
+  if [ -n "${TMUX_PANE:-}" ] && t=$(tty 2>/dev/null); then
+    read -r p s < <(tmux display-message -p -t "$TMUX_PANE" '#{pane_tty} #{session_id}' 2>/dev/null)
+    [ "${p:-}" = "$t" ] && TM_SID=$s
+  fi
+  [ -n "${TM_SID:-}" ] || { [ -n "${TMUX:-}" ] && TM_SID="\$${TMUX##*,}"; }
   export TM_SID=${TM_SID:-}
 }
 
