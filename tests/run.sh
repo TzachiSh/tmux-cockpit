@@ -3937,12 +3937,20 @@ else
     skip_ "a long name is shown whole, so its tail still matches (no fzf)"
 fi
 trt kill-session -t =my-very-long-project-name-number-2
+# One record per session even with a newline in the ask, and no control byte
+# of the agent's reaches fzf.
+trtouch=$(trrows env FZF_COLUMNS=56 TM_TOUCH=1 | tr '\0' '\036')
+is "touch rows are NUL-ended, one per session plus the header" "6" \
+   "$(printf '%s' "$trtouch" | tr -cd '\036' | wc -c)"
+is "a waiting touch row carries its ask, control bytes stripped" \
+   "1 ▲ 	waits	|     Allow [31meditto src/a.rs?more" \
+   "$(printf '%s' "$trtouch" | tr '\036' '\n' | sed -n '/	waits	/,/	broken	/p' | sed '$d' | cut -f2- | sed 's/ *$//' | paste -sd '|')"
 # The ask is read on its own: a record separator inside it forges nothing, and
 # no field reaches arithmetic unchecked (review of #210: PWNED was created).
 trs waits needs-input "$(printf 'x\036$9\0371\0371\037$(touch %s/PWNED)\0371\037\037 needs-input \037forged' "$STATE")"
-trforge=$(trrows env FZF_COLUMNS=56)
+trforge=$(trrows env FZF_COLUMNS=56 TM_TOUCH=1 | tr '\0' '\036')
 is "an ask holding the record separator forges no row and runs nothing" "6 no" \
-   "$(printf '%s\n' "$trforge" | wc -l) $([ -e "$STATE/PWNED" ] && echo yes || echo no)"
+   "$(printf '%s' "$trforge" | tr -cd '\036' | wc -c) $([ -e "$STATE/PWNED" ] && echo yes || echo no)"
 trs waits needs-input 'Allow edit?'
 # The colour roles (#210 design check): the ○ glyph is dim, age and (here) soft.
 trroles=$(env TMUX="$TRX" TM_SGR="$(printf 'N\037E\037R\037D\037M\037S\037')" FZF_COLUMNS=200 "$DIR/scripts/tm" --rows)
@@ -4046,6 +4054,25 @@ case "$(FZF_MATCH_COUNT=2 FZF_QUERY=ne trk --result)" in
     "change-header()+change-footer"?"↵ switch"*) ok "and a match restores the footer" ;;
     *) bad "and a match restores the footer" "the resting footer" "$(cat "$TRK/armed")" ;;
 esac
+# Touch: buttons share the footer evenly, the detail of a kill goes up top, and
+# a tap counts anywhere in its share.
+trkt() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" TM_TOUCH=1 FZF_COLUMNS=56 "$DIR/scripts/tm" "$@" | nosgr; }
+is "the touch footer: four buttons centred in equal shares" \
+   "  [ + new ]    [ kill ]     [ view ]     [ close ]  " "$(trkt --footer)"
+trquiet=$(trid quiet)
+is "touch arms in the header and the footer" \
+   "change-header(kill quiet? no agents)+change-footer:      [ kill quiet ]              [ cancel ]        " \
+   "$(trkt --arm "$trquiet")"
+is "a tap right of [ cancel ] still cancels" "change-header()+change-footer(  [ + new ]    [ kill ]     [ view ]     [ close ]  )" \
+   "$(FZF_CLICK_FOOTER_COLUMN=50 trkt --click "$trquiet")"
+is "+ new with an empty query asks for a name" "change-footer:type a name, then tap + new" \
+   "$(FZF_CLICK_FOOTER_COLUMN=7 trkt --click "$trquiet")"
+# The hint must not swallow the next tap (review of #210).
+is "a tap on close after the hint still closes" "change-header()+change-footer(  [ + new ]    [ kill ]     [ view ]     [ close ]  )+abort" \
+   "$(FZF_CLICK_FOOTER_COLUMN=45 trkt --click "$trquiet")"
+: > "$TRK/armed"
+is "+ new with a query creates it" "print(new)+accept" "$(FZF_QUERY=x FZF_CLICK_FOOTER_COLUMN=2 trkt --click "$trquiet")"
+is "a tap in the gap left of [ view ] is view's" "toggle-preview" "$(FZF_CLICK_FOOTER_COLUMN=28 trkt --click "$trquiet")"
 "$TMUX_REAL" -L "$TR" kill-server >/dev/null 2>&1
 fi
 

@@ -1147,7 +1147,11 @@ outside, and checks `session_attached` rather than `$TMUX` to tell the
 difference — anything launched from a pane inherits `$TMUX`, so a terminal
 opened inside tmux still carries it after the session is detached.
 
-`set -g @cockpit_glyphs ascii` swaps the glyphs for `! x * + .` where a terminal draws them at the
+**Touch mode** turns on below 100 client columns (`set -g @cockpit_touch
+auto|on|off`, default `auto`): rows are two lines tall, a waiting session shows
+its question on the second, one tap switches, and the footer is a row of
+buttons, `[ + new ] [ kill ] [ view ] [ close ]`. `set -g @cockpit_glyphs
+ascii` swaps the glyphs for `! x * + .` where a terminal draws them at the
 wrong width; `nerd` uses Nerd Font icons instead, opt-in because many Nerd
 Font builds draw them two cells wide.
 

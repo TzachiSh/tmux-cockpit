@@ -211,14 +211,14 @@ palette() {
 }
 
 # LW = the list's own width. The preview takes the right half while that half
-# is 60+ columns (the <60 alternative in pick).
+# is 60+ columns (the <60 alternative in pick), and starts hidden in touch mode.
 LW=0
 listw() {
   local cols=${FZF_COLUMNS:-}
   num "$cols" || cols=$(tput cols 2>/dev/null)
   num "$cols" || cols=80
   LW=$cols
-  [ $((cols / 2)) -lt 60 ] || LW=$((cols - cols / 2))
+  [ "${TM_TOUCH:-0}" = 1 ] || [ $((cols / 2)) -lt 60 ] || LW=$((cols - cols / 2))
 }
 
 trunc() {  # trunc VAR TEXT WIDTH -- TEXT cut with … to at most WIDTH cells
@@ -251,21 +251,24 @@ ask_of() {  # ask_of VAR PANE_ID
 }
 
 # A header line, then id<TAB>number glyph<TAB>name<TAB>rest per session: fzf
-# shows 2.. and searches the name.
+# shows 2.. and searches the name. NUL-ended in touch, so an ask fits in a row.
 rows() {
   glyphs; palette; listw; own
-  local now fmt end='\n'
+  # A printf escape, since a bash string cannot hold the NUL --read0 needs.
+  local touch=${TM_TOUCH:-0} now fmt end='\n'
+  [ "$touch" = 1 ] && end='\0'
   printf -v now '%(%s)T' -1
   # Only ids, counts and names: agent text never shares this output.
   fmt="#{session_id}$US#{session_windows}$US#{session_attached}"
   fmt+="$US#{?session_last_attached,#{session_last_attached},#{session_created}}"
   fmt+="$US#{n:#{W:#{P:#{?$AGENT,x,}}}}"
+  fmt+="$US#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$AGENT,#{pane_id} ,},}}}"
   fmt+="$US#{W:#{@cockpit_win_state} }$US#{session_name}"
 
-  local id name nw att last ws na st band nband=0
+  local id name nw att last ws na wp st band nband=0
   local -a recs=()
   local -A n=([needs-input]=0 [error]=0 [running]=0)
-  while IFS=$US read -r id nw att last na ws name; do
+  while IFS=$US read -r id nw att last na wp ws name; do
     [[ $id =~ ^\$[0-9]+$ ]] && num "$nw" && num "$att" && num "$last" && num "$na" || continue
     case " $ws" in
       *" needs-input "*) st=needs-input band=0 ;;
@@ -279,7 +282,7 @@ rows() {
     # Your own session goes last, and your own client is not "elsewhere".
     [ "$id" = "$TM_SID" ] && { band=9; att=$((att - 1)); }
     [ "$band" -le 1 ] && nband=$((nband + 1))
-    recs+=("$band$US$((now - last))$US$id$US$nw$US$att$US$st$US$na$US$name")
+    recs+=("$band$US$((now - last))$US$id$US$nw$US$att$US$st$US$na$US${wp%% *}$US$name")
   done < <(tmux list-sessions -F "$fmt" 2>/dev/null)
   local total=${#recs[@]}
 
@@ -293,6 +296,7 @@ rows() {
     hdr="${C[dim]}needs you ·$R"; sep=' '; counted=(needs-input error)
   else
     hdr="${C[dim]}$total session$([ "$total" = 1 ] || echo s)$R"
+    [ "$touch" = 1 ] && hdr="${C[dim]}$total$R"
     # An empty band falls back to every session rather than an empty popup.
     [ "${TM_NEEDS:-}" = 1 ] && hdr="${C[dim]}nothing needs you ·$R $hdr"
   fi
@@ -324,9 +328,9 @@ rows() {
 
   # The full name, never cut: fzf searches only what it shows, so a cut name
   # would stop matching its own tail and ↵ would create a duplicate.
-  local i=0 age num g a here rest when ag wn
+  local i=0 age num g a here rest when ag wn ask
   for r in "${recs[@]}"; do
-    IFS=$US read -r band age id nw att st na name <<<"$r"
+    IFS=$US read -r band age id nw att st na wp name <<<"$r"
     i=$((i + 1)); num=' '; [ "$i" -le 9 ] && num=$i
     g="${C[$st]}${G[$st]}$R"
     a=' '; [ "$att" -gt 0 ] && a="${C[dim]}${G[att]}$R"
@@ -344,6 +348,12 @@ rows() {
       here=''; [ "$band" = 9 ] && here="‹here›"
       printf -v rest '%s%*s%s' "${here:+${C[soft]}$here$R}" \
         $((23 - ${#name} - ${#here} > 0 ? 23 - ${#name} - ${#here} : 1)) '' "$a"
+    fi
+    if [ "$touch" = 1 ] && [ "$st" = needs-input ]; then
+      # The ask sits under the name, inside the row so a tap on it selects it.
+      ask=''; [ -n "$wp" ] && ask_of ask "$wp"
+      trunc ask "${ask:-needs you}" $((LW - 8))
+      rest+=$'\n'"     ${C[soft]}$ask$R"
     fi
     printf "%s\t%s %s \t%s\t%s$end" "$id" "$num" "$g" "$name" "$rest"
   done
@@ -394,9 +404,34 @@ preview() {  # preview SESSION_ID
     printf '%s\n' "${tail[@]: -$((room < ${#tail[@]} ? room : ${#tail[@]}))}"
 }
 
+# Touch buttons: each owns an equal share of the footer, its label centred in
+# it, so a tap anywhere in the share counts. Labels in the terminal's own fg.
+buttons() {  # buttons LABEL... -- the footer; a label starting with ! is a warning
+  listw
+  local w=$((LW - 3)) z l c t out=''
+  z=$((w / $#))
+  for l; do
+    c=$'\033[39m'; [ "${l:0:1}" = '!' ] && { c=${C[needs-input]}; l=${l:1}; }
+    trunc l "$l" $((z - 4))
+    t=$(( (z - ${#l} - 4) / 2 ))
+    printf -v out '%s%*s%s[ %s%s%s ]%s%*s' "$out" "$t" '' "${C[dim]}" "$c" "$l" "${C[dim]}" "$R" \
+      $((z - ${#l} - 4 - t)) ''
+  done
+  printf '%s' "$out"
+}
+
+zone() {  # zone N -- which of N equal footer shares the tap fell in, or -1
+  listw
+  local c=${FZF_CLICK_FOOTER_COLUMN:-0} w=$((LW - 3)) z
+  num "$c" && [ "$c" -ge 1 ] || { printf -- -1; return; }
+  z=$(( (c - 1) * $1 / w )); [ "$z" -lt "$1" ] || z=$(($1 - 1))
+  printf '%s' "$z"
+}
+
 footer() {  # the resting footer for the list's width
   listw
-  if   [ "$LW" -ge 80 ]; then printf '%s' '↵ switch · type a name + ↵ creates · ^X kill · ^/ preview · 1-9 jump · esc close'
+  if   [ "${TM_TOUCH:-0}" = 1 ]; then palette; buttons '+ new' kill view close
+  elif [ "$LW" -ge 80 ]; then printf '%s' '↵ switch · type a name + ↵ creates · ^X kill · ^/ preview · 1-9 jump · esc close'
   elif [ "$LW" -ge 64 ]; then printf '%s' '↵ switch · type a name + ↵ creates · ^X kill · ^/ preview · esc'
   else                        printf '%s' '↵ go · name+↵ new · ^X kill · esc'
   fi
@@ -440,7 +475,11 @@ arm() {  # arm ID -- the fzf actions for ^X on that session
   if [ "$na" -gt 0 ]; then what+=" · $na agent"; [ "$na" = 1 ] || what+=s; else what+=' · no agents'; fi
   h=$(act change-header "${C[needs-input]}kill $name?$R ${C[dim]}${what# · }$R")
   [ -z "$h" ] || printf '%s+' "$h"
-  printf 'change-footer:%s^X again kills%s%s · any key cancels%s' "${C[needs-input]}" "$R" "${C[dim]}" "$R"
+  if [ "${TM_TOUCH:-0}" = 1 ]; then
+    printf 'change-footer:%s' "$(buttons "!kill $name" cancel)"
+  else
+    printf 'change-footer:%s^X again kills%s%s · any key cancels%s' "${C[needs-input]}" "$R" "${C[dim]}" "$R"
+  fi
 }
 
 disarm() {  # disarm [ID] -- restore the header and footer, unless ID is the armed row
@@ -462,15 +501,38 @@ result() {
   fi
 }
 
+click() {  # click ID -- a tap on the touch footer
+  local pre=''
+  armed
+  # A message on the footer gives way, and the tap still counts.
+  [ "$ARMED" = '!' ] && { pre="$(disarm)+"; ARMED=''; }
+  if [ "${ARMED:0:1}" = = ]; then
+    case $(zone 2) in 0) arm "${ARMED#=}" ;; 1) disarm ;; esac
+    return
+  fi
+  case $(zone 4) in
+    0) if [ -n "${FZF_QUERY:-}" ]; then printf '%sprint(new)+accept' "$pre"
+       else printf '!\n' > "$TM_DIR/armed"; printf '%schange-footer:type a name, then tap + new' "$pre"; fi ;;
+    1) printf '%s' "$pre"; arm "$1" ;;
+    2) printf '%stoggle-preview' "$pre" ;;
+    3) printf '%sabort' "$pre" ;;
+    *) printf '%s' "${pre%+}" ;;
+  esac
+}
+
 pick() {
-  local cols glyph
+  local cols t glyph touch
   load_theme
-  glyph=$(tmux display-message -p '#{@cockpit_glyphs}' 2>/dev/null)
+  IFS=$US read -r glyph touch < <(tmux display-message -p "#{@cockpit_glyphs}$US#{@cockpit_touch}" 2>/dev/null)
   cols=$(tput cols 2>/dev/null); num "$cols" || cols=80
+  t=${TM_TOUCH:-}
+  if [ -z "$t" ]; then
+    t=0; case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cols" -lt 100 ] && t=1 ;; esac
+  fi
   TM_DIR=$(mktemp -d) || die "cockpit: no temp dir for the picker"
   trap 'rm -rf "$TM_DIR"' EXIT
   trap 'exit 130' INT TERM HUP
-  export TM_DIR TM_GLYPHS=${glyph:-} TM_NEEDS=${TM_NEEDS:-}
+  export TM_DIR TM_TOUCH=$t TM_GLYPHS=${glyph:-} TM_NEEDS=${TM_NEEDS:-}
   palette; own
 
   local -a THEME args digits=()
@@ -493,9 +555,17 @@ pick() {
         --bind 'alt-enter:print(new)+accept'
         --bind "resize:$(act transform "$QSELF --resized")+$(act reload-sync "$QSELF --rows")"
         "${digits[@]}")
-  args+=(--bind "every(2):$(act reload-sync "$QSELF --rows")+refresh-preview"
-         --bind "result:transform:[ \"\$FZF_MATCH_COUNT\" != 0 ] && [ ! -s \"\$TM_DIR/armed\" ] || $QSELF --result"
-         --preview-window='right,50%,border-left,<60(down,12,border-top)')
+  if [ "$t" = 1 ]; then
+    # One tap switches; no live refresh, since a row moving under a thumb is
+    # worse than a glyph 2 s stale.
+    args+=(--read0 --gap --gap-line=' ' --bind 'left-click:accept'
+           --bind "click-footer:transform:$QSELF --click {1}"
+           --preview-window='hidden,down,60%,border-top')
+  else
+    args+=(--bind "every(2):$(act reload-sync "$QSELF --rows")+refresh-preview"
+           --bind "result:transform:[ \"\$FZF_MATCH_COUNT\" != 0 ] && [ ! -s \"\$TM_DIR/armed\" ] || $QSELF --result"
+           --preview-window='right,50%,border-left,<60(down,12,border-top)')
+  fi
 
   local out rc query line
   out=$(FZF_COLUMNS=$cols rows | fzf "${THEME[@]}" "${args[@]}"); rc=$?
@@ -521,6 +591,7 @@ case "${1:-}" in
   --arm)     arm "${2:-}"; exit ;;
   --disarm)  disarm "${2:-}"; exit ;;
   --result)  result; exit ;;
+  --click)   click "${2:-}"; exit ;;
   --resized) : > "$TM_DIR/armed"; printf 'change-header()+%s' "$(act change-footer "$(footer)")"; exit ;;
   --kill-armed)
     # arm() never arms your own session, so this kills what the user confirmed.
@@ -540,7 +611,7 @@ case "${1:-}" in
       load_theme
       mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
       # The red --color must come after the theme for fzf to let it win.
-      mapfile -t doomed < <(rows \
+      mapfile -t doomed < <(TM_TOUCH=0 rows \
         | fzf "${THEME[@]}" \
               --multi --height=40% --reverse --info=inline-right --cycle --scroll-off=2 \
               --delimiter=$'\t' --with-nth=2.. --nth=2 --header-lines=1 \
