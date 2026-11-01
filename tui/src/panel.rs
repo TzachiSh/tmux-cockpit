@@ -1,5 +1,6 @@
 //! The type-panel port: capture, redaction, the prompt envelope, the `claude -p`
-//! request and reply parsing. No view here; the UI lands in the next phase.
+//! request, reply parsing, and the `cockpit-tui panel %N` screens.
+pub mod app;
 pub mod capture;
 pub mod envelope;
 pub mod parse;
@@ -7,6 +8,7 @@ pub mod prompts;
 pub mod redact;
 pub mod request;
 pub mod route;
+pub mod view;
 
 use std::path::PathBuf;
 
