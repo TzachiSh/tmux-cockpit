@@ -332,3 +332,17 @@ fn golden_with_a_note() {
     u.feed("fix/Left-Click".into(), "* 1a2b3c4 Fix the click\n");
     golden("branch-note-80", &draw(80, 24, &u));
 }
+
+#[test]
+fn f1_help_names_alt_enter_and_scrolls_to_the_end() {
+    let mut u = ui(fixture());
+    assert_eq!(u.pick.help_len, branch::help(&Theme::fixed().g).len());
+    assert!(
+        branch::help(&Theme::fixed().g)
+            .iter()
+            .any(|(k, v)| k == "alt-↵" && v.contains("create"))
+    );
+    press(&mut u, KeyCode::F(1), KeyModifiers::NONE);
+    assert_eq!(u.pick.help, Some(0));
+    golden("branch-help-40", &draw(40, 14, &u));
+}

@@ -13,8 +13,8 @@ a remote-only branch becomes a local tracking branch. The list marks the branch
 you are on with `●` and labels branches held by a linked worktree with `⑂name`
 — git will refuse those, and now you can see it before pressing Enter. When git
 does refuse — a dirty tree, a held branch — you read its message, press a key,
-and you are **back in the picker with your query intact** instead of starting
-over. It is `alt-↵` and not
+and you are **back in the picker** (with an empty filter) instead of the popup
+closing. It is `alt-↵` and not
 `^N`, which is fzf's own move-down: as a create key it meant navigating with
 emacs keys left the picker, and any filter you had typed became a branch name. When git refuses — a dirty
 tree, or a branch already checked out in another worktree — you get git's own

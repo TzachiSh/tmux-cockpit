@@ -12290,6 +12290,12 @@ BRW=$(mktmpd); rm -rf "$BRW"; git -C "$BRR" worktree add -q "$BRW" held >/dev/nu
 BRS="cockpit-br246-$$"; SOCKS="$SOCKS $BRS"
 "$TMUX_REAL" -L "$BRS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$BRR" >/dev/null 2>&1
 BRP=$("$TMUX_REAL" -L "$BRS" list-panes -a -F '#{pane_id}' | head -1)
+# A client makes display-message and its kin do something: without one a leak
+# through a status message goes nowhere and a test cannot see it.
+BRO="cockpit-br246o-$$"; SOCKS="$SOCKS $BRO"
+"$TMUX_REAL" -L "$BRO" -f /dev/null new-session -d -s o -x 100 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $BRS attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$BRS" list-clients -F '#{client_name}'
 brn=0
 br_run() {                    # start the script in the pane; wait for the picker
     brn=$((brn+1))
@@ -12353,7 +12359,9 @@ case "$(br_cap)" in
     *"Switched to branch '$BRF'"*) ok "git's message shows the name unexpanded" ;;
     *) bad "git's message shows the name unexpanded" "Switched to branch '$BRF'" "$(br_cap | tail -5)" ;;
 esac
-is "and no #( ) in it ran" "none" "$([ -e "$BRR/F" ] || [ -e "$HOME/F" ] && echo ran || echo none)"
+# #(...) from a client-side format runs in the SERVER's start dir, not the pane's.
+is "and no #( ) in it ran, in the repo, the home dir or the server's start dir" "none" \
+   "$([ -e "$BRR/F" ] || [ -e "$HOME/F" ] || [ -e "$PWD/F" ] || [ -e "$DIR/F" ] && echo ran || echo none)"
 git -C "$BRR" switch -q main
 
 # git's own refusal is shown verbatim, [any key] returns to the picker.
@@ -12376,6 +12384,7 @@ before=$(git -C "$BRR" for-each-ref --format='%(refname)' refs/heads | sort | tr
 br_run; br_type zzz; until_cap "$BRS" "$BRP" '*branch> zzz*'; br_key C-n Escape; br_done
 is "ctrl-n after typing creates no branch" "$before" \
    "$(git -C "$BRR" for-each-ref --format='%(refname)' refs/heads | sort | tr '\n' ' ')"
+"$TMUX_REAL" -L "$BRO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$BRS" kill-server >/dev/null 2>&1
 git -C "$BRR" worktree remove --force "$BRW" >/dev/null 2>&1
 rm -rf "$BRR" "$BRM" "$BRW"
@@ -12438,6 +12447,10 @@ case "$out" in *"no such directory"*) ok "a missing directory is refused" ;; *) 
 out=$(env -u TMUX COCKPIT_TUI_BIN="$BRN/none" "$DIR/scripts/tmux-branch" "$BRR" </dev/null 2>&1); rc=$?
 case "$out" in *"cockpit-tui is missing"*) ok "a missing binary is named" ;; *) bad "a missing binary is named" "cockpit-tui is missing" "$out" ;; esac
 is "and exits 1" "1" "$rc"
+# A relative directory is resolved once: the script cd's, then names the place it is in.
+printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$BRN/cockpit-tui"; chmod +x "$BRN/cockpit-tui"
+out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" </dev/null 2>&1)
+is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

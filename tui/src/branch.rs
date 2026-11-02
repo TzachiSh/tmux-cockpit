@@ -69,6 +69,7 @@ impl Ui {
             asked: HashSet::new(),
             tx,
         };
+        u.pick.help_len = help(g).len();
         u.sync();
         u
     }
@@ -195,10 +196,20 @@ pub fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
     }
 }
 
+/// pick's F1 help with the one key this screen adds, under "choose".
+pub fn help(g: &Glyphs) -> Vec<(String, String)> {
+    let mut rows = pick::help_rows(g);
+    let alt = if g.ascii { "alt-enter" } else { "alt-↵" };
+    let at = rows.iter().position(|(k, _)| k == g.key_enter).map_or(rows.len(), |i| i + 1);
+    rows.insert(at, (alt.to_string(), "print create <filter text>, exit".to_string()));
+    rows
+}
+
 pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Ui, th: &Theme) {
     let look = pick::Look {
         title: Some("branch"),
         hints: Some(hints(&th.g, area.width as usize)),
+        help: Some(help(&th.g)),
         ..Default::default()
     };
     pick::render_with(f, area, &u.pick, th, &look);
