@@ -135,6 +135,7 @@ None is required.
 | `@cockpit_open_single` | unset | `line` or `always`: open a lone path without the picker |
 | `@cockpit_review_window` | `off` | `on`: the review opens in a window, not a popup |
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |
+| `@cockpit_board_return` | `on` | `off`: `r`, `f` and `i` leave the board instead of coming back to it |
 | `@cockpit_panel_mode` | `auto` | `pc` or `tablet` forces the panel's mode |
 | `@cockpit_touch` | `auto` | touch layout for the session picker below 100 columns |
 | `@cockpit_glyphs` | unset | `ascii` or `nerd` glyph sets |

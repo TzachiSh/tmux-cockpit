@@ -17,7 +17,12 @@ come free from fzf, and the board is the grid of previews fzf cannot draw.
 
 The binary renders and decides; it never acts. It writes one line,
 `<verb> <pane-id>`, and the binding runs the same `tmux-jump` / `tmux-review`
-script the keys already use.
+script the keys already use. After `r` review, `f` panel or `i` info the board
+comes back on the same pane, with the outcome as a note in its footer; a
+failure (`✕`) stays until a key. `@cockpit_board_return off` makes them
+one-way. The last selection is kept in
+`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
+`prefix + w` opens on it too.
 
 Keys, options, the screens, the states and the engineering rules:
 [docs/tui.md](tui.md).

@@ -77,13 +77,13 @@ Inside the board:
 | `u` | the next needs-input tile, mirroring `prefix u` |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful, only when rows are hidden |
 | `↵` | jump to the selected pane, close the board |
-| `r` | review its diff (`tmux-review`) |
-| `f` | the panel for it (`cockpit-panel`) |
-| `i` | info for the selected pane |
+| `r` | review its diff (`tmux-review`); the board comes back after |
+| `f` | the panel for it (`cockpit-panel`); the board comes back after |
+| `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `^L` | refetch and redraw now |
-| `q` `esc` | close the board. With `?` open, any key only closes the help |
+| `q` `esc` | close the board. With `?` open, any key only closes the help; with a `✕` note up, `esc` only dismisses it |
 
 `j`/`k` are vertical because the board is a grid; `⇥` is the linear one. The
 help and the footer are generated from the same table the dispatch reads, so a
@@ -109,6 +109,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 |--------|---------|------|
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
+| `@cockpit_board_return` | `on` | `off` makes `r`, `f` and `i` one-way: the board closes and stays closed, as before the return trip. Read by `scripts/cockpit-board` after each action |
 | `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
@@ -142,7 +143,8 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
-| `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws |
+| `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws. The board's popup passes it too, so a panel opened from the board gets the same mode |
+| `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
@@ -225,6 +227,45 @@ a density: 2 header rows at `h >= 7`, 1 at `h >= 5` (the `said` line drops),
 and below that the grid scrolls by whole tile rows. A tile is never half cut and
 never resizes as you scroll; the header's `1-4 of 5   ▼1` is the indicator, not
 a scrollbar.
+
+### The return trip
+
+`scripts/cockpit-board` is a loop. After `review`, `info` and `panel` it runs
+the board again in the same popup, as
+`cockpit-tui board --select %N --note <file>`: the selection is back on the pane
+just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
+reserved), a verb the plugin does not know, a board that exits non-zero, and
+`@cockpit_board_return off` end the loop.
+
+The note is the action's last line. For `panel` it is what `cockpit-panel`
+would have put in the status line (`cockpit: sent to %3`); `review` writes
+none; `info` writes one only when the pane is gone. A line that starts with
+`✕` reports a failure or a refusal and stays until the next key, which also
+does its job, except `esc`, which only dismisses it; the note ends with
+`· esc dismiss`. Any other note fades after 5 s.
+
+```
+ ✕ cockpit: the pane now runs bash, not claude; nothing sent to %21 · esc dismiss
+```
+
+The note file is read like the panel's state file: no symlink, a regular file
+of at most 4 KiB, one `\n`-terminated line, control characters dropped. A note
+that fails those rules is logged and not shown.
+
+The selection is also kept in
+`${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
+plain `prefix w` opens on the same pane while it exists. Without one, or when
+the pane is gone, the board opens on the first `▲`, else the client's pane,
+else the first tile. The file is written on every exit, created new beside it
+with `O_NOFOLLOW`, mode 0600, and renamed over it; `COCKPIT_READONLY` skips the
+write. It is read back strictly: no symlink, a regular file of at most 64 KiB,
+the head `cockpit-board-state 1`, then known `key value` lines (today only
+`sel %N`, at most once). Anything else is a fresh board and a 5 s note
+`board.state ignored (<why>); starting fresh`.
+
+The design's first frame drawn from `board.state` before the first fetch is
+not built: it would need the fleet's tiles in the file, and the file keeps the
+selection only. The reopened board shows the loading card for its first fetch.
 
 ### The help
 
@@ -489,6 +530,28 @@ sends `prefix + f`.
 - `App::tap(t, now)` and `App::frame(now)` take the loop's clock in ms; a tap
   within 300 ms of a new view is dropped. `view::mouse()` takes `now` too.
 
+### Contract changes for the return trip (for #61)
+
+- The CLI line: `cockpit-tui board [--select %N] [--note <file>]`, each at most
+  once; anything else is exit 2.
+- New state file `board.state`, its path, head and read rules (see
+  [The return trip](#the-return-trip)). Steps 3 and 4 append `fold` and
+  `filter` lines to version 1.
+- New option `@cockpit_board_return` (`on`); new variable `COCKPIT_PANEL_NOTE`,
+  between the two wrappers only.
+- The board's popup passes `-e COCKPIT_PANEL_MODE=<mode>` (the parked window
+  too) and its title is ` board `, without `#{session_name}`.
+- `scripts/cockpit-panel` from the board writes its outcome to the note file
+  instead of `display-message`; `prefix f` is unchanged.
+- `info` from the board no longer waits on a bare `read -r _` (a line): it
+  names its key, `any key: back to the board`, and takes one.
+- The board's note: 5 s for success, until a key for a `✕` line (D20); the 2 s
+  note on `a` is unchanged.
+- The board opens on D5's choice: `--select`, else `board.state`, else the
+  first `▲`, else the client's pane, else the first tile (it was always the
+  first tile).
+- `board::run` takes `&Opts`; `panel::xdg` is `pub(crate)`.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -699,7 +762,7 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board | panel %N [--resume <state> --last <how>] |
+**CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last <how>] |
 transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
 board reaches those through the action file and the shell scripts.
 
