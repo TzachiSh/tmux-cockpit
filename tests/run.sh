@@ -8245,13 +8245,6 @@ esac
 case "$(tail -1 "$BD/tui.log" 2>/dev/null)" in *'cockpit-board: unknown verb [fix %1]') ok "and logs the unknown verb" ;;
     *) bad "and logs the unknown verb" "cockpit-board: unknown verb [fix %1]" "$(tail -1 "$BD/tui.log" 2>/dev/null)" ;; esac
 is "info %1 runs the info screen and nothing else" "tmux-review -p %1 --info;" "$(wact 'info %1')"
-# #228's registry verbs: until its arms land, each ends the loop as unknown.
-for v in kill request; do
-    case "$(wact "$v %1")" in *"the board sent \"$v\", which this plugin does not know"*) ok "$v %1 from the registry runs nothing yet and says so" ;;
-        *) bad "$v %1 from the registry runs nothing yet and says so" "one display-message" "$(wact "$v %1")" ;;
-    esac
-    is "and $v ends the loop: the board ran once" "board;" "$(tr '\n' ';' < "$BD/bargv")"
-done
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
     *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;
 esac
