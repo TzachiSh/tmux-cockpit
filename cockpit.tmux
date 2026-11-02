@@ -318,13 +318,15 @@ rows+=('New window' c "new-window -c '##{pane_current_path}'")
 rows+=('#{?#{E:@cockpit_is_touch},,Split right}' "\\" "split-window -h -c '##{pane_current_path}'")
 rows+=('#{?#{E:@cockpit_is_touch},,Split down}' - "split-window -v -c '##{pane_current_path}'")
 row 'Move window to a session...' M "$mk"
-rows+=('Rename window' ',' "command-prompt -I '##W' 'rename-window \"%%\"'")
+# -t is the id the menu was opened on (a closed form, expanded once here); -- keeps
+# a typed name that starts with - from reading as a flag.
+rows+=('Rename window' ',' "command-prompt -I '##W' 'rename-window -t #{window_id} -- \"%%\"'")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
 rows+=('')
 row 'Full screen (hide the bar)'  e "$fsk"
 row 'Pane info'                   i "$ik"
-rows+=('Rename session' '$' "command-prompt -I '##S' 'rename-session \"%%\"'")
+rows+=('Rename session' '$' "command-prompt -I '##S' 'rename-session -t #{session_id} -- \"%%\"'")
 rows+=('Detach' d detach-client)
 row 'Reload config'               R "$rlk"
 rows+=('Kill session' Q "confirm-before -p 'kill session ##S? (y/n)' kill-session")

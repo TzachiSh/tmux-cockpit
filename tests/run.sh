@@ -345,6 +345,17 @@ is "and New window still opens in the pane's own directory" "$MIHOSTILE" \
 # observable to poll; only elapsed time gives the injection its chance.
 sleep 1
 is "selecting New window from a hostile directory runs nothing" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+# A typed name that starts with - is a name, not a flag (rename-window --).
+"$TMUX_REAL" -L "$MO" send-keys -t o C-b a
+until_cap "$MO" o '*Rename window*'
+"$TMUX_REAL" -L "$MO" send-keys -t o ,
+until_cap "$MO" o '*(rename-window)*'
+"$TMUX_REAL" -L "$MO" send-keys -t o C-u
+"$TMUX_REAL" -L "$MO" send-keys -t o -l -- '-x name'
+"$TMUX_REAL" -L "$MO" send-keys -t o Enter
+until_out '-x name' "$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}' >/dev/null
+is "Rename window takes a name that starts with -" "-x name" \
+   "$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}')"
 # The runtime case above proves the mechanism on one row. The others that
 # re-expand a format are guarded structurally: the menu must carry the doubled
 # form, never the single one that a quote in a cwd or a name turned into a command.
