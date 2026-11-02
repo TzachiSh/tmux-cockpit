@@ -31,23 +31,24 @@ file or by another tool's link, reports anything it could not create, and
 anything it could not remove). `install.sh --help` prints usage and exits.
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
-row per thing that can be wrong (tmux, jq, fzf, bat, gum, `$PATH` order, the
+row per thing that can be wrong (tmux, jq, fzf, bat, `$PATH` order, the
 config, the hooks, truecolor, the popup border), the fix beside it, and the
 exit is the worst row, 0 ok or skipped, 1 warnings, 2 something is broken.
 Rows it cannot answer from where you ran it, such as truecolor outside tmux,
 come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
 
-`bootstrap.sh --full` is the opt-in tier: it fetches pinned versions of fzf,
-gum and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
+`bootstrap.sh --full` is the opt-in tier: it fetches pinned versions of fzf
+and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
 project publishes checksums, and shadows a distro copy rather than replacing
 it. Without `--full` it still fetches fzf alone when the one it finds is below
 0.73. No sudo, and nothing is downloaded when tmux loads the plugin or when you
 press a key. Add `--latest` for each project's newest tag instead of the pins.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
-match installs nothing. On macOS with brew it runs `brew install fzf bat gum`.
+match installs nothing. On macOS with brew it runs `brew install fzf bat`.
 
-The board (`prefix + w`) is the one optional extra: a small binary, fetched by
-`prefix + U` or built with `make tui`. Everything else here works without it.
+The board (`prefix + w`) is the one optional extra: a small binary, fetched with
+`set -g @cockpit_tui_fetch on` (fetched in the background when the config loads),
+`scripts/tui-fetch` by hand, or `make tui`. Everything else here works without it.
 See [docs/tui.md](tui.md).
 
 ### Or with tpm
@@ -100,8 +101,8 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
 - **fzf >= 0.73** for the pickers. Debian 13 ships 0.60.3, Ubuntu 24.04
   0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
   0.74.3 into `~/.local/bin` when it finds an older one, and
-  `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) and
-  `gum` are optional; `jq` is needed by `install.sh --hooks` and the review
+  `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) is
+  optional; `jq` is needed by `install.sh --hooks` and the review
   gate.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.

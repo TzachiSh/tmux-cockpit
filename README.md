@@ -1,10 +1,11 @@
 # tmux-cockpit
 
-Shows what every AI coding agent in your tmux session is doing, without you
-having to switch windows to find out — then lets you act on what you see without
-leaving the pane. Click the branch in the status bar to switch branch (a plain tap on a phone).
-Ctrl+double-click any line of output to pick a path off it and open that file,
-at the line it names.
+Shows the state of every AI coding agent in your tmux session in the window
+tabs, pane borders and status bar, so you do not have to switch windows to find
+out which one needs you. Keys and clicks then act on what you see: jump to a
+blocked agent, review its diff, switch branch by clicking the branch in the
+status bar (a tap on a phone), or Ctrl+double-click a line of output to open
+the file it names, at that line.
 
 ```text
  claude-main ●    claude-2 ▲    coder ○
@@ -49,9 +50,10 @@ screenshot and a red/green colourblind reader.
   `~/.local/bin` when the distro's is older.
 - jq, for `install.sh --hooks` and the review gate.
 - Claude Code, or any agent that can run a command on lifecycle events.
-- Optional: the `cockpit-tui` binary for the board and the panel. `prefix + U`
-  fetches it, or `make tui` builds it (Rust 1.88 or newer).
-- Optional: `bat` and `gum`. A Nerd Font is not needed.
+- Optional: the `cockpit-tui` binary for the board and the panel. Get it with
+  `set -g @cockpit_tui_fetch on` (fetched when the config loads),
+  `scripts/tui-fetch`, or `make tui` (Rust 1.88 or newer).
+- Optional: `bat`. A Nerd Font is not needed.
 
 ### With tpm
 
@@ -150,10 +152,12 @@ option such as `@panestate running`. The tabs, borders and status bar are plain
 tmux format strings that read that option, so a status redraw runs no shell.
 The option dies with its pane, so there is nothing to clean up.
 
-States rank `needs-input` > `error` > `running` > `done`, and a lower state
-cannot overwrite a higher one. The formats believe the state only while the
-pane is running a command that matches `@cockpit_agents`, so a crashed agent
-does not leave a stale marker.
+`needs-input` and `error` are sticky: a `Stop` or an idle event does not clear
+them, and `error` does not overwrite `needs-input`. Only work resuming
+(`running`) or an explicit `off` clears them.
+
+The formats believe the state only while the pane is running a command that
+matches `@cockpit_agents`, so a crashed agent does not leave a stale marker.
 
 Actions (jump, review, the pickers, the board) are shell scripts bound to keys.
 The optional `cockpit-tui` binary draws the board and the panel; it writes a
