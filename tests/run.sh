@@ -2444,6 +2444,7 @@ dcout=$(dc "$DCP"); dcrc=$?
 is "the doctor writes nothing" "$before" "$(find "$DH" "$DBIN" | sort)"
 is "fzf at the pinned version is an ok row" "1" "$(dcrow "$dcout" "ok fzf")"
 is "a wired config is an ok row"            "1" "$(dcrow "$dcout" "ok config")"
+is "a config with no #{agent_*} token is an ok row" "1" "$(dcrow "$dcout" "ok tokens")"
 is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
 # Neither can be answered from a bare shell, and a skip is 0: a doctor that
 # failed in CI over a missing client would be ignored everywhere else.
@@ -2507,6 +2508,12 @@ dcout=$(dc "$DCP"); dcrc=$?
 is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn formats")"
 # The count, not the prose around it: dcrow exists a few lines up for that reason.
 is "and it counts them" "1" "$(dcfound "$dcout" '2 formats ')"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# The old tokens print as literal text now: the doctor points at the migration.
+printf '%s\n' '# set -g status-right "#{agent_fleet}"' 'set -g status-right "#{agent_fleet}"' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a live #{agent_*} line is a warn tokens row, a commented one is not counted" "1 1" \
+   "$(dcrow "$dcout" "warn tokens") $(printf '%s\n' "$dcout" | grep -c 'tokens *1 lines')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a

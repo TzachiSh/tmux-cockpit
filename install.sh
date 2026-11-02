@@ -140,9 +140,11 @@ if [ "$check" -eq 1 ]; then
     fi
 
     # These formats re-expand per pane on every redraw, so a #{P:} walk in them freezes tmux.
-    if [ "$wired" -eq 0 ]; then row skip formats 'no cockpit config to read'
+    if [ "$wired" -eq 0 ]; then
+        row skip formats 'no cockpit config to read'
+        row skip tokens 'no cockpit config to read'
     else
-        walk=0
+        walk=0 tok=0
         # A symlink of one onto the other must not count twice.
         [ "$cxdg" -ef "$chome" ] && chome=''
         for c in "$cxdg" "$chome"; do
@@ -152,6 +154,8 @@ if [ "$check" -eq 1 ]; then
                 # tmux joins a trailing backslash before expanding.
                 case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
                 l="$acc$l"; acc=''
+                # Nothing rewrites #{agent_*} any more: it prints as text.
+                case "$l" in '#'*) ;; *'#{agent_'*) tok=$((tok + 1)) ;; esac
                 case "$l" in
                     set*\ pane-border-format\ *|set*\ window-status-format\ *|\
 set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
@@ -165,6 +169,11 @@ set*\ @catppuccin_window_current_text\ *)
             if [ "$walk" -eq 1 ]; then nf='format walks'; else nf='formats walk'; fi
             row warn formats "$walk $nf panes" \
                 "delete them: the plugin draws the bar (see $DIR/examples/tmux.conf)"
+        fi
+        if [ "$tok" -eq 0 ]; then row ok tokens 'no #{agent_*} token'
+        else
+            row warn tokens "$tok lines use #{agent_*}" \
+                "see the migration table in $DIR/docs/statusbar.md"
         fi
     fi
 
