@@ -36,17 +36,26 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-[ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
-[ -n "$TAG" ] || TAG=$TUI_TAG
+FROM=arg
+[ -n "$TAG" ] || { TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); FROM=option; }
+[ -n "$TAG" ] || { TAG=$TUI_TAG; FROM=default; }
 
 # Tags are `<package>-v<ver>` for axotag; an old `tui-` pin still compares equal.
 norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
+# A pin below the floor would reinstall a binary the scripts refuse.
+if [ "$FROM" = option ] && [ "$(vnum "$(norm "$TAG")")" -lt "$(vnum "$TUI_MIN")" ]; then
+    say "@cockpit_tui_version pins $TAG, below the required $TUI_MIN: unset it, or pin $TUI_TAG or newer" >&2
+    exit 1
+fi
+
 FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 2>/dev/null | head -1)
+
+works() { [ -n "$("$COCKPIT_TUI_BIN" --version 2>/dev/null)" ]; }
 
 # Every non-error exit: under --required, only a binary that runs is success.
 finish() {
-    if [ "$REQUIRED" -eq 1 ] && [ -z "$("$COCKPIT_TUI_BIN" --version 2>/dev/null)" ]; then
+    if [ "$REQUIRED" -eq 1 ] && ! works; then
         say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
         exit 1
     fi
@@ -132,9 +141,11 @@ build() {                     # 0 built · 2 skipped
     say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }
 
-have=$("$COCKPIT_TUI_BIN" --version 2>/dev/null)
-if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
-    say "cockpit-tui $(norm "$TAG") already current"
+# Unpinned, a newer binary (a make tui-bin build) is current too, never downgraded.
+have=$("$COCKPIT_TUI_BIN" --version 2>/dev/null); have=${have:+$(norm "$have")}
+if [ -n "$have" ] && { [ "$have" = "$(norm "$TAG")" ] || { [ "$FROM" = default ] &&
+       [ "$(vnum "$have")" -ge "$(vnum "$(norm "$TAG")")" ]; }; }; then
+    say "cockpit-tui $have already current"
     exit 0
 fi
 # Before gh, curl and cargo alike: a test run must never reach the network.
@@ -167,7 +178,9 @@ fi
 case "$rc" in
     0) rm -f "$BIN/.tried"; exit 0 ;;
     1) exit 1 ;;
-    3) finish ;;
+    # Transient, so no .tried; but a required binary still gets the source build.
+    3) if [ "$REQUIRED" -eq 1 ] && ! works; then build; fi
+       finish ;;
 esac
 printf '%s\n' "$TAG" > "$BIN/.tried"
 build

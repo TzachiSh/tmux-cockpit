@@ -9996,8 +9996,8 @@ is "so the next press fetches again instead of saying already tried" "2" "$(wc -
 # A box that could not ask must not fall through to a full cargo build.
 tfout=$(PATH="$TF/shim:$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
 case "$tfout" in
-    *"needs Rust"*|*CARGO_RAN*) bad "an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
-    *) ok "an unreachable host never starts a source build" ;;
+    *"needs Rust"*|*CARGO_RAN*) bad "without --required, an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
+    *) ok "without --required, an unreachable host never starts a source build" ;;
 esac
 
 # Deleting the binary after a good install must reinstall it, not report a
@@ -10060,6 +10060,18 @@ case "$tfout" in
 esac
 tfout=$(PATH="$TF/shim:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0); tfrc=$?
 is "--required offline with no binary exits 1 too" "1" "$tfrc"
+# A gh 404 or no login is transient, yet a required binary must still try
+# cargo: a box with Rust and no gh login is the common source install.
+mkdir -p "$TF/shim99"
+printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TF/shim99/rustc"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$TF/cargo99" > "$TF/shim99/cargo"
+chmod +x "$TF/shim99/rustc" "$TF/shim99/cargo"
+tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0)
+case "$(cat "$TF/cargo99" 2>/dev/null)" in
+    *"build --release --locked"*) ok "--required with an unreachable release and Rust >= the floor runs cargo" ;;
+    *) bad "--required with an unreachable release and Rust >= the floor runs cargo" "cargo build --release --locked" "$tfout" ;;
+esac
+is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = tui-v0.4.0 ] && echo yes || echo no)"
 mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a
@@ -10085,6 +10097,26 @@ case "$tfout" in
     *"already current"*) ok "and the binary it reads" ;;
     *) bad "and the binary it reads" "already current" "$tfout" ;;
 esac
+# Unpinned (no --version, no option), a newer binary is current: a make
+# tui-bin build ahead of the release must not be downgraded to it.
+mkdir -p "$TF/tmuxnone" "$TF/tmuxold"
+printf '#!/bin/sh\nexit 0\n' > "$TF/tmuxnone/tmux"
+printf '#!/bin/sh\necho cockpit-tui-v0.1.0\n' > "$TF/tmuxold/tmux"
+chmod +x "$TF/tmuxnone/tmux" "$TF/tmuxold/tmux"
+tfout=$(PATH="$TF/tmuxnone:$PATH"; tf "$TFGONE"); tfrc=$?
+case "$tfout" in
+    *"cockpit-tui 0.9.0 already current"*) ok "unpinned, a binary newer than the floor is already current" ;;
+    *) bad "unpinned, a binary newer than the floor is already current" "cockpit-tui 0.9.0 already current" "$tfout" ;;
+esac
+is "and exits 0 with it in place" "0 cockpit-tui 0.9.0" "$tfrc $(tf_ver)"
+# @cockpit_tui_version below TUI_MIN would reinstall a binary the scripts refuse.
+tfout=$(PATH="$TF/tmuxold:$PATH"; tf "$TFR"); tfrc=$?
+is "an @cockpit_tui_version below TUI_MIN is refused" "1" "$tfrc"
+case "$tfout" in
+    *"@cockpit_tui_version pins cockpit-tui-v0.1.0, below the required"*) ok "and says which pin and why" ;;
+    *) bad "and says which pin and why" "@cockpit_tui_version pins cockpit-tui-v0.1.0, below the required ..." "$tfout" ;;
+esac
+is "and the working binary is untouched" "cockpit-tui 0.9.0" "$(tf_ver)"
 
 # The repo is private (#84): the plain URL 404s without credentials, so the
 # fetch rides the user's own gh login when there is one. The shims serve the
