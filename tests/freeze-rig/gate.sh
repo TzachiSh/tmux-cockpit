@@ -102,6 +102,8 @@ while read -r pid; do
     else srv set-option -p -t "$pid" @panestate running; fi
     j=$((j+1))
 done < <(srv list-panes -a -F '#{pane_id}')
+# The bar's sums, as agent-state writes them, now that the windows and states exist.
+[ -n "$CONF" ] || seed_sums
 
 script -qfc "tmux -L $SOCK attach -t s1" /dev/null >/dev/null 2>&1 &
 CLIENT_PID=$!

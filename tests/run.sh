@@ -3929,6 +3929,43 @@ is "and closing b takes it away" "" "$(swaway a:)"
 "$TMUX_REAL" -L "$SW" kill-server >/dev/null 2>&1
 fi
 
+echo "== a sweep of 40 windows fits tmux's command limit and writes every count (#222) =="
+# Each window's clause inlined the formats (about 2 KB), so above six windows the
+# batch passed tmux's 16 KB limit and nothing was written, silently.
+if need_tmux "big sweep"; then :; else
+BS="cockpit-bigsweep-$$"; SOCKS="$SOCKS $BS"
+"$TMUX_REAL" -L "$BS" -f /dev/null new-session -d -s a 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BS" new-session -d -s b 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for _ in $(seq 1 19); do
+    "$TMUX_REAL" -L "$BS" new-window -d -t a: 'exec -a claude sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$BS" new-window -d -t b: 'exec -a claude sleep 300' >/dev/null 2>&1
+done
+until_out 40 sh -c "'$TMUX_REAL' -L '$BS' list-panes -a -F '#{pane_current_command}' | grep -c claude" >/dev/null
+for bsw in 3 7 18; do "$TMUX_REAL" -L "$BS" set -p -t "a:$bsw" @panestate needs-input >/dev/null 2>&1; done
+"$TMUX_REAL" -L "$BS" set -p -t b:11 @panestate error >/dev/null 2>&1
+"$TMUX_REAL" -L "$BS" set -p -t b:19 @cockpit_review pending >/dev/null 2>&1
+bsout=$(TMUX="$SOCKDIR/$BS,0,0" "$DIR/scripts/agent-state" sweep 2>&1); bsrc=$?
+is "the sweep exits 0 and says nothing" "0|" "$bsrc|$bsout"
+is "every count is written" "3 0 1 3 1" \
+   "$("$TMUX_REAL" -L "$BS" display-message -p -t a: '#{@cockpit_sess_nb} #{@cockpit_sess_ne}') $("$TMUX_REAL" -L "$BS" display-message -p -t b: '#{@cockpit_sess_ne}') $("$TMUX_REAL" -L "$BS" show-option -gqv @cockpit_fleet_nb) $("$TMUX_REAL" -L "$BS" show-option -gqv @cockpit_fleet_ne)"
+is "and the last window of the second session has its state and review" "idle 1" \
+   "$("$TMUX_REAL" -L "$BS" display-message -p -t b:19 '#{@cockpit_win_state} #{@cockpit_win_review}')"
+# The gauge cells move with the active pane, through a hook with no shell.
+"$TMUX_REAL" -L "$BS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+until_out '*cells*' "$TMUX_REAL" -L "$BS" show-options -g @cockpit_fmt_cells >/dev/null
+"$TMUX_REAL" -L "$BS" split-window -d -t a:5 'exec -a claude sleep 300' >/dev/null 2>&1
+BSG=$("$TMUX_REAL" -L "$BS" display-message -p -t a:5.1 '#{pane_id}')
+"$TMUX_REAL" -L "$BS" set -p -t "$BSG" @panestate_ctx 91 >/dev/null 2>&1
+TMUX="$SOCKDIR/$BS,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
+is "a gauge on a pane that is not its window's active one counts no cells" "" \
+   "$("$TMUX_REAL" -L "$BS" show-option -qv -t a: @cockpit_ctx_all)"
+"$TMUX_REAL" -L "$BS" select-pane -t "$BSG" >/dev/null 2>&1
+until_out 5 "$TMUX_REAL" -L "$BS" show-option -qv -t a: @cockpit_ctx_all >/dev/null
+is "focusing it adds its cells, with no sweep" "5" "$("$TMUX_REAL" -L "$BS" show-option -qv -t a: @cockpit_ctx_all)"
+"$TMUX_REAL" -L "$BS" kill-server >/dev/null 2>&1
+fi
+
 echo "== NO_COLOR sets every theme slot to the terminal's default (#222) =="
 # run-shell's jobs get the server's global environment, which is where a
 # NO_COLOR from the shell that started tmux lands.
@@ -10660,13 +10697,16 @@ TW="cockpit-tw-$$"; SOCKS="$SOCKS $TW"
 "$TMUX_REAL" -L "$TW" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 twp=$("$TMUX_REAL" -L "$TW" list-panes -t s: -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$TW" set -p -t "$twp" @cockpit_title review-the-ui-audit-ladder >/dev/null 2>&1
+# The load's background sweep marks the agent window idle (○); run it here so it
+# cannot land mid-test.
+TMUX="$SOCKDIR/$TW,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
 read -r twc twf twpid <<<"$(cw_open "$TW" s)"
 if [ -z "${twc:-}" ]; then skip_ "the tab width ladder (no control client)"; else
 twtab() { "$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t '#{E:window-status-current-format}' 2>/dev/null | plain; }
 cw_size "$TW" "$twc" 80
-is "an 80-column client cuts the current tab at 18 cells" " 0 review-the-ui-audi… " "$(twtab)"
+is "an 80-column client cuts the current tab at 18 cells" " 0 review-the-ui-audi… ○ " "$(twtab)"
 cw_size "$TW" "$twc" 160
-is "a 160-column client draws the whole title" " 0 review-the-ui-audit-ladder " "$(twtab)"
+is "a 160-column client draws the whole title" " 0 review-the-ui-audit-ladder ○ " "$(twtab)"
 for twn in $(seq 2 8); do "$TMUX_REAL" -L "$TW" new-window -d -t s: -n "w$twn" 'exec -a claude sleep 300' >/dev/null 2>&1; done
 twfit() { "$TMUX_REAL" -L "$TW" display-message -p -c "$twc" -t s:t '#{E:@cockpit_cur_w} #{E:@cockpit_tab_w} #{E:@cockpit_narrow}'; }
 cw_size "$TW" "$twc" 200
@@ -11266,13 +11306,14 @@ htp=$("$TMUX_REAL" -L "$HT" list-panes -t s: -F '#{pane_id}' | head -1)
 "$TMUX_REAL" -L "$HT" select-pane -t "$htp" -T "$("$TMUX_REAL" -L "$HT" display-message -p '#{host_short}')" >/dev/null 2>&1
 "$TMUX_REAL" -L "$HT" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$HT" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+TMUX="$SOCKDIR/$HT,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1   # the load's sweep, settled
 read -r htc htf htpid <<<"$(cw_open "$HT" s)"
 if [ -z "${htc:-}" ]; then skip_ "the host-title tab ladder (no control client)"; else
 httab() { "$TMUX_REAL" -L "$HT" display-message -p -c "$htc" -t s: '#{E:window-status-current-format}' 2>/dev/null | plain; }
 cw_size "$HT" "$htc" 80
-is "an 80-column client cuts the host-titled tab to its budget" " 0 abcdefghijabcdefgh… " "$(httab)"
+is "an 80-column client cuts the host-titled tab to its budget" " 0 abcdefghijabcdefgh… ○ " "$(httab)"
 cw_size "$HT" "$htc" 160
-is "a 160-column client draws the whole name" " 0 $HTN " "$(httab)"
+is "a 160-column client draws the whole name" " 0 $HTN ○ " "$(httab)"
 fi
 cw_close "${htpid:-}" "${htf:-}"
 "$TMUX_REAL" -L "$HT" kill-server >/dev/null 2>&1

@@ -40,33 +40,62 @@ fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
 
-# set_if <scope flag> <option> <format>: compare-then-set on target $T, since even an
+# The gauge cells the bar's tab budget takes off (see agent-context).
+fmt_cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
+
+# The formats live in global options, written once per version of them: inlined in
+# every clause, a sweep of a few windows passed tmux's 16 KB command limit.
+fmts=(state "$fmt_state" review "$fmt_review" snb "$fmt_snb" sne "$fmt_sne"
+      nb "$fmt_nb" ne "$fmt_ne" fleet "$fmt_fleet" cells "$fmt_cells")
+stamp=$(printf '%s' "${fmts[*]}" | cksum); stamp=${stamp%% *}
+defs="if -F '#{!=:#{@cockpit_fmt_v},$stamp}' {"
+for ((k = 0; k < ${#fmts[@]}; k += 2)); do
+    defs="$defs set-option -g @cockpit_fmt_${fmts[k]} '${fmts[k + 1]}' ;"
+done
+defs="$defs set-option -g @cockpit_fmt_v $stamp }"
+
+# set_if <scope flag> <option> <fmt name>: compare-then-set on target $T, since even an
 # identical set-option forces a redraw.
-set_if() { body="$body ; if -F -t $T '#{!=:$3,#{$2}}' { set-option $1F -t $T $2 '$3' }"; }
+set_if() { body="$body ; if -F -t $T '#{!=:#{E:@cockpit_fmt_$3},#{$2}}' { set-option $1F -t $T $2 '#{E:@cockpit_fmt_$3}' }"; }
 # Only closed-set values reach these strings.
 win_sums() {
-    body="$body ; if -F -t $T '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t $T '$fmt_state' { set-option -wF -t $T @cockpit_win_state '$fmt_state' } { set-option -wu -t $T @cockpit_win_state } }"
-    body="$body ; if -F -t $T '$fmt_review' { if -F -t $T '#{!=:#{@cockpit_win_review},1}' { set-option -w -t $T @cockpit_win_review 1 } } { if -F -t $T '#{@cockpit_win_review}' { set-option -wu -t $T @cockpit_win_review } }"
+    body="$body ; if -F -t $T '#{!=:#{E:@cockpit_fmt_state},#{@cockpit_win_state}}' { if -F -t $T '#{E:@cockpit_fmt_state}' { set-option -wF -t $T @cockpit_win_state '#{E:@cockpit_fmt_state}' } { set-option -wu -t $T @cockpit_win_state } }"
+    body="$body ; if -F -t $T '#{E:@cockpit_fmt_review}' { if -F -t $T '#{!=:#{@cockpit_win_review},1}' { set-option -w -t $T @cockpit_win_review 1 } } { if -F -t $T '#{@cockpit_win_review}' { set-option -wu -t $T @cockpit_win_review } }"
 }
-sess_sums() { set_if - @cockpit_sess_nb "$fmt_snb"; set_if - @cockpit_sess_ne "$fmt_sne"; }
-fleet_sums() {
-    set_if -g @cockpit_fleet_nb "$fmt_nb"
-    set_if -g @cockpit_fleet_ne "$fmt_ne"
-    set_if -gq @cockpit_fleet "$fmt_fleet"
+sess_sums() {
+    set_if - @cockpit_sess_nb snb; set_if - @cockpit_sess_ne sne
+    # e|!=: an unset sum reads 0, so a session with no gauge is never written.
+    body="$body ; if -F -t $T '#{e|!=:#{E:@cockpit_fmt_cells},#{@cockpit_ctx_all}}' { set-option -F -t $T @cockpit_ctx_all '#{E:@cockpit_fmt_cells}' }"
 }
+fleet_sums() { set_if -g @cockpit_fleet_nb nb; set_if -g @cockpit_fleet_ne ne; set_if -gq @cockpit_fleet fleet; }
 
 # sweep: every window, session and the fleet, from the hooks for what moves or ends
 # panes without a transition (move-window, kill-pane, a pane exiting, a session closing).
-# One tmux call for the batch, per event, never per redraw.
+# Per event, never per redraw; sent in batches under 12 KB (tmux refuses a command
+# over 16 KB), and a refused batch is an error, not silence.
 if [ "$state" = sweep ]; then
-    body="" w=""
-    for w in $(tmux list-windows -a -F '#{window_id}' 2>/dev/null); do T=$w; win_sums; done
-    # A session id is $N: single-quoted, or the command parser reads an environment variable.
-    for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; sess_sums; done
+    w="" chunk=() rc=0
+    flush() {
+        [ "${#chunk[@]}" -gt 0 ] || return 0
+        local c all=""
+        for c in "${chunk[@]}"; do all="$all$c"; done
+        tmux if-shell -F 1 "${all# ; }" || rc=1
+        chunk=()
+    }
+    add() {                   # one clause, a new batch when this one would pass 12 KB
+        local n=${#body} have=0 c
+        for c in "${chunk[@]}"; do have=$((have + ${#c})); done
+        [ $((have + n)) -lt 12000 ] || flush
+        chunk+=("$body")
+    }
+    body=" ; $defs"; add
+    for w in $(tmux list-windows -a -F '#{window_id}'); do T=$w; body=""; win_sums; add; done
+    # Quoted: tmux's parser leaves $<digit> alone today, and the id need not rely on it.
+    for s in $(tmux list-sessions -F '#{session_id}'); do T="'$s'"; body=""; sess_sums; add; done
     [ -n "$w" ] || exit 0
-    T=$w; fleet_sums
-    tmux if-shell -F 1 "${body# ; }" 2>/dev/null
-    exit 0
+    T=$w; body=""; fleet_sums; add
+    flush
+    exit "$rc"
 fi
 
 idle=""
@@ -183,6 +212,7 @@ case "$state" in
 esac
 
 T=$pane
+body="$body ; $defs"
 win_sums; sess_sums; fleet_sums
 body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
 # Fail-open: a hook must never block the agent that fired it.

@@ -76,11 +76,19 @@ tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
 for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
     tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_state_cmd} sweep"'
 done
-# Panes that predate the hooks (a reload), in the background: run-shell waits on
-# this script's output, so the job must not hold it open.
-tmux list-panes -a -F '#{pane_id}' 2>/dev/null | while IFS= read -r p; do
-    "$DIR/scripts/tmux-where" branch --set "$p"
-done >/dev/null 2>&1 &
+# The gauge follows the active pane, so a focus change can move the session's gauge
+# cells (@cockpit_ctx_all, the tab budget). No shell: agent-state's own format.
+tmux set-hook -g 'window-pane-changed[8]' \
+    'if-shell -F "#{e|!=:#{E:@cockpit_fmt_cells},#{@cockpit_ctx_all}}" { set-option -F @cockpit_ctx_all "#{E:@cockpit_fmt_cells}" }'
+# Panes and windows that predate the hooks (a reload), in the background: run-shell
+# waits on this script's output, so the job must not hold it open. The sweep also
+# writes the formats the hooks above read (@cockpit_fmt_*).
+{
+    "$DIR/scripts/agent-state" sweep
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | while IFS= read -r p; do
+        "$DIR/scripts/tmux-where" branch --set "$p"
+    done
+} >/dev/null 2>&1 &
 # Stock overflow markers, rewritten: "< " and " >" on desktop; touch has ‹ › instead.
 # Skipped when status-format[0] is not stock's (yours, or already rewritten).
 if [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
