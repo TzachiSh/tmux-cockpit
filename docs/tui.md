@@ -205,9 +205,10 @@ area, not the terminal's.
 Tile 1 is blocked: red border and the question in place of the doing line;
 the footer says `a answer` while it is selected. Tile 2 is the selection: the
 thick border, `▎` and its number in reverse video, so it still shows under
-`NO_COLOR`. It is also tmux's active pane, the `◂` (`@` in the ascii tier) at its top-right end. The
-`◆` after its state glyph is a pending review. The right rail is exactly 5 columns of elapsed duration; a 6-column
-duration would be clipped by the rail and lose its leading digit.
+`NO_COLOR`. It is also tmux's active pane, the `◂` (`@` in the ascii tier) at
+its top-right end. The `◆` after its state glyph is a pending review. The right
+rail is exactly 5 columns of elapsed duration; a 6-column duration would be
+clipped by the rail and lose its leading digit.
 
 Tiles sort by `(state rank, pane id)`: needs-input, error, running, done, idle.
 Nothing in the sort key is a clock, so tiles do not reorder while you read them.
@@ -527,7 +528,8 @@ the grid; `^L` asks again:
 ```
 
 When no read has worked since the board opened, there is no age and no tile
-to vouch for, so the card comes at once and says only that:
+to vouch for. The card comes as soon as the first read fails, or after 3 s if
+it hangs, and says only that:
 
 ```
 ╭ board ─────────────────────────────────────────────────────╮
