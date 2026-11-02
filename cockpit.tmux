@@ -344,7 +344,6 @@ rows=()
 row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
 row 'Board of every agent'        w "$bk"
 row 'Panel for this pane'         f "$pk"
-row 'Review its diff'             r "$rk"
 rows+=('What is each agent doing?' t 'switch-client -T cockpit ; send-keys -K t')
 rows+=('')
 rows+=('#{?#{E:@cockpit_path_shown},,Browse folder}' o 'switch-client -T cockpit ; send-keys -K o')

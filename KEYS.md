@@ -36,7 +36,6 @@ the path or the branch, and the two splits are left out on a touch client.
 |-----|--------|
 | Board of every agent | `w` |
 | Panel for this pane | `f` |
-| Review its diff | `r` |
 | What is each agent doing? (every pane and its state) | `t` |
 | Browse folder | `o` |
 | Switch branch | `b` |
