@@ -3967,6 +3967,10 @@ for bsw in 3 7 18; do "$TMUX_REAL" -L "$BS" set -p -t "a:$bsw" @panestate needs-
 "$TMUX_REAL" -L "$BS" set -p -t b:19 @cockpit_review pending >/dev/null 2>&1
 bsout=$(TMUX="$SOCKDIR/$BS,0,0" "$DIR/scripts/agent-state" sweep 2>&1); bsrc=$?
 is "the sweep exits 0 and says nothing" "0|" "$bsrc|$bsout"
+# No server, no windows: nothing to send, and no unbound-variable death on the
+# way (an empty array under set -u kills bash < 4.4).
+bsout=$(TMUX="$SOCKDIR/cockpit-nosuch-$$,0,0" "$DIR/scripts/agent-state" sweep 2>&1); bsrc=$?
+is "a sweep with no server sends nothing and exits 0 quietly" "0|" "$bsrc|$bsout"
 is "every count is written" "3 0 1 3 1" \
    "$("$TMUX_REAL" -L "$BS" display-message -p -t a: '#{@cockpit_sess_nb} #{@cockpit_sess_ne}') $("$TMUX_REAL" -L "$BS" display-message -p -t b: '#{@cockpit_sess_ne}') $("$TMUX_REAL" -L "$BS" show-option -gqv @cockpit_fleet_nb) $("$TMUX_REAL" -L "$BS" show-option -gqv @cockpit_fleet_ne)"
 is "and the last window of the second session has its state and review" "idle 1" \

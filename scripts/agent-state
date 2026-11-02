@@ -74,24 +74,21 @@ fleet_sums() { set_if -g @cockpit_fleet_nb nb; set_if -g @cockpit_fleet_ne ne; s
 # Per event, never per redraw; sent in batches under 12 KB (tmux refuses a command
 # over 16 KB), and a refused batch is an error, not silence.
 if [ "$state" = sweep ]; then
-    w="" chunk=() rc=0
+    w="" batch="" rc=0
     flush() {
-        [ "${#chunk[@]}" -gt 0 ] || return 0
-        local c all=""
-        for c in "${chunk[@]}"; do all="$all$c"; done
-        tmux if-shell -F 1 "${all# ; }" || rc=1
-        chunk=()
+        [ -n "$batch" ] || return 0
+        tmux if-shell -F 1 "${batch# ; }" || rc=1
+        batch=""
     }
     add() {                   # one clause, a new batch when this one would pass 12 KB
-        local n=${#body} have=0 c
-        for c in "${chunk[@]}"; do have=$((have + ${#c})); done
-        [ $((have + n)) -lt 12000 ] || flush
-        chunk+=("$body")
+        [ $(( ${#batch} + ${#body} )) -lt 12000 ] || flush
+        batch="$batch$body"
     }
     body=" ; $defs"; add
-    for w in $(tmux list-windows -a -F '#{window_id}'); do T=$w; body=""; win_sums; add; done
+    # No server means no windows: nothing to sweep, quietly.
+    for w in $(tmux list-windows -a -F '#{window_id}' 2>/dev/null); do T=$w; body=""; win_sums; add; done
     # Quoted: tmux's parser leaves $<digit> alone today, and the id need not rely on it.
-    for s in $(tmux list-sessions -F '#{session_id}'); do T="'$s'"; body=""; sess_sums; add; done
+    for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; body=""; sess_sums; add; done
     [ -n "$w" ] || exit 0
     T=$w; body=""; fleet_sums; add
     flush
