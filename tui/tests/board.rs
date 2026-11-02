@@ -1144,3 +1144,173 @@ fn a_loading_frame_is_drawn_before_the_first_fetch() {
     // and it is not the empty-fleet card, which would be a lie before a read
     assert!(!out.contains("no agent panes"), "{out}");
 }
+
+// ---------------------------------------------------------------- the return trip
+
+#[test]
+fn a_success_note_fades_after_five_seconds_and_a_failure_stays() {
+    let t0 = std::time::Instant::now();
+    let s = |n: u64| t0 + std::time::Duration::from_millis(n);
+    let ok = board::Note::returned("cockpit: sent to %3".into(), t0);
+    assert!(!ok.gone(s(4_999)), "under 5 s");
+    assert!(ok.gone(s(5_000)), "at 5 s");
+    let bad = board::Note::returned("✕ not sent: server asks something new".into(), t0);
+    assert!(!bad.gone(s(3_600_000)), "a ✕ note outlives any clock");
+}
+
+#[test]
+fn a_failure_note_goes_on_the_next_key_which_still_runs_except_esc() {
+    let t0 = std::time::Instant::now();
+    let bad = board::Note::returned("✕ cockpit: could not paste into %3; nothing sent".into(), t0);
+    assert_eq!(board::note_key(&bad, KeyCode::Esc), (true, false), "esc only dismisses");
+    for k in [
+        KeyCode::Char('r'),
+        KeyCode::Char('j'),
+        KeyCode::Enter,
+        KeyCode::Char('q'),
+        KeyCode::Char('?'),
+    ] {
+        assert_eq!(board::note_key(&bad, k), (true, true), "{k:?} dismisses and acts");
+    }
+    // a success note is the clock's: a key neither takes it nor is taken by it
+    let ok = board::Note::returned("cockpit: sent to %3".into(), t0);
+    assert_eq!(board::note_key(&ok, KeyCode::Esc), (false, true));
+    assert_eq!(board::note_key(&ok, KeyCode::Char('r')), (false, true));
+}
+
+#[test]
+fn board_flags_parse_strictly() {
+    let a = |v: &[&str]| board::opts(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert_eq!(a(&[]).unwrap(), board::Opts::default());
+    let o = a(&["--select", "%14", "--note", "/x/n"]).unwrap();
+    assert_eq!(
+        (o.select.as_deref(), o.note.as_deref()),
+        (Some("%14"), Some(std::path::Path::new("/x/n")))
+    );
+    for bad in [
+        &["--select"][..],
+        &["--select", "14"],
+        &["--select", "%1x"],
+        &["--select", "%1", "--select", "%2"],
+        &["--note", ""],
+        &["--resume", "x"],
+    ] {
+        assert!(a(bad).is_err(), "{bad:?}");
+    }
+}
+
+/// A private scratch dir per test: cargo runs tests on threads.
+fn scratch(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("cockpit-board-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
+
+#[test]
+fn board_state_round_trips_and_a_missing_file_is_a_fresh_board() {
+    let d = scratch("state-rt");
+    let p = d.join("tmux-cockpit/board.state");
+    assert_eq!(board::read_state(&p), Ok(None));
+    let s = board::Saved { sel: Some("%14".into()) };
+    board::write_state(&p, &s).unwrap();
+    assert_eq!(std::fs::read_to_string(&p).unwrap(), "cockpit-board-state 1\nsel %14\n");
+    assert_eq!(board::read_state(&p), Ok(Some(s)));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn board_state_is_read_strictly() {
+    let d = scratch("state-strict");
+    let p = d.join("board.state");
+    for (body, why) in [
+        ("cockpit-board-state 2\nsel %1\n", "a newer head"),
+        ("cockpit-panel-state 1\nsel %1\n", "another file's head"),
+        ("cockpit-board-state 1\nsel %1", "cut short"),
+        ("cockpit-board-state 1\nsel 1\n", "not a pane id"),
+        ("cockpit-board-state 1\nsel %1\nsel %2\n", "two selections"),
+        ("cockpit-board-state 1\nwho knows\n", "an unknown line"),
+        ("", "empty"),
+    ] {
+        std::fs::write(&p, body).unwrap();
+        assert!(board::read_state(&p).is_err(), "{why}");
+    }
+    // oversize, even with a good head
+    let mut big = String::from("cockpit-board-state 1\n");
+    big.push_str(&"x".repeat(board::STATE_MAX as usize));
+    std::fs::write(&p, big).unwrap();
+    assert!(board::read_state(&p).is_err(), "over 64 KiB");
+    // a symlink to a good file is still refused
+    let real = d.join("real");
+    std::fs::write(&real, "cockpit-board-state 1\nsel %1\n").unwrap();
+    std::fs::remove_file(&p).unwrap();
+    std::os::unix::fs::symlink(&real, &p).unwrap();
+    assert!(board::read_state(&p).is_err(), "a symlink");
+    // and a write replaces the link, never the file it points at
+    board::write_state(&p, &board::Saved { sel: Some("%2".into()) }).unwrap();
+    assert_eq!(std::fs::read_to_string(&real).unwrap(), "cockpit-board-state 1\nsel %1\n");
+    assert!(!std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn an_unknown_pane_falls_back_to_d5() {
+    let ps = fixture();
+    let ord = board::order(&ps);
+    let at = |id: &str| ord.iter().position(|&i| ps[i].id == id).unwrap();
+    assert_eq!(board::open_sel(&ps, &ord, Some("%21"), "%14"), at("%21"), "the pane asked for");
+    assert_eq!(board::open_sel(&ps, &ord, Some("%99"), "%14"), at("%9"), "gone: the first ▲");
+    let calm: Vec<Pane> = ps
+        .iter()
+        .filter(|p| p.state != cockpit_tui::data::State::NeedsInput)
+        .cloned()
+        .collect();
+    let ord = board::order(&calm);
+    let at = |id: &str| ord.iter().position(|&i| calm[i].id == id).unwrap();
+    assert_eq!(
+        board::open_sel(&calm, &ord, Some("%99"), "%30"),
+        at("%30"),
+        "no ▲: the client's pane"
+    );
+    assert_eq!(board::open_sel(&calm, &ord, None, "%99"), 0, "else the first row");
+}
+
+#[test]
+fn the_note_file_is_one_line_under_the_same_rules() {
+    let d = scratch("note");
+    let p = d.join("note");
+    std::fs::write(&p, "✕ cockpit: could not paste into %3\u{1b}[2J; nothing sent\n").unwrap();
+    assert_eq!(
+        board::read_note(&p),
+        Ok(Some("✕ cockpit: could not paste into %3[2J; nothing sent".into()))
+    );
+    std::fs::write(&p, "").unwrap();
+    assert_eq!(board::read_note(&p), Ok(None), "empty is no note");
+    std::fs::write(&p, "one\ntwo\n").unwrap();
+    assert!(board::read_note(&p).is_err(), "two lines");
+    std::fs::write(&p, "x".repeat(board::NOTE_MAX as usize + 1)).unwrap();
+    assert!(board::read_note(&p).is_err(), "oversize");
+    let real = d.join("real");
+    std::fs::write(&real, "cockpit: sent to %3\n").unwrap();
+    std::fs::remove_file(&p).unwrap();
+    std::os::unix::fs::symlink(&real, &p).unwrap();
+    assert!(board::read_note(&p).is_err(), "a symlink");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn note_goldens() {
+    let th = Theme::fixed();
+    let (ps, pvs) = (fixture(), previews());
+    let mut v = view(&ps, &pvs, &th, 2, 0);
+    v.note = Some("cockpit: sent to %21");
+    golden("board-note-100", &draw(100, 30, |f| board::render(f, f.area(), &v)));
+    v.note = Some("✕ cockpit: the pane now runs bash, not claude; nothing sent to %21");
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    golden("board-note-fail-100", &out);
+    // the way out survives a cut at 60 columns
+    let out = draw(60, 24, |f| board::render(f, f.area(), &v));
+    assert!(rows(&out)[23].trim_end().ends_with("· esc dismiss"), "{out}");
+}

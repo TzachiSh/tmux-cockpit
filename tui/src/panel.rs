@@ -14,7 +14,7 @@ pub mod view;
 use std::path::PathBuf;
 
 /// XDG says a relative value is to be ignored, so only an absolute one wins.
-fn xdg(var: &str, fallback: &str) -> PathBuf {
+pub(crate) fn xdg(var: &str, fallback: &str) -> PathBuf {
     match std::env::var(var) {
         Ok(v) if v.starts_with('/') => PathBuf::from(v),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(fallback),
