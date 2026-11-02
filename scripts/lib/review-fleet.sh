@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# tmux-review's review entry (what r on a board row runs), --request and --info (prefix i).
+# tmux-review's review entry (what r on a board row runs) and --request.
 # Sourced by tmux-review, never run. Bash 4+.
 
 # --- entry-point resolution -------------------------------------------------
 # review_pane() drives the interactive loop against one pane: a session-dir
-# store (session_dir(), below), the interactive --loop re-exec'd (not called
-# as a function -- it ends in a script `exit`, and this needs its own exit
-# code back rather than the whole process dying), ctrl-s (rc 20) handed to
-# --deliver via `tmux run-shell -b` -- a popup kills its own children the
-# moment it closes (tmux-open-path:381-386), so delivery has to outlive that
-# teardown, not run inside it.
+# store (session_dir() in tmux-review), the interactive --loop re-exec'd (not
+# called as a function -- it ends in a script `exit`, and this needs its own
+# exit code back rather than the whole process dying), rc 20 (deliver) handed
+# to --deliver via `tmux run-shell -b` -- a popup kills its own children the
+# moment it closes, so delivery has to outlive that teardown, not run inside
+# it.
 
 review_pane() {
     local pane=$1 dir=$2 store rc
@@ -48,8 +48,10 @@ review_pane() {
         # and tested with a plain `if`; the `\$` keep both out of the reach of
         # the bash expansion that is building the string. Every path is still
         # shq-quoted.
-        cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store"); else rm -f -- $(shq "$store.rows"); fi"
-        tmux run-shell -b "$(fesc "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup")"
+        cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store");"
+        cleanup="$cleanup else rm -f -- $(shq "$store.rows"); fi"
+        tmux run-shell -b "$(fesc "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") \
+$(shq "$dir"); $cleanup")"
     elif [ "$rc" -eq 21 ]; then
         # Approved: the ref is written (the loop did it, in the popup); the
         # pane's attention state and the review dir end here -- by NAME, not
@@ -63,7 +65,8 @@ review_pane() {
         tmux set-option -pu -t "$pane" @cockpit_review 2>/dev/null
         "$(dirname "$SELF")/agent-state" recount "$pane"
         clear_sess "$sess"
-        tmux display-message "cockpit: review approved · the next one shows only what changed" 2>/dev/null
+        tmux display-message \
+            "cockpit: review approved · the next one shows only what changed" 2>/dev/null
     else
         rm -f -- "$sess/revdiff.err"
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
@@ -85,10 +88,11 @@ review_pane() {
 # timed out) leaves the popup, the store and the rc file alone; running it
 # again resumes the pinned comments, so the recovery is "run it again".
 request() {                   # <pane>
-    local pane=$1 dir root sess store pw ph rc t
+    local pane=$1 dir root sess store pw ph rc t cmd
     is_pane "$pane" || { usage; exit 2; }
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
-        printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' "$pane" >&2
+        printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' \
+            "$pane" >&2
         exit 1
     fi
     dir=$(pane_dir "$pane")
@@ -107,15 +111,18 @@ request() {                   # <pane>
     # -T is a tmux format: a # in the path would be expanded. The command
     # itself is not (measured on 3.8), so it is only shell-quoted.
     t=${root/#"$HOME/"/\~/}
-    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T "$(fesc " review · requested · $t ")" \
-        "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
+    cmd="REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store");"
+    cmd="$cmd echo \$? > $(shq "$sess/rc")"
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" \
+        -T "$(fesc " review · requested · $t ")" "$cmd" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
         126) printf 'tmux-review: revdiff failed\n' >&2
              cat -- "$sess/revdiff.err" >&2 2>/dev/null; rm -f -- "$sess/revdiff.err"
              exit 1 ;;
         127) printf 'tmux-review: revdiff not found: install it, see #233\n' >&2; exit 1 ;;
-        20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
+        # deliver with nothing pinned cannot happen; belt and braces
+        20) [ -s "$store" ] || exit 0
             # The agent has the review in hand the moment this returns, so the
             # pane carries the same "sent" the paste path sets on delivery.
             tmux set-option -p -t "$pane" @cockpit_review sent 2>/dev/null
@@ -132,118 +139,6 @@ request() {                   # <pane>
             rmdir -- "$sess" 2>/dev/null
             exit 0 ;;
     esac
-}
-
-# The cockpit-tui binary, for the info screen: whether it is there, which
-# version, and whether @cockpit_tui_version asks for a different one. Absent is
-# a broken install (#199), so the row names the gesture that installs it.
-# Which credentials that fetch would ride (#84): the repo is private, so an
-# unauthenticated prefix U 404s, and the fix is `gh auth login`, not retrying.
-tui_auth() { "$(dirname "$LIBDIR")/tui-fetch" --auth 2>/dev/null || printf 'unauthenticated'; }
-tui_row() {
-    local bin have want
-    # Here, not at the top: tmux-review re-execs per fzf keystroke.
-    # shellcheck source=tui.sh
-    . "$LIBDIR/tui.sh" || return 1
-    bin=$COCKPIT_TUI_BIN
-    # Test the file before paying a fork for it.
-    [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }
-    have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
-    [ -n "$have" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }
-    want=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
-    want=${want#cockpit-}; want=${want#tui-}; want=${want#v}
-    if [ -n "$want" ] && [ "$want" != "$have" ]; then
-        printf '%s  %s  (want %s -- prefix U updates it)' "$have" "$bin" "$want"
-    else
-        printf '%s  %s' "$have" "$bin"
-    fi
-}
-
-# Seconds as 45s, 4m12s or 1h3m; nothing for a non-number.
-age_short() {                 # <seconds>
-    case $1 in ''|*[!0-9]*|??????????*) return 1 ;; esac
-    local n=$((10#$1))        # 0100 is a hundred, not an octal error
-    if [ "$n" -ge 3600 ]; then printf '%sh%sm' $(( n / 3600 )) $(( n % 3600 / 60 ))
-    elif [ "$n" -ge 60 ]; then printf '%sm%ss' $(( n / 60 )) $(( n % 60 ))
-    else printf '%ss' "$n"; fi
-}
-
-# The doing / said / asked rows and the /btw pointer, for an agent pane. The
-# transcript reader fails quietly (status 1, no output): then no rows, no error.
-info_doing_rows() {           # <pane> <is-agent 1|0>
-    local pane=$1 file kind a b age
-    [ "$2" = 1 ] || return 0
-    if file=$(transcript_file "$pane" 2>/dev/null) && [ -n "$file" ]; then
-        while IFS=$'\t' read -r kind a b; do
-            a=${a//[[:cntrl:]]/}          # a transcript is not trusted with the terminal
-            case $kind in
-                doing) age=$(age_short "$b") && age=" (since $age)"
-                       printf 'doing     %s%s\n' "$a" "$age" ;;
-                said)  printf 'said      %s\n' "$a" ;;
-                asked) age=$(age_short "$b") && age=" ($age)"
-                       printf 'asked     %s%s\n' "$a" "$age" ;;
-            esac
-        done < <(transcript_doing "$file" 2>/dev/null)
-    fi
-    printf 'ask it    /btw <question> in the pane (answers while it works)\n'
-}
-
-# --- --info: one screen for prefix i -------------------------------------------
-# What the plugin knows about one pane, in the order you ask it: who, what it
-# waits on, the review state, the base, the session, the review dir. Read in
-# ONE display-message, split on a US byte (agent-state's idiom -- tab would
-# collapse the empty fields that mean "unset").
-info_mode() {                 # <pane>
-    local pane=$1 sep=$'\037' f agent id where cmd path wt state msg review spool sid title root sess b n1 n2
-    f=$(tmux display-message -p -t "$pane" \
-        '#{pane_id}'"$sep"'#{session_name}:#{window_index} #{window_name}'"$sep"'#{pane_current_command}'"$sep"'#{pane_current_path}'"$sep"'#{@cockpit_dir}'"$sep"'#{@panestate}'"$sep"'#{@panestate_msg}'"$sep"'#{@cockpit_review}'"$sep"'#{@cockpit_review_spool}'"$sep"'#{@cockpit_session}'"$sep"'#{@cockpit_title}'"$sep"'#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}' 2>/dev/null)
-    id=${f%%"$sep"*};     f=${f#*"$sep"}
-    # display-message does NOT fail on a pane id that does not exist -- it
-    # expands every format to the empty string and exits 0 (measured on 3.7c),
-    # and without this the screen below described the CALLER's own cwd
-    # (git_root "" is the caller's repo) as if it were that pane's. The
-    # resolved id, not the exit code, is what says the pane was found.
-    [ -n "$id" ] || { printf 'tmux-review: no such pane %s\n' "$pane" >&2; return 1; }
-    where=${f%%"$sep"*};  f=${f#*"$sep"}
-    cmd=${f%%"$sep"*};    f=${f#*"$sep"}
-    path=${f%%"$sep"*};   f=${f#*"$sep"}
-    wt=${f%%"$sep"*};     f=${f#*"$sep"}
-    state=${f%%"$sep"*};  f=${f#*"$sep"}
-    msg=${f%%"$sep"*};    f=${f#*"$sep"}
-    review=${f%%"$sep"*}; f=${f#*"$sep"}
-    spool=${f%%"$sep"*};  f=${f#*"$sep"}
-    sid=${f%%"$sep"*};    f=${f#*"$sep"}
-    title=${f%%"$sep"*};  agent=${f#*"$sep"}
-    printf 'pane      %s  %s  (%s)\n' "$id" "$where" "$cmd"
-    printf 'cwd       %s\n' "$path"
-    # The root is the tree prefix r diffs; an agent editing another tree
-    # without setting @cockpit_dir shows the wrong one, and this is how the
-    # human notices.
-    if [ -n "$wt" ]; then
-        if [ -d "$wt" ]; then path=$wt; printf 'dir       %s  (@cockpit_dir)\n' "$wt"
-        else printf 'dir       %s  (@cockpit_dir, missing -- using cwd)\n' "$wt"; fi
-    fi
-    root=$(git_root "$path")
-    printf 'root      %s\n' "$root"
-    printf 'state     %s%s\n' "${state:-—}" "${msg:+  · $msg}"
-    info_doing_rows "$id" "$agent"
-    printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
-    sess=$(session_dir "$id" "$root")
-    if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
-        # The mode b chose for THIS review, as the loop reads it -- passed as
-        # the argument review_base actually keys on, not exported (nothing this
-        # function calls reads COCKPIT_REVIEW_BASE from the environment).
-        b=$(review_base "$root" "$(cat -- "$sess/comments.md.base" 2>/dev/null)")
-        printf 'base      %s  (%s)\n' "$(cut -f2 <<<"$b")" "$(cut -f1 <<<"$b")"
-    fi
-    printf 'session   %s\n' "${sid:-—}"
-    printf 'title     %s\n' "${title:-—}"
-    printf 'tui       %s\n' "$(tui_row)"
-    if [ -d "$sess" ]; then
-        n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
-        printf 'review dir %s\n           %s pinned · %s delivered · a at the prompt removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
-    fi
-    printf '\n↵ to close\n'
 }
 
 # No fleet queue any more (#253): prefix r opens the board, and r on a row

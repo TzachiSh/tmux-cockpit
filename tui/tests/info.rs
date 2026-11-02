@@ -351,3 +351,29 @@ fn review_base_gone_upstream_falls_back_to_main() {
         (main.as_str(), "vs main", "branch")
     );
 }
+
+/// origin/HEAD is the fallback base when the repo has no local main or master:
+/// a clone whose default branch is `develop`, on a topic branch one commit past
+/// it. The shell's tab IFS used to fold the row and lose the target.
+#[test]
+fn review_base_origin_head_when_no_main() {
+    let d = repo("ohead");
+    let remote = PathBuf::from(format!("{}-remote", d.display()));
+    let _ = std::fs::remove_dir_all(&remote);
+    std::fs::create_dir_all(&remote).unwrap();
+    let _g = (Scratch(d.clone()), Scratch(remote.clone()));
+    sh(&remote, &["init", "-q", "--bare", "-b", "develop"]);
+    sh(&d, &["branch", "-m", "develop"]);
+    sh(&d, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    sh(&d, &["push", "-q", "origin", "develop"]);
+    sh(&d, &["remote", "set-head", "origin", "develop"]);
+    let base = rev(&d, "HEAD");
+    sh(&d, &["checkout", "-q", "-b", "topic"]);
+    std::fs::write(d.join("f"), "a\nb\n").unwrap();
+    sh(&d, &["commit", "-q", "-am", "topic"]);
+    let b = review_base(d.to_str().unwrap(), "auto", "", "");
+    assert_eq!(
+        (b.rev.as_str(), b.label.as_str(), b.mode.as_str()),
+        (base.as_str(), "vs origin/develop", "branch")
+    );
+}

@@ -6617,9 +6617,8 @@ printf '%s\n' "$@" >> "$TMUX_LOG"; exit 0
 STUB
 chmod +x "$PWD_SHIM/tmux"; printf '## a:1 (+)\nx\n\n' > "$PWD_SHIM/store"
 pwrun() { PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" "$@" >/dev/null 2>&1; printf '%s ' "$?"; }
-pwrcs=$(pwrun --deliver "$PWN" "$PWD_SHIM/store" "$PWD_SHIM"; pwrun --request "$PWN"; pwrun -p "$PWN" --info
-        pwrun --delta "$PWN"; pwrun -p "$PWN")
-is "deliver, request, -p --info, delta and -p all refuse it" "1 2 2 1 2 " "$pwrcs"
+pwrcs=$(pwrun --deliver "$PWN" "$PWD_SHIM/store" "$PWD_SHIM"; pwrun --request "$PWN"; pwrun --delta "$PWN"; pwrun -p "$PWN")
+is "deliver, request, delta and -p all refuse it" "1 2 1 2 " "$pwrcs"
 is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/dev/null || true)"
 is "--dir prints nothing for it" "" "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir "$PWN" 2>/dev/null)"
 rm -rf "$PWD_SHIM"; unset -f pwrun
@@ -7567,107 +7566,6 @@ is "the board window is told the pane the key was pressed in, not its own" "-p $
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi
 
-echo "== tmux-review --info / prefix i: one screen says what the pane is, waits on, and holds =="
-if need_tmux "tmux-review --info"; then :; else
-IN="cockpit-in-$$"; SOCKS="$SOCKS $IN"; INSTATE=$(mktmpd); INDIR=$(mktmpd)
-( cd "$INDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f ) >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$INDIR" 'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-INAP=$("$TMUX_REAL" -L "$IN" list-panes -t t: -F '#{pane_id}')
-"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @panestate_msg 'run make?' >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_review pending >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_session sid-9 >/dev/null 2>&1
-"$TMUX_REAL" -L "$IN" set-option -p -t "$INAP" @cockpit_title 'Fix the parser' >/dev/null 2>&1
-INSESS="$INSTATE/tmux-cockpit/review/${INAP#%}-$(printf '%s' "$INDIR" | cksum | cut -d' ' -f1)"
-mkdir -p "$INSESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$INSESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$INSESS/delivered.md"
-inout=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INAP --info" 2>&1)
-for want in "pane      $INAP" "cwd       $INDIR" "root      $INDIR" "state     needs-input  · run make?" "review    pending" "base      uncommitted" "session   sid-9" "title     Fix the parser" "1 pinned · 2 delivered"; do
-    case "$inout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$inout" ;; esac
-done
-case "$inout" in *'hold      '*) bad "info has no hold row" "none" "$inout" ;; *) ok "info has no hold row" ;; esac
-# The root is what the review diffs, and it is not the cwd: a pane parked in
-# a subdirectory (or, issue #3, a session that edits another tree by absolute
-# path) has to see the tree the popup will actually show.
-mkdir -p "$INDIR/sub"
-"$TMUX_REAL" -L "$IN" new-window -d -t t: -c "$INDIR/sub" 'exec -a claude bash' >/dev/null 2>&1
-INSUB=$("$TMUX_REAL" -L "$IN" list-panes -t t:1 -F '#{pane_id}')
-insub=$("$TMUX_REAL" -L "$IN" run-shell "XDG_STATE_HOME=$(printf '%q' "$INSTATE") '$DIR/scripts/tmux-review' -p $INSUB --info" 2>&1)
-for want in "cwd       $INDIR/sub" "root      $INDIR"; do
-    case "$insub" in *"$want"*) ok "info from a subdirectory shows: $want" ;; *) bad "info from a subdirectory shows: $want" "$want" "$insub" ;; esac
-done
-# display-message exits 0 on a pane id that does not exist, expanding every
-# format to "" -- so a screen built on the exit code described the CALLER's own
-# repo (git_root "") as if it were that pane's.
-inbad=$("$TMUX_REAL" -L "$IN" run-shell "'$DIR/scripts/tmux-review' -p %999 --info 2>&1" 2>&1)
-case "$inbad" in
-    *"no such pane %999"*) ok "a pane that does not exist is named, not described" ;;
-    *) bad "a pane that does not exist is named, not described" "no such pane %999" "$inbad" ;;
-esac
-"$TMUX_REAL" -L "$IN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$IN" list-keys -T prefix 2>/dev/null | awk '$4=="i"')" in
-    *display-popup*"cockpit-tui'"*" info "*) ok "prefix i is bound to the info popup" ;;
-    *) bad "prefix i is bound to the info popup" "a display-popup running cockpit-tui info" "$("$TMUX_REAL" -L "$IN" list-keys -T prefix | awk '$4=="i"')" ;;
-esac
-"$TMUX_REAL" -L "$IN" kill-server >/dev/null 2>&1
-fi
-
-echo "== tmux-review --info: doing, said and asked rows and the /btw pointer =="
-if need_tmux "tmux-review --info doing"; then :; else
-ID="cockpit-id-$$"; SOCKS="$SOCKS $ID"; IDSTATE=$(mktmpd); IDDIR=$(mktmpd); IDTREE=$(mktmpd)
-"$TMUX_REAL" -L "$ID" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$IDDIR" 'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$ID" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-IDAP=$("$TMUX_REAL" -L "$ID" list-panes -t t: -F '#{pane_id}')
-"$TMUX_REAL" -L "$ID" new-window -d -t t: -c "$IDDIR" 'exec -a vim bash' >/dev/null 2>&1
-IDNP=$("$TMUX_REAL" -L "$ID" list-panes -t t:1 -F '#{pane_id}')
-# A copy of the tree whose transcript.sh is the fixture: the real reader is another lane's.
-id_screen() {                 # <fixture or ""> <pane>  -> stdout screen, stderr after a marker line
-    rm -rf "$IDTREE/scripts"; cp -r "$DIR/scripts" "$IDTREE/scripts"
-    [ -z "$1" ] || cp "$DIR/tests/fixtures/info-doing/$1" "$IDTREE/scripts/lib/transcript.sh"
-    "$TMUX_REAL" -L "$ID" run-shell "XDG_STATE_HOME=$(printf '%q' "$IDSTATE") '$IDTREE/scripts/tmux-review' -p $2 --info 2>&1" 2>&1
-}
-idout=$(id_screen transcript.sh "$IDAP")
-for want in "doing     Bash: run the suite (since 4m12s)" "said      all green so far" "asked     fix the parser (12s)"; do
-    case "$idout" in *"$want"*) ok "info shows: $want" ;; *) bad "info shows: $want" "$want" "$idout" ;; esac
-done
-case "$idout" in
-    *"ask it    /btw <question> in the pane (answers while it works)"*) ok "info points an agent pane at /btw" ;;
-    *) bad "info points an agent pane at /btw" "ask it    /btw ..." "$idout" ;;
-esac
-idrows=$(grep -c '^\(doing\|said\|asked\) ' <<<"$idout")
-[ "$idrows" = 3 ] && ok "info shows exactly the three transcript rows" || bad "info shows exactly the three transcript rows" 3 "$idrows"
-case "$idout" in *"state     "*"doing     "*"review    "*) ok "the rows sit under the state row" ;; *) bad "the rows sit under the state row" "state, doing, review in order" "$idout" ;; esac
-# stdout and stderr of the screen into separate files (outside the tree under test).
-rm -rf "$IDTREE/scripts"; cp -r "$DIR/scripts" "$IDTREE/scripts"
-cp "$DIR/tests/fixtures/info-doing/transcript-noisy.sh" "$IDTREE/scripts/lib/transcript.sh"
-"$TMUX_REAL" -L "$ID" run-shell "XDG_STATE_HOME=$(printf '%q' "$IDSTATE") '$IDTREE/scripts/tmux-review' -p $IDAP --info >'$IDSTATE/out' 2>'$IDSTATE/err'" >/dev/null 2>&1
-[ ! -s "$IDSTATE/err" ] && ok "a reader that writes to stderr leaves the screen's stderr empty" || bad "a reader that writes to stderr leaves the screen's stderr empty" "empty" "$(cat "$IDSTATE/err")"
-case "$(cat "$IDSTATE/out")" in *noise*) bad "reader stderr is not on the screen" "no noise" "$(cat "$IDSTATE/out")" ;; *) ok "reader stderr is not on the screen" ;; esac
-case "$(cat "$IDSTATE/out")" in *$'\033'*) bad "an ESC in a transcript field never reaches the screen" "no ESC byte" "$(cat -v "$IDSTATE/out")" ;; *) ok "an ESC in a transcript field never reaches the screen" ;; esac
-grep -q 'said      red \[31mtext\[0m end' "$IDSTATE/out" && ok "the text around the ESC survives" || bad "the text around the ESC survives" "said      red [31mtext[0m end" "$(cat -v "$IDSTATE/out")"
-idp=$(id_screen transcript-partial.sh "$IDAP")
-case "$idp" in
-    *"doing     Read: a file"*) ok "a doing row with no age has no since" ;;
-    *) bad "a doing row with no age has no since" "doing     Read: a file" "$idp" ;;
-esac
-case "$idp" in *"since"*|*said*|*asked*) bad "a row the reader left out is not shown" "no since/said/asked" "$idp" ;; *) ok "a row the reader left out is not shown" ;; esac
-# The stub (status 1): none of the rows, nothing on stderr, the rest of the screen intact.
-idstub=$(id_screen "" "$IDAP")
-idrows=$(grep -c '^\(doing\|said\|asked\) ' <<<"$idstub")
-[ "$idrows" = 0 ] && ok "a reader that returns 1 shows no transcript rows" || bad "a reader that returns 1 shows no transcript rows" 0 "$idrows"
-case "$idstub" in *"tmux-review:"*|*"command not found"*) bad "a reader that returns 1 prints no error" "no error" "$idstub" ;; *) ok "a reader that returns 1 prints no error" ;; esac
-case "$idstub" in *"pane      $IDAP"*"state     "*"review    "*) ok "the rest of the screen is unchanged" ;; *) bad "the rest of the screen is unchanged" "pane/state/review/hold" "$idstub" ;; esac
-# A pane that is not an agent: no rows, no pointer, even with a reader that has rows.
-idn=$(id_screen transcript.sh "$IDNP")
-case "$idn" in *"doing     "*|*"/btw"*) bad "a non-agent pane shows neither rows nor /btw" "neither" "$idn" ;; *) ok "a non-agent pane shows neither rows nor /btw" ;; esac
-idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>/dev/null; for t in 45 252 3780 0 x ""; do printf '[%s]' "$(age_short "$t")"; done )
-[ "$idages" = "[45s][4m12s][1h3m][0s][][]" ] && ok "ages read 45s, 4m12s, 1h3m" || bad "ages read 45s, 4m12s, 1h3m" "[45s][4m12s][1h3m][0s][][]" "$idages"
-idages=$( . "$DIR/scripts/lib/review-fleet.sh" 2>&1; for t in 0100 090 1234567890 1e3 -5; do printf '[%s]' "$(age_short "$t")"; done )
-[ "$idages" = "[1m40s][1m30s][][][]" ] && ok "ages are base 10 and capped at 9 digits" || bad "ages are base 10 and capped at 9 digits" "[1m40s][1m30s][][][]" "$idages"
-"$TMUX_REAL" -L "$ID" kill-server >/dev/null 2>&1
-fi
-
 echo "== prefix R sources every config file tmux loaded, not just the first =="
 # -f /dev/null above is single-entry #{config_files} -- it never exercised the
 # bug. A start with no -f is multi-entry (tmux tries /etc/tmux.conf, ~/.tmux.conf
@@ -8235,51 +8133,6 @@ case "$(cat "$NW/calls" 2>/dev/null)" in
 esac
 unset -f nw
 rm -rf "$NW"
-
-echo "== cockpit-tui: the tui row in tmux-review --info =="
-# A COPY of scripts/, so the row reads that copy's bin/ and the suite never
-# writes into the checkout it is running from (several sessions share it).
-if need_tmux "tui row in --info"; then :; else
-TI="cockpit-ti-$$"; SOCKS="$SOCKS $TI"; TIP=$(mktmpd)
-cp -r "$DIR/scripts" "$TIP/"
-# -u: run-shell has the server's environment, and the row must read the copy's bin/.
-env -u COCKPIT_TUI_BIN "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
-TIAP=$("$TMUX_REAL" -L "$TI" list-panes -t t: -F '#{pane_id}')
-# The optional shim dir pins the row's credential word (#84) whatever gh on
-# the box would say; \$PATH is the server's, expanded by its own sh.
-ti_info() { "$TMUX_REAL" -L "$TI" run-shell "PATH=\"${1:-/nonexistent}:\$PATH\" '$TIP/scripts/tmux-review' -p $TIAP --info" 2>&1; }
-mkdir -p "$TIP/gh" "$TIP/ghbad"
-printf '#!/bin/sh\nexit 0\n' > "$TIP/gh/gh"
-printf '#!/bin/sh\nexit 1\n' > "$TIP/ghbad/gh"
-chmod +x "$TIP/gh/gh" "$TIP/ghbad/gh"
-tiout=$(ti_info "$TIP/gh")
-case "$tiout" in
-    *"tui       not installed  (prefix U fetches it, via gh)"*) ok "an absent binary names the gesture and the gh login it will ride" ;;
-    *) bad "an absent binary names the gesture and the gh login it will ride" "tui       not installed  (prefix U fetches it, via gh)" "$tiout" ;;
-esac
-tiout=$(ti_info "$TIP/ghbad")
-case "$tiout" in
-    *"tui       not installed  (prefix U fetches it, unauthenticated)"*) ok "and without a gh login, says the fetch is unauthenticated" ;;
-    *) bad "and without a gh login, says the fetch is unauthenticated" "tui       not installed  (prefix U fetches it, unauthenticated)" "$tiout" ;;
-esac
-mkdir -p "$TIP/bin"
-printf '#!/bin/sh\necho "cockpit-tui 0.1.0"\n' > "$TIP/bin/cockpit-tui"; chmod +x "$TIP/bin/cockpit-tui"
-tiout=$(ti_info)
-case "$tiout" in
-    *"tui       0.1.0  $TIP/bin/cockpit-tui"*) ok "an installed binary shows its version and its path" ;;
-    *) bad "an installed binary shows its version and its path" "tui       0.1.0  $TIP/bin/cockpit-tui" "$tiout" ;;
-esac
-"$TMUX_REAL" -L "$TI" set -g @cockpit_tui_version cockpit-tui-v0.2.0 >/dev/null 2>&1
-tiout=$(ti_info)
-case "$tiout" in
-    *"tui       0.1.0  $TIP/bin/cockpit-tui  (want 0.2.0 -- prefix U updates it)"*)
-        ok "a pinned version the binary does not match reads as stale" ;;
-    *) bad "a pinned version the binary does not match reads as stale" \
-         "tui       0.1.0  ...  (want 0.2.0 -- prefix U updates it)" "$tiout" ;;
-esac
-unset -f ti_info
-"$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
-fi
 
 echo "== cockpit-tui: docs name only real options =="
 # Three README lines went stale on review phase 3 and cost a round; this asserts
@@ -11453,7 +11306,7 @@ rm -f "$RDS/revdiff.err"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
 
-echo "== cockpit-tui info: the same fields as tmux-review --info, for every base mode =="
+echo "== cockpit-tui info: the base row follows every base mode =="
 if need_tmux "cockpit-tui info parity"; then :; else
 PI="cockpit-pi-$$"; SOCKS="$SOCKS $PI"; PISTATE=$(mktmpd); PIDIR=$(mktmpd)
 ( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
@@ -11467,28 +11320,14 @@ for kv in "@panestate needs-input" "@panestate_msg run-make" "@cockpit_review pe
 done
 PISESS="$PISTATE/tmux-cockpit/review/${PIAP#%}-$(printf '%s' "$PIDIR" | cksum | cut -d' ' -f1)"
 mkdir -p "$PISESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$PISESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$PISESS/delivered.md"
-pi_sh()  { "$TMUX_REAL" -L "$PI" run-shell "XDG_STATE_HOME=$(printf '%q' "$PISTATE") '$DIR/scripts/tmux-review' -p $PIAP --info" 2>&1; }
 pi_rs()  { XDG_STATE_HOME="$PISTATE" COCKPIT_TMUX="tmux -L $PI" "$COCKPIT_TUI_BIN" info --text "${1:-$PIAP}" 2>&1; }
-pi_cmp() {                    # <what> -- each field of the shell screen is the Rust screen's
-    local shs rss f
-    shs=$(pi_sh); rss=$(pi_rs)
-    for f in pane cwd root state review base session title; do
-        is "$1: $f" "$(grep "^$f " <<<"$shs")" "$(grep "^$f " <<<"$rss")"
-    done
-    is "$1: review dir and its counts" "$(grep -A1 '^review dir' <<<"$shs")" "$(grep -A1 '^review dir' <<<"$rss")"
-    is "$1: the tui row names the same version" "$(grep '^tui ' <<<"$shs" | awk '{print $2}')" "$(grep '^tui ' <<<"$rss" | awk '{print $2}')"
-}
-pi_cmp "uncommitted base"
 is "the Rust base row is uncommitted" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 ( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git checkout -q -b feat; printf 'a\nb\n' > f; git commit -q -am two ) >/dev/null 2>&1
-pi_cmp "branch base"
 case "$(pi_rs | grep '^base ')" in 'base      vs main  ('*) ok "the Rust base row is vs main" ;; *) bad "the Rust base row is vs main" "vs main" "$(pi_rs | grep '^base ')" ;; esac
 git -C "$PIDIR" update-ref refs/cockpit/reviewed/feat HEAD
-pi_cmp "since-review base"
 case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Rust base row is since last review" ;; *) bad "the Rust base row is since last review" "since last review" "$(pi_rs | grep '^base ')" ;; esac
 printf 'uncommitted\n' > "$PISESS/comments.md.base"
-pi_cmp "a mode b chose"
 is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
 is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
@@ -12969,6 +12808,28 @@ rm -f "$SBSETS" "$SB3K"
 "$TMUX_REAL" -L "$SB" kill-server >/dev/null 2>&1
 fi
 fi
+
+echo "== tmux-review: review_base falls back to origin/HEAD when the repo has no main or master =="
+# for-each-ref rows were split on a tab IFS, which folds the empty upstream and
+# track fields of origin/HEAD's row, so its symref target landed in the wrong
+# variable and the fallback never fired. A clone whose default branch is
+# "develop" (no local main) shows it: the topic commit must be the review.
+ROH=$(mktmpd)
+(
+  cd "$ROH" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q --bare -b develop remote.git
+  git clone -q remote.git work
+  cd work || exit
+  printf 'a\n' > f; git add -A; git commit -q -m init; git push -q origin develop
+  git remote set-head origin develop
+  git checkout -q -b topic; printf 'a\nON-TOPIC\n' > f; git commit -q -am topic
+) >/dev/null 2>&1
+is "origin/HEAD is the base: a branch commit is a review row" "1" \
+   "$("$DIR/scripts/tmux-review" --lines "$ROH/work" | grep -c 'ON-TOPIC')"
+is "and the base names origin/develop" "vs origin/develop" \
+   "$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$ROH/work" | cut -f2)"
+rm -rf "$ROH"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
