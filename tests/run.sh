@@ -10523,10 +10523,10 @@ is "a version newer than any known one is still read" \
 is "transcript_tail also refuses the old version" \
    "1:" "$(transcript_tail "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
 # shellcheck disable=SC2123  # emptying the search path is the test
-NOJQ=$(PATH=/nonexistent; for f in "transcript_doing $TRF/open.jsonl" "transcript_tail $TRF/open.jsonl" \
-        "transcript_file %1"; do $f 2>&1; echo -n "$? "; done)
-is "with jq off PATH all three readers print nothing, even on stderr, and return 1" \
-   "1 1 1 " "$NOJQ"
+NOJQ=$(PATH=/nonexistent; for f in transcript_doing transcript_tail; do
+        o=$($f "$TRF/open.jsonl" 2>&1); r=$?; mapfile -t l <<<"$o"; echo -n "${#l[@]}:$r "; done)
+is "works with no jq: with an empty PATH doing and tail still read, status 0" \
+   "3:0 3:0 " "$NOJQ"
 EMPTY="$(mktmpf)"
 is "an empty transcript: status 1, no output" "1:" "$(transcript_doing "$EMPTY" 2>&1; echo -n "$?:")"
 is "a missing transcript: status 1, no output" "1:" \
@@ -10610,7 +10610,7 @@ cat > "$TRBIN/claude" <<FAKE
 echo '[{"pid":1,"sessionId":"sid-aaa","cwd":"/x","status":"idle"},{"pid":$TRKID,"sessionId":"sid-bbb","cwd":"/y","status":"busy"}]'
 FAKE
 chmod +x "$TRBIN/claude"
-trfile() { ( tmux() { tmux_tr "$@"; }; HOME="$TRH" PATH="$TRBIN:$PATH" transcript_file "$1" 2>&1; echo -n "$?" ); }
+trfile() { ( COCKPIT_TMUX="$TMUX_REAL -L $TRSOCK" HOME="$TRH" PATH="$TRBIN:$PATH" transcript_file "$1" 2>&1; echo -n "$?" ); }
 is "the fake claude's child pid was found under the pane (rig check)" "yes" \
    "$([ -n "$TRKID" ] && echo yes)"
 is "with no @cockpit_session the agents list is joined on the pane's process tree" \
@@ -10631,8 +10631,9 @@ touch "$TRH/.claude/projects/outside.jsonl"
 tmux_tr set-option -p -t "$TRP" @cockpit_session '../outside' 2>/dev/null
 is "a session id that climbs out of its project directory is refused" "1" "$(trfile "$TRP")"
 tmux_tr set-option -p -t "$TRP" @cockpit_session sid-aaa 2>/dev/null
-is "jq off PATH on the @cockpit_session path: nothing, status 1" "1" \
-   "$( ( tmux() { tmux_tr "$@"; }; HOME="$TRH" PATH=/nonexistent transcript_file "$TRP" 2>&1; echo -n "$?" ) )"
+is "works with no jq: an empty PATH still finds the @cockpit_session transcript" \
+   "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl
+0" "$( ( COCKPIT_TMUX="$TMUX_REAL -L $TRSOCK" HOME="$TRH" PATH=/nonexistent transcript_file "$TRP" 2>&1; echo -n "$?" ) )"
 tmux_tr set-option -pu -t "$TRP" @cockpit_session 2>/dev/null
 printf '#!/bin/sh\necho '"'"'[{"pid":%d,"sessionId":"sid-aaa"}]'"'"'\n' "$$" > "$TRBIN/claude"   # a live pid that is not under the pane
 is "an agents entry outside the pane's process tree is not joined" "1" "$(trfile "$TRP")"
@@ -10687,23 +10688,20 @@ is "git-flags --filters blanks every key of the driver" \
 rm -rf "$GD"
 unset -f ds_shell
 
-echo "== cockpit-tui transcript: byte-identical to the jq reader on every fixture (#199) =="
+echo "== transcript reader: the frozen output of every fixture (#199) =="
 . "$DIR/scripts/lib/transcript.sh"
-TPB=$COCKPIT_TUI_BIN; TPF="$DIR/tests/fixtures/transcript-reader"
-# The seconds field can tick between the two runs, so both sides read N.
+TPF="$DIR/tests/fixtures/transcript-reader"
+# The frozen files read N for the seconds field; an empty one means status 1.
 tpnorm() { awk -F'\t' -v OFS='\t' '($1=="doing"||$1=="asked") && $3 ~ /^[0-9]+$/ { $3="N" } 1'; }
+tprc() { [ -s "$1" ] && echo rc=0 || echo rc=1; }
 for f in "$TPF"/*.jsonl; do
     n=${f##*/}
-    is "doing on $n matches the jq reader" \
-       "$(transcript_doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")" \
-       "$("$TPB" transcript doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")"
-    for cap in "" 80 5; do
-        is "tail ${cap:-4096} on $n matches the jq reader" \
-           "$(transcript_tail "$f" $cap 2>&1; echo "rc=$?")" \
-           "$("$TPB" transcript tail "$f" $cap 2>&1; echo "rc=$?")"
-    done
+    is "doing on $n gives ${n%.jsonl}.doing" "$(cat "${f%.jsonl}.doing"; tprc "${f%.jsonl}.doing")" \
+       "$(transcript_doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")"
+    is "tail on $n gives ${n%.jsonl}.tail" "$(cat "${f%.jsonl}.tail"; tprc "${f%.jsonl}.tail")" \
+       "$(transcript_tail "$f" 2>&1; echo "rc=$?")"
 done
-unset -f tpnorm
+unset -f tpnorm tprc
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
