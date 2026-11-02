@@ -62,6 +62,14 @@ pub struct Pick {
     pub prompt: String,
     pub header: String,
     pub preview: Option<String>,
+    /// Rows in the help this picker shows, to bound its scroll. A caller that
+    /// brings its own `Look::help` sets it.
+    pub help_len: usize,
+    /// Text shown on the prompt line in place of the query, for a caller that
+    /// borrows the line to ask for something else (a new name).
+    pub entry: Option<String>,
+    /// The list's share of the width when a preview sits beside it.
+    pub list_pct: u16,
 }
 
 /// Characters that reorder what is drawn: the direction marks and the bidi
@@ -177,15 +185,15 @@ pub fn too_small(area: Rect) -> bool {
     area.width < MIN_W || area.height < MIN_H
 }
 
-struct Geo {
-    prompt: Rect,
-    header: Rect,
-    list: Rect,
-    preview: Option<Rect>,
-    footer: Rect,
+pub struct Geo {
+    pub prompt: Rect,
+    pub header: Rect,
+    pub list: Rect,
+    pub preview: Option<Rect>,
+    pub footer: Rect,
 }
 
-fn geo(area: Rect, p: &Pick) -> Geo {
+pub fn geo(area: Rect, p: &Pick) -> Geo {
     let hh = u16::from(!p.header.is_empty());
     let [prompt, header, body, footer] = Layout::vertical([
         Constraint::Length(1),
@@ -195,7 +203,7 @@ fn geo(area: Rect, p: &Pick) -> Geo {
     ])
     .areas(area);
     if p.preview.is_some() && area.width >= PREVIEW_MIN_W {
-        let [list, pv] = Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).areas(body);
+        let [list, pv] = Layout::horizontal([Constraint::Percentage(p.list_pct), Constraint::Percentage(100 - p.list_pct)]).areas(body);
         return Geo {
             prompt,
             header,
@@ -226,7 +234,24 @@ impl Pick {
             prompt: clean(&o.prompt),
             header: clean(&o.header.replace('\n', " ")),
             preview: preview_text.map(|t| clean_lines(&t)),
+            help_len: help_rows(&Glyphs::unicode()).len(),
+            entry: None,
+            list_pct: 40,
         }
+    }
+
+    /// New rows for a list that is open, a refresh. The query stays; the
+    /// selection stays on the row with the same key, else on its old place.
+    pub fn set_rows(&mut self, rows: Vec<Row>, area: Rect) {
+        let kept = self.shown.get(self.sel).map(|&i| self.rows[i].key.clone());
+        self.rows = rows;
+        self.shown = filter(&self.rows, &self.query);
+        if let Some(k) = kept
+            && let Some(at) = self.shown.iter().position(|&i| self.rows[i].key == k)
+        {
+            self.sel = at;
+        }
+        self.clamp(area);
     }
 
     fn room(&self, area: Rect) -> usize {
@@ -273,7 +298,7 @@ impl Pick {
         if let Some(t) = self.help {
             // any key but a scroll key closes it, and never acts
             let rows = area.height.saturating_sub(2) as usize;
-            self.help = chrome::scroll(k.code, t, help_rows(&Glyphs::unicode()).len().saturating_sub(rows), rows);
+            self.help = chrome::scroll(k.code, t, self.help_len.saturating_sub(rows), rows);
             return Outcome::Continue;
         }
         let last = self.shown.len().saturating_sub(1);
@@ -385,18 +410,41 @@ fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
     }
 }
 
+/// A row drawn by its caller: the row, whether it is selected, the cells it has.
+pub type RowFn<'a> = &'a dyn Fn(&Row, bool, usize) -> Line<'static>;
+
+/// What a caller changes about the screen without redrawing it: the floor card's
+/// title, the footer's hints, the `F1` help, each row's line, and the words for
+/// an empty list. A `None` keeps the picker's own.
+#[derive(Default)]
+pub struct Look<'a> {
+    pub title: Option<&'a str>,
+    pub hints: Option<Vec<(String, String)>>,
+    pub help: Option<Vec<(String, String)>>,
+    pub row: Option<RowFn<'a>>,
+    pub empty: Option<String>,
+}
+
 pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
+    render_with(f, area, p, th, &Look::default());
+}
+
+pub fn render_with(f: &mut Frame, area: Rect, p: &Pick, th: &Theme, look: &Look) {
+    let title = look.title.unwrap_or("pick");
     if area.width < MIN_W {
-        chrome::floor(f, area, th, "pick", "make the window larger or rotate", "esc closes");
+        chrome::floor(f, area, th, title, "make the window larger or rotate", "esc closes");
         return;
     }
     if area.height < MIN_H {
         let msg = format!("too short {} make the window larger or rotate", th.g.dot);
-        chrome::floor(f, area, th, "pick", &msg, "esc closes");
+        chrome::floor(f, area, th, title, &msg, "esc closes");
         return;
     }
     if let Some(top) = p.help {
-        chrome::help(f, area, th, &help_rows(&th.g), top);
+        match &look.help {
+            Some(h) => chrome::help(f, area, th, h, top),
+            None => chrome::help(f, area, th, &help_rows(&th.g), top),
+        };
         return;
     }
     let g = geo(area, p);
@@ -408,7 +456,7 @@ pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
             pad(g.header),
         );
     }
-    list(f, g.list, p, th);
+    list(f, g.list, p, th, look);
     if let Some(pv) = g.preview {
         let b = Block::new()
             .borders(Borders::LEFT)
@@ -428,7 +476,12 @@ pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
         f.render_widget(Paragraph::new(lines), pad(inner));
     }
     f.render_widget(
-        Paragraph::new(chrome::footer(th, hints(&th.g, area.width as usize), area.width as usize, 3)),
+        Paragraph::new(chrome::footer(
+            th,
+            look.hints.clone().unwrap_or_else(|| hints(&th.g, area.width as usize)),
+            area.width as usize,
+            3,
+        )),
         g.footer,
     );
 }
@@ -455,16 +508,16 @@ fn prompt_line(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
     let prompt = th.g.trunc(&p.prompt, (left.width as usize / 2).max(1));
     let room = (left.width as usize).saturating_sub(prompt.width() + 4);
     let mut spans = vec![Span::raw(" "), Span::styled(format!("{prompt}>"), accent), Span::raw(" ")];
-    spans.push(Span::styled(th.g.trunc_left(&p.query, room), value));
+    spans.push(Span::styled(th.g.trunc_left(p.entry.as_deref().unwrap_or(&p.query), room), value));
     spans.push(Span::styled(th.g.cursor, accent));
     f.render_widget(Paragraph::new(Line::from(spans)), left);
     f.render_widget(Paragraph::new(Span::styled(count, value)), right);
 }
 
-fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
+fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme, look: &Look) {
     let (accent, value) = (Style::new().fg(th.accent), Style::new().fg(th.value));
     if p.shown.is_empty() {
-        let msg = format!("no match for \"{}\"", p.query);
+        let msg = look.empty.clone().unwrap_or_else(|| format!("no match for \"{}\"", p.query));
         let msg = th.g.trunc(&msg, (r.width as usize).saturating_sub(2));
         f.render_widget(Paragraph::new(Span::styled(msg, value)), pad(r));
         return;
@@ -472,6 +525,9 @@ fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
     let w = (r.width as usize).saturating_sub(2);
     let lines: Vec<Line> = (p.top..p.shown.len().min(p.top + r.height as usize))
         .map(|i| {
+            if let Some(row) = look.row {
+                return row(&p.rows[p.shown[i]], i == p.sel, w);
+            }
             let text = th.g.trunc(&p.rows[p.shown[i]].text, w);
             if i == p.sel {
                 Line::from(vec![
@@ -489,11 +545,51 @@ fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
 const USAGE: &str = "cockpit-tui pick [--prompt <text>] [--header <text>] [--preview <file>]  (rows on stdin: <key>TAB<display>)";
 
 /// Leaves raw mode and the alternate screen, on the tty the screen was drawn on.
-fn restore_tty() {
+pub fn restore_tty() {
     let _ = crossterm::terminal::disable_raw_mode();
     if let Ok(mut t) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
         let _ = t.write_all(format!("{}\x1b[?25h\x1b[?1049l", backend::MOUSE_OFF).as_bytes());
     }
+}
+
+/// The screen both pickers draw on: /dev/tty in raw mode on the alternate
+/// screen with the mouse on. `Err` is the exit code, after saying why on stderr.
+pub fn open_screen(who: &str) -> Result<Terminal<WideCellBackend<std::fs::File>>, i32> {
+    let tty = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("cockpit-tui: {who}: no terminal to draw on: {e}");
+            return Err(2);
+        }
+    };
+    // crossterm caches a failed event-reader init forever: probe before the screen opens
+    if let Err(e) = event::poll(std::time::Duration::ZERO) {
+        eprintln!("cockpit-tui: {who}: no usable terminal: {e}");
+        return Err(2);
+    }
+    backend::exit_on_hangup(restore_tty);
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_tty();
+        hook(info);
+    }));
+    crossterm::terminal::enable_raw_mode()
+        .and_then(|_| {
+            let mut t = tty;
+            t.write_all(format!("\x1b[?1049h{}", backend::MOUSE_ON).as_bytes())?;
+            Terminal::new(WideCellBackend::new(t))
+        })
+        .map_err(|e| {
+            restore_tty();
+            eprintln!("cockpit-tui: {who}: {e}");
+            2
+        })
+}
+
+/// A terminal's size as a rect.
+pub fn screen(t: &Terminal<WideCellBackend<std::fs::File>>) -> Rect {
+    let s = t.size().unwrap_or_default();
+    Rect::new(0, 0, s.width, s.height)
 }
 
 fn read_limited(r: impl Read, cap: u64) -> std::io::Result<Vec<u8>> {
@@ -538,24 +634,6 @@ pub fn main(args: &[String]) -> i32 {
         }
         return 1;
     }
-    let tty = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("cockpit-tui: pick: no terminal to draw on: {e}");
-            return 2;
-        }
-    };
-    // crossterm caches a failed event-reader init forever: probe before the screen opens
-    if let Err(e) = event::poll(std::time::Duration::ZERO) {
-        eprintln!("cockpit-tui: pick: no usable terminal: {e}");
-        return 2;
-    }
-    backend::exit_on_hangup(restore_tty);
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_tty();
-        hook(info);
-    }));
     let th = Theme::load();
     let mut p = Pick::new(rows, &o, preview);
     if cut {
@@ -566,22 +644,11 @@ pub fn main(args: &[String]) -> i32 {
             format!("{}  {note}", p.header)
         };
     }
-    let mut term = match crossterm::terminal::enable_raw_mode().and_then(|_| {
-        let mut t = tty;
-        t.write_all(format!("\x1b[?1049h{}", backend::MOUSE_ON).as_bytes())?;
-        Terminal::new(WideCellBackend::new(t))
-    }) {
+    let mut term = match open_screen("pick") {
         Ok(t) => t,
-        Err(e) => {
-            restore_tty();
-            eprintln!("cockpit-tui: pick: {e}");
-            return 2;
-        }
+        Err(c) => return c,
     };
-    let area = |t: &Terminal<WideCellBackend<std::fs::File>>| {
-        let s = t.size().unwrap_or_default();
-        Rect::new(0, 0, s.width, s.height)
-    };
+    let area = screen;
     let out = loop {
         p.clamp(area(&term));
         if term.draw(|f| render(f, f.area(), &p, &th)).is_err() {
