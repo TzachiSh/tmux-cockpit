@@ -10377,7 +10377,8 @@ bloaded() {
 
 # --- the shipped default -------------------------------------------------------
 B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
-PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+# -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
+env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
 bw=$(bkey "$B" w)
 # bin/cockpit-tui is absent in this copy on purpose: the binary arrives by a
@@ -10408,7 +10409,33 @@ case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
 esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
+# Required since #199: the load says so, offline, and names the fix.
+case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
+    *"cockpit-tui is missing; run "*/install.sh) ok "a load with no binary says it is missing and names install.sh" ;;
+    *) bad "a load with no binary says it is missing and names install.sh" "cockpit-tui is missing; run .../install.sh" \
+         "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
+esac
 "$TMUX_REAL" -L "$B" kill-server >/dev/null 2>&1
+
+# The version check: below TUI_MIN names tui-fetch; a current one says nothing.
+# Registered out here: bver runs in a $(…) subshell, which would drop its SOCKS.
+SOCKS="$SOCKS cockpit-bw7-0.0.1-$$ cockpit-bw7-99.0.0-$$"
+bver() {                      # <version> -> the load's cockpit-tui message, if any
+    local b="cockpit-bw7-$1-$$"
+    bshim "$BD/s7" "$b" ""; rm -f "$BD/argv"
+    printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$1" > "$BD/vtui"; chmod +x "$BD/vtui"
+    COCKPIT_TUI_BIN="$BD/vtui" PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$b" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$b" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$b"
+    grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
+    "$TMUX_REAL" -L "$b" kill-server >/dev/null 2>&1
+}
+bmsg=$(bver 0.0.1)
+case "$bmsg" in
+    *"cockpit-tui 0.0.1 is older than "*"; run "*/scripts/tui-fetch) ok "a binary below TUI_MIN is named on load, with tui-fetch as the fix" ;;
+    *) bad "a binary below TUI_MIN is named on load, with tui-fetch as the fix" "cockpit-tui 0.0.1 is older than ...; run .../tui-fetch" "$bmsg" ;;
+esac
+is "a current binary loads without a word" "" "$(bver 99.0.0)"
+unset -f bver
 
 # --- off, the parked window, and the opt-in fetch ------------------------------
 # "off" cannot leave w EMPTY: stock tmux binds it to choose-tree, and not

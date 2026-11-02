@@ -196,7 +196,7 @@ fi
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 bk=$(key @cockpit_board_key w)
-# Bound even without bin/cockpit-tui, so the wrapper can say "not installed".
+# Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window above (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
@@ -205,6 +205,15 @@ if [ -n "$bk" ]; then
         tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
+
+# Required (#199). Offline: one --version, never a fetch, on every load.
+# shellcheck source=scripts/lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
+tv=$(tui_check)
+case $? in
+    1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
+    2) tmux display-message "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/scripts/tui-fetch" ;;
+esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
 if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
