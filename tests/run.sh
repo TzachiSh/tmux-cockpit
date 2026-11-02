@@ -7115,6 +7115,33 @@ is "and nothing it names runs under tmux-review or the previews" "" "$(cat "$GHM
 case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
     *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
 
+echo "== a partial clone's lazy fetch cannot run the repo's planted uploadpack (#217) =="
+# HEAD's blob is missing, so diffing it fetches through remote.origin.uploadpack.
+LF=$(mktmpd); LFM="$LF/marker"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"
+( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+  git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
+  && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
+  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c" \
+  && printf 'b\n' >> f.txt && git commit -qam 2 \
+  && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
+  && git config remote.origin.uploadpack "$LF/up" ) >/dev/null 2>&1
+git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+is "the planted uploadpack fires under plain git" "up" "$(cat "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+is "and not through git.sh's git" "" "$(cat "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"; tree_diff "$LF/c" --numstat ) >/dev/null 2>&1
+is "nor through tree_diff" "" "$(cat "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+"$DIR/scripts/tmux-review" --lines "$LF/c" >/dev/null 2>&1
+is "nor through tmux-review --lines" "" "$(cat "$LFM" 2>/dev/null)"
+rm -f "$LFM"
+XDG_RUNTIME_DIR="$LF" "$DIR/scripts/tmux-open-path" --preview-diff "$LF/c/f.txt" >/dev/null 2>&1
+is "nor through the path picker's preview diff" "" "$(cat "$LFM" 2>/dev/null)"
+rm -rf "$LF"
+
 echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
 # The key used to be path+HEAD+mtime+size, with "path" whatever the caller
 # passed -- and every caller cd's into the review target first and hands a

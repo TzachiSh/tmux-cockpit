@@ -39,5 +39,7 @@ git() {
     case ${!i-} in
         diff|log|show) set -- "${@:1:i}" --no-ext-diff --no-textconv "${@:i+1}" ;;
     esac
-    command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@"
+    # A partial clone fetches a missing blob through the remote the repo names
+    # (remote.*.uploadpack runs as the user); report it missing instead.
+    GIT_NO_LAZY_FETCH=1 command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@"
 }
