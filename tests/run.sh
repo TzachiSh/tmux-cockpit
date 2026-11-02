@@ -12589,11 +12589,17 @@ is "cockpit mode: the body is the rest" "more" "${STORE[0.body]:-}"
 rsa_load quoted.md; printf '## b.txt:9 ( )\ncomment\n' >> "$RSAF"; sed -i 's/^more$/more\n/' "$RSAF"; parse_store_revdiff "$RSAF"
 is "ingest: a quoted line in one record does not disturb the next" "2/comment" "${STORE_N:-}/${STORE[1.body]:-}"
 
-echo "== review store: a context record is stale only when its row is gone (#232) =="
+echo "== review store: stale_keys never judges a ( ) record, from real lines_mode rows (#232) =="
 rsa_load; . "$DIR/scripts/lib/review-diff.sh"
-printf 'a.txt\t1\n' > "$RSAD/rows"   # row 1 of a.txt is a context row (new-line number, no sign)
-printf '## a.txt:1 ( )\nlive\n\n## a.txt:9 ( )\ngone\n' > "$RSAF"
-is "stale_keys: a ( ) record whose row exists is not stale, one whose row is gone is" "## a.txt:9 ( )" "$(stale_keys "$RSAF" "$RSAD/rows")"
+RSAR="$RSAD/repo"
+(
+  git init -q -b main "$RSAR" && cd "$RSAR" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  seq 1 6 > a.txt; git add -A; git commit -q -m init; sed -i 5s/5/five/ a.txt
+) >/dev/null 2>&1
+lines_mode "$RSAR" > "$RSAD/rows" 2>/dev/null
+printf '## a.txt:4 ( )\nctx\n\n## a.txt:5 ( )\nctx on changed\n\n## a.txt:5 (+)\nlive\n\n## a.txt:9 (+)\ngone\n' > "$RSAF"
+is "stale_keys: a ( ) record is never reported; a (+) record is judged by its row" "## a.txt:9 (+)" "$(stale_keys "$RSAF" "$RSAD/rows")"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -594,8 +594,11 @@ stale_keys() {                # <store> <rows-file>  -> stale headers, one per l
             num = $2; sub(/^-/, "", num)
             k["## " $1 ":" num " (" sign ")"] = 1
         }
-        # A context row is keyed like an added one (new-line number, no sign).
-        END { for (i = 1; i <= n; i++) { a = h[i]; sub(/ \( \)$/, " (+)", a); if (!(a in k)) print h[i] } }
+        # A context ( ) record has no diff row to judge it by: never reported.
+        END {
+            for (i = 1; i <= n; i++)
+                if (h[i] !~ / \( \)$/ && !(h[i] in k)) print h[i]
+        }
     ' "$st" "$rows"
 }
 
