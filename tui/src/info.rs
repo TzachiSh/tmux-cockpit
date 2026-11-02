@@ -3,7 +3,8 @@
 //! board draws the same screen as an overlay over the selected tile. It is not
 //! a text-entry screen, so esc and q both close it.
 use crate::chrome;
-use crate::data::info::{Facts, age_short, gather};
+use crate::data::fmt_dur;
+use crate::data::info::{Facts, gather};
 use crate::panel::view::wrap;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -63,7 +64,7 @@ pub fn rows(x: &Facts, g: &Glyphs, w: usize) -> Vec<(String, String)> {
     };
     r.push(("state", format!("{}{msg}", if x.state.is_empty() { dash } else { &x.state })));
     for d in &x.doing {
-        let age = |pre: &str| d.age.map(|a| format!(" ({pre}{})", age_short(a))).unwrap_or_default();
+        let age = |pre: &str| d.age.map(|a| format!(" ({pre}{})", fmt_dur(a))).unwrap_or_default();
         match d.kind.as_str() {
             "doing" => r.push(("doing", format!("{}{}", d.text, age("since ")))),
             "said" => r.push(("said", d.text.clone())),

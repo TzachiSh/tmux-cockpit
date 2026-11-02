@@ -8,7 +8,7 @@
 "│ doing      Bash: make test (since    │"
 "│            4m12s)                    │"
 "│ said       Running the suite now.    │"
-"│ asked      fix the parser (1h2m)     │"
+"│ asked      fix the parser (1h02m)    │"
 "│ ask it     /btw <question> in the    │"
 "│            pane (answers while it    │"
 "│            works)                    │"

@@ -141,7 +141,7 @@ fn rows_follow_the_shell_and_a_non_agent_has_no_btw() {
     assert_eq!(get("pane"), Some("%7  work:2 api  (claude)"));
     assert_eq!(get("state"), Some("needs-input  · run make?"));
     assert_eq!(get("doing"), Some("Bash: make test (since 4m12s)"));
-    assert_eq!(get("asked"), Some("fix the parser (1h2m)"));
+    assert_eq!(get("asked"), Some("fix the parser (1h02m)"));
     assert_eq!(get("review"), Some("pending  · queued: 2"));
     assert_eq!(get("base"), Some("uncommitted  (HEAD)"));
     assert!(get("ask it").is_some());

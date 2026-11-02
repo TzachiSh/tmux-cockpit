@@ -179,15 +179,6 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
     held("HEAD", "uncommitted", "uncommitted")
 }
 
-/// Seconds as 45s, 4m12s or 1h3m, the shell's `age_short`.
-pub fn age_short(n: u64) -> String {
-    match n {
-        3600.. => format!("{}h{}m", n / 3600, n % 3600 / 60),
-        60.. => format!("{}m{}s", n / 60, n % 60),
-        _ => format!("{n}s"),
-    }
-}
-
 /// `1.2.3`, the installed binary's version and path, and the version
 /// `@cockpit_tui_version` asks for when it differs (prefix U updates it).
 fn tui_row(want: &str) -> String {
@@ -285,8 +276,7 @@ fn doing_rows(pane: &str) -> Vec<Doing> {
         .filter_map(|l| {
             let mut f = l.split('\t');
             let (kind, a) = (f.next()?, clean(f.next()?));
-            // the shell's age_short refuses a field of ten digits or more
-            let age = f.next().filter(|s| s.len() < 10).and_then(|s| s.parse().ok());
+            let age = f.next().and_then(|s| s.parse().ok());
             matches!(kind, "doing" | "said" | "asked").then(|| Doing {
                 kind: kind.into(),
                 text: a,
