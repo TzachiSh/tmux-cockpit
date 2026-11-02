@@ -1412,6 +1412,24 @@ fn fleet() -> Vec<Pane> {
     ps[0].review = "pending".into();
     ps[3].review = "pending".into();
     ps[6].review = "pending".into();
+    // what data::fleet fills in on the fetch thread: repo⑂branch and the stat
+    for (id, loc, pm) in [
+        ("%3", "api⑂feat/rate-limit", "+42 -7"),
+        ("%4", "api⑂feat/rate-limit", "+42 -7"),
+        ("%5", "api⑂feat/rate-limit", "+42 -7"),
+        ("%6", "api⑂main", "clean"),
+        ("%7", "web⑂docs-plan", "+3 -1"),
+        ("%8", "web⑂main", "+120 -33  ?2 new"),
+        ("%9", "web⑂checkout-a11y", "+0 -0  ?1 new"),
+        ("%10", "web⑂main", "clean"),
+        ("%11", "infra⑂main", "+9 -2"),
+        ("%12", "infra⑂main", "clean"),
+        ("%14", "ml⑂exp-40", "+15 -4"),
+        ("%15", "ml⑂exp-40", "+15 -4"),
+    ] {
+        let p = ps.iter_mut().find(|p| p.id == id).unwrap();
+        (p.loc, p.pm) = (loc.into(), pm.into());
+    }
     ps.reverse();
     ps
 }
@@ -1781,6 +1799,20 @@ fn list_goldens() {
         ..view(&ps, &[], &th, ord.iter().position(|&i| ps[i].id == "%3").unwrap(), 0)
     };
     golden("board-tiles-100", &draw(100, 30, |f| board::render(f, f.area(), &v)));
+}
+
+/// The extra cells at the four widths the issue names: the stat, the review
+/// mark and the branch, dropped from the right as the row narrows.
+#[test]
+fn list_extra_goldens() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    for w in [40u16, 60, 80, 120] {
+        let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+        let out = draw(w, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        golden(&format!("board-extra-{w}"), &out);
+        assert!(out.contains("+42 -7"), "the stat shows at {w}:\n{out}");
+    }
 }
 
 /// No row the list draws runs past the area, at any width the board accepts.

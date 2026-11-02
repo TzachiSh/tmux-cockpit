@@ -1,6 +1,7 @@
 //! The board: a list of agents grouped by tmux session (the default), or one
 //! live-preview tile per agent behind `v`. `render` is pure over `&[Pane]` (no
 //! tmux, no clock); `run` is the only impure entry.
+use crate::data::fleet as facts;
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
 use crate::panel::view::wrap;
 use crate::push::Push;
@@ -1401,10 +1402,38 @@ impl Nav {
     }
 }
 
-// #228: the list row's extra cells, drawn between the message and the age:
-// the diff stat, the review mark and the branch go here. None today.
-pub fn row_extra(_p: &Pane, _th: &Theme) -> Vec<Span<'static>> {
-    Vec::new()
+/// The list row's extra cells (#253), drawn between the message and the age:
+/// the diff stat, the review mark and the branch, in that order. `room` is the
+/// width they may take; a cell that does not fit is dropped, with every cell
+/// to its right, rather than cut. The facts come off `Pane`, filled on the
+/// fetch thread by `data::fleet`: nothing here forks.
+pub fn row_extra(p: &Pane, th: &Theme, room: usize) -> Vec<Span<'static>> {
+    let g = &th.g;
+    let stat = facts::stat_text(&p.loc, &p.pm);
+    let stat_c = match stat.as_str() {
+        "clean" | "no repo" | "?" => th.meta,
+        _ => th.running,
+    };
+    let (mark, mark_c) = th.review_mark(&p.review);
+    let br = facts::branch(&p.loc);
+    let mut cells = vec![(stat, stat_c)];
+    if mark != " " {
+        cells.push((mark.to_string(), mark_c));
+    }
+    if !br.is_empty() {
+        cells.push((format!("{}{}", if g.ascii { "@" } else { "⑂" }, g.trunc(br, 16)), th.label));
+    }
+    let mut left = room;
+    let mut out = vec![];
+    for (text, c) in cells {
+        let w = text.width() + 1;
+        if w > left {
+            break;
+        }
+        left -= w;
+        out.push(Span::styled(format!(" {text}"), Style::new().fg(c)));
+    }
+    out
 }
 
 /// The window index column: as wide as the widest index in the fleet.
@@ -1430,7 +1459,8 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     let g = &th.g;
     let (gl, gl_c) = th.glyph(p.state);
     let (rv, rv_c) = th.review_mark(&p.review);
-    let extra = row_extra(p, th);
+    // the extras take at most a third of what the name and message would share
+    let extra = row_extra(p, th, w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1) / 3);
     let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
