@@ -3,6 +3,8 @@
 # fsmonitor, filters, textconv, external diff and hooks there run as the user.
 
 GIT_SAFE=(-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false)
+GIT_NOFETCH=(-c protocol.allow=never -c protocol.file.allow=never -c protocol.ssh.allow=never -c protocol.git.allow=never
+    -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ext.allow=never)
 
 git() {
     local i=1 n=$# dir=. a
@@ -39,5 +41,10 @@ git() {
     case ${!i-} in
         diff|log|show) set -- "${@:1:i}" --no-ext-diff --no-textconv "${@:i+1}" ;;
     esac
-    command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@"
+    case ${!i-} in
+        # A lazy fetch runs the remote the repo names. GIT_ALLOW_PROTOCOL= refuses every transport,
+        # a remote helper too, on git < 2.44. Only a user's switch or the worktree hook's add may fetch.
+        switch|worktree) command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+        *) GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+    esac
 }
