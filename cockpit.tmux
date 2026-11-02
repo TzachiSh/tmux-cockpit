@@ -107,6 +107,10 @@ PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
 tmux bind-key -T cockpit o display-popup -E -w "$PW" -h "$PH" \
     -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
     "$Q_OPEN --browse"
+# What is each agent doing: one line per pane, its state or - for a non-agent.
+# display-popup expands no format in its command, so list-panes gets the #{...}.
+tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
+    "tmux list-panes -a -F '#{session_name}:#{window_index}  #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}  #{pane_title}' | column -t -s'  '; read -r _"
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
@@ -299,6 +303,7 @@ row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K 
 row 'Board of every agent'        w "$bk"
 row 'Panel for this pane'         f "$pk"
 row 'Review its diff'             r "$rk"
+rows+=('What is each agent doing?' t 'switch-client -T cockpit ; send-keys -K t')
 rows+=('')
 rows+=('#{?#{E:@cockpit_path_shown},,Browse folder}' o 'switch-client -T cockpit ; send-keys -K o')
 row '#{?#{E:@cockpit_branch_shown},,#{?#{E:@cockpit_where_branch},Switch branch,}}' b b

@@ -10570,6 +10570,35 @@ cw_close "${twpid:-}" "${twf:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
+echo "== the menu's What is each agent doing? lists every pane with its state (#125, #222) =="
+# The row replays the cockpit table's t, a popup over one tmux list-panes. Its
+# -F format is resolved here on a server, the same pass the popup's shell runs.
+if need_tmux "the agents popup"; then :; else
+AGS="cockpit-agents-$$"; SOCKS="$SOCKS $AGS"
+"$TMUX_REAL" -L "$AGS" -f /dev/null new-session -d -s ag -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$AGS" list-keys -T prefix | awk '$4=="a"')" in
+    *"What is each agent doing?"*"send-keys -K t"*) ok "the menu has the row, replaying the cockpit table's t" ;;
+    *) bad "the menu has the row, replaying the cockpit table's t" "What is each agent doing? ... send-keys -K t" "absent" ;;
+esac
+AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' | sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
+"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T alpha >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set-option -p -t ag:0 @panestate needs-input >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" set-option -p -t ag:1 @panestate running >/dev/null 2>&1
+until_out '*claude*claude*sleep*' "$TMUX_REAL" -L "$AGS" list-panes -a -F '#{pane_current_command}' >/dev/null
+# The third pane is not an agent: its state column is the - sentinel, not a blank
+# that would slide the title one column left.
+is "two agent panes with their state, the plain pane with the sentinel" \
+   "ag:0 needs-input alpha|ag:1 running bravo|ag:2 - plain" \
+   "$("$TMUX_REAL" -L "$AGS" list-panes -a -F "$AGF" 2>/dev/null | tr -s ' ' ' ' | paste -sd'|' -)"
+"$TMUX_REAL" -L "$AGS" kill-server >/dev/null 2>&1
+fi
+
 echo "== full.tmux.conf hardcodes no plugin path (#103) =="
 # Two menu rows hardcoded ~/.local/bin with their own popup geometry (#58 defect
 # 11): a second definition of the plugin's popup drifts from it. Pure file check.
