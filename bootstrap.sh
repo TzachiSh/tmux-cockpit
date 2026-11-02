@@ -212,6 +212,12 @@ else
     fi
 fi
 
+# ------------------------------------------------------------ cockpit-tui ----
+# Required (#199), so not asked: a release via your gh login, else a source build.
+step "cockpit-tui"
+if [ "$dry" -eq 1 ]; then printf '  would: run scripts/tui-fetch --required\n'
+else "$DIR/scripts/tui-fetch" --required && did+=("cockpit-tui") || failed+=("cockpit-tui"); fi
+
 # --------------------------------------------------------------- commands ----
 step "commands"
 if ask "link tm, tmux-branch and tmux-open-path into ~/.local/bin?" y; then

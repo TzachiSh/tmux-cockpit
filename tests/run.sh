@@ -2428,12 +2428,20 @@ is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
 # failed in CI over a missing client would be ignored everywhere else.
 is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolor")"
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
+is "the suite's cockpit-tui is an ok row"   "1" "$(dcrow "$dcout" "ok cockpit-tui")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
 if [ "$(dcge "$dctv" 3.8)" = no ]; then
     skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
     is "and the whole run exits 0"          "0" "$dcrc"
 fi
+# Required since #199: missing or below TUI_MIN fails the doctor, not warns.
+dcout=$(COCKPIT_TUI_BIN="$DC/no-such-tui" dc "$DCP"); dcrc=$?
+is "a missing cockpit-tui is a fail row"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
+is "and it exits 2"                         "2" "$dcrc"
+dshim cockpit-tui "cockpit-tui 0.0.1" "$DC"
+dcout=$(COCKPIT_TUI_BIN="$DC/cockpit-tui" dc "$DCP")
+is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
 # Debian ships 0.44.1, below the 0.73 the pickers need.
 dcout=$(dc "$DOLD:$DCP"); dcrc=$?
 is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"

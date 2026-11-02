@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tmux-cockpit installer.
-#   ./install.sh            symlink the commands into ~/.local/bin
+#   ./install.sh            symlink the commands into ~/.local/bin, fetch cockpit-tui
 #   ./install.sh --uninstall  remove only the symlinks that point back here
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
 #   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into ~/.claude/settings.json
@@ -36,6 +36,8 @@ esac; done
 # ---------------------------------------------------------------- doctor ----
 # shellcheck source=scripts/lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
+# shellcheck source=scripts/lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
 
 # A builtin, not awk: the fail rows must still be right on an empty PATH.
 fld() {                       # fld <field> <version line>
@@ -70,6 +72,14 @@ if [ "$check" -eq 1 ]; then
     elif [ "$(vnum "$v")" -lt "$(vnum 3.8)" ]; then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
     else row ok tmux "$v"
     fi
+
+    # Required (#199): the scripts read transcripts and git flags through it.
+    v=$(tui_check)
+    case $? in
+        0) row ok cockpit-tui "$v" ;;
+        1) row fail cockpit-tui 'not found' 'install.sh fetches or builds it' ;;
+        *) row fail cockpit-tui "$v" "needs $TUI_MIN+; scripts/tui-fetch updates it" ;;
+    esac
 
     # A warning, not a failure: the status bar and the pickers work without jq.
     v=$(jq --version 2>/dev/null)
@@ -255,6 +265,11 @@ if [ -d "${HOME:-}/.claude" ]; then
 fi
 else
     printf 'dry-run: skipping the symlink step\n'
+fi
+
+# Required (#199): a release through the user's gh login, else a source build.
+if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
+    "$DIR/scripts/tui-fetch" --required || rc=1
 fi
 
 if [ "$hooks" -eq 1 ]; then
