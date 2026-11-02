@@ -5,10 +5,11 @@ Each tile carries the pane's state glyph, what the agent is doing, how long it
 has been doing it, and a live `capture-pane` of the pane itself. `↵` jumps to
 the tile you are on and closes the board.
 
-It is a small Rust binary, `bin/cockpit-tui`, and it is **optional**. Nothing
-else in the plugin needs it, nothing breaks without it, and every key it offers
-already exists as a bash path. If it is not installed the binding prints one
-message and exits 0.
+It is a small Rust binary, `bin/cockpit-tui`. It is **required**: the board and
+the panel run on it, and the follow-up #199 PRs move the shell scripts'
+transcript, diff-count and git-safety readers onto its `transcript`, `diffstat`
+and `git-flags`. Install fetches it with your own `gh` login or builds it from
+source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## What it is not
 
@@ -19,14 +20,15 @@ message and exits 0.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
   runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
-  stays shell, so the suite keeps testing it with no binary present.
+  stays shell.
 - **Not a replacement for `prefix i` or `prefix f`.** The board reaches them; it
   does not reimplement them.
 
 ## Install
 
-The binary ships as a release asset. With `@cockpit_tui_fetch on`, `prefix U`
-(tpm's update key) fetches it; otherwise run `scripts/tui-fetch` yourself.
+The binary ships as a release asset. `install.sh` fetches it; so does
+`prefix U` (tpm's update key) with `@cockpit_tui_fetch on`, or
+`scripts/tui-fetch` run by hand.
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
@@ -48,12 +50,14 @@ That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
 Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
-`make check`, the repo's own gate, stays green with no cargo installed at all.
-`make tui` is a separate target on purpose: the board must never become a build
-prerequisite for a plugin that is otherwise shell.
+`make check` builds the binary first; the suite needs cargo.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
-does not touch it; that script manages only its symlinks in `~/.local/bin`.
+runs `scripts/tui-fetch --required` and exits 1 when no working binary is
+left; `install.sh --check` fails when it is missing or older than `TUI_MIN`
+(`scripts/lib/tui.sh`). `COCKPIT_TUI_BIN` points every script at another
+binary. Loading the plugin runs one offline `--version` and says when the
+binary is missing or too old.
 
 `@cockpit_board_window on` parks the board in a window instead of the popup.
 
@@ -794,8 +798,7 @@ workspace, no crate split.
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
 Every mutating action stays a shell script: the binary prints
-`<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
-binary present.
+`<verb> <pane-id>` and a wrapper runs it.
 
 ### Push wakeups
 

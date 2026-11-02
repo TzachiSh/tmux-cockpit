@@ -365,17 +365,19 @@ request() {                   # <pane>
     esac
 }
 
-# The optional cockpit-tui binary, for the info screen: whether it is there,
-# which version, and whether @cockpit_tui_version asks for a different one.
-# Absent is a normal state, not a fault -- prefix r is the fleet view with or
-# without it -- so the row names the gesture that installs it and stops.
+# The cockpit-tui binary, for the info screen: whether it is there, which
+# version, and whether @cockpit_tui_version asks for a different one. Absent is
+# a broken install (#199), so the row names the gesture that installs it.
 # Which credentials that fetch would ride (#84): the repo is private, so an
 # unauthenticated prefix U 404s, and the fix is `gh auth login`, not retrying.
 tui_auth() { "$(dirname "$LIBDIR")/tui-fetch" --auth 2>/dev/null || printf 'unauthenticated'; }
 tui_row() {
     local bin have want
-    bin="$(dirname "$(dirname "$LIBDIR")")/bin/cockpit-tui"
-    # Absent is the common case: test the file before paying a fork for it.
+    # Here, not at the top: tmux-review re-execs per fzf keystroke.
+    # shellcheck source=tui.sh
+    . "$LIBDIR/tui.sh" || return 1
+    bin=$COCKPIT_TUI_BIN
+    # Test the file before paying a fork for it.
     [ -x "$bin" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }
     have=$("$bin" --version 2>/dev/null); have=${have##* }; have=${have#v}
     [ -n "$have" ] || { printf 'not installed  (prefix U fetches it, %s)' "$(tui_auth)"; return 0; }

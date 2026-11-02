@@ -5,10 +5,12 @@
 set -u
 
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
-BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 # shellcheck source=lib/pane.sh
 . "$DIR/scripts/lib/pane.sh" || exit 1
+# shellcheck source=lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
+BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 log() {
@@ -25,9 +27,9 @@ esac
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
-# The binary is optional, so a missing one is not an error.
+# Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" 2>/dev/null
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh; prefix r is the fleet list" 2>/dev/null
     exit 0
 fi
 
