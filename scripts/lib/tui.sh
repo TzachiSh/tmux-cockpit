@@ -3,6 +3,8 @@
 # may be. Builtins only, like vnum.sh: install.sh's fail rows use it.
 
 TUI_MIN=0.2.0
+# shellcheck disable=SC2034  # read by tui-fetch: the release it installs is the floor
+TUI_TAG=cockpit-tui-v$TUI_MIN
 COCKPIT_TUI_BIN=${COCKPIT_TUI_BIN:-$(cd -P "${BASH_SOURCE[0]%/*}/../.." && pwd)/bin/cockpit-tui}
 # shellcheck source=vnum.sh
 . "${BASH_SOURCE[0]%/*}/vnum.sh" || return 1

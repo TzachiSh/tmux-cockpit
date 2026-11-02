@@ -5,12 +5,13 @@
 # Run by install.sh, by hand, or with @cockpit_tui_fetch on in the background of
 # every config load (start, prefix R, prefix U), which a dead network must not stall.
 # Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh),
-# COCKPIT_TUI_OFFLINE (no gh, curl or cargo: the suite sets it).
+# COCKPIT_TUI_OFFLINE (no gh, curl or cargo: the suite sets it), COCKPIT_TUI_BIN.
 set -u
 
-PIN=cockpit-tui-v0.2.0
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BIN="$DIR/bin"
+# shellcheck source=lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1    # COCKPIT_TUI_BIN, TUI_MIN, TUI_TAG, vnum
+BIN=${COCKPIT_TUI_BIN%/*}
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
 
 say() { printf 'tui-fetch: %s\n' "$1"; }
@@ -36,18 +37,16 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
-[ -n "$TAG" ] || TAG=$PIN
+[ -n "$TAG" ] || TAG=$TUI_TAG
 
 # Tags are `<package>-v<ver>` for axotag; an old `tui-` pin still compares equal.
 norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
 
-# shellcheck source=lib/vnum.sh
-. "$DIR/scripts/lib/vnum.sh" || exit 1
 FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 2>/dev/null | head -1)
 
 # Every non-error exit: under --required, only a binary that runs is success.
 finish() {
-    if [ "$REQUIRED" -eq 1 ] && [ -z "$("$BIN/cockpit-tui" --version 2>/dev/null)" ]; then
+    if [ "$REQUIRED" -eq 1 ] && [ -z "$("$COCKPIT_TUI_BIN" --version 2>/dev/null)" ]; then
         say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
         exit 1
     fi
@@ -111,8 +110,8 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     [ -n "$got" ] || { say "the $TAG build for $TARGET does not run here"; return 2; }
     [ "$(norm "$got")" = "$(norm "$TAG")" ] || {
         say "the $TAG tarball reports '$got' -- nothing installed" >&2; return 1; }
-    install -m 755 "$bin" "$BIN/cockpit-tui" || return 1
-    say "cockpit-tui $(norm "$TAG") -> $BIN/cockpit-tui $VIA"
+    install -m 755 "$bin" "$COCKPIT_TUI_BIN" || return 1
+    say "cockpit-tui $(norm "$TAG") -> $COCKPIT_TUI_BIN $VIA"
 }
 
 build() {                     # 0 built · 2 skipped
@@ -129,11 +128,11 @@ build() {                     # 0 built · 2 skipped
     trap 'rm -f "$log"' RETURN
     cargo build --release --locked --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
         say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
-    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$BIN/cockpit-tui" || return 2
-    say "cockpit-tui built from source -> $BIN/cockpit-tui"
+    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$COCKPIT_TUI_BIN" || return 2
+    say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }
 
-have=$("$BIN/cockpit-tui" --version 2>/dev/null)
+have=$("$COCKPIT_TUI_BIN" --version 2>/dev/null)
 if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
     say "cockpit-tui $(norm "$TAG") already current"
     exit 0
