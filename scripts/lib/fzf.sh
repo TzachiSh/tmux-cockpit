@@ -11,23 +11,31 @@
 # cache that dies with that call.
 declare -gA COCKPIT_THM=()
 # One tmux round-trip for the whole palette, not one per colour key: this runs
-# on every popup open, and the theme touches nine @thm_ roles. The defaults are
-# the plugin's dark palette (scripts/lib/statusbar.conf), so a picker started
-# before the plugin loaded is still coloured.
+# on every popup open, and the theme touches ten @thm_ roles. A popup cannot ask
+# its client for its theme, so `theme light` (tmux's own option) picks the
+# @thm_<role>_light set. The defaults are the plugin's palette
+# (scripts/lib/statusbar.conf), so a picker started before it loaded is coloured.
 _cockpit_fzf_thm() {
     [ "${#COCKPIT_THM[@]}" -gt 0 ] && return 0
-    local k fmt='' i
+    local k fmt='#{theme}'$'\037' i light=0
     local keys=(fg error surface sel dim accent done review needs running)
-    local defs=('#e6e4df' '#ff9e3d' '#2a2f3a' '#3a4252' '#9097a3' '#6cb6ff' \
+    local dark=('#e6e4df' '#ff9e3d' '#2a2f3a' '#3a4252' '#9097a3' '#6cb6ff' \
                 '#5fd38d' '#5fd3d3' '#ff5f6d' '#e6c84f')
+    local lite=('#1b1e24' '#9a4c00' '#e1e5ec' '#c8d1df' '#5c626c' '#0a5fc2' \
+                '#1d7439' '#00737a' '#c4122f' '#806200')
     # \037, not a tab: tab is IFS *whitespace*, so bash collapses a run of them
     # into one delimiter and every unset @thm_ token shifts the colours after
     # it onto the wrong keys. A user who overrides some roles leaves gaps.
-    for k in "${keys[@]}"; do fmt="$fmt#{@thm_$k}"$'\037'; done
+    for k in "${keys[@]}"; do fmt="$fmt#{@thm_$k}"$'\037'"#{@thm_${k}_light}"$'\037'; done
     local vals=()
     IFS=$'\037' read -r -a vals <<<"$(tmux display-message -p "$fmt" 2>/dev/null)"
+    [ "${vals[0]:-}" = light ] && light=1
     for i in "${!keys[@]}"; do
-        COCKPIT_THM[${keys[$i]}]=${vals[$i]:-${defs[$i]}}
+        if [ "$light" = 1 ]; then
+            COCKPIT_THM[${keys[$i]}]=${vals[2 * i + 2]:-${lite[$i]}}
+        else
+            COCKPIT_THM[${keys[$i]}]=${vals[2 * i + 1]:-${dark[$i]}}
+        fi
     done
 }
 

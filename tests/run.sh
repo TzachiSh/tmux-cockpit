@@ -10815,6 +10815,14 @@ fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
 is "two set tokens with gaps between them: no colour lands on its neighbour's key" \
    "fg:#e6e4df hl:#ff9838 bg+:#2a2f3a prompt:#c9a2ff" \
    "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
+# tmux's own `theme light` picks the _light roles: a popup cannot ask its client.
+"$TMUX_REAL" -L "$FZGS" set -s theme light >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZGS" set -g @thm_accent_light '#0b0c0d' >/dev/null 2>&1
+fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
+        "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
+is "under theme light the pickers read the light roles and defaults" \
+   "fg:#1b1e24 hl:#9a4c00 bg+:#e1e5ec prompt:#0b0c0d" \
+   "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
 "$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
 
 # Read off tm's own argv, not composed here: nothing in scripts/ decided the
