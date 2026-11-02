@@ -3172,13 +3172,13 @@ tap 2 30
 until_out 1 "$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}' >/dev/null
 is "tapping ‹ steps to the previous window" "1" \
    "$("$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}')"
-if command -v fzf >/dev/null 2>&1; then
+if [ -x "$DIR/bin/cockpit-tui" ]; then
     tap 12 1
-    # tm marks your own session ‹here› below 60 columns.
-    if until_cap "$TO" o '*session>*‹here›*'; then ok "tapping the session name opens the session picker"
-    else bad "tapping the session name opens the session picker" "tm's prompt and the ‹here› row" "$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | head -5)"; fi
+    # the sessions view marks your own session (here).
+    if until_cap "$TO" o '*session>*(here)*'; then ok "tapping the session name opens the session picker"
+    else bad "tapping the session name opens the session picker" "the picker's prompt and the (here) row" "$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | head -5)"; fi
 else
-    skip_ "tapping the session name opens the session picker (no fzf)"
+    skip_ "tapping the session name opens the session picker (no bin/cockpit-tui)"
 fi
 "$TMUX_REAL" -L "$TO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
@@ -12180,13 +12180,13 @@ is "desktop: 70% wide, rows + 4 under the 14-line floor" "-w 140 -h 14" "$(tpsiz
 is "desktop: rows + 4 above it" "-w 140 -h 24" "$(tpsize '20|0||||' 200 50)"
 is "desktop: many sessions stop at 70% of the height" "-w 140 -h 35" "$(tpsize '40|0||||' 200 50)"
 is "tablet: 90% wide" "-w 99 -h 14" "$(tpsize '7|3||||' 110 40)"
-is "narrow: full width, rows + 4, a 12-line floor" "-w 56 -h 12" "$(tpsize '7|3||||' 56 30)"
+is "narrow: full width, rows + 4, a 14-line floor (12 inside the border)" "-w 56 -h 14" "$(tpsize '7|3||||' 56 30)"
 is "narrow with many sessions: rows + 4" "-w 56 -h 24" "$(tpsize '20|0||||' 56 30)"
 is "@cockpit_touch off at a narrow width: the desktop tier" "-w 50 -h 14" "$(tpsize '7|3|off|||' 56 30)"
-is "@cockpit_touch on at a desktop width: full width" "-w 200 -h 12" "$(tpsize '7|3|on|||' 200 50)"
+is "@cockpit_touch on at a desktop width: full width" "-w 200 -h 14" "$(tpsize '7|3|on|||' 200 50)"
 is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7|3||60%|10|' 200 50)"
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
-is "--needs sizes for the needs-you band" "-w 56 -h 12" "$(tpsize '7|4||||' 56 30 --needs)"
+is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
     "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "the popup goes to that client, in its session" ;;

@@ -187,10 +187,11 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
   case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cw" -lt 100 ] && t=1 ;; esac
   rows=$n; [ -n "$needs" ] && [ "$nneed" -gt 0 ] && rows=$nneed
   # 4 = the prompt, the header line, the footer and the border; the list takes
-  # the rows, and 14 lines leave the preview room for a few windows.
+  # the rows. 14 is the floor: the popup's border takes 2 and the screen needs
+  # 12 inside it, or it draws its "too short" card.
   if [ "$t" = 1 ]; then
     w=$cw; ceiling w "$pw" "$cw"
-    h=$((rows + 4)); clamp h 12 "$ch"; ceiling h "$ph" "$ch"
+    h=$((rows + 4)); clamp h 14 "$ch"; ceiling h "$ph" "$ch"
   else
     w=$((cw * 70 / 100)); [ "$cw" -ge 160 ] || w=$((cw * 90 / 100))
     # The user's size options are ceilings, not sizes.
