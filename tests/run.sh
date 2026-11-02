@@ -13361,7 +13361,7 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 fi
 
 pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick args...]  runs `pick` in a fresh pane
-    local sock=$1 d=$2 cols=$3 lines=$4 text=$5 args; shift 5
+    local sock=$1 d=$2 cols=$3 height=$4 text=$5 args; shift 5
     args=; [ $# -eq 0 ] || args=$(printf '%q ' "$@")
     printf '%s' "$text" > "$d/rows"
     {
@@ -13370,7 +13370,7 @@ pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick a
         printf 'echo $? > "$d/rc"\nexec sleep 30\n'
     } > "$d/run"
     chmod +x "$d/run"
-    "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$lines" \
+    "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$height" \
         "$d/run '$DIR/bin/cockpit-tui' '$d' $args" >/dev/null 2>&1
 }
 
