@@ -6,15 +6,15 @@
 
 # The pane's transcript path: @cockpit_session, else `claude agents --json`.
 transcript_file() {           # <pane-id>
-    "$COCKPIT_TUI_BIN" transcript file "${1:-}" 2>/dev/null
+    "$COCKPIT_TUI_BIN" transcript file "${1:-}" 2>/dev/null || return 1
 }
 
 # doing / said / asked rows, tab separated, for prefix i.
 transcript_doing() {          # <jsonl-path>
-    "$COCKPIT_TUI_BIN" transcript doing "${1:-}" 2>/dev/null
+    "$COCKPIT_TUI_BIN" transcript doing "${1:-}" 2>/dev/null || return 1
 }
 
 # USER: / AGENT: / TOOL lines, oldest first, capped at [max-bytes] (default 4096).
 transcript_tail() {           # <jsonl-path> [max-bytes]
-    "$COCKPIT_TUI_BIN" transcript tail "${1:-}" "${2:-}" 2>/dev/null
+    "$COCKPIT_TUI_BIN" transcript tail "${1:-}" "${2:-}" 2>/dev/null || return 1
 }
