@@ -105,17 +105,11 @@ if [ "$check" -eq 1 ]; then
     else row warn bat 'not found' 'optional; bootstrap.sh --full'
     fi
 
-    v=$(fld 3 "$(gum --version 2>/dev/null)"); v=${v#v}
-    if [ -z "$v" ] || [ "$(vnum "$v")" -lt "$(vnum 2.0.0)" ]; then
-        row warn gum "${v:-not found}" 'optional; bootstrap.sh --full'
-    else row ok gum "$v"
-    fi
-
     # Order, not just presence: a fetched fzf in $BIN is useless if apt's answers first.
     case ":$PATH:" in
         *":$BIN:"*)
             shadow=''; sdir=''
-            for t in fzf bat gum; do
+            for t in fzf bat; do
                 [ -x "$BIN/$t" ] || continue
                 w=$(command -v "$t" 2>/dev/null) || w=''
                 [ -n "$w" ] && [ "$w" != "$BIN/$t" ] && { shadow=$t; sdir=${w%/*}; break; }

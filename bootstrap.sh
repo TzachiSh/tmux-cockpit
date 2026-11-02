@@ -3,7 +3,7 @@
 #
 #   ./bootstrap.sh             ask before each step (fetches fzf if below 0.73)
 #   ./bootstrap.sh --yes       take every default, ask nothing
-#   ./bootstrap.sh --full      also fetch the pinned fzf, gum and bat into $BIN
+#   ./bootstrap.sh --full      also fetch the pinned fzf and bat into $BIN
 #   ./bootstrap.sh --full --latest   the same, at each project's newest tag
 #   ./bootstrap.sh --check     run install.sh --check (the doctor) and exit
 #   ./bootstrap.sh --dry-run   print what would happen, change nothing
@@ -230,7 +230,7 @@ fi
 # ----------------------------------------------------------- latest tools ----
 # Pinned, into $BIN, never over a distro binary or with sudo. An fzf below the
 # pickers' 0.73 is fetched even without --full.
-FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
+FZF=0.74.3 BAT=0.26.1
 fzf_old=0
 fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
 [ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 73 && fzf_old=1
@@ -283,19 +283,16 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
 
 if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
     step "latest tools"
-    tools="fzf $FZF, gum $GUM and bat $BAT"
+    tools="fzf $FZF and bat $BAT"
     [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.73+)"
     BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
     G="${COCKPIT_GITHUB:-https://github.com}"
-    fz='' gu='' ba=''
+    fz='' ba=''
     case "$(uname -s)/$(uname -m)" in
-        Linux/x86_64|Linux/amd64) fz=linux_amd64; gu=Linux_x86_64
-                                  ba=x86_64-unknown-linux-musl ;;
-        Linux/aarch64|Linux/arm64) fz=linux_arm64; gu=Linux_arm64
-                                   ba=aarch64-unknown-linux-musl ;;
-        Darwin/x86_64) fz=darwin_amd64; gu=Darwin_x86_64; ba=x86_64-apple-darwin ;;
-        Darwin/arm64|Darwin/aarch64) fz=darwin_arm64; gu=Darwin_arm64
-                                     ba=aarch64-apple-darwin ;;
+        Linux/x86_64|Linux/amd64)    fz=linux_amd64;  ba=x86_64-unknown-linux-musl ;;
+        Linux/aarch64|Linux/arm64)   fz=linux_arm64;  ba=aarch64-unknown-linux-musl ;;
+        Darwin/x86_64)               fz=darwin_amd64; ba=x86_64-apple-darwin ;;
+        Darwin/arm64|Darwin/aarch64) fz=darwin_arm64; ba=aarch64-apple-darwin ;;
     esac
     if [ -z "$fz" ]; then
         note "no prebuilt binaries for $(uname -s)/$(uname -m), use your package manager"
@@ -304,8 +301,8 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
         # A fetched copy would shadow the one brew upgrades.
         if [ "$full" -eq 0 ] && ask "upgrade fzf $fzf_have with brew?" y; then
             run "brew upgrade fzf" brew upgrade fzf
-        elif [ "$full" -eq 1 ] && ask "install fzf, gum and bat with brew?" y; then
-            run "brew install fzf bat gum" brew install fzf bat gum
+        elif [ "$full" -eq 1 ] && ask "install fzf and bat with brew?" y; then
+            run "brew install fzf bat" brew install fzf bat
         else
             skipped+=("latest tools")
         fi
@@ -316,7 +313,6 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
         # Not in a dry run: a preview opens no connection, and the redirect is one.
         if [ "$latest" -eq 1 ] && [ "$dry" -eq 0 ]; then
             FZF=$(latest_tag junegunn/fzf "$FZF")
-            GUM=$(latest_tag charmbracelet/gum "$GUM")
             BAT=$(latest_tag sharkdp/bat "$BAT")
         elif [ "$latest" -eq 1 ]; then
             note "would: resolve the latest tags first; the pins are shown"
@@ -326,10 +322,6 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
             "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
             "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
             fzf || failed+=("fetch fzf")
-        [ "$full" -eq 0 ] || fetch_tool gum "$GUM" "$("$BIN/gum" --version 2>/dev/null | awk '{print $3}' | tr -d v)" \
-            "$G/charmbracelet/gum/releases/download/v$GUM/gum_${GUM}_$gu.tar.gz" \
-            "$G/charmbracelet/gum/releases/download/v$GUM/checksums.txt" \
-            "gum_${GUM}_$gu/gum" || failed+=("fetch gum")
         [ "$full" -eq 0 ] || fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
             "$G/sharkdp/bat/releases/download/v$BAT/bat-v$BAT-$ba.tar.gz" - \
             "bat-v$BAT-$ba/bat" || failed+=("fetch bat")

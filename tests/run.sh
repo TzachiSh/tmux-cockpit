@@ -2394,7 +2394,6 @@ mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DOLD" "$DNO" "$DC/tmuxtmp"
 printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim fzf "0.74.3 (15f64c49)" "$DSH"
-dshim gum "gum version v2.0.0 (b1f2)" "$DSH"
 dshim bat "bat 0.26.1 (a3c4)" "$DSH"
 dshim fzf "0.44.1 (debian)" "$DOLD"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
@@ -2460,9 +2459,10 @@ $DCS new-session -d 'sleep 300' >/dev/null 2>&1
 $DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
 is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
 $DCS kill-server >/dev/null 2>&1
-mkdir -p "$DC/oldgum"; dshim gum "gum version v1.0.0 (a1)" "$DC/oldgum"
-dcout=$(dc "$DC/oldgum:$DCP"); dcrc=$?
-is "an optional tool below its floor is a warn row" "1" "$(dcrow "$dcout" "warn gum")"
+# bat is the optional tool left, and a PATH without it is a warn row.
+mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"
+dcout=$(dc "$DBIN:$DC/nobat:$SHIM:$DNO"); dcrc=$?
+is "a missing optional tool is a warn row" "1" "$(dcrow "$dcout" "warn bat")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
@@ -2574,14 +2574,6 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         ( cd "$BS/pack" && tar -czf "$f/fzf-0.74.3-$a.tar.gz" fzf )
     done
     ( cd "$f" && sha256sum fzf-0.74.3-*.tar.gz > fzf_0.74.3_checksums.txt )
-    d="$REL/charmbracelet/gum/releases/download/v2.0.0"; mkdir -p "$d"
-    for a in Linux_x86_64 Linux_arm64 Darwin_x86_64 Darwin_arm64; do
-        rm -rf "$BS/pack"; mkdir -p "$BS/pack/gum_2.0.0_$a"
-        printf '#!/bin/sh\necho "gum version v2.0.0 (b1f2)"\n' > "$BS/pack/gum_2.0.0_$a/gum"
-        chmod +x "$BS/pack/gum_2.0.0_$a/gum"
-        ( cd "$BS/pack" && tar -czf "$d/gum_2.0.0_$a.tar.gz" "gum_2.0.0_$a" )
-    done
-    ( cd "$d" && sha256sum gum_2.0.0_*.tar.gz > checksums.txt )
     d="$REL/sharkdp/bat/releases/download/v0.26.1"; mkdir -p "$d"
     for a in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
              x86_64-apple-darwin aarch64-apple-darwin; do
@@ -2598,7 +2590,7 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         noasset) rm -f "$f"/fzf-0.74.3-*.tar.gz ;;
     esac
 }
-bsclear() { rm -f "$BB/fzf" "$BB/gum" "$BB/bat"; }
+bsclear() { rm -f "$BB/fzf" "$BB/bat"; }
 bssaid() {                    # bssaid <label> <literal line the freeze spells>
     case "$3" in
         *"$2"*) ok "$1" ;;
@@ -2608,21 +2600,21 @@ bssaid() {                    # bssaid <label> <literal line the freeze spells>
 
 mkrel
 bsout=$(bs --full); bsrc=$?
-is "--full installs all three pinned tools into \$BIN" "fzf gum bat" \
-   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+is "--full installs both pinned tools into \$BIN" "fzf bat" \
+   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
 is "and each is the version the pin names" "0.74.3 (15f64c49)" "$("$BB/fzf" --version 2>/dev/null)"
 is "and the run exits 0" "0" "$bsrc"
 # The probe is $BIN/<tool>, never PATH: the shimmed 0.44.1 fzf sits ahead of
-# $BIN here, and probing PATH would re-download all three on every run.
+# $BIN here, and probing PATH would re-download both on every run.
 bsout=$(bs --full)
 # fetch_tool's own lines: tui-fetch says "already current" for cockpit-tui too.
-is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c '^  ok: .* already current')"
+is "a second run fetches nothing" "2" "$(printf '%s\n' "$bsout" | grep -c '^  ok: .* already current')"
 
 # Without --full the 0.44.1 on PATH is below the pickers' 0.73: fzf alone.
 bsclear
 bsout=$(bs); bsrc=$?
 is "without --full an fzf below 0.73 fetches fzf alone" "fzf" \
-   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
 is "and the run exits 0" "0" "$bsrc"
 bsout=$(BPATH="$BB:$BPATH" bs)
 case "$bsout" in *"latest tools"*) bad "an fzf at 0.73+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
