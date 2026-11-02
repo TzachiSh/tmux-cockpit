@@ -23,12 +23,13 @@ pub struct Theme {
 
 /// field -> (@thm option, dark default, light default): the plugin's palette,
 /// shared with the status line (scripts/lib/statusbar.conf). The light set is
-/// `<option>_light`. Must-read text is fg or dim, and dim holds 4.5:1 on bg.
+/// `<option>_light`. Must-read text is fg or dim, and dim holds 4.5:1 on bg; faint
+/// (3:1) is for glyphs and hints that never carry meaning alone.
 const ROLES: [(&str, &str, &str); 10] = [
     ("@thm_dim", "#9097a3", "#5c626c"),     // label
     ("@thm_fg", "#e6e4df", "#1b1e24"),      // value
     ("@thm_fg", "#e6e4df", "#1b1e24"),      // quote
-    ("@thm_dim", "#9097a3", "#5c626c"),     // meta
+    ("@thm_faint", "#717885", "#7c828c"),   // meta: decoration only
     ("@thm_accent", "#6cb6ff", "#0a5fc2"),  // accent
     ("@thm_needs", "#ff5f6d", "#c4122f"),   // needs
     ("@thm_error", "#ff9e3d", "#9a4c00"),   // error

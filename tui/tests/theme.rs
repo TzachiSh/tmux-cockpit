@@ -41,3 +41,12 @@ fn theme_light_reads_the_light_set() {
     assert_eq!(th.needs, Color::Rgb(4, 5, 6));
     assert_eq!(th.value, Color::Rgb(0x1b, 0x1e, 0x24));
 }
+
+#[test]
+fn meta_reads_the_faint_role_apart_from_label() {
+    let th = load("@thm_faint \"#0a0b0c\"\ntheme detect\n");
+    assert_eq!(th.meta, Color::Rgb(10, 11, 12));
+    // label stays dim: a frame in label is never drawn in meta.
+    assert_eq!(th.label, Color::Rgb(0x90, 0x97, 0xa3));
+    assert_ne!(Theme::fixed().meta, Theme::fixed().label);
+}

@@ -77,6 +77,7 @@ light value. Set any of them before the `run-shell` line to override it.
 | `@thm_done` | `#5fd38d` | `#1d7439` | `✓` |
 | `@thm_review` | `#5fd3d3` | `#00737a` | `◆` |
 | `@thm_sel` | `#3a4252` | `#c8d1df` | the selected row in the pickers |
+| `@thm_faint` | `#717885` | `#7c828c` | cockpit-tui's decorative glyphs and hints, never the only copy of a meaning: 4.0 / 3.6 on bg, 3.0 / 3.1 on surface |
 
 The light values are the same names with `_light` added, for example
 `@thm_needs_light`.
