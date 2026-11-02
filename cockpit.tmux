@@ -212,7 +212,7 @@ if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
 fi
 
 # Reload sources every file in #{config_files}, resolved once at bind time.
-# Multi-command bindings go through a conf file: from argv, `\;` ends bind-key itself.
+# From argv a bare ; argument ends bind-key itself, so pick_on below passes '\;'.
 rlconf=$(mktemp) || exit 1
 trap 'rm -f "$rlconf"' EXIT HUP INT TERM
 {
@@ -242,7 +242,8 @@ rm -f "$rlconf"
 # destroy it and detach the client. The source is pinned by id (#{S:} shadows it).
 # User text stays data: ##{window_name} expands in display-menu, and the typed name
 # goes through %%% once into an option, so #( never runs. Four # for two expansions.
-# A session name's # is doubled by backreference: on 3.8 a ## replacement comes out as nothing.
+# A session name's # is doubled by backreference: on 3.8 an s/// pattern of a bare #
+# matches nothing, and a ## replacement inserts nothing.
 mk=$(key @cockpit_move_key M)
 if [ -n "$mk" ]; then
     mvconf=$(mktemp) || exit 1

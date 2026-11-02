@@ -2846,10 +2846,17 @@ QIP=$("$TMUX_REAL" -L "$QI" list-panes -t t -F '#{pane_id}')
 "$TMUX_REAL" -L "$QO" -f /dev/null new-session -d -s o -x 80 -y 24 \
     "$TMUX_REAL -L $QI attach -t t" >/dev/null 2>&1
 until_cap "$QO" o '*MARK*'
-# Ctrl+right-click on the MARK row: SGR button 2 plus the ctrl bit is 18.
-"$TMUX_REAL" -L "$QO" send-keys -t o -H 1b 5b 3c 31 38 3b 32 3b 31 4d >/dev/null 2>&1
-until_file "$QLOG" '*OPEN*'
-is "ctrl+right-click runs the picker from that path" "OPEN $QIP" "$(cat "$QLOG")"
+# SGR on the MARK row: ctrl is +16 and meta +8 on the button, so ctrl+right is 18.
+# The double click is one send-keys: tmux drops a pair more than ~300ms apart.
+for qg in "ctrl+right-click:1b 5b 3c 31 38 3b 32 3b 31 4d" \
+          "alt+click:1b 5b 3c 38 3b 32 3b 31 4d 1b 5b 3c 38 3b 32 3b 31 6d" \
+          "ctrl+double-click:1b 5b 3c 31 36 3b 32 3b 31 4d 1b 5b 3c 31 36 3b 32 3b 31 6d 1b 5b 3c 31 36 3b 32 3b 31 4d 1b 5b 3c 31 36 3b 32 3b 31 6d"; do
+    : > "$QLOG"
+    # shellcheck disable=SC2086  # the hex bytes are meant to split
+    "$TMUX_REAL" -L "$QO" send-keys -t o -H ${qg#*:} >/dev/null 2>&1
+    until_file "$QLOG" '*OPEN*'
+    is "${qg%%:*} runs the picker from that path" "OPEN $QIP" "$(cat "$QLOG")"
+done
 "$TMUX_REAL" -L "$QO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$QI" kill-server >/dev/null 2>&1
 fi
