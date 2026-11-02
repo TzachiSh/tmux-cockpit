@@ -1057,6 +1057,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
@@ -1145,7 +1146,7 @@ SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
 still names the key; `off` unbinds it). In the board, `i` draws the same screen
 as an overlay over the selected pane and `esc` returns to the board; the board
 no longer exits with `info %N` for the wrapper. The module is `info` (the
-screen, the module-table row it owes #61) and `data::info` (the facts).
+screen) and `data::info` (the facts); both are in the module table.
 
 It shows what `tmux-review --info` showed, in the same order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), `root`,

@@ -120,13 +120,12 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
             "--",
             &rname,
             &bref,
-            "refs/remotes/origin/HEAD",
             "refs/heads/main",
             "refs/heads/master",
         ],
     );
     let (mut ckpt, mut bups, mut btrack) = (String::new(), String::new(), String::new());
-    let (mut osha, mut mainsha, mut mastersha) = (String::new(), String::new(), String::new());
+    let (mut mainsha, mut mastersha) = (String::new(), String::new());
     for l in rows.lines() {
         let mut f = l.split('\t');
         let (name, sha) = (f.next().unwrap_or(""), f.next().unwrap_or("").to_string());
@@ -138,15 +137,12 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
                 head = sha;
             }
             (bups, btrack) = (ups, track);
-        } else if name == "refs/remotes/origin/HEAD" {
-            osha = sha;
         } else if name == "refs/heads/main" {
             mainsha = sha;
         } else if name == "refs/heads/master" {
             mastersha = sha;
         }
     }
-    let _ = osha;
     let held = |rev: &str, label: &str, mode: &str| Base {
         rev: rev.into(),
         label: label.into(),
@@ -184,6 +180,7 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
 fn tui_row(want: &str) -> String {
     let have = env!("CARGO_PKG_VERSION");
     let bin = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
+    let want = clean(want);
     let want = want.trim();
     let want = want.strip_prefix("cockpit-").unwrap_or(want);
     let want = want.strip_prefix("tui-").unwrap_or(want);
@@ -205,20 +202,23 @@ const SEP: char = '\u{1f}';
 /// there: display-message exits 0 and expands to nothing for a missing id, so
 /// the resolved id is the test, not the status.
 pub fn gather(pane: &str) -> Result<Facts, String> {
+    // A US byte inside a title, a message or a window name would shift every
+    // later field: free-form values are blanked in the format, as data.rs FIELDS does.
+    let q = |f: &str| format!("#{{s/{SEP}/ /:{f}}}");
     let fmt = [
-        "#{pane_id}",
-        "#{session_name}:#{window_index} #{window_name}",
-        "#{pane_current_command}",
-        "#{pane_current_path}",
-        "#{@cockpit_dir}",
-        "#{@panestate}",
-        "#{@panestate_msg}",
-        "#{@cockpit_review}",
-        "#{@cockpit_review_spool}",
-        "#{@cockpit_session}",
-        "#{@cockpit_title}",
-        "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}",
-        "#{@cockpit_tui_version}",
+        "#{pane_id}".to_string(),
+        format!("{}:#{{window_index}} {}", q("#{session_name}"), q("#{window_name}")),
+        q("#{pane_current_command}"),
+        q("#{pane_current_path}"),
+        q("#{@cockpit_dir}"),
+        q("#{@panestate}"),
+        q("#{@panestate_msg}"),
+        q("#{@cockpit_review}"),
+        q("#{@cockpit_review_spool}"),
+        q("#{@cockpit_session}"),
+        q("#{@cockpit_title}"),
+        "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}".to_string(),
+        q("#{@cockpit_tui_version}"),
     ]
     .join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
@@ -250,13 +250,14 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
             x.dir_missing = true;
         }
     }
-    let root = git_root(&path);
+    // No cwd at all: git_root("") would describe the caller's repo, not this pane's.
+    let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
     if x.agent {
         x.doing = doing_rows(&x.id);
     }
     let sess = session_dir(&x.id, &root);
-    if !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
+    if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
         let chosen = std::fs::read_to_string(sess.join("comments.md.base")).unwrap_or_default();
         x.base = Some(review_base(&root, chosen.trim_end_matches('\n'), "", ""));
     }

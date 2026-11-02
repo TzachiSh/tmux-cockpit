@@ -296,3 +296,58 @@ fn git_root_is_the_top_or_the_dir_itself() {
     assert_eq!(git_root(plain.to_str().unwrap()), plain.to_str().unwrap(), "no repo: the dir");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// A repo whose branch `feat` tracks a bare remote, for the upstream case of
+/// review_base. `feat` is one commit past main; the remote has it or not.
+fn tracked(tag: &str) -> (PathBuf, PathBuf) {
+    let d = repo(tag);
+    let remote = PathBuf::from(format!("{}-remote", d.display()));
+    let _ = std::fs::remove_dir_all(&remote);
+    std::fs::create_dir_all(&remote).unwrap();
+    sh(&remote, &["init", "-q", "--bare", "-b", "main"]);
+    sh(&d, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    sh(&d, &["checkout", "-q", "-b", "feat"]);
+    std::fs::write(d.join("f"), "a\nb\n").unwrap();
+    sh(&d, &["commit", "-q", "-am", "two"]);
+    sh(&d, &["push", "-q", "-u", "origin", "feat"]);
+    (d, remote)
+}
+
+/// The upstream, when it is not ahead of HEAD, leaves nothing to diff against.
+#[test]
+fn review_base_upstream_at_head_is_uncommitted() {
+    let (d, r) = tracked("upsame");
+    let (_g, _h) = (Scratch(d.clone()), Scratch(r));
+    let b = review_base(d.to_str().unwrap(), "auto", "", "");
+    assert_eq!((b.label.as_str(), b.mode.as_str()), ("uncommitted", "uncommitted"));
+}
+
+/// Ahead of its upstream, the branch is diffed against the merge-base with it,
+/// which is the upstream itself.
+#[test]
+fn review_base_ahead_of_upstream_is_vs_upstream() {
+    let (d, r) = tracked("upahead");
+    let (_g, _h) = (Scratch(d.clone()), Scratch(r));
+    let pushed = rev(&d, "HEAD");
+    std::fs::write(d.join("f"), "a\nb\nc\n").unwrap();
+    sh(&d, &["commit", "-q", "-am", "three"]);
+    let b = review_base(d.to_str().unwrap(), "auto", "", "");
+    assert_eq!(
+        (b.rev.as_str(), b.label.as_str(), b.mode.as_str()),
+        (pushed.as_str(), "vs origin/feat", "branch")
+    );
+}
+
+/// An upstream that was deleted reads [gone]: the fallback to main applies.
+#[test]
+fn review_base_gone_upstream_falls_back_to_main() {
+    let (d, r) = tracked("upgone");
+    let (_g, _h) = (Scratch(d.clone()), Scratch(r));
+    let main = rev(&d, "main");
+    sh(&d, &["push", "-q", "origin", "--delete", "feat"]);
+    let b = review_base(d.to_str().unwrap(), "auto", "", "");
+    assert_eq!(
+        (b.rev.as_str(), b.label.as_str(), b.mode.as_str()),
+        (main.as_str(), "vs main", "branch")
+    );
+}

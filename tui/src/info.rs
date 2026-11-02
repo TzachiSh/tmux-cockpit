@@ -256,6 +256,8 @@ pub fn main(args: &[String]) -> i32 {
             }
         };
     }
+    // a popup whose window is killed leaves a tty that reads EOF forever
+    crate::backend::exit_on_hangup(ratatui::restore);
     let th = Theme::load();
     let mut s = Screen::open(pane);
     if event::poll(Duration::ZERO).is_err() {

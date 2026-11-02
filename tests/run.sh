@@ -12475,6 +12475,45 @@ case "$(pk_i)" in *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "s
 "$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui info: values from outside cannot move a field or reach the terminal =="
+if need_tmux "cockpit-tui info hostile values"; then :; else
+PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHDIR=$(mktmpd)
+"$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -n w -x 100 -y 30 -c "$PHDIR" 'exec bash' >/dev/null 2>&1
+PHP=$("$TMUX_REAL" -L "$PH" list-panes -t t: -F '#{pane_id}')
+"$TMUX_REAL" -L "$PH" set-option -p -t "$PHP" @cockpit_title "$(printf 'a\037b')" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PH" set-option -p -t "$PHP" @cockpit_session sid-1 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PH" set -g @cockpit_tui_version "$(printf '9.9.9\033[31mred')" >/dev/null 2>&1
+phout=$(COCKPIT_TMUX="tmux -L $PH" "$COCKPIT_TUI_BIN" info --text "$PHP" 2>&1)
+is "a US byte in a title is a space, and the session row stays put" "title     a b" "$(grep '^title ' <<<"$phout")"
+is "the session row is not shifted by it" "session   sid-1" "$(grep '^session ' <<<"$phout")"
+case "$phout" in *$'\033'*) bad "an ESC in @cockpit_tui_version never reaches the screen" "no ESC byte" "$(cat -v <<<"$phout")" ;; *) ok "an ESC in @cockpit_tui_version never reaches the screen" ;; esac
+"$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui board: i opens the info card over the board and esc returns =="
+if need_tmux "board i overlay"; then :; else
+PO="cockpit-po-$$"; SOCKS="$SOCKS $PO"; PODIR=$(mktmpd)
+"$TMUX_REAL" -L "$PO" -f /dev/null new-session -d -s t -n w -x 100 -y 30 -c "$PODIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PO" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PO" set-option -p -t t:0.0 @panestate running >/dev/null 2>&1
+"$TMUX_REAL" -L "$PO" new-window -d -t t: -n b "COCKPIT_TMUX='tmux -L $PO' '$COCKPIT_TUI_BIN' board" >/dev/null 2>&1
+po_has() {                    # <fixed string> -- polled, 5 s at most
+    local n=0
+    while [ "$n" -lt 50 ]; do
+        "$TMUX_REAL" -L "$PO" capture-pane -p -t t:b | grep -qF -- "$1" && return 0
+        sleep 0.1; n=$((n+1))
+    done
+    return 1
+}
+po_has "1 agent" && ok "the board is up" || bad "the board is up" "1 agent" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
+"$TMUX_REAL" -L "$PO" send-keys -t t:b i
+po_has "info · %" && ok "i draws the info card over the board" || bad "i draws the info card over the board" "info · %N" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
+"$TMUX_REAL" -L "$PO" send-keys -t t:b Escape
+n=0; while [ "$n" -lt 50 ] && "$TMUX_REAL" -L "$PO" capture-pane -p -t t:b | grep -qF "info · %"; do sleep 0.1; n=$((n+1)); done
+po_has "1 agent" && ok "esc returns to the board" || bad "esc returns to the board" "1 agent" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
+case "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)" in *"info · %"*) bad "the card is gone after esc" "no card" "still drawn" ;; *) ok "the card is gone after esc" ;; esac
+"$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
