@@ -12432,10 +12432,13 @@ for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do mkdi
 rvshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 rvshim revdiff "version: 1.13.0" "$RV/new"; rvshim revdiff "version: 1.12.9" "$RV/old"
 rvshim revdiff "unknown" "$RV/unk"
-mkdir -p "$RV/rel" "$RV/relold"
+mkdir -p "$RV/rel" "$RV/relold" "$RV/dev" "$RV/un" "$RV/brew"
+rvshim revdiff "dev" "$RV/dev"
+printf '#!/bin/sh\ncase "$1" in -s) echo "$FAKE_S" ;; -m) echo "$FAKE_M" ;; *) exec /usr/bin/uname "$@" ;; esac\n' > "$RV/un/uname"
+printf '#!/bin/sh\necho "$*" >> "%s"\n' "$RV/brew.log" > "$RV/brew/brew"; chmod +x "$RV/un/uname" "$RV/brew/brew"
 rvshim revdiff "version: v1.13.0-abc1234-20260905T044327" "$RV/rel"
 rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
-for d in new old unk none rel relold; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
+for d in new old unk none rel relold dev; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
 rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
     env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
         PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
@@ -12444,6 +12447,14 @@ rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; 
 out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out")"
 out=$(rvdc "$RV/rel"); is "a release build's v1.13.0-sha-date is an ok row" "ok" "$(rvrow "$out")"
 out=$(rvdc "$RV/relold"); is "and v1.12.0-sha-date is a warn row" "warn" "$(rvrow "$out")"
+out=$(rvdc "$RV/dev"); is "an unparseable version (dev) is a warn row" "warn" "$(rvrow "$out")"
+# A server holds the PATH it started with: its revdiff is the one prefix r runs, even when
+# this shell finds a newer one first.
+RVS="env -u TMUX TMUX_TMPDIR=$RV/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
+$RVS new-session -d 'sleep 300' >/dev/null 2>&1
+$RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
+is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
+$RVS kill-server >/dev/null 2>&1
 out=$(rvdc "$RV/old")
 is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
@@ -12457,6 +12468,7 @@ rvrel() {                     # rvrel [flip]
     local a
     rm -f "$RVD"/*; printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$RV/pack/revdiff"; chmod +x "$RV/pack/revdiff"
     for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        printf '#!/bin/sh\necho "version: 1.13.0 %s"\n' "$a" > "$RV/pack/revdiff"
         ( cd "$RV/pack" && tar -czf "$RVD/revdiff_1.13.0_$a.tar.gz" revdiff )
     done
     ( cd "$RVD" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
@@ -12477,13 +12489,15 @@ out=$(rvbs "$RV/none" --dry-run); rc=$?
 is "--dry-run says it would fetch revdiff" "1" "$(printf '%s\n' "$out" | grep -c 'would: fetch revdiff 1.13.0')"
 is "and writes nothing into \$BIN" "" "$(ls -A "$RVB")"
 out=$(rvbs "$RV/none"); rc=$?
-is "bootstrap installs revdiff into \$BIN" "version: 1.13.0" "$("$RVB/revdiff" --version 2>/dev/null)"
+is "bootstrap installs revdiff into \$BIN" "version: 1.13.0" "$("$RVB/revdiff" --version 2>/dev/null | cut -d' ' -f1-2)"
 is "and exits 0" "0" "$rc"
 rm -f "$RVB/revdiff"
 out=$(rvbs "$RV/new"); rc=$?
 is "a revdiff at the pin on PATH is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 out=$(rvbs "$RV/unk")
 is "an unknown-version revdiff is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/dev")
+is "an unparseable version (dev) is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 out=$(rvbs "$RV/rel")
 is "a v-prefixed release build at the pin is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 out=$(rvbs "$RV/relold")
@@ -12497,6 +12511,19 @@ out=$(rvbs "$RV/none"); rc=$?
 is "a checksum mismatch installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 is "and says so on one line" "1" "$(printf '%s\n' "$out" | grep -c 'FAIL:  revdiff checksum mismatch -- NOT installed')"
 is "and the run exits 1" "1" "$rc"
+# The uname-to-asset mapping: each fake asset says which one it is.
+rvrel
+for m in "Linux x86_64 linux_amd64" "Linux aarch64 linux_arm64" "Linux arm64 linux_arm64" \
+         "Darwin arm64 darwin_arm64" "Darwin x86_64 darwin_amd64"; do
+    set -- $m; rm -f "$RVB/revdiff"
+    out=$(FAKE_S=$1 FAKE_M=$2 rvbs "$RV/un:$RV/none")
+    is "uname $1 $2 fetches the $3 asset" "version: 1.13.0 $3" "$("$RVB/revdiff" --version 2>/dev/null)"
+done
+# macOS with brew: brew installs it, and nothing is fetched into $BIN.
+rm -f "$RVB/revdiff" "$RV/brew.log"
+out=$(FAKE_S=Darwin FAKE_M=arm64 rvbs "$RV/un:$RV/brew:$RV/none")
+is "macOS with brew runs brew install umputun/apps/revdiff" "1" "$(grep -cx 'install umputun/apps/revdiff' "$RV/brew.log")"
+is "and fetches nothing into \$BIN" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 rm -rf "$RVD"; mkdir -p "$RVD"
 out=$(rvbs "$RV/none"); rc=$?
 is "offline (no release host) installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"

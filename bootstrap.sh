@@ -58,6 +58,7 @@ sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
 ver_ge() {  # ver_ge <have> <maj> <min>
     local v=${1#tmux } maj min
+    v=${v#v}                                          # v1.13.0-abc1234-date: x.y.z leads
     v=${v%%[!0-9.]*}; maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
     case "$maj" in ''|*[!0-9]*) return 0 ;; esac      # unparseable: assume modern
     case "$min" in ''|*[!0-9]*) min=0 ;; esac
@@ -335,10 +336,9 @@ fi
 REVDIFF=1.13.0
 step "revdiff"
 rv_have=$(revdiff --version 2>/dev/null); rv_have=${rv_have#version: }; rv_have=${rv_have%% *}
-# A release build prints v1.13.0-<sha>-<date>: keep the leading x.y.z.
-[ "$rv_have" = unknown ] || { rv_have=${rv_have#v}; rv_have=${rv_have%%[!0-9.]*}; }
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
-if [ "$rv_have" = unknown ] || { [ -n "$rv_have" ] && ver_ge "$rv_have" 1 13; }; then
+# ver_ge calls an unparseable word ("unknown", "dev") modern, so those are left alone too.
+if [ -n "$rv_have" ] && ver_ge "$rv_have" 1 13; then
     note "revdiff $rv_have already present"
 elif [ "$(uname -s)" = Darwin ] && have brew; then
     if ask "install revdiff with brew?" y; then
