@@ -203,6 +203,14 @@ fn sh(dir: &Path, args: &[&str]) {
     assert!(st.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&st.stderr));
 }
 
+/// Removes the scratch dir when the test ends, passed or not.
+struct Scratch(PathBuf);
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn repo(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("cockpit-info-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -225,6 +233,7 @@ fn rev(d: &Path, r: &str) -> String {
 #[test]
 fn review_base_three_modes() {
     let d = repo("modes");
+    let _g = Scratch(d.clone());
     let ds = d.to_str().unwrap();
     let main = rev(&d, "HEAD");
     assert_eq!(
@@ -259,7 +268,6 @@ fn review_base_three_modes() {
     // a checkpoint on another branch's name does not hold here
     sh(&d, &["update-ref", "-d", "refs/cockpit/reviewed/feat"]);
     assert_eq!(review_base(ds, "since-review", "", "").mode, "branch", "since-review falls through");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 /// The second case of the class: a detached HEAD keys its checkpoint on HEAD,
@@ -267,23 +275,24 @@ fn review_base_three_modes() {
 #[test]
 fn review_base_detached_and_upstream() {
     let d = repo("det");
+    let _g = Scratch(d.clone());
     let ds = d.to_str().unwrap();
     let head = rev(&d, "HEAD");
     sh(&d, &["checkout", "-q", "--detach"]);
     sh(&d, &["update-ref", "refs/cockpit/reviewed/HEAD", &head]);
     assert_eq!(review_base(ds, "auto", "", "").mode, "since-review");
-    let _ = std::fs::remove_dir_all(&d);
 }
 
 #[test]
 fn git_root_is_the_top_or_the_dir_itself() {
     let d = repo("root");
+    let _g = Scratch(d.clone());
     std::fs::create_dir_all(d.join("a/b")).unwrap();
     let want = std::fs::canonicalize(&d).unwrap();
     assert_eq!(git_root(d.join("a/b").to_str().unwrap()), want.to_str().unwrap());
     let plain = std::env::temp_dir().join(format!("cockpit-info-plain-{}", std::process::id()));
     std::fs::create_dir_all(&plain).unwrap();
+    let _p = Scratch(plain.clone());
     assert_eq!(git_root(plain.to_str().unwrap()), plain.to_str().unwrap(), "no repo: the dir");
     let _ = std::fs::remove_dir_all(&d);
-    let _ = std::fs::remove_dir_all(&plain);
 }

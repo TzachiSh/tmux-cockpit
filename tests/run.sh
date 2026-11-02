@@ -12417,7 +12417,8 @@ if need_tmux "cockpit-tui info parity"; then :; else
 PI="cockpit-pi-$$"; SOCKS="$SOCKS $PI"; PISTATE=$(mktmpd); PIDIR=$(mktmpd)
 ( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
-"$TMUX_REAL" -L "$PI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$PIDIR" 'exec -a claude bash' >/dev/null 2>&1
+# -n pins the window name: automatic-rename would change it between the two reads.
+"$TMUX_REAL" -L "$PI" -f /dev/null new-session -d -s t -n w -x 100 -y 30 -c "$PIDIR" 'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PI" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 PIAP=$("$TMUX_REAL" -L "$PI" list-panes -t t: -F '#{pane_id}')
 for kv in "@panestate needs-input" "@panestate_msg run-make" "@cockpit_review pending" "@cockpit_session sid-9" "@cockpit_title Fix-the-parser"; do
