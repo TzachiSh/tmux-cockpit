@@ -10641,7 +10641,14 @@ pn_stock_f "@cockpit_fixer_key off with no panel key keeps stock f"
 is "and binds no panel key" "" "$("$TMUX_REAL" -L "$PN" list-keys -T prefix 2>/dev/null | grep cockpit-panel)"
 "$TMUX_REAL" -L "$PN" set -g @cockpit_panel_key f >/dev/null 2>&1; pn_load
 is "an explicit @cockpit_panel_key still wins over it" "1" "$(pn_keys f | grep -c cockpit-panel)"
-unset -f pn_keys pn_load pn_stock_f
+pn_mode() { pn_keys f | grep -o 'COCKPIT_PANEL_MODE=[a-z]*'; }
+is "@cockpit_panel_mode unset hands the panel auto" "COCKPIT_PANEL_MODE=auto" "$(pn_mode)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_mode tablet >/dev/null 2>&1; pn_load
+is "@cockpit_panel_mode tablet reaches the popup's environment" "COCKPIT_PANEL_MODE=tablet" "$(pn_mode)"
+"$TMUX_REAL" -L "$PN" set -g @cockpit_panel_mode Tablet >/dev/null 2>&1; pn_load
+is "a word that is not auto, pc or tablet binds auto" "COCKPIT_PANEL_MODE=auto" "$(pn_mode)"
+"$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_mode >/dev/null 2>&1
+unset -f pn_keys pn_load pn_stock_f pn_mode
 "$TMUX_REAL" -L "$PN" kill-server >/dev/null 2>&1
 
 # The wrapper's grammar, with a stub binary and a tmux that only records.
@@ -10819,6 +10826,154 @@ is "the panel exits on a hangup that brings no signal" "exited" \
    "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" panel "$nha" 2>&1)"
 is "the board exits on a hangup that brings no signal" "exited" \
    "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" board 2>&1)"
+fi
+
+echo "== cockpit-panel: tablet mode turns the mouse off on every exit path =="
+# The modes are written to the tty, so the bytes are read off a pty: after the
+# last ?1000h there must be a ?1000l and a ?1006l, whichever way the panel ends.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "the mouse is off on every exit (no bin/cockpit-tui; run make tui)"
+elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+    skip_ "the mouse is off on every exit (needs /proc and python3)"
+elif need_tmux "the mouse is off on every exit"; then :; else
+MX="cockpit-mouse-$$"; SOCKS="$SOCKS $MX"; MXPY=$(mktmpf); MXD=$(mktmpd)
+"$TMUX_REAL" -L "$MX" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+cat > "$MXPY" <<'MXPY'
+import collections, fcntl, os, pty, select, signal, struct, subprocess, sys, termios, time
+tmux, sock, act, binary, pane, mode, how = sys.argv[1:8]
+runs = int(sys.argv[8]) if len(sys.argv) > 8 else 1
+env = dict(os.environ, COCKPIT_ACTION=act, COCKPIT_PANEL_MODE=mode)
+env['TMUX'] = subprocess.check_output([tmux, '-L', sock, 'display', '-p', '#{socket_path},#{pid},0']).decode().strip()
+send = {
+    'q': b'q', 'esc': b'\x1b', 'ctrl-c': b'\x03',
+    # 4 tall tiles on an 80x24 tty: the button row is the last inside the border
+    'tap-close': b'\x1b[<0;13;23M\x1b[<0;13;23m',
+    'flip-then-q': b'3q',
+    'action': b'1hi\x14',
+}
+def once(how):
+    m, s = pty.openpty()
+    fcntl.ioctl(s, termios.TIOCSWINSZ, struct.pack('HHHH', 24, 80, 0, 0))
+    p = subprocess.Popen([binary, 'panel', pane], stdin=s, stdout=s, stderr=subprocess.DEVNULL, start_new_session=True, env=env)
+    os.close(s)
+    out = b''
+    end = time.time() + 10                # a hang guard only: the loop polls for the first frame
+    while b'will send' not in out and time.time() < end:
+        if select.select([m], [], [], 0.1)[0]:
+            try:
+                out += os.read(m, 65536)
+            except OSError:
+                break
+    # a tap within 300 ms of a new view is dropped (the double-tap guard): repeat until it ends the panel
+    for _ in range(40 if how == 'tap-close' else 0):
+        os.write(m, send['tap-close'])
+        while select.select([m], [], [], 0.25)[0]:
+            try:
+                out += os.read(m, 65536)
+            except OSError:
+                break
+        if p.poll() is not None or b'?1049l' in out:
+            break
+    os.write(m, b'' if how == 'tap-close' else send.get(how, b''))
+    if how in ('term', 'hup'):
+        if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':   # named before it is signalled
+            p.send_signal(signal.SIGTERM if how == 'term' else signal.SIGHUP)
+    # EIO once the slave is closed: all output is in, though the process may still be exiting
+    while select.select([m], [], [], 10)[0]:
+        try:
+            chunk = os.read(m, 65536)
+        except OSError:
+            break
+        out += chunk
+    os.close(m)
+    # the slave closing is not the exit: a thread can still be on its way out (#4 flake)
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        if open(f'/proc/{p.pid}/comm').read().strip() == 'cockpit-tui':
+            p.kill()
+        return 'still running'
+    on = out.rfind(b'\x1b[?1000h')
+    tail = out[on:] if on >= 0 else b''
+    return f"on={int(on >= 0)} off={int(b'[?1000l' in tail and b'[?1006l' in tail)}"
+got = collections.Counter(once(how) for _ in range(runs))
+print(' '.join(k if runs == 1 else f'{n}x {k}' for k, n in sorted(got.items())))
+MXPY
+mxa=$("$TMUX_REAL" -L "$MX" list-panes -F '#{pane_id}' | head -1)
+mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$DIR/bin/cockpit-tui" "$mxa" "$@" 2>&1; }
+for how in q esc ctrl-c term hup tap-close action; do
+    is "tablet mode: the exit by $how turns the mouse off" "on=1 off=1" "$(mx tablet "$how")"
+done
+is "and the action still goes" "paste $mxa" "$(mx tablet action >/dev/null; cat "$MXD/act" 2>/dev/null)"
+is "pc mode never turns the mouse on" "on=0 off=0" "$(mx pc q)"
+is "the Home tile turns it on in pc mode, and q turns it off" "on=1 off=1" "$(mx pc flip-then-q)"
+mxe=$(COCKPIT_PANEL_MODE=Tablet "$DIR/bin/cockpit-tui" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
+# a signal exit that was read as "still running" 1 run in 30: 50 in a row, both signals
+is "50 SIGTERM exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet term 50)"
+is "50 SIGHUP exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet hup 50)"
+is "and 50 in pc mode never turn it on" "50x on=0 off=0" "$(mx pc term 50)"
+is "a mode that is not auto, pc or tablet is refused" "2 cockpit-tui: COCKPIT_PANEL_MODE is \"Tablet\": use auto, pc or tablet" "$mxr $mxe"
+"$TMUX_REAL" -L "$MX" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
+# A real popup on a client: the outer server's pane is the client's terminal, so
+# an SGR click written there is what a touch screen sends. Coordinates are read
+# off the outer capture, 1-based as the wire wants them.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "taps in the popup (no bin/cockpit-tui; run make tui)"
+elif need_tmux "taps in the popup"; then :; else
+TI="cockpit-tapi-$$"; TO="cockpit-tapo-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
+mkdir -p "$TPD/bin"
+printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
+chmod +x "$TPD/bin/claude"
+"$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec cat' >/dev/null 2>&1
+# off is the default: an app's OSC 52 reaches tmux's buffers and the terminal only under on
+"$TMUX_REAL" -L "$TI" set -g set-clipboard on >/dev/null 2>&1
+tpa=$("$TMUX_REAL" -L "$TI" list-panes -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$TO" -f /dev/null new-session -d -s o -x 100 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TI attach -t t" >/dev/null 2>&1
+"$TMUX_REAL" -L "$TO" set -g set-clipboard on >/dev/null 2>&1
+until_cap "$TO" o '*[!\ ]*' >/dev/null
+tpc=$("$TMUX_REAL" -L "$TI" list-clients -F '#{client_name}' | head -1)
+"$TMUX_REAL" -L "$TI" display-popup -c "$tpc" -w 80 -h 24 -e COCKPIT_PANEL_MODE=tablet -E \
+    "env 'PATH=$TPD/bin:$SHIM:/usr/bin:/bin' COCKPIT_LOG=$TPD/tui.log $DIR/scripts/cockpit-panel -p $tpa" >/dev/null 2>&1 &
+tp_at() {                     # <label> <M|m> [button]  presses (M) or releases (m) on the label's first cell
+    local y x line
+    line=$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | grep -n -F -m1 -- "$1") || return 1
+    y=${line%%:*}; line=${line#*:}; line=${line%%"$1"*}
+    x=$(( $(printf '%s' "$line" | wc -m) + 1 ))
+    "$TMUX_REAL" -L "$TO" send-keys -t o -l "$(printf '\033[<%s;%s;%s%s' "${3:-0}" "$x" "$y" "$2")"
+}
+tp_tap() { tp_at "$1" M && tp_at "$1" m; }
+# A tap within 300 ms of a new view is dropped (the double-tap guard), and no
+# clock says when that ends: tap until the pattern shows, 0.5 s a try.
+tp_tap_until() {              # <label> <socket> <pane> <pattern>
+    local i POLLS=5
+    for i in $(seq 1 20); do
+        tp_tap "$1"
+        until_cap "$2" "$3" "$4" && return 0
+    done
+    return 1
+}
+tp_cap() { "$TMUX_REAL" -L "$TO" capture-pane -p -t o; }
+until_cap "$TO" o '*will send*' || bad "the tablet panel opens in the popup" "will send" "$(tp_cap)"
+tp_tap_until Compose "$TO" o '*type: auto*' || bad "a tap on the Compose tile opens it" "type: auto" "$(tp_cap)"
+"$TMUX_REAL" -L "$TO" send-keys -t o -l 'say hi'
+if tp_tap_until '[ write ]' "$TO" o '*copied by tap*[ copy ]*'; then ok "a tap on [ write ] sends the draft to claude"
+else bad "a tap on [ write ] sends the draft to claude" "copied by tap" "$(tp_cap)"; fi
+tp_tap_until '[ copy ]' "$TO" o '*sent 13 chars to the clipboard*' || bad "x says what it copied" "sent 13 chars" "$(tp_cap)"
+# past the guard now: a release alone is no tap, or insert would close the popup and paste
+tp_at '[ insert ]' m
+is "a release alone does nothing: the result is still open" "1" "$(tp_cap | grep -c -F '[ insert ]')"
+is "the copy reaches tmux as OSC 52 (set-clipboard on)" "copied by tap" \
+   "$("$TMUX_REAL" -L "$TI" show-buffer 2>/dev/null)"
+is "and the outer terminal is handed it too" "copied by tap" "$("$TMUX_REAL" -L "$TO" show-buffer 2>/dev/null)"
+tp_tap_until '[ insert ]' "$TI" "$tpa" '*copied by tap*' || bad "a tap on [ insert ] pastes into the pane" "copied by tap" \
+    "$("$TMUX_REAL" -L "$TI" capture-pane -p -t "$tpa")"
+is "one tap pastes once" "1" "$("$TMUX_REAL" -L "$TI" capture-pane -p -t "$tpa" | grep -c 'copied by tap')"
+"$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TO" kill-server >/dev/null 2>&1
 fi
 
 echo "== the example configs ship the phone wrap override (#99) =="

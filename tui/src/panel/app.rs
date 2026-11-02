@@ -25,6 +25,16 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
+/// (1 MiB): 786,000 bytes landed, 786,432 did not. Kept under it.
+pub const COPY_MAX: usize = 768_000;
+/// Termux is said to cut an OSC string near 8 KB (unconfirmed): warned, not refused.
+pub const COPY_TERMUX: usize = 6_000;
+/// A tap this soon after the view changed is the second half of a double tap.
+pub const TAP_GUARD_MS: u64 = 300;
+/// A resumed panel's first view: the close, the paste and the reopen fit inside
+/// a slow double tap, and the reopened Steps put a button under the same finger.
+pub const RESUME_GUARD_MS: u64 = 800;
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -49,7 +59,18 @@ pub enum Tile {
     WriteCommand,
     Compose,
     Explain,
+    /// Flips pc and tablet for this run of the panel.
+    Mode,
     Close,
+}
+
+/// What a tap on a recorded hit rect does: the key the element stands for, or
+/// an entry chosen by its index (`Pick` also presses Enter on it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tap {
+    Key(KeyEvent),
+    Pick(usize),
+    Select(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -208,6 +229,18 @@ pub struct App {
     pub help: Option<usize>,
     /// The last frame was under the panel's floor: only esc, q and ^C act.
     pub tiny: bool,
+    /// Tablet presentation: mouse capture, tall tiles, tap buttons.
+    pub tablet: bool,
+    /// Text for the event loop to put on the clipboard (OSC 52).
+    pub copy: Option<String>,
+    /// Under Termux, whose OSC limit is lower: see [`COPY_TERMUX`].
+    pub termux: bool,
+    /// What the last frame showed and when, in the loop's milliseconds, for the tap guard.
+    seen: Option<(std::mem::Discriminant<View>, bool, bool)>,
+    seen_at: u64,
+    /// The guard for the first view: longer after a resume.
+    first_guard: u64,
+    guard: u64,
 }
 
 impl App {
@@ -240,6 +273,13 @@ impl App {
             bottom: 0,
             help: None,
             tiny: false,
+            tablet: false,
+            copy: None,
+            termux: false,
+            seen: None,
+            seen_at: 0,
+            first_guard: TAP_GUARD_MS,
+            guard: TAP_GUARD_MS,
         }
     }
 
@@ -257,6 +297,7 @@ impl App {
             verb,
         } = r;
         let n = sel + 1;
+        self.first_guard = RESUME_GUARD_MS;
         match last.strip_prefix("failed:") {
             None if last == "ok" => {
                 done[sel] = true;
@@ -285,10 +326,16 @@ impl App {
             "shell" => Some((Tile::WriteCommand, "Write a command", "describe it, Claude writes the command")),
             _ => None,
         };
+        let mode = if self.tablet {
+            (Tile::Mode, "PC mode", "keys only: the terminal selects text again")
+        } else {
+            (Tile::Mode, "Tablet mode", "big tiles, tap buttons, the mouse")
+        };
         let mut t: Vec<_> = star.into_iter().collect();
         t.extend([
             COMPOSE,
             (Tile::Explain, "Explain", "what is on this screen, and what next"),
+            mode,
             (Tile::Close, "Close", ""),
         ]);
         t
@@ -325,6 +372,73 @@ impl App {
         let (was, said) = (std::mem::discriminant(&self.view), self.said);
         self.handle(k);
         self.settle(was, said);
+    }
+
+    /// A tap on a hit rect: the key it stands for, or an entry by index. The
+    /// selection moves first, so a `Pick` is the Enter the keys would press.
+    /// Dropped within [`TAP_GUARD_MS`] of a new view: the cell under the finger
+    /// may now hold the confirming button. `now` is the loop's clock, like `tick`.
+    pub fn tap(&mut self, t: Tap, now: u64) {
+        // under the floor too: the card shows nothing a tap could be meant for
+        if now.saturating_sub(self.seen_at) < self.guard || self.tiny {
+            return;
+        }
+        let i = match t {
+            Tap::Key(k) => return self.key(k),
+            Tap::Pick(i) | Tap::Select(i) => i,
+        };
+        if self.help.is_some() {
+            return;
+        }
+        match &mut self.view {
+            View::Home { sel } | View::ExplainAsk { sel } | View::Steps { sel, .. } => *sel = i,
+            View::Question { sel, scroll } => (*sel, *scroll) = (i, None),
+            _ => return,
+        }
+        if matches!(t, Tap::Pick(_)) {
+            self.key(KeyEvent::from(KeyCode::Enter));
+        }
+    }
+
+    /// Called after each frame is drawn: a view that differs from the last
+    /// frame's starts the tap guard. The selection moving is not a new view.
+    pub fn frame(&mut self, now: u64) {
+        let armed = matches!(self.view, View::Answer { armed: true, .. });
+        let seen = Some((std::mem::discriminant(&self.view), armed, self.help.is_some()));
+        if seen != self.seen {
+            self.guard = if self.seen.is_none() { self.first_guard } else { TAP_GUARD_MS };
+            (self.seen, self.seen_at) = (seen, now);
+        }
+    }
+
+    /// The wheel is Up and Down, except in a text box, where those keys do nothing
+    /// but drop the note.
+    pub fn wheel(&mut self, up: bool) {
+        if self.help.is_none() && matches!(self.view, View::Compose | View::Input { .. }) {
+            return;
+        }
+        self.key(KeyEvent::from(if up { KeyCode::Up } else { KeyCode::Down }));
+    }
+
+    /// Queues `text` for the clipboard; the event loop writes it and says so.
+    /// Cleaned like a paste: an ESC copied out would be a keystroke wherever it lands.
+    fn copy_out(&mut self, text: &str) {
+        let text = sanitize(text);
+        let n = text.chars().count();
+        if text.is_empty() {
+            return self.say(Level::Info, "nothing to copy here");
+        }
+        if text.len() > COPY_MAX {
+            return self.say(Level::Warn, format!("too long to copy: {n} chars"));
+        }
+        // the terminal never answers an OSC 52: sent is all that is known
+        let sent = format!("sent {n} chars to the clipboard (needs tmux set-clipboard on)");
+        if self.termux && text.len() > COPY_TERMUX {
+            self.say(Level::Warn, format!("{sent}; Termux may cut it near 8 KB"));
+        } else {
+            self.say(Level::Info, sent);
+        }
+        self.copy = Some(text);
     }
 
     /// A note belongs to the view it was said on: a move to another view
@@ -586,6 +700,11 @@ impl App {
             Tile::WriteCommand => self.compose(OutType::Command),
             Tile::Compose => self.compose(OutType::Auto),
             Tile::Explain => self.view = View::ExplainAsk { sel: 0 },
+            Tile::Mode => {
+                self.tablet = !self.tablet;
+                let m = if self.tablet { "tablet" } else { "pc" };
+                self.say(Level::Info, format!("{m} mode until the panel closes"));
+            }
             Tile::Close => self.exit(),
         }
     }
@@ -1075,6 +1194,10 @@ impl App {
                 };
                 self.confirm(text, true, back);
             }
+            KeyCode::Char('x') => {
+                self.copy_out(&text);
+                self.view = View::Result { label, text, scroll };
+            }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
                 self.draft.clear();
@@ -1117,6 +1240,10 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
             KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
             KeyCode::Char(c @ '1'..='9') if (c as usize - '1' as usize) < items.len() => sel = c as usize - '1' as usize,
+            KeyCode::Char('x') => {
+                let s = items.get(sel).map_or("", |s| if s.cmd.is_empty() { &s.note } else { &s.cmd });
+                self.copy_out(s);
+            }
             KeyCode::Char('i' | 's') if cmd.is_empty() => self.say(Level::Info, "this step is done outside the terminal"),
             KeyCode::Char(c @ ('i' | 's')) => {
                 let here = View::Steps { label, items, sel, done };
@@ -1173,6 +1300,15 @@ impl App {
             return self.view = View::Answer { scroll, armed: false };
         }
         match k.code {
+            KeyCode::Char('x') => {
+                // the prompt is what gets pasted elsewhere; without one, the last answer
+                let last = self
+                    .run
+                    .as_ref()
+                    .and_then(|r| r.log.iter().rfind(|(you, _)| !you))
+                    .map(|l| l.1.clone());
+                self.copy_out(&ready.or(last).unwrap_or_default());
+            }
             KeyCode::Char('f') => {
                 let back = Box::new(View::Answer {
                     scroll: usize::MAX,
@@ -1192,7 +1328,12 @@ impl App {
             }
             // the transcript is paid-for calls with no way back: one esc or q only arms
             _ if esc && !armed => {
-                self.say(Level::Warn, "esc or q again to discard this conversation");
+                let again = if self.tablet {
+                    "tap discard it, or esc again, to drop this conversation"
+                } else {
+                    "esc or q again to discard this conversation"
+                };
+                self.say(Level::Warn, again);
                 // the note takes a body row: a view on the last line stays on it
                 let scroll = if scroll >= self.bottom { usize::MAX } else { scroll };
                 self.view = View::Answer { scroll, armed: true };

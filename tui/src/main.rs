@@ -33,11 +33,22 @@ fn panel(args: &[String]) {
         eprintln!("cockpit-tui: panel needs a pane id like %3\n{USAGE}");
         std::process::exit(2);
     };
+    // checked before the capture: a bad word is the user's to fix, not a pane problem
+    let mode = std::env::var("COCKPIT_PANEL_MODE").ok();
+    let tablet = match cockpit_tui::panel::tablet_mode(mode.as_deref(), cockpit_tui::panel::is_termux()) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("cockpit-tui: {e}");
+            std::process::exit(2);
+        }
+    };
     let Some(cap) = capture(pane) else {
         eprintln!("cockpit-tui: cannot capture pane {pane}");
         std::process::exit(1);
     };
     let mut a = app::App::new(pane, cap);
+    a.tablet = tablet;
+    a.termux = cockpit_tui::panel::is_termux();
     if let Some((f, last)) = resume {
         a.reopened = true;
         match app::read_state(std::path::Path::new(f), pane) {

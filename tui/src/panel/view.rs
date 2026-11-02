@@ -1,10 +1,10 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, InputKind, Level, MODELS, QUICK, View, needs_y, risky};
+use super::app::{App, InputKind, Level, MODELS, QUICK, Tap, View, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::theme::Theme;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -74,6 +74,17 @@ struct Body {
     count: bool,
     /// A cut-off body ends in "… N more lines".
     more: bool,
+    /// Line ranges a tap selects or picks, in tablet mode.
+    taps: Vec<((usize, usize), Tap)>,
+    /// Confirm's yes and no, drawn big above the tap buttons in tablet mode.
+    big: Vec<(String, Tap)>,
+}
+
+/// A rect a tap lands on, recorded by [`render`] every frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub at: Rect,
+    pub tap: Tap,
 }
 
 /// Under 28 columns the armed Answer's esc hint or the title's pane id is cut;
@@ -146,7 +157,135 @@ fn push_tile(b: &mut Body, rows: Vec<Line<'static>>) -> (usize, usize) {
     (at, b.lines.len())
 }
 
-fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
+/// `rows` in a rounded box `w` wide: a tall tile, or a big button.
+fn boxed(th: &Theme, sel: bool, rows: Vec<Line<'static>>, w: usize) -> Vec<Line<'static>> {
+    let st = Style::new().fg(if sel { th.accent } else { th.label });
+    let s = th.g.round;
+    let bar = |c: &str| c.repeat(w.saturating_sub(2));
+    let mut out = vec![styled(format!("{}{}{}", s.top_left, bar(s.horizontal_top), s.top_right), st)];
+    for mut l in rows {
+        let pad = " ".repeat(w.saturating_sub(l.width() + 4));
+        l.spans.insert(0, Span::styled(format!("{} ", s.vertical_left), st));
+        l.spans.push(Span::styled(format!("{pad} {}", s.vertical_right), st));
+        out.push(l);
+    }
+    out.push(styled(
+        format!("{}{}{}", s.bottom_left, bar(s.horizontal_bottom), s.bottom_right),
+        st,
+    ));
+    out
+}
+
+/// A tappable entry: boxed when `tall`, its lines recorded for the hit map.
+fn push_entry(b: &mut Body, th: &Theme, tall: bool, sel: bool, rows: Vec<Line<'static>>, w: usize, tap: Tap) -> (usize, usize) {
+    let rows = if tall { boxed(th, sel, rows, w) } else { rows };
+    let r = push_tile(b, rows);
+    b.taps.push((r, tap));
+    r
+}
+
+/// The key a footer hint names, as a tap; its last word, so `↵ y` is `y`. A
+/// range or the arrows name no single key, and become no button.
+fn tap_of(k: &str) -> Option<Tap> {
+    let t = k.rsplit(' ').next()?;
+    let code = match t {
+        "esc" => KeyCode::Esc,
+        "F1" => KeyCode::F(1),
+        "⇥" => KeyCode::Tab,
+        "⌫" => KeyCode::Backspace,
+        "↵" => KeyCode::Enter,
+        _ => {
+            let mut cs = t.chars();
+            match (cs.next(), cs.next(), cs.next()) {
+                (Some('^'), Some(c), None) => {
+                    let k = KeyEvent::new(KeyCode::Char(c.to_ascii_lowercase()), KeyModifiers::CONTROL);
+                    return Some(Tap::Key(k));
+                }
+                (Some(c), None, None) if c.is_ascii_graphic() && !c.is_ascii_digit() => KeyCode::Char(c),
+                _ => return None,
+            }
+        }
+    };
+    Some(Tap::Key(KeyEvent::from(code)))
+}
+
+fn rect(x: usize, y: usize, w: usize, h: usize) -> Rect {
+    Rect::new(x as u16, y as u16, w as u16, h as u16)
+}
+
+/// The big pair, `w` wide, for the top rows: the buttons that open them sit at
+/// the bottom, so a double tap never lands on yes. Hits are relative to its top left.
+fn bigs(th: &Theme, b: &Body, w: usize, big_tall: bool) -> (Vec<Line<'static>>, Vec<Hit>) {
+    let (mut lines, mut hits) = (vec![], vec![]);
+    if !b.big.is_empty() {
+        let n = b.big.len();
+        let each = w.saturating_sub(n - 1) / n;
+        let mut rows: Vec<Line<'static>> = vec![];
+        for (i, (label, tap)) in b.big.iter().enumerate() {
+            // the last one takes the columns the division left over
+            let bw = if i + 1 == n { w.saturating_sub(i * (each + 1)) } else { each };
+            let st = Style::new().fg(th.accent).add_modifier(Modifier::BOLD);
+            let one = if big_tall {
+                let width = bw.saturating_sub(4);
+                let text = th.g.trunc(label, width);
+                boxed(th, i == 0, vec![Line::styled(format!("{text:^width$}"), st)], bw)
+            } else {
+                let width = bw.saturating_sub(2);
+                let text = th.g.trunc(label, width);
+                vec![Line::styled(format!("[{text:^width$}]"), st)]
+            };
+            hits.push(Hit {
+                at: rect(i * (each + 1), 0, bw, one.len()),
+                tap: *tap,
+            });
+            for (r, l) in one.into_iter().enumerate() {
+                match rows.get_mut(r) {
+                    Some(row) => {
+                        row.spans.push(Span::raw(" "));
+                        row.spans.extend(l.spans);
+                    }
+                    None => rows.push(l),
+                }
+            }
+        }
+        lines.extend(rows);
+    }
+    (lines, hits)
+}
+
+/// A `[ verb ]` chip per footer hint that names a key, wrapped to `w`, for the
+/// bottom rows. Hits are relative to the rows' top left.
+fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
+    let (mut lines, mut hits) = (vec![], vec![]);
+    let mut row: Vec<Span<'static>> = vec![];
+    let mut x = 0;
+    for (k, v) in &b.footer {
+        let Some(tap) = tap_of(k) else { continue };
+        let chip = format!("[ {} ]", th.g.trunc(v, w.saturating_sub(4)));
+        let cw = chip.width();
+        if x > 0 && x + 1 + cw > w {
+            lines.push(Line::from(std::mem::take(&mut row)));
+            x = 0;
+        }
+        if x > 0 {
+            row.push(Span::raw(" "));
+            x += 1;
+        }
+        hits.push(Hit {
+            at: rect(x, lines.len(), cw, 1),
+            tap,
+        });
+        row.push(Span::styled(chip, Style::new().fg(th.accent)));
+        x += cw;
+    }
+    if !row.is_empty() {
+        lines.push(Line::from(row));
+    }
+    (lines, hits)
+}
+
+/// `tall` boxes the tappable entries, three rows each, for tablet mode.
+fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
     let star = if ascii(th) { "*" } else { "★" };
     let meta = Style::new().fg(th.meta);
     let label = Style::new().fg(th.label);
@@ -162,7 +301,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         footer: vec![],
         count: false,
         more: false,
+        taps: vec![],
+        big: vec![],
     };
+    // a tall tile's text sits inside its box
+    let tw = if tall { w.saturating_sub(4) } else { w };
     if let Some(n) = &app.note {
         let (g, fg) = match n.level {
             Level::Info => (th.g.idle, th.sky),
@@ -178,7 +321,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
         View::Home { sel } => {
             for (i, (_, name, desc)) in app.tiles().iter().enumerate() {
                 let mark = if i == 0 { star } else { " " };
-                let r = push_tile(&mut b, tile(th, i == *sel, i + 1, &format!("{mark} "), name, desc, w));
+                let rows = tile(th, i == *sel, i + 1, &format!("{mark} "), name, desc, tw);
+                let r = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(r);
                 }
@@ -269,7 +413,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.lines.push(plain(""));
             for (i, o) in r.options.iter().enumerate() {
                 let mark = if o.recommended { star } else { " " };
-                let t = push_tile(&mut b, tile(th, i == *sel, i + 1, &format!("{mark} "), &o.label, "", w));
+                let rows = tile(th, i == *sel, i + 1, &format!("{mark} "), &o.label, "", tw);
+                let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(t);
                 }
@@ -370,6 +515,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
                     b.scroll = at.saturating_sub(2);
                     b.sel = Some((at, b.lines.len()));
                 }
+                b.taps.push(((at, b.lines.len()), Tap::Select(i)));
             }
             b.count = true;
             b.footer = pills(&[("i", "insert"), ("s", "send"), ("↑↓", "pick"), ("r", "retry"), help, ("esc", &back)]);
@@ -384,7 +530,8 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.head.push(plain(""));
             let words = "In your own words";
             for (i, shown) in QUICK.iter().map(|q| q.0).chain([words]).enumerate() {
-                let t = push_tile(&mut b, tile(th, i == *sel, i + 1, "", shown, "", w));
+                let rows = tile(th, i == *sel, i + 1, "", shown, "", tw);
+                let t = push_entry(&mut b, th, tall, i == *sel, rows, w, Tap::Pick(i));
                 if i == *sel {
                     b.sel = Some(t);
                 }
@@ -416,7 +563,15 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             } else {
                 b.footer = pills(&[("f", "follow up"), ("↑↓", "scroll"), help, ("esc", "home")]);
             }
-            if *armed {
+            if *armed && app.tablet {
+                // the esc chip becomes keep it in place, so a second tap on home keeps;
+                // n is a key Answer leaves unbound, and discard is up top, away from it
+                for p in b.footer.iter_mut().filter(|p| p.0 == "esc") {
+                    *p = ("n".into(), "keep it".into());
+                }
+                let k = |c| Tap::Key(KeyEvent::from(c));
+                b.big = vec![("discard it".into(), k(KeyCode::Esc)), ("keep it".into(), k(KeyCode::Char('n')))];
+            } else if *armed {
                 b.footer = pills(&[("esc q", "again discards it"), ("any other key", "keeps it")]);
             }
             b.scroll = *scroll;
@@ -443,7 +598,13 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.scroll = *scroll;
             b.count = true;
             b.more = true;
-            b.footer = if needs_y(text, *send) {
+            b.footer = if app.tablet {
+                // yes is y, never Enter: a tap held over must not fire a risky send
+                let yes = if *send { "yes, send" } else { "yes, insert" };
+                let y = |c| Tap::Key(KeyEvent::from(KeyCode::Char(c)));
+                b.big = vec![(yes.into(), y('y')), ("no".into(), y('n'))];
+                pills(&[help])
+            } else if needs_y(text, *send) {
                 pills(&[
                     ("y", "confirm"),
                     ("↑↓", "scroll"),
@@ -464,6 +625,10 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64) -> Body {
             b.more = true;
             b.footer = pills(&[("r", "retry"), help, ("esc", "back")]);
         }
+    }
+    let copies = matches!(app.view, View::Result { .. } | View::Steps { .. } | View::Answer { .. });
+    if app.tablet && copies {
+        b.footer.insert(2.min(b.footer.len()), ("x".into(), "copy".into()));
     }
     b
 }
@@ -616,6 +781,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("s", "send with Enter, asks first"),
             s("r", "ask again"),
             s("c", "edit it as a new draft"),
+            s("x", "copy it (OSC 52)"),
             s("↑↓ j k", "scroll"),
             scroll,
             help,
@@ -627,6 +793,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s(&digits(items.len()), "pick a step by number"),
             s("i", "insert the step, no Enter"),
             s("s", "send the step with Enter"),
+            s("x", "copy the step (OSC 52)"),
             s("r", "ask again"),
             help,
             s("esc", &left),
@@ -644,6 +811,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("i", "insert the prompt, no Enter"),
             s("s", "send the prompt with Enter"),
             s("f", "ask a follow-up"),
+            s("x", "copy the prompt, else the answer"),
             s("↑↓ j k", "scroll"),
             scroll,
             help,
@@ -715,16 +883,35 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usi
 }
 
 /// `tick` is tenths of a second since the call went out, so a golden never reads
-/// the clock. Returns the line count and rows, for [`App::fit`]: the overlay's while open.
-pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (usize, usize) {
+/// the clock. Returns the line count and rows, for [`App::fit`] (the overlay's
+/// while open), and the frame's hit map: empty unless the panel is in tablet mode.
+pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (usize, usize, Vec<Hit>) {
+    let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
+    let anywhere = |on: bool| if on { vec![Hit { at: area, tap: esc }] } else { vec![] };
+    // no hits under the floor: the card hides what esc would do (arm, discard, cancel a call)
     if too_small(area) {
         small(f, area, th);
-        return (0, 0);
+        return (0, 0, vec![]);
     }
     let d = th.g.dot;
     let w = area.width.saturating_sub(4) as usize;
-    let mut b = body(app, th, w, tick);
-    let rows = (area.height as usize).saturating_sub(2);
+    let all = (area.height as usize).saturating_sub(2);
+    // the buttons go first: the big pair 3 rows tall only while the body keeps half the rows
+    let pad = |b: &Body| {
+        if !app.tablet {
+            return ((vec![], vec![]), (vec![], vec![]));
+        }
+        let low = chips(th, b, w);
+        (bigs(th, b, w, low.0.len() + 3 <= all / 2), low)
+    };
+    let mut b = body(app, th, w, tick, app.tablet);
+    let (mut up, mut btn) = pad(&b);
+    // tall tiles only while every row of the view fits: never a scroll they caused
+    if app.tablet && b.head.len() + b.lines.len() + up.0.len() + btn.0.len() > all {
+        b = body(app, th, w, tick, false);
+        (up, btn) = pad(&b);
+    }
+    let rows = all.saturating_sub(btn.0.len() + up.0.len());
     // short of a body row: the head's spacer goes, then the head scrolls with the body
     if b.head.len() >= rows && b.head.last().is_some_and(|l| l.width() == 0) {
         b.head.pop();
@@ -733,6 +920,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         let n = b.head.len();
         b.lines.splice(0..0, std::mem::take(&mut b.head));
         b.sel = b.sel.map(|(s, e)| (s + n, e + n));
+        for ((s, e), _) in &mut b.taps {
+            (*s, *e) = (*s + n, *e + n);
+        }
     }
     let room = rows.saturating_sub(b.head.len());
     let total = b.lines.len();
@@ -760,8 +950,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         .borders(Borders::ALL)
         .border_set(th.g.round)
         .border_style(Style::new().fg(th.label))
-        .title(Line::from(Span::styled(title, Style::new().fg(th.accent))))
-        .title_bottom(footer(th, b.footer, (area.width as usize).saturating_sub(2)));
+        .title(Line::from(Span::styled(title, Style::new().fg(th.accent))));
+    if !app.tablet {
+        block = block.title_bottom(footer(th, std::mem::take(&mut b.footer), (area.width as usize).saturating_sub(2)));
+    }
     if let Some(n) = ind {
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
     }
@@ -772,6 +964,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         width: inner.width.saturating_sub(2),
         ..inner
     };
+    let (tops, top_hits) = up;
+    let high = Rect {
+        height: (tops.len() as u16).min(inner.height),
+        ..inner
+    };
+    f.render_widget(Paragraph::new(tops), high);
+    let inner = Rect {
+        y: inner.y + high.height,
+        height: inner.height - high.height,
+        ..inner
+    };
+    let head = b.head.len();
     let mut lines = b.head;
     lines.extend(b.lines.into_iter().skip(top).take(last - top));
     if cut {
@@ -779,11 +983,72 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         let s = if n == 1 { "" } else { "s" };
         lines.push(styled(format!("{} {n} more line{s}", th.g.ellipsis), Style::new().fg(th.meta)));
     }
-    f.render_widget(Paragraph::new(lines), inner);
+    let (pads, pad_hits) = btn;
+    let low = Rect {
+        y: inner.y + inner.height.saturating_sub(pads.len() as u16),
+        height: (pads.len() as u16).min(inner.height),
+        ..inner
+    };
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect {
+            height: inner.height - low.height,
+            ..inner
+        },
+    );
+    f.render_widget(Paragraph::new(pads), low);
     if let Some(top) = app.help {
-        return overlay(f, area, app, th, top);
+        let (t, r) = overlay(f, area, app, th, top);
+        return (t, r, anywhere(app.tablet));
     }
-    (total, room)
+    let mut hits = vec![];
+    for ((s, e), tap) in b.taps {
+        let (s, e) = (s.max(top), e.min(last));
+        if s < e {
+            let y = inner.y + (head + s - top) as u16;
+            hits.push(Hit {
+                at: Rect::new(inner.x, y, inner.width, (e - s) as u16),
+                tap,
+            });
+        }
+    }
+    let place = |hs: Vec<Hit>, r: Rect| {
+        hs.into_iter().map(move |h| Hit {
+            at: Rect {
+                x: r.x + h.at.x,
+                y: r.y + h.at.y,
+                ..h.at
+            }
+            .intersection(r),
+            ..h
+        })
+    };
+    hits.extend(place(top_hits, high));
+    hits.extend(place(pad_hits, low));
+    hits.retain(|h| app.tablet && !h.at.is_empty());
+    (total, room, hits)
+}
+
+/// The tap a frame's hit map puts under a cell.
+pub fn hit(hits: &[Hit], x: u16, y: u16) -> Option<Tap> {
+    let p = ratatui::layout::Position { x, y };
+    hits.iter().find(|h| h.at.contains(p)).map(|h| h.tap)
+}
+
+/// A mouse event in tablet mode: a bare left press taps, the wheel scrolls.
+/// The release is ignored, so one tap is one action; `now` feeds the tap guard.
+/// Shift, Ctrl or Alt held is no tap: a click meant for the terminal.
+pub fn mouse(app: &mut App, hits: &[Hit], m: MouseEvent, now: u64) {
+    match m.kind {
+        MouseEventKind::Down(MouseButton::Left) if m.modifiers.is_empty() => {
+            if let Some(t) = hit(hits, m.column, m.row) {
+                app.tap(t, now);
+            }
+        }
+        MouseEventKind::ScrollUp => app.wheel(true),
+        MouseEventKind::ScrollDown => app.wheel(false),
+        _ => {}
+    }
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -812,14 +1077,16 @@ pub fn run(app: &mut App) {
         std::process::exit(1);
     }
     // a dead tty writes no action; the claude child goes with us by PDEATHSIG
-    crate::backend::exit_on_hangup(|| {});
+    crate::backend::exit_on_hangup(|| {
+        let _ = crate::backend::mouse(false);
+    });
     let th = Theme::load();
     // SAFETY: on_stop only stores an atomic and raises a signal.
     unsafe {
         libc::signal(libc::SIGHUP, on_stop as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, on_stop as *const () as libc::sighandler_t);
     }
-    let mut term = match crate::backend::init(true) {
+    let mut term = match crate::backend::init(true, app.tablet) {
         Ok(t) => t,
         Err(e) => {
             // init may fail after raw mode and the paste mode are already on
@@ -829,6 +1096,8 @@ pub fn run(app: &mut App) {
         }
     };
     let call = Call::from_env();
+    let born = std::time::Instant::now();
+    let ms = || born.elapsed().as_millis() as u64;
     loop {
         if STOP.load(Ordering::SeqCst) {
             break;
@@ -839,7 +1108,7 @@ pub fn run(app: &mut App) {
             break;
         }
         let tick = app.started.map_or(0, |t| (t.elapsed().as_millis() / 100) as u64);
-        let (mut page, mut tiny) = ((0, 0), false);
+        let (mut page, mut tiny) = ((0, 0, vec![]), false);
         let drawn = term.draw(|f| {
             tiny = too_small(f.area());
             page = render(f, f.area(), app, &th, tick);
@@ -848,6 +1117,7 @@ pub fn run(app: &mut App) {
             break;
         }
         app.shrunk(tiny);
+        app.frame(ms());
         // the floor message shows no body: fitting to it would lose the scroll
         if !tiny {
             app.fit(page.0, page.1);
@@ -872,9 +1142,19 @@ pub fn run(app: &mut App) {
         match ev {
             Ok(Some(Event::Key(k))) => app.key(k),
             Ok(Some(Event::Paste(s))) => app.paste(&s),
+            Ok(Some(Event::Mouse(m))) if app.tablet => mouse(app, &page.2, m, ms()),
             Ok(_) => {}
             Err(e) if transient(&e) => {}
             Err(_) => break,
+        }
+        if let Some(t) = app.copy.take()
+            && let Err(e) = crate::backend::copy(&t)
+        {
+            app.say(Level::Warn, format!("could not copy: {e}"));
+        }
+        // the Home tile flips the mode between two frames
+        if let Err(e) = crate::backend::mouse(app.tablet) {
+            app.say(Level::Warn, format!("could not switch the mouse: {e}"));
         }
     }
     if !app.quit || STOP.load(Ordering::SeqCst) {

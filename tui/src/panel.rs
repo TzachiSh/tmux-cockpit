@@ -25,6 +25,17 @@ pub fn is_termux() -> bool {
     std::env::var_os("TERMUX_VERSION").is_some_and(|v| !v.is_empty()) || std::env::var("PREFIX").is_ok_and(|p| p.contains("com.termux"))
 }
 
+/// `COCKPIT_PANEL_MODE` (from `@cockpit_panel_mode`) as tablet or not: `auto`
+/// or unset is tablet under Termux. Any other word is refused, never guessed at.
+pub fn tablet_mode(v: Option<&str>, termux: bool) -> Result<bool, String> {
+    match v {
+        None | Some("" | "auto") => Ok(termux),
+        Some("pc") => Ok(false),
+        Some("tablet") => Ok(true),
+        Some(x) => Err(format!("COCKPIT_PANEL_MODE is {x:?}: use auto, pc or tablet")),
+    }
+}
+
 fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }

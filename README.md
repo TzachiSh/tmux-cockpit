@@ -1030,6 +1030,29 @@ the pane: it leaves `paste %N` or `send %N` and the text in the action files,
 and `scripts/cockpit-panel` does the paste and says what it did. Options,
 variables and the action file are in [docs/tui.md](docs/tui.md).
 
+`x` on a result, a step or an answer copies it to the clipboard with OSC 52
+and says `sent N chars to the clipboard`. Inside tmux that needs
+`set -g set-clipboard on`; the default, `external`, drops it.
+
+### On a tablet
+
+Under Termux the panel opens in tablet mode: big tiles, a row of tap buttons
+in place of the `^S` `^F` `^T` `⇥` `^N` keys, and a big yes and no on the
+confirm, drawn at the top, away from the button that opened it. A tap is a
+press, so it acts once, and a tap in the first 300 ms of a new screen is
+dropped, so a double tap never confirms; the wheel or a swipe scrolls. A risky
+or multi-line send still needs the yes button, which is `y`, never Enter. Keys
+keep working.
+
+```sh
+set -g @cockpit_panel_mode auto    # the default; pc or tablet forces one
+```
+
+The Home tile `Tablet mode` / `PC mode` flips it until the panel closes. PC
+mode never captures the mouse, so dragging over the popup still selects text.
+[`examples/termux.properties`](examples/termux.properties) adds a Termux
+extra-keys row with a key that opens the panel.
+
 ## A goal that will not be met
 
 Claude Code's `/goal` is a Stop hook: after every turn an evaluator reads the

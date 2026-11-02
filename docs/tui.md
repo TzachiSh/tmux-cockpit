@@ -83,9 +83,10 @@ Inside the board:
 help overlay is generated from the same table the dispatch reads, so a renamed
 key cannot go stale in one and not the other.
 
-**No mouse**, in phase 1 or phase 2. Enabling SGR capture inside a popup takes
-the wheel and text selection away from you for as long as the board is open,
-and the board is a screen you hold for seconds.
+**No mouse on the board.** Enabling SGR capture inside a popup takes the wheel
+and text selection away from you for as long as the board is open, and the board
+is a screen you hold for seconds. The panel captures the mouse only in tablet
+mode: see [The panel in tablet mode](#the-panel-in-tablet-mode).
 
 ## Options
 
@@ -99,6 +100,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
+| `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to, so a reload that turns it off or moves it unbinds the old one |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
@@ -127,6 +129,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
+| `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
@@ -267,6 +270,145 @@ At 40x12 (a phone in portrait), Steps:
   ellipsis above; a long option or step note wraps under itself.
 - **The top border** gives the title way first, with an ellipsis, then drops the
   indicator's arrows; the `N-M of T` count is never cut, only dropped whole.
+
+### The panel in tablet mode
+
+One state machine and one set of views, shown two ways. `pc` is the default off
+Termux; `tablet` is the default on it; the Home tile `Tablet mode` (`PC mode`
+in tablet mode) flips it until the panel closes. A step resume opens a new
+process, so it comes back in the `@cockpit_panel_mode` mode.
+
+Why two modes and not one layout: mouse capture inside a popup takes the
+terminal's own text selection away (you can no longer drag over an answer to
+copy it), and tall tiles cost rows a keyboard user has no use for. A touch
+screen needs both.
+
+In tablet mode:
+
+- **Mouse capture** is `?1000h ?1006h`: presses, releases and the wheel, SGR
+  encoded. Not `?1003h`: a report for every pointer move is a wakeup and a
+  redraw each. Every exit path writes `?1006l ?1015l ?1003l ?1002l ?1000l`: `q`,
+  `esc`, `^C`, an action, SIGHUP and SIGTERM (through the loop's restore), the
+  panic hook (`restore()`), a failed `init()`, and the hangup watch before its
+  `_exit`. These are set-mode sequences, not queries: the terminal answers
+  nothing, so crossterm #1104 (a wedged parser on an unknown report) cannot
+  trigger. tmux 3.8 asks the outer terminal for the mouse whenever the popup
+  does, with `mouse` on or off, and hands the popup popup-relative coordinates.
+- **A tap is a bare left press.** The release, drags, the right button, motion,
+  and a press with Shift, Ctrl or Alt held (a click meant for the terminal) do
+  nothing, so a press and its release are one action. The wheel is
+  `↑`/`↓`: it scrolls Result, Answer, Confirm and `?`, and moves the selection
+  on Home, Question, Explain and Steps. In Compose and the one-line boxes it does
+  nothing.
+- **Hit map.** Every frame `render()` records a rect per tappable element: the
+  tiles, the options, the steps, each button, Confirm's yes and no. A tap runs
+  the key the element stands for, through the same `App::key()`; a tile or an
+  option is the selection plus Enter, a step is the selection only. With `?` open
+  a tap anywhere is `esc`, which closes it. Under the floor a tap does nothing:
+  the card hides the view, and what `esc` does there differs by view (it arms
+  and then discards an Answer, cancels a paid call), so two taps on a card the
+  user cannot read must not lose anything. The `esc` key still goes back, and
+  the card's remedy, a larger window or a rotation, needs no tap.
+- **Tiles are boxed, 3 rows tall,** on Home, Question and Explain, when the
+  whole view still fits; otherwise they are 1 row, as in pc mode. Measured, not
+  a fixed height: Home on a Claude Code pane (5 tiles) needs 21 rows, so a
+  80x24 popup gets tall tiles and a 40x20 phone in portrait does not.
+- **Buttons replace the footer.** Each footer hint that names one key becomes a
+  `[ verb ]` button on the bottom rows (Compose: write, fix spelling, insert as
+  typed, type, model, keys, home), wrapped to more rows when narrow. Ranges and
+  arrows (`1-5`, `↑↓`) become no button. Keys keep working in both modes.
+- **Confirm** gets a big `yes` and `no` pair at the top, 3 rows tall while the
+  body keeps half the rows. `yes` is `y`, never Enter, so a risky or multi-line
+  send still takes an explicit yes. An armed Answer gets a big `discard it`
+  (`esc`) and `keep it` (`n`) at the top, and its `[ home ]` button becomes
+  `[ keep it ]` in place; its note says "tap discard it, or esc again".
+- **A double tap never confirms.** Two defences, as in type-panel, whose tap
+  guard was there for the same reason:
+  - Layout: every button that opens a Confirm or arms a discard is a bottom
+    button, and what confirms is drawn at the top, so the second tap of a
+    double tap lands on no confirming cell. A property test checks every size
+    from 28x7 to 120x40 for each such button (Steps, Result and Answer send and
+    insert, Answer home, Compose insert as typed).
+  - Guard: a tap within 300 ms of a frame that shows a new view (another view,
+    the Answer armed, `?` opened or closed) is dropped. Keys are never dropped.
+    The selection moving is not a new view. The loop passes its clock in, like
+    `tick`, so the tests set the time and read no clock. The first frame starts
+    the guard too, and after a steps resume it lasts 800 ms: the close, the
+    paste and the reopen fit inside a slow double tap, and the reopened Steps
+    put `[ insert ]` back under the same finger. The state file is unchanged.
+
+At 40x20, a phone in portrait, a risky send:
+
+```
+╭ panel · %3 · work ───────────────────╮
+│ ╭───────────────╮ ╭────────────────╮ │
+│ │   yes, send   │ │       no       │ │
+│ ╰───────────────╯ ╰────────────────╯ │
+│ ⚠ risky: rm                          │
+│ send this to %3 (bash) and press     │
+│ Enter?                               │
+│                                      │
+│   rm -rf target                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│                                      │
+│ [ keys ]                             │
+╰──────────────────────────────────────╯
+```
+
+**Copy, in both modes.** `x` on a Result copies it, on Steps the selected
+step's command (its note when it has none), on an Answer the prompt for the
+agent (the last answer when there is none). `y` was not free: it is Confirm's
+yes. The text is cleaned like a paste (control characters out, tabs and
+newlines kept): an ESC copied out would be a keystroke wherever it is pasted.
+The panel writes OSC 52 (`ESC ] 52 ; c ; <base64> BEL`) to its own tty; nothing
+is run, no termux-* binary is needed, and a failed write is a warn note, never
+an exit. The terminal never answers an OSC 52, so the note says only what is
+known: `sent N chars to the clipboard (needs tmux set-clipboard on)`. Inside
+tmux it needs:
+
+```sh
+set -g set-clipboard on    # the default, external, drops an app's OSC 52
+```
+
+Measured on tmux 3.8 with a private server: from a popup, with `set-clipboard
+on`, the text lands in a tmux buffer and is passed on to the outer terminal;
+with `external` (the default) or `off`, nowhere. `allow-passthrough` is not
+needed, since the sequence is not wrapped. The outer terminal must accept OSC 52
+too (Termux does).
+
+**Size.** tmux 3.8 drops an OSC string longer than `input-buffer-size`
+(default 1048576) without a word: measured, 786,000 bytes of text (1,048,000 of
+base64) landed and 786,432 did not. Over 768,000 bytes the panel copies nothing
+and says `too long to copy: N chars`. Termux's emulator is said to cut OSC
+strings near 8 KB; that is unconfirmed, so under Termux a copy over 6,000 bytes
+is still sent, with a warn note that it may be cut.
+
+**Termux.** `examples/termux.properties` has an extra-keys row with a key that
+sends `prefix + f`.
+
+### Contract changes for tablet mode (for #61)
+
+- New option `@cockpit_panel_mode auto|pc|tablet`, read at load; the binding
+  passes it as `display-popup -e COCKPIT_PANEL_MODE=<mode>`.
+- New variable `COCKPIT_PANEL_MODE`; a value other than `auto`, `pc`, `tablet`
+  or empty is exit 2, a usage error.
+- `view::render()` returns `(total, room, Vec<Hit>)`: the hit map is new.
+- `backend::init(paste, mouse)` takes a second flag; `backend::mouse()`,
+  `osc52()` and `copy()` are new. `restore()` turns the mouse off.
+- In tablet mode the panel writes `?1000h ?1006h` and reads mouse events; in
+  both modes `x` writes OSC 52 to the tty. The board is unchanged: no mouse.
+- Home has one more tile, `Tablet mode` / `PC mode`, before `Close`, so Close's
+  digit moves up by one (`4` to `5` on a Claude Code or shell pane).
+- `x` is a new key on Result, Steps and Answer.
+- `App::tap(t, now)` and `App::frame(now)` take the loop's clock in ms; a tap
+  within 300 ms of a new view is dropped. `view::mouse()` takes `now` too.
 
 ### The triage overlay
 
@@ -473,7 +615,7 @@ when `COCKPIT_LOG` is set. No rotation.
 
 **Exit codes:** `0` normal (an action was written, or none), `1` runtime failure
 (tmux unreachable, terminal not a tty), `2` usage error (unknown subcommand, bad
-pane id). The binding treats a missing binary and a non-zero exit the same way.
+pane id, a bad `COCKPIT_PANEL_MODE`). The binding treats a missing binary and a non-zero exit the same way.
 
 `--rows` and `--json` exit 1 when the `list-panes` call fails, so a wrapper can
 tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
@@ -490,7 +632,8 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   wedges the parser and swallows all later input, and tmux emits exactly that
   family around a popup. Keep `q` as an exit that does not route through Escape
   parsing.
-- **No mouse in phase 1 or 2.**
+- **No mouse on the board; on the panel only in tablet mode,** which turns it
+  off on every exit path. Capture takes the terminal's text selection away.
 - **No tokio, no `notify`, no clap, no anyhow, no color-eyre, no chrono, no
   git2.** One input source, one timer, about four forks a tick. Five
   subcommands parse from `args[0..2]`.
@@ -531,7 +674,7 @@ workspace, no crate split.
 
 | module | owns |
 |--------|------|
-| `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste, and `exit_on_hangup()`, the tty hangup watch |
+| `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste and tablet-mode mouse capture, the OSC 52 copy, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |

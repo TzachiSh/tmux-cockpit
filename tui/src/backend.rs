@@ -8,6 +8,7 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend, WindowSize};
 use ratatui::buffer::Cell;
 use ratatui::layout::{Position, Size};
 use std::io::{self, Stdout, Write, stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
 use unicode_width::UnicodeWidthStr;
 
 pub struct WideCellBackend<W: Write> {
@@ -113,7 +114,8 @@ impl<W: Write> Backend for WideCellBackend<W> {
 
 /// `ratatui::init()` with our backend; its panic hook runs before `panic = "abort"`, hence no
 /// Drop guard. `paste` turns on bracketed paste, so a paste arrives as one event, not as keys.
-pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
+/// `mouse` turns on [`mouse`] capture, which every [`restore`] turns off again.
+pub fn init(paste: bool, mouse_on: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore(paste);
@@ -124,7 +126,54 @@ pub fn init(paste: bool) -> io::Result<Terminal<WideCellBackend<Stdout>>> {
     if paste {
         execute!(stdout(), EnableBracketedPaste)?;
     }
+    if mouse_on {
+        mouse(true)?;
+    }
     Terminal::new(WideCellBackend::new(stdout()))
+}
+
+/// Press, release and the wheel, SGR-encoded. Not crossterm's own capture command:
+/// its ?1003h reports every pointer move, a wakeup and a redraw each.
+pub const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+/// Also clears the modes crossterm's capture sets, whoever set them.
+pub const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+static MOUSE: AtomicBool = AtomicBool::new(false);
+
+/// Mouse capture on or off; a no-op when it already is. Set-mode sequences
+/// only: no query, so no reply for crossterm #1104 to wedge on.
+pub fn mouse(on: bool) -> io::Result<()> {
+    if MOUSE.swap(on, Ordering::SeqCst) == on {
+        return Ok(());
+    }
+    let mut o = stdout();
+    o.write_all(if on { MOUSE_ON } else { MOUSE_OFF }.as_bytes())?;
+    o.flush()
+}
+
+/// The OSC 52 sequence that puts `text` on the terminal's clipboard. BEL ends
+/// it: tmux and Termux both take it, and it is one byte shorter than ST.
+pub fn osc52(text: &str) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::from("\x1b]52;c;");
+    for c in text.as_bytes().chunks(3) {
+        let n = c.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+        for i in 0..4 {
+            out.push(if i <= c.len() {
+                B64[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    out.push('\x07');
+    out
+}
+
+/// Writes [`osc52`] to the terminal; tmux passes it on only under `set-clipboard on`.
+pub fn copy(text: &str) -> io::Result<()> {
+    let mut o = stdout();
+    o.write_all(osc52(text).as_bytes())?;
+    o.flush()
 }
 
 /// The fd crossterm reads keys from: stdin when it is a tty, else /dev/tty,
@@ -192,8 +241,10 @@ pub fn exit_on_hangup(cleanup: fn()) {
     });
 }
 
-/// `ratatui::restore()`, plus the bracketed paste `init(true)` turned on.
+/// `ratatui::restore()`, plus the bracketed paste `init(true, _)` turned on and
+/// any mouse capture still on.
 pub fn restore(paste: bool) {
+    let _ = mouse(false);
     if paste {
         let _ = execute!(stdout(), DisableBracketedPaste);
     }
@@ -242,6 +293,23 @@ mod tests {
 
     fn contains(hay: &[u8], needle: &str) -> bool {
         count(hay, needle) > 0
+    }
+
+    #[test]
+    fn osc52_is_base64_between_the_introducer_and_bel() {
+        assert_eq!(osc52(""), "\x1b]52;c;\x07");
+        assert_eq!(osc52("f"), "\x1b]52;c;Zg==\x07");
+        assert_eq!(osc52("fo"), "\x1b]52;c;Zm8=\x07");
+        assert_eq!(osc52("foo"), "\x1b]52;c;Zm9v\x07");
+        assert_eq!(osc52("héllo\n"), "\x1b]52;c;aMOpbGxvCg==\x07");
+    }
+
+    #[test]
+    fn mouse_off_clears_every_mode_on_turns_on() {
+        for m in ["1000", "1006"] {
+            assert!(MOUSE_ON.contains(&format!("?{m}h")) && MOUSE_OFF.contains(&format!("?{m}l")));
+        }
+        assert!(!MOUSE_ON.contains("1003"), "no motion reports");
     }
 
     #[test]
