@@ -21,7 +21,7 @@ focused on, names the ask instead of just flagging one:
 
 | state | marker | colour | means |
 |-------|--------|--------|-------|
-| blocked | `▲` | red | waiting on **you** — a permission prompt |
+| blocked | `▲` | red | waiting on **you**: a permission prompt |
 | error | `✕` | orange | a tool failed |
 | running | `●` | yellow | working |
 | done | `✓` | green | finished, you have not picked it back up |
@@ -111,9 +111,9 @@ until they restart.
 | `prefix + u` | jump to the pane that needs you; again for the next |
 | `prefix + w` | the board: every agent pane as a live tile (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
-| `prefix + r` | review an agent's uncommitted diff |
-| `prefix + i` | info about this pane: cwd, git root, state, review |
-| `prefix + s` | session picker |
+| `prefix + r` | review an agent's uncommitted diff (being replaced, #228) |
+| `prefix + i` | info about this pane: cwd, git root, state, review (being folded into the board, #228) |
+| `prefix + s` | session picker (its fzf picker is being replaced, #228) |
 | `prefix + M` | move this window to another session |
 | `prefix + e` | hide the status line and borders (full screen) |
 | Ctrl+double-click | pick a file path off a line of output and open it |
@@ -191,7 +191,9 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
 - [docs/board-and-panel.md](docs/board-and-panel.md) and [docs/tui.md](docs/tui.md): the `cockpit-tui` board and panel
 - [docs/menus.md](docs/menus.md): the agents menu and moving windows
 - [docs/phone-and-touch.md](docs/phone-and-touch.md): using it from a phone
-- [docs/review.md](docs/review.md), [docs/branch-picker.md](docs/branch-picker.md), [docs/tm.md](docs/tm.md): being replaced by the board (#228)
+- [docs/tm.md](docs/tm.md): the `tm` session launcher (the command stays; its fzf picker is being replaced, #228)
+- [docs/review.md](docs/review.md): the `prefix + r` review (being replaced by the board, #228)
+- [docs/branch-picker.md](docs/branch-picker.md): the branch picker and folder browser (changing, #228)
 - [docs/testing.md](docs/testing.md): running the tests
 
 ## License

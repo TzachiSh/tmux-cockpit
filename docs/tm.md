@@ -1,6 +1,6 @@
 # tm
 
-Being replaced by the board (#228).
+The `tm` command stays; its fzf picker is being replaced by a cockpit-tui picker (#228).
 
 ## tm — session launcher
 

@@ -1,6 +1,6 @@
 # Branch picker and folder browser
 
-Being replaced by the board (#228).
+The branch picker becomes a cockpit-tui popup and the folder browser is dropped (#228).
 
 ## Click the branch to switch branch
 
