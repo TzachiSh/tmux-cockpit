@@ -142,7 +142,6 @@ if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
 fi
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
-Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
 # The pane a popup came from, via the session id $TMUX ends in: display-popup
 # expands formats only in -T and -d, and inside it $TMUX_PANE is the popup's (#38).
 SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
@@ -189,7 +188,8 @@ jk=$(key @cockpit_jump_key u)
 [ -z "$jk" ] || tmux bind-key "$jk" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'"
 
 ik=$(key @cockpit_info_key i)
-[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
+# The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
+[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
 
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \

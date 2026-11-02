@@ -1,6 +1,7 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
 pub mod fleet;
 pub mod gitsafe;
+pub mod info;
 pub mod sessions;
 pub mod transcript;
 

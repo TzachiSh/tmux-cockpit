@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
 
 /// Never publishes @cockpit_tui_pid: that pid is the board's, for its wakeups.
 fn panel(args: &[String]) {
@@ -89,6 +89,7 @@ fn main() {
                 std::process::exit(2);
             }
         },
+        Some("info") => std::process::exit(cockpit_tui::info::main(&args[1..])),
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),
         // sessions view (#245): writes its own action files, like panel
         Some("sessions") => std::process::exit(cockpit_tui::sessions::main(&args[1..])),
