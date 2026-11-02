@@ -1005,9 +1005,8 @@ file and the answer to a private temp file for the paste.
 - On a result, `i` inserts it into the pane without Enter, and `s` sends it
   with Enter after a confirm. The paste is bracketed only when the program
   asked for that, so a multi-line insert into a program that may run each
-  line (python3, sh, psql) asks first too. The confirm also flags risky
-  commands such as `rm` or `sudo`, and a risky or multi-line send takes
-  `y`, not Enter. `n`, `q` or `esc` cancels it.
+  line (python3, sh, psql) asks first too. A multi-line send takes `y`,
+  not Enter. `n`, `q` or `esc` cancels it.
 - On steps, `1`-`9` or `↑↓` pick one, `i` inserts it and `s` sends it. The
   panel comes back on the steps with that one marked `✓ inserted` or `✓ sent`
   (`+` with `COCKPIT_GLYPHS=ascii`), so you can go on to the next.
@@ -1042,8 +1041,8 @@ Under Termux the panel opens in tablet mode: big tiles, a row of tap buttons
 in place of the `^S` `^F` `^T` `⇥` `^N` keys, and a big yes and no on the
 confirm, drawn at the top, away from the button that opened it. A tap is a
 press, so it acts once, and a tap in the first 300 ms of a new screen is
-dropped, so a double tap never confirms; the wheel or a swipe scrolls. A risky
-or multi-line send still needs the yes button, which is `y`, never Enter. Keys
+dropped, so a double tap never confirms; the wheel or a swipe scrolls. A
+multi-line send still needs the yes button, which is `y`, never Enter. Keys
 keep working.
 
 ```sh
