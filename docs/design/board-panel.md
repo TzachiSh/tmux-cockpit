@@ -787,29 +787,33 @@ centred and wraps. Loading stays `reading the fleet …`.
 ships and adds two rules; the frozen colour rules stand.* ⟦rev2: P1 P2 P3⟧
 Colours come from the `@thm_*` tmux options, emitted as truecolor and
 downgraded by tmux per client, as `docs/tui.md` freezes. The roles below are
-today's, from `tui/src/theme.rs`; values belong to that file (open question 19).
+the R7 palette from #256 (#222), in `tui/src/theme.rs`. Every option has a
+dark value and a `_light` one. Values belong to that file, which session
+tmux-cockpit-79 owns (open question 19, settled).
 
-| shows | glyph | `Theme` role | `@thm_*` today | without colour (`NO_COLOR`) |
+| shows | glyph | `Theme` role | `@thm_*` | without colour (`NO_COLOR`) |
 |---|---|---|---|---|
-| needs you | `▲` | `needs` | `@thm_red` | the glyph, bold |
-| error | `✕` | `error` | `@thm_peach` | the glyph, bold |
-| running | `●` | `running` | `@thm_yellow` | the glyph |
-| done | `✓` | `done` | `@thm_green` | the glyph |
-| idle | `○` | `meta` | `@thm_overlay_0` | the glyph and the word `idle` |
-| review pending | `◆` | `sky` | `@thm_sky` | the glyph |
-| focus | the focused pane's frame | `accent` | `@thm_lavender` | the frame in bold |
-| selection | `▎` and a band | a background role | not in `theme.rs` yet | `▎` plus reverse video |
+| needs you | `▲` | `needs` | `@thm_needs` | the glyph, bold |
+| error | `✕` | `error` | `@thm_error` | the glyph, bold |
+| running | `●` | `running` | `@thm_running` | the glyph |
+| done | `✓` | `done` | `@thm_done` | the glyph |
+| idle | `○` | `meta` | `@thm_dim` | the glyph and the word `idle` |
+| review pending | `◆` | `sky` | `@thm_review` | the glyph |
+| focus | the focused pane's frame | `accent` | `@thm_accent` | the frame in bold |
+| muted text that must be read | | `meta`, `label` | `@thm_dim` (≥ 4.5:1) | plain, or dim beside a glyph or word |
+| decoration only | separator dots, borders, rules | `faint` | `@thm_faint` (about 3:1) | the glyphs |
+| selection | `▎` and a band | `sel`, added by the panel lane when the list uses it | `@thm_sel` | `▎` plus reverse video |
 
-The two rules:
-- **Focus never shares a hue with a state.** `accent` is the only frame colour
-  that means focus, so a lavender frame never reads as "needs you".
-- **Must-read text never relies on a low-contrast grey or on dim alone.**
-  `meta` (`@thm_overlay_0`) is fine for a glyph beside a word, not for the only
-  copy of something a user must read. On a light set such as Catppuccin Latte
-  it drops well under 4.5:1; the switch at the top shows it. The muted role in
-  79's theme split (held at ≥ 4.5:1) is where such text goes. Under
-  `NO_COLOR`, dim stays one of the three fallback attributes, as frozen, but
-  only on text that also has a glyph or a word.
+The rules:
+- **Focus never shares a hue with a state.** `accent` (blue) is the only
+  frame colour that means focus; the nearest state hue is `review`.
+- **Must-read text uses `fg` or `@thm_dim` (`meta`, `label`), both ≥ 4.5:1 on
+  both themes.** It never relies on dim alone. Under `NO_COLOR`, dim stays one
+  of the three fallback attributes, as frozen, but only on text that also has
+  a glyph or a word.
+- **`faint` is decoration only:** never the focus frame, never a selected row,
+  never the only copy of anything.
+- **Selected-row text uses `fg`.** `@thm_dim` on `@thm_sel` is only 3.4/4.0:1.
 
 **D18. The target holds still.** *New in revision 2.* ⟦rev2: P5 P6⟧
 - While the quick-answer sheet or its confirm is open, a refresh updates ages
@@ -2260,10 +2264,9 @@ its bare `read -r _`.
 18. **Help inside Compose.** `?` types there, so help is `F1`, which some
     terminals and Termux do not send (htop #1047). Add a second key, such as
     `^O`, or a `[ keys ]` button on tablet and leave pc on `F1`? ⟦rev2: P9⟧
-19. **Who owns the palette values.** D17 names the roles and adds two rules.
-    Session tmux-cockpit-79 owns `theme.rs` and the muted-role rename. Does 79
-    take the two rules, and the selection background role, into its split?
-    ⟦rev2: P1⟧
+19. *Settled in #256.* **Who owns the palette values.** Session
+    tmux-cockpit-79 owns `theme.rs`. It took D17's rules, added `@thm_sel` and
+    `@thm_faint`, and D17's table now lists the R7 names. ⟦rev2: P1⟧
 20. **The panel's border hints.** D19 leaves them, because D10 freezes the
     panel's goldens. Move them to a footer in the step that touches those
     goldens anyway (step 9), or leave them? ⟦rev2: P4⟧
