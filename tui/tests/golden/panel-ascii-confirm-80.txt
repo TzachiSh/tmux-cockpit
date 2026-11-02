@@ -17,4 +17,4 @@
 "|   echo step 14                                                               |"
 "|   echo step 15                                                               |"
 "| ... 25 more lines                                                            |"
-"+ y confirm  up/dn scroll  ? keys  esc n cancel -------------------------------+"
+"+ y confirm  up/dn scroll  enter is off: multi-line  ? keys  esc n cancel -----+"
