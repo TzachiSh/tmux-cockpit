@@ -305,6 +305,12 @@ if [ -z "$menuk" ] && [ -n "$aik" ]; then
     tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
 fi
 case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
+# A reload that turns the key off or moves it must give the old one back.
+mprev=$(tmux show-option -gqv @cockpit_menu_bound)
+if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
+    give_back "$mprev"
+    tmux set-option -gu @cockpit_menu_bound
+fi
 rows=()
 row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
 row 'Board of every agent'        w "$bk"
@@ -332,7 +338,10 @@ rows+=('Detach' d detach-client)
 row 'Reload config'               R "$rlk"
 rows+=('Kill session' Q "confirm-before -p 'kill session ##S? (y/n)' kill-session")
 tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M -y M "${rows[@]}"
-[ -z "$menuk" ] || tmux bind-key "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
+if [ -n "$menuk" ]; then
+    tmux bind-key "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
+    tmux set-option -g @cockpit_menu_bound "$menuk"
+fi
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);

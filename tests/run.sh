@@ -3291,12 +3291,27 @@ case "$(ak)" in
     *) bad "a rebound move key moves the row with it" "send-keys -K W" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
 esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
+# Fresh servers below, never a just-killed name: a new-session there can lose the
+# race to the old server's exit, and every later check passes on no server.
+PA="cockpit-pa1-$$"; SOCKS="$SOCKS $PA"
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_menu_key off binds nothing" "" "$(ak)"
+# A reload that moves the key or turns it off gives the old key back.
+"$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key n >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$(ak n)" in *display-menu*) ok "a moved menu key binds the new key" ;;
+    *) bad "a moved menu key binds the new key" "the menu on n" "$(ak n)" ;; esac
+is "and gives a back" "" "$(ak a)"
+"$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "turning it off on a reload gives n back too" "" "$(ak n | grep display-menu)"
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 # The old name still works, and says it was renamed.
+PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
 "$TMUX_REAL" -L "$PA" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -g @cockpit_ai_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
