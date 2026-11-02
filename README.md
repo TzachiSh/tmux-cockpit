@@ -50,9 +50,9 @@ screenshot and a red/green colourblind reader.
   `~/.local/bin` when the distro's is older.
 - jq, for `install.sh --hooks` and the review gate.
 - Claude Code, or any agent that can run a command on lifecycle events.
-- Optional: the `cockpit-tui` binary for the board and the panel. Get it with
-  `set -g @cockpit_tui_fetch on` (fetched when the config loads),
-  `scripts/tui-fetch`, or `make tui` (Rust 1.88 or newer).
+- The `cockpit-tui` binary, which draws the board and the panel. `install.sh`
+  fetches it with your `gh` login, else builds it (Rust 1.88 or newer), and
+  stops with a message when it can do neither.
 - Optional: `bat`. A Nerd Font is not needed.
 
 ### With tpm
@@ -140,6 +140,7 @@ None is required.
 | `@cockpit_glyphs` | unset | `ascii` or `nerd` glyph sets |
 | `@cockpit_blocked_bg` | `#52303a` | the tint behind a blocked pane |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
+| `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables |
 
 Status-bar tokens: `#{agent_fleet}`, `#{agent_where_path}` and
 `#{agent_where_branch}`. They work only in the options listed in
@@ -160,7 +161,7 @@ The formats believe the state only while the pane is running a command that
 matches `@cockpit_agents`, so a crashed agent does not leave a stale marker.
 
 Actions (jump, review, the pickers, the board) are shell scripts bound to keys.
-The optional `cockpit-tui` binary draws the board and the panel; it writes a
+The required `cockpit-tui` binary draws the board and the panel; it writes a
 verb and a pane id, and the scripts act on it.
 
 Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).

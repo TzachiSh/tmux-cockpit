@@ -1,0 +1,7 @@
+#!/bin/sh
+# Stands in for `claude agents --json --all`. Prints $AV_JSON (a file); logs argv to $AV_CLAUDELOG;
+# exits $AV_RC (default 0). Any other subcommand is a test bug and fails loudly.
+printf '%s\n' "$*" >> "${AV_CLAUDELOG:-/dev/null}"
+[ "$*" = "agents --json --all" ] || { echo "fake claude: unexpected argv: $*" >&2; exit 64; }
+[ -n "${AV_JSON:-}" ] && cat "$AV_JSON"
+exit "${AV_RC:-0}"

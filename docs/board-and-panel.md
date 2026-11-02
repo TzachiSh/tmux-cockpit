@@ -34,10 +34,9 @@ the tile you are on and closes the board.
  ↵ jump   a ask   r review   f fix   i info   ? help   q close
 ```
 
-It is a separate optional binary, `bin/cockpit-tui`, fetched with
-`set -g @cockpit_tui_fetch on` (fetched in the background when the config loads),
-`scripts/tui-fetch` by hand, or `make tui` (Rust >= 1.88). Without
-it the binding prints one message and exits 0, and nothing else changes.
+It is the plugin's required binary, `bin/cockpit-tui`, fetched by `install.sh`
+(or by `scripts/tui-fetch` by hand, or built with `make tui`, Rust >= 1.88).
+Without it the binding prints one message and exits 0.
 `prefix + r` remains the fleet list: fuzzy filter, multi-select and the wheel
 come free from fzf, and the board is the grid of previews fzf cannot draw.
 

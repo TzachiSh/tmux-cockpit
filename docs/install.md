@@ -31,7 +31,7 @@ file or by another tool's link, reports anything it could not create, and
 anything it could not remove). `install.sh --help` prints usage and exits.
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
-row per thing that can be wrong (tmux, jq, fzf, bat, `$PATH` order, the
+row per thing that can be wrong (tmux, cockpit-tui, jq, fzf, bat, `$PATH` order, the
 config, the hooks, truecolor, the popup border), the fix beside it, and the
 exit is the worst row, 0 ok or skipped, 1 warnings, 2 something is broken.
 Rows it cannot answer from where you ran it, such as truecolor outside tmux,
@@ -46,10 +46,10 @@ press a key. Add `--latest` for each project's newest tag instead of the pins.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
 match installs nothing. On macOS with brew it runs `brew install fzf bat`.
 
-The board (`prefix + w`) is the one optional extra: a small binary, fetched with
-`set -g @cockpit_tui_fetch on` (fetched in the background when the config loads),
-`scripts/tui-fetch` by hand, or `make tui`. Everything else here works without it.
-See [docs/tui.md](tui.md).
+The `cockpit-tui` binary is required: `install.sh` fetches it with your `gh`
+login or builds it from source, and stops with a message when it can do
+neither. It draws the board (`prefix + w`) and the panel (`prefix + f`). See
+[tui.md](tui.md).
 
 ### Or with tpm
 
@@ -96,8 +96,10 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
 
 - **tmux >= 3.8**. Below it the plugin says so and binds nothing; `bootstrap.sh`
   builds 3.8 into `~/.local/bin` when the distro's tmux is older.
-- **Rust >= 1.88** only to build the board with `make tui`;
-  the fetched binary needs neither Rust nor cargo.
+- **`cockpit-tui`**, the plugin's own binary. `install.sh` fetches the
+  release through your `gh` login when it can reach it, and otherwise builds
+  it, which needs **Rust >= 1.88**; the fetched binary needs neither Rust nor
+  cargo. `make check` builds it, so the suite needs cargo.
 - **fzf >= 0.73** for the pickers. Debian 13 ships 0.60.3, Ubuntu 24.04
   0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
   0.74.3 into `~/.local/bin` when it finds an older one, and

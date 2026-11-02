@@ -39,13 +39,15 @@ manifest() {
     # literal. The `case` keeps the old grep's job: a stamp must not depend on
     # tests/.par.* or tests/.cache, which only exist mid-run.
     local f
+    # tui/ too, since the suite runs the binary built from it (#199).
     # shellcheck disable=SC2046  # deliberate glob expansion into one sha256sum
-    sha256sum $(for f in cockpit.tmux install.sh bootstrap.sh \
-                         scripts/* scripts/lib/* tests/* \
-                         tests/fixtures/review/* examples/*; do
-                    case $f in tests/.*) continue ;; esac
-                    [ -f "$f" ] && printf '%s\n' "$f"
-                done | sort) 2>&1
+    sha256sum $({ for f in cockpit.tmux install.sh bootstrap.sh \
+                           scripts/* scripts/lib/* tests/* \
+                           tests/fixtures/review/* examples/*; do
+                      case $f in tests/.*) continue ;; esac
+                      [ -f "$f" ] && printf '%s\n' "$f"
+                  done
+                  find tui -path tui/target -prune -o -type f -print; } | sort) 2>&1
     # A tmux, fzf or git upgrade changes what the suite observes without
     # changing a byte of this repo, so a green stamp must not survive one.
     printf 'tool %s\n' "$(tmux -V 2>&1)" "$(fzf --version 2>&1)" "$(git --version 2>&1)"

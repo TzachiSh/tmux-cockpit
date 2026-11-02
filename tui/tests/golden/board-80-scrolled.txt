@@ -21,4 +21,4 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" ↵ jump   a ask   r review   f panel   i info   ? help   q close                "
+" ↵ jump   a ask   r review   f panel   i info   ? keys   q close                "

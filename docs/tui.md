@@ -5,10 +5,11 @@ Each tile carries the pane's state glyph, what the agent is doing, how long it
 has been doing it, and a live `capture-pane` of the pane itself. `↵` jumps to
 the tile you are on and closes the board.
 
-It is a small Rust binary, `bin/cockpit-tui`, and it is **optional**. Nothing
-else in the plugin needs it, nothing breaks without it, and every key it offers
-already exists as a bash path. If it is not installed the binding prints one
-message and exits 0.
+It is a small Rust binary, `bin/cockpit-tui`. It is **required**: the board and
+the panel run on it, and the follow-up #199 PRs move the shell scripts'
+transcript, diff-count and git-safety readers onto its `transcript`, `diffstat`
+and `git-flags`. Install fetches it with your own `gh` login or builds it from
+source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## What it is not
 
@@ -19,16 +20,17 @@ message and exits 0.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
   runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
-  stays shell, so the suite keeps testing it with no binary present.
+  stays shell.
 - **Not a replacement for `prefix i` or `prefix f`.** The board reaches them; it
   does not reimplement them.
 
 ## Install
 
-The binary ships as a release asset. With `@cockpit_tui_fetch on`, every config load
-runs `scripts/tui-fetch` in the background: tmux starting, `prefix R`, and tpm's
-update key `prefix U`, which reloads the config after updating. Otherwise run
-`scripts/tui-fetch` yourself, or build it with `make tui`.
+The binary ships as a release asset. `install.sh` fetches it. With
+`@cockpit_tui_fetch on`, every config load also runs `scripts/tui-fetch` in the
+background: tmux starting, `prefix R`, and tpm's update key `prefix U`, which
+reloads the config after updating. Otherwise run `scripts/tui-fetch` yourself,
+or build it with `make tui`.
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
@@ -50,12 +52,14 @@ That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
 Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
-`make check`, the repo's own gate, stays green with no cargo installed at all.
-`make tui` is a separate target on purpose: the board must never become a build
-prerequisite for a plugin that is otherwise shell.
+`make check` builds the binary first; the suite needs cargo.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
-does not touch it; that script manages only its symlinks in `~/.local/bin`.
+runs `scripts/tui-fetch --required` and exits 1 when no working binary is
+left; `install.sh --check` fails when it is missing or older than `TUI_MIN`
+(`scripts/lib/tui.sh`). `COCKPIT_TUI_BIN` points every script at another
+binary. Loading the plugin runs one offline `--version` and says when the
+binary is missing or too old.
 
 `@cockpit_board_window on` parks the board in a window instead of the popup.
 
@@ -76,14 +80,21 @@ Inside the board:
 | `r` | review its diff (`tmux-review`) |
 | `f` | the panel for it (`cockpit-panel`) |
 | `i` | info for the selected pane |
-| `a` | ask this agent. Phase 1 jumps; phase 2 opens the reply overlay |
-| `?` | help overlay, generated from the key table itself |
+| `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
+| `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `^L` | refetch and redraw now |
-| `q` | close. `esc` closes an open overlay, else closes the board |
+| `q` `esc` | close the board. With `?` open, any key only closes the help |
 
 `j`/`k` are vertical because the board is a grid; `⇥` is the linear one. The
-help overlay is generated from the same table the dispatch reads, so a renamed
-key cannot go stale in one and not the other.
+help and the footer are generated from the same table the dispatch reads, so a
+renamed key cannot go stale in one and not the other.
+
+**One key bar.** The footer row is the only place the board lists keys; no
+tile frame carries a hint. It lists only keys that act on the selection, in
+priority order (`↵ jump`, `a answer` or `a ask`, `r review`, `f panel`,
+`i info`, `? keys`, `q close`), and drops one whole hint at a time from the
+right as the width shrinks; `?` and `q` always stay. The footer, the `?` help
+and the floor card are the panel's own, from `chrome`.
 
 **No mouse on the board.** Enabling SGR capture inside a popup takes the wheel
 and text selection away from you for as long as the board is open, and the board
@@ -166,22 +177,22 @@ area, not the terminal's.
 
 ```
  board · 5 agents · 1 needs you
-┌ 1 ▲  henosis:1 · Openvpn setup ──────────────────────────┐┏▎2 ●◆ henosis:3 · Implement with test review and rig ━━━━━┓
-│permission: Bash(sudo openvpn --config                4m12│┃Bash: shellcheck on cockpit.tmux and tests/run.sh      32s┃
+┌ 1 ▲  henosis:1 · Openvpn setup ──────────────────────────┐┏▎2 ●◆ henosis:3 · Implement with test review and rig ━━ ◂ ┓
+│permission: Bash(sudo openvpn --config               4m12s│┃Bash: shellcheck on cockpit.tmux and tests/run.sh      32s┃
 │/etc/openvpn/work.conf --daemon --log /var/log/ovpn.log)  │┃While the suite and rig run: shellcheck on the two script…┃
 │Bash command                                              │┃$ make check                                              ┃
 │sudo openvpn --config /etc/openvpn/work.conf --daemon     │┃1001 assertions, 0 failures                               ┃
 │Do you want to proceed?                                   │┃$ shellcheck cockpit.tmux tests/run.sh                    ┃
 │❯ 1. Yes   2. Yes, don't ask again   3. No                │┃                                                          ┃
 │                                                          │┃                                                          ┃
-│                                                          │┃                                                          ┃
-└─ ↵ answer ───────────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+└──────────────────────────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 ┌ 3 ●  work:2 · Fleet gate review ─────────────────────────┐┌ 4 ✓↵ work:4 · Left click issue ──────────────────────────┐
-│Agent: whole-branch review of phase 1                 4m12││idle · handover pending                                12m│
+│Agent: whole-branch review of phase 1                4m12s││idle · handover pending                                12m│
 │Dispatched the review agent; waiting on its report before…││Pushed PR #28 and left the branch on master.              │
 │⏺ Agent (fleet-gate-review)                               ││  ✓ pushed to origin/fix/left-click                       │
 │  Read tests/fleet.sh, 214 lines                          ││  PR #28 opened                                           │
 │  Read scripts/agent-state, 412 lines                     ││❯                                                         │
+│                                                          ││                                                          │
 │                                                          ││                                                          │
 │                                                          ││                                                          │
 └──────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────────┘
@@ -194,14 +205,16 @@ area, not the terminal's.
 │                                                          │
 │                                                          │
 └──────────────────────────────────────────────────────────┘
- ↵ jump   a ask   r review   f panel   i info   ? help   q close
+ ↵ jump   a ask   r review   f panel   i info   ? keys   q close
 ```
 
-Tile 1 is blocked: red border, the question in place of the doing line, and
-` ↵ answer ` on the bottom border. Tile 2 has focus (thick border) and is
-tmux's active pane (the `▎`). The `◆` after its state glyph is a pending
-review. The right rail is exactly 5 columns of elapsed duration; a 6-column
-duration would be clipped by the rail and lose its leading digit.
+Tile 1 is blocked: red border and the question in place of the doing line;
+the footer says `a answer` while it is selected. Tile 2 is the selection: the
+thick border, `▎` and its number in reverse video, so it still shows under
+`NO_COLOR`. It is also tmux's active pane, the `◂` (`@` in the ascii tier) at
+its top-right end. The `◆` after its state glyph is a pending review. The right
+rail is exactly 5 columns of elapsed duration; a 6-column duration would be
+clipped by the rail and lose its leading digit.
 
 Tiles sort by `(state rank, pane id)`: needs-input, error, running, done, idle.
 Nothing in the sort key is a clock, so tiles do not reorder while you read them.
@@ -213,22 +226,46 @@ and below that the grid scrolls by whole tile rows. A tile is never half cut and
 never resizes as you scroll; the header's `1-4 of 5   ▼1` is the indicator, not
 a scrollbar.
 
-### The help overlay
+### The help
+
+`?` covers the whole board, one column, so nothing is cut at 60 columns. Rows
+that do not fit scroll: the top border says `1-22 of 31` and the bottom one
+`↑↓ scroll  any other key closes`. The panel's `?` is the same code.
 
 ```
-╭ keys ──────────────────────────────────────────────────────────────────╮
-│ move                          act                                      │
-│ h l  ← →   column             ↵    jump to this pane, close the board  │
-│ j k  ↑ ↓   row                a    answer / ask this agent             │
-│ ⇥ ⇧⇥       next / previous    r    review its diff                     │
-│ 1-9        tile by number     f    panel for this pane                 │
-│ g G        first / last       i    info for this pane                  │
-│ u          next blocked                                                │
-│ [ ]        page               view                                     │
-│                               ?    this help                           │
-│                               ^L   refresh now                         │
-│                               q    close   ·   esc close overlay       │
-╰ any key closes ────────────────────────────────────────────────────────╯
+╭ keys ────────────────────────────────────────────────────────╮
+│ move                                                         │
+│ h l  ← →  column                                             │
+│ j k  ↑ ↓  row                                                │
+│ ⇥ ⇧⇥      next / previous                                    │
+│ 1-9       tile by number                                     │
+│ g G       first / last                                       │
+│ u         next blocked                                       │
+│ [ ]       page                                               │
+│                                                              │
+│ act on the selected agent                                    │
+│ ↵         jump to this pane, close the board                 │
+│ a         answer / ask this agent                            │
+│ r         review its diff                                    │
+│ f         panel for this pane                                │
+│ i         info for this pane                                 │
+│                                                              │
+│ view                                                         │
+│ ?         this help                                          │
+│ ^L        refresh now                                        │
+│ q esc     close the board                                    │
+│                                                              │
+│ on a tile                                                    │
+│ ▲         needs you                                          │
+│ ✕         error                                              │
+│ ●         running                                            │
+│ ✓         done                                               │
+│ ○         idle                                               │
+│ ◆         review pending                                     │
+│ ↵         review sent                                        │
+│ ▎         the selection                                      │
+│ ◂         tmux's active pane                                 │
+╰ any key closes ──────────────────────────────────────────────╯
 ```
 
 ### The panel's text boxes
@@ -297,7 +334,8 @@ At 40x12 (a phone in portrait), Steps:
 - **`?` lists every key of the view on screen**, `^N`, `⇥` and `F2` included,
   and each `esc` row says where it leads, so the way back to Home reads off the
   chain. In the Compose box and the one-line boxes `?` is text, so `F1` opens it
-  there (and everywhere else). Any key closes it; `↑↓` scroll it when it does not fit.
+  there (and everywhere else). Any key closes it; `↑↓` `j` `k` `PgUp` `PgDn`
+  scroll it when it does not fit.
 - **Home, Question and Steps keep the selection on screen.** A long question
   scrolls with its options, so the options never fall off the bottom; its
   `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
@@ -464,7 +502,8 @@ Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
 only on `display-message` output, never inside the board, where the frame
 already says who is talking.
 
-**No agent panes:**
+**No agent panes:** the header says ` board · 0 agents`, and under it this card
+sits centred; on a narrow board it wraps, never cuts.
 
 ```
 ╭ board ─────────────────────────────────────────────────────╮
@@ -472,14 +511,16 @@ already says who is talking.
 │ no agent panes                                             │
 │                                                            │
 │ cockpit tracks a pane once an agent runs in it.            │
-│ start one, or press q and use prefix r for the full fleet. │
+│ start an agent in any pane and it shows up here.           │
 │                                                            │
 ╰ q close ───────────────────────────────────────────────────╯
 ```
 
-**tmux not answering**, in two stages, never an instant blank screen. Until 30 s
-the last-known tiles stay and the header carries `· stale 34s`. After 30 s or
-three consecutive failures the grid is replaced:
+**tmux not answering**, in two stages, never an instant blank screen. A read
+that fails, or none arriving for 3 s (a hung tmux fails nothing, it blocks),
+keeps the last-known tiles and the header carries `· stale 34s`, counted from
+the last good read. After 30 s or three consecutive failures this card covers
+the grid; `^L` asks again:
 
 ```
 ╭ board · stale 34s ─────────────────────────────────────────╮
@@ -488,6 +529,18 @@ three consecutive failures the grid is replaced:
 │                                                            │
 │ last good read 34s ago · the server may have exited.       │
 │ the tiles below are from that read.                        │
+│                                                            │
+╰ ^L retry   q close ────────────────────────────────────────╯
+```
+
+When no read has worked since the board opened, there is no age and no tile
+to vouch for. The card comes as soon as the first read fails, or after 3 s if
+it hangs, and says only that:
+
+```
+╭ board ─────────────────────────────────────────────────────╮
+│                                                            │
+│ tmux is not answering · no read has worked yet.            │
 │                                                            │
 ╰ ^L retry   q close ────────────────────────────────────────╯
 ```
@@ -519,9 +572,21 @@ the word "unknown".
 once, for that tile only, and the errno goes to the log. One unreadable file
 must never take the screen.
 
-**Terminal below 40 usable columns:** the board refuses to draw and prints
-`terminal too narrow — prefix i on the pane instead`. Better than a row that
-lies about which agent it names.
+**Under the floor:** below 40 usable columns the board refuses to draw the
+tiles. Better than a row that lies about which agent it names. It draws the
+panel's floor card instead:
+
+```
+╭ board ─────────────────────╮
+│ make the window larger or  │
+│ rotate                     │
+│ esc or q closes            │
+╰────────────────────────────╯
+```
+
+Under 8 rows, where the width is fine, the card says `too short · make the
+window larger or rotate`. Under the card only `q`, `esc` and `^L` act; any
+other key is dropped, since nobody can see what it would do.
 
 **`a` on a tile that is not waiting on you:** one line in the footer row for
 2 s, replacing the key hints.
@@ -728,14 +793,14 @@ workspace, no crate split.
 | `backend` | the VS16 wide-glyph shim over the Crossterm backend, `init()` / `restore()` with the panel's bracketed paste and tablet-mode mouse capture, the OSC 52 copy, and `exit_on_hangup()`, the tty hangup watch |
 | `data` | every tmux and transcript read, `Pane`, the truncation helpers |
 | `board` | the tile grid and its event loop |
+| `chrome` | what the board and the panel share: the footer's hint fit, the full-popup `?` help and its scroll, the floor card |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
 Every mutating action stays a shell script: the binary prints
-`<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no
-binary present.
+`<verb> <pane-id>` and a wrapper runs it.
 
 ### Push wakeups
 
