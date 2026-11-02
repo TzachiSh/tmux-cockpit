@@ -303,8 +303,12 @@ In tablet mode:
 - **Hit map.** Every frame `render()` records a rect per tappable element: the
   tiles, the options, the steps, each button, Confirm's yes and no. A tap runs
   the key the element stands for, through the same `App::key()`; a tile or an
-  option is the selection plus Enter, a step is the selection only. With `?`
-  open, or under the floor, a tap anywhere is `esc`.
+  option is the selection plus Enter, a step is the selection only. With `?` open
+  a tap anywhere is `esc`, which closes it. Under the floor a tap does nothing:
+  the card hides the view, and what `esc` does there differs by view (it arms
+  and then discards an Answer, cancels a paid call), so two taps on a card the
+  user cannot read must not lose anything. The `esc` key still goes back, and
+  the card's remedy, a larger window or a rotation, needs no tap.
 - **Tiles are boxed, 3 rows tall,** on Home, Question and Explain, when the
   whole view still fits; otherwise they are 1 row, as in pc mode. Measured, not
   a fixed height: Home on a Claude Code pane (5 tiles) needs 21 rows, so a
@@ -329,7 +333,9 @@ In tablet mode:
     the Answer armed, `?` opened or closed) is dropped. Keys are never dropped.
     The selection moving is not a new view. The loop passes its clock in, like
     `tick`, so the tests set the time and read no clock. The first frame starts
-    the guard too: a steps resume opens a new process under the same finger.
+    the guard too, and after a steps resume it lasts 800 ms: the close, the
+    paste and the reopen fit inside a slow double tap, and the reopened Steps
+    put `[ insert ]` back under the same finger. The state file is unchanged.
 
 At 40x20, a phone in portrait, a risky send:
 

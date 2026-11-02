@@ -32,6 +32,9 @@ pub const COPY_MAX: usize = 768_000;
 pub const COPY_TERMUX: usize = 6_000;
 /// A tap this soon after the view changed is the second half of a double tap.
 pub const TAP_GUARD_MS: u64 = 300;
+/// A resumed panel's first view: the close, the paste and the reopen fit inside
+/// a slow double tap, and the reopened Steps put a button under the same finger.
+pub const RESUME_GUARD_MS: u64 = 800;
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -235,6 +238,9 @@ pub struct App {
     /// What the last frame showed and when, in the loop's milliseconds, for the tap guard.
     seen: Option<(std::mem::Discriminant<View>, bool, bool)>,
     seen_at: u64,
+    /// The guard for the first view: longer after a resume.
+    first_guard: u64,
+    guard: u64,
 }
 
 impl App {
@@ -272,6 +278,8 @@ impl App {
             termux: false,
             seen: None,
             seen_at: 0,
+            first_guard: TAP_GUARD_MS,
+            guard: TAP_GUARD_MS,
         }
     }
 
@@ -289,6 +297,7 @@ impl App {
             verb,
         } = r;
         let n = sel + 1;
+        self.first_guard = RESUME_GUARD_MS;
         match last.strip_prefix("failed:") {
             None if last == "ok" => {
                 done[sel] = true;
@@ -370,14 +379,15 @@ impl App {
     /// Dropped within [`TAP_GUARD_MS`] of a new view: the cell under the finger
     /// may now hold the confirming button. `now` is the loop's clock, like `tick`.
     pub fn tap(&mut self, t: Tap, now: u64) {
-        if now.saturating_sub(self.seen_at) < TAP_GUARD_MS {
+        // under the floor too: the card shows nothing a tap could be meant for
+        if now.saturating_sub(self.seen_at) < self.guard || self.tiny {
             return;
         }
         let i = match t {
             Tap::Key(k) => return self.key(k),
             Tap::Pick(i) | Tap::Select(i) => i,
         };
-        if self.help.is_some() || self.tiny {
+        if self.help.is_some() {
             return;
         }
         match &mut self.view {
@@ -396,6 +406,7 @@ impl App {
         let armed = matches!(self.view, View::Answer { armed: true, .. });
         let seen = Some((std::mem::discriminant(&self.view), armed, self.help.is_some()));
         if seen != self.seen {
+            self.guard = if self.seen.is_none() { self.first_guard } else { TAP_GUARD_MS };
             (self.seen, self.seen_at) = (seen, now);
         }
     }

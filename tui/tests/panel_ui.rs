@@ -2382,13 +2382,76 @@ fn error_and_busy_buttons() {
 }
 
 #[test]
-fn under_the_floor_a_tap_is_esc() {
+fn under_the_floor_a_tap_does_nothing_and_esc_still_goes_back() {
     let mut a = tabbed("w", "zsh", "$ ");
     ch(&mut a, '2');
     let (_, _, hits) = drawn(&a, 20, 5, &Theme::fixed(), 0);
+    assert!(hits.is_empty(), "the card records no hits");
     a.shrunk(true);
-    at(&mut a, 3, 3, MouseEventKind::Down(MouseButton::Left), &hits);
-    assert_eq!(a.view, View::Home { sel: 0 });
+    a.tap(Tap::Key(KeyEvent::from(KeyCode::Esc)), LATER);
+    assert_eq!(a.view, View::Compose, "nor does App take a tap there");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Home { sel: 0 }, "the esc key is the card's way back");
+}
+
+/// The re-verifier's D-new-1: under the floor, taps 500 and 800 ms apart on an Answer.
+#[test]
+fn under_the_floor_taps_never_arm_or_discard_an_answer() {
+    let mut a = tablet(explained());
+    a.frame(0);
+    let (_, _, hits) = drawn(&a, 20, 5, &Theme::fixed(), 0);
+    a.shrunk(true);
+    a.frame(16);
+    let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
+    for now in [500, 800, 1_300, 5_000] {
+        at_with(
+            &mut a,
+            3,
+            2,
+            MouseEventKind::Down(MouseButton::Left),
+            &hits,
+            KeyModifiers::NONE,
+            now,
+        );
+        a.tap(esc, now);
+        assert!(
+            a.run.is_some() && matches!(a.view, View::Answer { armed: false, .. }),
+            "a tap at {now} ms"
+        );
+    }
+}
+
+/// D-new-2: the second tap of a slow double tap on [ insert ] lands on the
+/// resumed Steps, whose first view guards for longer.
+#[test]
+fn a_resumed_panel_guards_its_first_view_for_longer() {
+    use cockpit_tui::panel::app::{RESUME_GUARD_MS, TAP_GUARD_MS};
+    let mut a = tablet(stepped());
+    ch(&mut a, 'i');
+    let mut b = tablet(app("w", "bash", "$ "));
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    b.frame(1_000);
+    let insert = hits_of(&b, 40, 20).into_iter().find(|h| h.tap == k('i')).unwrap();
+    for late in [TAP_GUARD_MS, 500, RESUME_GUARD_MS - 1] {
+        b.tap(insert.tap, 1_000 + late);
+        assert!(b.action.is_none(), "{late} ms after the resumed first frame");
+    }
+    b.tap(insert.tap, 1_000 + RESUME_GUARD_MS);
+    assert!(b.action.is_some(), "past the longer guard a tap acts");
+
+    // the next view of a resumed panel has the usual guard, and so has a fresh panel
+    let mut b = tablet(app("w", "bash", "$ "));
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    b.frame(0);
+    b.tap(k('s'), RESUME_GUARD_MS);
+    assert!(matches!(b.view, View::Confirm { .. }));
+    b.frame(RESUME_GUARD_MS + 10);
+    b.tap(k('n'), RESUME_GUARD_MS + 10 + TAP_GUARD_MS);
+    assert!(matches!(b.view, View::Steps { .. }));
+    let mut c = tablet_steps();
+    c.frame(0);
+    c.tap(k('s'), TAP_GUARD_MS);
+    assert!(matches!(c.view, View::Confirm { .. }));
 }
 
 #[test]
@@ -2448,12 +2511,18 @@ fn k(c: char) -> Tap {
 }
 
 /// A button that opens a Confirm or arms a discard, and the tap that then
-/// confirms: at no size from 28x7 to 120x40 may a second tap on the opener's
+/// confirms: at no size from 20x4 to 120x40 may a second tap on the opener's
 /// cells be that tap. One app for the whole grid, back to the opener with n.
 fn never_under(name: &str, mut a: App, open: Tap, yes: Tap) {
     let mut checked = 0;
-    for w in 28..=120u16 {
-        for h in 7..=40u16 {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    // from under the floor, where nothing may be tapped at all
+    for w in 20..=120u16 {
+        for h in 4..=40u16 {
+            if w < MIN_W || h < MIN_H {
+                assert!(hits_of(&a, w, h).is_empty(), "{name} at {w}x{h}: a hit under the floor");
+                continue;
+            }
             let Some(o) = hits_of(&a, w, h).into_iter().find(|x| x.tap == open) else {
                 continue;
             };

@@ -888,9 +888,10 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usi
 pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (usize, usize, Vec<Hit>) {
     let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
     let anywhere = |on: bool| if on { vec![Hit { at: area, tap: esc }] } else { vec![] };
+    // no hits under the floor: the card hides what esc would do (arm, discard, cancel a call)
     if too_small(area) {
         small(f, area, th);
-        return (0, 0, anywhere(app.tablet));
+        return (0, 0, vec![]);
     }
     let d = th.g.dot;
     let w = area.width.saturating_sub(4) as usize;
