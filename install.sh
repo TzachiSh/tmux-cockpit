@@ -155,7 +155,7 @@ if [ "$check" -eq 1 ]; then
                 case "$l" in *\\) acc="$acc${l%\\}"; continue ;; esac
                 l="$acc$l"; acc=''
                 # Nothing rewrites #{agent_*} any more: it prints as text.
-                case "$l" in '#'*) ;; *'#{agent_'*) tok=$((tok + 1)) ;; esac
+                case "${l#"${l%%[![:space:]]*}"}" in '#'*) ;; *'#{agent_'*) tok=$((tok + 1)) ;; esac
                 case "$l" in
                     set*\ pane-border-format\ *|set*\ window-status-format\ *|\
 set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\

@@ -2510,9 +2510,10 @@ is "a pre-precompute config is a warn formats row" "1" "$(dcrow "$dcout" "warn f
 is "and it counts them" "1" "$(dcfound "$dcout" '2 formats ')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The old tokens print as literal text now: the doctor points at the migration.
-printf '%s\n' '# set -g status-right "#{agent_fleet}"' 'set -g status-right "#{agent_fleet}"' >> "$DH/.tmux.conf"
+printf '%s\n' '# set -g status-right "#{agent_fleet}"' '    # an indented comment: #{agent_where_path}' \
+    'set -g status-right "#{agent_fleet}"' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
-is "a live #{agent_*} line is a warn tokens row, a commented one is not counted" "1 1" \
+is "a live #{agent_*} line is a warn tokens row, a commented one (indented too) is not" "1 1" \
    "$(dcrow "$dcout" "warn tokens") $(printf '%s\n' "$dcout" | grep -c 'tokens *1 lines')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
