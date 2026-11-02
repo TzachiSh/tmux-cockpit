@@ -1,6 +1,7 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
+#          agent-state sweep      every window's and session's summaries (tmux hooks)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
@@ -16,6 +17,58 @@ if [ "$state" = poll ]; then
 else
     pane="${2:-${TMUX_PANE:-}}"
 fi
+# Window, session and fleet summaries are precomputed here so status redraws walk no
+# panes (tmux#2774/#3352). They refresh only on a transition in that window or session.
+agent='#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}'
+
+# Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
+fmt_state="#{?#{m:*needs-input*,#{P:#{?$agent,#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?$agent,#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?$agent,#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?$agent,#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?$agent,A,}}},idle,}}}}}"
+# An agent in the window holds an unread review: the tab's ◆.
+fmt_review="#{m:*pending*,#{P:#{?$agent,#{@cockpit_review},} }}"
+
+# Counts of agents waiting (nb) and failed (ne) in this session and in every session.
+# The bar's "elsewhere" mark is fleet minus session, so no redraw walks the sessions.
+fmt_snb="#{n:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$agent,x,},}}}}"
+fmt_sne="#{n:#{W:#{P:#{?#{==:#{@panestate},error},#{?$agent,x,},}}}}"
+fmt_nb="#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$agent,x,},}}}}}"
+fmt_ne="#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?$agent,x,},}}}}}"
+fmt_nr="#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?$agent,x,},}}}}}"
+
+# Theme slots, not hex: the colours follow each client's light or dark theme. Spaces,
+# not commas, inside #[]: a comma would end the #{?} branch.
+fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
+
+# set_if <scope flag> <option> <format>: compare-then-set on target $T, since even an
+# identical set-option forces a redraw.
+set_if() { body="$body ; if -F -t $T '#{!=:$3,#{$2}}' { set-option $1F -t $T $2 '$3' }"; }
+# Only closed-set values reach these strings.
+win_sums() {
+    body="$body ; if -F -t $T '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t $T '$fmt_state' { set-option -wF -t $T @cockpit_win_state '$fmt_state' } { set-option -wu -t $T @cockpit_win_state } }"
+    body="$body ; if -F -t $T '$fmt_review' { if -F -t $T '#{!=:#{@cockpit_win_review},1}' { set-option -w -t $T @cockpit_win_review 1 } } { if -F -t $T '#{@cockpit_win_review}' { set-option -wu -t $T @cockpit_win_review } }"
+}
+sess_sums() { set_if - @cockpit_sess_nb "$fmt_snb"; set_if - @cockpit_sess_ne "$fmt_sne"; }
+fleet_sums() {
+    set_if -g @cockpit_fleet_nb "$fmt_nb"
+    set_if -g @cockpit_fleet_ne "$fmt_ne"
+    set_if -gq @cockpit_fleet "$fmt_fleet"
+}
+
+# sweep: every window, session and the fleet, from the hooks for what moves or ends
+# panes without a transition (move-window, kill-pane, a pane exiting, a session closing).
+# One tmux call for the batch, per event, never per redraw.
+if [ "$state" = sweep ]; then
+    body="" w=""
+    for w in $(tmux list-windows -a -F '#{window_id}' 2>/dev/null); do T=$w; win_sums; done
+    # A session id is $N: single-quoted, or the command parser reads an environment variable.
+    for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; sess_sums; done
+    [ -n "$w" ] || exit 0
+    T=$w; fleet_sums
+    tmux if-shell -F 1 "${body# ; }" 2>/dev/null
+    exit 0
+fi
+
 idle=""
 # An agent-view background worker has no pane: its front end relays what matters. Already
 # true of the empty-pane exit below; stated first so it does not depend on that guard.
@@ -129,42 +182,8 @@ case "$state" in
     done|error) [ -z "$poll" ] || body="$body ; set-option -pu -t $pane @panestate_msg" ;;
 esac
 
-# Window, session and fleet summaries are precomputed here so status redraws walk no
-# panes (tmux#2774/#3352). They refresh only on a transition in that window or session.
-agent='#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}'
-
-# Worst state in the window: needs-input > error > running > done > idle ("A" = agent with no state).
-fmt_state="#{?#{m:*needs-input*,#{P:#{?$agent,#{@panestate},} }},needs-input,#{?#{m:*error*,#{P:#{?$agent,#{@panestate},} }},error,#{?#{m:*running*,#{P:#{?$agent,#{@panestate},} }},running,#{?#{m:*done*,#{P:#{?$agent,#{@panestate},} }},done,#{?#{m:*A*,#{P:#{?$agent,A,}}},idle,}}}}}"
-# An agent in the window holds an unread review: the tab's ◆.
-fmt_review="#{m:*pending*,#{P:#{?$agent,#{@cockpit_review},} }}"
-
-# Counts of agents waiting (nb) and failed (ne) in this session and in every session.
-# The bar's "elsewhere" mark is fleet minus session, so no redraw walks the sessions.
-fmt_snb="#{n:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$agent,x,},}}}}"
-fmt_sne="#{n:#{W:#{P:#{?#{==:#{@panestate},error},#{?$agent,x,},}}}}"
-fmt_nb="#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$agent,x,},}}}}}"
-fmt_ne="#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},error},#{?$agent,x,},}}}}}"
-fmt_nr="#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?$agent,x,},}}}}}"
-
-# Theme slots, not hex: the colours follow each client's light or dark theme. Spaces,
-# not commas, inside #[]: a comma would end the #{?} branch.
-fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
-fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
-fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
-
-# set_if <scope flag> <option> <format>: compare-then-set, since even an identical
-# set-option forces a redraw.
-set_if() { body="$body ; if -F -t $pane '#{!=:$3,#{$2}}' { set-option $1F -t $pane $2 '$3' }"; }
-
-# One command list, so parallel hooks cannot interleave a stale read.
-# Only closed-set values reach this string; the untrusted ask text was written above.
-body="$body ; if -F -t $pane '#{!=:$fmt_state,#{@cockpit_win_state}}' { if -F -t $pane '$fmt_state' { set-option -wF -t $pane @cockpit_win_state '$fmt_state' } { set-option -wu -t $pane @cockpit_win_state } }"
-body="$body ; if -F -t $pane '$fmt_review' { if -F -t $pane '#{!=:#{@cockpit_win_review},1}' { set-option -w -t $pane @cockpit_win_review 1 } } { if -F -t $pane '#{@cockpit_win_review}' { set-option -wu -t $pane @cockpit_win_review } }"
-set_if - @cockpit_sess_nb "$fmt_snb"
-set_if - @cockpit_sess_ne "$fmt_sne"
-set_if -g @cockpit_fleet_nb "$fmt_nb"
-set_if -g @cockpit_fleet_ne "$fmt_ne"
-set_if -gq @cockpit_fleet "$fmt_fleet"
+T=$pane
+win_sums; sess_sums; fleet_sums
 body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
 # Fail-open: a hook must never block the agent that fired it.
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed

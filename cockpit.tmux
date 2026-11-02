@@ -70,6 +70,12 @@ for h in window-pane-changed session-window-changed client-session-changed \
          after-new-window after-split-window pane-shell-prompt pane-command-finished; do
     tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_where_cmd} branch --set #{pane_id}"'
 done
+# Moving, killing or closing changes the summaries without a state transition, so
+# these hooks recount every window and session (agent-state sweep), per event.
+tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
+for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
+    tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_state_cmd} sweep"'
+done
 # Panes that predate the hooks (a reload), in the background: run-shell waits on
 # this script's output, so the job must not hold it open.
 tmux list-panes -a -F '#{pane_id}' 2>/dev/null | while IFS= read -r p; do

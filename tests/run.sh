@@ -3861,6 +3861,36 @@ is "and with the other session quiet there is no mark" "" "$(away a:)"
 "$TMUX_REAL" -L "$EW" kill-server >/dev/null 2>&1
 fi
 
+echo "== the counts follow a moved window, a killed pane and a closed session (#222) =="
+# None of these is a state transition, so agent-state never ran: a window moved
+# from a to b showed its own agent as "▲ elsewhere" in b. Hooks sweep instead.
+if need_tmux "count sweep"; then :; else
+SW="cockpit-sw-$$"; SOCKS="$SOCKS $SW"
+"$TMUX_REAL" -L "$SW" -f /dev/null new-session -d -s a 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SW" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SW" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SW" new-window -d -t a: 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SW" new-session -d -s b 'exec -a claude sleep 300' >/dev/null 2>&1
+until_out '*claude*claude*claude*' "$TMUX_REAL" -L "$SW" list-panes -a -F '#{pane_current_command}' >/dev/null
+SWP=$("$TMUX_REAL" -L "$SW" display-message -p -t a:1 '#{pane_id}')
+TMUX="$SOCKDIR/$SW,0,0" "$DIR/scripts/agent-state" needs-input "$SWP" >/dev/null 2>&1
+swaway() { "$TMUX_REAL" -L "$SW" display-message -p -t "$1" '#{E:@cockpit_away}'; }
+is "before the move, b sees a's agent waiting" "w" "$(swaway b:)"
+"$TMUX_REAL" -L "$SW" move-window -s a:1 -t b: >/dev/null 2>&1
+until_out w swaway a: >/dev/null
+is "after it, a sees it elsewhere and b does not" "w|" "$(swaway a:)|$(swaway b:)"
+"$TMUX_REAL" -L "$SW" kill-pane -t "$SWP" >/dev/null 2>&1
+until_out '' swaway a: >/dev/null
+is "killing the waiting pane clears the mark" "|0" "$(swaway a:)|$("$TMUX_REAL" -L "$SW" show-option -gqv @cockpit_fleet_nb)"
+SWP2=$("$TMUX_REAL" -L "$SW" display-message -p -t b:0 '#{pane_id}')
+TMUX="$SOCKDIR/$SW,0,0" "$DIR/scripts/agent-state" error "$SWP2" >/dev/null 2>&1
+is "a failed agent in b shows in a" "e" "$(swaway a:)"
+"$TMUX_REAL" -L "$SW" kill-session -t b >/dev/null 2>&1
+until_out '' swaway a: >/dev/null
+is "and closing b takes it away" "" "$(swaway a:)"
+"$TMUX_REAL" -L "$SW" kill-server >/dev/null 2>&1
+fi
+
 echo "== NO_COLOR sets every theme slot to the terminal's default (#222) =="
 # run-shell's jobs get the server's global environment, which is where a
 # NO_COLOR from the shell that started tmux lands.
@@ -10590,29 +10620,32 @@ ggctx() {                     # <window> <percent>: the statusLine payload, as C
         | TMUX="$SOCKDIR/$GG,0,0" TMUX_PANE="$("$TMUX_REAL" -L "$GG" display-message -p -t "s:$1" '#{pane_id}')" \
           "$DIR/scripts/agent-context" >/dev/null 2>&1
 }
+# The sweep the window hooks run, now: every agent window idle (○) from the start,
+# so no later hook changes a tab under an assertion.
+TMUX="$SOCKDIR/$GG,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
 read -r ggc ggf ggpid <<<"$(cw_open "$GG" s)"
 if [ -z "${ggc:-}" ]; then skip_ "the context gauge (no control client)"; else
 ggcur() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:t '#{E:window-status-current-format}' | plain; }
 ggoth() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:u '#{E:window-status-format}' | plain; }
 cw_size "$GG" "$ggc" 160
 ggctx t 79
-is "under 80% there is no gauge" " 0 review-the-ui-audit-ladder " "$(ggcur)"
+is "under 80% there is no gauge" " 0 review-the-ui-audit-ladder ○ " "$(ggcur)"
 ggctx t 91; ggctx u 100
 is "from 80% the gauge goes on top of a label that keeps its cap" \
-   " 0 review-the-ui-audit-ladder ◔91% " "$(ggcur)"
-is "and on another tab" " 1 second-window-with-a-long-na… ◔100% " "$(ggoth)"
+   " 0 review-the-ui-audit-ladder ○ ◔91% " "$(ggcur)"
+is "and on another tab" " 1 second-window-with-a-long-na… ○ ◔100% " "$(ggoth)"
 is "agent-context sums the session's gauge cells" "11" \
    "$("$TMUX_REAL" -L "$GG" show-option -qv -t s: @cockpit_ctx_all)"
 cw_size "$GG" "$ggc" 80
 is "and the tab budget takes them off the room" "61" \
    "$("$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" '#{E:@cockpit_tab_room}')"
-for ggn in $(seq 3 9); do "$TMUX_REAL" -L "$GG" new-window -d -t s: 'exec -a claude sleep 300' >/dev/null 2>&1; done
+for _ in $(seq 3 9); do "$TMUX_REAL" -L "$GG" new-window -d -t s: 'exec -a claude sleep 300' >/dev/null 2>&1; done
 cw_size "$GG" "$ggc" 56
-is "a compact tab shows the bare ◔" " 1 ◔ " "$(ggoth)"
+is "a compact tab shows the bare ◔" " 1 ○ ◔ " "$(ggoth)"
 # A cut that lands after a word leaves no space before the …: 12 cells of
 # "abcdefghijk lmno..." are "abcdefghijk ".
 "$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title "abcdefghijk lmnopqrstuvwxyz" >/dev/null 2>&1
-is "a cut on a word boundary drops the space before the …" " 0 abcdefghijk… ◔91% " "$(ggcur)"
+is "a cut on a word boundary drops the space before the …" " 0 abcdefghijk… ○ ◔91% " "$(ggcur)"
 fi
 cw_close "${ggpid:-}" "${ggf:-}"
 "$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
