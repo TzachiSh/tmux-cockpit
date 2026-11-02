@@ -29,9 +29,9 @@ start_logged() {        # start_logged <sockname>
         set -g history-limit 2000 \; \
         set -g mouse on \; \
         set -g @cockpit_agents_glob "$GLOB" \; \
-        set -g @thm_red '#ff6b6b' \; set -g @thm_peach '#ff9838' \; \
-        set -g @thm_yellow '#ffcc33' \; set -g @thm_green '#3dea7d' \; \
-        set -g @thm_overlay_0 '#5b6272' \; set -g @cockpit_blocked_bg '#52303a' \; \
+        set -g @thm_needs '#ff5f6d' \; set -g @thm_error '#ff9e3d' \; \
+        set -g @thm_running '#e6c84f' \; set -g @thm_done '#5fd38d' \; \
+        set -g @thm_dim '#9097a3' \; \
         set -g status-left '' \; set -g status-right '' \; \
         set -g window-status-format '#W' \; set -g window-status-current-format '#W' )
 }

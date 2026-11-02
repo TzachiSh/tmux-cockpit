@@ -20,17 +20,12 @@ emacs keys left the picker, and any filter you had typed became a branch name. W
 tree, or a branch already checked out in another worktree — you get git's own
 message, naming the files or the worktree, and the popup waits for a key.
 
-The plugin binds the key but **cannot mark the click target**: `status-right`
-belongs to your config, not to the plugin. Wrap whatever shows the branch:
+The click target is the branch on the active pane's top border (a control
+range, `control|3`, acting on release). The **path** beside it (`control|2`)
+opens the **folder browser** at the pane's working dir — the same popup the path
+picker descends into, entered from the top. When the border has no room for
+them, the menu's Switch branch and Browse folder rows stand in.
 
-```tmux
-set -ag status-right "#[range=control|1]#{E:@catppuccin_status_gitmux}#[norange]"
-```
-
-The **directory segment** works the same way: wrap it in `range=control|2` and
-clicking it opens the **folder browser** at the pane's working dir — the same
-popup the path picker descends into, entered from the top.
-
-`range=control|1` triggers `MouseDown1Control1`, a key of its own.
-`range=user|X` would have taken over `MouseDown1Status` — the key that selects a
-window when you click the window list.
+With `@cockpit_statusbar off`, mark your own segments with the same ranges; see
+[status-bar.md](status-bar.md#a-bar-of-your-own). A control range has a key of
+its own, so it never takes over the click that selects a window.

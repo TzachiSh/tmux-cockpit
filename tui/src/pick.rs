@@ -413,7 +413,7 @@ pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
         let b = Block::new()
             .borders(Borders::LEFT)
             .border_set(th.g.round)
-            .border_style(Style::new().fg(th.label));
+            .border_style(Style::new().fg(th.faint));
         let inner = b.inner(pv);
         f.render_widget(b, pv);
         let w = (inner.width as usize).saturating_sub(1);

@@ -430,7 +430,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         Span::styled(wher, Style::new().fg(th.meta)),
     ];
     if title_w > 0 {
-        top.push(Span::styled(sep, Style::new().fg(th.meta)));
+        top.push(Span::styled(sep, Style::new().fg(th.faint)));
         top.push(Span::styled(g.trunc(p.label(), title_w), Style::new().fg(title_c)));
         top.push(Span::raw(" "));
     }
@@ -589,7 +589,7 @@ fn card(f: &mut Frame, area: Rect, th: &Theme, title: &str, body: &[&str], foot:
     let r = area.centered(Constraint::Length(w), Constraint::Length(lines.len() as u16 + 2));
     let mut block = Block::bordered()
         .border_set(g.round)
-        .border_style(Style::new().fg(th.meta))
+        .border_style(Style::new().fg(th.faint))
         .padding(Padding::horizontal(1))
         .title(Line::from(Span::styled(format!(" {title} "), Style::new().fg(th.label))));
     if !foot.is_empty() {
@@ -1529,7 +1529,7 @@ fn head_row(name: &str, members: &[usize], ps: &[Pane], folded: bool, sel: bool,
             format!("{name} "),
             band(Style::new().fg(th.value).add_modifier(Modifier::BOLD), sel, th),
         ),
-        Span::styled(g.plain.horizontal_top.repeat(rule), band(Style::new().fg(th.meta), sel, th)),
+        Span::styled(g.plain.horizontal_top.repeat(rule), band(Style::new().fg(th.faint), sel, th)),
     ];
     spans.extend(counts);
     spans.push(Span::styled("  ", band(Style::new(), sel, th)));
@@ -1554,7 +1554,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     }
     let mut block = Block::bordered()
         .border_set(th.g.plain)
-        .border_style(Style::new().fg(th.meta))
+        .border_style(Style::new().fg(th.faint))
         .title(Line::from(Span::styled(" sessions ", Style::new().fg(th.label))));
     let last = rows.len().min(top + room);
     if top > 0 || last < rows.len() {

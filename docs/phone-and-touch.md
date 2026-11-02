@@ -28,8 +28,17 @@ a desktop client still uses its last column. It also stops tmux letting the
 terminal wrap long lines by itself, measured at +2.5% bytes on 260-column lines
 wrapped into 131 and +4.3% on a full-screen fill, with identical output.
 
+## The touch layout
+
+The bar has the same layout on every device. A touch client
+(`@cockpit_touch on`, or unset and under 100 columns) adds `‹` and `›` at the
+ends of the window line to step through the windows (red with `▲` when a
+waiting window lies off-screen on that side), compact tabs at least 5 cells
+wide, and a padded `≡` and session name on a pane wide enough for them. Taps
+act on release; see [status-bar.md](status-bar.md#what-is-where).
+
 `prefix + e` hides the status line and the pane borders for this session and
-window, and puts them back: a phone shows about 58 rows and the chrome is three
+window, and puts them back: a phone shows about 58 rows and the chrome is two
 of them. `@cockpit_fullscreen_key` rebinds it, `off` keeps stock tmux.
 
 Never combine the override with `status-position top`. Either one stops the
