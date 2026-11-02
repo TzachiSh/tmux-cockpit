@@ -3331,8 +3331,8 @@ case "$(ak m)" in *"select-pane -m"*) ok "and moving it off m gives stock mark-p
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_review_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak r)" in *tmux-review*) ok "giving r back does not undo the review key bound in the same load" ;;
-    *) bad "giving r back does not undo the review key bound in the same load" "tmux-review on r" "$(ak r)" ;; esac
+case "$(ak r)" in *cockpit-board*) ok "giving r back does not undo the review key bound in the same load" ;;
+    *) bad "giving r back does not undo the review key bound in the same load" "cockpit-board on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 # The old name still works, and says it was renamed.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
