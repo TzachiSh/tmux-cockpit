@@ -3,7 +3,7 @@
 use super::app::{App, InputKind, Level, MODELS, QUICK, Tap, View, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -14,11 +14,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPIN_ASCII: [&str; 4] = ["|", "/", "-", "\\"];
-
-fn ascii(th: &Theme) -> bool {
-    th.g.ellipsis == "..."
+/// app.rs words its warnings in the unicode tier: the ascii tier swaps the glyphs in.
+fn tiered(g: &Glyphs, s: &str) -> String {
+    let u = Glyphs::unicode();
+    s.replace(u.warn, g.warn).replace(u.ndash, g.ndash)
 }
 
 /// Word wrap to `w` columns, keeping line breaks and splitting a word longer
@@ -186,14 +185,14 @@ fn push_entry(b: &mut Body, th: &Theme, tall: bool, sel: bool, rows: Vec<Line<'s
 
 /// The key a footer hint names, as a tap; its last word, so `↵ y` is `y`. A
 /// range or the arrows name no single key, and become no button.
-fn tap_of(k: &str) -> Option<Tap> {
+fn tap_of(g: &Glyphs, k: &str) -> Option<Tap> {
     let t = k.rsplit(' ').next()?;
     let code = match t {
         "esc" => KeyCode::Esc,
         "F1" => KeyCode::F(1),
-        "⇥" => KeyCode::Tab,
-        "⌫" => KeyCode::Backspace,
-        "↵" => KeyCode::Enter,
+        _ if t == g.key_tab => KeyCode::Tab,
+        _ if t == g.key_bksp => KeyCode::Backspace,
+        _ if t == g.key_enter => KeyCode::Enter,
         _ => {
             let mut cs = t.chars();
             match (cs.next(), cs.next(), cs.next()) {
@@ -260,7 +259,7 @@ fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
     let mut row: Vec<Span<'static>> = vec![];
     let mut x = 0;
     for (k, v) in &b.footer {
-        let Some(tap) = tap_of(k) else { continue };
+        let Some(tap) = tap_of(&th.g, k) else { continue };
         let chip = format!("[ {} ]", th.g.trunc(v, w.saturating_sub(4)));
         let cw = chip.width();
         if x > 0 && x + 1 + cw > w {
@@ -286,7 +285,8 @@ fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
 
 /// `tall` boxes the tappable entries, three rows each, for tablet mode.
 fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
-    let star = if ascii(th) { "*" } else { "★" };
+    let star = th.g.star;
+    let g = &th.g;
     let meta = Style::new().fg(th.meta);
     let label = Style::new().fg(th.label);
     let bold = Style::new().add_modifier(Modifier::BOLD);
@@ -343,11 +343,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             let r = app.write_route();
             let head = format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]);
             b.head.push(styled(th.g.trunc(&head, w), label));
-            b.lines = many(&format!("{}▏", app.draft), w, "", value);
+            b.lines = many(&format!("{}{}", app.draft, g.cursor), w, "", value);
             // the cursor's line, over the route lines under it
             b.sel = Some((b.lines.len() - 1, b.lines.len()));
             b.lines.push(plain(""));
-            b.lines.extend(many(&format!("→ {} {d} {}", r.model, r.why), w, "", meta));
+            b.lines.extend(many(&format!("{} {} {d} {}", g.arrow, r.model, r.why), w, "", meta));
             if let Some((m, why)) = &r.suggest {
                 b.lines.extend(many(
                     &format!("{star} suggest stronger: {m} {d} {why}"),
@@ -361,14 +361,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("^S", "write"),
                 ("^F", "fix spelling"),
                 ("^T", "insert as typed"),
-                ("⇥", "type"),
+                (g.key_tab, "type"),
                 ("^N", "model"),
                 ("F1", "keys"),
                 ("esc", "home"),
             ]);
         }
         View::Busy => {
-            let frames: &[&str] = if ascii(th) { &SPIN_ASCII } else { &SPIN };
+            let frames = g.spin;
             let (model, why) = run.map_or(("", ""), |r| (r.model.as_str(), r.why.as_str()));
             let (what, flow) = match run.map(|r| &r.flow) {
                 Some(Flow::Write { out, .. }) => ("writing", format!("write ({})", out.as_str())),
@@ -434,7 +434,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 (&n, "pick"),
                 ("o", "other"),
                 ("g", "best guess"),
-                ("⌫", "back"),
+                (g.key_bksp, "back"),
                 help,
                 ("esc", &back),
             ]);
@@ -447,14 +447,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             };
             b.head.extend(many(&title, w, "", label));
             b.head.push(plain(""));
-            b.lines = many(&format!("{text}▏"), w, "", value);
+            b.lines = many(&format!("{text}{}", g.cursor), w, "", value);
             b.scroll = usize::MAX;
-            b.footer = pills(&[("↵", "send"), ("F1", "keys"), ("esc", "back")]);
+            b.footer = pills(&[(g.key_enter, "send"), ("F1", "keys"), ("esc", "back")]);
         }
         View::Result { label: l, text, scroll } => {
             b.head.push(styled(th.g.trunc(l, w), heading));
             if let Some(x) = app.line_warning(text) {
-                b.head.extend(many(&x, w, "", Style::new().fg(th.error)));
+                b.head.extend(many(&tiered(g, &x), w, "", Style::new().fg(th.error)));
             }
             b.head.push(plain(""));
             b.lines = many(text, w, "", value);
@@ -465,7 +465,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("s", "send"),
                 ("r", "retry"),
                 ("c", "edit"),
-                ("↑↓", "scroll"),
+                (g.key_updown, "scroll"),
                 help,
                 ("esc", &back),
             ]);
@@ -504,12 +504,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                     }
                 }
                 if let Some(x) = app.line_warning(&s.cmd) {
-                    b.lines.extend(many(&x, w, "     ", Style::new().fg(th.error)));
+                    b.lines.extend(many(&tiered(g, &x), w, "     ", Style::new().fg(th.error)));
                 }
                 if let Some(r) = risky(&s.cmd) {
-                    let mark = if ascii(th) { "!" } else { "⚠" };
                     b.lines
-                        .extend(many(&format!("{mark} risky: {r}"), w, "     ", Style::new().fg(th.error)));
+                        .extend(many(&format!("{} risky: {r}", g.warn), w, "     ", Style::new().fg(th.error)));
                 }
                 if i == *sel {
                     b.scroll = at.saturating_sub(2);
@@ -518,7 +517,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.taps.push(((at, b.lines.len()), Tap::Select(i)));
             }
             b.count = true;
-            b.footer = pills(&[("i", "insert"), ("s", "send"), ("↑↓", "pick"), ("r", "retry"), help, ("esc", &back)]);
+            b.footer = pills(&[
+                ("i", "insert"),
+                ("s", "send"),
+                (g.key_updown, "pick"),
+                ("r", "retry"),
+                help,
+                ("esc", &back),
+            ]);
         }
         View::ExplainAsk { sel } => {
             let what = match app.session {
@@ -537,7 +543,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 }
             }
             let n = digits(QUICK.len() + 1);
-            b.footer = pills(&[(&n, "pick"), ("↵", "ask"), help, ("esc", "home")]);
+            b.footer = pills(&[(&n, "pick"), (g.key_enter, "ask"), help, ("esc", "home")]);
         }
         View::Answer { scroll, armed } => {
             let Some(r) = run else { return b };
@@ -556,12 +562,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                     ("i", "insert"),
                     ("s", "send"),
                     ("f", "follow up"),
-                    ("↑↓", "scroll"),
+                    (g.key_updown, "scroll"),
                     help,
                     ("esc", "home"),
                 ]);
             } else {
-                b.footer = pills(&[("f", "follow up"), ("↑↓", "scroll"), help, ("esc", "home")]);
+                b.footer = pills(&[("f", "follow up"), (g.key_updown, "scroll"), help, ("esc", "home")]);
             }
             if *armed && app.tablet {
                 // the esc chip becomes keep it in place, so a second tap on home keeps;
@@ -585,7 +591,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             ..
         } => {
             for x in ws {
-                b.head.extend(many(x, w, "", Style::new().fg(th.error)));
+                b.head.extend(many(&tiered(g, x), w, "", Style::new().fg(th.error)));
             }
             let ask = if *send {
                 format!("send this to {} ({}) and press Enter?", app.pane, app.cap.cmd)
@@ -607,13 +613,18 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             } else if needs_y(text, *send) {
                 pills(&[
                     ("y", "confirm"),
-                    ("↑↓", "scroll"),
-                    ("↵", "is off: risky or multi-line"),
+                    (g.key_updown, "scroll"),
+                    (g.key_enter, "is off: risky or multi-line"),
                     help,
                     ("esc n", "cancel"),
                 ])
             } else {
-                pills(&[("↵ y", "confirm"), ("↑↓", "scroll"), help, ("esc n", "cancel")])
+                pills(&[
+                    (&format!("{} y", g.key_enter), "confirm"),
+                    (g.key_updown, "scroll"),
+                    help,
+                    ("esc n", "cancel"),
+                ])
             };
         }
         View::Error { line, hint } => {
@@ -722,20 +733,22 @@ fn named(v: Option<&View>) -> &'static str {
 
 /// Every key of the view on screen, `(keys, what)`, for the `?` overlay. Each
 /// esc row names where it goes, so the way back to home reads off the chain.
-pub fn keys(app: &App) -> Vec<(String, String)> {
+pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     let s = |k: &str, v: &str| (k.to_string(), v.to_string());
     let left = match app.leave_to() {
         "home" => "back to home".to_string(),
         x => format!("back to the {x}"),
     };
-    let move_ = s("↑↓ j k", "move");
+    let ud = format!("{} j k", g.key_updown);
+    let (ret, bksp) = (g.key_enter, g.key_bksp);
+    let move_ = s(&ud, "move");
     let quit = s("q ^C", "close the panel");
     let help = s("? F1", "this help");
     let scroll = s("PgUp PgDn", "scroll a page");
     match &app.view {
         View::Home { .. } => vec![
             move_,
-            s("↵", "open the selected tile"),
+            s(ret, "open the selected tile"),
             s(&digits(app.tiles().len()), "open a tile by number"),
             help,
             s("esc q ^C", "close the panel"),
@@ -744,10 +757,10 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("^S F2", "write it with Claude"),
             s("^F", "fix the spelling"),
             s("^T", "insert as typed"),
-            s("⇥", "next output type"),
+            s(g.key_tab, "next output type"),
             s("^N", "next model"),
-            s("↵", "new line"),
-            s("⌫ ^W ^U", "delete a char, a word, all"),
+            s(ret, "new line"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all"),
             s("F1", "this help"),
             s("esc", "back to home"),
             s("^C", "close the panel"),
@@ -759,19 +772,19 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::Question { .. } => vec![
             move_,
-            s("↵", "answer the selected option"),
+            s(ret, "answer the selected option"),
             s(&digits(app.run.as_ref().map_or(0, |r| r.options.len()).min(4)), "answer by number"),
             s("o", "type your own answer"),
             s("g", "let Claude guess"),
-            s("⌫ ←", "the previous question"),
+            s(&format!("{bksp} {}", g.key_left), "the previous question"),
             s("PgUp PgDn", "scroll the question"),
             help,
             s("esc", &left),
             quit,
         ],
         View::Input { back, .. } => vec![
-            s("↵", "send"),
-            s("⌫ ^W ^U", "delete a char, a word, all"),
+            s(ret, "send"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all"),
             s("F1", "this help"),
             s("esc", &format!("back to {}", named(Some(back)))),
             s("^C", "close the panel"),
@@ -782,14 +795,14 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("r", "ask again"),
             s("c", "edit it as a new draft"),
             s("x", "copy it (OSC 52)"),
-            s("↑↓ j k", "scroll"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc", &left),
             quit,
         ],
         View::Steps { items, .. } => vec![
-            s("↑↓ j k", "pick a step"),
+            s(&ud, "pick a step"),
             s(&digits(items.len()), "pick a step by number"),
             s("i", "insert the step, no Enter"),
             s("s", "send the step with Enter"),
@@ -801,7 +814,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::ExplainAsk { .. } => vec![
             move_,
-            s("↵", "ask the selected question"),
+            s(ret, "ask the selected question"),
             s(&digits(QUICK.len() + 1), "ask by number, 5 in your words"),
             help,
             s("esc", "back to home"),
@@ -812,7 +825,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("s", "send the prompt with Enter"),
             s("f", "ask a follow-up"),
             s("x", "copy the prompt, else the answer"),
-            s("↑↓ j k", "scroll"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc q", "twice: drop it, back to home"),
@@ -820,8 +833,8 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::Confirm { back, .. } => vec![
             s("y", "confirm"),
-            s("↵", "confirm, unless risky or multi-line"),
-            s("↑↓ j k", "scroll"),
+            s(ret, "confirm, unless risky or multi-line"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc n q", &format!("cancel, back to {}", named(Some(back)))),
@@ -840,7 +853,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
 /// card inside it would clip the very rows it exists to show.
 /// Returns the key count and rows, for [`App::fit`] to clamp the scroll by.
 fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usize, usize) {
-    let ks = keys(app);
+    let ks = keys(app, &th.g);
     let (total, rows) = (ks.len(), (area.height as usize).saturating_sub(2));
     let top = top.min(ks.len().saturating_sub(rows));
     let mut block = Block::new()
@@ -852,11 +865,11 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usi
     let close = if top > 0 || last < ks.len() {
         let n = format!(" {}-{last} of {} ", top + 1, ks.len());
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
-        "↑↓ scroll  any other key closes"
+        format!("{} scroll  any other key closes", th.g.key_updown)
     } else {
-        "any key closes"
+        "any key closes".into()
     };
-    let close = format!(" {} ", th.g.trunc(close, (area.width as usize).saturating_sub(4)));
+    let close = format!(" {} ", th.g.trunc(&close, (area.width as usize).saturating_sub(4)));
     block = block.title_bottom(Line::from(Span::styled(close, Style::new().fg(th.meta))));
     let inner = block.inner(area);
     let inner = Rect {

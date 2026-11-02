@@ -2704,3 +2704,101 @@ fn the_armed_note_says_tap_in_tablet_mode() {
     let f = frame(&a, 80, 24, 0);
     assert!(f.contains("discard it") && f.contains("[ keep it ]"), "{f}");
 }
+
+// ---------------------------------------------------------------- glyph tiers
+
+fn composing(draft: &str) -> App {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    assert_eq!(a.view, View::Compose);
+    typ(&mut a, draft);
+    a
+}
+
+fn ascii_theme() -> Theme {
+    let mut th = Theme::fixed();
+    th.g = cockpit_tui::theme::Glyphs::ascii();
+    th
+}
+
+/// Every view, the `?` overlay over each, and the views every_view leaves out.
+fn more_views() -> Vec<(String, App)> {
+    let mut v: Vec<(String, App)> = every_view().into_iter().map(|(n, a, ..)| (n.to_string(), a)).collect();
+    for (name, mut a, ..) in every_view() {
+        a.help = Some(0);
+        v.push((format!("{name} ?"), a));
+    }
+    v.push(("compose-empty".into(), composing("")));
+    let mut a = long_question();
+    key(&mut a, KeyCode::PageUp);
+    v.push(("question-scrolled".into(), a));
+    let mut a = stepped();
+    ch(&mut a, 's');
+    v.push(("confirm-steps".into(), a));
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<steps><step><note>wipe</note><cmd>sudo rm -rf /tmp/x\necho done</cmd></step></steps>".into(),
+    ));
+    v.push(("steps-risky".into(), a));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    v.push(("result-lines".into(), a));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    ch(&mut a, 'i');
+    v.push(("confirm-lines".into(), a));
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question>".into()));
+    v.push(("question-no-options".into(), a));
+    for lv in [Level::Info, Level::Warn, Level::Error] {
+        let mut a = composing("");
+        a.say(lv, "hi");
+        v.push((format!("note {lv:?}"), a));
+    }
+    v
+}
+
+/// [`more_views`] in pc mode and in tablet mode.
+fn every_view_and_more() -> Vec<(String, App)> {
+    let mut v = more_views();
+    v.extend(more_views().into_iter().map(|(n, a)| (format!("{n} tablet"), tablet(a))));
+    v
+}
+
+#[test]
+fn the_ascii_tier_prints_nothing_but_ascii() {
+    let th = ascii_theme();
+    for (name, a) in every_view_and_more() {
+        for (w, h) in [(80, 24), (40, 12)] {
+            let (f, ..) = drawn(&a, w, h, &th, 37);
+            let bad: String = f.chars().filter(|c| !c.is_ascii()).collect();
+            assert!(bad.is_empty(), "{name} at {w}x{h}: {bad:?}\n{f}");
+        }
+    }
+}
+
+#[test]
+fn the_unicode_tier_has_no_nerd_or_private_use_glyph() {
+    let pua = |c: char| matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0x10FFFF);
+    for (name, a) in every_view_and_more() {
+        for (w, h) in [(80, 24), (40, 12)] {
+            let f = frame(&a, w, h, 37);
+            assert!(!f.chars().any(pua), "{name} at {w}x{h}:\n{f}");
+        }
+    }
+}
+
+#[test]
+fn golden_ascii() {
+    let th = ascii_theme();
+    for (name, a, ..) in every_view() {
+        if ["home", "compose", "question", "steps", "answer", "confirm"].contains(&name) {
+            golden(&format!("panel-ascii-{name}-80"), &framed(&a, 80, 20, &th, 0).0);
+            golden(&format!("panel-ascii-{name}-40"), &framed(&a, 40, 12, &th, 0).0);
+        }
+    }
+}
