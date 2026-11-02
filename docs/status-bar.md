@@ -76,7 +76,7 @@ light value. Set any of them before the `run-shell` line to override it.
 | `@thm_running` | `#e6c84f` | `#806200` | `●` |
 | `@thm_done` | `#5fd38d` | `#1d7439` | `✓` |
 | `@thm_review` | `#5fd3d3` | `#00737a` | `◆` |
-| `@thm_sel` | `#3a4252` | `#c8d1df` | the selection band in cockpit-tui |
+| `@thm_sel` | `#3a4252` | `#c8d1df` | the selected row in the pickers |
 
 The light values are the same names with `_light` added, for example
 `@thm_needs_light`.
