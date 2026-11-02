@@ -59,7 +59,7 @@ AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //
 # resolve against <dir> itself. Resolve once, at each entry point, and thread
 # the root through everywhere a diff-row path gets turned back into a file:
 # lines_mode (for consistency, even though git already normalizes this), the
-# review-loop's preview `cd`, and the fleet queue's preview. Falls back to
+# review-loop's preview `cd`. Falls back to
 # the caller's own dir when it is not a git worktree at all, so the existing
 # "no diff" behavior for a non-repo pane is unchanged.
 git_root() {

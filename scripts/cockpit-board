@@ -112,9 +112,10 @@ while :; do
         kill)
             want=
             [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
-            info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{window_name}$sep#{session_name}:#{window_index},}" 2>/dev/null | head -n 1)
+            # window_name last: it is the one field a person can fill with anything.
+            info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{session_name}:#{window_index}$sep#{window_name},}" 2>/dev/null | head -n 1)
             have=${info%%"$sep"*}; label=${info#*"$sep"}
-            label=$(printf %s "$label" | tr -d '\000-\037\177'); label=${label//"$sep"/ }
+            where=${label%%"$sep"*}; label="$where $(printf %s "${label#*"$sep"}" | tr -d '\000-\037\177')"
             case "$want" in @[0-9]*) case "${want#@}" in *[!0-9]*) want= ;; esac ;; *) want= ;; esac
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
@@ -122,11 +123,16 @@ while :; do
                 printf '✕ cockpit: not killed: the board named no window to confirm\n' > "$note"
             elif [ "$have" != "$want" ]; then
                 printf '✕ cockpit: not killed: %s is now in window %s, you confirmed %s\n' "$target" "$have" "$want" > "$note"
-            elif tmux kill-window -t "$have" 2>/dev/null; then
-                printf '✓ cockpit: killed window %s (%s)\n' "$have" "${label#*"$sep"} ${label%%"$sep"*}" > "$note"
-                log "killed window $have $label via $target"
             else
-                printf '✕ cockpit: could not kill window %s\n' "$have" > "$note"
+                # The check and the kill are one tmux call: a pane that moves in the
+                # gap makes the format false and nothing dies. $want is @digits.
+                tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-window -t $want" 2>/dev/null
+                if tmux list-windows -a -F '#{window_id}' 2>/dev/null | grep -qx -- "$want"; then
+                    printf '✕ cockpit: not killed: %s left window %s or it would not close\n' "$target" "$want" > "$note"
+                else
+                    printf '✓ cockpit: killed window %s (%s)\n' "$want" "$label" > "$note"
+                    log "killed window $want $label via $target"
+                fi
             fi
             ;;
         # Today's --request path. It opens its own popup, and tmux silently
