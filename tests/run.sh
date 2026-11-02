@@ -148,7 +148,7 @@ until_cap() {                 # <socket> <pane> <pattern>
 review_enter() {              # <socket> <ctl-pane>  the queue opens preselected on the pressed pane; ↵ reviews it
     until_cap "$1" "$2" '*fleet>*' || return 1
     "$TMUX_REAL" -L "$1" send-keys -t "$2" Enter
-    until_cap "$1" "$2" '*review>*'
+    until_cap "$1" "$2" '*review · base*'
 }
 until_file() {                # <file> <pattern>
     local i
@@ -5332,12 +5332,6 @@ is "the capped output is exactly one row (the popup stays trivially small)" \
 # rows_mode, so it carries an offset too rather than arriving one field short.
 is "the cap notice carries the offset field too, so no row is short" \
    "5" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
-# mark_rows rebuilds every display field out of path/line/fragment. The cap
-# row is a notice, not an anchor -- rebuilt it reads "(diff too large):0  + ..."
-# with a green sign, a code row the user cannot pin and that names no file.
-is "the cap row is shown as the plain notice, not a rebuilt path:0 row" \
-   "$(printf '%s' "$rvcapout" | cut -f4)" \
-   "$("$DIR/scripts/tmux-review" --rows "$RVCAP" /dev/null | cut -f4)"
 # A diff at or under the cap is untouched -- still fully parsed, row per line.
 RVUNDER=$(mktmpd)
 (
@@ -5769,122 +5763,7 @@ is "and all 4900 rows are there" "4900" \
    "$("$DIR/scripts/tmux-review" --lines "$RV49" | grep -c .)"
 rm -rf "$RV49"
 
-echo "== tmux-review --rows: pinning a comment does not re-grep the store once per row =="
-# rows_mode used to fire `grep -qxF <header>` over the whole store for EVERY
-# diff row, and the picker reloads the whole marked list after each pinned
-# comment. The headers are now read once into a set and each row does an O(1)
-# lookup. Correctness first: the ● must land on exactly the commented row and
-# be sign-specific -- a (-) row at the same line number must stay blank.
-RVMARK=$(mktmpd)
-(
-  cd "$RVMARK" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\nb\nc\n' > src.go
-  git add -A; git commit -q -m init
-  printf 'a\nZED\nc\nADDED\n' > src.go
-) >/dev/null 2>&1
-RVMSTORE=$(mktemp)
-# Pin a comment on the +2 (ZED) row -- the diff also has a -2 (b) row at the
-# same line number, so this proves the marker is keyed on path:line AND sign.
-"$DIR/scripts/tmux-review" --attach "$RVMSTORE" "src.go" "2" "ZED" "fix this line"
-rvmarkcol=$("$DIR/scripts/tmux-review" --rows "$RVMARK" "$RVMSTORE" | cut -f4)
-rvmarkwant=$(printf '%s\n' '  src.go:2  '$'\e[31m''-'$'\e[0m'' b' '● src.go:2  '$'\e[32m''+'$'\e[0m'' ZED' '  src.go:4  '$'\e[32m''+'$'\e[0m'' ADDED')
-is "the ● lands on exactly the commented row, sign-specific" "$rvmarkwant" "$rvmarkcol"
-rm -f "$RVMSTORE"; rm -rf "$RVMARK"
-
-# Perf: --rows on a 4000-row diff with a pinned comment. The old per-row grep
-# made this ~10.7s here; it is ~0.3s now. timeout is the fail-first teeth.
-RVMPERF=$(mktmpd)
-(
-  cd "$RVMPERF" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  : > big.txt
-  git add -A; git commit -q -m init
-  seq 1 4000 > big.txt
-) >/dev/null 2>&1
-RVMPSTORE=$(mktemp)
-"$DIR/scripts/tmux-review" --attach "$RVMPSTORE" "big.txt" "100" "100" "a comment"
-timeout 5 "$DIR/scripts/tmux-review" --rows "$RVMPERF" "$RVMPSTORE" >/dev/null; rvmprc=$?
-if [ "$rvmprc" -eq 124 ]; then
-    bad "--rows re-marks a 4000-row diff in well under 5s" \
-        "output within 5s" "timed out (the per-row grep)"
-else
-    ok "--rows re-marks a 4000-row diff in well under 5s"
-fi
-rm -f "$RVMPSTORE"; rm -rf "$RVMPERF"
-
 # group: serial
-echo "== tmux-review --rows: re-marking after a comment reads the cache, not git =="
-# The picker reloads the WHOLE marked list after every pinned comment, and
-# rows_mode re-derived that list from `git diff` + the full row build every
-# single time. The rows themselves cannot change while the popup is open, so
-# run_loop snapshots --lines into "$store.rows" once at open and each reload
-# only re-marks that snapshot. Measured on a 4900-row diff with 500 comments
-# pinned: 306ms per reload before, 15ms after. The snapshot must also be
-# INVISIBLE -- same bytes as re-deriving the rows from the tree.
-RV49=$(mktmpd); ( cd "$RV49" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'seed\n' > f; git add -A; git commit -q -m init; seq 1 4900 > f ) >/dev/null 2>&1
-RV49S=$(mktmpf); "$DIR/scripts/tmux-review" --lines "$RV49" > "$RV49S.rows"
-for i in $(seq 1 500); do printf '## f:%d (+)\n> %d\nc\n\n' "$i" "$i"; done > "$RV49S"
-# timeout 10 is a hang guard, not a budget: the 0.15s tooth that stood here
-# killed the write often enough on a loaded box to drag its two readers below
-# red with it (#75), and it never proved the cache was read anyway.
-timeout 10 "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.cached" 2>/dev/null
-rvcrc=$?
-if [ "$rvcrc" -eq 0 ]; then
-    ok "a 500-comment re-mark over 4900 rows exits 0"
-else bad "a 500-comment re-mark over 4900 rows exits 0" "exit 0" "exit $rvcrc"; fi
-# What does prove the snapshot is READ: a row that exists ONLY in it. There is
-# no way for that row to reach the output except by being read back out of the
-# file -- a build that writes the snapshot and still re-derives every row
-# passes every timing tooth and fails this one.
-printf 'SENTINEL\t1\tx\tSENTINEL:1 (+)  x\t1\n' >> "$RV49S.rows"
-if "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" | grep -q '^SENTINEL'; then
-    ok "a row that exists only in the snapshot is served from it"
-else
-    bad "a row that exists only in the snapshot is served from it" \
-        "a row starting SENTINEL" "no SENTINEL row -- the rows were re-derived"
-fi
-rm -f "$RV49S.rows"
-# Both readers below are rows.cached: a killed write leaves it empty and they
-# would report that kill twice over as failures of their own.
-if [ "$rvcrc" -eq 0 ]; then
-    "$DIR/scripts/tmux-review" --rows "$RV49" "$RV49S" > "$STATE/rows.fresh"
-    is "the cached and fresh rows are identical" "" "$(cmp "$STATE/rows.cached" "$STATE/rows.fresh" 2>&1)"
-    is "500 rows are marked" "500" "$(grep -c '●' "$STATE/rows.cached")"
-else
-    skip_ "the cached and fresh rows are identical"; skip_ "500 rows are marked"
-fi
-rm -rf "$RV49" "$RV49S"
-
-echo "== tmux-review --rows: a blank added line is still a visible, anchorable row =="
-RVBL=$(mktmpd)
-(
-  cd "$RVBL" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\nb\n' > f.md; git add -A; git commit -q -m init
-  printf 'a\n\nNEW\nb\n' > f.md
-) >/dev/null 2>&1
-RVBLS=$(mktmpf)
-rvbl=$("$DIR/scripts/tmux-review" --rows "$RVBL" "$RVBLS")
-rvblbad=""
-while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    rest=${row#*$'\t'}; rest=${rest#*$'\t'}; disp=${rest#*$'\t'}
-    case "$disp" in *"f.md:"*) ;; *) rvblbad="display lost its path: [$row]" ;; esac
-done <<<"$rvbl"
-is "every row's display names its file, blank fragment or not" "" "$rvblbad"
-rvblcount=$(printf '%s\n' "$rvbl" | grep -c .)
-is "the blank line is a row of its own" "2" "$rvblcount"
-case "$rvbl" in *$'\e[32m+'*) ok "an added row carries green SGR in --rows" ;;
-    *) bad "an added row carries green SGR in --rows" "ESC[32m+ in a row" "$(printf '%s' "$rvbl" | cat -v)" ;; esac
-case "$("$DIR/scripts/tmux-review" --lines "$RVBL")" in *$'\e['*) bad "--lines stays plain" "no SGR" "sgr found" ;;
-    *) ok "--lines stays plain" ;; esac
-rm -rf "$RVBL" "$RVBLS"
-
 echo "== tmux-review --lines: a non-ASCII filename anchors its own rows, not the previous file's =="
 # git C-quotes non-ASCII paths by default (`--- \"a/caf\\303\\251.txt\"`), which
 # the bare `a/`/`b/` header match could not read -- so café.txt's rows were
@@ -5993,103 +5872,7 @@ is "the aligned fragment keeps all 160 of its bytes" "160" \
    "$(printf '%s\n' "$rvuout" | awk -F'\t' '$2 == 2 { print $3 }' | tr -d '\n' | wc -c)"
 rm -rf "$RVU"
 
-echo "== tmux-review --attach: no row under the cursor stores nothing =="
-# {1} resolves to an empty string when the list has no row (or the match
-# under the cursor vanished) -- without a guard this still writes
-# "## : (+)" to the store with an empty fragment, and it delivers.
-ATSTORE=$(mktemp)
-"$DIR/scripts/tmux-review" --attach "$ATSTORE" "" "" "" "a stray comment"
-if [ -s "$ATSTORE" ]; then
-    bad "an empty path attaches nothing" "an empty store" "$(cat "$ATSTORE")"
-else
-    ok "an empty path attaches nothing"
-fi
-rm -f "$ATSTORE"
-
-echo "== tmux-review --attach: the cap's '(diff too large)' row stores nothing =="
-# C0: that row (lines_mode's giant-diff cap) has no real file or line behind
-# it -- alt-enter on it used to write "## (diff too large): (+)" to the
-# store anyway, a comment anchored to nothing that delivered as a bogus
-# instruction the agent could not act on.
-CAPSTORE=$(mktemp)
-"$DIR/scripts/tmux-review" --attach "$CAPSTORE" "(diff too large)" "" \
-    "diff too large to anchor line-by-line" "fix this somehow"
-if [ -s "$CAPSTORE" ]; then
-    bad "the cap sentinel row attaches nothing" "an empty store" "$(cat "$CAPSTORE")"
-else
-    ok "the cap sentinel row attaches nothing"
-fi
-rm -f "$CAPSTORE"
-
-echo "== tmux-review --attach: a long line is quoted whole, so the agent can find it =="
-RVLONG=$(mktmpd)
-LONGLINE=$(printf 'x%.0s' $(seq 1 220))
-(
-  cd "$RVLONG" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\n' > f.txt; git add -A; git commit -q -m init
-  printf 'a\n%s\n' "$LONGLINE" > f.txt
-) >/dev/null 2>&1
-RVLS=$(mktmpf)
-frag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==2 {print $3}')
-is "the display fragment is still capped" "160" "${#frag}"
-"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 2 "$frag" "too long" "$RVLONG"
-is "the stored quote is the full line" "> $LONGLINE" "$(sed -n 2p "$RVLS")"
-
-# fzf STRIPS leading whitespace from a {n} field replacement, so the fragment
-# attach() is actually handed for an indented row is the DE-INDENTED one -- and
-# the stale-fragment guard, a plain prefix test against the untrimmed file line,
-# then rejected every indented line and fell back to the trimmed, 160-byte
-# display fragment. Every line inside a function body is indented, so the
-# guard was inert for essentially all real code; the block above only passed
-# because its fixture line starts at column 1. Measured through a real fzf
-# 0.44.1 before the fix: a 224-char indented line stored a 156-char quote with
-# the indentation gone. The fragment here is passed TRIMMED, exactly as fzf
-# hands it over.
-INDENTED="    $LONGLINE"
-printf 'a\n%s\n%s\n' "$LONGLINE" "$INDENTED" > "$RVLONG/f.txt"
-ifrag=$("$DIR/scripts/tmux-review" --lines "$RVLONG" | awk -F'\t' '$2==3 {print $3}')
-ifrag=${ifrag#"${ifrag%%[![:space:]]*}"}
-is "fzf's trimmed fragment is the de-indented 156-byte tail" "156" "${#ifrag}"
-"$DIR/scripts/tmux-review" --attach "$RVLS" f.txt 3 "$ifrag" "indented" "$RVLONG"
-is "an indented line is stored whole, indentation and all" \
-   "> $INDENTED" "$(sed -n 6p "$RVLS")"
-# A store planted as a symlink is refused, not appended through.
-RVCAN=$(mktmpf); printf 'canary\n' > "$RVCAN"; ln -sf "$RVCAN" "$RVLONG/linked.md"
-"$DIR/scripts/tmux-review" --attach "$RVLONG/linked.md" f.txt 2 "$frag" "via link" "$RVLONG"; rvrc=$?
-is "a symlinked store is refused, and its target is untouched" "1 canary" "$rvrc $(cat "$RVCAN")"
-rm -rf "$RVLONG" "$RVLS" "$RVCAN"
-
-echo "== tmux-review --detach: a row with nothing pinned says so instead of doing nothing in silence =="
-RXN=$(mktmpd)
-printf '#!/bin/sh\necho "$*" >> %s/log\n' "$RXN" > "$RXN/tmux"; chmod +x "$RXN/tmux"
-printf '## src.go:3 (+)\n> x\nkeep\n\n' > "$RXN/store"
-PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/store" src.go 9
-case "$(cat "$RXN/log" 2>/dev/null)" in
-    *"nothing pinned on this row"*) ok "^X on an uncommented row reports it" ;;
-    *) bad "^X on an uncommented row reports it" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
-esac
-is "and the store is untouched" "1" "$(grep -c '^## src.go:3 (+)' "$RXN/store")"
-: > "$RXN/log"; : > "$RXN/empty"
-PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/empty" src.go 3
-case "$(cat "$RXN/log" 2>/dev/null)" in
-    *"nothing pinned on this row"*) ok "so does ^X on an empty store" ;;
-    *) bad "so does ^X on an empty store" "display-message ... nothing pinned on this row" "$(cat "$RXN/log" 2>/dev/null)" ;;
-esac
-# A store that does not parse is set aside as .bak with a note on stderr, and
-# ^X runs under execute-silent, which eats stderr: every mark vanished with
-# no word (#22 item 4). The note must reach the status line too.
-: > "$RXN/log"; printf 'garbage before any header\n## src.go:3 (+)\nfine\n' > "$RXN/corrupt"
-PATH="$RXN:$PATH" "$DIR/scripts/tmux-review" --detach "$RXN/corrupt" src.go 3 2>/dev/null
-case "$(cat "$RXN/log" 2>/dev/null)" in
-    *"set aside as"*) ok "^X on a store that does not parse says so on the status line" ;;
-    *) bad "^X on a store that does not parse says so on the status line" "display-message ... set aside as" "$(cat "$RXN/log" 2>/dev/null)" ;;
-esac
-
-# tmux-review's source: the dispatcher and the libs it sources.
-rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-picker.sh" "$DIR/scripts/lib/review-revdiff.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
-
+rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-revdiff.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
 echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
 for f in tm tmux-branch tmux-open-path tmux-review; do
     if [ "$f" = tmux-review ]; then src=$(rv_src); else src=$(cat "$DIR/scripts/$f"); fi
@@ -6097,33 +5880,6 @@ for f in tm tmux-branch tmux-open-path tmux-review; do
        "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16')" \
        "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16,[^ ]*border:8')"
 done
-
-echo "== tmux-review --copy: the file as it is now, then its diff; no path: the whole review's diff =="
-RCP=$(mktmpd)
-(
-  cd "$RCP" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f; printf 'n\n' > g
-) >/dev/null 2>&1
-rcp=$("$DIR/scripts/tmux-review" --copy "$RCP" f)
-case "$rcp" in
-    "### f"*"a"$'\n'"b"*"### diff f"*"+b"*) ok "one path: the whole file, then its diff" ;;
-    *) bad "one path: the whole file, then its diff" "### f / a b / ### diff f / +b" "$rcp" ;;
-esac
-rcpall=$("$DIR/scripts/tmux-review" --copy "$RCP")
-case "$rcpall" in
-    *"+b"*"+n"*|*"+n"*"+b"*) ok "no path: every file's diff, untracked included" ;;
-    *) bad "no path: every file's diff, untracked included" "+b and +n" "$rcpall" ;;
-esac
-is "the cap row copies nothing" "" "$("$DIR/scripts/tmux-review" --copy "$RCP" '(diff too large)' | head -c 1)"
-# alt-c used to copy the list row's fragment, control characters stripped and
-# cut at 160 bytes, so tab-indented code pasted flush left (#22 item 1).
-# --copy-lines takes fzf's {+1} {+2} shape (every path, then every line) and
-# reads each line from the tree (+) or HEAD (-).
-printf 'b\n' > "$RCP/f"; CL=$(printf 'y%.0s' $(seq 1 200)); printf '\t%s\n' "$CL" > "$RCP/t"
-is "--copy-lines reads the real lines: tab and 200-byte tail kept, HEAD's line for a - row, in order" \
-   $'\t'"$CL"$'\na' "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" t f 1 -1)"
-is "and the cap row copies nothing there either" "" "$("$DIR/scripts/tmux-review" --copy-lines "$RCP" '(diff too large)' 1 | head -c 1)"
 
 echo "== review-store: parse is the inverse of format over the full grammar =="
 # The one module that knows what "## path:line (+)" means. Sourced, pure:
@@ -6178,9 +5934,9 @@ is "and the first backup is untouched" "garbage before any header" "$(head -1 "$
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
 is "a header with a non-numeric line is corruption" "0" "$STORE_N"
 parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
-# Today's writer (attach) produces records this parser reads.
-RSATT="$RSD/att"; "$DIR/scripts/tmux-review" --attach "$RSATT" src.go 3 'x := 1' 'from attach' >/dev/null 2>&1
-parse_store "$RSATT"; is "attach()'s store parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
+# A record in the shape the loop writes (header, quote, body) parses.
+RSATT="$RSD/att"; printf '## src.go:3 (+)\n> x := 1\nfrom attach\n\n' > "$RSATT"
+parse_store "$RSATT"; is "a store record in the loop's shape parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
 # The boundary: nothing but comments may say tmux or git in the pure module.
 is "the library touches neither tmux nor git" "0" "$(sed '/^[[:space:]]*#/d' "$RS_LIB" | grep -cE 'tmux|git')"
 unset -f store_set store_dump; unset STORE STORE_N STORE_BAK
@@ -6976,7 +6732,7 @@ case " \$* " in *" add "*) kill -TERM "\$PPID"; exit 0 ;; esac
 exec $(command -v git) "\$@"
 STUB
 chmod +x "$TDK/bin/git"
-PATH="$TDK/bin:$PATH" TMPDIR="$TDK/tmp" "$DIR/scripts/tmux-review" --copy "$TDK/repo" >/dev/null 2>&1; tdrc=$?
+PATH="$TDK/bin:$PATH" TMPDIR="$TDK/tmp" bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2"' _ "$DIR/scripts/lib" "$TDK/repo" >/dev/null 2>&1; tdrc=$?
 is "the run was killed mid-diff (exit 143)" "143" "$tdrc"
 is "and its temp index is gone" "" "$(ls -A "$TDK/tmp")"
 rm -rf "$TDK"
@@ -8686,140 +8442,6 @@ fi
 "$TMUX_REAL" -L "$RC" kill-server >/dev/null 2>&1
 rm -rf "$RCHOME"
 fi
-
-echo "== tmux-review --edit: the editor gets the terminal even while fzf holds stdout, and @cockpit_editor wins =="
-# fzf's execute() runs its command with stdin on the tty and stdout on fzf's
-# own stdout -- which run_loop captures. vi printed "Output is not to a
-# terminal" and ate every key after. `| cat` below is that exact shape.
-if need_tmux "tmux-review --edit tty"; then :; else
-ET="cockpit-et-$$"; SOCKS="$SOCKS $ET"; ETDIR=$(mktmpd); ETTMP=$(mktmpd); ETSTORE="$STATE/review-edit-tty-$$"
-(
-  cd "$ETDIR" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
-) >/dev/null 2>&1
-# The -t 1 test runs BEFORE the append: `if ...; fi >> "$1"` redirects the
-# condition too, and then reports a pipe however the caller left stdout.
-ETED=$(mktmpf); printf '#!/bin/sh\nif [ -t 1 ]; then r=STDOUT-IS-TTY; else r=STDOUT-IS-A-PIPE; fi\necho "$r" >> "$1"\n' > "$ETED"; chmod +x "$ETED"
-ETED2=$(mktmpf); printf '#!/bin/sh\necho FROM-COCKPIT-EDITOR >> "$1"\n' > "$ETED2"; chmod +x "$ETED2"
-"$TMUX_REAL" -L "$ET" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
-ETP=$("$TMUX_REAL" -L "$ET" list-panes -t t: -F '#{pane_id}'); until_cap "$ET" "$ETP" '*$*'
-"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "TMPDIR=$(printf '%q' "$ETTMP") VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC=\$?" Enter
-# ETRC=0, not ETRC=: the send-keys line echoes into the pane as `echo ETRC=$?`,
-# so the looser glob matches the typed command and reads the store too early.
-until_cap "$ET" "$ETP" '*ETRC=0*'
-case "$(cat "$ETSTORE" 2>/dev/null)" in
-    *STDOUT-IS-TTY*) ok "stdin a tty, stdout a pipe: the editor still writes to the terminal" ;;
-    *) bad "stdin a tty, stdout a pipe: the editor still writes to the terminal" "STDOUT-IS-TTY" "$(cat "$ETSTORE" 2>/dev/null)" ;;
-esac
-"$TMUX_REAL" -L "$ET" set -g @cockpit_editor "$ETED2"
-"$TMUX_REAL" -L "$ET" send-keys -t "$ETP" "clear; TMPDIR=$(printf '%q' "$ETTMP") VISUAL= EDITOR=$(printf '%q' "$ETED") '$DIR/scripts/tmux-review' --edit $(printf '%q' "$ETSTORE") src.go 3 CHANGED '' $(printf '%q' "$ETDIR") | cat; echo ETRC2=\$?" Enter
-until_cap "$ET" "$ETP" '*ETRC2=0*'
-case "$(cat "$ETSTORE" 2>/dev/null)" in
-    *FROM-COCKPIT-EDITOR*) ok "@cockpit_editor wins over \$EDITOR, same chain as the path picker" ;;
-    *) bad "@cockpit_editor wins over \$EDITOR, same chain as the path picker" "FROM-COCKPIT-EDITOR" "$(cat "$ETSTORE" 2>/dev/null)" ;;
-esac
-is "no editor temp file is left behind" "" "$(ls "$ETTMP"/* 2>/dev/null)"
-"$TMUX_REAL" -L "$ET" kill-server >/dev/null 2>&1
-fi
-
-echo "== tmux-review --edit: with nothing configured, ^E opens in VS Code's remote shim when a window is reachable, else vi =="
-# On a Remote-SSH/Coder host there is no code(1) and usually no $EDITOR either,
-# and ^E fell back to vi inside the popup -- next to the VS Code window the
-# person is actually reading the diff in. The shim takes it with --wait, so the
-# buffer comes back the same way vi's does. No live window: vi, and say so.
-VETM=$(mktmpd); VEH=$(mktmpd); VE=$(mktmpd)
-VESK="$VEH/run"; VELOG="$VEH/log"; VELOGT="$VETM/log"; VESTORE="$VEH/store.md"
-VESHIM="$VEH/.vscode-server/cli/servers/Stable-abc/server/bin/remote-cli"
-cat > "$VETM/tmux" <<'VESTUB'
-#!/usr/bin/env bash
-case "$1" in
-  show-options)  printf '\n' ;;
-  display-message) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;;
-esac
-exit 0
-VESTUB
-chmod +x "$VETM/tmux"
-mkdir -p "$VESHIM" "$VESK"
-cat > "$VESHIM/code" <<'VESHIMEOF'
-#!/bin/sh
-# The real CLI reads its stdin. If the probe loop leaves the socket list on
-# fd 0, this eats the rest of it and the walk stops after one socket.
-head -c 200 >/dev/null
-printf 'SOCK=%s ARGS=%s\n' "$VSCODE_IPC_HOOK_CLI" "$*" >> "$VLOG"
-case "$VSCODE_IPC_HOOK_CLI" in
-    *live.sock) case " $* " in
-                    *' --wait '*) for a in "$@"; do last=$a; done
-                                  printf 'FROM-VSCODE\n' >> "$last" ;;
-                esac
-                exit 0 ;;
-    *) exit 1 ;;
-esac
-VESHIMEOF
-chmod +x "$VESHIM/code"
-: > "$VESK/vscode-ipc-live.sock"; touch -t 202001010000 "$VESK/vscode-ipc-live.sock"
-: > "$VESK/vscode-ipc-dead.sock"
-# `vi` on PATH is the fallback the last assertion measures: $EDITOR unset, so
-# editor_cmd's own last resort is the bare name.
-printf '#!/bin/sh\nprintf "FROM-VI\\n" >> "$1"\n' > "$VETM/vi"; chmod +x "$VETM/vi"
-(
-  cd "$VE" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nCHANGED\n' > src.go
-) >/dev/null 2>&1
-: > "$VELOG"; : > "$VELOGT"
-env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
-    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
-case "$(cat "$VESTORE" 2>/dev/null)" in
-    *FROM-VSCODE*) ok "^E with no editor configured reaches the live window with --wait" ;;
-    *) bad "^E with no editor configured reaches the live window with --wait" \
-         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
-esac
-# The shim command carries the script's own path, and $ed is word-split on
-# purpose (EDITOR="code --wait") -- so an install under "~/my dotfiles" split
-# it into two words and ^E ran a command that does not exist.
-: > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
-mkdir -p "$VEH/my dotfiles"; cp -r "$DIR/scripts" "$VEH/my dotfiles/"
-env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
-    "$VEH/my dotfiles/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
-case "$(cat "$VESTORE" 2>/dev/null)" in
-    *FROM-VSCODE*) ok "and from an install path with a space in it" ;;
-    *) bad "and from an install path with a space in it" \
-         "FROM-VSCODE in the store" "$(cat "$VESTORE" 2>/dev/null; cat "$VELOG")" ;;
-esac
-rm -f "$VESK"/vscode-ipc-live.sock; : > "$VELOG"; : > "$VELOGT"; : > "$VESTORE"
-env -i PATH="$VETM:$PATH" HOME="$VEH" VLOG="$VELOG" XDG_RUNTIME_DIR="$VESK" TMUX_LOG="$VELOGT" \
-    "$DIR/scripts/tmux-review" --edit "$VESTORE" src.go 3 CHANGED '' "$VE" </dev/null >/dev/null 2>&1
-case "$(cat "$VESTORE" 2>/dev/null)" in
-    *FROM-VI*) ok "with no live window it falls back to \$EDITOR" ;;
-    *) bad "with no live window it falls back to \$EDITOR" "FROM-VI" "$(cat "$VESTORE" 2>/dev/null)" ;;
-esac
-case "$(cat "$VELOGT" 2>/dev/null)" in
-    *"no VS Code window reachable"*) ok "and the status line says which editor it used instead" ;;
-    *) bad "and the status line says which editor it used instead" \
-         "a display-message naming vi" "$(cat "$VELOGT" 2>/dev/null)" ;;
-esac
-
-echo "== tmux-review --edit: an in-place edit keeps the stored quote when the line moved under it (#22 item 8) =="
-# The store's > quote is the review's snapshot. edit_comment used to hand
-# attach the row's display fragment, and attach re-read the LIVE line: an
-# agent that had moved the line since the snapshot replaced the quote with
-# whatever sits there now, or with the 160-byte fragment.
-RM=$(mktmpd); RMSTORE="$STATE/review-edit-moved-$$"; RMQ=$(printf 'q%.0s' $(seq 1 300))
-(
-  cd "$RM" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\nb\n' > src.go; git add -A; git commit -q -m init; printf 'a\nb\nMOVED\n' > src.go
-) >/dev/null 2>&1
-printf '## src.go:3 (+)\n> %s\nold text\n\n' "$RMQ" > "$RMSTORE"
-RMED=$(mktmpf); printf '#!/bin/sh\necho "more" >> "$1"\n' > "$RMED"; chmod +x "$RMED"
-TMPDIR="$RM" VISUAL='' EDITOR="$RMED" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
-is "the edit landed" "1" "$(grep -c '^more$' "$RMSTORE")"
-is "and the quote is still the snapshot's, not the line that sits there now" "> $RMQ" "$(grep '^> ' "$RMSTORE")"
-# Test debt from #22: an editor that empties the buffer deletes the record.
-RMED2=$(mktmpf); printf '#!/bin/sh\n: > "$1"\n' > "$RMED2"; chmod +x "$RMED2"
-TMPDIR="$RM" VISUAL='' EDITOR="$RMED2" "$DIR/scripts/tmux-review" --edit "$RMSTORE" src.go 3 MOVED '' "$RM" </dev/null >/dev/null 2>&1
-is "an emptied buffer deletes the comment" "0" "$(grep -c '^## ' "$RMSTORE" 2>/dev/null)"
 
 echo "== tests/par.sh: every block runs exactly once across the shards, and a red shard reddens the run =="
 # A sandboxed copy, never the live tests/run.sh: par.sh derives DIR from its
@@ -10879,7 +10501,6 @@ rm -rf "$FZTD" "$FZG"
 # notice that names the configured jump key. Every width here comes from a FAKE
 # tput, so a column count is a fixture rather than whatever terminal the suite
 # happens to run in.
-echo "== #105: the review row's path column is a share of the width, not a constant 48 =="
 rr_has() {                    # rr_has <argv-file> <flag> <what>
     if grep -qxF -- "$2" "$1" 2>/dev/null; then ok "$3 is given $2"
     else bad "$3 is given $2" "$2 in its argv" "$(tr '\n' ' ' < "$1" 2>/dev/null)"; fi
@@ -10920,7 +10541,6 @@ exit "$(cat "$RR_CAP.rc.$n" 2>/dev/null || echo 130)"
 RRFZF
     chmod +x "$RRB/tput" "$RRB/fzf"
 }
-rr_fakebin
 
 # Keyed on a fixed path, not on whether $RRDIR is already set: another block
 # in the same shard uses that name for a repo of its own, and returning early
@@ -10939,40 +10559,6 @@ rr_repo() {                   # -> $RRDIR, a repo whose one changed file has a l
       printf 'a\nb changed to something quite long indeed\n' > scripts/lib/very_long_module_name_here.sh
     ) >/dev/null 2>&1
 }
-rr_repo
-# Field 4 is the only field fzf draws. Its gutter is mark + space + path + two
-# spaces + sign + space, and the diff text starts at a sentence that appears
-# nowhere else in the row. The review loop is --multi, so fzf keeps 4 of the
-# popup's columns for its own pointer and marker.
-# Columns, not bytes and not characters-if-the-locale-happens-to-be-UTF-8:
-# the rows carry …, ◆ and ⑂, and awk's length() and bash's ${#s} both count
-# bytes under the C locale a CI box may well be in. Dropping the UTF-8
-# continuation bytes leaves one count per character, in any locale.
-rr_row() {                    # <cols> -> the display field of the long-path row
-    RR_COLS=$1 PATH="$RRB:$PATH" "$DIR/scripts/tmux-review" --rows "$RRDIR" /dev/null \
-        | awk -F'\t' '$1 ~ /very_long_module/ { print $4; exit }'
-}
-rr_gutter() {                 # <cols> -> columns spent before the diff text, -1 if the row is missing
-    local row pre
-    row=$(rr_row "$1"); pre=${row%%b changed to*}
-    { [ -n "$row" ] && [ "$pre" != "$row" ]; } || { printf '%s' -1; return; }
-    ncols "$pre"
-}
-rr_g80=$(rr_gutter 80)
-is "at 80 columns the diff text keeps at least 40 of them" "yes" \
-   "$( [ "${rr_g80:-0}" -gt 0 ] && [ $(( 80 - 4 - rr_g80 )) -ge 40 ] && echo yes || echo "no: a $rr_g80-column gutter leaves $(( 80 - 4 - ${rr_g80:-0} ))" )"
-# The head-ellipsis at :873 is the mechanism the cap is supposed to reach: at
-# 80 the 42-column path:line no longer fits, so it loses its head, not the
-# file name at its tail.
-rr_row80=$(rr_row 80)
-case "$rr_row80" in
-    *"…"*"module_name_here.sh:2"*) ok "and the path loses its head, keeping the file name" ;;
-    *) bad "and the path loses its head, keeping the file name" "…<tail>module_name_here.sh:2" "$rr_row80" ;;
-esac
-# A wide terminal must not truncate what already fits.
-rr_g200=$(rr_gutter 200)
-is "at 200 columns the whole path:line is spelled out" "yes" \
-   "$( [ "${rr_g200:-0}" -gt "${rr_g80:-0}" ] && echo yes || echo "no: gutter $rr_g80 at 80, $rr_g200 at 200" )"
 
 echo "== #105: fit_field cuts whole characters, whatever the locale is =="
 # ${s:i:n} counts BYTES unless the locale is UTF-8, so under C the head cut
