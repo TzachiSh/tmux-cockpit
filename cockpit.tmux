@@ -136,10 +136,11 @@ key() {                       # <option> <default> -> the key, empty when off
 }
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
-# TM_HEIGHT=100%: inside a popup, fzf's inline 40% leaves half of it empty.
+# tm --popup opens the popup itself: its height follows the session count,
+# which a display-popup size cannot express.
 Q_TM=$(sq "$DIR/scripts/tm")
 sk=$(key @cockpit_sessions_key s)
-[ -z "$sk" ] || tmux bind-key "$sk" display-popup -E -w "$PW" -h "$PH" -T ' sessions ' "TM_HEIGHT=100% $Q_TM"
+[ -z "$sk" ] || tmux bind-key "$sk" run-shell -b "$Q_TM --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
 jk=$(key @cockpit_jump_key u)
@@ -333,7 +334,7 @@ if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_
         . "$DIR/scripts/lib/vnum.sh" 2>/dev/null; then
     fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
     tmux set-option -gq @cockpit_fzf_notice "${fzf_v:-?}"
-    if [ "$(vnum "$fzf_v")" -lt "$(vnum 0.63.0)" ]; then
-        tmux display-message "fzf $fzf_v found; tmux-cockpit's pickers need 0.63+, bootstrap.sh fetches it"
+    if [ "$(vnum "$fzf_v")" -lt "$(vnum 0.73.0)" ]; then
+        tmux display-message "fzf $fzf_v found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it"
     fi
 fi
