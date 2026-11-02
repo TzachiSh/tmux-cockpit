@@ -5,6 +5,7 @@ pub mod board;
 pub mod chrome;
 pub mod data;
 pub mod fleet;
+pub mod info;
 pub mod panel;
 pub mod pick;
 pub mod push;

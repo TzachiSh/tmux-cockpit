@@ -334,7 +334,7 @@ fn golden_with_a_note() {
 }
 
 #[test]
-fn f1_help_names_alt_enter_and_scrolls_to_the_end() {
+fn f1_help_has_an_alt_enter_row_sized_for_scrolling() {
     let mut u = ui(fixture());
     assert_eq!(u.pick.help_len, branch::help(&Theme::fixed().g).len());
     assert!(

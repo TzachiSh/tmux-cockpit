@@ -14,10 +14,8 @@ source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## What it is not
 
-- **Not the fleet list.** `prefix r` stays fzf. fzf gives fuzzy filter,
-  multi-select and the wheel for free; a table in Rust would buy `j`/`k`/`↵` and
-  lose the filter. The board is a grid of previews, which is the thing fzf
-  cannot draw.
+- **Not a fuzzy filter.** The fzf fleet queue is gone (#253): `prefix r` opens
+  the board, a grouped list of agents with their diff stat and branch.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
   runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
@@ -870,7 +868,7 @@ other key is dropped, since nobody can see what it would do.
 ```
 
 **No binary, or a non-zero exit:** one `display-message`, exit 0, never a broken
-popup. `prefix r` still opens the fleet list.
+popup. `prefix r` opens the same board.
 
 ## Rules
 
@@ -1071,6 +1069,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
@@ -1182,6 +1181,62 @@ verbatim with `[any key]`, then the picker opens again.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.
+
+## The info screen (#252)
+
+`cockpit-tui info %N` is what `prefix i` opens, in a popup (`@cockpit_info_key`
+still names the key; `off` unbinds it). In the board, `i` draws the same screen
+as an overlay over the selected pane and `esc` returns to the board; the board
+no longer exits with `info %N` for the wrapper. The module is `info` (the
+screen) and `data::info` (the facts); both are in the module table.
+
+It shows what `tmux-review --info` showed, in the same order: `pane`, `cwd`,
+`dir` (`@cockpit_dir`, and `missing` when the directory is gone), `root`,
+`state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
+ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
+`base`, `session`, `title`, `tui` and the review dir with its pinned and
+delivered counts. The git root and the review base are Rust, on the `gitsafe`
+flags: the base is `review_base` from `review-diff.sh` (since-review, branch,
+uncommitted), so the screen names what `prefix r` diffs against. One quirk is
+kept on purpose: `review_base` reads its ref rows with a tab `IFS`, which
+folds empty fields, so `origin/HEAD` never serves as the upstream there; it
+does not here either.
+
+Text from outside (a transcript, a title, a path) is stripped of control
+characters before it is drawn. It is not a text-entry screen: `esc` and `q`
+close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
+`tmux-review --info` stays until #228's cleanup removes it.
+
+## The board as the review queue (#253)
+
+`prefix r` opens the board, the same command `prefix w` runs, and
+`@cockpit_review_window on` opens it in a window. The fzf fleet queue is gone;
+`tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
+
+**Row cells.** The list draws, between the message and the age: the diff stat
+(`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
+(`⑂name`). The review mark stays in the row's leading column. A cell that does
+not fit is dropped with every cell to its right; the cells take at most a third
+of the width the name and message share, and leave the name 6 cells and the
+message 12, so a 40-column row may show none.
+
+**Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
+scan per distinct repo root however many panes share it, at most 8 git processes
+at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
+the gitsafe flags. The list still makes no pane capture.
+
+**Verbs.** `cockpit-board` gains two lines, `kill %N` and `request %N`.
+`kill %N` kills the pane's window. The board writes the `#{window_id}` it
+showed (`@9`, not the name: automatic-rename gives agents the same name) to
+`$COCKPIT_ACTION.expect` first. The wrapper compares it with the window the pane
+is in now and kills the window that id names; it refuses with a `✕` note if the
+pane moved to another window, if the file is missing, empty, not an `@<digits>`
+id or a symlink, or if the pane is gone. The `✓` note and the log carry the id
+and `session:index` of what died.
+`request %N` ends the board, like `jump`, and then runs `tmux-review --request`
+for that pane: tmux silently refuses a popup opened inside the board's popup.
+Its output (the composed batch on exit 10) is not shown.
+The board keys for both wait on the board's verb hook (not shipped).
 
 ## Sessions
 

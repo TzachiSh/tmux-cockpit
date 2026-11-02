@@ -1,9 +1,10 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
+pub mod fleet;
 pub mod gitsafe;
+pub mod info;
 pub mod sessions;
 pub mod transcript;
 
-use gitsafe::{git, tree_stat};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
@@ -539,22 +540,7 @@ fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> Strin
 
 /// repo⑂branch, the `±` string and the repo root, for one path.
 pub fn git_facts(path: &str) -> (String, String, String) {
-    let top = git(
-        path,
-        &[],
-        None,
-        &["rev-parse", "--show-toplevel", "--absolute-git-dir", "--abbrev-ref", "HEAD"],
-    );
-    let mut it = top.lines();
-    let (Some(root), Some(gitdir), Some(branch)) = (it.next(), it.next(), it.next()) else {
-        return (String::new(), String::new(), String::new());
-    };
-    let repo = root.rsplit('/').next().unwrap_or(root);
-    (
-        format!("{repo}⑂{branch}"),
-        tree_stat(root, gitdir, None).map(|s| s.3).unwrap_or_default(),
-        root.to_string(),
-    )
+    fleet::scan(&[path.to_string()]).facts.remove(path).unwrap_or_default()
 }
 
 const GIT_TTL: Duration = Duration::from_secs(10);
@@ -574,20 +560,28 @@ thread_local! {
 }
 
 fn fill_git(ps: &mut [Pane]) {
+    // the tree each pane works in: @cockpit_dir over the cwd (#253)
+    let dirs = fleet::work_dirs(&ps.iter().map(|p| (p.id.clone(), p.path.clone())).collect::<Vec<_>>());
     GIT.with(|c| {
         let GitCache { facts, seen } = &mut *c.borrow_mut();
-        let stale: HashSet<String> = ps
+        let stale: HashSet<&String> = ps
             .iter()
-            .filter(|p| seen.get(&p.id) != Some(&p.state))
-            .map(|p| p.path.clone())
+            .zip(&dirs)
+            .filter(|(p, _)| seen.get(&p.id) != Some(&p.state))
+            .map(|(_, d)| d)
             .collect();
         *seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
         facts.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
-        for path in stale {
-            facts.remove(&path);
+        for d in stale {
+            facts.remove(d);
         }
-        for p in ps.iter_mut() {
-            let (_, (loc, pm, root)) = facts.entry(p.path.clone()).or_insert_with(|| (Instant::now(), git_facts(&p.path)));
+        // one scan per distinct root, in parallel, however many dirs share it
+        let missing: Vec<String> = dirs.iter().filter(|d| !facts.contains_key(*d)).cloned().collect();
+        for (d, f) in fleet::scan(&missing).facts {
+            facts.insert(d, (Instant::now(), f));
+        }
+        for (p, d) in ps.iter_mut().zip(&dirs) {
+            let (_, (loc, pm, root)) = &facts[d];
             (p.loc, p.pm, p.root) = (loc.clone(), pm.clone(), root.clone());
         }
     });

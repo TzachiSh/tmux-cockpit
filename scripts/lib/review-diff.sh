@@ -48,8 +48,8 @@ big_files() {                 # <dir>
 # file present in the tree but untracked here as DELETED (reproduced); with
 # the -N entry it compares the file's content instead.
 #
-# --no-optional-locks on every call, the same discipline fleet_scan_root()
-# uses: even a read can take index.lock, and this runs against a repo an
+# --no-optional-locks on every call, the same discipline the board's scan
+# (tui/src/data/gitsafe.rs) uses: even a read can take index.lock, and this runs against a repo an
 # AGENT is working in.
 tree_diff() {
     local dir=$1; shift
@@ -62,12 +62,8 @@ tree_diff() {
     mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
     gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
     [ -n "$gd" ] || return 1
-    # A caller that scans many roots at once (fleet_rows) lends the one temp
-    # dir it already owns, and the copy is named by PID and dies with that
-    # dir: mktemp + rm per root were 40 of the fleet's forks.
-    if [ -n "${TREE_DIFF_TMP:-}" ]; then idx=$TREE_DIFF_TMP/idx.$BASHPID
-    else idx=$(mktemp) || return 1
-        trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM; fi
+    idx=$(mktemp) || return 1
+    trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
     cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
     # Keep the big files away from git rather than filter them afterwards: the
@@ -97,7 +93,7 @@ tree_diff() {
     # them: a binary file's numstat is "-\t-\tpath". Without it a tree whose
     # only change is a big file reads CLEAN to --delta and to the fleet scan.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
-    [ -n "${TREE_DIFF_TMP:-}" ] || { rm -f -- "$idx"; trap - EXIT HUP INT TERM; }
+    rm -f -- "$idx"; trap - EXIT HUP INT TERM
 }
 
 # --- which base ---------------------------------------------------------------
@@ -199,7 +195,6 @@ delta_mode() {                # <pane>
 # be measured in C. In a UTF-8 locale a non-ASCII diff measures up to 4x short,
 # and that does not merely miss the cap: it reads a capture that WAS truncated
 # at the budget as one that fit, and hands the truncated diff to the parse.
-# Same idiom as pad_field() in review-fleet.sh.
 bytelen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
 
 lines_mode() {

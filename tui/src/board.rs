@@ -1,6 +1,7 @@
 //! The board: a list of agents grouped by tmux session (the default), or one
 //! live-preview tile per agent behind `v`. `render` is pure over `&[Pane]` (no
 //! tmux, no clock); `run` is the only impure entry.
+use crate::data::fleet as facts;
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
 use crate::panel::view::wrap;
 use crate::push::Push;
@@ -1401,10 +1402,35 @@ impl Nav {
     }
 }
 
-// #228: the list row's extra cells, drawn between the message and the age:
-// the diff stat, the review mark and the branch go here. None today.
-pub fn row_extra(_p: &Pane, _th: &Theme) -> Vec<Span<'static>> {
-    Vec::new()
+/// The list row's extra cells (#253), drawn between the message and the age:
+/// the diff stat, then the branch (the review mark is the leading column's).
+/// `room` is the width they may take, which `agent_row` sizes so the name and
+/// message keep at least 18 cells; a cell that does not fit is dropped, with every cell
+/// to its right, rather than cut. The facts come off `Pane`, filled on the
+/// fetch thread by `data::fleet`: nothing here forks.
+pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
+    let g = &th.g;
+    let stat = facts::stat_text(&p.loc, &p.pm);
+    let stat_c = match stat.as_str() {
+        "clean" | "no repo" | "?" => th.meta,
+        _ => th.running,
+    };
+    let br = facts::branch(&p.loc);
+    let mut cells = vec![(stat, stat_c)];
+    if !br.is_empty() {
+        cells.push((format!("{}{}", if g.ascii { "@" } else { "⑂" }, g.trunc(br, 16)), th.label));
+    }
+    let mut left = room as usize;
+    let mut out = vec![];
+    for (text, c) in cells {
+        let w = text.width() + 1;
+        if w > left {
+            break;
+        }
+        left -= w;
+        out.push(Span::styled(format!(" {text}"), Style::new().fg(c)));
+    }
+    out
 }
 
 /// The window index column: as wide as the widest index in the fleet.
@@ -1430,7 +1456,10 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     let g = &th.g;
     let (gl, gl_c) = th.glyph(p.state);
     let (rv, rv_c) = th.review_mark(&p.review);
-    let extra = row_extra(p, th);
+    // a third of what the name and message would share, and never so much that
+    // the name keeps under 6 cells and the message under 12
+    let flex0 = w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1);
+    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16);
     let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
@@ -1819,10 +1848,10 @@ fn sel_id(ps: &[Pane], nav: &Nav) -> String {
     ps[*first.unwrap_or(&lo[0])].id.clone()
 }
 
-// #228: the one place `i` opens a view. Today it exits with `info %N` for the
-// wrapper to run; `None` would keep the board open, for a view drawn in-process.
-fn info(id: &str) -> Option<String> {
-    Some(format!("info {id}"))
+// #228: the one place `i` opens a view. `None` keeps the board open: the info
+// screen is drawn in-process, over the selected tile (#252).
+fn info(_id: &str) -> Option<String> {
+    None
 }
 
 const DRAW_BUDGET: u8 = 5;
@@ -1952,6 +1981,8 @@ pub fn run(o: &Opts) -> Option<String> {
     let mut seen: HashMap<String, Option<String>> = HashMap::new();
     let (mut sel, mut top, mut loaded) = (0usize, 0usize, false);
     let mut help: Option<usize> = None;
+    // the info screen over the board (#252), while it is open
+    let mut overlay: Option<crate::info::Screen> = None;
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
@@ -2068,7 +2099,12 @@ pub fn run(o: &Opts) -> Option<String> {
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them
-            match term.draw(|f| render(f, f.area(), &v)) {
+            match term.draw(|f| {
+                render(f, f.area(), &v);
+                if let Some(o) = &overlay {
+                    crate::info::render(f, f.area(), &th, o);
+                }
+            }) {
                 Ok(_) => {
                     draw_fails = 0;
                     dirty = false;
@@ -2108,6 +2144,12 @@ pub fn run(o: &Opts) -> Option<String> {
         let here = area(term.size().unwrap_or_default());
         if too_small(here) {
             help = None;
+        }
+        if let Some(o) = &mut overlay {
+            if let crate::info::Out::Close = crate::info::key(o, &th, k.code, here) {
+                overlay = None;
+            }
+            continue;
         }
         if let Some(t) = help {
             // a help screen you have to learn a key to leave is a joke: any
@@ -2180,6 +2222,7 @@ pub fn run(o: &Opts) -> Option<String> {
                     action_line = Some(line);
                     break;
                 }
+                overlay = Some(crate::info::Screen::open(&id));
             }
             // `a` on a blocked agent jumps; there is no inline reply yet
             (Act::Ask, Some(p)) if p.state == State::NeedsInput => {
