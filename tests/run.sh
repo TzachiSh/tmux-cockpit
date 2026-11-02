@@ -10573,6 +10573,34 @@ cw_close "${bqpid:-}" "${bqf:-}"
 "$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
 fi
 
+echo "== under prefix e the menu offers Browse folder and Switch branch again (#222) =="
+# Full screen hides the border, and with it the path and branch taps: the rows
+# that stand in for them must come back.
+if need_tmux "menu under full screen"; then :; else
+FM="cockpit-fm-$$"; FMO="cockpit-fmo-$$"; SOCKS="$SOCKS $FM $FMO"; FMD=$(mktmpd)
+mkdir -p "$FMD/repo/.git"; printf 'ref: refs/heads/main\n' > "$FMD/repo/.git/HEAD"
+"$TMUX_REAL" -L "$FM" -f /dev/null new-session -d -s t -x 200 -y 40 -c "$FMD/repo" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FM" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+TMUX="$SOCKDIR/$FM,0,0" "$DIR/scripts/tmux-where" branch --set \
+    "$("$TMUX_REAL" -L "$FM" display-message -p -t t: '#{pane_id}')" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FMO" -f /dev/null new-session -d -s o -x 200 -y 40 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $FM attach -t t" >/dev/null 2>&1
+until_cap "$FMO" o '*⎇ main*'
+"$TMUX_REAL" -L "$FMO" send-keys -t o C-b a
+until_cap "$FMO" o '*New window*'
+case "$("$TMUX_REAL" -L "$FMO" capture-pane -p -t o)" in
+    *"Browse folder"*|*"Switch branch"*) bad "with the border on, neither row is offered" "no row" "a row" ;;
+    *) ok "with the border on, neither row is offered" ;;
+esac
+"$TMUX_REAL" -L "$FMO" send-keys -t o Escape
+"$TMUX_REAL" -L "$FMO" send-keys -t o C-b e
+until_out 1 "$TMUX_REAL" -L "$FM" show-options -t t -qv @cockpit_fs >/dev/null
+"$TMUX_REAL" -L "$FMO" send-keys -t o C-b a
+if until_cap "$FMO" o '*Browse folder*Switch branch*'; then ok "under prefix e both rows are back"
+else bad "under prefix e both rows are back" "Browse folder and Switch branch" "$("$TMUX_REAL" -L "$FMO" capture-pane -p -t o | grep '│' | head -12)"; fi
+"$TMUX_REAL" -L "$FMO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FM" kill-server >/dev/null 2>&1
+fi
+
 echo "== a window tab gets the width it can afford (#103, #222) =="
 # The current tab gets (W - reserve)/n - 6, clamped to 12..cap (cap 28 from 160
 # columns, else 18); the others share the rest and go compact below 4 cells.
