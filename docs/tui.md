@@ -26,9 +26,11 @@ source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## Install
 
-The binary ships as a release asset. `install.sh` fetches it; so does
-`prefix U` (tpm's update key) with `@cockpit_tui_fetch on`, or
-`scripts/tui-fetch` run by hand.
+The binary ships as a release asset. `install.sh` fetches it. With
+`@cockpit_tui_fetch on`, every config load also runs `scripts/tui-fetch` in the
+background: tmux starting, `prefix R`, and tpm's update key `prefix U`, which
+reloads the config after updating. Otherwise run `scripts/tui-fetch` yourself,
+or build it with `make tui`.
 Either way: uname picks the asset, the `.sha256` is fetched first and verified,
 and only a verified file is installed. A checksum mismatch, an unfetchable manifest or a
 platform with no asset all leave whatever binary is already there and say so
@@ -37,7 +39,7 @@ once. The repository is private, so the fetch rides your own `gh` login when
 release URL 404s and the fetch skips. `COCKPIT_TUI_REPO` overrides the
 `owner/repo` gh downloads from.
 
-Nothing is fetched when tmux loads its config. The load path stays offline;
+By default (unless `@cockpit_tui_fetch on`) nothing is fetched when tmux loads its config. The load path stays offline;
 installing and updating stay gestures you make, the way tpm's own are.
 
 To build from source instead, from the plugin directory:
@@ -107,8 +109,8 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 |--------|---------|------|
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
-| `@cockpit_tui_fetch` | `off` | `on` lets `prefix U` run `scripts/tui-fetch`. Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
-| `@cockpit_tui_version` | unset | pins the release tag `prefix U` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
+| `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
+| `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
