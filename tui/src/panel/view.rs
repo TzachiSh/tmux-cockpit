@@ -97,8 +97,14 @@ pub struct Hit {
 pub const MIN_W: u16 = 28;
 pub const MIN_H: u16 = 7;
 
-pub fn too_small(area: Rect) -> bool {
-    area.width < MIN_W || area.height < MIN_H
+/// The tablet's buttons take rows of their own: under 12, Result and Confirm at
+/// 28 columns keep under 2 body rows beside them (`every_tablet_view_keeps_two_body_rows`).
+pub const TABLET_MIN_W: u16 = 28;
+pub const TABLET_MIN_H: u16 = 12;
+
+pub fn too_small(area: Rect, tablet: bool) -> bool {
+    let (w, h) = if tablet { (TABLET_MIN_W, TABLET_MIN_H) } else { (MIN_W, MIN_H) };
+    area.width < w || area.height < h
 }
 
 fn plain(s: impl Into<String>) -> Line<'static> {
@@ -769,7 +775,7 @@ fn titles(th: &Theme, title: &str, ind: Option<(String, String)>, w: usize) -> (
     (fit(w), None)
 }
 
-/// Drawn in place of every view under [`MIN_W`] x [`MIN_H`].
+/// Drawn in place of every view under the floor: [`MIN_W`] x [`MIN_H`], or the tablet's.
 fn small(f: &mut Frame, area: Rect, th: &Theme) {
     let block = Block::new()
         .borders(Borders::ALL)
@@ -982,7 +988,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
     let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
     let anywhere = |on: bool| if on { vec![Hit { at: area, tap: esc }] } else { vec![] };
     // no hits under the floor: the card hides what esc would do (arm, discard, cancel a call)
-    if too_small(area) {
+    if too_small(area, app.tablet) {
         small(f, area, th);
         return (0, 0, vec![]);
     }
@@ -1213,7 +1219,7 @@ pub fn run(app: &mut App) {
         let tick = app.started.map_or(0, |t| (t.elapsed().as_millis() / 100) as u64);
         let (mut page, mut tiny) = ((0, 0, vec![]), false);
         let drawn = term.draw(|f| {
-            tiny = too_small(f.area());
+            tiny = too_small(f.area(), app.tablet);
             page = render(f, f.area(), app, &th, tick);
         });
         if drawn.is_err() {

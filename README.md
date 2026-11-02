@@ -1016,7 +1016,7 @@ file and the answer to a private temp file for the paste.
 - `?` lists every key of the screen you are on (`F1` inside a text box, where
   `?` is text). `esc` steps back one screen, and the footer names where to:
   Home, the draft, the answer. On Home it closes the panel.
-- Under 28x7 the panel asks for a larger window. `esc` and `q` still act as on
+- Under 28x7 (28x12 in tablet mode) the panel asks for a larger window. `esc` and `q` still act as on
   the screen underneath and `^C` quits; other keys are dropped.
 
 Secrets on the screen are blanked before anything is sent. `prefix + f`

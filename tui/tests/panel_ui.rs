@@ -2513,13 +2513,13 @@ fn tall_tiles_only_where_the_whole_view_fits() {
 
 #[test]
 fn every_tablet_view_fits_its_buttons_at_the_floor() {
-    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
     for (name, a, ..) in every_view() {
         let a = tablet(a);
-        let (f, _, hits) = drawn(&a, MIN_W, MIN_H, &Theme::fixed(), 0);
+        let (f, _, hits) = drawn(&a, TABLET_MIN_W, TABLET_MIN_H, &Theme::fixed(), 0);
         assert!(!hits.is_empty(), "{name}: something to tap:\n{f}");
         for h in &hits {
-            assert!(h.at.y < MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
+            assert!(h.at.y < TABLET_MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
         }
     }
 }
@@ -2539,11 +2539,11 @@ fn k(c: char) -> Tap {
 /// cells be that tap. One app for the whole grid, back to the opener with n.
 fn never_under(name: &str, mut a: App, open: Tap, yes: Tap) {
     let mut checked = 0;
-    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
     // from under the floor, where nothing may be tapped at all
     for w in 20..=120u16 {
         for h in 4..=40u16 {
-            if w < MIN_W || h < MIN_H {
+            if w < TABLET_MIN_W || h < TABLET_MIN_H {
                 assert!(hits_of(&a, w, h).is_empty(), "{name} at {w}x{h}: a hit under the floor");
                 continue;
             }
@@ -3199,7 +3199,7 @@ fn wrap_and_the_cursor_measure_emoji_as_drawn() {
 
 #[test]
 fn at_the_floor_the_cap_note_stays_over_the_cursor_line() {
-    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    use cockpit_tui::panel::view::{MIN_H, MIN_W, TABLET_MIN_H, TABLET_MIN_W};
     let capped = |tab: bool| {
         let mut a = composing("");
         a.tablet = tab;
@@ -3211,14 +3211,22 @@ fn at_the_floor_the_cap_note_stays_over_the_cursor_line() {
     };
     for tab in [false, true] {
         let mut a = capped(tab);
-        // tablet buttons fill a 28x7 body whole; at 11 rows they leave the head 4
-        let f = shown(&mut a, MIN_W, if tab { 11 } else { MIN_H });
+        let f = if tab {
+            shown(&mut a, TABLET_MIN_W, TABLET_MIN_H)
+        } else {
+            shown(&mut a, MIN_W, MIN_H)
+        };
         assert!(f.contains("the box"), "tablet {tab}: the note shows:\n{f}");
         assert!(f.contains("▏"), "tablet {tab}: and the cursor:\n{f}");
     }
-    // one row for the note: its first line, cut with an ellipsis
-    let f = shown(&mut capped(true), MIN_W, 9);
-    assert!(f.contains("▲ the box holds 8000 …"), "{f}");
+    // a note longer than the rows over the body: it keeps them, cut with an ellipsis
+    let mut a = capped(false);
+    a.say(
+        Level::Warn,
+        "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen",
+    );
+    let f = shown(&mut a, MIN_W, MIN_H);
+    assert!(f.contains("▲ one two") && f.contains(" …") && f.contains("▏"), "{f}");
 }
 
 #[test]
@@ -3263,5 +3271,45 @@ fn the_cursor_has_a_style_of_its_own_in_both_tiers() {
         assert_eq!(cur.symbol(), th.g.cursor);
         assert!(cur.modifier.contains(Modifier::REVERSED) && cur.fg == th.accent, "{text:?}");
         assert!(!pipe.modifier.contains(Modifier::REVERSED) && pipe.fg != th.accent, "{text:?}");
+    }
+}
+
+/// Measured like the pc floor: the smallest size where every tablet view shows
+/// its heading, 2 body rows, every button uncut and its note. Under it, the card.
+#[test]
+fn every_tablet_view_keeps_two_body_rows() {
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
+    let keys = |hits: Vec<Hit>| hits.into_iter().filter(|x| matches!(x.tap, Tap::Key(_))).collect::<Vec<_>>();
+    let (fw, fh) = (TABLET_MIN_W, TABLET_MIN_H);
+    let mut sizes: Vec<(u16, u16)> = (fh..=40).map(|h| (fw, h)).collect();
+    sizes.extend((fw..=120).step_by(4).map(|w| (w, fh)));
+    for (w, h) in sizes {
+        for (name, a, head, body) in every_view() {
+            let mut a = tablet(a);
+            let tall = keys(hits_of(&a, w, 60));
+            let _ = shown(&mut a, w, h);
+            let (f, (_, room), hits) = drawn(&a, w, h, &Theme::fixed(), 0);
+            let at = format!("{name} at {w}x{h}:\n{f}");
+            assert!(f.contains(head) && f.contains(body) && !f.contains("make the window"), "{at}");
+            assert!(room >= 2, "{room} body rows, {at}");
+            let got = keys(hits);
+            let uncut = |t: &Hit| got.iter().any(|g| g.tap == t.tap && g.at.width == t.at.width);
+            assert!(got.len() == tall.len() && tall.iter().all(uncut), "the buttons, {at}");
+            if let Some(n) = &a.note {
+                assert!(f.contains(&n.text.chars().take(10).collect::<String>()), "the note, {at}");
+            }
+        }
+    }
+    for (name, a, ..) in every_view() {
+        let mut a = tablet(a);
+        for (w, h) in [(fw - 1, 40), (200, fh - 1)] {
+            let f = shown(&mut a, w, h);
+            assert!(
+                f.contains("make the window larger") && hits_of(&a, w, h).is_empty(),
+                "{name} at {w}x{h}:\n{f}"
+            );
+        }
+        a.tablet = false;
+        assert!(!shown(&mut a, fw, fh - 1).contains("make the window"), "{name}: pc keeps 28x7");
     }
 }
