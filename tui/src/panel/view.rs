@@ -127,13 +127,21 @@ fn typed(g: &Glyphs, text: &str, cur: usize, w: usize, st: Style) -> (Vec<Line<'
     (lines, at)
 }
 
-/// A picker's number keys, from its real count.
+/// A picker's number keys, from its real count: none for no entries, and
+/// the empty hint is dropped, so no key is shown that does nothing.
 fn digits(n: usize) -> String {
-    if n <= 1 { "1".into() } else { format!("1-{}", n.min(9)) }
+    match n {
+        0 => String::new(),
+        1 => "1".into(),
+        _ => format!("1-{}", n.min(9)),
+    }
 }
 
 fn pills(xs: &[(&str, &str)]) -> Vec<(String, String)> {
-    xs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    xs.iter()
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 /// A picker entry: the cursor, the number, the text wrapped under itself, and
@@ -782,7 +790,7 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     let quit = s("q ^C", "close the panel");
     let help = s("? F1", "this help");
     let scroll = s("PgUp PgDn", "scroll a page");
-    match &app.view {
+    let all = match &app.view {
         View::Home { .. } => vec![
             move_,
             s(ret, "open the selected tile"),
@@ -889,7 +897,8 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("esc", &format!("back to {}", named(app.busy_back.as_ref()))),
             quit,
         ],
-    }
+    };
+    all.into_iter().filter(|(k, _)| !k.is_empty()).collect()
 }
 
 /// The `?` overlay over the whole panel: the popup is small enough that a

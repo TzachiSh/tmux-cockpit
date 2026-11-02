@@ -3064,3 +3064,51 @@ fn golden_compose_editing() {
     a.paste(&"word ".repeat(1300));
     goldens("compose-count", &a, 0);
 }
+
+// ---------------------------------------------------------------- item 3 leftovers
+
+#[test]
+fn a_question_with_no_options_shows_no_digit_pill() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question>".into()));
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("o other") && !f.contains(" 1 pick"), "{f}");
+    let ks = cockpit_tui::panel::view::keys(&a, &Theme::fixed().g);
+    assert!(!ks.iter().any(|(k, v)| k.is_empty() || v.contains("by number")), "{ks:?}");
+    key(&mut a, KeyCode::Enter);
+    assert!(matches!(a.view, View::Input { .. }), "Enter with no option types one");
+}
+
+#[test]
+fn enter_after_pgup_shows_the_selection_before_it_answers() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::PageUp);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("START") && !f.contains("second"), "scrolled off the selection:\n{f}");
+    key(&mut a, KeyCode::Enter);
+    assert!(
+        matches!(a.view, View::Question { sel: 1, scroll: None }),
+        "the first Enter answers nothing"
+    );
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎2   second"), "it scrolled back to the selection:\n{f}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy, "the second answers it");
+    assert_eq!(a.run.as_ref().unwrap().turns.last().unwrap().text, "second");
+}
+
+#[test]
+fn a_pinned_question_scroll_is_dropped_when_it_all_fits() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::PageUp);
+    let _ = shown(&mut a, 30, 7);
+    assert!(matches!(a.view, View::Question { scroll: Some(0), .. }));
+    let _ = shown(&mut a, 120, 40);
+    assert!(matches!(a.view, View::Question { scroll: None, .. }), "{:?}", a.view);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎1   first"), "back on a small screen, it follows the selection:\n{f}");
+}

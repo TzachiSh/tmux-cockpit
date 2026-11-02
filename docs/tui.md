@@ -284,6 +284,9 @@ At 40x12 (a phone in portrait), Steps:
 - **Home, Question and Steps keep the selection on screen.** A long question
   scrolls with its options, so the options never fall off the bottom; its
   `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
+  `Enter` after `PgUp` first scrolls back to the selection, and the next one
+  answers it; a resize that fits the whole question drops the scroll. A
+  question with no options shows no digit hint.
 - **Tiles** drop their description under 50 columns of text and cut it with an
   ellipsis above; a long option or step note wraps under itself.
 - **The top border** gives the title way first, with an ellipsis, then drops the

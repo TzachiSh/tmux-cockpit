@@ -566,8 +566,9 @@ impl App {
         if let View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } = &mut self.view {
             *scroll = (*scroll).min(self.bottom);
         }
-        if let View::Question { scroll: Some(s), .. } = &mut self.view {
-            *s = (*s).min(self.bottom);
+        // a resize that fits it all unpins: nothing is left to read from the start
+        if let View::Question { scroll: s @ Some(_), .. } = &mut self.view {
+            *s = s.map(|s| s.min(self.bottom)).filter(|_| self.bottom > 0);
         }
     }
 
@@ -1102,6 +1103,8 @@ impl App {
                 self.view = View::Question { sel, scroll }
             }
             KeyCode::Char(c @ '1'..='4') if (c as usize - '1' as usize) < n => self.pick_option(c as usize - '1' as usize),
+            // after PgUp the selection may be off screen: Enter shows it before it answers
+            KeyCode::Enter if n > 0 && scroll.is_some() => self.view = View::Question { sel, scroll: None },
             KeyCode::Enter if n > 0 => self.pick_option(sel.min(n - 1)),
             KeyCode::Char('o') | KeyCode::Enter => {
                 self.view = View::Input {
