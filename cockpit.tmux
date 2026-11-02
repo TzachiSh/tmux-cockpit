@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tmux-cockpit. Load with:  run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
-# Expands #{agent_where_path}, #{agent_where_branch} and #{agent_fleet} in the
-# status options, defaults the cockpit options, and binds every cockpit key.
-# Keys and options are documented in KEYS.md and the README.
+# Draws the status line and pane borders (scripts/lib/statusbar.conf; off with
+# @cockpit_statusbar off), defaults the cockpit options, and binds every cockpit key.
+# Keys and options are documented in KEYS.md, docs/status-bar.md and the README.
 set -u
 
 # A failed cd must stop here, not bind every key to /scripts/...
@@ -20,38 +20,6 @@ fi
 # Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
 # %q's backslashes before sh sees them.
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
-
-interpolate() {
-    local s="$1"
-    # Replacements live in variables: inlined, their "}" would end ${s//pat/rep}.
-    local w; w=$(sq "$DIR/scripts/tmux-where")
-    # Only ssh panes need the script; a #() in the untaken #{?} branch never runs.
-    local ssh='#{==:#{pane_current_command},ssh}'
-    # #() injection guard: the path goes single-quoted with ' made '\'', which a
-    # newline or tab in a cwd cannot break out of (#{q:} can).
-    local qp="'#{s|'|'\\\\''|:pane_current_path}'"
-    # exec: dash forks before running the job's one command otherwise.
-    local r_path="#{?$ssh,#(exec $w path #{pane_pid} #{pane_id}), #{s|^#{@cockpit_home_re}|~|:pane_current_path}}"
-    local r_brch="#{?$ssh,,#(exec $w branch #{pane_pid} $qp -)}"
-
-    # agent-state precomputes the fleet string; #{E:} resolves its colour tokens
-    # at render time, so a theme sourced after the plugin still wins.
-    local r_fleet="#{E:@cockpit_fleet}"
-
-    s="${s//'#{agent_where_path}'/$r_path}"
-    s="${s//'#{agent_where_branch}'/"$r_brch"}"   # quoted: bash 5.2 eats its \\
-    s="${s//'#{agent_fleet}'/$r_fleet}"
-    printf '%s' "$s"
-}
-
-update_option() {
-    local opt="$1" val
-    val=$(tmux show-option -gqv "$opt")
-    [ -n "$val" ] || return 0
-    case "$val" in
-        *'#{agent_'*) tmux set-option -gq "$opt" "$(interpolate "$val")" ;;
-    esac
-}
 
 # Never left empty: tmux treats an empty pattern as matching every command.
 if [ -z "$(tmux show-option -gqv @cockpit_agents)" ]; then
@@ -81,33 +49,103 @@ tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null
 
 # $HOME as a regex, held in an option so no character in it can break the format.
 tmux set-option -gq @cockpit_home_re "$(printf '%s' "${HOME:-/nonexistent}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
-for opt in status-left status-right \
-           window-status-format window-status-current-format \
-           @catppuccin_directory_text @catppuccin_gitmux_text; do
-    update_option "$opt"
+
+# --- status line and borders -----------------------------------------------------
+# The script's path, shell-quoted, for the formats and hooks to expand: a format's
+# value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
+tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
+tmux source-file "$DIR/scripts/lib/statusbar.conf"
+# NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
+if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
+    set --
+    for slot in black white dark-grey light-grey blue red cyan yellow green magenta; do
+        set -- "$@" set-option -s "dark-theme-$slot" default ';' set-option -s "light-theme-$slot" default ';'
+    done
+    tmux "$@"
+fi
+# The branch is a pane option these hooks push (a shell per event, never per
+# redraw). Index 9 leaves a user's own hook at [0]; OSC 133 shells add a push per
+# prompt, which catches a `git switch` typed in place.
+for h in window-pane-changed session-window-changed client-session-changed \
+         after-new-window after-split-window pane-shell-prompt pane-command-finished; do
+    tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_where_cmd} branch --set #{pane_id}"'
 done
+# Moving, killing or closing changes the summaries without a state transition, so
+# these hooks recount every window and session (agent-state sweep), per event.
+tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
+for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
+    tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_state_cmd} sweep"'
+done
+# The gauge follows the active pane, so a focus change can move the session's gauge
+# cells (@cockpit_ctx_all, the tab budget). No shell: agent-state's own format.
+tmux set-hook -g 'window-pane-changed[8]' \
+    'if-shell -F "#{e|!=:#{E:@cockpit_fmt_cells},#{@cockpit_ctx_all}}" { set-option -F @cockpit_ctx_all "#{E:@cockpit_fmt_cells}" }'
+# Panes and windows that predate the hooks (a reload), in the background: run-shell
+# waits on this script's output, so the job must not hold it open. The sweep also
+# writes the formats the hooks above read (@cockpit_fmt_*).
+{
+    "$DIR/scripts/agent-state" sweep
+    tmux list-panes -a -F '#{pane_id}' 2>/dev/null | while IFS= read -r p; do
+        "$DIR/scripts/tmux-where" branch --set "$p"
+    done
+} >/dev/null 2>&1 &
+# Stock overflow markers, rewritten: "< " and " >" on desktop; touch has ‹ › instead.
+# Skipped when status-format[0] is not stock's (yours, or already rewritten).
+if [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
+    sf=$(tmux show-option -gv 'status-format[0]' 2>/dev/null)
+    stock='#[list=left-marker]<#[list=right-marker]>'
+    case "$sf" in *"$stock"*)
+        mark='#[list=left-marker]#{?#{E:@cockpit_is_touch},,< }#[list=right-marker]#{?#{E:@cockpit_is_touch},, >}'
+        tmux set-option -g 'status-format[0]' "${sf/"$stock"/"$mark"}" ;;
+    esac
+fi
 
 # --- keys ---------------------------------------------------------------------
+# A key the plugin lets go of gets its stock 3.8 binding back, or is unbound if
+# stock has none.
+give_back() {
+    local k=$1
+    case "$k" in
+        C) set -- customize-mode -Z ;;          D) set -- choose-client -Z ;;
+        E) set -- select-layout -E ;;           L) set -- switch-client -l ;;
+        M) set -- select-pane -M ;;             c) set -- new-window ;;
+        T) set -- command-prompt -I '#T' 'select-pane -T "%%"' ;;
+        d) set -- detach-client ;;              f) set -- command-prompt 'find-window -Z "%%"' ;;
+        g) set -- switch-client -T move ;;      i) set -- display-message ;;
+        l) set -- last-window ;;                m) set -- select-pane -m ;;
+        n) set -- next-window ;;                o) set -- select-pane -t :.+ ;;
+        p) set -- previous-window ;;            q) set -- display-panes ;;
+        r) set -- refresh-client ;;             s) set -- choose-tree -Zs ;;
+        t) set -- clock-mode ;;                 w) set -- choose-tree -Zw ;;
+        x) set -- confirm-before -p 'kill-pane #P? (y/n)' kill-pane ;;
+        z) set -- resize-pane -Z ;;
+        *) set -- ;;
+    esac
+    if [ "$#" -gt 0 ]; then tmux bind-key -T prefix "$k" "$@"
+    else tmux unbind-key -T prefix "$k"; fi
+}
+
+# The menu's key, settled before any key is bound this load, so giving an old one
+# back can never undo a binding made below. @cockpit_ai_key was the agents menu's
+# key; it still works, with a notice.
+menuk=$(tmux show-option -gqv @cockpit_menu_key)
+aik=$(tmux show-option -gqv @cockpit_ai_key)
+if [ -z "$menuk" ] && [ -n "$aik" ]; then
+    menuk=$aik
+    tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
+fi
+case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
+mprev=$(tmux show-option -gqv @cockpit_menu_bound)
+if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
+    give_back "$mprev"
+    tmux set-option -gu @cockpit_menu_bound
+fi
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
 # The pane a popup came from, via the session id $TMUX ends in: display-popup
 # expands formats only in -T and -d, and inside it $TMUX_PANE is the popup's (#38).
 SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
-
-# catppuccin's names, defaulted only when unset: without them tmux rejects "fg=".
-while read -r n v; do
-    [ -n "$(tmux show-option -gqv "$n")" ] || tmux set-option -gq "$n" "$v"
-done <<'PALETTE'
-@thm_red #f38ba8
-@thm_peach #fab387
-@thm_yellow #f9e2af
-@thm_green #a6e3a1
-@thm_overlay_0 #6c7086
-@thm_sky #89dceb
-@thm_mauve #cba6f7
-@cockpit_blocked_bg #52303a
-PALETTE
 
 if [ "$(tmux show-option -gqv mouse)" != on ]; then
     tmux display-message "tmux-cockpit: the click gestures need 'set -g mouse on'; prefix+b still works"
@@ -116,13 +154,17 @@ fi
 PW=$(tmux show-option -gqv @cockpit_popup_width);  PW=${PW:-70%}
 PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
 
-# The click needs a range=control|1 marker in the user's status-right (README).
-tmux bind-key -n MouseDown1Control1 display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
-# The directory segment (range=control|2) browses the pane's cwd; -d is a format
-# and the shell-command is not, so --browse takes its $PWD.
-tmux bind-key -n MouseDown1Control2 display-popup -E -w "$PW" -h "$PH" \
+# Browse folder, for the path tap and the menu row: a row replays it from this
+# table, since an inline display-popup inside a menu row loses its quoting.
+# -d is a format and the shell-command is not, so --browse takes its $PWD.
+tmux bind-key -T cockpit o display-popup -E -w "$PW" -h "$PH" \
     -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
     "$Q_OPEN --browse"
+# What is each agent doing: one line per pane, its state or - for a non-agent.
+# display-popup expands no format in its command, so list-panes gets the #{...}.
+# The columns are tmux's own padding (p16), so a title with spaces stays whole.
+tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
+    "tmux list-panes -a -F '#{p16:#{session_name}:#{window_index}} #{p12:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},-}} #{pane_title}'; read -r _"
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
@@ -149,11 +191,6 @@ jk=$(key @cockpit_jump_key u)
 ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
-# A key the plugin lets go of: f gets stock find-window back, any other is unbound.
-give_back() {
-    if [ "$1" = f ]; then tmux bind-key -T prefix f command-prompt 'find-window -Z "%%"'
-    else tmux unbind-key -T prefix "$1"; fi
-}
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
     | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
@@ -296,24 +333,62 @@ EOF
     rm -f "$fsconf"
 fi
 
-# A row replays its action's key (send-keys -K), so a rebound key moves its row
-# and an off key drops it.
-ak=$(key @cockpit_ai_key a)
-if [ -n "$ak" ]; then
-    rows=()
-    row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
-    row 'Jump to the pane that needs you' u "$jk"
-    row 'Review its diff'                 r "$rk"
-    row 'Panel for it'                    f "$pk"
-    row 'Pane info'                       i "$ik"
-    row 'Board of every agent'            w "$bk"
-    row 'Full screen (hide the chrome)'   e "$fsk"
-    rows+=('')
-    row 'Switch branch'                   b b
-    row 'Move window to a session...'     m "$mk"
-    row 'Sessions...'                     s "$sk"
-    tmux bind-key "$ak" display-menu -T ' agents ' -x C -y C "${rows[@]}"
+# --- the menu and the taps ---------------------------------------------------------
+# One menu: prefix a (centred), ≡ on the border and a right-click on the bar (at
+# the pointer). A row exists only if nothing on screen does that job: Browse
+# folder and Switch branch show when the border has no room for the path or the
+# branch. A row replays its action's key (send-keys -K), so a rebound key moves
+# its row and an off key drops it. ##: display-menu expands an item's command
+# once, so a quote in a path or name reaches the command as data.
+rows=()
+row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
+row 'Board of every agent'        w "$bk"
+row 'Panel for this pane'         f "$pk"
+row 'Review its diff'             r "$rk"
+rows+=('What is each agent doing?' t 'switch-client -T cockpit ; send-keys -K t')
+rows+=('')
+rows+=('#{?#{E:@cockpit_path_shown},,Browse folder}' o 'switch-client -T cockpit ; send-keys -K o')
+row '#{?#{E:@cockpit_branch_shown},,#{?#{E:@cockpit_where_branch},Switch branch,}}' b b
+rows+=('')
+rows+=('New window' c "new-window -c '##{pane_current_path}'")
+rows+=('#{?#{E:@cockpit_is_touch},,Split right}' "\\" "split-window -h -c '##{pane_current_path}'")
+rows+=('#{?#{E:@cockpit_is_touch},,Split down}' - "split-window -v -c '##{pane_current_path}'")
+row 'Move window to a session...' M "$mk"
+# -t is the id the menu was opened on (a closed form, expanded once here); -- keeps
+# a typed name that starts with - from reading as a flag.
+rows+=('Rename window' ',' "command-prompt -I '##W' 'rename-window -t #{window_id} -- \"%%\"'")
+rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
+       "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
+rows+=('')
+row 'Full screen (hide the bar)'  e "$fsk"
+row 'Pane info'                   i "$ik"
+rows+=('Rename session' '$' "command-prompt -I '##S' 'rename-session -t #{session_id} -- \"%%\"'")
+rows+=('Detach' d detach-client)
+row 'Reload config'               R "$rlk"
+rows+=('Kill session' Q "confirm-before -p 'kill session ##S? (y/n)' kill-session")
+tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M -y M "${rows[@]}"
+if [ -n "$menuk" ]; then
+    tmux bind-key "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
+    tmux set-option -g @cockpit_menu_bound "$menuk"
 fi
+
+# Taps act on release: a menu opened on the press is closed by its own release.
+# The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);
+# stock binds 7 ([f]), 8 ([z]) and 9 ([x]). The window line's ‹ › are user ranges.
+tmux unbind-key -q -n MouseDown1Control1 \; unbind-key -q -n MouseDown1Control2
+# From argv a bare ; would end bind-key itself, so a two-command binding passes '\;'.
+if [ -n "$sk" ]; then
+    tmux bind-key -n MouseUp1Control0 switch-client -T prefix '\;' send-keys -K "$sk"
+else
+    tmux unbind-key -q -n MouseUp1Control0
+fi
+tmux bind-key -n MouseUp1Control1 switch-client -T cockpit '\;' send-keys -K m
+tmux bind-key -n MouseUp1Control2 switch-client -T cockpit '\;' send-keys -K o
+tmux bind-key -n MouseUp1Control3 switch-client -T prefix '\;' send-keys -K b
+tmux bind-key -n MouseUp1Status if-shell -F '#{==:#{mouse_status_range},cp-prev}' previous-window \
+    "if-shell -F '#{==:#{mouse_status_range},cp-next}' next-window"
+tmux bind-key -n MouseUp3Status if-shell -F '#{m:cp-*,#{mouse_status_range}}' \
+    'switch-client -T cockpit ; send-keys -K m'
 
 # Click a line of output to pick a path off it. The line travels in a pane option
 # (-F), since pane output is full of quotes that would tear a shell string apart.
