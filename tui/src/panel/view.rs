@@ -1,6 +1,6 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, InputKind, Level, MODELS, QUICK, Tap, View, needs_y, risky};
+use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::theme::{Glyphs, Theme};
@@ -110,6 +110,21 @@ fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
         .into_iter()
         .map(|l| styled(format!("{indent}{l}"), st))
         .collect()
+}
+
+/// A text box's lines with the cursor drawn in at `cur`, and the cursor's line.
+/// The text may hold the cursor glyph itself, so those are counted past.
+fn typed(g: &Glyphs, text: &str, cur: usize, w: usize, st: Style) -> (Vec<Line<'static>>, usize) {
+    let c = boundary(text, cur);
+    let before = text[..c].matches(g.cursor).count();
+    let lines = many(&format!("{}{}{}", &text[..c], g.cursor, &text[c..]), w, "", st);
+    let mut seen = 0;
+    let at = lines.iter().position(|l| {
+        seen += l.spans.iter().map(|s| s.content.matches(g.cursor).count()).sum::<usize>();
+        seen > before
+    });
+    let at = at.unwrap_or(lines.len() - 1);
+    (lines, at)
 }
 
 /// A picker's number keys, from its real count.
@@ -342,10 +357,30 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         View::Compose => {
             let r = app.write_route();
             let head = format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]);
-            b.head.push(styled(th.g.trunc(&head, w), label));
-            b.lines = many(&format!("{}{}", app.draft, g.cursor), w, "", value);
+            let mut top = styled(th.g.trunc(&head, w), label);
+            let n = app.draft.chars().count();
+            if n > DRAFT_COUNT {
+                let fg = if n >= MAX_DRAFT { th.needs } else { th.meta };
+                let count = Span::styled(format!("{n}/{MAX_DRAFT}"), Style::new().fg(fg));
+                if top.width() + 3 + count.width() <= w {
+                    top.spans.extend([Span::raw("   "), count]);
+                } else {
+                    b.head.push(top);
+                    top = Line::from(count);
+                }
+            }
+            b.head.push(top);
+            let at;
+            if app.draft.is_empty() {
+                // drawn, never typed: the draft stays empty
+                let hint = th.g.trunc(&format!("type what you want{}", g.ellipsis), w.saturating_sub(1));
+                let dim = meta.add_modifier(Modifier::DIM);
+                (b.lines, at) = (vec![Line::from(vec![Span::styled(g.cursor, value), Span::styled(hint, dim)])], 0);
+            } else {
+                (b.lines, at) = typed(g, &app.draft, app.cur, w, value);
+            }
             // the cursor's line, over the route lines under it
-            b.sel = Some((b.lines.len() - 1, b.lines.len()));
+            b.sel = Some((at, at + 1));
             b.lines.push(plain(""));
             b.lines.extend(many(&format!("{} {} {d} {}", g.arrow, r.model, r.why), w, "", meta));
             if let Some((m, why)) = &r.suggest {
@@ -439,7 +474,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("esc", &back),
             ]);
         }
-        View::Input { kind, text, .. } => {
+        View::Input { kind, text, cur, .. } => {
             let title = match kind {
                 InputKind::Other => format!("your answer: {}", run.map_or("", |r| r.question.as_str())),
                 InputKind::Explain => "what do you want to know about this screen?".into(),
@@ -447,8 +482,9 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             };
             b.head.extend(many(&title, w, "", label));
             b.head.push(plain(""));
-            b.lines = many(&format!("{text}{}", g.cursor), w, "", value);
-            b.scroll = usize::MAX;
+            let at;
+            (b.lines, at) = typed(g, text, *cur, w, value);
+            (b.scroll, b.sel) = (usize::MAX, Some((at, at + 1)));
             b.footer = pills(&[(g.key_enter, "send"), ("F1", "keys"), ("esc", "back")]);
         }
         View::Result { label: l, text, scroll } => {
@@ -741,6 +777,7 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     };
     let ud = format!("{} j k", g.key_updown);
     let (ret, bksp) = (g.key_enter, g.key_bksp);
+    let lr = format!("{} {}", g.key_left, g.key_right);
     let move_ = s(&ud, "move");
     let quit = s("q ^C", "close the panel");
     let help = s("? F1", "this help");
@@ -760,7 +797,10 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s(g.key_tab, "next output type"),
             s("^N", "next model"),
             s(ret, "new line"),
-            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
+            s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+            s("Home End", "line start, end; ^A ^E too"),
+            s("Del", "delete the char after"),
             s("F1", "this help"),
             s("esc", "back to home"),
             s("^C", "close the panel"),
@@ -784,7 +824,10 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
         ],
         View::Input { back, .. } => vec![
             s(ret, "send"),
-            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
+            s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+            s("Home End", "line start, end; ^A ^E too"),
+            s("Del", "delete the char after"),
             s("F1", "this help"),
             s("esc", &format!("back to {}", named(Some(back)))),
             s("^C", "close the panel"),

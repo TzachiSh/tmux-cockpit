@@ -1492,6 +1492,7 @@ fn an_answer_box_with_no_conversation_stays_put() {
         a.view = View::Input {
             kind,
             text: "hi".into(),
+            cur: 2,
             back: Box::new(View::Home { sel: 0 }),
         };
         let v = a.view.clone();
@@ -1712,14 +1713,14 @@ fn a_short_help_scrolls() {
     key(&mut a, KeyCode::F(1));
     let f = shown(&mut a, 40, 9);
     assert!(
-        f.contains("1-7 of 10") && f.contains("any other key closes") && !f.contains("close the panel"),
+        f.contains("1-7 of 13") && f.contains("any other key closes") && !f.contains("close the panel"),
         "{f}"
     );
-    for _ in 0..5 {
+    for _ in 0..6 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 9);
-    assert!(f.contains("4-10 of 10") && f.contains("close the panel"), "{f}");
+    assert!(f.contains("7-13 of 13") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
 }
@@ -1734,9 +1735,9 @@ fn an_overscrolled_help_moves_back_at_once() {
         key(&mut a, KeyCode::Down);
         shown(&mut a, 40, 9);
     }
-    assert_eq!(a.help, Some(3), "10 keys in 7 rows: 3 is the last offset");
+    assert_eq!(a.help, Some(6), "13 keys in 7 rows: 6 is the last offset");
     key(&mut a, KeyCode::Up);
-    assert!(shown(&mut a, 40, 9).contains("3-9 of 10"), "the first Up moves");
+    assert!(shown(&mut a, 40, 9).contains("6-12 of 13"), "the first Up moves");
 }
 
 #[test]
@@ -2801,4 +2802,265 @@ fn golden_ascii() {
             golden(&format!("panel-ascii-{name}-40"), &framed(&a, 40, 12, &th, 0).0);
         }
     }
+}
+
+// ---------------------------------------------------------------- editing
+
+/// The draft with `|` where the cursor is.
+fn at_cur(a: &App) -> String {
+    format!("{}|{}", &a.draft[..a.cur], &a.draft[a.cur..])
+}
+
+fn press(a: &mut App, code: KeyCode, m: KeyModifiers) {
+    a.key(KeyEvent::new(code, m));
+}
+
+#[test]
+fn the_cursor_moves_by_char_word_and_line() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = composing("one two  three");
+    assert_eq!(at_cur(&a), "one two  three|");
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "one two  thre|e");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "one two  |three");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "one |two  three");
+    press(&mut a, KeyCode::Right, c);
+    assert_eq!(at_cur(&a), "one two|  three");
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), "one two | three");
+    key(&mut a, KeyCode::Home);
+    assert_eq!(at_cur(&a), "|one two  three");
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "|one two  three", "Left at the start stays");
+    key(&mut a, KeyCode::End);
+    assert_eq!(at_cur(&a), "one two  three|");
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), "one two  three|", "Right at the end stays");
+    ctrl(&mut a, 'a');
+    assert_eq!(a.cur, 0);
+    ctrl(&mut a, 'e');
+    assert_eq!(a.cur, a.draft.len());
+
+    // Home and End are the line's, ^A and ^E too
+    let mut a = composing("ab\ncd\nef");
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "ab\ncd|\nef");
+    key(&mut a, KeyCode::Home);
+    assert_eq!(at_cur(&a), "ab\n|cd\nef");
+    ctrl(&mut a, 'e');
+    assert_eq!(at_cur(&a), "ab\ncd|\nef");
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::End);
+    assert_eq!(at_cur(&a), "ab|\ncd\nef");
+}
+
+#[test]
+fn typing_pasting_and_deleting_happen_at_the_cursor() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = composing("one three");
+    press(&mut a, KeyCode::Left, c);
+    typ(&mut a, "two ");
+    assert_eq!(at_cur(&a), "one two |three");
+    a.paste("and\na half ");
+    assert_eq!(at_cur(&a), "one two and\na half |three");
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), "one two and\na |three");
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), "one two and\na|three");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "one two and\na|hree");
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "one two and\nahree|", "Delete at the end does nothing");
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), "one two and|ahree", "Backspace at a line start joins the lines");
+    ctrl(&mut a, 'u');
+    assert_eq!(at_cur(&a), "|ahree", "^U takes everything before the cursor");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(at_cur(&a), "\n|ahree");
+
+    // the cap counts the whole draft: a typed char mid-text is turned away too
+    let mut a = composing("ab");
+    typ(&mut a, &"x".repeat(7998));
+    key(&mut a, KeyCode::Home);
+    ch(&mut a, 'y');
+    assert_eq!((a.draft.chars().count(), a.cur), (8000, 0));
+    assert!(note(&a).is_some_and(|n| n.contains("1 left out")), "{:?}", a.note);
+}
+
+#[test]
+fn the_cursor_steps_over_whole_utf8_chars_and_marks() {
+    let c = KeyModifiers::CONTROL;
+    // a combining acute, VS16 and an ideographic space: none may be split from its base
+    let text = "e\u{301}x ❤\u{fe0f}日本\u{3000}語";
+    let mut a = composing(text);
+    let mut stops = vec![a.cur];
+    for _ in 0..12 {
+        key(&mut a, KeyCode::Left);
+        stops.push(a.cur);
+    }
+    stops.dedup();
+    let want: Vec<usize> = [
+        "e\u{301}x ❤\u{fe0f}日本\u{3000}語",
+        "e\u{301}x ❤\u{fe0f}日本\u{3000}",
+        "e\u{301}x ❤\u{fe0f}日本",
+        "e\u{301}x ❤\u{fe0f}日",
+        "e\u{301}x ❤\u{fe0f}",
+        "e\u{301}x ",
+        "e\u{301}x",
+        "e\u{301}",
+        "",
+    ]
+    .iter()
+    .map(|s| s.len())
+    .collect();
+    assert_eq!(stops, want);
+    let mut back = vec![a.cur];
+    for _ in 0..12 {
+        key(&mut a, KeyCode::Right);
+        back.push(a.cur);
+    }
+    back.dedup();
+    back.reverse();
+    assert_eq!(back, want, "Right stops where Left does");
+    // every key from every stop: always on a char boundary, never a panic
+    let keys = [
+        (KeyCode::Backspace, KeyModifiers::NONE),
+        (KeyCode::Delete, KeyModifiers::NONE),
+        (KeyCode::Char('w'), c),
+        (KeyCode::Char('u'), c),
+        (KeyCode::Left, c),
+        (KeyCode::Right, c),
+        (KeyCode::Char('é'), KeyModifiers::NONE),
+    ];
+    for &stop in &want {
+        for (code, m) in keys {
+            let mut a = composing(text);
+            a.cur = stop;
+            press(&mut a, code, m);
+            assert!(a.draft.is_char_boundary(a.cur) && a.cur <= a.draft.len(), "{code:?} at {stop}");
+        }
+    }
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(a.draft, "e\u{301}x ❤\u{fe0f}日本");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "e\u{301}x |❤\u{fe0f}日本");
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), "|❤\u{fe0f}日本");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "|日本", "Delete takes the heart and its VS16");
+    // a stale offset off a char boundary is pulled back onto one
+    a.cur = 1;
+    ch(&mut a, 'a');
+    assert_eq!(at_cur(&a), "a|日本");
+}
+
+#[test]
+fn the_one_line_box_edits_at_its_cursor() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = asking();
+    ch(&mut a, '5');
+    typ(&mut a, "why is it red");
+    press(&mut a, KeyCode::Left, c);
+    typ(&mut a, "so ");
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Delete);
+    a.paste("W\nh");
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Backspace);
+    let View::Input { text, cur, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!((text.as_str(), *cur), ("W hhy is it so re", 17));
+    ctrl(&mut a, 'a');
+    ctrl(&mut a, 'u');
+    let View::Input { text, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(text, "W hhy is it so re", "^U at the start takes nothing");
+    key(&mut a, KeyCode::Right);
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("W▏ hhy is it so re"), "the cursor is drawn where it is:\n{f}");
+}
+
+#[test]
+fn a_wide_char_puts_the_cursor_by_its_width() {
+    let mut a = composing("日本語 ok");
+    for _ in 0..4 {
+        key(&mut a, KeyCode::Left);
+    }
+    assert_eq!(at_cur(&a), "日本|語 ok");
+    let f = frame(&a, 60, 12, 0);
+    let line = f.lines().find(|l| l.contains('▏')).unwrap_or_else(|| panic!("no cursor:\n{f}"));
+    // the backend writes a wide char's second cell as nothing: count columns by width
+    use unicode_width::UnicodeWidthStr;
+    let col = line[..line.find('▏').unwrap()].width();
+    assert_eq!(col, "\"│ 日本".width(), "{line}");
+}
+
+#[test]
+fn the_cursor_line_stays_on_screen() {
+    let lines: Vec<String> = (1..=30).map(|i| format!("line{i}")).collect();
+    let mut a = composing(&lines.join("\n"));
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("line30▏") && f.contains("model"), "the end and the route:\n{f}");
+    while a.cur > 0 {
+        key(&mut a, KeyCode::Left);
+    }
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▏line1") && !f.contains("line30"), "the cursor's line is shown:\n{f}");
+}
+
+#[test]
+fn an_empty_compose_shows_a_placeholder_that_is_never_typed() {
+    let mut a = composing("");
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("▏type what you want…"), "{f}");
+    ctrl(&mut a, 't');
+    assert_eq!((a.draft.as_str(), note(&a)), ("", Some("nothing to insert yet")));
+    ctrl(&mut a, 's');
+    assert!(a.action.is_none() && a.view == View::Compose);
+    ch(&mut a, 'x');
+    assert!(!frame(&a, 60, 12, 0).contains("type what you want"));
+    key(&mut a, KeyCode::Backspace);
+    assert!(frame(&a, 60, 12, 0).contains("type what you want"), "back when the draft empties");
+    assert_eq!(a.draft, "");
+}
+
+#[test]
+fn a_long_draft_counts_against_the_cap() {
+    let mut a = composing("");
+    a.paste(&"x".repeat(6000));
+    assert!(!frame(&a, 80, 20, 0).contains("/8000"), "6000 is not long yet");
+    ch(&mut a, 'y');
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("model: auto   6001/8000"), "{f}");
+    key(&mut a, KeyCode::Tab);
+    key(&mut a, KeyCode::Tab);
+    let f = frame(&a, 40, 12, 0);
+    let own = f.lines().any(|l| l.contains("6001/8000") && !l.contains("type:"));
+    assert!(own && f.contains("type: command"), "on its own line when narrow:\n{f}");
+}
+
+#[test]
+fn golden_compose_editing() {
+    let mut a = composing("");
+    goldens("compose-empty", &a, 0);
+    typ(&mut a, "fix the flaky api test then rerun it");
+    let c = KeyModifiers::CONTROL;
+    for _ in 0..3 {
+        press(&mut a, KeyCode::Left, c);
+    }
+    goldens("compose-cursor", &a, 0);
+    let mut a = composing("");
+    a.paste(&"word ".repeat(1300));
+    goldens("compose-count", &a, 0);
 }

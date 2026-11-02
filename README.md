@@ -994,7 +994,9 @@ file and the answer to a private temp file for the paste.
 
 - **Compose**: type rough words. `^S` writes a prompt, command, steps,
   text or hint from them, `^F` fixes the spelling, `^T` inserts them as
-  typed. `⇥` picks the output type and `^N` the model.
+  typed. `⇥` picks the output type and `^N` the model. The box has a
+  cursor: `←` `→`, `^←` `^→` by word, `Home` `End` (`^A` `^E`) and `Del`;
+  `⌫`, `^W` and `^U` delete before it.
 - **Explain**: what the pane is doing, what should happen next, or your
   own question. When the next step is a message to a Claude Code agent,
   the answer ends with that message, ready to insert or send.

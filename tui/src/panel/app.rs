@@ -13,6 +13,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use unicode_width::UnicodeWidthChar;
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
 pub const OUT_CYCLE: [OutType; 7] = [
@@ -25,6 +26,8 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// Past this the Compose head counts the draft against MAX_DRAFT.
+pub const DRAFT_COUNT: usize = 6000;
 /// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
 /// (1 MiB): 786,000 bytes landed, 786,432 did not. Kept under it.
 pub const COPY_MAX: usize = 768_000;
@@ -95,6 +98,8 @@ pub enum View {
     Input {
         kind: InputKind,
         text: String,
+        /// The cursor: a byte offset into `text`, on a char boundary.
+        cur: usize,
         back: Box<View>,
     },
     Result {
@@ -196,6 +201,8 @@ pub struct App {
     pub session: Option<Session>,
     pub view: View,
     pub draft: String,
+    /// The draft's cursor, as [`View::Input`]'s `cur`.
+    pub cur: usize,
     pub out: OutType,
     pub model: usize,
     pub run: Option<Run>,
@@ -252,6 +259,7 @@ impl App {
             cap,
             view: View::Home { sel: 0 },
             draft: String::new(),
+            cur: 0,
             out: OutType::Auto,
             model: 0,
             run: None,
@@ -509,7 +517,7 @@ impl App {
             View::Answer { scroll, armed } => self.answer_key(k, *scroll, *armed),
             View::Input { .. } | View::Result { .. } | View::Steps { .. } | View::Confirm { .. } => {
                 match std::mem::replace(&mut self.view, View::Busy) {
-                    View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
+                    View::Input { kind, text, cur, back } => self.input_key(k, ctrl, kind, text, cur, *back),
                     View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
                     View::Steps { label, items, sel, done } => self.steps_key(k, label, items, sel, done),
                     View::Confirm {
@@ -540,8 +548,8 @@ impl App {
             return;
         }
         let dropped = match &mut self.view {
-            View::Compose => append(&mut self.draft, &pasted(s, true)),
-            View::Input { text, .. } => append(text, &pasted(s, false)),
+            View::Compose => put(&mut self.draft, &mut self.cur, &pasted(s, true)),
+            View::Input { text, cur, .. } => put(text, cur, &pasted(s, false)),
             _ => return,
         };
         self.cap_note(dropped);
@@ -734,7 +742,7 @@ impl App {
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
             }
             _ => {
-                let n = edit(&mut self.draft, k, ctrl, true);
+                let n = edit(&mut self.draft, &mut self.cur, k, ctrl, true);
                 self.cap_note(n)
             }
         }
@@ -1099,6 +1107,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::Other,
                     text: String::new(),
+                    cur: 0,
                     back: Box::new(View::Question { sel, scroll: None }),
                 }
             }
@@ -1137,7 +1146,7 @@ impl App {
         }
     }
 
-    fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, back: View) {
+    fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, mut cur: usize, back: View) {
         match k.code {
             KeyCode::Esc => {
                 self.note = None;
@@ -1164,11 +1173,12 @@ impl App {
                     };
                 }
             }
-            _ => self.cap_note(edit(&mut text, k, ctrl, false)),
+            _ => self.cap_note(edit(&mut text, &mut cur, k, ctrl, false)),
         }
         self.view = View::Input {
             kind,
             text,
+            cur,
             back: Box::new(back),
         };
     }
@@ -1200,8 +1210,8 @@ impl App {
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
-                self.draft.clear();
-                let n = append(&mut self.draft, &text);
+                (self.draft, self.cur) = (String::new(), 0);
+                let n = put(&mut self.draft, &mut self.cur, &text);
                 self.cap_note(n);
                 self.run = None;
                 self.view = View::Compose;
@@ -1283,6 +1293,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::Explain,
                     text: String::new(),
+                    cur: 0,
                     back: Box::new(here),
                 }
             }
@@ -1317,6 +1328,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::FollowUp,
                     text: String::new(),
+                    cur: 0,
                     back,
                 };
             }
@@ -1348,34 +1360,92 @@ impl App {
     }
 }
 
-/// The shared text-box keys. `multi` makes Enter a newline. Returns how many
-/// characters the MAX_DRAFT cap turned away.
-fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) -> usize {
-    match k.code {
-        KeyCode::Backspace => {
-            text.pop();
+/// The shared text-box keys, at the cursor `cur`. `multi` makes Enter a
+/// newline. Returns how many characters the MAX_DRAFT cap turned away.
+fn edit(text: &mut String, cur: &mut usize, k: KeyEvent, ctrl: bool, multi: bool) -> usize {
+    let c = boundary(text, *cur);
+    let home = text[..c].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[c..].find('\n').map_or(text.len(), |i| c + i);
+    let at = |i: usize| (i, i);
+    // the cursor goes to `from`, and `from..to` is deleted
+    let (from, to) = match k.code {
+        KeyCode::Left if ctrl => at(word_left(text, c)),
+        KeyCode::Right if ctrl => at(word_right(text, c)),
+        KeyCode::Left => at(prev(text, c)),
+        KeyCode::Right => at(next(text, c)),
+        KeyCode::Home => at(home),
+        KeyCode::Char('a') if ctrl => at(home),
+        KeyCode::End => at(end),
+        KeyCode::Char('e') if ctrl => at(end),
+        KeyCode::Backspace => (prev(text, c), c),
+        KeyCode::Delete => (c, next(text, c)),
+        KeyCode::Char('w') if ctrl => (word_left(text, c), c),
+        // readline's ^U: the whole text before the cursor, not its line
+        KeyCode::Char('u') if ctrl => (0, c),
+        KeyCode::Enter if multi => {
+            *cur = c;
+            return put(text, cur, "\n");
         }
-        KeyCode::Char('w') if ctrl => {
-            let t = text.trim_end_matches(char::is_whitespace).len();
-            // Past the whole separator: U+00A0 and U+3000 are more than one byte.
-            let w = text[..t]
-                .char_indices()
-                .rfind(|(_, c)| c.is_whitespace())
-                .map_or(0, |(i, c)| i + c.len_utf8());
-            text.truncate(w);
+        KeyCode::Char(ch) if !ctrl => {
+            *cur = c;
+            return put(text, cur, ch.encode_utf8(&mut [0; 4]));
         }
-        KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Enter if multi => return append(text, "\n"),
-        KeyCode::Char(c) if !ctrl => return append(text, c.encode_utf8(&mut [0; 4])),
-        _ => {}
-    }
+        _ => at(c),
+    };
+    text.replace_range(from..to, "");
+    *cur = from;
     0
 }
 
-/// Appends what fits under MAX_DRAFT; returns the count left out.
-fn append(text: &mut String, s: &str) -> usize {
+/// `i` moved back onto a char boundary, and into the text.
+pub fn boundary(text: &str, i: usize) -> usize {
+    let mut i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// A combining mark, VS16 or ZWJ: the cursor never stops before one, or it
+/// would split what the terminal draws as one cell or two.
+fn joins(c: char) -> bool {
+    !c.is_control() && c.width() == Some(0)
+}
+
+fn prev(text: &str, i: usize) -> usize {
+    text[..i].char_indices().rev().find(|&(_, c)| !joins(c)).map_or(0, |(j, _)| j)
+}
+
+fn next(text: &str, i: usize) -> usize {
+    let mut it = text[i..].char_indices().skip(1);
+    it.find(|&(_, c)| !joins(c)).map_or(text.len(), |(j, _)| i + j)
+}
+
+/// The start of the word before `i`, past the whitespace in between: U+00A0
+/// and U+3000 are more than one byte, so offsets come from char_indices.
+fn word_left(text: &str, i: usize) -> usize {
+    let t = text[..i].trim_end_matches(char::is_whitespace).len();
+    text[..t]
+        .char_indices()
+        .rfind(|(_, c)| c.is_whitespace())
+        .map_or(0, |(j, c)| j + c.len_utf8())
+}
+
+/// The end of the word after `i`, past the whitespace in between.
+fn word_right(text: &str, i: usize) -> usize {
+    let rest = &text[i..];
+    let w = rest.len() - rest.trim_start_matches(char::is_whitespace).len();
+    rest[w..].find(char::is_whitespace).map_or(text.len(), |j| i + w + j)
+}
+
+/// Inserts at the cursor what fits under MAX_DRAFT, the cursor after it;
+/// returns the count left out.
+fn put(text: &mut String, cur: &mut usize, s: &str) -> usize {
     let room = MAX_DRAFT.saturating_sub(text.chars().count());
-    text.extend(s.chars().take(room));
+    let kept: String = s.chars().take(room).collect();
+    let c = boundary(text, *cur);
+    text.insert_str(c, &kept);
+    *cur = c + kept.len();
     s.chars().count().saturating_sub(room)
 }
 

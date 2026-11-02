@@ -229,6 +229,24 @@ a scrollbar.
 ╰ any key closes ────────────────────────────────────────────────────────╯
 ```
 
+### The panel's text boxes
+
+Compose and the one-line boxes have a cursor, drawn as `▏` (`|` in the ascii
+tier) between two characters and placed by display width, so it sits after a
+wide CJK or emoji character, not inside it.
+
+- `←` `→` move a character, `^←` `^→` a word, `Home` `End` (`^A` `^E`) to the
+  line's start and end, `Del` deletes the character after it. `⌫` and `^W`
+  delete the character and the word before it, and `^U` everything before it,
+  as in readline. Typing and a paste go in at the cursor.
+- A move never stops between a character and a combining mark, a VS16 or a
+  ZWJ after it: offsets are char boundaries, never a byte inside a character.
+- The box keeps the cursor's line on screen; the route lines under it show
+  whenever it leaves room.
+- An empty Compose shows a dim `type what you want…`; it is drawn, never typed.
+- Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
+  or pasted character is turned away and a note says how many.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
