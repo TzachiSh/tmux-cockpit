@@ -8328,7 +8328,7 @@ case "$fqout" in
     *) ok "a dirty non-agent pane is not in the queue" ;;
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly four rows" "3" "$rowcount"
+is "the queue lists exactly three rows" "3" "$rowcount"
 
 # Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
 # one-line files), folded into the same numstat by tree_diff's intent-to-add

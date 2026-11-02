@@ -64,11 +64,11 @@ pub struct Pick {
     pub preview: Option<String>,
 }
 
-/// Characters that draw nothing or reorder what is drawn: the zero-width and
-/// direction marks and the bidi embeddings, overrides and isolates. A row could
-/// otherwise display one name and print another.
+/// Characters that reorder what is drawn: the direction marks and the bidi
+/// embeddings, overrides and isolates. A row could otherwise display one name and
+/// print another. U+200C and U+200D stay: Persian, Indic scripts and emoji need them.
 fn is_bidi(c: char) -> bool {
-    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 /// Untrusted text made safe to draw: a tab is a space; every other control
@@ -106,6 +106,17 @@ pub fn parse_rows(input: &[u8]) -> Vec<Row> {
             })
         })
         .collect()
+}
+
+/// Lines that have a tab but nothing before it: the rows `parse_rows` skips. A
+/// line with no tab at all is its own key, so it is never counted.
+pub fn keyless(input: &[u8]) -> usize {
+    input.split(|&b| b == b'\n').filter(|l| l.first() == Some(&b'\t')).count()
+}
+
+/// The one stderr line for them, or `None` when nothing was skipped.
+pub fn keyless_note(n: usize) -> Option<String> {
+    (n > 0).then(|| format!("cockpit-tui: pick: skipped {n} rows with no key"))
 }
 
 /// At most `cap` bytes, ending on a line boundary so a key is never cut; and
@@ -376,12 +387,12 @@ fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
 
 pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
     if area.width < MIN_W {
-        chrome::floor(f, area, th, "pick", "make the window larger or rotate", "esc or q closes");
+        chrome::floor(f, area, th, "pick", "make the window larger or rotate", "esc closes");
         return;
     }
     if area.height < MIN_H {
         let msg = format!("too short {} make the window larger or rotate", th.g.dot);
-        chrome::floor(f, area, th, "pick", &msg, "esc or q closes");
+        chrome::floor(f, area, th, "pick", &msg, "esc closes");
         return;
     }
     if let Some(top) = p.help {
@@ -520,7 +531,11 @@ pub fn main(args: &[String]) -> i32 {
     };
     let (input, cut) = cap_input(input, MAX_INPUT);
     let rows = parse_rows(&input);
+    let note = keyless_note(keyless(&input));
     if rows.is_empty() {
+        if let Some(n) = note {
+            eprintln!("{n}");
+        }
         return 1;
     }
     let tty = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
@@ -585,5 +600,8 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     restore_tty();
+    if let Some(n) = note {
+        eprintln!("{n}");
+    }
     answer(&mut std::io::stdout().lock(), &out)
 }

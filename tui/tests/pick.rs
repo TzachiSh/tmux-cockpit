@@ -559,10 +559,7 @@ fn prompt_header_and_preview_hold_no_control_character_after_new() {
 
 #[test]
 fn bidi_controls_are_dropped_so_a_name_cannot_lie() {
-    assert_eq!(
-        pick::clean("bidi \u{202e}txt.exe\u{2066}\u{2069}\u{200b}\u{200f}\u{202a}"),
-        "bidi txt.exe"
-    );
+    assert_eq!(pick::clean("bidi \u{202e}txt.exe\u{2066}\u{2069}\u{200f}\u{202a}"), "bidi txt.exe");
     let r = pick::parse_rows("k\tevil\u{202e}gpj.sh".as_bytes());
     assert_eq!(r[0].text, "evilgpj.sh");
 }
@@ -612,4 +609,28 @@ fn the_28x12_footer_keeps_choose_and_cancel() {
     let s = draw(28, 12, &picker("branch", "", None));
     let last = s.lines().rev().find(|l| l.contains("choose")).unwrap_or("");
     assert!(last.contains("choose") && last.contains("cancel"), "{s}");
+}
+
+#[test]
+fn joiners_survive_the_strip_because_persian_and_emoji_need_them() {
+    let s = "می\u{200c}خواهم \u{1f468}\u{200d}\u{1f469}";
+    assert_eq!(pick::clean(s), s);
+}
+
+#[test]
+fn only_lines_with_a_tab_and_no_key_are_counted_as_skipped() {
+    let input = b"\tno key\nplain\nk\tok\n\n\tagain\n\tthird";
+    assert_eq!(pick::parse_rows(input).len(), 2);
+    assert_eq!(pick::keyless(input), 3, "a blank line and a tab-less line are not keyless");
+    assert_eq!(
+        pick::keyless_note(2).as_deref(),
+        Some("cockpit-tui: pick: skipped 2 rows with no key")
+    );
+    assert_eq!(pick::keyless_note(0), None);
+}
+
+#[test]
+fn the_floor_card_names_esc_alone_as_the_way_out() {
+    let s = draw(27, 11, &picker("branch", "", None));
+    assert!(s.contains("esc closes") && !s.contains("or q"), "{s}");
 }

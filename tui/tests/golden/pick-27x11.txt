@@ -1,7 +1,7 @@
 "╭ pick ───────────────────╮"
 "│ make the window larger  │"
 "│ or rotate               │"
-"│ esc or q closes         │"
+"│ esc closes              │"
 "│                         │"
 "│                         │"
 "│                         │"
