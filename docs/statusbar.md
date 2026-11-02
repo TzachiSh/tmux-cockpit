@@ -19,8 +19,9 @@ that file when the plugin loads.
   number is in the accent colour.
 - **`◔NN%` on a tab** once the window's agent has filled 80% of its context
   (`@panestate_ctx`, written by `scripts/agent-context` as Claude Code's
-  `statusLine`). Its cells come out of the tab's label; a compact tab shows the
-  bare `◔`.
+  `statusLine`). It goes on top of the label, and the tab budget takes every
+  gauge's cells off the room the tabs share; a compact tab shows the bare `◔`.
+  A cut label never leaves a space before its `…`.
 - **The top border, at the top-left pane (or the zoomed pane), shows the
   corner:**
   - `≡`, which opens the menu;

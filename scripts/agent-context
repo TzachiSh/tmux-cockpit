@@ -34,9 +34,12 @@ case "$pct" in
     ''|*[!0-9]*) exit 0 ;;
     *)
         # Called every render, and an unchanged set-option still redraws: compare first.
-        # $pane and $pct are validated, safe in a command string.
+        # $pane and $pct are validated, safe in a command string. The session's
+        # gauge cells (the bar's tab budget counts them) are summed here, once per
+        # change, so no redraw walks the windows; written only when the sum moves.
+        cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
         tmux if-shell -F -t "$pane" "#{!=:#{@panestate_ctx},$pct}" \
-            "set-option -p -t $pane @panestate_ctx $pct" 2>/dev/null
+            "set-option -p -t $pane @panestate_ctx $pct ; if-shell -F -t $pane '#{e|!=:$cells,#{@cockpit_ctx_all}}' { set-option -F -t $pane @cockpit_ctx_all '$cells' }" 2>/dev/null
         ;;
 esac
 printf '%s · ctx %s%%\n' "${model:-claude}" "$pct"

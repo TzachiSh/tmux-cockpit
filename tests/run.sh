@@ -10572,10 +10572,10 @@ cw_close "${twpid:-}" "${twf:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
-echo "== the context gauge comes out of the tab's own budget (#103, #222) =="
-# ◔NN% from @panestate_ctx (scripts/agent-context), from 80% on. It takes its
-# cells from the label, so the tab budget and the overflow estimate hold; a
-# compact tab shows the bare ◔.
+echo "== the context gauge adds to its tab, and the budget counts it (#103, #222) =="
+# ◔NN% from @panestate_ctx, written by scripts/agent-context, from 80% on. A
+# label keeps its cap and the gauge goes on top; the others share what is left
+# after every gauge, which agent-context sums into @cockpit_ctx_all.
 if need_tmux "context gauge"; then :; else
 GG="cockpit-gg-$$"; SOCKS="$SOCKS $GG"
 "$TMUX_REAL" -L "$GG" -f /dev/null new-session -d -s s -n t -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
@@ -10585,23 +10585,34 @@ GG="cockpit-gg-$$"; SOCKS="$SOCKS $GG"
 until_out '*claude*claude*' "$TMUX_REAL" -L "$GG" list-panes -a -F '#{pane_current_command}' >/dev/null
 "$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title review-the-ui-audit-ladder >/dev/null 2>&1
 "$TMUX_REAL" -L "$GG" set -p -t s:u @cockpit_title second-window-with-a-long-name >/dev/null 2>&1
+ggctx() {                     # <window> <percent>: the statusLine payload, as Claude sends it
+    printf '{"context_window":{"used_percentage":%s},"model":{"display_name":"m"}}' "$2" \
+        | TMUX="$SOCKDIR/$GG,0,0" TMUX_PANE="$("$TMUX_REAL" -L "$GG" display-message -p -t "s:$1" '#{pane_id}')" \
+          "$DIR/scripts/agent-context" >/dev/null 2>&1
+}
 read -r ggc ggf ggpid <<<"$(cw_open "$GG" s)"
 if [ -z "${ggc:-}" ]; then skip_ "the context gauge (no control client)"; else
 ggcur() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:t '#{E:window-status-current-format}' | plain; }
 ggoth() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:u '#{E:window-status-format}' | plain; }
 cw_size "$GG" "$ggc" 160
-"$TMUX_REAL" -L "$GG" set -p -t s:t @panestate_ctx 79 >/dev/null 2>&1
+ggctx t 79
 is "under 80% there is no gauge" " 0 review-the-ui-audit-ladder " "$(ggcur)"
-"$TMUX_REAL" -L "$GG" set -p -t s:t @panestate_ctx 91 >/dev/null 2>&1
-"$TMUX_REAL" -L "$GG" set -p -t s:u @panestate_ctx 100 >/dev/null 2>&1
-# 160 columns, two windows: both tabs are capped at 28 cells; the gauge's width
-# comes off the label.
-is "from 80% the current tab shows it, its label shortened by the gauge's width" \
-   " 0 review-the-ui-audit-lad… ◔91% " "$(ggcur)"
-is "and another tab too, inside its own budget" " 1 second-window-with-a-l… ◔100% " "$(ggoth)"
+ggctx t 91; ggctx u 100
+is "from 80% the gauge goes on top of a label that keeps its cap" \
+   " 0 review-the-ui-audit-ladder ◔91% " "$(ggcur)"
+is "and on another tab" " 1 second-window-with-a-long-na… ◔100% " "$(ggoth)"
+is "agent-context sums the session's gauge cells" "11" \
+   "$("$TMUX_REAL" -L "$GG" show-option -qv -t s: @cockpit_ctx_all)"
+cw_size "$GG" "$ggc" 80
+is "and the tab budget takes them off the room" "61" \
+   "$("$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" '#{E:@cockpit_tab_room}')"
 for ggn in $(seq 3 9); do "$TMUX_REAL" -L "$GG" new-window -d -t s: 'exec -a claude sleep 300' >/dev/null 2>&1; done
 cw_size "$GG" "$ggc" 56
 is "a compact tab shows the bare ◔" " 1 ◔ " "$(ggoth)"
+# A cut that lands after a word leaves no space before the …: 12 cells of
+# "abcdefghijk lmno..." are "abcdefghijk ".
+"$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title "abcdefghijk lmnopqrstuvwxyz" >/dev/null 2>&1
+is "a cut on a word boundary drops the space before the …" " 0 abcdefghijk… ◔91% " "$(ggcur)"
 fi
 cw_close "${ggpid:-}" "${ggf:-}"
 "$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
