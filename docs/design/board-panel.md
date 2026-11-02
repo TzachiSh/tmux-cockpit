@@ -763,6 +763,10 @@ frame title names the screen (tablet.md 10.1, pc.md 12.2).
 - One floor card: `make the window larger or rotate`. pc's list adds a
   `too short` message for under 8 rows instead of today's wrong "too narrow".
 - `▎` means the selection on both screens.
+- On a text-entry screen (the panel's Compose, the find field, #228's picker)
+  every printable key is text. There `esc` and `^C` replace `q`, and `F1`
+  replaces `?`, until open question 18 adds a second help key that every
+  text-entry screen takes. ⟦rev2: P9⟧
 - The help label is `? keys` on both screens. pc.md kept `? help` on the board;
   tablet.md's single label wins because the audit lists the mismatch as a
   problem.
