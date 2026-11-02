@@ -11581,6 +11581,16 @@ case "$(kv_run "kill $V" vic-two)" in '✕ cockpit: not killed: the window is no
     *) bad ".expect naming another window refuses, with a ✕ note naming both" "✕ ... is now \"renamed-since\", you confirmed \"vic-two\"" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and the renamed window survives" "alive" "$(kv_alive "$V")"
 
+# What the board's write_expect leaves: one line, control characters dropped, up
+# to 1024 bytes. A long name and a name holding a tab must still match.
+LONGN=$(printf 'n%.0s' $(seq 1 900))
+V=$(kv_win "$LONGN")
+kv_run "kill $V" "$LONGN" >/dev/null
+is "a 900-byte window name is matched whole, not cut at the reader" "gone" "$(kv_alive "$V")"
+V=$(kv_win "tab"$'\t'"bed")
+kv_run "kill $V" "tabbed" >/dev/null
+is "a window name holding a control character matches the board's cleaned copy" "gone" "$(kv_alive "$V")"
+V=$(kv_win vic-two)
 case "$(kv_run "kill $V")" in '✕ cockpit: not killed: the board named no window'*) ok "kill %N with no .expect refuses" ;;
     *) bad "kill %N with no .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and the window survives" "alive" "$(kv_alive "$V")"

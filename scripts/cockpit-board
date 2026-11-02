@@ -107,8 +107,10 @@ while :; do
         # agreed to lose, so it is refused, and the board comes back with a ✕.
         kill)
             want=
-            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 256 -- "$f.expect" 2>/dev/null | head -n 1)
-            have=$(tmux display-message -p -t "$target" '#{?pane_id,#{window_name},}' 2>/dev/null)
+            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 1100 -- "$f.expect" 2>/dev/null | head -n 1)
+            # The board drops control characters from what it writes (up to 1024
+            # bytes, one line), so the name tmux holds is cleaned the same way.
+            have=$(tmux display-message -p -t "$target" '#{?pane_id,#{window_name},}' 2>/dev/null | head -n 1 | tr -d '\000-\037\177')
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
             elif [ -z "$want" ]; then
