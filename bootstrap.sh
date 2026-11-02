@@ -330,6 +330,44 @@ if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
     fi
 fi
 
+# --------------------------------------------------------------- revdiff ----
+# Required: prefix r spawns it. Pinned like fzf; a copy at or above the pin
+# anywhere on PATH (brew, go install) is left alone. "unknown" is a go install
+# build: present, so not replaced.
+REVDIFF=1.13.0
+step "revdiff"
+rv_have=$(revdiff --version 2>/dev/null); rv_have=${rv_have#version: }; rv_have=${rv_have%% *}
+BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
+if [ "$rv_have" = unknown ] || { [ -n "$rv_have" ] && ver_ge "$rv_have" 1 13; }; then
+    note "revdiff $rv_have already present"
+elif [ "$(uname -s)" = Darwin ] && have brew; then
+    if ask "install revdiff with brew?" y; then
+        run "brew install umputun/apps/revdiff" brew install umputun/apps/revdiff
+    else skipped+=("revdiff"); fi
+else
+    case "$(uname -s)/$(uname -m)" in
+        Linux/x86_64|Linux/amd64)    rv_os=linux_amd64 ;;
+        Linux/aarch64|Linux/arm64)   rv_os=linux_arm64 ;;
+        Darwin/x86_64)               rv_os=darwin_amd64 ;;
+        Darwin/arm64|Darwin/aarch64) rv_os=darwin_arm64 ;;
+        *) rv_os='' ;;
+    esac
+    if [ -z "$rv_os" ]; then
+        note "no prebuilt revdiff for $(uname -s)/$(uname -m);" \
+             "go install github.com/umputun/revdiff/app@v$REVDIFF"
+        skipped+=("revdiff: no prebuilt binary")
+    elif ! have curl; then
+        note "curl is missing; revdiff not fetched"
+        skipped+=("revdiff: no curl")
+    elif ask "fetch revdiff $REVDIFF into $BIN?" y; then
+        rv_rel="${COCKPIT_GITHUB:-https://github.com}/umputun/revdiff/releases/download/v$REVDIFF"
+        fetch_tool revdiff "$REVDIFF" "" "$rv_rel/revdiff_${REVDIFF}_$rv_os.tar.gz" \
+            "$rv_rel/revdiff_${REVDIFF}_checksums.txt" revdiff || failed+=("fetch revdiff")
+    else
+        skipped+=("revdiff")
+    fi
+fi
+
 # ------------------------------------------------------------------ hooks ----
 step "Claude Code hooks"
 if [ ! -d "$HOME/.claude" ] && ! have claude; then

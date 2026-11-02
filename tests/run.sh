@@ -2395,6 +2395,7 @@ printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim fzf "0.74.3 (15f64c49)" "$DSH"
 dshim bat "bat 0.26.1 (a3c4)" "$DSH"
+dshim revdiff "version: 1.13.0" "$DSH"
 dshim fzf "0.44.1 (debian)" "$DOLD"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
 # PATH" is the absence itself rather than a shim standing in for it.
@@ -2460,7 +2461,7 @@ $DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
 is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
 $DCS kill-server >/dev/null 2>&1
 # bat is the optional tool left, and a PATH without it is a warn row.
-mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"
+mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"; dshim revdiff "version: 1.13.0" "$DC/nobat"
 dcout=$(dc "$DBIN:$DC/nobat:$SHIM:$DNO"); dcrc=$?
 is "a missing optional tool is a warn row" "1" "$(dcrow "$dcout" "warn bat")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
@@ -2582,6 +2583,13 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         chmod +x "$BS/pack/bat-v0.26.1-$a/bat"
         ( cd "$BS/pack" && tar -czf "$d/bat-v0.26.1-$a.tar.gz" "bat-v0.26.1-$a" )
     done
+    # revdiff is fetched on every run, so a release tree without it would fail them all.
+    d="$REL/umputun/revdiff/releases/download/v1.13.0"; mkdir -p "$d"
+    printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$BS/pack/revdiff"; chmod +x "$BS/pack/revdiff"
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        ( cd "$BS/pack" && tar -czf "$d/revdiff_1.13.0_$a.tar.gz" revdiff )
+    done
+    ( cd "$d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
     case "${1:-}" in
         flip) awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
                   "$f/fzf_0.74.3_checksums.txt" > "$f/s2" &&
@@ -12346,6 +12354,82 @@ is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
+
+echo "== revdiff: the doctor grades it and bootstrap.sh fetches it, verified =="
+# Fake box and a file:// release host: no network, no real HOME, no live tmux.
+if ! command -v curl >/dev/null 2>&1; then skip_ "revdiff install (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "revdiff install (no sha256sum)"
+elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff install (no jq)"; else
+RV=$(mktmpd)
+RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/rel"; RVD="$RVREL/umputun/revdiff/releases/download/v1.13.0"
+mkdir -p "$RVH/.tmux/plugins" "$RVB" "$RV/new" "$RV/old" "$RV/unk" "$RV/none" "$RV/tmuxtmp" "$RVD" "$RV/pack"
+for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do mkdir -p "$RVH/.tmux/plugins/$d/.git"; done
+rvshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
+rvshim revdiff "version: 1.13.0" "$RV/new"; rvshim revdiff "version: 1.12.9" "$RV/old"
+rvshim revdiff "unknown" "$RV/unk"
+for d in new old unk none; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
+rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
+    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
+        PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
+}
+rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; }
+out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out")"
+out=$(rvdc "$RV/old"); rc=$?
+is "revdiff below the pin is a fail row" "fail" "$(rvrow "$out")"
+is "and the doctor exits 2" "2" "$rc"
+out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
+out=$(rvdc "$RV/none"); rc=$?
+is "a missing revdiff is a fail row" "fail" "$(rvrow "$out")"
+is "and its fix names the brew route" "1" "$(printf '%s\n' "$out" | grep -c 'brew install umputun/apps/revdiff')"
+is "and the go route" "1" "$(printf '%s\n' "$out" | grep -c 'go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff)')"
+is "and the doctor exits 2 for it" "2" "$rc"
+
+# One tarball per published name; the checksums file lists them as upstream does.
+rvrel() {                     # rvrel [flip]
+    local a
+    rm -f "$RVD"/*; printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$RV/pack/revdiff"; chmod +x "$RV/pack/revdiff"
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        ( cd "$RV/pack" && tar -czf "$RVD/revdiff_1.13.0_$a.tar.gz" revdiff )
+    done
+    ( cd "$RVD" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
+    if [ "${1:-}" = flip ]; then
+        awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
+            "$RVD/revdiff_1.13.0_checksums.txt" > "$RV/s2" &&
+            mv "$RV/s2" "$RVD/revdiff_1.13.0_checksums.txt"
+    fi
+}
+rvbs() {                      # rvbs <extra PATH dir> <args...> -- bootstrap.sh on the fake box
+    local p=$1; shift
+    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" XDG_CONFIG_HOME="$RVH/.config" \
+        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="file://$RVREL" \
+        PATH="$p:$SHIM:/usr/bin:/bin" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
+}
+rvrel
+out=$(rvbs "$RV/none" --dry-run); rc=$?
+is "--dry-run says it would fetch revdiff" "1" "$(printf '%s\n' "$out" | grep -c 'would: fetch revdiff 1.13.0')"
+is "and writes nothing into \$BIN" "" "$(ls -A "$RVB")"
+out=$(rvbs "$RV/none"); rc=$?
+is "bootstrap installs revdiff into \$BIN" "version: 1.13.0" "$("$RVB/revdiff" --version 2>/dev/null)"
+is "and exits 0" "0" "$rc"
+rm -f "$RVB/revdiff"
+out=$(rvbs "$RV/new"); rc=$?
+is "a revdiff at the pin on PATH is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/unk")
+is "an unknown-version revdiff is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/old")
+is "one below the pin is fetched" "present" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+rm -f "$RVB/revdiff"
+rvrel flip
+out=$(rvbs "$RV/none"); rc=$?
+is "a checksum mismatch installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+is "and says so on one line" "1" "$(printf '%s\n' "$out" | grep -c 'FAIL:  revdiff checksum mismatch -- NOT installed')"
+is "and the run exits 1" "1" "$rc"
+rm -rf "$RVD"; mkdir -p "$RVD"
+out=$(rvbs "$RV/none"); rc=$?
+is "offline (no release host) installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+is "and says so on one line" "1" "$(printf '%s\n' "$out" | grep -c 'FAIL:  revdiff checksums unreachable')"
+rm -rf "$RV"
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
