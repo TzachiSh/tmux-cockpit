@@ -1921,7 +1921,7 @@ pub static EXTRAS: &[Extra] = &[
     Extra {
         key: 'R',
         label: "request",
-        help: "request a review from it",
+        help: "review it and hand the review to its agent",
         verb: "request",
         confirm: None,
         expect: None,

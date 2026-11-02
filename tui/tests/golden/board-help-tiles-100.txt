@@ -15,7 +15,7 @@
 "│ f         panel for this pane                                                                    │"
 "│ i         info for this pane                                                                     │"
 "│ x         kill its window, after a confirm                                                       │"
-"│ R         request a review from it                                                               │"
+"│ R         review it and hand the review to its agent                                             │"
 "│                                                                                                  │"
 "│ view                                                                                             │"
 "│ ?         this help                                                                              │"
