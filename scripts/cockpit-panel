@@ -31,6 +31,8 @@ said() {                      # <ok|fail> <text> <display-message argv...>
     local how=$1 text=$2; shift 2
     if [ -n "${COCKPIT_PANEL_NOTE:-}" ]; then
         [ "$how" = ok ] || text="✕ $text"
+        # One line: a newline in, say, a pane's command would make the board refuse it.
+        text=$(printf '%s' "$text" | LC_ALL=C tr '\000-\037\177' ' ')
         printf '%s\n' "$text" > "$COCKPIT_PANEL_NOTE" 2>/dev/null
     else
         tmux "$@" "$text" 2>/dev/null

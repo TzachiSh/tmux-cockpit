@@ -165,8 +165,13 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         return;
     }
     if v.panes.is_empty() {
-        let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+        // no key bar here, but a note still has to be seen: a ✕ one takes the next esc
+        let foot = u16::from(v.note.is_some());
+        let [head, body, row] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(foot)]).areas(area);
         header(f, head, v, &grid(area, 0), 0);
+        if let Some(n) = v.note {
+            f.render_widget(note_line(v.th, n, row.width as usize), row);
+        }
         // the empty card's border would peek out from under the lost one
         if !v.lost {
             empty(f, body, v.th);
@@ -1403,7 +1408,8 @@ pub fn run(o: &Opts) -> Option<String> {
     }
     ratatui::restore();
     // the selection the next board opens on, this trip's or the next prefix w's
-    if let (Some(p), false) = (&path, crate::data::readonly() || panes.is_empty()) {
+    // a quit before a good read placed the selection would save row 0 over the kept one
+    if let (Some(p), false) = (&path, crate::data::readonly() || panes.is_empty() || want.is_some()) {
         let id = panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone();
         if let Err(e) = write_state(p, &Saved { sel: Some(id) }) {
             eprintln!("cockpit-tui: cannot write {}: {e}", p.display());

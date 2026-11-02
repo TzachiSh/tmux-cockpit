@@ -11133,6 +11133,11 @@ is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
    "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
+# From the board the refusal is its note, which must stay one line: the board
+# refuses a two-line note, and a pane's command can carry a newline.
+: > "$PND/note"; COCKPIT_PANEL_NOTE="$PND/note" pact 'send %5' hi '' claude $'zsh\nevil' >/dev/null
+is "a refusal from the board is one ✕ line in the note, never a status message" \
+   "1 ✕ cockpit: the pane now runs zsh evil, not claude; nothing sent" "$(wc -l < "$PND/note" | tr -d ' ') $(cat "$PND/note")"
 rm -f "$PND/caps"; pact 'send %5' hi >/dev/null
 is "send waits for the paste to show before Enter: one capture before, one after" "2" "$(wc -l < "$PND/caps" | tr -d ' ')"
 rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"

@@ -1310,6 +1310,10 @@ fn note_goldens() {
     v.note = Some("✕ cockpit: the pane now runs bash, not claude; nothing sent to %21");
     let out = draw(100, 30, |f| board::render(f, f.area(), &v));
     golden("board-note-fail-100", &out);
+    // with no tiles there is no key bar, but the note that takes esc still shows
+    let out = draw(100, 30, |f| board::render(f, f.area(), &board::View { panes: &[], pvs: &[], ..v }));
+    assert!(out.contains("no agent panes"), "{out}");
+    assert!(rows(&out)[29].contains("nothing sent to %21 · esc dismiss"), "{out}");
     // the way out survives a cut at 60 columns
     let out = draw(60, 24, |f| board::render(f, f.area(), &v));
     assert!(rows(&out)[23].trim_end().ends_with("· esc dismiss"), "{out}");
