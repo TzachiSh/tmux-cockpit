@@ -2455,6 +2455,29 @@ fn a_resumed_panel_guards_its_first_view_for_longer() {
     assert!(matches!(c.view, View::Confirm { .. }));
 }
 
+/// Only the resumed panel's first view guards for longer: its second view, a
+/// Confirm, drops a tap under the usual 300 ms like any other new view.
+#[test]
+fn a_resumed_panels_second_view_drops_a_tap_under_300_ms() {
+    use cockpit_tui::panel::app::{RESUME_GUARD_MS, TAP_GUARD_MS};
+    let mut a = tablet(stepped());
+    ch(&mut a, 'i');
+    let mut b = tablet(app("w", "bash", "$ "));
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    b.frame(0);
+    b.tap(k('s'), RESUME_GUARD_MS);
+    assert!(matches!(b.view, View::Confirm { .. }));
+    let second = RESUME_GUARD_MS + 10;
+    b.frame(second);
+    b.tap(k('y'), second + TAP_GUARD_MS - 1);
+    assert!(
+        matches!(b.view, View::Confirm { .. }) && b.action.is_none(),
+        "a tap under 300 ms is dropped"
+    );
+    b.tap(k('y'), second + TAP_GUARD_MS);
+    assert!(b.action.is_some(), "at 300 ms it acts");
+}
+
 #[test]
 fn the_wheel_scrolls_and_never_touches_a_box() {
     let mut a = tablet(long_answer(60));
