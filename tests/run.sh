@@ -3123,7 +3123,7 @@ esac
 "$TMUX_REAL" -L "$BB" kill-server >/dev/null 2>&1
 fi
 
-echo "== the bar's taps act on release: ≡ opens the menu, ‹ steps back, the name replays prefix s (#222) =="
+echo "== the bar's taps act on release: ≡ opens the menu, the name the picker, ‹ steps back (#222) =="
 # A menu opened on the press is closed by that press's own release, so every
 # cockpit tap is a MouseUp binding. Real clicks into an attached 56-column
 # client (touch, auto): the corner reads "──  ≡  ─  <name> ...", so ≡ is
@@ -3151,12 +3151,14 @@ tap 2 30
 until_out 1 "$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}' >/dev/null
 is "tapping ‹ steps to the previous window" "1" \
    "$("$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}')"
-# The name replays the sessions key (prefix s, whose popup its own block tests).
-case "$("$TMUX_REAL" -L "$TI" list-keys -T root | grep MouseUp1Control0)" in
-    *"switch-client -T prefix"*"send-keys -K s"*) ok "the session name replays the sessions key" ;;
-    *) bad "the session name replays the sessions key" "switch-client -T prefix ; send-keys -K s" \
-         "$("$TMUX_REAL" -L "$TI" list-keys -T root | grep MouseUp1Control0)" ;;
-esac
+if command -v fzf >/dev/null 2>&1; then
+    tap 12 1
+    # tm marks your own session ‹here› below 60 columns.
+    if until_cap "$TO" o '*session>*‹here›*'; then ok "tapping the session name opens the session picker"
+    else bad "tapping the session name opens the session picker" "tm's prompt and the ‹here› row" "$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | head -5)"; fi
+else
+    skip_ "tapping the session name opens the session picker (no fzf)"
+fi
 "$TMUX_REAL" -L "$TO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
 fi
@@ -10603,6 +10605,24 @@ is "a compact tab shows the bare ◔" " 1 ◔ " "$(ggoth)"
 fi
 cw_close "${ggpid:-}" "${ggf:-}"
 "$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
+fi
+
+echo "== the menu's ≡ follows @cockpit_icons; the state glyphs never do (#222) =="
+if need_tmux "menu icon tiers"; then :; else
+IC="cockpit-ic-$$"; SOCKS="$SOCKS $IC"
+"$TMUX_REAL" -L "$IC" -f /dev/null new-session -d -s s -x 120 -y 30 >/dev/null 2>&1
+"$TMUX_REAL" -L "$IC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+icm() { "$TMUX_REAL" -L "$IC" set -g @cockpit_icons "$1" >/dev/null 2>&1
+        "$TMUX_REAL" -L "$IC" display-message -p '#{E:@cockpit_i_menu}'; }
+is "unicode (unset) draws ≡" "≡" "$(icm '')"
+is "ascii draws =" "=" "$(icm ascii)"
+is "nerd draws U+F0C9" "$(printf '\357\203\211')" "$(icm nerd)"
+is "and the nerd branch icon is U+E0A0" "$(printf '\356\202\240') " \
+   "$("$TMUX_REAL" -L "$IC" display-message -p '#{E:@cockpit_i_branch}')"
+"$TMUX_REAL" -L "$IC" set -w -t s: @cockpit_win_state needs-input >/dev/null 2>&1
+is "and the ▲ stays a ▲ in the ascii tier" " #[fg=themered]▲" \
+   "$("$TMUX_REAL" -L "$IC" set -g @cockpit_icons ascii \; display-message -p -t s: '#{E:@cockpit_marks}')"
+"$TMUX_REAL" -L "$IC" kill-server >/dev/null 2>&1
 fi
 
 echo "== the menu's What is each agent doing? lists every pane with its state (#125, #222) =="

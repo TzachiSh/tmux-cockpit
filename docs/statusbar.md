@@ -46,14 +46,15 @@ The layout is the same on every device. A touch client
 
 ## Options
 
-Set these before the plugin's `run-shell` line. They are read when the plugin
-loads.
+Set these before the plugin's `run-shell` line. `@cockpit_statusbar` and
+`@cockpit_menu_key` are read when the plugin loads; `@cockpit_touch` and
+`@cockpit_icons` are read on every redraw, so a change shows at once.
 
 | option | values |
 |---|---|
 | `@cockpit_statusbar` | `off` leaves your status line and borders alone |
 | `@cockpit_touch` | `on`, `off`, or unset (auto: under 100 columns) |
-| `@cockpit_icons` | the branch icon: `nerd`, `ascii` (`git:`), or unset (`⎇`) |
+| `@cockpit_icons` | the menu and branch icons: unset `≡` `⎇`, `ascii` `=` `git:`, `nerd` U+F0C9 U+E0A0. The state glyphs are the same in every tier: the shape carries the state |
 | `@cockpit_menu_key` | the menu's key, `a` by default; `off` binds none |
 
 ## Colours
