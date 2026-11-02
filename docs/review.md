@@ -80,9 +80,9 @@ have already been through.
 where the agent finishes: it sets `@cockpit_review = pending` when the pane's
 tree still differs from its review base. The mark clears when the agent starts
 working again, when that diff goes empty at a later `Stop`, or when you approve
-with `^A`. The same step recounts `◆N` in `#{agent_fleet}`, so the status bar
-tells you how many finished agents nobody has read across every session,
-attached or not. Nothing polls, and a redraw still runs no shell.
+with `^A`. The same step marks the window's tab with `◆` and recounts `◆N` in
+`#{E:@cockpit_fleet}`, which tells you how many finished agents nobody has read
+across every session, attached or not. Nothing polls, and a redraw still runs no shell.
 
 `tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
 to drive the same list from a script.

@@ -4,11 +4,11 @@
 set -u
 
 RIG_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO=${REPO:-/home/tzachi/.tmux/plugins/tmux-cockpit}
+REPO=${REPO:-$(cd -P "$RIG_DIR/../.." && pwd)}
 
 # ---------------------------------------------------------------- format text
-# The shipped formats, lifted verbatim from examples/tmux.conf +
-# examples/full.tmux.conf so we measure what users actually run.
+# V1-V6 are the pre-#222 example config's elements, one at a time, on the role
+# palette; V7 is the plugin's own bar (scripts/lib/statusbar.conf), what users run.
 
 GLOB='|claude|codex|aider|cursor|opencode|gemini|crush|'
 
@@ -16,27 +16,27 @@ GLOB='|claude|codex|aider|cursor|opencode|gemini|crush|'
 # is actually running an agent
 GUARD='#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},}'
 
-BORDER_STYLE="fg=#{?#{==:${GUARD},needs-input},#{@thm_red},#{?#{==:${GUARD},error},#{@thm_peach},#{?#{==:${GUARD},running},#{@thm_yellow},#{?#{==:${GUARD},done},#{@thm_green},#{@thm_overlay_0}}}}}"
+BORDER_STYLE="fg=#{?#{==:${GUARD},needs-input},#{@thm_needs},#{?#{==:${GUARD},error},#{@thm_error},#{?#{==:${GUARD},running},#{@thm_running},#{?#{==:${GUARD},done},#{@thm_done},#{@thm_dim}}}}}"
 
 # the aggregate cross-window banner: a #{S:#{W:#{P:}}} walk of the whole server
 BANNER_WALK='#{S:#{W:#{?window_active,,#{?#{m:*needs-input*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},#{window_index}:#{window_name} ,}}}}'
-BORDER_FORMAT="#{?#{&&:#{pane_active},#{!=:${BANNER_WALK},}},#[fg=#{@thm_red}]#[bold]─ NEEDS YOU ${BANNER_WALK}#[default],#{?pane_active,,#{?#{==:${GUARD},needs-input},#[fg=#{@thm_red}]#[bold]─ NEEDS YOU #{=/48/…:#{@panestate_msg}}#[default],#{?#{==:${GUARD},error},#[fg=#{@thm_peach}]#[bold]─ ERROR #[default],}}}}#{?#{mouse},#[align=right]#{?#{e|>:#{window_panes},1},#[range=control|8][#{?#{window_zoomed_flag},u,z}]#[norange],}#[range=control|9][x]#[norange],}"
+BORDER_FORMAT="#{?#{&&:#{pane_active},#{!=:${BANNER_WALK},}},#[fg=#{@thm_needs}]#[bold]─ NEEDS YOU ${BANNER_WALK}#[default],#{?pane_active,,#{?#{==:${GUARD},needs-input},#[fg=#{@thm_needs}]#[bold]─ NEEDS YOU #{=/48/…:#{@panestate_msg}}#[default],#{?#{==:${GUARD},error},#[fg=#{@thm_error}]#[bold]─ ERROR #[default],}}}}#{?#{mouse},#[align=right]#{?#{e|>:#{window_panes},1},#[range=control|8][#{?#{window_zoomed_flag},u,z}]#[norange],}#[range=control|9][x]#[norange],}"
 
 # the same format with the banner removed -- the per-pane half only
-BORDER_FORMAT_NOBANNER="#{?pane_active,,#{?#{==:${GUARD},needs-input},#[fg=#{@thm_red}]#[bold]─ NEEDS YOU #{=/48/…:#{@panestate_msg}}#[default],#{?#{==:${GUARD},error},#[fg=#{@thm_peach}]#[bold]─ ERROR #[default],}}}#{?#{mouse},#[align=right]#{?#{e|>:#{window_panes},1},#[range=control|8][#{?#{window_zoomed_flag},u,z}]#[norange],}#[range=control|9][x]#[norange],}"
+BORDER_FORMAT_NOBANNER="#{?pane_active,,#{?#{==:${GUARD},needs-input},#[fg=#{@thm_needs}]#[bold]─ NEEDS YOU #{=/48/…:#{@panestate_msg}}#[default],#{?#{==:${GUARD},error},#[fg=#{@thm_error}]#[bold]─ ERROR #[default],}}}#{?#{mouse},#[align=right]#{?#{e|>:#{window_panes},1},#[range=control|8][#{?#{window_zoomed_flag},u,z}]#[norange],}#[range=control|9][x]#[norange],}"
 
 # window tab: five #{P:} walks over the window's own panes
 _dot() { printf '#{?#{m:*%s*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{@panestate},} }},#[fg=#{@thm_%s}]%s,' "$1" "$2" "$3"; }
 TAB_TEXT=" #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},#{?#{==:#{pane_title},#{host_short}},#W,#{=/16/…:#{s/^✳ //:#{pane_title}}}},#W} "
-TAB_TEXT+="$(_dot needs-input red ▲)$(_dot error peach ✕)$(_dot running yellow ●)$(_dot done green ✓)"
-TAB_TEXT+='#{?#{m:*A*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},A,}}},#[fg=#{@thm_overlay_0}]○,}}}}}'
+TAB_TEXT+="$(_dot needs-input needs ▲)$(_dot error error ✕)$(_dot running running ●)$(_dot done done ✓)"
+TAB_TEXT+='#{?#{m:*A*,#{P:#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},A,}}},#[fg=#{@thm_dim}]○,}}}}}'
 TAB_TEXT+='#{?#{e|>=:#{@panestate_ctx},80},#[fg=colour208] ◔#{@panestate_ctx}%,}'
 
 # fleet counter: FOUR full server walks per expansion (each count appears twice)
 _cnt() { printf '#{n:#{S:#{W:#{P:#{?#{==:#{@panestate},%s},#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},x,},}}}}}' "$1"; }
-FLEET="#{?#{e|>:$(_cnt needs-input),0},#[fg=#{@thm_red}#,bold]▲$(_cnt needs-input)#[default] ,}#{?#{e|>:$(_cnt error),0},#[fg=#{@thm_peach}]✕$(_cnt error)#[default] ,}"
+FLEET="#{?#{e|>:$(_cnt needs-input),0},#[fg=#{@thm_needs}#,bold]▲$(_cnt needs-input)#[default] ,}#{?#{e|>:$(_cnt error),0},#[fg=#{@thm_error}]✕$(_cnt error)#[default] ,}"
 
-TINT_STYLE="bg=#{?#{==:${GUARD},needs-input},#{@cockpit_blocked_bg},default}"
+TINT_STYLE="bg=#{?#{==:${GUARD},needs-input},#52303a,default}"
 
 # The two #() shell tokens cockpit.tmux interpolates into status-right. These
 # are the only part of the shipped config that spawns a process on redraw.
@@ -59,9 +59,9 @@ rig_start() {           # rig_start <sockname>
         set -g history-limit "${HISTLIMIT:-50000}" \; \
         set -g mouse on \; \
         set -g @cockpit_agents_glob "$GLOB" \; \
-        set -g @thm_red '#ff6b6b' \; set -g @thm_peach '#ff9838' \; \
-        set -g @thm_yellow '#ffcc33' \; set -g @thm_green '#3dea7d' \; \
-        set -g @thm_overlay_0 '#5b6272' \; set -g @cockpit_blocked_bg '#52303a' \; \
+        set -g @thm_needs '#ff5f6d' \; set -g @thm_error '#ff9e3d' \; \
+        set -g @thm_running '#e6c84f' \; set -g @thm_done '#5fd38d' \; \
+        set -g @thm_dim '#9097a3' \; \
         set -g status-left '' \; set -g status-right '' \; \
         set -g window-status-format '#W' \; set -g window-status-current-format '#W'
 }
@@ -182,11 +182,11 @@ apply_variant() {       # apply_variant <name>
         srv set -g pane-border-format "$BORDER_FORMAT" ;;
     V4) srv set -g window-status-format "$TAB_TEXT"
         srv set -g window-status-current-format "$TAB_TEXT" ;;
-    V5) srv set -g status-right "$FLEET" ;;
+    V5) srv set -g status-right '#{E:@cockpit_fleet}'; seed_sums ;;
     V6) srv set -g window-style "$TINT_STYLE"
         srv set -g window-active-style 'bg=default' ;;
-    V7) apply_variant V1; apply_variant V3; apply_variant V4
-        apply_variant V5; apply_variant V6 ;;
+    V7) srv set -g @cockpit_where_cmd "'$REPO/scripts/tmux-where'"
+        srv source-file "$REPO/scripts/lib/statusbar.conf"; seed_sums ;;
     V8) srv set -g status-right "$SHELL_TOKENS" ;;
     V9) apply_variant V7; srv set -ag status-right "$SHELL_TOKENS" ;;
     esac
@@ -199,12 +199,18 @@ variant_desc() {
     V2) echo 'pane-border-format, banner REMOVED' ;;
     V3) echo 'pane-border-format WITH banner' ;;
     V4) echo 'window tabs (5x #{P:} walks)' ;;
-    V5) echo 'status-right #{agent_fleet}' ;;
+    V5) echo 'status-right #{E:@cockpit_fleet}' ;;
     V6) echo 'window-style tint' ;;
-    V7) echo 'FULL shipped config' ;;
+    V7) echo 'the plugin bar (statusbar.conf)' ;;
     V8) echo 'status-right #() shell tokens' ;;
     V9) echo 'FULL + #() shell tokens' ;;
     esac
+}
+
+# The precomputed options the bar reads, as agent-state writes them after the
+# states rig_states set by hand.
+seed_sums() {
+    TMUX="$(srv display-message -p '#{socket_path}'),0,0" "$REPO/scripts/agent-state" sweep
 }
 
 # Back to a bare server, so variants measured on one shape cannot contaminate
@@ -217,6 +223,7 @@ reset_variant() {
     srv set -g window-status-format '#W'
     srv set -g window-status-current-format '#W'
     srv set -g status-right ''
+    srv set -g status-left ''
     srv set -gu window-style
     srv set -gu window-active-style
 }

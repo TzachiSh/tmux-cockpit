@@ -137,15 +137,13 @@ else
 fi
 
 # ---------------------------------------------------------------- plugins ----
-# dir:repo -- catppuccin lands in "tmux" because the example config sources
-# ~/.tmux/plugins/tmux/catppuccin_*.conf by that path.
+# dir:repo, cloned into $PLUGINS/<dir>.
 TPM_PLUGINS=(
     "tpm:https://github.com/tmux-plugins/tpm"
     "tmux-sensible:https://github.com/tmux-plugins/tmux-sensible"
     "tmux-yank:https://github.com/tmux-plugins/tmux-yank"
     "tmux-resurrect:https://github.com/tmux-plugins/tmux-resurrect"
     "tmux-continuum:https://github.com/tmux-plugins/tmux-continuum"
-    "tmux:https://github.com/catppuccin/tmux"
 )
 
 step "tmux plugins"

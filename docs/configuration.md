@@ -4,9 +4,9 @@
 
 | key | does |
 |-----|------|
-| click the branch segment | branch picker |
+| tap the branch on the border | branch picker |
 | `prefix + b` | the same picker, without the mouse |
-| `prefix + a` | the agents menu: every row below, one letter each, no Shift — `@cockpit_ai_key` rebinds, `off` disables |
+| `prefix + a` | the menu: every cockpit and window action, one letter each, no Shift; `≡` on the border opens it too — `@cockpit_menu_key` rebinds, `off` disables |
 | `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + s` | the session picker, replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
 | `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup (being replaced, #228) |
@@ -14,7 +14,7 @@
 | `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](board-and-panel.md#the-panel-cockpit-tui) in board-and-panel.md; needs the `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` restores stock |
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup; after `r`, `f` or `i` the board comes back on the same pane with the outcome as a note, and `@cockpit_board_return off` makes them one-way |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
-| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a m`, and `prefix + m m` in the example config |
+| `prefix + M` | move this window to another session, or a new one, picked from a menu; the client follows it, and moving your last window out will not detach you (replaces stock `select-pane -M`) — `@cockpit_move_key` rebinds, `off` restores stock; also `prefix + a M` |
 
 Every key on one page, a line each: [KEYS.md](../KEYS.md).
 
@@ -31,7 +31,7 @@ set -g @cockpit_info_key       i       # off restores stock window info
 set -g @cockpit_jump_key       u
 set -g @cockpit_sessions_key   s       # off keeps stock choose-tree
 set -g @cockpit_move_key       M       # off restores stock select-pane -M
-set -g @cockpit_ai_key         a       # the agents menu; n if you never use next-window
+set -g @cockpit_menu_key       a       # the menu; n if you never use next-window
 set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
 set -g @cockpit_fleet_fzf_options ""

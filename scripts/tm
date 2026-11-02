@@ -201,7 +201,7 @@ palette() {
   local roles=(needs-input error running done dim soft fg) v=() i k h s=''
   if [ -z "${TM_SGR:-}" ]; then
     load_theme; _cockpit_fzf_thm
-    for k in red peach yellow green overlay_1 overlay_2 fg; do
+    for k in needs error running done dim dim fg; do
       h=${COCKPIT_THM[$k]#\#}
       # Only #rrggbb becomes a colour; a named one leaves the role plain.
       [[ $h =~ ^[0-9a-fA-F]{6}$ ]] &&
@@ -335,7 +335,7 @@ rows() {
   # would stop matching its own tail and ↵ would create a duplicate. The name
   # column fits the longest name; past the room it has, that row alone sheds
   # age, windows, agents.
-  local i=0 age num g a here hw=7 nw0 L=0 NW rest when ag wn ask k
+  local i=0 age num g a pre here hw=7 nw0 L=0 NW rest when ag wn ask k
   [ "$LW" -ge 60 ] || hw=6
   for r in "${recs[@]}"; do
     IFS=$US read -r band _ _ _ _ _ _ _ name <<<"$r"
@@ -350,6 +350,7 @@ rows() {
     i=$((i + 1)); num=' '; [ "$i" -le 9 ] && num=$i
     g="${C[$st]}${G[$st]}$R"
     a=' '; [ "$att" -gt 0 ] && a="${C[dim]}${G[att]}$R"
+    pre=''
     here=''; [ "$band" = 9 ] && { here=" (here)"; [ "$LW" -ge 60 ] || here="‹here›"; }
     k=$((NW - 1 - ${#name} - ${#here}))
     if [ "$LW" -ge 60 ]; then
@@ -371,6 +372,11 @@ rows() {
       fi
     elif [ "$k" -ge 0 ]; then
       printf -v rest '%s%*s%s' "${here:+${C[soft]}$here$R}" "$k" '' "$a"
+    elif [ "$att" -eq 0 ]; then
+      rest="${here:+${C[soft]}$here$R}"      # no ◉ to show, so no space held for one
+    elif [ "${#name}" -gt $((LW - 10)) ]; then
+      # fzf's ellipsis would cut a ◉ after the name: it goes before it (#216).
+      pre=$a; rest="${here:+${C[soft]}$here$R}"
     else
       rest="${here:+${C[soft]}$here$R }$a"
     fi
@@ -380,7 +386,7 @@ rows() {
       trunc ask "${ask:-needs you}" $((LW - 8))
       rest+=$'\n'"     ${C[soft]}$ask$R"
     fi
-    printf "%s\t%s %s \t%s\t%s$end" "$id" "$num" "$g" "$name" "$rest"
+    printf "%s\t%s %s%s \t%s\t%s$end" "$id" "$num" "$g" "$pre" "$name" "$rest"
   done
 }
 

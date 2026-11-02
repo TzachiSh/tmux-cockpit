@@ -19,9 +19,9 @@
 # The is-agent test is tmux's own #{m:*|cmd|*,glob} conditional (deliver()'s
 # guard, cockpit.tmux's window formats) run once per pane inside list-panes,
 # not a second shell per pane to re-ask; the title falls back from pane_title
-# to the window name the same way @catppuccin_window_text already does
-# (examples/tmux.conf:42) -- #{host_short} is what an UNSET pane_title reads
-# as, not empty.
+# to the window name the same way the bar's tab label does (@cockpit_label in
+# scripts/lib/statusbar.conf) -- #{host_short} is what an UNSET pane_title
+# reads as, not empty.
 fleet_rows() {
     # One -F argument, built in a variable: continuation lines each starting
     # a fresh quoted string are separate WORDS to tmux, not one concatenated
