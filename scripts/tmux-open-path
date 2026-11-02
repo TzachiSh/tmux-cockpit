@@ -77,7 +77,7 @@ fi
 # plain `git status`/`git diff` refreshes the index and takes index.lock to do
 # it. A read that fights the agent's own git for the lock is a read that can
 # make its command fail -- the same rule tmux-review's tree_diff() states and
-# fleet_scan_root() follows. The --no-index calls do not need the flag; they
+# the board's scan (tui/src/data/gitsafe.rs) follows. The --no-index calls do not need the flag; they
 # carry it anyway, because "every git call here" is the only version of this
 # rule that survives the next edit.
 if [ "${1:-}" = --preview-diff ]; then

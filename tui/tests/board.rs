@@ -1412,6 +1412,24 @@ fn fleet() -> Vec<Pane> {
     ps[0].review = "pending".into();
     ps[3].review = "pending".into();
     ps[6].review = "pending".into();
+    // what data::fleet fills in on the fetch thread: repo⑂branch and the stat
+    for (id, loc, pm) in [
+        ("%3", "api⑂feat/rate-limit", "+42 -7"),
+        ("%4", "api⑂feat/rate-limit", "+42 -7"),
+        ("%5", "api⑂feat/rate-limit", "+42 -7"),
+        ("%6", "api⑂main", "clean"),
+        ("%7", "web⑂docs-plan", "+3 -1"),
+        ("%8", "web⑂main", "+120 -33  ?2 new"),
+        ("%9", "web⑂checkout-a11y", "+0 -0  ?1 new"),
+        ("%10", "web⑂main", "clean"),
+        ("%11", "infra⑂main", "+9 -2"),
+        ("%12", "infra⑂main", "clean"),
+        ("%14", "ml⑂exp-40", "+15 -4"),
+        ("%15", "ml⑂exp-40", "+15 -4"),
+    ] {
+        let p = ps.iter_mut().find(|p| p.id == id).unwrap();
+        (p.loc, p.pm) = (loc.into(), pm.into());
+    }
     ps.reverse();
     ps
 }
@@ -1781,6 +1799,56 @@ fn list_goldens() {
         ..view(&ps, &[], &th, ord.iter().position(|&i| ps[i].id == "%3").unwrap(), 0)
     };
     golden("board-tiles-100", &draw(100, 30, |f| board::render(f, f.area(), &v)));
+}
+
+/// The extra cells at the four widths the issue names: the stat, the review
+/// mark and the branch, dropped from the right as the row narrows.
+#[test]
+fn list_extra_goldens() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    for w in [40u16, 60, 80, 120] {
+        let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+        let out = draw(w, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        golden(&format!("board-extra-{w}"), &out);
+        assert!(w < 60 || out.contains("+42 -7"), "the stat shows at {w}:\n{out}");
+    }
+}
+
+/// A row with a branch and a row without end their age in the same column: the
+/// board and the buffer measure ⑂ with the same unicode-width.
+#[test]
+fn rows_with_and_without_a_branch_end_at_the_same_column() {
+    use unicode_width::UnicodeWidthStr;
+    let th = Theme::fixed();
+    let mut ps = fleet();
+    // %12 reads "no repo" and shows no ⑂; %4 shows the branch
+    ps.iter_mut().find(|p| p.id == "%12").unwrap().loc.clear();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    let out = draw(80, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    let rs = rows(&out);
+    let row = |name: &str| rs.iter().find(|r| r.contains(name)).unwrap_or_else(|| panic!("{name}:\n{out}"));
+    let (with, without) = (row(" dns "), row(" tests "));
+    assert!(with.contains("no repo") && !with.contains('⑂'), "{with}");
+    assert!(without.contains('⑂') || without.contains("+42 -7"), "{without}");
+    assert_eq!(with.width(), without.width());
+    // the age is the last text before the active-mark column and the border
+    let end = |r: &str| r.trim_end_matches('│').trim_end_matches(['◂', ' ']).width();
+    assert_eq!(end(with), end(without), "{with}\n{without}");
+}
+
+/// At 40 columns the cells may get no room at all; the message and the age stay.
+#[test]
+fn at_40_columns_the_cells_never_starve_the_message_or_the_age() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    let out = draw(40, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    let r = rows(&out);
+    let server = r.iter().find(|l| l.contains(" server ")).unwrap();
+    assert!(server.contains("Do you") && server.contains("4m12s"), "{server}");
+    let ui = r.iter().find(|l| l.contains(" ui ")).unwrap();
+    assert!(ui.contains("Bash") && ui.contains("3m40s"), "{ui}");
 }
 
 /// No row the list draws runs past the area, at any width the board accepts.

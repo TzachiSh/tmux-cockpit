@@ -135,9 +135,7 @@ until_cap() {                 # <socket> <pane> <pattern>
     done
     return 1
 }
-review_enter() {              # <socket> <ctl-pane>  the queue opens preselected on the pressed pane; ↵ reviews it
-    until_cap "$1" "$2" '*fleet>*' || return 1
-    "$TMUX_REAL" -L "$1" send-keys -t "$2" Enter
+review_enter() {              # <socket> <ctl-pane>  tmux-review -p opens the pane's review loop at once
     until_cap "$1" "$2" '*review · base*'
 }
 until_file() {                # <file> <pattern>
@@ -2365,9 +2363,6 @@ mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/lock
 is "an unreadable .git file is quiet, not a bash error" "" \
    "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
 chmod 600 "$DH/locked/.git"
-# A worktree removed after the board resolved its root.
-is "the board's scan of a vanished root is quiet" "" \
-   "$(bash -c '. "$1/scripts/lib/review-diff.sh"; . "$1/scripts/lib/review-fleet.sh"; fleet_scan_root "$2"' _ "$DIR" "$DH/gone" 2>&1 >/dev/null)"
 echo b >> "$DH/a"; chmod 000 "$DH/a"
 is "the diff preview of an unreadable changed file is quiet" "" \
    "$("$DIR/scripts/tmux-open-path" --preview-diff "$DH/a" 2>&1 >/dev/null)"
@@ -2410,6 +2405,7 @@ printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim fzf "0.74.3 (15f64c49)" "$DSH"
 dshim bat "bat 0.26.1 (a3c4)" "$DSH"
+dshim revdiff "version: 1.13.0" "$DSH"
 dshim fzf "0.44.1 (debian)" "$DOLD"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
 # PATH" is the absence itself rather than a shim standing in for it.
@@ -2476,7 +2472,7 @@ $DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
 is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
 $DCS kill-server >/dev/null 2>&1
 # bat is the optional tool left, and a PATH without it is a warn row.
-mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"
+mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"; dshim revdiff "version: 1.13.0" "$DC/nobat"
 dcout=$(dc "$DBIN:$DC/nobat:$SHIM:$DNO"); dcrc=$?
 is "a missing optional tool is a warn row" "1" "$(dcrow "$dcout" "warn bat")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
@@ -2599,6 +2595,13 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         chmod +x "$BS/pack/bat-v0.26.1-$a/bat"
         ( cd "$BS/pack" && tar -czf "$d/bat-v0.26.1-$a.tar.gz" "bat-v0.26.1-$a" )
     done
+    # revdiff is fetched on every run, so a release tree without it would fail them all.
+    d="$REL/umputun/revdiff/releases/download/v1.13.0"; mkdir -p "$d"
+    printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$BS/pack/revdiff"; chmod +x "$BS/pack/revdiff"
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        ( cd "$BS/pack" && tar -czf "$d/revdiff_1.13.0_$a.tar.gz" revdiff )
+    done
+    ( cd "$d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
     case "${1:-}" in
         flip) awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
                   "$f/fzf_0.74.3_checksums.txt" > "$f/s2" &&
@@ -3172,13 +3175,13 @@ tap 2 30
 until_out 1 "$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}' >/dev/null
 is "tapping ‹ steps to the previous window" "1" \
    "$("$TMUX_REAL" -L "$TI" display-message -p -t cockpit: '#{window_index}')"
-if command -v fzf >/dev/null 2>&1; then
+if [ -x "$DIR/bin/cockpit-tui" ]; then
     tap 12 1
-    # tm marks your own session ‹here› below 60 columns.
-    if until_cap "$TO" o '*session>*‹here›*'; then ok "tapping the session name opens the session picker"
-    else bad "tapping the session name opens the session picker" "tm's prompt and the ‹here› row" "$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | head -5)"; fi
+    # the sessions view marks your own session (here).
+    if until_cap "$TO" o '*session>*(here)*'; then ok "tapping the session name opens the session picker"
+    else bad "tapping the session name opens the session picker" "the picker's prompt and the (here) row" "$("$TMUX_REAL" -L "$TO" capture-pane -p -t o | head -5)"; fi
 else
-    skip_ "tapping the session name opens the session picker (no fzf)"
+    skip_ "tapping the session name opens the session picker (no bin/cockpit-tui)"
 fi
 "$TMUX_REAL" -L "$TO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
@@ -3336,8 +3339,8 @@ case "$(ak m)" in *"select-pane -m"*) ok "and moving it off m gives stock mark-p
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" set -gu @cockpit_review_key >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$(ak r)" in *tmux-review*) ok "giving r back does not undo the review key bound in the same load" ;;
-    *) bad "giving r back does not undo the review key bound in the same load" "tmux-review on r" "$(ak r)" ;; esac
+case "$(ak r)" in *cockpit-board*) ok "giving r back does not undo the review key bound in the same load" ;;
+    *) bad "giving r back does not undo the review key bound in the same load" "cockpit-board on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 # The old name still works, and says it was renamed.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
@@ -4104,249 +4107,6 @@ case "$(os_run always 'f.txt')" in
 esac
 fi
 
-echo "== tm --rows and the kill rules: needs-you first, your own last, tiers by the list's width =="
-# Driven with $FZF_COLUMNS, the width fzf hands a reload. nosgr drops tm's own
-# colours only: an agent's escape has lost its ESC byte if tm stripped it.
-if need_tmux "tm rows"; then :; else
-TR="cockpit-tmrows-$$"; SOCKS="$SOCKS $TR"
-trt() { "$TMUX_REAL" -L "$TR" "$@"; }
-trt -f /dev/null new-session -d -s here -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
-trt set -g @cockpit_agents_glob '|claude|'
-trt new-session -d -s quiet 'exec sleep 300'
-trt new-session -d -s busy 'exec -a claude sleep 300'
-trt new-session -d -s waits 'exec -a claude sleep 300'
-trt new-session -d -s broken 'exec -a claude sleep 300'
-trs() {                       # trs <session> <state> [ask] -- what agent-state leaves behind
-    trt set -p -t "$1:" @panestate "$2"; trt set -w -t "$1:" @cockpit_win_state "$2"
-    [ -z "${3:-}" ] || trt set -p -t "$1:" @panestate_msg "$3"
-}
-trid() { trt display-message -p -t "$1:" '#{session_id}'; }
-trs here idle; trs busy running; trs broken error 'API Error: 529'
-# Escapes, a tab and a newline: agent free text, as another writer could leave it.
-trs waits needs-input "$(printf 'Allow \033[31medit\tto src/a.rs?\nmore\177')"
-TRX="$SOCKDIR/$TR,0,$(trid here | tr -d '$')"
-TRSGR=$(printf '\037\037\037\037\037\037')
-nosgr() { sed $'s/\033\\[[0-9;]*m//g'; }
-trrows() { env TMUX="$TRX" TM_SGR="$TRSGR" "$@" "$DIR/scripts/tm" --rows | nosgr; }
-trw=$(trrows env FZF_COLUMNS=200)
-is "the header counts the sessions and the states worth a look" \
-   "	5 sessions · ▲1 · ✕1 · ●1" "$(printf '%s\n' "$trw" | head -1)"
-is "needs-you first, error second, your own session last" "waits broken here" \
-   "$(printf '%s\n' "$trw" | sed -n '2p;3p;6p' | cut -f3 | tr '\n' ' ' | sed 's/ $//')"
-is "field 1 is the session id, so a name tmux cannot target still works" "$(trid waits)" \
-   "$(printf '%s\n' "$trw" | sed -n 2p | cut -f1)"
-is "the jump numbers follow the rows" "1 2 3 4 5" \
-   "$(printf '%s\n' "$trw" | sed 1d | cut -f2 | cut -c1 | tr '\n' ' ' | sed 's/ $//')"
-is "a wide row: glyph, name, agents, windows, age" \
-   "1 ▲ 	waits	                1 agent   1 win       now" "$(printf '%s\n' "$trw" | sed -n 2p | cut -f2-)"
-is "your own row says (here) and has no age" \
-   "5 ○ 	here	 (here)          1 agent   1 win          " "$(printf '%s\n' "$trw" | sed -n 6p | cut -f2-)"
-case "$(printf '%s\n' "$trw" | grep '	quiet	')" in
-    *"	quiet	"*"—"*) ok "a session with no agent has a blank glyph and a dash" ;;
-    *) bad "a session with no agent has a blank glyph and a dash" "quiet ... —" "$(printf '%s\n' "$trw" | grep quiet)" ;;
-esac
-# The preview takes half from 120 columns on, and the list's half decides.
-is "120 columns leave a 60-column list: still the wide tier" "4" \
-   "$(trrows env FZF_COLUMNS=120 | grep -c 'agent')"
-is "below 60 the narrow tier drops the counts" "0 5 ○ 	here	‹here›              " \
-   "$(trrows env FZF_COLUMNS=59 | grep -c agent) $(trrows env FZF_COLUMNS=59 | grep '	here	' | cut -f2-)"
-# fzf searches only the fields it shows, so the whole name must be shown, or a
-# filter on its tail misses and ↵ creates a duplicate (review of #210).
-trt new-session -d -s my-very-long-project-name-number-2 'exec sleep 300'
-if command -v fzf >/dev/null 2>&1; then
-    is "a long name is shown whole, so its tail still matches" "my-very-long-project-name-number-2" \
-       "$(trrows env FZF_COLUMNS=200 | fzf --filter number-2 --delimiter='	' --with-nth=2.. --nth=2 --header-lines=1 | cut -f3)"
-else
-    skip_ "a long name is shown whole, so its tail still matches (no fzf)"
-fi
-trt kill-session -t =my-very-long-project-name-number-2
-# One record per session even with a newline in the ask, and no control byte
-# of the agent's reaches fzf.
-trtouch=$(trrows env FZF_COLUMNS=56 TM_TOUCH=1 | tr '\0' '\036')
-is "touch rows are NUL-ended, one per session plus the header" "6" \
-   "$(printf '%s' "$trtouch" | tr -cd '\036' | wc -c)"
-is "a waiting touch row carries its ask, control bytes stripped" \
-   "1 ▲ 	waits	|     Allow [31meditto src/a.rs?more" \
-   "$(printf '%s' "$trtouch" | tr '\036' '\n' | sed -n '/	waits	/,/	broken	/p' | sed '$d' | cut -f2- | sed 's/ *$//' | paste -sd '|')"
-# The ask is read on its own: a record separator inside it forges nothing, and
-# no field reaches arithmetic unchecked (review of #210: PWNED was created).
-trs waits needs-input "$(printf 'x\036$9\0371\0371\037$(touch %s/PWNED)\0371\037\037 needs-input \037forged' "$STATE")"
-trforge=$(trrows env FZF_COLUMNS=56 TM_TOUCH=1 | tr '\0' '\036')
-is "an ask holding the record separator forges no row and runs nothing" "6 no" \
-   "$(printf '%s' "$trforge" | tr -cd '\036' | wc -c) $([ -e "$STATE/PWNED" ] && echo yes || echo no)"
-trs waits needs-input 'Allow edit?'
-# The colour roles (#210 design check): the ○ glyph is dim, age and (here) soft.
-trroles=$(env TMUX="$TRX" TM_SGR="$(printf 'N\037E\037R\037D\037M\037S\037')" FZF_COLUMNS=200 "$DIR/scripts/tm" --rows)
-case "$(printf '%s\n' "$trroles" | grep '	here	')" in
-    *"M○"*"S (here)"*) ok "the idle glyph is dim and (here) is soft" ;;
-    *) bad "the idle glyph is dim and (here) is soft" "M○ ... S (here)" "$(printf '%s\n' "$trroles" | grep '	here	')" ;;
-esac
-case "$(printf '%s\n' "$trroles" | grep '	busy	')" in
-    *"S now"*) ok "the age is soft" ;;
-    *) bad "the age is soft" "S now" "$(printf '%s\n' "$trroles" | grep '	busy	')" ;;
-esac
-# --needs keeps the needs-you band; with nothing waiting it shows everything.
-trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
-is "--needs lists the waiting and the broken only" "	needs you · ▲1 ✕1|waits broken" \
-   "$(printf '%s\n' "$trn" | head -1)|$(printf '%s\n' "$trn" | sed 1d | cut -f3 | tr '\n' ' ' | sed 's/ $//')"
-trs waits running; trs broken done
-trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
-is "an empty band falls back to the full list, and says so" "	nothing needs you · 5 sessions · ●2 6" \
-   "$(printf '%s\n' "$trn" | head -1) $(printf '%s\n' "$trn" | wc -l)"
-# Your own session waiting is not a reason to open the band: you are there.
-trs here needs-input 'mine'
-trn=$(trrows env FZF_COLUMNS=200 TM_NEEDS=1)
-is "only your own session waiting still falls back to the full list" "	nothing needs you · 5 sessions · ▲1 · ●2 6" \
-   "$(printf '%s\n' "$trn" | head -1) $(printf '%s\n' "$trn" | wc -l)"
-trs here idle
-# The order freezes: a later reload keeps the rows where they were, and a new
-# session goes last.
-TRD=$(mktmpd)
-tro1=$(trrows env FZF_COLUMNS=200 TM_DIR="$TRD" | sed 1d | cut -f3 | tr '\n' ' ')
-trs quiet needs-input 'now me'
-trt new-session -d -s late 'exec sleep 300'
-tro2=$(trrows env FZF_COLUMNS=200 TM_DIR="$TRD" | sed 1d | cut -f3 | tr '\n' ' ')
-is "a reload keeps the first render's order, new sessions last" "${tro1}late " "$tro2"
-# The name column fits the longest name, so a long one is never cut and the
-# columns after it stay aligned (#210 design check).
-trt new-session -d -s a-name-of-exactly-thirty-five-chars 'exec sleep 300'
-for c in 110 200; do
-    trcol=$(trrows env FZF_COLUMNS=$c | sed 1d | cut -f2- | tr '\t' ' ')
-    is "a 35-character name at $c columns: whole, and every row's columns line up" "yes 1" \
-       "$(printf '%s\n' "$trcol" | grep -q 'a-name-of-exactly-thirty-five-chars ' && echo yes) $(printf '%s\n' "$trcol" | awk '{print index($0, " win")}' | sort -u | wc -l)"
-done
-trt kill-session -t =a-name-of-exactly-thirty-five-chars
-# Past the room it has, only that row sheds columns, age first, and ◉ moves up
-# beside the name: another device on it must stay visible.
-trt new-session -d -s this-session-name-is-fifty-characters-long-exactly 'exec sleep 300'
-TRL="cockpit-tmrowsl-$$"; SOCKS="$SOCKS $TRL"
-"$TMUX_REAL" -L "$TRL" -f /dev/null new-session -d -s o -x 80 -y 24 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $TR attach -t this-session-name-is-fifty-characters-long-exactly" >/dev/null 2>&1
-until_out '*fifty*' "$TMUX_REAL" -L "$TR" list-clients -F '#{session_name}'
-is "a 50-character name at 80 columns keeps ◉ and its counts, and drops its age" \
-   "this-session-name-is-fifty-characters-long-exactly	◉ —         1 win  " \
-   "$(trrows env FZF_COLUMNS=80 | grep 'fifty' | cut -f3-)"
-# At phone width a name past LW - 10 leaves ◉ to fzf's ellipsis, so it goes
-# before the name instead (#216).
-trph=$(trrows env FZF_COLUMNS=56 | grep 'fifty')
-case "$(printf '%s' "$trph" | cut -f2)" in
-    *'◉ ') ok "at 56 columns a long attached name carries ◉ before it" ;;
-    *) bad "at 56 columns a long attached name carries ◉ before it" "N G◉ " "$(printf '%s' "$trph" | cut -f2)" ;;
-esac
-is "and none after it" "" "$(printf '%s' "$trph" | cut -f4)"
-"$TMUX_REAL" -L "$TRL" kill-server >/dev/null 2>&1
-until_out '' "$TMUX_REAL" -L "$TR" list-clients -t this-session-name-is-fifty-characters-long-exactly -F '#{client_name}'
-# Not attached: no placeholder space after the name either (#216).
-is "an over-long row with nothing attached ends at its name" "" \
-   "$(trrows env FZF_COLUMNS=56 | grep 'fifty' | cut -f4)"
-trt kill-session -t =this-session-name-is-fifty-characters-long-exactly
-# A garbled list never falls through to the name path: "tm --rows" once
-# created a session called "rows".
-TRG=$(mktmpd)
-printf '#!/bin/sh\ncase "$1" in list-sessions) printf %s ;; new-session) echo NEW >> "%s/log" ;; esac\nexit 0\n' \
-    "'\$((1/0))\\037x\\037y\\n'" "$TRG" > "$TRG/tmux"
-chmod +x "$TRG/tmux"
-env -u TMUX PATH="$TRG:$PATH" "$DIR/scripts/tm" --rows >/dev/null 2>&1
-is "a garbled session list creates nothing" "" "$(cat "$TRG/log" 2>/dev/null)"
-
-# ^X twice kills, never your own session; attached elsewhere is allowed. The
-# fzf bindings print actions, and the kill runs through --kill-armed.
-TRK=$(mktmpd); : > "$TRK/armed"
-trk() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" "$@" 2>/dev/null | nosgr; }
-is "^X on your own session refuses" "change-footer:here is this session · detach or use tm -k" "$(trk --arm "$(trid here)")"
-case "$(trk --arm "$(trid here)")" in
-    *execute-silent*) bad "a second ^X on your own session still refuses" "no kill" "a kill" ;;
-    *) ok "a second ^X on your own session still refuses" ;;
-esac
-# A leaked $TMUX_PANE names some other pane (#212): $TMUX's session is yours.
-trmv=$(trt list-panes -t busy: -F '#{pane_id}')
-case "$(env TMUX_PANE="$trmv" TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" FZF_COLUMNS=200 "$DIR/scripts/tm" --arm "$(trid here)" | nosgr)" in
-    *"is this session"*) ok "a leaked \$TMUX_PANE does not move your own session" ;;
-    *) bad "a leaked \$TMUX_PANE does not move your own session" "is this session" "armed" ;;
-esac
-: > "$TRK/armed"
-trs busy needs-input 'ok?'
-is "the first ^X arms: the header names what you lose, the footer how to confirm" \
-   "change-header(kill busy? 1 waiting · 1 agent)+change-footer:^X again kills · any key cancels" "$(trk --arm "$(trid busy)")"
-trs busy running
-is "focus staying on the armed row keeps it armed" "" "$(trk --disarm "$(trid busy)")"
-trkout=$(trk --disarm "$(trid quiet)")
-case "$trkout" in
-    "change-header()+change-footer"?"↵ switch"*) ok "moving off the armed row disarms" ;;
-    *) bad "moving off the armed row disarms" "change-header()+change-footer(↵ switch ...)" "$trkout" ;;
-esac
-trk --arm "$(trid busy)" >/dev/null
-# A resize redraws the footer, so it must drop the armed kill with it.
-trkout=$(trk --resized)
-is "a resize disarms" "change-header()+ " "${trkout%%change-footer*} $(cat "$TRK/armed")"
-trk --arm "$(trid busy)" >/dev/null
-trkout=$(trk --arm "$(trid busy)")
-case "$trkout" in
-    execute-silent*--kill-armed*+change-header\(\)+change-footer*+reload-sync*) ok "the second ^X kills, then reloads last" ;;
-    *) bad "the second ^X kills, then reloads last" "execute-silent(...)+...+reload-sync(...)" "$trkout" ;;
-esac
-trbusy=$(trid busy)
-trk --kill-armed
-is "and --kill-armed kills the armed session" "no" \
-   "$(trt has-session -t "$trbusy" 2>/dev/null && echo yes || echo no)"
-# A client on another device: the confirm says so first, and the kill goes ahead.
-TRO="cockpit-tmrowso-$$"; SOCKS="$SOCKS $TRO"
-"$TMUX_REAL" -L "$TRO" -f /dev/null new-session -d -s o -x 80 -y 24 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $TR attach -t late" >/dev/null 2>&1
-until_out '*late*' "$TMUX_REAL" -L "$TR" list-clients -F '#{session_name}'
-trlate=$(trid late)
-is "an attached session arms with 'attached elsewhere' first" \
-   "change-header(kill late? attached elsewhere · no agents)+change-footer:^X again kills · any key cancels" "$(trk --arm "$trlate")"
-trk --arm "$trlate" >/dev/null; trk --kill-armed
-is "and the confirmed kill takes it" "no" \
-   "$(trt has-session -t "$trlate" 2>/dev/null && echo yes || echo no)"
-"$TMUX_REAL" -L "$TRO" kill-server >/dev/null 2>&1
-# The no-match footer says ↵ creates the query, and goes once something matches.
-: > "$TRK/armed"
-is "a query nothing matches: the footer says ↵ creates it" 'change-footer:↵ create "new_one" · esc' \
-   "$(FZF_MATCH_COUNT=0 FZF_QUERY='new one' trk --result)"
-case "$(FZF_MATCH_COUNT=2 FZF_QUERY=ne trk --result)" in
-    "change-header()+change-footer"?"↵ switch"*) ok "and a match restores the footer" ;;
-    *) bad "and a match restores the footer" "the resting footer" "$(cat "$TRK/armed")" ;;
-esac
-# Touch: buttons share the footer evenly, the detail of a kill goes up top, and
-# a tap counts anywhere in its share.
-trkt() { env TMUX="$TRX" TM_SGR="$TRSGR" TM_DIR="$TRK" TM_TOUCH=1 FZF_COLUMNS="${TRKW:-56}" "$DIR/scripts/tm" "$@" | nosgr; }
-is "the touch footer: four buttons centred in equal shares" \
-   "  [ + new ]    [ kill ]     [ view ]     [ close ]  " "$(trkt --footer)"
-trquiet=$(trid quiet)
-is "touch arms in the header and the footer" \
-   "change-header(kill quiet? no agents)+change-footer:      [ kill quiet ]              [ cancel ]        " \
-   "$(trkt --arm "$trquiet")"
-is "a tap right of [ cancel ] still cancels" "change-header()+change-footer(  [ + new ]    [ kill ]     [ view ]     [ close ]  )" \
-   "$(FZF_CLICK_FOOTER_COLUMN=50 trkt --click "$trquiet")"
-is "+ new with an empty query asks for a name" "change-footer:type a name, then tap + new" \
-   "$(FZF_CLICK_FOOTER_COLUMN=7 trkt --click "$trquiet")"
-# The hint must not swallow the next tap (review of #210).
-is "a tap on close after the hint still closes" "change-header()+change-footer(  [ + new ]    [ kill ]     [ view ]     [ close ]  )+abort" \
-   "$(FZF_CLICK_FOOTER_COLUMN=45 trkt --click "$trquiet")"
-: > "$TRK/armed"
-is "+ new with a query creates it" "print(new)+accept" "$(FZF_QUERY=x FZF_CLICK_FOOTER_COLUMN=2 trkt --click "$trquiet")"
-is "a tap in the gap left of [ view ] is view's" "toggle-preview" "$(FZF_CLICK_FOOTER_COLUMN=28 trkt --click "$trquiet")"
-# Every column of every drawn button is that button: the tap and the drawing
-# share one geometry (#210 design check: the left edge of close toggled view).
-# A 56-column popup gives fzf 54, where the old split drifted a column.
-for trw in 54 56; do
-    trfoot=$(TRKW=$trw trkt --footer); trmiss=''
-    for trb in '+ new|change-footer:type a name' 'kill|change-header(kill quiet?' 'view|toggle-preview' 'close|abort'; do
-        trl=${trb%%|*}; trpre=${trfoot%%"[ $trl ]"*}
-        for c in $(seq $((${#trpre} + 1)) $((${#trpre} + ${#trl} + 4))); do
-            : > "$TRK/armed"
-            case "$(TRKW=$trw FZF_CLICK_FOOTER_COLUMN=$c trkt --click "$trquiet")" in
-                "${trb#*|}"*) ;; *) trmiss+=" $trl@$c" ;; esac
-        done
-    done
-    is "at $trw columns each drawn button answers at every one of its columns" "" "$trmiss"
-done
-: > "$TRK/armed"
-"$TMUX_REAL" -L "$TR" kill-server >/dev/null 2>&1
-fi
-
 echo "== tm: a name tmux cannot target, and the popup's own client =="
 # tmux reads "=\$5x" as a session id, so every -t "=NAME" missed such a session
 # and tm made a duplicate (review of #210). A fake tmux logs what tm asks for.
@@ -4371,231 +4131,6 @@ is "and tm -k \$5x kills it by id" "kill-session -t \$7" "$(grep '^kill' "$TF/lo
 # on the same session must not be the one that moves.
 tfrun env TMUX=/tmp/fake,1,8 TM_CLIENT=/dev/pts/9 "$DIR/scripts/tm" plain
 is "the popup's switch goes to its own client" "switch-client -c /dev/pts/9 -t \$8" "$(grep '^switch' "$TF/log")"
-
-echo "== tm --popup: shrink-to-fit, the user's size options are ceilings =="
-# A fake tmux answers the one display-message --popup asks and logs the popup.
-# Fields: sessions, waiting, needs-you band, @cockpit_touch, width, height.
-TP=$(mktmpd)
-cat > "$TP/tmux" <<'STUB'
-#!/bin/sh
-case "$1" in
-  display-message) printf '%s\n' "$TP_ANSWER" ;;
-  display-popup)   shift; printf '%s\n' "$*" >> "$TP_LOG" ;;
-esac
-exit 0
-STUB
-chmod +x "$TP/tmux"
-tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W -h H"
-    local a=$1; shift
-    : > "$TP/log"
-    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
-        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
-    sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
-}
-tpspec() { sed -n 's/.*TM_PREVIEW=\([^ ]*\) .*/\1/p' "$TP/log" | tr -d "\\\\"; }
-is "desktop: 70% wide, rows + 7 under the 18-line floor" "-w 140 -h 18" "$(tpsize '7|2|3||||' 200 50)"
-is "desktop: many sessions stop at 70% of the height" "-w 140 -h 35" "$(tpsize '40|0|0||||' 200 50)"
-# The preview lands where fzf puts it: right while half the list is 60+
-# columns, below otherwise, whatever the client's tier (review of #210).
-is "165 columns: 70% is too narrow for a right preview, so it goes below and every row fits" "-w 115 -h 34" "$(tpsize '14|0|0||||' 165 50)"
-is "140 columns: the preview is on the right, so no lines are kept for it" "-w 126 -h 18" "$(tpsize '7|2|3||||' 140 50)"
-is "a 60% ceiling at 200 drops the preview below, and the rows still fit" "-w 120 -h 27 down,12,border-top" \
-   "$(tpsize '7|2|3||60%||' 200 50) $(tpspec)"
-is "tablet: 90% wide, with 12 preview lines and their rule below" "-w 99 -h 27" "$(tpsize '7|2|3||||' 110 40)"
-# The rows come first; the preview gets what is left, and under 5 lines it
-# starts hidden (#210 design check: 110x24 showed one row).
-is "a short tablet keeps the rows and starts the preview hidden" "-w 99 -h 14 hidden,down,50%,border-top" \
-   "$(tpsize '7|2|3||||' 110 24) $(tpspec)"
-is "@cockpit_touch off on a phone: a 6-line preview below the rows" "-w 50 -h 21 down,6,border-top" \
-   "$(tpsize '7|2|3|off|||' 56 30) $(tpspec)"
-is "touch below 100 columns: full width, two lines a row, one more per ask" "-w 56 -h 23" "$(tpsize '7|2|3||||' 56 30)"
-is "touch keeps a 12-line floor" "-w 56 -h 12" "$(tpsize '2|0|0||||' 56 30)"
-is "@cockpit_touch on at a desktop width" "-w 200 -h 23" "$(tpsize '7|2|3|on|||' 200 50)"
-is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7|2|3||60%|10|' 200 50)"
-is "and never floors" "-w 140 -h 18" "$(tpsize '7|2|3||90%|40|' 200 50)"
-is "--needs sizes for the needs-you band" "-w 56 -h 17" "$(tpsize '7|2|4||||' 56 30 --needs)"
-tpsize '7|2|3||||' 200 50 >/dev/null
-case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 18 -T  sessions  -E TM_POPUP=1 TM_TOUCH=0 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PREVIEW='' "*/tm) ok "the popup goes to that client, in its session, with the tier" ;;
-    *) bad "the popup goes to that client, in its session, with the tier" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9" "$(cat "$TP/log")" ;;
-esac
-tpsize '7|2|3||||' 56 30 --needs >/dev/null
-case "$(cat "$TP/log")" in
-    *"TM_TOUCH=1 "*"/tm --needs") ok "--needs rides into the popup" ;;
-    *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
-esac
-
-echo "== tm: the picker, driven: type-to-create, alt-enter, 1-9, ^X twice =="
-# Real fzf in a private pane. A real client on the server, so switch-client
-# has someone to move and session_attached means something.
-if need_tmux "tm picker"; then :; else
-if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
-   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
-TK="cockpit-tk-$$"; TKO="cockpit-tko-$$"; SOCKS="$SOCKS $TK $TKO"
-# A bare shell: a login shell's banner can outlast every wait below.
-"$TMUX_REAL" -L "$TK" -f /dev/null new-session -d -s alpha -x 120 -y 30 'bash --norc --noprofile' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TK" set -g default-command 'bash --norc --noprofile'
-"$TMUX_REAL" -L "$TK" set -g @cockpit_touch off
-"$TMUX_REAL" -L "$TK" new-session -d -s beta >/dev/null 2>&1
-"$TMUX_REAL" -L "$TK" new-session -d -s gamma >/dev/null 2>&1
-"$TMUX_REAL" -L "$TKO" -f /dev/null new-session -d -s o -x 120 -y 30 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $TK attach -t alpha" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$TK" list-clients -F '#{client_name}'
-tkon() { "$TMUX_REAL" -L "$TK" list-clients -F '#{session_name}' 2>/dev/null | head -1; }
-tkopen() {                    # tkopen -- tm in the client's current pane; prints the pane
-    local p; p=$("$TMUX_REAL" -L "$TK" list-clients -F '#{pane_id}' | head -1)
-    "$TMUX_REAL" -L "$TK" send-keys -t "$p" "'$DIR/scripts/tm'" Enter
-    # Your own row is the last one drawn, so the list is complete once it shows.
-    until_cap "$TK" "$p" '*session>*sessions*(here)*'
-    printf '%s' "$p"
-}
-KP2=$(tkopen)
-case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
-    *"alpha"*"(here)"*) ok "your own session is labelled (here)" ;;
-    *) bad "your own session is labelled (here)" "alpha (here)" "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -8)" ;;
-esac
-until_cap "$TK" "$KP2" '*[a-z] · 1 window*no agent*'
-case "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2")" in
-    *[a-z]" · 1 window"*"no agent"*) ok "sessions preview their windows, named" ;;
-    *) bad "sessions preview their windows, named" "NAME · 1 window" "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | head -8)" ;;
-esac
-# Typing filters; it never acts. A name nothing matches + Enter creates it.
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "zeta"
-until_cap "$TK" "$KP2" '*session> zeta*'
-is "typing filters instead of acting" "3" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Enter
-until_out zeta tkon
-is "Enter with no match creates the typed name and switches to it" "zeta" "$(tkon)"
-# alt-Enter creates even though "alp" matches alpha.
-KP2=$(tkopen)
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" alp
-until_cap "$TK" "$KP2" '*session> alp*'
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" M-Enter
-until_out alp tkon
-is "alt-Enter creates the query even when a row matches" "alp" "$(tkon)"
-# 2 with an empty query jumps to row 2; the order is the renderer's.
-KP2=$(tkopen)
-tkx="$SOCKDIR/$TK,0,$("$TMUX_REAL" -L "$TK" display-message -p -t alp: '#{session_id}' | tr -d '$')"
-tkwant=$(env TMUX="$tkx" FZF_COLUMNS=120 "$DIR/scripts/tm" --rows | sed -n 3p | cut -f3)
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" 2
-until_out "$tkwant" tkon
-is "2 on an empty query switches to row 2" "$tkwant" "$(tkon)"
-# ^X once arms and kills nothing; ^X again kills.
-KP2=$(tkopen)
-tkdoomed=$(env TMUX="$SOCKDIR/$TK,0,$("$TMUX_REAL" -L "$TK" display-message -p -t "$(tkon):" '#{session_id}' | tr -d '$')" \
-    FZF_COLUMNS=120 "$DIR/scripts/tm" --rows | sed -n 2p | cut -f3)
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
-until_cap "$TK" "$KP2" '*again kills*'
-is "one ^X kills nothing" "5" "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
-until_out 4 eval "\"$TMUX_REAL\" -L $TK list-sessions 2>/dev/null | wc -l"
-is "the second ^X kills the highlighted session" "no" \
-   "$("$TMUX_REAL" -L "$TK" has-session -t "=$tkdoomed" 2>/dev/null && echo yes || echo no)"
-# Your own row, found by an exact query: ^X there refuses, twice.
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" "^$(tkon)\$"
-until_cap "$TK" "$KP2" "*session> ^$(tkon)\$*1/4*"
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
-# The second ^X only after the refusal shows: on any other row it would kill.
-if until_cap "$TK" "$KP2" '*is this session*'; then
-    "$TMUX_REAL" -L "$TK" send-keys -t "$KP2" C-x
-    sleep 0.3
-    is "your own session refuses to die from the picker" "4" \
-       "$("$TMUX_REAL" -L "$TK" list-sessions 2>/dev/null | wc -l)"
-else
-    bad "your own session refuses to die from the picker" "the refusal footer" \
-        "$("$TMUX_REAL" -L "$TK" capture-pane -p -t "$KP2" | tail -12)"
-fi
-"$TMUX_REAL" -L "$TK" send-keys -t "$KP2" Escape
-"$TMUX_REAL" -L "$TKO" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$TK" kill-server >/dev/null 2>&1
-else
-  for t in "your own session is labelled (here)" "sessions preview their windows, named" \
-           "typing filters instead of acting" "Enter with no match creates the typed name and switches to it" \
-           "alt-Enter creates the query even when a row matches" "2 on an empty query switches to row 2" \
-           "one ^X kills nothing" "the second ^X kills the highlighted session" \
-           "your own session refuses to die from the picker"; do skip_ "$t (needs fzf 0.73+)"; done
-fi
-fi
-
-echo "== tm: Enter in the prefix+s popup switches the client =="
-# The real path: tm --popup opens the picker, Enter picks a row. The server
-# starts with a leaked $TMUX_PANE, as one launched from inside tmux does (#212).
-if need_tmux "tm popup Enter"; then :; else
-if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
-   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
-TQI="cockpit-tmqi-$$"; TQO="cockpit-tmqo-$$"; SOCKS="$SOCKS $TQI $TQO"
-TMUX_PANE=%99 "$TMUX_REAL" -L "$TQI" -f /dev/null new-session -d -s one 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TQI" new-session -d -s two 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TQO" -f /dev/null new-session -d -s o -x 120 -y 30 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $TQI attach -t one" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}'
-tqc=$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}')
-"$TMUX_REAL" -L "$TQI" run-shell -b "$DIR/scripts/tm --popup '$tqc' '$("$TMUX_REAL" -L "$TQI" display-message -p -t one: '#{session_id}')' 120 30"
-until_cap "$TQO" o: '*session>*(here)*'
-"$TMUX_REAL" -L "$TQO" send-keys -t o: two
-until_cap "$TQO" o: '*session> two*'
-"$TMUX_REAL" -L "$TQO" send-keys -t o: Enter
-until_out "$tqc two" "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}'
-is "Enter on a row switches the popup's own client, and nests nothing" "$tqc two" \
-   "$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}' 2>/dev/null)"
-"$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
-else
-  skip_ "Enter on a row switches the popup's own client, and nests nothing (needs fzf 0.73+)"
-fi
-fi
-
-echo "== tm: your own session, from a plain display-popup and from a moved pane =="
-# A user's own "display-popup -E tm" binding, on a server whose start env
-# leaked a $TMUX_PANE that names a pane in ANOTHER session: that session must
-# not become "here", and yours must not become killable (re-review of #210).
-if need_tmux "tm in a plain popup"; then :; else
-if command -v fzf >/dev/null 2>&1 && . "$DIR/scripts/lib/vnum.sh" &&
-   [ "$(vnum "$(fzf --version | cut -d' ' -f1)")" -ge "$(vnum 0.73.0)" ]; then
-TLI="cockpit-tmli-$$"; TLO="cockpit-tmlo-$$"; SOCKS="$SOCKS $TLI $TLO"
-# real gets %0 and other %1, the pane the leak names.
-TMUX_PANE=%1 "$TMUX_REAL" -L "$TLI" -f /dev/null new-session -d -s real -x 120 -y 30 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TLI" new-session -d -s other 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TLI" set -g @cockpit_touch off
-"$TMUX_REAL" -L "$TLO" -f /dev/null new-session -d -s o -x 120 -y 30 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $TLI attach -t real" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$TLI" list-clients -F '#{client_name}'
-tlc=$("$TMUX_REAL" -L "$TLI" list-clients -F '#{client_name}')
-"$TMUX_REAL" -L "$TLI" display-popup -c "$tlc" -w 100 -h 28 -E "$DIR/scripts/tm" >/dev/null 2>&1 &
-until_cap "$TLO" o: '*session>*2 sessions*'
-"$TMUX_REAL" -L "$TLO" send-keys -t o: '^real$'
-until_cap "$TLO" o: '*session> ^real$*1/2*'
-case "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | grep ' real ')" in
-    *"(here)"*) ok "the popup's own session is the one marked (here)" ;;
-    *) bad "the popup's own session is the one marked (here)" "real (here)" \
-           "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | grep ' real ')" ;;
-esac
-"$TMUX_REAL" -L "$TLO" send-keys -t o: C-x
-if until_cap "$TLO" o: '*real is this session*'; then
-    ok "and ^X on it refuses"
-else
-    bad "and ^X on it refuses" "real is this session" "$("$TMUX_REAL" -L "$TLO" capture-pane -p -t o: | tail -4)"
-fi
-"$TMUX_REAL" -L "$TLO" send-keys -t o: Escape
-# And a pane moved to another session: its $TMUX still names the one it was
-# born in, but its tty is the pane's, so the session it now sits in is yours.
-TLD=$(mktmpd); : > "$TLD/armed"
-"$TMUX_REAL" -L "$TLI" new-window -d -t real: 'bash --norc --noprofile' >/dev/null 2>&1
-"$TMUX_REAL" -L "$TLI" move-window -s real:1 -t other:5 >/dev/null 2>&1
-tlo=$("$TMUX_REAL" -L "$TLI" display-message -p -t other: '#{session_id}')
-"$TMUX_REAL" -L "$TLI" send-keys -t other:5 \
-    "TM_DIR=$TLD TM_SGR=\$(printf '\\037\\037\\037\\037\\037\\037') '$DIR/scripts/tm' --arm '$tlo' > $TLD/out" Enter
-until_file "$TLD/out" '*session*'
-is "a pane moved to another session refuses ^X on its new one" \
-   "change-footer:other is this session · detach or use tm -k" "$(sed $'s/\033\\[[0-9;]*m//g' "$TLD/out")"
-"$TMUX_REAL" -L "$TLO" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$TLI" kill-server >/dev/null 2>&1
-else
-  skip_ "the popup's own session is the one marked (here) (needs fzf 0.73+)"
-  skip_ "and ^X on it refuses (needs fzf 0.73+)"
-  skip_ "a pane moved to another session refuses ^X on its new one (needs fzf 0.73+)"
-fi
-fi
 
 echo "== install.sh --hooks merges additively =="
 HK=$(mktmpd); mkdir -p "$HK/.claude"
@@ -6290,7 +5825,7 @@ case "$rv8rawpreview" in
          "gone: root.txt" "$rv8rawpreview" ;;
 esac
 # The actual fix: resolve the pane's cwd to its repo root first (what
-# review_pane/fleet_queue now do before ever calling --loop or previewing),
+# review_pane/main_entry now do before ever calling --loop or previewing),
 # then the same row path resolves to a real diff.
 rv8root=$(git -C "$RV8/sub" rev-parse --show-toplevel)
 rv8rootpreview=$(cd "$rv8root" && "$DIR/scripts/tmux-open-path" --preview-diff root.txt \
@@ -7535,7 +7070,7 @@ echo "== tmux-review: a delivered review's comment store does not outlive the po
 # never named to us. Redirect XDG_STATE_HOME to a private, otherwise-empty
 # directory for the pane driving this, so whatever session_dir() creates
 # there is unambiguously it.
-if need_tmux "tmux-review fleet-to-deliver store cleanup"; then :; else
+if need_tmux "tmux-review -p deliver store cleanup"; then :; else
 FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
 FDTMPDIR="$STATE/fd-tmp-$$"
 mkdir -p "$FDTMPDIR"
@@ -7561,34 +7096,13 @@ FD_DIRTY=$(mktmpd)
   printf 'a\nb\nCHANGED\n' > src.go
 ) >/dev/null 2>&1
 
-# -d: main_entry() resolves its pane with a bare `display-message -p`, no
-# -t -- through the session's ACTIVE pane. Without -d, new-window switches
-# focus to the window it just made, and the command typed into CTL2 would
-# resolve against FD_AGENT instead, reviewing it directly and skipping the
-# fleet queue this test means to exercise.
 "$TMUX_REAL" -L "$FD" new-window -d -t t: -c "$FD_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
 FD_AGENT=$("$TMUX_REAL" -L "$FD" list-panes -t t:1 -F '#{pane_id}')
-# The queue below picks this pane by its command, so wait for the command.
+# The review below is delivered to this pane by its command, so wait for it.
 until_out claude "$TMUX_REAL" -L "$FD" display-message -p -t "$FD_AGENT" '#{pane_current_command}'
 
-# The fleet queue, from the non-agent control pane -- main_entry()'s own
-# routing, the same path a real prefix-R press from a shell pane takes.
-"$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" "'$DIR/scripts/tmux-review'" Enter
-fdup=0
-for i in 1 2 3 4 5 6 7 8 9 10; do
-    case "$("$TMUX_REAL" -L "$FD" capture-pane -p -t "$CTL2")" in
-        *"fleet>"*) fdup=1; break ;;
-    esac
-    sleep 0.5
-done
-if [ "$fdup" != 1 ]; then
-    bad "the fleet queue comes up" "a visible 'fleet>' prompt" \
-        "$("$TMUX_REAL" -L "$FD" capture-pane -p -t "$CTL2")"
-else
-    ok "the fleet queue comes up"
-fi
-
-"$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" Enter
+# What r on a board row runs: main_entry() with -p, straight into review_pane().
+"$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" "'$DIR/scripts/tmux-review' -p $FD_AGENT" Enter
 rvup=0
 for i in 1 2 3 4 5 6 7 8 9 10; do
     case "$("$TMUX_REAL" -L "$FD" capture-pane -p -t "$CTL2")" in
@@ -7597,10 +7111,10 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
 done
 if [ "$rvup" != 1 ]; then
-    bad "selecting the one row opens its review loop" "a visible 'review · base' prompt" \
+    bad "tmux-review -p opens that pane's review loop" "a visible 'review · base' prompt" \
         "$("$TMUX_REAL" -L "$FD" capture-pane -p -t "$CTL2")"
 else
-    ok "selecting the one row opens its review loop"
+    ok "tmux-review -p opens that pane's review loop"
 fi
 
 storefile=""
@@ -7623,8 +7137,8 @@ until_cap "$FD" "$CTL2" '*1 comment(s) pinned*'
 until_cap "$FD" "$FD_AGENT" '*fix this*'
 
 case "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" in
-    *"fix this"*) ok "the review still gets delivered through the fleet path" ;;
-    *) bad "the review still gets delivered through the fleet path" \
+    *"fix this"*) ok "the review still gets delivered from the board's r" ;;
+    *) bad "the review still gets delivered from the board's r" \
          "the comment in the agent pane" \
          "$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$FD_AGENT")" ;;
 esac
@@ -7701,28 +7215,15 @@ RK_AGENT=$("$TMUX_REAL" -L "$RK" list-panes -t t:1 -F '#{pane_id}')
 # state a human is most likely to leave a pane in right after finishing a
 # review.
 "$TMUX_REAL" -L "$RK" set-option -p -t "$RK_AGENT" @panestate needs-input >/dev/null 2>&1
-# Both preconditions, polled rather than slept for: the fleet queue filters on
-# pane_current_command, so the agent pane's own shell has to be up before
-# --fleet runs (it would otherwise report no dirty agent pane at all), and
-# deliver()'s if-shell reads @panestate back off the pane at paste time.
+# Both preconditions, polled rather than slept for: the agent pane's own shell
+# has to be up before the review runs, and deliver()'s if-shell reads @panestate back off the pane at paste time.
 for i in $(seq 1 20); do
     [ "$("$TMUX_REAL" -L "$RK" display-message -p -t "$RK_AGENT" '#{pane_current_command}')" = claude ] &&
     [ "$("$TMUX_REAL" -L "$RK" show-option -pqv -t "$RK_AGENT" @panestate)" = needs-input ] && break
     sleep 0.1
 done
 
-"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "'$DIR/scripts/tmux-review'" Enter
-rkup=0
-for i in $(seq 1 20); do
-    case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
-        *"fleet>"*) rkup=1; break ;;
-    esac
-    sleep 0.25
-done
-[ "$rkup" = 1 ] || bad "the fleet queue comes up (queued-delivery case)" \
-    "a visible 'fleet>' prompt" "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")"
-
-"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" Enter
+"$TMUX_REAL" -L "$RK" send-keys -t "$RKCTL" "'$DIR/scripts/tmux-review' -p $RK_AGENT" Enter
 for i in $(seq 1 20); do
     case "$("$TMUX_REAL" -L "$RK" capture-pane -p -t "$RKCTL")" in
         *"1 comment(s) pinned"*) break ;;
@@ -7809,594 +7310,15 @@ esac
 rm -rf "$RK_DIRTY" "$RKTMPDIR"
 fi
 
-echo "== tmux-review: prefix r from an agent pane opens the queue with that pane preselected, and returns to it after a review =="
-if need_tmux "prefix r is the queue"; then :; else
-PQ="cockpit-pq-$$"; SOCKS="$SOCKS $PQ"; PQSTATE=$(mktmpd); PQA=$(mktmpd); PQB=$(mktmpd)
-for d in "$PQA" "$PQB"; do (
-  cd "$d" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'a\nb\n' > f
-) >/dev/null 2>&1; done
-"$TMUX_REAL" -L "$PQ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PQA" 'exec -a claude bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$PQ" set -g @cockpit_agents_glob '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-"$TMUX_REAL" -L "$PQ" new-window -t t: -c "$PQB" 'exec -a claude bash' >/dev/null 2>&1
-PQAP=$("$TMUX_REAL" -L "$PQ" list-panes -t t:0 -F '#{pane_id}'); PQBP=$("$TMUX_REAL" -L "$PQ" list-panes -t t:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQAP" @panestate done >/dev/null 2>&1
-"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQBP" @panestate needs-input >/dev/null 2>&1   # ranks FIRST in the queue
-"$TMUX_REAL" -L "$PQ" set-option -p -t "$PQAP" @cockpit_review pending >/dev/null 2>&1
-PQB=$(mktmpd); PQW=$(mktmpd); fake_revdiff "$PQB"
-PQCTL=$("$TMUX_REAL" -L "$PQ" split-window -t t:0 -P -F '#{pane_id}' 'exec bash'); until_cap "$PQ" "$PQCTL" '*$*'
-"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" "PATH=$(printf '%q' "$PQB"):\$PATH FAKE_RD_DIR=$(printf '%q' "$PQW") XDG_STATE_HOME=$(printf '%q' "$PQSTATE") '$DIR/scripts/tmux-review' -p $PQAP" Enter
-until_cap "$PQ" "$PQCTL" '*fleet>*' && ok "prefix r from an agent pane opens the queue" || bad "prefix r from an agent pane opens the queue" "fleet>" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
-# The pointer sits on the row of the pane the key was pressed in, not on the
-# needs-input pane that sorts first.
-case "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")" in
-    *"▌ ◆ done"*) ok "with that pane preselected (its row shows ◆ for the pending review)" ;;
-    *) bad "with that pane preselected (its row shows ◆ for the pending review)" "▌ ◆ done …" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")" ;;
-esac
-"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" Enter
-until_cap "$PQ" "$PQCTL" '*review · base*' && ok "↵ reviews it" || bad "↵ reviews it" "review · base" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
-"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" l
-until_cap "$PQ" "$PQCTL" '*fleet>*' && ok "leaving the review returns to the queue" || bad "leaving the review returns to the queue" "fleet>" "$("$TMUX_REAL" -L "$PQ" capture-pane -p -t "$PQCTL")"
-"$TMUX_REAL" -L "$PQ" send-keys -t "$PQCTL" Escape
-until_cap "$PQ" "$PQCTL" '*$*'
-"$TMUX_REAL" -L "$PQ" kill-server >/dev/null 2>&1
-fi
-
-# group: serial
-echo "== tmux-review --fleet: from a non-agent pane, the queue lists every agent pane and only those =="
-if need_tmux "tmux-review --fleet"; then :; else
-FQ="cockpit-fq-$$"; SOCKS="$SOCKS $FQ"
-# Window 0's pane is the CONTROL pane -- a plain shell, the non-agent
-# vantage point this step drives the queue from.
-"$TMUX_REAL" -L "$FQ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-CTL=$("$TMUX_REAL" -L "$FQ" list-panes -t t:0 -F '#{pane_id}')
-
-mk_git_dir() {  # mk_git_dir <dir> <dirty:0|1>
-    (
-      cd "$1" || exit
-      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-      git init -q -b main .
-      printf 'a\n' > f
-      git add -A; git commit -q -m init
-      [ "$2" = 1 ] && printf 'b\n' >> f
-    ) >/dev/null 2>&1
-}
-FQ_DIRTY=$(mktmpd);    mk_git_dir "$FQ_DIRTY" 1      # agent, dirty -- wanted
-printf 'x\n' > "$FQ_DIRTY/new1.txt"                  # + three one-line untracked files
-printf 'y\n' > "$FQ_DIRTY/new2.txt"
-printf 'z\n' > "$FQ_DIRTY/new3.txt"
-FQ_CLEAN=$(mktmpd);    mk_git_dir "$FQ_CLEAN" 0      # agent, clean -- listed as clean (#49)
-FQ_NONAGENT=$(mktmpd); mk_git_dir "$FQ_NONAGENT" 1   # dirty, but not an agent
-# Same rank as FQ_DIRTY (neither has @panestate set, below) but its 5 changed
-# lines are all TRACKED, none untracked -- against FQ_DIRTY's 1 tracked + 3
-# untracked. The double-count bug inflated FQ_DIRTY's churn to 7 (4 real + the
-# untracked FILE count charged again), sorting it above this one; the fix's
-# real 4 sorts it below.
-FQ_DIRTY2=$(mktmpd);   mk_git_dir "$FQ_DIRTY2" 0
-printf 'b\nc\nd\ne\nf\n' >> "$FQ_DIRTY2/f"
-
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY" 'exec -a claude bash' >/dev/null 2>&1
-DIRTY_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_CLEAN" 'exec -a claude bash' >/dev/null 2>&1
-CLEAN_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:2 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NONAGENT" 'exec bash' >/dev/null 2>&1
-NONAGENT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:3 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_DIRTY2" 'exec -a claude bash' >/dev/null 2>&1
-DIRTY2_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:4 -F '#{pane_id}')
-# The queue picks its rows by pane_current_command, so wait for the four new
-# panes to report theirs: three agents and the non-agent shell.
-fq_cmds() { "$TMUX_REAL" -L "$FQ" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
-until_out 'bash bash bash claude claude claude ' fq_cmds
-
-# A review pasted into this pane and not yet sent: the row has to SAY so, or
-# the queue sends you back to a pane you already reviewed.
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @cockpit_review sent >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "'$DIR/scripts/tmux-review' --fleet" Enter
-until_cap "$FQ" "$CTL" "*$DIRTY_PANE*"
-fqout=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-
-case "$fqout" in
-    *"$DIRTY_PANE"*) ok "the dirty agent pane is in the queue" ;;
-    *) bad "the dirty agent pane is in the queue" "$DIRTY_PANE in the rows" "$fqout" ;;
-esac
-# #49: a clean agent is still an agent. The queue used to drop it, and with
-# every agent in a hand-made worktree reading clean from its cwd, prefix r
-# told six live agents "no agent pane".
-case "$fqout" in
-    *"$CLEAN_PANE"$'\t'*) ok "a clean agent pane is in the queue" ;;
-    *) bad "a clean agent pane is in the queue" "$CLEAN_PANE in the rows" "$fqout" ;;
-esac
-is "and its ± column reads clean, not a dash" "clean" \
-   "$(printf '%s\n' "$fqout" | awk -F'\t' -v p="$CLEAN_PANE" '$1 == p { print $5; exit }')"
-case "$fqout" in
-    *"$NONAGENT_PANE"*) bad "a dirty non-agent pane is not in the queue" \
-         "no $NONAGENT_PANE in the rows" "$fqout" ;;
-    *) ok "a dirty non-agent pane is not in the queue" ;;
-esac
-rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly three rows" "3" "$rowcount"
-
-# Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
-# one-line files), folded into the same numstat by tree_diff's intent-to-add
-# copy, so the ?? walk below must count the untracked files only toward the
-# "?3 new" file-count suffix, not toward churn too (that double-counted it as
-# +4 -0 +3 = 7 before the fix).
-case "$fqout" in
-    *"$DIRTY_PANE"*"+4 -0  ?3 new"*) ok "the dirty row's stat is +4 -0  ?3 new, not double-counted" ;;
-    *) bad "the dirty row's stat is +4 -0  ?3 new, not double-counted" \
-         "$DIRTY_PANE ... +4 -0  ?3 new" "$fqout" ;;
-esac
-
-case "$fqout" in
-    *"$DIRTY_PANE"$'\t'"↵ "*) ok "a pane holding a delivered, unsent review reads ↵ in its state column" ;;
-    *) bad "a pane holding a delivered, unsent review reads ↵ in its state column" \
-         "$DIRTY_PANE<tab>↵ " "$fqout" ;;
-esac
-
-# The bite: FQ_DIRTY and FQ_DIRTY2 are the SAME rank here (neither has
-# @panestate set) so ordering between them falls straight to churn, real
-# churn under the fix (4 vs 5, DIRTY2 wins) or double-counted churn under the
-# bug (7 vs 5, DIRTY wins instead). This is the only assertion in the suite
-# that can tell the two arithmetics apart -- the stat pin above and every
-# other assertion in this block read the same either way, because $stat's
-# TEXT was never wrong; only the hidden sort key was.
-fq_first=$(printf '%s\n' "$fqout" | grep -n "^$DIRTY2_PANE\|^$DIRTY_PANE" | head -1 | cut -d: -f2 | cut -f1)
-is "same-rank rows sort by real churn: +5 tracked outranks +1 tracked + 3 untracked files" \
-   "$DIRTY2_PANE" "$fq_first"
-
-# The queue is a triage list, not a churn leaderboard. A pane parked on a
-# permission prompt is exactly the one that needs a human -- and it typically
-# has NOTHING to diff, so churn-only ordering buried it under whoever happened
-# to type the most. State ranks first; churn only breaks ties inside a rank.
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$DIRTY_PANE" @panestate running >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-# until_cap, not a hand-rolled 20 x 0.1 s: 2 s of re-render lost the row under
-# the audit's back-to-back server teardowns and the three assertions below read
-# the PREVIOUS render (#125). The cap is a hang guard only a red run pays for,
-# so it belongs on the suite's shared POLLS (#117). The first render already
-# shows the bare row, so wait for its new state.
-until_cap "$FQ" "$CTL" "*$CLEAN_PANE$(printf '\t')needs-input*"
-fqout2=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-is "a blocked agent with a clean tree is listed first" "$CLEAN_PANE" \
-   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f1)"
-is "its state is in the row" "needs-input" \
-   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f2)"
-is "and a clean tree reads clean instead of +0 -0" "clean" \
-   "$(printf '%s\n' "$fqout2" | grep '^%' | head -1 | cut -f5)"
-is "the dirty running agent sorts below it" "$DIRTY_PANE" \
-   "$(printf '%s\n' "$fqout2" | grep '^%' | sed -n 2p | cut -f1)"
-case "$(printf '%s\n' "$fqout2" | grep "^$DIRTY_PANE")" in
-    *"$(basename "$FQ_DIRTY")⑂main"*) ok "the row names the repo and branch" ;;
-    *) bad "the row names the repo and branch" "$(basename "$FQ_DIRTY")⑂main" "$fqout2" ;;
-esac
-
-# A blocked agent whose cwd is not a git repo at all. fleet_scan_root()
-# short-circuits that group with no git call -- but it emitted its unknown
-# fields EMPTY, `0\t\t\t—\t0`, and tab is an IFS *whitespace* character: the
-# run of three tabs collapsed into one under phase 3's `IFS=$'\t' read`, so
-# the row came back shifted (repo=—, branch=0, stat empty) and rendered
-# "—⑂0" with a blank ± column. The same trap the pane format guards against
-# at fleet_rows' #{@panestate} sentinel. Sentinels on the wire, not empties.
-FQ_NOREPO=$(mktmpd)
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_NOREPO" 'exec -a claude bash' >/dev/null 2>&1
-NOREPO_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:5 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$NOREPO_PANE" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-# Polled on the row we assert about, same reason and same helper as above.
-until_cap "$FQ" "$CTL" "*$NOREPO_PANE$(printf '\t')*"
-fqout3=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-nrrow=$(printf '%s\n' "$fqout3" | awk -F'\t' -v p="$NOREPO_PANE" '$1 == p { print; exit }')
-is "a blocked agent outside a repo reads its repo and branch as unknown" "?⑂?" \
-   "$(printf '%s\n' "$nrrow" | cut -f4)"
-is "and its ± column reads no repo, not an empty field" "no repo" \
-   "$(printf '%s\n' "$nrrow" | cut -f5)"
-
-# An agent that committed on its branch: `git status --porcelain` is clean
-# (nothing uncommitted), but the branch itself is ahead of main -- and that
-# is still a review worth queuing. Window/pane index is the next FREE one
-# (t:6): t:0-t:5 are already CTL/DIRTY/CLEAN/NONAGENT/DIRTY2/NOREPO above.
-FQ_AHEAD=$(mktmpd)                                   # agent, clean tree, commits ahead of main -- wanted
-(
-  cd "$FQ_AHEAD" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
-  git checkout -q -b feat; printf 'b\n' >> f; git commit -q -am feat
-) >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_AHEAD" 'exec -a claude bash' >/dev/null 2>&1
-AHEAD_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:6 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-until_cap "$FQ" "$CTL" "*$AHEAD_PANE$(printf '\t')*"
-fqout4=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-case "$fqout4" in
-    *"$AHEAD_PANE"*"+1 -0"*) ok "an agent that committed on its branch is still in the queue, with its branch churn" ;;
-    *) bad "an agent that committed on its branch is still in the queue, with its branch churn" "$AHEAD_PANE with +1 -0" "$fqout4" ;;
-esac
-
-# --delta answers the Stop hook's one question: does this pane's tree still
-# differ from its review base? Run through `run-shell` on THIS block's own
-# server -- delta_mode's internal `tmux` calls need to land on $FQ, not
-# whatever server a bare tmux-review invocation from the suite's own shell
-# would resolve against.
-is "--delta: a branch ahead of main has something to review" "D=0" \
-   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $AHEAD_PANE; echo D=\$?" 2>/dev/null | tail -1)"
-is "--delta: a clean agent on an unadvanced branch has nothing to review" "D=1" \
-   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $CLEAN_PANE; echo D=\$?" 2>/dev/null | tail -1)"
-
-# A tree whose ONLY change is a file over the cap. tree_diff keeps it away
-# from git, so its --numstat would come back empty and the Stop hook would
-# call the pane clean -- the one thing the skip must not do. git itself
-# printed "-\t-\tcore" here (its binary row) before the skip existed.
-FQ_BIG=$(mktmpd)
-(
-  cd "$FQ_BIG" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
-  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core   # untracked, over the cap, and nothing else
-) >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_BIG" 'exec -a claude bash' >/dev/null 2>&1
-BIG_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:7 -F '#{pane_id}')
-is "--delta: a tree whose only change is a skipped big file is still dirty" "D=0" \
-   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $BIG_PANE; echo D=\$?" 2>/dev/null | tail -1)"
-
-# #49: an agent that made its worktree by hand (`git worktree add` from the
-# main checkout) keeps its process in the main checkout and drives the tree
-# with git -C, so its cwd reads clean master. @cockpit_dir, a pane option the
-# agent sets, names the tree it WORKS in, and every reader of a pane's tree
-# prefers it. t:8 is the next free window.
-FQ_MAIN=$(mktmpd); mk_git_dir "$FQ_MAIN" 0
-FQ_WT="$FQ_MAIN-wt"
-git -C "$FQ_MAIN" worktree add -q -b feat "$FQ_WT" >/dev/null 2>&1
-printf 'b\n' >> "$FQ_WT/f"
-"$TMUX_REAL" -L "$FQ" new-window -t t: -c "$FQ_MAIN" 'exec -a claude bash' >/dev/null 2>&1
-WT_PANE=$("$TMUX_REAL" -L "$FQ" list-panes -t t:8 -F '#{pane_id}')
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$WT_PANE" @cockpit_dir "$FQ_WT" >/dev/null 2>&1
-# A dangling @cockpit_dir (the worktree was removed since) falls back to the cwd.
-"$TMUX_REAL" -L "$FQ" set-option -p -t "$CLEAN_PANE" @cockpit_dir "$FQ_CLEAN/gone" >/dev/null 2>&1
-"$TMUX_REAL" -L "$FQ" send-keys -t "$CTL" "clear; '$DIR/scripts/tmux-review' --fleet" Enter
-until_cap "$FQ" "$CTL" "*$WT_PANE$(printf '\t')*"
-fqout5=$("$TMUX_REAL" -L "$FQ" capture-pane -p -J -t "$CTL")
-wtrow=$(printf '%s\n' "$fqout5" | awk -F'\t' -v p="$WT_PANE" '$1 == p { print; exit }')
-is "@cockpit_dir: the row names the worktree and its branch, not the cwd's" "$(basename "$FQ_WT")⑂feat" \
-   "$(printf '%s\n' "$wtrow" | cut -f4)"
-is "and its churn is the worktree's" "+1 -0" "$(printf '%s\n' "$wtrow" | cut -f5)"
-clrow=$(printf '%s\n' "$fqout5" | awk -F'\t' -v p="$CLEAN_PANE" '$1 == p { print; exit }')
-is "a dangling @cockpit_dir falls back to the pane's own tree" "$(basename "$FQ_CLEAN")⑂main" \
-   "$(printf '%s\n' "$clrow" | cut -f4)"
-is "--delta: the Stop hook sees the worktree's change through @cockpit_dir" "D=0" \
-   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --delta $WT_PANE; echo D=\$?" 2>/dev/null | tail -1)"
-is "--dir: the tree the pane works in" "$FQ_WT" \
-   "$("$TMUX_REAL" -L "$FQ" run-shell "'$DIR/scripts/tmux-review' --dir $WT_PANE" 2>/dev/null | tail -1)"
-# The store a review of the pane uses: tmux-review's own functions, lifted out
-# rather than respelled, applied the way review_pane and --info apply them.
-FQSD=$(mktmpf)
-{ cat "$DIR/scripts/lib/pane.sh"
-  sed -n '/^git_root() {/,/^}/p; /^pane_dir() {/,/^}/p; /^session_dir() {/,/^}/p' "$DIR/scripts/tmux-review"
-  printf '%s\n' 'session_dir "$1" "$(git_root "$(pane_dir "$1")")"'; } > "$FQSD"
-wtsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
-"$TMUX_REAL" -L "$FQ" set-option -pu -t "$WT_PANE" @cockpit_dir >/dev/null 2>&1
-cwdsess=$("$TMUX_REAL" -L "$FQ" run-shell "bash '$FQSD' $WT_PANE" 2>/dev/null | tail -1)
-is "the worktree review keeps its own store, not the main checkout's" "1" \
-   "$(case "$wtsess" in */tmux-cockpit/review/"${WT_PANE#%}"-[0-9]*) [ "$wtsess" != "$cwdsess" ] && echo 1 ;; esac || echo "$wtsess = $cwdsess")"
-
-"$TMUX_REAL" -L "$FQ" kill-server >/dev/null 2>&1
-rm -rf "$FQ_DIRTY" "$FQ_CLEAN" "$FQ_NONAGENT" "$FQ_DIRTY2" "$FQ_NOREPO" "$FQ_AHEAD" "$FQ_BIG" "$FQ_WT" "$FQ_MAIN"
-fi
-
-echo "== tmux-review --fleet: ranks needs-input, error, running, done, then no state =="
-if need_tmux "tmux-review --fleet rank"; then :; else
-FO="cockpit-fo-$$"; SOCKS="$SOCKS $FO"; FOD=$(mktmpd)
-"$TMUX_REAL" -L "$FO" -f /dev/null new-session -d -s t -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1
-for _ in 1 2 3 4; do "$TMUX_REAL" -L "$FO" new-window -t t: -c "$FOD" 'exec -a claude sleep 300' >/dev/null 2>&1; done
-"$TMUX_REAL" -L "$FO" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-# shellcheck disable=SC2317,SC2329  # called by until_out
-fo_cmds() { "$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_current_command}' | tr '\n' ' '; }
-until_out 'claude claude claude claude claude ' fo_cmds
-# Created in an order that matches no ranking, so only the sort can produce the expected one.
-mapfile -t fo_p < <("$TMUX_REAL" -L "$FO" list-panes -a -F '#{pane_id}')
-fo_i=0
-for s in done running '' error needs-input; do
-    [ -z "$s" ] || "$TMUX_REAL" -L "$FO" set-option -p -t "${fo_p[fo_i]}" @panestate "$s" >/dev/null 2>&1
-    fo_i=$((fo_i + 1))
-done
-is "the queue's state column reads in the chosen order" "needs-input error running done —" \
-   "$("$TMUX_REAL" -L "$FO" run-shell "'$DIR/scripts/tmux-review' --fleet" 2>/dev/null | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
-"$TMUX_REAL" -L "$FO" kill-server >/dev/null 2>&1
-rm -rf "$FOD"; unset fo_i fo_p; unset -f fo_cmds
-fi
-
-echo "== tmux-review --fleet: gathers per-pane git state in parallel =="
-# fleet_rows() used to run each pane's git status+numstat SERIALLY, one pane
-# after the next -- ~2 git calls/pane. On a cold filesystem (150ms/git,
-# measured) 100 panes blanked the popup for ~32s, on every prefix+r from a
-# non-agent pane. A fixed-latency git shim stands in for that cold filesystem
-# here: real git still runs behind it, so this measures the serial-vs-parallel
-# SHAPE, not a fabricated number: the pre-fix script ran them one at a time.
-if need_tmux "tmux-review --fleet parallel git"; then :; else
-FP="cockpit-fp-$$"; SOCKS="$SOCKS $FP"
-FP_DIR=$(mktmpd)
-(
-  cd "$FP_DIR" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\n' > f
-  git add -A; git commit -q -m init
-  printf 'b\n' >> f   # dirty -- every pane below shares this one working tree
-) >/dev/null 2>&1
-"$TMUX_REAL" -L "$FP" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FP" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-i=1
-while [ "$i" -le 50 ]; do
-    # sleep, not bash: 50 shells sourcing rc files are the load spike, and the
-    # last one had not exec'd when the scan ran, so it read 49 rows (issue #47).
-    "$TMUX_REAL" -L "$FP" new-window -t t: -c "$FP_DIR" 'exec -a claude sleep 3600' >/dev/null 2>&1
-    i=$((i + 1))
-done
-for i in $(seq 1 "$POLLS"); do
-    [ "$("$TMUX_REAL" -L "$FP" list-panes -a -F '#{pane_current_command}' | grep -c '^claude$')" -eq 50 ] && break
-    sleep 0.1
-done
-FP_SOCKPATH=$("$TMUX_REAL" -L "$FP" display-message -p '#{socket_path}')
-
-# Graded as a COUNT, not a clock (#117): each shimmed git call records how
-# many siblings are live with it. Serial dispatch never sees more than 1; the
-# capped parallel path sees up to 8 and never more.
-FP_SLOWGIT=$(mktmpd); FP_LIVE=$(mktmpd); FP_LIVEN=$(mktmpf)
-FP_REALGIT=$(command -v git)
-cat > "$FP_SLOWGIT/git" <<SHIMEOF
-#!/bin/sh
-: > "$FP_LIVE/\$\$"
-ls "$FP_LIVE" | wc -l >> "$FP_LIVEN"
-sleep 0.1
-"$FP_REALGIT" "\$@"; rc=\$?
-rm -f "$FP_LIVE/\$\$"
-exit \$rc
-SHIMEOF
-chmod +x "$FP_SLOWGIT/git"
-
-timeout 15 env TMUX="$FP_SOCKPATH,0,0" PATH="$FP_SLOWGIT:$PATH" \
-    "$DIR/scripts/tmux-review" --fleet > "$STATE/fp-out" 2>&1
-fp_rc=$?
-fp_peak=$(sort -n "$FP_LIVEN" 2>/dev/null | tail -1)
-
-if [ "$fp_rc" -ne 0 ]; then
-    bad "the fleet queue gathers 50 panes' git state" "exit 0" "exit $fp_rc"
-elif [ "${fp_peak:-0}" -ge 2 ] && [ "$fp_peak" -le 8 ]; then
-    ok "the fleet queue gathers 50 panes' git state in parallel, capped at 8 (peak $fp_peak in flight)"
-else
-    bad "the fleet queue gathers 50 panes' git state in parallel, capped at 8" \
-        "2..8 git calls in flight at the peak" "${fp_peak:-0}"
-fi
-rm -rf "$FP_LIVE" "$FP_LIVEN"
-fp_rows=$(grep -c . "$STATE/fp-out" || true)
-is "all 50 dirty panes are still in the rows" "50" "$fp_rows"
-
-"$TMUX_REAL" -L "$FP" kill-server >/dev/null 2>&1
-rm -rf "$FP_DIR"
-fi
-
-# group: serial
-echo "== tmux-review --fleet: dedups panes sharing a repo root across 20 panes =="
-# fleet_rows() used to cost one status+numstat scan PER PANE even when two
-# panes were cd'd into the exact same worktree -- resolving the repo root now
-# happens first (fleet_rows:~1180), panes are grouped on it, and
-# fleet_scan_root() runs once per UNIQUE root, not once per pane. 20 windows,
-# 19 fixture repos -- pane 20 reuses pane 1's directory -- so 20 rows still
-# come out, but only 19 `git status` calls should ever run. `timeout 5` is a
-# hang guard, not a perf gate: the scan is 0.3-0.7 s on a quiet box, but a
-# peer suite or an ssh sync pushed it past the old `timeout 1`, and a killed
-# scan left fd-out empty, so the row count read 0 too (issue #18).
-if need_tmux "tmux-review --fleet dedup across 20 panes"; then :; else
-FD="cockpit-fd-$$"; SOCKS="$SOCKS $FD"
-"$TMUX_REAL" -L "$FD" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FD" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-CTL=$("$TMUX_REAL" -L "$FD" list-panes -t t:0 -F '#{pane_id}')
-
-# mk_git_dir is the fleet queue block's own fixture helper (tests/run.sh
-# above, "gathers exactly the dirty agent panes"), reused here as-is.
-declare -a FD_DIRS=()
-i=1
-while [ "$i" -le 19 ]; do
-    d=$(mktmpd); mk_git_dir "$d" 1
-    FD_DIRS+=("$d")
-    i=$((i + 1))
-done
-
-i=1
-while [ "$i" -le 20 ]; do
-    if [ "$i" -eq 20 ]; then
-        wd="${FD_DIRS[0]}"           # the dup: shares pane 1's repo root
-    else
-        wd="${FD_DIRS[$((i - 1))]}"
-    fi
-    # sleep, not bash: 20 interactive shells sourcing ~/.bashrc (nvm alone is
-    # 0.2 s here) ran beside the timed scan and tripled it (0.19 s -> 0.65 s,
-    # measured), so the 1 s gate flaked on any box whose rc files cost something.
-    "$TMUX_REAL" -L "$FD" new-window -t t: -c "$wd" 'exec -a claude sleep 3600' >/dev/null 2>&1
-    i=$((i + 1))
-done
-
-# Counts `git status` invocations specifically -- a PATH shim that logs argv
-# and still execs the real binary, the same trick the round-trip-count block
-# uses (tests/run.sh:389-405) and the fixed-latency shim above stands on.
-FD_SHIM=$(mktmpd)
-FD_REALGIT=$(command -v git)
-FD_LOG="$STATE/fd-git-calls"
-: > "$FD_LOG"
-cat > "$FD_SHIM/git" <<SHIMEOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$FD_LOG"
-exec "$FD_REALGIT" "\$@"
-SHIMEOF
-chmod +x "$FD_SHIM/git"
-
-"$TMUX_REAL" -L "$FD" send-keys -t "$CTL" \
-    "PATH='$FD_SHIM:'\"\$PATH\" timeout 5 '$DIR/scripts/tmux-review' --fleet > $STATE/fd-out; echo RC=\$?" Enter
-fd_out=""
-# 80 x 0.1 s outlasts the timeout 5 above on purpose: a killed scan must
-# still print RC=124 here rather than leave fd_out empty.
-for i in $(seq 1 80); do
-    fd_out=$("$TMUX_REAL" -L "$FD" capture-pane -p -J -t "$CTL")
-    # The typed-but-not-yet-run command line already contains the literal
-    # text "echo RC=$?" the instant send-keys lands it -- a bare *RC=* match
-    # breaks on that unevaluated line before the command has even started.
-    # Only a REAL exit code prints digits after the "=", so require one.
-    case "$fd_out" in *RC=[0-9]*) break ;; esac
-    sleep 0.1
-done
-
-is "the 20-pane scan exits 0" "RC=0" \
-   "$(printf '%s\n' "$fd_out" | grep -o 'RC=[0-9-]*' | tail -1)"
-
-fd_rows=$(grep -c . "$STATE/fd-out" || true)
-is "20 rows for 20 panes even though two share one repo" "20" "$fd_rows"
-
-fd_diff_calls=$(grep -c ' diff ' "$FD_LOG" || true)
-is "the shared repo is scanned once -- 19 diffs for 19 unique roots" \
-    "19" "$fd_diff_calls"
-# The budget above is forks: 19 roots in ~0.5 s is ~25 ms each and one git is
-# 3-5 ms. Phase 3's per-review base took a dirty root from 4 forks to 13 and
-# blew it. Pinned as a count -- one rev-parse per pane to find its root, five
-# per unique root (rev-parse, add -N, for-each-ref, diff, and big_files'
-# ls-files, which is what keeps a 1 GB file from costing that root 26 s) -- so
-# the next helper that costs a fork per root fails here on any box, not only a
-# busy one. The 50-pane block above keeps the wall-clock bar (1818 ms against
-# 5000 ms); this one stopped timing itself, see the top of the block.
-fd_git_calls=$(grep -c . "$FD_LOG" || true)
-# The sixth is lib/git.sh reading the repo's filter drivers once.
-is "one fork per pane and six per dirty root, no more" "1" \
-   "$([ "$fd_git_calls" -le $((20 + 19 * 6)) ] && echo 1 || echo "$fd_git_calls")"
-
-"$TMUX_REAL" -L "$FD" kill-server >/dev/null 2>&1
-for d in "${FD_DIRS[@]}"; do rm -rf "$d"; done
-fi
-
-echo "== tmux-review: the popup resolves the pane it was opened from, not the busiest client =="
-# Same hazard as tmux-branch's popup resolution (tmux-branch:34-53, tested
-# above): inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
-# `display-message -p` (no -t) falls back to whichever attached client was
-# most recently active -- reproduced here with two real attached clients,
-# cliB attaching after cliA so cliB is the busier one. Only cliA is an agent
-# pane, and prefix r is the queue either way now, so the observable difference
-# is the PRESELECT: resolved to cliA the queue opens with that pane under the
-# pointer (--sync --bind start:pos(N)), resolved to cliB's plain shell there is
-# no such pane in the queue and no bind at all. A stub fzf on PATH records the
-# arguments it was invoked with and exits 1 (a harmless no-match/cancel) rather
-# than actually opening anything, so this needs no real interactive picker.
-if need_tmux "review popup pane resolution"; then :; else
-RDA=$(mktmpd); RDB=$(mktmpd)
-(
-    cd "$RDA" || exit
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-    git init -q -b main .
-    printf 'a\n' > f
-    git add -A; git commit -q -m init
-    printf 'b\n' >> f   # dirty -- so review_pane's loop reaches the fzf call
-) >/dev/null 2>&1
-RINNER="cockpit-review-inner-$$"; ROUTERA="cockpit-review-outera-$$"; ROUTERB="cockpit-review-outerb-$$"
-SOCKS="$SOCKS $RINNER $ROUTERA $ROUTERB"
-tmux -L "$RINNER" -f /dev/null new-session -d -s cliA -c "$RDA" 'exec -a claude bash' >/dev/null 2>&1
-tmux -L "$RINNER" new-session -d -s cliB -c "$RDB" 'exec bash' >/dev/null 2>&1
-tmux -L "$RINNER" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-rv_clients() { "$TMUX_REAL" -L "$RINNER" list-clients 2>/dev/null | grep -c .; }
-# Counted, not slept for: the hazard needs cliB to be the more recent client,
-# so the second attach only starts once the first has landed.
-tmux -L "$ROUTERA" -f /dev/null new-session -d -s o -x 80 -y 24 \
-    "$TMUX_REAL -L $RINNER attach -t cliA" >/dev/null 2>&1
-until_out 1 rv_clients
-tmux -L "$ROUTERB" -f /dev/null new-session -d -s o -x 80 -y 24 \
-    "$TMUX_REAL -L $RINNER attach -t cliB" >/dev/null 2>&1
-until_out 2 rv_clients
-rpaneA=$(tmux -L "$RINNER" list-panes -t cliA -F '#{pane_id}')
-RSOCKPATH=$(tmux -L "$RINNER" display-message -p '#{socket_path}')
-
-RFZFSTUB=$(mktmpd)
-RMARKER="$STATE/review-fzf-marker"
-: > "$RMARKER"
-cat > "$RFZFSTUB/fzf" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$RMARKER"
-exit 1
-EOF
-chmod +x "$RFZFSTUB/fzf"
-
-# Without -p: unpinned resolution lands on cliB (the busier client, attached
-# second) -- a plain shell, which is in nobody's queue, so the list opens with
-# no preselect at all. The hazard is real.
-: > "$RMARKER"
-env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
-case "$(cat "$RMARKER")" in
-    *'fleet>'*'start:pos('*|*'start:pos('*'fleet>'*)
-        bad "unpinned resolution really does land on the busier client (the hazard is real)" \
-         "fleet> with no start:pos( in the fzf invocation" "$(cat "$RMARKER")" ;;
-    *'fleet>'*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
-    *) bad "unpinned resolution really does land on the busier client (the hazard is real)" \
-         "fleet> in the fzf invocation" "$(cat "$RMARKER")" ;;
-esac
-# With -p pane_id: pinned to the pane the popup actually opened from -- the
-# agent pane, so the queue opens with that pane's row under the pointer.
-: > "$RMARKER"
-env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1
-case "$(cat "$RMARKER")" in
-    *'start:pos('*) ok "-p pane_id resolves the pane the popup was opened from" ;;
-    *) bad "-p pane_id resolves the pane the popup was opened from" \
-         "start:pos( in the fzf invocation" "$(cat "$RMARKER")" ;;
-esac
-# #49: ↵ on a clean row jumps to the pane instead of opening a review that
-# closes itself with "no uncommitted changes" and lands back on the list
-# (section 8 #3). A second window in cliA's session holds a clean agent; the
-# stub fzf picks its row; the session's current window must move there and
-# tmux-review must exit rather than re-list forever.
-RDC=$(mktmpd)
-(
-    cd "$RDC" || exit
-    export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-    git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init
-) >/dev/null 2>&1
-tmux -L "$RINNER" new-window -d -t cliA: -c "$RDC" 'exec -a claude bash' >/dev/null 2>&1
-rpaneC=$(tmux -L "$RINNER" list-panes -t cliA:1 -F '#{pane_id}')
-for i in $(seq 1 20); do   # until bash has exec'd as claude, or the row is not built
-    [ "$(tmux -L "$RINNER" display-message -p -t "$rpaneC" '#{pane_current_command}' 2>/dev/null)" = claude ] && break
-    sleep 0.1
-done
-cat > "$RFZFSTUB/fzf" <<EOF
-#!/usr/bin/env bash
-row=\$(grep "^$rpaneC"\$'\\t' || true)
-[ -n "\$row" ] || exit 1
-printf '\\n%s\\n' "\$row"
-EOF
-jrc=$(timeout 5 env PATH="$RFZFSTUB:$PATH" TMUX="$RSOCKPATH,0,0" "$DIR/scripts/tmux-review" -p "$rpaneA" </dev/null >/dev/null 2>&1; echo $?)
-is "↵ on a clean row leaves the queue instead of re-listing" "0" "$jrc"
-is "and the session's current window is now that agent's" "1" \
-   "$(tmux -L "$RINNER" display-message -p -t cliA: '#{window_index}' 2>/dev/null)"
-# A bare switch-client inside the popup lands on the most recently active
-# client -- cliB's, attached second -- and yanks THAT person to cliA.
-case "$(tmux -L "$RINNER" list-clients -F '#{client_session}' 2>/dev/null)" in
-    *cliB*) ok "and the other client is still on its own session" ;;
-    *) bad "and the other client is still on its own session" "a client on cliB" \
-         "$(tmux -L "$RINNER" list-clients -F '#{client_name} #{client_session}' 2>/dev/null)" ;;
-esac
-rm -rf "$RDC"
-tmux -L "$ROUTERA" kill-server >/dev/null 2>&1
-tmux -L "$ROUTERB" kill-server >/dev/null 2>&1
-tmux -L "$RINNER" kill-server >/dev/null 2>&1
-rm -rf "$RDA" "$RDB" "$RFZFSTUB"
-fi
-
-echo "== prefix r reviews, prefix R reloads; off unbinds each =="
+echo "== prefix r opens the board, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *tmux-review*) ok "prefix r is bound to the review popup by default" ;;
-    *) bad "prefix r is bound to the review popup by default" \
-         "a display-popup running tmux-review" \
+    *display-popup*cockpit-board*) ok "prefix r opens the board in a popup by default" ;;
+    *) bad "prefix r opens the board in a popup by default" \
+         "a display-popup running cockpit-board" \
          "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="r"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
@@ -8422,8 +7344,8 @@ RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 # not binding ours simply leaves the stock binding standing. Unbound-from-review
 # is the real contract.
 case "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *tmux-review*) bad "@cockpit_review_key off leaves r to stock tmux" \
-         "no tmux-review in the binding" \
+    *cockpit-board*) bad "@cockpit_review_key off leaves r to stock tmux" \
+         "no cockpit-board in the binding" \
          "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix | awk '$4=="r"')" ;;
     *) ok "@cockpit_review_key off leaves r to stock tmux" ;;
 esac
@@ -8439,9 +7361,9 @@ RB3="cockpit-rb3-$$"; SOCKS="$SOCKS $RB3"; RB3D=$(mktmpd)
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_review_window on >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *new-window*tmux-review*) ok "@cockpit_review_window on opens a window instead of the popup" ;;
-    *) bad "@cockpit_review_window on opens a window instead of the popup" \
-         "a new-window running tmux-review" \
+    *new-window*cockpit-board*) ok "@cockpit_review_window on opens the board in a window instead of the popup" ;;
+    *) bad "@cockpit_review_window on opens the board in a window instead of the popup" \
+         "a new-window running cockpit-board" \
          "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix | awk '$4=="r"')" ;;
 esac
 # new-window activates the review window before its command runs, so a pane
@@ -8450,7 +7372,7 @@ esac
 # A copy of the plugin whose tmux-review is a stub records the -p it got.
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
 mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
-printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/tmux-review"; chmod +x "$RB3D/p/scripts/tmux-review"
+printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"; chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
@@ -8458,7 +7380,7 @@ RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
 "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
 until_file "$RB3D/args" '*-p *'
-is "the review window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
+is "the board window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi
@@ -8743,63 +7665,6 @@ is "and leaves the spool option, the spool file and the loop count alone" "$RHSE
    "$("$TMUX_REAL" -L "$RH" show-option -pqv -t "$RHAP" @cockpit_review_spool) $([ -e "$RHSESS/spool.md" ] && echo present || echo absent) $(cat "$RHLOOP" 2>/dev/null)"
 unset -f rh_n rh_start rh_wait rh_run rh_queue
 "$TMUX_REAL" -L "$RH" kill-server >/dev/null 2>&1
-fi
-
-echo "== tmux-review fleet: ^x kills the window under the cursor, after a y/N =="
-if need_tmux "fleet ^x"; then :; else
-KW="cockpit-kw-$$"; SOCKS="$SOCKS $KW"
-KWD=$(mktmpd); mk_git_dir "$KWD" 1
-"$TMUX_REAL" -L "$KW" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$KW" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-KWCTL=$("$TMUX_REAL" -L "$KW" list-panes -t t:0 -F '#{pane_id}')
-"$TMUX_REAL" -L "$KW" new-window -d -t t: -c "$KWD" 'exec -a claude bash' >/dev/null 2>&1
-KWP=$("$TMUX_REAL" -L "$KW" list-panes -t t:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$KW" new-session -d -s solo -c "$KWD" 'exec -a claude bash' >/dev/null 2>&1
-KWSOLO=$("$TMUX_REAL" -L "$KW" list-panes -t solo -F '#{pane_id}')
-# A stand-in fzf: the first call "presses" ^x on the agent's row, the second escs.
-KWB=$(mktmpd)
-cat > "$KWB/fzf" <<'KWFZF'
-#!/usr/bin/env bash
-# The shared theme probes the version before it builds an argv (#105); without
-# this arm the probe reads the terminal and eats the next typed line.
-case "$1" in --version) echo '0.44.1 (debian)'; exit 0 ;; esac
-rows=$(cat)
-if [ ! -e "$KWFLAG" ]; then : > "$KWFLAG"; printf 'ctrl-x\n%s\n' "$(grep "^$KWTARGET"$'\t' <<<"$rows")"; exit 0; fi
-exit 130
-KWFZF
-chmod +x "$KWB/fzf"
-kwn=0
-kw_run() { rm -f "$KWB/flag"; kwn=$((kwn+1))   # kw_run [target]: an unmatched target is ^x on an empty filter
-    "$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" "clear; echo KWSTAR''T$kwn; KWFLAG='$KWB/flag' KWTARGET='${1:-$KWP}' PATH='$KWB:$PATH' '$DIR/scripts/tmux-review'; echo KWEN''D$kwn" Enter
-    until_cap "$KW" "$KWCTL" "*KWSTART$kwn*"; }   # past the clear: no stale prompt can match
-kw_done() { until_cap "$KW" "$KWCTL" "*KWEND$kwn*"; }
-kw_run '%none'; kw_done
-case "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL")" in
-    *"kill window"*) bad "^x on an empty filter asks nothing" "no prompt" "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL" | grep 'kill window')" ;;
-    *) ok "^x on an empty filter asks nothing" ;;
-esac
-is "and touches no window" "2" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
-kw_run; until_cap "$KW" "$KWCTL" '*y/N*'
-case "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL")" in
-    *"kill window t:1"*"[y/N]"*) ok "^x asks first, naming the window" ;;
-    *) bad "^x asks first, naming the window" "kill window t:1 ...? [y/N]" \
-         "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL" | grep -v '^$' | tail -3)" ;;
-esac
-"$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" n; kw_done
-is "n leaves the window alone" "2" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
-kw_run "$KWSOLO"; until_cap "$KW" "$KWCTL" '*y/N*'
-case "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL")" in
-    *"kill session solo (last window)?"*) ok "a session's last window is named as the session it takes" ;;
-    *) bad "a session's last window is named as the session it takes" "kill session solo (last window)? [y/N]" \
-         "$("$TMUX_REAL" -L "$KW" capture-pane -p -t "$KWCTL" | grep 'kill ' | tail -1)" ;;
-esac
-"$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" y; kw_done
-is "and y takes the session" "t" "$("$TMUX_REAL" -L "$KW" list-sessions -F '#{session_name}')"
-kw_run; until_cap "$KW" "$KWCTL" '*y/N*'
-"$TMUX_REAL" -L "$KW" send-keys -t "$KWCTL" y; kw_done
-is "y kills it" "1" "$("$TMUX_REAL" -L "$KW" list-windows -t t -F x | wc -l | tr -d ' ')"
-is "and the pane the list was opened from survives" "$KWCTL" "$("$TMUX_REAL" -L "$KW" list-panes -a -F '#{pane_id}')"
-"$TMUX_REAL" -L "$KW" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-tui: tui-fetch verifies before it installs, and never breaks a working binary =="
@@ -9408,8 +8273,8 @@ esac
 case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
     *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
 esac
-case "$(bkey "$B" r)" in *tmux-review*) ok "prefix r still opens the fleet list without the binary" ;;
-    *) bad "prefix r still opens the fleet list without the binary" "a display-popup running tmux-review" "$(bkey "$B" r)" ;;
+case "$(bkey "$B" r)" in *cockpit-board*) ok "prefix r opens the board, with no binary installed" ;;
+    *) bad "prefix r opens the board, with no binary installed" "a display-popup running cockpit-board" "$(bkey "$B" r)" ;;
 esac
 case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
@@ -9625,7 +8490,7 @@ esac
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh; prefix r is the fleet list" \
+   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
@@ -10906,8 +9771,6 @@ fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's ar
         bad "$tag reaches fzf" "an argv file" \
             "rc=$(cat "$FZTD/rc-$tag") stderr=[$(tail -c 200 "$FZTD/err-$tag" | tr '\n' ' ')] sessions=[$(tmux list-sessions -F '#{session_id}=#{session_name}' 2>&1 | tr '\n' ' ')]"
 }
-fzrun tm-attach "$DIR/scripts/tm"
-fzrun tm-kill   "$DIR/scripts/tm" -k
 fzrun branch    "$DIR/scripts/tmux-branch" "$FZG"
 fzrun path      "$DIR/scripts/tmux-open-path" --pick "$PANE"
 fzrun browse    "$DIR/scripts/tmux-open-path" --browse "$FZTD"
@@ -10917,28 +9780,8 @@ for f in "$FZTD"/argv-*-"$$".*; do
     fzn=$((fzn+1))
     grep -qx -- '--ansi' "$f" && grep -qx -- '--tabstop=1' "$f" && fzboth=$((fzboth+1))
 done
-is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
+is "all three pickers reach fzf, and every argv carries --ansi and --tabstop=1" "3 3" "$fzn $fzboth"
 
-# shellcheck disable=SC2002  # cat, so a missing log still counts 0
-is "a picker open never probes fzf --version" "0" \
-   "$(cat "$FZTD/vlog-tm-attach" 2>/dev/null | grep -c .)"
-
-# fzf merges --color per key and the last occurrence wins, so an override is
-# only an override if it is appended after the theme.
-fzk=$(cat "$FZTD"/argv-tm-kill-"$$".* 2>/dev/null)
-fzti=$(printf '%s\n' "$fzk" | grep -n -- '^--color=16,fg:' | head -1 | cut -d: -f1)
-fzui=$(printf '%s\n' "$fzk" | grep -n -- 'prompt:red' | head -1 | cut -d: -f1)
-is "the kill picker's red --color lands after the theme's, so it wins" "yes" \
-   "$([ -n "$fzti" ] && [ -n "$fzui" ] && [ "$fzui" -gt "$fzti" ] 2>/dev/null && echo yes || echo no)"
-
-# Read off the same fake: the argv fzf would be handed.
-fzrun styled "$DIR/scripts/tm"
-fzs=$(cat "$FZTD"/argv-styled-"$$".* 2>/dev/null)
-fzhas() { printf '%s\n' "$fzs" | grep -q -- "$1" && printf yes || printf no; }
-is "styled: --highlight-line, the keys in --footer, no --header, selected-bg" \
-   "yes yes no yes" \
-   "$(fzhas '^--highlight-line$'; printf ' '; fzhas '^--footer=.*kill'
-      printf ' '; fzhas '^--header='; printf ' '; fzhas '^--color=16,.*selected-bg:')"
 # The open picker's two key lines must be ONE --footer argument (#116): the
 # lib prints one argument per line, so a footer asked of it with a newline
 # arrives as two, and fzf rejects the second as an unknown option (exit 2).
@@ -10971,12 +9814,6 @@ is "under theme light the pickers read the light roles and defaults" \
    "fg:#1b1e24 hl:#9a4c00 bg+:#e1e5ec prompt:#0b0c0d" \
    "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
 "$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
-
-# Read off tm's own argv, not composed here: nothing in scripts/ decided the
-# order in the composed form, so no production change could turn it red.
-fzlast=$(printf '%s\n' "$fzk" | grep -- '^--color=' | tail -1)
-is "the last --color fzf sees is the caller's, not the theme's" \
-   "--color=prompt:red,pointer:red,marker:red" "$fzlast"
 
 fzh=$(env -u TMUX "$DIR/scripts/tm" -h 2>&1)
 is "tm -h names the picker's ^X and no longer a k kill key" "yes no" \
@@ -11091,155 +9928,6 @@ rr_repo() {                   # -> $RRDIR, a repo whose one changed file has a l
     ) >/dev/null 2>&1
 }
 
-echo "== #105: fit_field cuts whole characters, whatever the locale is =="
-# ${s:i:n} counts BYTES unless the locale is UTF-8, so under C the head cut
-# fell through the ⑂ and left a lone continuation byte the terminal draws as a
-# replacement glyph. Run against the real function, on the owner's own
-# 37-column repo⑂branch, in the locale that breaks it.
-RRFIT="$STATE/rr-fit-$$.sh"
-sed -n '/^fit_field() {/,/^}/p' "$DIR/scripts/lib/review-fleet.sh" > "$RRFIT"
-rr_fit() { LC_ALL=C bash -c '. "$1"; shift; fit_field "$@"' _ "$RRFIT" "$@"; }
-RRLOC='research-mobile-97⑂research/mobile-97'
-is "a head cut landing inside the ⑂ drops it rather than half of it" \
-   "…research/mobile-97" "$(rr_fit 20 "$RRLOC" head)"
-is "a head cut clearing the ⑂ keeps it whole" \
-   "…⑂research/mobile-97" "$(rr_fit 22 "$RRLOC" head)"
-is "a tail cut leaves no half character either" \
-   "research-mobile-97…" "$(rr_fit 19 "$RRLOC")"
-is "and a field that fits is returned untouched" "$RRLOC" "$(rr_fit 40 "$RRLOC" head)"
-
-echo "== #105: the fleet's ± column survives a narrow popup and repo⑂branch gives way first =="
-if need_tmux "#105 fleet widths"; then :; else
-RRF="cockpit-rrf-$$"; SOCKS="$SOCKS $RRF"
-RRW=$(mktmpd)
-rr_git() {                    # rr_git <dir> <branch>  a repo with one uncommitted line
-    mkdir -p "$1"
-    (
-      cd "$1" || exit
-      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-      git init -q -b "$2" .
-      printf 'a\n' > f; git add -A; git commit -q -m init
-      printf 'b\n' >> f
-    ) >/dev/null 2>&1
-}
-rr_trim() { local s=$1; printf '%s' "${s%"${s##*[! ]}"}"; }
-# The owner's own worktree name: the 37-column loc field the mobile lane
-# measured as needing 100 columns today (#97 verified.md, inventory claim 4).
-rr_git "$RRW/research-mobile-97" research/mobile-97
-rr_fakebin
-
-"$TMUX_REAL" -L "$RRF" -f /dev/null new-session -d -s t -x 200 -y 40 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RRF" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-RRCTL=$("$TMUX_REAL" -L "$RRF" list-panes -t t:0 -F '#{pane_id}')
-"$TMUX_REAL" -L "$RRF" new-window -t t: -n review-rows-fixture -c "$RRW/research-mobile-97" \
-    'exec -a claude bash' >/dev/null 2>&1
-RRAG=$("$TMUX_REAL" -L "$RRF" list-panes -t t:1 -F '#{pane_id}')
-rr_cmds() { "$TMUX_REAL" -L "$RRF" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
-until_out 'bash claude ' rr_cmds
-# The widest shape the queue really renders: "◆ needs-input" is 13 columns.
-"$TMUX_REAL" -L "$RRF" set-option -p -t "$RRAG" @panestate needs-input >/dev/null 2>&1
-"$TMUX_REAL" -L "$RRF" set-option -p -t "$RRAG" @cockpit_review pending >/dev/null 2>&1
-
-rr_queue() {                  # rr_queue <cols>  -> $RRW/cap-<cols>.stdin.1 holds the rows
-    local cap="$RRW/cap-$1"
-    rm -f "$cap".*
-    "$TMUX_REAL" -L "$RRF" send-keys -t "$RRCTL" \
-        "PATH='$RRB':\$PATH RR_COLS=$1 RR_CAP='$cap' RR_VLOG='$cap.vlog' '$DIR/scripts/tmux-review' -p $RRCTL; echo rr-done > '$cap.done'" Enter
-    until_file "$cap.done" '*rr-done*'
-}
-rr_field() { awk -F'\t' -v n="$2" 'NR == 1 { print $n; exit }' "$1"; }
-rr_queue 100; RRC100="$RRW/cap-100.stdin.1"
-rr_queue 60;  RRC60="$RRW/cap-60.stdin.1"
-if [ -s "$RRC100" ] && [ -s "$RRC60" ]; then
-    rr_stat100=$(rr_field "$RRC100" 5); rr_stat60=$(rr_field "$RRC60" 5)
-    rr_loc100=$(rr_field "$RRC100" 4); rr_loc60=$(rr_field "$RRC60" 4)
-    is "the ± field reads the same at 60 columns as at 100: it never gives way" "$rr_stat100" "$rr_stat60"
-    is "and at 100 it is the tree's real diff stat" "+1 -0" "$rr_stat100"
-    is "repo⑂branch is whole at 100" "research-mobile-97⑂research/mobile-97" "$(rr_trim "$rr_loc100")"
-    is "repo⑂branch is the field that gives way at 60" "yes" \
-       "$( [ "$(ncols "$rr_loc60")" -lt "$(ncols "$rr_loc100")" ] && echo yes \
-            || echo "no: $(ncols "$rr_loc60") columns at 60, $(ncols "$rr_loc100") at 100" )"
-    # The point of a width-aware row: it fits. fzf keeps 2 columns for its
-    # pointer, and --tabstop=1 makes each delimiter exactly one column.
-    rr_w60=0
-    while IFS= read -r rr_f; do rr_w60=$(( rr_w60 + $(ncols "$rr_f") + 1 )); done \
-        <<<"$(cut -f2- "$RRC60" | head -1 | tr '\t' '\n')"
-    rr_w60=$(( rr_w60 - 1 ))
-    is "the whole row fits the 58 columns fzf has at 60" "yes" \
-       "$( [ "${rr_w60:-999}" -le 58 ] && echo yes || echo "no: $rr_w60 columns" )"
-    # --tabstop=1 is what makes those widths the real columns: without it fzf
-    # lays the rejoined fields on an 8-column grid and pad_field decides
-    # nothing (#105 defect 5). --ansi is what lets a row dim at all (defect 8).
-    rr_argv="$RRW/cap-100.argv.1"
-    for rr_flag in --ansi --tabstop=1; do
-        if grep -qxF -- "$rr_flag" "$rr_argv" 2>/dev/null; then ok "the fleet picker is given $rr_flag"
-        else bad "the fleet picker is given $rr_flag" "$rr_flag in its argv" "$(tr '\n' ' ' < "$rr_argv")"; fi
-    done
-    is "and one --color, the shared theme's" "1" "$(grep -c '^--color=' "$rr_argv" 2>/dev/null)"
-    is "the user's own options still come last, so they win" "yes" \
-       "$( [ "$(grep -n '^--color=' "$rr_argv" | cut -d: -f1)" -lt "$(grep -c . "$rr_argv")" ] && echo yes || echo no )"
-    # shellcheck disable=SC2002  # cat, so a missing log still counts 0
-    is "a fleet queue open never probes fzf --version" "0" \
-       "$(cat "$RRW/cap-100.vlog" 2>/dev/null | grep -c .)"
-    # The footer draws its own rule; --header-border=bottom is the matching one
-    # above the list. Two rules, zero boxes (pickers.md §6).
-    rr_has "$rr_argv" --header-border=bottom "the fleet picker"
-else
-    bad "the fleet queue hands its rows to fzf under a fake tput" "a capture at 60 and at 100" \
-        "100:[$(cat "$RRC100" 2>/dev/null)] 60:[$(cat "$RRC60" 2>/dev/null)]"
-fi
-"$TMUX_REAL" -L "$RRF" kill-server >/dev/null 2>&1
-fi
-
-echo "== #105: a cwd carrying a tab or a newline still renders one fleet row, @cockpit_dir intact =="
-if need_tmux "#105 fleet field framing"; then :; else
-RRS="cockpit-rrs-$$"; SOCKS="$SOCKS $RRS"
-RRSW=$(mktmpd)
-rr_git2() {                   # this block's own fixture builder
-    mkdir -p "$1"
-    (
-      cd "$1" || exit
-      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-      git init -q -b "$2" .
-      printf 'a\n' > f; git add -A; git commit -q -m init
-      printf 'b\n' >> f
-    ) >/dev/null 2>&1
-}
-rr_git2 "$RRSW/tabtree" main
-rr_git2 "$RRSW/nltree"  main
-RRTABCWD="$RRSW/plain/sub"$'\t'"dir"
-RRNLCWD="$RRSW/plain/sub"$'\n'"dir"
-mkdir -p "$RRTABCWD" "$RRNLCWD"
-"$TMUX_REAL" -L "$RRS" -f /dev/null new-session -d -s t -x 200 -y 40 'exec bash' >/dev/null 2>&1
-"$TMUX_REAL" -L "$RRS" set -g @cockpit_agents_glob \
-    '|claude|codex|aider|cursor|opencode|gemini|crush|' >/dev/null 2>&1
-RRSCTL=$("$TMUX_REAL" -L "$RRS" list-panes -t t:0 -F '#{pane_id}')
-"$TMUX_REAL" -L "$RRS" new-window -t t: -n tabpane -c "$RRTABCWD" 'exec -a claude bash' >/dev/null 2>&1
-RRTABP=$("$TMUX_REAL" -L "$RRS" list-panes -t t:1 -F '#{pane_id}')
-"$TMUX_REAL" -L "$RRS" new-window -t t: -n nlpane -c "$RRNLCWD" 'exec -a claude bash' >/dev/null 2>&1
-RRNLP=$("$TMUX_REAL" -L "$RRS" list-panes -t t:2 -F '#{pane_id}')
-rr_cmds2() { "$TMUX_REAL" -L "$RRS" list-panes -s -t t: -F '#{pane_current_command}' | sort | tr '\n' ' '; }
-until_out 'bash claude claude ' rr_cmds2
-# The tree each agent really works in (#49). The option is the LAST field on
-# the wire, so it is the field a tab in the cwd shifts into.
-"$TMUX_REAL" -L "$RRS" set-option -p -t "$RRTABP" @cockpit_dir "$RRSW/tabtree" >/dev/null 2>&1
-"$TMUX_REAL" -L "$RRS" set-option -p -t "$RRNLP"  @cockpit_dir "$RRSW/nltree"  >/dev/null 2>&1
-RRSOUT="$RRSW/fleet.out"
-"$TMUX_REAL" -L "$RRS" send-keys -t "$RRSCTL" \
-    "'$DIR/scripts/tmux-review' --fleet > '$RRSOUT' 2>&1; echo rr-done > '$RRSW/fleet.done'" Enter
-until_file "$RRSW/fleet.done" '*rr-done*'
-is "two agent panes, two rows: the newline in a cwd splits no record" "2" \
-   "$(grep -c '^%' "$RRSOUT" 2>/dev/null)"
-is "the tab-cwd pane reads its @cockpit_dir tree, not a path cut at the tab" "tabtree⑂main" \
-   "$(awk -F'\t' -v p="$RRTABP" '$1 == p { print $4; exit }' "$RRSOUT")"
-is "and its ± comes from that tree" "+1 -0" \
-   "$(awk -F'\t' -v p="$RRTABP" '$1 == p { print $5; exit }' "$RRSOUT")"
-is "the newline-cwd pane reads its @cockpit_dir tree too" "nltree⑂main" \
-   "$(awk -F'\t' -v p="$RRNLP" '$1 == p { print $4; exit }' "$RRSOUT")"
-"$TMUX_REAL" -L "$RRS" kill-server >/dev/null 2>&1
-fi
-
 echo "== #105: the delivery notice names the configured jump key and fits 72 columns =="
 if need_tmux "#105 jump key notice"; then :; else
 RRJ="cockpit-rrj-$$"; SOCKS="$SOCKS $RRJ"
@@ -11317,10 +10005,6 @@ case "$(rr_nofzf --loop "$RRDIR" "$STATE/rr-nofzf-store")" in
     *) bad "the review loop's no-revdiff refusal is a prefixed display-message" "display-message cockpit: ..." \
          "$(rr_nofzf --loop "$RRDIR" "$STATE/rr-nofzf-store")" ;;
 esac
-case "$(rr_nofzf -p %0)" in
-    *"display-message cockpit: "*) ok "so is the fleet queue's" ;;
-    *) bad "so is the fleet queue's" "display-message cockpit: ..." "$(rr_nofzf -p %0)" ;;
-esac
 
 # --- #124 config leftovers ---
 echo "== a window titled after the host still gets the tab ladder (#124) =="
@@ -11356,60 +10040,6 @@ is "and says who found no sessions" "1" \
    "$(grep -c "printf 'cockpit: No tmux sessions running" "$DIR/scripts/tm")"
 
 # --- #125 suite leftovers ---------------------------------------------------
-echo "== #125: a killed fleet scan takes its temp dir with it =="
-# fleet_rows() mktemps a directory for its root-N/scan-N/idx.PID files and
-# removed it only where it RETURNS. The popup is killed far more often than it
-# returns, so a suite run left one of those dirs in /tmp every time.
-if need_tmux "the fleet scan's temp dir"; then :; else
-LKD=$(mktmpd)                     # the run's own TMPDIR, so the count is ours
-LKB=$(mktmpd)                     # shims: a private tmux, a git that blocks
-LKG=$(mktmpd)                     # somewhere for the panes to sit
-LKGO="$LKB/go"; LKSIG="$LKD/sig"
-LKS="cockpit-leak-$$"; SOCKS="$SOCKS $LKS"
-"$TMUX_REAL" -L "$LKS" -f /dev/null new-session -d -s lk -c "$LKG" \
-    'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$LKS" split-window -d -t lk -c "$LKG" \
-    'exec -a claude sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$LKS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
-printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$LKS" > "$LKB/tmux"
-# git blocks until the block says go, which holds the scan open long enough to
-# kill it. The 30s ceiling is a hang guard nothing reads: without one a shim
-# whose go file went with the suite's own cleanup spins forever. Seen once.
-{ printf '#!/bin/sh\ni=0\n'
-  printf 'while [ ! -e "$LK_GO" ] && [ $i -lt 300 ]; do i=$((i+1)); sleep 0.1; done\n'
-  printf 'exec %s "$@"\n' "$(command -v git)"; } > "$LKB/git"
-# The EXIT trap's rm records the signals it inherited, which is the only place
-# the handler's self-disarm is visible: both codes remove the directory.
-{ printf '#!/bin/sh\n'
-  printf 'grep SigIgn /proc/self/status >> "$LK_SIG"\n'
-  printf 'exec %s "$@"\n' "$(command -v rm)"; } > "$LKB/rm"
-chmod +x "$LKB/tmux" "$LKB/git" "$LKB/rm"
-lkdirs() { find "$LKD" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' '; }
-until_out '*claude*claude*' "$TMUX_REAL" -L "$LKS" list-panes -a -F '#{pane_current_command}'
-TMPDIR="$LKD" LK_GO="$LKGO" LK_SIG="$LKSIG" PATH="$LKB:$PATH" \
-    "$DIR/scripts/tmux-review" --fleet >/dev/null 2>&1 &
-LKPID=$!
-lkseen=1; until_out '1' lkdirs || lkseen=0
-# Twice, the shape tmux uses when a pane goes. Two signals sent from here are
-# coalesced, so what pins the self-disarm is the mask below, not this.
-kill -TERM "$LKPID" 2>/dev/null; kill -TERM "$LKPID" 2>/dev/null
-# Polled, and the -9 only AFTER it: a signal handler that cleans up but forgets
-# to exit leaves the scan running, and a bare `wait` on that hangs the suite.
-lkgone=1; until_out '0' lkdirs || lkgone=0
-kill -9 "$LKPID" 2>/dev/null
-wait "$LKPID" 2>/dev/null
-: > "$LKGO"                       # release the blocked git shims
-is "the scan's temp dir is there to kill, and gone once it is killed" "1 1" \
-   "$lkseen $lkgone"
-# 0x4003 is HUP|INT|TERM. Without the handler's disarm this reads 0 while the
-# directory still goes, which is why the assertion above cannot see it.
-lksig() {                     # the mask the rm inherited, 0 if it recorded none
-    local m; m=$(awk '{print $2}' "$LKSIG" 2>/dev/null | head -1)
-    printf '%x' $(( 0x${m:-0} & 0x4003 ))
-}
-is "the EXIT trap's rm runs with HUP, INT and TERM ignored" "4003" "$(lksig)"
-"$TMUX_REAL" -L "$LKS" kill-server >/dev/null 2>&1
-fi
 
 echo "== #125: ^G shows the diff and ^F the content, in both open-path pickers =="
 # The other half of defect 14. Both fzf calls in tmux-open-path carry the pair;
@@ -12102,7 +10732,7 @@ rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
 DSB=$COCKPIT_TUI_BIN
-# tree_diff's rows summed the way fleet_scan_root sums them, as diffstat's four
+# tree_diff's rows summed the way the board's scan sums them, as diffstat's four
 # columns; review_base forced to HEAD, which is what diffstat with no --base reads.
 ds_shell() {
     ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"
@@ -12513,6 +11143,676 @@ n=0; while [ "$n" -lt 50 ] && "$TMUX_REAL" -L "$PO" capture-pane -p -t t:b | gre
 po_has "1 agent" && ok "esc returns to the board" || bad "esc returns to the board" "1 agent" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)"
 case "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)" in *"info · %"*) bad "the card is gone after esc" "no card" "still drawn" ;; *) ok "the card is gone after esc" ;; esac
 "$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: kill %N re-checks the window name, request %N runs the request path =="
+# The wrapper half of the two verbs, driven by writing the action file directly
+# (a stub binary does the writing). A real private server, real windows; the
+# only stub besides the binary is tmux-review, which records its argv.
+if need_tmux "the board's kill and request verbs"; then :; else
+KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
+mkdir -p "$KD/p" "$KD/state"
+cp -r "$DIR"/scripts "$KD/p/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n[ ! -e %s/rvout ] || cat %s/rvout\nexit "$(cat %s/rvrc 2>/dev/null || echo 0)"\n' "$KD" "$KD" "$KD" "$KD" > "$KD/p/scripts/tmux-review"
+chmod +x "$KD/p/scripts/tmux-review"
+# The binary acts once, then exits with no action (the ordinary q). It writes
+# $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
+cat > "$KD/bin" <<KDBIN
+#!/bin/sh
+printf '%s\n' "\$*" >> "$KD/bargv"
+[ "\${5:-}" = "" ] || cat "\$5" >> "$KD/bargv"
+if [ -e "$KD/once" ]; then
+    # a second trip in the same wrapper, with no .expect of its own
+    [ -e "$KD/line2" ] && [ ! -e "$KD/twice" ] || exit 0
+    : > "$KD/twice"; cat "$KD/line2" > "\$COCKPIT_ACTION"; exit 0
+fi
+: > "$KD/once"
+if [ -e "$KD/link" ]; then ln -s "$KD/expect" "\$COCKPIT_ACTION.expect"
+elif [ -e "$KD/expect" ]; then cp "$KD/expect" "\$COCKPIT_ACTION.expect"; fi
+cat "$KD/line" > "\$COCKPIT_ACTION"
+KDBIN
+chmod +x "$KD/bin"
+"$TMUX_REAL" -L "$KV" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 3600' >/dev/null 2>&1
+KVHOME=$("$TMUX_REAL" -L "$KV" list-panes -t t -F '#{pane_id}')
+kv_win() {                    # <window-name> -> the pane id of a fresh one-pane window
+    "$TMUX_REAL" -L "$KV" new-window -d -P -F '#{pane_id}' -n "$1" -t t: 'exec sleep 3600'
+}
+kv_id() { "$TMUX_REAL" -L "$KV" display-message -p -t "$1" '#{window_id}'; }
+kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" && echo alive || echo gone; }
+kv_run() {                    # <action-line> [expect]: one trip through the wrapper; the note it left
+    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"; : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
+    [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
+    [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
+    "$TMUX_REAL" -L "$KV" new-window -d -t t: \
+        "${KV_SHIM:+export PATH=\"$KV_SHIM:\$PATH\"; }env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME; echo x > $KD/done"
+    until_file "$KD/done" 'x'
+    # the second run's argv is `board --select %N --note <file>` and then the note
+    sed -n '3,$p' "$KD/bargv"
+}
+
+V=$(kv_win vic-one); VW=$(kv_id "$V"); VI=$("$TMUX_REAL" -L "$KV" display-message -p -t "$V" '#{session_name}:#{window_index}')
+KVNOTE="✓ cockpit: killed window $VW ($VI vic-one)"
+is "kill %N with the shown window id kills that window, and the whole ✓ note names id, place and name" "$KVNOTE" "$(kv_run "kill $V" "$VW")"
+is "and the window is gone" "gone" "$(kv_alive "$V")"
+
+# Two windows with one name, a pane moved from the first into the second between
+# the confirm and the verb: the id the human confirmed no longer holds the pane,
+# and the other window of that name must not die in its place.
+A=$(kv_win claude); AW=$(kv_id "$A"); A2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$A" 'exec sleep 3600')
+B=$(kv_win claude); BW=$(kv_id "$B")
+"$TMUX_REAL" -L "$KV" join-pane -d -s "$A" -t "$B"
+case "$(kv_run "kill $A" "$AW")" in "✕ cockpit: not killed: $A is now in window $BW, you confirmed $AW") ok "a pane moved into a window of the same name is refused, naming both ids" ;;
+    *) bad "a pane moved into a window of the same name is refused, naming both ids" "✕ ... $A is now in window $BW, you confirmed $AW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and nothing died: the first window's other pane, the moved pane, the other window" "alive alive alive" \
+   "$(kv_alive "$A2") $(kv_alive "$A") $(kv_alive "$B")"
+
+# The same move, but in the gap between the wrapper's check and its kill: a tmux
+# shim moves the pane just before the if-shell that kills. The check and the kill
+# are one call, so the format goes false and the other window survives.
+C=$(kv_win claude); CW=$(kv_id "$C"); C2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$C" 'exec sleep 3600')
+D=$(kv_win claude)
+mkdir -p "$KD/shim"
+printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s/race ]; then rm -f %s/race; %s join-pane -d -s %s -t %s; fi\nexec %s "$@"\n' "$KD" "$KD" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
+chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
+kv_run "kill $C" "$CW" >/dev/null
+KV_SHIM=
+is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
+is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | cut -c1-1)"
+
+V=$(kv_win vic-two)
+case "$(kv_run "kill $V" "$BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
+    *) bad ".expect naming another window's id refuses" "✕ ... you confirmed $BW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and that window survives" "alive" "$(kv_alive "$V")"
+
+case "$(kv_run "kill $V")" in '✕ cockpit: not killed: the board named no window'*) ok "kill %N with no .expect refuses" ;;
+    *) bad "kill %N with no .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the window survives" "alive" "$(kv_alive "$V")"
+
+case "$(kv_run "kill $V" "")" in '✕ cockpit: not killed: the board named no window'*) ok "an empty .expect refuses" ;;
+    *) bad "an empty .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+case "$(kv_run "kill $V" "vic-two")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a window name, not an id, refuses" ;;
+    *) bad "a .expect that is a window name, not an id, refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the window survives both" "alive" "$(kv_alive "$V")"
+
+KV_LINK=1; case "$(kv_run "kill $V" "$(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
+    *) bad "a .expect that is a symlink is not read" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+KV_LINK=
+is "and that window survives too" "alive" "$(kv_alive "$V")"
+
+# The wrapper clears .expect before every board run: trip 1 leaves V2's id behind
+# (a refused kill of V), trip 2 asks to kill V2 with no .expect of its own.
+V2=$(kv_win vic-three); V2W=$(kv_id "$V2")
+rm -f "$KD/once" "$KD/twice" "$KD/done" "$KD/link" "$KD/rv"; : > "$KD/bargv"
+printf 'kill %s\n' "$V" > "$KD/line"; printf '%s\n' "$V2W" > "$KD/expect"; printf 'kill %s\n' "$V2" > "$KD/line2"
+"$TMUX_REAL" -L "$KV" new-window -d -t t: \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME 2>$KD/err; echo x > $KD/done"
+until_file "$KD/done" 'x'
+case "$(tail -n 1 "$KD/bargv")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect left by the last trip does not stand in for the next action's" ;;
+    *) bad "a .expect left by the last trip does not stand in for the next action's" "✕ ... named no window" "$(cat "$KD/bargv")" ;; esac
+is "and the window it named survives" "alive" "$(kv_alive "$V2")"
+
+case "$(kv_run "kill %99999" "@1")" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
+    *) bad "kill of a pane that is gone says so and kills nothing" "✕ cockpit: %99999 is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+
+# a window holding a second pane: the whole window goes, as the confirm said
+V=$(kv_win vic-four); V3=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
+kv_run "kill $V" "$(kv_id "$V")" >/dev/null
+is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive "$V") $(kv_alive "$V3")"
+case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board returns after a kill, selecting the pane that was" ;;
+    *) bad "the board returns after a kill, selecting the pane that was" "board --select $V --note <file>" "$(sed -n 2p "$KD/bargv")" ;; esac
+
+: > "$KD/rv"; rm -f "$KD/rvrc" "$KD/rvout"
+kv_run "request $V" >/dev/null
+until_file "$KD/rv" '*--request*'
+is "request %N runs tmux-review's --request path on that pane, once the board has closed" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
+is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/bargv" | tr '\n' ';')"
+# run-shell expands formats and hands the string to sh: a plugin directory with a
+# # and a ' in its name must still reach tmux-review.
+KQ="$KD/q#{x}uo'te"; mkdir -p "$KQ"; cp -r "$KD/p/." "$KQ/"; : > "$KD/rv"
+rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/expect" "$KD/link"; printf 'request %s\n' "$V" > "$KD/line"
+"$TMUX_REAL" -L "$KV" new-window -d -t t: \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log '${KQ//\'/\'\\\'\'}/scripts/cockpit-board' -p $KVHOME 2>$KD/err; echo x > $KD/done"
+until_file "$KD/rv" '*--request*'
+is "request %N finds tmux-review under a plugin directory holding #{x} and '" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
+
+# The request opens a popup, and tmux silently runs nothing for a popup opened
+# inside another (display-popup exits 0). So the wrapper must be gone first:
+# a real client on the private server, the board in a popup, tmux-review a stub
+# that opens a popup of its own and leaves a file.
+KN="cockpit-kn-$$"; KNO="cockpit-kno-$$"; SOCKS="$SOCKS $KN $KNO"
+"$TMUX_REAL" -L "$KN" -f /dev/null new-session -d -s s -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+KNP=$("$TMUX_REAL" -L "$KN" list-panes -F '#{pane_id}')
+printf '#!/bin/sh\n"%s" -L %s display-popup -E -t %s "echo ran > %s/nested; sleep 0.2"\n' "$TMUX_REAL" "$KN" "$KNP" "$KD" > "$KD/p/scripts/tmux-review"
+"$TMUX_REAL" -L "$KNO" -f /dev/null new-session -d -s o -x 100 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $KN attach -t s" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$KN" list-clients -F '#{client_name}'
+rm -f "$KD/once" "$KD/nested" "$KD/expect" "$KD/link"; printf 'request %s\n' "$KNP" > "$KD/line"
+"$TMUX_REAL" -L "$KN" display-popup -E -w 80 -h 20 \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KNP" >/dev/null 2>&1 &
+KNJOB=$!
+until_file "$KD/nested" 'ran'; knr=$?
+is "request %N from inside the board's popup gets its own popup open" "0" "$knr"
+kill "$KNJOB" 2>/dev/null; wait "$KNJOB" 2>/dev/null
+"$TMUX_REAL" -L "$KNO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$KN" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
+fi
+
+# --- sessions view (#245): cockpit-tui sessions and the tm that runs it -------
+# A private server of sessions (SVS) and a second one (SVO) whose panes are the
+# ptys the picker and tm run in, so nothing here touches the suite's own server.
+sv_server() {                 # sv_server <tag> -- alpha, beta (waiting), gamma; ids in SVA SVB SVG
+    SVS="cockpit-sv$1-$$"; SVO="cockpit-svo$1-$$"; SOCKS="$SOCKS $SVS $SVO"
+    "$TMUX_REAL" -L "$SVS" -f /dev/null new-session -d -s alpha -x 100 -y 30 'exec -a claude sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SVS" set -g @cockpit_agents_glob '|claude|'
+    "$TMUX_REAL" -L "$SVS" new-session -d -s beta 'exec -a claude sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SVS" new-session -d -s gamma 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate needs-input
+    "$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate_msg 'Deploy to prod?'
+    SVA=$("$TMUX_REAL" -L "$SVS" display-message -p -t alpha: '#{session_id}')
+    SVB=$("$TMUX_REAL" -L "$SVS" display-message -p -t beta: '#{session_id}')
+    SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
+}
+sv_pane() {                   # sv_pane <dir> <cmd...> -- <cmd> in a pty of SVO; its rc lands in <dir>/rc, stderr in <dir>/err
+    local d=$1; shift
+    "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+    { printf '#!/bin/sh\n'; printf '%q ' "$@"; printf '2> "%s/err"\necho $? > "%s/rc"\nexec sleep 30\n' "$d" "$d"; } > "$d/run"
+    chmod +x "$d/run"; : > "$d/err"; rm -f "$d/rc"
+    "$TMUX_REAL" -L "$SVO" -f /dev/null new-session -d -s t -x "${SVCOLS:-100}" -y "${SVROWS:-24}" "TERM=xterm-256color $d/run" >/dev/null 2>&1
+}
+sv_ui() {                     # sv_ui <dir> [tui args...] -- cockpit-tui sessions, the action files under <dir>/act
+    local d=$1; shift
+    rm -f "$d"/act "$d"/act.*
+    sv_pane "$d" env COCKPIT_TMUX="$TMUX_REAL -L $SVS" COCKPIT_ACTION="$d/act" "$DIR/bin/cockpit-tui" sessions "$@"
+}
+sv_key() { "$TMUX_REAL" -L "$SVO" send-keys -t t "$@"; }
+sv_cap() { until_cap "$SVO" t "$1"; }
+sv_tm() {                     # sv_tm <dir> [VAR=val...] -- [tm args] -- tm as a login shell would run it, tmux aimed at SVS
+    local d=$1; shift
+    mkdir -p "$d/bin" "$d/work"
+    printf '#!/bin/sh\n[ -z "${SV_ARGS:-}" ] || printf "%%s\\n" "$*" >> "$SV_ARGS"\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$SVS" > "$d/bin/tmux"; chmod +x "$d/bin/tmux"
+    local -a ev=()
+    while [ $# -gt 0 ] && [ "$1" != -- ]; do ev+=("$1"); shift; done
+    shift
+    sv_pane "$d" sh -c 'cd "$1" && shift && exec "$@"' sh "$d/work" \
+        env -u TMUX -u TMUX_PANE -u COCKPIT_ACTION PATH="$d/bin:$PATH" "${ev[@]}" "$DIR/scripts/tm" "$@"
+}
+sv_stub() {                   # sv_stub <dir> -- a picker that prints $SV_LINE, then races $SV_RENAME in before tm acts
+    cat > "$1/picker" <<'STUB'
+#!/bin/sh
+[ -z "${SV_ONCE:-}" ] || { [ ! -e "$SV_ONCE" ] || exit 1; : > "$SV_ONCE"; }
+[ -z "${SV_EXPECT:-}" ] || printf '%s\n' "$SV_EXPECT" > "$COCKPIT_ACTION.expect"
+[ -z "${SV_TEXT:-}" ] || printf '%s\n' "$SV_TEXT" > "$COCKPIT_ACTION.text"
+[ -z "${SV_GLYPHS_OUT:-}" ] || printf '%s' "${COCKPIT_GLYPHS:-}" > "$SV_GLYPHS_OUT"
+printf '%s\n' "$SV_LINE" > "$COCKPIT_ACTION"
+[ -z "${SV_RENAME:-}" ] || "$SV_TMUX" -L "$SV_SOCK" rename-session -t "$SV_TARGET" "$SV_RENAME"
+STUB
+    chmod +x "$1/picker"
+}
+sv_names() { "$TMUX_REAL" -L "$SVS" list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '; }
+
+echo "== sessions view: cockpit-tui sessions through a pty (#245) =="
+# Rows come from tmux, keys from /dev/tty, and the answer goes to the action
+# file: a picker that drew on stdout or read stdin would fail one of these.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui sessions (no bin/cockpit-tui; run make tui)"
+elif need_tmux "cockpit-tui sessions"; then :; else
+sv_server a; SVD=$(mktmpd)
+sv_ui "$SVD" --current "$SVA"
+sv_cap '*beta*gamma*alpha*(here)*' && ok "the rows are drawn: waiting first, your own session last and marked" \
+    || bad "the rows are drawn: waiting first, your own session last and marked" "beta, gamma, alpha (here)" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)"
+case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+    *"Deploy to prod?"*) ok "the preview shows the question a waiting window asks" ;;
+    *) bad "the preview shows the question a waiting window asks" "Deploy to prod?" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)" ;;
+esac
+sv_key Enter; until_file "$SVD/rc" '?*'
+is "enter writes switch and the id of the first row" "switch $SVB" "$(cat "$SVD/act" 2>/dev/null)"
+is "enter exits 0" "0" "$(cat "$SVD/rc")"
+is "a switch leaves no side files" "act" "$(ls "$SVD" | grep '^act' | tr '\n' ' ' | sed 's/ $//')"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key 2; until_file "$SVD/rc" '?*'
+is "2 on an empty filter switches to the second row" "switch $SVG" "$(cat "$SVD/act" 2>/dev/null)"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key z e t a; sv_cap '*zeta*creates it*'; sv_key Enter; until_file "$SVD/rc" '?*'
+is "enter with no match writes new-session -" "new-session -" "$(cat "$SVD/act" 2>/dev/null)"
+is "and the typed name goes in .text" "zeta" "$(cat "$SVD/act.text" 2>/dev/null)"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key g a; sv_cap '*1/1 of 3*'; sv_key M-Enter; until_file "$SVD/rc" '?*'
+is "alt-enter creates the typed name although gamma matches" "new-session - ga" "$(cat "$SVD/act" 2>/dev/null) $(cat "$SVD/act.text" 2>/dev/null)"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key C-x; sv_cap '*kill beta?*1 agent (1 waiting)*'
+sleep 0.3
+is "one ^X names what dies and writes nothing" "" "$(cat "$SVD/act" 2>/dev/null)"
+sv_key C-x; until_file "$SVD/rc" '?*'
+is "the second ^X writes kill-session and the id" "kill-session $SVB" "$(cat "$SVD/act" 2>/dev/null)"
+is "and the shown name goes in .expect" "beta" "$(cat "$SVD/act.expect" 2>/dev/null)"
+is "the picker killed nothing itself" "alpha beta gamma " "$(sv_names)"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key End C-x; sv_cap '*your own session*'
+sv_key C-x; sleep 0.3
+is "your own session refuses a kill, and a second ^X still writes nothing" "" "$(cat "$SVD/act" 2>/dev/null)"
+sv_key Escape; sv_key Escape; until_file "$SVD/rc" '?*'
+is "esc cancels with exit 1 and no action" "1 0" "$(cat "$SVD/rc") $(ls "$SVD" | grep -c '^act')"
+
+sv_ui "$SVD" --current "$SVA"; sv_cap '*gamma*'; sv_key F2; sv_cap '*rename> beta*'
+sv_key BSpace BSpace BSpace BSpace d e l t a; sv_key Enter; until_file "$SVD/rc" '?*'
+is "F2 and a new name write rename-session, the id, the name in .text" "rename-session $SVB delta" "$(cat "$SVD/act" 2>/dev/null) $(cat "$SVD/act.text" 2>/dev/null)"
+is "and the old name in .expect" "beta" "$(cat "$SVD/act.expect" 2>/dev/null)"
+
+sv_ui "$SVD" --needs; sv_cap '*needs you*beta*'
+case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+    *gamma*|*alpha*) bad "--needs lists only the sessions waiting or failed" "beta alone" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)" ;;
+    *) ok "--needs lists only the sessions waiting or failed" ;;
+esac
+sv_key Escape; until_file "$SVD/rc" '?*'
+
+# No COCKPIT_ACTION: stdout is the only place to answer, and only switch fits.
+sv_pane "$SVD" env COCKPIT_TMUX="$TMUX_REAL -L $SVS" "$DIR/bin/cockpit-tui" sessions --current "$SVA"
+sv_cap '*gamma*'; sv_key Enter; until_file "$SVD/rc" '?*'
+is "without COCKPIT_ACTION a switch is the one line on stdout" "0" "$(cat "$SVD/rc")"
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+
+SVCOLS=60 SVROWS=14 sv_ui "$SVD" --current "$SVA"
+sv_cap '*beta*'
+case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+    *"(here)"*alpha*|*alpha*"(here)"*) ok "at 60 columns the rows still show your own session" ;;
+    *) bad "at 60 columns the rows still show your own session" "alpha (here)" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)" ;;
+esac
+sv_key Escape; until_file "$SVD/rc" '?*'
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
+fi
+
+echo "== sessions view: the picker says when every row it was given had no key (#245) =="
+# The note #237's review asked for: an input of tab-led lines opens no screen,
+# exits 1, and stderr names how many rows were skipped.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "pick keyless note (no bin/cockpit-tui; run make tui)"
+else
+KLD=$(mktmpd)
+printf '\tone\n\ttwo\n\tthree\n' | "$DIR/bin/cockpit-tui" pick >"$KLD/out" 2>"$KLD/err"; klrc=$?
+is "all rows keyless: exit 1 without a screen" "1" "$klrc"
+is "and nothing on stdout" "0" "$(wc -c < "$KLD/out" | tr -d ' ')"
+is "and stderr counts the rows it skipped" "cockpit-tui: pick: skipped 3 rows with no key" "$(cat "$KLD/err")"
+printf '\tonly\n' | "$DIR/bin/cockpit-tui" pick >/dev/null 2>"$KLD/err"
+is "one keyless row is singular" "cockpit-tui: pick: skipped 1 row with no key" "$(cat "$KLD/err")"
+fi
+
+echo "== tm sessions picker: switch, create, kill, rename and --needs from a login shell (#245) =="
+# No $TMUX: the shape of a shell outside tmux. tm runs in a pty of its own, so
+# the picker is the real cockpit-tui; attach-session lands as a client of SVS.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "tm sessions picker (no bin/cockpit-tui; run make tui)"
+elif need_tmux "tm sessions picker"; then :; else
+sv_server b; SVD=$(mktmpd)
+sv_tm "$SVD" --; sv_cap '*session>*3 sessions*'
+sv_key g a m; sv_cap '*1/1 of 3*'; sv_key Enter
+until_out gamma "$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}'
+is "enter on a row attaches the login shell to that session" "gamma" "$("$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}' 2>/dev/null)"
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+
+sv_server b2; SVD=$(mktmpd)
+sv_tm "$SVD" --; sv_cap '*session>*3 sessions*'
+sv_key f r e s h Space o n e; sv_cap '*fresh one*creates it*'; sv_key Enter
+until_out '*fresh_one*' "$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}'
+is "a name nothing matches creates it, cleaned, and attaches" "fresh_one" "$("$TMUX_REAL" -L "$SVS" list-clients -F '#{session_name}' 2>/dev/null)"
+is "in the directory tm was run from" "$SVD/work" "$("$TMUX_REAL" -L "$SVS" display-message -p -t fresh_one: '#{session_path}' 2>/dev/null)"
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+
+sv_server b3; SVD=$(mktmpd)
+sv_tm "$SVD" --; sv_cap '*session>*3 sessions*'
+sv_key g a m m a; sv_cap '*1/1 of 3*'; sv_key C-x; sv_cap '*kill gamma?*'; sv_key C-x
+until_out 'alpha beta ' sv_names
+is "^X twice kills the session through tm" "alpha beta " "$(sv_names)"
+sv_cap '*session>*2 sessions*' && ok "and the picker comes back for the next one" || bad "and the picker comes back for the next one" "2 sessions" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -3)"
+sv_key Escape; until_file "$SVD/rc" '?*'
+is "esc then ends tm with exit 0" "0" "$(cat "$SVD/rc")"
+case "$(cat "$SVD/err")" in *"killed: gamma"*) ok "and tm says what it killed" ;; *) bad "and tm says what it killed" "killed: gamma" "$(cat "$SVD/err")" ;; esac
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+
+sv_server b4; SVD=$(mktmpd)
+sv_tm "$SVD" --; sv_cap '*session>*3 sessions*'
+sv_key g a m m a; sv_cap '*1/1 of 3*'; sv_key F2; sv_cap '*rename> gamma*'
+sv_key BSpace BSpace BSpace BSpace BSpace d e l t a Enter
+until_out 'alpha beta delta ' sv_names
+is "F2 renames the session through tm" "alpha beta delta " "$(sv_names)"
+sv_cap '*session>*3 sessions*'; sv_key Escape; until_file "$SVD/rc" '?*'
+case "$(cat "$SVD/err")" in *"renamed: gamma -> delta"*) ok "and tm says what it renamed" ;; *) bad "and tm says what it renamed" "renamed: gamma -> delta" "$(cat "$SVD/err")" ;; esac
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+
+sv_server b5; SVD=$(mktmpd); mkdir "$SVD/tmp"
+sv_tm "$SVD" TMPDIR="$SVD/tmp" -- --needs; sv_cap '*needs you*beta*'
+case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+    *gamma*|*alpha*) bad "tm --needs shows only the sessions waiting or failed" "beta alone" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)" ;;
+    *) ok "tm --needs shows only the sessions waiting or failed" ;;
+esac
+sv_key Escape; until_file "$SVD/rc" '?*'
+is "esc ends tm with exit 0, nothing on stderr and no temp dir left" "0||" "$(cat "$SVD/rc")|$(cat "$SVD/err")|$(ls -A "$SVD/tmp")"
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm sessions picker: tm re-checks the id and the name before it acts (#245) =="
+# A stand-in picker writes the action and, when asked, renames the session
+# between the print and tm's act: the window a person's ^X ^X can lose.
+if need_tmux "tm re-check"; then :; else
+sv_server c; SVD=$(mktmpd); sv_stub "$SVD"
+svrun() {                     # svrun <env words...> -- run tm against the stub; rc in SVRC, stderr in SVERR
+    sv_tm "$SVD" COCKPIT_TUI_BIN="$SVD/picker" SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" SV_SOCK="$SVS" "$@" --
+    until_file "$SVD/rc" '?*'; SVRC=$(cat "$SVD/rc" 2>/dev/null); SVERR=$(cat "$SVD/err"); rm -f "$SVD/once"
+}
+svrun SV_LINE="kill-session $SVG" SV_EXPECT=gamma SV_TARGET="$SVG" SV_RENAME=other
+is "a session renamed between the print and the kill is not killed" "alpha beta other " "$(sv_names)"
+case "$SVERR" in *"✕"*"now called 'other', not 'gamma'"*"nothing changed"*) ok "and tm refuses with a ✕ note naming both names" ;;
+    *) bad "and tm refuses with a ✕ note naming both names" "✕ ... now called 'other', not 'gamma'" "$SVERR" ;; esac
+is "and exits 1" "1" "$SVRC"
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" gamma
+
+svrun SV_LINE="kill-session $SVG" SV_EXPECT=gamma
+is "the same kill with the name unchanged goes through" "alpha beta " "$(sv_names)"
+case "$SVERR" in *"killed: gamma"*) ok "and says what it killed" ;; *) bad "and says what it killed" "killed: gamma" "$SVERR" ;; esac
+"$TMUX_REAL" -L "$SVS" new-session -d -s gamma 'exec sleep 300'; SVG=$("$TMUX_REAL" -L "$SVS" display-message -p -t gamma: '#{session_id}')
+
+svrun SV_LINE="kill-session $SVG"
+is "a kill with no .expect kills nothing" "alpha beta gamma " "$(sv_names)"
+svrun SV_LINE="rename-session $SVG" SV_EXPECT=gamma SV_TARGET="$SVG" SV_RENAME=other SV_TEXT=zed
+is "a rename races the same way and is refused" "alpha beta other " "$(sv_names)"
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" gamma
+svrun SV_LINE="rename-session $SVG" SV_EXPECT=gamma SV_TEXT='a.b c'
+is "a rename with the name unchanged goes through, cleaned like a new name" "a_b_c alpha beta " "$(sv_names)"
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" gamma
+svrun SV_LINE="new-session -" SV_TEXT='--x y'
+is "new-session - creates the .text name, cleaned of a leading dash and a space" "alpha beta gamma x_y " "$(sv_names)"
+"$TMUX_REAL" -L "$SVS" kill-session -t x_y
+for bad_line in "switch beta" 'kill-session $1x' 'kill-session beta' 'kill-session $1;x' 'switch $' 'new-session beta' 'frob $1'; do
+    svrun SV_LINE="$bad_line" SV_EXPECT=beta
+    is "an action line '$bad_line' is refused: exit 1, nothing killed or attached" "1 alpha beta gamma  " \
+       "$SVRC $(sv_names) $("$TMUX_REAL" -L "$SVS" list-clients 2>/dev/null)"
+done
+"$TMUX_REAL" -L "$SVS" set -g @cockpit_glyphs ascii
+svrun SV_LINE="switch $SVB" SV_GLYPHS_OUT="$SVD/glyphs"
+is "@cockpit_glyphs ascii reaches the picker as COCKPIT_GLYPHS" "ascii" "$(cat "$SVD/glyphs" 2>/dev/null)"
+"$TMUX_REAL" -L "$SVS" set -u -g @cockpit_glyphs
+svrun TM_SID="$SVA" SV_LINE="kill-session $SVA" SV_EXPECT=alpha
+is "tm will not kill the session it was run from, whatever the picker says" "alpha beta gamma " "$(sv_names)"
+case "$SVERR" in *"the session you are in"*) ok "and says why" ;; *) bad "and says why" "the session you are in" "$SVERR" ;; esac
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm sessions picker: a name is data, never a tmux format (#245) =="
+# tmux expands #{...} and #(...) in a session name and in display-message, and
+# #(cmd) runs cmd. ${IFS} stands in for the space tm's name cleaner would turn
+# into an underscore; the link has no dot, which it would turn into one too.
+if need_tmux "tm names are data"; then :; else
+sv_server d; SVD=$(mktmpd); sv_stub "$SVD"
+HOSTL="/tmp/svp$$"; ln -s "$SVD" "$HOSTL"; HOSTF="$HOSTL/pwned"; : > "$SVD/args"
+svrun() {                     # svrun <env words...> -- run tm against the stub; rc in SVRC, stderr in SVERR
+    sv_tm "$SVD" COCKPIT_TUI_BIN="$SVD/picker" SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" SV_SOCK="$SVS" SV_ARGS="$SVD/args" "$@" --
+    until_file "$SVD/rc" '?*'; SVRC=$(cat "$SVD/rc" 2>/dev/null); SVERR=$(cat "$SVD/err"); rm -f "$SVD/once"
+}
+sv_lit() { "$TMUX_REAL" -L "$SVS" list-sessions -F '#{session_name}' 2>/dev/null | grep -cxF -- "$1"; }
+HN='x#(touch${IFS}'"$HOSTF"')y'
+svrun SV_LINE="new-session -" SV_TEXT="$HN"
+sleep 0.5
+is "new-session with #(cmd) in the name runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and the session carries the name literally" "1" "$(sv_lit "$HN")"
+svrun SV_LINE="new-session -" SV_TEXT='a#{pid}b'
+is "#{pid} in a new name is not expanded" "1" "$(sv_lit 'a#{pid}b')"
+svrun SV_LINE="new-session -" SV_TEXT='n#[fg=red]d'
+is "#[ in a new name is kept" "1" "$(sv_lit 'n#[fg=red]d')"
+svrun SV_LINE="new-session -" SV_TEXT='m##x#'
+is "a run of # and a trailing # are kept" "1" "$(sv_lit 'm##x#')"
+svrun SV_LINE="new-session -" SV_TEXT='c#[fg=red]d'
+is "#[fg=red] in a new name is kept" "1" "$(sv_lit 'c#[fg=red]d')"
+svrun SV_LINE="rename-session $SVG" SV_EXPECT=gamma SV_TEXT="$HN"'2'
+sleep 0.5
+is "rename-session with #(cmd) runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and renames to the literal name" "1" "$(sv_lit "$HN"2)"
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'e##{pid}f'
+svrun SV_LINE="rename-session $SVG" SV_EXPECT='e#{pid}f' SV_TEXT=plain
+is "a name with #{pid} is renamed when .expect is that name" "1" "$(sv_lit plain)"
+# A refusal names the live session: that text must reach display-message escaped.
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'g##(touch${IFS}'"$HOSTF"')h'
+: > "$SVD/args"
+svrun TM_POPUP=1 SV_LINE="kill-session $SVG" SV_EXPECT=gamma
+sleep 0.5
+is "a refusal naming a #(cmd) session runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and hands display-message the escaped text" "0 1" "$(grep '^display-message' "$SVD/args" | grep -c '[^#]#(' ) $(grep '^display-message' "$SVD/args" | grep -c '##(')"
+printf '%s' "$SVERR" > "$SVD/e.txt"
+is "and stderr still shows the name as it is" "1" "$(grep -cF -- 'g#(touch${IFS}' "$SVD/e.txt")"
+# The picker draws the same names literally.
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'k##{pid}##(touch${IFS}'"$HOSTF"')'
+if [ -x "$DIR/bin/cockpit-tui" ]; then
+    sv_ui "$SVD" --current "$SVA"; sv_cap '*k#{pid}#(touch${IFS}*'
+    sv_cap '*k#{pid}#(touch*'; svshot=$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)
+    is "the sessions view draws the name as it is, and runs nothing" "1 absent" \
+       "$(printf '%s\n' "$svshot" | grep -cF -- 'k#{pid}#(touch') $([ -e "$HOSTF" ] && echo present || echo absent)"
+    sv_key Escape; until_file "$SVD/rc" '?*'
+fi
+# A waiting session's question may carry the record separators and a newline.
+"$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate_msg "$(printf 'Ship it?\037now\nplease\tok')"
+if [ -x "$DIR/bin/cockpit-tui" ]; then
+    sv_ui "$SVD" --current "$SVA"; sv_cap '*Ship it? now please ok*'
+    case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+        *'Ship it? now please ok'*beta*|*beta*'Ship it? now please ok'*) ok "a question with a record separator, newline and tab reads as one line" ;;
+        *) bad "a question with a record separator, newline and tab reads as one line" "Ship it? now please ok" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)" ;;
+    esac
+    is "and the session rows are not shifted by it" "3" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | grep -cE '^.?. [123] ')"
+    sv_key Escape; until_file "$SVD/rc" '?*'
+fi
+rm -f "$HOSTL"
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm --popup: sized to the sessions, the options are ceilings (#245) =="
+# A fake tmux answers the one display-message --popup asks and logs the popup.
+# Fields: sessions, the needs-you band, @cockpit_touch, width, height.
+TP=$(mktmpd)
+cat > "$TP/tmux" <<'STUB'
+#!/bin/sh
+case "$1" in
+  display-message) printf '%s\n' "$TP_ANSWER" ;;
+  display-popup)   shift; printf '%s\n' "$*" >> "$TP_LOG" ;;
+  new-window)      shift; printf 'WINDOW %s\n' "$*" >> "$TP_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$TP/tmux"
+tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W -h H"
+    local a=$1; shift
+    : > "$TP/log"
+    env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
+        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
+    sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
+}
+is "desktop: 70% wide, rows + 5 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
+is "desktop: rows + 5 above it" "-w 140 -h 25" "$(tpsize '20|0||||' 200 50)"
+is "desktop: 12 sessions get their 12 rows (prompt, header, footer and border make 17)" "-w 140 -h 17" "$(tpsize '12|0||||' 200 50)"
+is "desktop: many sessions stop at 70% of the height" "-w 140 -h 35" "$(tpsize '40|0||||' 200 50)"
+is "tablet: 90% wide" "-w 99 -h 14" "$(tpsize '7|3||||' 110 40)"
+is "narrow: full width, rows + 5, a 14-line floor (12 inside the border)" "-w 56 -h 14" "$(tpsize '7|3||||' 56 30)"
+is "narrow with many sessions: rows + 5" "-w 56 -h 25" "$(tpsize '20|0||||' 56 30)"
+is "@cockpit_touch off at a narrow width: the desktop tier" "-w 50 -h 14" "$(tpsize '7|3|off|||' 56 30)"
+is "@cockpit_touch on at a desktop width: full width" "-w 200 -h 14" "$(tpsize '7|3|on|||' 200 50)"
+is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7|3||60%|10|' 200 50)"
+is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
+tpsize '7|3||||' 200 12 >/dev/null
+case "$(cat "$TP/log")" in
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "but a window of its session, running tm" ;;
+    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... /tm" "$(cat "$TP/log")" ;;
+esac
+is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" "$(tpsize '7|3||||' 200 14)"
+tpsize '7|3||||' 200 13 >/dev/null
+case "$(cat "$TP/log")" in WINDOW*) ok "and 13 lines is still a window" ;; *) bad "and 13 lines is still a window" "WINDOW ..." "$(cat "$TP/log")" ;; esac
+is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
+tpsize '7|3||||' 200 50 >/dev/null
+case "$(cat "$TP/log")" in
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "the popup goes to that client, in its session" ;;
+    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 .../tm" "$(cat "$TP/log")" ;;
+esac
+tpsize '7|3||||' 56 30 --needs >/dev/null
+case "$(cat "$TP/log")" in
+    *"/tm --needs") ok "--needs rides into the popup" ;;
+    *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
+esac
+
+echo "== tm sessions picker: prefix+s popup switches the client, and kill leaves it open (#245) =="
+# The real path: tm --popup opens the picker in a popup of a real client. The
+# server starts with a leaked $TMUX_PANE, as one launched from inside tmux does (#212).
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "tm popup (no bin/cockpit-tui; run make tui)"
+elif need_tmux "tm popup"; then :; else
+TQI="cockpit-tmqi-$$"; TQO="cockpit-tmqo-$$"; SOCKS="$SOCKS $TQI $TQO"
+TMUX_PANE=%99 "$TMUX_REAL" -L "$TQI" -f /dev/null new-session -d -s one -x 120 -y 30 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQI" new-session -d -s two 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQI" new-session -d -s three 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQO" -f /dev/null new-session -d -s o -x 120 -y 30 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $TQI attach -t one" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}'
+tqc=$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name}')
+tqs=$("$TMUX_REAL" -L "$TQI" display-message -p -t one: '#{session_id}')
+tqpop() { "$TMUX_REAL" -L "$TQI" run-shell -b "$DIR/scripts/tm --popup '$tqc' '$tqs' 120 30"; }
+tqpop
+until_cap "$TQO" o: '*session>*one (here)*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: t w o
+until_cap "$TQO" o: '*session> two*1/1 of 3*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: Enter
+until_out "$tqc two" "$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}'
+is "enter on a row switches the popup's own client, and nests nothing" "$tqc two" \
+   "$("$TMUX_REAL" -L "$TQI" list-clients -F '#{client_name} #{session_name}' 2>/dev/null)"
+# From "two" the popup marks two as here, and ^X on it refuses.
+tqs=$("$TMUX_REAL" -L "$TQI" display-message -p -t two: '#{session_id}')
+tqpop
+until_cap "$TQO" o: '*session>*two (here)*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: t w o
+until_cap "$TQO" o: '*session> two*1/1 of 3*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: C-x
+if until_cap "$TQO" o: '*your own session*'; then ok "the popup's own session is the one marked, and ^X on it refuses"
+else bad "the popup's own session is the one marked, and ^X on it refuses" "your own session" "$("$TMUX_REAL" -L "$TQO" capture-pane -p -t o: | head -4)"; fi
+"$TMUX_REAL" -L "$TQO" send-keys -t o: C-x
+sleep 0.3
+is "and a second ^X kills nothing" "one three two " "$("$TMUX_REAL" -L "$TQI" list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' ')"
+# Kill another one: the popup stays open on the rest.
+"$TMUX_REAL" -L "$TQO" send-keys -t o: C-u t h r e e C-x
+until_cap "$TQO" o: '*kill three?*'
+"$TMUX_REAL" -L "$TQO" send-keys -t o: C-x
+until_out 'one two ' eval "\"$TMUX_REAL\" -L $TQI list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' '"
+is "^X twice in the popup kills that session" "one two " "$("$TMUX_REAL" -L "$TQI" list-sessions -F '#{session_name}' 2>/dev/null | sort | tr '\n' ' ')"
+until_cap "$TQO" o: '*session>*2 sessions*' && ok "and the popup stays open on the sessions left" \
+    || bad "and the popup stays open on the sessions left" "session> ... 2 sessions" "$("$TMUX_REAL" -L "$TQO" capture-pane -p -t o: | head -4)"
+"$TMUX_REAL" -L "$TQO" send-keys -t o: Escape
+"$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
+fi
+
+echo "== revdiff: the doctor grades it and bootstrap.sh fetches it, verified =="
+# Fake box and a file:// release host: no network, no real HOME, no live tmux.
+if ! command -v curl >/dev/null 2>&1; then skip_ "revdiff install (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "revdiff install (no sha256sum)"
+elif ! command -v jq >/dev/null 2>&1; then skip_ "revdiff install (no jq)"; else
+RV=$(mktmpd)
+RVH="$RV/home"; RVB="$RV/bin"; RVREL="$RV/rel"; RVD="$RVREL/umputun/revdiff/releases/download/v1.13.0"
+mkdir -p "$RVH/.tmux/plugins" "$RVB" "$RV/new" "$RV/old" "$RV/unk" "$RV/none" "$RV/tmuxtmp" "$RVD" "$RV/pack"
+for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do mkdir -p "$RVH/.tmux/plugins/$d/.git"; done
+rvshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
+rvshim revdiff "version: 1.13.0" "$RV/new"; rvshim revdiff "version: 1.12.9" "$RV/old"
+rvshim revdiff "unknown" "$RV/unk"
+mkdir -p "$RV/rel" "$RV/relold" "$RV/dev" "$RV/un" "$RV/brew"
+rvshim revdiff "dev" "$RV/dev"
+printf '#!/bin/sh\ncase "$1" in -s) echo "$FAKE_S" ;; -m) echo "$FAKE_M" ;; *) exec /usr/bin/uname "$@" ;; esac\n' > "$RV/un/uname"
+printf '#!/bin/sh\necho "$*" >> "%s"\n' "$RV/brew.log" > "$RV/brew/brew"; chmod +x "$RV/un/uname" "$RV/brew/brew"
+rvshim revdiff "version: v1.13.0-abc1234-20260905T044327" "$RV/rel"
+rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
+for d in new old unk none rel relold dev; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
+rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
+    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
+        PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
+}
+rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; }
+out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out")"
+out=$(rvdc "$RV/rel"); is "a release build's v1.13.0-sha-date is an ok row" "ok" "$(rvrow "$out")"
+out=$(rvdc "$RV/relold"); is "and v1.12.0-sha-date is a warn row" "warn" "$(rvrow "$out")"
+out=$(rvdc "$RV/dev"); is "an unparseable version (dev) is a warn row" "warn" "$(rvrow "$out")"
+# A server holds the PATH it started with: its revdiff is the one prefix r runs, even when
+# this shell finds a newer one first.
+RVS="env -u TMUX TMUX_TMPDIR=$RV/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
+$RVS new-session -d 'sleep 300' >/dev/null 2>&1
+$RVS set-environment -g PATH "$RV/old:/usr/bin:/bin" >/dev/null 2>&1
+is "the revdiff on the server's PATH is the one graded" "warn" "$(rvrow "$(rvdc "$RV/new")")"
+$RVS kill-server >/dev/null 2>&1
+out=$(rvdc "$RV/old")
+is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
+out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
+out=$(rvdc "$RV/none")
+is "a missing revdiff is a fail row" "fail" "$(rvrow "$out")"
+is "and its fix names the brew route" "1" "$(printf '%s\n' "$out" | grep -c 'brew install umputun/apps/revdiff')"
+is "and the go route" "1" "$(printf '%s\n' "$out" | grep -c 'go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff)')"
+
+# One tarball per published name; the checksums file lists them as upstream does.
+rvrel() {                     # rvrel [flip]
+    local a
+    rm -f "$RVD"/*; printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$RV/pack/revdiff"; chmod +x "$RV/pack/revdiff"
+    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
+        printf '#!/bin/sh\necho "version: 1.13.0 %s"\n' "$a" > "$RV/pack/revdiff"
+        ( cd "$RV/pack" && tar -czf "$RVD/revdiff_1.13.0_$a.tar.gz" revdiff )
+    done
+    ( cd "$RVD" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
+    if [ "${1:-}" = flip ]; then
+        awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
+            "$RVD/revdiff_1.13.0_checksums.txt" > "$RV/s2" &&
+            mv "$RV/s2" "$RVD/revdiff_1.13.0_checksums.txt"
+    fi
+}
+rvbs() {                      # rvbs <extra PATH dir> <args...> -- bootstrap.sh on the fake box
+    local p=$1; shift
+    env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" XDG_CONFIG_HOME="$RVH/.config" \
+        TMUX_TMPDIR="$RV/tmuxtmp" COCKPIT_GITHUB="file://$RVREL" \
+        PATH="$p:$SHIM:/usr/bin:/bin" "$DIR/bootstrap.sh" "$@" </dev/null 2>&1
+}
+rvrel
+out=$(rvbs "$RV/none" --dry-run); rc=$?
+is "--dry-run says it would fetch revdiff" "1" "$(printf '%s\n' "$out" | grep -c 'would: fetch revdiff 1.13.0')"
+is "and writes nothing into \$BIN" "" "$(ls -A "$RVB")"
+out=$(rvbs "$RV/none"); rc=$?
+is "bootstrap installs revdiff into \$BIN" "version: 1.13.0" "$("$RVB/revdiff" --version 2>/dev/null | cut -d' ' -f1-2)"
+is "and exits 0" "0" "$rc"
+rm -f "$RVB/revdiff"
+out=$(rvbs "$RV/new"); rc=$?
+is "a revdiff at the pin on PATH is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/unk")
+is "an unknown-version revdiff is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/dev")
+is "an unparseable version (dev) is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/rel")
+is "a v-prefixed release build at the pin is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/relold")
+is "a v-prefixed one below the pin is fetched" "present" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+rm -f "$RVB/revdiff"
+out=$(rvbs "$RV/old")
+is "one below the pin is fetched" "present" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+rm -f "$RVB/revdiff"
+rvrel flip
+out=$(rvbs "$RV/none"); rc=$?
+is "a checksum mismatch installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+is "and says so on one line" "1" "$(printf '%s\n' "$out" | grep -c 'FAIL:  revdiff checksum mismatch -- NOT installed')"
+is "and the run exits 1" "1" "$rc"
+# The uname-to-asset mapping: each fake asset says which one it is.
+rvrel
+for m in "Linux x86_64 linux_amd64" "Linux aarch64 linux_arm64" "Linux arm64 linux_arm64" \
+         "Darwin arm64 darwin_arm64" "Darwin x86_64 darwin_amd64"; do
+    set -- $m; rm -f "$RVB/revdiff"
+    out=$(FAKE_S=$1 FAKE_M=$2 rvbs "$RV/un:$RV/none")
+    is "uname $1 $2 fetches the $3 asset" "version: 1.13.0 $3" "$("$RVB/revdiff" --version 2>/dev/null)"
+done
+# macOS with brew: brew installs it, and nothing is fetched into $BIN.
+rm -f "$RVB/revdiff" "$RV/brew.log"
+out=$(FAKE_S=Darwin FAKE_M=arm64 rvbs "$RV/un:$RV/brew:$RV/none")
+is "macOS with brew runs brew install umputun/apps/revdiff" "1" "$(grep -cx 'install umputun/apps/revdiff' "$RV/brew.log")"
+is "and fetches nothing into \$BIN" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+rm -rf "$RVD"; mkdir -p "$RVD"
+out=$(rvbs "$RV/none"); rc=$?
+is "offline (no release host) installs nothing" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+is "and says so on one line" "1" "$(printf '%s\n' "$out" | grep -c 'FAIL:  revdiff checksums unreachable')"
+rm -rf "$RV"
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

@@ -99,6 +99,22 @@ if [ "$check" -eq 1 ]; then
     else row ok fzf "$v"
     fi
 
+    # Required: prefix r spawns it. Same server-PATH rule as fzf. A go install
+    # build prints "unknown": present, version unverifiable, so a warn.
+    rv=$(PATH=${fp:-$PATH} command -v revdiff 2>/dev/null)
+    v=''; [ -z "$rv" ] || v=$("$rv" --version 2>/dev/null)
+    v=${v#version: }; v=${v%% *}
+    revfix='bootstrap.sh, or brew install umputun/apps/revdiff, or'
+    revfix="$revfix go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff);"
+    revfix="$revfix see docs/install.md#requirements"
+    if [ -z "$rv" ]; then row fail revdiff 'not found' "$revfix"
+    elif [ "$(vnum "$v")" -eq 0 ]; then       # "unknown", "dev": no x.y.z to grade
+        row warn revdiff "${v:-unknown} @ $rv" 'a go install build; tested with v1.13.0'
+    elif [ -z "$v" ] || [ "$(vnum "$v")" -lt "$(vnum 1.13.0)" ]; then
+        row warn revdiff "${v:-no version} @ $rv" "older than the tested v1.13.0; $revfix"
+    else row ok revdiff "$v"
+    fi
+
     # Debian names it batcat; the path shows which one won.
     bp=$(command -v bat 2>/dev/null) || bp=$(command -v batcat 2>/dev/null) || bp=''
     if [ -n "$bp" ]; then row ok bat "$(fld 2 "$("$bp" --version 2>/dev/null)") @ $bp"

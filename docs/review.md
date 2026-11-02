@@ -1,26 +1,21 @@
 # Review
 
-Being replaced by the board (#228).
-
 ## Review the agent's changes
 
-`prefix + r` opens a popup review of an agent's uncommitted diff. Comments
-attach to individual lines, and nothing reaches the agent until you say so —
-there is deliberately no key that approves the whole thing at once.
+`prefix + r` opens the board; `r` on a row opens a popup review of that agent's
+uncommitted diff. Comments attach to individual lines, and nothing reaches the
+agent until you say so — there is deliberately no key that approves the whole
+thing at once.
 
-It always opens the **fleet queue**: every agent pane, on every session,
-blocked ones first, previewed the same way the path picker's folder preview
-shows a directory's `git status`. A pane with nothing to review reads `clean`
-(or `no repo`) in the ± column and `↵` on it jumps there instead of opening
-an empty review. Nothing else in this plugin answers "which of my agents
-needs my eyes"; the queue exists because visiting each pane in turn to find
-out does not scale past two or three of them.
+The board lists every agent pane, on every session, blocked ones first. Each row
+shows its diff stat (`+a -d`, `clean`, `no repo`, `?N new`) and branch, so
+"which of my agents needs my eyes" is answered without visiting each pane.
 
 The tree a row diffs is the pane's cwd, unless the pane option `@cockpit_dir`
 names another. An agent that made its worktree by hand (`git worktree add`
 from the main checkout) keeps its process, and so its cwd, in the main
 checkout and drives the tree with `git -C`; its row would read clean master.
-One line from the agent fixes that, and every reader (the queue, `--delta`
+One line from the agent fixes that, and every reader (the board, `--delta`
 for the Stop hook's ◆, `prefix + i`) follows it:
 
 ```sh
@@ -33,12 +28,9 @@ pane, and then every row diffs that one tree.
 `EnterWorktree` and `claude --worktree` need none of this; they move the
 process itself, and the cwd is the tree.
 
-From an **agent pane** the queue opens with that pane already under the
-pointer, so `prefix + r` there is still one `↵` from its review — and the
-other agents waiting on you stay on screen instead of being replaced by it.
-Finishing a review returns to the queue, on the pane you just left, so
-reviewing four agents is four `↵` rather than four `prefix + r`; `esc` on the
-list is the way out.
+From an **agent pane** the board opens with that pane selected, so `prefix + r`
+there is one `r` from its review. Finishing a review returns to the board, on
+the pane you just left; `q` is the way out.
 
 The review diffs the **git root of the pane's cwd**, and the header names it
 (`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
@@ -47,33 +39,17 @@ that line is how you notice. The fix is workflow, not the plugin: an agent that
 works on a branch lives in that worktree, which is what the `WorktreeCreate`
 hook above arranges for `claude --worktree` and `EnterWorktree`.
 
-The review opens in a popup. `set -g @cockpit_review_window on` opens it as a
-real window (`new-window -n review`) instead, if you would rather keep the
-fleet's borders and window tabs visible while you read.
+The board opens in a popup. `set -g @cockpit_review_window on` opens it as a
+real window (`new-window -n board`) instead.
 
-The order is that question's answer, and it is deliberately **not** churn.
-Agent state ranks first — `needs-input`, then `error`, `running`, `done`, then
-panes with no state at all — and churn only breaks ties inside a rank. An
-agent parked on a permission prompt is the one actually waiting on you, and it
-usually has nothing at all to diff; sorting by churn listed it last, or (with a
-clean tree) left it out entirely, and answered "who typed most" instead. A
-blocked pane is listed even with a clean tree, and its `±` column reads `—`
-rather than `+0 -0`, because there is nothing to review there — only someone to
-unblock.
+The order is that question's answer: agents grouped by session, blocked ones
+first (see the board's own docs). A blocked pane is listed even with a clean
+tree; there is nothing to review there, only someone to unblock. The row's
+`where` is `repo⑂branch`, which tells two worktrees of the same repo apart.
 
-Each row is `state · title · where · ±`, in aligned columns. The `where`
-field is `repo⑂branch`, and it is what tells two worktrees of the same repo
-apart, which `s:w claude` alone cannot:
-
-```text
-needs-input     main:2 claude    cockpit⑂feat/review-p0     —
-◆ done          side:0 codex     cockpit⑂main               +142 -30  ?2 new
-↵ running       main:4 claude    api⑂fix/token-refresh      +8 -8
-```
-
-The state column carries the review mark: `◆` a finished diff nobody has read
+The row's leading column carries the review mark: `◆` a finished diff nobody has read
 yet (the `Stop` gate flagged it), `↵` a review already pasted into that pane
-and not yet sent. Without them the queue keeps sending you back to a pane you
+and not yet sent. Without them the board keeps sending you back to a pane you
 have already been through.
 
 `◆` is written by `review-gate`, the second `Stop` hook, at the turn boundary
@@ -84,44 +60,28 @@ with `^A`. The same step marks the window's tab with `◆` and recounts `◆N` i
 `#{E:@cockpit_fleet}`, which tells you how many finished agents nobody has read
 across every session, attached or not. Nothing polls, and a redraw still runs no shell.
 
-`tmux-review --fleet` prints those rows tab-separated with no fzf, if you want
-to drive the same list from a script.
+The comment loop's typed text *is* a comment, so the keys that would collide with
+typing it move elsewhere:
 
-The fleet queue — and only it — takes extra fzf options from a global tmux
-option, so you can bend the picker to your own taste without patching the
-script:
-
-```sh
-set -g @cockpit_fleet_fzf_options "--height=80% --pointer='▸'"
-```
-
-It is confined to this picker on purpose. In the comment loop `↵` has a
-contract (it pins a comment, it never approves) and `^S` is the consent
-gesture; one stray `--bind` from a config file would quietly break either one.
-
-The review popup's two pickers do not share one key set — the fleet queue is
-a plain list, `↵` picks a pane; the comment loop's typed text *is* a
-comment, so the keys that would collide with typing it move elsewhere:
-
-| key | fleet queue | comment loop |
-|-----|-------------|--------------|
-| `↵` | review the selected pane | pin the typed comment (empty: nothing) |
-| `alt-↵` | — | alias for `↵` |
-| `^/` | toggle the preview | toggle the preview |
-| `^U` / `^D` | scroll the preview | — (would edit the comment instead) |
-| `alt-↑` / `alt-↓`, `alt-u` / `alt-d` | — | scroll the preview a line, half a page (the mouse wheel over it scrolls too) |
-| `^R` | — | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
-| `^X` | kill the window under the cursor, after a y/N that names it and its pane count — the session too, when it is that session's last window (a forgotten agent elsewhere) | delete the comment(s) on the row under the cursor |
-| `^L` | — | show every pinned comment in the terminal |
-| `^E` | — | open your editor on the typed text; with nothing typed on a commented row, on that comment (save empty to delete it) |
-| `⇥` | — | mark the row (any number) |
-| `^Y` | — | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
-| `alt-y` | — | copy the whole review's diff |
-| `alt-c` | — | copy the marked rows' lines as the file has them, tabs and all (a `-` row: HEAD's line; or the row under the cursor), to the tmux buffer and the clipboard |
-| `^B` | — | cycle the base the diff is taken against |
-| `^A` | — | approve what you just read (only with nothing pinned) |
-| `^S` | — | deliver the whole batch; asks first |
-| `esc` | cancel | leave — the batch stays pinned (asks first) |
+| key | comment loop |
+|-----|--------------|
+| `↵` | pin the typed comment (empty: nothing) |
+| `alt-↵` | alias for `↵` |
+| `^/` | toggle the preview |
+| `^U` / `^D` | — (would edit the comment instead) |
+| `alt-↑` / `alt-↓`, `alt-u` / `alt-d` | scroll the preview a line, half a page (the mouse wheel over it scrolls too) |
+| `^R` | re-snapshot the diff; names any comment the agent moved (it still delivers, quoted) |
+| `^X` | delete the comment(s) on the row under the cursor |
+| `^L` | show every pinned comment in the terminal |
+| `^E` | open your editor on the typed text; with nothing typed on a commented row, on that comment (save empty to delete it) |
+| `⇥` | mark the row (any number) |
+| `^Y` | copy the file under the cursor, then its diff, to the tmux buffer and the clipboard |
+| `alt-y` | copy the whole review's diff |
+| `alt-c` | copy the marked rows' lines as the file has them, tabs and all (a `-` row: HEAD's line; or the row under the cursor), to the tmux buffer and the clipboard |
+| `^B` | cycle the base the diff is taken against |
+| `^A` | approve what you just read (only with nothing pinned) |
+| `^S` | deliver the whole batch; asks first |
+| `esc` | leave — the batch stays pinned (asks first) |
 
 Inside the review: `↵` pins whatever you typed as a comment on the diff line
 under the cursor — `alt-↵` does the same thing, kept as an alias for
@@ -190,7 +150,7 @@ data/dump.bin (412 MB) skipped — over 32 MB, review it directly
 The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
 diff too large to anchor line-by-line leaves. The file itself is untouched, and
 the tree still counts as dirty because of it, so a pane whose only change is a
-skipped file stays in the fleet queue and its review opens on that notice
+skipped file stays on the board and its review opens on that notice
 rather than on an empty diff. The path picker's `^G` diff preview refuses any
 file over 32 MB, naming the size. Put core dumps in `.gitignore`, as git's own
 templates do, and the review never sees them at all.
@@ -200,7 +160,7 @@ that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
 this branch was approved (only what moved since), the merge-base with the
 upstream when that is not `HEAD` itself (the branch plus its uncommitted work),
 else `HEAD` (today's uncommitted view). An agent that commits as it goes stays
-in the queue that way instead of dropping out of it the moment it commits. `^B`
+on the board that way instead of dropping out of it the moment it commits. `^B`
 cycles the bases that hold, the picker's header names the one in force
 (`base: since last review`), and the choice is remembered beside the comments,
 so a resumed review reads the same diff it did before.

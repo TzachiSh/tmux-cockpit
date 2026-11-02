@@ -12,7 +12,7 @@ layout.
 |-----|------|
 | `prefix a` | the menu below. Every row has its letter on screen. |
 | `prefix u` | jump to the pane that needs you; again for the next one. |
-| `prefix r` | review an agent's uncommitted diff, blocked agents first. |
+| `prefix r` | the board: every agent, blocked ones first; `r` on a row reviews its diff. |
 | `prefix i` | one screen about this pane: cwd, git root, state, review. |
 | `prefix f` | the panel: Claude writes, fixes or explains for this pane and pastes the answer in. Needs `cockpit-tui`. |
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |

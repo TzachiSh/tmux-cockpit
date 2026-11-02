@@ -9,7 +9,7 @@
 | `prefix + a` | the menu: every cockpit and window action, one letter each, no Shift; `≡` on the border opens it too — `@cockpit_menu_key` rebinds, `off` disables |
 | `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
 | `prefix + s` | the session picker, replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
-| `prefix + r` | review an agent's uncommitted diff — always the fleet queue, blocked agents first, then dirty ones, with the current pane preselected (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup (being replaced, #228) |
+| `prefix + r` | the board, the same one `prefix + w` opens; `r` on a row reviews that agent's uncommitted diff (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
 | `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock (being folded into the board, #228) |
 | `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](board-and-panel.md#the-panel-cockpit-tui) in board-and-panel.md; needs the `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` restores stock |
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup; after `r`, `f` or `i` the board comes back on the same pane with the outcome as a note, and `@cockpit_board_return off` makes them one-way |
@@ -25,8 +25,8 @@ None of them has to be set; as with the rest, set them before the `run-shell`
 line.
 
 ```sh
-set -g @cockpit_review_key     r       # off restores stock refresh-client
-set -g @cockpit_review_window  off     # on: a window instead of the popup
+set -g @cockpit_review_key     r       # the board; off restores stock refresh-client
+set -g @cockpit_review_window  off     # on: the board in a window instead of the popup
 set -g @cockpit_info_key       i       # off restores stock window info
 set -g @cockpit_jump_key       u
 set -g @cockpit_sessions_key   s       # off keeps stock choose-tree
@@ -34,7 +34,6 @@ set -g @cockpit_move_key       M       # off restores stock select-pane -M
 set -g @cockpit_menu_key       a       # the menu; n if you never use next-window
 set -g @cockpit_popup_width    70%
 set -g @cockpit_popup_height   70%
-set -g @cockpit_fleet_fzf_options ""
 ```
 
 ## Popup size

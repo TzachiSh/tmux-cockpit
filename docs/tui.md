@@ -14,10 +14,8 @@ source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## What it is not
 
-- **Not the fleet list.** `prefix r` stays fzf. fzf gives fuzzy filter,
-  multi-select and the wheel for free; a table in Rust would buy `j`/`k`/`↵` and
-  lose the filter. The board is a grid of previews, which is the thing fzf
-  cannot draw.
+- **Not a fuzzy filter.** The fzf fleet queue is gone (#253): `prefix r` opens
+  the board, a grouped list of agents with their diff stat and branch.
 - **Not an actor.** The binary renders and decides. It writes one line,
   `<verb> <pane-id>`, to the file named by `$COCKPIT_ACTION`, and the binding
   runs the existing `tmux-jump` / `tmux-review` script. Every mutating path
@@ -756,6 +754,20 @@ written the exit is 2. At the narrowest popup the footer keeps `↵ choose` and
 Mouse capture is on for the picker, unlike the board: a list you click is the
 point of it.
 
+**stderr.** A line with a tab but nothing before it has no key and is skipped.
+When that happens, `cockpit-tui pick` says so once on stderr, whatever else
+happens: `cockpit-tui: pick: skipped 3 rows with no key` (`1 row` when it is
+one). If every row was skipped there is nothing to choose, so no screen opens,
+stdout is empty and the exit is 1.
+
+**Reusing it.** `sessions` (and the branch picker) build on the same `Pick`:
+`Pick::set_rows` swaps the rows of an open list and keeps the query and the
+selection on the row with the same key; `Look` swaps the floor card's title, the
+footer's hints, the `F1` help, each row's line and the empty-list text without
+redrawing the screen; `Pick::entry` borrows the prompt line to ask for something
+else; `Pick::list_pct` moves the divider when a preview sits beside the list;
+`open_screen` and `screen` are the tty setup both pickers share.
+
 ## States
 
 Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
@@ -856,7 +868,7 @@ other key is dropped, since nobody can see what it would do.
 ```
 
 **No binary, or a non-zero exit:** one `display-message`, exit 0, never a broken
-popup. `prefix r` still opens the fleet list.
+popup. `prefix r` opens the same board.
 
 ## Rules
 
@@ -1059,6 +1071,7 @@ workspace, no crate split.
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
+| `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
 Every mutating action stays a shell script: the binary prints
@@ -1164,3 +1177,114 @@ Text from outside (a transcript, a title, a path) is stripped of control
 characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` stays until #228's cleanup removes it.
+
+## The board as the review queue (#253)
+
+`prefix r` opens the board, the same command `prefix w` runs, and
+`@cockpit_review_window on` opens it in a window. The fzf fleet queue is gone;
+`tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
+
+**Row cells.** The list draws, between the message and the age: the diff stat
+(`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
+(`⑂name`). The review mark stays in the row's leading column. A cell that does
+not fit is dropped with every cell to its right; the cells take at most a third
+of the width the name and message share, and leave the name 6 cells and the
+message 12, so a 40-column row may show none.
+
+**Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
+scan per distinct repo root however many panes share it, at most 8 git processes
+at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
+the gitsafe flags. The list still makes no pane capture.
+
+**Verbs.** `cockpit-board` gains two lines, `kill %N` and `request %N`.
+`kill %N` kills the pane's window. The board writes the `#{window_id}` it
+showed (`@9`, not the name: automatic-rename gives agents the same name) to
+`$COCKPIT_ACTION.expect` first. The wrapper compares it with the window the pane
+is in now and kills the window that id names; it refuses with a `✕` note if the
+pane moved to another window, if the file is missing, empty, not an `@<digits>`
+id or a symlink, or if the pane is gone. The `✓` note and the log carry the id
+and `session:index` of what died.
+`request %N` ends the board, like `jump`, and then runs `tmux-review --request`
+for that pane: tmux silently refuses a popup opened inside the board's popup.
+Its output (the composed batch on exit 10) is not shown.
+The board keys for both wait on the board's verb hook (not shipped).
+
+## Sessions
+
+<!-- sessions view (#245) -->
+
+`cockpit-tui sessions [--needs] [--current $N]` is `tm`'s picker (#228, decision
+6), built on `pick`. One `list-panes -a` read gives every session with its
+windows; a fetch thread repeats it about every 2 s, so the glyphs move while the
+list is open.
+
+```
+ session> ▏                                                                   1/5
+ 5 sessions · ▲1 ✕1 ●1
+▎ 1 ▲ api                  1a 2w       45s  │ api · 2 windows
+  2 ✕ ops                  1a 1w        5s  │ ▎0 ▲ claude needs you
+  3 ● web                  1a 1w   ◉ 1m05s  │       Run rm -rf build/ before the
+  4   docs                 - 2w      4m12s  │       tests?
+  5 ✓ tmux-cockpit (here)  1a 1w            │  1   shell no agent
+ ↵ switch   ^X kill   F2 rename   F1 keys   esc cancel
+```
+
+Each row is a jump digit, the worst agent state over the session's panes (`▲` needs
+you, `✕` error, `●` running, `✓` done, `○` idle, blank for no agent), the name,
+agent and window counts (`1 agent  2 wins` at 47 columns of list or more, `1a 2w`
+down to 32, none below), `◉` when another client is attached, and the time since
+the session was last used, in `data::fmt_dur`'s format (`45s`, `1m05s`, `4m12s`,
+`1h03m`). A pane is an agent when its command is in `@cockpit_agents_glob`, the test
+`agent-state` uses, so a stale `@panestate` on a shell is not believed.
+
+**Order.** Waiting first, then failed, then the most recently used; the session
+`--current` names goes last and is marked `(here)`. The order is read once and
+frozen: a refresh updates states and ages, keeps every session where it was, drops
+the ones that went and appends new ones, so a digit and the cursor keep their
+session. `--needs` shows only the waiting and the failed, falling back to every
+session (`nothing needs you`) when there are none; it takes no new sessions on
+refresh. `--current` must be `^[$][0-9]+$`.
+
+The preview (when the screen is 60 columns or wider) lists the windows with their
+state, and wraps the question a waiting window asks. Narrower screens have no
+preview.
+
+| key | does |
+|-----|------|
+| letters, `⌫` `^U` | filter by name (a substring, case-insensitive) |
+| `1`-`9` | switch to that row, only while the filter is empty |
+| `↵` | switch to the selected session; with nothing matching, create the typed name |
+| `alt-↵` | create the typed name even when a row matches |
+| `^X` | arm a kill: the header names what dies (`kill api? 1 agent (1 waiting) · 2 windows`, with `attached elsewhere` first when it is). A second `^X` confirms; any other key, `esc` and a click keep the session and are spent. Your own session refuses |
+| `F2` | rename: the prompt becomes `rename>` with the old name; `↵` confirms, `esc` goes back |
+| click | select; click the selected row again to switch (two taps, so a stray one never switches) |
+| `F1`, `esc` `^C` | the keys, cancel |
+
+**The action contract.** The binary mutates nothing. It writes one line,
+`<verb> <target>`, to `$COCKPIT_ACTION`, the target a tmux id (`$N`, checked
+against `^[$][0-9]+$` by the caller, never a name) or `-`:
+
+| line | side files | caller does |
+|------|-----------|-------------|
+| `switch $N` | none | `switch-client` / `attach-session` |
+| `new-session -` | `.text`: the new name, already cleaned | create it in the active pane's directory, then switch |
+| `kill-session $N` | `.expect`: the name that was shown | kill `$N` if its live name is still `.expect` |
+| `rename-session $N` | `.text`: the new name; `.expect`: the old name | rename `$N` if its live name is still `.expect` |
+
+Free-form text never rides on the action line. `.text` and `.expect` are one line,
+mode 0600, created new with `O_NOFOLLOW` and written before the action line, like
+the panel's files. With `COCKPIT_ACTION` unset only `switch` has anywhere to go
+(its line is printed on stdout) and `^X`, `F2` and creating say
+`✕ ... needs COCKPIT_ACTION` instead of doing anything: one contract, so a name
+never has to be split out of a stdout line. Exit 0 with an action written, 1 for a
+cancel (nothing written), 2 for a bad argument, no terminal or tmux, 3 when the
+action could not be written.
+
+`scripts/tm` re-checks all of it before it acts: the id against the pattern, the
+name against `tmux display-message -p -t $N '#{session_name}'`, and refuses with a
+`✕` note (on stderr, and on the client's status line when in a popup) if the
+session is gone, was renamed between the print and the act (`session $3 is now
+called 'x', not 'y'; nothing changed`), or is the one `tm` runs in. A kill or a
+rename that goes through puts the picker back, in the same popup. `@cockpit_glyphs
+ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` is not a tier of the
+Rust screens and draws the default.
