@@ -7,32 +7,7 @@ agent is doing, how long it has been doing it, and a `capture-pane` of the pane
 itself. Blocked agents sort first, so page 1 is the triage page. `↵` jumps to
 the tile you are on and closes the board.
 
-```text
- board · 5 agents · 1 needs you                                   1-4 of 5   ▼1 
-┌ 1 ▲  henosis:1 · Openvpn setup ──────────────────────────────────────────────┐
-│permission: Bash(sudo openvpn --config /etc/openvpn/work.conf --daemon…   4m12│
-│Bash command                                                                  │
-│sudo openvpn --config /etc/openvpn/work.conf --daemon                         │
-│Do you want to proceed?                                                       │
-└─ ↵ answer ───────────────────────────────────────────────────────────────────┘
-┏▎2 ●◆ henosis:3 · Implement with test review and rig ━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃Bash: shellcheck on cockpit.tmux and tests/run.sh                          32s┃
-┃$ make check                                                                  ┃
-┃1001 assertions, 0 failures                                                   ┃
-┃$ shellcheck cockpit.tmux tests/run.sh                                        ┃
-┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-┌ 3 ●  work:2 · Fleet gate review ─────────────────────────────────────────────┐
-│Agent: whole-branch review of phase 1                                     4m12│
-│⏺ Agent (fleet-gate-review)                                                   │
-│  Read tests/fleet.sh, 214 lines                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-┌ 4 ✓↵ work:4 · Left click issue ──────────────────────────────────────────────┐
-│idle · handover pending                                                    12m│
-│  ✓ pushed to origin/fix/left-click                                           │
-│  PR #28 opened                                                               │
-└──────────────────────────────────────────────────────────────────────────────┘
- ↵ jump   a ask   r review   f fix   i info   ? help   q close
-```
+See [the board screen](tui.md#the-board) for what it looks like.
 
 It is the plugin's required binary, `bin/cockpit-tui`, fetched by `install.sh`
 (or by `scripts/tui-fetch` by hand, or built with `make tui`, Rust >= 1.88).

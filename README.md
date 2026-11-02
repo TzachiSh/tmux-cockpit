@@ -140,7 +140,7 @@ None is required.
 | `@cockpit_glyphs` | unset | `ascii` or `nerd` glyph sets |
 | `@cockpit_blocked_bg` | `#52303a` | the tint behind a blocked pane |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
-| `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables |
+| `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |
 
 Status-bar tokens: `#{agent_fleet}`, `#{agent_where_path}` and
 `#{agent_where_branch}`. They work only in the options listed in

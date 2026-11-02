@@ -39,7 +39,7 @@ once. The repository is private, so the fetch rides your own `gh` login when
 release URL 404s and the fetch skips. `COCKPIT_TUI_REPO` overrides the
 `owner/repo` gh downloads from.
 
-Nothing is fetched when tmux loads its config. The load path stays offline;
+By default (unless `@cockpit_tui_fetch on`) nothing is fetched when tmux loads its config. The load path stays offline;
 installing and updating stay gestures you make, the way tpm's own are.
 
 To build from source instead, from the plugin directory:
