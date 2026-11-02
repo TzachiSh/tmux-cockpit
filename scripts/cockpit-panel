@@ -25,9 +25,20 @@ case "${1:-}" in
 esac
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
+# Opened from the board, the outcome is the board's note on its return rather
+# than a status-line message; the board keeps a line starting with ✕ until a key.
+said() {                      # <ok|fail> <text> <display-message argv...>
+    local how=$1 text=$2; shift 2
+    if [ -n "${COCKPIT_PANEL_NOTE:-}" ]; then
+        [ "$how" = ok ] || text="✕ $text"
+        printf '%s\n' "$text" > "$COCKPIT_PANEL_NOTE" 2>/dev/null
+    else
+        tmux "$@" "$text" 2>/dev/null
+    fi
+}
 # The messages outside a paste; under COCKPIT_READONLY they go to the log only.
 tell() {
-    if [ -n "${COCKPIT_READONLY:-}" ]; then log "readonly, not said: $1"; else tmux "${say[@]}" "$1" 2>/dev/null; fi
+    if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then log "readonly, not said: $1"; else said fail "$1" "${say[@]}"; fi
 }
 
 if [ ! -x "$BIN" ]; then
@@ -64,6 +75,7 @@ act() {
     # Screenshots and probes: the whole panel runs, and the pane is never written.
     if [ -n "${COCKPIT_READONLY:-}" ]; then
         log "readonly, not sent: $verb $target"
+        [ -z "${COCKPIT_PANEL_NOTE:-}" ] || said fail "cockpit: COCKPIT_READONLY is set; nothing sent"
         last="failed:COCKPIT_READONLY is set; nothing sent"
         return 0
     fi
@@ -72,14 +84,14 @@ act() {
     read -r want 2>/dev/null < "$f.cmd"
     now=$(tmux display -p -t "$target" '#{pane_current_command}' 2>/dev/null)
     if [ -z "$want" ] || [ "$now" != "$want" ]; then
-        tmux display-message -t "$target" "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" 2>/dev/null
+        said fail "cockpit: the pane now runs ${now:-nothing}, not ${want:-?}; nothing sent" display-message -t "$target"
         log "$target now runs [$now], not [$want]; nothing sent"
         last="failed:the pane now runs ${now:-nothing}, not ${want:-?}"
         return 0
     fi
     if ! err=$(strip | tmux load-buffer -b "$buf" - 2>&1); then
         log "load-buffer failed for $target: ${err:-no error text}"
-        tmux "${say[@]}" "cockpit: could not load the paste buffer; nothing sent to $target" 2>/dev/null
+        said fail "cockpit: could not load the paste buffer; nothing sent to $target" "${say[@]}"
         last="failed:could not load the paste buffer"
         return 0
     fi
@@ -88,14 +100,14 @@ act() {
     if ! err=$(tmux paste-buffer -p -d -b "$buf" -t "$target" 2>&1); then
         tmux delete-buffer -b "$buf" 2>/dev/null
         log "paste-buffer failed for $target: ${err:-no error text}"
-        tmux "${say[@]}" "cockpit: could not paste into $target; nothing sent" 2>/dev/null
+        said fail "cockpit: could not paste into $target; nothing sent" "${say[@]}"
         last="failed:could not paste into $target"
         return 0
     fi
     last=ok
     if [ "$verb" != send ]; then
         n=$(strip | wc -m)
-        tmux "${say[@]}" "cockpit: inserted $((n)) chars into $target" 2>/dev/null
+        said ok "cockpit: inserted $((n)) chars into $target" "${say[@]}"
         return 0
     fi
     # Ink apps (Claude Code) can drop an Enter that lands in the same read as the
@@ -105,7 +117,7 @@ act() {
         sleep 0.05; i=$((i + 1))
     done
     tmux send-keys -t "$target" Enter 2>/dev/null
-    tmux "${say[@]}" "cockpit: sent to $target" 2>/dev/null
+    said ok "cockpit: sent to $target" "${say[@]}"
     return 0
 }
 # Stripped again on the way: the binary already did, but this is what reaches the pane.
