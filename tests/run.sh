@@ -684,9 +684,9 @@ is "the window dot still ranks it" "done" \
    "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_state)"
 rtneeds=$(rtcall needs-input)
 is "needs-input costs one tmux invocation" "1" "$rtneeds"
-is "the banner boolean still flips" "1" \
-   "$("$TMUX_REAL" -L "$RT" show-option -wqv -t "$RTP" @cockpit_win_needs)"
-is "the fleet counter still counts" '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+is "the session count still counts" "1" \
+   "$("$TMUX_REAL" -L "$RT" show-option -qv -t t: @cockpit_sess_nb)"
+is "the fleet counter still counts" '#[fg=themered bold]▲1#[default] ' \
    "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
 # The writes happen inside one tmux command now, so a server hook is what sees
 # them. Not -b: the hook's shell finishes before the hook's client returns.
@@ -696,19 +696,19 @@ RTSETS="$RTS/sets"; : > "$RTSETS"
 # An unchanged state still costs exactly one round-trip and writes nothing.
 rtsame=$(rtcall needs-input)
 is "an unchanged state costs one call and no writes" "1 0" "$rtsame $(wc -l < "$RTSETS" | tr -d ' ')"
-# The stored fleet string carries #{...} colour tokens. If the compare
-# re-expanded them the guard would never match and every transition on the
-# server would rewrite the global -- a server-wide redraw apiece. A second agent
-# pane whose transition leaves the count at 1 must write nothing to it.
+# If the compare ever saw the stored fleet string differently from the fresh one
+# the guard would never match, and every transition on the server would rewrite
+# the globals -- a server-wide redraw apiece. A second agent pane whose transition
+# leaves the counts at 1 must write nothing to them.
 "$TMUX_REAL" -L "$RT" new-window -t t: 'exec -a claude bash' >/dev/null 2>&1
 RTP2=$("$TMUX_REAL" -L "$RT" list-panes -t t:1 -F '#{pane_id}')
 PATH="$RTS:$PATH" TMUX="$SOCKDIR/$RT,0,0" "$DIR/scripts/agent-state" \
     running "$RTP2" >/dev/null 2>&1
 is "the hook sees the transition's own writes" "1" "$(grep -c '@panestate running' "$RTSETS")"
 is "an unchanged fleet count is never rewritten" "0" \
-   "$(grep -c '@cockpit_fleet' "$RTSETS")"
-is "and the stored count still carries its colour tokens" \
-   '#[fg=#{@thm_red}#,bold]▲1#[default] ' \
+   "$(grep -c '@cockpit_fleet\|@cockpit_sess_' "$RTSETS")"
+is "and the stored count still names its theme slot" \
+   '#[fg=themered bold]▲1#[default] ' \
    "$("$TMUX_REAL" -L "$RT" show-option -gqv @cockpit_fleet)"
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
 fi
@@ -814,14 +814,14 @@ ptall() {                     # <state>: every pane at once, then wait for all
     wait $pids                # only ours: the suite may have other jobs running
 }
 ptall needs-input
-is "20 panes blocking at once count ▲20" '#[fg=#{@thm_red}#,bold]▲20#[default] ' \
+is "20 panes blocking at once count ▲20" '#[fg=themered bold]▲20#[default] ' \
    "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
-is "and every window's banner boolean is set" "20" \
-   "$("$TMUX_REAL" -L "$PT" list-windows -F '#{@cockpit_win_needs}' | grep -c '^1$')"
+is "and the session and fleet counts agree" "20 20" \
+   "$("$TMUX_REAL" -L "$PT" show-option -qv -t t: @cockpit_sess_nb) $("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet_nb)"
 ptall error
 ptall running
 ptall error
-is "20 panes erroring at once after a resume count ✕20" '#[fg=#{@thm_peach}]✕20#[default] ' \
+is "20 panes erroring at once after a resume count ✕20" '#[fg=themecyan]✕20#[default] ' \
    "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
 ptall off
 is "and 20 ending at once clear it" "" "$("$TMUX_REAL" -L "$PT" show-option -gqv @cockpit_fleet)"
@@ -836,12 +836,14 @@ case "$(tmux show-option -gqv @cockpit_fleet)" in
     *'◆1'*) ok "recount adds ◆1 to the fleet string" ;;
     *) bad "recount adds ◆1 to the fleet string" "…◆1…" "$(tmux show-option -gqv @cockpit_fleet)" ;;
 esac
+is "...and ◆ to the window's tab flag" "1" "$(tmux show-option -wqv -t "$PANE" @cockpit_win_review)"
 tmux set-option -p -t "$PANE" @cockpit_review sent >/dev/null 2>&1
 st recount "$PANE"
 case "$(tmux show-option -gqv @cockpit_fleet)" in
     *'◆'*) bad "a sent review is not a pending one" "no ◆" "$(tmux show-option -gqv @cockpit_fleet)" ;;
     *) ok "a sent review is not a pending one" ;;
 esac
+is "...and the tab flag goes with it" "" "$(tmux show-option -wqv -t "$PANE" @cockpit_win_review)"
 tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
 tmux set-option -p -t "$PANE" @cockpit_review_spool /nonexistent >/dev/null 2>&1
 tmux set-option -p -t "$PANE" @panestate needs-input >/dev/null 2>&1
@@ -4923,7 +4925,7 @@ is "and the window did not change" "0" \
 "$TMUX_REAL" -L "$JJ" kill-server >/dev/null 2>&1
 fi
 
-echo "== the fleet counter reads every session =="
+echo "== the fleet counter reads every session; each session keeps its own count =="
 if need_tmux "agent_fleet"; then :; else
 FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
 # Unredirected stderr, deliberately: a `can't find window: 1` from this setup
@@ -4937,8 +4939,7 @@ FC="cockpit-fc-$$"; SOCKS="$SOCKS $FC"
 "$TMUX_REAL" -L "$FC" rename-window -t b:0 bash >/dev/null
 "$TMUX_REAL" -L "$FC" new-window  -t b: 'exec -a claude sleep 300' >/dev/null
 "$TMUX_REAL" -L "$FC" set -g @cockpit_agents_glob '|claude|' >/dev/null
-"$TMUX_REAL" -L "$FC" set -g status-right '[#{agent_fleet}]' >/dev/null
-"$TMUX_REAL" -L "$FC" run-shell "$DIR/cockpit.tmux" >/dev/null
+"$TMUX_REAL" -L "$FC" set -g status-right '[#{E:@cockpit_fleet}]' >/dev/null
 is "the fleet fixture really has three agent panes" "3" \
    "$("$TMUX_REAL" -L "$FC" list-panes -a -F '#{pane_id}' | grep -c .)"
 FCP1=$("$TMUX_REAL" -L "$FC" list-panes -t a:0 -F '#{pane_id}')
@@ -4954,16 +4955,12 @@ asFC error       "$FCP3"
 fleet() { "$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
             "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)" | plain; }
 is "two blocked and one errored, across sessions" "[▲2 ✕1 ]" "$(fleet)"
-# Read at render time, so a theme sourced after the plugin still wins -- and a
-# regression to a hard-coded colour shows up here rather than in someone's eyes.
-"$TMUX_REAL" -L "$FC" set -g @thm_red '#ff6b6b' >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
-          "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" in
-    *'#[fg=#ff6b6b,bold]▲2'*) ok "the count wears the theme's red" ;;
-    *) bad "the count wears the theme's red" "#[fg=#ff6b6b,bold]▲2" \
-         "$("$TMUX_REAL" -L "$FC" display-message -p -t "$FCP1" \
-              "$("$TMUX_REAL" -L "$FC" show-option -gv status-right)")" ;;
-esac
+# The bar's "elsewhere" mark is the fleet count minus this session's, so each
+# session must hold only its own.
+fccount() { "$TMUX_REAL" -L "$FC" display-message -p -t "$1" \
+              '#{@cockpit_fleet_nb} #{@cockpit_fleet_ne} #{@cockpit_sess_nb} #{@cockpit_sess_ne}'; }
+is "session a: fleet 2 waiting and 1 failed, its own 1 waiting" "2 1 1 0" "$(fccount a:)"
+is "session b: its own 1 waiting and 1 failed" "2 1 1 1" "$(fccount b:)"
 asFC running "$FCP1"
 asFC running "$FCP2"
 asFC running "$FCP3"
@@ -11520,11 +11517,11 @@ av_st() {
     env -u TMUX_PANE TMUX="$AVT" "$DIR/scripts/agent-state" "$@" </dev/null >/dev/null 2>&1
 }
 av_st needs-input "$AVP"
-is "the hook's needs-input raises the window banner" "1" \
-   "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_needs)"
+is "the hook's needs-input reaches the window state" "needs-input" \
+   "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_state)"
 av_st poll done "$AVP"
 is "poll done lifts a sticky needs-input" "done" "$(avo @panestate)"
-is "...and the window banner follows" "" "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_needs)"
+is "...and the window state follows" "done" "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_state)"
 av_tm set-option -p -t "$AVP" @cockpit_review pending
 av_st poll running "$AVP"
 is "poll running does not drop a pending review (nobody pressed Enter)" "running pending" \
