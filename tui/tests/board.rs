@@ -108,9 +108,15 @@ fn view<'a>(ps: &'a [Pane], pvs: &'a [Option<String>], th: &'a Theme, sel: usize
         top,
         active: "%14",
         note: None,
-        help: false,
+        help: None,
+        stale: None,
+        lost: false,
     }
 }
+
+/// The widths step 1's goldens pin: a phone in landscape, the common popup,
+/// a wide monitor.
+const SIZES: [(u16, u16); 3] = [(60, 24), (100, 30), (180, 40)];
 
 fn board_at(w: u16, h: u16, top: usize, th: &Theme) -> String {
     let (ps, pvs) = (fixture(), previews());
@@ -226,7 +232,8 @@ fn needs_input_tile() {
     golden("board-needs", &draw(72, 10, |f| board::render(f, f.area(), &v)));
 }
 
-/// Red border, the question in the header, ` ↵ answer ` on the bottom border.
+/// Red border, the question in the header, and no key hint on the frame: the
+/// footer says `a answer` for a ▲ selection (D14, D19).
 #[test]
 fn needs_input_border_is_red_and_carries_the_verb() {
     let th = Theme::fixed();
@@ -247,8 +254,10 @@ fn needs_input_border_is_red_and_carries_the_verb() {
         "the question must be on the tile's first header row: {row2:?}"
     );
     assert_eq!(b[(1, 2)].fg, th.needs, "the question is in needs red");
-    let text = b.content.iter().map(|c| c.symbol()).collect::<String>();
-    assert!(text.contains("↵ answer"), "the bottom title must carry the verb");
+    let bottom: String = (0..72).map(|x| b[(x, 8)].symbol()).collect();
+    assert!(bottom.starts_with('┗') && !bottom.contains("answer"), "{bottom:?}");
+    let foot: String = (0..72).map(|x| b[(x, 9)].symbol()).collect();
+    assert!(foot.contains("a answer"), "{foot:?}");
 }
 
 /// Focus is border weight, not colour: it survives NO_COLOR (ux.md §1.2).
@@ -302,6 +311,78 @@ fn done_and_idle_tiles_are_dimmed() {
 
 // ------------------------------------------------------------ colour tiers
 
+/// D17: the selection is ▎ plus reverse, so it still shows with no colour.
+#[test]
+fn no_color_keeps_the_selection_visible() {
+    let th = Theme::no_color();
+    let (ps, pvs) = (fixture(), previews());
+    let v = view(&ps, &pvs, &th, 2, 0);
+    golden("board-nocolor-100", &draw(100, 30, |f| board::render(f, f.area(), &v)));
+    let b = render_to_buffer(100, 30, |f| board::render(f, f.area(), &v));
+    let (x, y) = (0..b.area.height)
+        .flat_map(|y| (0..b.area.width).map(move |x| (x, y)))
+        .find(|&(x, y)| b[(x, y)].symbol() == "▎")
+        .expect("the selection carries ▎");
+    assert_eq!(b[(x + 1, y)].symbol(), "3", "on the selected tile");
+    assert!(b[(x + 1, y)].modifier.contains(Modifier::REVERSED), "and its number is reversed");
+    let marks = b.content.iter().filter(|c| c.symbol() == "▎").count();
+    assert_eq!(marks, 1, "one selection");
+    // tmux's active pane is a different mark, at its tile's end
+    let text: String = b.content.iter().map(|c| c.symbol()).collect();
+    assert_eq!(text.matches('◂').count(), 1);
+}
+
+/// D17's two rules: focus never shares a hue with a state, and what a reader
+/// must read (a footer verb, the note, a help line, a way out) is never `meta`.
+#[test]
+fn focus_has_its_own_hue_and_must_read_text_is_not_meta() {
+    let th = Theme::fixed();
+    for st in [th.needs, th.error, th.running, th.done, th.sky] {
+        assert_ne!(th.accent, st, "the focus hue is a state's");
+    }
+    let (ps, pvs) = (fixture(), previews());
+    let v = view(&ps, &pvs, &th, 1, 0);
+    let b = render_to_buffer(120, 30, |f| board::render(f, f.area(), &v));
+    let at = |y: u16| (0..b.area.width).map(|x| &b[(x, y)]).collect::<Vec<_>>();
+    assert_eq!(
+        at(1).iter().find(|c| c.symbol() == "┏").unwrap().fg,
+        th.accent,
+        "a focused running tile"
+    );
+    let words = |cells: Vec<&ratatui::buffer::Cell>| {
+        cells
+            .into_iter()
+            .filter(|c| c.symbol().chars().all(char::is_alphabetic) && c.symbol() != " ")
+            .map(|c| c.fg)
+            .collect::<Vec<_>>()
+    };
+    assert!(!words(at(29)).contains(&th.meta), "the footer");
+
+    let mut v = view(&ps, &pvs, &th, 3, 0);
+    v.note = Some("work:2 is not waiting on you");
+    let b = render_to_buffer(120, 30, |f| board::render(f, f.area(), &v));
+    assert!(
+        !(0..120).any(|x| b[(x, 29)].symbol() != " " && b[(x, 29)].fg == th.meta),
+        "the note"
+    );
+
+    let mut v = view(&ps, &pvs, &th, 1, 0);
+    v.help = Some(0);
+    let b = render_to_buffer(100, 40, |f| board::render(f, f.area(), &v));
+    let text: Vec<String> = (0..40).map(|y| (0..100).map(|x| b[(x, y)].symbol()).collect()).collect();
+    let y = text.iter().position(|l| l.contains("review its diff")).unwrap() as u16;
+    let x = text[y as usize].find("review").unwrap();
+    let x = text[y as usize][..x].chars().count() as u16;
+    assert_ne!(b[(x, y)].fg, th.meta, "a help line");
+
+    let b = render_to_buffer(30, 12, |f| board::render(f, f.area(), &v));
+    let text: Vec<String> = (0..12).map(|y| (0..30).map(|x| b[(x, y)].symbol()).collect()).collect();
+    let y = text.iter().position(|l| l.contains("esc or q")).unwrap() as u16;
+    let x = text[y as usize].find("esc").unwrap();
+    let x = text[y as usize][..x].chars().count() as u16;
+    assert_ne!(b[(x, y)].fg, th.meta, "the floor's way out");
+}
+
 /// NO_COLOR: every role is Reset and nothing else moves. Shape still carries
 /// state, which is why this is the tier the goldens can pin byte-for-byte.
 #[test]
@@ -349,7 +430,7 @@ fn ascii_tier_keeps_every_column_width() {
         assert_eq!(a.width(), u.width(), "line {i} changed display width in the ascii tier");
     }
     for glyph in [
-        "┌", "│", "─", "┏", "┃", "━", "▲", "▼", "●", "○", "✓", "✕", "◆", "↵", "▎", "…", "·", "—",
+        "┌", "│", "─", "┏", "┃", "━", "▲", "▼", "●", "○", "✓", "✕", "◆", "↵", "▎", "◂", "…", "·", "—",
     ] {
         assert!(!ascii.contains(glyph), "the ascii tier still draws {glyph}:\n{ascii}");
     }
@@ -391,13 +472,52 @@ fn help_lists_every_key_in_the_dispatch_table() {
     assert_eq!(bound, documented, "the dispatch table and the help overlay disagree");
 }
 
+/// One column over the whole board, the glyph legend at the end (D14).
 #[test]
-fn help_overlay() {
+fn help_goldens() {
     let th = Theme::fixed();
     let (ps, pvs) = (fixture(), previews());
+    for (w, h) in SIZES {
+        let mut v = view(&ps, &pvs, &th, 1, 0);
+        v.help = Some(0);
+        golden(&format!("board-help-{w}"), &draw(w, h, |f| board::render(f, f.area(), &v)));
+    }
+}
+
+/// `↑↓ j k PgUp PgDn` scroll a help taller than the screen; anything else closes.
+#[test]
+fn a_short_help_scrolls_to_its_legend() {
+    use cockpit_tui::chrome::scroll;
+    let th = Theme::fixed();
+    let (ps, pvs) = (fixture(), previews());
+    let n = board::help_rows(&th.g).len();
+    let rows = 10usize;
+    let bottom = n - rows;
     let mut v = view(&ps, &pvs, &th, 1, 0);
-    v.help = true;
-    golden("board-help", &draw(100, 24, |f| board::render(f, f.area(), &v)));
+    v.help = Some(0);
+    let first = draw(80, rows as u16 + 2, |f| board::render(f, f.area(), &v));
+    assert!(
+        first.contains(&format!("1-{rows} of {n}")) && first.contains("any other key closes"),
+        "{first}"
+    );
+    assert!(!first.contains("tmux's active pane"), "{first}");
+    let mut t = 0;
+    for k in [
+        KeyCode::Down,
+        KeyCode::Char('j'),
+        KeyCode::PageDown,
+        KeyCode::PageDown,
+        KeyCode::PageDown,
+    ] {
+        t = scroll(k, t, bottom, rows).expect("a scroll key keeps it open");
+    }
+    assert_eq!(t, bottom);
+    v.help = Some(t);
+    let last = draw(80, rows as u16 + 2, |f| board::render(f, f.area(), &v));
+    assert!(last.contains("tmux's active pane") && last.contains("the selection"), "{last}");
+    assert_eq!(scroll(KeyCode::Char('k'), t, bottom, rows), Some(bottom - 1));
+    assert_eq!(scroll(KeyCode::PageUp, 1, bottom, rows), Some(0));
+    assert_eq!(scroll(KeyCode::Char('q'), t, bottom, rows), None, "any other key closes");
 }
 
 // -------------------------------------------------------------- truncation
@@ -448,6 +568,7 @@ fn no_wrapping_and_no_terminal_queries() {
     let backend = include_str!("../src/backend.rs");
     for (name, src) in [
         ("board.rs", include_str!("../src/board.rs")),
+        ("chrome.rs", include_str!("../src/chrome.rs")),
         ("theme.rs", include_str!("../src/theme.rs")),
         ("backend.rs", backend),
     ] {
@@ -465,50 +586,153 @@ fn no_wrapping_and_no_terminal_queries() {
     );
     assert!(!include_str!("../src/board.rs").contains("window_size"));
     // every colour literal lives in theme.rs
-    assert!(
-        !include_str!("../src/board.rs").contains("Color::"),
-        "board.rs names a colour directly"
-    );
+    for (name, src) in [
+        ("board.rs", include_str!("../src/board.rs")),
+        ("chrome.rs", include_str!("../src/chrome.rs")),
+    ] {
+        assert!(!src.contains("Color::"), "{name} names a colour directly");
+    }
 }
 
-/// Footer pills drop whole, never truncated: "half a label is not a smaller
-/// button, it is an unreadable one" (ux.md §1.6).
+/// Hints drop whole, lowest priority first, and `?` and `q` stay: "half a
+/// label is not a smaller button, it is an unreadable one" (ux.md §1.6).
 #[test]
-fn footer_drops_whole_pills() {
+fn footer_drops_whole_hints_in_priority_order() {
+    use cockpit_tui::chrome::fit;
     let g = Glyphs::unicode();
-    let full = "↵ jump   a ask   r review   f panel   i info   ? help   q close";
-    let mid = "↵ jump   ? help   q close";
-    let last = "? help";
-    for w in 1..90usize {
-        let got = board::footer_text(&g, w);
-        assert!(
-            got == full || got == mid || got == last || got.is_empty(),
-            "at w={w} the footer is a fragment: {got:?}"
-        );
+    let keys = |w: usize| -> Vec<String> { fit(board::hints(&g, false), w, 3).into_iter().map(|(k, _)| k).collect() };
+    for (w, want) in [
+        (200, vec!["↵", "a", "r", "f", "i", "?", "q"]),
+        (65, vec!["↵", "a", "r", "f", "i", "?", "q"]),
+        (64, vec!["↵", "a", "r", "f", "?", "q"]),
+        (56, vec!["↵", "a", "r", "f", "?", "q"]),
+        (55, vec!["↵", "a", "r", "?", "q"]),
+        (46, vec!["↵", "a", "r", "?", "q"]),
+        (45, vec!["↵", "a", "?", "q"]),
+        (35, vec!["↵", "a", "?", "q"]),
+        (34, vec!["↵", "?", "q"]),
+        (26, vec!["?", "q"]),
+        (17, vec!["q"]),
+        (1, vec!["q"]),
+    ] {
+        assert_eq!(keys(w), want, "at w={w}");
     }
-    assert_eq!(board::footer_text(&g, 80), full);
-    assert_eq!(board::footer_text(&g, 30), mid);
-    assert_eq!(board::footer_text(&g, 10), last);
+    // the label follows the selection: answer on a ▲, ask on anything else
+    let verb = |needs| board::hints(&g, needs).into_iter().find(|(k, _)| k == "a").unwrap().1;
+    assert_eq!((verb(true).as_str(), verb(false).as_str()), ("answer", "ask"));
+    // the panel's spacing: its 40-column footers are pinned by its goldens
+    let ps: Vec<(String, String)> = [("i", "insert"), ("s", "send"), ("?", "keys"), ("esc", "draft")]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    assert_eq!(fit(ps.clone(), 37, 2).len(), 4);
+    assert_eq!(fit(ps, 36, 2).into_iter().map(|(k, _)| k).collect::<Vec<_>>(), ["i", "?", "esc"]);
+}
+
+/// Every key the footer names is one the dispatch takes, for what the hint says.
+#[test]
+fn the_footer_lists_only_keys_the_dispatch_accepts() {
+    for needs in [false, true] {
+        for (k, verb) in board::hints(&Glyphs::unicode(), needs) {
+            let code = match k.as_str() {
+                "↵" => KeyCode::Enter,
+                c if c.chars().count() == 1 => KeyCode::Char(c.chars().next().unwrap()),
+                other => panic!("the footer names {other:?}, which no key sends"),
+            };
+            let a = board::action(KeyEvent::new(code, KeyModifiers::NONE)).unwrap_or_else(|| panic!("{k} {verb} is not bound"));
+            let row = KEYS.iter().find(|r| r.acts.contains(&a)).unwrap();
+            assert!(
+                !row.hint.is_empty() && row.keys.split_whitespace().next() == Some(k.as_str()),
+                "{k} {verb} runs {a:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn board_goldens() {
+    let th = Theme::fixed();
+    let (ps, pvs) = (fixture(), previews());
+    for (w, h) in SIZES {
+        // 60 selects the ▲: `a answer`, and ▎ and ◂ on different tiles
+        let v = view(&ps, &pvs, &th, if w == 60 { 0 } else { 1 }, 0);
+        golden(&format!("board-{w}"), &draw(w, h, |f| board::render(f, f.area(), &v)));
+    }
 }
 
 #[test]
 fn empty_fleet_says_so() {
     let th = Theme::fixed();
+    for (w, h) in SIZES {
+        let v = view(&[], &[], &th, 0, 0);
+        let out = draw(w, h, |f| board::render(f, f.area(), &v));
+        golden(&format!("board-empty-{w}"), &out);
+        assert!(out.contains("no agent panes"), "{out}");
+        assert!(
+            out.contains("start an agent in any pane and it shows up here."),
+            "wrapped, never cut:\n{out}"
+        );
+        assert!(!out.contains("prefix r"), "{out}");
+        assert!(!out.contains('…'), "{out}");
+    }
+    // centred: as many rows above the card as under it, give or take one
     let v = view(&[], &[], &th, 0, 0);
-    let out = draw(80, 24, |f| board::render(f, f.area(), &v));
-    assert!(out.contains("no agent panes"), "{out}");
-    assert!(out.contains("prefix r"), "{out}");
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    let r = rows(&out);
+    let top = r.iter().position(|l| l.contains('╭')).unwrap();
+    let bot = r.iter().position(|l| l.contains('╰')).unwrap();
+    assert!((top as i32 - 1 - (r.len() - 1 - bot) as i32).abs() <= 1, "{out}");
+    // and wrapped at 44 columns, not cut
+    let out = draw(44, 24, |f| board::render(f, f.area(), &v));
+    assert!(
+        out.contains("start an agent in any pane and it shows") && out.contains("│ up here."),
+        "{out}"
+    );
 }
 
-/// Better than a grid of tiles too narrow to name their agent (rules.md 32).
+/// D16: the header says how stale the tiles are; the card comes after 30 s,
+/// three failed reads, or at once when no read ever worked.
+#[test]
+fn a_silent_tmux_goes_stale_then_says_so() {
+    let th = Theme::fixed();
+    let (ps, pvs) = (fixture(), previews());
+    let mut v = view(&ps, &pvs, &th, 1, 0);
+    v.stale = Some(12);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    golden("board-stale-100", &out);
+    assert!(out.lines().next().unwrap().contains("· stale 12s"), "{out}");
+    assert!(!out.contains("tmux is not answering"), "{out}");
+
+    v.stale = Some(34);
+    v.lost = true;
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    for s in [
+        "board · stale 34s",
+        "tmux is not answering",
+        "last good read 34s ago · the server may have exited.",
+        "^L retry",
+        "q close",
+    ] {
+        assert!(out.contains(s), "{s}:\n{out}");
+    }
+    assert!(!board::lost(Some(29), 2, true));
+    assert!(board::lost(Some(30), 1, true));
+    assert!(board::lost(Some(3), 3, true));
+    assert!(board::lost(Some(0), 1, false), "no read ever worked");
+    assert!(!board::lost(None, 0, false));
+}
+
+/// Better than a grid of tiles too narrow to name their agent (rules.md 32):
+/// the shared floor card, with its way out.
 #[test]
 fn refuses_below_forty_columns() {
     let th = Theme::fixed();
     let (ps, pvs) = (fixture(), previews());
     let v = view(&ps, &pvs, &th, 0, 0);
     let out = draw(30, 12, |f| board::render(f, f.area(), &v));
-    assert!(out.contains("terminal too narrow"), "{out}");
-    assert!(out.contains("prefix i on the pane instead"), "{out}");
+    assert!(out.contains("make the window larger") && out.contains("rotate"), "{out}");
+    assert!(out.contains("esc or q closes"), "{out}");
+    assert!(!out.contains("too short"), "{out}");
     // and 40 still draws the board
     let v = view(&ps, &pvs, &th, 0, 0);
     assert!(draw(40, 12, |f| board::render(f, f.area(), &v)).contains("henosis:1"));
@@ -624,7 +848,7 @@ fn sixteen_agents_page_and_number_correctly() {
     let v = view(&ps, &pvs, &th, sel, top);
     let out = draw(160, 24, |f| board::render(f, f.area(), &v));
     assert!(out.lines().next().unwrap().contains("13-16 of 16"), "{out}");
-    assert!(out.contains(" 13 "), "page two labels its first tile 13:\n{out}");
+    assert!(out.contains("▎13 ●"), "page two labels its first tile 13:\n{out}");
     assert_eq!(
         board::moved(Act::Tile(5), sel, ps.len(), &g, top, &ps, &ord).0,
         4,
@@ -700,14 +924,20 @@ fn no_rendered_row_ever_exceeds_the_area() {
     }
 }
 
-/// Below either floor the board says why instead of drawing a blank rectangle.
+/// Under 8 rows the width is fine, so the card says `too short`, not narrow.
 #[test]
 fn refuses_below_the_height_floor_too() {
     let th = Theme::fixed();
     let (ps, pvs) = (fixture(), previews());
     let v = view(&ps, &pvs, &th, 0, 0);
-    assert!(draw(80, 4, |f| board::render(f, f.area(), &v)).contains("terminal too narrow"));
-    assert!(draw(80, 5, |f| board::render(f, f.area(), &v)).contains("henosis:1"));
+    let out = draw(100, 6, |f| board::render(f, f.area(), &v));
+    golden("board-short-100", &out);
+    assert!(out.contains("too short") && out.contains("esc or q closes"), "{out}");
+    assert!(draw(80, 4, |f| board::render(f, f.area(), &v)).contains("too short"));
+    assert!(draw(80, 7, |f| board::render(f, f.area(), &v)).contains("too short"));
+    assert!(draw(80, 8, |f| board::render(f, f.area(), &v)).contains("henosis:1"));
+    assert!(board::too_small(ratatui::layout::Rect::new(0, 0, 80, 7)));
+    assert!(!board::too_small(ratatui::layout::Rect::new(0, 0, 40, 8)));
 }
 
 /// capture-pane exit 1 with empty stdout means the pane is gone, not that the

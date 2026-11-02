@@ -1,6 +1,7 @@
 //! The board: one live-preview tile per agent pane, needs-first. `render` is pure
 //! over `&[Pane]` (no tmux, no clock); `run` is the only impure entry.
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
+use crate::panel::view::wrap;
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
 use ansi_to_tui::IntoText;
@@ -33,7 +34,26 @@ pub struct View<'a> {
     /// tmux's active pane id
     pub active: &'a str,
     pub note: Option<&'a str>,
-    pub help: bool,
+    /// the help's scroll offset while it is open
+    pub help: Option<usize>,
+    /// seconds since the last good read, while reads are failing
+    pub stale: Option<u64>,
+    /// tmux has not answered for long enough to say so over the tiles (D16)
+    pub lost: bool,
+}
+
+/// D16: the card replaces the stale header after 30 s or three failed reads in
+/// a row, and at once when no read has ever worked.
+pub fn lost(stale: Option<u64>, fails: u32, ever: bool) -> bool {
+    stale.is_some_and(|s| s >= 30) || fails >= 3 || (fails > 0 && !ever)
+}
+
+/// tmux's active pane, at the tile's top-right end: `▎` is the selection (D14).
+/// Open question 1 of the board-panel design; one place to change it.
+const PANE_MARK: (&str, &str) = ("◂", "<");
+
+fn pane_mark(g: &Glyphs) -> &'static str {
+    if g.ascii { PANE_MARK.1 } else { PANE_MARK.0 }
 }
 
 fn pane_num(id: &str) -> u64 {
@@ -74,20 +94,43 @@ pub fn grid(area: Rect, n: usize) -> Grid {
 /// Below this the tiles are narrower than a pane name, so a row would lie about
 /// which agent it names. fleet.rs refuses at the same width.
 const MIN_BOARD_W: u16 = 40;
-/// Header, footer and one tile with a border and a content row.
-const MIN_BOARD_H: u16 = 5;
+/// Header, footer and one tile with a border, its header and a preview row.
+const MIN_BOARD_H: u16 = 8;
+
+/// Under the floor the card hides the board, so only its way out does anything.
+pub fn too_small(area: Rect) -> bool {
+    area.width < MIN_BOARD_W || area.height < MIN_BOARD_H
+}
 
 pub fn render(f: &mut Frame, area: Rect, v: &View) {
     // below either floor every tile fails its own size guard and the board is a
     // blank rectangle with nothing saying why
-    if area.width < MIN_BOARD_W || area.height < MIN_BOARD_H {
-        narrow(f, area, v.th);
+    if area.width < MIN_BOARD_W {
+        crate::chrome::floor(f, area, v.th, "board", "make the window larger or rotate", "esc or q closes");
+        return;
+    }
+    if area.height < MIN_BOARD_H {
+        let msg = format!("too short {} make the window larger or rotate", v.th.g.dot);
+        crate::chrome::floor(f, area, v.th, "board", &msg, "esc or q closes");
+        return;
+    }
+    if let Some(top) = v.help {
+        crate::chrome::help(f, area, v.th, &help_rows(&v.th.g), top);
         return;
     }
     if v.panes.is_empty() {
-        empty(f, area, v.th);
-        return;
+        let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+        header(f, head, v, &grid(area, 0), 0);
+        empty(f, body, v.th);
+    } else {
+        grid_board(f, area, v);
     }
+    if v.lost {
+        lost_card(f, area, v);
+    }
+}
+
+fn grid_board(f: &mut Frame, area: Rect, v: &View) {
     let ord = order(v.panes);
     let g = grid(area, ord.len());
     // View.top is caller-supplied and the terminal can shrink under it
@@ -99,10 +142,8 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
 
     header(f, head, v, &g, ord.len());
     tiles(f, body, v, &ord, &g);
-    footer(f, foot, v);
-    if v.help {
-        help(f, area, v.th);
-    }
+    let needs = v.panes[ord[v.sel.min(ord.len() - 1)]].state == State::NeedsInput;
+    footer(f, foot, v, needs);
 }
 
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
@@ -114,6 +155,12 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     )];
     if needs > 0 {
         left.push(Span::styled(format!(" {} {needs} needs you", th.g.dot), Style::new().fg(th.needs)));
+    }
+    if let Some(s) = v.stale {
+        left.push(Span::styled(
+            format!(" {} stale {}", th.g.dot, fmt_dur(s)),
+            Style::new().fg(th.error),
+        ));
     }
     f.render_widget(Line::from(left), area);
 
@@ -132,42 +179,39 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     f.render_widget(Line::from(Span::styled(right, Style::new().fg(th.meta))).right_aligned(), area);
 }
 
-fn footer(f: &mut Frame, area: Rect, v: &View) {
+fn footer(f: &mut Frame, area: Rect, v: &View, needs: bool) {
     let th = v.th;
     if let Some(n) = v.note {
-        f.render_widget(Line::from(Span::styled(format!(" {n}"), Style::new().fg(th.meta))), area);
+        f.render_widget(Line::from(Span::styled(format!(" {n}"), Style::new().fg(th.value))), area);
         return;
     }
-    let text = footer_text(&th.g, area.width.saturating_sub(1) as usize);
-    if text.is_empty() {
-        return;
-    }
-    let mut spans = vec![Span::raw(" ")];
-    for (i, pill) in text.split("   ").enumerate() {
-        if i > 0 {
-            spans.push(Span::raw("   "));
-        }
-        let (k, verb) = pill.split_once(' ').unwrap_or((pill, ""));
-        spans.push(Span::styled(k.to_string(), Style::new().fg(th.accent)));
-        spans.push(Span::styled(format!(" {verb}"), Style::new().fg(th.meta)));
-    }
-    f.render_widget(Line::from(spans), area);
+    f.render_widget(crate::chrome::footer(th, hints(&th.g, needs), area.width as usize, 3), area);
 }
 
-/// Pills drop whole, never truncated: half a label is not a smaller button, it
-/// is an unreadable one. Widest candidate that measures under the width.
-pub fn footer_text(g: &Glyphs, w: usize) -> String {
-    let e = g.enter;
-    for t in [
-        format!("{e} jump   a ask   r review   f panel   i info   ? help   q close"),
-        format!("{e} jump   ? help   q close"),
-        "? help".to_string(),
-    ] {
-        if t.width() <= w {
-            return t;
-        }
+/// The footer's hints from the key table, in priority order, for the selection:
+/// `a` answers a ▲ and asks anything else (D14). Only keys the dispatch takes.
+pub fn hints(g: &Glyphs, needs: bool) -> Vec<(String, String)> {
+    KEYS.iter()
+        .filter(|k| !k.hint.is_empty())
+        .map(|k| {
+            let key = k.keys.split_whitespace().next().unwrap_or(k.keys);
+            let verb = if k.acts == [Act::Ask] && needs { "answer" } else { k.hint };
+            (names(g, key), verb.to_string())
+        })
+        .collect()
+}
+
+/// The key table speaks unicode; the ascii tier names the keys instead.
+fn names(g: &Glyphs, s: &str) -> String {
+    if !g.ascii {
+        return s.to_string();
     }
-    String::new()
+    s.replace("⇧⇥", &format!("S-{}", g.key_tab))
+        .replace('⇥', g.key_tab)
+        .replace('↵', g.key_enter)
+        .replace('←', g.key_left)
+        .replace('→', g.key_right)
+        .replace("↑ ↓", g.key_updown)
 }
 
 /// The redraw gate's extra input: `hash_rows` skips the ages, so hash the rail's
@@ -230,7 +274,8 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         th.meta
     };
 
-    let inner_w = cell.width.saturating_sub(2) as usize;
+    // the pane mark takes the title's right end, so the left one budgets for it
+    let inner_w = (cell.width.saturating_sub(2) as usize).saturating_sub(if active { 3 } else { 0 });
     let n = num.to_string();
     let fixed = 1 + n.width() + 1 + gl.width() + rv.width() + 1;
     let wher = g.trunc(&p.wher, inner_w.saturating_sub(fixed + 1));
@@ -238,9 +283,15 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     let title_w = inner_w.saturating_sub(fixed + wher.width() + sep.width() + 1);
 
     let title_c = if dimmed(p.state) { th.meta } else { th.value };
+    // the selection is ▎ plus reverse, so it survives NO_COLOR (D17)
+    let num_st = if focused {
+        Style::new().fg(th.accent).add_modifier(Modifier::REVERSED)
+    } else {
+        Style::new().fg(th.meta)
+    };
     let mut top = vec![
-        Span::styled(if active { g.active } else { " " }, Style::new().fg(th.accent)),
-        Span::styled(n, Style::new().fg(if focused { th.accent } else { th.meta })),
+        Span::styled(if focused { g.active } else { " " }, Style::new().fg(th.accent)),
+        Span::styled(n, num_st),
         Span::raw(" "),
         Span::styled(
             gl,
@@ -258,14 +309,13 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         top.push(Span::raw(" "));
     }
 
+    // no key hints on the frame: the footer is the board's one key bar (D19)
     let mut block = Block::bordered()
         .border_set(if focused { g.thick } else { g.plain })
         .border_style(Style::new().fg(border_c))
         .title(Line::from(top));
-    if needs {
-        // the ▲, the red border and the red question already say "needs you";
-        // the bottom title is where the eye looks for what to do
-        block = block.title_bottom(Line::from(Span::styled(format!(" {} answer ", g.enter), Style::new().fg(th.needs))));
+    if active {
+        block = block.title(Line::from(Span::styled(format!(" {} ", pane_mark(g)), Style::new().fg(th.accent))).right_aligned());
     }
     let inner = block.inner(cell);
     f.render_widget(block, cell);
@@ -393,49 +443,43 @@ fn fold(s: &str, first_w: usize, rest_w: usize, rows: usize, g: &Glyphs) -> Vec<
     out
 }
 
-fn narrow(f: &mut Frame, area: Rect, th: &Theme) {
-    let block = Block::bordered()
-        .border_set(th.g.round)
-        .border_style(Style::new().fg(th.meta))
-        .title(Line::from(Span::styled(" board ", Style::new().fg(th.label))));
-    let inner = block.inner(area);
-    f.render_widget(Clear, area);
-    f.render_widget(block, area);
-    let w = inner.width as usize;
-    f.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(th.g.trunc("terminal too narrow", w), Style::new().fg(th.needs))),
-            Line::from(Span::styled(
-                th.g.trunc("prefix i on the pane instead", w),
-                Style::new().fg(th.meta),
-            )),
-        ]),
-        inner,
-    );
-}
-
-/// A centred card, the shape every state screen shares.
-fn card(f: &mut Frame, area: Rect, th: &Theme, body: &[&str], foot: Option<(&str, &str)>) {
+/// A centred card, the shape every state screen shares. The body wraps, never
+/// cut: at 60 columns the advice is the half a reader needs.
+fn card(f: &mut Frame, area: Rect, th: &Theme, title: &str, body: &[&str], foot: &[(&str, &str)]) {
     let g = &th.g;
     let w = 62.min(area.width);
-    let r = area.centered(Constraint::Length(w), Constraint::Length(body.len() as u16 + 2));
+    let lines: Vec<Line> = body
+        .iter()
+        .flat_map(|l| {
+            if l.is_empty() {
+                return vec![Line::default()];
+            }
+            wrap(l, w.saturating_sub(4) as usize)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, Style::new().fg(th.value))))
+                .collect()
+        })
+        .collect();
+    let r = area.centered(Constraint::Length(w), Constraint::Length(lines.len() as u16 + 2));
     let mut block = Block::bordered()
         .border_set(g.round)
         .border_style(Style::new().fg(th.meta))
-        .title(Line::from(Span::styled(" board ", Style::new().fg(th.label))));
-    if let Some((key, verb)) = foot {
-        block = block.title_bottom(Line::from(vec![
-            Span::styled(format!(" {key}"), Style::new().fg(th.accent)),
-            Span::styled(format!(" {verb} "), Style::new().fg(th.meta)),
-        ]));
+        .padding(Padding::horizontal(1))
+        .title(Line::from(Span::styled(format!(" {title} "), Style::new().fg(th.label))));
+    if !foot.is_empty() {
+        let mut spans = vec![];
+        for (i, (key, verb)) in foot.iter().enumerate() {
+            spans.push(Span::styled(
+                format!("{}{key}", if i == 0 { " " } else { "  " }),
+                Style::new().fg(th.accent),
+            ));
+            spans.push(Span::styled(format!(" {verb} "), Style::new().fg(th.value)));
+        }
+        block = block.title_bottom(Line::from(spans));
     }
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
-    let lines: Vec<Line> = body
-        .iter()
-        .map(|l| Line::from(Span::styled(g.trunc(l, inner.width as usize), Style::new().fg(th.value))))
-        .collect();
     f.render_widget(Paragraph::new(lines), inner);
 }
 
@@ -444,69 +488,67 @@ fn empty(f: &mut Frame, area: Rect, th: &Theme) {
         f,
         area,
         th,
+        "board",
         &[
             "",
-            " no agent panes",
+            "no agent panes",
             "",
-            " cockpit tracks a pane once an agent runs in it.",
-            " start one, or press q and use prefix r for the full fleet.",
+            "cockpit tracks a pane once an agent runs in it.",
+            "start an agent in any pane and it shows up here.",
             "",
         ],
-        Some(("q", "close")),
+        &[("q", "close")],
+    );
+}
+
+/// D16's second stage, over the last good read's tiles.
+fn lost_card(f: &mut Frame, area: Rect, v: &View) {
+    let d = v.th.g.dot;
+    let age = fmt_dur(v.stale.unwrap_or(0));
+    let read = format!("last good read {age} ago {d} the server may have exited.");
+    card(
+        f,
+        area,
+        v.th,
+        &format!("board {d} stale {age}"),
+        &["", "tmux is not answering", "", &read, "the tiles below are from that read.", ""],
+        &[("^L", "retry"), ("q", "close")],
     );
 }
 
 /// Drawn before the first fetch, which is slow enough that a black popup reads
 /// as a hang.
 pub fn loading(f: &mut Frame, area: Rect, th: &Theme) {
-    card(f, area, th, &["", " reading the fleet \u{2026}", ""], None);
+    card(f, area, th, "board", &["", "reading the fleet \u{2026}", ""], &[]);
 }
 
-fn help(f: &mut Frame, area: Rect, th: &Theme) {
-    // the description column is aligned at the widest key in its own column,
-    // never per group, so `act` and `view` stay on one grid
-    let kw = |gs: &[Grp]| {
-        KEYS.iter()
-            .filter(|k| gs.contains(&k.grp))
-            .map(|k| k.keys.width())
-            .max()
-            .unwrap_or(0)
-    };
-    let row = |k: &Key, w: usize| {
-        Line::from(vec![
-            Span::styled(pad(k.keys.to_string(), w), Style::new().fg(th.accent)),
-            Span::styled(format!("  {}", k.desc), Style::new().fg(th.meta)),
-        ])
-    };
-    let head = |t: &'static str| Line::from(Span::styled(t, Style::new().fg(th.label)));
-
-    let (lw_k, rw_k) = (kw(&[Grp::Move]), kw(&[Grp::Act, Grp::View]));
-    let mut left = vec![head("move")];
-    left.extend(KEYS.iter().filter(|k| k.grp == Grp::Move).map(|k| row(k, lw_k)));
-    let mut right = vec![head("act")];
-    right.extend(KEYS.iter().filter(|k| k.grp == Grp::Act).map(|k| row(k, rw_k)));
-    right.push(Line::default());
-    right.push(head("view"));
-    right.extend(KEYS.iter().filter(|k| k.grp == Grp::View).map(|k| row(k, rw_k)));
-
-    let lw = left.iter().map(Line::width).max().unwrap_or(0);
-    let rw = right.iter().map(Line::width).max().unwrap_or(0);
-    let w = (lw + rw + 6).min(area.width as usize) as u16;
-    let h = (left.len().max(right.len()) + 2).min(area.height as usize) as u16;
-    let r = area.centered(Constraint::Length(w), Constraint::Length(h));
-
-    let block = Block::bordered()
-        .border_set(th.g.round)
-        .border_style(Style::new().fg(th.meta))
-        .padding(Padding::horizontal(1))
-        .title(Line::from(Span::styled(" keys ", Style::new().fg(th.label))))
-        .title_bottom(Line::from(Span::styled(" any key closes ", Style::new().fg(th.meta))));
-    let inner = block.inner(r);
-    f.render_widget(Clear, r);
-    f.render_widget(block, r);
-    let [a, b] = Layout::horizontal([Constraint::Length(lw as u16 + 2), Constraint::Min(0)]).areas(inner);
-    f.render_widget(Paragraph::new(left), a);
-    f.render_widget(Paragraph::new(right), b);
+/// The `?` rows: the key table by group, then what each glyph on a tile means.
+pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
+    let head = |t: &str| (String::new(), t.to_string());
+    let mut out = vec![];
+    for (grp, title) in [(Grp::Move, "move"), (Grp::Act, "act on the selected agent"), (Grp::View, "view")] {
+        if !out.is_empty() {
+            out.push((String::new(), String::new()));
+        }
+        out.push(head(title));
+        out.extend(KEYS.iter().filter(|k| k.grp == grp).map(|k| (names(g, k.keys), k.desc.to_string())));
+    }
+    out.push((String::new(), String::new()));
+    out.push(head("on a tile"));
+    for (k, v) in [
+        (g.needs, "needs you"),
+        (g.error, "error"),
+        (g.running, "running"),
+        (g.done, "done"),
+        (g.idle, "idle"),
+        (g.review_pending, "review pending"),
+        (g.review_sent, "review sent"),
+        (g.active, "the selection"),
+        (pane_mark(g), "tmux's active pane"),
+    ] {
+        out.push((k.to_string(), v.to_string()));
+    }
+    out
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -545,99 +587,116 @@ pub struct Key {
     pub desc: &'static str,
     pub grp: Grp,
     pub acts: &'static [Act],
+    /// the footer's verb; empty keeps the key out of the footer
+    pub hint: &'static str,
 }
 
-/// One table feeds `action` and the `?` overlay, so the help cannot drift.
+/// One table feeds `action`, the footer and the `?` help, so none can drift.
 pub const KEYS: &[Key] = &[
     Key {
         keys: "h l  ← →",
         desc: "column",
         grp: Grp::Move,
         acts: &[Act::Left, Act::Right],
+        hint: "",
     },
     Key {
         keys: "j k  ↑ ↓",
         desc: "row",
         grp: Grp::Move,
         acts: &[Act::Up, Act::Down],
+        hint: "",
     },
     Key {
         keys: "⇥ ⇧⇥",
         desc: "next / previous",
         grp: Grp::Move,
         acts: &[Act::Next, Act::Prev],
+        hint: "",
     },
     Key {
         keys: "1-9",
         desc: "tile by number",
         grp: Grp::Move,
         acts: &[Act::Tile(0)],
+        hint: "",
     },
     Key {
         keys: "g G",
         desc: "first / last",
         grp: Grp::Move,
         acts: &[Act::First, Act::Last],
+        hint: "",
     },
     Key {
         keys: "u",
         desc: "next blocked",
         grp: Grp::Move,
         acts: &[Act::NextNeeds],
+        hint: "",
     },
     Key {
         keys: "[ ]",
         desc: "page",
         grp: Grp::Move,
         acts: &[Act::PageUp, Act::PageDown],
+        hint: "",
     },
     Key {
         keys: "↵",
         desc: "jump to this pane, close the board",
         grp: Grp::Act,
         acts: &[Act::Jump],
+        hint: "jump",
     },
     Key {
         keys: "a",
         desc: "answer / ask this agent",
         grp: Grp::Act,
         acts: &[Act::Ask],
+        hint: "ask",
     },
     Key {
         keys: "r",
         desc: "review its diff",
         grp: Grp::Act,
         acts: &[Act::Review],
+        hint: "review",
     },
     Key {
         keys: "f",
         desc: "panel for this pane",
         grp: Grp::Act,
         acts: &[Act::Panel],
+        hint: "panel",
     },
     Key {
         keys: "i",
         desc: "info for this pane",
         grp: Grp::Act,
         acts: &[Act::Info],
+        hint: "info",
     },
     Key {
         keys: "?",
         desc: "this help",
         grp: Grp::View,
         acts: &[Act::Help],
+        hint: "keys",
     },
     Key {
         keys: "^L",
         desc: "refresh now",
         grp: Grp::View,
         acts: &[Act::Refresh],
+        hint: "",
     },
     Key {
-        keys: "q",
-        desc: "close   ·   esc close overlay",
+        keys: "q esc",
+        desc: "close the board",
         grp: Grp::View,
         acts: &[Act::Quit],
+        hint: "close",
     },
 ];
 
@@ -746,6 +805,8 @@ struct Snapshot {
     /// visible tiles only, by pane id
     pvs: Vec<(String, Option<String>)>,
     took: Duration,
+    /// the list-panes read worked; `panes` is the last good one either way
+    ok: bool,
 }
 
 /// The fetch is fork-heavy, so it runs here and never on the key thread. A wake
@@ -756,15 +817,23 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         let t0 = Instant::now();
         // None is "tmux did not answer"; keep the last good tile list rather
         // than blanking the board on one failed read
-        if let Some(ps) = list_panes() {
+        let got = list_panes();
+        let ok = got.is_some();
+        if let Some(ps) = got {
             panes = ps;
         }
         let (_, top, g) = fit(want.area, panes.len(), want.sel, want.top);
         let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
         let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
         let ord = order(&panes);
-        // visible tiles only: each capture is a fork
-        let pvs = (top * g.cols..panes.len().min((top + g.rows_shown) * g.cols))
+        // visible tiles only: each capture is a fork. A server that did not
+        // answer list-panes fails every capture too, and the last ones stay
+        let shown = if ok {
+            top * g.cols..panes.len().min((top + g.rows_shown) * g.cols)
+        } else {
+            0..0
+        };
+        let pvs = shown
             .map(|k| {
                 let id = &panes[ord[k]].id;
                 (id.clone(), preview(id, rows))
@@ -774,6 +843,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
             panes: panes.clone(),
             pvs,
             took: t0.elapsed(),
+            ok,
         };
         if tx.send(snap).is_err() {
             return;
@@ -816,7 +886,11 @@ pub fn run() -> Option<String> {
     // previews survive between snapshots, so a tile scrolled into view shows
     // its last capture instead of a false "capture failed"
     let mut seen: HashMap<String, Option<String>> = HashMap::new();
-    let (mut sel, mut top, mut help_open, mut loaded) = (0usize, 0usize, false, false);
+    let (mut sel, mut top, mut loaded) = (0usize, 0usize, false);
+    let mut help: Option<usize> = None;
+    // D16: when the last good read was, and how many have failed since
+    let (mut good, mut fails, mut stale_shown) = (None::<Instant>, 0u32, None::<u64>);
+    let start = Instant::now();
     let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
     let (mut dirty, mut draw_fails) = (true, 0u8);
@@ -850,6 +924,12 @@ pub fn run() -> Option<String> {
             Ok(s) => {
                 let t0 = Instant::now();
                 let s = snap_rx.try_iter().last().unwrap_or(s);
+                if s.ok {
+                    (good, fails) = (Some(Instant::now()), 0);
+                } else {
+                    fails += 1;
+                    dirty = true;
+                }
                 panes = s.panes;
                 seen.retain(|id, _| panes.iter().any(|p| &p.id == id));
                 seen.extend(s.pvs);
@@ -883,6 +963,11 @@ pub fn run() -> Option<String> {
                 dirty = false;
             }
         }
+        let stale = (fails > 0).then(|| good.unwrap_or(start).elapsed().as_secs());
+        if stale != stale_shown {
+            stale_shown = stale;
+            dirty = true;
+        }
         if dirty && loaded {
             let v = View {
                 panes: &panes,
@@ -892,7 +977,9 @@ pub fn run() -> Option<String> {
                 top,
                 active: &active,
                 note: note.as_ref().map(|(s, _)| s.as_str()),
-                help: help_open,
+                help,
+                stale,
+                lost: lost(stale, fails, good.is_some()),
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them
@@ -931,26 +1018,35 @@ pub fn run() -> Option<String> {
             continue;
         }
         dirty = true;
-        if help_open {
-            // a help screen you have to learn a key to leave is a joke
-            help_open = false;
+        let here = area(term.size().unwrap_or_default());
+        if too_small(here) {
+            help = None;
+        }
+        if let Some(t) = help {
+            // a help screen you have to learn a key to leave is a joke: any
+            // key but a scroll key closes it
+            let rows = here.height.saturating_sub(2) as usize;
+            help = crate::chrome::scroll(k.code, t, help_rows(&th.g).len().saturating_sub(rows), rows);
             continue;
         }
         let Some(a) = action(k) else { continue };
-        if panes.is_empty() {
-            if a == Act::Quit {
-                break;
+        // under the floor or with no tiles nobody can see what a key would do
+        if too_small(here) || panes.is_empty() {
+            match a {
+                Act::Quit => break,
+                Act::Help if !too_small(here) => help = Some(0),
+                Act::Refresh => ask(here, sel, top),
+                _ => {}
             }
             continue;
         }
         let ord = order(&panes);
-        let here = area(term.size().unwrap_or_default());
         let g = grid(here, panes.len());
         let p = &panes[ord[sel]];
         let id = p.id.clone();
         match a {
             Act::Quit => break,
-            Act::Help => help_open = true,
+            Act::Help => help = Some(0),
             Act::Refresh => ask(here, sel, top),
             Act::Jump => {
                 action_line = Some(format!("jump {id}"));
