@@ -3439,11 +3439,12 @@ echo "== a session name is data in the move menu =="
 # ran cmd as the menu opened: the name has to reach it with its # doubled.
 if need_tmux "move menu session name"; then :; else
 MH="cockpit-mh-$$"; MHO="cockpit-mho-$$"; SOCKS="$SOCKS $MH $MHO"; MHD=$(mktmpd)
-"$TMUX_REAL" -L "$MH" -f /dev/null new-session -d -s work -n editor -x 90 -y 24 >/dev/null 2>&1
-"$TMUX_REAL" -L "$MH" new-window -t work -n keeper >/dev/null 2>&1
+# Silent panes: a login shell's banner can land over the menu and hide its rows.
+"$TMUX_REAL" -L "$MH" -f /dev/null new-session -d -s work -n editor -x 90 -y 24 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" new-window -t work -n keeper 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$MH" select-window -t work:editor >/dev/null 2>&1
 # new-session expands -s as a format itself: ## lands the literal #( name.
-"$TMUX_REAL" -L "$MH" new-session -d -s "##(touch $MHD/pwned)" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" new-session -d -s "##(touch $MHD/pwned)" 'exec sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$MH" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 "$TMUX_REAL" -L "$MHO" -f /dev/null new-session -d -s o -x 90 -y 26 \
     "$TMUX_REAL -L $MH attach -t work" >/dev/null 2>&1
