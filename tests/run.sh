@@ -10037,6 +10037,20 @@ case "$tfout" in
     *"needs Rust >= 1.99"*) ok "the floor comes from Cargo.toml, not a second pin in the script" ;;
     *) bad "the floor comes from Cargo.toml, not a second pin in the script" "needs Rust >= 1.99" "$tfout" ;;
 esac
+# --required is the install path (#199): a binary that runs is success, and
+# none at all is exit 1 naming both ways out, whether settled or offline.
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+is "--required with a working binary left exits 0" "0" "$tfrc"
+mv "$TFB" "$TF/keep"
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+is "--required with no binary and no way to build one exits 1" "1" "$tfrc"
+case "$tfout" in
+    *"cockpit-tui is required"*"no Rust >= 1.99"*"gh auth login"*rustup*) ok "and names the floor, gh auth login and rustup" ;;
+    *) bad "and names the floor, gh auth login and rustup" "cockpit-tui is required ... Rust >= 1.99 ... gh auth login ... rustup" "$tfout" ;;
+esac
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0); tfrc=$?
+is "--required offline with no binary exits 1 too" "1" "$tfrc"
+mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a
 # broken release: source is the way out, so it must not exit 1 like a refusal.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# tui-fetch — put the optional cockpit-tui binary in the plugin's own bin/.
+# tui-fetch — put the required cockpit-tui binary in the plugin's own bin/.
 #
-#   scripts/tui-fetch [--version <tag>]
+#   scripts/tui-fetch [--required] [--version <tag>]   --required: exit 1 if none works
 # Run from prefix U, never on config load, where a dead network stalls startup.
 # Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh).
 set -u
@@ -21,15 +21,18 @@ auth_path() {
     then printf 'via gh'; else printf 'unauthenticated'; fi
 }
 
-TAG=
-case "${1:-}" in
-    --version) TAG=${2:-}
-               [ -n "$TAG" ] || { say "usage: tui-fetch [--version <tag>]" >&2; exit 2; } ;;
-    --auth)    auth_path; echo; exit 0 ;;    # the tmux-review tui row asks
-    -h|--help) sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    "")        ;;
-    *)         say "usage: tui-fetch [--version <tag>]" >&2; exit 2 ;;
-esac
+USAGE="usage: tui-fetch [--required] [--version <tag>]"
+TAG='' REQUIRED=0
+while [ $# -gt 0 ]; do
+    case $1 in
+        --version)  TAG=${2:-}; [ -n "$TAG" ] || { say "$USAGE" >&2; exit 2; }; shift ;;
+        --required) REQUIRED=1 ;;
+        --auth)     auth_path; echo; exit 0 ;;    # the tmux-review tui row asks
+        -h|--help)  sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        *)          say "$USAGE" >&2; exit 2 ;;
+    esac
+    shift
+done
 [ -n "$TAG" ] || TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null)
 [ -n "$TAG" ] || TAG=$PIN
 
@@ -38,14 +41,24 @@ norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}";
 
 # shellcheck source=lib/vnum.sh
 . "$DIR/scripts/lib/vnum.sh" || exit 1
+FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 2>/dev/null | head -1)
+
+# Every non-error exit: under --required, only a binary that runs is success.
+finish() {
+    if [ "$REQUIRED" -eq 1 ] && [ -z "$("$BIN/cockpit-tui" --version 2>/dev/null)" ]; then
+        say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
+        exit 1
+    fi
+    exit 0
+}
 
 case "$(uname -s):$(uname -m)" in
     Linux:x86_64|Linux:amd64)    TARGET=x86_64-unknown-linux-musl ;;
     Linux:aarch64|Linux:arm64)   TARGET=aarch64-unknown-linux-musl ;;
     Darwin:x86_64)               TARGET=x86_64-apple-darwin ;;
     Darwin:arm64|Darwin:aarch64) TARGET=aarch64-apple-darwin ;;
-    *) say "no release build for $(uname -s)/$(uname -m) -- cargo build --release --manifest-path $DIR/tui/Cargo.toml"
-       exit 0 ;;
+    *) say "no release build for $(uname -s)/$(uname -m) -- cargo build --release --locked --manifest-path $DIR/tui/Cargo.toml"
+       finish ;;
 esac
 
 sha_c() { if command -v sha256sum >/dev/null 2>&1; then sha256sum -c -; else shasum -a 256 -c -; fi; }
@@ -101,19 +114,18 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
 }
 
 build() {                     # 0 built · 2 skipped
-    local floor rv log
+    local rv log
     [ -f "$DIR/tui/Cargo.toml" ] || { say "no source tree at $DIR/tui to build from"; return 2; }
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
-    floor=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" | head -1)
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
-    if [ -n "$floor" ] && [ "$(vnum "$rv")" -lt "$(vnum "$floor")" ]; then
-        say "cockpit-tui needs Rust >= $floor to build from source (found ${rv:-none}); install rustup and press prefix U again"
+    if [ -n "$FLOOR" ] && [ "$(vnum "$rv")" -lt "$(vnum "$FLOOR")" ]; then
+        say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and press prefix U again"
         return 2
     fi
     # Captured: only the tail of rustc's output fits the popup.
     log=$(mktemp) || return 2
     trap 'rm -f "$log"' RETURN
-    cargo build --release --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
+    cargo build --release --locked --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
         say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
     install -m 755 "$DIR/tui/target/release/cockpit-tui" "$BIN/cockpit-tui" || return 2
     say "cockpit-tui built from source -> $BIN/cockpit-tui"
@@ -149,8 +161,8 @@ fi
 case "$rc" in
     0) rm -f "$BIN/.tried"; exit 0 ;;
     1) exit 1 ;;
-    3) exit 0 ;;
+    3) finish ;;
 esac
 printf '%s\n' "$TAG" > "$BIN/.tried"
 build
-exit 0
+finish
