@@ -51,6 +51,8 @@ back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]
 args=()
 while :; do
     : > "$f" || exit 0
+    # The binary creates its sidecars new and refuses a stale one: a kill's
+    # .expect from the last trip must not stand in for the next action's.
     rm -f -- "$f.expect"
     # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
     # environment and must not mark the binary as its child.

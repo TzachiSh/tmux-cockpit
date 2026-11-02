@@ -3,7 +3,7 @@
 //! built by hand, so a failure means the layout moved and nothing else.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
-use cockpit_tui::board::{self, Act, Focus, Grid, KEYS, Nav, Row, Sel, View};
+use cockpit_tui::board::{self, Act, EXTRAS, Focus, Grid, KEYS, Nav, Row, Sel, View};
 use cockpit_tui::data::Pane;
 use cockpit_tui::theme::{Glyphs, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -113,6 +113,7 @@ fn view<'a>(ps: &'a [Pane], pvs: &'a [Option<String>], th: &'a Theme, sel: usize
         lost: false,
         never: false,
         list: None,
+        confirm: None,
     }
 }
 
@@ -455,6 +456,7 @@ fn dispatch_matches_help(list: bool) {
         .iter()
         .filter(|k| k.on.shown(list))
         .flat_map(|k| k.acts.iter().copied())
+        .chain(EXTRAS.iter().map(|e| Act::Extra(e.key)))
         .map(norm)
         .collect();
 
@@ -631,7 +633,11 @@ fn footer_drops_whole_hints_in_priority_order() {
             .collect()
     };
     for (w, want) in [
-        (200, vec!["↵", "a", "r", "f", "i", "?", "q"]),
+        (200, vec!["↵", "a", "r", "f", "i", "x", "R", "?", "q"]),
+        (86, vec!["↵", "a", "r", "f", "i", "x", "R", "?", "q"]),
+        (85, vec!["↵", "a", "r", "f", "i", "x", "?", "q"]),
+        (74, vec!["↵", "a", "r", "f", "i", "x", "?", "q"]),
+        (73, vec!["↵", "a", "r", "f", "i", "?", "q"]),
         (65, vec!["↵", "a", "r", "f", "i", "?", "q"]),
         (64, vec!["↵", "a", "r", "f", "?", "q"]),
         (56, vec!["↵", "a", "r", "f", "?", "q"]),
@@ -686,6 +692,11 @@ fn the_footer_lists_only_keys_the_dispatch_accepts() {
                 other => panic!("the footer names {other:?}, which no key sends"),
             };
             let a = board::action(KeyEvent::new(code, KeyModifiers::NONE), list).unwrap_or_else(|| panic!("{k} {verb} is not bound"));
+            if let Act::Extra(c) = a {
+                let e = board::extra(c).unwrap();
+                assert!(matches!(focus, Focus::Agent(_)) && e.label == verb, "{k} {verb} runs {a:?}");
+                continue;
+            }
             let row = KEYS.iter().find(|r| r.acts.contains(&a) && r.on.shown(list)).unwrap();
             let named = if matches!(focus, Focus::Head(_)) { row.head } else { row.hint };
             assert!(!named.is_empty() && row.keys.starts_with(k.as_str()), "{k} {verb} runs {a:?}");
@@ -696,7 +707,7 @@ fn the_footer_lists_only_keys_the_dispatch_accepts() {
         .into_iter()
         .map(|(k, _)| k)
         .collect();
-    for k in ["↵", "a", "r", "f", "i"] {
+    for k in ["↵", "a", "r", "f", "i", "x", "R"] {
         assert!(!head.contains(&k.to_string()), "a header's footer offers {k}");
     }
 }
@@ -1718,6 +1729,8 @@ fn the_footer_follows_the_focus() {
             "f panel",
             "i info",
             "space fold",
+            "x kill",
+            "R request",
             "? keys",
             "q close"
         ]
@@ -1735,12 +1748,25 @@ fn the_footer_follows_the_focus() {
         ]
     );
     assert_eq!(f(Focus::Head(true))[0], "space unfold");
-    // the tiles keep today's footer
+    // the tiles keep today's footer, and #228's actions
     let t: Vec<String> = board::hints(&g, false, Focus::Agent(false))
         .into_iter()
         .map(|(k, v)| format!("{k} {v}"))
         .collect();
-    assert_eq!(t, ["↵ jump", "a ask", "r review", "f panel", "i info", "? keys", "q close"]);
+    assert_eq!(
+        t,
+        [
+            "↵ jump",
+            "a ask",
+            "r review",
+            "f panel",
+            "i info",
+            "x kill",
+            "R request",
+            "? keys",
+            "q close"
+        ]
+    );
 
     // and the drawn footer is the one for the selection
     let ps = fleet();
@@ -1933,4 +1959,250 @@ fn h_l_and_space_fold_in_the_list_and_move_in_the_tiles() {
     assert_eq!(board::action(k('v'), true), Some(Act::Layout));
     // esc is never the only way out (D22)
     assert_eq!(board::action(k('q'), true), Some(Act::Quit));
+}
+
+// ------------------------------------------- extra actions and the confirm (#228)
+
+/// The fleet with each window named as its title, which a kill names.
+fn named() -> Vec<Pane> {
+    let mut ps = fleet();
+    for p in &mut ps {
+        p.name = p.title.clone();
+    }
+    ps
+}
+
+fn id(ps: &[Pane], id: &str) -> Pane {
+    ps.iter().find(|p| p.id == id).unwrap().clone()
+}
+
+fn key(c: KeyCode) -> KeyEvent {
+    KeyEvent::new(c, KeyModifiers::NONE)
+}
+
+fn kill() -> &'static board::Extra {
+    board::extra('x').unwrap()
+}
+
+/// Each entry's key reaches it in both layouts, so no table row takes it
+/// first; and it is none of D6's, D7's `/`, D8's `a` or the confirm's own.
+#[test]
+fn every_extra_has_a_key_of_its_own() {
+    let mut seen = HashSet::new();
+    for e in EXTRAS {
+        assert!(seen.insert(e.key), "{} is registered twice", e.key);
+        assert!(!"/a0123456789nyu[]".contains(e.key), "{} is a key D6-D8 take", e.key);
+        assert!(!e.verb.is_empty() && e.verb.bytes().all(|b| b.is_ascii_lowercase()), "{}", e.verb);
+        for list in [false, true] {
+            assert_eq!(board::action(key(KeyCode::Char(e.key)), list), Some(Act::Extra(e.key)));
+        }
+    }
+    assert_eq!(
+        EXTRAS.iter().map(|e| (e.key, e.verb)).collect::<Vec<_>>(),
+        [('x', "kill"), ('R', "request")]
+    );
+}
+
+/// On an agent the footer and `?` list every entry; a header lists none.
+#[test]
+fn the_footer_and_the_help_list_the_extras() {
+    let g = Glyphs::unicode();
+    for list in [false, true] {
+        let ks = board::hints(&g, list, Focus::Agent(false));
+        let help = board::help_rows(&g, list);
+        for e in EXTRAS {
+            assert!(ks.contains(&(e.key.to_string(), e.label.to_string())), "{ks:?}");
+            assert!(help.contains(&(e.key.to_string(), e.help.to_string())), "{help:?}");
+        }
+        // after the act keys, before `?`: the cut drops them first
+        let at = |k: &str| ks.iter().position(|(x, _)| x == k).unwrap();
+        assert!(at("i") < at("x") && at("R") < at("?"), "{ks:?}");
+    }
+    let head = board::hints(&g, true, Focus::Head(false));
+    assert!(
+        EXTRAS.iter().all(|e| !head.iter().any(|(k, _)| *k == e.key.to_string())),
+        "{head:?}"
+    );
+}
+
+/// D18: `y n esc ? q ^C` and nothing else; `↵` never sends.
+#[test]
+fn the_confirm_owns_the_keys() {
+    use board::Answer;
+    assert_eq!(board::confirm_key(key(KeyCode::Char('y'))), Some(Answer::Yes));
+    assert_eq!(board::confirm_key(key(KeyCode::Char('n'))), Some(Answer::Back));
+    assert_eq!(board::confirm_key(key(KeyCode::Esc)), Some(Answer::Back));
+    assert_eq!(board::confirm_key(key(KeyCode::Char('?'))), Some(Answer::Help));
+    assert_eq!(board::confirm_key(key(KeyCode::Char('q'))), Some(Answer::Close));
+    assert_eq!(
+        board::confirm_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+        Some(Answer::Close)
+    );
+    let mut dead: Vec<KeyEvent> = ('a'..='z')
+        .chain('A'..='Z')
+        .chain('0'..='9')
+        .chain("[]/ -=".chars())
+        .filter(|c| !"ynq".contains(*c))
+        .map(|c| key(KeyCode::Char(c)))
+        .collect();
+    dead.extend(
+        [
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+        ]
+        .map(key),
+    );
+    dead.push(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+    dead.push(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+    for k in dead {
+        assert_eq!(board::confirm_key(k), None, "{k:?} does something on the confirm");
+    }
+    // the footer is those keys, in that order (D19)
+    let c = board::Confirm::open(kill(), &id(&named(), "%3")).unwrap();
+    let ks: Vec<String> = board::confirm_hints(&c).into_iter().map(|(k, v)| format!("{k} {v}")).collect();
+    assert_eq!(ks, ["y kill", "n back", "esc back", "? keys", "q close"]);
+    let help: Vec<String> = board::confirm_help_rows().into_iter().map(|(k, _)| k).collect();
+    assert!(
+        ["y", "n esc", "?", "q ^C"].iter().all(|k| help.contains(&k.to_string())),
+        "{help:?}"
+    );
+}
+
+/// `x` asks, naming what dies, and `y` exits with `kill %N` and the shown
+/// window name as `.expect`; `R` asks nothing and exits at once.
+#[test]
+fn y_writes_the_verb_and_the_expected_name() {
+    let ps = named();
+    let c = board::Confirm::open(kill(), &id(&ps, "%3")).unwrap();
+    assert_eq!(c.ask, "kill window api:0 · server?");
+    assert_eq!(
+        c.exit(),
+        board::Exit {
+            line: "kill %3".into(),
+            expect: Some("server".into())
+        }
+    );
+    let r = board::extra('R').unwrap();
+    assert!(board::Confirm::open(r, &id(&ps, "%3")).is_none());
+    assert_eq!(
+        board::at_once(r, &id(&ps, "%3")),
+        board::Exit {
+            line: "request %3".into(),
+            expect: None
+        }
+    );
+    // the expected value lands beside the action file, as one line
+    let d = scratch("expect-y");
+    let f = d.join("act");
+    cockpit_tui::panel::action::write_expect(&f, c.expect.as_deref().unwrap()).unwrap();
+    assert_eq!(std::fs::read_to_string(d.join("act.expect")).unwrap(), "server\n");
+}
+
+/// `.expect` follows `.text`'s rules: control characters out (here `\t` and
+/// `\n` too, as it is one line), a size cap that refuses rather than cuts,
+/// created fresh, never through a symlink, mode 0600.
+#[test]
+fn the_expect_file_rules() {
+    use cockpit_tui::panel::action::{EXPECT_MAX, expect_body, write_expect};
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(expect_body("se\x1b[31mrv\ter\n\u{9b}x").as_deref(), Some("se[31mrverx\n"));
+    assert_eq!(expect_body(&"w".repeat(EXPECT_MAX)).map(|b| b.len()), Some(EXPECT_MAX + 1));
+    assert_eq!(expect_body(&"w".repeat(EXPECT_MAX + 1)), None);
+    let d = scratch("expect-rules");
+    let f = d.join("act");
+    assert!(write_expect(&f, &"w".repeat(EXPECT_MAX + 1)).is_err());
+    assert!(!d.join("act.expect").exists(), "a refused value leaves no file");
+    write_expect(&f, "api").unwrap();
+    let m = std::fs::metadata(d.join("act.expect")).unwrap();
+    assert_eq!(m.permissions().mode() & 0o777, 0o600);
+    // a stale file is never overwritten, and a symlink is never followed
+    assert!(write_expect(&f, "api").is_err());
+    let g = d.join("g");
+    std::os::unix::fs::symlink(d.join("victim"), d.join("g.expect")).unwrap();
+    assert!(write_expect(&g, "api").is_err());
+    assert!(!d.join("victim").exists());
+}
+
+/// D18: a refresh while the confirm is open updates the ages, but no row
+/// moves, folds or goes, even when states, sessions and panes change under it.
+#[test]
+fn a_refresh_while_asked_moves_no_row() {
+    let old = named();
+    let c = board::Confirm::open(kill(), &id(&old, "%4")).unwrap();
+    let mut new = named();
+    set(&mut new, "%4", "needs-input");
+    set(&mut new, "%3", "done");
+    new[7].wher = "zzz:9".into();
+    new.retain(|p| p.id != "%12");
+    new.push(pane("%40", "aaa:0", "newcomer", "needs-input"));
+    for p in &mut new {
+        p.since = p.since.map(|s| s + 7);
+    }
+    let Ok(held) = board::held(&c, &old, &new) else {
+        panic!("a pane that is there closed the confirm")
+    };
+    let f = folds(&["ml"]);
+    assert_eq!(shown(&held, &f), shown(&old, &f));
+    assert_eq!(board::rows(&held, &f), board::rows(&old, &f));
+    assert_eq!(held.iter().find(|p| p.id == "%4").unwrap().since, Some(70));
+}
+
+/// D18: the target's pane goes while the confirm is open: it closes itself
+/// with a `✕` note, which stays until a key, and never moves to another agent.
+#[test]
+fn a_gone_target_closes_the_confirm_with_a_note() {
+    let old = named();
+    let c = board::Confirm::open(kill(), &id(&old, "%3")).unwrap();
+    let new: Vec<Pane> = named().into_iter().filter(|p| p.id != "%3").collect();
+    let Err(msg) = board::held(&c, &old, &new) else {
+        panic!("the confirm stayed open on a gone pane")
+    };
+    assert_eq!(msg, "✕ nothing done: api:0 is gone, kill not sent");
+    assert!(board::failure(&msg));
+}
+
+fn confirm_view<'a>(ps: &'a [Pane], th: &'a Theme, nav: &'a Nav, c: &'a board::Confirm) -> View<'a> {
+    View {
+        confirm: Some(c),
+        ..list_view(ps, th, nav)
+    }
+}
+
+#[test]
+fn confirm_goldens() {
+    let th = Theme::fixed();
+    let ps = named();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    let c = board::Confirm::open(kill(), &id(&ps, "%3")).unwrap();
+    for (w, h) in [(60u16, 24u16), (100, 30)] {
+        let v = confirm_view(&ps, &th, &nav, &c);
+        let out = draw(w, h, |f| board::render(f, f.area(), &v));
+        golden(&format!("board-confirm-{w}"), &out);
+        let r = rows(&out);
+        assert!(
+            out.contains("kill window api:0 · server?") && out.contains("sessions · held"),
+            "{out}"
+        );
+        assert!(r[h as usize - 1].starts_with(" y kill"), "{out}");
+    }
+    // the tiles draw the same confirm
+    let ord = board::order(&ps);
+    let v = View {
+        confirm: Some(&c),
+        ..view(&ps, &[], &th, ord.iter().position(|&i| ps[i].id == "%3").unwrap(), 0)
+    };
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    assert!(
+        out.contains("kill window api:0 · server?") && rows(&out)[29].starts_with(" y kill"),
+        "{out}"
+    );
+    // its `?` is its own keys
+    let mut v = confirm_view(&ps, &th, &nav, &c);
+    v.help = Some(0);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    assert!(out.contains("on the confirm") && !out.contains("fold all"), "{out}");
 }

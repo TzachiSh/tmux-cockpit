@@ -46,6 +46,8 @@ pub struct View<'a> {
     pub never: bool,
     /// the grouped list and its selection; `None` draws the tiles (`v`)
     pub list: Option<&'a Nav>,
+    /// the confirm over either layout, which then owns the keys (D18)
+    pub confirm: Option<&'a Confirm>,
 }
 
 /// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
@@ -165,7 +167,11 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         return;
     }
     if let Some(top) = v.help {
-        crate::chrome::help(f, area, v.th, &help_rows(&v.th.g, v.list.is_some()), top);
+        let ks = match v.confirm {
+            Some(_) => confirm_help_rows(),
+            None => help_rows(&v.th.g, v.list.is_some()),
+        };
+        crate::chrome::help(f, area, v.th, &ks, top);
         return;
     }
     if v.panes.is_empty() {
@@ -184,6 +190,10 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         list_board(f, area, v, nav);
     } else {
         grid_board(f, area, v);
+    }
+    if let Some(c) = v.confirm.filter(|_| !v.panes.is_empty()) {
+        let [_, body, _] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+        confirm_card(f, body, v.th, c);
     }
     if v.lost {
         lost_card(f, area, v);
@@ -259,6 +269,11 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Opt
 
 fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
     let th = v.th;
+    // the confirm owns the keys, so its keys are the bar, over any note (D19)
+    if let Some(c) = v.confirm {
+        f.render_widget(crate::chrome::footer(th, confirm_hints(c), area.width as usize, 3), area);
+        return;
+    }
     if let Some(n) = v.note {
         f.render_widget(note_line(th, n, area.width as usize), area);
         return;
@@ -302,7 +317,8 @@ pub enum Focus {
 /// keys (D19): `a` answers a ▲ and asks anything else (D14), and a header
 /// lists the fold keys instead. Only keys the dispatch takes there.
 pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
-    KEYS.iter()
+    let mut out: Vec<(String, String)> = KEYS
+        .iter()
         .filter(|k| k.on.shown(list))
         .filter_map(|k| {
             let verb = match focus {
@@ -325,7 +341,13 @@ pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
             };
             Some((names(g, key), verb.to_string()))
         })
-        .collect()
+        .collect();
+    // #228's actions need an agent; they go last before `?`, so the cut takes them first
+    if let Focus::Agent(_) = focus {
+        let at = out.iter().position(|(k, _)| k == "?").unwrap_or(out.len());
+        out.splice(at..at, EXTRAS.iter().map(|e| (e.key.to_string(), e.label.to_string())));
+    }
+    out
 }
 
 /// The key table speaks unicode; the ascii tier names the keys instead.
@@ -678,6 +700,9 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
                 .filter(|k| k.grp == grp && k.on.shown(list))
                 .map(|k| (names(g, k.keys), k.desc.to_string())),
         );
+        if grp == Grp::Act {
+            out.extend(EXTRAS.iter().map(|e| (e.key.to_string(), e.help.to_string())));
+        }
     }
     out.push((String::new(), String::new()));
     out.push(head(if list { "on a row" } else { "on a tile" }));
@@ -728,6 +753,8 @@ pub enum Act {
     NextSess,
     PrevSess,
     Layout,
+    /// one of [`EXTRAS`], by its key
+    Extra(char),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1035,6 +1062,7 @@ pub fn action(k: KeyEvent, list: bool) -> Option<Act> {
         C::Char('v') => Act::Layout,
         C::Char('?') => Act::Help,
         C::Char('q') | C::Esc => Act::Quit,
+        C::Char(c) if extra(c).is_some() => Act::Extra(c),
         _ => return None,
     })
 }
@@ -1581,10 +1609,16 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     } else if r >= top + room {
         top = r + 1 - room;
     }
+    // a confirm holds the rows still, and the title says so (D18)
+    let title = if v.confirm.is_some() {
+        format!(" sessions {} held ", th.g.dot)
+    } else {
+        " sessions ".to_string()
+    };
     let mut block = Block::bordered()
         .border_set(th.g.plain)
         .border_style(Style::new().fg(th.faint))
-        .title(Line::from(Span::styled(" sessions ", Style::new().fg(th.label))));
+        .title(Line::from(Span::styled(title, Style::new().fg(th.label))));
     let last = rows.len().min(top + room);
     if top > 0 || last < rows.len() {
         // where the list is, when it does not fit (D19, P10)
@@ -1854,6 +1888,210 @@ fn info(_id: &str) -> Option<String> {
     None
 }
 
+// ------------------------------------------------ extra actions and the confirm (D8, D18)
+
+/// One board action beyond the key table: a key on an agent that exits with
+/// `<verb> %N` for the wrapper to run. Never on a list header.
+pub struct Extra {
+    pub key: char,
+    /// the footer's verb, and `y`'s on the confirm
+    pub label: &'static str,
+    /// the `?` help row
+    pub help: &'static str,
+    /// the action line's verb, `[a-z]+` as `cockpit-board` checks it
+    pub verb: &'static str,
+    /// the question naming the target; `None` writes the action at once
+    pub confirm: Option<fn(&Pane) -> String>,
+    /// `$COCKPIT_ACTION.expect`, for the wrapper to check the target against
+    pub expect: Option<fn(&Pane) -> String>,
+}
+
+// #228: the board's extra actions. A key here must not clash with KEYS, D6's
+// keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
+// scripts/cockpit-board, which ends the loop on a verb it does not know.
+pub static EXTRAS: &[Extra] = &[
+    Extra {
+        key: 'x',
+        label: "kill",
+        help: "kill its window, after a confirm",
+        verb: "kill",
+        confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
+        expect: Some(|p| p.name.clone()),
+    },
+    Extra {
+        key: 'R',
+        label: "request",
+        help: "request a review from it",
+        verb: "request",
+        confirm: None,
+        expect: None,
+    },
+];
+
+pub fn extra(key: char) -> Option<&'static Extra> {
+    EXTRAS.iter().find(|e| e.key == key)
+}
+
+/// What the board exits with: the action line and, when the action names one,
+/// the value `$COCKPIT_ACTION.expect` carries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Exit {
+    pub line: String,
+    pub expect: Option<String>,
+}
+
+/// A confirm that is open: the action it writes on `y` and what it says.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Confirm {
+    /// the target, `%N`
+    pub id: String,
+    pub verb: &'static str,
+    /// `y`'s verb in the footer
+    pub yes: &'static str,
+    /// the frame's title: the action and the target as the board names it
+    pub title: String,
+    pub ask: String,
+    pub expect: Option<String>,
+}
+
+impl Confirm {
+    /// `None` for an action that asks nothing.
+    pub fn open(e: &Extra, p: &Pane) -> Option<Self> {
+        Some(Self {
+            id: p.id.clone(),
+            verb: e.verb,
+            yes: e.label,
+            title: format!("{} · {} · {}", e.label, p.wher, p.label()),
+            ask: (e.confirm?)(p),
+            expect: e.expect.map(|f| f(p)),
+        })
+    }
+
+    pub fn exit(&self) -> Exit {
+        Exit {
+            line: format!("{} {}", self.verb, self.id),
+            expect: self.expect.clone(),
+        }
+    }
+}
+
+/// An action with no confirm, written as soon as its key is pressed.
+pub fn at_once(e: &Extra, p: &Pane) -> Exit {
+    Exit {
+        line: format!("{} {}", e.verb, p.id),
+        expect: e.expect.map(|f| f(p)),
+    }
+}
+
+/// What a key does on the confirm. It owns the keyboard: any other key is
+/// `None` and does nothing, `↵` included, so a held Enter cannot send (D8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Yes,
+    Back,
+    Help,
+    Close,
+}
+
+pub fn confirm_key(k: KeyEvent) -> Option<Answer> {
+    if k.modifiers.contains(KeyModifiers::CONTROL) {
+        return matches!(k.code, KeyCode::Char('c')).then_some(Answer::Close);
+    }
+    match k.code {
+        KeyCode::Char('y') => Some(Answer::Yes),
+        KeyCode::Char('n') | KeyCode::Esc => Some(Answer::Back),
+        KeyCode::Char('?') => Some(Answer::Help),
+        KeyCode::Char('q') => Some(Answer::Close),
+        _ => None,
+    }
+}
+
+/// The confirm's footer, those keys only (D19).
+pub fn confirm_hints(c: &Confirm) -> Vec<(String, String)> {
+    [("y", c.yes), ("n", "back"), ("esc", "back"), ("?", "keys"), ("q", "close")]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .into()
+}
+
+/// `?` on the confirm: its keys, and nothing it would ignore.
+pub fn confirm_help_rows() -> Vec<(String, String)> {
+    [
+        ("", "on the confirm"),
+        ("y", "yes, do it"),
+        ("n esc", "back to the board, nothing done"),
+        ("?", "this help"),
+        ("q ^C", "close the board, nothing done"),
+        ("", ""),
+        ("", "every other key does nothing here, ↵ included"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .into()
+}
+
+/// D18 on a refresh while the confirm is open: no row moves, folds or goes,
+/// so each pane keeps its state and its place and takes the rest of its row
+/// (the age, the message) from `new`. A target that is gone closes the confirm:
+/// `Err` is the note to show.
+pub fn held(c: &Confirm, old: &[Pane], new: &[Pane]) -> Result<Vec<Pane>, String> {
+    if !new.iter().any(|p| p.id == c.id) {
+        let who = old.iter().find(|p| p.id == c.id).map_or(c.id.as_str(), |p| p.wher.as_str());
+        return Err(format!("✕ nothing done: {who} is gone, {} not sent", c.verb));
+    }
+    Ok(old
+        .iter()
+        .map(|o| match new.iter().find(|n| n.id == o.id) {
+            Some(n) => Pane {
+                state: o.state,
+                wher: o.wher.clone(),
+                ..n.clone()
+            },
+            None => o.clone(),
+        })
+        .collect())
+}
+
+/// The confirm, a focus frame over the foot of the body. Must-read text is fg (D17).
+fn confirm_card(f: &mut Frame, area: Rect, th: &Theme, c: &Confirm) {
+    let g = &th.g;
+    let dot = |s: &str| if g.ascii { s.replace('·', g.dot) } else { s.to_string() };
+    let w = 62.min(area.width);
+    let tw = w.saturating_sub(4) as usize;
+    let enter = format!("{} is off here, so a held Enter cannot send.", g.enter);
+    let mut lines: Vec<Line> = vec![];
+    for (i, para) in [dot(&c.ask), String::new(), enter, "the list holds still while this is open.".into()]
+        .iter()
+        .enumerate()
+    {
+        if para.is_empty() {
+            lines.push(Line::default());
+            continue;
+        }
+        let st = Style::new().fg(th.value);
+        let st = if i == 0 { st.add_modifier(Modifier::BOLD) } else { st };
+        lines.extend(wrap(para, tw).into_iter().map(|l| Line::styled(l, st)));
+    }
+    let h = (lines.len() as u16 + 2).min(area.height);
+    // at the foot of the body, over the list's empty rows rather than its top,
+    // which is where the selection opens; the frame's bottom edge stays
+    let r = area.centered_horizontally(Constraint::Length(w));
+    let r = Rect {
+        y: area.y + area.height.saturating_sub(h + 1),
+        height: h,
+        ..r
+    };
+    let title = g.trunc(&dot(&c.title), tw.saturating_sub(10));
+    let block = Block::bordered()
+        .border_set(g.thick)
+        .border_style(Style::new().fg(th.accent))
+        .padding(Padding::horizontal(1))
+        .title(Line::from(Span::styled(format!(" {title} "), Style::new().fg(th.value))))
+        .title(Line::from(Span::styled(" confirm ", Style::new().fg(th.label))).right_aligned());
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(block, r);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 const DRAW_BUDGET: u8 = 5;
 
 fn transient(e: &std::io::Error) -> bool {
@@ -1927,7 +2165,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
     }
 }
 
-pub fn run(o: &Opts) -> Option<String> {
+pub fn run(o: &Opts) -> Option<Exit> {
     // crossterm caches a failed event-reader init forever: probe before init, or
     // a run with no controlling terminal paints a TUI that ignores every key.
     if let Err(e) = event::poll(Duration::ZERO) {
@@ -1987,7 +2225,8 @@ pub fn run(o: &Opts) -> Option<String> {
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
     let (mut dirty, mut draw_fails) = (true, 0u8);
-    let mut action_line = None;
+    let (mut action_line, mut expect) = (None, None::<String>);
+    let mut confirm: Option<Confirm> = None;
     let area = |s: ratatui::layout::Size| Rect::new(0, 0, s.width, s.height);
 
     let (want_tx, want_rx) = mpsc::channel::<Want>();
@@ -2025,7 +2264,18 @@ pub fn run(o: &Opts) -> Option<String> {
                 let s = snap_rx.try_iter().last().unwrap_or(s);
                 reads.got(s.ok, Instant::now());
                 dirty |= !s.ok;
-                panes = s.panes;
+                // D18: a confirm holds the rows still, and closes if its target went
+                match confirm.as_ref().map(|c| held(c, &panes, &s.panes)) {
+                    None => panes = s.panes,
+                    Some(_) if !s.ok => {}
+                    Some(Ok(ps)) => panes = ps,
+                    Some(Err(msg)) => {
+                        confirm = None;
+                        note = Some(Note::returned(msg, Instant::now()));
+                        panes = s.panes;
+                        dirty = true;
+                    }
+                }
                 seen.retain(|id, _| panes.iter().any(|p| &p.id == id));
                 seen.extend(s.pvs);
                 // never fetched draws as an empty body, not as a failed capture
@@ -2096,6 +2346,7 @@ pub fn run(o: &Opts) -> Option<String> {
                 lost: reads.lost(now),
                 never: reads.good.is_none(),
                 list: list.then_some(&nav),
+                confirm: confirm.as_ref(),
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them
@@ -2155,7 +2406,32 @@ pub fn run(o: &Opts) -> Option<String> {
             // a help screen you have to learn a key to leave is a joke: any
             // key but a scroll key closes it
             let rows = here.height.saturating_sub(2) as usize;
-            help = crate::chrome::scroll(k.code, t, help_rows(&th.g, list).len().saturating_sub(rows), rows);
+            let n = if confirm.is_some() {
+                confirm_help_rows().len()
+            } else {
+                help_rows(&th.g, list).len()
+            };
+            help = crate::chrome::scroll(k.code, t, n.saturating_sub(rows), rows);
+            continue;
+        }
+        // the confirm owns the keyboard: every key it does not name does nothing (D18)
+        if let Some(c) = &confirm {
+            match confirm_key(k) {
+                // under the floor the confirm is not on screen to say yes to
+                Some(Answer::Yes) if too_small(here) => {}
+                Some(Answer::Yes) => {
+                    let e = c.exit();
+                    (action_line, expect) = (Some(e.line), e.expect);
+                    break;
+                }
+                Some(Answer::Back) => {
+                    confirm = None;
+                    ask(here, sel, top, list);
+                }
+                Some(Answer::Help) if !too_small(here) => help = Some(0),
+                Some(Answer::Close) => break,
+                _ => {}
+            }
             continue;
         }
         if !too_small(here)
@@ -2204,7 +2480,16 @@ pub fn run(o: &Opts) -> Option<String> {
             }
             // ↵ on a header toggles its fold (D4)
             (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
-            (Act::Ask | Act::Review | Act::Panel | Act::Info, None) => {}
+            (Act::Ask | Act::Review | Act::Panel | Act::Info | Act::Extra(_), None) => {}
+            (Act::Extra(c), Some(p)) => {
+                let Some(e) = extra(c) else { continue };
+                confirm = Confirm::open(e, p);
+                if confirm.is_none() {
+                    let x = at_once(e, p);
+                    (action_line, expect) = (Some(x.line), x.expect);
+                    break;
+                }
+            }
             (Act::Jump, Some(_)) => {
                 action_line = Some(format!("jump {id}"));
                 break;
@@ -2267,5 +2552,5 @@ pub fn run(o: &Opts) -> Option<String> {
             eprintln!("cockpit-tui: cannot write {}: {e}", p.display());
         }
     }
-    action_line
+    action_line.map(|line| Exit { line, expect })
 }

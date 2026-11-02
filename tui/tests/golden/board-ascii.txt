@@ -21,4 +21,4 @@
 "|  > pushed to origin/fix/left-click                                           |"
 "|  PR #28 opened                                                               |"
 "+------------------------------------------------------------------------------+"
-" enter jump   a ask   r review   f panel   i info   ? keys   q close            "
+" enter jump   a ask   r review   f panel   i info   x kill   ? keys   q close   "

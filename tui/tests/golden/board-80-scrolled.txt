@@ -21,4 +21,4 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" ↵ jump   a ask   r review   f panel   i info   ? keys   q close                "
+" ↵ jump   a ask   r review   f panel   i info   x kill   ? keys   q close       "

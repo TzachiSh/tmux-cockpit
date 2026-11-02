@@ -81,7 +81,7 @@ fn panel(args: &[String]) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let action: Option<String> = match args.first().map(String::as_str) {
+    let action: Option<board::Exit> = match args.first().map(String::as_str) {
         Some("board") => match board::opts(&args[1..]) {
             Ok(o) => board::run(&o),
             Err(e) => {
@@ -124,12 +124,26 @@ fn main() {
         }
     };
     // ratatui draws to stdout, where $(...) would swallow the UI: use a file.
+    // `.expect` goes first, so the wrapper never reads a line whose value is not there yet.
     if let Some(a) = action {
         match std::env::var("COCKPIT_ACTION") {
             Ok(f) if !f.is_empty() => {
-                let _ = std::fs::write(f, format!("{a}\n"));
+                if let Some(e) = &a.expect
+                    && let Err(err) = action::write_expect(std::path::Path::new(&f), e)
+                {
+                    eprintln!("cockpit-tui: cannot write the expected value: {err}; nothing was sent");
+                    std::process::exit(1);
+                }
+                let _ = std::fs::write(f, format!("{}\n", a.line));
             }
-            _ => println!("{a}"),
+            _ if a.expect.is_some() => {
+                eprintln!(
+                    "cockpit-tui: {} needs COCKPIT_ACTION to carry its expected value; nothing was sent",
+                    a.line
+                );
+                std::process::exit(1);
+            }
+            _ => println!("{}", a.line),
         }
     }
 }
