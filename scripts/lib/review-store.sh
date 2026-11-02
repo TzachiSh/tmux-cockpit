@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Review store: revdiff's annotation grammar plus a fragment line. Sourced; pure.
-#   "## <path>:<line>[-<end>] (+|-)" or "## <path> (file-level)", an optional
+#   "## <path>:<line>[-<end>] (+|-| )" (a space is a context line) or "## <path> (file-level)", an optional
 #   "> <fragment>", body lines (a body "## " is stored " ## "), a blank line.
 # parse_store FILE fills STORE ("<i>.path|line|end|side|frag|body") and STORE_N;
 # it never fails: a bad file is set aside as STORE_BAK. format_store writes back.
+# parse_store_revdiff FILE reads revdiff's own output: it has no fragment line,
+# so a leading "> " body line stays body. parse_store keeps the fragment rule.
 
-parse_store() {
-    local file=$1 line hdr loc i=-1 frag=0 body=0 bad=0
+parse_store() { _parse_store "$1" 0; }
+parse_store_revdiff() { _parse_store "$1" 1; }
+
+_parse_store() {
+    local file=$1 ingest=$2 line hdr loc i=-1 frag=0 body=0 bad=0
     STORE=(); STORE_N=0; STORE_BAK=
     [ -f "$file" ] || return 0
     while IFS= read -r line || [ -n "$line" ]; do
@@ -17,7 +22,7 @@ parse_store() {
                     *' (file-level)')
                         STORE[$i.path]=${hdr% (file-level)}; STORE[$i.side]='file-level'
                         [ -n "${STORE[$i.path]}" ] || bad=1 ;;
-                    *' (+)'|*' (-)')
+                    *' (+)'|*' (-)'|*' ( )')
                         STORE[$i.side]=${hdr: -2:1}; hdr=${hdr% (?)}
                         # The LAST ':' splits path from location: a path may hold ':'.
                         loc=${hdr##*:}; STORE[$i.path]=${hdr%:*}
@@ -33,7 +38,7 @@ parse_store() {
             '> '*)
                 # Only the line right after a header is the fragment; later
                 # "> " lines are body (a comment may start with a quote).
-                if [ $i -ge 0 ] && [ $frag = 0 ] && [ $body = 0 ]; then
+                if [ $ingest = 0 ] && [ $i -ge 0 ] && [ $frag = 0 ] && [ $body = 0 ]; then
                     STORE[$i.frag]=${line#'> '}; frag=1
                 else
                     [ $i -ge 0 ] || bad=1; STORE[$i.body]+="$line"$'\n'; body=1

@@ -6420,14 +6420,14 @@ case "$rs1" in *$'## old name.txt:4 (-)\n> a\tb\n\n'*) ok "an empty body is head
 store_dump() { local k; for k in "${!STORE[@]}"; do printf '%s=%q\n' "$k" "${STORE[$k]}"; done | sort; }
 snap=$(store_dump); STORE=(); STORE_N=0
 parse_store "$RSF"
-is "parse reads back every record" "5" "$STORE_N"
+is "parse reads back every record" "5" "${STORE_N:-}"
 is "parse reads back every field" "$snap" "$(store_dump)"
 format_store "$RSF.2"
 is "format(parse(format(x))) is byte-identical" "" "$(cmp "$RSF" "$RSF.2" 2>&1)"
 # revdiff's own output has no fragment line; ranges, file-level, ?? intact.
 printf '## README.md:2 (+)\nrevdiff note ?? why changed\n\n## a.go:5-9 (-)\nold block\n\n## b.go (file-level)\nsplit it\n' > "$RSF.rd"
 parse_store "$RSF.rd"
-is "revdiff's records parse: count" "3" "$STORE_N"
+is "revdiff's records parse: count" "3" "${STORE_N:-}"
 is "revdiff's records parse: range end" "9" "${STORE[1.end]:-}"
 is "revdiff's records parse: no fragment key when there was no fragment line" "unset" "${STORE[0.frag]-unset}"
 # Corruption is fail-open: blank state, the file set aside, never a crash.
@@ -6441,8 +6441,8 @@ printf 'second garbage\n' > "$RSF.bad"; parse_store "$RSF.bad" 2>/dev/null
 is "a second bad store gets its own backup" "second garbage" "$(head -1 "$STORE_BAK" 2>/dev/null)"
 is "and the first backup is untouched" "garbage before any header" "$(head -1 "$rsbak1" 2>/dev/null)"
 printf '## src.go:x (+)\nbad line number\n' > "$RSF.bad2"; parse_store "$RSF.bad2" 2>/dev/null
-is "a header with a non-numeric line is corruption" "0" "$STORE_N"
-parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "$STORE_N"
+is "a header with a non-numeric line is corruption" "0" "${STORE_N:-}"
+parse_store "$RSD/does-not-exist"; is "a missing store is a blank state" "0" "${STORE_N:-}"
 # Today's writer (attach) produces records this parser reads.
 RSATT="$RSD/att"; "$DIR/scripts/tmux-review" --attach "$RSATT" src.go 3 'x := 1' 'from attach' >/dev/null 2>&1
 parse_store "$RSATT"; is "attach()'s store parses" "src.go/3/+/x := 1/from attach" "${STORE[0.path]:-}/${STORE[0.line]:-}/${STORE[0.side]:-}/${STORE[0.frag]:-}/${STORE[0.body]:-}"
@@ -12467,6 +12467,39 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 "$TMUX_REAL" -L "$TPO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TPI" kill-server >/dev/null 2>&1
 fi
+
+echo "== review store: revdiff context-line records parse and round-trip (#232) =="
+# Shared setup lives in a function so each block passes alone under tests/only.sh.
+rsa_load() { # source the lib, copy the revdiff fixture to a fresh dir, set RSAD/RSAF
+    # shellcheck disable=SC1090
+    . "$DIR/scripts/lib/review-store.sh"; declare -gA STORE=()
+    RSAD=$(mktmpd); RSAF="$RSAD/comments.md"; cp "$DIR/tests/fixtures/store-adapter/${1:-revdiff.md}" "$RSAF"
+}
+rsa_load; parse_store "$RSAF" 2>"$RSAD/err"
+is "a revdiff store with a ( ) record keeps every record" "5" "${STORE_N:-}"
+is "and sets no .bak aside" "" "$(ls "$RSAD" | grep '\.bak' || true)"
+is "and says nothing on stderr" "" "$(cat "$RSAD/err")"
+is "the context record stores side ' '" "1| |1" "${STORE[1.line]:-}|${STORE[1.side]:-}|${STORE[1.line]:-}"
+format_store "$RSAD/f1"; grep -qxF '## a.txt:1 ( )' "$RSAD/f1" && ok "a context record formats back as ( )" || bad "a context record formats back as ( )" "## a.txt:1 ( )" "$(cat "$RSAD/f1")"
+is "format of the fixture is byte-identical to revdiff's text (modulo the final blank)" "" "$(diff <(cat "$RSAF"; echo) "$RSAD/f1" 2>&1)"
+parse_store "$RSAD/f1"; format_store "$RSAD/f2"
+is "format(parse(x)) is stable across a second pass" "" "$(cmp "$RSAD/f1" "$RSAD/f2" 2>&1)"
+
+echo "== review store: a missing final blank line parses the same (#232) =="
+rsa_load; parse_store "$RSAF"; rsa_n1=${STORE_N:-}; rsa_b1=${STORE[4.body]:-}
+printf '\n' >> "$RSAF"; parse_store "$RSAF"
+is "with and without the last blank line the count matches" "$rsa_n1" "${STORE_N:-}"
+is "and the last body matches" "$rsa_b1" "${STORE[4.body]:-}"
+
+echo "== review store: ingest mode keeps a leading > line as body (#232) =="
+rsa_load quoted.md; parse_store_revdiff "$RSAF"
+is "ingest: a > first body line is body" "> quoted first"$'\n'"more" "${STORE[0.body]:-}"
+is "ingest: no fragment key is set" "unset" "${STORE[0.frag]-unset}"
+rsa_load quoted.md; parse_store "$RSAF"
+is "cockpit mode: the same line is still a fragment" "quoted first" "${STORE[0.frag]:-}"
+is "cockpit mode: the body is the rest" "more" "${STORE[0.body]:-}"
+rsa_load quoted.md; printf '## b.txt:9 ( )\ncomment\n' >> "$RSAF"; sed -i 's/^more$/more\n/' "$RSAF"; parse_store_revdiff "$RSAF"
+is "ingest: a quoted line in one record does not disturb the next" "2/comment" "${STORE_N:-}/${STORE[1.body]:-}"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
