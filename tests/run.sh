@@ -11948,7 +11948,7 @@ sv_cap() { until_cap "$SVO" t "$1"; }
 sv_tm() {                     # sv_tm <dir> [VAR=val...] -- [tm args] -- tm as a login shell would run it, tmux aimed at SVS
     local d=$1; shift
     mkdir -p "$d/bin" "$d/work"
-    printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$SVS" > "$d/bin/tmux"; chmod +x "$d/bin/tmux"
+    printf '#!/bin/sh\n[ -z "${SV_ARGS:-}" ] || printf "%%s\\n" "$*" >> "$SV_ARGS"\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$SVS" > "$d/bin/tmux"; chmod +x "$d/bin/tmux"
     local -a ev=()
     while [ $# -gt 0 ] && [ "$1" != -- ]; do ev+=("$1"); shift; done
     shift
@@ -12153,6 +12153,71 @@ is "@cockpit_glyphs ascii reaches the picker as COCKPIT_GLYPHS" "ascii" "$(cat "
 svrun TM_SID="$SVA" SV_LINE="kill-session $SVA" SV_EXPECT=alpha
 is "tm will not kill the session it was run from, whatever the picker says" "alpha beta gamma " "$(sv_names)"
 case "$SVERR" in *"the session you are in"*) ok "and says why" ;; *) bad "and says why" "the session you are in" "$SVERR" ;; esac
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+fi
+
+echo "== tm sessions picker: a name is data, never a tmux format (#245) =="
+# tmux expands #{...} and #(...) in a session name and in display-message, and
+# #(cmd) runs cmd. ${IFS} stands in for the space tm's name cleaner would turn
+# into an underscore; the link has no dot, which it would turn into one too.
+if need_tmux "tm names are data"; then :; else
+sv_server d; SVD=$(mktmpd); sv_stub "$SVD"
+HOSTL="/tmp/svp$$"; ln -s "$SVD" "$HOSTL"; HOSTF="$HOSTL/pwned"; : > "$SVD/args"
+svrun() {                     # svrun <env words...> -- run tm against the stub; rc in SVRC, stderr in SVERR
+    sv_tm "$SVD" COCKPIT_TUI_BIN="$SVD/picker" SV_ONCE="$SVD/once" SV_TMUX="$TMUX_REAL" SV_SOCK="$SVS" SV_ARGS="$SVD/args" "$@" --
+    until_file "$SVD/rc" '?*'; SVRC=$(cat "$SVD/rc" 2>/dev/null); SVERR=$(cat "$SVD/err"); rm -f "$SVD/once"
+}
+sv_lit() { "$TMUX_REAL" -L "$SVS" list-sessions -F '#{session_name}' 2>/dev/null | grep -cxF -- "$1"; }
+HN='x#(touch${IFS}'"$HOSTF"')y'
+svrun SV_LINE="new-session -" SV_TEXT="$HN"
+sleep 0.5
+is "new-session with #(cmd) in the name runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and the session carries the name literally" "1" "$(sv_lit "$HN")"
+svrun SV_LINE="new-session -" SV_TEXT='a#{pid}b'
+is "#{pid} in a new name is not expanded" "1" "$(sv_lit 'a#{pid}b')"
+svrun SV_LINE="new-session -" SV_TEXT='n#[fg=red]d'
+is "#[ in a new name is kept" "1" "$(sv_lit 'n#[fg=red]d')"
+svrun SV_LINE="new-session -" SV_TEXT='m##x#'
+is "a run of # and a trailing # are kept" "1" "$(sv_lit 'm##x#')"
+svrun SV_LINE="new-session -" SV_TEXT='c#[fg=red]d'
+is "#[fg=red] in a new name is kept" "1" "$(sv_lit 'c#[fg=red]d')"
+svrun SV_LINE="rename-session $SVG" SV_EXPECT=gamma SV_TEXT="$HN"'2'
+sleep 0.5
+is "rename-session with #(cmd) runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and renames to the literal name" "1" "$(sv_lit "$HN"2)"
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'e##{pid}f'
+svrun SV_LINE="rename-session $SVG" SV_EXPECT='e#{pid}f' SV_TEXT=plain
+is "a name with #{pid} is renamed when .expect is that name" "1" "$(sv_lit plain)"
+# A refusal names the live session: that text must reach display-message escaped.
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'g##(touch${IFS}'"$HOSTF"')h'
+: > "$SVD/args"
+svrun TM_POPUP=1 SV_LINE="kill-session $SVG" SV_EXPECT=gamma
+sleep 0.5
+is "a refusal naming a #(cmd) session runs nothing" "absent" "$([ -e "$HOSTF" ] && echo present || echo absent)"
+is "and hands display-message the escaped text" "0 1" "$(grep '^display-message' "$SVD/args" | grep -c '[^#]#(' ) $(grep '^display-message' "$SVD/args" | grep -c '##(')"
+printf '%s' "$SVERR" > "$SVD/e.txt"
+is "and stderr still shows the name as it is" "1" "$(grep -cF -- 'g#(touch${IFS}' "$SVD/e.txt")"
+# The picker draws the same names literally.
+"$TMUX_REAL" -L "$SVS" rename-session -t "$SVG" 'k##{pid}##(touch${IFS}'"$HOSTF"')'
+if [ -x "$DIR/bin/cockpit-tui" ]; then
+    sv_ui "$SVD" --current "$SVA"; sv_cap '*k#{pid}#(touch${IFS}*'
+    sv_cap '*k#{pid}#(touch*'; svshot=$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)
+    is "the sessions view draws the name as it is, and runs nothing" "1 absent" \
+       "$(printf '%s\n' "$svshot" | grep -cF -- 'k#{pid}#(touch') $([ -e "$HOSTF" ] && echo present || echo absent)"
+    sv_key Escape; until_file "$SVD/rc" '?*'
+fi
+# A waiting session's question may carry the record separators and a newline.
+"$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate_msg "$(printf 'Ship it?\037now\nplease\tok')"
+if [ -x "$DIR/bin/cockpit-tui" ]; then
+    sv_ui "$SVD" --current "$SVA"; sv_cap '*Ship it? now please ok*'
+    case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+        *'Ship it? now please ok'*beta*|*beta*'Ship it? now please ok'*) ok "a question with a record separator, newline and tab reads as one line" ;;
+        *) bad "a question with a record separator, newline and tab reads as one line" "Ship it? now please ok" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -6)" ;;
+    esac
+    is "and the session rows are not shifted by it" "3" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | grep -cE '^.?. [123] ')"
+    sv_key Escape; until_file "$SVD/rc" '?*'
+fi
+rm -f "$HOSTL"
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
 fi
 

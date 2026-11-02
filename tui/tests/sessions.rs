@@ -647,3 +647,34 @@ fn the_screen_never_shows_a_control_character_from_a_name() {
     let out = draw_at(&mut v, 120, 14);
     assert!(!out.contains('\u{1b}') && !out.contains('\u{7}'), "{out}");
 }
+
+// --- .expect is the raw name -------------------------------------------------
+
+fn spoofed() -> View {
+    // U+202E reorders what is drawn, so the screen strips it; tmux still has it
+    let name = "ab\u{202e}cd";
+    let l = rec("$1", 0, 1, 0, 1, 0, "", "", "w", name);
+    View::new(sessions::parse(&l), &args(false, None), true, NOW, Glyphs::unicode())
+}
+
+#[test]
+fn a_kill_expects_the_name_tmux_has_not_the_one_drawn() {
+    let mut v = spoofed();
+    press(&mut v, ctrl('x'));
+    assert_eq!(v.header(), "kill abcd? no agents · 1 window");
+    let Step::Act(a) = press(&mut v, ctrl('x')) else {
+        panic!("no action")
+    };
+    assert_eq!(a.expect.as_deref(), Some("ab\u{202e}cd"));
+}
+
+#[test]
+fn a_rename_expects_the_name_tmux_has_not_the_one_drawn() {
+    let mut v = spoofed();
+    press(&mut v, k(KeyCode::F(2)));
+    type_str(&mut v, "x");
+    let Step::Act(a) = press(&mut v, k(KeyCode::Enter)) else {
+        panic!("no action")
+    };
+    assert_eq!((a.text.as_deref(), a.expect.as_deref()), (Some("abcdx"), Some("ab\u{202e}cd")));
+}

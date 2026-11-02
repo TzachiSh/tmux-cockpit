@@ -76,11 +76,15 @@ enum Mode {
     /// ^X was pressed once on this session; the header names what dies.
     Armed {
         id: String,
+        /// as drawn
         name: String,
+        /// as tmux has it: what `.expect` carries
+        raw: String,
     },
     Rename {
         id: String,
         old: String,
+        raw: String,
         buf: String,
     },
 }
@@ -203,20 +207,20 @@ impl View {
 
     fn arm(&mut self) -> Step {
         let Some(s) = self.selected() else { return Step::Continue };
-        let (id, name, mine) = (s.id.clone(), pick::clean(&s.name), self.mine(s));
+        let (id, name, raw, mine) = (s.id.clone(), pick::clean(&s.name), s.name.clone(), self.mine(s));
         if mine {
             return self.refuse(&format!("{name} is your own session: detach, or kill it from another"));
         }
         if !self.carry {
             return self.refuse("killing needs COCKPIT_ACTION");
         }
-        self.mode = Mode::Armed { id, name };
+        self.mode = Mode::Armed { id, name, raw };
         Step::Continue
     }
 
     fn rename(&mut self) -> Step {
         let Some(s) = self.selected() else { return Step::Continue };
-        let (id, old) = (s.id.clone(), pick::clean(&s.name));
+        let (id, old, raw) = (s.id.clone(), pick::clean(&s.name), s.name.clone());
         if !self.carry {
             return self.refuse("renaming needs COCKPIT_ACTION");
         }
@@ -225,6 +229,7 @@ impl View {
         self.mode = Mode::Rename {
             id,
             old: old.clone(),
+            raw,
             buf: old,
         };
         Step::Continue
@@ -232,7 +237,7 @@ impl View {
 
     fn rename_key(&mut self, k: KeyEvent) -> Step {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        let Mode::Rename { id, old, buf } = &mut self.mode else {
+        let Mode::Rename { id, old, raw, buf } = &mut self.mode else {
             return Step::Continue;
         };
         match k.code {
@@ -241,7 +246,7 @@ impl View {
                 return Step::Continue;
             }
             KeyCode::Enter => {
-                let (id, old, new) = (id.clone(), old.clone(), sessions::clean_name(buf));
+                let (id, old, raw, new) = (id.clone(), old.clone(), raw.clone(), sessions::clean_name(buf));
                 self.leave();
                 if new.is_empty() || new == old {
                     return self.refuse("the name is empty or unchanged");
@@ -249,7 +254,7 @@ impl View {
                 return Step::Act(Act {
                     line: format!("rename-session {id}"),
                     text: Some(new),
-                    expect: Some(old),
+                    expect: Some(raw),
                 });
             }
             KeyCode::Backspace => {
@@ -278,13 +283,13 @@ impl View {
         self.note = None;
         match self.mode.clone() {
             // any key but the second ^X puts the session back; the key is spent
-            Mode::Armed { id, name } => {
+            Mode::Armed { id, raw, .. } => {
                 self.mode = Mode::Normal;
                 if ctrl && k.code == KeyCode::Char('x') {
                     return Step::Act(Act {
                         line: format!("kill-session {id}"),
                         text: None,
-                        expect: Some(name),
+                        expect: Some(raw),
                     });
                 }
                 return Step::Continue;
@@ -365,7 +370,7 @@ impl View {
         if let Some(n) = &self.note {
             return n.clone();
         }
-        if let Mode::Armed { id, name } = &self.mode {
+        if let Mode::Armed { id, name, .. } = &self.mode {
             let what = self.sess.iter().find(|s| s.id == *id).map(|s| self.doomed(s)).unwrap_or_default();
             return format!("kill {name}? {what}");
         }

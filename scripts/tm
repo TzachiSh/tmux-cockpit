@@ -16,9 +16,25 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
 fi
 
 # Not readlink -f: BSD readlink lacks -f before macOS 12.3, which would leave
-# SELF empty and every fzf binding silently dead.
+# SELF empty and the popup it opens running nothing.
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 printf -v QSELF '%q' "$SELF"
+
+# tmux expands #{...} and #(...) in a session name, a start directory and a
+# display-message text, and #(cmd) runs cmd. Every name, path or question that
+# reaches one of those goes through here: ## is a literal #. A run of # before
+# a [ goes as it is: tmux keeps #[ and ##[ verbatim, and doubling them would
+# add a #.
+fesc() {
+  local s=$1 out='' run='' c
+  while [ -n "$s" ]; do
+    c=${s:0:1}; s=${s:1}
+    if [ "$c" = '#' ]; then run+='#'; continue; fi
+    if [ "$c" = '[' ]; then out+=$run; else out+=${run//#/##}; fi
+    out+=$c; run=''
+  done
+  printf '%s' "$out${run//#/##}"
+}
 
 die() { printf '%s\n' "$*" >&2; exit 1; }
 command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
@@ -149,7 +165,7 @@ go() {  # go NAME -- that session, created first when missing
   if [ -z "$id" ]; then
     # In a popup $PWD is the session's start dir, not the active pane's (#41).
     [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
-    id=$(tmux new-session -d -P -F '#{session_id}' -s "$name" -c "${dir:-$PWD}") && [ -n "$id" ] ||
+    id=$(tmux new-session -d -P -F '#{session_id}' -s "$(fesc "$name")" -c "$(fesc "${dir:-$PWD}")") && [ -n "$id" ] ||
       die "cockpit: could not create session '$name'"
   fi
   enter "$id"
@@ -225,7 +241,7 @@ ceiling() {  # ceiling VAR OPTION WHOLE -- OPTION as N% of WHOLE or N cells
 # popup closes and takes its stderr with it.
 refuse() {
   printf '✕ %s\n' "$*" >&2
-  [ -z "${TM_POPUP:-}" ] || tmux display-message ${TM_CLIENT:+-c "$TM_CLIENT"} "cockpit: ✕ $*" 2>/dev/null
+  [ -z "${TM_POPUP:-}" ] || tmux display-message ${TM_CLIENT:+-c "$TM_CLIENT"} "$(fesc "cockpit: ✕ $*")" 2>/dev/null
   return 1
 }
 
@@ -285,7 +301,7 @@ pick() {
         live=$(confirm "$arg" "$(side "$d/act.expect")") || return 1
         new=$(clean "$(side "$d/act.text")")
         [ -n "$new" ] || { refuse "no name to rename $live to; nothing changed"; return 1; }
-        tmux rename-session -t "$arg" -- "$new" 2>/dev/null || { refuse "could not rename $live to '$new'"; return 1; }
+        tmux rename-session -t "$arg" -- "$(fesc "$new")" 2>/dev/null || { refuse "could not rename $live to '$new'"; return 1; }
         printf 'renamed: %s -> %s\n' "$live" "$new" >&2 ;;
       *) die "cockpit: the picker wrote an action tm does not know: $verb" ;;
     esac
