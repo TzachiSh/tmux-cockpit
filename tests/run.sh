@@ -1229,6 +1229,33 @@ is "a normal pane still shows its path" " /tmp/x" \
    "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
 
+echo "== tmux-where branch --set: the pushed branch, compare-then-set =="
+# The bar reads @cockpit_branch, a pane option the hooks push, so a redraw runs no
+# shell. Every set-option redraws, so an unchanged branch must write nothing.
+if need_tmux "tmux-where --set"; then :; else
+WS="cockpit-wset-$$"; SOCKS="$SOCKS $WS"; WSD=$(mktmpd)
+mkdir -p "$WSD/repo/.git" "$WSD/plain"
+printf 'ref: refs/heads/feat/x\n' > "$WSD/repo/.git/HEAD"
+"$TMUX_REAL" -L "$WS" -f /dev/null new-session -d -s s -c "$WSD/repo" >/dev/null 2>&1
+"$TMUX_REAL" -L "$WS" split-window -t s: -c "$WSD/plain" >/dev/null 2>&1
+WSR=$("$TMUX_REAL" -L "$WS" display-message -p -t s:0.0 '#{pane_id}')
+WSP=$("$TMUX_REAL" -L "$WS" display-message -p -t s:0.1 '#{pane_id}')
+wset() { TMUX="$SOCKDIR/$WS,0,0" "$DIR/scripts/tmux-where" branch --set "$1" >/dev/null 2>&1; }
+wsb() { "$TMUX_REAL" -L "$WS" show-option -pqv -t "$1" @cockpit_branch; }
+wset "$WSR"; wset "$WSP"
+is "a repo pane gets its branch" "feat/x" "$(wsb "$WSR")"
+is "a pane outside a repo gets none" "" "$(wsb "$WSP")"
+WSLOG="$WSD/sets"; : > "$WSLOG"
+"$TMUX_REAL" -L "$WS" set-hook -g after-set-option \
+    "run-shell 'echo \"#{hook_arguments}\" >> $WSLOG'" >/dev/null 2>&1
+wset "$WSR"; wset "$WSP"
+is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
+printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
+wset "$WSR"
+is "a switched branch lands" "main" "$(wsb "$WSR")"
+"$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-where: the pane_id form opens no command client =="
 # The #() job runs on every status tick, and each display-message it made
 # landed in show-messages: the 1000-entry log spanned minutes and no click was
