@@ -12,9 +12,8 @@ fi
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
-
-# HOME can be unset under a systemd- or launchd-started server.
-H=${HOME:-/nonexistent}
+# shellcheck source=lib/tui.sh
+. "${d%/*}/lib/tui.sh" || exit 1
 
 PANE_CMD=""
 PANE_ID=""
@@ -57,21 +56,6 @@ redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
 
 current=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || printf '')
 
-# Last three path components: the leaf identifies the repo.
-tail3() {
-    local p=${1/#$H/\~} a b c r
-    r=$p; c=${r##*/}; r=${r%/*}
-    [ "$r" = "$p" ] && { printf '%s' "$p"; return; }
-    b=${r##*/}; r=${r%/*}
-    [ "$r/$b" = "$p" ] || [ -z "$r" ] && { printf '%s' "$p"; return; }
-    a=${r##*/}; r=${r%/*}
-    if [ -z "$r" ] || [ "$r" = "$p" ] || [ "$r" = "~" ]; then
-        printf '%s' "$p"
-    else
-        printf '…/%s/%s/%s' "$a" "$b" "$c"
-    fi
-}
-
 # Failures are common (dirty tree, branch held by a worktree); git's own message
 # names the cause, so show it verbatim.
 switch_to() {
@@ -93,18 +77,6 @@ switch_remote() {  # origin/foo -> local foo tracking it
     printf '%s\n' "$out" >&2; pause; return 1
 }
 
-# Ask git what the name is: a slash does not mean remote ("feature/one").
-route() {
-    local name=$1
-    if git show-ref --quiet --verify "refs/heads/$name"; then
-        switch_to "$name"
-    elif git show-ref --quiet --verify "refs/remotes/$name"; then
-        switch_remote "$name"
-    else
-        fail "cockpit: no such branch: $name"
-    fi
-}
-
 create() {
     local name=$1 out
     # Return, not exit: the caller loops back into the picker.
@@ -117,111 +89,39 @@ create() {
     printf '%s\n' "$out" >&2; pause; return 1
 }
 
-# Rows are "<branch>\t<relative age>", most recently committed first.
-list_branches() {
-    local ref age name
-    declare -A have=()
-    while IFS=$'\t' read -r ref age; do
-        have[$ref]=1
-        printf '%s\t%s\n' "$ref" "$age"
-    done < <(git for-each-ref --sort=-committerdate \
-                 --format='%(refname:short)%09%(committerdate:relative)' refs/heads)
-    # Only remotes with no local branch of the same name.
-    while IFS=$'\t' read -r ref age; do
-        case "$ref" in */HEAD) continue ;; esac
-        name=${ref#*/}
-        [ -n "${have[$name]:-}" ] && continue
-        printf '%s\t%s\n' "$ref" "$age"
-    done < <(git for-each-ref --sort=-committerdate \
-                 --format='%(refname:short)%09%(committerdate:relative)' refs/remotes)
+# cockpit-tui draws the picker and prints one action line. This script reads it as
+# untrusted text: a fixed verb, one line, a name git accepts and a ref that exists.
+act() {
+    local line=$1 verb arg ns
+    verb=${line%% *}; arg=${line#* }
+    case "$verb" in
+        switch) ns=heads ;;
+        track)  ns=remotes ;;
+        create) ns= ;;
+        *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\n' "$line" >&2; pause; return 1 ;;
+    esac
+    if [ "$line" = "$verb" ] || [ -z "$arg" ] || [[ $line == *$'\n'* ]] \
+       || ! git check-ref-format --branch "$arg" >/dev/null 2>&1; then
+        printf 'cockpit: not a branch name: %s\n' "$arg" >&2; pause; return 1
+    fi
+    case "$verb" in
+        create) create "$arg" ;;
+        *)
+            git show-ref --quiet --verify "refs/$ns/$arg" \
+                || { printf 'cockpit: no such branch: %s\n' "$arg" >&2; pause; return 1; }
+            if [ "$verb" = switch ]; then switch_to "$arg"; else switch_remote "$arg"; fi ;;
+    esac
 }
 
-# Branches checked out in a linked worktree, which git refuses to switch to.
-declare -A wt=()
-wtpath="" 
-while IFS= read -r wl; do
-    case "$wl" in
-        'worktree '*) wtpath=${wl#worktree } ;;
-        'branch refs/heads/'*)
-            [ "$wtpath" = "$(git rev-parse --show-toplevel 2>/dev/null)" ] || \
-                wt[${wl#branch refs/heads/}]="⑂${wtpath##*/}" ;;
-    esac
-done < <(git worktree list --porcelain 2>/dev/null)
+[ -x "$COCKPIT_TUI_BIN" ] || fail "cockpit: cockpit-tui is missing ($COCKPIT_TUI_BIN) · run scripts/tui-fetch"
 
-refs=(); disps=()
-row=""
-while IFS=$'\t' read -r ref age; do
-    if [ "$ref" = "$current" ]; then m='●'; else m=' '; fi
-    refs+=("$ref")
-    # printf -v, not $(...): a fork per branch dominates on large repos.
-    printf -v row '%s %-32s %-16s %s' "$m" "$ref" "($age)" "${wt[$ref]:-}"
-    disps+=("$row")
-done < <(list_branches)
-[ ${#refs[@]} -eq 0 ] && fail "cockpit: no branches yet in $DIR"
-
-if ! command -v fzf >/dev/null; then
-    # stderr, where `select` writes its menu, so one redirect moves both.
-    printf 'Switch branch in %s (now: %s)\n' "${DIR/#$H/\~}" "${current:-detached}" >&2
-    select row in "${disps[@]}"; do
-        [ -n "${row:-}" ] || exit 0
-        break
-    done
-    [ -n "${row:-}" ] || exit 0
-    for j in "${!disps[@]}"; do [ "${disps[$j]}" = "$row" ] && route "${refs[$j]}"; done
-    exit
-fi
-
-avail=$(tput lines 2>/dev/null || echo 24)
-lrows=${#refs[@]}; maxl=$(( avail / 3 )); [ "$lrows" -gt "$maxl" ] && lrows=$maxl
-psz=$(( avail - lrows - 5 ))
-[ "$psz" -lt 5 ] && psz=5
-
-d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
-# shellcheck source=lib/fzf.sh
-. "${d%/*}/lib/fzf.sh" \
-  || fail "cockpit: the fzf theme is missing · reinstall from the repo"
-
-# At most 48 columns: what a 70% popup shows at an 80-column terminal.
-KEYS='↵ switch · alt-↵ new branch · ^/ preview · esc'
-CTX="on ${current:-detached HEAD} · $(tail3 "$DIR")"
-# Head-ellipsis: the directory tail is the half that says where you are.
-[ ${#CTX} -gt 48 ] && CTX="…${CTX: -47}"
-mapfile -t THEME < <(cockpit_fzf_args highlight-line header-border "footer=$KEYS")
-THEME+=("--header=$CTX")
-
-# --expect, not print(): fzf 0.44 lacks print(). Create is alt-enter because
-# ctrl-n is fzf's move-down, and an --expect key exits fzf at once.
-query=""
+# A failed action returns to the picker; esc leaves.
 while :; do
-    out=$(for i in "${!refs[@]}"; do printf '%s\t%s\n' "${refs[$i]}" "${disps[$i]}"; done \
-        | fzf "${THEME[@]}" \
-              --print-query --expect=alt-enter --query="$query" \
-              --reverse --no-multi --info=inline-right --cycle --scroll-off=2 \
-              --delimiter=$'\t' --with-nth=2 \
-              --bind 'ctrl-/:toggle-preview,ctrl-u:preview-half-page-up,ctrl-d:preview-half-page-down' \
-              --prompt="switch> " \
-              --preview='git -c core.fsmonitor=false -c log.showSignature=false log --no-ext-diff --no-textconv --color=always --oneline --graph --decorate -30 {1} 2>/dev/null' \
-              --preview-label=' log ' --preview-label-pos=2 \
-              --preview-window="down,$psz,border-top")
-    rc=$?
-    # fzf exits 1 on no match, which is exactly when alt-enter creates a branch.
+    pick=$("$COCKPIT_TUI_BIN" branch -C "$DIR"); rc=$?
     case "$rc" in
-        0|1) ;;
-        *)   exit 0 ;;
+        0) ;;
+        1) exit 0 ;;
+        *) pause; exit 1 ;;
     esac
-
-    query=$(sed -n 1p <<<"$out")
-    key=$(sed -n 2p <<<"$out")
-    pick=$(sed -n 3p <<<"$out")
-
-    if [ "$key" = alt-enter ]; then
-        if [ -z "$query" ]; then
-            printf 'type a name before alt-enter\n' >&2; pause; continue
-        fi
-        create "$query" && exit 0
-        continue
-    fi
-
-    [ -n "$pick" ] || exit 0          # esc, or an empty selection
-    route "${pick%%$'\t'*}" && exit 0 # field 1 is the ref, exactly as git named it
+    act "$pick" && exit 0
 done

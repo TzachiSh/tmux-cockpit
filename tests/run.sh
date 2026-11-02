@@ -1887,91 +1887,6 @@ is "a payload with no trailing newline is not lost" "needs-input" "$(sv)"
 st off "$PANE"
 fi
 
-echo "== tmux-branch: usable without column(1) =="
-# The branch list was piped through column -t. Where column is not installed the
-# pipe produced nothing and the script reported "no branches yet" -- a confident
-# lie about a repo that had several.
-CB=$(mktmpd)
-(
-  cd "$CB" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; : > a; git add a
-  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
-  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
-  git branch feature/one
-) >/dev/null 2>&1
-NOCOL=$(mktmpd)
-for c in git bash; do ln -s "$(command -v $c)" "$NOCOL/$c"; done
-out=$(env -u TMUX PATH="$NOCOL" "$DIR/scripts/tmux-branch" "$CB" </dev/null 2>&1)
-case "$out" in
-    *feature/one*) ok "column missing: the branches are still listed" ;;
-    *) bad "column missing: the branches are still listed" "a list naming feature/one" "$out" ;;
-esac
-rm -rf "$CB" "$NOCOL"
-
-# group: serial
-echo "== tmux-branch: builds each row without a fork per branch =="
-# The disps loop ran `$(printf ...)` inside a command substitution -- a fork
-# per branch. 5000 branches measured 16.9s (for-each-ref itself is 0.12s; 99%
-# was the loop). printf -v does the identical formatting inside the running
-# shell instead. The fork build is the CPU it burns, so the CPU budget is the
-# fail-first teeth: 3s against a measured 1.10s under twelve spinners.
-BP=$(mktmpd)
-(
-  cd "$BP" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; : > a; git add a
-  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
-  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
-  {
-    printf '# pack-refs with: peeled fully-peeled sorted\n'
-    for i in $(seq 1 5000); do printf '%s refs/heads/br%d\n' "$c" "$i"; done
-  } > .git/packed-refs
-) >/dev/null 2>&1
-# A stub fzf: drains the piped rows (so the real row-build cost is still paid
-# in full) and exits 130 (esc), the same code a real esc keypress produces --
-# the fastest path back out once fzf would have taken over the terminal.
-FZFSTUB=$(mktmpd)
-cat > "$FZFSTUB/fzf" <<'EOS'
-#!/usr/bin/env bash
-cat >/dev/null
-exit 130
-EOS
-chmod +x "$FZFSTUB/fzf"
-for c in git bash tput; do
-    p=$(command -v "$c" 2>/dev/null) && ln -s "$p" "$FZFSTUB/$c"
-done
-cpu_under "5000 branches build their rows in well under 3s of CPU" 3.0 \
-    env -u TMUX PATH="$FZFSTUB" "$DIR/scripts/tmux-branch" "$BP"
-rm -rf "$BP" "$FZFSTUB"
-
-echo "== tmux-branch: row format is unchanged by the fork removal =="
-# Same fixture, small enough to read by hand: proves printf -v produced the
-# exact same padded columns as the old $(printf ...) subshell, not just that
-# it runs fast. Forced through the no-fzf numbered menu, which prints each
-# disps row verbatim to stderr -- the same string a real fzf list would show.
-BF=$(mktmpd)
-(
-  cd "$BF" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  # A fixed commit date: the row is read twice below and %(committerdate:relative)
-  # flipped "0 seconds ago" -> "1 second ago" across the boundary (1 run in 8).
-  export GIT_AUTHOR_DATE=2000-01-01T00:00:00Z GIT_COMMITTER_DATE=2000-01-01T00:00:00Z
-  git init -q -b main .; : > a; git add a
-  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
-  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
-) >/dev/null 2>&1
-age=$(git -C "$BF" for-each-ref --format='%(committerdate:relative)' refs/heads/main)
-want_row=$(printf '%s %-32s %-16s %s' '●' 'main' "($age)" '')
-NOCOLB=$(mktmpd)
-for c in git bash; do ln -s "$(command -v $c)" "$NOCOLB/$c"; done
-out=$(env -u TMUX PATH="$NOCOLB" "$DIR/scripts/tmux-branch" "$BF" </dev/null 2>&1)
-case "$out" in
-    *"$want_row"*) ok "the row's field widths are byte-identical to the old build" ;;
-    *) bad "the row's field widths are byte-identical to the old build" "$want_row" "$out" ;;
-esac
-rm -rf "$BF" "$NOCOLB"
-
 echo "== tmux-branch: the popup resolves the pane it was opened from, not the busiest client =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so bare
 # `display-message -p` (no -t) cannot resolve "the current client" from
@@ -2007,15 +1922,18 @@ paneA=$(tmux -L "$INNER" list-panes -t cliA -F '#{pane_id}')
 SOCKPATH=$(tmux -L "$INNER" display-message -p '#{socket_path}')
 NOCOLD=$(mktmpd)
 for c in git bash tmux; do ln -s "$(command -v $c)" "$NOCOLD/$c"; done
+# The picker is cockpit-tui's now (#246); this block is about which directory the
+# script hands it, so a stub that names its -C and leaves like esc stands in.
+printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$NOCOLD/cockpit-tui"; chmod +x "$NOCOLD/cockpit-tui"
 # Without -p: the hazard is real -- it resolves into cliB, not the popup's
 # actual origin (cliA), because cliB is the busier client.
-bugout=$(env PATH="$NOCOLD" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" </dev/null 2>&1)
+bugout=$(env PATH="$NOCOLD" COCKPIT_TUI_BIN="$NOCOLD/cockpit-tui" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" </dev/null 2>&1)
 case "$bugout" in
     *"$DB"*) ok "unpinned resolution really does land on the busier client (the hazard is real)" ;;
     *) bad "unpinned resolution really does land on the busier client (the hazard is real)" "$DB" "$bugout" ;;
 esac
 # With -p pane_id: pinned to the pane the popup actually opened from.
-fixout=$(env PATH="$NOCOLD" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" -p "$paneA" </dev/null 2>&1)
+fixout=$(env PATH="$NOCOLD" COCKPIT_TUI_BIN="$NOCOLD/cockpit-tui" TMUX="$SOCKPATH,0,0" "$DIR/scripts/tmux-branch" -p "$paneA" </dev/null 2>&1)
 case "$fixout" in
     *"$DA"*) ok "-p pane_id resolves the pane the popup was opened from" ;;
     *) bad "-p pane_id resolves the pane the popup was opened from" "$DA" "$fixout" ;;
@@ -2693,101 +2611,6 @@ DL=$(mktmpf)
 rc=${PIPESTATUS[1]}; n=$(wc -l < "$DL")
 if [ "$rc" = 0 ] && [ "$n" -lt 8 ]; then ok "a slow drip does not hold the hook open"
 else bad "a slow drip does not hold the hook open" "rc 0, fewer than 8 lines drained" "rc $rc, $n lines"; fi
-
-echo "== the branch picker must not hijack ctrl-n =="
-# ctrl-n is fzf's own move-down. As an --expect key it instead EXITS fzf, so
-# navigating with emacs keys created a branch named by the filter, or tripped
-# "type a name before ^N" and closed the popup. Driven through a real pty,
-# because this only misbehaves with a terminal attached.
-if need_tmux "ctrl-n in the branch picker"; then :; else
-if command -v fzf >/dev/null 2>&1; then
-KB=$(mktmpd)
-(
-  cd "$KB" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; : > a; git add a
-  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
-  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
-  git branch second; git branch third
-) >/dev/null 2>&1
-SOCK5="cockpit-keys-$$"; SOCKS="$SOCKS $SOCK5"
-tmux -L "$SOCK5" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$KB" >/dev/null 2>&1
-KP=$(tmux -L "$SOCK5" list-panes -a -F '#{pane_id}' | head -1)
-# The trailing marker is how the picker's EXIT gets an observable:
-# pane_current_command reads "bash" for the script the whole time fzf is up
-# (measured), so only the finished command's own output separates them.
-tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'; echo BRC1=\$?" Enter
-# The list marks the branch you are ON; the header alone said it before, and
-# the current branch looked like a normal destination.
-until_cap "$SOCK5" "$KP" '*● main*'
-case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
-    *"● main"*) ok "the current branch is marked in the list" ;;
-    *) bad "the current branch is marked in the list" "● main" \
-         "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | sed -n 4p)" ;;
-esac
-# Type a filter FIRST. With an empty query the old binding only errored, so a
-# bare ctrl-n proves nothing -- it is the typed query that used to become a
-# branch name. "zzz" matches no branch, exactly the case the create key exists
-# for and exactly what a user filtering the list would trip over.
-tmux -L "$SOCK5" send-keys -t "$KP" "zzz"
-until_cap "$SOCK5" "$KP" '*switch> zzz*'
-# fzf reads its keys in order, so it can only exit after it has handled the
-# ctrl-n: the picker's own exit is the proof that the create never fired.
-tmux -L "$SOCK5" send-keys -t "$KP" C-n Escape   # move-down, NOT create; then leave
-until_cap "$SOCK5" "$KP" '*BRC1=[0-9]*'
-after=$(git -C "$KB" for-each-ref --format='%(refname:short)' refs/heads | sort | tr '\n' ' ')
-is "ctrl-n after typing creates no branch" "main second third " "$after"
-is "and the checkout is untouched" "main" "$(git -C "$KB" branch --show-current)"
-# A branch held by a linked worktree is labelled, and a FAILED action returns
-# to the picker instead of dying at "[any key]". The failure driven here is the
-# deterministic one -- an invalid name via alt-enter -- because driving a git
-# refusal through a pty raced fzf's own startup and the test keyed the wrong
-# row. Waiting for the prompt before typing fixes the label half too.
-git -C "$KB" worktree add -q "$KB-wt" second 2>/dev/null
-tmux -L "$SOCK5" send-keys -t "$KP" "'$DIR/scripts/tmux-branch' '$KB'; echo BRC2=\$?" Enter
-picker_up=0
-for i in 1 2 3 4 5 6 7 8 9 10; do
-    case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
-        *"switch>"*) picker_up=1; break ;;
-    esac
-    sleep 0.5
-done
-case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
-    *"⑂"*) ok "a worktree-held branch is labelled" ;;
-    *) bad "a worktree-held branch is labelled" "a ⑂ mark" \
-         "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | sed -n 4,6p)" ;;
-esac
-if [ "$picker_up" = 1 ]; then
-    tmux -L "$SOCK5" send-keys -t "$KP" "bad..name"
-    until_cap "$SOCK5" "$KP" '*switch> bad..name*'
-    tmux -L "$SOCK5" send-keys -t "$KP" M-Enter                # create fails, pauses
-    until_cap "$SOCK5" "$KP" '*any key*'
-    tmux -L "$SOCK5" send-keys -t "$KP" Space                  # [any key] ...
-    back=0
-    for i in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 0.5
-        case "$(tmux -L "$SOCK5" capture-pane -p -t "$KP")" in
-            *"switch>"*) back=1; break ;;
-        esac
-    done
-    if [ "$back" = 1 ]; then ok "a failed action returns to the picker"
-    else bad "a failed action returns to the picker" "the picker again" \
-             "$(tmux -L "$SOCK5" capture-pane -p -t "$KP" | head -3)"; fi
-    # The picker exiting is what proves the failed create is finished, and the
-    # assertion below is that it checked nothing out.
-    tmux -L "$SOCK5" send-keys -t "$KP" Escape
-    until_cap "$SOCK5" "$KP" '*BRC2=[0-9]*'
-else
-    bad "a failed action returns to the picker" "a visible picker" "never appeared"
-fi
-is "and the failure checked nothing out" "main" "$(git -C "$KB" branch --show-current)"
-git -C "$KB" worktree remove --force "$KB-wt" >/dev/null 2>&1
-tmux -L "$SOCK5" kill-server >/dev/null 2>&1
-rm -rf "$KB" "$KB-wt"
-else
-  skip_ "ctrl-n creates no branch"; skip_ "and the checkout is untouched"
-fi
-fi
 
 echo "== the path picker fires in a window with a split =="
 # tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
@@ -6151,7 +5974,7 @@ esac
 rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-picker.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
 
 echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
-for f in tm tmux-branch tmux-open-path tmux-review; do
+for f in tm tmux-open-path tmux-review; do
     if [ "$f" = tmux-review ]; then src=$(rv_src); else src=$(cat "$DIR/scripts/$f"); fi
     is "$f: every --color=16 carries border:8" \
        "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16')" \
@@ -11907,7 +11730,6 @@ fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's ar
 }
 fzrun tm-attach "$DIR/scripts/tm"
 fzrun tm-kill   "$DIR/scripts/tm" -k
-fzrun branch    "$DIR/scripts/tmux-branch" "$FZG"
 fzrun path      "$DIR/scripts/tmux-open-path" --pick "$PANE"
 fzrun browse    "$DIR/scripts/tmux-open-path" --browse "$FZTD"
 fzn=0; fzboth=0
@@ -11916,7 +11738,7 @@ for f in "$FZTD"/argv-*-"$$".*; do
     fzn=$((fzn+1))
     grep -qx -- '--ansi' "$f" && grep -qx -- '--tabstop=1' "$f" && fzboth=$((fzboth+1))
 done
-is "all five pickers reach fzf, and every argv carries --ansi and --tabstop=1" "5 5" "$fzn $fzboth"
+is "all four pickers reach fzf, and every argv carries --ansi and --tabstop=1" "4 4" "$fzn $fzboth"
 
 # shellcheck disable=SC2002  # cat, so a missing log still counts 0
 is "a picker open never probes fzf --version" "0" \
@@ -11993,9 +11815,6 @@ is "tm -k without fzf prompts on stderr, where the menu goes" "err" \
 FZWANT='Sessions:'
 is "tm without fzf prompts on stderr" "err" \
    "$(fznofzf tma "$DIR/scripts/tm")"
-FZWANT='Switch branch in'
-is "tmux-branch without fzf prompts on stderr" "err" \
-   "$(fznofzf tmb "$DIR/scripts/tmux-branch" "$FZG")"
 FZWANT='Open which path'
 is "tmux-open-path without fzf prompts on stderr" "err" \
    "$(fznofzf tmo "$DIR/scripts/tmux-open-path" --pick "$PANE")"
@@ -13494,6 +13313,166 @@ RSAR="$RSAD/repo"
 lines_mode "$RSAR" > "$RSAD/rows" 2>/dev/null
 printf '## a.txt:4 ( )\nctx\n\n## a.txt:5 ( )\nctx on changed\n\n## a.txt:5 (+)\nlive\n\n## a.txt:9 (+)\ngone\n' > "$RSAF"
 is "stale_keys: a ( ) record is never reported; a (+) record is judged by its row" "## a.txt:9 (+)" "$(stale_keys "$RSAF" "$RSAD/rows")"
+
+# --- #246 branch popup: tmux-branch reads cockpit-tui's answer ----------------
+# Obsolete fzf blocks deleted by this change: "tmux-branch: usable without
+# column(1)", "tmux-branch: builds each row without a fork per branch",
+# "tmux-branch: row format is unchanged by the fork removal", "the branch picker
+# must not hijack ctrl-n", the `fzrun branch` and "tmux-branch without fzf
+# prompts on stderr" rows of the shared fzf theme block, and tmux-branch in the
+# --color=16 border loop. They drove fzf or its numbered fallback, which is gone.
+br_repo() {                   # br_repo <dir> <bare-remote-dir>
+    (
+        export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+        git init -q -b main "$1" && cd "$1" || exit 1
+        echo main > a; git add a; git commit -q -m init
+        git branch old; git branch held; git branch 'feat/$(touch${IFS}x);`id`'
+        git checkout -q -b conf; echo conf > a; git commit -q -am conf; git checkout -q main
+        git init -q --bare "$2"; git remote add origin "$2"
+        git branch only-remote; git push -q origin only-remote; git branch -q -D only-remote
+        git fetch -q origin
+    ) >/dev/null 2>&1
+}
+br_cur() { git -C "$1" branch --show-current; }
+
+echo "== tmux-branch (#246): the popup's keys switch, track, create and refuse =="
+if need_tmux "branch popup keys"; then :; else
+BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
+BRW=$(mktmpd); rm -rf "$BRW"; git -C "$BRR" worktree add -q "$BRW" held >/dev/null 2>&1
+BRS="cockpit-br246-$$"; SOCKS="$SOCKS $BRS"
+"$TMUX_REAL" -L "$BRS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$BRR" >/dev/null 2>&1
+BRP=$("$TMUX_REAL" -L "$BRS" list-panes -a -F '#{pane_id}' | head -1)
+brn=0
+br_run() {                    # start the script in the pane; wait for the picker
+    brn=$((brn+1))
+    "$TMUX_REAL" -L "$BRS" send-keys -t "$BRP" "'$DIR/scripts/tmux-branch' '$BRR'; echo BRDONE$brn=\$?" Enter
+    until_cap "$BRS" "$BRP" '*branch>*'
+}
+br_done() { until_cap "$BRS" "$BRP" "*BRDONE$brn=[0-9]*"; }
+br_type() { "$TMUX_REAL" -L "$BRS" send-keys -t "$BRP" -l "$1"; }
+br_key()  { "$TMUX_REAL" -L "$BRS" send-keys -t "$BRP" "$@"; }
+br_cap()  { "$TMUX_REAL" -L "$BRS" capture-pane -p -J -t "$BRP"; }
+
+br_run; br_type old; until_cap "$BRS" "$BRP" '*branch> old*'; br_key Enter; br_done
+is "↵ on a local branch switches to it" "old" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+
+br_run; br_type only-remote; until_cap "$BRS" "$BRP" '*branch> only-remote*'; br_key Enter; br_done
+is "↵ on a remote-only branch creates a local one" "only-remote" "$(br_cur "$BRR")"
+is "and it tracks the remote" "origin/only-remote" \
+   "$(git -C "$BRR" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null)"
+git -C "$BRR" switch -q main
+
+br_run; br_type newbr; until_cap "$BRS" "$BRP" '*branch> newbr*'; br_key M-Enter; br_done
+is "alt-↵ creates the branch named by the filter" "newbr" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+
+br_run; br_type held; until_cap "$BRS" "$BRP" '*branch> held*'
+case "$(br_cap)" in
+    *⑂*) ok "a branch held by another worktree wears ⑂" ;;
+    *) bad "a branch held by another worktree wears ⑂" "a ⑂ mark" "$(br_cap | sed -n 1,6p)" ;;
+esac
+br_key Enter
+if until_cap "$BRS" "$BRP" '*checked out in the worktree*'; then ok "↵ on it shows a ✕ note"
+else bad "↵ on it shows a ✕ note" "checked out in the worktree" "$(br_cap | sed -n 1,4p)"; fi
+br_key Escape; br_done
+is "and nothing was switched" "main" "$(br_cur "$BRR")"
+
+# A name made of shell syntax: printed as itself, handled as itself.
+BRH='feat/$(touch${IFS}x);`id`'
+br_run; br_type 'touch'; until_cap "$BRS" "$BRP" '*branch> touch*'
+case "$(br_cap)" in
+    *'feat/$(touch${IFS}x);`id`'*) ok "a branch named with shell syntax is drawn exactly" ;;
+    *) bad "a branch named with shell syntax is drawn exactly" "$BRH" "$(br_cap | sed -n 1,5p)" ;;
+esac
+br_key Enter; br_done
+is "↵ switches to that exact ref" "$BRH" "$(br_cur "$BRR")"
+is "and no command in the name ran" "none" "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
+git -C "$BRR" switch -q main
+
+# git's own refusal is shown verbatim, [any key] returns to the picker.
+echo dirty > "$BRR/a"
+br_run; br_type conf; until_cap "$BRS" "$BRP" '*branch> conf*'; br_key Enter
+if until_cap "$BRS" "$BRP" '*any key*'; then ok "a refused switch shows git's message and [any key]"
+else bad "a refused switch shows git's message and [any key]" "[any key]" "$(br_cap | head -8)"; fi
+case "$(br_cap)" in
+    *overwritten*) ok "git's wording is verbatim" ;;
+    *) bad "git's wording is verbatim" "git's 'would be overwritten' error" "$(br_cap | head -8)" ;;
+esac
+br_key Space
+if until_cap "$BRS" "$BRP" '*branch>*'; then ok "any key returns to the picker"
+else bad "any key returns to the picker" "the picker again" "$(br_cap | head -4)"; fi
+br_key Escape; br_done
+git -C "$BRR" checkout -q -- a
+
+# ctrl-n moves down: it never creates a branch from the filter text.
+before=$(git -C "$BRR" for-each-ref --format='%(refname)' refs/heads | sort | tr '\n' ' ')
+br_run; br_type zzz; until_cap "$BRS" "$BRP" '*branch> zzz*'; br_key C-n Escape; br_done
+is "ctrl-n after typing creates no branch" "$before" \
+   "$(git -C "$BRR" for-each-ref --format='%(refname)' refs/heads | sort | tr '\n' ' ')"
+"$TMUX_REAL" -L "$BRS" kill-server >/dev/null 2>&1
+git -C "$BRR" worktree remove --force "$BRW" >/dev/null 2>&1
+rm -rf "$BRR" "$BRM" "$BRW"
+fi
+
+echo "== tmux-branch (#246): the script trusts nothing the binary prints =="
+BRR=$(mktmpd); BRM=$(mktmpd); br_repo "$BRR" "$BRM"
+BRX=$(mktmpd)
+cat > "$BRX/cockpit-tui" <<'EOS'
+#!/bin/sh
+# prints BR_STUB_OUT once, then leaves like esc, so a refused answer cannot loop
+[ -e "$BR_STUB_OUT.used" ] && exit 1
+: > "$BR_STUB_OUT.used"; cat "$BR_STUB_OUT"
+EOS
+chmod +x "$BRX/cockpit-tui"
+br_stub() {                   # br_stub <answer> -> the script's output; the repo is left on main
+    rm -f "$BRX/out.used"; printf '%s\n' "$1" > "$BRX/out"
+    env -u TMUX COCKPIT_TUI_BIN="$BRX/cockpit-tui" BR_STUB_OUT="$BRX/out" \
+        "$DIR/scripts/tmux-branch" "$BRR" </dev/null 2>&1
+}
+br_want() {                   # br_want <label> <answer> <expected text>
+    local got; got=$(br_stub "$2")
+    case "$got" in
+        *"$3"*) ok "$1" ;;
+        *) bad "$1" "$3" "$got" ;;
+    esac
+    is "$1: nothing was checked out" "main" "$(br_cur "$BRR")"
+}
+br_want "an unknown verb is refused"            'rm -rf /'            "unexpected answer"
+br_want "a verb with no name is refused"        'switch'              "not a branch name"
+br_want "a name git rejects is refused"         'switch ../x'         "not a branch name"
+br_want "a branch that does not exist is refused" 'switch nope'       "no such branch"
+br_want "track of a local branch is refused"    'track old'           "no such branch"
+br_want "create with an invalid name is refused" 'create bad..name'   "not a branch name"
+br_want "two lines are refused"                 $'switch old\nswitch main' "not a branch name"
+br_stub 'switch old' >/dev/null
+is "a good answer is acted on" "old" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+br_stub 'switch feat/$(touch${IFS}x);`id`' >/dev/null
+is "a metacharacter name is switched to literally" 'feat/$(touch${IFS}x);`id`' "$(br_cur "$BRR")"
+is "and no command in it ran" "none" "$([ -e "$BRR/x" ] || [ -e "$HOME/x" ] && echo ran || echo none)"
+git -C "$BRR" switch -q main
+br_stub 'track origin/only-remote' >/dev/null
+is "track makes a local branch from the remote one" "only-remote" "$(br_cur "$BRR")"
+git -C "$BRR" switch -q main
+br_stub 'create fresh' >/dev/null
+is "create makes the branch" "fresh" "$(br_cur "$BRR")"
+rm -rf "$BRR" "$BRM" "$BRX"
+
+echo "== tmux-branch (#246): its refusals are unchanged =="
+BRN=$(mktmpd); BRR=$(mktmpd); br_repo "$BRR" "$(mktmpd)"
+out=$(env -u TMUX "$DIR/scripts/tmux-branch" "$BRN" </dev/null 2>&1); rc=$?
+case "$out" in *"not a git repository: $BRN"*) ok "a directory that is not a repo is refused" ;; *) bad "a directory that is not a repo is refused" "not a git repository: $BRN" "$out" ;; esac
+is "and exits 1" "1" "$rc"
+out=$(env -u TMUX "$DIR/scripts/tmux-branch" -c ssh "$BRR" </dev/null 2>&1); rc=$?
+case "$out" in *"inside ssh"*) ok "an ssh pane is refused" ;; *) bad "an ssh pane is refused" "this pane is inside ssh" "$out" ;; esac
+is "and exits 1" "1" "$rc"
+out=$(env -u TMUX "$DIR/scripts/tmux-branch" "$BRR/missing" </dev/null 2>&1)
+case "$out" in *"no such directory"*) ok "a missing directory is refused" ;; *) bad "a missing directory is refused" "no such directory" "$out" ;; esac
+out=$(env -u TMUX COCKPIT_TUI_BIN="$BRN/none" "$DIR/scripts/tmux-branch" "$BRR" </dev/null 2>&1); rc=$?
+case "$out" in *"cockpit-tui is missing"*) ok "a missing binary is named" ;; *) bad "a missing binary is named" "cockpit-tui is missing" "$out" ;; esac
+is "and exits 1" "1" "$rc"
+rm -rf "$BRN" "$BRR"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -995,3 +995,32 @@ and the borders for a tier that is byte-stable across fonts.
 **A stale `@cockpit_tui_pid`.** The board unpublishes the pid on `q`, SIGHUP and
 SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
 `/proc/$pid/comm` before it signals anything.
+
+## `cockpit-tui branch` (#246)
+
+The branch popup behind `prefix b` and the status-bar branch click, built on the
+shared picker (`pick.rs`). `scripts/tmux-branch` runs `cockpit-tui branch -C <dir>`
+and acts on the one line it prints; the binary never mutates.
+
+| key | does |
+|---|---|
+| type | filters the list (case-insensitive substring) |
+| `↵` | prints `switch <branch>`, or `track <remote>/<branch>` on a remote-only row |
+| `alt-↵` | prints `create <name>` from the filter text, after `git check-ref-format --branch` accepts it |
+| `esc` `^C` | cancels, prints nothing, exit 1 |
+
+Rows are local branches by most recent commit, then remote-only branches. `●` marks
+the current branch. `⑂` marks a branch checked out in another worktree: git refuses
+to switch to it, so `↵` gives a `✕` note and prints nothing. The preview is
+`git log --graph --oneline -30` of the selection, read on a worker thread and cached
+per branch; it shows `loading…` until it arrives, and below 60 columns it is hidden.
+
+Every git read uses the `gitsafe` flags. A branch name is untrusted text: control and
+bidi characters are dropped from what is drawn, and the line printed carries the exact
+ref. The script treats that line as untrusted too: a verb from `switch track create`, one
+line, a name `git check-ref-format --branch` accepts, and for `switch`/`track` a ref that
+exists under `refs/heads` or `refs/remotes`. Git's own refusal (a dirty tree) is shown
+verbatim with `[any key]`, then the picker opens again.
+
+A branch name cannot contain a space, so the filter text `my branch` is refused with a
+note on `alt-↵`.
