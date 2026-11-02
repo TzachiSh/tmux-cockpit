@@ -10460,8 +10460,14 @@ esac
 case "$bw" in *'"70%"'*) ok "and its height is @cockpit_popup_height, like every other cockpit popup" ;;
     *) bad "and its height is @cockpit_popup_height, like every other cockpit popup" "-h 70%" "$bw" ;;
 esac
-case "$bw" in *'#{session_name}'*) ok "the popup title leaves #{session_name} for tmux to expand" ;;
-    *) bad "the popup title leaves #{session_name} for tmux to expand" "#{session_name} in -T" "$bw" ;;
+# The client's session is not the agent's, so the title names neither (D9 step 2).
+case "$bw" in *'#{session_name}'*) bad "the popup title names no session" '-T " board "' "$bw" ;;
+    *'-T " board "'*) ok "the popup title names no session" ;;
+    *) bad "the popup title names no session" '-T " board "' "$bw" ;;
+esac
+# One option drives both screens: the board's popup hands the panel's mode on.
+case "$bw" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "the board popup passes -e COCKPIT_PANEL_MODE" ;;
+    *) bad "the board popup passes -e COCKPIT_PANEL_MODE" "-e COCKPIT_PANEL_MODE=auto" "$bw" ;;
 esac
 # display-popup expands only -T and -d, so the pane id cannot be a format here
 # (#38): the popup's own sh resolves it.
@@ -10546,6 +10552,9 @@ PATH="$BD/s6:$PATH" "$TMUX_REAL" -L "$B6" -f /dev/null new-session -d -s t 'exec
 case "$(bkey "$B6" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
     *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B6" w)" ;;
 esac
+case "$(bkey "$B6" w)" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "and the window gets the panel mode too" ;;
+    *) bad "and the window gets the panel mode too" "-e COCKPIT_PANEL_MODE=auto" "$(bkey "$B6" w)" ;;
+esac
 "$TMUX_REAL" -L "$B6" kill-server >/dev/null 2>&1
 
 # --- the 3.8 floor -------------------------------------------------------------
@@ -10564,18 +10573,38 @@ esac
 # Every script the wrapper can reach is a stub that records its argv, and tmux
 # only records: the assertion is what ran, in full, not just that the right
 # thing did.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/wargv\nexit 0\n' "$BD" > "$BD/rec/tmux"
+# The one read the loop makes, @cockpit_board_return, answers from $BD/ret and
+# is not recorded: what is asserted is what ran.
+cat > "$BD/rec/tmux" <<BDREC
+#!/bin/sh
+case "\$*" in "show-option -gqv @cockpit_board_return") cat "$BD/ret" 2>/dev/null; exit 0 ;; esac
+printf '%s\\n' "\$*" >> "$BD/wargv"
+exit 0
+BDREC
 chmod +x "$BD/rec/tmux"
 for s in tmux-jump tmux-review cockpit-panel; do
     printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
     chmod +x "$BD/p/scripts/$s"
 done
+# The panel from the board writes its last line where the loop asks.
+printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s/wargv\n[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s/pnote > "$COCKPIT_PANEL_NOTE"\n' "$BD" "$BD" > "$BD/p/scripts/cockpit-panel"
+printf 'cockpit: sent to %%1\n' > "$BD/pnote"
 # The line travels in a file rather than inside the fake binary's source: the
 # cases below are shell syntax, and re-quoting them into a script is the test
 # writing the very bug it is checking for.
+# The fake binary acts once and then exits with no action, the ordinary q, so a
+# verb that returns runs it exactly twice; $BD/bargv is every run's argv, and
+# the note it was handed.
 wact() {                      # <action-line> -> every argv the wrapper produced
-    : > "$BD/wargv"; printf '%s\n' "$1" > "$BD/line"
-    printf '#!/bin/sh\ncat %s/line > "$COCKPIT_ACTION"\n' "$BD" > "$BD/p/bin/cockpit-tui"
+    : > "$BD/wargv"; : > "$BD/bargv"; rm -f "$BD/once"; printf '%s\n' "$1" > "$BD/line"
+    cat > "$BD/p/bin/cockpit-tui" <<BDBIN
+#!/bin/sh
+printf '%s\\n' "\$*" >> "$BD/bargv"
+[ "\${5:-}" = "" ] || cat "\$5" >> "$BD/bargv"
+[ -e "$BD/once" ] && exit 0
+: > "$BD/once"
+cat "$BD/line" > "\$COCKPIT_ACTION"
+BDBIN
     chmod +x "$BD/p/bin/cockpit-tui"
     # The copy's stub, named: the suite exports its own real binary.
     PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
@@ -10599,6 +10628,34 @@ case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved 
 esac
 is "only the FIRST line of the action file is ever acted on" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact $'jump %9\nreview %1')"
+
+# The return trip (D9): review, info and panel bring the board back on the pane
+# they acted on; jump, q and the off switch end it.
+bruns() { tr '\n' ';' < "$BD/bargv"; }
+wact 'jump %9' >/dev/null
+is "jump ends the loop: the board ran once" "board;" "$(bruns)"
+wact 'review %1' >/dev/null
+is "review %1 brings the board back with --select %1, and no note" "board;board --select %1;" "$(bruns)"
+wact 'info %1' >/dev/null
+is "so does info %1" "board;board --select %1;" "$(bruns)"
+wact 'panel %1' >/dev/null
+case "$(bruns)" in "board;board --select %1 --note "*"/note;cockpit: sent to %1;") ok "panel %1 comes back with the panel's last line as the note" ;;
+    *) bad "panel %1 comes back with the panel's last line as the note" "board;board --select %1 --note .../note;cockpit: sent to %1;" "$(bruns)" ;;
+esac
+wact 'deliver %1' >/dev/null
+is "deliver, still reserved, ends the loop" "board;" "$(bruns)"
+printf 'off\n' > "$BD/ret"
+is "@cockpit_board_return off: review is one-way again" "tmux-review -p %1;" "$(wact 'review %1')"
+is "and the board ran once" "board;" "$(bruns)"
+is "@cockpit_board_return off: panel too" "cockpit-panel -p %1;" "$(wact 'panel %1')"
+is "and the board ran once again" "board;" "$(bruns)"
+rm -f "$BD/ret"
+# A board that fails ends the loop rather than spinning on it.
+printf '#!/bin/sh\nprintf x >> %s/bfail\nexit 3\n' "$BD" > "$BD/p/bin/cockpit-tui"
+: > "$BD/wargv"; rm -f "$BD/bfail"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+is "a board that exits non-zero runs once and says so" "x display-message -t %3 cockpit: the board exited 3 — see $BD/tui.log;" \
+   "$(cat "$BD/bfail") $(tr '\n' ';' < "$BD/wargv")"
 
 # The binary is the one piece of this plugin that is not shell, so its one line
 # of output is re-checked here rather than trusted. Empty means nothing ran.
@@ -10667,6 +10724,110 @@ is "a plugin directory named like a command substitution still reaches the wrapp
 is "and its name never runs" "no" "$([ -e "$BI/OWNED" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$BW_OUT" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$BW_IN" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: the return trip lands on the same pane, and a ✕ note stays =="
+# The real binary in a real window: the loop, --select and board.state end to
+# end. tmux-review is a stub that records its argv; the panel is the real one.
+if need_tmux "the board's return trip"; then :; else
+RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
+mkdir -p "$RBD/p" "$RBD/state"
+cp -r "$DIR"/scripts "$RBD/p/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
+chmod +x "$RBD/p/scripts/tmux-review"
+"$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 3600' >/dev/null 2>&1
+RBP=()
+for i in 1 2 3; do
+    RBP+=("$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')")
+done
+for p in "${RBP[@]}"; do
+    "$TMUX_REAL" -L "$RB" set -p -t "$p" @panestate running >/dev/null 2>&1
+done
+# Tiles sort by state, then pane id: all running, so tile 2 is the second pane.
+RBX=${RBP[1]}
+RBENV="env COCKPIT_TUI_BIN=$COCKPIT_TUI_BIN XDG_STATE_HOME=$RBD/state COCKPIT_LOG=$RBD/tui.log"
+rb_open() {                   # -> RBW, the wrapper's pane, with tiles drawn
+    RBW=$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: "$RBENV $RBD/p/scripts/cockpit-board -p ${RBP[0]}")
+    until_cap "$RB" "$RBW" '*board · 3 agents*'
+}
+rb_gone() {                   # <pane>
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$RB" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+rb_rv() { tr '\n' ';' < "$RBD/rv" 2>/dev/null; }
+
+rb_open || bad "the board opens in a window" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" 2 r
+until_file "$RBD/rv" '*-p*'
+is "r on tile 2 reviews its pane" "-p $RBX;" "$(rb_rv)"
+# the stub returns at once: the board must come back, on that same pane
+until_cap "$RB" "$RBW" '*board · 3 agents*' || bad "r returns to the board" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*'
+is "r, then the return, lands on the same pane" "-p $RBX;-p $RBX;" "$(rb_rv)"
+
+until_cap "$RB" "$RBW" '*board · 3 agents*'
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" f
+until_cap "$RB" "$RBW" '*will send*' || bad "f opens the panel in the same window" "will send" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" Escape
+until_cap "$RB" "$RBW" '*board · 3 agents*' || bad "esc on the panel's Home returns to the board" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*-p*'
+is "f, then esc on Home, returns on the same pane" "-p $RBX;-p $RBX;-p $RBX;" "$(rb_rv)"
+
+until_cap "$RB" "$RBW" '*board · 3 agents*'
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" Enter
+rb_gone "$RBW" || bad "jump ends the loop" "the window closes" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+is "jump ends the loop, on the pane it jumped to" "$RBX" "$("$TMUX_REAL" -L "$RB" display -p -t t '#{pane_id}')"
+is "board.state keeps the selection" "cockpit-board-state 1;sel $RBX;" \
+   "$(tr '\n' ';' < "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
+is "created 0600" "600" "$(stat -c %a "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
+
+# The next plain prefix w opens on it too; @cockpit_board_return off makes r one-way.
+"$TMUX_REAL" -L "$RB" set -g @cockpit_board_return off >/dev/null 2>&1
+rb_open
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*-p*-p*'
+is "a fresh board opens on the saved pane" "-p $RBX" "$(tail -1 "$RBD/rv")"
+rb_gone "$RBW" || bad "@cockpit_board_return off keeps r one-way" "the window closes" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+ok "@cockpit_board_return off keeps r one-way"
+"$TMUX_REAL" -L "$RB" set -gu @cockpit_board_return >/dev/null 2>&1
+
+# D20: two boards opened together, one with a success note, one with a ✕ note.
+# Once the success note has faded (5 s), the ✕ one must still be there.
+printf 'cockpit: sent to %s\n' "$RBX" > "$RBD/ok"
+printf '✕ cockpit: the pane now runs bash, not claude; nothing sent\n' > "$RBD/no"
+# A pane that is no agent: whatever a board would write over it is a real one.
+printf 'cockpit-board-state 1\nsel %%0\n' > "$RBD/state/tmux-cockpit/board.state"
+rb_bin() { "$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: "$RBENV COCKPIT_READONLY=1 $COCKPIT_TUI_BIN board --note $1"; }
+RBOK=$(rb_bin "$RBD/ok"); RBNO=$(rb_bin "$RBD/no")
+until_cap "$RB" "$RBOK" '*cockpit: sent to*' || bad "a success note shows" "cockpit: sent to" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBOK")"
+until_cap "$RB" "$RBNO" '*nothing sent · esc dismiss*' || bad "a ✕ note shows with its way out" "· esc dismiss" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")"
+rbfaded=
+for i in $(seq 1 $((POLLS * 2))); do
+    case "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBOK" 2>/dev/null)" in
+        *'cockpit: sent to'*) sleep 0.1 ;;
+        *'↵ jump'*) rbfaded=1; break ;;
+        *) sleep 0.1 ;;
+    esac
+done
+is "the success note fades" "1" "$rbfaded"
+case "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")" in
+    *'nothing sent · esc dismiss'*) ok "a ✕ note survives the ticks that fade a success note" ;;
+    *) bad "a ✕ note survives the ticks that fade a success note" "the ✕ note" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")" ;;
+esac
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBNO" Escape
+until_cap "$RB" "$RBNO" '*↵ jump*' || bad "esc only dismisses the ✕ note" "the key bar" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")"
+is "and leaves the board open" "$RBNO" "$("$TMUX_REAL" -L "$RB" list-panes -a -F '#{pane_id}' | grep -x "$RBNO")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBOK" q
+rb_gone "$RBOK"
+is "COCKPIT_READONLY writes no board.state" "sel %0" "$(tail -1 "$RBD/state/tmux-cockpit/board.state")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBNO" q
+"$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
@@ -10972,6 +11133,11 @@ is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
    "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
+# From the board the refusal is its note, which must stay one line: the board
+# refuses a two-line note, and a pane's command can carry a newline.
+: > "$PND/note"; COCKPIT_PANEL_NOTE="$PND/note" pact 'send %5' hi '' claude $'zsh\nevil' >/dev/null
+is "a refusal from the board is one ✕ line in the note, never a status message" \
+   "1 ✕ cockpit: the pane now runs zsh evil, not claude; nothing sent" "$(wc -l < "$PND/note" | tr -d ' ') $(cat "$PND/note")"
 rm -f "$PND/caps"; pact 'send %5' hi >/dev/null
 is "send waits for the paste to show before Enter: one capture before, one after" "2" "$(wc -l < "$PND/caps" | tr -d ' ')"
 rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"

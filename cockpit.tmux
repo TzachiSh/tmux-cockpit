@@ -200,9 +200,10 @@ bk=$(key @cockpit_board_key w)
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window above (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        tmux bind-key "$bk" run-shell "tmux new-window -n board $(sq "$Q_BOARD -p '#{pane_id}'")"
+        tmux bind-key "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$Q_BOARD -p '#{pane_id}'")"
     else
-        tmux bind-key "$bk" display-popup -E -w 90% -h "$PH" -T ' board · #{session_name} ' "$Q_BOARD -p $SRC_PANE"
+        # No #{session_name}: it named the client's session, not the agent's.
+        tmux bind-key "$bk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 
