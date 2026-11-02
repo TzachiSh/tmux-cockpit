@@ -67,15 +67,15 @@ srv() { tmux -L "$SOCK" "$@"; }
 ( cd "$LOGDIR" && tmux -L "$SOCK" -vv -f /dev/null \
     new-session -d -s s1 -x 200 -y 62 \; set -g status-interval 0 ) || exit 2
 
-# The formats under test. Default to the repo's shipped example config.
+# The formats under test. Default to the plugin's own bar (V7, statusbar.conf).
 if [ -n "$CONF" ]; then
     srv source-file "$CONF" 2>/dev/null || { echo "gate: cannot source $CONF"; exit 2; }
 else
     srv set -g mouse on
     srv set -g @cockpit_agents_glob "$GLOB"
-    srv set -g @thm_red '#ff6b6b'; srv set -g @thm_peach '#ff9838'
-    srv set -g @thm_yellow '#ffcc33'; srv set -g @thm_green '#3dea7d'
-    srv set -g @thm_overlay_0 '#5b6272'; srv set -g @cockpit_blocked_bg '#52303a'
+    srv set -g @thm_needs '#ff5f6d'; srv set -g @thm_error '#ff9e3d'
+    srv set -g @thm_running '#e6c84f'; srv set -g @thm_done '#5fd38d'
+    srv set -g @thm_dim '#9097a3'
     apply_variant V7
 fi
 
