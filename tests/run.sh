@@ -2340,6 +2340,13 @@ mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/lock
 is "an unreadable .git file is quiet, not a bash error" "" \
    "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
 chmod 600 "$DH/locked/.git"
+# A worktree removed after the board resolved its root.
+is "the board's scan of a vanished root is quiet" "" \
+   "$(bash -c '. "$1/scripts/lib/review-diff.sh"; . "$1/scripts/lib/review-fleet.sh"; fleet_scan_root "$2"' _ "$DIR" "$DH/gone" 2>&1 >/dev/null)"
+echo b >> "$DH/a"; chmod 000 "$DH/a"
+is "the diff preview of an unreadable changed file is quiet" "" \
+   "$("$DIR/scripts/tmux-open-path" --preview-diff "$DH/a" 2>&1 >/dev/null)"
+chmod 600 "$DH/a"
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"

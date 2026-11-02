@@ -168,7 +168,7 @@ if [ "${1:-}" = --preview-diff ]; then
     chd=$(git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
     apath="$d/$base"
     idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
-    csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
+    csum=$(sha1sum 2>/dev/null < "$f" || shasum 2>/dev/null < "$f")
     if [ -n "$csum" ]; then
         # $rbase in the key too: ^B switches the same pane's base mid-review,
         # and without this a render cached under the old base would be served
