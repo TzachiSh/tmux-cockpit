@@ -4134,7 +4134,19 @@ until_out '*fifty*' "$TMUX_REAL" -L "$TR" list-clients -F '#{session_name}'
 is "a 50-character name at 80 columns keeps ◉ and its counts, and drops its age" \
    "this-session-name-is-fifty-characters-long-exactly	◉ —         1 win  " \
    "$(trrows env FZF_COLUMNS=80 | grep 'fifty' | cut -f3-)"
+# At phone width a name past LW - 10 leaves ◉ to fzf's ellipsis, so it goes
+# before the name instead (#216).
+trph=$(trrows env FZF_COLUMNS=56 | grep 'fifty')
+case "$(printf '%s' "$trph" | cut -f2)" in
+    *'◉ ') ok "at 56 columns a long attached name carries ◉ before it" ;;
+    *) bad "at 56 columns a long attached name carries ◉ before it" "N G◉ " "$(printf '%s' "$trph" | cut -f2)" ;;
+esac
+is "and none after it" "" "$(printf '%s' "$trph" | cut -f4)"
 "$TMUX_REAL" -L "$TRL" kill-server >/dev/null 2>&1
+until_out '' "$TMUX_REAL" -L "$TR" list-clients -t this-session-name-is-fifty-characters-long-exactly -F '#{client_name}'
+# Not attached: no placeholder space after the name either (#216).
+is "an over-long row with nothing attached ends at its name" "" \
+   "$(trrows env FZF_COLUMNS=56 | grep 'fifty' | cut -f4)"
 trt kill-session -t =this-session-name-is-fifty-characters-long-exactly
 # A garbled list never falls through to the name path: "tm --rows" once
 # created a session called "rows".
