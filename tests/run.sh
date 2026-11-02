@@ -10723,7 +10723,7 @@ esac
 AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' | sed -n "s/.*list-panes -a -F '\([^']*\)'.*/\1/p")
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" new-window -d -t ag: 'sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T alpha >/dev/null 2>&1
+"$TMUX_REAL" -L "$AGS" select-pane -t ag:0 -T 'alpha  two  spaces' >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:1 -T bravo >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" select-pane -t ag:2 -T plain >/dev/null 2>&1
 "$TMUX_REAL" -L "$AGS" set-option -p -t ag:0 @panestate needs-input >/dev/null 2>&1
@@ -10731,9 +10731,11 @@ AGF=$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' | sed -n "s/.*
 until_out '*claude*claude*sleep*' "$TMUX_REAL" -L "$AGS" list-panes -a -F '#{pane_current_command}' >/dev/null
 # The third pane is not an agent: its state column is the - sentinel, not a blank
 # that would slide the title one column left.
-is "two agent panes with their state, the plain pane with the sentinel" \
-   "ag:0 needs-input alpha|ag:1 running bravo|ag:2 - plain" \
-   "$("$TMUX_REAL" -L "$AGS" list-panes -a -F "$AGF" 2>/dev/null | tr -s ' ' ' ' | paste -sd'|' -)"
+is "two agent panes with their state, the plain pane with the sentinel, in fixed columns" \
+   "ag:0             needs-input  alpha  two  spaces|ag:1             running      bravo|ag:2             -            plain" \
+   "$("$TMUX_REAL" -L "$AGS" list-panes -a -F "$AGF" 2>/dev/null | paste -sd'|' -)"
+is "and the popup needs no column(1), which split a title on its spaces" "0" \
+   "$("$TMUX_REAL" -L "$AGS" list-keys -T cockpit | awk '$4=="t"' | grep -c 'column')"
 "$TMUX_REAL" -L "$AGS" kill-server >/dev/null 2>&1
 fi
 
