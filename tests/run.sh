@@ -8503,8 +8503,8 @@ case "$inbad" in
 esac
 "$TMUX_REAL" -L "$IN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$IN" list-keys -T prefix 2>/dev/null | awk '$4=="i"')" in
-    *tmux-review*--info*) ok "prefix i is bound to the info popup" ;;
-    *) bad "prefix i is bound to the info popup" "a display-popup running tmux-review --info" "$("$TMUX_REAL" -L "$IN" list-keys -T prefix | awk '$4=="i"')" ;;
+    *display-popup*"cockpit-tui'"*" info "*) ok "prefix i is bound to the info popup" ;;
+    *) bad "prefix i is bound to the info popup" "a display-popup running cockpit-tui info" "$("$TMUX_REAL" -L "$IN" list-keys -T prefix | awk '$4=="i"')" ;;
 esac
 "$TMUX_REAL" -L "$IN" kill-server >/dev/null 2>&1
 fi
@@ -12411,6 +12411,67 @@ is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
+
+echo "== cockpit-tui info: the same fields as tmux-review --info, for every base mode =="
+if need_tmux "cockpit-tui info parity"; then :; else
+PI="cockpit-pi-$$"; SOCKS="$SOCKS $PI"; PISTATE=$(mktmpd); PIDIR=$(mktmpd)
+( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$PIDIR" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+PIAP=$("$TMUX_REAL" -L "$PI" list-panes -t t: -F '#{pane_id}')
+for kv in "@panestate needs-input" "@panestate_msg run-make" "@cockpit_review pending" "@cockpit_session sid-9" "@cockpit_title Fix-the-parser"; do
+    "$TMUX_REAL" -L "$PI" set-option -p -t "$PIAP" "${kv%% *}" "${kv#* }" >/dev/null 2>&1
+done
+PISESS="$PISTATE/tmux-cockpit/review/${PIAP#%}-$(printf '%s' "$PIDIR" | cksum | cut -d' ' -f1)"
+mkdir -p "$PISESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$PISESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$PISESS/delivered.md"
+pi_sh()  { "$TMUX_REAL" -L "$PI" run-shell "XDG_STATE_HOME=$(printf '%q' "$PISTATE") '$DIR/scripts/tmux-review' -p $PIAP --info" 2>&1; }
+pi_rs()  { XDG_STATE_HOME="$PISTATE" COCKPIT_TMUX="tmux -L $PI" "$COCKPIT_TUI_BIN" info --text "${1:-$PIAP}" 2>&1; }
+pi_cmp() {                    # <what> -- each field of the shell screen is the Rust screen's
+    local shs rss f
+    shs=$(pi_sh); rss=$(pi_rs)
+    for f in pane cwd root state review base session title; do
+        is "$1: $f" "$(grep "^$f " <<<"$shs")" "$(grep "^$f " <<<"$rss")"
+    done
+    is "$1: review dir and its counts" "$(grep -A1 '^review dir' <<<"$shs")" "$(grep -A1 '^review dir' <<<"$rss")"
+    is "$1: the tui row names the same version" "$(grep '^tui ' <<<"$shs" | awk '{print $2}')" "$(grep '^tui ' <<<"$rss" | awk '{print $2}')"
+}
+pi_cmp "uncommitted base"
+is "the Rust base row is uncommitted" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
+( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git checkout -q -b feat; printf 'a\nb\n' > f; git commit -q -am two ) >/dev/null 2>&1
+pi_cmp "branch base"
+case "$(pi_rs | grep '^base ')" in 'base      vs main  ('*) ok "the Rust base row is vs main" ;; *) bad "the Rust base row is vs main" "vs main" "$(pi_rs | grep '^base ')" ;; esac
+git -C "$PIDIR" update-ref refs/cockpit/reviewed/feat HEAD
+pi_cmp "since-review base"
+case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Rust base row is since last review" ;; *) bad "the Rust base row is since last review" "since last review" "$(pi_rs | grep '^base ')" ;; esac
+printf 'uncommitted\n' > "$PISESS/comments.md.base"
+pi_cmp "a mode b chose"
+is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
+is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
+is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
+"$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui info: prefix i opens the popup =="
+if need_tmux "prefix i popup"; then :; else
+PK="cockpit-pk-$$"; SOCKS="$SOCKS $PK"
+"$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+pk_i() { "$TMUX_REAL" -L "$PK" list-keys -T prefix 2>/dev/null | awk '$4=="i"'; }
+case "$(pk_i)" in
+    *display-popup*"cockpit-tui'"*" info "*) ok "prefix i is bound to a popup running cockpit-tui info" ;;
+    *) bad "prefix i is bound to a popup running cockpit-tui info" "display-popup ... cockpit-tui info" "$(pk_i)" ;;
+esac
+case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-review --info" "no tmux-review" "$(pk_i)" ;; *) ok "prefix i no longer runs tmux-review --info" ;; esac
+"$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PK" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$(pk_i)" in *cockpit-tui*) bad "@cockpit_info_key off leaves i unbound" "stock i" "$(pk_i)" ;; *) ok "@cockpit_info_key off leaves i unbound" ;; esac
+"$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
+fi
+
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

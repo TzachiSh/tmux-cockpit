@@ -1138,3 +1138,28 @@ and the borders for a tier that is byte-stable across fonts.
 **A stale `@cockpit_tui_pid`.** The board unpublishes the pid on `q`, SIGHUP and
 SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
 `/proc/$pid/comm` before it signals anything.
+
+## The info screen (#252)
+
+`cockpit-tui info %N` is what `prefix i` opens, in a popup (`@cockpit_info_key`
+still names the key; `off` unbinds it). In the board, `i` draws the same screen
+as an overlay over the selected pane and `esc` returns to the board; the board
+no longer exits with `info %N` for the wrapper. The module is `info` (the
+screen, the module-table row it owes #61) and `data::info` (the facts).
+
+It shows what `tmux-review --info` showed, in the same order: `pane`, `cwd`,
+`dir` (`@cockpit_dir`, and `missing` when the directory is gone), `root`,
+`state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
+ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
+`base`, `session`, `title`, `tui` and the review dir with its pinned and
+delivered counts. The git root and the review base are Rust, on the `gitsafe`
+flags: the base is `review_base` from `review-diff.sh` (since-review, branch,
+uncommitted), so the screen names what `prefix r` diffs against. One quirk is
+kept on purpose: `review_base` reads its ref rows with a tab `IFS`, which
+folds empty fields, so `origin/HEAD` never serves as the upstream there; it
+does not here either.
+
+Text from outside (a transcript, a title, a path) is stripped of control
+characters before it is drawn. It is not a text-entry screen: `esc` and `q`
+close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
+`tmux-review --info` stays until #228's cleanup removes it.

@@ -1819,10 +1819,10 @@ fn sel_id(ps: &[Pane], nav: &Nav) -> String {
     ps[*first.unwrap_or(&lo[0])].id.clone()
 }
 
-// #228: the one place `i` opens a view. Today it exits with `info %N` for the
-// wrapper to run; `None` would keep the board open, for a view drawn in-process.
-fn info(id: &str) -> Option<String> {
-    Some(format!("info {id}"))
+// #228: the one place `i` opens a view. `None` keeps the board open: the info
+// screen is drawn in-process, over the selected tile (#252).
+fn info(_id: &str) -> Option<String> {
+    None
 }
 
 const DRAW_BUDGET: u8 = 5;
@@ -1952,6 +1952,8 @@ pub fn run(o: &Opts) -> Option<String> {
     let mut seen: HashMap<String, Option<String>> = HashMap::new();
     let (mut sel, mut top, mut loaded) = (0usize, 0usize, false);
     let mut help: Option<usize> = None;
+    // the info screen over the board (#252), while it is open
+    let mut overlay: Option<crate::info::Screen> = None;
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
@@ -2068,7 +2070,12 @@ pub fn run(o: &Opts) -> Option<String> {
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them
-            match term.draw(|f| render(f, f.area(), &v)) {
+            match term.draw(|f| {
+                render(f, f.area(), &v);
+                if let Some(o) = &overlay {
+                    crate::info::render(f, f.area(), &th, o);
+                }
+            }) {
                 Ok(_) => {
                     draw_fails = 0;
                     dirty = false;
@@ -2108,6 +2115,12 @@ pub fn run(o: &Opts) -> Option<String> {
         let here = area(term.size().unwrap_or_default());
         if too_small(here) {
             help = None;
+        }
+        if let Some(o) = &mut overlay {
+            if let crate::info::Out::Close = crate::info::key(o, &th, k.code, here) {
+                overlay = None;
+            }
+            continue;
         }
         if let Some(t) = help {
             // a help screen you have to learn a key to leave is a joke: any
@@ -2180,6 +2193,7 @@ pub fn run(o: &Opts) -> Option<String> {
                     action_line = Some(line);
                     break;
                 }
+                overlay = Some(crate::info::Screen::open(&id));
             }
             // `a` on a blocked agent jumps; there is no inline reply yet
             (Act::Ask, Some(p)) if p.state == State::NeedsInput => {

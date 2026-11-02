@@ -201,7 +201,8 @@ rk=$(key @cockpit_review_key r)
 [ -z "$rk" ] || tmux bind-key "$rk" "${R_OPEN[@]}" "$R_CMD"
 
 ik=$(key @cockpit_info_key i)
-[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
+# The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
+[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
 
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
