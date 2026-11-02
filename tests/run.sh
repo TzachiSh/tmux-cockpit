@@ -10604,6 +10604,16 @@ is "so the menu has neither row" "[][]" "$(bqrows)"
 # 80 - 6 for the line ends - 12 for the touch corner (≡ and the session name).
 is "a waiting pane gives the question every cell left, the path and branch none" "0 0 62" "$(bqfit)"
 is "so the menu offers both" "[Browse folder][Switch branch]" "$(bqrows)"
+# A cut that lands on a space is flush with its …, as on the tabs: 62 cells of
+# 61 a's, a space and more, end "a…", never "a …".
+"$TMUX_REAL" -L "$BQ" set -p -t "$BQP" @panestate_msg "$(printf 'a%.0s' $(seq 61)) bbbbbbbb" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" '#{E:pane-border-format}' | plain)" in
+    *"a …"*) bad "a cut question leaves no space before its …" "…a…" "a space before the …" ;;
+    *"a…"*)  ok "a cut question leaves no space before its …" ;;
+    *) bad "a cut question leaves no space before its …" "…a…" "$("$TMUX_REAL" -L "$BQ" display-message -p -c "$bqc" -t "$BQP" '#{E:pane-border-format}' | plain)" ;;
+esac
+"$TMUX_REAL" -L "$BQ" set -p -t "$BQP" @panestate_msg \
+    "Should I force-push the rebased branch to origin and open the PR now" >/dev/null 2>&1
 cw_size "$BQ" "$bqc" 200
 is "at 200 columns the whole question fits beside path and branch" "1 1 68" "$(bqfit)"
 fi
