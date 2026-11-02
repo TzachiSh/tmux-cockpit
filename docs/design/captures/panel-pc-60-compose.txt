@@ -1,0 +1,30 @@
+╭ panel · %0 · server ─────────────────────────────────────╮
+│ type: auto   model: auto                                 │
+│ make the flaky test in b.test.ts deterministic▏          │
+│                                                          │
+│ → haiku · short request - the fast model is enough       │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+╰ ^S write  ^F fix spelling  F1 keys  esc home ────────────╯
