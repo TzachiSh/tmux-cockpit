@@ -9,3 +9,6 @@ pub mod panel;
 pub mod pick;
 pub mod push;
 pub mod theme;
+
+// sessions view (#245)
+pub mod sessions;

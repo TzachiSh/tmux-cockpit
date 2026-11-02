@@ -638,3 +638,79 @@ fn the_floor_card_names_esc_alone_as_the_way_out() {
     let s = draw(27, 11, &picker("branch", "", None));
     assert!(s.contains("esc closes") && !s.contains("or q"), "{s}");
 }
+
+// --- the reusable pieces (#245) ---------------------------------------------
+
+#[test]
+fn set_rows_keeps_the_query_and_the_selection_on_its_key() {
+    let mut p = picker("branch", "", None);
+    type_str(&mut p, "e");
+    press(&mut p, KeyCode::Down, BIG);
+    let want = names(&p)[p.sel].to_string();
+    // a refresh that puts a new row first and drops another
+    let mut next = rows(&[("new", "new  e")]);
+    next.extend(rows(&BRANCHES).into_iter().filter(|r| r.key != b"main"));
+    p.set_rows(next, BIG);
+    assert_eq!(p.query, "e");
+    assert_eq!(names(&p)[p.sel], want);
+}
+
+#[test]
+fn set_rows_with_the_selected_row_gone_stays_on_a_row() {
+    let mut p = picker("branch", "", None);
+    p.sel = 5;
+    p.set_rows(rows(&BRANCHES[..2]), BIG);
+    assert_eq!(p.sel, 1);
+}
+
+#[test]
+fn set_rows_to_nothing_leaves_an_empty_list() {
+    let mut p = picker("branch", "", None);
+    p.set_rows(vec![], BIG);
+    assert!(p.shown.is_empty());
+    assert_eq!(p.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), BIG), Outcome::Continue);
+}
+
+#[test]
+fn render_with_the_default_look_is_render() {
+    let p = picker("branch", "pick one", Some(PREVIEW));
+    let mut t = Terminal::new(TestBackend::new(80, 14)).unwrap();
+    t.draw(|f| pick::render_with(f, f.area(), &p, &Theme::fixed(), &pick::Look::default()))
+        .unwrap();
+    assert_eq!(t.backend().to_string(), draw(80, 14, &p));
+}
+
+#[test]
+fn a_look_brings_its_own_footer_and_floor_title() {
+    let p = picker("branch", "", None);
+    let look = pick::Look {
+        title: Some("mine"),
+        hints: Some(vec![("^Z".into(), "undo".into()), ("esc".into(), "cancel".into())]),
+        ..Default::default()
+    };
+    let mut t = Terminal::new(TestBackend::new(40, 14)).unwrap();
+    t.draw(|f| pick::render_with(f, f.area(), &p, &Theme::fixed(), &look)).unwrap();
+    assert!(t.backend().to_string().contains("^Z undo"));
+    let mut t = Terminal::new(TestBackend::new(20, 14)).unwrap();
+    t.draw(|f| pick::render_with(f, f.area(), &p, &Theme::fixed(), &look)).unwrap();
+    assert!(t.backend().to_string().contains(" mine "));
+}
+
+#[test]
+fn an_entry_replaces_the_query_on_the_prompt_line_only() {
+    let mut p = picker("rename", "", None);
+    type_str(&mut p, "rel");
+    p.entry = Some("typed-elsewhere".into());
+    let out = draw(80, 14, &p);
+    assert!(out.lines().next().unwrap().contains("rename> typed-elsewhere"));
+    assert_eq!((p.query.as_str(), p.shown.len()), ("rel", 1));
+}
+
+#[test]
+fn a_list_share_moves_the_preview_divider() {
+    let mut p = picker("branch", "", Some(PREVIEW));
+    let at = |p: &Pick| pick::geo(area(100, 14), p).preview.unwrap().x;
+    assert_eq!(at(&p), 40);
+    p.list_pct = 55;
+    assert_eq!(at(&p), 55);
+}
