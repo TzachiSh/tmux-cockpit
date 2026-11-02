@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Review store: revdiff's annotation grammar plus a fragment line. Sourced; pure.
-#   "## <path>:<line>[-<end>] (+|-| )" (a space is a context line) or "## <path> (file-level)", an optional
-#   "> <fragment>", body lines (a body "## " is stored " ## "), a blank line.
+#   "## <path>:<line>[-<end>] (+|-| )" (a space is a context line) or
+#   "## <path> (file-level)", an optional "> <fragment>", body lines
+#   (a body "## " is stored " ## "), a blank line.
 # parse_store FILE fills STORE ("<i>.path|line|end|side|frag|body") and STORE_N;
 # it never fails: a bad file is set aside as STORE_BAK. format_store writes back.
 # parse_store_revdiff FILE reads revdiff's own output: it has no fragment line,

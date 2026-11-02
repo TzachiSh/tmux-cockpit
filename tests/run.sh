@@ -12567,7 +12567,7 @@ rsa_load; parse_store "$RSAF" 2>"$RSAD/err"
 is "a revdiff store with a ( ) record keeps every record" "5" "${STORE_N:-}"
 is "and sets no .bak aside" "" "$(ls "$RSAD" | grep '\.bak' || true)"
 is "and says nothing on stderr" "" "$(cat "$RSAD/err")"
-is "the context record stores side ' '" "1| |1" "${STORE[1.line]:-}|${STORE[1.side]:-}|${STORE[1.line]:-}"
+is "the context record stores side ' '" " " "${STORE[1.side]:-}"
 format_store "$RSAD/f1"; grep -qxF '## a.txt:1 ( )' "$RSAD/f1" && ok "a context record formats back as ( )" || bad "a context record formats back as ( )" "## a.txt:1 ( )" "$(cat "$RSAD/f1")"
 is "format of the fixture is byte-identical to revdiff's text (modulo the final blank)" "" "$(diff <(cat "$RSAF"; echo) "$RSAD/f1" 2>&1)"
 parse_store "$RSAD/f1"; format_store "$RSAD/f2"
@@ -12588,6 +12588,12 @@ is "cockpit mode: the same line is still a fragment" "quoted first" "${STORE[0.f
 is "cockpit mode: the body is the rest" "more" "${STORE[0.body]:-}"
 rsa_load quoted.md; printf '## b.txt:9 ( )\ncomment\n' >> "$RSAF"; sed -i 's/^more$/more\n/' "$RSAF"; parse_store_revdiff "$RSAF"
 is "ingest: a quoted line in one record does not disturb the next" "2/comment" "${STORE_N:-}/${STORE[1.body]:-}"
+
+echo "== review store: a context record is stale only when its row is gone (#232) =="
+rsa_load; . "$DIR/scripts/lib/review-diff.sh"
+printf 'a.txt\t1\n' > "$RSAD/rows"   # row 1 of a.txt is a context row (new-line number, no sign)
+printf '## a.txt:1 ( )\nlive\n\n## a.txt:9 ( )\ngone\n' > "$RSAF"
+is "stale_keys: a ( ) record whose row exists is not stale, one whose row is gone is" "## a.txt:9 ( )" "$(stale_keys "$RSAF" "$RSAD/rows")"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
