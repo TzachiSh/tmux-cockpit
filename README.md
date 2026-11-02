@@ -188,7 +188,7 @@ come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
 gum and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
 project publishes checksums, and shadows a distro copy rather than replacing
 it. Without `--full` it still fetches fzf alone when the one it finds is below
-0.63. No sudo, and nothing is downloaded when tmux loads the plugin or when you
+0.73. No sudo, and nothing is downloaded when tmux loads the plugin or when you
 press a key. Add `--latest` for each project's newest tag instead of the pins.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
 match installs nothing. On macOS with brew it runs `brew install fzf bat gum`.
@@ -265,11 +265,12 @@ over earlier, `prefix r` included.
   builds 3.8 into `~/.local/bin` when the distro's tmux is older.
 - **Rust >= 1.88** only to build the board with `make tui`;
   the fetched binary needs neither Rust nor cargo.
-- **fzf >= 0.63** for the pickers. Debian and Ubuntu ship 0.44.1, so
-  `bootstrap.sh` fetches 0.74.3 into `~/.local/bin` when it finds an older
-  one, and `install.sh --check` fails below 0.63. `bat`
-  (`batcat` on Debian) and `gum` are optional; `jq` is needed by
-  `install.sh --hooks` and the review gate.
+- **fzf >= 0.73** for the pickers. Debian 13 ships 0.60.3, Ubuntu 24.04
+  0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
+  0.74.3 into `~/.local/bin` when it finds an older one, and
+  `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) and
+  `gum` are optional; `jq` is needed by `install.sh --hooks` and the review
+  gate.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
 
@@ -396,6 +397,10 @@ set -g @cockpit_popup_height 50%
 
 Anything `display-popup` accepts works, absolute columns/rows included. The
 path picker re-reads them on every click, so changing them needs no reload.
+
+The session picker (`prefix + s`) reads them as **ceilings**, not sizes: it
+shrinks to fit its sessions, at most 70% of the client on a desktop, 90% wide
+below 160 columns, and full width in touch mode.
 
 ### The snippet
 
@@ -1141,25 +1146,43 @@ the cost of the override, and it is the only one.
 
 ## tm — session launcher
 
-`prefix + s` opens it in the same popup chrome as the other pickers. Each
-session previews as its windows with the cockpit state beside every agent pane
-— the one view the status bar cannot give you is *across* sessions.
+`prefix + s` opens it in a popup sized to its sessions: no empty half-screen.
 
 ```sh
 tm <name>     attach to <name>, creating it if missing
-tm            pick from a session list; if none exist, ask for a name
+tm            pick a session; a name nothing matches + ↵ creates it
+tm --needs    the picker, only the sessions waiting on you or in error
 tm -k [name]  kill sessions (no name = pick them, Tab selects several)
 ```
 
-In the picker: typing **filters**, like every other picker here — it used to be
-a command mode where a bare `k` (the first key of filtering to "kanban") killed
-the highlighted session instantly. Kill is `^X` now, the attached session is
-labelled and refuses to die from the picker (`tm -k <name>` still kills
-anything, deliberately, by name), and the kill picker wears red. The
-new-session prompt cancels on empty instead of looping. It uses `switch-client` inside tmux and `attach-session` outside,
-and checks `session_attached` rather than `$TMUX` to tell the difference —
-anything launched from a pane inherits `$TMUX`, so a terminal opened inside tmux
-still carries it after the session is detached.
+Each row reads `1 ▲  api-gateway  2 agents  2 wins  ◉  5m`: a jump number, the
+worst agent state in the session (`▲` needs you, `✕` error, `●` running, `✓`
+done, `○` idle, blank for no agent), the name, counts, `◉` when another client
+is on it, and when you last used it. Sessions that need you come first, the
+rest by last use, and your own session last with `(here)`, so `prefix + s ↵`
+goes back to the session you just left. The order holds still while the
+picker is open; on a desktop the glyphs refresh every 2 s.
+
+In the picker: typing **filters**. `↵` switches, or creates the typed name when
+nothing matches; `alt-↵` creates it even when something does. `^X` arms a kill
+and names what you would lose; `^X` again kills, any other key cancels. Your
+own session refuses (`tm -k <name>` still kills anything, by name). `^/`
+toggles the preview: the session's windows with their states, the waiting
+agent's question, and the tail of its most urgent pane. `1`-`9` jump while the
+query is empty. It uses `switch-client` inside tmux and `attach-session`
+outside, and checks `session_attached` rather than `$TMUX` to tell the
+difference — anything launched from a pane inherits `$TMUX`, so a terminal
+opened inside tmux still carries it after the session is detached.
+
+**Touch mode** turns on below 100 client columns (`set -g @cockpit_touch
+auto|on|off`, default `auto`): rows are two lines tall, a waiting session shows
+its question on the second, one tap switches, and the footer is a row of
+buttons, `[ + new ] [ kill ] [ view ] [ close ]`. `set -g @cockpit_glyphs
+ascii` swaps the glyphs for `! x * + .` where a terminal draws them at the
+wrong width; `nerd` uses Nerd Font icons instead, opt-in because many Nerd
+Font builds draw them two cells wide.
+
+Without fzf, `tm` lists the sessions and reads a name.
 
 ## Also included
 

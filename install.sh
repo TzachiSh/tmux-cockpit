@@ -77,11 +77,15 @@ if [ "$check" -eq 1 ]; then
     else row warn jq 'not found' 'needed by install.sh --hooks and the review gate'
     fi
 
-    v=$(fld 1 "$(fzf --version 2>/dev/null)")
+    # The pickers run under the server's PATH, not this shell's: Debian's
+    # /usr/bin/fzf can answer there while a fetched one wins here.
+    fp=$(tmux show-environment -g PATH 2>/dev/null); fp=${fp#PATH=}
+    fz=$(PATH=${fp:-$PATH} command -v fzf 2>/dev/null)
+    v=''; [ -z "$fz" ] || v=$(fld 1 "$("$fz" --version 2>/dev/null)")
     if [ -z "$v" ]; then
         row warn fzf 'not found' 'bootstrap.sh --full (pickers fall back to a menu)'
-    elif [ "$(vnum "$v")" -lt "$(vnum 0.63.0)" ]; then
-        row fail fzf "$v" 'the pickers need 0.63+; bootstrap.sh fetches it'
+    elif [ "$(vnum "$v")" -lt "$(vnum 0.73.0)" ]; then
+        row fail fzf "$v @ $fz" 'the pickers need 0.73+; bootstrap.sh fetches it'
     else row ok fzf "$v"
     fi
 
