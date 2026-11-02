@@ -5,11 +5,11 @@ Each tile carries the pane's state glyph, what the agent is doing, how long it
 has been doing it, and a live `capture-pane` of the pane itself. `↵` jumps to
 the tile you are on and closes the board.
 
-It is a small Rust binary, `bin/cockpit-tui`. It is **required**: the shell
-scripts read transcripts, diff counts and git-safety flags through it
-(`transcript`, `diffstat`, `git-flags`). Install fetches it with your own `gh`
-login or builds it from source (Rust ≥ 1.88), and stops with a message when it
-can do neither.
+It is a small Rust binary, `bin/cockpit-tui`. It is **required**: the board and
+the panel run on it, and the follow-up #199 PRs move the shell scripts'
+transcript, diff-count and git-safety readers onto its `transcript`, `diffstat`
+and `git-flags`. Install fetches it with your own `gh` login or builds it from
+source (Rust ≥ 1.88), and stops with a message when it can do neither.
 
 ## What it is not
 

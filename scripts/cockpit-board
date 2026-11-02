@@ -29,7 +29,7 @@ say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
 # Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" 2>/dev/null
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh; prefix r is the fleet list" 2>/dev/null
     exit 0
 fi
 

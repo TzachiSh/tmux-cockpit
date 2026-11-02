@@ -195,8 +195,8 @@ match installs nothing. On macOS with brew it runs `brew install fzf bat`.
 
 The `cockpit-tui` binary is required: `install.sh` fetches it with your `gh`
 login or builds it from source, and stops with a message when it can do
-neither. It draws the board (`prefix + w`) and the panel (`prefix + f`), and
-the shell scripts read through it. See [docs/tui.md](docs/tui.md).
+neither. It draws the board (`prefix + w`) and the panel (`prefix + f`).
+See [docs/tui.md](docs/tui.md).
 
 ### Or with tpm
 

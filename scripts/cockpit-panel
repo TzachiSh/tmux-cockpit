@@ -31,7 +31,7 @@ tell() {
 }
 
 if [ ! -x "$BIN" ]; then
-    tell "cockpit: the panel needs cockpit-tui: prefix U fetches it"
+    tell "cockpit: the panel needs cockpit-tui: run $DIR/install.sh"
     exit 0
 fi
 is_pane "$PANE" || { tell "cockpit: the panel needs a pane id, not [$PANE]"; exit 0; }

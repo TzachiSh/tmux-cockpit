@@ -10497,8 +10497,8 @@ bver() {                      # <version> -> the load's cockpit-tui message, if 
 }
 bmsg=$(bver 0.0.1)
 case "$bmsg" in
-    *"cockpit-tui 0.0.1 is older than "*"; run "*/scripts/tui-fetch) ok "a binary below TUI_MIN is named on load, with tui-fetch as the fix" ;;
-    *) bad "a binary below TUI_MIN is named on load, with tui-fetch as the fix" "cockpit-tui 0.0.1 is older than ...; run .../tui-fetch" "$bmsg" ;;
+    *"cockpit-tui 0.0.1 is older than "*"; run "*/install.sh) ok "a binary below TUI_MIN is named on load, with install.sh as the fix" ;;
+    *) bad "a binary below TUI_MIN is named on load, with install.sh as the fix" "cockpit-tui 0.0.1 is older than ...; run .../install.sh" "$bmsg" ;;
 esac
 is "a current binary loads without a word" "" "$(bver 99.0.0)"
 unset -f bver
@@ -10634,7 +10634,7 @@ esac
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" \
+   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh; prefix r is the fleet list" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------

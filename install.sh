@@ -73,12 +73,12 @@ if [ "$check" -eq 1 ]; then
     else row ok tmux "$v"
     fi
 
-    # Required (#199): the scripts read transcripts and git flags through it.
+    # Required (#199): the board and the panel run on it.
     v=$(tui_check)
     case $? in
         0) row ok cockpit-tui "$v" ;;
         1) row fail cockpit-tui 'not found' 'install.sh fetches or builds it' ;;
-        *) row fail cockpit-tui "$v" "needs $TUI_MIN+; scripts/tui-fetch updates it" ;;
+        *) row fail cockpit-tui "$v" "needs $TUI_MIN+; install.sh updates it" ;;
     esac
 
     # A warning, not a failure: the status bar and the pickers work without jq.

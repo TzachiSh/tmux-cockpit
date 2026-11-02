@@ -212,7 +212,7 @@ fi
 tv=$(tui_check)
 case $? in
     1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
-    2) tmux display-message "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/scripts/tui-fetch" ;;
+    2) tmux display-message "tmux-cockpit: cockpit-tui $tv is older than $TUI_MIN; run $DIR/install.sh" ;;
 esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
