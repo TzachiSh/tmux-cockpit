@@ -53,6 +53,9 @@ screenshot and a red/green colourblind reader.
 - The `cockpit-tui` binary, which draws the board and the panel. `install.sh`
   fetches it with your `gh` login, else builds it (Rust 1.88 or newer), and
   stops with a message when it can do neither.
+- [revdiff](https://github.com/umputun/revdiff) 1.13.0 or newer, for the
+  `prefix + r` review. Without it `prefix + r` says "revdiff not found".
+  Install details: [docs/install.md](docs/install.md#requirements).
 - Optional: `bat`. A Nerd Font is not needed.
 
 ### With tpm
@@ -111,7 +114,7 @@ until they restart.
 | `prefix + u` | jump to the pane that needs you; again for the next |
 | `prefix + w` | the board: every agent pane as a live tile (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
-| `prefix + r` | review an agent's uncommitted diff (being replaced, #228) |
+| `prefix + r` | review an agent's uncommitted diff in revdiff |
 | `prefix + i` | info about this pane: cwd, git root, state, review (being folded into the board, #228) |
 | `prefix + s` | session picker (its fzf picker is being replaced, #228) |
 | `prefix + M` | move this window to another session |

@@ -106,5 +106,12 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) is
   optional; `jq` is needed by `install.sh --hooks` and the review
   gate.
+- **revdiff >= 1.13.0** for the `prefix + r` review. Without it `prefix + r`
+  says "revdiff not found" and `tmux-review --request` exits 1. Install it
+  with `brew install umputun/apps/revdiff`, from a
+  [release package](https://github.com/umputun/revdiff/releases), or with
+  Go 1.26 or newer:
+  `go install github.com/umputun/revdiff/app@v1.13.0`, then rename the
+  installed `app` binary to `revdiff`.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.
