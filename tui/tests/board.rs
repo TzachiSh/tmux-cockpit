@@ -111,6 +111,7 @@ fn view<'a>(ps: &'a [Pane], pvs: &'a [Option<String>], th: &'a Theme, sel: usize
         help: None,
         stale: None,
         lost: false,
+        never: false,
     }
 }
 
@@ -715,11 +716,70 @@ fn a_silent_tmux_goes_stale_then_says_so() {
     ] {
         assert!(out.contains(s), "{s}:\n{out}");
     }
-    assert!(!board::lost(Some(29), 2, true));
-    assert!(board::lost(Some(30), 1, true));
-    assert!(board::lost(Some(3), 3, true));
-    assert!(board::lost(Some(0), 1, false), "no read ever worked");
-    assert!(!board::lost(None, 0, false));
+}
+
+/// Each legend glyph means one thing, in both tiers: the ascii pane mark once
+/// shared `<` with review-sent.
+#[test]
+fn the_legend_never_lists_a_glyph_twice() {
+    for g in [Glyphs::unicode(), Glyphs::ascii()] {
+        let rows = board::help_rows(&g);
+        let at = rows.iter().position(|(k, v)| k.is_empty() && v == "on a tile").unwrap();
+        let marks: Vec<&str> = rows[at + 1..].iter().map(|(k, _)| k.as_str()).collect();
+        let set: HashSet<&str> = marks.iter().copied().collect();
+        assert_eq!(set.len(), marks.len(), "a glyph twice in the legend: {marks:?}");
+    }
+}
+
+/// The stale rules over a passed-in clock: a failed read, or a worker silent
+/// for 3 s (a hung tmux fails nothing), makes the header; 30 s, three failures,
+/// or no read ever makes the card.
+#[test]
+fn stale_counts_from_the_last_good_read_and_a_hang_counts_too() {
+    use board::Reads;
+    use std::time::{Duration, Instant};
+    let t0 = Instant::now();
+    let at = |s: u64| t0 + Duration::from_secs(s);
+    let mut r = Reads::new(t0);
+    r.got(true, at(1));
+    assert_eq!((r.stale(at(2)), r.lost(at(2))), (None, false));
+    // hung: no snapshot at all after the good read at 1 s
+    assert_eq!(r.stale(at(3)), None, "two quiet seconds are a slow read");
+    assert_eq!((r.stale(at(4)), r.lost(at(4))), (Some(3), false));
+    assert_eq!((r.stale(at(31)), r.lost(at(31))), (Some(30), true));
+    // failing: the header at once, the card at the third failure
+    let mut r = Reads::new(t0);
+    r.got(true, at(1));
+    r.got(false, at(2));
+    assert_eq!((r.stale(at(2)), r.lost(at(2))), (Some(1), false));
+    r.got(false, at(3));
+    r.got(false, at(4));
+    assert!(r.lost(at(4)));
+    r.got(true, at(5));
+    assert_eq!((r.stale(at(5)), r.lost(at(5))), (None, false), "a good read clears it");
+    // no read has ever worked: the card at once, failed or hung
+    let mut r = Reads::new(t0);
+    assert_eq!((r.stale(at(2)), r.lost(at(2))), (None, false));
+    assert!(r.lost(at(3)), "a first read that hangs");
+    r.got(false, at(1));
+    assert!(r.lost(at(1)), "a first read that fails");
+}
+
+/// With no read ever, the card claims no age and no tiles, and nothing peeks
+/// out from under it.
+#[test]
+fn the_never_card_says_no_read_has_worked() {
+    let th = Theme::fixed();
+    let mut v = view(&[], &[], &th, 0, 0);
+    (v.stale, v.lost, v.never) = (Some(4), true, true);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &v));
+    golden("board-never-100", &out);
+    assert!(out.contains("tmux is not answering · no read has worked yet."), "{out}");
+    assert!(out.contains("^L retry") && out.contains("q close"), "{out}");
+    for s in ["last good read", "tiles below", "stale", "no agent panes"] {
+        assert!(!out.contains(s), "{s}:\n{out}");
+    }
+    assert_eq!(out.matches('╰').count(), 1, "one card:\n{out}");
 }
 
 /// Better than a grid of tiles too narrow to name their agent (rules.md 32):

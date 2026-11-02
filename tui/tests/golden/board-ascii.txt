@@ -5,7 +5,7 @@
 "|sudo openvpn --config /etc/openvpn/work.conf --daemon                         |"
 "|Do you want to proceed?                                                       |"
 "+------------------------------------------------------------------------------+"
-"#>2 *# henosis:3 . Implement with test review and rig ====================== < #"
+"#>2 *# henosis:3 . Implement with test review and rig ====================== @ #"
 "#Bash: shellcheck on cockpit.tmux and tests/run.sh                          32s#"
 "#$ make check                                                                  #"
 "#1001 assertions, 0 failures                                                   #"

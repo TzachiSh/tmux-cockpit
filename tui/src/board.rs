@@ -36,21 +36,67 @@ pub struct View<'a> {
     pub note: Option<&'a str>,
     /// the help's scroll offset while it is open
     pub help: Option<usize>,
-    /// seconds since the last good read, while reads are failing
+    /// seconds since the last good read, while reads fail or hang
     pub stale: Option<u64>,
     /// tmux has not answered for long enough to say so over the tiles (D16)
     pub lost: bool,
+    /// no read has worked since the board opened: no age, no tiles to vouch for
+    pub never: bool,
 }
 
-/// D16: the card replaces the stale header after 30 s or three failed reads in
-/// a row, and at once when no read has ever worked.
-pub fn lost(stale: Option<u64>, fails: u32, ever: bool) -> bool {
-    stale.is_some_and(|s| s >= 30) || fails >= 3 || (fails > 0 && !ever)
+/// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
+const HUNG: Duration = Duration::from_secs(3);
+
+/// What the key loop knows about its reads. The clock is passed in, so the
+/// stale rules are tested without one.
+#[derive(Clone, Copy, Debug)]
+pub struct Reads {
+    pub start: Instant,
+    /// when the last snapshot of any kind arrived; `start` before the first
+    pub snap: Instant,
+    pub good: Option<Instant>,
+    /// failed reads in a row
+    pub fails: u32,
+}
+
+impl Reads {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            start: now,
+            snap: now,
+            good: None,
+            fails: 0,
+        }
+    }
+
+    pub fn got(&mut self, ok: bool, now: Instant) {
+        self.snap = now;
+        if ok {
+            (self.good, self.fails) = (Some(now), 0);
+        } else {
+            self.fails += 1;
+        }
+    }
+
+    /// Seconds since the last good read, once a read fails or the worker has
+    /// been silent for [`HUNG`]: tmux can block a read rather than fail it.
+    pub fn stale(&self, now: Instant) -> Option<u64> {
+        let hung = now.saturating_duration_since(self.snap) >= HUNG;
+        (self.fails > 0 || hung).then(|| now.saturating_duration_since(self.good.unwrap_or(self.start)).as_secs())
+    }
+
+    /// D16: the card replaces the stale header after 30 s or three failed
+    /// reads in a row, and at once when no read has ever worked.
+    pub fn lost(&self, now: Instant) -> bool {
+        let stale = self.stale(now);
+        stale.is_some_and(|s| s >= 30) || self.fails >= 3 || (stale.is_some() && self.good.is_none())
+    }
 }
 
 /// tmux's active pane, at the tile's top-right end: `▎` is the selection (D14).
 /// Open question 1 of the board-panel design; one place to change it.
-const PANE_MARK: (&str, &str) = ("◂", "<");
+/// `@` in ascii: every other ascii glyph, `<` (review sent, enter) included, is taken.
+const PANE_MARK: (&str, &str) = ("◂", "@");
 
 fn pane_mark(g: &Glyphs) -> &'static str {
     if g.ascii { PANE_MARK.1 } else { PANE_MARK.0 }
@@ -121,7 +167,10 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
     if v.panes.is_empty() {
         let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
         header(f, head, v, &grid(area, 0), 0);
-        empty(f, body, v.th);
+        // the empty card's border would peek out from under the lost one
+        if !v.lost {
+            empty(f, body, v.th);
+        }
     } else {
         grid_board(f, area, v);
     }
@@ -156,7 +205,7 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     if needs > 0 {
         left.push(Span::styled(format!(" {} {needs} needs you", th.g.dot), Style::new().fg(th.needs)));
     }
-    if let Some(s) = v.stale {
+    if let Some(s) = v.stale.filter(|_| !v.never) {
         left.push(Span::styled(
             format!(" {} stale {}", th.g.dot, fmt_dur(s)),
             Style::new().fg(th.error),
@@ -504,6 +553,10 @@ fn empty(f: &mut Frame, area: Rect, th: &Theme) {
 /// D16's second stage, over the last good read's tiles.
 fn lost_card(f: &mut Frame, area: Rect, v: &View) {
     let d = v.th.g.dot;
+    if v.never {
+        let body = format!("tmux is not answering {d} no read has worked yet.");
+        return card(f, area, v.th, "board", &["", &body, ""], &[("^L", "retry"), ("q", "close")]);
+    }
     let age = fmt_dur(v.stale.unwrap_or(0));
     let read = format!("last good read {age} ago {d} the server may have exited.");
     card(
@@ -889,8 +942,7 @@ pub fn run() -> Option<String> {
     let (mut sel, mut top, mut loaded) = (0usize, 0usize, false);
     let mut help: Option<usize> = None;
     // D16: when the last good read was, and how many have failed since
-    let (mut good, mut fails, mut stale_shown) = (None::<Instant>, 0u32, None::<u64>);
-    let start = Instant::now();
+    let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
     let (mut dirty, mut draw_fails) = (true, 0u8);
@@ -924,12 +976,8 @@ pub fn run() -> Option<String> {
             Ok(s) => {
                 let t0 = Instant::now();
                 let s = snap_rx.try_iter().last().unwrap_or(s);
-                if s.ok {
-                    (good, fails) = (Some(Instant::now()), 0);
-                } else {
-                    fails += 1;
-                    dirty = true;
-                }
+                reads.got(s.ok, Instant::now());
+                dirty |= !s.ok;
                 panes = s.panes;
                 seen.retain(|id, _| panes.iter().any(|p| &p.id == id));
                 seen.extend(s.pvs);
@@ -956,19 +1004,21 @@ pub fn run() -> Option<String> {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,
         }
-        if dirty && !loaded {
+        if dirty && !loaded && stale_shown.is_none() {
             // the first fetch can take most of a second, and a popup that is a
             // blank rectangle until it returns reads as a hang
             if term.draw(|f| loading(f, f.area(), &th)).is_ok() {
                 dirty = false;
             }
         }
-        let stale = (fails > 0).then(|| good.unwrap_or(start).elapsed().as_secs());
+        let now = Instant::now();
+        let stale = reads.stale(now);
         if stale != stale_shown {
             stale_shown = stale;
             dirty = true;
         }
-        if dirty && loaded {
+        // a first read that hangs must not leave the loading card up forever
+        if dirty && (loaded || stale.is_some()) {
             let v = View {
                 panes: &panes,
                 pvs: &pvs,
@@ -979,7 +1029,8 @@ pub fn run() -> Option<String> {
                 note: note.as_ref().map(|(s, _)| s.as_str()),
                 help,
                 stale,
-                lost: lost(stale, fails, good.is_some()),
+                lost: reads.lost(now),
+                never: reads.good.is_none(),
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them

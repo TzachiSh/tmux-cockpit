@@ -205,7 +205,7 @@ area, not the terminal's.
 Tile 1 is blocked: red border and the question in place of the doing line;
 the footer says `a answer` while it is selected. Tile 2 is the selection: the
 thick border, `▎` and its number in reverse video, so it still shows under
-`NO_COLOR`. It is also tmux's active pane, the `◂` at its top-right end. The
+`NO_COLOR`. It is also tmux's active pane, the `◂` (`@` in the ascii tier) at its top-right end. The
 `◆` after its state glyph is a pending review. The right rail is exactly 5 columns of elapsed duration; a 6-column
 duration would be clipped by the rail and lose its leading digit.
 
@@ -509,10 +509,11 @@ sits centred; on a narrow board it wraps, never cuts.
 ╰ q close ───────────────────────────────────────────────────╯
 ```
 
-**tmux not answering**, in two stages, never an instant blank screen. Until 30 s
-the last-known tiles stay and the header carries `· stale 34s`. After 30 s,
-three consecutive failures, or at once when no read has worked yet, this card
-covers the grid; `^L` asks again:
+**tmux not answering**, in two stages, never an instant blank screen. A read
+that fails, or none arriving for 3 s (a hung tmux fails nothing, it blocks),
+keeps the last-known tiles and the header carries `· stale 34s`, counted from
+the last good read. After 30 s or three consecutive failures this card covers
+the grid; `^L` asks again:
 
 ```
 ╭ board · stale 34s ─────────────────────────────────────────╮
@@ -521,6 +522,17 @@ covers the grid; `^L` asks again:
 │                                                            │
 │ last good read 34s ago · the server may have exited.       │
 │ the tiles below are from that read.                        │
+│                                                            │
+╰ ^L retry   q close ────────────────────────────────────────╯
+```
+
+When no read has worked since the board opened, there is no age and no tile
+to vouch for, so the card comes at once and says only that:
+
+```
+╭ board ─────────────────────────────────────────────────────╮
+│                                                            │
+│ tmux is not answering · no read has worked yet.            │
 │                                                            │
 ╰ ^L retry   q close ────────────────────────────────────────╯
 ```
