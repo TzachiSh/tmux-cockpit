@@ -13,7 +13,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
 pub const OUT_CYCLE: [OutType; 7] = [
@@ -1098,8 +1098,9 @@ impl App {
                 let scroll = Some(scroll.map_or(0, |s| s.saturating_sub(page)));
                 self.view = View::Question { sel, scroll }
             }
+            // at the bottom it follows the selection again: Enter must not need a second press
             KeyCode::PageDown => {
-                let scroll = scroll.map(|s| (s + page).min(self.bottom));
+                let scroll = scroll.map(|s| s + page).filter(|&s| s < self.bottom);
                 self.view = View::Question { sel, scroll }
             }
             KeyCode::Char(c @ '1'..='4') if (c as usize - '1' as usize) < n => self.pick_option(c as usize - '1' as usize),
@@ -1400,56 +1401,77 @@ fn edit(text: &mut String, cur: &mut usize, k: KeyEvent, ctrl: bool, multi: bool
     0
 }
 
-/// `i` moved back onto a char boundary, and into the text.
+/// `i` moved back onto a grapheme boundary, and into the text.
 pub fn boundary(text: &str, i: usize) -> usize {
     let mut i = i.min(text.len());
     while !text.is_char_boundary(i) {
         i -= 1;
     }
-    i
+    if GraphemeCursor::new(i, text.len(), true).is_boundary(text, 0) == Ok(true) {
+        i
+    } else {
+        prev(text, i)
+    }
 }
 
-/// A combining mark, VS16 or ZWJ: the cursor never stops before one, or it
-/// would split what the terminal draws as one cell or two.
-fn joins(c: char) -> bool {
-    !c.is_control() && c.width() == Some(0)
-}
-
+/// Moves by grapheme cluster: a ZWJ family, a skin tone or a flag draws as
+/// one symbol, and a cursor inside it would split it on Backspace.
 fn prev(text: &str, i: usize) -> usize {
-    text[..i].char_indices().rev().find(|&(_, c)| !joins(c)).map_or(0, |(j, _)| j)
+    let r = GraphemeCursor::new(i, text.len(), true).prev_boundary(text, 0);
+    r.ok().flatten().unwrap_or(0)
 }
 
 fn next(text: &str, i: usize) -> usize {
-    let mut it = text[i..].char_indices().skip(1);
-    it.find(|&(_, c)| !joins(c)).map_or(text.len(), |(j, _)| i + j)
+    let r = GraphemeCursor::new(i, text.len(), true).next_boundary(text, 0);
+    r.ok().flatten().unwrap_or(text.len())
 }
 
-/// The start of the word before `i`, past the whitespace in between: U+00A0
-/// and U+3000 are more than one byte, so offsets come from char_indices.
+/// A cluster is whitespace by its first char: a space with a mark on it too.
+fn blank(g: &str) -> bool {
+    g.starts_with(char::is_whitespace)
+}
+
+/// The start of the word before `i`, past the whitespace in between.
 fn word_left(text: &str, i: usize) -> usize {
-    let t = text[..i].trim_end_matches(char::is_whitespace).len();
-    text[..t]
-        .char_indices()
-        .rfind(|(_, c)| c.is_whitespace())
-        .map_or(0, |(j, c)| j + c.len_utf8())
+    let mut at = 0;
+    for (j, g) in text[..i].grapheme_indices(true).rev().skip_while(|(_, g)| blank(g)) {
+        if blank(g) {
+            break;
+        }
+        at = j;
+    }
+    at
 }
 
 /// The end of the word after `i`, past the whitespace in between.
 fn word_right(text: &str, i: usize) -> usize {
-    let rest = &text[i..];
-    let w = rest.len() - rest.trim_start_matches(char::is_whitespace).len();
-    rest[w..].find(char::is_whitespace).map_or(text.len(), |j| i + w + j)
+    let mut it = text[i..].grapheme_indices(true).skip_while(|(_, g)| blank(g));
+    it.find(|(_, g)| blank(g)).map_or(text.len(), |(j, _)| i + j)
 }
 
-/// Inserts at the cursor what fits under MAX_DRAFT, the cursor after it;
-/// returns the count left out.
+/// Inserts at the cursor the clusters that fit under MAX_DRAFT; the cursor goes
+/// after them and past a mark they joined. Returns the count left out.
 fn put(text: &mut String, cur: &mut usize, s: &str) -> usize {
-    let room = MAX_DRAFT.saturating_sub(text.chars().count());
-    let kept: String = s.chars().take(room).collect();
+    let mut room = MAX_DRAFT.saturating_sub(text.chars().count());
+    let kept: String = s
+        .graphemes(true)
+        .take_while(|g| {
+            let n = g.chars().count();
+            let fits = n <= room;
+            room = room.saturating_sub(n);
+            fits
+        })
+        .collect();
     let c = boundary(text, *cur);
     text.insert_str(c, &kept);
-    *cur = c + kept.len();
-    s.chars().count().saturating_sub(room)
+    let after = c + kept.len();
+    // a letter typed before a stray combining mark takes the mark: step past it
+    *cur = if GraphemeCursor::new(after, text.len(), true).is_boundary(text, 0) == Ok(true) {
+        after
+    } else {
+        next(text, after)
+    };
+    s.chars().count() - kept.chars().count()
 }
 
 /// A bracketed paste, cleaned like the action file. Terminals send a pasted

@@ -3135,3 +3135,133 @@ fn a_pinned_question_scroll_is_dropped_when_it_all_fits() {
     let f = shown(&mut a, 30, 7);
     assert!(f.contains("▎1   first"), "back on a small screen, it follows the selection:\n{f}");
 }
+
+// ---------------------------------------------------------------- verifier round (item 5)
+
+#[test]
+fn the_cursor_and_the_deletes_move_by_grapheme_cluster() {
+    let c = KeyModifiers::CONTROL;
+    let family = "👨\u{200d}👩\u{200d}👧";
+    let (tone, il, us) = ("👍\u{1f3fd}", "🇮🇱", "🇺🇸");
+    let mut a = composing(&format!("a{family}{tone}{il}{us}"));
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), format!("a{family}{tone}{il}|{us}"), "one flag, not half of one");
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), format!("a{family}|{tone}{il}{us}"), "the skin tone stays on its hand");
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), format!("a|{tone}{il}{us}"), "Backspace takes the whole family");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), format!("a|{il}{us}"));
+    key(&mut a, KeyCode::Right);
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), format!("a{il}{us}|"));
+    typ(&mut a, &format!(" {family}{family}"));
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), format!("a{il}{us} |"), "^W takes a word of emoji whole");
+    typ(&mut a, family);
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), format!("a{il}{us} |{family}"));
+    // a stale offset inside a cluster is pulled back to its start
+    a.cur += 4;
+    ch(&mut a, 'x');
+    assert_eq!(at_cur(&a), format!("a{il}{us} x|{family}"));
+}
+
+#[test]
+fn a_letter_typed_before_a_stray_mark_puts_the_cursor_past_the_mark() {
+    let mut a = composing("");
+    a.paste("\u{301}");
+    key(&mut a, KeyCode::Home);
+    ch(&mut a, 'a');
+    assert_eq!(at_cur(&a), "a\u{301}|", "the mark joined the a: the cursor is after both");
+    ch(&mut a, 'b');
+    assert_eq!(a.draft, "a\u{301}b");
+}
+
+#[test]
+fn wrap_and_the_cursor_measure_emoji_as_drawn() {
+    use cockpit_tui::panel::view::wrap;
+    use unicode_width::UnicodeWidthStr;
+    let hearts = "❤\u{fe0f}".repeat(30);
+    for l in wrap(&hearts, 36) {
+        assert!(l.width() <= 36, "{} columns: {l}", l.width());
+    }
+    assert_eq!(wrap(&"1\u{fe0f}\u{20e3}".repeat(20), 36).len(), 2, "a keycap is 2 columns");
+    let a = composing(&hearts);
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("❤\u{fe0f}▏"), "the cursor is on screen:\n{f}");
+    // the backend notes the cells a wide symbol hides after the row: not drawn
+    for l in f.lines().map(|l| l.split(" Hidden by").next().unwrap()) {
+        assert_eq!(l.width(), 42, "no row drawn past the box:\n{f}");
+    }
+}
+
+#[test]
+fn at_the_floor_the_cap_note_stays_over_the_cursor_line() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    let capped = |tab: bool| {
+        let mut a = composing("");
+        a.tablet = tab;
+        a.paste(&"word ".repeat(1600));
+        assert!(note(&a).is_none());
+        ch(&mut a, 'x');
+        assert!(note(&a).is_some_and(|n| n.contains("left out")), "{:?}", a.note);
+        a
+    };
+    for tab in [false, true] {
+        let mut a = capped(tab);
+        // tablet buttons fill a 28x7 body whole; at 11 rows they leave the head 4
+        let f = shown(&mut a, MIN_W, if tab { 11 } else { MIN_H });
+        assert!(f.contains("the box"), "tablet {tab}: the note shows:\n{f}");
+        assert!(f.contains("▏"), "tablet {tab}: and the cursor:\n{f}");
+    }
+    // one row for the note: its first line, cut with an ellipsis
+    let f = shown(&mut capped(true), MIN_W, 9);
+    assert!(f.contains("▲ the box holds 8000 …"), "{f}");
+}
+
+#[test]
+fn pgdn_back_to_the_bottom_follows_the_selection_again() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::PageUp);
+    let _ = shown(&mut a, 30, 7);
+    assert!(matches!(a.view, View::Question { scroll: Some(0), .. }));
+    for _ in 0..10 {
+        key(&mut a, KeyCode::PageDown);
+        let _ = shown(&mut a, 30, 7);
+    }
+    assert!(matches!(a.view, View::Question { scroll: None, .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy, "one Enter answers");
+}
+
+#[test]
+fn the_tier_flag_matches_the_tier() {
+    use cockpit_tui::theme::Glyphs;
+    assert!(Glyphs::ascii().ascii && !Glyphs::unicode().ascii);
+}
+
+/// The cell holding the cursor is accent and reversed; a typed `|` is not.
+#[test]
+fn the_cursor_has_a_style_of_its_own_in_both_tiers() {
+    use ratatui::style::Modifier;
+    for th in [Theme::fixed(), ascii_theme()] {
+        let mut a = composing("a|b");
+        key(&mut a, KeyCode::Left);
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| {
+            render(f, f.area(), &a, &th, 0);
+        })
+        .unwrap();
+        let buf = t.backend().buffer();
+        let cells: Vec<_> = (0..40).map(|x| buf[(x, 2)].clone()).collect();
+        let text: String = cells.iter().map(|c| c.symbol()).collect();
+        let i = text[..text.find("a|").unwrap_or_else(|| panic!("{text:?}"))].chars().count();
+        let (pipe, cur) = (&cells[i + 1], &cells[i + 2]);
+        assert_eq!(cur.symbol(), th.g.cursor);
+        assert!(cur.modifier.contains(Modifier::REVERSED) && cur.fg == th.accent, "{text:?}");
+        assert!(!pipe.modifier.contains(Modifier::REVERSED) && pipe.fg != th.accent, "{text:?}");
+    }
+}

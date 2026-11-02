@@ -12,19 +12,23 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// app.rs words its warnings in the unicode tier: the ascii tier swaps the glyphs in.
 fn tiered(g: &Glyphs, s: &str) -> String {
+    if !g.ascii {
+        return s.to_string();
+    }
     let u = Glyphs::unicode();
     s.replace(u.warn, g.warn).replace(u.ndash, g.ndash)
 }
 
-/// Word wrap to `w` columns, keeping line breaks and splitting a word longer
-/// than the line.
+/// Word wrap to `w` columns, splitting a word longer than the line. Widths are
+/// per grapheme cluster, as the buffer draws them: ❤️ is 2 columns, not 1.
 pub fn wrap(text: &str, w: usize) -> Vec<String> {
     let w = w.max(4);
-    let width = |s: &str| s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+    let width = |s: &str| s.graphemes(true).map(|g| g.width()).sum::<usize>();
     let mut out = Vec::new();
     for para in text.split('\n') {
         // Indentation is meaning in code and YAML: the first line keeps it.
@@ -45,8 +49,8 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
             let mut rest = word.to_string();
             while width(&rest) > w {
                 let mut used = 0;
-                let cut = rest.char_indices().find(|(_, c)| {
-                    used += c.width().unwrap_or(0);
+                let cut = rest.grapheme_indices(true).find(|(_, g)| {
+                    used += g.width();
                     used > w
                 });
                 let at = cut.map_or(rest.len(), |(i, _)| i);
@@ -62,6 +66,8 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
 
 struct Body {
     head: Vec<Line<'static>>,
+    /// The note's rows at the head's top: they never scroll away.
+    pin: usize,
     lines: Vec<Line<'static>>,
     /// `usize::MAX` pins the bottom.
     scroll: usize,
@@ -114,17 +120,34 @@ fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
 
 /// A text box's lines with the cursor drawn in at `cur`, and the cursor's line.
 /// The text may hold the cursor glyph itself, so those are counted past.
-fn typed(g: &Glyphs, text: &str, cur: usize, w: usize, st: Style) -> (Vec<Line<'static>>, usize) {
+fn typed(g: &Glyphs, text: &str, cur: usize, w: usize, st: Style, cs: Style) -> (Vec<Line<'static>>, usize) {
     let c = boundary(text, cur);
-    let before = text[..c].matches(g.cursor).count();
-    let lines = many(&format!("{}{}{}", &text[..c], g.cursor, &text[c..]), w, "", st);
-    let mut seen = 0;
+    let mut before = text[..c].matches(g.cursor).count();
+    let mut lines = many(&format!("{}{}{}", &text[..c], g.cursor, &text[c..]), w, "", st);
     let at = lines.iter().position(|l| {
-        seen += l.spans.iter().map(|s| s.content.matches(g.cursor).count()).sum::<usize>();
-        seen > before
+        let n = l.to_string().matches(g.cursor).count();
+        let here = n > before;
+        before -= if here { 0 } else { n };
+        here
     });
     let at = at.unwrap_or(lines.len() - 1);
+    // the cursor gets a span of its own: a `|` typed in the ascii tier looks just like it
+    let t = lines[at].to_string();
+    if let Some((i, _)) = t.match_indices(g.cursor).nth(before) {
+        let j = i + g.cursor.len();
+        let spans = vec![
+            Span::styled(t[..i].to_string(), st),
+            Span::styled(g.cursor, cs),
+            Span::styled(t[j..].to_string(), st),
+        ];
+        lines[at] = Line::from(spans);
+    }
     (lines, at)
+}
+
+/// The text box's cursor: accent and reversed, so it is never read as a typed char.
+fn cursor_style(th: &Theme) -> Style {
+    Style::new().fg(th.accent).add_modifier(Modifier::REVERSED)
 }
 
 /// A picker's number keys, from its real count: none for no entries, and
@@ -318,6 +341,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
     let d = th.g.dot;
     let mut b = Body {
         head: vec![],
+        pin: 0,
         lines: vec![],
         scroll: 0,
         sel: None,
@@ -336,6 +360,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             Level::Error => (th.g.error, th.error),
         };
         b.head.extend(many(&format!("{g} {}", n.text), w, "", Style::new().fg(fg)));
+        b.pin = b.head.len();
     }
     let run = app.run.as_ref();
     let back = app.leave_to().to_string();
@@ -383,9 +408,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 // drawn, never typed: the draft stays empty
                 let hint = th.g.trunc(&format!("type what you want{}", g.ellipsis), w.saturating_sub(1));
                 let dim = meta.add_modifier(Modifier::DIM);
-                (b.lines, at) = (vec![Line::from(vec![Span::styled(g.cursor, value), Span::styled(hint, dim)])], 0);
+                (b.lines, at) = (
+                    vec![Line::from(vec![Span::styled(g.cursor, cursor_style(th)), Span::styled(hint, dim)])],
+                    0,
+                );
             } else {
-                (b.lines, at) = typed(g, &app.draft, app.cur, w, value);
+                (b.lines, at) = typed(g, &app.draft, app.cur, w, value, cursor_style(th));
             }
             // the cursor's line, over the route lines under it
             b.sel = Some((at, at + 1));
@@ -491,7 +519,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             b.head.extend(many(&title, w, "", label));
             b.head.push(plain(""));
             let at;
-            (b.lines, at) = typed(g, text, *cur, w, value);
+            (b.lines, at) = typed(g, text, *cur, w, value, cursor_style(th));
             (b.scroll, b.sel) = (usize::MAX, Some((at, at + 1)));
             b.footer = pills(&[(g.key_enter, "send"), ("F1", "keys"), ("esc", "back")]);
         }
@@ -982,8 +1010,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         b.head.pop();
     }
     if b.head.len() >= rows {
-        let n = b.head.len();
-        b.lines.splice(0..0, std::mem::take(&mut b.head));
+        // the note stays put: a cap note scrolled off behind the cursor is never read
+        let keep = b.pin.min(rows.saturating_sub(1));
+        let rest = b.head.split_off(b.pin.min(b.head.len()));
+        if keep < b.head.len() {
+            b.head.truncate(keep);
+            if let Some(l) = b.head.last_mut() {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                *l = Line::styled(th.g.trunc(&format!("{t} {}", th.g.ellipsis), w), l.spans[0].style);
+            }
+        }
+        let n = rest.len();
+        b.lines.splice(0..0, rest);
         b.sel = b.sel.map(|(s, e)| (s + n, e + n));
         for ((s, e), _) in &mut b.taps {
             (*s, *e) = (*s + n, *e + n);

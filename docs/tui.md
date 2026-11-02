@@ -232,17 +232,21 @@ a scrollbar.
 ### The panel's text boxes
 
 Compose and the one-line boxes have a cursor, drawn as `▏` (`|` in the ascii
-tier) between two characters and placed by display width, so it sits after a
-wide CJK or emoji character, not inside it.
+tier) in accent and reversed, so a typed `|` never passes for it. It sits
+between two grapheme clusters, placed by display width: the wrap measures each
+cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 
 - `←` `→` move a character, `^←` `^→` a word, `Home` `End` (`^A` `^E`) to the
   line's start and end, `Del` deletes the character after it. `⌫` and `^W`
   delete the character and the word before it, and `^U` everything before it,
   as in readline. Typing and a paste go in at the cursor.
-- A move never stops between a character and a combining mark, a VS16 or a
-  ZWJ after it: offsets are char boundaries, never a byte inside a character.
+- Moves and deletes go by grapheme cluster: a ZWJ family, a skin tone or a
+  flag is one symbol, and Backspace takes it whole. A letter typed before a
+  stray combining mark takes the mark, and the cursor goes past both.
 - The box keeps the cursor's line on screen; the route lines under it show
-  whenever it leaves room.
+  whenever it leaves room. A note never scrolls away behind it: when the head
+  has to scroll with the body, the note stays on top (cut with an ellipsis
+  when only one row is left), so the cap note is always read.
 - An empty Compose shows a dim `type what you want…`; it is drawn, never typed.
 - Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
   or pasted character is turned away and a note says how many.
@@ -285,7 +289,8 @@ At 40x12 (a phone in portrait), Steps:
   scrolls with its options, so the options never fall off the bottom; its
   `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
   `Enter` after `PgUp` first scrolls back to the selection, and the next one
-  answers it; a resize that fits the whole question drops the scroll. A
+  answers it; `PgDn` back to the bottom, or a resize that fits the whole
+  question, drops the scroll. A
   question with no options shows no digit hint.
 - **Tiles** drop their description under 50 columns of text and cut it with an
   ellipsis above; a long option or step note wraps under itself.

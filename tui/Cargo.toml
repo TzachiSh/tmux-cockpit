@@ -19,6 +19,9 @@ ratatui = "0.30.2"
 # Width budgets subtract ellipsis.width() and never count chars: U+2328 plus
 # U+FE0F sums to 1 char-wise but measures 2, a one-column overrun per title.
 unicode-width = "0.2"
+# The panel's text boxes move by grapheme cluster: a ZWJ family or a flag is
+# one symbol on screen. Already in the tree through ratatui.
+unicode-segmentation = "1.13"
 # preserve_order: the 14 `--json` keys are a frozen contract and serde_json's
 # default map is a BTreeMap, which would emit them alphabetically.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
