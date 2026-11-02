@@ -3,7 +3,7 @@
 //! built by hand, so a failure means the layout moved and nothing else.
 //!
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
-use cockpit_tui::board::{self, Act, Grid, KEYS, View};
+use cockpit_tui::board::{self, Act, Focus, Grid, KEYS, Nav, Row, Sel, View};
 use cockpit_tui::data::Pane;
 use cockpit_tui::theme::{Glyphs, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Color, Modifier};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 fn golden(name: &str, got: &str) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
@@ -112,6 +112,7 @@ fn view<'a>(ps: &'a [Pane], pvs: &'a [Option<String>], th: &'a Theme, sel: usize
         stale: None,
         lost: false,
         never: false,
+        list: None,
     }
 }
 
@@ -443,13 +444,24 @@ fn ascii_tier_keeps_every_column_width() {
 /// undocumented, or documented but unbound, fails here (ux.md §3.4).
 #[test]
 fn help_lists_every_key_in_the_dispatch_table() {
+    for list in [false, true] {
+        dispatch_matches_help(list);
+    }
+}
+
+fn dispatch_matches_help(list: bool) {
     let norm = |a: Act| if matches!(a, Act::Tile(_)) { Act::Tile(0) } else { a };
-    let documented: HashSet<Act> = KEYS.iter().flat_map(|k| k.acts.iter().copied()).map(norm).collect();
+    let documented: HashSet<Act> = KEYS
+        .iter()
+        .filter(|k| k.on.shown(list))
+        .flat_map(|k| k.acts.iter().copied())
+        .map(norm)
+        .collect();
 
     let mut codes: Vec<KeyEvent> = ('a'..='z')
         .chain('A'..='Z')
         .chain('0'..='9')
-        .chain("[]?".chars())
+        .chain("[]? -=".chars())
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
         .collect();
     codes.extend(
@@ -468,21 +480,32 @@ fn help_lists_every_key_in_the_dispatch_table() {
         .map(|c| KeyEvent::new(c, KeyModifiers::NONE)),
     );
     codes.push(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-    let bound: HashSet<Act> = codes.iter().filter_map(|k| board::action(*k)).map(norm).collect();
+    let bound: HashSet<Act> = codes.iter().filter_map(|k| board::action(*k, list)).map(norm).collect();
 
-    assert_eq!(bound, documented, "the dispatch table and the help overlay disagree");
+    assert_eq!(bound, documented, "the dispatch table and the help overlay disagree (list: {list})");
 }
 
-/// One column over the whole board, the glyph legend at the end (D14).
+/// One column over the whole board, the glyph legend at the end (D14), for
+/// the layout on screen (D2): the list's by default, the tiles' behind `v`.
 #[test]
 fn help_goldens() {
     let th = Theme::fixed();
     let (ps, pvs) = (fixture(), previews());
+    let nav = Nav::new(Sel::Pane("%9".into()), Default::default());
     for (w, h) in SIZES {
         let mut v = view(&ps, &pvs, &th, 1, 0);
         v.help = Some(0);
+        v.list = Some(&nav);
         golden(&format!("board-help-{w}"), &draw(w, h, |f| board::render(f, f.area(), &v)));
     }
+    let mut v = view(&ps, &pvs, &th, 1, 0);
+    v.help = Some(0);
+    let out = draw(100, 40, |f| board::render(f, f.area(), &v));
+    golden("board-help-tiles-100", &out);
+    assert!(
+        out.contains("tile by number") && out.contains("column") && !out.contains("fold"),
+        "{out}"
+    );
 }
 
 /// `↑↓ j k PgUp PgDn` scroll a help taller than the screen; anything else closes.
@@ -491,7 +514,7 @@ fn a_short_help_scrolls_to_its_legend() {
     use cockpit_tui::chrome::scroll;
     let th = Theme::fixed();
     let (ps, pvs) = (fixture(), previews());
-    let n = board::help_rows(&th.g).len();
+    let n = board::help_rows(&th.g, false).len();
     let rows = 10usize;
     let bottom = n - rows;
     let mut v = view(&ps, &pvs, &th, 1, 0);
@@ -601,7 +624,12 @@ fn no_wrapping_and_no_terminal_queries() {
 fn footer_drops_whole_hints_in_priority_order() {
     use cockpit_tui::chrome::fit;
     let g = Glyphs::unicode();
-    let keys = |w: usize| -> Vec<String> { fit(board::hints(&g, false), w, 3).into_iter().map(|(k, _)| k).collect() };
+    let keys = |w: usize| -> Vec<String> {
+        fit(board::hints(&g, false, Focus::Agent(false)), w, 3)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect()
+    };
     for (w, want) in [
         (200, vec!["↵", "a", "r", "f", "i", "?", "q"]),
         (65, vec!["↵", "a", "r", "f", "i", "?", "q"]),
@@ -619,7 +647,13 @@ fn footer_drops_whole_hints_in_priority_order() {
         assert_eq!(keys(w), want, "at w={w}");
     }
     // the label follows the selection: answer on a ▲, ask on anything else
-    let verb = |needs| board::hints(&g, needs).into_iter().find(|(k, _)| k == "a").unwrap().1;
+    let verb = |needs| {
+        board::hints(&g, false, Focus::Agent(needs))
+            .into_iter()
+            .find(|(k, _)| k == "a")
+            .unwrap()
+            .1
+    };
     assert_eq!((verb(true).as_str(), verb(false).as_str()), ("answer", "ask"));
     // the panel's spacing: its 40-column footers are pinned by its goldens
     let ps: Vec<(String, String)> = [("i", "insert"), ("s", "send"), ("?", "keys"), ("esc", "draft")]
@@ -630,23 +664,40 @@ fn footer_drops_whole_hints_in_priority_order() {
     assert_eq!(fit(ps, 36, 2).into_iter().map(|(k, _)| k).collect::<Vec<_>>(), ["i", "?", "esc"]);
 }
 
-/// Every key the footer names is one the dispatch takes, for what the hint says.
+/// Every key the footer names is one the dispatch takes there, for what the
+/// hint says (D19): on a tile, on a list agent, on a list header.
 #[test]
 fn the_footer_lists_only_keys_the_dispatch_accepts() {
-    for needs in [false, true] {
-        for (k, verb) in board::hints(&Glyphs::unicode(), needs) {
+    let cases = [
+        (false, Focus::Agent(false)),
+        (false, Focus::Agent(true)),
+        (true, Focus::Agent(false)),
+        (true, Focus::Agent(true)),
+        (true, Focus::Head(false)),
+        (true, Focus::Head(true)),
+    ];
+    for (list, focus) in cases {
+        for (k, verb) in board::hints(&Glyphs::unicode(), list, focus) {
             let code = match k.as_str() {
                 "↵" => KeyCode::Enter,
+                "space" => KeyCode::Char(' '),
+                "n p" => KeyCode::Char('n'),
                 c if c.chars().count() == 1 => KeyCode::Char(c.chars().next().unwrap()),
                 other => panic!("the footer names {other:?}, which no key sends"),
             };
-            let a = board::action(KeyEvent::new(code, KeyModifiers::NONE)).unwrap_or_else(|| panic!("{k} {verb} is not bound"));
-            let row = KEYS.iter().find(|r| r.acts.contains(&a)).unwrap();
-            assert!(
-                !row.hint.is_empty() && row.keys.split_whitespace().next() == Some(k.as_str()),
-                "{k} {verb} runs {a:?}"
-            );
+            let a = board::action(KeyEvent::new(code, KeyModifiers::NONE), list).unwrap_or_else(|| panic!("{k} {verb} is not bound"));
+            let row = KEYS.iter().find(|r| r.acts.contains(&a) && r.on.shown(list)).unwrap();
+            let named = if matches!(focus, Focus::Head(_)) { row.head } else { row.hint };
+            assert!(!named.is_empty() && row.keys.starts_with(k.as_str()), "{k} {verb} runs {a:?}");
         }
+    }
+    // a header never offers the act keys, which need an agent
+    let head: Vec<String> = board::hints(&Glyphs::unicode(), true, Focus::Head(false))
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
+    for k in ["↵", "a", "r", "f", "i"] {
+        assert!(!head.contains(&k.to_string()), "a header's footer offers {k}");
     }
 }
 
@@ -723,7 +774,7 @@ fn a_silent_tmux_goes_stale_then_says_so() {
 #[test]
 fn the_legend_never_lists_a_glyph_twice() {
     for g in [Glyphs::unicode(), Glyphs::ascii()] {
-        let rows = board::help_rows(&g);
+        let rows = board::help_rows(&g, false);
         let at = rows.iter().position(|(k, v)| k.is_empty() && v == "on a tile").unwrap();
         let marks: Vec<&str> = rows[at + 1..].iter().map(|(k, _)| k.as_str()).collect();
         let set: HashSet<&str> = marks.iter().copied().collect();
@@ -1212,7 +1263,10 @@ fn board_state_round_trips_and_a_missing_file_is_a_fresh_board() {
     let d = scratch("state-rt");
     let p = d.join("tmux-cockpit/board.state");
     assert_eq!(board::read_state(&p), Ok(None));
-    let s = board::Saved { sel: Some("%14".into()) };
+    let s = board::Saved {
+        sel: Some("%14".into()),
+        ..Default::default()
+    };
     board::write_state(&p, &s).unwrap();
     assert_eq!(std::fs::read_to_string(&p).unwrap(), "cockpit-board-state 1\nsel %14\n");
     assert_eq!(board::read_state(&p), Ok(Some(s)));
@@ -1249,7 +1303,14 @@ fn board_state_is_read_strictly() {
     std::os::unix::fs::symlink(&real, &p).unwrap();
     assert!(board::read_state(&p).is_err(), "a symlink");
     // and a write replaces the link, never the file it points at
-    board::write_state(&p, &board::Saved { sel: Some("%2".into()) }).unwrap();
+    board::write_state(
+        &p,
+        &board::Saved {
+            sel: Some("%2".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(std::fs::read_to_string(&real).unwrap(), "cockpit-board-state 1\nsel %1\n");
     assert!(!std::fs::symlink_metadata(&p).unwrap().file_type().is_symlink());
     let _ = std::fs::remove_dir_all(&d);
@@ -1317,4 +1378,491 @@ fn note_goldens() {
     // the way out survives a cut at 60 columns
     let out = draw(60, 24, |f| board::render(f, f.area(), &v));
     assert!(rows(&out)[23].trim_end().ends_with("· esc dismiss"), "{out}");
+}
+
+// ------------------------------------------------------- the list (step 3)
+
+/// 6.1's fleet: four sessions, thirteen agents, in tmux's own order.
+fn fleet() -> Vec<Pane> {
+    let a = |id: &str, wher: &str, title: &str, state: &str, line: &str, since: Option<u64>| {
+        let mut p = pane(id, wher, title, state);
+        if matches!(state, "needs-input" | "error") {
+            p.msg = line.into();
+        } else {
+            p.doing = line.into();
+        }
+        p.since = since;
+        p
+    };
+    let mut ps = vec![
+        a("%3", "api:0", "server", "needs-input", "Do you want to run npm test?", Some(252)),
+        a("%4", "api:1", "tests", "running", "Bash: cargo test --workspace", Some(63)),
+        a("%5", "api:3", "migrate", "running", "Edit src/db/migrate.rs", Some(22)),
+        a("%6", "api:4", "auth", "done", "Pushed PR #231, waiting on review", Some(720)),
+        a("%7", "web:2", "docs", "needs-input", "plan ready: approve?", Some(38)),
+        a("%8", "web:0", "ui", "running", "Bash: pnpm test Board", Some(220)),
+        a("%9", "web:1", "checkout", "done", "Opened PR #88: card form a11y", Some(1500)),
+        a("%10", "web:5", "a11y", "", "", None),
+        a("%11", "infra:0", "terraform", "error", "terraform plan: state lock held", Some(362)),
+        a("%12", "infra:1", "dns", "running", "Bash: dig +short api.internal", Some(9)),
+        a("%13", "infra:2", "k8s", "", "", None),
+        a("%14", "ml:0", "train", "running", "Bash: python train.py --epochs 40", Some(2460)),
+        a("%15", "ml:1", "eval", "done", "Wrote eval/test_report.md", Some(7500)),
+    ];
+    ps[0].review = "pending".into();
+    ps[3].review = "pending".into();
+    ps[6].review = "pending".into();
+    ps.reverse();
+    ps
+}
+
+fn folds(ss: &[&str]) -> BTreeSet<String> {
+    ss.iter().map(|s| s.to_string()).collect()
+}
+
+/// The list as text: `[api]` for a header, the pane id for an agent.
+fn shown(ps: &[Pane], f: &BTreeSet<String>) -> Vec<String> {
+    board::rows(ps, f)
+        .into_iter()
+        .map(|r| match r {
+            Row::Head(s) => format!("[{s}]"),
+            Row::Agent(i) => ps[i].id.clone(),
+        })
+        .collect()
+}
+
+fn names(ps: &[Pane]) -> Vec<&str> {
+    board::groups(ps).into_iter().map(|(n, _)| n).collect()
+}
+
+fn set(ps: &mut [Pane], id: &str, state: &str) {
+    let p = ps.iter_mut().find(|p| p.id == id).unwrap();
+    p.state = state.into();
+}
+
+fn list_view<'a>(ps: &'a [Pane], th: &'a Theme, nav: &'a Nav) -> View<'a> {
+    View {
+        active: "%8",
+        list: Some(nav),
+        ..view(ps, &[], th, 0, 0)
+    }
+}
+
+fn nav_on(ps: &[Pane], sel: Sel, f: &[&str], room: usize) -> Nav {
+    let mut n = Nav::new(sel, folds(f));
+    n.settle(ps, room);
+    n
+}
+
+/// D3: the hot band (a ▲ or ✕) first, then the rest, each by session name;
+/// inside, (state rank, pane id), the id numerically.
+#[test]
+fn groups_sort_in_two_bands_by_name() {
+    let ps = fleet();
+    assert_eq!(names(&ps), ["api", "infra", "web", "ml"]);
+    assert_eq!(
+        shown(&ps, &folds(&[])),
+        [
+            "[api]", "%3", "%4", "%5", "%6", "[infra]", "%11", "%12", "%13", "[web]", "%7", "%8", "%9", "%10", "[ml]", "%14", "%15"
+        ]
+    );
+}
+
+/// No clock in the sort: ages move nothing, and a state change moves a group
+/// only when it crosses a band.
+#[test]
+fn a_group_moves_only_across_bands() {
+    let mut ps = fleet();
+    let before = shown(&ps, &folds(&[]));
+    for (i, p) in ps.iter_mut().enumerate() {
+        p.since = Some(99_999 - i as u64 * 1000);
+        p.idle_since = Some(i as u64);
+    }
+    assert_eq!(shown(&ps, &folds(&[])), before, "ages reorder nothing");
+
+    // inside a band: running to done reorders the group's rows, not the groups
+    set(&mut ps, "%14", "done");
+    assert_eq!(names(&ps), ["api", "infra", "web", "ml"]);
+    set(&mut ps, "%4", "done");
+    assert_eq!(names(&ps), ["api", "infra", "web", "ml"], "api still holds a ▲");
+    // across: ml gains a ▲ and joins the hot band, by name
+    set(&mut ps, "%15", "needs-input");
+    assert_eq!(names(&ps), ["api", "infra", "ml", "web"]);
+    // and api's ▲ answered drops it to the calm band
+    set(&mut ps, "%3", "running");
+    assert_eq!(names(&ps), ["infra", "ml", "web", "api"]);
+}
+
+/// D4: a folded group shows its header and every ▲ and ✕ row, and nothing
+/// unfolds by itself.
+#[test]
+fn a_fold_never_hides_an_urgent_row_and_never_opens_by_itself() {
+    let mut ps = fleet();
+    let f = folds(&["api", "infra", "web", "ml"]);
+    assert_eq!(shown(&ps, &f), ["[api]", "%3", "[infra]", "%11", "[web]", "%7", "[ml]"]);
+    // a folded session that gains a ▲ stays folded and shows the row
+    let mut nav = nav_on(&ps, Sel::Head("ml".into()), &["api", "infra", "web", "ml"], 20);
+    set(&mut ps, "%15", "needs-input");
+    nav.settle(&ps, 20);
+    assert!(nav.folds.contains("ml"), "nothing unfolds by itself");
+    assert_eq!(
+        shown(&ps, &nav.folds),
+        ["[api]", "%3", "[infra]", "%11", "[ml]", "%15", "[web]", "%7"]
+    );
+    assert_eq!(nav.sel, Sel::Head("ml".into()), "the selection stays on its header");
+    // a new session appears unfolded
+    ps.push(pane("%20", "new:0", "fresh", "running"));
+    nav.settle(&ps, 20);
+    assert!(shown(&ps, &nav.folds).ends_with(&["[new]".to_string(), "%20".to_string()]));
+}
+
+/// D4: a digit or `u` that lands in a folded group unfolds it.
+#[test]
+fn a_digit_or_u_landing_in_a_folded_group_unfolds_it() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Head("api".into()), &["api", "infra", "web", "ml"], 20);
+    // rows: [api] %3 [infra] %11 [web] %7 [ml]; agent 2 on screen is %11
+    nav.act(Act::Tile(2), &ps, 20);
+    assert_eq!(nav.sel, Sel::Pane("%11".into()));
+    assert!(!nav.folds.contains("infra"), "the digit unfolded infra");
+    assert!(nav.folds.contains("api") && nav.folds.contains("web"), "and nothing else");
+
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &["web"], 20);
+    nav.act(Act::NextNeeds, &ps, 20);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()));
+    assert!(!nav.folds.contains("web"), "u unfolded web");
+    nav.act(Act::NextNeeds, &ps, 20);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()), "u wraps");
+}
+
+/// D5: the selection is an identity. A refresh that moves its group keeps it,
+/// on the screen row it had, so the viewport moves and not the cursor.
+#[test]
+fn the_selection_survives_a_refresh_that_moves_it() {
+    let mut ps = fleet();
+    let room = 6;
+    let mut nav = nav_on(&ps, Sel::Pane("%14".into()), &[], room);
+    // rows 0..17; %14 is row 15, so the viewport ends on it
+    let screen = |n: &Nav, ps: &[Pane]| {
+        let rows = board::rows(ps, &n.folds);
+        n.find(&rows, ps) - n.top
+    };
+    let held = screen(&nav, &ps);
+    // ml gains a ▲: it jumps into the hot band, above web
+    set(&mut ps, "%15", "needs-input");
+    nav.settle(&ps, room);
+    assert_eq!(nav.sel, Sel::Pane("%14".into()));
+    assert_eq!(screen(&nav, &ps), held, "the cursor holds its screen row");
+    let rows = board::rows(&ps, &nav.folds);
+    assert_eq!(
+        rows[nav.find(&rows, &ps)],
+        Row::Agent(ps.iter().position(|p| p.id == "%14").unwrap())
+    );
+}
+
+/// D5's fallbacks for a pane that is gone: the row now at its place in the
+/// same session, else that session's header, else the first row.
+#[test]
+fn a_gone_pane_gives_way_to_its_neighbour_then_its_header_then_the_top() {
+    let mut ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 30);
+    ps.retain(|p| p.id != "%4");
+    nav.settle(&ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%5".into()), "the row now at its place");
+    // the last of its group gone: that place is past the group's end
+    let mut nav = nav_on(&ps, Sel::Pane("%6".into()), &[], 30);
+    ps.retain(|p| p.id != "%6");
+    nav.settle(&ps, 30);
+    assert_eq!(nav.sel, Sel::Head("api".into()), "its header");
+    // the whole session gone
+    let mut nav = nav_on(&ps, Sel::Pane("%15".into()), &[], 30);
+    ps.retain(|p| !p.wher.starts_with("ml:"));
+    nav.settle(&ps, 30);
+    assert_eq!(nav.sel, Sel::Head("api".into()), "the first row");
+}
+
+/// D5: folding the selected agent's group moves the selection to the header,
+/// unless the agent is ▲ or ✕ and stays on screen.
+#[test]
+fn folding_moves_the_selection_to_the_header_unless_it_stays_visible() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 30);
+    nav.act(Act::Fold, &ps, 30);
+    assert_eq!(nav.sel, Sel::Head("api".into()));
+    assert!(nav.folds.contains("api"));
+    nav.act(Act::Toggle, &ps, 30);
+    assert!(!nav.folds.contains("api"), "space unfolds");
+    assert_eq!(nav.sel, Sel::Head("api".into()), "and stays on the header");
+
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 30);
+    nav.act(Act::Toggle, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()), "a ▲ stays selected");
+    nav.act(Act::FoldAll, &ps, 30);
+    assert_eq!(nav.folds, folds(&["api", "infra", "ml", "web"]));
+    nav.act(Act::UnfoldAll, &ps, 30);
+    assert!(nav.folds.is_empty());
+
+    // `l` on a folded header unfolds; on an open one it enters the group
+    let mut nav = nav_on(&ps, Sel::Head("web".into()), &["web"], 30);
+    nav.act(Act::Unfold, &ps, 30);
+    assert!(nav.folds.is_empty());
+    assert_eq!(nav.sel, Sel::Head("web".into()));
+    nav.act(Act::Unfold, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()));
+}
+
+/// D6: the digits are the first nine agent rows on screen, renumbered as the
+/// list scrolls; `[` `]` scroll a screenful and the selection only clamps.
+#[test]
+fn digits_follow_the_screen_and_a_page_only_clamps_the_selection() {
+    let ps = fleet();
+    let room = 6;
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], room);
+    assert_eq!(nav.top, 0);
+    nav.act(Act::Tile(1), &ps, room);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()));
+    nav.act(Act::PageDown, &ps, room);
+    // rows 6..12 on screen: %11 %12 %13 [web] %7 %8
+    assert_eq!(nav.top, 6);
+    assert_eq!(nav.sel, Sel::Pane("%11".into()), "clamped to the first row on screen");
+    nav.act(Act::Tile(4), &ps, room);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()), "the 4th agent row on screen, past the header");
+    nav.act(Act::Tile(9), &ps, room);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()), "no ninth row on screen: nothing");
+    nav.act(Act::PageDown, &ps, room);
+    assert_eq!(nav.top, 11, "stops on the last full screen");
+    assert_eq!(nav.sel, Sel::Pane("%8".into()), "clamped: %7 scrolled off the top");
+    nav.act(Act::Down, &ps, room);
+    nav.act(Act::PageDown, &ps, room);
+    assert_eq!(nav.top, 11);
+    assert_eq!(nav.sel, Sel::Pane("%9".into()), "still on screen, so it stays");
+    nav.act(Act::PageUp, &ps, room);
+    assert_eq!(nav.top, 5);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()), "clamped to the last row on screen");
+    nav.act(Act::PageUp, &ps, room);
+    assert_eq!(nav.top, 0);
+    assert_eq!(nav.sel, Sel::Head("infra".into()), "a header row is a row too");
+
+    // and the rendered digits are those same rows
+    let th = Theme::fixed();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 6);
+    nav.act(Act::PageDown, &ps, 6);
+    let v = list_view(&ps, &th, &nav);
+    let out = draw(60, 10, |f| board::render(f, f.area(), &v));
+    let r = rows(&out);
+    assert!(r[2].contains(" 1 ✕") && r[2].contains("terraform"), "{out}");
+    assert!(r[6].contains(" 4 ▲") && r[6].contains("docs"), "{out}");
+    assert!(r[1].contains("7-12 of 17"), "N-M of T when the list does not fit:\n{out}");
+}
+
+/// `n` `p` step through the headers, wrapping; `⇥` skips them; `g` `G` ends.
+#[test]
+fn n_and_p_walk_the_headers_and_tab_skips_them() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 30);
+    let mut seen = vec![];
+    for _ in 0..5 {
+        nav.act(Act::NextSess, &ps, 30);
+        seen.push(nav.sel.clone());
+    }
+    let h = |s: &str| Sel::Head(s.into());
+    assert_eq!(seen, [h("infra"), h("web"), h("ml"), h("api"), h("infra")]);
+    nav.act(Act::PrevSess, &ps, 30);
+    assert_eq!(nav.sel, h("api"));
+    nav.act(Act::PrevSess, &ps, 30);
+    assert_eq!(nav.sel, h("ml"), "p wraps");
+    nav.act(Act::Next, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%14".into()));
+    nav.act(Act::Next, &ps, 30);
+    nav.act(Act::Next, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()), "⇥ skips [api] as it wraps");
+    nav.act(Act::Prev, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%15".into()));
+    nav.act(Act::First, &ps, 30);
+    assert_eq!(nav.sel, h("api"));
+    nav.act(Act::Up, &ps, 30);
+    assert_eq!(nav.sel, h("api"), "j k stop at the ends");
+    nav.act(Act::Last, &ps, 30);
+    assert_eq!(nav.sel, Sel::Pane("%15".into()));
+}
+
+/// D19: the footer follows the focus and lists only what works there.
+#[test]
+fn the_footer_follows_the_focus() {
+    let g = Glyphs::unicode();
+    let f = |focus| -> Vec<String> { board::hints(&g, true, focus).into_iter().map(|(k, v)| format!("{k} {v}")).collect() };
+    assert_eq!(
+        f(Focus::Agent(true)),
+        [
+            "↵ jump",
+            "a answer",
+            "r review",
+            "f panel",
+            "i info",
+            "space fold",
+            "? keys",
+            "q close"
+        ]
+    );
+    assert_eq!(
+        f(Focus::Head(false)),
+        [
+            "space fold",
+            "l open",
+            "- fold all",
+            "= open all",
+            "n p sessions",
+            "? keys",
+            "q close"
+        ]
+    );
+    assert_eq!(f(Focus::Head(true))[0], "space unfold");
+    // the tiles keep today's footer
+    let t: Vec<String> = board::hints(&g, false, Focus::Agent(false))
+        .into_iter()
+        .map(|(k, v)| format!("{k} {v}"))
+        .collect();
+    assert_eq!(t, ["↵ jump", "a ask", "r review", "f panel", "i info", "? keys", "q close"]);
+
+    // and the drawn footer is the one for the selection
+    let ps = fleet();
+    let th = Theme::fixed();
+    let nav = nav_on(&ps, Sel::Head("web".into()), &["web"], 26);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    assert!(rows(&out)[29].starts_with(" space unfold   l open   - fold all"), "{out}");
+    assert_eq!(nav.focus(&ps), Focus::Head(true));
+}
+
+/// D17: the selected row is ▎ plus reverse video, its text in fg; that reads
+/// with no colour at all.
+#[test]
+fn the_selected_row_is_a_bar_and_reverse_video() {
+    for th in [Theme::fixed(), Theme::no_color()] {
+        let ps = fleet();
+        let nav = nav_on(&ps, Sel::Pane("%6".into()), &[], 26);
+        let b = render_to_buffer(100, 30, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        let marks: Vec<(u16, u16)> = (0..30)
+            .flat_map(|y| (0..100).map(move |x| (x, y)))
+            .filter(|&(x, y)| b[(x, y)].symbol() == "▎")
+            .collect();
+        assert_eq!(marks.len(), 1, "one selection");
+        let (x, y) = marks[0];
+        let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+        assert!(line.contains("auth"), "{line}");
+        let k = line.find("Pushed").unwrap();
+        let k = line[..k].chars().count() as u16;
+        assert!(b[(k, y)].modifier.contains(Modifier::REVERSED));
+        assert_eq!(b[(k, y)].fg, th.value, "never the dim role");
+        assert!(!b[(x, y)].modifier.contains(Modifier::REVERSED), "the bar itself is not reversed");
+    }
+}
+
+#[test]
+fn list_goldens() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    for (w, h) in SIZES {
+        let room = h as usize - 4;
+        let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], room);
+        let out = draw(w, h, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        golden(&format!("board-list-{w}"), &out);
+        assert!(out.contains("13 agents · 4 sessions"), "{out}");
+        assert!(out.contains("idle"), "an idle row says idle:\n{out}");
+
+        let nav = nav_on(&ps, Sel::Head("infra".into()), &["web", "infra", "ml"], room);
+        let out = draw(w, h, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        golden(&format!("board-folded-{w}"), &out);
+        assert!(out.contains("2 folded"), "{out}");
+    }
+    // the same fleet behind `v`
+    let ord = board::order(&ps);
+    let v = View {
+        active: "%8",
+        ..view(&ps, &[], &th, ord.iter().position(|&i| ps[i].id == "%3").unwrap(), 0)
+    };
+    golden("board-tiles-100", &draw(100, 30, |f| board::render(f, f.area(), &v)));
+}
+
+/// No row the list draws runs past the area, at any width the board accepts.
+#[test]
+fn no_list_row_exceeds_the_area() {
+    use unicode_width::UnicodeWidthStr;
+    let ps = fleet();
+    for th in [Theme::fixed(), {
+        let mut t = Theme::fixed();
+        t.g = Glyphs::ascii();
+        t
+    }] {
+        for w in [40u16, 41, 47, 60, 80, 100, 133, 180, 240] {
+            for f in [&[][..], &["api", "web"][..]] {
+                let nav = nav_on(&ps, Sel::Pane("%7".into()), f, 20);
+                let out = draw(w, 24, |fr| board::render(fr, fr.area(), &list_view(&ps, &th, &nav)));
+                for (i, r) in rows(&out).iter().enumerate() {
+                    assert_eq!(r.width(), w as usize, "row {i} at {w}:\n{out}");
+                }
+                // a header's rule meets its counts: nothing clipped at the right edge
+                assert!(!out.contains("▲1 ●") || out.contains("▲1 ●2 ✓1"), "{out}");
+            }
+        }
+    }
+}
+
+/// `fold <session>` lines round-trip, after the selection, and are read strictly.
+#[test]
+fn board_state_keeps_the_folds() {
+    let d = scratch("state-folds");
+    let p = d.join("board.state");
+    let s = board::Saved {
+        sel: Some("%7".into()),
+        folds: folds(&["web", "my session"]),
+    };
+    board::write_state(&p, &s).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "cockpit-board-state 1\nsel %7\nfold my session\nfold web\n"
+    );
+    assert_eq!(board::read_state(&p), Ok(Some(s)));
+    for (body, why) in [
+        ("cockpit-board-state 1\nfold web\nfold web\n", "a fold twice"),
+        ("cockpit-board-state 1\nfold \n", "an empty name"),
+        ("cockpit-board-state 1\nfold web\nsel %1\n", "the selection after a fold"),
+        ("cockpit-board-state 1\nfold a\tb\n", "a control character"),
+    ] {
+        std::fs::write(&p, body).unwrap();
+        assert!(board::read_state(&p).is_err(), "{why}");
+    }
+    std::fs::write(&p, "cockpit-board-state 1\nfold web\n").unwrap();
+    assert_eq!(
+        board::read_state(&p),
+        Ok(Some(board::Saved {
+            sel: None,
+            folds: folds(&["web"])
+        })),
+        "folds with no selection"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// D5 on open reads the first ▲ in the list's order, not the tiles'.
+#[test]
+fn the_list_opens_on_its_first_blocked_agent() {
+    let ps = fleet();
+    let lo = board::list_order(&ps);
+    assert_eq!(ps[lo[board::open_sel(&ps, &lo, None, "%8")]].id, "%3");
+    assert_eq!(ps[lo[board::open_sel(&ps, &lo, Some("%13"), "%8")]].id, "%13");
+}
+
+/// The keys mean what the layout on screen says (D2, 9.1).
+#[test]
+fn h_l_and_space_fold_in_the_list_and_move_in_the_tiles() {
+    let k = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+    assert_eq!(board::action(k('h'), true), Some(Act::Fold));
+    assert_eq!(board::action(k('l'), true), Some(Act::Unfold));
+    assert_eq!(board::action(k('h'), false), Some(Act::Left));
+    assert_eq!(board::action(k(' '), false), None);
+    assert_eq!(board::action(k('n'), false), None);
+    assert_eq!(board::action(k('v'), false), Some(Act::Layout));
+    assert_eq!(board::action(k('v'), true), Some(Act::Layout));
+    // esc is never the only way out (D22)
+    assert_eq!(board::action(k('q'), true), Some(Act::Quit));
 }

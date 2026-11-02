@@ -109,7 +109,7 @@ until they restart.
 |-----|------|
 | `prefix + a` | the agents menu: every action below, one letter each |
 | `prefix + u` | jump to the pane that needs you; again for the next |
-| `prefix + w` | the board: every agent pane as a live tile (needs `cockpit-tui`) |
+| `prefix + w` | the board: every agent pane, grouped by session, blocked first; `v` for live tiles (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
 | `prefix + r` | review an agent's uncommitted diff (being replaced, #228) |
 | `prefix + i` | info about this pane: cwd, git root, state, review (being folded into the board, #228) |
