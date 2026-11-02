@@ -2,7 +2,8 @@
 # tui-fetch — put the required cockpit-tui binary in the plugin's own bin/.
 #
 #   scripts/tui-fetch [--required] [--version <tag>]   --required: exit 1 if none works
-# Run from prefix U, never on config load, where a dead network stalls startup.
+# Run by install.sh, by hand, or with @cockpit_tui_fetch on in the background of
+# every config load (start, prefix R, prefix U), which a dead network must not stall.
 # Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh),
 # COCKPIT_TUI_OFFLINE (no gh, curl or cargo: the suite sets it).
 set -u
