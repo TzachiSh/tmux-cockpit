@@ -1251,11 +1251,12 @@ the very theme those variable names come from — and *darker* than most bases,
 reading as disabled rather than alarmed.
 
 The tint never fires at the pane you are **on**: `window-active-style` pins the
-focused pane to the terminal default. An alert that colours the thing you are
-already looking at — prompt on screen, border already red — is noise, not
-signal. So the tint marks a blocked pane in a split you are *not* focused on,
-and nothing else. The explicit `bg=default` is load-bearing; left unset, the
-active pane inherits `window-style` and the tint comes back.
+focused pane to the terminal's own background. An alert that colours the thing
+you are already looking at — prompt on screen, border already red — is noise,
+not signal. So the tint marks a blocked pane in a split you are *not* focused
+on, and nothing else. The explicit `bg=terminal` is load-bearing; left unset or
+set to `bg=default`, the active pane inherits `window-style` and the tint comes
+back.
 
 ## Which commands count as an agent
 
