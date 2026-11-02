@@ -29,7 +29,7 @@ say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
 # Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh; prefix r is the fleet list" 2>/dev/null
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh" 2>/dev/null
     exit 0
 fi
 
@@ -48,6 +48,7 @@ back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]
 args=()
 while :; do
     : > "$f" || exit 0
+    rm -f -- "$f.expect"
     # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
     # environment and must not mark the binary as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
@@ -101,6 +102,36 @@ while :; do
             exit 0
             ;;
         # #228 verbs
+        # The board confirmed with the window's name on screen and wrote it to
+        # $f.expect first. A window renamed since is not the one the human
+        # agreed to lose, so it is refused, and the board comes back with a ✕.
+        kill)
+            want=
+            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 256 -- "$f.expect" 2>/dev/null | head -n 1)
+            have=$(tmux display-message -p -t "$target" '#{?pane_id,#{window_name},}' 2>/dev/null)
+            if [ -z "$have" ]; then
+                printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
+            elif [ -z "$want" ]; then
+                printf '✕ cockpit: not killed: the board named no window to confirm\n' > "$note"
+            elif [ "$have" != "$want" ]; then
+                printf '✕ cockpit: not killed: the window is now "%s", you confirmed "%s"\n' \
+                    "$(printf %s "$have" | tr -d '\000-\037\177')" "$(printf %s "$want" | tr -d '\000-\037\177')" > "$note"
+            elif tmux kill-window -t "$target" 2>/dev/null; then
+                printf '✓ cockpit: killed window %s\n' "$(printf %s "$have" | tr -d '\000-\037\177')" > "$note"
+            else
+                printf '✕ cockpit: could not kill the window of %s\n' "$target" > "$note"
+            fi
+            ;;
+        # Today's --request path: it opens the review for the pane and exits 10
+        # with the composed batch when the human delivers.
+        request)
+            "$DIR/scripts/tmux-review" -p "$target" --request "$target" > "$d/request.out" 2>&1
+            case $? in
+                0)  ;;
+                10) printf '✓ cockpit: review of %s composed\n' "$target" > "$note" ;;
+                *)  printf '✕ cockpit: request failed: %s\n' "$(head -n 1 "$d/request.out" | tr -d '\000-\037\177')" > "$note" ;;
+            esac
+            ;;
         # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
         *)
             log "unknown verb [$verb $target]"

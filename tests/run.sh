@@ -9497,7 +9497,7 @@ esac
 PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh; prefix r is the fleet list" \
+   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
@@ -12346,6 +12346,88 @@ is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
 rm -f "$RDS/revdiff.err"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
+
+echo "== cockpit-board: kill %N re-checks the window name, request %N runs the request path =="
+# The wrapper half of the two verbs, driven by writing the action file directly
+# (a stub binary does the writing). A real private server, real windows; the
+# only stub besides the binary is tmux-review, which records its argv.
+if need_tmux "the board's kill and request verbs"; then :; else
+KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
+mkdir -p "$KD/p" "$KD/state"
+cp -r "$DIR"/scripts "$KD/p/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n[ ! -e %s/rvout ] || cat %s/rvout\nexit "$(cat %s/rvrc 2>/dev/null || echo 0)"\n' "$KD" "$KD" "$KD" "$KD" > "$KD/p/scripts/tmux-review"
+chmod +x "$KD/p/scripts/tmux-review"
+# The binary acts once, then exits with no action (the ordinary q). It writes
+# $COCKPIT_ACTION.expect before the line, as the board does, when asked to.
+cat > "$KD/bin" <<KDBIN
+#!/bin/sh
+printf '%s\n' "\$*" >> "$KD/bargv"
+[ "\${5:-}" = "" ] || cat "\$5" >> "$KD/bargv"
+[ -e "$KD/once" ] && exit 0
+: > "$KD/once"
+if [ -e "$KD/link" ]; then ln -s "$KD/expect" "\$COCKPIT_ACTION.expect"
+elif [ -e "$KD/expect" ]; then cp "$KD/expect" "\$COCKPIT_ACTION.expect"; fi
+cat "$KD/line" > "\$COCKPIT_ACTION"
+KDBIN
+chmod +x "$KD/bin"
+"$TMUX_REAL" -L "$KV" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 3600' >/dev/null 2>&1
+KVHOME=$("$TMUX_REAL" -L "$KV" list-panes -t t -F '#{pane_id}')
+kv_win() {                    # <window-name> -> the pane id of a fresh one-pane window
+    "$TMUX_REAL" -L "$KV" new-window -d -P -F '#{pane_id}' -n "$1" -t t: 'exec sleep 3600'
+}
+kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" && echo alive || echo gone; }
+kv_run() {                    # <action-line> [expect]: one trip through the wrapper; the note it left
+    rm -f "$KD/once" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"; : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
+    [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
+    [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
+    "$TMUX_REAL" -L "$KV" new-window -d -t t: \
+        "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME; echo x > $KD/done"
+    until_file "$KD/done" 'x'
+    # the second run's argv is `board --select %N --note <file>` and then the note
+    sed -n '3,$p' "$KD/bargv"
+}
+
+V=$(kv_win vic-one)
+case "$(kv_run "kill $V" vic-one)" in '✓ cockpit: killed window vic-one') ok "kill %N with the shown name kills that window, and the note says ✓" ;;
+    *) bad "kill %N with the shown name kills that window, and the note says ✓" "✓ cockpit: killed window vic-one" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the window is gone" "gone" "$(kv_alive "$V")"
+
+V=$(kv_win vic-two)
+"$TMUX_REAL" -L "$KV" rename-window -t "$V" renamed-since
+case "$(kv_run "kill $V" vic-two)" in '✕ cockpit: not killed: the window is now "renamed-since", you confirmed "vic-two"') ok ".expect naming another window refuses, with a ✕ note naming both" ;;
+    *) bad ".expect naming another window refuses, with a ✕ note naming both" "✕ ... is now \"renamed-since\", you confirmed \"vic-two\"" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the renamed window survives" "alive" "$(kv_alive "$V")"
+
+case "$(kv_run "kill $V")" in '✕ cockpit: not killed: the board named no window'*) ok "kill %N with no .expect refuses" ;;
+    *) bad "kill %N with no .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the window survives" "alive" "$(kv_alive "$V")"
+
+KV_LINK=1; case "$(kv_run "kill $V" renamed-since)" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
+    *) bad "a .expect that is a symlink is not read" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+KV_LINK=
+is "and that window survives too" "alive" "$(kv_alive "$V")"
+
+case "$(kv_run "kill %99999" anything)" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
+    *) bad "kill of a pane that is gone says so and kills nothing" "✕ cockpit: %99999 is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+
+# a window holding a second pane: the whole window goes, as the confirm said
+V=$(kv_win vic-three); V2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
+kv_run "kill $V" vic-three >/dev/null
+is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive "$V") $(kv_alive "$V2")"
+case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board returns after a kill, selecting the pane that was" ;;
+    *) bad "the board returns after a kill, selecting the pane that was" "board --select $V --note <file>" "$(sed -n 2p "$KD/bargv")" ;; esac
+
+: > "$KD/rv"; rm -f "$KD/rvrc" "$KD/rvout"
+kv_run "request $V" >/dev/null
+is "request %N runs tmux-review's --request path on that pane" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
+printf '10\n' > "$KD/rvrc"; printf 'the review\n' > "$KD/rvout"
+case "$(kv_run "request $KVHOME")" in '✓ cockpit: review of '*' composed') ok "a delivered request (exit 10) comes back with a ✓ note" ;;
+    *) bad "a delivered request (exit 10) comes back with a ✓ note" "✓ cockpit: review of … composed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+printf '1\n' > "$KD/rvrc"; printf 'tmux-review: pane %%9 is gone\n' > "$KD/rvout"
+case "$(kv_run "request $KVHOME")" in '✕ cockpit: request failed: tmux-review: pane %9 is gone') ok "a failed request comes back with a ✕ note carrying its first line" ;;
+    *) bad "a failed request comes back with a ✕ note carrying its first line" "✕ cockpit: request failed: tmux-review: pane %9 is gone" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+"$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
