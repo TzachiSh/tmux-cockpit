@@ -84,11 +84,17 @@ tmux 3.8 has ten theme colour slots, and the plugin points each one at a role
 (`dark-theme-red` reads `@thm_needs`, and so on). That gives each client its
 own light or dark set:
 
-- An unknown terminal background counts as dark. On a light terminal that tmux
-  cannot detect, set `set -g theme light`.
+- An unknown terminal background counts as dark.
 - `set -g theme terminal` turns the slots off and uses the terminal's own
   colours.
 - When the environment sets `NO_COLOR`, every slot is set to `default`.
+- With `@cockpit_statusbar off` the plugin leaves the slots alone; tmux's own
+  (or yours) stay.
+- On a 16-colour client the slots fall back to ANSI: error is magenta, so it
+  never shares yellow with running.
+- A light terminal that tmux cannot detect needs `set -g theme light`. The
+  board, the panel and the pickers run in popups, which cannot ask the terminal,
+  so this option is also what switches them to the light roles.
 
 ## A bar of your own
 
