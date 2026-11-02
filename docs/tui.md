@@ -1146,10 +1146,11 @@ SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
 `tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
 
 **Row cells.** The list draws, between the message and the age: the diff stat
-(`+a -d`, `clean`, `no repo`, `?N new` for untracked files), the review mark
-(`◆` pending, `↵` pasted and unsent) and the branch (`⑂name`), in that order.
-A cell that does not fit is dropped with every cell to its right; the cells never
-take more than a third of the width the name and message share.
+(`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
+(`⑂name`). The review mark stays in the row's leading column. A cell that does
+not fit is dropped with every cell to its right; the cells take at most a third
+of the width the name and message share, and leave the name 6 cells and the
+message 12, so a 40-column row may show none.
 
 **Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
 scan per distinct repo root however many panes share it, at most 8 git processes
@@ -1160,5 +1161,7 @@ the gitsafe flags. The list still makes no pane capture.
 `kill %N` kills the pane's window; the board writes the window name it showed to
 `$COCKPIT_ACTION.expect` first, and the wrapper re-reads `#{window_name}` and
 refuses with a `✕` note if it differs, if the file is missing or a symlink, or
-if the pane is gone. `request %N` runs `tmux-review --request` for that pane.
+if the pane is gone. `request %N` ends the board, like `jump`, and then runs `tmux-review --request`
+for that pane: tmux silently refuses a popup opened inside the board's popup.
+Its output (the composed batch on exit 10) is not shown.
 The board keys for both wait on the board's verb hook (not shipped).

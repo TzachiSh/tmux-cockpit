@@ -11602,13 +11602,30 @@ case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board r
 
 : > "$KD/rv"; rm -f "$KD/rvrc" "$KD/rvout"
 kv_run "request $V" >/dev/null
-is "request %N runs tmux-review's --request path on that pane" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
-printf '10\n' > "$KD/rvrc"; printf 'the review\n' > "$KD/rvout"
-case "$(kv_run "request $KVHOME")" in '✓ cockpit: review of '*' composed') ok "a delivered request (exit 10) comes back with a ✓ note" ;;
-    *) bad "a delivered request (exit 10) comes back with a ✓ note" "✓ cockpit: review of … composed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
-printf '1\n' > "$KD/rvrc"; printf 'tmux-review: pane %%9 is gone\n' > "$KD/rvout"
-case "$(kv_run "request $KVHOME")" in '✕ cockpit: request failed: tmux-review: pane %9 is gone') ok "a failed request comes back with a ✕ note carrying its first line" ;;
-    *) bad "a failed request comes back with a ✕ note carrying its first line" "✕ cockpit: request failed: tmux-review: pane %9 is gone" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+until_file "$KD/rv" '*--request*'
+is "request %N runs tmux-review's --request path on that pane, once the board has closed" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
+is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/bargv" | tr '\n' ';')"
+
+# The request opens a popup, and tmux silently runs nothing for a popup opened
+# inside another (display-popup exits 0). So the wrapper must be gone first:
+# a real client on the private server, the board in a popup, tmux-review a stub
+# that opens a popup of its own and leaves a file.
+KN="cockpit-kn-$$"; KNO="cockpit-kno-$$"; SOCKS="$SOCKS $KN $KNO"
+"$TMUX_REAL" -L "$KN" -f /dev/null new-session -d -s s -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+KNP=$("$TMUX_REAL" -L "$KN" list-panes -F '#{pane_id}')
+printf '#!/bin/sh\n"%s" -L %s display-popup -E -t %s "echo ran > %s/nested; sleep 0.2"\n' "$TMUX_REAL" "$KN" "$KNP" "$KD" > "$KD/p/scripts/tmux-review"
+"$TMUX_REAL" -L "$KNO" -f /dev/null new-session -d -s o -x 100 -y 32 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $KN attach -t s" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$KN" list-clients -F '#{client_name}'
+rm -f "$KD/once" "$KD/nested" "$KD/expect" "$KD/link"; printf 'request %s\n' "$KNP" > "$KD/line"
+"$TMUX_REAL" -L "$KN" display-popup -E -w 80 -h 20 \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KNP" >/dev/null 2>&1 &
+KNJOB=$!
+until_file "$KD/nested" 'ran'; knr=$?
+is "request %N from inside the board's popup gets its own popup open" "0" "$knr"
+kill "$KNJOB" 2>/dev/null; wait "$KNJOB" 2>/dev/null
+"$TMUX_REAL" -L "$KNO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$KN" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
 fi
 

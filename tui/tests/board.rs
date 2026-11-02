@@ -1811,8 +1811,44 @@ fn list_extra_goldens() {
         let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
         let out = draw(w, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
         golden(&format!("board-extra-{w}"), &out);
-        assert!(out.contains("+42 -7"), "the stat shows at {w}:\n{out}");
+        assert!(w < 60 || out.contains("+42 -7"), "the stat shows at {w}:\n{out}");
     }
+}
+
+/// A row with a branch and a row without end their age in the same column: the
+/// board and the buffer measure ⑂ with the same unicode-width.
+#[test]
+fn rows_with_and_without_a_branch_end_at_the_same_column() {
+    use unicode_width::UnicodeWidthStr;
+    let th = Theme::fixed();
+    let mut ps = fleet();
+    // %12 reads "no repo" and shows no ⑂; %4 shows the branch
+    ps.iter_mut().find(|p| p.id == "%12").unwrap().loc.clear();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    let out = draw(80, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    let rs = rows(&out);
+    let row = |name: &str| rs.iter().find(|r| r.contains(name)).unwrap_or_else(|| panic!("{name}:\n{out}"));
+    let (with, without) = (row(" dns "), row(" tests "));
+    assert!(with.contains("no repo") && !with.contains('⑂'), "{with}");
+    assert!(without.contains('⑂') || without.contains("+42 -7"), "{without}");
+    assert_eq!(with.width(), without.width());
+    // the age is the last text before the active-mark column and the border
+    let end = |r: &str| r.trim_end_matches('│').trim_end_matches(['◂', ' ']).width();
+    assert_eq!(end(with), end(without), "{with}\n{without}");
+}
+
+/// At 40 columns the cells may get no room at all; the message and the age stay.
+#[test]
+fn at_40_columns_the_cells_never_starve_the_message_or_the_age() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    let out = draw(40, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    let r = rows(&out);
+    let server = r.iter().find(|l| l.contains(" server ")).unwrap();
+    assert!(server.contains("Do you") && server.contains("4m12s"), "{server}");
+    let ui = r.iter().find(|l| l.contains(" ui ")).unwrap();
+    assert!(ui.contains("Bash") && ui.contains("3m40s"), "{ui}");
 }
 
 /// No row the list draws runs past the area, at any width the board accepts.

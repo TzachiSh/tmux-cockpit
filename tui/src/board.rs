@@ -1403,27 +1403,24 @@ impl Nav {
 }
 
 /// The list row's extra cells (#253), drawn between the message and the age:
-/// the diff stat, the review mark and the branch, in that order. `room` is the
-/// width they may take; a cell that does not fit is dropped, with every cell
+/// the diff stat, then the branch (the review mark is the leading column's).
+/// `room` is the width they may take, which `agent_row` sizes so the name and
+/// message keep at least 18 cells; a cell that does not fit is dropped, with every cell
 /// to its right, rather than cut. The facts come off `Pane`, filled on the
 /// fetch thread by `data::fleet`: nothing here forks.
-pub fn row_extra(p: &Pane, th: &Theme, room: usize) -> Vec<Span<'static>> {
+pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
     let g = &th.g;
     let stat = facts::stat_text(&p.loc, &p.pm);
     let stat_c = match stat.as_str() {
         "clean" | "no repo" | "?" => th.meta,
         _ => th.running,
     };
-    let (mark, mark_c) = th.review_mark(&p.review);
     let br = facts::branch(&p.loc);
     let mut cells = vec![(stat, stat_c)];
-    if mark != " " {
-        cells.push((mark.to_string(), mark_c));
-    }
     if !br.is_empty() {
         cells.push((format!("{}{}", if g.ascii { "@" } else { "⑂" }, g.trunc(br, 16)), th.label));
     }
-    let mut left = room;
+    let mut left = room as usize;
     let mut out = vec![];
     for (text, c) in cells {
         let w = text.width() + 1;
@@ -1459,8 +1456,10 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     let g = &th.g;
     let (gl, gl_c) = th.glyph(p.state);
     let (rv, rv_c) = th.review_mark(&p.review);
-    // the extras take at most a third of what the name and message would share
-    let extra = row_extra(p, th, w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1) / 3);
+    // a third of what the name and message would share, and never so much that
+    // the name keeps under 6 cells and the message under 12
+    let flex0 = w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1);
+    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16);
     let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;

@@ -122,15 +122,14 @@ while :; do
                 printf '✕ cockpit: could not kill the window of %s\n' "$target" > "$note"
             fi
             ;;
-        # Today's --request path: it opens the review for the pane and exits 10
-        # with the composed batch when the human delivers.
+        # Today's --request path. It opens its own popup, and tmux silently
+        # refuses a popup inside the board's (measured: display-popup returns 0 and
+        # runs nothing), so the board closes first, like jump: a background job
+        # waits for this wrapper to exit, then runs the request. Its output, the
+        # composed batch on exit 10, is not shown anywhere.
         request)
-            "$DIR/scripts/tmux-review" -p "$target" --request "$target" > "$d/request.out" 2>&1
-            case $? in
-                0)  ;;
-                10) printf '✓ cockpit: review of %s composed\n' "$target" > "$note" ;;
-                *)  printf '✕ cockpit: request failed: %s\n' "$(head -n 1 "$d/request.out" | tr -d '\000-\037\177')" > "$note" ;;
-            esac
+            tmux run-shell -b "while kill -0 $$ 2>/dev/null; do sleep 0.1; done; $(printf %q "$DIR/scripts/tmux-review") -p $target --request $target >/dev/null 2>&1"
+            exit 0
             ;;
         # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
         *)
