@@ -17,6 +17,10 @@ that file when the plugin loads.
   window's worst agent state: `▲` needs you, `✕` error, `●` running, `✓` done,
   `○` idle. A tab with an unread review also shows `◆`. The current tab's
   number is in the accent colour.
+- **`◔NN%` on a tab** once the window's agent has filled 80% of its context
+  (`@panestate_ctx`, written by `scripts/agent-context` as Claude Code's
+  `statusLine`). Its cells come out of the tab's label; a compact tab shows the
+  bare `◔`.
 - **The top border, at the top-left pane (or the zoomed pane), shows the
   corner:**
   - `≡`, which opens the menu;

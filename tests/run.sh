@@ -10570,6 +10570,41 @@ cw_close "${twpid:-}" "${twf:-}"
 "$TMUX_REAL" -L "$TW" kill-server >/dev/null 2>&1
 fi
 
+echo "== the context gauge comes out of the tab's own budget (#103, #222) =="
+# ◔NN% from @panestate_ctx (scripts/agent-context), from 80% on. It takes its
+# cells from the label, so the tab budget and the overflow estimate hold; a
+# compact tab shows the bare ◔.
+if need_tmux "context gauge"; then :; else
+GG="cockpit-gg-$$"; SOCKS="$SOCKS $GG"
+"$TMUX_REAL" -L "$GG" -f /dev/null new-session -d -s s -n t -x 200 -y 50 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" new-window -d -t s: -n u 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+until_out '*claude*claude*' "$TMUX_REAL" -L "$GG" list-panes -a -F '#{pane_current_command}' >/dev/null
+"$TMUX_REAL" -L "$GG" set -p -t s:t @cockpit_title review-the-ui-audit-ladder >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -p -t s:u @cockpit_title second-window-with-a-long-name >/dev/null 2>&1
+read -r ggc ggf ggpid <<<"$(cw_open "$GG" s)"
+if [ -z "${ggc:-}" ]; then skip_ "the context gauge (no control client)"; else
+ggcur() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:t '#{E:window-status-current-format}' | plain; }
+ggoth() { "$TMUX_REAL" -L "$GG" display-message -p -c "$ggc" -t s:u '#{E:window-status-format}' | plain; }
+cw_size "$GG" "$ggc" 160
+"$TMUX_REAL" -L "$GG" set -p -t s:t @panestate_ctx 79 >/dev/null 2>&1
+is "under 80% there is no gauge" " 0 review-the-ui-audit-ladder " "$(ggcur)"
+"$TMUX_REAL" -L "$GG" set -p -t s:t @panestate_ctx 91 >/dev/null 2>&1
+"$TMUX_REAL" -L "$GG" set -p -t s:u @panestate_ctx 100 >/dev/null 2>&1
+# 160 columns, two windows: both tabs are capped at 28 cells; the gauge's width
+# comes off the label.
+is "from 80% the current tab shows it, its label shortened by the gauge's width" \
+   " 0 review-the-ui-audit-lad… ◔91% " "$(ggcur)"
+is "and another tab too, inside its own budget" " 1 second-window-with-a-l… ◔100% " "$(ggoth)"
+for ggn in $(seq 3 9); do "$TMUX_REAL" -L "$GG" new-window -d -t s: 'exec -a claude sleep 300' >/dev/null 2>&1; done
+cw_size "$GG" "$ggc" 56
+is "a compact tab shows the bare ◔" " 1 ◔ " "$(ggoth)"
+fi
+cw_close "${ggpid:-}" "${ggf:-}"
+"$TMUX_REAL" -L "$GG" kill-server >/dev/null 2>&1
+fi
+
 echo "== the menu's What is each agent doing? lists every pane with its state (#125, #222) =="
 # The row replays the cockpit table's t, a popup over one tmux list-panes. Its
 # -F format is resolved here on a server, the same pass the popup's shell runs.
