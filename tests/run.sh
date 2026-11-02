@@ -4,6 +4,10 @@
 set -u
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Required (#199), and make test builds it first. Exported, so a copy of the
+# plugin under test still runs the binary this tree built.
+export COCKPIT_TUI_BIN=${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}
+[ -x "$COCKPIT_TUI_BIN" ] || { echo "tests/run.sh: no $COCKPIT_TUI_BIN; run make tui-bin" >&2; exit 1; }
 STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
@@ -10190,7 +10194,8 @@ echo "== cockpit-tui: the tui row in tmux-review --info =="
 if need_tmux "tui row in --info"; then :; else
 TI="cockpit-ti-$$"; SOCKS="$SOCKS $TI"; TIP=$(mktmpd)
 cp -r "$DIR/scripts" "$TIP/"
-"$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+# -u: run-shell has the server's environment, and the row must read the copy's bin/.
+env -u COCKPIT_TUI_BIN "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 TIAP=$("$TMUX_REAL" -L "$TI" list-panes -t t: -F '#{pane_id}')
 # The optional shim dir pins the row's credential word (#84) whatever gh on
 # the box would say; \$PATH is the server's, expanded by its own sh.
@@ -10256,13 +10261,7 @@ else
 fi
 
 echo "== cockpit-tui: --json names every agent pane and nothing else =="
-# The Rust binary is additive: no cargo on the box means no bin/cockpit-tui, and
-# `make check` must still be green, so this skips rather than fails. skip_ is
-# not a pass (tests/run.sh:76) -- a green run with this line absent from the
-# output means the binary was never exercised.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui --json (no bin/cockpit-tui; run make tui)"
-elif need_tmux "cockpit-tui --json"; then :; else
+if need_tmux "cockpit-tui --json"; then :; else
 TJ="cockpit-tj-$$"; SOCKS="$SOCKS $TJ"
 "$TMUX_REAL" -L "$TJ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 TJSH=$("$TMUX_REAL" -L "$TJ" list-panes -t t:0 -F '#{pane_id}')
@@ -10280,14 +10279,14 @@ done
 # COCKPIT_TMUX still resolves `tmux` through the suite's PATH shim; tmux takes
 # the LAST -L, so the binary lands on this block's server, not the suite's
 # (tests/run.sh:31). $TJSH carries no option and must not appear.
-TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json 2>/dev/null)
+TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 is "--json carries the 14 frozen keys, in order" \
    "id where state title doing said asked msg since loc diff review session path" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
-   "$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json >/dev/null 2>&1; printf '%s ' "$?"; \
+   "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
 
 # F1: a Bash tool_use whose command holds a TAB used to split --rows into 10
@@ -10306,10 +10305,10 @@ TJT=$("$TMUX_REAL" -L "$TJ" list-panes -a -F '#{pane_id} #{pane_current_path}' |
 "$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @panestate running          >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @cockpit_session "$TJUUID"  >/dev/null 2>&1
 is "a TAB in a tool_use keeps --rows at 8 fields" "8" \
-   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --rows \
       | awk -F'\t' -v p="$TJT" '$2==p{print NF; exit}')"
 is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
-   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --rows \
       | awk -F'\t' -v p="$TJT" '$2==p{print $5; exit}')"
 
 # F4: the agent command list is @cockpit_agents_glob, which cockpit.tmux
@@ -10319,12 +10318,12 @@ TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
-TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
+TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do "$TMUX_REAL" -L "$TJ" display-message -p -t "$i" '#{pane_current_command}'; done | sort -u | tr '\n' ' ')
 is "@cockpit_agents_glob names zzz and not sleep" "claude zzz" "$(printf '%s' "$TJCMDS" | sed 's/ $//')"
 
 # F6: "no agents" ([] , exit 0) and "no tmux" (exit 1, no stdout) are different.
-TJOUT2=$(COCKPIT_TMUX="tmux -L cockpit-nosuch-$$" "$DIR/bin/cockpit-tui" --json 2>/dev/null); TJRC=$?
+TJOUT2=$(COCKPIT_TMUX="tmux -L cockpit-nosuch-$$" "$COCKPIT_TUI_BIN" --json 2>/dev/null); TJRC=$?
 is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
    "$TJRC $([ -z "$TJOUT2" ] && echo empty || echo "[$TJOUT2]")"
 
@@ -10381,8 +10380,8 @@ B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
 env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
 bw=$(bkey "$B" w)
-# bin/cockpit-tui is absent in this copy on purpose: the binary arrives by a
-# gesture, so the key is bound either way and the wrapper says so at press time.
+# This copy has no binary on purpose: a broken install still binds the key,
+# and the wrapper says so at press time.
 case "$bw" in *cockpit-board*) ok "prefix w opens the board, with no binary installed" ;;
     *) bad "prefix w opens the board, with no binary installed" "a display-popup running cockpit-board" "$bw" ;;
 esac
@@ -10511,7 +10510,8 @@ wact() {                      # <action-line> -> every argv the wrapper produced
     : > "$BD/wargv"; printf '%s\n' "$1" > "$BD/line"
     printf '#!/bin/sh\ncat %s/line > "$COCKPIT_ACTION"\n' "$BD" > "$BD/p/bin/cockpit-tui"
     chmod +x "$BD/p/bin/cockpit-tui"
-    PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+    # The copy's stub, named: the suite exports its own real binary.
+    PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$BD/wargv"
 }
 # jump is three tmux calls and NOT tmux-jump: that script cycles to the next
@@ -10552,19 +10552,19 @@ is "a rejected line leaves a trace instead of a silently dead key" "1" \
 
 : > "$BD/wargv"
 printf '#!/bin/sh\nrm -f "$COCKPIT_ACTION"\n' > "$BD/p/bin/cockpit-tui"; chmod +x "$BD/p/bin/cockpit-tui"
-bnoise=$(PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null 2>&1); brc=$?
+bnoise=$(PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null 2>&1); brc=$?
 is "a binary that deletes the action file exits 0, prints nothing, says nothing" "0  " \
    "$brc $bnoise $(cat "$BD/wargv" 2>/dev/null)"
 
 rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
-PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
 case "$(cat "$BD/wargv" 2>/dev/null)" in
     'display-message cockpit: board needs'*) ok "a -p that is not a pane id drops the -t rather than passing it on" ;;
     *) bad "a -p that is not a pane id drops the -t rather than passing it on" \
          "display-message cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
 esac
 : > "$BD/wargv"
-PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
    "0 display-message -t %3 cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" \
@@ -10605,9 +10605,7 @@ fi
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-panel end to end (no bin/cockpit-tui; run make tui)"
-elif need_tmux "cockpit-panel end to end"; then :; else
+if need_tmux "cockpit-panel end to end"; then :; else
 PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
 # With $PND/hang present the fake records its pid and parent, then never answers.
@@ -10877,7 +10875,7 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
     printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
@@ -10944,9 +10942,7 @@ fi
 echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
 # crossterm rereads a hung-up tty forever, so a panel whose server died spun at
 # 80% CPU and shrugged off SIGTERM. Pids are named before anything acts on them.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "a dead server ends the panel (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ]; then
+if [ ! -d /proc/self ]; then
     skip_ "a dead server ends the panel (no /proc to check pids by name)"
 elif need_tmux "a dead server ends the panel"; then :; else
 for oscreen in panel board; do
@@ -10955,7 +10951,7 @@ for oscreen in panel board; do
     ora=$("$TMUX_REAL" -L "$OR" list-panes -F '#{pane_id}' | head -1)
     oarg=$ora; [ "$oscreen" = board ] && oarg=
     orb=$("$TMUX_REAL" -L "$OR" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $DIR/bin/cockpit-tui $oscreen $oarg")
+        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $COCKPIT_TUI_BIN $oscreen $oarg")
     until_cap "$OR" "$orb" '*[a-z]*' || bad "the $oscreen draws before its server dies" "a frame" "$("$TMUX_REAL" -L "$OR" capture-pane -p -t "$orb")"
     orp=$("$TMUX_REAL" -L "$OR" display -p -t "$orb" '#{pane_pid}')
     ocomm=''
@@ -10978,9 +10974,7 @@ fi
 echo "== cockpit-panel: a hangup with no SIGHUP still ends the panel and the board =="
 # In a session of its own the binary has no controlling tty, so closing the pty
 # master sends no SIGHUP: only the hangup watch can end it.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "a hangup with no SIGHUP (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+if [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
     skip_ "a hangup with no SIGHUP (needs /proc and python3)"
 elif need_tmux "a hangup with no SIGHUP"; then :; else
 NH="cockpit-nohup-$$"; SOCKS="$SOCKS $NH"; NHPY=$(mktmpf)
@@ -11008,17 +11002,15 @@ if comm == 'cockpit-tui':                 # named before it is signalled
 NHPY
 nha=$("$TMUX_REAL" -L "$NH" list-panes -F '#{pane_id}' | head -1)
 is "the panel exits on a hangup that brings no signal" "exited" \
-   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" panel "$nha" 2>&1)"
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$COCKPIT_TUI_BIN" panel "$nha" 2>&1)"
 is "the board exits on a hangup that brings no signal" "exited" \
-   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" board 2>&1)"
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$COCKPIT_TUI_BIN" board 2>&1)"
 fi
 
 echo "== cockpit-panel: tablet mode turns the mouse off on every exit path =="
 # The modes are written to the tty, so the bytes are read off a pty: after the
 # last ?1000h there must be a ?1000l and a ?1006l, whichever way the panel ends.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "the mouse is off on every exit (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+if [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
     skip_ "the mouse is off on every exit (needs /proc and python3)"
 elif need_tmux "the mouse is off on every exit"; then :; else
 MX="cockpit-mouse-$$"; SOCKS="$SOCKS $MX"; MXPY=$(mktmpf); MXD=$(mktmpd)
@@ -11085,14 +11077,14 @@ got = collections.Counter(once(how) for _ in range(runs))
 print(' '.join(k if runs == 1 else f'{n}x {k}' for k, n in sorted(got.items())))
 MXPY
 mxa=$("$TMUX_REAL" -L "$MX" list-panes -F '#{pane_id}' | head -1)
-mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$DIR/bin/cockpit-tui" "$mxa" "$@" 2>&1; }
+mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$COCKPIT_TUI_BIN" "$mxa" "$@" 2>&1; }
 for how in q esc ctrl-c term hup tap-close action; do
     is "tablet mode: the exit by $how turns the mouse off" "on=1 off=1" "$(mx tablet "$how")"
 done
 is "and the action still goes" "paste $mxa" "$(mx tablet action >/dev/null; cat "$MXD/act" 2>/dev/null)"
 is "pc mode never turns the mouse on" "on=0 off=0" "$(mx pc q)"
 is "the Home tile turns it on in pc mode, and q turns it off" "on=1 off=1" "$(mx pc flip-then-q)"
-mxe=$(COCKPIT_PANEL_MODE=Tablet "$DIR/bin/cockpit-tui" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
+mxe=$(COCKPIT_PANEL_MODE=Tablet "$COCKPIT_TUI_BIN" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
 # a signal exit that was read as "still running" 1 run in 30: 50 in a row, both signals
 is "50 SIGTERM exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet term 50)"
 is "50 SIGHUP exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet hup 50)"
@@ -11105,9 +11097,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # A real popup on a client: the outer server's pane is the client's terminal, so
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "taps in the popup (no bin/cockpit-tui; run make tui)"
-elif need_tmux "taps in the popup"; then :; else
+if need_tmux "taps in the popup"; then :; else
 TI="cockpit-tapi-$$"; TO="cockpit-tapo-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
@@ -13052,13 +13042,7 @@ is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/nul
 rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
-# Skipped, not failed, with no binary: bin/cockpit-tui is still optional here.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui diffstat/git-flags parity (no bin/cockpit-tui; run make tui)"
-elif ! "$DIR/bin/cockpit-tui" git-flags >/dev/null 2>&1; then
-    skip_ "cockpit-tui diffstat/git-flags parity (bin/cockpit-tui predates the subcommand; run make tui)"
-else
-DSB="$DIR/bin/cockpit-tui"
+DSB=$COCKPIT_TUI_BIN
 # tree_diff's rows summed the way fleet_scan_root sums them, as diffstat's four
 # columns; review_base forced to HEAD, which is what diffstat with no --base reads.
 ds_shell() {
@@ -13099,17 +13083,10 @@ is "git-flags --filters blanks every key of the driver" \
    "$("$DSB" git-flags --filters "$GD/r" | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$GD"
 unset -f ds_shell
-fi
 
 echo "== cockpit-tui transcript: byte-identical to the jq reader on every fixture (#199) =="
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui transcript parity (no bin/cockpit-tui; run make tui)"
-# A binary built before #199 calls `transcript` an unknown screen and exits 2.
-elif "$DIR/bin/cockpit-tui" transcript >/dev/null 2>&1; [ "$?" != 1 ]; then
-    skip_ "cockpit-tui transcript parity (bin/cockpit-tui predates the subcommand; run make tui)"
-else
 . "$DIR/scripts/lib/transcript.sh"
-TPB="$DIR/bin/cockpit-tui"; TPF="$DIR/tests/fixtures/transcript-reader"
+TPB=$COCKPIT_TUI_BIN; TPF="$DIR/tests/fixtures/transcript-reader"
 # The seconds field can tick between the two runs, so both sides read N.
 tpnorm() { awk -F'\t' -v OFS='\t' '($1=="doing"||$1=="asked") && $3 ~ /^[0-9]+$/ { $3="N" } 1'; }
 for f in "$TPF"/*.jsonl; do
@@ -13124,7 +13101,6 @@ for f in "$TPF"/*.jsonl; do
     done
 done
 unset -f tpnorm
-fi
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
