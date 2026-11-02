@@ -1800,8 +1800,8 @@ fn no_list_row_exceeds_the_area() {
                 for (i, r) in rows(&out).iter().enumerate() {
                     assert_eq!(r.width(), w as usize, "row {i} at {w}:\n{out}");
                 }
-                // a header's rule meets its counts: nothing clipped at the right edge
-                assert!(!out.contains("▲1 ●") || out.contains("▲1 ●2 ✓1"), "{out}");
+                // a header's counts are never clipped by the frame
+                assert!(out.contains("▲1 ●2 ✓1  │") || out.contains("!1 *2 +1  |"), "{out}");
             }
         }
     }
