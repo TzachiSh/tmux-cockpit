@@ -10677,15 +10677,15 @@ is "styled: the open picker's two key lines are one --footer argument" "1" \
 # the wrong key.
 FZGS="cockpit-fzfgap-$$"; SOCKS="$SOCKS $FZGS"
 "$TMUX_REAL" -L "$FZGS" -f /dev/null new-session -d 'sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZGS" set -g @thm_peach '#ff9838' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZGS" set -g @thm_mauve '#c9a2ff' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZGS" set -g @thm_error '#ff9838' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FZGS" set -g @thm_accent '#c9a2ff' >/dev/null 2>&1
 FZGB="$FZTD/gapbin"; mkdir -p "$FZGB"
 printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$FZGS" > "$FZGB/tmux"
 chmod +x "$FZGB/tmux"; ln -sf "$FZP/fzf" "$FZGB/fzf"
 fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
         "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
 is "two set tokens with gaps between them: no colour lands on its neighbour's key" \
-   "fg:#cdd6f4 hl:#ff9838 bg+:#313244 prompt:#c9a2ff" \
+   "fg:#e6e4df hl:#ff9838 bg+:#2a2f3a prompt:#c9a2ff" \
    "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
 "$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
 
