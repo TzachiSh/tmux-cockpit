@@ -1,9 +1,10 @@
 # The board (cockpit-tui)
 
-`prefix w` opens a grid of live agent panes, one tile each, blocked ones first.
-Each tile carries the pane's state glyph, what the agent is doing, how long it
-has been doing it, and a live `capture-pane` of the pane itself. `↵` jumps to
-the tile you are on and closes the board.
+`prefix w` opens a list of every agent pane, grouped by tmux session, the
+sessions that need you first. Each row carries the pane's state glyph, what the
+agent is doing and how long it has been doing it; a group folds to one header
+that still shows every agent waiting on you. `v` swaps to the tiles, one live
+`capture-pane` per agent. `↵` jumps to the selected agent and closes the board.
 
 It is a small Rust binary, `bin/cockpit-tui`. It is **required**: the board and
 the panel run on it, and the follow-up #199 PRs move the shell scripts'
@@ -65,7 +66,27 @@ binary is missing or too old.
 
 ## Keys
 
-Inside the board:
+Inside the board, the list (the default layout):
+
+| key | does |
+|-----|------|
+| `j` `k` `↑` `↓` | next / previous row, headers included |
+| `h` `←` | fold the selected group |
+| `l` `→` | unfold the selected group; on an open header, enter it |
+| `space` | fold / unfold the selected group |
+| `-` `=` | fold all / unfold all |
+| `⇥` `⇧⇥` | next / previous agent, skipping headers, wrapping |
+| `n` `p` | next / previous session header, wrapping |
+| `1`-`9` | the Nth agent row on screen. Selects, does not jump; a row in a folded group unfolds it |
+| `g` `G` | first / last row |
+| `u` | the next `▲` agent, wrapping; unfolds its group |
+| `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
+| `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
+| `a` `r` `f` `i` | as in the tiles, on an agent; a header does not take them |
+| `v` | the tiles |
+| `?` `^L` `q` `esc` | as in the tiles |
+
+In the tiles (`v`):
 
 | key | does |
 |-----|------|
@@ -82,19 +103,23 @@ Inside the board:
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
+| `v` | the list |
 | `^L` | refetch and redraw now |
 | `q` `esc` | close the board. With `?` open, any key only closes the help; with a `✕` note up, `esc` only dismisses it |
 
-`j`/`k` are vertical because the board is a grid; `⇥` is the linear one. The
-help and the footer are generated from the same table the dispatch reads, so a
-renamed key cannot go stale in one and not the other.
+`h`/`l` fold in the list and move a column in the tiles: tree-view convention
+in one, grid convention in the other. `?` lists the keys of the layout on
+screen. The help and the footer are generated from the same table the dispatch
+reads, so a renamed key cannot go stale in one and not the other.
 
 **One key bar.** The footer row is the only place the board lists keys; no
-tile frame carries a hint. It lists only keys that act on the selection, in
-priority order (`↵ jump`, `a answer` or `a ask`, `r review`, `f panel`,
-`i info`, `? keys`, `q close`), and drops one whole hint at a time from the
-right as the width shrinks; `?` and `q` always stay. The footer, the `?` help
-and the floor card are the panel's own, from `chrome`.
+frame carries a hint. It lists only keys that work on what is selected, in
+priority order, and drops one whole hint at a time from the right as the width
+shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
+`r review`, `f panel`, `i info`, then `space fold` in the list. On a list
+header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
+`n p sessions`. The footer, the `?` help and the floor card are the panel's
+own, from `chrome`.
 
 **No mouse on the board.** Enabling SGR capture inside a popup takes the wheel
 and text selection away from you for as long as the board is open, and the board
@@ -173,6 +198,82 @@ changes.
 ## The screens
 
 ### The board
+
+The list, at 100 columns: 13 agents in 4 sessions, the first `▲` selected.
+
+```
+ board · 13 agents · 4 sessions · 2 needs you · 1 error
+┌ sessions ────────────────────────────────────────────────────────────────────────────────────────┐
+│  ▾ api ─────────────────────────────────────────────────────────────────────────────── ▲1 ●2 ✓1  │
+│▎ 1 ▲◆ 0 server               Do you want to run npm test?                                  4m12s │
+│  2 ●  1 tests                Bash: cargo test --workspace                                  1m03s │
+│  3 ●  3 migrate              Edit src/db/migrate.rs                                          22s │
+│  4 ✓◆ 4 auth                 Pushed PR #231, waiting on review                               12m │
+│  ▾ infra ───────────────────────────────────────────────────────────────────────────── ✕1 ●1 ○1  │
+│  5 ✕  0 terraform            terraform plan: state lock held                               6m02s │
+│  6 ●  1 dns                  Bash: dig +short api.internal                                    9s │
+│  7 ○  2 k8s                  idle                                                                │
+│  ▾ web ──────────────────────────────────────────────────────────────────────────── ▲1 ●1 ✓1 ○1  │
+│  8 ▲  2 docs                 plan ready: approve?                                            38s │
+│  9 ●  0 ui                   Bash: pnpm test Board                                         3m40s◂│
+│    ✓◆ 1 checkout             Opened PR #88: card form a11y                                   25m │
+│    ○  5 a11y                 idle                                                                │
+│  ▾ ml ─────────────────────────────────────────────────────────────────────────────────── ●1 ✓1  │
+│    ●  0 train                Bash: python train.py --epochs 40                               41m │
+│    ✓  1 eval                 Wrote eval/test_report.md                                     2h05m │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ↵ jump   a answer   r review   f panel   i info   space fold   ? keys   q close
+```
+
+A row is the selection mark, its digit, the state glyph and review mark, the
+window index, the title, what the agent asks (`▲`, `✕`) or is doing, and its
+age; an idle agent says `idle`. `◂` marks tmux's active pane. The selection is
+`▎` plus reverse video, its text in the value colour, so it shows under
+`NO_COLOR` too; a `sel` background role replaces the reverse once the theme
+gains one.
+
+**Order.** One group per tmux session. Sessions holding a `▲` or `✕` come
+first, then the rest, each band by session name; inside a group,
+`(state rank, pane id)`, as in the tiles. No clock: a group moves only when it
+starts or stops needing you, never when an agent goes from running to done.
+
+**Folding.** `h`, `space`, `↵` on a header, or `-` fold a group to its header,
+which counts what it hides and shows every `▲` and `✕` row it holds, so
+folding never hides an agent waiting on you:
+
+```
+│  ▾ api ─────────────────────────────────────────────────────────────────────────────── ▲1 ●2 ✓1  │
+│  1 ▲◆ 0 server               Do you want to run npm test?                                  4m12s │
+│  …                                                                                               │
+│▎ ▸ infra ────────────────────────────────────────────────────────────────── 2 folded · ✕1 ●1 ○1  │
+│  5 ✕  0 terraform            terraform plan: state lock held                               6m02s │
+│  ▸ web ───────────────────────────────────────────────────────────────── 3 folded · ▲1 ●1 ✓1 ○1  │
+│  6 ▲  2 docs                 plan ready: approve?                                            38s │
+│  ▸ ml ──────────────────────────────────────────────────────────────────────── 2 folded · ●1 ✓1  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ space unfold   l open   - fold all   = open all   n p sessions   ? keys   q close
+```
+
+Nothing unfolds by itself: a new session appears unfolded, and a folded
+session that gains a `▲` stays folded and shows the row. A digit or `u` that
+lands in a folded group unfolds it. Folds are kept in `board.state`.
+
+**Selection.** The selection is a pane id, or a session name on a header,
+never an index. A refresh finds it by id and keeps it on the screen row it had,
+so the viewport moves and the cursor does not. A pane that is gone gives way to
+the row now at its place in the same session, else that session's header, else
+the first row. Folding the selected agent's group moves the selection to the
+header, unless the agent is `▲` or `✕` and stays on screen.
+
+**Digits and scrolling.** `1`-`9` are the first nine agent rows on screen,
+renumbered as the list scrolls; a header takes no digit. `[` `]` scroll a
+screenful and the selection only moves to stay on screen. When the list does
+not fit, its frame's title says `N-M of T`, counted in rows.
+
+The list has no preview: the right-hand preview pane is a later step, so the
+list takes the board's whole width, and it captures no pane.
+
+### The tiles (`v`)
 
 120 columns, 5 agents, 2 columns, full density. The width is the board's own
 area, not the terminal's.
@@ -259,33 +360,51 @@ the pane is gone, the board opens on the first `▲`, else the client's pane,
 else the first tile. The file is written on every exit, created new beside it
 with `O_NOFOLLOW`, mode 0600, and renamed over it; `COCKPIT_READONLY` skips the
 write. It is read back strictly: no symlink, a regular file of at most 64 KiB,
-the head `cockpit-board-state 1`, then known `key value` lines (today only
-`sel %N`, at most once). Anything else is a fresh board and a 5 s note
-`board.state ignored (<why>); starting fresh`.
+the head `cockpit-board-state 1`, then known `key value` lines: `sel %N` at
+most once, then one `fold <session>` line per folded session, each name once,
+with no control character. Anything else is a fresh board and a 5 s note
+`board.state ignored (<why>); starting fresh`. A header selection is saved as
+its group's first agent, and a fold whose session is gone is dropped on the
+next write. The layout is not kept: every board opens on the list.
+
+```
+cockpit-board-state 1
+sel %7
+fold infra
+fold web
+```
 
 The design's first frame drawn from `board.state` before the first fetch is
-not built: it would need the fleet's tiles in the file, and the file keeps the
-selection only. The reopened board shows the loading card for its first fetch.
+not built: it would need the fleet's rows in the file, and the file keeps the
+selection and the folds only. The reopened board shows the loading card for its first fetch.
 
 ### The help
 
-`?` covers the whole board, one column, so nothing is cut at 60 columns. Rows
-that do not fit scroll: the top border says `1-22 of 31` and the bottom one
-`↑↓ scroll  any other key closes`. The panel's `?` is the same code.
+`?` covers the whole board, one column, so nothing is cut at 60 columns, and
+lists the keys of the layout on screen. Rows that do not fit scroll: the top
+border says `1-28 of 41` and the bottom one `↑↓ scroll  any other key closes`.
+The panel's `?` is the same code. The list's:
 
 ```
 ╭ keys ────────────────────────────────────────────────────────╮
 │ move                                                         │
-│ h l  ← →  column                                             │
 │ j k  ↑ ↓  row                                                │
-│ ⇥ ⇧⇥      next / previous                                    │
-│ 1-9       tile by number                                     │
+│ ⇥ ⇧⇥      next / previous agent                              │
+│ 1-9       agent by its number on screen                      │
 │ g G       first / last                                       │
 │ u         next blocked                                       │
-│ [ ]       page                                               │
+│ [ ]       scroll a screenful                                 │
+│ n p       next / previous session                            │
+│                                                              │
+│ groups                                                       │
+│ space     fold / unfold the group                            │
+│ h ←       fold the group                                     │
+│ l →       unfold, or enter an open group                     │
+│ -         fold all                                           │
+│ =         unfold all                                         │
 │                                                              │
 │ act on the selected agent                                    │
-│ ↵         jump to this pane, close the board                 │
+│ ↵         jump to this pane; on a header, fold / unfold      │
 │ a         answer / ask this agent                            │
 │ r         review its diff                                    │
 │ f         panel for this pane                                │
@@ -293,10 +412,11 @@ that do not fit scroll: the top border says `1-22 of 31` and the bottom one
 │                                                              │
 │ view                                                         │
 │ ?         this help                                          │
+│ v         tiles / list                                       │
 │ ^L        refresh now                                        │
 │ q esc     close the board                                    │
 │                                                              │
-│ on a tile                                                    │
+│ on a row                                                     │
 │ ▲         needs you                                          │
 │ ✕         error                                              │
 │ ●         running                                            │
@@ -304,10 +424,15 @@ that do not fit scroll: the top border says `1-22 of 31` and the bottom one
 │ ○         idle                                               │
 │ ◆         review pending                                     │
 │ ↵         review sent                                        │
+│ ▾         an open group                                      │
+│ ▸         a folded group                                     │
 │ ▎         the selection                                      │
 │ ◂         tmux's active pane                                 │
 ╰ any key closes ──────────────────────────────────────────────╯
 ```
+
+The tiles' help lists `h l ← →` as columns, `1-9` as tiles by number, `[ ]` as
+pages, and no group keys.
 
 ### The panel's text boxes
 
@@ -551,6 +676,24 @@ sends `prefix + f`.
   first `▲`, else the client's pane, else the first tile (it was always the
   first tile).
 - `board::run` takes `&Opts`; `panel::xdg` is `pub(crate)`.
+
+### Contract changes for the list (for #61)
+
+- The default layout is the grouped list; the tiles move behind `v`, which
+  toggles them in both layouts. The tiles keep every other key.
+- In the list, `h` `l` `←` `→` fold and unfold instead of moving a column,
+  `1`-`9` are the agent rows on screen instead of absolute tiles, and `[` `]`
+  scroll without moving the selection a page. New keys: `space`, `-`, `=`,
+  `n`, `p`, `v`; `↵` on a header toggles its fold.
+- `board.state` version 1 gains `fold <session>` lines after `sel`.
+- The list's header line adds the session count and the error count; the
+  tiles' header is unchanged.
+- The list captures no pane: the worker skips `capture-pane` until `v`.
+- The `?` help is generated per layout; `board-help-{60,100,180}` are the
+  list's, and the tiles' is `board-help-tiles-100`.
+- Two marked seams for #228 in `board.rs`: `row_extra(&Pane, &Theme) ->
+  Vec<Span>`, extra cells on a list row (none today), and `info(&str) ->
+  Option<String>`, where `i` opens a view (today `info %N`).
 
 ### The triage overlay
 

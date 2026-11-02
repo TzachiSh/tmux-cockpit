@@ -9636,6 +9636,49 @@ is "COCKPIT_READONLY writes no board.state" "sel %0" "$(tail -1 "$RBD/state/tmux
 "$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-board: folds survive a reopen (board.state fold lines) =="
+# Step 3 of the board design: the list folds by tmux session, and the folds
+# persist in board.state, so the next board opens folded the same way.
+if need_tmux "the board's folds"; then :; else
+BF="cockpit-bf-$$"; SOCKS="$SOCKS $BF"; BFD=$(mktmpd)
+"$TMUX_REAL" -L "$BF" -f /dev/null new-session -d -s alpha -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BF" new-session -d -s beta 'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta; do
+    bfp=$("$TMUX_REAL" -L "$BF" new-window -d -P -F '#{pane_id}' -t "$s:" 'exec -a claude sleep 3600')
+    "$TMUX_REAL" -L "$BF" set -p -t "$bfp" @panestate running >/dev/null 2>&1
+done
+bf_open() {                   # -> BFW, a board in its own window, its list drawn
+    BFW=$("$TMUX_REAL" -L "$BF" new-window -d -P -F '#{pane_id}' -t alpha: \
+        "env XDG_STATE_HOME=$BFD COCKPIT_LOG=$BFD/tui.log $COCKPIT_TUI_BIN board")
+    until_cap "$BF" "$BFW" '*2 sessions*'
+}
+bf_quit() {                   # q, then wait for the window to go
+    local i
+    "$TMUX_REAL" -L "$BF" send-keys -t "$BFW" q
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$BF" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$BFW" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+bf_state() { tr '\n' ';' < "$BFD/tmux-cockpit/board.state" 2>/dev/null | sed 's/sel %[0-9]*;//'; }
+bf_open || bad "the board opens on the list" "2 sessions" "$("$TMUX_REAL" -L "$BF" capture-pane -p -t "$BFW")"
+"$TMUX_REAL" -L "$BF" send-keys -t "$BFW" -- -
+until_cap "$BF" "$BFW" '*▸ beta*' || bad "- folds every group" "▸ beta" "$("$TMUX_REAL" -L "$BF" capture-pane -p -t "$BFW")"
+bf_quit
+is "board.state keeps one fold line per session" "cockpit-board-state 1;fold alpha;fold beta;" "$(bf_state)"
+bf_open
+case "$("$TMUX_REAL" -L "$BF" capture-pane -p -t "$BFW")" in
+    *'▸ alpha'*'1 folded'*'▸ beta'*'1 folded'*) ok "a reopened board is folded the same way" ;;
+    *) bad "a reopened board is folded the same way" "▸ alpha ... ▸ beta, each 1 folded" "$("$TMUX_REAL" -L "$BF" capture-pane -p -t "$BFW")" ;;
+esac
+"$TMUX_REAL" -L "$BF" send-keys -t "$BFW" =
+until_cap "$BF" "$BFW" '*▾ beta*' || bad "= unfolds every group" "▾ beta" "$("$TMUX_REAL" -L "$BF" capture-pane -p -t "$BFW")"
+bf_quit
+is "and the unfolded board saves no fold line" "cockpit-board-state 1;" "$(bf_state)"
+"$TMUX_REAL" -L "$BF" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.

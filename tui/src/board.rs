@@ -1,5 +1,6 @@
-//! The board: one live-preview tile per agent pane, needs-first. `render` is pure
-//! over `&[Pane]` (no tmux, no clock); `run` is the only impure entry.
+//! The board: a list of agents grouped by tmux session (the default), or one
+//! live-preview tile per agent behind `v`. `render` is pure over `&[Pane]` (no
+//! tmux, no clock); `run` is the only impure entry.
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
 use crate::panel::view::wrap;
 use crate::push::Push;
@@ -11,7 +12,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Padding, Paragraph};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 use unicode_width::UnicodeWidthStr;
@@ -42,6 +43,8 @@ pub struct View<'a> {
     pub lost: bool,
     /// no read has worked since the board opened: no age, no tiles to vouch for
     pub never: bool,
+    /// the grouped list and its selection; `None` draws the tiles (`v`)
+    pub list: Option<&'a Nav>,
 }
 
 /// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
@@ -161,14 +164,14 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         return;
     }
     if let Some(top) = v.help {
-        crate::chrome::help(f, area, v.th, &help_rows(&v.th.g), top);
+        crate::chrome::help(f, area, v.th, &help_rows(&v.th.g, v.list.is_some()), top);
         return;
     }
     if v.panes.is_empty() {
         // no key bar here, but a note still has to be seen: a ✕ one takes the next esc
         let foot = u16::from(v.note.is_some());
         let [head, body, row] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(foot)]).areas(area);
-        header(f, head, v, &grid(area, 0), 0);
+        header(f, head, v, &grid(area, 0), 0, None);
         if let Some(n) = v.note {
             f.render_widget(note_line(v.th, n, row.width as usize), row);
         }
@@ -176,6 +179,8 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         if !v.lost {
             empty(f, body, v.th);
         }
+    } else if let Some(nav) = v.list {
+        list_board(f, area, v, nav);
     } else {
         grid_board(f, area, v);
     }
@@ -194,21 +199,35 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
     };
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
 
-    header(f, head, v, &g, ord.len());
+    header(f, head, v, &g, ord.len(), None);
     tiles(f, body, v, &ord, &g);
     let needs = v.panes[ord[v.sel.min(ord.len() - 1)]].state == State::NeedsInput;
-    footer(f, foot, v, needs);
+    footer(f, foot, v, Focus::Agent(needs));
 }
 
-fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
+/// `sessions` is the list's: it adds the session and error counts (6.1).
+fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Option<usize>) {
     let th = v.th;
     let needs = v.panes.iter().filter(|p| p.state == State::NeedsInput).count();
     let mut left = vec![Span::styled(
         format!(" board {} {n} agent{}", th.g.dot, if n == 1 { "" } else { "s" }),
         Style::new().fg(th.label),
     )];
+    if let Some(s) = sessions {
+        left.push(Span::styled(
+            format!(" {} {s} session{}", th.g.dot, if s == 1 { "" } else { "s" }),
+            Style::new().fg(th.label),
+        ));
+    }
     if needs > 0 {
         left.push(Span::styled(format!(" {} {needs} needs you", th.g.dot), Style::new().fg(th.needs)));
+    }
+    let errors = v.panes.iter().filter(|p| p.state == State::Error).count();
+    if sessions.is_some() && errors > 0 {
+        left.push(Span::styled(
+            format!(" {} {errors} error{}", th.g.dot, if errors == 1 { "" } else { "s" }),
+            Style::new().fg(th.error),
+        ));
     }
     if let Some(s) = v.stale.filter(|_| !v.never) {
         left.push(Span::styled(
@@ -217,6 +236,10 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
         ));
     }
     f.render_widget(Line::from(left), area);
+    // the list says where it is in its own frame's title (D19)
+    if sessions.is_some() {
+        return;
+    }
 
     let first = v.top * g.cols;
     let last = n.min((v.top + g.rows_shown) * g.cols);
@@ -233,13 +256,14 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
     f.render_widget(Line::from(Span::styled(right, Style::new().fg(th.meta))).right_aligned(), area);
 }
 
-fn footer(f: &mut Frame, area: Rect, v: &View, needs: bool) {
+fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
     let th = v.th;
     if let Some(n) = v.note {
         f.render_widget(note_line(th, n, area.width as usize), area);
         return;
     }
-    f.render_widget(crate::chrome::footer(th, hints(&th.g, needs), area.width as usize, 3), area);
+    let ks = hints(&th.g, v.list.is_some(), focus);
+    f.render_widget(crate::chrome::footer(th, ks, area.width as usize, 3), area);
 }
 
 /// A failure note ends with its way out, `esc dismiss`, which the cut never
@@ -265,15 +289,40 @@ fn note_line(th: &Theme, n: &str, w: usize) -> Line<'static> {
     ])
 }
 
-/// The footer's hints from the key table, in priority order, for the selection:
-/// `a` answers a ▲ and asks anything else (D14). Only keys the dispatch takes.
-pub fn hints(g: &Glyphs, needs: bool) -> Vec<(String, String)> {
+/// What has the keys: an agent (`true` on a `▲`), or a list header (`true`
+/// when folded). The tiles only ever have an agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Focus {
+    Agent(bool),
+    Head(bool),
+}
+
+/// The footer's hints from the key table, in priority order, for what has the
+/// keys (D19): `a` answers a ▲ and asks anything else (D14), and a header
+/// lists the fold keys instead. Only keys the dispatch takes there.
+pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
     KEYS.iter()
-        .filter(|k| !k.hint.is_empty())
-        .map(|k| {
-            let key = k.keys.split_whitespace().next().unwrap_or(k.keys);
-            let verb = if k.acts == [Act::Ask] && needs { "answer" } else { k.hint };
-            (names(g, key), verb.to_string())
+        .filter(|k| k.on.shown(list))
+        .filter_map(|k| {
+            let verb = match focus {
+                Focus::Agent(_) => k.hint,
+                Focus::Head(_) => k.head,
+            };
+            if verb.is_empty() {
+                return None;
+            }
+            let verb = match (k.acts, focus) {
+                ([Act::Ask], Focus::Agent(true)) => "answer",
+                ([Act::Toggle], Focus::Head(true)) => "unfold",
+                _ => verb,
+            };
+            // `n p` is one hint for two keys, as the mockups draw it
+            let key = if k.acts == [Act::NextSess, Act::PrevSess] {
+                k.keys
+            } else {
+                k.keys.split_whitespace().next().unwrap_or(k.keys)
+            };
+            Some((names(g, key), verb.to_string()))
         })
         .collect()
 }
@@ -603,20 +652,35 @@ pub fn loading(f: &mut Frame, area: Rect, th: &Theme) {
     card(f, area, th, "board", &["", "reading the fleet \u{2026}", ""], &[]);
 }
 
-/// The `?` rows: the key table by group, then what each glyph on a tile means.
-pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
+/// The `?` rows for the layout on screen (D2): the key table by group, then
+/// what each glyph means.
+pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
     let head = |t: &str| (String::new(), t.to_string());
     let mut out = vec![];
-    for (grp, title) in [(Grp::Move, "move"), (Grp::Act, "act on the selected agent"), (Grp::View, "view")] {
+    let grps: &[(Grp, &str)] = if list {
+        &[
+            (Grp::Move, "move"),
+            (Grp::Fold, "groups"),
+            (Grp::Act, "act on the selected agent"),
+            (Grp::View, "view"),
+        ]
+    } else {
+        &[(Grp::Move, "move"), (Grp::Act, "act on the selected agent"), (Grp::View, "view")]
+    };
+    for &(grp, title) in grps {
         if !out.is_empty() {
             out.push((String::new(), String::new()));
         }
         out.push(head(title));
-        out.extend(KEYS.iter().filter(|k| k.grp == grp).map(|k| (names(g, k.keys), k.desc.to_string())));
+        out.extend(
+            KEYS.iter()
+                .filter(|k| k.grp == grp && k.on.shown(list))
+                .map(|k| (names(g, k.keys), k.desc.to_string())),
+        );
     }
     out.push((String::new(), String::new()));
-    out.push(head("on a tile"));
-    for (k, v) in [
+    out.push(head(if list { "on a row" } else { "on a tile" }));
+    let mut legend = vec![
         (g.needs, "needs you"),
         (g.error, "error"),
         (g.running, "running"),
@@ -624,11 +688,12 @@ pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
         (g.idle, "idle"),
         (g.review_pending, "review pending"),
         (g.review_sent, "review sent"),
-        (g.active, "the selection"),
-        (pane_mark(g), "tmux's active pane"),
-    ] {
-        out.push((k.to_string(), v.to_string()));
+    ];
+    if list {
+        legend.extend([(fold_mark(g, false), "an open group"), (fold_mark(g, true), "a folded group")]);
     }
+    legend.extend([(g.active, "the selection"), (pane_mark(g), "tmux's active pane")]);
+    out.extend(legend.into_iter().map(|(k, v)| (k.to_string(), v.to_string())));
     out
 }
 
@@ -654,13 +719,41 @@ pub enum Act {
     Help,
     Refresh,
     Quit,
+    Fold,
+    Unfold,
+    Toggle,
+    FoldAll,
+    UnfoldAll,
+    NextSess,
+    PrevSess,
+    Layout,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Grp {
     Move,
+    Fold,
     Act,
     View,
+}
+
+/// Which layout a key row belongs to: `h`, `l` and the digits mean different
+/// things in the list and the tiles (D2, 9.1).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum On {
+    Both,
+    List,
+    Tiles,
+}
+
+impl On {
+    pub fn shown(self, list: bool) -> bool {
+        match self {
+            On::Both => true,
+            On::List => list,
+            On::Tiles => !list,
+        }
+    }
 }
 
 pub struct Key {
@@ -668,11 +761,16 @@ pub struct Key {
     pub desc: &'static str,
     pub grp: Grp,
     pub acts: &'static [Act],
-    /// the footer's verb; empty keeps the key out of the footer
+    /// the footer's verb on an agent; empty keeps the key out of that footer
     pub hint: &'static str,
+    /// the footer's verb on a list header (D19); empty keeps it out
+    pub head: &'static str,
+    pub on: On,
 }
 
 /// One table feeds `action`, the footer and the `?` help, so none can drift.
+/// Its order is the footer's priority: the fold keys follow the acts, and `n p`
+/// follows the fold keys, as a header's footer lists them (6.2).
 pub const KEYS: &[Key] = &[
     Key {
         keys: "h l  ← →",
@@ -680,6 +778,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::Left, Act::Right],
         hint: "",
+        head: "",
+        on: On::Tiles,
     },
     Key {
         keys: "j k  ↑ ↓",
@@ -687,13 +787,17 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::Up, Act::Down],
         hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "⇥ ⇧⇥",
-        desc: "next / previous",
+        desc: "next / previous agent",
         grp: Grp::Move,
         acts: &[Act::Next, Act::Prev],
         hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "1-9",
@@ -701,6 +805,17 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::Tile(0)],
         hint: "",
+        head: "",
+        on: On::Tiles,
+    },
+    Key {
+        keys: "1-9",
+        desc: "agent by its number on screen",
+        grp: Grp::Move,
+        acts: &[Act::Tile(0)],
+        hint: "",
+        head: "",
+        on: On::List,
     },
     Key {
         keys: "g G",
@@ -708,6 +823,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::First, Act::Last],
         hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "u",
@@ -715,6 +832,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::NextNeeds],
         hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "[ ]",
@@ -722,6 +841,17 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Move,
         acts: &[Act::PageUp, Act::PageDown],
         hint: "",
+        head: "",
+        on: On::Tiles,
+    },
+    Key {
+        keys: "[ ]",
+        desc: "scroll a screenful",
+        grp: Grp::Move,
+        acts: &[Act::PageUp, Act::PageDown],
+        hint: "",
+        head: "",
+        on: On::List,
     },
     Key {
         keys: "↵",
@@ -729,6 +859,17 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Act,
         acts: &[Act::Jump],
         hint: "jump",
+        head: "",
+        on: On::Tiles,
+    },
+    Key {
+        keys: "↵",
+        desc: "jump to this pane; on a header, fold / unfold",
+        grp: Grp::Act,
+        acts: &[Act::Jump],
+        hint: "jump",
+        head: "",
+        on: On::List,
     },
     Key {
         keys: "a",
@@ -736,6 +877,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Act,
         acts: &[Act::Ask],
         hint: "ask",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "r",
@@ -743,6 +886,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Act,
         acts: &[Act::Review],
         hint: "review",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "f",
@@ -750,6 +895,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Act,
         acts: &[Act::Panel],
         hint: "panel",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "i",
@@ -757,6 +904,62 @@ pub const KEYS: &[Key] = &[
         grp: Grp::Act,
         acts: &[Act::Info],
         hint: "info",
+        head: "",
+        on: On::Both,
+    },
+    Key {
+        keys: "space",
+        desc: "fold / unfold the group",
+        grp: Grp::Fold,
+        acts: &[Act::Toggle],
+        hint: "fold",
+        head: "fold",
+        on: On::List,
+    },
+    Key {
+        keys: "h ←",
+        desc: "fold the group",
+        grp: Grp::Fold,
+        acts: &[Act::Fold],
+        hint: "",
+        head: "",
+        on: On::List,
+    },
+    Key {
+        keys: "l →",
+        desc: "unfold, or enter an open group",
+        grp: Grp::Fold,
+        acts: &[Act::Unfold],
+        hint: "",
+        head: "open",
+        on: On::List,
+    },
+    Key {
+        keys: "-",
+        desc: "fold all",
+        grp: Grp::Fold,
+        acts: &[Act::FoldAll],
+        hint: "",
+        head: "fold all",
+        on: On::List,
+    },
+    Key {
+        keys: "=",
+        desc: "unfold all",
+        grp: Grp::Fold,
+        acts: &[Act::UnfoldAll],
+        hint: "",
+        head: "open all",
+        on: On::List,
+    },
+    Key {
+        keys: "n p",
+        desc: "next / previous session",
+        grp: Grp::Move,
+        acts: &[Act::NextSess, Act::PrevSess],
+        hint: "",
+        head: "sessions",
+        on: On::List,
     },
     Key {
         keys: "?",
@@ -764,6 +967,17 @@ pub const KEYS: &[Key] = &[
         grp: Grp::View,
         acts: &[Act::Help],
         hint: "keys",
+        head: "keys",
+        on: On::Both,
+    },
+    Key {
+        keys: "v",
+        desc: "tiles / list",
+        grp: Grp::View,
+        acts: &[Act::Layout],
+        hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "^L",
@@ -771,6 +985,8 @@ pub const KEYS: &[Key] = &[
         grp: Grp::View,
         acts: &[Act::Refresh],
         hint: "",
+        head: "",
+        on: On::Both,
     },
     Key {
         keys: "q esc",
@@ -778,15 +994,26 @@ pub const KEYS: &[Key] = &[
         grp: Grp::View,
         acts: &[Act::Quit],
         hint: "close",
+        head: "close",
+        on: On::Both,
     },
 ];
 
-pub fn action(k: KeyEvent) -> Option<Act> {
+/// The key's act in the layout on screen: `h` `l` fold in the list and move a
+/// column in the tiles, tree-view convention against grid convention (9.1).
+pub fn action(k: KeyEvent, list: bool) -> Option<Act> {
     use KeyCode as C;
     if k.modifiers.contains(KeyModifiers::CONTROL) {
         return matches!(k.code, C::Char('l')).then_some(Act::Refresh);
     }
     Some(match k.code {
+        C::Char('h') | C::Left if list => Act::Fold,
+        C::Char('l') | C::Right if list => Act::Unfold,
+        C::Char(' ') if list => Act::Toggle,
+        C::Char('-') if list => Act::FoldAll,
+        C::Char('=') if list => Act::UnfoldAll,
+        C::Char('n') if list => Act::NextSess,
+        C::Char('p') if list => Act::PrevSess,
         C::Char('h') | C::Left => Act::Left,
         C::Char('l') | C::Right => Act::Right,
         C::Char('k') | C::Up => Act::Up,
@@ -804,6 +1031,7 @@ pub fn action(k: KeyEvent) -> Option<Act> {
         C::Char('r') => Act::Review,
         C::Char('f') => Act::Panel,
         C::Char('i') => Act::Info,
+        C::Char('v') => Act::Layout,
         C::Char('?') => Act::Help,
         C::Char('q') | C::Esc => Act::Quit,
         _ => return None,
@@ -865,6 +1093,503 @@ fn fit(area: Rect, n: usize, sel: usize, top: usize) -> (usize, usize, Grid) {
     let g = grid(area, n);
     // the same ceiling moved() pages to, or `]` snaps back within a second
     (sel, follow(sel, top.min(g.rows.saturating_sub(1)), &g), g)
+}
+
+// ------------------------------------------------ the list (D1, D3-D6)
+
+/// A list header's fold state. Local, as `PANE_MARK` is: theme.rs has no
+/// fold glyph. The ascii tier borrows tree-view convention.
+const FOLD_MARK: [(&str, &str); 2] = [("▾", "v"), ("▸", ">")];
+
+fn fold_mark(g: &Glyphs, folded: bool) -> &'static str {
+    let (u, a) = FOLD_MARK[usize::from(folded)];
+    if g.ascii { a } else { u }
+}
+
+/// The tmux session a pane lives in: `wher` is `session:window`, and a
+/// session name never holds a `:` (tmux swaps it for `_`).
+pub fn session(p: &Pane) -> &str {
+    p.wher.rsplit_once(':').map_or(p.wher.as_str(), |(s, _)| s)
+}
+
+fn window(p: &Pane) -> &str {
+    p.wher.rsplit_once(':').map_or("", |(_, w)| w)
+}
+
+/// `▲` and `✕`: the rows a fold never hides (D4) and the hot band (D3).
+fn urgent(s: State) -> bool {
+    matches!(s, State::NeedsInput | State::Error)
+}
+
+/// D3: one group per session. Sessions holding a `▲` or `✕` first, then the
+/// rest, each band by name; inside a group, `(state rank, pane id)`. No clock:
+/// a group moves only when it starts or stops needing you.
+pub fn groups(ps: &[Pane]) -> Vec<(&str, Vec<usize>)> {
+    let mut gs: Vec<(&str, Vec<usize>)> = vec![];
+    for i in order(ps) {
+        let s = session(&ps[i]);
+        match gs.iter_mut().find(|(n, _)| *n == s) {
+            Some((_, v)) => v.push(i),
+            None => gs.push((s, vec![i])),
+        }
+    }
+    gs.sort_by_key(|(n, v)| (!v.iter().any(|&i| urgent(ps[i].state)), *n));
+    gs
+}
+
+/// Every agent in list order, folds ignored: what D5's "first `▲`" reads.
+pub fn list_order(ps: &[Pane]) -> Vec<usize> {
+    groups(ps).into_iter().flat_map(|(_, v)| v).collect()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Row {
+    /// a session's header
+    Head(String),
+    /// an index into the panes
+    Agent(usize),
+}
+
+/// The rows on the list: each header, then its agents. A folded group keeps
+/// every `▲` and `✕` row, so folding never hides an agent waiting on you (D4).
+pub fn rows(ps: &[Pane], folds: &BTreeSet<String>) -> Vec<Row> {
+    let mut out = vec![];
+    for (s, v) in groups(ps) {
+        let shut = folds.contains(s);
+        out.push(Row::Head(s.to_string()));
+        out.extend(v.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+    }
+    out
+}
+
+/// The selection is an identity, never an index (D5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Sel {
+    Pane(String),
+    Head(String),
+}
+
+/// The list's state: the selection, the viewport and the folds. Every method
+/// takes the panes, so a refresh and a key go through the same rules.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nav {
+    pub sel: Sel,
+    /// the first row on screen
+    pub top: usize,
+    /// folded sessions; nothing unfolds by itself (D4)
+    pub folds: BTreeSet<String>,
+    /// the row the selection was last placed on
+    row: usize,
+    /// its session and its offset under that header, for D5's fallback
+    at: (String, usize),
+    /// no row yet: the first placement scrolls only as far as it must
+    placed: bool,
+}
+
+/// The list rows a screen of `area` shows: the header, the frame's two
+/// borders and the footer take four.
+pub fn list_room(area: Rect) -> usize {
+    area.height.saturating_sub(4) as usize
+}
+
+/// `n` steps along `ks` (sorted rows) from `r`, wrapping; `None` when empty.
+fn cycle(ks: &[usize], r: usize, fwd: bool) -> Option<usize> {
+    if fwd {
+        ks.iter().find(|&&k| k > r).or(ks.first()).copied()
+    } else {
+        ks.iter().rev().find(|&&k| k < r).or(ks.last()).copied()
+    }
+}
+
+impl Nav {
+    pub fn new(sel: Sel, folds: BTreeSet<String>) -> Self {
+        Self {
+            sel,
+            top: 0,
+            folds,
+            row: 0,
+            at: (String::new(), 0),
+            placed: false,
+        }
+    }
+
+    /// The selection's row: by identity; a pane a fold hides, its header; a
+    /// pane that is gone, the row now at its place in its session, else that
+    /// session's header; else the first row (D5). Pure, so render can call it.
+    pub fn find(&self, rows: &[Row], ps: &[Pane]) -> usize {
+        let head = |s: &str| rows.iter().position(|r| matches!(r, Row::Head(h) if h == s));
+        let hit = match &self.sel {
+            Sel::Pane(id) => rows
+                .iter()
+                .position(|r| matches!(r, Row::Agent(i) if ps[*i].id == *id))
+                .or_else(|| ps.iter().find(|p| p.id == *id).and_then(|p| head(session(p)))),
+            Sel::Head(s) => head(s),
+        };
+        hit.or_else(|| {
+            let (s, k) = &self.at;
+            let h = head(s)?;
+            let end = rows[h + 1..]
+                .iter()
+                .position(|r| matches!(r, Row::Head(_)))
+                .map_or(rows.len(), |e| h + 1 + e);
+            Some(if h + k < end { h + k } else { h })
+        })
+        .unwrap_or(0)
+    }
+
+    /// Make row `r` the selection, and remember where it sat.
+    fn put(&mut self, rows: &[Row], ps: &[Pane], r: usize) {
+        let Some(row) = rows.get(r) else { return };
+        self.sel = match row {
+            Row::Head(s) => Sel::Head(s.clone()),
+            Row::Agent(i) => Sel::Pane(ps[*i].id.clone()),
+        };
+        let h = rows[..=r].iter().rposition(|r| matches!(r, Row::Head(_))).unwrap_or(0);
+        if let Row::Head(s) = &rows[h] {
+            self.at = (s.clone(), r - h);
+        }
+        self.row = r;
+    }
+
+    /// Keep the viewport in the list and the selection in the viewport.
+    fn clamp(&mut self, n: usize, room: usize) {
+        let room = room.max(1);
+        self.top = self.top.min(n.saturating_sub(room));
+        if self.row < self.top {
+            self.top = self.row;
+        } else if self.row >= self.top + room {
+            self.top = self.row + 1 - room;
+        }
+    }
+
+    /// Re-place the selection after the rows changed under it, a refresh or a
+    /// fold: by identity, on the screen row it had where that fits, so the
+    /// viewport moves and the cursor does not (D5).
+    pub fn settle(&mut self, ps: &[Pane], room: usize) {
+        let rows = rows(ps, &self.folds);
+        let r = self.find(&rows, ps);
+        if self.placed {
+            let screen = self.row.saturating_sub(self.top);
+            self.top = r.saturating_sub(screen);
+        }
+        self.placed = !rows.is_empty();
+        self.put(&rows, ps, r);
+        self.clamp(rows.len(), room);
+    }
+
+    /// The selection's session and whether it is a header.
+    fn group_of(&self, rows: &[Row], ps: &[Pane], r: usize) -> Option<(String, bool)> {
+        match rows.get(r)? {
+            Row::Head(s) => Some((s.clone(), true)),
+            Row::Agent(i) => Some((session(&ps[*i]).to_string(), false)),
+        }
+    }
+
+    /// What has the keys, for the footer.
+    pub fn focus(&self, ps: &[Pane]) -> Focus {
+        let rows = rows(ps, &self.folds);
+        match rows.get(self.find(&rows, ps)) {
+            Some(Row::Head(s)) => Focus::Head(self.folds.contains(s)),
+            Some(Row::Agent(i)) => Focus::Agent(ps[*i].state == State::NeedsInput),
+            None => Focus::Agent(false),
+        }
+    }
+
+    /// The selected agent; `None` on a header.
+    pub fn pane<'p>(&self, ps: &'p [Pane]) -> Option<&'p Pane> {
+        let rows = rows(ps, &self.folds);
+        match rows.get(self.find(&rows, ps)) {
+            Some(Row::Agent(i)) => Some(&ps[*i]),
+            _ => None,
+        }
+    }
+
+    /// One key on the list, `room` rows on screen (D4, D6).
+    pub fn act(&mut self, a: Act, ps: &[Pane], room: usize) {
+        let rows = rows(ps, &self.folds);
+        let Some(last) = rows.len().checked_sub(1) else { return };
+        let room = room.max(1);
+        // the viewport render draws, which a resize may have moved
+        let r = self.find(&rows, ps);
+        self.row = r;
+        self.clamp(rows.len(), room);
+        let agents: Vec<usize> = (0..rows.len()).filter(|&k| matches!(rows[k], Row::Agent(_))).collect();
+        let heads: Vec<usize> = (0..rows.len()).filter(|&k| matches!(rows[k], Row::Head(_))).collect();
+        let to = match a {
+            Act::Up => Some(r.saturating_sub(1)),
+            Act::Down => Some((r + 1).min(last)),
+            Act::First => Some(0),
+            Act::Last => Some(last),
+            Act::Next => cycle(&agents, r, true),
+            Act::Prev => cycle(&agents, r, false),
+            Act::NextSess => cycle(&heads, r, true),
+            Act::PrevSess => cycle(&heads, r, false),
+            Act::NextNeeds => {
+                let needs: Vec<usize> = agents
+                    .iter()
+                    .copied()
+                    .filter(|&k| matches!(rows[k], Row::Agent(i) if ps[i].state == State::NeedsInput))
+                    .collect();
+                cycle(&needs, r, true)
+            }
+            // the Nth agent row on screen, never an absolute number (D6)
+            Act::Tile(n) => agents
+                .iter()
+                .copied()
+                .filter(|&k| k >= self.top && k < self.top + room)
+                .nth(usize::from(n.max(1)) - 1),
+            Act::PageUp | Act::PageDown => {
+                // a screenful; the selection only clamps to stay on screen
+                self.top = if a == Act::PageUp {
+                    self.top.saturating_sub(room)
+                } else {
+                    (self.top + room).min(rows.len().saturating_sub(room))
+                };
+                let k = r.clamp(self.top, (self.top + room - 1).min(last));
+                self.put(&rows, ps, k);
+                return;
+            }
+            Act::Fold | Act::Unfold | Act::Toggle | Act::FoldAll | Act::UnfoldAll => {
+                return self.fold(a, &rows, ps, r, room);
+            }
+            _ => None,
+        };
+        let Some(t) = to else { return };
+        self.put(&rows, ps, t);
+        // a digit or `u` that lands in a folded group unfolds it (D4)
+        if matches!(a, Act::Tile(_) | Act::NextNeeds)
+            && let Some((s, _)) = self.group_of(&rows, ps, t)
+            && self.folds.remove(&s)
+        {
+            return self.settle(ps, room);
+        }
+        self.clamp(rows.len(), room);
+    }
+
+    fn fold(&mut self, a: Act, rows: &[Row], ps: &[Pane], r: usize, room: usize) {
+        let Some((s, on_head)) = self.group_of(rows, ps, r) else { return };
+        let folded = self.folds.contains(&s);
+        match a {
+            // on an open header, `l` enters the group
+            Act::Unfold if on_head && !folded => {
+                if let Some(Row::Agent(_)) = rows.get(r + 1) {
+                    self.put(rows, ps, r + 1);
+                    self.clamp(rows.len(), room);
+                }
+                return;
+            }
+            Act::Unfold => {
+                self.folds.remove(&s);
+            }
+            Act::Fold => {
+                self.folds.insert(s);
+            }
+            Act::Toggle if folded => {
+                self.folds.remove(&s);
+            }
+            Act::Toggle => {
+                self.folds.insert(s);
+            }
+            Act::FoldAll => self.folds.extend(rows.iter().filter_map(|r| match r {
+                Row::Head(h) => Some(h.clone()),
+                Row::Agent(_) => None,
+            })),
+            _ => self.folds.clear(),
+        }
+        // a selected agent the fold hid gives way to its header (find's rule)
+        self.settle(ps, room);
+    }
+}
+
+// #228: the list row's extra cells, drawn between the message and the age:
+// the diff stat, the review mark and the branch go here. None today.
+pub fn row_extra(_p: &Pane, _th: &Theme) -> Vec<Span<'static>> {
+    Vec::new()
+}
+
+/// The window index column: as wide as the widest index in the fleet.
+fn win_w(ps: &[Pane]) -> usize {
+    ps.iter().map(|p| window(p).width()).max().unwrap_or(1).max(1)
+}
+
+/// The selected row's text: the bar's colour is fg, never the dim role (D17).
+/// The band is reverse video, which reads in every tier and under NO_COLOR.
+/// #222 adds a `sel` background role to theme.rs; once it lands, the band
+/// becomes that background and REVERSED goes.
+fn band(st: Style, sel: bool, th: &Theme) -> Style {
+    if sel {
+        st.fg(th.value).add_modifier(Modifier::REVERSED)
+    } else {
+        st
+    }
+}
+
+/// One agent row (6.1): `▎ 1 ▲◆ 0 server  Do you want…  4m12◂`.
+#[allow(clippy::too_many_arguments)]
+fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, th: &Theme) -> Line<'static> {
+    let g = &th.g;
+    let (gl, gl_c) = th.glyph(p.state);
+    let (rv, rv_c) = th.review_mark(&p.review);
+    let extra = row_extra(p, th);
+    let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
+    // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
+    let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
+    let flex = w.saturating_sub(fixed + extra_w);
+    let name_w = (flex / 4).clamp(6, 20).min(flex);
+    let msg_w = flex.saturating_sub(name_w);
+    let msg = match p.state {
+        State::Unknown => "idle".to_string(),
+        State::NeedsInput | State::Error if !p.msg.is_empty() => g.trunc(&p.msg, msg_w),
+        _ if p.doing.is_empty() => g.trunc(g.dash, msg_w),
+        _ => g.trunc_middle(&p.doing, msg_w),
+    };
+    // idle has no age worth reading: the word says it (6.1)
+    let age = match p.state {
+        State::Unknown => String::new(),
+        _ => p.since.map(fmt_dur).unwrap_or_default(),
+    };
+    let rail_c = match (p.state == State::NeedsInput, p.since) {
+        (true, Some(s)) if s >= 300 => th.needs,
+        (true, Some(s)) if s >= 60 => th.error,
+        _ => th.meta,
+    };
+    let text_c = if dimmed(p.state) { th.quote } else { th.value };
+    let num = num.map_or(" ".to_string(), |n| n.to_string());
+    let mut spans = vec![
+        Span::styled(if sel { g.active } else { " " }, Style::new().fg(th.accent)),
+        Span::styled(" ", band(Style::new(), sel, th)),
+        Span::styled(num, band(Style::new().fg(th.meta), sel, th)),
+        Span::styled(" ", band(Style::new(), sel, th)),
+        Span::styled(
+            gl,
+            band(
+                Style::new()
+                    .fg(gl_c)
+                    .add_modifier(if urgent(p.state) { Modifier::BOLD } else { Modifier::empty() }),
+                sel,
+                th,
+            ),
+        ),
+        Span::styled(rv, band(Style::new().fg(rv_c), sel, th)),
+        Span::styled(" ", band(Style::new(), sel, th)),
+        Span::styled(
+            format!("{:>ww$} ", g.trunc(window(p), ww)),
+            band(Style::new().fg(th.label), sel, th),
+        ),
+        Span::styled(
+            pad(g.trunc(p.label(), name_w), name_w + 1),
+            band(Style::new().fg(th.value), sel, th),
+        ),
+        Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c), sel, th)),
+    ];
+    spans.extend(extra.into_iter().map(|s| {
+        let st = band(s.style, sel, th);
+        s.style(st)
+    }));
+    spans.push(Span::styled(
+        format!(" {:>RAIL_W$}", g.trunc(&age, RAIL_W)),
+        band(Style::new().fg(rail_c), sel, th),
+    ));
+    spans.push(Span::styled(
+        if active { pane_mark(g) } else { " " },
+        band(Style::new().fg(th.accent), sel, th),
+    ));
+    Line::from(spans)
+}
+
+/// One header (6.1, 6.2): `▾ api ──── ▲1 ●2 ✓1`, folded `▸ web ── 3 folded · ▲1 ●1`.
+fn head_row(name: &str, members: &[usize], ps: &[Pane], folded: bool, sel: bool, w: usize, th: &Theme) -> Line<'static> {
+    let g = &th.g;
+    let mut counts: Vec<Span> = vec![];
+    for st in [State::NeedsInput, State::Error, State::Running, State::Done, State::Unknown] {
+        let n = members.iter().filter(|&&i| ps[i].state == st).count();
+        if n > 0 {
+            let (gl, c) = th.glyph(st);
+            counts.push(Span::styled(format!(" {gl}"), band(Style::new().fg(c), sel, th)));
+            counts.push(Span::styled(n.to_string(), band(Style::new().fg(th.value), sel, th)));
+        }
+    }
+    if folded {
+        let hid = members.iter().filter(|&&i| !urgent(ps[i].state)).count();
+        let lead = if hid > 0 {
+            format!(" {hid} folded {}", g.dot)
+        } else {
+            format!(" folded {}", g.dot)
+        };
+        counts.insert(0, Span::styled(lead, band(Style::new().fg(th.value), sel, th)));
+    }
+    let counts_w: usize = counts.iter().map(|s| s.content.width()).sum::<usize>() + 2;
+    // `▎ ▾ ` + name + ` ` + rule + counts + ` ` + the active column
+    let name = g.trunc(name, w.saturating_sub(4 + 1 + 3 + counts_w).max(1));
+    let rule = w.saturating_sub(4 + name.width() + 1 + counts_w);
+    let mut spans = vec![
+        Span::styled(if sel { g.active } else { " " }, Style::new().fg(th.accent)),
+        Span::styled(format!(" {} ", fold_mark(g, folded)), band(Style::new().fg(th.label), sel, th)),
+        Span::styled(
+            format!("{name} "),
+            band(Style::new().fg(th.value).add_modifier(Modifier::BOLD), sel, th),
+        ),
+        Span::styled(g.plain.horizontal_top.repeat(rule), band(Style::new().fg(th.meta), sel, th)),
+    ];
+    spans.extend(counts);
+    spans.push(Span::styled("  ", band(Style::new(), sel, th)));
+    Line::from(spans)
+}
+
+fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
+    let th = v.th;
+    let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    let gs = groups(v.panes);
+    header(f, head, v, &grid(area, 0), v.panes.len(), Some(gs.len()));
+
+    let rows = rows(v.panes, &nav.folds);
+    let room = list_room(area).max(1);
+    let r = nav.find(&rows, v.panes);
+    // the same clamp Nav applies; a resize can land between a key and a draw
+    let mut top = nav.top.min(rows.len().saturating_sub(room));
+    if r < top {
+        top = r;
+    } else if r >= top + room {
+        top = r + 1 - room;
+    }
+    let mut block = Block::bordered()
+        .border_set(th.g.plain)
+        .border_style(Style::new().fg(th.meta))
+        .title(Line::from(Span::styled(" sessions ", Style::new().fg(th.label))));
+    let last = rows.len().min(top + room);
+    if top > 0 || last < rows.len() {
+        // where the list is, when it does not fit (D19, P10)
+        let n = format!(" {}-{last} of {} ", top + 1, rows.len());
+        block = block.title(Line::from(Span::styled(n, Style::new().fg(th.value))).right_aligned());
+    }
+    let inner = block.inner(body);
+    f.render_widget(block, body);
+
+    let w = inner.width as usize;
+    let ww = win_w(v.panes);
+    let mut digit = 0;
+    let lines: Vec<Line> = rows[top..last]
+        .iter()
+        .enumerate()
+        .map(|(k, row)| {
+            let sel = top + k == r;
+            match row {
+                Row::Head(s) => {
+                    let members = gs.iter().find(|(n, _)| n == s).map(|(_, m)| m.as_slice()).unwrap_or(&[]);
+                    head_row(s, members, v.panes, nav.folds.contains(s), sel, w, th)
+                }
+                Row::Agent(i) => {
+                    // the first nine agent rows on screen carry a digit (D6)
+                    digit += 1;
+                    let num = (digit <= 9).then_some(digit);
+                    let p = &v.panes[*i];
+                    agent_row(p, num, sel, p.id == v.active, ww, w, th)
+                }
+            }
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), inner);
+    footer(f, foot, v, nav.focus(v.panes));
 }
 
 // ------------------------------------------------ the return trip (D9, D20)
@@ -959,11 +1684,12 @@ pub const STATE_MAX: u64 = 64 * 1024;
 /// One line of the wrapper's; far over any message it writes.
 pub const NOTE_MAX: u64 = 4 * 1024;
 
-/// What `board.state` keeps. Steps 3 and 4 append their `fold` and `filter`
-/// lines to the same version.
+/// What `board.state` keeps: the selection, then one `fold <session>` line per
+/// folded session. Step 4 appends its `filter` line to the same version.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Saved {
     pub sel: Option<String>,
+    pub folds: BTreeSet<String>,
 }
 
 /// `None` with no usable HOME: a relative path would land in the cwd.
@@ -977,7 +1703,15 @@ pub fn state_text(s: &Saved) -> String {
     if let Some(p) = &s.sel {
         b.push_str(&format!("sel {p}\n"));
     }
+    for f in &s.folds {
+        b.push_str(&format!("fold {f}\n"));
+    }
     b
+}
+
+/// A session name as a `fold` line holds it: one line, no control character.
+fn fold_name(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
 }
 
 /// Strict: the head, then known `key value` lines, each in its place.
@@ -990,7 +1724,8 @@ pub fn parse_state(body: &str) -> Result<Saved, String> {
     let mut s = Saved::default();
     for l in lines {
         match l.split_once(' ') {
-            Some(("sel", p)) if s.sel.is_none() && is_pane_id(p) => s.sel = Some(p.to_string()),
+            Some(("sel", p)) if s.sel.is_none() && s.folds.is_empty() && is_pane_id(p) => s.sel = Some(p.to_string()),
+            Some(("fold", n)) if fold_name(n) && s.folds.insert(n.to_string()) => {}
             _ => return Err(format!("a bad line [{}]", l.chars().take(40).collect::<String>())),
         }
     }
@@ -1065,6 +1800,31 @@ pub fn read_note(path: &std::path::Path) -> Result<Option<String>, String> {
     Ok((!line.is_empty()).then(|| line.to_string()))
 }
 
+/// The tile a pane id sits on, `0` when it is gone.
+fn tile_of(ps: &[Pane], id: &str) -> usize {
+    order(ps).iter().position(|&i| ps[i].id == id).unwrap_or(0)
+}
+
+/// The list selection as a pane id: a header gives its first agent, which is
+/// what `sel %N` can hold. `ps` is never empty here.
+fn sel_id(ps: &[Pane], nav: &Nav) -> String {
+    if let Some(p) = nav.pane(ps) {
+        return p.id.clone();
+    }
+    let lo = list_order(ps);
+    let first = match &nav.sel {
+        Sel::Head(s) => lo.iter().find(|&&i| session(&ps[i]) == s),
+        Sel::Pane(_) => None,
+    };
+    ps[*first.unwrap_or(&lo[0])].id.clone()
+}
+
+// #228: the one place `i` opens a view. Today it exits with `info %N` for the
+// wrapper to run; `None` would keep the board open, for a view drawn in-process.
+fn info(id: &str) -> Option<String> {
+    Some(format!("info {id}"))
+}
+
 const DRAW_BUDGET: u8 = 5;
 
 fn transient(e: &std::io::Error) -> bool {
@@ -1077,6 +1837,8 @@ struct Want {
     area: Rect,
     sel: usize,
     top: usize,
+    /// the list draws no preview, so it needs no capture
+    tiles: bool,
 }
 
 struct Snapshot {
@@ -1107,7 +1869,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         let ord = order(&panes);
         // visible tiles only: each capture is a fork. A server that did not
         // answer list-panes fails every capture too, and the last ones stay
-        let shown = if ok {
+        let shown = if ok && want.tiles {
             top * g.cols..panes.len().min((top + g.rows_shown) * g.cols)
         } else {
             0..0
@@ -1171,6 +1933,8 @@ pub fn run(o: &Opts) -> Option<String> {
     };
     // the selection to restore once the first good read names its pane
     let mut want = Some(o.select.clone().or(saved.sel));
+    // the list is the default layout; `v` swaps to the tiles (D2)
+    let (mut list, mut nav) = (true, Nav::new(Sel::Head(String::new()), saved.folds));
     let push = Push::start();
     // no text box to paste into: the board keeps the input it always had
     let mut term = match crate::backend::init(false, false) {
@@ -1201,18 +1965,24 @@ pub fn run(o: &Opts) -> Option<String> {
         area: area(term.size().unwrap_or_default()),
         sel,
         top,
+        tiles: !list,
     };
     std::thread::spawn(move || worker(want_rx, snap_tx, first));
     // a failed send means the worker is gone, which the snapshot arm notices
-    let ask = |a: Rect, sel: usize, top: usize| {
-        let _ = want_tx.send(Want { area: a, sel, top });
+    let ask = |a: Rect, sel: usize, top: usize, list: bool| {
+        let _ = want_tx.send(Want {
+            area: a,
+            sel,
+            top,
+            tiles: !list,
+        });
     };
 
     loop {
         // a push only pulls the next fetch forward, so a missed signal costs
         // one second and never a hang
         if push.pending() {
-            ask(area(term.size().unwrap_or_default()), sel, top);
+            ask(area(term.size().unwrap_or_default()), sel, top, list);
         }
         if note.as_ref().is_some_and(|n| n.gone(Instant::now())) {
             note = None;
@@ -1237,13 +2007,18 @@ pub fn run(o: &Opts) -> Option<String> {
                     && !panes.is_empty()
                     && let Some(w) = want.take()
                 {
-                    sel = open_sel(&panes, &order(&panes), w.as_deref(), &active);
+                    // D5 reads "the first ▲" in the order on screen: the list's
+                    let lo = list_order(&panes);
+                    let id = panes[lo[open_sel(&panes, &lo, w.as_deref(), &active)]].id.clone();
+                    sel = tile_of(&panes, &id);
+                    nav.sel = Sel::Pane(id);
                 }
+                nav.settle(&panes, list_room(here));
                 let was = top;
                 (sel, top, _) = fit(here, panes.len(), sel, top);
                 // the restored selection can sit below the first fetch's viewport
-                if top != was {
-                    ask(here, sel, top);
+                if top != was && !list {
+                    ask(here, sel, top, list);
                 }
                 let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
                 if h != last_hash || !loaded {
@@ -1289,6 +2064,7 @@ pub fn run(o: &Opts) -> Option<String> {
                 stale,
                 lost: reads.lost(now),
                 never: reads.good.is_none(),
+                list: list.then_some(&nav),
             };
             // size() errno can name its tput fallback rather than the terminal,
             // so count failures instead of printing them
@@ -1319,7 +2095,9 @@ pub fn run(o: &Opts) -> Option<String> {
         };
         // a resize is the same request as USR1: look again
         if let Some(Event::Resize(..)) = &ev {
-            ask(area(term.size().unwrap_or_default()), sel, top);
+            let here = area(term.size().unwrap_or_default());
+            nav.settle(&panes, list_room(here));
+            ask(here, sel, top, list);
             dirty = true;
         }
         let Some(Event::Key(k)) = ev else { continue };
@@ -1335,7 +2113,7 @@ pub fn run(o: &Opts) -> Option<String> {
             // a help screen you have to learn a key to leave is a joke: any
             // key but a scroll key closes it
             let rows = here.height.saturating_sub(2) as usize;
-            help = crate::chrome::scroll(k.code, t, help_rows(&th.g).len().saturating_sub(rows), rows);
+            help = crate::chrome::scroll(k.code, t, help_rows(&th.g, list).len().saturating_sub(rows), rows);
             continue;
         }
         if !too_small(here)
@@ -1349,59 +2127,79 @@ pub fn run(o: &Opts) -> Option<String> {
                 continue;
             }
         }
-        let Some(a) = action(k) else { continue };
+        let Some(a) = action(k, list) else { continue };
         // under the floor or with no tiles nobody can see what a key would do
         if too_small(here) || panes.is_empty() {
             match a {
                 Act::Quit => break,
                 Act::Help if !too_small(here) => help = Some(0),
-                Act::Refresh => ask(here, sel, top),
+                Act::Refresh => ask(here, sel, top, list),
                 _ => {}
             }
             continue;
         }
         let ord = order(&panes);
         let g = grid(here, panes.len());
-        let p = &panes[ord[sel]];
-        let id = p.id.clone();
-        match a {
-            Act::Quit => break,
-            Act::Help => help = Some(0),
-            Act::Refresh => ask(here, sel, top),
-            Act::Jump => {
+        let room = list_room(here);
+        // the agent the act keys work on; `None` on a list header, which offers none
+        let p = if list { nav.pane(&panes) } else { Some(&panes[ord[sel]]) };
+        let id = p.map(|p| p.id.clone()).unwrap_or_default();
+        match (a, p) {
+            (Act::Quit, _) => break,
+            (Act::Help, _) => help = Some(0),
+            (Act::Refresh, _) => ask(here, sel, top, list),
+            (Act::Layout, _) => {
+                // the selection crosses over by identity; a header gives its first agent
+                if list {
+                    sel = tile_of(&panes, &sel_id(&panes, &nav));
+                    (sel, top, _) = fit(here, panes.len(), sel, 0);
+                } else {
+                    nav.sel = Sel::Pane(id);
+                    nav.settle(&panes, room);
+                }
+                list = !list;
+                ask(here, sel, top, list);
+            }
+            // ↵ on a header toggles its fold (D4)
+            (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
+            (Act::Ask | Act::Review | Act::Panel | Act::Info, None) => {}
+            (Act::Jump, Some(_)) => {
                 action_line = Some(format!("jump {id}"));
                 break;
             }
-            Act::Review => {
+            (Act::Review, Some(_)) => {
                 action_line = Some(format!("review {id}"));
                 break;
             }
-            Act::Panel => {
+            (Act::Panel, Some(_)) => {
                 action_line = Some(format!("panel {id}"));
                 break;
             }
-            Act::Info => {
-                action_line = Some(format!("info {id}"));
-                break;
+            (Act::Info, Some(_)) => {
+                if let Some(line) = info(&id) {
+                    action_line = Some(line);
+                    break;
+                }
             }
-            // `a` on a blocked tile jumps; there is no inline reply yet
-            Act::Ask if p.state == State::NeedsInput => {
+            // `a` on a blocked agent jumps; there is no inline reply yet
+            (Act::Ask, Some(p)) if p.state == State::NeedsInput => {
                 action_line = Some(format!("jump {id}"));
                 break;
             }
-            Act::Ask => {
+            (Act::Ask, Some(p)) => {
                 let msg = format!(
                     "{} is not waiting on you {} {} jumps there, /btw asks it while it works",
                     p.wher, th.g.dot, th.g.enter
                 );
                 note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
             }
+            _ if list => nav.act(a, &panes, room),
             _ => {
                 let was = top;
                 (sel, top) = moved(a, sel, panes.len(), &g, top, &panes, &ord);
                 // newly visible tiles need a capture now, not at the next second
                 if top != was {
-                    ask(here, sel, top);
+                    ask(here, sel, top, list);
                 }
             }
         }
@@ -1410,8 +2208,19 @@ pub fn run(o: &Opts) -> Option<String> {
     // the selection the next board opens on, this trip's or the next prefix w's
     // a quit before a good read placed the selection would save row 0 over the kept one
     if let (Some(p), false) = (&path, crate::data::readonly() || panes.is_empty() || want.is_some()) {
-        let id = panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone();
-        if let Err(e) = write_state(p, &Saved { sel: Some(id) }) {
+        let id = if list {
+            sel_id(&panes, &nav)
+        } else {
+            panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone()
+        };
+        // a fold outlives its session only until the next save
+        let folds = nav
+            .folds
+            .iter()
+            .filter(|f| panes.iter().any(|p| session(p) == *f))
+            .cloned()
+            .collect();
+        if let Err(e) = write_state(p, &Saved { sel: Some(id), folds }) {
             eprintln!("cockpit-tui: cannot write {}: {e}", p.display());
         }
     }
