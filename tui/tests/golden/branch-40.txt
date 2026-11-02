@@ -1,5 +1,5 @@
 " branch> ▏                          1/5 "
-" alt-↵ new · on main · repo             "
+" on main · repo                         "
 "▎ ●  main                 (2 hours ago) "
 "     feat/246-branch      (3 hours ago) "
 "   ⑂ fix/Left-Click       (2 days ago) …"
@@ -11,4 +11,4 @@
 "                                        "
 "                                        "
 "                                        "
-" ↵ choose   F1 keys   esc cancel        "
+" ↵ switch   F1 keys   esc cancel        "

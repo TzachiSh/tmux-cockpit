@@ -21,4 +21,4 @@
 "                                │                                               "
 "                                │                                               "
 "                                │                                               "
-" ↵ choose   ↑↓ move   F1 keys   esc cancel                                      "
+" ↵ switch   alt-↵ new   ↑↓ move   F1 keys   esc cancel                          "

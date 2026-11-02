@@ -1,5 +1,6 @@
 //! tmux and transcript reads. The frozen contract (#61) is "The freeze" in docs/tui.md.
 pub mod gitsafe;
+pub mod sessions;
 pub mod transcript;
 
 use gitsafe::{git, tree_stat};

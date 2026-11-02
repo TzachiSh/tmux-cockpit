@@ -1,5 +1,5 @@
 " branch> ▏                                              1/5 "
-" alt-↵ new · on main · repo                                 "
+" on main · repo                                             "
 "▎ ●  main              …│ * dea82ca (HEAD -> main) Merge pu…"
 "     feat/246-branch   …│ |\                                "
 "   ⑂ fix/Left-Click    …│ | * 3f1c2d0 Add a Rust picker     "
@@ -13,4 +13,4 @@
 "                        │                                   "
 "                        │                                   "
 "                        │                                   "
-" ↵ choose   ↑↓ move   F1 keys   esc cancel                  "
+" ↵ switch   alt-↵ new   ↑↓ move   F1 keys   esc cancel      "

@@ -157,7 +157,7 @@ review_base() {               # <dir> [auto|since-review|branch|uncommitted] [br
     printf 'HEAD\tuncommitted\tuncommitted\n'
 }
 
-# The mode after CUR among those that hold, wrapping -- ^B's cycle.
+# The mode after CUR among those that hold, wrapping -- b's cycle at the prompt.
 next_base() {                 # <dir> <current-mode>
     local dir=$1 cur=$2 m first="" prev="" out
     for m in since-review branch uncommitted; do
@@ -170,7 +170,7 @@ next_base() {                 # <dir> <current-mode>
 }
 
 # Exit 0 when PANE's tree differs from its review base -- the one question the
-# Stop hook asks. Reads the mode the pane's own review chose with ^B, if any.
+# Stop hook asks. Reads the mode the pane's own review chose with b, if any.
 delta_mode() {                # <pane>
     local pane=$1 dir root sess mode
     dir=$(pane_dir "$pane")
@@ -318,14 +318,14 @@ lines_mode() {
     fi
     if [ -n "$reason" ]; then
         local big="diff too large to anchor line-by-line ($reason) — review it directly"
-        # Offset 1 (the preview's first line) so the 5-field split in rows_mode
+        # Offset 1 (the preview's first line) so the 5-field split of a reader
         # never meets a short row -- this notice has no file to scroll anyway.
         printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
         return 0
     fi
 
     # The files tree_diff kept away from git, as one notice row on the
-    # sentinel every reader already refuses (attach, ^Y, mark_rows).
+    # sentinel every reader already refuses.
     local skipped
     skipped=$(big_files "$dir" | awk -F'\t' '{ printf "%s%s (%d MB)", (n++ ? ", " : ""), $2, $1 / 1048576 }')
     if [ -n "$skipped" ]; then
@@ -524,82 +524,6 @@ lines_mode() {
     ' <(printf '%s\n' "$numstat") <(printf '%s\n' "$raw") \
         | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 -k3,3 \
         | cut -f4-
-}
-
-# The snapshot: lines_mode's rows, written ONCE per popup, re-marked after.
-#
-# And on any tree with something to review, that ONE parse is the only one
-# this popup pays: it lands in "<store>.rows" and every rows_mode below --
-# fzf's own reload() after each pinned comment, and the two rebuilds on the
-# keep-reviewing paths -- reads it back and only re-marks it. (A clean tree
-# writes an empty snapshot, which rows_mode declines, so that one case
-# still parses twice before the "no uncommitted changes" exit below. It has
-# nothing to parse.) The snapshot is deliberately NOT refreshed afterwards:
-# the rows a reviewer comments on must stay the rows the reviewer SAW, even
-# if the agent writes to the tree while the popup is up. (That is the
-# phase-0 mitigation for reviewing a live tree; it is not a diff cache that
-# outlives anything -- it dies with the store below.)
-#
-# Guarded on a non-empty store because "$store.rows" with no store is
-# ".rows", a real path in whatever directory this was run from.
-#
-# `umask 077` + `set -C` in the same subshell that does the writing, the
-# discipline deliver() already uses for the oversized-review file -- and
-# this file needs it MORE, because its name is DERIVABLE. session_dir()
-# builds the store's path from the pane id and the repo root's cksum, and
-# "<store>.rows" is one suffix away from that -- inside a 0700 dir under
-# $HOME, but O_EXCL still earns its keep against a link planted by anyone
-# who can write there. The file holds the entire uncommitted diff. A plain
-# `>` was wrong twice over: it created the
-# snapshot at the caller's umask (0664 here -- the whole diff
-# world-readable, while the store beside it is 0600), and it FOLLOWED a
-# symlink already sitting at that name, so the diff could be written into
-# a file of someone else's choosing and their file truncated to make room.
-# noclobber makes the open O_CREAT|O_EXCL, which refuses an existing path
-# -- a symlink included, dangling or not -- and umask makes what it does
-# create born 0600, with no create-then-chmod window.
-#
-# The `rm -f` first is for a resumed session's stale snapshot, which set -C
-# would otherwise refuse to replace -- but it is guarded, not unconditional:
-# cleared only when "$2.rows" is a plain file, so a planted symlink is left
-# standing here and still hits the noclobber refusal below, which sweeps it
-# up (unlinked, never followed) the same as always.
-#
-# A refused write is not an error worth stopping for: the `rm -f` unlinks
-# whatever was squatting the name (unlink never follows a symlink, so the
-# victim is untouched) and leaves no snapshot, and rows_mode simply
-# derives the rows from the tree instead. Slower, correct, no popup lost.
-snapshot() {                  # <dir> <store>
-    [ -n "${2:-}" ] || return 0
-    [ -L "$2.rows" ] || rm -f -- "$2.rows"
-    (umask 077; set -C; lines_mode "$1" > "$2.rows") 2>/dev/null || rm -f -- "$2.rows"
-}
-
-# Comments whose "## path:line (sign)" header matches no row in the
-# snapshot: the agent moved the line since the comment was pinned (dev lens
-# §2.2). They still deliver -- the quoted fragment is what the agent anchors
-# on -- so this only NAMES them. Streams told apart by FILENAME, as in
-# mark_rows: an empty store makes NR == FNR lie.
-stale_keys() {                # <store> <rows-file>  -> stale headers, one per line
-    # A refused snapshot write means "unknown", not "everything moved".
-    [ -s "${2:-}" ] || return 0
-    local st=${1:-/dev/null} rows=${2:-/dev/null}
-    [ -f "$st" ] || st=/dev/null
-    [ -f "$rows" ] || rows=/dev/null
-    LC_ALL=C awk -F'\t' '
-        FILENAME == ARGV[1] { if (substr($0, 1, 3) == "## ") h[++n] = $0; next }
-        NF == 0 { next }
-        {
-            sign = (substr($2, 1, 1) == "-") ? "-" : "+"
-            num = $2; sub(/^-/, "", num)
-            k["## " $1 ":" num " (" sign ")"] = 1
-        }
-        # A context ( ) record has no diff row to judge it by: never reported.
-        END {
-            for (i = 1; i <= n; i++)
-                if (h[i] !~ / \( \)$/ && !(h[i] in k)) print h[i]
-        }
-    ' "$st" "$rows"
 }
 
 # --- approve -------------------------------------------------------------------

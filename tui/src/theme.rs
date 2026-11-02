@@ -18,20 +18,27 @@ pub struct Theme {
     pub done: Color,
     /// the review mark: ◆ must not share "working" yellow with ●
     pub sky: Color,
+    /// frames, rules and separators only: never text (@thm_faint, 3:1)
+    pub faint: Color,
     pub g: Glyphs,
 }
 
-/// role -> (@thm option, Catppuccin Mocha default)
-const ROLES: [(&str, &str); 9] = [
-    ("@thm_overlay_1", "#7f849c"),
-    ("@thm_subtext_0", "#a6adc8"),
-    ("@thm_overlay_0", "#6c7086"),
-    ("@thm_lavender", "#b4befe"),
-    ("@thm_red", "#f38ba8"),
-    ("@thm_peach", "#fab387"),
-    ("@thm_yellow", "#f9e2af"),
-    ("@thm_green", "#a6e3a1"),
-    ("@thm_sky", "#89dceb"),
+/// field -> (@thm option, dark default, light default): the plugin's palette,
+/// shared with the status line (scripts/lib/statusbar.conf). The light set is
+/// `<option>_light`. Must-read text is fg or dim, and dim holds 4.5:1 on bg;
+/// faint (3:1) is for frames, rules and separators, never for text.
+const ROLES: [(&str, &str, &str); 11] = [
+    ("@thm_dim", "#9097a3", "#5c626c"),     // label
+    ("@thm_fg", "#e6e4df", "#1b1e24"),      // value
+    ("@thm_fg", "#e6e4df", "#1b1e24"),      // quote
+    ("@thm_dim", "#9097a3", "#5c626c"),     // meta
+    ("@thm_accent", "#6cb6ff", "#0a5fc2"),  // accent
+    ("@thm_needs", "#ff5f6d", "#c4122f"),   // needs
+    ("@thm_error", "#ff9e3d", "#9a4c00"),   // error
+    ("@thm_running", "#e6c84f", "#806200"), // running
+    ("@thm_done", "#5fd38d", "#1d7439"),    // done
+    ("@thm_review", "#5fd3d3", "#00737a"),  // sky
+    ("@thm_faint", "#717885", "#7c828c"),   // faint
 ];
 
 fn hex(s: &str) -> Option<Color> {
@@ -44,7 +51,8 @@ fn hex(s: &str) -> Option<Color> {
 }
 
 impl Theme {
-    /// One tmux call, once per process.
+    /// One tmux call, once per process. tmux 3.8 has no format for a client's
+    /// detected theme, so the light set is used only when `theme` says `light`.
     pub fn load() -> Self {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return Self {
@@ -52,10 +60,16 @@ impl Theme {
                 ..Self::no_color()
             };
         }
-        let opts = tmux(&["show-options", "-g"]).unwrap_or_default();
-        let mut c = [Color::Reset; 9];
-        for (i, (opt, fallback)) in ROLES.iter().enumerate() {
-            let set = opts.lines().find_map(|l| l.strip_prefix(opt)?.strip_prefix(' '));
+        let opts = tmux(&["show-options", "-g", ";", "show-options", "-s", "theme"]).unwrap_or_default();
+        let light = opts.lines().any(|l| l == "theme light");
+        let mut c = [Color::Reset; 11];
+        for (i, (opt, dark, lite)) in ROLES.iter().enumerate() {
+            let (name, fallback) = if light {
+                (format!("{opt}_light"), lite)
+            } else {
+                (opt.to_string(), dark)
+            };
+            let set = opts.lines().find_map(|l| l.strip_prefix(&name)?.strip_prefix(' '));
             c[i] = set.and_then(hex).or_else(|| hex(fallback)).unwrap_or(Color::Reset);
         }
         Self {
@@ -64,18 +78,19 @@ impl Theme {
         }
     }
 
-    fn from_roles(c: [Color; 9]) -> Self {
+    fn from_roles(c: [Color; 11]) -> Self {
         Self {
             label: c[0],
-            value: Color::Reset,
-            quote: c[1],
-            meta: c[2],
-            accent: c[3],
-            needs: c[4],
-            error: c[5],
-            running: c[6],
-            done: c[7],
-            sky: c[8],
+            value: c[1],
+            quote: c[2],
+            meta: c[3],
+            accent: c[4],
+            needs: c[5],
+            error: c[6],
+            running: c[7],
+            done: c[8],
+            sky: c[9],
+            faint: c[10],
             g: Glyphs::unicode(),
         }
     }
@@ -83,8 +98,8 @@ impl Theme {
     /// The test fixture: the shipped defaults with no tmux read, so a snapshot
     /// never moves with the user's palette.
     pub fn fixed() -> Self {
-        let mut c = [Color::Reset; 9];
-        for (i, (_, fallback)) in ROLES.iter().enumerate() {
+        let mut c = [Color::Reset; 11];
+        for (i, (_, fallback, _)) in ROLES.iter().enumerate() {
             c[i] = hex(fallback).unwrap_or(Color::Reset);
         }
         Self::from_roles(c)
@@ -93,7 +108,7 @@ impl Theme {
     /// NO_COLOR, honoured in-app: crossterm's own support emits an empty SGR that
     /// also drops bold, dim and reverse, which the colourless fallback relies on.
     pub fn no_color() -> Self {
-        Self::from_roles([Color::Reset; 9])
+        Self::from_roles([Color::Reset; 11])
     }
 
     /// Per-state glyph and colour, on an urgency ramp.

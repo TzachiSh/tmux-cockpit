@@ -1,5 +1,5 @@
 " branch> ▏                                                                                                          1/5 "
-" alt-↵ new · on main · repo                                                                                             "
+" on main · repo                                                                                                         "
 "▎ ●  main                 (2 hours ago)         │ * dea82ca (HEAD -> main) Merge pull request #238                      "
 "     feat/246-branch      (3 hours ago)         │ |\                                                                    "
 "   ⑂ fix/Left-Click       (2 days ago) wt-fix   │ | * 3f1c2d0 Add a Rust picker                                         "
@@ -21,4 +21,4 @@
 "                                                │                                                                       "
 "                                                │                                                                       "
 "                                                │                                                                       "
-" ↵ choose   ↑↓ move   F1 keys   esc cancel                                                                              "
+" ↵ switch   alt-↵ new   ↑↓ move   F1 keys   esc cancel                                                                  "

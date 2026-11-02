@@ -5,7 +5,7 @@
 //! COCKPIT_BLESS=1 cargo test  rewrites the goldens.
 use cockpit_tui::branch::{self, Ui};
 use cockpit_tui::data::branches::{self, Branch};
-use cockpit_tui::pick::{self, Outcome};
+use cockpit_tui::pick::Outcome;
 use cockpit_tui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
@@ -184,7 +184,7 @@ fn fixture() -> Vec<Branch> {
 }
 
 fn ui(bs: Vec<Branch>) -> Ui {
-    Ui::new(".", bs, "alt-↵ new · on main · repo", &Theme::fixed().g, None)
+    Ui::new(".", bs, "on main · repo", &Theme::fixed().g, None)
 }
 
 const BIG: Rect = Rect::new(0, 0, 80, 24);
@@ -302,7 +302,7 @@ fn bad_arguments_are_named() {
 
 fn draw(w: u16, h: u16, u: &Ui) -> String {
     let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
-    t.draw(|f| pick::render(f, f.area(), &u.pick, &Theme::fixed())).unwrap();
+    t.draw(|f| branch::draw(f, f.area(), u, &Theme::fixed())).unwrap();
     t.backend().to_string()
 }
 

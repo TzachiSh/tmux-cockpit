@@ -7,16 +7,15 @@ git clone <this repo> ~/.tmux/plugins/tmux-cockpit
 ~/.tmux/plugins/tmux-cockpit/install.sh    # symlinks tm and the two tmux-* commands into ~/.local/bin
 ```
 
-Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block; its
-`status-right` directory and branch segments read catppuccin's
-`@catppuccin_status_*` options, so without that theme they render nothing):
+Add to `~/.tmux.conf` (see `examples/tmux.conf` for the full block):
 
 ```tmux
 run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
 ```
 
-That one line also binds the keys below — there is nothing else to add for them.
-It must come **after** every option using an `#{agent_*}` token, and before tpm.
+That one line draws the status bar and borders and binds the keys — there is
+nothing else to add for them. It must come **after** the cockpit options you
+set, and before tpm.
 
 If the path contains a space, quote it for the shell *inside* the tmux string —
 tmux hands the line to `sh`, which would otherwise split it and fail with 127:
@@ -56,20 +55,14 @@ neither. It draws the board (`prefix + w`) and the panel (`prefix + f`). See
 It is a normal tpm plugin — an executable `*.tmux` at the repo root — so:
 
 ```tmux
-set -g @plugin 'catppuccin/tmux'          # declare it FIRST; the example
-                                          # block's status-right needs it
 set -g @plugin '<owner>/tmux-cockpit'
 run '~/.tmux/plugins/tpm/tpm'             # last
 ```
 
 tpm is the better route, because it runs plugins from that last line — after
-every `set -g` in your config, which is exactly the ordering the `#{agent_*}`
-tokens need. The one failure mode of the `run-shell` line, loading it too early
-and getting the raw token printed in your status bar, cannot happen under tpm.
-
-Order matters against catppuccin specifically: cockpit rewrites
-`@catppuccin_directory_text` and `@catppuccin_gitmux_text`, so catppuccin has to
-be declared first or it resets them afterwards.
+every `set -g` in your config, so the cockpit options you set are in place when
+the plugin reads them. No theme plugin is needed: the plugin draws the bar and
+its own palette ([status-bar.md](status-bar.md#colours)).
 
 Wire the hooks into `~/.claude/settings.json`:
 
@@ -106,5 +99,13 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) is
   optional; `jq` is needed by `install.sh --hooks` and the review
   gate.
+- **revdiff** for the `prefix + r` review; tested with v1.13.0. Without it
+  `prefix + r` says "revdiff not found" and `tmux-review --request` exits 1.
+  Install it with `brew install umputun/apps/revdiff`, from a
+  [release package](https://github.com/umputun/revdiff/releases) (deb, rpm or
+  an archive). With Go 1.26 or newer, v1.13.0 installs as `app`:
+  `go install github.com/umputun/revdiff/app@v1.13.0`, then rename it to
+  `revdiff`. Other versions may use a different package path; see revdiff's
+  README.
 - Claude Code (or any agent that can run a command on lifecycle events).
 - A Nerd Font is *not* required. The markers are plain Unicode geometry.

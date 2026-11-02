@@ -5,15 +5,13 @@
 //! The line is `switch <branch>`, `track <remote>/<branch>` or `create <name>`.
 //! A name is validated here with git's own rule (the same one the script runs
 //! again), so a bad name is a note on this screen and not a failed action.
-use crate::backend::{self, WideCellBackend};
+use crate::chrome;
 use crate::data::branches::{self, Branch};
 use crate::pick::{self, Opts, Outcome, Pick, Row};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
-use ratatui::Terminal;
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet};
-use std::io::Write;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use unicode_width::UnicodeWidthStr;
 
@@ -175,11 +173,35 @@ pub fn parse_args(args: &[String]) -> Result<String, String> {
     }
 }
 
-fn restore_tty() {
-    let _ = crossterm::terminal::disable_raw_mode();
-    if let Ok(mut t) = std::fs::OpenOptions::new().write(true).open("/dev/tty") {
-        let _ = t.write_all(format!("{}\x1b[?25h\x1b[?1049l", backend::MOUSE_OFF).as_bytes());
+/// The footer: pick's keys plus the one this screen adds. ↵ and esc stay when it narrows.
+pub fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
+    let h = |k: &str, v: &str| (k.to_string(), v.to_string());
+    let alt = if g.ascii { "alt-enter" } else { "alt-↵" };
+    let fitted = chrome::fit(
+        vec![
+            h(g.key_enter, "switch"),
+            h(alt, "new"),
+            h(g.key_updown, "move"),
+            h("F1", "keys"),
+            h("esc", "cancel"),
+        ],
+        w,
+        3,
+    );
+    if fitted.iter().any(|(k, _)| k == g.key_enter) {
+        fitted
+    } else {
+        vec![h(g.key_enter, "switch"), h("esc", "cancel")]
     }
+}
+
+pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Ui, th: &Theme) {
+    let look = pick::Look {
+        title: Some("branch"),
+        hints: Some(hints(&th.g, area.width as usize)),
+        ..Default::default()
+    };
+    pick::render_with(f, area, &u.pick, th, &look);
 }
 
 fn header(dir: &str, bs: &[Branch], g: &Glyphs) -> String {
@@ -187,8 +209,7 @@ fn header(dir: &str, bs: &[Branch], g: &Glyphs) -> String {
     let leaf = std::fs::canonicalize(dir)
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    let key = if g.ascii { "alt-enter" } else { "alt-↵" };
-    format!("{key} new {} on {cur} {} {}", g.dot, g.dot, leaf.unwrap_or_default())
+    format!("on {cur} {} {}", g.dot, leaf.unwrap_or_default())
 }
 
 /// Exit 0 with the action line on stdout, 1 for esc, 2 for a bad argument, no
@@ -205,45 +226,15 @@ pub fn main(args: &[String]) -> i32 {
         eprintln!("cockpit-tui: branch: not a git repository: {dir}");
         return 2;
     }
-    let tty = match std::fs::OpenOptions::new().read(true).write(true).open("/dev/tty") {
+    let mut term = match pick::open_screen("branch") {
         Ok(t) => t,
-        Err(e) => {
-            eprintln!("cockpit-tui: branch: no terminal to draw on: {e}");
-            return 2;
-        }
+        Err(rc) => return rc,
     };
-    // crossterm caches a failed event-reader init forever: probe before the screen opens
-    if let Err(e) = event::poll(std::time::Duration::ZERO) {
-        eprintln!("cockpit-tui: branch: no usable terminal: {e}");
-        return 2;
-    }
-    backend::exit_on_hangup(restore_tty);
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        restore_tty();
-        hook(info);
-    }));
     let th = Theme::load();
     let bs = branches::list(&dir);
     let head = header(&dir, &bs, &th.g);
     let (tx, rx) = worker(dir.clone(), bs.clone());
     let mut ui = Ui::new(&dir, bs, &head, &th.g, Some(tx));
-    let mut term = match crossterm::terminal::enable_raw_mode().and_then(|_| {
-        let mut t = tty;
-        t.write_all(format!("\x1b[?1049h{}", backend::MOUSE_ON).as_bytes())?;
-        Terminal::new(WideCellBackend::new(t))
-    }) {
-        Ok(t) => t,
-        Err(e) => {
-            restore_tty();
-            eprintln!("cockpit-tui: branch: {e}");
-            return 2;
-        }
-    };
-    let area = |t: &Terminal<WideCellBackend<std::fs::File>>| {
-        let s = t.size().unwrap_or_default();
-        Rect::new(0, 0, s.width, s.height)
-    };
     let mut dirty = true;
     let out = loop {
         while let Ok((b, t)) = rx.try_recv() {
@@ -251,8 +242,8 @@ pub fn main(args: &[String]) -> i32 {
             dirty = true;
         }
         if dirty {
-            ui.pick.clamp(area(&term));
-            if term.draw(|f| pick::render(f, f.area(), &ui.pick, &th)).is_err() {
+            ui.pick.clamp(pick::screen(&term));
+            if term.draw(|f| draw(f, f.area(), &ui, &th)).is_err() {
                 break Outcome::Cancel;
             }
             dirty = false;
@@ -265,17 +256,17 @@ pub fn main(args: &[String]) -> i32 {
         }
         dirty = true;
         match event::read() {
-            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match ui.key(k, area(&term)) {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match ui.key(k, pick::screen(&term)) {
                 Outcome::Continue => {}
                 o => break o,
             },
-            Ok(Event::Mouse(m)) => ui.mouse(m, area(&term)),
+            Ok(Event::Mouse(m)) => ui.mouse(m, pick::screen(&term)),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break Outcome::Cancel,
         }
     };
     drop(term);
-    restore_tty();
+    pick::restore_tty();
     pick::answer(&mut std::io::stdout().lock(), &out)
 }
