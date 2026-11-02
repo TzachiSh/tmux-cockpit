@@ -100,6 +100,8 @@ fn main() {
             println!("cockpit-tui {}", env!("CARGO_PKG_VERSION"));
             None
         }
+        Some("git-flags") => std::process::exit(data::gitsafe::git_flags(&args[1..])),
+        Some("diffstat") => std::process::exit(data::gitsafe::diffstat(&args[1..])),
         Some("-h") | Some("--help") => {
             println!("{USAGE}");
             None

@@ -1,6 +1,7 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
+use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
 use cockpit_tui::data::{Pane, git_facts, list_panes, preview};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
@@ -443,28 +444,181 @@ fn planted_git_config_never_runs() {
     let r = Repo::new("plant");
     let marker = r.dir.join("../cockpit-tui-pwned-".to_string() + &std::process::id().to_string());
     let m = marker.display().to_string();
-    write_exec(&r.dir.join(".git/fsmon"), &format!("#!/bin/sh\necho fsmonitor >> '{m}'\n"));
-    r.git(&["config", "core.fsmonitor", &r.dir.join(".git/fsmon").display().to_string()]);
-    r.git(&["config", "filter.evil.clean", &format!("sh -c 'echo filter >> \"{m}\"; cat'")]);
+    let plant = |name: &str| {
+        let p = r.dir.join(".git").join(name);
+        write_exec(&p, &format!("#!/bin/sh\necho {name} >> '{m}'\ncat \"${{1:--}}\"\n"));
+        p.display().to_string()
+    };
+    r.write("t", "a\n");
+    r.write("g", "a\n");
+    r.git(&["add", "t", "g"]);
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "t"]);
+    r.git(&["config", "core.fsmonitor", &plant("fsmonitor")]);
+    r.git(&["config", "filter.evil.clean", &plant("filter")]);
     r.git(&["config", "filter.evil.required", "true"]);
-    r.write(".gitattributes", "f filter=evil\n");
+    r.git(&["config", "filter.proc.process", &plant("process")]);
+    r.git(&["config", "diff.evil.textconv", &plant("textconv")]);
+    r.git(&["config", "diff.external", &plant("external")]);
+    r.write(".gitattributes", "f filter=evil\nt filter=proc\ng diff=evil\n");
     r.write("f", "a\nb\n");
+    r.write("g", "b\n");
+    // a tracked file touched but not changed: only a re-hash can tell, and it runs t's filter
+    let touch = |secs: u64| {
+        let t = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(r.dir.join("t"))
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    };
+    touch(100);
 
-    // the control: plain git does run both, so the plant is live
+    // the control: plain git runs every plant, so each one is live
+    r.git(&["ls-files", "-m"]);
     r.git(&["diff", "--numstat", "HEAD"]);
+    // g alone: a patch of f would die in its required filter before reaching g
+    r.git(&["diff", "HEAD", "--", "g"]);
+    r.git(&["diff", "--no-ext-diff", "HEAD", "--", "g"]);
     let ran = std::fs::read_to_string(&marker).unwrap_or_default();
-    assert!(
-        ran.contains("fsmonitor") && ran.contains("filter"),
-        "the plant never fired: {ran:?}"
-    );
+    for p in ["fsmonitor", "filter", "process", "textconv", "external"] {
+        assert!(ran.contains(p), "the {p} plant never fired: {ran:?}");
+    }
     std::fs::remove_file(&marker).unwrap();
+    touch(200); // the control's diff may have refreshed the real index
 
     let (_, pm, _) = git_facts(&r.path());
+    assert_eq!(diffstat(&[&r.path()]).0, "5\t1\t1\t+5 -1  ?1 new\n");
     assert!(
         !marker.exists(),
         "a fetch ran planted config: {:?}",
         std::fs::read_to_string(&marker)
     );
-    // f gains a line, and the untracked .gitattributes is the one new file
-    assert_eq!(pm, "+2 -0  ?1 new", "the hardened diff still measures the tree");
+    // f gains a line, g changes one, and the untracked .gitattributes is the one new file
+    assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
+}
+
+fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
+    tree_stat(&r.path(), &r.dir.join(".git").display().to_string(), base)
+}
+
+fn diffstat(args: &[&str]) -> (String, i32) {
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .arg("diffstat")
+        .args(args)
+        .output()
+        .unwrap();
+    (String::from_utf8_lossy(&o.stdout).into_owned(), o.status.code().unwrap_or(-1))
+}
+
+/// `git diff HEAD` fails on an unborn HEAD, and that failure used to read as
+/// "clean" for a tree full of new files.
+#[test]
+fn an_unborn_repo_with_new_files_is_not_clean() {
+    let r = Repo::new("unborn");
+    std::fs::remove_dir_all(r.dir.join(".git")).unwrap();
+    r.git(&["init", "-q", "-b", "main", "."]);
+    r.write("g", "x\ny\n");
+    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+    assert_eq!(git_facts(&r.path()).1, "+3 -0  ?2 new");
+    // staged and otherwise untouched: only the index has it, tree_diff's --cached leg
+    r.git(&["add", "-A"]);
+    assert_eq!(stat(&r, None), Some((3, 0, 2, "+3 -0  ?2 new".into())));
+}
+
+/// Past BIGCAP a file is never hashed, but it is still a change.
+#[test]
+fn a_file_over_the_cap_counts_dirty() {
+    let r = Repo::new("big");
+    // sparse: the size is what the cap reads, and no 33 MB lands on disk
+    std::fs::File::create(r.dir.join("core"))
+        .unwrap()
+        .set_len(33 * 1024 * 1024)
+        .unwrap();
+    assert_eq!(stat(&r, None), Some((0, 0, 0, "+0 -0".into())));
+}
+
+#[test]
+fn base_picks_what_the_diff_is_against() {
+    let r = Repo::new("base");
+    r.write("f", "a\nb\n");
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-qam", "two"]);
+    assert_eq!(stat(&r, None), Some((0, 0, 0, "clean".into())));
+    assert_eq!(stat(&r, Some("HEAD~1")), Some((1, 0, 0, "+1 -0".into())));
+    assert_eq!(stat(&r, Some("no-such-rev")), None, "a bad base is a failure, not clean");
+    assert_eq!(diffstat(&[&r.path(), "--base", "HEAD~1"]), ("1\t0\t0\t+1 -0\n".into(), 0));
+    assert_eq!(diffstat(&[&r.path(), "--base", "no-such-rev"]), (String::new(), 1));
+    // a base git would parse as an option is refused before git sees it
+    let out = r.dir.join("out");
+    let opt = format!("--output={}", out.display());
+    assert_eq!(diffstat(&[&r.path(), "--base", &opt]), (String::new(), 1));
+    assert!(!out.exists(), "--base reached git as an option");
+}
+
+/// The git dir is read off `.git`, which in a linked worktree is a file.
+#[test]
+fn diffstat_reads_a_linked_worktree_and_refuses_a_non_repo() {
+    let r = Repo::new("wt");
+    let wt = r.dir.join("wt");
+    r.git(&["worktree", "add", "-q", "-b", "side", &wt.display().to_string()]);
+    std::fs::write(wt.join("n"), "x\n").unwrap();
+    assert_eq!(diffstat(&[&wt.display().to_string()]), ("1\t0\t1\t+1 -0  ?1 new\n".into(), 0));
+    assert_eq!(diffstat(&[&r.dir.join(".git").display().to_string()]), (String::new(), 1));
+}
+
+/// git.sh keeps a static copy of SAFE, pinned to `cockpit-tui git-flags` by tests/run.sh.
+#[test]
+fn the_flag_lists() {
+    assert_eq!(
+        SAFE.join(" "),
+        "--no-optional-locks -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false"
+    );
+    let r = Repo::new("flags");
+    assert_eq!(no_filters(&r.path()), Vec::<String>::new());
+    r.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
+    r.git(&["config", "filter.a.b.process", "x"]);
+    assert_eq!(
+        no_filters(&r.path()).join(" "),
+        "-c filter.a.b.clean= -c filter.a.b.smudge= -c filter.a.b.process= -c filter.a.b.required=false \
+         -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false"
+    );
+}
+
+/// A HEAD that resolves but cannot be diffed is a broken repo, not an unborn
+/// one: the unborn fallback would count the index and call that the diff.
+#[test]
+fn a_broken_head_is_a_failure_not_unborn() {
+    let r = Repo::new("broken");
+    r.write("f", "a\nb\n");
+    let tree = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD^{tree}"]).stdout)
+        .trim()
+        .to_string();
+    std::fs::remove_file(r.dir.join(".git/objects").join(&tree[..2]).join(&tree[2..])).unwrap();
+    assert_eq!(stat(&r, None), None);
+}
+
+/// A partial clone fetches a missing blob on demand, and the fetch runs the
+/// repo's own remote.origin.uploadpack.
+#[test]
+fn a_missing_blob_never_lazy_fetches() {
+    let r = Repo::new("lazy");
+    let marker = r.dir.join("../cockpit-tui-lazy-".to_string() + &std::process::id().to_string());
+    write_exec(
+        &r.dir.join(".git/up"),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    );
+    let blob = String::from_utf8_lossy(&r.git(&["rev-parse", "HEAD:f"]).stdout).trim().to_string();
+    std::fs::remove_file(r.dir.join(".git/objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+    r.git(&["config", "core.repositoryformatversion", "1"]);
+    r.git(&["config", "extensions.partialClone", "origin"]);
+    r.git(&["config", "remote.origin.url", &r.dir.join("../nowhere").display().to_string()]);
+    r.git(&["config", "remote.origin.uploadpack", &r.dir.join(".git/up").display().to_string()]);
+    r.write("f", "b\n");
+
+    r.git(&["diff", "--numstat", "HEAD"]); // the control
+    assert!(marker.exists(), "the plant never fired");
+    std::fs::remove_file(&marker).unwrap();
+
+    assert_eq!(diffstat(&[&r.path()]), (String::new(), 1));
+    assert!(!marker.exists(), "diffstat ran the planted uploadpack");
 }
