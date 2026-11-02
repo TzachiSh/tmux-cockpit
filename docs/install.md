@@ -93,7 +93,7 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   release through your `gh` login when it can reach it, and otherwise builds
   it, which needs **Rust >= 1.88**; the fetched binary needs neither Rust nor
   cargo. `make check` builds it, so the suite needs cargo.
-- **fzf >= 0.73** for the pickers. Debian 13 ships 0.60.3, Ubuntu 24.04
+- **fzf >= 0.73** for the path picker and the folder browser. Debian 13 ships 0.60.3, Ubuntu 24.04
   0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
   0.74.3 into `~/.local/bin` when it finds an older one, and
   `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) is

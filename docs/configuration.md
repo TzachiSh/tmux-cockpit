@@ -4,13 +4,13 @@
 
 | key | does |
 |-----|------|
-| tap the branch on the border | branch picker |
-| `prefix + b` | the same picker, without the mouse |
+| tap the branch on the border | the branch popup, `cockpit-tui branch` |
+| `prefix + b` | the same popup, without the mouse |
 | `prefix + a` | the menu: every cockpit and window action, one letter each, no Shift; `≡` on the border opens it too — `@cockpit_menu_key` rebinds, `off` disables |
 | `prefix + u` | jump to the pane that needs you (again: next one) — `@cockpit_jump_key` rebinds, `off` disables |
-| `prefix + s` | the session picker, replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
+| `prefix + s` | the sessions screen (`cockpit-tui sessions`, what `tm` shows), replacing stock `choose-tree` — `@cockpit_sessions_key` rebinds, `off` keeps stock |
 | `prefix + r` | the board, the same one `prefix + w` opens; `r` on a row reviews that agent's uncommitted diff (replaces stock `refresh-client`) — `@cockpit_review_key` rebinds, `off` restores stock; `@cockpit_review_window on` opens a window instead of the popup |
-| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock (being folded into the board, #228) |
+| `prefix + i` | one screen for the pane you are on: cwd, the git root the review diffs, state, review mark, review base, session id and review dir; it replaces stock window info, `@cockpit_info_key` rebinds, `off` restores stock; the board's `i` draws the same screen |
 | `prefix + f` | the panel: ask a text-only `claude -p` about this pane and paste the answer back into it — see [The panel](board-and-panel.md#the-panel-cockpit-tui) in board-and-panel.md; needs the `cockpit-tui` binary, replaces stock `find-window`, `@cockpit_panel_key` rebinds, `off` restores stock |
 | `prefix + w` | the board: every agent pane as a live tile, blocked first, each previewing the pane itself; needs the `cockpit-tui` binary, `@cockpit_board_key` rebinds, `off` keeps stock; `@cockpit_board_window on` opens a window instead of the popup; after `r`, `f` or `i` the board comes back on the same pane with the outcome as a note, and `@cockpit_board_return off` makes them one-way |
 | `prefix + R` | reload the tmux config — the file tmux actually loaded, XDG included — `@cockpit_reload_key` rebinds, `off` disables |
@@ -49,6 +49,6 @@ set -g @cockpit_popup_height 50%
 Anything `display-popup` accepts works, absolute columns/rows included. The
 path picker re-reads them on every click, so changing them needs no reload.
 
-The session picker (`prefix + s`) reads them as **ceilings**, not sizes: it
+The sessions screen (`prefix + s`) reads them as **ceilings**, not sizes: it
 shrinks to fit its sessions, at most 70% of the client on a desktop, 90% wide
 below 160 columns, and full width in touch mode.

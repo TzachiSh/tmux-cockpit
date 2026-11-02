@@ -26,7 +26,7 @@ happening.
 - **The top border, at the top-left pane (or the zoomed pane), shows the
   corner:**
   - `≡`, which opens the menu;
-  - the session name, which opens the session picker;
+  - the session name, which opens the sessions screen;
   - `▲ elsewhere` while an agent in another session needs you. If none does
     but one has failed, it shows `✕ elsewhere`.
 - **The active pane's border shows, on the right:**
@@ -111,9 +111,9 @@ With `@cockpit_statusbar off`, the plugin still publishes these options:
 Some ranges you can mark with `#[range=control|N]…#[norange]`:
 
 - `control|2` opens the folder browser;
-- `control|3` opens the branch picker;
+- `control|3` opens the branch popup;
 - `control|1` opens the menu;
-- `control|0` opens the session picker.
+- `control|0` opens the sessions screen.
 
 `4` to `6` are free for you. tmux uses `7` to `9`.
 

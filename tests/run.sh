@@ -8102,6 +8102,9 @@ esac
 case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
 esac
+case "$(bkey "$B" a)" in *'Review its diff'*) bad "the menu has no review row beside the board's" "no 'Review its diff' item" "$(bkey "$B" a)" ;;
+    *) ok "the menu has no review row beside the board's" ;;
+esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
 # Required since #199: the load says so, offline, and names the fix.
 case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
