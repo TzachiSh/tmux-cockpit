@@ -2,10 +2,11 @@
 
 ## The board (cockpit-tui)
 
-`prefix + w` opens every agent pane as a live tile: the state glyph, what the
-agent is doing, how long it has been doing it, and a `capture-pane` of the pane
-itself. Blocked agents sort first, so page 1 is the triage page. `↵` jumps to
-the tile you are on and closes the board.
+`prefix + w` opens every agent pane in a list grouped by tmux session: the
+state glyph, what the agent is doing and how long it has been doing it. The
+sessions holding a blocked agent sort first, and a folded session still shows
+its blocked agents. `v` swaps to the tiles, one live `capture-pane` per agent.
+`↵` jumps to the agent you are on and closes the board.
 
 See [the board screen](tui.md#the-board) for what it looks like.
 
@@ -20,9 +21,9 @@ The binary renders and decides; it never acts. It writes one line,
 script the keys already use. After `r` review, `f` panel or `i` info the board
 comes back on the same pane, with the outcome as a note in its footer; a
 failure (`✕`) stays until a key. `@cockpit_board_return off` makes them
-one-way. The last selection is kept in
+one-way. The last selection and the folds are kept in
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
-`prefix + w` opens on it too.
+`prefix + w` opens the same way.
 
 Keys, options, the screens, the states and the engineering rules:
 [docs/tui.md](tui.md).
