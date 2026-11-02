@@ -45,7 +45,9 @@ fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (boo
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         // a partial clone's missing blob would run the repo's remote.*.uploadpack
-        .env("GIT_NO_LAZY_FETCH", "1");
+        .env("GIT_NO_LAZY_FETCH", "1")
+        // and on git < 2.44, which ignores that: no transport at all, a remote helper included
+        .env("GIT_ALLOW_PROTOCOL", "");
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }

@@ -42,9 +42,9 @@ git() {
         diff|log|show) set -- "${@:1:i}" --no-ext-diff --no-textconv "${@:i+1}" ;;
     esac
     case ${!i-} in
-        # A lazy fetch runs the remote the repo names, as the user (git < 2.44 ignores the
-        # env, hence the pin); only the user's own switch or worktree add may fetch.
+        # A lazy fetch runs the remote the repo names. GIT_ALLOW_PROTOCOL= refuses every transport,
+        # a remote helper too, on git < 2.44. Only a user's switch or the worktree hook's add may fetch.
         switch|worktree) command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
-        *) GIT_NO_LAZY_FETCH=1 command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+        *) GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
     esac
 }

@@ -7206,8 +7206,8 @@ case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
 # old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
-LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old"
-printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"
+LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"; ln -s "$LF/up" "$LF/hb/git-remote-foo"
 printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$(command -v git)" > "$LF/old/git"; chmod +x "$LF/old/git"
 ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
   git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
@@ -7220,7 +7220,7 @@ printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$(command -v git)" 
   && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
   && git config remote.origin.uploadpack "$LF/up" && git config core.sshCommand "$LF/up" \
   && git config protocol.file.allow always && git config protocol.ssh.allow always \
-  && git config protocol.ext.allow always ) >/dev/null 2>&1
+  && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
 lf_paths() {
     ( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
     is "not through git.sh's git$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
@@ -7231,12 +7231,13 @@ lf_paths() {
     XDG_RUNTIME_DIR="$(mktmpd)" "$DIR/scripts/tmux-open-path" --preview-diff "$LF/c/f.txt" >/dev/null 2>&1
     is "nor through the path picker's preview diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
 }
-for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up"; do
+# foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
+for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
     git -C "$LF/c" config remote.origin.url "$lfu"
-    git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+    PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
     is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"; rm -f "$LFM"
-    lf_paths " (${lfu%%:*})"
-    PATH="$LF/old:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
+    PATH="$LF/hb:$PATH" lf_paths " (${lfu%%:*})"
+    PATH="$LF/old:$LF/hb:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
 done
 # A user's own switch or worktree add still fetches what it checks out; a diff does not.
 is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \

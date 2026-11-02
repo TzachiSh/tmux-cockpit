@@ -646,4 +646,33 @@ fn a_missing_blob_never_lazy_fetches() {
         .unwrap();
     assert_eq!(o.status.code(), Some(1));
     assert!(!marker.exists(), "diffstat ran the planted uploadpack on an old git");
+
+    // A remote helper the repo names gets past the per-protocol pin.
+    let helpers = r.dir.join(".git/helpers");
+    std::fs::create_dir_all(&helpers).unwrap();
+    write_exec(
+        &helpers.join("git-remote-foo"),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    );
+    r.git(&["config", "protocol.foo.allow", "always"]);
+    r.git(&["config", "remote.origin.url", "foo::x"]);
+    let hpath = format!("{}:{path}", helpers.display());
+    std::process::Command::new("git")
+        .args(["-C", &r.path(), "diff", "--numstat", "HEAD"])
+        .env("PATH", &hpath)
+        .output()
+        .unwrap();
+    assert!(marker.exists(), "the planted remote helper never fired");
+    std::fs::remove_file(&marker).unwrap();
+    write_exec(
+        &shim.join("git"),
+        &format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nPATH='{hpath}' exec git \"$@\"\n"),
+    );
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["diffstat", &r.path()])
+        .env("PATH", format!("{}:{path}", shim.display()))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!marker.exists(), "diffstat ran the planted remote helper on an old git");
 }
