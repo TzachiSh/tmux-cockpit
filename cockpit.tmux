@@ -142,7 +142,6 @@ if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
 fi
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
-Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
 # The pane a popup came from, via the session id $TMUX ends in: display-popup
 # expands formats only in -T and -d, and inside it $TMUX_PANE is the popup's (#38).
 SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
