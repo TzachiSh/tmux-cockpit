@@ -804,3 +804,6 @@ pub fn wrap(s: &str, w: usize, max: usize) -> Vec<String> {
     }
     out
 }
+
+// branch popup (#246)
+pub mod branches;

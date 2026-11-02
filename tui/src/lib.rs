@@ -11,5 +11,7 @@ pub mod pick;
 pub mod push;
 pub mod theme;
 
+// branch popup (#246)
+pub mod branch;
 // sessions view (#245)
 pub mod sessions;
