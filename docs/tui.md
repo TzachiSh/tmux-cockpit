@@ -258,7 +258,8 @@ columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
 rows Explain's heading leaves no body row. Tablet mode has its own floor,
 28x12: its buttons take rows of their own, and it is the smallest size where
 every view keeps its heading, 2 or more body rows, its note and every button
-uncut beside them. Under 12 rows, Result (heading, line warning, two rows of
+uncut beside them. A Confirm that carries line or risky warnings, and a view
+with a long note, keep 1 body row there and scroll it. Under 12 rows, Result (heading, line warning, two rows of
 buttons) and Confirm (the big pair) at 28 columns fall short; 40x12, a phone in
 portrait, is at the floor. The Home tile refuses to flip into tablet mode
 under 28x12 (a warn note says so), since the card would leave Home's only way
