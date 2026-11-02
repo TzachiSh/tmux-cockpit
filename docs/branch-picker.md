@@ -1,24 +1,18 @@
-# Branch picker and folder browser
+# Branch popup and folder browser
 
-The branch picker becomes a cockpit-tui popup and the folder browser is dropped (#228).
+`prefix + b` and a tap on the branch on the border open a `cockpit-tui branch`
+popup (#246). The keys, the preview and what `scripts/tmux-branch` checks before
+it acts are in [tui.md](tui.md#cockpit-tui-branch-246). The folder browser is
+still fzf, opened from the path (below).
 
 ## Click the branch to switch branch
 
-The branch picker and the path picker share their keys: `↵` acts, `esc`
-cancels, `^/` toggles the preview and `^U`/`^D` scroll it. The review popup's
-two pickers are their own case — see below.
-
-Most-recent branch first, `alt-↵` creates a branch named by what you typed, and
-a remote-only branch becomes a local tracking branch. The list marks the branch
-you are on with `●` and labels branches held by a linked worktree with `⑂name`
-— git will refuse those, and now you can see it before pressing Enter. When git
-does refuse — a dirty tree, a held branch — you read its message, press a key,
-and you are **back in the picker** (with an empty filter) instead of the popup
-closing. It is `alt-↵` and not
-`^N`, which is fzf's own move-down: as a create key it meant navigating with
-emacs keys left the picker, and any filter you had typed became a branch name. When git refuses — a dirty
-tree, or a branch already checked out in another worktree — you get git's own
-message, naming the files or the worktree, and the popup waits for a key.
+Type to filter. `↵` switches; `alt-↵` creates a branch named by what you typed;
+a remote-only branch becomes a local tracking branch. The list is most recent
+first and marks the branch you are on with `●`. A branch held by a linked
+worktree carries `⑂name`: git will refuse it, and `↵` says so before git is
+asked. When git refuses anyway (a dirty tree, say) you read its message, press a
+key, and the popup opens again instead of closing.
 
 The click target is the branch on the active pane's top border (a control
 range, `control|3`, acting on release). The **path** beside it (`control|2`)

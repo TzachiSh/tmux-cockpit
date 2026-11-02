@@ -47,8 +47,9 @@ screenshot and a red/green colourblind reader.
 ### Requirements
 
 - tmux 3.8 or newer. Below it the plugin says so and binds nothing.
-- fzf 0.73 or newer, for the pickers. `bootstrap.sh` fetches a newer one into
-  `~/.local/bin` when the distro's is older.
+- fzf 0.73 or newer, for the path picker, the folder browser and `tm -k`.
+  `bootstrap.sh` fetches a newer one into `~/.local/bin` when the distro's is
+  older.
 - jq, for `install.sh --hooks` and the review gate.
 - Claude Code, or any agent that can run a command on lifecycle events.
 - The `cockpit-tui` binary, which draws the board and the panel. `install.sh`
@@ -115,9 +116,10 @@ until they restart.
 | `prefix + u` | jump to the pane that needs you; again for the next |
 | `prefix + w` | the board: every agent pane, grouped by session, blocked first; `v` for live tiles (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
-| `prefix + r` | review an agent's uncommitted diff: the fleet queue, then revdiff (the queue moves into the board, #228) |
-| `prefix + i` | info about this pane: cwd, git root, state, review (being folded into the board, #228) |
-| `prefix + s` | session picker (its fzf picker is being replaced, #228) |
+| `prefix + r` | the board again, as the review queue: `r` on a row opens that agent's uncommitted diff in revdiff (needs `cockpit-tui`) |
+| `prefix + i` | info about this pane: cwd, git root, state, review (`cockpit-tui info`; `i` in the board shows the same) |
+| `prefix + s` | the session picker, `cockpit-tui sessions` (needs `cockpit-tui`) |
+| `prefix + b` | switch branch (`cockpit-tui branch`; needs `cockpit-tui`) |
 | `prefix + M` | move this window to another session |
 | `prefix + e` | hide the status line and borders (full screen) |
 | Ctrl+double-click | pick a file path off a line of output and open it |
@@ -144,7 +146,7 @@ None is required.
 | `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
 | `@cockpit_touch` | `auto` | the touch layout (bar and session picker) below 100 columns |
 | `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |
-| `@cockpit_glyphs` | unset | `ascii` or `nerd` glyph sets |
+| `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, `tm` and sessions; `nerd` draws the default there |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
 | `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |
@@ -168,7 +170,7 @@ them, and `error` does not overwrite `needs-input`. Only work resuming
 The formats believe the state only while the pane is running a command that
 matches `@cockpit_agents`, so a crashed agent does not leave a stale marker.
 
-Actions (jump, review, the pickers, the board) are shell scripts bound to keys.
+Actions (jump, review, the board, the path picker) are shell scripts bound to keys.
 The required `cockpit-tui` binary draws the board and the panel; it writes a
 verb and a pane id, and the scripts act on it.
 
@@ -202,9 +204,9 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
 - [docs/board-and-panel.md](docs/board-and-panel.md) and [docs/tui.md](docs/tui.md): the `cockpit-tui` board and panel
 - [docs/menus.md](docs/menus.md): the menu and moving windows
 - [docs/phone-and-touch.md](docs/phone-and-touch.md): using it from a phone
-- [docs/tm.md](docs/tm.md): the `tm` session launcher (the command stays; its fzf picker is being replaced, #228)
-- [docs/review.md](docs/review.md): the `prefix + r` review (being replaced by the board, #228)
-- [docs/branch-picker.md](docs/branch-picker.md): the branch picker and folder browser (changing, #228)
+- [docs/tm.md](docs/tm.md): the `tm` session launcher (the command stays; its picker is `cockpit-tui sessions`)
+- [docs/review.md](docs/review.md): the review `r` opens from the board
+- [docs/branch-picker.md](docs/branch-picker.md): the branch popup and the folder browser
 - [docs/testing.md](docs/testing.md): running the tests
 
 ## License

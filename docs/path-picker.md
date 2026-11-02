@@ -4,8 +4,7 @@
 
 **Ctrl+double-click** any line of pane output. Every whitespace-separated token
 on that line that resolves to a real file becomes a candidate, and a picker
-popup opens with the list and a preview of the spot — the same popup shape the
-branch picker uses. Enter opens the highlighted one, Esc cancels.
+popup opens with the list and a preview of the spot. Enter opens the highlighted one, Esc cancels.
 
 The picker opens even when the line yields exactly **one** path. Seeing what the
 line resolved to, with the file and line in front of you, is the point of the
@@ -104,7 +103,7 @@ cannot fire there at all.
 Of the gestures that do arrive, `Ctrl`+double-click is the only one tmux does
 not already own: plain `Ctrl`+click is `swap-pane`, and plain double-click is
 select-word-and-copy. Taking either would cost a feature people use daily. It
-also pairs with the branch picker, which is `Ctrl`+click on the status bar.
+also pairs with the branch popup, which is `Ctrl`+click on the status bar.
 
 `M-MouseDown1Pane` stays bound as well, for terminals that *do* forward
 `Alt`+click (xterm, kitty, WezTerm, foot), where it is the lighter gesture.
