@@ -55,8 +55,8 @@ tmux set-option -gq @cockpit_home_re "$(printf '%s' "${HOME:-/nonexistent}" | se
 # value reaches sh as it is, where a tmux "..." string would eat sq()'s backslashes.
 tmux set-option -g @cockpit_where_cmd "$(sq "$DIR/scripts/tmux-where")"
 tmux source-file "$DIR/scripts/lib/statusbar.conf"
-# NO_COLOR: every slot is the terminal's default colour.
-if [ -n "${NO_COLOR:-}" ]; then
+# NO_COLOR: every slot is the terminal's default colour (the slots are the bar's).
+if [ -n "${NO_COLOR:-}" ] && [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
     set --
     for slot in black white dark-grey light-grey blue red cyan yellow green magenta; do
         set -- "$@" set-option -s "dark-theme-$slot" default ';' set-option -s "light-theme-$slot" default ';'

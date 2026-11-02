@@ -2224,6 +2224,8 @@ for o in status-right status-left window-status-format pane-border-format; do
     is "$o is left as it was" "mine $o" "$(tmux -L "$SOCK2" show-option -gqv "$o")"
 done
 is "status-style is left as it was" "bg=red" "$(tmux -L "$SOCK2" show-option -gqv status-style)"
+is "and so are tmux's theme slots" "#{?#{e|>=:#{client_colours},256},indianred,red}" \
+   "$(tmux -L "$SOCK2" show-option -sv dark-theme-red)"
 for o in @cockpit_where_path @cockpit_where_branch; do
     case "$(tmux -L "$SOCK2" show-option -gqv "$o")" in
         *pane_current_command*) ok "$o is published" ;;
@@ -3857,6 +3859,9 @@ case "$("$TMUX_REAL" -L "$FR" show-option -sv dark-theme-red)" in
     *) bad "and the slot reads the palette's needs role" "#{@thm_needs}" "$("$TMUX_REAL" -L "$FR" show-option -sv dark-theme-red)" ;;
 esac
 is "which the plugin defaults" "#ff5f6d" "$("$TMUX_REAL" -L "$FR" show-option -gv @thm_needs)"
+# 16 colours: error and running must not share yellow.
+is "a 16-colour client gets error in magenta, running in yellow" "magenta yellow" \
+   "$("$TMUX_REAL" -L "$FR" show-option -sv dark-theme-cyan | sed 's/.*,\([a-z]*\)}$/\1/') $("$TMUX_REAL" -L "$FR" show-option -sv dark-theme-yellow | sed 's/.*,\([a-z]*\)}$/\1/')"
 # A window with no agent pane must carry NO marker -- ten windows with two
 # agents used to show ten circles, and the circle meant two different things.
 "$TMUX_REAL" -L "$FR" new-window -d -n plainwin 'sleep 300' >/dev/null 2>&1
