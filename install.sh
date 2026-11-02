@@ -164,7 +164,7 @@ set*\ @catppuccin_window_current_text\ *)
         else
             if [ "$walk" -eq 1 ]; then nf='format walks'; else nf='formats walk'; fi
             row warn formats "$walk $nf panes" \
-                "recopy them from $DIR/examples/tmux.conf"
+                "delete them: the plugin draws the bar (see $DIR/examples/tmux.conf)"
         fi
     fi
 
