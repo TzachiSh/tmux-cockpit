@@ -105,12 +105,13 @@ if [ "$check" -eq 1 ]; then
     v=''; [ -z "$rv" ] || v=$("$rv" --version 2>/dev/null)
     v=${v#version: }; v=${v%% *}
     revfix='bootstrap.sh, or brew install umputun/apps/revdiff, or'
-    revfix="$revfix go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff)"
+    revfix="$revfix go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff);"
+    revfix="$revfix see docs/install.md#requirements"
     if [ -z "$rv" ]; then row fail revdiff 'not found' "$revfix"
     elif [ "$v" = unknown ]; then
-        row warn revdiff "unknown @ $rv" 'a go install build; v1.13.0+ cannot be confirmed'
+        row warn revdiff "unknown @ $rv" 'a go install build; tested with v1.13.0'
     elif [ -z "$v" ] || [ "$(vnum "$v")" -lt "$(vnum 1.13.0)" ]; then
-        row fail revdiff "${v:-no version} @ $rv" "prefix r needs 1.13.0+; $revfix"
+        row warn revdiff "${v:-no version} @ $rv" "older than the tested v1.13.0; $revfix"
     else row ok revdiff "$v"
     fi
 

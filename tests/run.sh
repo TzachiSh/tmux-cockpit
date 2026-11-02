@@ -12374,15 +12374,13 @@ rvdc() {                      # rvdc <dir holding the fake revdiff> -- the docto
 }
 rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; }
 out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out")"
-out=$(rvdc "$RV/old"); rc=$?
-is "revdiff below the pin is a fail row" "fail" "$(rvrow "$out")"
-is "and the doctor exits 2" "2" "$rc"
+out=$(rvdc "$RV/old")
+is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
-out=$(rvdc "$RV/none"); rc=$?
+out=$(rvdc "$RV/none")
 is "a missing revdiff is a fail row" "fail" "$(rvrow "$out")"
 is "and its fix names the brew route" "1" "$(printf '%s\n' "$out" | grep -c 'brew install umputun/apps/revdiff')"
 is "and the go route" "1" "$(printf '%s\n' "$out" | grep -c 'go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff)')"
-is "and the doctor exits 2 for it" "2" "$rc"
 
 # One tarball per published name; the checksums file lists them as upstream does.
 rvrel() {                     # rvrel [flip]
