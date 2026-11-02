@@ -3313,3 +3313,33 @@ fn every_tablet_view_keeps_two_body_rows() {
         assert!(!shown(&mut a, fw, fh - 1).contains("make the window"), "{name}: pc keeps 28x7");
     }
 }
+
+#[test]
+fn the_tablet_tile_refuses_a_window_under_the_tablet_floor() {
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
+    let mode = |a: &App| a.tiles().iter().position(|t| t.0 == Tile::Mode).unwrap();
+    let mut a = app("w", "bash", "$ ");
+    for size in [(40, TABLET_MIN_H - 1), (TABLET_MIN_W - 1, 40)] {
+        a.size = Some(size);
+        a.view = View::Home { sel: mode(&a) };
+        key(&mut a, KeyCode::Enter);
+        assert!(!a.tablet, "{size:?}: no flip into a card");
+        assert_eq!(
+            (level(&a), note(&a)),
+            (Some(Level::Warn), Some("the window is too small for tablet mode (28x12)"))
+        );
+        // 27 columns is under the pc floor too: only the short window still draws
+        if size.0 >= cockpit_tui::panel::view::MIN_W {
+            let f = shown(&mut a, size.0, size.1);
+            assert!(!f.contains("make the window larger"), "{size:?}: pc keeps drawing");
+        }
+    }
+    a.size = Some((TABLET_MIN_W, TABLET_MIN_H));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.tablet, "at the floor it flips");
+    // back to pc is always allowed, even under the floor
+    a.size = Some((30, 8));
+    a.view = View::Home { sel: mode(&a) };
+    key(&mut a, KeyCode::Enter);
+    assert!(!a.tablet && note(&a) == Some("pc mode until the panel closes"));
+}

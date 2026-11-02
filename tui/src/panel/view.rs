@@ -1217,8 +1217,9 @@ pub fn run(app: &mut App) {
             break;
         }
         let tick = app.started.map_or(0, |t| (t.elapsed().as_millis() / 100) as u64);
-        let (mut page, mut tiny) = ((0, 0, vec![]), false);
+        let (mut page, mut tiny, mut size) = ((0, 0, vec![]), false, (0, 0));
         let drawn = term.draw(|f| {
+            size = (f.area().width, f.area().height);
             tiny = too_small(f.area(), app.tablet);
             page = render(f, f.area(), app, &th, tick);
         });
@@ -1226,6 +1227,7 @@ pub fn run(app: &mut App) {
             break;
         }
         app.shrunk(tiny);
+        app.size = Some(size);
         app.frame(ms());
         // the floor message shows no body: fitting to it would lose the scroll
         if !tiny {

@@ -7,6 +7,7 @@ use super::prompts::{self, Ctx};
 use super::redact::redact;
 use super::request::{Call, Fail, Request};
 use super::route::{Route, route};
+use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use super::{boundary_at, boundary_before, ci};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
@@ -236,6 +237,8 @@ pub struct App {
     pub help: Option<usize>,
     /// The last frame was under the panel's floor: only esc, q and ^C act.
     pub tiny: bool,
+    /// The last frame's columns and rows, once one is drawn.
+    pub size: Option<(u16, u16)>,
     /// Tablet presentation: mouse capture, tall tiles, tap buttons.
     pub tablet: bool,
     /// Text for the event loop to put on the clipboard (OSC 52).
@@ -281,6 +284,7 @@ impl App {
             bottom: 0,
             help: None,
             tiny: false,
+            size: None,
             tablet: false,
             copy: None,
             termux: false,
@@ -709,6 +713,13 @@ impl App {
             Tile::WriteCommand => self.compose(OutType::Command),
             Tile::Compose => self.compose(OutType::Auto),
             Tile::Explain => self.view = View::ExplainAsk { sel: 0 },
+            // under the tablet floor the flip would strand the user on the card
+            Tile::Mode if !self.tablet && self.size.is_some_and(|(w, h)| w < TABLET_MIN_W || h < TABLET_MIN_H) => {
+                self.say(
+                    Level::Warn,
+                    format!("the window is too small for tablet mode ({TABLET_MIN_W}x{TABLET_MIN_H})"),
+                );
+            }
             Tile::Mode => {
                 self.tablet = !self.tablet;
                 let m = if self.tablet { "tablet" } else { "pc" };

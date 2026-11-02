@@ -260,7 +260,12 @@ rows Explain's heading leaves no body row. Tablet mode has its own floor,
 every view keeps its heading, 2 or more body rows, its note and every button
 uncut beside them. Under 12 rows, Result (heading, line warning, two rows of
 buttons) and Confirm (the big pair) at 28 columns fall short; 40x12, a phone in
-portrait, is at the floor. Below the floor the panel draws one card,
+portrait, is at the floor. The Home tile refuses to flip into tablet mode
+under 28x12 (a warn note says so), since the card would leave Home's only way
+out, `esc`, closing the panel; back to pc is always allowed. A panel that
+starts in tablet mode (`auto` on Termux, or the option) under 28x12 shows the
+card like any other start, and `esc` closes it from Home. Below the floor the
+panel draws one card,
 `make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
 they do on the view under the card (an Answer still asks first, Compose keeps its
 draft, only Home closes), `^C` quits. Any other key, `q` typed into a box and a
