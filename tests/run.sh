@@ -12556,5 +12556,74 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 "$TMUX_REAL" -L "$TPI" kill-server >/dev/null 2>&1
 fi
 
+pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick args...]  runs `pick` in a fresh pane
+    local sock=$1 d=$2 cols=$3 lines=$4 text=$5; shift 5
+    printf '%s' "$text" > "$d/rows"
+    {
+        printf '#!/bin/sh\nbin=$1; d=$2; shift 2\n'
+        printf '"$bin" pick "$@" < "$d/rows" > "$d/out" 2> "$d/err"\n'
+        printf 'echo $? > "$d/rc"\nexec sleep 30\n'
+    } > "$d/run"
+    chmod +x "$d/run"
+    "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$lines" \
+        "$d/run '$DIR/bin/cockpit-tui' '$d' $*" >/dev/null 2>&1
+}
+
+echo "== cockpit-tui pick: filter, choose and cancel through a pty =="
+# The rows come on stdin, so the keys and the screen must be /dev/tty: a picker
+# that read keys from stdin would see EOF, and one that drew on stdout would
+# put the UI into $(...). The key is the only byte on stdout.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui pick (no bin/cockpit-tui; run make tui)"
+elif need_tmux "cockpit-tui pick"; then :; else
+PKROWS=$(printf 'main\tmain\nfeat/237\tfeat/237-pick  Add a Rust picker\nrelease\trelease/0.2\n')$'\n'
+PKS="cockpit-pk-$$"; SOCKS="$SOCKS $PKS"; PKD=$(mktmpd)
+pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt branch
+until_cap "$PKS" t '*branch>*1/3*' && ok "the list is drawn on the tty, three rows" \
+    || bad "the list is drawn on the tty, three rows" "branch> 1/3" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
+"$TMUX_REAL" -L "$PKS" send-keys -t t / R E L
+until_cap "$PKS" t '*1/1 of 3*' && ok "typing REL filters case-insensitively to one row" \
+    || bad "typing REL filters case-insensitively to one row" "1/1 of 3" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
+"$TMUX_REAL" -L "$PKS" send-keys -t t Enter
+until_file "$PKD/rc" '?*'
+is "enter prints the key of the filtered row and nothing else" "release" "$(cat "$PKD/out" 2>/dev/null)"
+is "enter exits 0" "0" "$(cat "$PKD/rc" 2>/dev/null)"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+until_cap "$PKS" t '*pick>*1/3*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t j Enter
+until_file "$PKD/rc" '?*'
+is "j then enter chooses the second row's key" "feat/237" "$(cat "$PKD/out" 2>/dev/null)"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+until_cap "$PKS" t '*pick>*1/3*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t q
+until_file "$PKD/rc" '?*'
+is "q exits 1" "1" "$(cat "$PKD/rc" 2>/dev/null)"
+is "q prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "" 
+until_file "$PKD/rc" '?*'
+is "no rows exits 1 without opening a screen" "1" "$(cat "$PKD/rc" 2>/dev/null)"
+is "no rows prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 27 11 "$PKROWS"
+until_cap "$PKS" t '*make the window larger*' && ok "under 28x12 the floor card is drawn" \
+    || bad "under 28x12 the floor card is drawn" "make the window larger" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
+"$TMUX_REAL" -L "$PKS" send-keys -t t Enter Escape
+until_file "$PKD/rc" '?*'
+is "under the floor enter chooses nothing and esc exits 1" "1:0" "$(cat "$PKD/rc" 2>/dev/null):$(wc -c < "$PKD/out" | tr -d ' ')"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --bogus
+until_file "$PKD/rc" '?*'
+is "an unknown flag exits 2 and names it" "2:1" "$(cat "$PKD/rc" 2>/dev/null):$(grep -c -- '--bogus' "$PKD/err")"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

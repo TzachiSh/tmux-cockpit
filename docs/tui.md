@@ -490,6 +490,54 @@ to its pane, and reserves the action line `deliver %N`. Its design is on
 [#61](https://github.com/TzachiSh/tmux-cockpit/issues/61), in the research
 lane's `ux.md` §2.
 
+### The picker
+
+`cockpit-tui pick` is the one list-and-filter component (#228, decision 6). It
+replaces fzf wherever cockpit asked a person to choose a row.
+
+```
+printf 'main\tmain\nfeat/x\tfeat/x  Add x\n' | cockpit-tui pick --prompt branch --header 'switch to' --preview notes.txt
+```
+
+Rows come on stdin as `<key>TAB<display>`; a line with no tab is its own key and
+display, and a line with no key is skipped. The chosen key is the only thing on
+stdout. The screen is drawn on `/dev/tty` and keys are read from it, since stdin
+is the rows and stdout is the answer.
+
+| exit | meaning |
+|------|---------|
+| 0 | a row was chosen; its key is on stdout |
+| 1 | `esc`, `q` or ctrl-c, or no rows; stdout is empty |
+| 2 | a bad argument, an unreadable `--preview` file, or no terminal |
+
+`--preview <file>` is static text shown right of the list when the screen is 60
+columns or wider (the first 64 KiB, no scrolling). Nothing mutates: the caller
+acts on the key. Row, header and preview text have control characters stripped
+before they are drawn, and every text is drawn in `value` (D17). Under 28x12 the
+screen is the floor card.
+
+The filter is a case-insensitive substring over the display text, never the key.
+`j` `k` `q` are commands, so typing starts the filter on any other letter and `/`
+starts it for those three. While filtering every printable key is a letter.
+
+| key | does |
+|-----|------|
+| `↑` `↓` `j` `k` `PgUp` `PgDn` | move the selection (`chrome::scroll`); the arrows and pages also while filtering |
+| `g` `G` | first / last row |
+| `/` | start the filter |
+| letters | start the filter with that letter (not `j` `k` `q` `g` `G` `?`) |
+| `⌫` | widen the filter; on an empty one, leave filtering |
+| `^U` | clear the filter |
+| `↵` | print the selected row's key, exit 0 |
+| click | select the row under the pointer; `↵` chooses |
+| wheel | scroll the window three rows, the selection stays inside it |
+| `?` | the keys; any key but a scroll key closes it |
+| `esc` | clear the filter; on the list, cancel |
+| `q` `^C` | cancel |
+
+Mouse capture is on for the picker, unlike the board: a list you click is the
+point of it.
+
 ## States
 
 Exact text. All lower case, no exclamation marks. The `cockpit:` prefix appears
@@ -791,6 +839,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
 Every mutating action stays a shell script: the binary prints

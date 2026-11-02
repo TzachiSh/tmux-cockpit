@@ -6,5 +6,6 @@ pub mod chrome;
 pub mod data;
 pub mod fleet;
 pub mod panel;
+pub mod pick;
 pub mod push;
 pub mod theme;
