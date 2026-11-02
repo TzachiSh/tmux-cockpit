@@ -345,7 +345,7 @@ fi
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);
-# stock keeps 8 ([z]) and 9. The window line's ‹ › are user ranges.
+# stock binds 7 ([f]), 8 ([z]) and 9 ([x]). The window line's ‹ › are user ranges.
 tmux unbind-key -q -n MouseDown1Control1 \; unbind-key -q -n MouseDown1Control2
 # From argv a bare ; would end bind-key itself, so a two-command binding passes '\;'.
 if [ -n "$sk" ]; then
