@@ -3,7 +3,8 @@
 #
 #   scripts/tui-fetch [--required] [--version <tag>]   --required: exit 1 if none works
 # Run from prefix U, never on config load, where a dead network stalls startup.
-# Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh).
+# Env: COCKPIT_TUI_RELEASES (release host, curl only), COCKPIT_TUI_REPO (for gh),
+# COCKPIT_TUI_OFFLINE (no gh, curl or cargo: the suite sets it).
 set -u
 
 PIN=cockpit-tui-v0.2.0
@@ -135,6 +136,11 @@ have=$("$BIN/cockpit-tui" --version 2>/dev/null)
 if [ -n "$have" ] && [ "$(norm "$have")" = "$(norm "$TAG")" ]; then
     say "cockpit-tui $(norm "$TAG") already current"
     exit 0
+fi
+# Before gh, curl and cargo alike: a test run must never reach the network.
+if [ -n "${COCKPIT_TUI_OFFLINE:-}" ]; then
+    say "skip: COCKPIT_TUI_OFFLINE is set, nothing fetched or built"
+    finish
 fi
 mkdir -p "$BIN" || exit 1
 VIA=$(auth_path)

@@ -7,6 +7,9 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Required (#199), and make test builds it first. Exported, so a copy of the
 # plugin under test still runs the binary this tree built.
 export COCKPIT_TUI_BIN=${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}
+# Never the network: any tui-fetch a block reaches (install.sh, bootstrap.sh)
+# stops before gh, curl or cargo, whatever the pin and Cargo.toml say.
+export COCKPIT_TUI_OFFLINE=1
 [ -x "$COCKPIT_TUI_BIN" ] || { echo "tests/run.sh: no $COCKPIT_TUI_BIN; run make tui-bin" >&2; exit 1; }
 STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
@@ -9875,7 +9878,8 @@ fi
 echo "== cockpit-tui: tui-fetch verifies before it installs, and never breaks a working binary =="
 # No network: the release host is a file:// tree the block builds itself. The
 # binary is a stand-in shell script -- tui-fetch only ever asks it --version,
-# which is exactly the check a checksum cannot make.
+# which is exactly the check a checksum cannot make. env -u: this block alone
+# lifts the suite's offline switch, against a local host and stub gh and curl.
 if ! command -v curl >/dev/null 2>&1; then skip_ "tui-fetch (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum)"; else
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
@@ -9927,7 +9931,7 @@ tf_release() {                # <tag> <version-it-reports> [flip|flat|broken|noa
 }
 tf() {                        # <release-base-url> <args...>
     local u=$1; shift
-    COCKPIT_TUI_RELEASES="$u" "$TF/plugin/scripts/tui-fetch" "$@" 2>&1
+    COCKPIT_TUI_RELEASES="$u" env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" "$@" 2>&1
 }
 tf_ver() { "$TFB" --version 2>/dev/null; }
 tf_mark() { cat "$TF/plugin/bin/.tried" 2>/dev/null; }
@@ -10124,7 +10128,7 @@ chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 # a keypress: `gh auth token` reads the local config, `gh auth status` would
 # validate against api.github.com with no timeout to bound it.
 : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$PATH" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
+tfout=$(PATH="$TF/ghshim:$PATH" env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
 is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
 case "$(cat "$TF/ghlog")" in
     *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
@@ -10134,7 +10138,7 @@ esac
 
 tf_release tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
 is "an authenticated gh is preferred over the plain URL" "0" "$tfrc"
 is "and installs the release it serves" "cockpit-tui 1.0.0" "$(tf_ver)"
 case "$tfout" in
@@ -10149,7 +10153,7 @@ esac
 tf_release tui-v1.1.0 1.1.0
 : > "$TF/ghlog"
 tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" COCKPIT_TUI_REPO=alice/example \
-    "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
+    env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
 case "$(cat "$TF/ghlog")" in
     *"-R alice/example"*) ok "COCKPIT_TUI_REPO overrides the repo gh asks" ;;
     *) bad "COCKPIT_TUI_REPO overrides the repo gh asks" "-R alice/example" "$(cat "$TF/ghlog")" ;;
@@ -10157,7 +10161,7 @@ esac
 
 tf_release tui-v1.2.0 1.2.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
 is "a gh that is not logged in falls back to curl" "0" "$tfrc"
 is "and still installs" "cockpit-tui 1.2.0" "$(tf_ver)"
 is "and paid exactly the two curl forks" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
@@ -10173,7 +10177,7 @@ esac
 # A tag gh has no release for: fall to the plain URL, then skip -- never a
 # source build, and no marker, so the next press may ask again.
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" env -u COCKPIT_TUI_OFFLINE "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
 is "a tag gh has no release for still exits 0" "0" "$tfrc"
 case "$tfout" in
     *"no release tui-v9.9.0 via gh (or offline)"*) ok "and the skip names the gh path" ;;
@@ -10187,6 +10191,33 @@ esac
 is "and leaves no marker" "" "$(tf_mark)"
 unset -f tf tf_release tf_ver tf_mark
 fi
+
+# tests: scripts/tui-fetch
+echo "== the suite never reaches the network: install.sh fetches nothing under COCKPIT_TUI_OFFLINE =="
+# A plugin copy with no binary forces a fetch; gh, curl and cargo are recorders
+# that fail, so any call is a line here and never a request.
+NW=$(mktmpd); mkdir -p "$NW/p" "$NW/stub" "$NW/home" "$NW/bin"
+cp "$DIR/install.sh" "$NW/p/"; cp -r "$DIR/scripts" "$NW/p/"
+for t in gh curl cargo; do
+    printf '#!/bin/sh\necho "%s $*" >> %s/calls\nexit 1\n' "$t" "$NW" > "$NW/stub/$t"; chmod +x "$NW/stub/$t"
+done
+nw() { PATH="$NW/stub:$PATH" HOME="$NW/home" XDG_BIN_HOME="$NW/bin" "$@" "$NW/p/install.sh" </dev/null 2>&1; }
+nwout=$(nw env); nwrc=$?
+is "install.sh with no binary calls no gh, curl or cargo under the suite's switch" "" "$(cat "$NW/calls" 2>/dev/null)"
+is "and exits 1, since the binary is required" "1" "$nwrc"
+case "$nwout" in
+    *"cockpit-tui is required"*) ok "and says the binary is required" ;;
+    *) bad "and says the binary is required" "cockpit-tui is required ..." "$nwout" ;;
+esac
+# The control: without the switch the same run reaches the recorders, so the
+# first assertion can fail.
+nw env -u COCKPIT_TUI_OFFLINE >/dev/null
+case "$(cat "$NW/calls" 2>/dev/null)" in
+    *curl*|*gh*) ok "without the switch the same run would have fetched" ;;
+    *) bad "without the switch the same run would have fetched" "a gh or curl call" "none" ;;
+esac
+unset -f nw
+rm -rf "$NW"
 
 echo "== cockpit-tui: the tui row in tmux-review --info =="
 # A COPY of scripts/, so the row reads that copy's bin/ and the suite never
