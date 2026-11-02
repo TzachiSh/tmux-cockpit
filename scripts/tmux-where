@@ -4,6 +4,7 @@
 #   tmux-where branch <pane_pid> <path> -              -- cockpit.tmux's #() job, non-ssh panes
 #   tmux-where path   <pane_pid> <path> <command>      -- direct call: tests, manual use
 #   tmux-where branch <pane_pid> <path> <command>
+#   tmux-where branch --set <pane_id>                  -- the hooks' push into @cockpit_branch
 set -u
 
 mode="${1:-path}"
@@ -67,6 +68,23 @@ git_label() {
         *)             printf ' %s' "${br:0:24}" ;;
     esac
 }
+
+# The bar reads the branch from a pane option, so no redraw runs a shell. Hooks call
+# this on focus changes and prompts; the write is compare-then-set, since every
+# set-option redraws. The format blanks it for an ssh pane.
+if [ "$mode" = branch ] && [ "$pid" = --set ]; then
+    case "$arg3" in %[0-9]*) ;; *) exit 0 ;; esac
+    # The path last and NUL-read: it may hold a newline.
+    IFS= read -r -d '' cur < <(tmux display-message -p -t "$arg3" \
+        '#{@cockpit_branch}'$'\037''#{pane_current_path}' 2>/dev/null)
+    path=${cur#*$'\037'}; path=${path%$'\n'}; cur=${cur%%$'\037'*}
+    [ -n "$path" ] || exit 0
+    b=$(git_label); b=${b# }
+    [ "$b" = "$cur" ] && exit 0
+    if [ -n "$b" ]; then tmux set-option -p -t "$arg3" @cockpit_branch "$b" 2>/dev/null
+    else tmux set-option -pu -t "$arg3" @cockpit_branch 2>/dev/null; fi
+    exit 0
+fi
 
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
