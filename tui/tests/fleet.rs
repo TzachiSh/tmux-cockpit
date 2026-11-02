@@ -1,6 +1,6 @@
 //! data/fleet.rs against scratch repos: the facts a list row draws, and the
 //! rule that two panes on one root cost one diff scan.
-use cockpit_tui::data::fleet::{scan, stat_text};
+use cockpit_tui::data::fleet::{choose_dirs, scan, stat_text};
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -107,4 +107,22 @@ fn two_roots_are_two_scans_and_nothing_is_one_scan_less() {
     assert_eq!(scan(&[a.path(), b.path()]).stats, 2);
     let none = scan(&[]);
     assert_eq!((none.stats, none.facts.len()), (0, 0));
+}
+
+#[test]
+fn cockpit_dir_wins_over_the_cwd_when_it_names_a_directory() {
+    let wt = Repo::new("wt");
+    let panes = [
+        ("%1".to_string(), "/main/checkout".to_string()),
+        ("%2".to_string(), "/other".to_string()),
+    ];
+    let listed = format!("%1\u{1f}{}\n%2\u{1f}\n", wt.path());
+    assert_eq!(choose_dirs(&panes, &listed), vec![wt.path(), "/other".to_string()]);
+}
+
+#[test]
+fn a_dangling_cockpit_dir_falls_back_to_the_cwd() {
+    let panes = [("%1".to_string(), "/main/checkout".to_string())];
+    assert_eq!(choose_dirs(&panes, "%1\u{1f}/no/such/tree\n"), vec!["/main/checkout".to_string()]);
+    assert_eq!(choose_dirs(&panes, ""), vec!["/main/checkout".to_string()]);
 }

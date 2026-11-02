@@ -48,17 +48,21 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 /// cwd. tmux-review's `pane_dir` rule.
 pub fn work_dirs(panes: &[(String, String)]) -> Vec<String> {
     let fmt = "#{pane_id}\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_dir}}}}";
-    let set: HashMap<String, String> = tmux(&["list-panes", "-a", "-F", fmt])
-        .unwrap_or_default()
+    choose_dirs(panes, &tmux(&["list-panes", "-a", "-F", fmt]).unwrap_or_default())
+}
+
+/// `work_dirs` over tmux's answer: `<pane id>US<@cockpit_dir>` per line. A
+/// dangling option (the tree was removed) falls back to the cwd.
+pub fn choose_dirs(panes: &[(String, String)], listed: &str) -> Vec<String> {
+    let set: HashMap<&str, &str> = listed
         .lines()
         .filter_map(|l| l.split_once('\u{1f}'))
         .filter(|(_, d)| !d.is_empty())
-        .map(|(i, d)| (i.to_string(), d.to_string()))
         .collect();
     panes
         .iter()
-        .map(|(id, cwd)| match set.get(id) {
-            Some(d) if std::path::Path::new(d).is_dir() => d.clone(),
+        .map(|(id, cwd)| match set.get(id.as_str()) {
+            Some(d) if std::path::Path::new(d).is_dir() => d.to_string(),
             _ => cwd.clone(),
         })
         .collect()
