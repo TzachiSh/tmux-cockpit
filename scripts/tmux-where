@@ -40,13 +40,13 @@ git_label() {
         gd=$d/.git
     else
         # "gitdir: <path>", possibly relative (worktree or submodule).
-        read -r _ gd < "$d/.git" 2>/dev/null || return 0
+        read -r _ gd 2>/dev/null < "$d/.git" || return 0
         gd=${gd%$'\r'}                       # a repo checked out on Windows
         [ -n "$gd" ] || return 0
         case "$gd" in /*) ;; *) gd=$d/$gd ;; esac
     fi
     [ -r "$gd/HEAD" ] || return 0
-    read -r head < "$gd/HEAD" 2>/dev/null || return 0
+    read -r head 2>/dev/null < "$gd/HEAD" || return 0
     # read never strips \r, which would land raw in the status line.
     head=${head%$'\r'}
 
@@ -85,7 +85,7 @@ ssh_cmd() {
         c=${d#/proc/}
         [ -r "$d/stat" ] || continue
         # comm may contain spaces and parens: split after the last ')'.
-        read -r line < "$d/stat" 2>/dev/null || continue
+        read -r line 2>/dev/null < "$d/stat" || continue
         line=${line##*) }
         set -- $line                      # $1=state $2=ppid
         ppid=$2

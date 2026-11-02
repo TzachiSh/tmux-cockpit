@@ -203,10 +203,10 @@ fleet_scan_root() {
     # .git is a file naming the dir that holds its own HEAD.
     gd=$root/.git
     if [ ! -d "$gd" ]; then
-        read -r gd < "$gd" 2>/dev/null || gd=
+        read -r gd 2>/dev/null < "$gd" || gd=
         gd=${gd#gitdir: }; case "$gd" in ''|/*) ;; *) gd=$root/$gd ;; esac
     fi
-    read -r branch < "$gd/HEAD" 2>/dev/null || branch=
+    read -r branch 2>/dev/null < "$gd/HEAD" || branch=
     case "$branch" in 'ref: refs/heads/'*) branch=${branch#ref: refs/heads/} ;; *) branch=HEAD ;; esac
 
     # One diff per root, and that is every git this row needs beyond the

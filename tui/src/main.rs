@@ -1,6 +1,6 @@
 //! The CLI. It never mutates: it prints `<verb> <pane-id>` and a shell wrapper
 //! runs it.
-use cockpit_tui::panel::{app, capture::capture, view};
+use cockpit_tui::panel::{action, app, capture::capture, view};
 use cockpit_tui::{board, data, fleet, theme};
 
 /// Exit 1 with no stdout is "no tmux", so a wrapper can tell it from `[]`.
@@ -51,7 +51,7 @@ fn panel(args: &[String]) {
     a.termux = cockpit_tui::panel::is_termux();
     if let Some((f, last)) = resume {
         a.reopened = true;
-        match app::read_state(std::path::Path::new(f), pane) {
+        match action::read_state(std::path::Path::new(f), pane) {
             Ok((cmd, r)) => a.resumed(cmd, r, last),
             Err(e) => {
                 eprintln!("cockpit-tui: cannot resume from {f}: {e}");
@@ -68,12 +68,12 @@ fn panel(args: &[String]) {
     };
     let f = std::path::Path::new(&f);
     if let Some(r) = &a.resume
-        && let Err(e) = app::write_state(f, pane, &a.cap.cmd, r)
+        && let Err(e) = action::write_state(f, pane, &a.cap.cmd, r)
     {
         // the action still goes: only the way back to the steps is lost
         eprintln!("cockpit-tui: cannot write the steps to resume: {e}");
     }
-    if let Err(e) = app::write_action(f, pane, &a.cap.cmd, &act) {
+    if let Err(e) = action::write_action(f, pane, &a.cap.cmd, &act) {
         eprintln!("cockpit-tui: cannot write the action: {e}");
         std::process::exit(1);
     }

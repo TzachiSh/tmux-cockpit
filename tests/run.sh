@@ -913,6 +913,8 @@ held=$( { printf '{"worktree_path":"/nonexistent/x"}\n'; sleep 3; } | ( XDG_CACH
 is "worktree-remove returns while claude holds stdin open" "rc=0" "$held"
 is "worktree-remove with HOME unset is a quiet no-op, not a bash error" "0:" \
    "$(printf '{"worktree_path":"/x/cockpit-wt/a"}' | env -u HOME -u XDG_CACHE_HOME "$DIR/scripts/worktree-remove" 2>&1; echo "$?:")"
+is "worktree-remove of a tree with no .repo sidecar is quiet, not a bash error" "0:" \
+   "$(printf '{"worktree_path":"%s"}' "$WCCACHE/cockpit-wt/nosidecar" | XDG_CACHE_HOME="$WCCACHE" "$DIR/scripts/worktree-remove" 2>&1; echo "$?:")"
 
 echo "== review-gate: hands a queued review over once, flags ◆ on a finished unreviewed diff, never blocks =="
 if need_tmux "review-gate"; then :; else
@@ -1631,6 +1633,11 @@ case "$(printf '%s' "$mk" | sed -n 2p)" in
     *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
 esac
 else skip_ "the target line starts with the marker (no bat)"; fi
+# Debian's batcat is often an older bat than one installed by hand: bat wins.
+PVB=$(mktmpd)
+for b in bat batcat; do printf '#!/bin/sh\necho %s\n' "$b" > "$PVB/$b"; chmod +x "$PVB/$b"; done
+is "the preview runs bat over batcat when both exist" " bat" \
+   "$(PATH="$PVB:$PATH" "$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null)"
 case "$(printf '%s' "$mk" | sed -n 1p)" in
     " "*) ok "and its neighbours keep alignment" ;;
     *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
@@ -2328,6 +2335,18 @@ case "$d" in
     *"@${sha:0:7}"*) ok "detached HEAD shows a hash, not the word HEAD" ;;
     *) bad "detached HEAD shows a hash, not the word HEAD" "@${sha:0:7}" "$d" ;;
 esac
+# A redirect's error goes to stderr unless 2>/dev/null comes before it.
+mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/locked/.git"
+is "an unreadable .git file is quiet, not a bash error" "" \
+   "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
+chmod 600 "$DH/locked/.git"
+# A worktree removed after the board resolved its root.
+is "the board's scan of a vanished root is quiet" "" \
+   "$(bash -c '. "$1/scripts/lib/review-diff.sh"; . "$1/scripts/lib/review-fleet.sh"; fleet_scan_root "$2"' _ "$DIR" "$DH/gone" 2>&1 >/dev/null)"
+echo b >> "$DH/a"; chmod 000 "$DH/a"
+is "the diff preview of an unreadable changed file is quiet" "" \
+   "$("$DIR/scripts/tmux-open-path" --preview-diff "$DH/a" 2>&1 >/dev/null)"
+chmod 600 "$DH/a"
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
@@ -2810,6 +2829,36 @@ else
 fi
 "$TMUX_REAL" -L "$OUTER" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$INNER" kill-server >/dev/null 2>&1
+fi
+
+echo "== the click bindings survive a plugin path with a quote and a space =="
+# The bindings carry the script path shell-quoted, and inside a tmux "..." string
+# tmux eats the backslash of '\'' so the shell got ''' instead.
+if need_tmux "quoted plugin path"; then :; else
+QO="cockpit-qpo-$$"; QI="cockpit-qpi-$$"; SOCKS="$SOCKS $QO $QI"
+QPD="$(mktmpd)/it's a dir"; mkdir -p "$QPD"; QLOG=$(mktmpf)
+cp -R "$DIR/cockpit.tmux" "$DIR/scripts" "$QPD/"
+printf '#!/bin/sh\nprintf "OPEN %%s\\n" "$*" > "%s"\n' "$QLOG" > "$QPD/scripts/tmux-open-path"
+"$TMUX_REAL" -L "$QI" -f /dev/null new-session -d -s t -x 80 -y 24 'printf "MARK\n"; exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" set -g mouse on >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" run-shell "\"$QPD/cockpit.tmux\"" >/dev/null 2>&1
+QIP=$("$TMUX_REAL" -L "$QI" list-panes -t t -F '#{pane_id}')
+"$TMUX_REAL" -L "$QO" -f /dev/null new-session -d -s o -x 80 -y 24 \
+    "$TMUX_REAL -L $QI attach -t t" >/dev/null 2>&1
+until_cap "$QO" o '*MARK*'
+# SGR on the MARK row: ctrl is +16 and meta +8 on the button, so ctrl+right is 18.
+# The double click is one send-keys: tmux drops a pair more than ~300ms apart.
+for qg in "ctrl+right-click:1b 5b 3c 31 38 3b 32 3b 31 4d" \
+          "alt+click:1b 5b 3c 38 3b 32 3b 31 4d 1b 5b 3c 38 3b 32 3b 31 6d" \
+          "ctrl+double-click:1b 5b 3c 31 36 3b 32 3b 31 4d 1b 5b 3c 31 36 3b 32 3b 31 6d 1b 5b 3c 31 36 3b 32 3b 31 4d 1b 5b 3c 31 36 3b 32 3b 31 6d"; do
+    : > "$QLOG"
+    # shellcheck disable=SC2086  # the hex bytes are meant to split
+    "$TMUX_REAL" -L "$QO" send-keys -t o -H ${qg#*:} >/dev/null 2>&1
+    until_file "$QLOG" '*OPEN*'
+    is "${qg%%:*} runs the picker from that path" "OPEN $QIP" "$(cat "$QLOG")"
+done
+"$TMUX_REAL" -L "$QO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$QI" kill-server >/dev/null 2>&1
 fi
 
 # tests: examples/tmux.conf cockpit.tmux
@@ -3385,6 +3434,39 @@ done
 "$TMUX_REAL" -L "$MV" kill-server >/dev/null 2>&1
 fi
 
+echo "== a session name is data in the move menu =="
+# display-menu expands each item's name as a format, so a session named #(cmd)
+# ran cmd as the menu opened: the name has to reach it with its # doubled.
+if need_tmux "move menu session name"; then :; else
+MH="cockpit-mh-$$"; MHO="cockpit-mho-$$"; SOCKS="$SOCKS $MH $MHO"; MHD=$(mktmpd)
+# Silent panes: a login shell's banner can land over the menu and hide its rows.
+"$TMUX_REAL" -L "$MH" -f /dev/null new-session -d -s work -n editor -x 90 -y 24 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" new-window -t work -n keeper 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" select-window -t work:editor >/dev/null 2>&1
+# new-session expands -s as a format itself: ## lands the literal #( name.
+"$TMUX_REAL" -L "$MH" new-session -d -s "##(touch $MHD/pwned)" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MHO" -f /dev/null new-session -d -s o -x 90 -y 26 \
+    "$TMUX_REAL -L $MH attach -t work" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$MH" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$MHO" send-keys -t o C-b M
+until_cap "$MHO" o '*new session...*'
+# An absence has no observable to poll: give the #() job time to run.
+sleep 1
+[ -e "$MHD/pwned" ] && bad "opening the menu runs nothing" "no file" "pwned created" \
+    || ok "opening the menu runs nothing"
+if until_cap "$MHO" o '*#(touch*'; then ok "the menu lists the session by its literal name"
+else bad "the menu lists the session by its literal name" "a #(touch row" \
+    "$("$TMUX_REAL" -L "$MHO" capture-pane -p -t o | grep -v '^$' | tail -6)"; fi
+"$TMUX_REAL" -L "$MHO" send-keys -t o Enter
+if until_out "#(touch $MHD/pwned):editor" "$TMUX_REAL" -L "$MH" list-clients -F '#{session_name}:#{window_name}'; then
+    ok "and the window moves into it"
+else bad "and the window moves into it" "#(touch $MHD/pwned):editor" \
+    "$("$TMUX_REAL" -L "$MH" list-clients -F '#{session_name}:#{window_name}')"; fi
+"$TMUX_REAL" -L "$MHO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$MH" kill-server >/dev/null 2>&1
+fi
+
 echo "== clicking the directory segment browses the working dir =="
 # range=control|2 on the status bar's directory segment opens the folder
 # browser at the pane's cwd -- the same popup the path picker descends into,
@@ -3431,17 +3513,16 @@ echo "== the tint never fires at the pane you are on =="
 # The blocked-pane tint is an alert. Painting it onto the pane the user is
 # focused on -- with the permission prompt already in front of them and the
 # border already red -- is noise, and was reported as exactly that. The
-# explicit bg=default on window-active-style is load-bearing: left unset, the
-# active pane INHERITS window-style and the tint comes back (verified: 6 tinted
-# rows unset, 4 with the explicit default).
+# window-active-style must be explicit, or the active pane INHERITS window-style.
+# Only what a client draws shows it: on 3.8 bg=default still inherits the tint.
 if need_tmux "focused-pane tint"; then :; else
-TS="cockpit-tint-$$"; SOCKS="$SOCKS $TS"
-"$TMUX_REAL" -L "$TS" -f /dev/null new-session -d -s t -x 60 -y 14 'exec -a claude sleep 300' >/dev/null 2>&1
+TS="cockpit-tint-$$"; TSO="cockpit-tinto-$$"; SOCKS="$SOCKS $TS $TSO"
+"$TMUX_REAL" -L "$TS" -f /dev/null new-session -d -s t -x 60 -y 14 "bash -c 'printf PASSIVE; exec -a claude sleep 300'" >/dev/null 2>&1
 for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
     "$TMUX_REAL" -L "$TS" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
 done
 "$TMUX_REAL" -L "$TS" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
-"$TMUX_REAL" -L "$TS" split-window -t t 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$TS" split-window -t t "bash -c 'printf FOCUSED; exec -a claude sleep 300'" >/dev/null 2>&1
 TP1=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==0{print $1}')
 TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk '$2==1{print $1}')
 "$TMUX_REAL" -L "$TS" set -p -t "$TP1" @panestate needs-input >/dev/null 2>&1
@@ -3449,10 +3530,17 @@ TP2=$("$TMUX_REAL" -L "$TS" list-panes -t t -F '#{pane_id} #{pane_active}' | awk
 "$TMUX_REAL" -L "$TS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "a blocked pane you are NOT on still tints" "bg=#52303a" \
    "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP1" '#{E:window-style}')"
-is "the pane you are on never tints"           "bg=default" \
-   "$("$TMUX_REAL" -L "$TS" display-message -p -t "$TP2" '#{E:window-active-style}')"
+"$TMUX_REAL" -L "$TSO" -f /dev/null new-session -d -s o -x 60 -y 16 "TERM=xterm-256color exec $TMUX_REAL -L $TS attach -t t" >/dev/null 2>&1
+until_cap "$TSO" o '*FOCUSED*'
+# @cockpit_blocked_bg #52303a as the outer pane records it: RGB 82;48;58.
+tsrow() { "$TMUX_REAL" -L "$TSO" capture-pane -e -p -t o | grep "$1"; }
+case "$(tsrow PASSIVE)" in *'48;2;82;48;58m'*) ok "the client draws the tint on the pane you are not on" ;;
+    *) bad "the client draws the tint on the pane you are not on" "48;2;82;48;58m" "$(tsrow PASSIVE | cat -v)" ;; esac
+case "$(tsrow FOCUSED)" in *'48;2;82;48;58m'*) bad "the client draws no tint on the pane you are on" "no 48;2;82;48;58m" "$(tsrow FOCUSED | cat -v)" ;;
+    *) ok "the client draws no tint on the pane you are on" ;; esac
+"$TMUX_REAL" -L "$TSO" kill-server >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$TS" show-option -gv window-active-style)" in
-    *@panestate*) bad "window-active-style carries no state format" "bg=default" "a @panestate conditional" ;;
+    *@panestate*) bad "window-active-style carries no state format" "bg=terminal" "a @panestate conditional" ;;
     *) ok "window-active-style carries no state format" ;;
 esac
 "$TMUX_REAL" -L "$TS" kill-server >/dev/null 2>&1

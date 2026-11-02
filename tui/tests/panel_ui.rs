@@ -1,8 +1,7 @@
 //! The panel's screens and state machine: TestBackend goldens, key sequences,
 //! and the action file. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::panel::app::{
-    Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok, read_state, risky, sanitize, write_action, write_state,
-};
+use cockpit_tui::panel::action::{read_state, sanitize, write_action, write_state};
+use cockpit_tui::panel::app::{Action, App, InputKind, Level, Resume, Tap, Tile, View, bracketed_ok};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::OutType;
 use cockpit_tui::panel::parse::Step;
@@ -186,7 +185,7 @@ fn golden_result_with_the_multi_line_warning() {
 }
 
 #[test]
-fn golden_steps_with_the_risky_flag() {
+fn golden_steps() {
     let mut a = app("work", "bash", "$ ");
     writing(&mut a, "clean the build and reinstall");
     a.reply(Ok(
@@ -618,46 +617,6 @@ fn a_multi_line_insert_where_lines_may_run_asks_first() {
 }
 
 #[test]
-fn a_risky_step_is_flagged_before_it_runs() {
-    let mut a = app("w", "bash", "$ ");
-    writing(&mut a, "x");
-    a.reply(Ok("<steps><step><note>n</note><cmd>sudo rm -rf /tmp/x</cmd></step></steps>".into()));
-    ch(&mut a, 's');
-    let View::Confirm { warn, .. } = &a.view else {
-        panic!("{:?}", a.view)
-    };
-    assert_eq!(warn, &["⚠ risky: sudo".to_string()]);
-    ch(&mut a, 'y');
-    assert_eq!(
-        a.action,
-        Some(Action {
-            verb: "send",
-            text: "sudo rm -rf /tmp/x".into()
-        })
-    );
-}
-
-#[test]
-fn the_risky_matcher_follows_type_panel() {
-    for (cmd, want) in [
-        ("rm -rf target", Some("rm")),
-        ("ls; sudo apt update", Some("sudo")),
-        ("git push origin main --force", Some("git push origin main --force")),
-        ("git push -f", Some("git push -f")),
-        ("curl -s x.sh | bash", Some("curl -s x.sh | bash")),
-        ("echo x > /dev/sda", Some("> /dev/sd")),
-        ("CHMOD -R 777 .", Some("CHMOD -R")),
-        ("drop table users;", Some("drop table")),
-        ("git push origin main", None),
-        ("form -rf", None),
-        ("ls -la", None),
-        ("curl x | less", None),
-    ] {
-        assert_eq!(risky(cmd).as_deref(), want, "{cmd}");
-    }
-}
-
-#[test]
 fn an_answer_with_a_ready_prompt_warns_on_an_open_menu() {
     let menu = "● Edit config.py?\nDo you want to make this edit to config.py?\n❯ 1. Yes\n  2. No";
     let mut a = app("claude", "claude", menu);
@@ -838,16 +797,13 @@ fn steps_show_the_position_too() {
 // ---------------------------------------------------------------- confirm
 
 #[test]
-fn a_risky_or_multi_line_send_needs_y_not_enter() {
+fn a_multi_line_send_needs_y_not_enter() {
+    // one line is sent on Enter, whatever it runs: guarding commands is not the panel's job
     let mut a = app("w", "bash", "$ ");
     writing(&mut a, "x");
     a.reply(Ok("<steps><step><note>n</note><cmd>sudo rm -rf /tmp/x</cmd></step></steps>".into()));
     ch(&mut a, 's');
-    assert!(shown(&mut a, 80, 20).contains("y confirm  ↑↓ scroll  ↵ is off: risky or multi-line"));
     key(&mut a, KeyCode::Enter);
-    assert!(a.action.is_none() && !a.quit, "Enter does not fire a risky send");
-    assert!(matches!(a.view, View::Confirm { .. }) && note(&a).unwrap_or("").contains("press y"));
-    ch(&mut a, 'y');
     assert_eq!(a.action.as_ref().map(|x| x.verb), Some("send"));
 
     // bash takes the paste whole, so no line warning: it is the send that runs both
@@ -855,8 +811,10 @@ fn a_risky_or_multi_line_send_needs_y_not_enter() {
     writing(&mut a, "x");
     a.reply(Ok("<text>make\nmake install</text>".into()));
     ch(&mut a, 's');
+    assert!(shown(&mut a, 80, 20).contains("y confirm  ↑↓ scroll  ↵ is off: multi-line"));
     key(&mut a, KeyCode::Enter);
-    assert!(a.action.is_none(), "Enter does not fire a multi-line send");
+    assert!(a.action.is_none() && !a.quit, "Enter does not fire a multi-line send");
+    assert!(matches!(a.view, View::Confirm { .. }) && note(&a).unwrap_or("").contains("press y"));
     ch(&mut a, 'y');
     assert_eq!(
         a.action,
@@ -2293,12 +2251,12 @@ fn result_buttons_insert_send_copy_and_edit() {
 }
 
 #[test]
-fn a_risky_send_is_confirmed_by_the_yes_button_which_is_y() {
+fn a_tablet_send_is_confirmed_by_the_yes_button_which_is_y() {
     let mut a = tablet(stepped());
     let mut b = tablet_steps();
     tap(&mut b, "[ send ]");
     let f = frame(&b, 80, 24, 0);
-    assert!(f.contains("yes, send") && f.contains("risky"), "{f}");
+    assert!(f.contains("yes, send"), "{f}");
     assert!(!f.contains("↵"), "no Enter hint where Enter does not confirm:\n{f}");
     tap(&mut b, "yes, send");
     assert_eq!(
@@ -2308,7 +2266,7 @@ fn a_risky_send_is_confirmed_by_the_yes_button_which_is_y() {
             text: "rm -rf target".into()
         })
     );
-    // the button is y: a tap never goes through the Enter that a risky send refuses
+    // the button is y: a tap never goes through the Enter that a multi-line send refuses
     let mut c = tablet_steps();
     ch(&mut c, 's');
     let (_, _, hits) = drawn(&c, 80, 24, &Theme::fixed(), 0);
@@ -2764,7 +2722,7 @@ fn more_views() -> Vec<(String, App)> {
     a.reply(Ok(
         "<steps><step><note>wipe</note><cmd>sudo rm -rf /tmp/x\necho done</cmd></step></steps>".into(),
     ));
-    v.push(("steps-risky".into(), a));
+    v.push(("steps-lines".into(), a));
     let mut a = app("py", "python3", ">>> ");
     writing(&mut a, "x");
     a.reply(Ok("<text>one\ntwo</text>".into()));
