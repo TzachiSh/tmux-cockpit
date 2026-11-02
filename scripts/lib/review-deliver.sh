@@ -15,7 +15,8 @@ done_store() {                # <store>
     if [ -f "$st" ] && [ ! -L "$st" ] && [ -s "$st" ]; then
         cat -- "$st" >> "$d/delivered.md" || return 1
     fi
-    rm -f -- "$st" "$st.rows" "$st.base"
+    rm -rf -- "$d/history"
+    rm -f -- "$st" "$st.rows" "$st.rdin" "$st.rdout" "$st.base"
     rmdir -- "$d" 2>/dev/null
     return 0
 }
@@ -30,8 +31,9 @@ done_store() {                # <store>
 clear_sess() {                # <sess dir>
     local s=$1
     [ -d "$s" ] && [ ! -L "$s" ] || return 0
-    rm -f -- "$s/comments.md" "$s/comments.md.rows" "$s/comments.md.base" \
-             "$s/delivered.md" "$s/rc"
+    rm -rf -- "$s/history"
+    rm -f -- "$s/comments.md" "$s/comments.md.rows" "$s/comments.md.rdin" \
+             "$s/comments.md.rdout" "$s/comments.md.base" "$s/delivered.md" "$s/rc"
     rmdir -- "$s" 2>/dev/null
     return 0
 }
@@ -91,7 +93,7 @@ compose() {
 keep_hint() {
     local pane=$1 store=$2
     [ -n "$store" ] && [ -s "$store" ] || return 0
-    # run_loop giving up has no pane in hand -- it was handed a dir and a store
+    # the loop giving up has no pane in hand -- it was handed a dir and a store
     # and nothing else -- so the id becomes a visible placeholder rather than a
     # silently missing argument in a command the reader would paste as-is.
     [ -n "$pane" ] || pane='<pane>'

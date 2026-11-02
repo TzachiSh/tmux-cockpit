@@ -7,10 +7,10 @@
 #                                          pane -- preselected
 #   tmux-review --fleet                    the fleet queue's rows, no fzf
 #   tmux-review --lines <dir>              the diff rows a review anchors to
-#   tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
-#                                          ctrl-s asks, then exits 20
-#                                          (deliver); esc leaves the batch
-#                                          pinned (asks first when any are)
+#   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key
+#                                          prompt; exits 20 (deliver), 21
+#                                          (approved), 127 (no revdiff), else
+#                                          leaves the batch pinned
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
@@ -103,10 +103,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
                                           after every review
   tmux-review --fleet                    the fleet queue's rows, no fzf
   tmux-review --lines <dir>              the diff rows a review anchors to
-  tmux-review --loop <dir> <store>       the interactive picker (needs fzf);
-                                          ctrl-s asks, then exits 20 (deliver);
-                                          esc leaves the batch pinned (asks
-                                          first when any are)
+  tmux-review --loop <dir> <store>       the review: revdiff, then a one-key prompt (deliver, approve,
+                                          review again, base, discard, leave); needs revdiff
   tmux-review --copy <dir> [path]        the file, then its diff (no path: the whole diff), for the clipboard
   tmux-review --resnap <dir> <store>     re-snapshot the diff; names the comments that moved
   tmux-review --list <store>            every pinned comment, then a key
@@ -117,8 +115,8 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review --request <pane>          the agent asks: one popup on <pane>; the batch on stdout, exit 10
   tmux-review -p <pane> --info          one screen: state, doing/said/asked, review, base, session, review dir (prefix i)
   tmux-review --dir <pane>              the tree <pane> works in: @cockpit_dir, else its cwd
-In the picker: ↵ pin the typed comment on the row under the cursor   ⇥ mark   ^E editor   ^X delete its comments   ^L list   ^R refresh   ^B base   ^A approve   ^Y copy file+diff   alt-c copy lines   alt-y copy all   ^/ preview   alt-↑↓ scroll   ^S deliver (asks first)   esc leave (asks first)
-(there is no accept-all: ↵ with nothing typed does nothing)
+In revdiff: its own keys (? lists them); q saves the comments, Q discards.
+After it: d deliver   a approve (no comments)   r review again   b base   x discard   l leave
 USAGE
 }
 
@@ -162,7 +160,7 @@ case "${1:-}" in
                                 need review-picker.sh ;;
     --rows|--copy|--resnap)     need review-diff.sh review-picker.sh ;;
     --edit)                     need review-picker.sh ;;
-    --loop)                     need review-diff.sh review-picker.sh review-deliver.sh ;;
+    --loop)                     need review-diff.sh review-revdiff.sh review-deliver.sh ;;
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
     --info)                     need review-diff.sh review-fleet.sh transcript.sh ;;
@@ -208,7 +206,7 @@ case "${1:-}" in
             "${EDITOR:-vi}" "${@: -1}"
         } ;;
     --loop)
-        shift; run_loop "${1:-}" "${2:-}" ;;
+        shift; review_loop "${1:-}" "${2:-}" ;;
     --resnap)
         shift; resnap "${1:-}" "${2:-}" ;;
     --list)

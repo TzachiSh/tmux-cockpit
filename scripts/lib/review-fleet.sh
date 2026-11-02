@@ -288,7 +288,7 @@ review_pane() {
         cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store"); else rm -f -- $(shq "$store.rows"); fi"
         tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
     elif [ "$rc" -eq 21 ]; then
-        # Approved: the ref is written (run_loop did it, in the popup); the
+        # Approved: the ref is written (the loop did it, in the popup); the
         # pane's attention state and the review dir end here -- by NAME, not
         # rm -rf. A review already delivered to a busy pane is in flight in
         # comments.md.deliver with @cockpit_review_spool armed at it, and ^A is
@@ -346,6 +346,7 @@ request() {                   # <pane>
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
+        127) printf 'tmux-review: revdiff not found: install it, see #233\n' >&2; exit 1 ;;
         20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
             # The agent has the review in hand the moment this returns, so the
             # pane carries the same "sent" the paste path sets on delivery.
@@ -459,7 +460,7 @@ info_mode() {                 # <pane>
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
     sess=$(session_dir "$id" "$root")
     if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
-        # The mode ^B chose for THIS review, as run_loop reads it -- passed as
+        # The mode ^B chose for THIS review, as the loop reads it -- passed as
         # the argument review_base actually keys on, not exported (nothing this
         # function calls reads COCKPIT_REVIEW_BASE from the environment).
         b=$(review_base "$root" "$(cat -- "$sess/comments.md.base" 2>/dev/null)")
