@@ -592,10 +592,10 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
 }
 
 clamp() {  # clamp VAR LOW HIGH -- HIGH wins when the two cross
-  local v=${!1}
-  [ "$v" -ge "$2" ] || v=$2
-  [ "$v" -le "$3" ] || v=$3
-  printf -v "$1" '%d' "$v"
+  local _v=${!1}
+  [ "$_v" -ge "$2" ] || _v=$2
+  [ "$_v" -le "$3" ] || _v=$3
+  printf -v "$1" '%d' "$_v"
 }
 
 ceiling() {  # ceiling VAR OPTION WHOLE -- OPTION as N% of WHOLE or N cells
