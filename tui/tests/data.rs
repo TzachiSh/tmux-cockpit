@@ -571,7 +571,11 @@ fn diffstat_reads_a_linked_worktree_and_refuses_a_non_repo() {
 fn the_flag_lists() {
     assert_eq!(
         SAFE.join(" "),
-        "--no-optional-locks -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false"
+        concat!(
+            "--no-optional-locks -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false",
+            " -c protocol.allow=never -c protocol.file.allow=never -c protocol.ssh.allow=never -c protocol.git.allow=never",
+            " -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ext.allow=never"
+        )
     );
     let r = Repo::new("flags");
     assert_eq!(no_filters(&r.path()), Vec::<String>::new());
@@ -621,4 +625,54 @@ fn a_missing_blob_never_lazy_fetches() {
 
     assert_eq!(diffstat(&[&r.path()]), (String::new(), 1));
     assert!(!marker.exists(), "diffstat ran the planted uploadpack");
+
+    // git < 2.44 ignores GIT_NO_LAZY_FETCH, so only the protocol pin is left,
+    // and a planted protocol.file.allow=always must not reopen it.
+    r.git(&["config", "protocol.file.allow", "always"]);
+    r.git(&["diff", "--numstat", "HEAD"]);
+    assert!(marker.exists(), "the plant never fired under protocol.file.allow");
+    std::fs::remove_file(&marker).unwrap();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let shim = r.dir.join(".git/oldgit");
+    std::fs::create_dir_all(&shim).unwrap();
+    write_exec(
+        &shim.join("git"),
+        &format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nPATH='{path}' exec git \"$@\"\n"),
+    );
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["diffstat", &r.path()])
+        .env("PATH", format!("{}:{path}", shim.display()))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!marker.exists(), "diffstat ran the planted uploadpack on an old git");
+
+    // A remote helper the repo names gets past the per-protocol pin.
+    let helpers = r.dir.join(".git/helpers");
+    std::fs::create_dir_all(&helpers).unwrap();
+    write_exec(
+        &helpers.join("git-remote-foo"),
+        &format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+    );
+    r.git(&["config", "protocol.foo.allow", "always"]);
+    r.git(&["config", "remote.origin.url", "foo::x"]);
+    let hpath = format!("{}:{path}", helpers.display());
+    std::process::Command::new("git")
+        .args(["-C", &r.path(), "diff", "--numstat", "HEAD"])
+        .env("PATH", &hpath)
+        .output()
+        .unwrap();
+    assert!(marker.exists(), "the planted remote helper never fired");
+    std::fs::remove_file(&marker).unwrap();
+    write_exec(
+        &shim.join("git"),
+        &format!("#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nPATH='{hpath}' exec git \"$@\"\n"),
+    );
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["diffstat", &r.path()])
+        .env("PATH", format!("{}:{path}", shim.display()))
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(1));
+    assert!(!marker.exists(), "diffstat ran the planted remote helper on an old git");
 }

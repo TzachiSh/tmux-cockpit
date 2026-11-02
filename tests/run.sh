@@ -6615,6 +6615,51 @@ is "and nothing it names runs under tmux-review or the previews" "" "$(cat "$GHM
 case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
     *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
 
+echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
+# c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
+# old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
+LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"; ln -s "$LF/up" "$LF/hb/git-remote-foo"
+printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$(command -v git)" > "$LF/old/git"; chmod +x "$LF/old/git"
+( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+  git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
+  && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
+  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c" \
+  && git switch -qc side && printf 'g\n' > g.txt && git add g.txt && git commit -qm g \
+  && git switch -qc side2 main && printf 'h\n' > h.txt && git add h.txt && git commit -qm h \
+  && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
+  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c2" \
+  && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
+  && git config remote.origin.uploadpack "$LF/up" && git config core.sshCommand "$LF/up" \
+  && git config protocol.file.allow always && git config protocol.ssh.allow always \
+  && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
+lf_paths() {
+    ( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+    is "not through git.sh's git$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"; tree_diff "$LF/c" --numstat ) >/dev/null 2>&1
+    is "nor through tree_diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    "$DIR/scripts/tmux-review" --lines "$LF/c" >/dev/null 2>&1
+    is "nor through tmux-review --lines$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    XDG_RUNTIME_DIR="$(mktmpd)" "$DIR/scripts/tmux-open-path" --preview-diff "$LF/c/f.txt" >/dev/null 2>&1
+    is "nor through the path picker's preview diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+}
+# foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
+for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
+    git -C "$LF/c" config remote.origin.url "$lfu"
+    PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+    is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    PATH="$LF/hb:$PATH" lf_paths " (${lfu%%:*})"
+    PATH="$LF/old:$LF/hb:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
+done
+# A user's own switch or worktree add still fetches what it checks out; a diff does not.
+is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \
+   "$( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" diff --numstat main origin/side 2>/dev/null)"
+( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" switch -q --track origin/side ) >/dev/null 2>&1
+is "while switch --track through it fetches the branch's blob" "g" "$(cat "$LF/c2/g.txt" 2>/dev/null)"
+( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
+is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
+rm -rf "$LF"; unset lfu; unset -f lf_paths
+
 echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
 # The key used to be path+HEAD+mtime+size, with "path" whatever the caller
 # passed -- and every caller cd's into the review target first and hands a
@@ -11693,8 +11738,8 @@ rm -rf "$GD"
 
 # git.sh keeps a static copy of the list (a missing binary must not break the
 # worktree hook); this pins the copy to the binary.
-is "git-flags is git.sh's GIT_SAFE plus --no-optional-locks" \
-   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}")" "$("$DSB" git-flags)"
+is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH plus --no-optional-locks" \
+   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
 # The filter overrides still differ until PR 5 moves git.sh onto the binary's:
 # git.sh sets clean/smudge=cat and a blank required, and only for the keys the
 # repo set; git-flags blanks all four keys of every driver, required=false.
