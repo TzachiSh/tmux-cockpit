@@ -146,18 +146,6 @@ sk=$(key @cockpit_sessions_key s)
 jk=$(key @cockpit_jump_key u)
 [ -z "$jk" ] || tmux bind-key "$jk" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'"
 
-# The window form cannot use SRC_PANE: new-window activates itself before its
-# command runs. run-shell expands #{pane_id} on the source pane instead (#45).
-if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-    R_OPEN=(run-shell)
-    R_CMD="tmux new-window -n review $(sq "$Q_REVIEW -p '#{pane_id}'")"
-else
-    R_OPEN=(display-popup -E -w "$PW" -h "$PH" -T ' review · #{b:pane_current_path} ')
-    R_CMD="$Q_REVIEW -p $SRC_PANE"
-fi
-rk=$(key @cockpit_review_key r)
-[ -z "$rk" ] || tmux bind-key "$rk" "${R_OPEN[@]}" "$R_CMD"
-
 ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
@@ -204,6 +192,19 @@ if [ -n "$bk" ]; then
     else
         # No #{session_name}: it named the client's session, not the agent's.
         tmux bind-key "$bk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+    fi
+fi
+
+# prefix r is the board too (#253): the review queue is the grouped list, and
+# `r` on a row opens the review. The same command prefix w runs; the window form
+# cannot use SRC_PANE, since new-window activates itself before its command
+# runs, so run-shell expands #{pane_id} on the source pane instead (#45).
+rk=$(key @cockpit_review_key r)
+if [ -n "$rk" ]; then
+    if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
+        tmux bind-key "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$Q_BOARD -p '#{pane_id}'")"
+    else
+        tmux bind-key "$rk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 

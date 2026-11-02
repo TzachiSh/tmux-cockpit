@@ -8260,15 +8260,15 @@ tmux -L "$RINNER" kill-server >/dev/null 2>&1
 rm -rf "$RDA" "$RDB" "$RFZFSTUB"
 fi
 
-echo "== prefix r reviews, prefix R reloads; off unbinds each =="
+echo "== prefix r opens the board, prefix R reloads; off unbinds each =="
 if need_tmux "cockpit_review_key"; then :; else
 RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"
 "$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *tmux-review*) ok "prefix r is bound to the review popup by default" ;;
-    *) bad "prefix r is bound to the review popup by default" \
-         "a display-popup running tmux-review" \
+    *display-popup*cockpit-board*) ok "prefix r opens the board in a popup by default" ;;
+    *) bad "prefix r opens the board in a popup by default" \
+         "a display-popup running cockpit-board" \
          "$("$TMUX_REAL" -L "$RB" list-keys -T prefix | awk '$4=="r"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$RB" list-keys -T prefix 2>/dev/null | awk '$4=="R"')" in
@@ -8294,8 +8294,8 @@ RB2="cockpit-rb2-$$"; SOCKS="$SOCKS $RB2"
 # not binding ours simply leaves the stock binding standing. Unbound-from-review
 # is the real contract.
 case "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *tmux-review*) bad "@cockpit_review_key off leaves r to stock tmux" \
-         "no tmux-review in the binding" \
+    *cockpit-board*) bad "@cockpit_review_key off leaves r to stock tmux" \
+         "no cockpit-board in the binding" \
          "$("$TMUX_REAL" -L "$RB2" list-keys -T prefix | awk '$4=="r"')" ;;
     *) ok "@cockpit_review_key off leaves r to stock tmux" ;;
 esac
@@ -8311,9 +8311,9 @@ RB3="cockpit-rb3-$$"; SOCKS="$SOCKS $RB3"; RB3D=$(mktmpd)
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_review_window on >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix 2>/dev/null | awk '$4=="r"')" in
-    *new-window*tmux-review*) ok "@cockpit_review_window on opens a window instead of the popup" ;;
-    *) bad "@cockpit_review_window on opens a window instead of the popup" \
-         "a new-window running tmux-review" \
+    *new-window*cockpit-board*) ok "@cockpit_review_window on opens the board in a window instead of the popup" ;;
+    *) bad "@cockpit_review_window on opens the board in a window instead of the popup" \
+         "a new-window running cockpit-board" \
          "$("$TMUX_REAL" -L "$RB3" list-keys -T prefix | awk '$4=="r"')" ;;
 esac
 # new-window activates the review window before its command runs, so a pane
@@ -8322,7 +8322,7 @@ esac
 # A copy of the plugin whose tmux-review is a stub records the -p it got.
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
 mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
-printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/tmux-review"; chmod +x "$RB3D/p/scripts/tmux-review"
+printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"; chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
 RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
@@ -8330,7 +8330,7 @@ RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
 "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
 until_file "$RB3D/args" '*-p *'
-is "the review window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
+is "the board window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi
@@ -9280,8 +9280,8 @@ esac
 case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
     *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
 esac
-case "$(bkey "$B" r)" in *tmux-review*) ok "prefix r still opens the fleet list without the binary" ;;
-    *) bad "prefix r still opens the fleet list without the binary" "a display-popup running tmux-review" "$(bkey "$B" r)" ;;
+case "$(bkey "$B" r)" in *cockpit-board*) ok "prefix r opens the board, with no binary installed" ;;
+    *) bad "prefix r opens the board, with no binary installed" "a display-popup running cockpit-board" "$(bkey "$B" r)" ;;
 esac
 case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries a board row that replays w" ;;
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
