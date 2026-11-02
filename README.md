@@ -47,7 +47,7 @@ screenshot and a red/green colourblind reader.
 ### Requirements
 
 - tmux 3.8 or newer. Below it the plugin says so and binds nothing.
-- fzf 0.73 or newer, for the path picker, the folder browser and `tm -k`.
+- fzf 0.73 or newer, for the path picker and the folder browser.
   `bootstrap.sh` fetches a newer one into `~/.local/bin` when the distro's is
   older.
 - jq, for `install.sh --hooks` and the review gate.
@@ -118,7 +118,7 @@ until they restart.
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
 | `prefix + r` | the board again, as the review queue: `r` on a row opens that agent's uncommitted diff in revdiff (needs `cockpit-tui`) |
 | `prefix + i` | info about this pane: cwd, git root, state, review (`cockpit-tui info`; `i` in the board shows the same) |
-| `prefix + s` | the session picker, `cockpit-tui sessions` (needs `cockpit-tui`) |
+| `prefix + s` | the sessions screen, `cockpit-tui sessions` (needs `cockpit-tui`) |
 | `prefix + b` | switch branch (`cockpit-tui branch`; needs `cockpit-tui`) |
 | `prefix + M` | move this window to another session |
 | `prefix + e` | hide the status line and borders (full screen) |
@@ -144,7 +144,7 @@ None is required.
 | `@cockpit_board_return` | `on` | `off`: `r`, `f` and `i` leave the board instead of coming back to it |
 | `@cockpit_panel_mode` | `auto` | `pc` or `tablet` forces the panel's mode |
 | `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
-| `@cockpit_touch` | `auto` | the touch layout (bar and session picker) below 100 columns |
+| `@cockpit_touch` | `auto` | the touch layout (bar and sessions screen) below 100 columns |
 | `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |
 | `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, `tm` and sessions; `nerd` draws the default there |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |

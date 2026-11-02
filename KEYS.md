@@ -16,8 +16,8 @@ layout.
 | `prefix i` | one screen about this pane: cwd, git root, state, review. |
 | `prefix f` | the panel: Claude writes, fixes or explains for this pane and pastes the answer in. Needs `cockpit-tui`. |
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |
-| `prefix b` | branch picker for this pane's repo. |
-| `prefix s` | session picker (`tm`), with each session's agents previewed. Replaces stock `choose-tree`. |
+| `prefix b` | the branch popup (`cockpit-tui branch`) for this pane's repo. |
+| `prefix s` | the sessions screen (`cockpit-tui sessions`, what `tm` shows), with each session's agents previewed. Replaces stock `choose-tree`. |
 | `prefix w` | the board: every agent pane in a list grouped by session, blocked first; `v` shows them as live tiles. `r`, `f` and `i` come back to it (`@cockpit_board_return off` makes them one-way). Needs the `cockpit-tui` binary. |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
@@ -62,9 +62,9 @@ Taps on the bar act on release.
 | gesture | does |
 |---------|------|
 | tap `≡` (top left of the border) | the menu |
-| tap the session name, or `▲ elsewhere` beside it | session picker, waiting sessions first |
+| tap the session name, or `▲ elsewhere` beside it | sessions screen, waiting sessions first |
 | tap the path on the border | browse the pane's working directory |
-| tap the branch on the border | branch picker |
+| tap the branch on the border | the branch popup |
 | tap `[z]` / `[u]` (split windows) | zoom / unzoom the pane |
 | tap a window tab | that window |
 | tap `‹` / `›` (touch) | previous / next window |
