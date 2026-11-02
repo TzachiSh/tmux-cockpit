@@ -5,12 +5,13 @@
 #
 # The exit codes are the loop's contract with review_pane and --request, the
 # same as the fzf picker had: 20 deliver, 21 approved, anything else leave.
-# 127 is new: revdiff is not installed.
+# 127 is new: revdiff is not installed. 126: revdiff failed (its stderr is left
+# in <session dir>/revdiff.err for the caller to print).
 
 # The line as the tree (+, context) or the base (-) has it; <line> is the
 # store's number, <sign> its side. A deleted line lives in the base rev, not
 # in the tree. Control characters out and 1000 bytes at most, as the store has
-# always held a quote (attach(), before this).
+# always held a quote.
 read_line() {                 # <dir> <path> <line> <sign> [base-rev]
     local line
     case "$3" in ''|*[!0-9]*) return 0 ;; esac   # anything else is a sed script
@@ -31,8 +32,8 @@ pane_label() {                # <pane-id>
     printf '%s\n' "${t:+$t }($1)"
 }
 
-# The scratch beside a store: revdiff's input and output, the diff snapshot
-# --resnap writes, and revdiff's own auto-saved history. By name, never `rm -rf`
+# The scratch beside a store: revdiff's input and output, a snapshot an older
+# version wrote, and revdiff's own auto-saved history. By name, never `rm -rf`
 # on the dir: it may also hold a queued delivery.
 drop_rows() {
     [ -n "${1:-}" ] || return 0
@@ -141,7 +142,7 @@ review_loop() {
             "cockpit: resumed $(grep -c '^## ' -- "$store") pinned comment(s)" 2>/dev/null
     fi
 
-    local rc n key choice to
+    local rc n key choice to errf="${store%/*}/revdiff.err"
     local -a args
     while :; do
         # The default view is the uncommitted one; any other base is a ref.
@@ -150,17 +151,20 @@ review_loop() {
         write_preload "$store" "$store.rdin" && args+=(--annotations "$store.rdin")
         [ "$mode" = uncommitted ] || args+=("$rev")
         rm -f -- "$store.rdout"
-        (cd "$dir" && revdiff "${args[@]}")
+        (cd "$dir" && revdiff "${args[@]}" 2>"$errf")
         rc=$?
         case "$rc" in
             10) if [ -f "$store.rdout" ] && [ ! -L "$store.rdout" ]; then
                     ingest_revdiff "$dir" "$store" "$store.rdout" "$rev"
                 fi ;;
             0)  ;;                      # no comments, or Q: nothing changes
-            *)  tmux display-message "cockpit: revdiff exited $rc" 2>/dev/null
-                printf 'revdiff exited %s\n' "$rc" >&2
-                drop_rows "$store"; exit 1 ;;
+            *)  # Kept, for --request to print once the popup is gone.
+                tmux display-message \
+                    "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)" 2>/dev/null
+                printf 'revdiff exited %s\n' "$rc" >&2; cat -- "$errf" >&2 2>/dev/null
+                drop_rows "$store"; exit 126 ;;
         esac
+        rm -f -- "$errf"
         rm -f -- "$store.rdout" "$store.rdin"
 
         while :; do
@@ -186,7 +190,7 @@ review_loop() {
                        continue; }
                    if approve "$dir"; then drop_store "$store"; exit 21; fi
                    tmux display-message \
-                       "cockpit: could not mark the branch reviewed · a stale ref may block it" 2>/dev/null
+                       "cockpit: could not mark the branch reviewed · a stale ref blocks it" 2>/dev/null
                    continue ;;
                 r) break ;;
                 b) [ -n "$nxt" ] || continue
@@ -205,21 +209,4 @@ review_loop() {
             esac
         done
     done
-}
-
-# --- --resnap ----------------------------------------------------------------
-# Re-snapshot the diff and name the comments that no longer anchor to a changed
-# line. A context ( ) comment is never named: the snapshot holds changed lines
-# only, so it cannot judge one.
-resnap() {                    # <dir> <store>
-    local dir=$1 store=$2 stale n
-    [ -n "$dir" ] && [ -n "$store" ] || { usage; exit 2; }
-    COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
-    snapshot "$dir" "$store"
-    stale=$(stale_keys "$store" "$store.rows")
-    n=$(printf '%s\n' "$stale" | grep -c '^## ')
-    [ "$n" -gt 0 ] || return 0
-    printf 'refreshed — %d comment(s) no longer anchor to a changed line' "$n"
-    printf ' (they still deliver, quoted):\n%s\n' "$stale"
-    return 0
 }

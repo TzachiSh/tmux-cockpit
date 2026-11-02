@@ -302,6 +302,7 @@ review_pane() {
         clear_sess "$sess"
         tmux display-message "cockpit: review approved · the next one shows only what changed" 2>/dev/null
     else
+        rm -f -- "$sess/revdiff.err"
         rmdir -- "$sess" 2>/dev/null   # empty after a discard; a kept store keeps it
     fi
 }
@@ -315,7 +316,7 @@ review_pane() {
 #
 # What comes back is decided by the LOOP's exit code, not by the store: esc
 # now offers "leave" (the human said "not now"), which keeps the batch pinned
-# and non-empty, and only ^S (rc 20) is a delivery. display-popup does not
+# and non-empty, and only d (rc 20) is a delivery. display-popup does not
 # return the command's status -- it returns tmux's own -- so the popup command
 # records it in <sess>/rc and this reads it back. A dropped launcher (the tool
 # timed out) leaves the popup, the store and the rc file alone; running it
@@ -346,6 +347,9 @@ request() {                   # <pane>
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
+        126) printf 'tmux-review: revdiff failed\n' >&2
+             cat -- "$sess/revdiff.err" >&2 2>/dev/null; rm -f -- "$sess/revdiff.err"
+             exit 1 ;;
         127) printf 'tmux-review: revdiff not found: install it, see #233\n' >&2; exit 1 ;;
         20) [ -s "$store" ] || exit 0          # deliver with nothing pinned cannot happen; belt and braces
             # The agent has the review in hand the moment this returns, so the
@@ -460,7 +464,7 @@ info_mode() {                 # <pane>
     printf 'review    %s%s\n' "${review:-—}" "${spool:+  · queued: $spool}"
     sess=$(session_dir "$id" "$root")
     if git -C "$root" --no-optional-locks rev-parse -q --verify HEAD >/dev/null 2>&1; then
-        # The mode ^B chose for THIS review, as the loop reads it -- passed as
+        # The mode b chose for THIS review, as the loop reads it -- passed as
         # the argument review_base actually keys on, not exported (nothing this
         # function calls reads COCKPIT_REVIEW_BASE from the environment).
         b=$(review_base "$root" "$(cat -- "$sess/comments.md.base" 2>/dev/null)")
@@ -471,7 +475,7 @@ info_mode() {                 # <pane>
     printf 'tui       %s\n' "$(tui_row)"
     if [ -d "$sess" ]; then
         n1=$(grep -c '^## ' -- "$sess/comments.md" 2>/dev/null); n2=$(grep -c '^## ' -- "$sess/delivered.md" 2>/dev/null)
-        printf 'review dir %s\n           %s pinned · %s delivered · ^A removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
+        printf 'review dir %s\n           %s pinned · %s delivered · a at the prompt removes it\n' "$sess" "${n1:-0}" "${n2:-0}"
     fi
     printf '\n↵ to close\n'
 }
@@ -663,7 +667,7 @@ fleet_queue() {               # [preselect-pane]
         # been written by the owner's own tmux.conf, so `eval`ing it is eval of
         # their config, not of anything an agent pane can reach. It is confined to
         # this navigation picker on purpose: in the review loop ↵ has a contract
-        # (pin a comment, never approve) and ^S is the consent gesture, and one
+        # (pin a comment, never approve) and d is the consent gesture, and one
         # stray --bind from a config would quietly break either of them.
         local -a extra=()
         local opt; opt=$(tmux show-option -gqv @cockpit_fleet_fzf_options 2>/dev/null)

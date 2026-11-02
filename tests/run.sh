@@ -6214,7 +6214,8 @@ case "$rbrows" in
     *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
     *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
 esac
-is "--numstat (the Stop hook's and the fleet's read) omits it too" "0" "$("$DIR/scripts/tmux-review" --copy "$RB" | grep -c '^diff --git a/core')"
+is "the full diff omits it too" "0" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2"' _ "$DIR/scripts/lib" "$RB" | grep -c '^diff --git a/core')"
+is "and numstat names it as a binary row, unread" "-	-	core" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$RB" | grep -P '\tcore$')"
 printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
 rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
 is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
@@ -6250,6 +6251,7 @@ if [ -n "$pre" ]; then
     { stat -c %a "$pre" 2>/dev/null || stat -f %Lp "$pre"; } > "$d/premode.$n"
 fi
 [ -f "$d/out.$n" ] && [ -n "$out" ] && cat "$d/out.$n" > "$out"
+[ -f "$d/err.$n" ] && cat "$d/err.$n" >&2
 exit "$(cat "$d/rc.$n" 2>/dev/null || echo 0)"
 FAKERD
     chmod +x "$1/revdiff"
@@ -6334,14 +6336,13 @@ review_enter "$RA" "$RACTL"
 # approve means "nothing more to say".
 until_cap "$RA" "$RACTL" '*1 comment(s) pinned*' && ok "the comment revdiff wrote is pinned in the session store" || bad "the comment revdiff wrote is pinned in the session store" "1 comment(s) pinned" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")"
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" a
-# Assert the refusal's EFFECT: the prompt is still there and the comment too.
-sleep 0.3
-case "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")" in *'1 comment(s) pinned'*) ok "a with a pinned comment refuses -- the prompt stays, the comment survives" ;; *) bad "a with a pinned comment refuses -- the prompt stays, the comment survives" "1 comment(s) pinned" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RACTL")" ;; esac
-is "and nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
 # Deliver it (the pane is idle: a paste), then re-open and approve.
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL" d
 until_cap "$RA" "$RAAP" '*not yet*' && ok "the batch lands in the agent pane" || bad "the batch lands in the agent pane" "not yet" "$("$TMUX_REAL" -L "$RA" capture-pane -p -t "$RAAP")"
 until_file "$RASESS/delivered.md" '*not yet*' && ok "a delivered batch is archived as delivered.md" || bad "a delivered batch is archived as delivered.md" "not yet in delivered.md" "$(ls "$RASESS" 2>/dev/null)"
+# a with a pinned comment must have refused: had it approved, the loop would have
+# exited (the d above would be typed into a shell) and the ref would exist.
+is "a with a pinned comment refused: nothing was approved" "" "$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
 # done_store() appends to delivered.md and unlinks the store as two statements,
 # so the poll above can land between them. Poll the store path itself.
 for i in $(seq 1 40); do [ -e "$RASESS/comments.md" ] || break; sleep 0.1; done
@@ -6520,6 +6521,11 @@ SHIMEOF
 rq_out=$(PATH="$RQSHIM:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP"); rq_rc=$?
 is "the real loop and a stand-in revdiff: exit 10" "10" "$rq_rc"
 case "$rq_out" in "Code review of your changes"*"> b"*"REQ-LOOP-MARKER"*) ok "and the composed review is on stdout, quote and comment" ;; *) bad "and the composed review is on stdout, quote and comment" "header, > b, REQ-LOOP-MARKER" "$rq_out" ;; esac
+rm -rf "$RQW"; mkdir -p "$RQW"; echo 3 > "$RQW/rc.1"; echo "boom: bad flag" > "$RQW/err.1"
+rq_err=$(PATH="$RQSHIM:$RQB:$PATH" FAKE_RD_DIR="$RQW" XDG_STATE_HOME=$RQSTATE "$DIR/scripts/tmux-review" --request "$RQAP" 2>&1 >/dev/null); rq_rc=$?
+is "a revdiff that fails: --request exits 1, not 0" "1" "$rq_rc"
+is "and prints revdiff's own stderr after the popup" "tmux-review: revdiff failed"$'\n'"boom: bad flag" "$rq_err"
+is "and leaves no revdiff.err behind" "no" "$([ -e "$RQSESS/revdiff.err" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
 fi
 
@@ -7470,6 +7476,11 @@ else
     bad "the review's comment store exists while the popup is open" \
         "one */comments.md under $FDTMPDIR/tmux-cockpit/review" "none"
 fi
+fdmode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || echo none; }
+# The store holds the whole review and its dir the delivered archive: private.
+is "the session dir is born 0700" "700" "$(fdmode "${storefile%/*}")"
+is "the store is born 0600" "600" "$(fdmode "$storefile")"
+is "and the state parent is 0700 too" "700" "$(fdmode "$FDTMPDIR/tmux-cockpit")"
 
 until_cap "$FD" "$CTL2" '*1 comment(s) pinned*'
 "$TMUX_REAL" -L "$FD" send-keys -t "$CTL2" d
@@ -7584,8 +7595,8 @@ for i in $(seq 1 20); do
 done
 
 rkstore=""
-# The glob names comments.md itself, not its ".rows" snapshot beside it, so
-# head -1 is just belt-and-suspenders against a second session dir.
+# The glob names comments.md itself, so head -1 is just belt-and-suspenders
+# against a second session dir.
 rksf=$(ls -d "$RKTMPDIR"/tmux-cockpit/review/*/comments.md 2>/dev/null | head -1)
 [ -n "$rksf" ] && rkstore="$rksf"
 for i in $(seq 1 20); do
@@ -11840,18 +11851,6 @@ is "cockpit mode: the body is the rest" "more" "${STORE[0.body]:-}"
 rsa_load quoted.md; printf '## b.txt:9 ( )\ncomment\n' >> "$RSAF"; sed -i 's/^more$/more\n/' "$RSAF"; parse_store_revdiff "$RSAF"
 is "ingest: a quoted line in one record does not disturb the next" "2/comment" "${STORE_N:-}/${STORE[1.body]:-}"
 
-echo "== review store: stale_keys never judges a ( ) record, from real lines_mode rows (#232) =="
-rsa_load; . "$DIR/scripts/lib/review-diff.sh"
-RSAR="$RSAD/repo"
-(
-  git init -q -b main "$RSAR" && cd "$RSAR" || exit 1
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  seq 1 6 > a.txt; git add -A; git commit -q -m init; sed -i 5s/5/five/ a.txt
-) >/dev/null 2>&1
-lines_mode "$RSAR" > "$RSAD/rows" 2>/dev/null
-printf '## a.txt:4 ( )\nctx\n\n## a.txt:5 ( )\nctx on changed\n\n## a.txt:5 (+)\nlive\n\n## a.txt:9 (+)\ngone\n' > "$RSAF"
-is "stale_keys: a ( ) record is never reported; a (+) record is judged by its row" "## a.txt:9 (+)" "$(stale_keys "$RSAF" "$RSAD/rows")"
-
 echo "== tmux-review --loop: revdiff reviews, the store takes what it wrote (#233) =="
 RDB=$(mktmpd); RDW=$(mktmpd); RD=$(mktmpd); RDS=$(mktmpd); fake_revdiff "$RDB"
 (
@@ -11941,6 +11940,19 @@ git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# 9. a file-level comment whose first line is a quote keeps it as body.
+rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
+rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
+is "the preload keeps a file-level body's first > line" "1" "$(grep -c '^> not a quote$' "$RDW/pre.1")"
+is "and relaunching (r) does not empty the comment" "> not a quote"$'\n'"note" "${STORE[0.body]:-}"
+is "it is body, not a fragment" "unset" "${STORE[0.frag]-unset}"
+
+# 10. a revdiff that fails (not 0, 10): its own code and its stderr are kept.
+rd_reset; echo 3 > "$RDW/rc.1"; echo "boom: bad flag" > "$RDW/err.1"; rm -f "$RDS/revdiff.err"
+is "revdiff exit 3: the loop exits 126, not 'left for later'" "126" "$(rd_loop l "$RD" "$RDS/comments.md")"
+is "revdiff's stderr is kept for the caller" "boom: bad flag" "$(cat "$RDS/revdiff.err" 2>/dev/null)"
+is "and the loop says it failed" "revdiff exited 3" "$(head -1 "$RDW/stderr")"
+rm -f "$RDS/revdiff.err"
 rm -rf "$RDK" "$RDB" "$RDW" "$RD" "$RDS" "$RDT" "$RDWT" "$RDV"
 unset RDB RDW RD RDS RDT RDWT RDV
 

@@ -140,9 +140,9 @@ if [ "${1:-}" = --preview-diff ]; then
     # been told did not change. An unborn HEAD has no HEAD to diff against, so
     # that one case keeps the old fallback.
     #
-    # $rbase is $COCKPIT_REVIEW_BASE_REV when tmux-review's run_loop set it
+    # $rbase is $COCKPIT_REVIEW_BASE_REV when tmux-review's loop set it
     # (its own preview subprocess -- the pane's chosen base: a checkpoint, the
-    # branch's merge-base, or HEAD, and ^B's re-export follows a switch here
+    # branch's merge-base, or HEAD, and b's re-export follows a switch here
     # too), else plain HEAD -- any other caller of this preview (a direct run,
     # tmux-branch) sees the same "today's uncommitted view" it always did.
     rbase=${COCKPIT_REVIEW_BASE_REV:-HEAD}
@@ -170,7 +170,7 @@ if [ "${1:-}" = --preview-diff ]; then
     idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
     csum=$(sha1sum 2>/dev/null < "$f" || shasum 2>/dev/null < "$f")
     if [ -n "$csum" ]; then
-        # $rbase in the key too: ^B switches the same pane's base mid-review,
+        # $rbase in the key too: b switches the same pane's base mid-review,
         # and without this a render cached under the old base would be served
         # right back for the new one -- same file, same index, same content,
         # different diff.
