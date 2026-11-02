@@ -473,11 +473,7 @@ impl App {
             return self.exit();
         }
         if let Some(top) = self.help.take() {
-            self.help = match k.code {
-                KeyCode::Up | KeyCode::Char('k') => Some(top.saturating_sub(1)),
-                KeyCode::Down | KeyCode::Char('j') => Some((top + 1).min(self.bottom)),
-                _ => None,
-            };
+            self.help = self.scrolled(k.code, top);
             return;
         }
         // esc and q act as on the view under the card, so nothing is lost unasked;
@@ -579,24 +575,7 @@ impl App {
 
     /// The offset after a scroll key, or `None` for any other key.
     fn scrolled(&self, code: KeyCode, scroll: usize) -> Option<usize> {
-        let scroll = scroll.min(self.bottom);
-        if self.room == 0 {
-            // no body rows on screen: an offset that moved would show nothing
-            return matches!(
-                code,
-                KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown | KeyCode::Char('j' | 'k')
-            )
-            .then_some(scroll);
-        }
-        let page = self.room.saturating_sub(1).max(1);
-        let s = match code {
-            KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
-            KeyCode::Down | KeyCode::Char('j') => scroll + 1,
-            KeyCode::PageUp => scroll.saturating_sub(page),
-            KeyCode::PageDown => scroll + page,
-            _ => return None,
-        };
-        Some(s.min(self.bottom))
+        crate::chrome::scroll(code, scroll, self.bottom, self.room)
     }
 
     /// Out with no action, the call killed: a hangup, or a loop that broke.

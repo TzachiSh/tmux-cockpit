@@ -9,7 +9,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use unicode_segmentation::UnicodeSegmentation;
@@ -718,32 +718,6 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
     b
 }
 
-/// The hints that fit `w`, whole, lowest priority dropped first: half a hint is
-/// unreadable. `esc` and the help key go last, so the way out always shows.
-fn footer(th: &Theme, mut ps: Vec<(String, String)>, w: usize) -> Line<'static> {
-    let keep = |k: &str| k.starts_with("esc") || k == "?" || k == "F1";
-    let width = |ps: &[(String, String)]| ps.iter().map(|(k, v)| k.width() + v.width() + 3).sum::<usize>();
-    while width(&ps) > w {
-        let Some(i) = ps
-            .iter()
-            .rposition(|(k, _)| !keep(k))
-            .or_else(|| ps.iter().position(|(k, _)| !k.starts_with("esc")))
-        else {
-            break;
-        };
-        ps.remove(i);
-    }
-    let mut spans = vec![Span::raw(" ")];
-    for (i, (k, v)) in ps.into_iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" "));
-        }
-        spans.push(Span::styled(k, Style::new().fg(th.accent)));
-        spans.push(Span::styled(format!(" {v} "), Style::new().fg(th.meta)));
-    }
-    Line::from(spans)
-}
-
 /// The left title and the "N-M of T" indicator in `w` columns: the title gives
 /// way first, then the arrows; the count is never cut, only dropped whole.
 fn titles(th: &Theme, title: &str, ind: Option<(String, String)>, w: usize) -> (String, Option<String>) {
@@ -773,22 +747,7 @@ fn titles(th: &Theme, title: &str, ind: Option<(String, String)>, w: usize) -> (
 
 /// Drawn in place of every view under the floor: [`MIN_W`] x [`MIN_H`], or the tablet's.
 fn small(f: &mut Frame, area: Rect, th: &Theme) {
-    let block = Block::new()
-        .borders(Borders::ALL)
-        .border_set(th.g.round)
-        .border_style(Style::new().fg(th.label))
-        .title(Line::from(Span::styled(" panel ", Style::new().fg(th.accent))));
-    let inner = block.inner(area);
-    let inner = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
-    f.render_widget(block, area);
-    let w = inner.width as usize;
-    let mut lines = many("make the window larger or rotate", w, "", Style::new().fg(th.needs));
-    lines.extend(many("esc goes back", w, "", Style::new().fg(th.meta)));
-    f.render_widget(Paragraph::new(lines), inner);
+    crate::chrome::floor(f, area, th, "panel", "make the window larger or rotate", "esc goes back");
 }
 
 /// What esc on `v` goes back to, in the words the `?` overlay uses.
@@ -931,50 +890,10 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     all.into_iter().filter(|(k, _)| !k.is_empty()).collect()
 }
 
-/// The `?` overlay over the whole panel: the popup is small enough that a
-/// card inside it would clip the very rows it exists to show.
-/// Returns the key count and rows, for [`App::fit`] to clamp the scroll by.
+/// The `?` overlay over the whole panel. Returns the key count and rows, for
+/// [`App::fit`] to clamp the scroll by.
 fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usize, usize) {
-    let ks = keys(app, &th.g);
-    let (total, rows) = (ks.len(), (area.height as usize).saturating_sub(2));
-    let top = top.min(ks.len().saturating_sub(rows));
-    let mut block = Block::new()
-        .borders(Borders::ALL)
-        .border_set(th.g.round)
-        .border_style(Style::new().fg(th.label))
-        .title(Line::from(Span::styled(" keys ", Style::new().fg(th.accent))));
-    let last = (top + rows).min(ks.len());
-    let close = if top > 0 || last < ks.len() {
-        let n = format!(" {}-{last} of {} ", top + 1, ks.len());
-        block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
-        format!("{} scroll  any other key closes", th.g.key_updown)
-    } else {
-        "any key closes".into()
-    };
-    let close = format!(" {} ", th.g.trunc(&close, (area.width as usize).saturating_sub(4)));
-    block = block.title_bottom(Line::from(Span::styled(close, Style::new().fg(th.meta))));
-    let inner = block.inner(area);
-    let inner = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
-    f.render_widget(Clear, area);
-    f.render_widget(block, area);
-    let kw = ks.iter().map(|(k, _)| k.width()).max().unwrap_or(0);
-    let room = (inner.width as usize).saturating_sub(kw + 2);
-    let lines: Vec<Line> = ks
-        .into_iter()
-        .skip(top)
-        .map(|(k, v)| {
-            Line::from(vec![
-                Span::styled(format!("{k}{}  ", " ".repeat(kw - k.width())), Style::new().fg(th.accent)),
-                Span::styled(th.g.trunc(&v, room), Style::new().fg(th.meta)),
-            ])
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), inner);
-    (total, rows)
+    crate::chrome::help(f, area, th, &keys(app, &th.g), top)
 }
 
 /// `tick` is tenths of a second since the call went out, so a golden never reads
@@ -1057,7 +976,12 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         .border_style(Style::new().fg(th.label))
         .title(Line::from(Span::styled(title, Style::new().fg(th.accent))));
     if !app.tablet {
-        block = block.title_bottom(footer(th, std::mem::take(&mut b.footer), (area.width as usize).saturating_sub(2)));
+        block = block.title_bottom(crate::chrome::footer(
+            th,
+            std::mem::take(&mut b.footer),
+            (area.width as usize).saturating_sub(2),
+            2,
+        ));
     }
     if let Some(n) = ind {
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
