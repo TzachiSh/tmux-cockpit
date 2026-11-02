@@ -2,6 +2,7 @@
 //! see "Contracts" in docs/tui.md.
 pub mod backend;
 pub mod board;
+pub mod chrome;
 pub mod data;
 pub mod fleet;
 pub mod panel;
