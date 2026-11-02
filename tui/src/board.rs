@@ -1916,7 +1916,9 @@ pub static EXTRAS: &[Extra] = &[
         help: "kill its window, after a confirm",
         verb: "kill",
         confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-        expect: Some(|p| p.name.clone()),
+        // the id, never the name: agent windows tend to share one (`claude`),
+        // and a pane moved into a namesake would pass a name check
+        expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
     },
     Extra {
         key: 'R',
@@ -1930,6 +1932,21 @@ pub static EXTRAS: &[Extra] = &[
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
+}
+
+/// A tmux window id as `#{window_id}` prints it: `@` and digits.
+pub fn is_window_id(s: &str) -> bool {
+    s.strip_prefix('@')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The `✕` note when `e` cannot be offered on `p`: its `.expect` would be
+/// empty, and an empty value checks nothing. `None` when it can go ahead.
+pub fn refused(e: &Extra, p: &Pane) -> Option<String> {
+    let f = e.expect?;
+    f(p).trim()
+        .is_empty()
+        .then(|| format!("✕ nothing done: {} has no window id to check, {} not sent", p.wher, e.verb))
 }
 
 /// What the board exits with: the action line and, when the action names one,
@@ -2483,6 +2500,10 @@ pub fn run(o: &Opts) -> Option<Exit> {
             (Act::Ask | Act::Review | Act::Panel | Act::Info | Act::Extra(_), None) => {}
             (Act::Extra(c), Some(p)) => {
                 let Some(e) = extra(c) else { continue };
+                if let Some(msg) = refused(e, p) {
+                    note = Some(Note::returned(msg, Instant::now()));
+                    continue;
+                }
                 confirm = Confirm::open(e, p);
                 if confirm.is_none() {
                     let x = at_once(e, p);

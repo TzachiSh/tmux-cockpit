@@ -19,7 +19,7 @@ fn two_ticks_inside_the_ttl_fork_claude_once() {
     let d = dir.display().to_string();
     // One agent pane with no @cockpit_session, which is the only path that asks
     // `claude` at all.
-    let row = ["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "100", "-", "-"].join("\u{1f}");
+    let row = ["%1", "w:0", "win", "claude", "running", "-", "-", "-", "/w", "100", "-", "-", "@1"].join("\u{1f}");
     std::fs::write(dir.join("rows"), row + "\n").unwrap();
     std::fs::write(dir.join("ps"), "100 1 claude\n").unwrap();
     write_exec(

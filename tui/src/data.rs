@@ -130,6 +130,8 @@ pub struct Pane {
     pub asked_since: Option<u64>,
     /// age of the newest transcript event of any kind
     pub idle_since: Option<u64>,
+    /// `#{window_id}`, `@N`, as tmux gave it; the board checks it before use
+    pub win: String,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -160,9 +162,10 @@ impl Hash for Pane {
             since: _,
             asked_since: _,
             idle_since: _,
+            win,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm,
+            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
         (state, pinned, delivered).hash(h);
@@ -639,6 +642,7 @@ const FIELDS: &str = concat!(
     "\u{1f}#{pane_pid}",
     "\u{1f}#{?#{@cockpit_review},#{@cockpit_review},-}",
     "\u{1f}#{?#{@cockpit_review_spool},#{@cockpit_review_spool},-}",
+    "\u{1f}#{window_id}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -654,7 +658,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
     let mut ps = vec![];
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
-        if f.len() < 12 {
+        if f.len() < 13 {
             continue;
         }
         // A pane carrying @panestate counts whatever it runs: the hooks are the
@@ -681,6 +685,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
             pid: f[9].into(),
             review: unsentinel(f[10]),
             spool: unsentinel(f[11]),
+            win: f[12].into(),
             ..Default::default()
         };
         if p.sess.is_empty() {

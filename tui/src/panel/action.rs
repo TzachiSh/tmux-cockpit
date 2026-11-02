@@ -36,12 +36,13 @@ pub fn write_action(path: &Path, pane: &str, cmd: &str, a: &Action) -> std::io::
 /// The longest `.expect` written: far over a tmux name, and the wrapper reads one line.
 pub const EXPECT_MAX: usize = 1024;
 
-/// `.expect`'s text: one line, with every control character out, `\t` and `\n`
-/// too; `None` over [`EXPECT_MAX`] bytes, which is refused rather than cut, as
-/// a cut value could never match what the wrapper reads back.
+/// `.expect`'s text: one line, every ASCII control character out, `\t` and
+/// `\n` too, and nothing else, so its bytes are what a shell reader sees.
+/// `None` when empty, which would check nothing, or over [`EXPECT_MAX`] bytes,
+/// refused rather than cut, as a cut value could never match.
 pub fn expect_body(s: &str) -> Option<String> {
-    let line: String = s.chars().filter(|c| !c.is_control()).collect();
-    (line.len() <= EXPECT_MAX).then(|| format!("{line}\n"))
+    let line: String = s.chars().filter(|c| !c.is_ascii_control()).collect();
+    (!line.is_empty() && line.len() <= EXPECT_MAX).then(|| format!("{line}\n"))
 }
 
 /// `<path>.expect`, the value the board showed for the target, for the wrapper
@@ -50,7 +51,7 @@ pub fn expect_body(s: &str) -> Option<String> {
 pub fn write_expect(path: &Path, value: &str) -> std::io::Result<()> {
     let b = expect_body(value).ok_or(std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        "the expected value is too long",
+        "the expected value is empty or too long",
     ))?;
     fresh(Path::new(&format!("{}.expect", path.display())), &b)
 }

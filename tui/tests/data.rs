@@ -120,9 +120,9 @@ impl Drop for Rig {
     }
 }
 
-/// One `list-panes -F` row: 12 `\037` fields, `-` where the option is unset.
+/// One `list-panes -F` row: 13 `\037` fields, `-` where the option is unset.
 fn row_at(id: &str, wher: &str, cmd: &str, state: &str, sess: &str, pid: &str, path: &str) -> String {
-    [id, wher, "win", cmd, state, "-", "-", sess, path, pid, "-", "-"].join("\u{1f}")
+    [id, wher, "win", cmd, state, "-", "-", sess, path, pid, "-", "-", "@1"].join("\u{1f}")
 }
 
 fn row(id: &str, cmd: &str, state: &str, sess: &str, pid: &str) -> String {
@@ -675,4 +675,19 @@ fn a_missing_blob_never_lazy_fetches() {
         .unwrap();
     assert_eq!(o.status.code(), Some(1));
     assert!(!marker.exists(), "diffstat ran the planted remote helper on an old git");
+}
+
+/// The 13th field is `#{window_id}`, which the board's kill checks against;
+/// a row with one field fewer is not this format, and is skipped whole.
+#[test]
+fn the_window_id_is_the_thirteenth_field() {
+    let r = Rig::new("winid");
+    r.ps("400 1 claude\n401 1 claude\n");
+    let short = row("%2", "claude", "running", "-", "401");
+    let short = short.rsplit_once('\u{1f}').unwrap().0.to_string();
+    assert_eq!(short.split('\u{1f}').count(), 12);
+    r.rows(&[row("%1", "claude", "running", "-", "400"), short]);
+    let ps = list_panes().unwrap();
+    assert_eq!(ids(&ps), ["%1"]);
+    assert_eq!(ps[0].win, "@1");
 }

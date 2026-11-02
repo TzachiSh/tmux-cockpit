@@ -128,7 +128,7 @@ verb, and two optional functions of the selected `Pane`, `confirm` (the
 question) and `expect` (the value for `.expect`). Each entry is in the footer on
 an agent (never a header), in `?` under "act on the selected agent", and in the
 dispatch; its key may not be one the table, D6, D7's `/` or D8's `a` takes.
-`x` → `kill`, with a confirm and the window name as `.expect`, and `R` →
+`x` → `kill`, with a confirm and the window id as `.expect`, and `R` →
 `request`, with neither, are #228's. An entry with no `confirm` exits at once.
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
@@ -725,7 +725,11 @@ sends `prefix + f`.
   the `EXTRAS` registry; new verbs `kill` and `request` on the action line.
 - New sidecar `$COCKPIT_ACTION.expect` (rules under [the action
   file](#the-freeze)); `panel::action::{write_expect, expect_body, EXPECT_MAX}`
-  are new.
+  are new. For `kill` it holds the target's window id (`@N`), never the name.
+- The fleet read appends a 13th `list-panes -F` field, `#{window_id}`, kept in
+  `data::Pane::win`; a row with fewer than 13 fields is skipped. `--json` and
+  `--rows` do not carry it. `board::{is_window_id, refused}` are new: a pane
+  with no `@N` id gets a `✕` note on `x` instead of a confirm.
 - `board::run` returns `Option<board::Exit>` (`line`, `expect`), not
   `Option<String>`; `board::View` gains `confirm: Option<&Confirm>`;
   `Act::Extra(char)` is new.
@@ -972,9 +976,15 @@ An action whose `EXTRAS` entry has an `expect` also writes
 new with `O_NOFOLLOW`, mode 0600, never over a file that is there. It is one
 `\n`-terminated line, every control character dropped (`\t` and `\n` too), at
 most 1 KiB (`EXPECT_MAX`); a longer value is refused, not cut, and the board
-exits 1 with nothing written. For `kill` it is the window name the confirm
-showed, so the wrapper can read `#{window_name}` again and refuse with a `✕`
-note when it differs. With `COCKPIT_ACTION` unset such an action is refused,
+exits 1 with nothing written, as is an empty one. For `kill` it is the target
+pane's `#{window_id}` (`@9`) when the confirm opened, not its name: agent
+windows tend to share one (`claude`), and a pane moved into a namesake would
+pass a name check. The wrapper reads the pane's `#{window_id}` again and
+refuses with a `✕` note when it differs. A pane with no `@N` window id is
+not offered the kill: `x` shows `✕ nothing done: <sess:idx> has no window id
+to check, kill not sent` and opens no confirm. Only ASCII control characters
+are dropped (`is_ascii_control`), so the bytes match what a shell `read` sees;
+a C1 character such as U+009B stays. With `COCKPIT_ACTION` unset such an action is refused,
 exit 1. `scripts/cockpit-board` removes `act.expect` before each run of the
 board, so one trip's value never stands in for the next.
 

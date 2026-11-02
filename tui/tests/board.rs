@@ -1968,6 +1968,7 @@ fn named() -> Vec<Pane> {
     let mut ps = fleet();
     for p in &mut ps {
         p.name = p.title.clone();
+        p.win = format!("@{}", p.id.trim_start_matches('%'));
     }
     ps
 }
@@ -2083,7 +2084,7 @@ fn y_writes_the_verb_and_the_expected_name() {
         c.exit(),
         board::Exit {
             line: "kill %3".into(),
-            expect: Some("server".into())
+            expect: Some("@3".into())
         }
     );
     let r = board::extra('R').unwrap();
@@ -2099,7 +2100,7 @@ fn y_writes_the_verb_and_the_expected_name() {
     let d = scratch("expect-y");
     let f = d.join("act");
     cockpit_tui::panel::action::write_expect(&f, c.expect.as_deref().unwrap()).unwrap();
-    assert_eq!(std::fs::read_to_string(d.join("act.expect")).unwrap(), "server\n");
+    assert_eq!(std::fs::read_to_string(d.join("act.expect")).unwrap(), "@3\n");
 }
 
 /// `.expect` follows `.text`'s rules: control characters out (here `\t` and
@@ -2109,7 +2110,12 @@ fn y_writes_the_verb_and_the_expected_name() {
 fn the_expect_file_rules() {
     use cockpit_tui::panel::action::{EXPECT_MAX, expect_body, write_expect};
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(expect_body("se\x1b[31mrv\ter\n\u{9b}x").as_deref(), Some("se[31mrverx\n"));
+    assert_eq!(expect_body("se\x1b[31mrv\ter\n\x7fx").as_deref(), Some("se[31mrverx\n"));
+    // a C1 character is not an ASCII control: kept, as the shell reader keeps it
+    assert_eq!(expect_body("a\u{9b}b\u{85}").as_deref(), Some("a\u{9b}b\u{85}\n"));
+    // an empty value would check nothing: refused, as is one that is all control
+    assert_eq!(expect_body(""), None);
+    assert_eq!(expect_body("\t\n\x1b"), None);
     assert_eq!(expect_body(&"w".repeat(EXPECT_MAX)).map(|b| b.len()), Some(EXPECT_MAX + 1));
     assert_eq!(expect_body(&"w".repeat(EXPECT_MAX + 1)), None);
     let d = scratch("expect-rules");
@@ -2205,4 +2211,37 @@ fn confirm_goldens() {
     v.help = Some(0);
     let out = draw(100, 30, |f| board::render(f, f.area(), &v));
     assert!(out.contains("on the confirm") && !out.contains("fold all"), "{out}");
+}
+
+/// Agent windows share a name (`claude`): the kill's `.expect` is the window
+/// id, so a pane moved into a namesake window fails the wrapper's check.
+#[test]
+fn two_windows_with_one_name_expect_different_ids() {
+    let mut a = pane("%8", "api:1", "one", "running");
+    let mut b = pane("%9", "api:2", "two", "running");
+    (a.name, a.win) = ("claude".into(), "@8".into());
+    (b.name, b.win) = ("claude".into(), "@9".into());
+    let (ca, cb) = (board::Confirm::open(kill(), &a).unwrap(), board::Confirm::open(kill(), &b).unwrap());
+    assert_eq!(
+        (ca.ask.as_str(), cb.ask.as_str()),
+        ("kill window api:1 · claude?", "kill window api:2 · claude?")
+    );
+    assert_eq!((ca.expect.as_deref(), cb.expect.as_deref()), (Some("@8"), Some("@9")));
+}
+
+/// A pane with no window id, or a malformed one, is never offered a kill:
+/// the confirm does not open and a `✕` note says why. `R` needs none.
+#[test]
+fn no_window_id_refuses_the_kill() {
+    for w in ["", "claude", "@", "@9x", "%9"] {
+        let mut p = pane("%8", "api:1", "one", "running");
+        p.win = w.into();
+        let msg = board::refused(kill(), &p).unwrap_or_else(|| panic!("{w:?} was offered a kill"));
+        assert_eq!(msg, "✕ nothing done: api:1 has no window id to check, kill not sent");
+        assert!(board::failure(&msg));
+    }
+    let mut p = pane("%8", "api:1", "one", "running");
+    assert_eq!(board::refused(board::extra('R').unwrap(), &p), None);
+    p.win = "@12".into();
+    assert_eq!(board::refused(kill(), &p), None);
 }
