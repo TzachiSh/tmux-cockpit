@@ -18,6 +18,9 @@ log() {
     printf '%s cockpit-board: %s\n' "$ts" "$*" >> "$LOG"
 }
 
+sep=$'\037'
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
+
 PANE=
 case "${1:-}" in
     -p) PANE=${2:-} ;;
@@ -29,7 +32,7 @@ say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
 # Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh; prefix r is the fleet list" 2>/dev/null
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh" 2>/dev/null
     exit 0
 fi
 
@@ -48,6 +51,7 @@ back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]
 args=()
 while :; do
     : > "$f" || exit 0
+    rm -f -- "$f.expect"
     # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
     # environment and must not mark the binary as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
@@ -101,6 +105,47 @@ while :; do
             exit 0
             ;;
         # #228 verbs
+        # The board confirmed with the window's id (@N) and wrote it to $f.expect
+        # first. A name is no identity (automatic-rename gives agents the same
+        # one), so the id is compared: a pane moved to another window since is
+        # refused, and what dies is the window that id names, never a re-lookup.
+        kill)
+            want=
+            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
+            # window_name last: it is the one field a person can fill with anything.
+            info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{session_name}:#{window_index}$sep#{window_name},}" 2>/dev/null | head -n 1)
+            have=${info%%"$sep"*}; label=${info#*"$sep"}
+            where=${label%%"$sep"*}; label="$where $(printf %s "${label#*"$sep"}" | tr -d '\000-\037\177')"
+            case "$want" in @[0-9]*) case "${want#@}" in *[!0-9]*) want= ;; esac ;; *) want= ;; esac
+            if [ -z "$have" ]; then
+                printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
+            elif [ -z "$want" ]; then
+                printf '✕ cockpit: not killed: the board named no window to confirm\n' > "$note"
+            elif [ "$have" != "$want" ]; then
+                printf '✕ cockpit: not killed: %s is now in window %s, you confirmed %s\n' "$target" "$have" "$want" > "$note"
+            else
+                # The check and the kill are one tmux call: a pane that moves in the
+                # gap makes the format false and nothing dies. $want is @digits.
+                tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-window -t $want" 2>/dev/null
+                if tmux list-windows -a -F '#{window_id}' 2>/dev/null | grep -qx -- "$want"; then
+                    printf '✕ cockpit: not killed: %s left window %s or it would not close\n' "$target" "$want" > "$note"
+                else
+                    printf '✓ cockpit: killed window %s (%s)\n' "$want" "$label" > "$note"
+                    log "killed window $want $label via $target"
+                fi
+            fi
+            ;;
+        # Today's --request path. It opens its own popup, and tmux silently
+        # refuses a popup inside the board's (measured: display-popup returns 0 and
+        # runs nothing), so the board closes first, like jump: a background job
+        # waits for this wrapper to exit, then runs the request. Its output, the
+        # composed batch on exit 10, is not shown anywhere.
+        request)
+            # run-shell expands formats (# becomes ##) and hands the string to sh.
+            rq=$(sq "$DIR/scripts/tmux-review"); rq=${rq//#/##}
+            tmux run-shell -b "while kill -0 $$ 2>/dev/null; do sleep 0.1; done; $rq -p $target --request $target >/dev/null 2>&1"
+            exit 0
+            ;;
         # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
         *)
             log "unknown verb [$verb $target]"

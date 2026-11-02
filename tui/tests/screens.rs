@@ -3,7 +3,7 @@
 //! fixture is a literal, so a failure means the logic moved and nothing else.
 //!
 //! The board's goldens land here with L2. There is deliberately no golden for a
-//! ratatui fleet list: `prefix r` stays fzf.
+//! ratatui fleet list: the board's list is the fleet view (#253).
 use cockpit_tui::data::{Pane, hash_rows};
 use cockpit_tui::fleet;
 

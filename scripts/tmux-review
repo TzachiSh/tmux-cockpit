@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # tmux-review — review an agent's uncommitted diff, one comment at a time, and
 # hand the finished review back to the agent's pane.
-#   tmux-review [-p pane_id]               no args: the fleet queue (bound to
-#                                          prefix r), with that pane -- or,
+#   tmux-review [-p pane_id]               no args: review that pane -- or,
 #                                          without -p, the CLIENT's active
-#                                          pane -- preselected
-#   tmux-review --fleet                    the fleet queue's rows, no fzf
+#                                          pane (what r on a board row runs)
 #   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key
 #                                          prompt; exits 20 (deliver), 21
@@ -37,16 +35,6 @@ LIBDIR=${d%/*}/lib
 # shellcheck source=lib/git.sh
 . "$LIBDIR/git.sh" || exit 1
 
-# The fzf theme, loaded from the fleet queue's arm only: --fleet, --lines and
-# the rest open no picker.
-load_theme() {
-    # shellcheck source=lib/fzf.sh
-    . "$LIBDIR/fzf.sh" 2>/dev/null || {
-        tmux display-message "cockpit: the fzf theme is missing · reinstall from the repo" 2>/dev/null
-        return 1
-    }
-}
-
 # tmux runs run-shell and popup strings through sh, so every path inside one
 # has to be shell-quoted -- the same reasoning as tmux-open-path's shq.
 shq() { printf '%q' "$1"; }
@@ -60,9 +48,8 @@ shq() { printf '%q' "$1"; }
 # shellcheck disable=SC2034  # read by the libs
 CAP_SENTINEL='(diff too large)'
 
-# How a pane names itself, for the fleet queue and the delivery prompt alike; the
-# fallback convention (and why #{host_short} reads as "unset") is the note
-# above fleet_rows, examples/tmux.conf:42.
+# How a pane names itself in the delivery prompt; the fallback convention is that
+# an unset pane_title reads as #{host_short}, not empty, so the window name stands in.
 # shellcheck disable=SC2034  # read by the libs
 AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'
 
@@ -72,7 +59,7 @@ AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //
 # resolve against <dir> itself. Resolve once, at each entry point, and thread
 # the root through everywhere a diff-row path gets turned back into a file:
 # lines_mode (for consistency, even though git already normalizes this), the
-# review-loop's preview `cd`, and the fleet queue's preview. Falls back to
+# review-loop's preview `cd`. Falls back to
 # the caller's own dir when it is not a git worktree at all, so the existing
 # "no diff" behavior for a non-repo pane is unchanged.
 git_root() {
@@ -95,11 +82,9 @@ pane_dir() {                  # <pane> -> a directory; empty when the pane is go
 usage() {
     cat >&2 <<'USAGE'
 tmux-review — review an agent's uncommitted diff, one comment at a time.
-  tmux-review [-p pane_id]                the fleet queue, with that pane (or,
-                                          without -p, the client's active pane)
-                                          preselected; it returns to the queue
-                                          after every review
-  tmux-review --fleet                    the fleet queue's rows, no fzf
+  tmux-review [-p pane_id]                review that pane (or, without -p, the
+                                          client's active pane); prefix r opens
+                                          the board, where r on a row runs this
   tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key prompt
                                           (deliver, approve, review again, base,
@@ -155,13 +140,10 @@ case "${1:-}" in
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
     --info)                     need review-diff.sh review-fleet.sh transcript.sh ;;
-    --fleet)                    need review-diff.sh review-fleet.sh ;;
     "")                         need review-diff.sh review-deliver.sh review-fleet.sh ;;
 esac
 
 case "${1:-}" in
-    --fleet)
-        fleet_rows ;;
     --lines)
         shift; lines_mode "${1:-}" ;;
     --loop)
