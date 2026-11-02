@@ -10,7 +10,7 @@ layout.
 
 | key | does |
 |-----|------|
-| `prefix a` | the agents menu below. Every row has its letter on screen. |
+| `prefix a` | the menu below. Every row has its letter on screen. |
 | `prefix u` | jump to the pane that needs you; again for the next one. |
 | `prefix r` | review an agent's uncommitted diff, blocked agents first. |
 | `prefix i` | one screen about this pane: cwd, git root, state, review. |
@@ -23,45 +23,63 @@ layout.
 | `prefix R` | reload every config file tmux loaded. |
 
 `M` and `R` are the two Shift keys left: both are rare, and both have a
-Shift-free path (`prefix a m`, and the `Move window...` / `Reload config` rows
-of the example's `prefix m` menu).
+Shift-free path: the `Move window...` and `Reload config` rows of `prefix a`.
 
-## The agents menu, `prefix a`
+## The menu, `prefix a`
+
+The same menu opens from `≡` at the top left of the border, and from a
+right-click on `‹` or `›`. A row is there only when nothing on screen does its
+job: Browse folder and Switch branch appear when the border has no room for
+the path or the branch, and the two splits are left out on a touch client.
 
 | row | letter |
 |-----|--------|
-| Jump to the pane that needs you | `u` |
-| Review its diff | `r` |
-| Panel for it | `f` |
-| Pane info | `i` |
 | Board of every agent | `w` |
-| Full screen (hide the chrome) | `e` |
+| Panel for this pane | `f` |
+| Review its diff | `r` |
+| Browse folder | `o` |
 | Switch branch | `b` |
-| Move window to a session... | `m` |
-| Sessions... | `s` |
+| New window | `c` |
+| Split right | `\` |
+| Split down | `-` |
+| Move window to a session... | `M` |
+| Rename window | `,` |
+| Kill pane… (Close window… on a single pane), with a confirm | `x` |
+| Full screen (hide the bar) | `e` |
+| Pane info | `i` |
+| Rename session | `$` |
+| Detach | `d` |
+| Reload config | `R` |
+| Kill session, with a confirm | `Q` |
 
-Each row presses the key it names, so rebinding a key moves its row and
-`off` drops it.
+The rows for plugin keys press the key they name, so rebinding a key moves its
+row and `off` drops it.
 
-## Mouse
+## Mouse and touch
+
+Taps on the bar act on release.
 
 | gesture | does |
 |---------|------|
-| click the branch segment | branch picker |
-| click the directory segment | browse the pane's working directory |
+| tap `≡` (top left of the border) | the menu |
+| tap the session name, or `▲ elsewhere` beside it | session picker, waiting sessions first |
+| tap the path on the border | browse the pane's working directory |
+| tap the branch on the border | branch picker |
+| tap `[z]` / `[u]` (split windows) | zoom / unzoom the pane |
+| tap a window tab | that window |
+| tap `‹` / `›` (touch) | previous / next window |
 | `Ctrl`+double-click a line | path picker for the paths on that line |
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
-Plain clicks, wheel and drag are never touched. `Ctrl`+click focuses the pane
-instead of tmux's swap-pane; `set -g @cockpit_keep_swap_pane on` keeps the swap
-and loses the picker.
+Plain clicks in a pane, wheel and drag are never touched. `Ctrl`+click focuses
+the pane instead of tmux's swap-pane; `set -g @cockpit_keep_swap_pane on`
+keeps the swap and loses the picker.
 
 ## The example config, `examples/full.tmux.conf`
 
 | key | does |
 |-----|------|
-| `prefix m` | action menu: splits, zoom, layout, kill pane, new / rename / move / kill window, agents, branch, sessions, rename session, detach, reload, kill session |
 | `prefix \|` or `prefix \` | split right, same directory |
 | `prefix -` | split down, same directory |
 | `prefix c` | new window, same directory |
@@ -80,7 +98,7 @@ Set the option before the plugin's `run-shell` line. `off` disables the key
 (and restores stock tmux where the plugin replaced one).
 
 ```sh
-set -g @cockpit_ai_key        a    # n if you never use next-window
+set -g @cockpit_menu_key      a    # n if you never use next-window
 set -g @cockpit_jump_key      u
 set -g @cockpit_sessions_key  s    # off keeps stock choose-tree
 set -g @cockpit_board_key     w    # the board; off keeps stock tmux
