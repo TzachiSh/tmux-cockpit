@@ -1138,3 +1138,27 @@ and the borders for a tier that is byte-stable across fonts.
 **A stale `@cockpit_tui_pid`.** The board unpublishes the pid on `q`, SIGHUP and
 SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
 `/proc/$pid/comm` before it signals anything.
+
+## The board as the review queue (#253)
+
+`prefix r` opens the board, the same command `prefix w` runs, and
+`@cockpit_review_window on` opens it in a window. The fzf fleet queue is gone;
+`tmux-review --fleet` went with it. `r` on a row opens the review loop as before.
+
+**Row cells.** The list draws, between the message and the age: the diff stat
+(`+a -d`, `clean`, `no repo`, `?N new` for untracked files), the review mark
+(`◆` pending, `↵` pasted and unsent) and the branch (`⑂name`), in that order.
+A cell that does not fit is dropped with every cell to its right; the cells never
+take more than a third of the width the name and message share.
+
+**Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
+scan per distinct repo root however many panes share it, at most 8 git processes
+at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
+the gitsafe flags. The list still makes no pane capture.
+
+**Verbs.** `cockpit-board` gains two lines, `kill %N` and `request %N`.
+`kill %N` kills the pane's window; the board writes the window name it showed to
+`$COCKPIT_ACTION.expect` first, and the wrapper re-reads `#{window_name}` and
+refuses with a `✕` note if it differs, if the file is missing or a symlink, or
+if the pane is gone. `request %N` runs `tmux-review --request` for that pane.
+The board keys for both wait on the board's verb hook (not shipped).
