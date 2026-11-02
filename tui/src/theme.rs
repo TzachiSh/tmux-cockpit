@@ -120,6 +120,8 @@ impl Theme {
 /// box-drawing; its ellipsis is three cells, which every budget subtracts.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Glyphs {
+    /// Prints nothing but ASCII, the panel's key names included.
+    pub ascii: bool,
     pub needs: &'static str,
     pub error: &'static str,
     pub running: &'static str,
@@ -137,6 +139,19 @@ pub struct Glyphs {
     pub plain: border::Set<'static>,
     pub thick: border::Set<'static>,
     pub round: border::Set<'static>,
+    pub star: &'static str,
+    pub warn: &'static str,
+    pub arrow: &'static str,
+    pub ndash: &'static str,
+    /// The text box's cursor, one cell wide in both tiers.
+    pub cursor: &'static str,
+    pub spin: &'static [&'static str],
+    pub key_enter: &'static str,
+    pub key_tab: &'static str,
+    pub key_bksp: &'static str,
+    pub key_left: &'static str,
+    pub key_right: &'static str,
+    pub key_updown: &'static str,
 }
 
 const ASCII_PLAIN: border::Set = border::Set {
@@ -172,6 +187,7 @@ impl Glyphs {
 
     pub const fn unicode() -> Self {
         Self {
+            ascii: false,
             needs: "▲",
             error: "✕",
             running: "●",
@@ -189,11 +205,24 @@ impl Glyphs {
             plain: border::PLAIN,
             thick: border::THICK,
             round: border::ROUNDED,
+            star: "★",
+            warn: "⚠",
+            arrow: "→",
+            ndash: "–",
+            cursor: "▏",
+            spin: &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
+            key_enter: "↵",
+            key_tab: "⇥",
+            key_bksp: "⌫",
+            key_left: "←",
+            key_right: "→",
+            key_updown: "↑↓",
         }
     }
 
     pub const fn ascii() -> Self {
         Self {
+            ascii: true,
             needs: "!",
             error: "x",
             running: "*",
@@ -211,6 +240,18 @@ impl Glyphs {
             plain: ASCII_PLAIN,
             thick: ASCII_THICK,
             round: ASCII_PLAIN,
+            star: "*",
+            warn: "!",
+            arrow: "->",
+            ndash: "-",
+            cursor: "|",
+            spin: &["|", "/", "-", "\\"],
+            key_enter: "enter",
+            key_tab: "tab",
+            key_bksp: "bksp",
+            key_left: "left",
+            key_right: "right",
+            key_updown: "up/dn",
         }
     }
 

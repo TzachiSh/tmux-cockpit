@@ -1,9 +1,9 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, InputKind, Level, MODELS, QUICK, Tap, View, needs_y, risky};
+use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y, risky};
 use super::envelope::Flow;
 use super::request::Call;
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -12,20 +12,23 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
-const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const SPIN_ASCII: [&str; 4] = ["|", "/", "-", "\\"];
-
-fn ascii(th: &Theme) -> bool {
-    th.g.ellipsis == "..."
+/// app.rs words its warnings in the unicode tier: the ascii tier swaps the glyphs in.
+fn tiered(g: &Glyphs, s: &str) -> String {
+    if !g.ascii {
+        return s.to_string();
+    }
+    let u = Glyphs::unicode();
+    s.replace(u.warn, g.warn).replace(u.ndash, g.ndash)
 }
 
-/// Word wrap to `w` columns, keeping line breaks and splitting a word longer
-/// than the line.
+/// Word wrap to `w` columns, splitting a word longer than the line. Widths are
+/// per grapheme cluster, as the buffer draws them: ❤️ is 2 columns, not 1.
 pub fn wrap(text: &str, w: usize) -> Vec<String> {
     let w = w.max(4);
-    let width = |s: &str| s.chars().map(|c| c.width().unwrap_or(0)).sum::<usize>();
+    let width = |s: &str| s.graphemes(true).map(|g| g.width()).sum::<usize>();
     let mut out = Vec::new();
     for para in text.split('\n') {
         // Indentation is meaning in code and YAML: the first line keeps it.
@@ -46,8 +49,8 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
             let mut rest = word.to_string();
             while width(&rest) > w {
                 let mut used = 0;
-                let cut = rest.char_indices().find(|(_, c)| {
-                    used += c.width().unwrap_or(0);
+                let cut = rest.grapheme_indices(true).find(|(_, g)| {
+                    used += g.width();
                     used > w
                 });
                 let at = cut.map_or(rest.len(), |(i, _)| i);
@@ -63,6 +66,8 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
 
 struct Body {
     head: Vec<Line<'static>>,
+    /// The note's rows at the head's top: they never scroll away.
+    pin: usize,
     lines: Vec<Line<'static>>,
     /// `usize::MAX` pins the bottom.
     scroll: usize,
@@ -92,8 +97,14 @@ pub struct Hit {
 pub const MIN_W: u16 = 28;
 pub const MIN_H: u16 = 7;
 
-pub fn too_small(area: Rect) -> bool {
-    area.width < MIN_W || area.height < MIN_H
+/// The tablet's buttons take rows of their own: under 12, Result and Confirm at
+/// 28 columns keep under 2 body rows beside them (`every_tablet_view_keeps_two_body_rows`).
+pub const TABLET_MIN_W: u16 = 28;
+pub const TABLET_MIN_H: u16 = 12;
+
+pub fn too_small(area: Rect, tablet: bool) -> bool {
+    let (w, h) = if tablet { (TABLET_MIN_W, TABLET_MIN_H) } else { (MIN_W, MIN_H) };
+    area.width < w || area.height < h
 }
 
 fn plain(s: impl Into<String>) -> Line<'static> {
@@ -113,13 +124,53 @@ fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// A picker's number keys, from its real count.
+/// A text box's lines with the cursor drawn in at `cur`, and the cursor's line.
+/// The text may hold the cursor glyph itself, so those are counted past.
+fn typed(g: &Glyphs, text: &str, cur: usize, w: usize, st: Style, cs: Style) -> (Vec<Line<'static>>, usize) {
+    let c = boundary(text, cur);
+    let mut before = text[..c].matches(g.cursor).count();
+    let mut lines = many(&format!("{}{}{}", &text[..c], g.cursor, &text[c..]), w, "", st);
+    let at = lines.iter().position(|l| {
+        let n = l.to_string().matches(g.cursor).count();
+        let here = n > before;
+        before -= if here { 0 } else { n };
+        here
+    });
+    let at = at.unwrap_or(lines.len() - 1);
+    // the cursor gets a span of its own: a `|` typed in the ascii tier looks just like it
+    let t = lines[at].to_string();
+    if let Some((i, _)) = t.match_indices(g.cursor).nth(before) {
+        let j = i + g.cursor.len();
+        let spans = vec![
+            Span::styled(t[..i].to_string(), st),
+            Span::styled(g.cursor, cs),
+            Span::styled(t[j..].to_string(), st),
+        ];
+        lines[at] = Line::from(spans);
+    }
+    (lines, at)
+}
+
+/// The text box's cursor: accent and reversed, so it is never read as a typed char.
+fn cursor_style(th: &Theme) -> Style {
+    Style::new().fg(th.accent).add_modifier(Modifier::REVERSED)
+}
+
+/// A picker's number keys, from its real count: none for no entries, and
+/// the empty hint is dropped, so no key is shown that does nothing.
 fn digits(n: usize) -> String {
-    if n <= 1 { "1".into() } else { format!("1-{}", n.min(9)) }
+    match n {
+        0 => String::new(),
+        1 => "1".into(),
+        _ => format!("1-{}", n.min(9)),
+    }
 }
 
 fn pills(xs: &[(&str, &str)]) -> Vec<(String, String)> {
-    xs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    xs.iter()
+        .filter(|(k, _)| !k.is_empty())
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
 }
 
 /// A picker entry: the cursor, the number, the text wrapped under itself, and
@@ -186,14 +237,14 @@ fn push_entry(b: &mut Body, th: &Theme, tall: bool, sel: bool, rows: Vec<Line<'s
 
 /// The key a footer hint names, as a tap; its last word, so `↵ y` is `y`. A
 /// range or the arrows name no single key, and become no button.
-fn tap_of(k: &str) -> Option<Tap> {
+fn tap_of(g: &Glyphs, k: &str) -> Option<Tap> {
     let t = k.rsplit(' ').next()?;
     let code = match t {
         "esc" => KeyCode::Esc,
         "F1" => KeyCode::F(1),
-        "⇥" => KeyCode::Tab,
-        "⌫" => KeyCode::Backspace,
-        "↵" => KeyCode::Enter,
+        _ if t == g.key_tab => KeyCode::Tab,
+        _ if t == g.key_bksp => KeyCode::Backspace,
+        _ if t == g.key_enter => KeyCode::Enter,
         _ => {
             let mut cs = t.chars();
             match (cs.next(), cs.next(), cs.next()) {
@@ -260,7 +311,7 @@ fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
     let mut row: Vec<Span<'static>> = vec![];
     let mut x = 0;
     for (k, v) in &b.footer {
-        let Some(tap) = tap_of(k) else { continue };
+        let Some(tap) = tap_of(&th.g, k) else { continue };
         let chip = format!("[ {} ]", th.g.trunc(v, w.saturating_sub(4)));
         let cw = chip.width();
         if x > 0 && x + 1 + cw > w {
@@ -286,7 +337,8 @@ fn chips(th: &Theme, b: &Body, w: usize) -> (Vec<Line<'static>>, Vec<Hit>) {
 
 /// `tall` boxes the tappable entries, three rows each, for tablet mode.
 fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
-    let star = if ascii(th) { "*" } else { "★" };
+    let star = th.g.star;
+    let g = &th.g;
     let meta = Style::new().fg(th.meta);
     let label = Style::new().fg(th.label);
     let bold = Style::new().add_modifier(Modifier::BOLD);
@@ -295,6 +347,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
     let d = th.g.dot;
     let mut b = Body {
         head: vec![],
+        pin: 0,
         lines: vec![],
         scroll: 0,
         sel: None,
@@ -313,6 +366,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             Level::Error => (th.g.error, th.error),
         };
         b.head.extend(many(&format!("{g} {}", n.text), w, "", Style::new().fg(fg)));
+        b.pin = b.head.len();
     }
     let run = app.run.as_ref();
     let back = app.leave_to().to_string();
@@ -342,12 +396,35 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
         View::Compose => {
             let r = app.write_route();
             let head = format!("type: {}   model: {}", app.out.as_str(), MODELS[app.model]);
-            b.head.push(styled(th.g.trunc(&head, w), label));
-            b.lines = many(&format!("{}▏", app.draft), w, "", value);
+            let mut top = styled(th.g.trunc(&head, w), label);
+            let n = app.draft.chars().count();
+            if n > DRAFT_COUNT {
+                let fg = if n >= MAX_DRAFT { th.needs } else { th.meta };
+                let count = Span::styled(format!("{n}/{MAX_DRAFT}"), Style::new().fg(fg));
+                if top.width() + 3 + count.width() <= w {
+                    top.spans.extend([Span::raw("   "), count]);
+                } else {
+                    b.head.push(top);
+                    top = Line::from(count);
+                }
+            }
+            b.head.push(top);
+            let at;
+            if app.draft.is_empty() {
+                // drawn, never typed: the draft stays empty
+                let hint = th.g.trunc(&format!("type what you want{}", g.ellipsis), w.saturating_sub(1));
+                let dim = meta.add_modifier(Modifier::DIM);
+                (b.lines, at) = (
+                    vec![Line::from(vec![Span::styled(g.cursor, cursor_style(th)), Span::styled(hint, dim)])],
+                    0,
+                );
+            } else {
+                (b.lines, at) = typed(g, &app.draft, app.cur, w, value, cursor_style(th));
+            }
             // the cursor's line, over the route lines under it
-            b.sel = Some((b.lines.len() - 1, b.lines.len()));
+            b.sel = Some((at, at + 1));
             b.lines.push(plain(""));
-            b.lines.extend(many(&format!("→ {} {d} {}", r.model, r.why), w, "", meta));
+            b.lines.extend(many(&format!("{} {} {d} {}", g.arrow, r.model, r.why), w, "", meta));
             if let Some((m, why)) = &r.suggest {
                 b.lines.extend(many(
                     &format!("{star} suggest stronger: {m} {d} {why}"),
@@ -361,14 +438,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("^S", "write"),
                 ("^F", "fix spelling"),
                 ("^T", "insert as typed"),
-                ("⇥", "type"),
+                (g.key_tab, "type"),
                 ("^N", "model"),
                 ("F1", "keys"),
                 ("esc", "home"),
             ]);
         }
         View::Busy => {
-            let frames: &[&str] = if ascii(th) { &SPIN_ASCII } else { &SPIN };
+            let frames = g.spin;
             let (model, why) = run.map_or(("", ""), |r| (r.model.as_str(), r.why.as_str()));
             let (what, flow) = match run.map(|r| &r.flow) {
                 Some(Flow::Write { out, .. }) => ("writing", format!("write ({})", out.as_str())),
@@ -434,12 +511,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 (&n, "pick"),
                 ("o", "other"),
                 ("g", "best guess"),
-                ("⌫", "back"),
+                (g.key_bksp, "back"),
                 help,
                 ("esc", &back),
             ]);
         }
-        View::Input { kind, text, .. } => {
+        View::Input { kind, text, cur, .. } => {
             let title = match kind {
                 InputKind::Other => format!("your answer: {}", run.map_or("", |r| r.question.as_str())),
                 InputKind::Explain => "what do you want to know about this screen?".into(),
@@ -447,14 +524,15 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             };
             b.head.extend(many(&title, w, "", label));
             b.head.push(plain(""));
-            b.lines = many(&format!("{text}▏"), w, "", value);
-            b.scroll = usize::MAX;
-            b.footer = pills(&[("↵", "send"), ("F1", "keys"), ("esc", "back")]);
+            let at;
+            (b.lines, at) = typed(g, text, *cur, w, value, cursor_style(th));
+            (b.scroll, b.sel) = (usize::MAX, Some((at, at + 1)));
+            b.footer = pills(&[(g.key_enter, "send"), ("F1", "keys"), ("esc", "back")]);
         }
         View::Result { label: l, text, scroll } => {
             b.head.push(styled(th.g.trunc(l, w), heading));
             if let Some(x) = app.line_warning(text) {
-                b.head.extend(many(&x, w, "", Style::new().fg(th.error)));
+                b.head.extend(many(&tiered(g, &x), w, "", Style::new().fg(th.error)));
             }
             b.head.push(plain(""));
             b.lines = many(text, w, "", value);
@@ -465,7 +543,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("s", "send"),
                 ("r", "retry"),
                 ("c", "edit"),
-                ("↑↓", "scroll"),
+                (g.key_updown, "scroll"),
                 help,
                 ("esc", &back),
             ]);
@@ -504,12 +582,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                     }
                 }
                 if let Some(x) = app.line_warning(&s.cmd) {
-                    b.lines.extend(many(&x, w, "     ", Style::new().fg(th.error)));
+                    b.lines.extend(many(&tiered(g, &x), w, "     ", Style::new().fg(th.error)));
                 }
                 if let Some(r) = risky(&s.cmd) {
-                    let mark = if ascii(th) { "!" } else { "⚠" };
                     b.lines
-                        .extend(many(&format!("{mark} risky: {r}"), w, "     ", Style::new().fg(th.error)));
+                        .extend(many(&format!("{} risky: {r}", g.warn), w, "     ", Style::new().fg(th.error)));
                 }
                 if i == *sel {
                     b.scroll = at.saturating_sub(2);
@@ -518,7 +595,14 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.taps.push(((at, b.lines.len()), Tap::Select(i)));
             }
             b.count = true;
-            b.footer = pills(&[("i", "insert"), ("s", "send"), ("↑↓", "pick"), ("r", "retry"), help, ("esc", &back)]);
+            b.footer = pills(&[
+                ("i", "insert"),
+                ("s", "send"),
+                (g.key_updown, "pick"),
+                ("r", "retry"),
+                help,
+                ("esc", &back),
+            ]);
         }
         View::ExplainAsk { sel } => {
             let what = match app.session {
@@ -537,7 +621,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 }
             }
             let n = digits(QUICK.len() + 1);
-            b.footer = pills(&[(&n, "pick"), ("↵", "ask"), help, ("esc", "home")]);
+            b.footer = pills(&[(&n, "pick"), (g.key_enter, "ask"), help, ("esc", "home")]);
         }
         View::Answer { scroll, armed } => {
             let Some(r) = run else { return b };
@@ -556,12 +640,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                     ("i", "insert"),
                     ("s", "send"),
                     ("f", "follow up"),
-                    ("↑↓", "scroll"),
+                    (g.key_updown, "scroll"),
                     help,
                     ("esc", "home"),
                 ]);
             } else {
-                b.footer = pills(&[("f", "follow up"), ("↑↓", "scroll"), help, ("esc", "home")]);
+                b.footer = pills(&[("f", "follow up"), (g.key_updown, "scroll"), help, ("esc", "home")]);
             }
             if *armed && app.tablet {
                 // the esc chip becomes keep it in place, so a second tap on home keeps;
@@ -585,7 +669,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             ..
         } => {
             for x in ws {
-                b.head.extend(many(x, w, "", Style::new().fg(th.error)));
+                b.head.extend(many(&tiered(g, x), w, "", Style::new().fg(th.error)));
             }
             let ask = if *send {
                 format!("send this to {} ({}) and press Enter?", app.pane, app.cap.cmd)
@@ -607,13 +691,18 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             } else if needs_y(text, *send) {
                 pills(&[
                     ("y", "confirm"),
-                    ("↑↓", "scroll"),
-                    ("↵", "is off: risky or multi-line"),
+                    (g.key_updown, "scroll"),
+                    (g.key_enter, "is off: risky or multi-line"),
                     help,
                     ("esc n", "cancel"),
                 ])
             } else {
-                pills(&[("↵ y", "confirm"), ("↑↓", "scroll"), help, ("esc n", "cancel")])
+                pills(&[
+                    (&format!("{} y", g.key_enter), "confirm"),
+                    (g.key_updown, "scroll"),
+                    help,
+                    ("esc n", "cancel"),
+                ])
             };
         }
         View::Error { line, hint } => {
@@ -686,7 +775,7 @@ fn titles(th: &Theme, title: &str, ind: Option<(String, String)>, w: usize) -> (
     (fit(w), None)
 }
 
-/// Drawn in place of every view under [`MIN_W`] x [`MIN_H`].
+/// Drawn in place of every view under the floor: [`MIN_W`] x [`MIN_H`], or the tablet's.
 fn small(f: &mut Frame, area: Rect, th: &Theme) {
     let block = Block::new()
         .borders(Borders::ALL)
@@ -722,20 +811,23 @@ fn named(v: Option<&View>) -> &'static str {
 
 /// Every key of the view on screen, `(keys, what)`, for the `?` overlay. Each
 /// esc row names where it goes, so the way back to home reads off the chain.
-pub fn keys(app: &App) -> Vec<(String, String)> {
+pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
     let s = |k: &str, v: &str| (k.to_string(), v.to_string());
     let left = match app.leave_to() {
         "home" => "back to home".to_string(),
         x => format!("back to the {x}"),
     };
-    let move_ = s("↑↓ j k", "move");
+    let ud = format!("{} j k", g.key_updown);
+    let (ret, bksp) = (g.key_enter, g.key_bksp);
+    let lr = format!("{} {}", g.key_left, g.key_right);
+    let move_ = s(&ud, "move");
     let quit = s("q ^C", "close the panel");
     let help = s("? F1", "this help");
     let scroll = s("PgUp PgDn", "scroll a page");
-    match &app.view {
+    let all = match &app.view {
         View::Home { .. } => vec![
             move_,
-            s("↵", "open the selected tile"),
+            s(ret, "open the selected tile"),
             s(&digits(app.tiles().len()), "open a tile by number"),
             help,
             s("esc q ^C", "close the panel"),
@@ -744,10 +836,13 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("^S F2", "write it with Claude"),
             s("^F", "fix the spelling"),
             s("^T", "insert as typed"),
-            s("⇥", "next output type"),
+            s(g.key_tab, "next output type"),
             s("^N", "next model"),
-            s("↵", "new line"),
-            s("⌫ ^W ^U", "delete a char, a word, all"),
+            s(ret, "new line"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
+            s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+            s("Home End", "line start, end; ^A ^E too"),
+            s("Del", "delete the char after"),
             s("F1", "this help"),
             s("esc", "back to home"),
             s("^C", "close the panel"),
@@ -759,19 +854,22 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::Question { .. } => vec![
             move_,
-            s("↵", "answer the selected option"),
+            s(ret, "answer the selected option"),
             s(&digits(app.run.as_ref().map_or(0, |r| r.options.len()).min(4)), "answer by number"),
             s("o", "type your own answer"),
             s("g", "let Claude guess"),
-            s("⌫ ←", "the previous question"),
+            s(&format!("{bksp} {}", g.key_left), "the previous question"),
             s("PgUp PgDn", "scroll the question"),
             help,
             s("esc", &left),
             quit,
         ],
         View::Input { back, .. } => vec![
-            s("↵", "send"),
-            s("⌫ ^W ^U", "delete a char, a word, all"),
+            s(ret, "send"),
+            s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
+            s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+            s("Home End", "line start, end; ^A ^E too"),
+            s("Del", "delete the char after"),
             s("F1", "this help"),
             s("esc", &format!("back to {}", named(Some(back)))),
             s("^C", "close the panel"),
@@ -782,14 +880,14 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("r", "ask again"),
             s("c", "edit it as a new draft"),
             s("x", "copy it (OSC 52)"),
-            s("↑↓ j k", "scroll"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc", &left),
             quit,
         ],
         View::Steps { items, .. } => vec![
-            s("↑↓ j k", "pick a step"),
+            s(&ud, "pick a step"),
             s(&digits(items.len()), "pick a step by number"),
             s("i", "insert the step, no Enter"),
             s("s", "send the step with Enter"),
@@ -801,7 +899,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::ExplainAsk { .. } => vec![
             move_,
-            s("↵", "ask the selected question"),
+            s(ret, "ask the selected question"),
             s(&digits(QUICK.len() + 1), "ask by number, 5 in your words"),
             help,
             s("esc", "back to home"),
@@ -812,7 +910,7 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("s", "send the prompt with Enter"),
             s("f", "ask a follow-up"),
             s("x", "copy the prompt, else the answer"),
-            s("↑↓ j k", "scroll"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc q", "twice: drop it, back to home"),
@@ -820,8 +918,8 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
         ],
         View::Confirm { back, .. } => vec![
             s("y", "confirm"),
-            s("↵", "confirm, unless risky or multi-line"),
-            s("↑↓ j k", "scroll"),
+            s(ret, "confirm, unless risky or multi-line"),
+            s(&ud, "scroll"),
             scroll,
             help,
             s("esc n q", &format!("cancel, back to {}", named(Some(back)))),
@@ -833,14 +931,15 @@ pub fn keys(app: &App) -> Vec<(String, String)> {
             s("esc", &format!("back to {}", named(app.busy_back.as_ref()))),
             quit,
         ],
-    }
+    };
+    all.into_iter().filter(|(k, _)| !k.is_empty()).collect()
 }
 
 /// The `?` overlay over the whole panel: the popup is small enough that a
 /// card inside it would clip the very rows it exists to show.
 /// Returns the key count and rows, for [`App::fit`] to clamp the scroll by.
 fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usize, usize) {
-    let ks = keys(app);
+    let ks = keys(app, &th.g);
     let (total, rows) = (ks.len(), (area.height as usize).saturating_sub(2));
     let top = top.min(ks.len().saturating_sub(rows));
     let mut block = Block::new()
@@ -852,11 +951,11 @@ fn overlay(f: &mut Frame, area: Rect, app: &App, th: &Theme, top: usize) -> (usi
     let close = if top > 0 || last < ks.len() {
         let n = format!(" {}-{last} of {} ", top + 1, ks.len());
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
-        "↑↓ scroll  any other key closes"
+        format!("{} scroll  any other key closes", th.g.key_updown)
     } else {
-        "any key closes"
+        "any key closes".into()
     };
-    let close = format!(" {} ", th.g.trunc(close, (area.width as usize).saturating_sub(4)));
+    let close = format!(" {} ", th.g.trunc(&close, (area.width as usize).saturating_sub(4)));
     block = block.title_bottom(Line::from(Span::styled(close, Style::new().fg(th.meta))));
     let inner = block.inner(area);
     let inner = Rect {
@@ -889,7 +988,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
     let esc = Tap::Key(KeyEvent::from(KeyCode::Esc));
     let anywhere = |on: bool| if on { vec![Hit { at: area, tap: esc }] } else { vec![] };
     // no hits under the floor: the card hides what esc would do (arm, discard, cancel a call)
-    if too_small(area) {
+    if too_small(area, app.tablet) {
         small(f, area, th);
         return (0, 0, vec![]);
     }
@@ -917,8 +1016,18 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, th: &Theme, tick: u64) -> (u
         b.head.pop();
     }
     if b.head.len() >= rows {
-        let n = b.head.len();
-        b.lines.splice(0..0, std::mem::take(&mut b.head));
+        // the note stays put: a cap note scrolled off behind the cursor is never read
+        let keep = b.pin.min(rows.saturating_sub(1));
+        let rest = b.head.split_off(b.pin.min(b.head.len()));
+        if keep < b.head.len() {
+            b.head.truncate(keep);
+            if let Some(l) = b.head.last_mut() {
+                let t: String = l.spans.iter().map(|s| s.content.as_ref()).collect();
+                *l = Line::styled(th.g.trunc(&format!("{t} {}", th.g.ellipsis), w), l.spans[0].style);
+            }
+        }
+        let n = rest.len();
+        b.lines.splice(0..0, rest);
         b.sel = b.sel.map(|(s, e)| (s + n, e + n));
         for ((s, e), _) in &mut b.taps {
             (*s, *e) = (*s + n, *e + n);
@@ -1108,15 +1217,17 @@ pub fn run(app: &mut App) {
             break;
         }
         let tick = app.started.map_or(0, |t| (t.elapsed().as_millis() / 100) as u64);
-        let (mut page, mut tiny) = ((0, 0, vec![]), false);
+        let (mut page, mut tiny, mut size) = ((0, 0, vec![]), false, (0, 0));
         let drawn = term.draw(|f| {
-            tiny = too_small(f.area());
+            size = (f.area().width, f.area().height);
+            tiny = too_small(f.area(), app.tablet);
             page = render(f, f.area(), app, &th, tick);
         });
         if drawn.is_err() {
             break;
         }
         app.shrunk(tiny);
+        app.size = Some(size);
         app.frame(ms());
         // the floor message shows no body: fitting to it would lose the scroll
         if !tiny {

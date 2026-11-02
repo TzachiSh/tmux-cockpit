@@ -125,7 +125,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
-| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
@@ -229,11 +229,44 @@ a scrollbar.
 ╰ any key closes ────────────────────────────────────────────────────────╯
 ```
 
+### The panel's text boxes
+
+Compose and the one-line boxes have a cursor, drawn as `▏` (`|` in the ascii
+tier) in accent and reversed, so a typed `|` never passes for it. It sits
+between two grapheme clusters, placed by display width: the wrap measures each
+cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
+
+- `←` `→` move a character, `^←` `^→` a word, `Home` `End` (`^A` `^E`) to the
+  line's start and end, `Del` deletes the character after it. `⌫` and `^W`
+  delete the character and the word before it, and `^U` everything before it,
+  as in readline. Typing and a paste go in at the cursor.
+- Moves and deletes go by grapheme cluster: a ZWJ family, a skin tone or a
+  flag is one symbol, and Backspace takes it whole. A letter typed before a
+  stray combining mark takes the mark, and the cursor goes past both.
+- The box keeps the cursor's line on screen; the route lines under it show
+  whenever it leaves room. A note never scrolls away behind it: when the head
+  has to scroll with the body, the note stays on top (cut with an ellipsis
+  when only one row is left), so the cap note is always read.
+- An empty Compose shows a dim `type what you want…`; it is drawn, never typed.
+- Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
+  or pasted character is turned away and a note says how many.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
 columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
-rows Explain's heading leaves no body row. Below it the panel draws one card,
+rows Explain's heading leaves no body row. Tablet mode has its own floor,
+28x12: its buttons take rows of their own, and it is the smallest size where
+every view keeps its heading, 2 or more body rows, its note and every button
+uncut beside them. A Confirm that carries line or risky warnings, and a view
+with a long note, keep 1 body row there and scroll it. Under 12 rows, Result (heading, line warning, two rows of
+buttons) and Confirm (the big pair) at 28 columns fall short; 40x12, a phone in
+portrait, is at the floor. The Home tile refuses to flip into tablet mode
+under 28x12 (a warn note says so), since the card would leave Home's only way
+out, `esc`, closing the panel; back to pc is always allowed. A panel that
+starts in tablet mode (`auto` on Termux, or the option) under 28x12 shows the
+card like any other start, and `esc` closes it from Home. Below the floor the
+panel draws one card,
 `make the window larger or rotate` and `esc goes back`. `esc` and `q` do what
 they do on the view under the card (an Answer still asks first, Compose keeps its
 draft, only Home closes), `^C` quits. Any other key, `q` typed into a box and a
@@ -266,6 +299,10 @@ At 40x12 (a phone in portrait), Steps:
 - **Home, Question and Steps keep the selection on screen.** A long question
   scrolls with its options, so the options never fall off the bottom; its
   `N-M of T` shows what is cut, and `PgUp` reads the question from its start.
+  `Enter` after `PgUp` first scrolls back to the selection, and the next one
+  answers it; `PgDn` back to the bottom, or a resize that fits the whole
+  question, drops the scroll. A
+  question with no options shows no digit hint.
 - **Tiles** drop their description under 50 columns of text and cut it with an
   ellipsis above; a long option or step note wraps under itself.
 - **The top border** gives the title way first, with an ellipsis, then drops the
@@ -327,7 +364,7 @@ In tablet mode:
   - Layout: every button that opens a Confirm or arms a discard is a bottom
     button, and what confirms is drawn at the top, so the second tap of a
     double tap lands on no confirming cell. A property test checks every size
-    from 28x7 to 120x40 for each such button (Steps, Result and Answer send and
+    from the tablet floor, 28x12, to 120x40 for each such button (Steps, Result and Answer send and
     insert, Answer home, Compose insert as typed).
   - Guard: a tap within 300 ms of a frame that shows a new view (another view,
     the Answer armed, `?` opened or closed) is dropped. Keys are never dropped.
@@ -400,6 +437,8 @@ sends `prefix + f`.
 - New variable `COCKPIT_PANEL_MODE`; a value other than `auto`, `pc`, `tablet`
   or empty is exit 2, a usage error.
 - `view::render()` returns `(total, room, Vec<Hit>)`: the hit map is new.
+- `view::too_small(area, tablet)` takes the mode: tablet mode's floor is
+  `TABLET_MIN_W` x `TABLET_MIN_H` (28x12), pc mode's stays 28x7.
 - `backend::init(paste, mouse)` takes a second flag; `backend::mouse()`,
   `osc52()` and `copy()` are new. `restore()` turns the mouse off.
 - In tablet mode the panel writes `?1000h ?1006h` and reads mouse events; in

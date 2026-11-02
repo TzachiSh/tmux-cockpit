@@ -1492,6 +1492,7 @@ fn an_answer_box_with_no_conversation_stays_put() {
         a.view = View::Input {
             kind,
             text: "hi".into(),
+            cur: 2,
             back: Box::new(View::Home { sel: 0 }),
         };
         let v = a.view.clone();
@@ -1712,14 +1713,14 @@ fn a_short_help_scrolls() {
     key(&mut a, KeyCode::F(1));
     let f = shown(&mut a, 40, 9);
     assert!(
-        f.contains("1-7 of 10") && f.contains("any other key closes") && !f.contains("close the panel"),
+        f.contains("1-7 of 13") && f.contains("any other key closes") && !f.contains("close the panel"),
         "{f}"
     );
-    for _ in 0..5 {
+    for _ in 0..6 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 9);
-    assert!(f.contains("4-10 of 10") && f.contains("close the panel"), "{f}");
+    assert!(f.contains("7-13 of 13") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
 }
@@ -1734,9 +1735,9 @@ fn an_overscrolled_help_moves_back_at_once() {
         key(&mut a, KeyCode::Down);
         shown(&mut a, 40, 9);
     }
-    assert_eq!(a.help, Some(3), "10 keys in 7 rows: 3 is the last offset");
+    assert_eq!(a.help, Some(6), "13 keys in 7 rows: 6 is the last offset");
     key(&mut a, KeyCode::Up);
-    assert!(shown(&mut a, 40, 9).contains("3-9 of 10"), "the first Up moves");
+    assert!(shown(&mut a, 40, 9).contains("6-12 of 13"), "the first Up moves");
 }
 
 #[test]
@@ -2454,6 +2455,29 @@ fn a_resumed_panel_guards_its_first_view_for_longer() {
     assert!(matches!(c.view, View::Confirm { .. }));
 }
 
+/// Only the resumed panel's first view guards for longer: its second view, a
+/// Confirm, drops a tap under the usual 300 ms like any other new view.
+#[test]
+fn a_resumed_panels_second_view_drops_a_tap_under_300_ms() {
+    use cockpit_tui::panel::app::{RESUME_GUARD_MS, TAP_GUARD_MS};
+    let mut a = tablet(stepped());
+    ch(&mut a, 'i');
+    let mut b = tablet(app("w", "bash", "$ "));
+    b.resumed("bash".into(), resume_of(&a), "ok");
+    b.frame(0);
+    b.tap(k('s'), RESUME_GUARD_MS);
+    assert!(matches!(b.view, View::Confirm { .. }));
+    let second = RESUME_GUARD_MS + 10;
+    b.frame(second);
+    b.tap(k('y'), second + TAP_GUARD_MS - 1);
+    assert!(
+        matches!(b.view, View::Confirm { .. }) && b.action.is_none(),
+        "a tap under 300 ms is dropped"
+    );
+    b.tap(k('y'), second + TAP_GUARD_MS);
+    assert!(b.action.is_some(), "at 300 ms it acts");
+}
+
 #[test]
 fn the_wheel_scrolls_and_never_touches_a_box() {
     let mut a = tablet(long_answer(60));
@@ -2489,13 +2513,13 @@ fn tall_tiles_only_where_the_whole_view_fits() {
 
 #[test]
 fn every_tablet_view_fits_its_buttons_at_the_floor() {
-    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
     for (name, a, ..) in every_view() {
         let a = tablet(a);
-        let (f, _, hits) = drawn(&a, MIN_W, MIN_H, &Theme::fixed(), 0);
+        let (f, _, hits) = drawn(&a, TABLET_MIN_W, TABLET_MIN_H, &Theme::fixed(), 0);
         assert!(!hits.is_empty(), "{name}: something to tap:\n{f}");
         for h in &hits {
-            assert!(h.at.y < MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
+            assert!(h.at.y < TABLET_MIN_H - 1 && h.at.y > 0, "{name}: a hit on the border {h:?}:\n{f}");
         }
     }
 }
@@ -2515,11 +2539,11 @@ fn k(c: char) -> Tap {
 /// cells be that tap. One app for the whole grid, back to the opener with n.
 fn never_under(name: &str, mut a: App, open: Tap, yes: Tap) {
     let mut checked = 0;
-    use cockpit_tui::panel::view::{MIN_H, MIN_W};
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
     // from under the floor, where nothing may be tapped at all
     for w in 20..=120u16 {
         for h in 4..=40u16 {
-            if w < MIN_W || h < MIN_H {
+            if w < TABLET_MIN_W || h < TABLET_MIN_H {
                 assert!(hits_of(&a, w, h).is_empty(), "{name} at {w}x{h}: a hit under the floor");
                 continue;
             }
@@ -2703,4 +2727,619 @@ fn the_armed_note_says_tap_in_tablet_mode() {
     assert_eq!(note(&a), Some("tap discard it, or esc again, to drop this conversation"));
     let f = frame(&a, 80, 24, 0);
     assert!(f.contains("discard it") && f.contains("[ keep it ]"), "{f}");
+}
+
+// ---------------------------------------------------------------- glyph tiers
+
+fn composing(draft: &str) -> App {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '2');
+    assert_eq!(a.view, View::Compose);
+    typ(&mut a, draft);
+    a
+}
+
+fn ascii_theme() -> Theme {
+    let mut th = Theme::fixed();
+    th.g = cockpit_tui::theme::Glyphs::ascii();
+    th
+}
+
+/// Every view, the `?` overlay over each, and the views every_view leaves out.
+fn more_views() -> Vec<(String, App)> {
+    let mut v: Vec<(String, App)> = every_view().into_iter().map(|(n, a, ..)| (n.to_string(), a)).collect();
+    for (name, mut a, ..) in every_view() {
+        a.help = Some(0);
+        v.push((format!("{name} ?"), a));
+    }
+    v.push(("compose-empty".into(), composing("")));
+    let mut a = long_question();
+    key(&mut a, KeyCode::PageUp);
+    v.push(("question-scrolled".into(), a));
+    let mut a = stepped();
+    ch(&mut a, 's');
+    v.push(("confirm-steps".into(), a));
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<steps><step><note>wipe</note><cmd>sudo rm -rf /tmp/x\necho done</cmd></step></steps>".into(),
+    ));
+    v.push(("steps-risky".into(), a));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    v.push(("result-lines".into(), a));
+    let mut a = app("py", "python3", ">>> ");
+    writing(&mut a, "x");
+    a.reply(Ok("<text>one\ntwo</text>".into()));
+    ch(&mut a, 'i');
+    v.push(("confirm-lines".into(), a));
+    let mut a = app("w", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question>".into()));
+    v.push(("question-no-options".into(), a));
+    for lv in [Level::Info, Level::Warn, Level::Error] {
+        let mut a = composing("");
+        a.say(lv, "hi");
+        v.push((format!("note {lv:?}"), a));
+    }
+    v
+}
+
+/// [`more_views`] in pc mode and in tablet mode.
+fn every_view_and_more() -> Vec<(String, App)> {
+    let mut v = more_views();
+    v.extend(more_views().into_iter().map(|(n, a)| (format!("{n} tablet"), tablet(a))));
+    v
+}
+
+#[test]
+fn the_ascii_tier_prints_nothing_but_ascii() {
+    let th = ascii_theme();
+    for (name, a) in every_view_and_more() {
+        for (w, h) in [(80, 24), (40, 12)] {
+            let (f, ..) = drawn(&a, w, h, &th, 37);
+            let bad: String = f.chars().filter(|c| !c.is_ascii()).collect();
+            assert!(bad.is_empty(), "{name} at {w}x{h}: {bad:?}\n{f}");
+        }
+    }
+}
+
+#[test]
+fn the_unicode_tier_has_no_nerd_or_private_use_glyph() {
+    let pua = |c: char| matches!(c as u32, 0xE000..=0xF8FF | 0xF0000..=0x10FFFF);
+    for (name, a) in every_view_and_more() {
+        for (w, h) in [(80, 24), (40, 12)] {
+            let f = frame(&a, w, h, 37);
+            assert!(!f.chars().any(pua), "{name} at {w}x{h}:\n{f}");
+        }
+    }
+}
+
+#[test]
+fn golden_ascii() {
+    let th = ascii_theme();
+    for (name, a, ..) in every_view() {
+        if ["home", "compose", "question", "steps", "answer", "confirm"].contains(&name) {
+            golden(&format!("panel-ascii-{name}-80"), &framed(&a, 80, 20, &th, 0).0);
+            golden(&format!("panel-ascii-{name}-40"), &framed(&a, 40, 12, &th, 0).0);
+        }
+    }
+}
+
+// ---------------------------------------------------------------- editing
+
+/// The draft with `|` where the cursor is.
+fn at_cur(a: &App) -> String {
+    format!("{}|{}", &a.draft[..a.cur], &a.draft[a.cur..])
+}
+
+fn press(a: &mut App, code: KeyCode, m: KeyModifiers) {
+    a.key(KeyEvent::new(code, m));
+}
+
+#[test]
+fn the_cursor_moves_by_char_word_and_line() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = composing("one two  three");
+    assert_eq!(at_cur(&a), "one two  three|");
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "one two  thre|e");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "one two  |three");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "one |two  three");
+    press(&mut a, KeyCode::Right, c);
+    assert_eq!(at_cur(&a), "one two|  three");
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), "one two | three");
+    key(&mut a, KeyCode::Home);
+    assert_eq!(at_cur(&a), "|one two  three");
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "|one two  three", "Left at the start stays");
+    key(&mut a, KeyCode::End);
+    assert_eq!(at_cur(&a), "one two  three|");
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), "one two  three|", "Right at the end stays");
+    ctrl(&mut a, 'a');
+    assert_eq!(a.cur, 0);
+    ctrl(&mut a, 'e');
+    assert_eq!(a.cur, a.draft.len());
+
+    // Home and End are the line's, ^A and ^E too
+    let mut a = composing("ab\ncd\nef");
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), "ab\ncd|\nef");
+    key(&mut a, KeyCode::Home);
+    assert_eq!(at_cur(&a), "ab\n|cd\nef");
+    ctrl(&mut a, 'e');
+    assert_eq!(at_cur(&a), "ab\ncd|\nef");
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::End);
+    assert_eq!(at_cur(&a), "ab|\ncd\nef");
+}
+
+#[test]
+fn typing_pasting_and_deleting_happen_at_the_cursor() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = composing("one three");
+    press(&mut a, KeyCode::Left, c);
+    typ(&mut a, "two ");
+    assert_eq!(at_cur(&a), "one two |three");
+    a.paste("and\na half ");
+    assert_eq!(at_cur(&a), "one two and\na half |three");
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), "one two and\na |three");
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), "one two and\na|three");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "one two and\na|hree");
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "one two and\nahree|", "Delete at the end does nothing");
+    key(&mut a, KeyCode::Home);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), "one two and|ahree", "Backspace at a line start joins the lines");
+    ctrl(&mut a, 'u');
+    assert_eq!(at_cur(&a), "|ahree", "^U takes everything before the cursor");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(at_cur(&a), "\n|ahree");
+
+    // the cap counts the whole draft: a typed char mid-text is turned away too
+    let mut a = composing("ab");
+    typ(&mut a, &"x".repeat(7998));
+    key(&mut a, KeyCode::Home);
+    ch(&mut a, 'y');
+    assert_eq!((a.draft.chars().count(), a.cur), (8000, 0));
+    assert!(note(&a).is_some_and(|n| n.contains("1 left out")), "{:?}", a.note);
+}
+
+#[test]
+fn the_cursor_steps_over_whole_utf8_chars_and_marks() {
+    let c = KeyModifiers::CONTROL;
+    // a combining acute, VS16 and an ideographic space: none may be split from its base
+    let text = "e\u{301}x ❤\u{fe0f}日本\u{3000}語";
+    let mut a = composing(text);
+    let mut stops = vec![a.cur];
+    for _ in 0..12 {
+        key(&mut a, KeyCode::Left);
+        stops.push(a.cur);
+    }
+    stops.dedup();
+    let want: Vec<usize> = [
+        "e\u{301}x ❤\u{fe0f}日本\u{3000}語",
+        "e\u{301}x ❤\u{fe0f}日本\u{3000}",
+        "e\u{301}x ❤\u{fe0f}日本",
+        "e\u{301}x ❤\u{fe0f}日",
+        "e\u{301}x ❤\u{fe0f}",
+        "e\u{301}x ",
+        "e\u{301}x",
+        "e\u{301}",
+        "",
+    ]
+    .iter()
+    .map(|s| s.len())
+    .collect();
+    assert_eq!(stops, want);
+    let mut back = vec![a.cur];
+    for _ in 0..12 {
+        key(&mut a, KeyCode::Right);
+        back.push(a.cur);
+    }
+    back.dedup();
+    back.reverse();
+    assert_eq!(back, want, "Right stops where Left does");
+    // every key from every stop: always on a char boundary, never a panic
+    let keys = [
+        (KeyCode::Backspace, KeyModifiers::NONE),
+        (KeyCode::Delete, KeyModifiers::NONE),
+        (KeyCode::Char('w'), c),
+        (KeyCode::Char('u'), c),
+        (KeyCode::Left, c),
+        (KeyCode::Right, c),
+        (KeyCode::Char('é'), KeyModifiers::NONE),
+    ];
+    for &stop in &want {
+        for (code, m) in keys {
+            let mut a = composing(text);
+            a.cur = stop;
+            press(&mut a, code, m);
+            assert!(a.draft.is_char_boundary(a.cur) && a.cur <= a.draft.len(), "{code:?} at {stop}");
+        }
+    }
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Backspace);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(a.draft, "e\u{301}x ❤\u{fe0f}日本");
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), "e\u{301}x |❤\u{fe0f}日本");
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), "|❤\u{fe0f}日本");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), "|日本", "Delete takes the heart and its VS16");
+    // a stale offset off a char boundary is pulled back onto one
+    a.cur = 1;
+    ch(&mut a, 'a');
+    assert_eq!(at_cur(&a), "a|日本");
+}
+
+#[test]
+fn the_one_line_box_edits_at_its_cursor() {
+    let c = KeyModifiers::CONTROL;
+    let mut a = asking();
+    ch(&mut a, '5');
+    typ(&mut a, "why is it red");
+    press(&mut a, KeyCode::Left, c);
+    typ(&mut a, "so ");
+    ctrl(&mut a, 'a');
+    key(&mut a, KeyCode::Delete);
+    a.paste("W\nh");
+    key(&mut a, KeyCode::End);
+    key(&mut a, KeyCode::Backspace);
+    let View::Input { text, cur, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!((text.as_str(), *cur), ("W hhy is it so re", 17));
+    ctrl(&mut a, 'a');
+    ctrl(&mut a, 'u');
+    let View::Input { text, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(text, "W hhy is it so re", "^U at the start takes nothing");
+    key(&mut a, KeyCode::Right);
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("W▏ hhy is it so re"), "the cursor is drawn where it is:\n{f}");
+}
+
+#[test]
+fn a_wide_char_puts_the_cursor_by_its_width() {
+    let mut a = composing("日本語 ok");
+    for _ in 0..4 {
+        key(&mut a, KeyCode::Left);
+    }
+    assert_eq!(at_cur(&a), "日本|語 ok");
+    let f = frame(&a, 60, 12, 0);
+    let line = f.lines().find(|l| l.contains('▏')).unwrap_or_else(|| panic!("no cursor:\n{f}"));
+    // the backend writes a wide char's second cell as nothing: count columns by width
+    use unicode_width::UnicodeWidthStr;
+    let col = line[..line.find('▏').unwrap()].width();
+    assert_eq!(col, "\"│ 日本".width(), "{line}");
+}
+
+#[test]
+fn the_cursor_line_stays_on_screen() {
+    let lines: Vec<String> = (1..=30).map(|i| format!("line{i}")).collect();
+    let mut a = composing(&lines.join("\n"));
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("line30▏") && f.contains("model"), "the end and the route:\n{f}");
+    while a.cur > 0 {
+        key(&mut a, KeyCode::Left);
+    }
+    let f = shown(&mut a, 40, 12);
+    assert!(f.contains("▏line1") && !f.contains("line30"), "the cursor's line is shown:\n{f}");
+}
+
+#[test]
+fn an_empty_compose_shows_a_placeholder_that_is_never_typed() {
+    let mut a = composing("");
+    let f = frame(&a, 60, 12, 0);
+    assert!(f.contains("▏type what you want…"), "{f}");
+    ctrl(&mut a, 't');
+    assert_eq!((a.draft.as_str(), note(&a)), ("", Some("nothing to insert yet")));
+    ctrl(&mut a, 's');
+    assert!(a.action.is_none() && a.view == View::Compose);
+    ch(&mut a, 'x');
+    assert!(!frame(&a, 60, 12, 0).contains("type what you want"));
+    key(&mut a, KeyCode::Backspace);
+    assert!(frame(&a, 60, 12, 0).contains("type what you want"), "back when the draft empties");
+    assert_eq!(a.draft, "");
+}
+
+#[test]
+fn a_long_draft_counts_against_the_cap() {
+    let mut a = composing("");
+    a.paste(&"x".repeat(6000));
+    assert!(!frame(&a, 80, 20, 0).contains("/8000"), "6000 is not long yet");
+    ch(&mut a, 'y');
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("model: auto   6001/8000"), "{f}");
+    key(&mut a, KeyCode::Tab);
+    key(&mut a, KeyCode::Tab);
+    let f = frame(&a, 40, 12, 0);
+    let own = f.lines().any(|l| l.contains("6001/8000") && !l.contains("type:"));
+    assert!(own && f.contains("type: command"), "on its own line when narrow:\n{f}");
+}
+
+#[test]
+fn golden_compose_editing() {
+    let mut a = composing("");
+    goldens("compose-empty", &a, 0);
+    typ(&mut a, "fix the flaky api test then rerun it");
+    let c = KeyModifiers::CONTROL;
+    for _ in 0..3 {
+        press(&mut a, KeyCode::Left, c);
+    }
+    goldens("compose-cursor", &a, 0);
+    let mut a = composing("");
+    a.paste(&"word ".repeat(1300));
+    goldens("compose-count", &a, 0);
+}
+
+// ---------------------------------------------------------------- item 3 leftovers
+
+#[test]
+fn a_question_with_no_options_shows_no_digit_pill() {
+    let mut a = app("work", "bash", "$ ");
+    writing(&mut a, "x");
+    a.reply(Ok("<question>Which file?</question>".into()));
+    let f = frame(&a, 80, 20, 0);
+    assert!(f.contains("o other") && !f.contains(" 1 pick"), "{f}");
+    let ks = cockpit_tui::panel::view::keys(&a, &Theme::fixed().g);
+    assert!(!ks.iter().any(|(k, v)| k.is_empty() || v.contains("by number")), "{ks:?}");
+    key(&mut a, KeyCode::Enter);
+    assert!(matches!(a.view, View::Input { .. }), "Enter with no option types one");
+}
+
+#[test]
+fn enter_after_pgup_shows_the_selection_before_it_answers() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::Down);
+    key(&mut a, KeyCode::PageUp);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("START") && !f.contains("second"), "scrolled off the selection:\n{f}");
+    key(&mut a, KeyCode::Enter);
+    assert!(
+        matches!(a.view, View::Question { sel: 1, scroll: None }),
+        "the first Enter answers nothing"
+    );
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎2   second"), "it scrolled back to the selection:\n{f}");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy, "the second answers it");
+    assert_eq!(a.run.as_ref().unwrap().turns.last().unwrap().text, "second");
+}
+
+#[test]
+fn a_pinned_question_scroll_is_dropped_when_it_all_fits() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::PageUp);
+    let _ = shown(&mut a, 30, 7);
+    assert!(matches!(a.view, View::Question { scroll: Some(0), .. }));
+    let _ = shown(&mut a, 120, 40);
+    assert!(matches!(a.view, View::Question { scroll: None, .. }), "{:?}", a.view);
+    let f = shown(&mut a, 30, 7);
+    assert!(f.contains("▎1   first"), "back on a small screen, it follows the selection:\n{f}");
+}
+
+// ---------------------------------------------------------------- verifier round (item 5)
+
+#[test]
+fn the_cursor_and_the_deletes_move_by_grapheme_cluster() {
+    let c = KeyModifiers::CONTROL;
+    let family = "👨\u{200d}👩\u{200d}👧";
+    let (tone, il, us) = ("👍\u{1f3fd}", "🇮🇱", "🇺🇸");
+    let mut a = composing(&format!("a{family}{tone}{il}{us}"));
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), format!("a{family}{tone}{il}|{us}"), "one flag, not half of one");
+    key(&mut a, KeyCode::Left);
+    key(&mut a, KeyCode::Left);
+    assert_eq!(at_cur(&a), format!("a{family}|{tone}{il}{us}"), "the skin tone stays on its hand");
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(at_cur(&a), format!("a|{tone}{il}{us}"), "Backspace takes the whole family");
+    key(&mut a, KeyCode::Delete);
+    assert_eq!(at_cur(&a), format!("a|{il}{us}"));
+    key(&mut a, KeyCode::Right);
+    key(&mut a, KeyCode::Right);
+    assert_eq!(at_cur(&a), format!("a{il}{us}|"));
+    typ(&mut a, &format!(" {family}{family}"));
+    ctrl(&mut a, 'w');
+    assert_eq!(at_cur(&a), format!("a{il}{us} |"), "^W takes a word of emoji whole");
+    typ(&mut a, family);
+    press(&mut a, KeyCode::Left, c);
+    assert_eq!(at_cur(&a), format!("a{il}{us} |{family}"));
+    // a stale offset inside a cluster is pulled back to its start
+    a.cur += 4;
+    ch(&mut a, 'x');
+    assert_eq!(at_cur(&a), format!("a{il}{us} x|{family}"));
+}
+
+#[test]
+fn a_letter_typed_before_a_stray_mark_puts_the_cursor_past_the_mark() {
+    let mut a = composing("");
+    a.paste("\u{301}");
+    key(&mut a, KeyCode::Home);
+    ch(&mut a, 'a');
+    assert_eq!(at_cur(&a), "a\u{301}|", "the mark joined the a: the cursor is after both");
+    ch(&mut a, 'b');
+    assert_eq!(a.draft, "a\u{301}b");
+}
+
+#[test]
+fn wrap_and_the_cursor_measure_emoji_as_drawn() {
+    use cockpit_tui::panel::view::wrap;
+    use unicode_width::UnicodeWidthStr;
+    let hearts = "❤\u{fe0f}".repeat(30);
+    for l in wrap(&hearts, 36) {
+        assert!(l.width() <= 36, "{} columns: {l}", l.width());
+    }
+    assert_eq!(wrap(&"1\u{fe0f}\u{20e3}".repeat(20), 36).len(), 2, "a keycap is 2 columns");
+    let a = composing(&hearts);
+    let f = frame(&a, 40, 12, 0);
+    assert!(f.contains("❤\u{fe0f}▏"), "the cursor is on screen:\n{f}");
+    // the backend notes the cells a wide symbol hides after the row: not drawn
+    for l in f.lines().map(|l| l.split(" Hidden by").next().unwrap()) {
+        assert_eq!(l.width(), 42, "no row drawn past the box:\n{f}");
+    }
+}
+
+#[test]
+fn at_the_floor_the_cap_note_stays_over_the_cursor_line() {
+    use cockpit_tui::panel::view::{MIN_H, MIN_W, TABLET_MIN_H, TABLET_MIN_W};
+    let capped = |tab: bool| {
+        let mut a = composing("");
+        a.tablet = tab;
+        a.paste(&"word ".repeat(1600));
+        assert!(note(&a).is_none());
+        ch(&mut a, 'x');
+        assert!(note(&a).is_some_and(|n| n.contains("left out")), "{:?}", a.note);
+        a
+    };
+    for tab in [false, true] {
+        let mut a = capped(tab);
+        let f = if tab {
+            shown(&mut a, TABLET_MIN_W, TABLET_MIN_H)
+        } else {
+            shown(&mut a, MIN_W, MIN_H)
+        };
+        assert!(f.contains("the box"), "tablet {tab}: the note shows:\n{f}");
+        assert!(f.contains("▏"), "tablet {tab}: and the cursor:\n{f}");
+    }
+    // a note longer than the rows over the body: it keeps them, cut with an ellipsis
+    let mut a = capped(false);
+    a.say(
+        Level::Warn,
+        "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen",
+    );
+    let f = shown(&mut a, MIN_W, MIN_H);
+    assert!(f.contains("▲ one two") && f.contains(" …") && f.contains("▏"), "{f}");
+}
+
+#[test]
+fn pgdn_back_to_the_bottom_follows_the_selection_again() {
+    let mut a = long_question();
+    let _ = shown(&mut a, 30, 7);
+    key(&mut a, KeyCode::PageUp);
+    let _ = shown(&mut a, 30, 7);
+    assert!(matches!(a.view, View::Question { scroll: Some(0), .. }));
+    for _ in 0..10 {
+        key(&mut a, KeyCode::PageDown);
+        let _ = shown(&mut a, 30, 7);
+    }
+    assert!(matches!(a.view, View::Question { scroll: None, .. }), "{:?}", a.view);
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy, "one Enter answers");
+}
+
+#[test]
+fn the_tier_flag_matches_the_tier() {
+    use cockpit_tui::theme::Glyphs;
+    assert!(Glyphs::ascii().ascii && !Glyphs::unicode().ascii);
+}
+
+/// The cell holding the cursor is accent and reversed; a typed `|` is not.
+#[test]
+fn the_cursor_has_a_style_of_its_own_in_both_tiers() {
+    use ratatui::style::Modifier;
+    for th in [Theme::fixed(), ascii_theme()] {
+        let mut a = composing("a|b");
+        key(&mut a, KeyCode::Left);
+        let mut t = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        t.draw(|f| {
+            render(f, f.area(), &a, &th, 0);
+        })
+        .unwrap();
+        let buf = t.backend().buffer();
+        let cells: Vec<_> = (0..40).map(|x| buf[(x, 2)].clone()).collect();
+        let text: String = cells.iter().map(|c| c.symbol()).collect();
+        let i = text[..text.find("a|").unwrap_or_else(|| panic!("{text:?}"))].chars().count();
+        let (pipe, cur) = (&cells[i + 1], &cells[i + 2]);
+        assert_eq!(cur.symbol(), th.g.cursor);
+        assert!(cur.modifier.contains(Modifier::REVERSED) && cur.fg == th.accent, "{text:?}");
+        assert!(!pipe.modifier.contains(Modifier::REVERSED) && pipe.fg != th.accent, "{text:?}");
+    }
+}
+
+/// Measured like the pc floor: the smallest size where every tablet view shows
+/// its heading, 2 body rows, every button uncut and its note. Under it, the card.
+#[test]
+fn every_tablet_view_keeps_two_body_rows() {
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
+    let keys = |hits: Vec<Hit>| hits.into_iter().filter(|x| matches!(x.tap, Tap::Key(_))).collect::<Vec<_>>();
+    let (fw, fh) = (TABLET_MIN_W, TABLET_MIN_H);
+    let mut sizes: Vec<(u16, u16)> = (fh..=40).map(|h| (fw, h)).collect();
+    sizes.extend((fw..=120).step_by(4).map(|w| (w, fh)));
+    for (w, h) in sizes {
+        for (name, a, head, body) in every_view() {
+            let mut a = tablet(a);
+            let tall = keys(hits_of(&a, w, 60));
+            let _ = shown(&mut a, w, h);
+            let (f, (_, room), hits) = drawn(&a, w, h, &Theme::fixed(), 0);
+            let at = format!("{name} at {w}x{h}:\n{f}");
+            assert!(f.contains(head) && f.contains(body) && !f.contains("make the window"), "{at}");
+            assert!(room >= 2, "{room} body rows, {at}");
+            let got = keys(hits);
+            let uncut = |t: &Hit| got.iter().any(|g| g.tap == t.tap && g.at.width == t.at.width);
+            assert!(got.len() == tall.len() && tall.iter().all(uncut), "the buttons, {at}");
+            if let Some(n) = &a.note {
+                assert!(f.contains(&n.text.chars().take(10).collect::<String>()), "the note, {at}");
+            }
+        }
+    }
+    for (name, a, ..) in every_view() {
+        let mut a = tablet(a);
+        for (w, h) in [(fw - 1, 40), (200, fh - 1)] {
+            let f = shown(&mut a, w, h);
+            assert!(
+                f.contains("make the window larger") && hits_of(&a, w, h).is_empty(),
+                "{name} at {w}x{h}:\n{f}"
+            );
+        }
+        a.tablet = false;
+        assert!(!shown(&mut a, fw, fh - 1).contains("make the window"), "{name}: pc keeps 28x7");
+    }
+}
+
+#[test]
+fn the_tablet_tile_refuses_a_window_under_the_tablet_floor() {
+    use cockpit_tui::panel::view::{TABLET_MIN_H, TABLET_MIN_W};
+    let mode = |a: &App| a.tiles().iter().position(|t| t.0 == Tile::Mode).unwrap();
+    let mut a = app("w", "bash", "$ ");
+    for size in [(40, TABLET_MIN_H - 1), (TABLET_MIN_W - 1, 40)] {
+        a.size = Some(size);
+        a.view = View::Home { sel: mode(&a) };
+        key(&mut a, KeyCode::Enter);
+        assert!(!a.tablet, "{size:?}: no flip into a card");
+        assert_eq!(
+            (level(&a), note(&a)),
+            (Some(Level::Warn), Some("the window is too small for tablet mode (28x12)"))
+        );
+        // 27 columns is under the pc floor too: only the short window still draws
+        if size.0 >= cockpit_tui::panel::view::MIN_W {
+            let f = shown(&mut a, size.0, size.1);
+            assert!(!f.contains("make the window larger"), "{size:?}: pc keeps drawing");
+        }
+    }
+    a.size = Some((TABLET_MIN_W, TABLET_MIN_H));
+    key(&mut a, KeyCode::Enter);
+    assert!(a.tablet, "at the floor it flips");
+    // back to pc is always allowed, even under the floor
+    a.size = Some((30, 8));
+    a.view = View::Home { sel: mode(&a) };
+    key(&mut a, KeyCode::Enter);
+    assert!(!a.tablet && note(&a) == Some("pc mode until the panel closes"));
 }

@@ -7,12 +7,14 @@ use super::prompts::{self, Ctx};
 use super::redact::redact;
 use super::request::{Call, Fail, Request};
 use super::route::{Route, route};
+use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use super::{boundary_at, boundary_before, ci};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
 pub const MODELS: [&str; 4] = ["auto", "haiku", "sonnet", "opus"];
 pub const OUT_CYCLE: [OutType; 7] = [
@@ -25,6 +27,8 @@ pub const OUT_CYCLE: [OutType; 7] = [
     OutType::Hint,
 ];
 pub const MAX_DRAFT: usize = 8000;
+/// Past this the Compose head counts the draft against MAX_DRAFT.
+pub const DRAFT_COUNT: usize = 6000;
 /// tmux 3.8 drops, silently, an OSC 52 whose base64 tops `input-buffer-size`
 /// (1 MiB): 786,000 bytes landed, 786,432 did not. Kept under it.
 pub const COPY_MAX: usize = 768_000;
@@ -95,6 +99,8 @@ pub enum View {
     Input {
         kind: InputKind,
         text: String,
+        /// The cursor: a byte offset into `text`, on a char boundary.
+        cur: usize,
         back: Box<View>,
     },
     Result {
@@ -196,6 +202,8 @@ pub struct App {
     pub session: Option<Session>,
     pub view: View,
     pub draft: String,
+    /// The draft's cursor, as [`View::Input`]'s `cur`.
+    pub cur: usize,
     pub out: OutType,
     pub model: usize,
     pub run: Option<Run>,
@@ -229,6 +237,8 @@ pub struct App {
     pub help: Option<usize>,
     /// The last frame was under the panel's floor: only esc, q and ^C act.
     pub tiny: bool,
+    /// The last frame's columns and rows, once one is drawn.
+    pub size: Option<(u16, u16)>,
     /// Tablet presentation: mouse capture, tall tiles, tap buttons.
     pub tablet: bool,
     /// Text for the event loop to put on the clipboard (OSC 52).
@@ -252,6 +262,7 @@ impl App {
             cap,
             view: View::Home { sel: 0 },
             draft: String::new(),
+            cur: 0,
             out: OutType::Auto,
             model: 0,
             run: None,
@@ -273,6 +284,7 @@ impl App {
             bottom: 0,
             help: None,
             tiny: false,
+            size: None,
             tablet: false,
             copy: None,
             termux: false,
@@ -509,7 +521,7 @@ impl App {
             View::Answer { scroll, armed } => self.answer_key(k, *scroll, *armed),
             View::Input { .. } | View::Result { .. } | View::Steps { .. } | View::Confirm { .. } => {
                 match std::mem::replace(&mut self.view, View::Busy) {
-                    View::Input { kind, text, back } => self.input_key(k, ctrl, kind, text, *back),
+                    View::Input { kind, text, cur, back } => self.input_key(k, ctrl, kind, text, cur, *back),
                     View::Result { text, scroll, label } => self.result_key(k, text, scroll, label),
                     View::Steps { label, items, sel, done } => self.steps_key(k, label, items, sel, done),
                     View::Confirm {
@@ -540,8 +552,8 @@ impl App {
             return;
         }
         let dropped = match &mut self.view {
-            View::Compose => append(&mut self.draft, &pasted(s, true)),
-            View::Input { text, .. } => append(text, &pasted(s, false)),
+            View::Compose => put(&mut self.draft, &mut self.cur, &pasted(s, true)),
+            View::Input { text, cur, .. } => put(text, cur, &pasted(s, false)),
             _ => return,
         };
         self.cap_note(dropped);
@@ -558,8 +570,9 @@ impl App {
         if let View::Result { scroll, .. } | View::Answer { scroll, .. } | View::Confirm { scroll, .. } = &mut self.view {
             *scroll = (*scroll).min(self.bottom);
         }
-        if let View::Question { scroll: Some(s), .. } = &mut self.view {
-            *s = (*s).min(self.bottom);
+        // a resize that fits it all unpins: nothing is left to read from the start
+        if let View::Question { scroll: s @ Some(_), .. } = &mut self.view {
+            *s = s.map(|s| s.min(self.bottom)).filter(|_| self.bottom > 0);
         }
     }
 
@@ -700,6 +713,13 @@ impl App {
             Tile::WriteCommand => self.compose(OutType::Command),
             Tile::Compose => self.compose(OutType::Auto),
             Tile::Explain => self.view = View::ExplainAsk { sel: 0 },
+            // under the tablet floor the flip would strand the user on the card
+            Tile::Mode if !self.tablet && self.size.is_some_and(|(w, h)| w < TABLET_MIN_W || h < TABLET_MIN_H) => {
+                self.say(
+                    Level::Warn,
+                    format!("the window is too small for tablet mode ({TABLET_MIN_W}x{TABLET_MIN_H})"),
+                );
+            }
             Tile::Mode => {
                 self.tablet = !self.tablet;
                 let m = if self.tablet { "tablet" } else { "pc" };
@@ -734,7 +754,7 @@ impl App {
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
             }
             _ => {
-                let n = edit(&mut self.draft, k, ctrl, true);
+                let n = edit(&mut self.draft, &mut self.cur, k, ctrl, true);
                 self.cap_note(n)
             }
         }
@@ -1089,16 +1109,20 @@ impl App {
                 let scroll = Some(scroll.map_or(0, |s| s.saturating_sub(page)));
                 self.view = View::Question { sel, scroll }
             }
+            // at the bottom it follows the selection again: Enter must not need a second press
             KeyCode::PageDown => {
-                let scroll = scroll.map(|s| (s + page).min(self.bottom));
+                let scroll = scroll.map(|s| s + page).filter(|&s| s < self.bottom);
                 self.view = View::Question { sel, scroll }
             }
             KeyCode::Char(c @ '1'..='4') if (c as usize - '1' as usize) < n => self.pick_option(c as usize - '1' as usize),
+            // after PgUp the selection may be off screen: Enter shows it before it answers
+            KeyCode::Enter if n > 0 && scroll.is_some() => self.view = View::Question { sel, scroll: None },
             KeyCode::Enter if n > 0 => self.pick_option(sel.min(n - 1)),
             KeyCode::Char('o') | KeyCode::Enter => {
                 self.view = View::Input {
                     kind: InputKind::Other,
                     text: String::new(),
+                    cur: 0,
                     back: Box::new(View::Question { sel, scroll: None }),
                 }
             }
@@ -1137,7 +1161,7 @@ impl App {
         }
     }
 
-    fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, back: View) {
+    fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, mut cur: usize, back: View) {
         match k.code {
             KeyCode::Esc => {
                 self.note = None;
@@ -1164,11 +1188,12 @@ impl App {
                     };
                 }
             }
-            _ => self.cap_note(edit(&mut text, k, ctrl, false)),
+            _ => self.cap_note(edit(&mut text, &mut cur, k, ctrl, false)),
         }
         self.view = View::Input {
             kind,
             text,
+            cur,
             back: Box::new(back),
         };
     }
@@ -1200,8 +1225,8 @@ impl App {
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
             KeyCode::Char('c') => {
-                self.draft.clear();
-                let n = append(&mut self.draft, &text);
+                (self.draft, self.cur) = (String::new(), 0);
+                let n = put(&mut self.draft, &mut self.cur, &text);
                 self.cap_note(n);
                 self.run = None;
                 self.view = View::Compose;
@@ -1283,6 +1308,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::Explain,
                     text: String::new(),
+                    cur: 0,
                     back: Box::new(here),
                 }
             }
@@ -1317,6 +1343,7 @@ impl App {
                 self.view = View::Input {
                     kind: InputKind::FollowUp,
                     text: String::new(),
+                    cur: 0,
                     back,
                 };
             }
@@ -1348,35 +1375,114 @@ impl App {
     }
 }
 
-/// The shared text-box keys. `multi` makes Enter a newline. Returns how many
-/// characters the MAX_DRAFT cap turned away.
-fn edit(text: &mut String, k: KeyEvent, ctrl: bool, multi: bool) -> usize {
-    match k.code {
-        KeyCode::Backspace => {
-            text.pop();
+/// The shared text-box keys, at the cursor `cur`. `multi` makes Enter a
+/// newline. Returns how many characters the MAX_DRAFT cap turned away.
+fn edit(text: &mut String, cur: &mut usize, k: KeyEvent, ctrl: bool, multi: bool) -> usize {
+    let c = boundary(text, *cur);
+    let home = text[..c].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[c..].find('\n').map_or(text.len(), |i| c + i);
+    let at = |i: usize| (i, i);
+    // the cursor goes to `from`, and `from..to` is deleted
+    let (from, to) = match k.code {
+        KeyCode::Left if ctrl => at(word_left(text, c)),
+        KeyCode::Right if ctrl => at(word_right(text, c)),
+        KeyCode::Left => at(prev(text, c)),
+        KeyCode::Right => at(next(text, c)),
+        KeyCode::Home => at(home),
+        KeyCode::Char('a') if ctrl => at(home),
+        KeyCode::End => at(end),
+        KeyCode::Char('e') if ctrl => at(end),
+        KeyCode::Backspace => (prev(text, c), c),
+        KeyCode::Delete => (c, next(text, c)),
+        KeyCode::Char('w') if ctrl => (word_left(text, c), c),
+        // readline's ^U: the whole text before the cursor, not its line
+        KeyCode::Char('u') if ctrl => (0, c),
+        KeyCode::Enter if multi => {
+            *cur = c;
+            return put(text, cur, "\n");
         }
-        KeyCode::Char('w') if ctrl => {
-            let t = text.trim_end_matches(char::is_whitespace).len();
-            // Past the whole separator: U+00A0 and U+3000 are more than one byte.
-            let w = text[..t]
-                .char_indices()
-                .rfind(|(_, c)| c.is_whitespace())
-                .map_or(0, |(i, c)| i + c.len_utf8());
-            text.truncate(w);
+        KeyCode::Char(ch) if !ctrl => {
+            *cur = c;
+            return put(text, cur, ch.encode_utf8(&mut [0; 4]));
         }
-        KeyCode::Char('u') if ctrl => text.clear(),
-        KeyCode::Enter if multi => return append(text, "\n"),
-        KeyCode::Char(c) if !ctrl => return append(text, c.encode_utf8(&mut [0; 4])),
-        _ => {}
-    }
+        _ => at(c),
+    };
+    text.replace_range(from..to, "");
+    *cur = from;
     0
 }
 
-/// Appends what fits under MAX_DRAFT; returns the count left out.
-fn append(text: &mut String, s: &str) -> usize {
-    let room = MAX_DRAFT.saturating_sub(text.chars().count());
-    text.extend(s.chars().take(room));
-    s.chars().count().saturating_sub(room)
+/// `i` moved back onto a grapheme boundary, and into the text.
+pub fn boundary(text: &str, i: usize) -> usize {
+    let mut i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    if GraphemeCursor::new(i, text.len(), true).is_boundary(text, 0) == Ok(true) {
+        i
+    } else {
+        prev(text, i)
+    }
+}
+
+/// Moves by grapheme cluster: a ZWJ family, a skin tone or a flag draws as
+/// one symbol, and a cursor inside it would split it on Backspace.
+fn prev(text: &str, i: usize) -> usize {
+    let r = GraphemeCursor::new(i, text.len(), true).prev_boundary(text, 0);
+    r.ok().flatten().unwrap_or(0)
+}
+
+fn next(text: &str, i: usize) -> usize {
+    let r = GraphemeCursor::new(i, text.len(), true).next_boundary(text, 0);
+    r.ok().flatten().unwrap_or(text.len())
+}
+
+/// A cluster is whitespace by its first char: a space with a mark on it too.
+fn blank(g: &str) -> bool {
+    g.starts_with(char::is_whitespace)
+}
+
+/// The start of the word before `i`, past the whitespace in between.
+fn word_left(text: &str, i: usize) -> usize {
+    let mut at = 0;
+    for (j, g) in text[..i].grapheme_indices(true).rev().skip_while(|(_, g)| blank(g)) {
+        if blank(g) {
+            break;
+        }
+        at = j;
+    }
+    at
+}
+
+/// The end of the word after `i`, past the whitespace in between.
+fn word_right(text: &str, i: usize) -> usize {
+    let mut it = text[i..].grapheme_indices(true).skip_while(|(_, g)| blank(g));
+    it.find(|(_, g)| blank(g)).map_or(text.len(), |(j, _)| i + j)
+}
+
+/// Inserts at the cursor the clusters that fit under MAX_DRAFT; the cursor goes
+/// after them and past a mark they joined. Returns the count left out.
+fn put(text: &mut String, cur: &mut usize, s: &str) -> usize {
+    let mut room = MAX_DRAFT.saturating_sub(text.chars().count());
+    let kept: String = s
+        .graphemes(true)
+        .take_while(|g| {
+            let n = g.chars().count();
+            let fits = n <= room;
+            room = room.saturating_sub(n);
+            fits
+        })
+        .collect();
+    let c = boundary(text, *cur);
+    text.insert_str(c, &kept);
+    let after = c + kept.len();
+    // a letter typed before a stray combining mark takes the mark: step past it
+    *cur = if GraphemeCursor::new(after, text.len(), true).is_boundary(text, 0) == Ok(true) {
+        after
+    } else {
+        next(text, after)
+    };
+    s.chars().count() - kept.chars().count()
 }
 
 /// A bracketed paste, cleaned like the action file. Terminals send a pasted
