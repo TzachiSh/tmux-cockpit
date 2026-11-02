@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tmux-cockpit bootstrap -- a working tmux on a machine that has nothing.
 #
-#   ./bootstrap.sh             ask before each step (fetches fzf if below 0.63)
+#   ./bootstrap.sh             ask before each step (fetches fzf if below 0.73)
 #   ./bootstrap.sh --yes       take every default, ask nothing
 #   ./bootstrap.sh --full      also fetch the pinned fzf, gum and bat into $BIN
 #   ./bootstrap.sh --full --latest   the same, at each project's newest tag
@@ -78,7 +78,7 @@ fi
 PACKAGES=(
     "git:git:cloning the plugins"
     "tmux:tmux:the whole point"
-    "fzf:fzf:the pickers (0.63+; an older one is fetched below)"
+    "fzf:fzf:the pickers (0.73+; an older one is fetched below)"
     "bat:batcat:syntax-coloured file previews (falls back to plain text)"
     "jq:jq:merging the Claude Code hooks"
 )
@@ -223,11 +223,11 @@ fi
 
 # ----------------------------------------------------------- latest tools ----
 # Pinned, into $BIN, never over a distro binary or with sudo. An fzf below the
-# pickers' 0.63 is fetched even without --full.
+# pickers' 0.73 is fetched even without --full.
 FZF=0.74.3 GUM=2.0.0 BAT=0.26.1
 fzf_old=0
 fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
-[ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 63 && fzf_old=1
+[ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 73 && fzf_old=1
 
 # The releases redirect, not the API: no token and no 60-per-hour quota.
 latest_tag() {                # latest_tag <owner/repo> <pin>
@@ -278,7 +278,7 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
 if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
     step "latest tools"
     tools="fzf $FZF, gum $GUM and bat $BAT"
-    [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.63+)"
+    [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.73+)"
     BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
     G="${COCKPIT_GITHUB:-https://github.com}"
     fz='' gu='' ba=''

@@ -4,26 +4,27 @@
 # No `bg`, `list-bg` or `input-bg` anywhere below: the popup's background
 # belongs to the user's popup-style, the same rule cockpit.tmux states for the
 # border. `16` stays the base so an unset key degrades to the terminal's own.
-# fzf 0.63+ is required (--footer is the newest flag used); cockpit.tmux warns.
+# fzf 0.73+ is required (tm's every(N) is the newest feature used); cockpit.tmux warns.
 
 # -g, not a bare declare: a caller that sources this lib from inside one of its
 # own functions (tmux-open-path's op_theme does) would otherwise get a LOCAL
 # cache that dies with that call.
 declare -gA COCKPIT_THM=()
 # One tmux round-trip for the whole palette, not one per colour key: this runs
-# on every popup open, and the theme touches eleven @thm_ tokens. Defaults are
+# on every popup open, and the theme touches thirteen @thm_ tokens. Defaults are
 # Mocha, so a user without a catppuccin theme still gets a coloured picker.
+# red and yellow, read only for tm's glyphs, have none: unset, they stay plain.
 _cockpit_fzf_thm() {
     [ "${#COCKPIT_THM[@]}" -gt 0 ] && return 0
     local k fmt='' i
     local keys=(fg peach surface_0 surface_1 surface_2 overlay_0 overlay_1 \
-                overlay_2 mauve green teal)
+                overlay_2 mauve green teal red yellow)
     local defs=('#cdd6f4' '#fab387' '#313244' '#45475a' '#585b70' '#6c7086' \
-                '#7f849c' '#9399b2' '#cba6f7' '#a6e3a1' '#94e2d5')
+                '#7f849c' '#9399b2' '#cba6f7' '#a6e3a1' '#94e2d5' '' '')
     # \037, not a tab: tab is IFS *whitespace*, so bash collapses a run of them
     # into one delimiter and every unset @thm_ token shifts the colours after
     # it onto the wrong keys. cockpit.tmux's PALETTE leaves seven of these
-    # eleven unset, so the gapped palette is the default install.
+    # thirteen unset, so the gapped palette is the default install.
     for k in "${keys[@]}"; do fmt="$fmt#{@thm_$k}"$'\037'; done
     local vals=()
     IFS=$'\037' read -r -a vals <<<"$(tmux display-message -p "$fmt" 2>/dev/null)"
@@ -72,7 +73,9 @@ _cockpit_fzf_color() {
 cockpit_fzf_args() {
     local f
     _cockpit_fzf_color
-    printf '%s\n' --ansi --tabstop=1 --pointer=▌ --marker=◆ --ellipsis=… \
+    # --gutter: fzf 0.66+ draws ▌ in every row's gutter, which reads as a
+    # pointer on all of them.
+    printf '%s\n' --ansi --tabstop=1 --pointer=▌ --gutter=' ' --marker=◆ --ellipsis=… \
                   "--color=$COCKPIT_FZF_COLOR"
     for f in "$@"; do printf -- '--%s\n' "$f"; done
 }
