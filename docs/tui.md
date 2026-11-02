@@ -260,7 +260,7 @@ columns the armed Answer's `esc` hint or the title's pane id is cut, and under 7
 rows Explain's heading leaves no body row. Tablet mode has its own floor,
 28x12: its buttons take rows of their own, and it is the smallest size where
 every view keeps its heading, 2 or more body rows, its note and every button
-uncut beside them. A Confirm that carries line or risky warnings, and a view
+uncut beside them. A Confirm that carries line warnings, and a view
 with a long note, keep 1 body row there and scroll it. Under 12 rows, Result (heading, line warning, two rows of
 buttons) and Confirm (the big pair) at 28 columns fall short; 40x12, a phone in
 portrait, is at the floor. The Home tile refuses to flip into tablet mode
@@ -282,10 +282,10 @@ At 40x12 (a phone in portrait), Steps:
 │                                      │
 │  1 Remove the old build              │
 │      $ rm -rf target                 │
-│      ⚠ risky: rm                     │
 │ ▎2 Build again                       │
 │      $ cargo build --release         │
 │  3 Tap Allow in the app              │
+│                                      │
 │                                      │
 │                                      │
 ╰ i insert  s send  ? keys  esc draft ─╯
@@ -357,8 +357,8 @@ In tablet mode:
   typed, type, model, keys, home), wrapped to more rows when narrow. Ranges and
   arrows (`1-5`, `↑↓`) become no button. Keys keep working in both modes.
 - **Confirm** gets a big `yes` and `no` pair at the top, 3 rows tall while the
-  body keeps half the rows. `yes` is `y`, never Enter, so a risky or multi-line
-  send still takes an explicit yes. An armed Answer gets a big `discard it`
+  body keeps half the rows. `yes` is `y`, never Enter, so a multi-line send
+  still takes an explicit yes. An armed Answer gets a big `discard it`
   (`esc`) and `keep it` (`n`) at the top, and its `[ home ]` button becomes
   `[ keep it ]` in place; its note says "tap discard it, or esc again".
 - **A double tap never confirms.** Two defences, as in type-panel, whose tap
@@ -376,18 +376,18 @@ In tablet mode:
     paste and the reopen fit inside a slow double tap, and the reopened Steps
     put `[ insert ]` back under the same finger. The state file is unchanged.
 
-At 40x20, a phone in portrait, a risky send:
+At 40x20, a phone in portrait, a send:
 
 ```
 ╭ panel · %3 · work ───────────────────╮
 │ ╭───────────────╮ ╭────────────────╮ │
 │ │   yes, send   │ │       no       │ │
 │ ╰───────────────╯ ╰────────────────╯ │
-│ ⚠ risky: rm                          │
 │ send this to %3 (bash) and press     │
 │ Enter?                               │
 │                                      │
 │   rm -rf target                      │
+│                                      │
 │                                      │
 │                                      │
 │                                      │
@@ -731,7 +731,7 @@ workspace, no crate split.
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
-| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it, so the bash suite works with no

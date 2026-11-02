@@ -168,7 +168,7 @@ if [ "${1:-}" = --preview-diff ]; then
     chd=$(git -C "$d" --no-optional-locks -c core.quotePath=false rev-parse -q --verify HEAD 2>/dev/null)
     apath="$d/$base"
     idx=$(git -C "$d" --no-optional-locks -c core.quotePath=false ls-files -s -- "$base" 2>/dev/null)
-    csum=$(sha1sum < "$f" 2>/dev/null || shasum < "$f" 2>/dev/null)
+    csum=$(sha1sum 2>/dev/null < "$f" || shasum 2>/dev/null < "$f")
     if [ -n "$csum" ]; then
         # $rbase in the key too: ^B switches the same pane's base mid-review,
         # and without this a render cached under the old base would be served
@@ -377,7 +377,8 @@ if [ "${1:-}" = --preview ]; then
 
     # bat gives syntax colour, line numbers, AND -- via the "changes" style -- the
     # git gutter, so an edited line is marked +/~ right beside its content. That
-    # is both things you want from a snippet at once. Debian ships it as batcat.
+    # is both things you want from a snippet at once. Debian ships it as batcat,
+    # often older than a bat installed by hand, so bat goes first (install.sh too).
     # A minified bundle is one line of megabytes. bat --wrap=never does not
     # truncate, it declines to WRAP -- the whole line is still piped into the
     # preview on every cursor move (measured: 3.2MB for one 3MB line). Fall
@@ -396,7 +397,7 @@ if [ "${1:-}" = --preview ]; then
     # line (bundle.js:48213) made the picker hang. The awk path is flat.
     bat=""
     if [ "${longest:-0}" -le 1000 ] && [ "${last:-0}" -le 2000 ]; then
-        bat=$(command -v batcat 2>/dev/null || command -v bat 2>/dev/null || true)
+        bat=$(command -v bat 2>/dev/null || command -v batcat 2>/dev/null || true)
     fi
     if [ -n "$bat" ]; then
         # bat's --highlight-line paints a #333333 band -- measured at 1.4:1
