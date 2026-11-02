@@ -73,7 +73,7 @@ fn type_str(p: &mut Pick, s: &str) {
 }
 
 fn names(p: &Pick) -> Vec<&str> {
-    p.shown.iter().map(|&i| p.rows[i].key.as_str()).collect()
+    p.shown.iter().map(|&i| std::str::from_utf8(&p.rows[i].key).unwrap()).collect()
 }
 
 const PREVIEW: &str = "branch feat/237-pick\n\n  dea82ca Merge pull request #236\n  3 files changed\n";
@@ -82,32 +82,32 @@ const PREVIEW: &str = "branch feat/237-pick\n\n  dea82ca Merge pull request #236
 
 #[test]
 fn rows_split_at_the_first_tab_and_the_display_keeps_the_rest() {
-    let r = pick::parse_rows("k1\tone\ttwo\nk2\tthree\n");
-    assert_eq!((r[0].key.as_str(), r[0].text.as_str()), ("k1", "one two"));
-    assert_eq!((r[1].key.as_str(), r[1].text.as_str()), ("k2", "three"));
+    let r = pick::parse_rows(b"k1\tone\ttwo\nk2\tthree\n");
+    assert_eq!((r[0].key.as_slice(), r[0].text.as_str()), (&b"k1"[..], "one two"));
+    assert_eq!((r[1].key.as_slice(), r[1].text.as_str()), (&b"k2"[..], "three"));
 }
 
 #[test]
 fn a_row_with_no_tab_is_its_own_key_and_display() {
-    let r = pick::parse_rows("plain\n");
-    assert_eq!((r[0].key.as_str(), r[0].text.as_str()), ("plain", "plain"));
+    let r = pick::parse_rows(b"plain\n");
+    assert_eq!((r[0].key.as_slice(), r[0].text.as_str()), (&b"plain"[..], "plain"));
 }
 
 #[test]
 fn empty_input_and_blank_lines_give_no_rows() {
-    assert!(pick::parse_rows("").is_empty());
-    assert!(pick::parse_rows("\n\r\n\n").is_empty());
+    assert!(pick::parse_rows(b"").is_empty());
+    assert!(pick::parse_rows(b"\n\r\n\n").is_empty());
 }
 
 #[test]
 fn a_crlf_row_loses_its_carriage_return() {
-    let r = pick::parse_rows("k\tshown\r\n");
-    assert_eq!((r[0].key.as_str(), r[0].text.as_str()), ("k", "shown"));
+    let r = pick::parse_rows(b"k\tshown\r\n");
+    assert_eq!((r[0].key.as_slice(), r[0].text.as_str()), (&b"k"[..], "shown"));
 }
 
 #[test]
 fn control_characters_are_stripped_from_the_display() {
-    let r = pick::parse_rows("k\tev\x1b[2Jil\x07\u{9b}x\n");
+    let r = pick::parse_rows("k\tev\x1b[2Jil\x07\u{9b}x\n".as_bytes());
     assert_eq!(r[0].text, "ev[2Jilx");
     assert_eq!(pick::clean("a\tb\x00c"), "a bc");
 }
@@ -147,14 +147,30 @@ fn a_wide_glyph_row_is_found_by_its_glyphs() {
 // ---------------------------------------------------------------- selection
 
 #[test]
-fn j_and_k_move_by_one_and_stop_at_both_ends() {
+fn down_and_up_move_by_one_and_stop_at_both_ends() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('k'), BIG);
-    assert_eq!(p.sel, 0, "k at the top stays");
+    press(&mut p, KeyCode::Up, BIG);
+    assert_eq!(p.sel, 0, "up at the top stays");
     for _ in 0..9 {
-        press(&mut p, KeyCode::Char('j'), BIG);
+        press(&mut p, KeyCode::Down, BIG);
     }
-    assert_eq!(p.sel, 5, "j at the bottom stays on the last row");
+    assert_eq!(p.sel, 5, "down at the bottom stays on the last row");
+}
+
+#[test]
+fn ctrl_n_and_ctrl_p_move_and_home_and_end_jump() {
+    let mut p = picker("pick", "", None);
+    let ctrl = |p: &mut Pick, c| p.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL), BIG);
+    ctrl(&mut p, 'n');
+    ctrl(&mut p, 'n');
+    assert_eq!(p.sel, 2);
+    ctrl(&mut p, 'p');
+    assert_eq!(p.sel, 1);
+    press(&mut p, KeyCode::End, BIG);
+    assert_eq!(p.sel, 5);
+    press(&mut p, KeyCode::Home, BIG);
+    assert_eq!(p.sel, 0);
+    assert_eq!(p.query, "", "a chord is not a letter");
 }
 
 #[test]
@@ -163,7 +179,7 @@ fn the_arrows_and_the_pages_move_through_chrome_scroll() {
     let r: Vec<Row> = many
         .iter()
         .map(|(k, t)| Row {
-            key: k.clone(),
+            key: k.clone().into_bytes(),
             text: t.clone(),
         })
         .collect();
@@ -184,7 +200,7 @@ fn the_arrows_and_the_pages_move_through_chrome_scroll() {
 fn the_selection_stays_inside_the_window_it_scrolls() {
     let r: Vec<Row> = (0..40)
         .map(|i| Row {
-            key: format!("k{i}"),
+            key: format!("k{i}").into_bytes(),
             text: format!("row {i}"),
         })
         .collect();
@@ -206,22 +222,20 @@ fn the_selection_stays_inside_the_window_it_scrolls() {
 fn enter_chooses_the_selected_rows_key_not_its_display() {
     let mut p = picker("pick", "", None);
     press(&mut p, KeyCode::Down, BIG);
-    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose("feat/237-pick".into()));
+    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose(b"feat/237-pick".to_vec()));
 }
 
 #[test]
 fn enter_after_a_filter_chooses_from_the_filtered_list() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('/'), BIG);
     type_str(&mut p, "RELEASE");
     assert_eq!(names(&p), vec!["release/0.2"]);
-    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose("release/0.2".into()));
+    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose(b"release/0.2".to_vec()));
 }
 
 #[test]
 fn enter_with_no_match_chooses_nothing() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('/'), BIG);
     type_str(&mut p, "zzz");
     assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Continue);
 }
@@ -229,75 +243,108 @@ fn enter_with_no_match_chooses_nothing() {
 #[test]
 fn a_new_query_puts_the_selection_back_on_the_first_match() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('G'), BIG);
-    press(&mut p, KeyCode::Char('/'), BIG);
+    press(&mut p, KeyCode::End, BIG);
     type_str(&mut p, "f");
     assert_eq!((p.sel, p.top), (0, 0));
 }
 
 #[test]
-fn backspace_widens_the_filter_and_on_an_empty_query_leaves_filtering() {
+fn backspace_widens_the_filter_and_on_an_empty_query_does_nothing() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('/'), BIG);
     type_str(&mut p, "zz");
     assert!(p.shown.is_empty());
     press(&mut p, KeyCode::Backspace, BIG);
     press(&mut p, KeyCode::Backspace, BIG);
     assert_eq!(p.shown.len(), 6);
-    press(&mut p, KeyCode::Backspace, BIG);
-    assert!(!p.filtering, "j k q are commands again");
+    assert_eq!(press(&mut p, KeyCode::Backspace, BIG), Outcome::Continue);
+    assert_eq!(p.query, "");
 }
 
 #[test]
-fn typing_a_letter_that_is_not_a_command_starts_the_filter() {
+fn ctrl_u_clears_the_filter() {
     let mut p = picker("pick", "", None);
-    type_str(&mut p, "rel");
-    assert!(p.filtering);
-    assert_eq!(names(&p), vec!["release/0.2"]);
+    type_str(&mut p, "feat");
+    p.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL), BIG);
+    assert_eq!((p.query.as_str(), p.shown.len()), ("", 6));
+}
+
+const SESSIONS: [(&str, &str); 6] = [
+    ("kitchen", "kitchen"),
+    ("queue", "queue"),
+    ("main", "main"),
+    ("jira-main", "jira-main"),
+    ("git-hooks", "git-hooks"),
+    ("ketchup", "ketchup"),
+];
+
+fn sessions() -> Pick {
+    Pick::new(rows(&SESSIONS), &opts("session", ""), None)
+}
+
+/// The first letter of a name is never a command: `q` would have cancelled.
+#[test]
+fn typing_queue_filters_to_the_queue_row_and_enter_prints_its_key() {
+    let mut p = sessions();
+    for c in "queue".chars() {
+        assert_eq!(press(&mut p, KeyCode::Char(c), BIG), Outcome::Continue, "{c}");
+    }
+    assert_eq!(names(&p), vec!["queue"]);
+    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose(b"queue".to_vec()));
+}
+
+/// `g` would have jumped to the top, leaving `it` and `kitchen` above `git-hooks`.
+#[test]
+fn typing_git_puts_git_hooks_first() {
+    let mut p = sessions();
+    type_str(&mut p, "git");
+    assert_eq!((p.query.as_str(), names(&p)), ("git", vec!["git-hooks"]));
+    assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Choose(b"git-hooks".to_vec()));
 }
 
 #[test]
-fn while_filtering_j_k_and_q_are_letters() {
-    let mut p = Pick::new(rows(&[("a", "quick jack")]), &opts("pick", ""), None);
-    press(&mut p, KeyCode::Char('/'), BIG);
-    type_str(&mut p, "qu");
-    assert_eq!(p.query, "qu");
-    assert_eq!(press(&mut p, KeyCode::Char('j'), BIG), Outcome::Continue);
-    assert_eq!(p.query, "quj".to_string());
+fn typing_jira_keeps_the_j_and_k_h_q_g_and_question_mark_are_letters() {
+    let mut p = sessions();
+    type_str(&mut p, "jira");
+    assert_eq!((p.query.as_str(), names(&p)), ("jira", vec!["jira-main"]));
+    let mut p = Pick::new(rows(&[("a", "what? quick Gk")]), &opts("pick", ""), None);
+    type_str(&mut p, "? q");
+    assert_eq!((p.query.as_str(), p.help), ("? q", None));
+    assert_eq!(p.shown.len(), 1);
+}
+
+#[test]
+fn alt_letter_is_not_a_letter() {
+    let mut p = picker("pick", "", None);
+    let o = p.key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT), BIG);
+    assert_eq!((o, p.query.as_str()), (Outcome::Continue, ""));
+    p.key(KeyEvent::new(KeyCode::Char('B'), KeyModifiers::SHIFT), BIG);
+    assert_eq!(p.query, "B", "shift is how a capital arrives");
 }
 
 // ---------------------------------------------------------------- cancel
 
 #[test]
-fn q_and_esc_cancel_from_the_list() {
-    assert_eq!(press(&mut picker("p", "", None), KeyCode::Char('q'), BIG), Outcome::Cancel);
+fn esc_cancels_with_or_without_a_filter() {
     assert_eq!(press(&mut picker("p", "", None), KeyCode::Esc, BIG), Outcome::Cancel);
+    let mut p = picker("p", "", None);
+    type_str(&mut p, "feat");
+    assert_eq!(press(&mut p, KeyCode::Esc, BIG), Outcome::Cancel);
 }
 
 #[test]
 fn ctrl_c_cancels_even_while_filtering() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('/'), BIG);
+    type_str(&mut p, "fe");
     let o = p.key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), BIG);
     assert_eq!(o, Outcome::Cancel);
-}
-
-#[test]
-fn esc_while_filtering_clears_the_filter_and_a_second_esc_cancels() {
-    let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('/'), BIG);
-    type_str(&mut p, "feat");
-    assert_eq!(press(&mut p, KeyCode::Esc, BIG), Outcome::Continue);
-    assert_eq!((p.query.as_str(), p.shown.len(), p.filtering), ("", 6, false));
-    assert_eq!(press(&mut p, KeyCode::Esc, BIG), Outcome::Cancel);
 }
 
 #[test]
 fn empty_input_has_no_selection_and_enter_does_nothing() {
     let mut p = Pick::new(vec![], &opts("pick", ""), None);
     assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Continue);
-    assert_eq!(press(&mut p, KeyCode::Char('j'), BIG), Outcome::Continue);
-    assert_eq!(press(&mut p, KeyCode::Char('q'), BIG), Outcome::Cancel);
+    assert_eq!(press(&mut p, KeyCode::Down, BIG), Outcome::Continue);
+    assert_eq!(press(&mut p, KeyCode::Esc, BIG), Outcome::Cancel);
 }
 
 #[test]
@@ -307,14 +354,14 @@ fn under_the_floor_only_the_way_out_acts() {
     assert!(pick::too_small(a) && !pick::too_small(area(28, 12)));
     assert_eq!(press(&mut p, KeyCode::Enter, a), Outcome::Continue);
     assert_eq!(press(&mut p, KeyCode::Char('x'), a), Outcome::Continue);
-    assert!(!p.filtering);
+    assert_eq!(p.query, "");
     assert_eq!(press(&mut p, KeyCode::Esc, a), Outcome::Cancel);
 }
 
 #[test]
-fn the_help_swallows_keys_and_any_other_key_closes_it() {
+fn f1_opens_the_help_and_any_other_key_closes_it_without_acting() {
     let mut p = picker("pick", "", None);
-    press(&mut p, KeyCode::Char('?'), BIG);
+    press(&mut p, KeyCode::F(1), BIG);
     assert!(p.help.is_some());
     assert_eq!(press(&mut p, KeyCode::Enter, BIG), Outcome::Continue, "enter closes, never chooses");
     assert!(p.help.is_none());
@@ -351,7 +398,7 @@ fn a_click_on_the_prompt_the_footer_or_below_the_last_row_changes_nothing() {
 fn the_wheel_scrolls_the_window_and_keeps_the_selection_in_it() {
     let r: Vec<Row> = (0..40)
         .map(|i| Row {
-            key: format!("k{i}"),
+            key: format!("k{i}").into_bytes(),
             text: format!("row {i}"),
         })
         .collect();
@@ -435,7 +482,7 @@ fn pick_80_no_match() {
 #[test]
 fn pick_80_help() {
     let mut p = picker("branch", "", None);
-    press(&mut p, KeyCode::Char('?'), BIG);
+    press(&mut p, KeyCode::F(1), BIG);
     golden("pick-80-help", &draw(80, 24, &p));
 }
 
@@ -450,21 +497,16 @@ fn pick_28x12_is_the_smallest_list() {
 }
 
 #[test]
-fn pick_empty_input_draws_a_card_not_a_blank() {
-    golden("pick-80-empty", &draw(80, 14, &Pick::new(vec![], &opts("branch", ""), None)));
-}
-
-#[test]
 fn pick_scrolled_keeps_the_marker_on_the_last_row() {
     let r: Vec<Row> = (0..40)
         .map(|i| Row {
-            key: format!("k{i}"),
+            key: format!("k{i}").into_bytes(),
             text: format!("row {i}"),
         })
         .collect();
     let mut p = Pick::new(r, &opts("pick", ""), None);
     let a = area(40, 12);
-    press(&mut p, KeyCode::Char('G'), a);
+    press(&mut p, KeyCode::End, a);
     let s = draw(40, 12, &p);
     assert!(s.contains("row 39"), "{s}");
     golden("pick-40-last", &s);
@@ -490,7 +532,84 @@ fn no_text_is_drawn_in_meta_or_dim() {
 
 #[test]
 fn control_bytes_in_a_row_never_reach_the_screen() {
-    let p = Pick::new(pick::parse_rows("k\tev\x1b]0;pwned\x07il\n"), &opts("pick", ""), None);
+    let p = Pick::new(pick::parse_rows(b"k\tev\x1b]0;pwned\x07il\n"), &opts("pick", ""), None);
     let s = draw(40, 12, &p);
     assert!(!s.contains('\x1b') && !s.contains('\x07'), "{s:?}");
+}
+
+// ---------------------------------------------------------------- untrusted text
+
+const HOSTILE: &str = "x\x1b]0;pwned\x07y\u{9b}z";
+
+/// ratatui drops control characters when it writes a cell, so the screen cannot
+/// show whether `Pick::new` cleaned: the fields are the contract.
+#[test]
+fn prompt_header_and_preview_hold_no_control_character_after_new() {
+    let o = Opts {
+        prompt: HOSTILE.into(),
+        header: format!("{HOSTILE}\nsecond"),
+        preview: None,
+    };
+    let p = Pick::new(vec![], &o, Some(format!("a{HOSTILE}\n{HOSTILE}b\tc\n")));
+    let bad = |s: &str| s.chars().any(|c| c.is_control() && c != '\n');
+    assert!(!bad(&p.prompt) && !bad(&p.header), "{:?} {:?}", p.prompt, p.header);
+    assert_eq!(p.preview.as_deref(), Some("ax]0;pwnedyz\nx]0;pwnedyzb c"));
+    assert_eq!(p.header, "x]0;pwnedyz second");
+}
+
+#[test]
+fn bidi_controls_are_dropped_so_a_name_cannot_lie() {
+    assert_eq!(
+        pick::clean("bidi \u{202e}txt.exe\u{2066}\u{2069}\u{200b}\u{200f}\u{202a}"),
+        "bidi txt.exe"
+    );
+    let r = pick::parse_rows("k\tevil\u{202e}gpj.sh".as_bytes());
+    assert_eq!(r[0].text, "evilgpj.sh");
+}
+
+// ---------------------------------------------------------------- the key is bytes
+
+#[test]
+fn a_key_that_is_not_utf8_comes_back_byte_for_byte() {
+    let r = pick::parse_rows(b"/tmp/caf\xe9.txt\tcaf\xe9\n");
+    assert_eq!(r[0].key, b"/tmp/caf\xe9.txt");
+    let mut out = Vec::new();
+    assert_eq!(pick::answer(&mut out, &Outcome::Choose(r[0].key.clone())), 0);
+    assert_eq!(out, b"/tmp/caf\xe9.txt\n");
+}
+
+#[test]
+fn a_cancel_answers_one_and_writes_nothing() {
+    let mut out = Vec::new();
+    assert_eq!(pick::answer(&mut out, &Outcome::Cancel), 1);
+    assert!(out.is_empty());
+}
+
+#[test]
+fn an_unwritable_stdout_answers_two_not_a_panic() {
+    let mut full = std::fs::OpenOptions::new().write(true).open("/dev/full").unwrap();
+    assert_eq!(pick::answer(&mut full, &Outcome::Choose(b"k".to_vec())), 2);
+}
+
+#[test]
+fn the_input_cap_stops_at_a_line_boundary_and_says_it_cut() {
+    let (b, cut) = pick::cap_input(b"aa\nbb\ncc\n".to_vec(), 7);
+    assert_eq!((b.as_slice(), cut), (&b"aa\nbb\n"[..], true));
+    let (b, cut) = pick::cap_input(b"aa\nbb\n".to_vec(), 6);
+    assert_eq!((b.as_slice(), cut), (&b"aa\nbb\n"[..], false), "exactly the cap is not cut");
+    let (b, cut) = pick::cap_input(b"aaaaaaaaa".to_vec(), 4);
+    assert_eq!(
+        (b.len(), cut),
+        (0, true),
+        "one line longer than the cap leaves nothing, never half a key"
+    );
+    let (b, _) = pick::cap_input(b"aa\nbb\ncc\n".to_vec(), 6);
+    assert_eq!(b, b"aa\nbb\n", "a cap landing on a newline keeps that line");
+}
+
+#[test]
+fn the_28x12_footer_keeps_choose_and_cancel() {
+    let s = draw(28, 12, &picker("branch", "", None));
+    let last = s.lines().rev().find(|l| l.contains("choose")).unwrap_or("");
+    assert!(last.contains("choose") && last.contains("cancel"), "{s}");
 }

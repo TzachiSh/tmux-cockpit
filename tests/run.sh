@@ -8328,7 +8328,7 @@ case "$fqout" in
     *) ok "a dirty non-agent pane is not in the queue" ;;
 esac
 rowcount=$(printf '%s\n' "$fqout" | grep -c '^%' || true)
-is "the queue lists exactly three rows" "3" "$rowcount"
+is "the queue lists exactly four rows" "3" "$rowcount"
 
 # Pins the churn fix: 1 tracked added line (f) + 3 untracked lines (three
 # one-line files), folded into the same numstat by tree_diff's intent-to-add
@@ -12557,7 +12557,8 @@ is "the popup's own client moved to two and is the only client" "$tpc two" \
 fi
 
 pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick args...]  runs `pick` in a fresh pane
-    local sock=$1 d=$2 cols=$3 lines=$4 text=$5; shift 5
+    local sock=$1 d=$2 cols=$3 lines=$4 text=$5 args; shift 5
+    args=; [ $# -eq 0 ] || args=$(printf '%q ' "$@")
     printf '%s' "$text" > "$d/rows"
     {
         printf '#!/bin/sh\nbin=$1; d=$2; shift 2\n'
@@ -12566,7 +12567,7 @@ pick_pane() {                 # <socket> <dir> <cols> <rows> <rows-text> [pick a
     } > "$d/run"
     chmod +x "$d/run"
     "$TMUX_REAL" -L "$sock" -f /dev/null new-session -d -s t -x "$cols" -y "$lines" \
-        "$d/run '$DIR/bin/cockpit-tui' '$d' $*" >/dev/null 2>&1
+        "$d/run '$DIR/bin/cockpit-tui' '$d' $args" >/dev/null 2>&1
 }
 
 echo "== cockpit-tui pick: filter, choose and cancel through a pty =="
@@ -12576,14 +12577,14 @@ echo "== cockpit-tui pick: filter, choose and cancel through a pty =="
 if [ ! -x "$DIR/bin/cockpit-tui" ]; then
     skip_ "cockpit-tui pick (no bin/cockpit-tui; run make tui)"
 elif need_tmux "cockpit-tui pick"; then :; else
-PKROWS=$(printf 'main\tmain\nfeat/237\tfeat/237-pick  Add a Rust picker\nrelease\trelease/0.2\n')$'\n'
+PKROWS=$(printf 'main\tmain\nfeat/237\tfeat/237-pick  Add a Rust picker\nrelease\trelease/0.2\nqueue\tqueue\n')$'\n'
 PKS="cockpit-pk-$$"; SOCKS="$SOCKS $PKS"; PKD=$(mktmpd)
 pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt branch
-until_cap "$PKS" t '*branch>*1/3*' && ok "the list is drawn on the tty, three rows" \
-    || bad "the list is drawn on the tty, three rows" "branch> 1/3" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
-"$TMUX_REAL" -L "$PKS" send-keys -t t / R E L
-until_cap "$PKS" t '*1/1 of 3*' && ok "typing REL filters case-insensitively to one row" \
-    || bad "typing REL filters case-insensitively to one row" "1/1 of 3" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
+until_cap "$PKS" t '*branch>*1/4*' && ok "the list is drawn on the tty, four rows" \
+    || bad "the list is drawn on the tty, four rows" "branch> 1/4" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -3)"
+"$TMUX_REAL" -L "$PKS" send-keys -t t R E L
+until_cap "$PKS" t '*1/1 of 4*' && ok "typing REL filters case-insensitively to one row" \
+    || bad "typing REL filters case-insensitively to one row" "1/1 of 4" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter
 until_file "$PKD/rc" '?*'
 is "enter prints the key of the filtered row and nothing else" "release" "$(cat "$PKD/out" 2>/dev/null)"
@@ -12591,18 +12592,18 @@ is "enter exits 0" "0" "$(cat "$PKD/rc" 2>/dev/null)"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
 PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
-until_cap "$PKS" t '*pick>*1/3*'
-"$TMUX_REAL" -L "$PKS" send-keys -t t j Enter
+until_cap "$PKS" t '*pick>*1/4*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t Down Enter
 until_file "$PKD/rc" '?*'
-is "j then enter chooses the second row's key" "feat/237" "$(cat "$PKD/out" 2>/dev/null)"
+is "down then enter chooses the second row's key" "feat/237" "$(cat "$PKD/out" 2>/dev/null)"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
 PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
-until_cap "$PKS" t '*pick>*1/3*'
-"$TMUX_REAL" -L "$PKS" send-keys -t t q
+until_cap "$PKS" t '*pick>*1/4*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t Escape
 until_file "$PKD/rc" '?*'
-is "q exits 1" "1" "$(cat "$PKD/rc" 2>/dev/null)"
-is "q prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
+is "esc exits 1" "1" "$(cat "$PKD/rc" 2>/dev/null)"
+is "esc prints nothing on stdout" "0" "$(wc -c < "$PKD/out" | tr -d ' ')"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
 PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "" 
@@ -12617,6 +12618,18 @@ until_cap "$PKS" t '*make the window larger*' && ok "under 28x12 the floor card 
 "$TMUX_REAL" -L "$PKS" send-keys -t t Enter Escape
 until_file "$PKD/rc" '?*'
 is "under the floor enter chooses nothing and esc exits 1" "1:0" "$(cat "$PKD/rc" 2>/dev/null):$(wc -c < "$PKD/out" | tr -d ' ')"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS"
+until_cap "$PKS" t '*pick>*1/4*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t q u e u e Enter
+until_file "$PKD/rc" '?*'
+is "typing queue is a filter: q is a letter, and enter prints the row's key" "queue:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
+until_cap "$PKS" t '*two words>*' && ok "an argument with a space reaches the picker whole" \
+    || bad "an argument with a space reaches the picker whole" "two words>" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
 PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --bogus

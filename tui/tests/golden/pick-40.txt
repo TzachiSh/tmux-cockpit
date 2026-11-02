@@ -1,4 +1,4 @@
-" branch>                            1/6 "
+" branch> ▏                          1/6 "
 " pick the branch to switch to           "
 "▎ main                                  "
 "  feat/237-pick  Add a Rust picker      "
@@ -11,4 +11,4 @@
 "                                        "
 "                                        "
 "                                        "
-" ↵ choose   ? keys   q cancel           "
+" ↵ choose   F1 keys   esc cancel        "

@@ -1,4 +1,4 @@
-" branch>                1/6 "
+" branch> ▏              1/6 "
 "▎ main                      "
 "  feat/237-pick  Add a Rust…"
 "  feat/board-chrome  The sh…"
@@ -9,4 +9,4 @@
 "                            "
 "                            "
 "                            "
-" ? keys   q cancel          "
+" ↵ choose   esc cancel      "

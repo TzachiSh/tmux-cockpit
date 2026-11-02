@@ -507,8 +507,8 @@ is the rows and stdout is the answer.
 | exit | meaning |
 |------|---------|
 | 0 | a row was chosen; its key is on stdout |
-| 1 | `esc`, `q` or ctrl-c, or no rows; stdout is empty |
-| 2 | a bad argument, an unreadable `--preview` file, or no terminal |
+| 1 | `esc` or ctrl-c, or no rows; stdout is empty |
+| 2 | a bad argument, an unreadable `--preview` file, no terminal, or a stdout that cannot be written |
 
 `--preview <file>` is static text shown right of the list when the screen is 60
 columns or wider (the first 64 KiB, no scrolling). Nothing mutates: the caller
@@ -517,23 +517,29 @@ before they are drawn, and every text is drawn in `value` (D17). Under 28x12 the
 screen is the floor card.
 
 The filter is a case-insensitive substring over the display text, never the key.
-`j` `k` `q` are commands, so typing starts the filter on any other letter and `/`
-starts it for those three. While filtering every printable key is a letter.
+The picker is a text-entry screen: every printable key, `j` `k` `q` `g` `G` `?`
+included, is a letter of the query, so the first letter of a name is never a
+command. Ctrl and Alt chords are not letters.
 
 | key | does |
 |-----|------|
-| `↑` `↓` `j` `k` `PgUp` `PgDn` | move the selection (`chrome::scroll`); the arrows and pages also while filtering |
-| `g` `G` | first / last row |
-| `/` | start the filter |
-| letters | start the filter with that letter (not `j` `k` `q` `g` `G` `?`) |
-| `⌫` | widen the filter; on an empty one, leave filtering |
-| `^U` | clear the filter |
+| letters | add to the filter |
+| `⌫` `^U` | delete a letter / clear the filter |
+| `↑` `↓` `^P` `^N` `PgUp` `PgDn` | move the selection (`chrome::scroll`) |
+| `Home` `End` | first / last row |
 | `↵` | print the selected row's key, exit 0 |
 | click | select the row under the pointer; `↵` chooses |
 | wheel | scroll the window three rows, the selection stays inside it |
-| `?` | the keys; any key but a scroll key closes it |
-| `esc` | clear the filter; on the list, cancel |
-| `q` `^C` | cancel |
+| `F1` | the keys; any key but a scroll key closes it |
+| `esc` `^C` | cancel |
+
+The key is bytes: rows are split on `\n` and the first tab as bytes and the key is
+printed exactly as sent (a path need not be UTF-8); only the display is decoded.
+Input is read up to 8 MiB and cut at a line boundary; the header then ends with
+`(first N rows)`. Bidi and zero-width controls are stripped with the other
+controls, so a row cannot show one name and print another. If stdout cannot be
+written the exit is 2. At the narrowest popup the footer keeps `↵ choose` and
+`esc cancel`.
 
 Mouse capture is on for the picker, unlike the board: a list you click is the
 point of it.

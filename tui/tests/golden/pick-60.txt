@@ -1,4 +1,4 @@
-" branch>                                                1/6 "
+" branch> ▏                                              1/6 "
 "▎ main                  │ branch feat/237-pick              "
 "  feat/237-pick  Add a …│                                   "
 "  feat/board-chrome  Th…│   dea82ca Merge pull request #236 "
@@ -11,4 +11,4 @@
 "                        │                                   "
 "                        │                                   "
 "                        │                                   "
-" ↵ choose   / filter   ↑↓ move   ? keys   q cancel          "
+" ↵ choose   ↑↓ move   F1 keys   esc cancel                  "

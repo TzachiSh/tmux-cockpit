@@ -7,7 +7,7 @@
 //! a UI drawn on it.
 use crate::backend::{self, WideCellBackend};
 use crate::chrome;
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::Terminal;
@@ -26,11 +26,12 @@ const PREVIEW_MIN_W: u16 = 60;
 /// A wheel notch, in rows.
 const WHEEL: usize = 3;
 /// Rows and preview are text for a person: a runaway producer must not fill memory.
-const MAX_INPUT: u64 = 8 << 20;
+const MAX_INPUT: usize = 8 << 20;
 const MAX_PREVIEW: u64 = 64 << 10;
 
 pub struct Row {
-    pub key: String,
+    /// Raw bytes: a path need not be UTF-8, and the caller gets exactly what it sent.
+    pub key: Vec<u8>,
     pub text: String,
 }
 
@@ -45,7 +46,7 @@ pub struct Opts {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
-    Choose(String),
+    Choose(Vec<u8>),
     Cancel,
 }
 
@@ -57,40 +58,77 @@ pub struct Pick {
     /// An index into `shown`.
     pub sel: usize,
     pub top: usize,
-    /// Typing edits the query. Off, `j` `k` `q` are commands.
-    pub filtering: bool,
     pub help: Option<usize>,
     pub prompt: String,
     pub header: String,
     pub preview: Option<String>,
 }
 
-/// Untrusted text made safe to draw: a tab is a space, every other control
-/// character (ESC, BEL, the C1 range) is dropped.
+/// Characters that draw nothing or reorder what is drawn: the zero-width and
+/// direction marks and the bidi embeddings, overrides and isolates. A row could
+/// otherwise display one name and print another.
+fn is_bidi(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Untrusted text made safe to draw: a tab is a space; every other control
+/// character (ESC, BEL, the C1 range) and every bidi control is dropped.
 pub fn clean(s: &str) -> String {
     s.chars()
         .filter_map(|c| match c {
             '\t' => Some(' '),
-            c if c.is_control() => None,
+            c if c.is_control() || is_bidi(c) => None,
             c => Some(c),
         })
         .collect()
 }
 
-/// `<key>\t<display>` per line. No tab: the line is both. A line with no key is
-/// skipped, since choosing it would print nothing.
-pub fn parse_rows(input: &str) -> Vec<Row> {
+/// `clean` per line, keeping the line breaks.
+fn clean_lines(s: &str) -> String {
+    s.lines().map(clean).collect::<Vec<_>>().join("\n")
+}
+
+/// `<key>\t<display>` per line, as bytes. No tab: the line is both. A line with
+/// no key is skipped, since choosing it would print nothing. The display is
+/// decoded lossily; the key never is.
+pub fn parse_rows(input: &[u8]) -> Vec<Row> {
     input
-        .lines()
+        .split(|&b| b == b'\n')
         .filter_map(|l| {
-            let l = l.strip_suffix('\r').unwrap_or(l);
-            let (key, text) = l.split_once('\t').unwrap_or((l, l));
+            let l = l.strip_suffix(b"\r").unwrap_or(l);
+            let (key, text) = match l.iter().position(|&b| b == b'\t') {
+                Some(i) => (&l[..i], &l[i + 1..]),
+                None => (l, l),
+            };
             (!key.is_empty()).then(|| Row {
-                key: key.to_string(),
-                text: clean(text),
+                key: key.to_vec(),
+                text: clean(&String::from_utf8_lossy(text)),
             })
         })
         .collect()
+}
+
+/// At most `cap` bytes, ending on a line boundary so a key is never cut; and
+/// whether anything was dropped.
+pub fn cap_input(mut b: Vec<u8>, cap: usize) -> (Vec<u8>, bool) {
+    if b.len() <= cap {
+        return (b, false);
+    }
+    let end = b[..=cap].iter().rposition(|&c| c == b'\n').map_or(0, |i| i + 1);
+    b.truncate(end);
+    (b, true)
+}
+
+/// Writes the answer. 0 for a chosen key, 1 for a cancel, 2 when stdout is gone.
+pub fn answer(out: &mut impl Write, o: &Outcome) -> i32 {
+    let Outcome::Choose(k) = o else { return 1 };
+    match out.write_all(k).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("cockpit-tui: pick: cannot write the key: {e}");
+            2
+        }
+    }
 }
 
 /// Case-insensitive substring over the display text; the indexes that match.
@@ -173,11 +211,10 @@ impl Pick {
             shown,
             sel: 0,
             top: 0,
-            filtering: false,
             help: None,
             prompt: clean(&o.prompt),
             header: clean(&o.header.replace('\n', " ")),
-            preview: preview_text,
+            preview: preview_text.map(|t| clean_lines(&t)),
         }
     }
 
@@ -211,66 +248,49 @@ impl Pick {
         }
     }
 
+    /// The picker is a text-entry screen: every printable key is a letter of the
+    /// query, so nothing a person types first is a command.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
-        if ctrl && k.code == KeyCode::Char('c') {
+        if (ctrl && k.code == KeyCode::Char('c')) || (k.code == KeyCode::Esc && self.help.is_none()) {
             return Outcome::Cancel;
         }
         if too_small(area) {
             self.help = None;
-            return match k.code {
-                KeyCode::Esc | KeyCode::Char('q') => Outcome::Cancel,
-                _ => Outcome::Continue,
-            };
+            return Outcome::Continue;
         }
         if let Some(t) = self.help {
             // any key but a scroll key closes it, and never acts
             let rows = area.height.saturating_sub(2) as usize;
-            self.help = chrome::scroll(
-                k.code,
-                t,
-                help_rows(&crate::theme::Glyphs::from_env()).len().saturating_sub(rows),
-                rows,
-            );
+            self.help = chrome::scroll(k.code, t, help_rows(&Glyphs::unicode()).len().saturating_sub(rows), rows);
             return Outcome::Continue;
         }
-        let moves = matches!(k.code, KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown);
-        if k.code == KeyCode::Enter {
-            return self.choose();
-        }
-        if moves || (!self.filtering && matches!(k.code, KeyCode::Char('j' | 'k'))) {
-            let room = self.room(area);
-            let last = self.shown.len().saturating_sub(1);
-            if let Some(s) = chrome::scroll(k.code, self.sel, last, room) {
-                self.sel = s;
-            }
-            self.clamp(area);
-            return Outcome::Continue;
-        }
-        if self.filtering {
-            match k.code {
-                KeyCode::Esc => {
-                    self.query.clear();
-                    self.filtering = false;
+        let last = self.shown.len().saturating_sub(1);
+        let code = match (ctrl, k.code) {
+            (true, KeyCode::Char('n')) => KeyCode::Down,
+            (true, KeyCode::Char('p')) => KeyCode::Up,
+            (_, c) => c,
+        };
+        match code {
+            KeyCode::Enter => return self.choose(),
+            KeyCode::F(1) => self.help = Some(0),
+            KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
+                if let Some(s) = chrome::scroll(code, self.sel, last, self.room(area)) {
+                    self.sel = s;
                 }
-                KeyCode::Backspace if self.query.pop().is_none() => self.filtering = false,
-                KeyCode::Backspace => {}
-                KeyCode::Char('u') if ctrl => self.query.clear(),
-                KeyCode::Char(c) if !ctrl => self.query.push(c),
-                _ => return Outcome::Continue,
             }
-            self.requery(area);
-            return Outcome::Continue;
-        }
-        match k.code {
-            KeyCode::Esc | KeyCode::Char('q') => return Outcome::Cancel,
-            KeyCode::Char('?') => self.help = Some(0),
-            KeyCode::Char('/') => self.filtering = true,
-            KeyCode::Char('g') => self.sel = 0,
-            KeyCode::Char('G') => self.sel = self.shown.len().saturating_sub(1),
-            // a letter that is no command is the first letter of the filter
-            KeyCode::Char(c) if !ctrl => {
-                self.filtering = true;
+            KeyCode::Home => self.sel = 0,
+            KeyCode::End => self.sel = last,
+            KeyCode::Backspace => {
+                self.query.pop();
+                self.requery(area);
+            }
+            KeyCode::Char('u') if ctrl => {
+                self.query.clear();
+                self.requery(area);
+            }
+            // Shift is how a capital arrives; Ctrl and Alt make a chord, not a letter
+            KeyCode::Char(c) if k.modifiers.difference(KeyModifiers::SHIFT).is_empty() => {
                 self.query.push(c);
                 self.requery(area);
             }
@@ -313,39 +333,44 @@ impl Pick {
 }
 
 /// Section heading rows have an empty key (see `chrome::help`).
-pub fn help_rows(g: &crate::theme::Glyphs) -> Vec<(String, String)> {
+pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
     let r = |k: &str, v: &str| (k.to_string(), v.to_string());
     vec![
+        r("", "type"),
+        r("any key", "adds to the filter, j k q ? included"),
+        r("⌫  ^U", "delete a letter / clear the filter"),
         r("", "move"),
-        r(&format!("{} j k", g.key_updown), "one row"),
+        r(&format!("{}  ^N ^P", g.key_updown), "one row"),
         r("PgUp PgDn", "a page"),
-        r("g G", "first / last"),
+        r("Home End", "first / last"),
         r("click", "select the row, ↵ chooses it"),
         r("wheel", "scroll"),
         r("", "choose"),
         r(g.key_enter, "print this row's key, exit"),
-        r("", "filter"),
-        r("/", "type to filter by the text shown"),
-        r("a letter", "starts the filter too"),
-        r("esc", "clear the filter"),
         r("", "leave"),
-        r("q esc", "cancel, print nothing"),
-        r("?", "this help"),
+        r("esc  ^C", "cancel, print nothing"),
+        r("F1", "this help"),
     ]
 }
 
-fn hints(p: &Pick, g: &crate::theme::Glyphs) -> Vec<(String, String)> {
+/// ↵ and esc come first: at the narrowest popup they are all that fits, and
+/// `chrome::fit` would drop the choose key before the help key.
+fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
     let h = |k: &str, v: &str| (k.to_string(), v.to_string());
-    if p.filtering {
-        vec![h(g.key_enter, "choose"), h(g.key_updown, "move"), h("esc", "clear")]
-    } else {
+    let fitted = chrome::fit(
         vec![
             h(g.key_enter, "choose"),
-            h("/", "filter"),
             h(g.key_updown, "move"),
-            h("?", "keys"),
-            h("q", "cancel"),
-        ]
+            h("F1", "keys"),
+            h("esc", "cancel"),
+        ],
+        w,
+        3,
+    );
+    if fitted.iter().any(|(k, _)| k == g.key_enter) {
+        fitted
+    } else {
+        vec![h(g.key_enter, "choose"), h("esc", "cancel")]
     }
 }
 
@@ -387,12 +412,12 @@ pub fn render(f: &mut Frame, area: Rect, p: &Pick, th: &Theme) {
             .unwrap_or_default()
             .lines()
             .take(inner.height as usize)
-            .map(|l| Line::styled(th.g.trunc(&clean(l), w), value))
+            .map(|l| Line::styled(th.g.trunc(l, w), value))
             .collect();
         f.render_widget(Paragraph::new(lines), pad(inner));
     }
     f.render_widget(
-        Paragraph::new(chrome::footer(th, hints(p, &th.g), area.width as usize, 3)),
+        Paragraph::new(chrome::footer(th, hints(&th.g, area.width as usize), area.width as usize, 3)),
         g.footer,
     );
 }
@@ -420,9 +445,7 @@ fn prompt_line(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
     let room = (left.width as usize).saturating_sub(prompt.width() + 4);
     let mut spans = vec![Span::raw(" "), Span::styled(format!("{prompt}>"), accent), Span::raw(" ")];
     spans.push(Span::styled(th.g.trunc_left(&p.query, room), value));
-    if p.filtering {
-        spans.push(Span::styled(th.g.cursor, accent));
-    }
+    spans.push(Span::styled(th.g.cursor, accent));
     f.render_widget(Paragraph::new(Line::from(spans)), left);
     f.render_widget(Paragraph::new(Span::styled(count, value)), right);
 }
@@ -430,11 +453,7 @@ fn prompt_line(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
 fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme) {
     let (accent, value) = (Style::new().fg(th.accent), Style::new().fg(th.value));
     if p.shown.is_empty() {
-        let msg = if p.rows.is_empty() {
-            "nothing to pick".to_string()
-        } else {
-            format!("no match for \"{}\"", p.query)
-        };
+        let msg = format!("no match for \"{}\"", p.query);
         let msg = th.g.trunc(&msg, (r.width as usize).saturating_sub(2));
         f.render_widget(Paragraph::new(Span::styled(msg, value)), pad(r));
         return;
@@ -466,10 +485,10 @@ fn restore_tty() {
     }
 }
 
-fn read_limited(r: impl Read, cap: u64) -> std::io::Result<String> {
+fn read_limited(r: impl Read, cap: u64) -> std::io::Result<Vec<u8>> {
     let mut b = Vec::new();
     r.take(cap).read_to_end(&mut b)?;
-    Ok(String::from_utf8_lossy(&b).into_owned())
+    Ok(b)
 }
 
 /// Exit 0 with the key on stdout, 1 for esc, q or no rows (stdout empty), 2 for
@@ -485,20 +504,21 @@ pub fn main(args: &[String]) -> i32 {
     let preview = match &o.preview {
         None => None,
         Some(f) => match std::fs::File::open(f).and_then(|f| read_limited(f, MAX_PREVIEW)) {
-            Ok(t) => Some(t),
+            Ok(t) => Some(String::from_utf8_lossy(&t).into_owned()),
             Err(e) => {
                 eprintln!("cockpit-tui: pick: cannot read {f}: {e}");
                 return 2;
             }
         },
     };
-    let input = match read_limited(std::io::stdin().lock(), MAX_INPUT) {
+    let input = match read_limited(std::io::stdin().lock(), MAX_INPUT as u64 + 1) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("cockpit-tui: pick: cannot read the rows: {e}");
             return 2;
         }
     };
+    let (input, cut) = cap_input(input, MAX_INPUT);
     let rows = parse_rows(&input);
     if rows.is_empty() {
         return 1;
@@ -523,6 +543,14 @@ pub fn main(args: &[String]) -> i32 {
     }));
     let th = Theme::load();
     let mut p = Pick::new(rows, &o, preview);
+    if cut {
+        let note = format!("(first {} rows)", p.rows.len());
+        p.header = if p.header.is_empty() {
+            note
+        } else {
+            format!("{}  {note}", p.header)
+        };
+    }
     let mut term = match crossterm::terminal::enable_raw_mode().and_then(|_| {
         let mut t = tty;
         t.write_all(format!("\x1b[?1049h{}", backend::MOUSE_ON).as_bytes())?;
@@ -557,11 +585,5 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     restore_tty();
-    match out {
-        Outcome::Choose(k) => {
-            println!("{k}");
-            0
-        }
-        _ => 1,
-    }
+    answer(&mut std::io::stdout().lock(), &out)
 }

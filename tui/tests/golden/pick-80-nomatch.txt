@@ -11,4 +11,4 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" ↵ choose   ↑↓ move   esc clear                                                 "
+" ↵ choose   ↑↓ move   F1 keys   esc cancel                                      "

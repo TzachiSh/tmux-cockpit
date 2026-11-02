@@ -1,4 +1,4 @@
-" pick>                            40/40 "
+" pick> ▏                          40/40 "
 "  row 30                                "
 "  row 31                                "
 "  row 32                                "
@@ -9,4 +9,4 @@
 "  row 37                                "
 "  row 38                                "
 "▎ row 39                                "
-" ↵ choose   ? keys   q cancel           "
+" ↵ choose   F1 keys   esc cancel        "

@@ -1,4 +1,4 @@
-" branch>                                                                    1/6 "
+" branch> ▏                                                                  1/6 "
 " pick the branch to switch to                                                   "
 "▎ main                          │ branch feat/237-pick                          "
 "  feat/237-pick  Add a Rust pic…│                                               "
@@ -11,4 +11,4 @@
 "                                │                                               "
 "                                │                                               "
 "                                │                                               "
-" ↵ choose   / filter   ↑↓ move   ? keys   q cancel                              "
+" ↵ choose   ↑↓ move   F1 keys   esc cancel                                      "
