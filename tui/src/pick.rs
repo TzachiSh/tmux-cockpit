@@ -116,7 +116,7 @@ pub fn keyless(input: &[u8]) -> usize {
 
 /// The one stderr line for them, or `None` when nothing was skipped.
 pub fn keyless_note(n: usize) -> Option<String> {
-    (n > 0).then(|| format!("cockpit-tui: pick: skipped {n} rows with no key"))
+    (n > 0).then(|| format!("cockpit-tui: pick: skipped {n} row{} with no key", if n == 1 { "" } else { "s" }))
 }
 
 /// At most `cap` bytes, ending on a line boundary so a key is never cut; and

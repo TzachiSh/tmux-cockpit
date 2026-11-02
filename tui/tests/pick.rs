@@ -626,6 +626,10 @@ fn only_lines_with_a_tab_and_no_key_are_counted_as_skipped() {
         pick::keyless_note(2).as_deref(),
         Some("cockpit-tui: pick: skipped 2 rows with no key")
     );
+    assert_eq!(
+        pick::keyless_note(1).as_deref(),
+        Some("cockpit-tui: pick: skipped 1 row with no key")
+    );
     assert_eq!(pick::keyless_note(0), None);
 }
 

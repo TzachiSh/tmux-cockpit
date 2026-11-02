@@ -12627,6 +12627,14 @@ until_file "$PKD/rc" '?*'
 is "typing queue is a filter: q is a letter, and enter prints the row's key" "queue:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 
+PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$(printf '\tx\nk\tok\n')"
+until_cap "$PKS" t '*pick>*1/1*'
+"$TMUX_REAL" -L "$PKS" send-keys -t t Enter
+until_file "$PKD/rc" '?*'
+is "a keyless row is skipped and the key of the next one is printed" "k:0" "$(cat "$PKD/out" 2>/dev/null):$(cat "$PKD/rc" 2>/dev/null)"
+is "stderr says once how many rows had no key" "cockpit-tui: pick: skipped 1 row with no key" "$(cat "$PKD/err" 2>/dev/null)"
+"$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
+
 PKD=$(mktmpd); pick_pane "$PKS" "$PKD" 80 20 "$PKROWS" --prompt 'two words'
 until_cap "$PKS" t '*two words>*' && ok "an argument with a space reaches the picker whole" \
     || bad "an argument with a space reaches the picker whole" "two words>" "$("$TMUX_REAL" -L "$PKS" capture-pane -p -t t | head -1)"
