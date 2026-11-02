@@ -8,7 +8,6 @@ pub mod parse;
 pub mod prompts;
 pub mod redact;
 pub mod request;
-pub mod risky;
 pub mod route;
 pub mod view;
 

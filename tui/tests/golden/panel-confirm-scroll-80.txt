@@ -17,4 +17,4 @@
 "│   echo step 19                                                               │"
 "│   echo step 20                                                               │"
 "│ … 20 more lines                                                              │"
-"╰ y confirm  ↑↓ scroll  ↵ is off: risky or multi-line  ? keys  esc n cancel ───╯"
+"╰ y confirm  ↑↓ scroll  ↵ is off: multi-line  ? keys  esc n cancel ────────────╯"

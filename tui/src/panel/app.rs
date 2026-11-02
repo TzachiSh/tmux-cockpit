@@ -7,7 +7,6 @@ use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
 use super::request::{Call, Fail, Request};
-use super::risky::risky;
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -666,10 +665,7 @@ impl App {
                 self.note = None;
                 return self.view = *back;
             }
-            KeyCode::Enter => self.say(
-                Level::Warn,
-                "press y to send this: Enter does not confirm a risky or multi-line send",
-            ),
+            KeyCode::Enter => self.say(Level::Warn, "press y to send this: Enter does not confirm a multi-line send"),
             _ => {}
         }
         let scroll = self.scrolled(k.code, scroll).unwrap_or(scroll);
@@ -1245,9 +1241,6 @@ impl App {
             _ => vec![],
         };
         w.extend(self.line_warning(text));
-        if let Some(r) = risky(text) {
-            w.push(format!("⚠ risky: {r}"));
-        }
         w
     }
 
@@ -1507,8 +1500,8 @@ pub fn hint(f: &Fail) -> Option<&'static str> {
     }
 }
 
-/// A send that runs something risky, or more than one line, wants a `y`: an
-/// Enter held over from the last view must not fire it.
+/// A send of more than one line wants a `y`: a pasted block runs line by line
+/// as it arrives, and an Enter held over from the last view must not fire it.
 pub fn needs_y(text: &str, send: bool) -> bool {
-    send && (risky(text).is_some() || text.trim_end_matches('\n').contains('\n'))
+    send && text.trim_end_matches('\n').contains('\n')
 }

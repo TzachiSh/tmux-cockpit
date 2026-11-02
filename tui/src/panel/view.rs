@@ -3,7 +3,6 @@
 use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
 use super::envelope::Flow;
 use super::request::Call;
-use super::risky::risky;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
@@ -585,10 +584,6 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 if let Some(x) = app.line_warning(&s.cmd) {
                     b.lines.extend(many(&tiered(g, &x), w, "     ", Style::new().fg(th.error)));
                 }
-                if let Some(r) = risky(&s.cmd) {
-                    b.lines
-                        .extend(many(&format!("{} risky: {r}", g.warn), w, "     ", Style::new().fg(th.error)));
-                }
                 if i == *sel {
                     b.scroll = at.saturating_sub(2);
                     b.sel = Some((at, b.lines.len()));
@@ -684,7 +679,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
             b.count = true;
             b.more = true;
             b.footer = if app.tablet {
-                // yes is y, never Enter: a tap held over must not fire a risky send
+                // yes is y, never Enter: a tap held over must not fire a multi-line send
                 let yes = if *send { "yes, send" } else { "yes, insert" };
                 let y = |c| Tap::Key(KeyEvent::from(KeyCode::Char(c)));
                 b.big = vec![(yes.into(), y('y')), ("no".into(), y('n'))];
@@ -693,7 +688,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 pills(&[
                     ("y", "confirm"),
                     (g.key_updown, "scroll"),
-                    (g.key_enter, "is off: risky or multi-line"),
+                    (g.key_enter, "is off: multi-line"),
                     help,
                     ("esc n", "cancel"),
                 ])
@@ -919,7 +914,7 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
         ],
         View::Confirm { back, .. } => vec![
             s("y", "confirm"),
-            s(ret, "confirm, unless risky or multi-line"),
+            s(ret, "confirm, unless multi-line"),
             s(&ud, "scroll"),
             scroll,
             help,
