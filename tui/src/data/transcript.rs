@@ -1,5 +1,5 @@
-//! `cockpit-tui transcript`: a port of scripts/lib/transcript.sh whose output is
-//! byte-identical to the jq reader's (Freeze 1, #54). Every failure is no output
+//! `cockpit-tui transcript`, behind the scripts/lib/transcript.sh shim: its output is
+//! byte-identical to the jq reader it replaced (Freeze 1, #54). Every failure is no output
 //! and status 1, nothing on stderr.
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -162,7 +162,7 @@ fn clean(s: &str) -> String {
 }
 
 /// What the harness injected is "", never a prompt. The bash-* tags are #193's,
-/// not yet in the jq reader.
+/// added after the jq reader was frozen.
 const INJECTED: [&str; 7] = [
     "<task-notification",
     "<system-reminder",
