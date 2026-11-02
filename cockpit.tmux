@@ -2,7 +2,7 @@
 # tmux-cockpit. Load with:  run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
 # Draws the status line and pane borders (scripts/lib/statusbar.conf; off with
 # @cockpit_statusbar off), defaults the cockpit options, and binds every cockpit key.
-# Keys and options are documented in KEYS.md, docs/statusbar.md and the README.
+# Keys and options are documented in KEYS.md, docs/status-bar.md and the README.
 set -u
 
 # A failed cd must stop here, not bind every key to /scripts/...

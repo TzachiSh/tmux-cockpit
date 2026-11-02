@@ -8,16 +8,16 @@ status bar (a tap on a phone), or Ctrl+double-click a line of output to open
 the file it names, at that line.
 
 ```text
- claude-main ●    claude-2 ▲    coder ○
-─ NEEDS YOU 2:claude-2 ────────────────────────────────────────
+── ≡ ─ cockpit  ▲ elsewhere ───~/src/api ⎇ feat/jwt   [z]  ┬── ▲ Allow Bash: rm -rf .next? ───
+⋮
+ 1 Rotate the JWT signing key ●  2 docs  3 Terraform plan ✕  4 Weekly notes ✓ ◆  5 logs
 ```
 
-A blocked pane's own border, visible in a split but not the one you are
-focused on, names the ask instead of just flagging one:
-
-```text
-─ NEEDS YOU Claude needs your permission to use Bash ───────────
-```
+The bottom line is the window tabs, each with its window's worst state. The
+top border holds the menu (`≡`), the session name, `▲ elsewhere` while an agent
+in another session waits, and the active pane's path, branch and zoom button.
+A waiting pane's border names what it is asking. Every one of them is a click,
+or a tap on a phone.
 
 | state | marker | colour | means |
 |-------|--------|--------|-------|
@@ -25,7 +25,8 @@ focused on, names the ask instead of just flagging one:
 | error | `✕` | orange | a tool failed |
 | running | `●` | yellow | working |
 | done | `✓` | green | finished, you have not picked it back up |
-| idle | `○` | grey | no agent, or nothing happening |
+| idle | `○` | grey | an agent with nothing happening |
+| unread review | `◆` | cyan | finished work nobody has read yet |
 
 Shape carries the state as well as colour, so it survives a greyscale
 screenshot and a red/green colourblind reader.
@@ -61,13 +62,13 @@ screenshot and a red/green colourblind reader.
 ### With tpm
 
 ```tmux
-set -g @plugin 'catppuccin/tmux'          # declare it first
 set -g @plugin 'TzachiSh/tmux-cockpit'
 run '~/.tmux/plugins/tpm/tpm'             # last
 ```
 
-tpm runs plugins after every `set -g` in your config, which is the order the
-`#{agent_*}` tokens need.
+tpm runs plugins after every `set -g` in your config, so the cockpit options
+you set are in place when the plugin loads. No theme plugin is needed: the
+plugin draws the bar itself.
 
 ### Manual
 
@@ -76,8 +77,8 @@ git clone https://github.com/TzachiSh/tmux-cockpit ~/.tmux/plugins/tmux-cockpit
 ~/.tmux/plugins/tmux-cockpit/install.sh    # links tm and the tmux-* commands into ~/.local/bin
 ```
 
-Then add this line to `~/.tmux.conf`, after every option that uses an
-`#{agent_*}` token and before tpm:
+Then add this line to `~/.tmux.conf`, after the cockpit options you set and
+before tpm:
 
 ```tmux
 run-shell ~/.tmux/plugins/tmux-cockpit/cockpit.tmux
@@ -110,7 +111,7 @@ until they restart.
 
 | key | does |
 |-----|------|
-| `prefix + a` | the agents menu: every action below, one letter each |
+| `prefix + a` | the menu: every action, one letter each; also `≡` on the border |
 | `prefix + u` | jump to the pane that needs you; again for the next |
 | `prefix + w` | the board: every agent pane, grouped by session, blocked first; `v` for live tiles (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`) |
@@ -140,15 +141,18 @@ None is required.
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |
 | `@cockpit_board_return` | `on` | `off`: `r`, `f` and `i` leave the board instead of coming back to it |
 | `@cockpit_panel_mode` | `auto` | `pc` or `tablet` forces the panel's mode |
-| `@cockpit_touch` | `auto` | touch layout for the session picker below 100 columns |
+| `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
+| `@cockpit_touch` | `auto` | the touch layout (bar and session picker) below 100 columns |
+| `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |
 | `@cockpit_glyphs` | unset | `ascii` or `nerd` glyph sets |
-| `@cockpit_blocked_bg` | `#52303a` | the tint behind a blocked pane |
+| `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
 | `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |
 
-Status-bar tokens: `#{agent_fleet}`, `#{agent_where_path}` and
-`#{agent_where_branch}`. They work only in the options listed in
-[docs/status-bar.md](docs/status-bar.md#status-bar-tokens).
+For a bar of your own, `@cockpit_statusbar off` and the
+`#{E:@cockpit_where_path}`, `#{E:@cockpit_where_branch}` and
+`#{E:@cockpit_fleet}` options: [docs/status-bar.md](docs/status-bar.md#a-bar-of-your-own).
+The old `#{agent_*}` tokens are gone; the same page has the migration table.
 
 ## How it works
 
@@ -172,8 +176,10 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
 
 ## Troubleshooting
 
-- **The status bar shows `#{agent_fleet}` literally.** The `run-shell` line is
-  above the option that uses the token. Move it below, or use tpm.
+- **The status bar shows `#{agent_fleet}` literally.** The `#{agent_*}` tokens
+  were removed. Use the options in the
+  [migration table](docs/status-bar.md#moving-from-the-agent_-tokens);
+  `install.sh --check` lists the lines that still carry one.
 - **A pane stays grey while its agent works.** The session started before the
   hooks were installed; restart it. A long thinking phase also fires no hook.
 - **Ctrl+double-click opens a GUI editor instead of the picker.** The terminal
@@ -190,11 +196,11 @@ Details: [docs/states-and-hooks.md](docs/states-and-hooks.md).
 - [docs/install.md](docs/install.md): install, bootstrap, tpm, requirements
 - [docs/configuration.md](docs/configuration.md): keys, options, popup size
 - [docs/states-and-hooks.md](docs/states-and-hooks.md): the state model, the hooks, `/goal`, known limits
-- [docs/status-bar.md](docs/status-bar.md): tabs, borders, tokens, the blocked tint, `tmux-where`
+- [docs/status-bar.md](docs/status-bar.md): the bar, borders and tabs, colours, a bar of your own, `tmux-where`
 - [docs/path-picker.md](docs/path-picker.md): Ctrl+double-click a path
 - [docs/vscode-remote.md](docs/vscode-remote.md): VS Code over Remote-SSH and Coder, security
 - [docs/board-and-panel.md](docs/board-and-panel.md) and [docs/tui.md](docs/tui.md): the `cockpit-tui` board and panel
-- [docs/menus.md](docs/menus.md): the agents menu and moving windows
+- [docs/menus.md](docs/menus.md): the menu and moving windows
 - [docs/phone-and-touch.md](docs/phone-and-touch.md): using it from a phone
 - [docs/tm.md](docs/tm.md): the `tm` session launcher (the command stays; its fzf picker is being replaced, #228)
 - [docs/review.md](docs/review.md): the `prefix + r` review (being replaced by the board, #228)

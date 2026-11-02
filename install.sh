@@ -173,7 +173,7 @@ set*\ @catppuccin_window_current_text\ *)
         if [ "$tok" -eq 0 ]; then row ok tokens 'no #{agent_*} token'
         else
             row warn tokens "$tok lines use #{agent_*}" \
-                "see the migration table in $DIR/docs/statusbar.md"
+                "see the migration table in $DIR/docs/status-bar.md"
         fi
     fi
 
