@@ -45,5 +45,7 @@ is no separate touch layout. Below 100 client columns the popup is full width
 ascii` swaps the glyphs for `! x * + .` where a terminal draws them at the wrong
 width.
 
+A client under 14 lines high has no room for a popup and its border, so `prefix + s` opens `tm` in a window of the client's session instead; the window closes when `tm` is done. Under 13 lines even that is too short and the screen asks for a larger terminal.
+
 Without a terminal, or without `cockpit-tui` (see `make tui`), `tm` lists the
 sessions and reads a name.

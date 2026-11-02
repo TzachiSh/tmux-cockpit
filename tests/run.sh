@@ -12230,6 +12230,7 @@ cat > "$TP/tmux" <<'STUB'
 case "$1" in
   display-message) printf '%s\n' "$TP_ANSWER" ;;
   display-popup)   shift; printf '%s\n' "$*" >> "$TP_LOG" ;;
+  new-window)      shift; printf 'WINDOW %s\n' "$*" >> "$TP_LOG" ;;
 esac
 exit 0
 STUB
@@ -12241,16 +12242,25 @@ tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W
         "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
-is "desktop: 70% wide, rows + 4 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
-is "desktop: rows + 4 above it" "-w 140 -h 24" "$(tpsize '20|0||||' 200 50)"
+is "desktop: 70% wide, rows + 5 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
+is "desktop: rows + 5 above it" "-w 140 -h 25" "$(tpsize '20|0||||' 200 50)"
+is "desktop: 12 sessions get their 12 rows (prompt, header, footer and border make 17)" "-w 140 -h 17" "$(tpsize '12|0||||' 200 50)"
 is "desktop: many sessions stop at 70% of the height" "-w 140 -h 35" "$(tpsize '40|0||||' 200 50)"
 is "tablet: 90% wide" "-w 99 -h 14" "$(tpsize '7|3||||' 110 40)"
-is "narrow: full width, rows + 4, a 14-line floor (12 inside the border)" "-w 56 -h 14" "$(tpsize '7|3||||' 56 30)"
-is "narrow with many sessions: rows + 4" "-w 56 -h 24" "$(tpsize '20|0||||' 56 30)"
+is "narrow: full width, rows + 5, a 14-line floor (12 inside the border)" "-w 56 -h 14" "$(tpsize '7|3||||' 56 30)"
+is "narrow with many sessions: rows + 5" "-w 56 -h 25" "$(tpsize '20|0||||' 56 30)"
 is "@cockpit_touch off at a narrow width: the desktop tier" "-w 50 -h 14" "$(tpsize '7|3|off|||' 56 30)"
 is "@cockpit_touch on at a desktop width: full width" "-w 200 -h 14" "$(tpsize '7|3|on|||' 200 50)"
 is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7|3||60%|10|' 200 50)"
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
+tpsize '7|3||||' 200 12 >/dev/null
+case "$(cat "$TP/log")" in
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "but a window of its session, running tm" ;;
+    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... /tm" "$(cat "$TP/log")" ;;
+esac
+is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" "$(tpsize '7|3||||' 200 14)"
+tpsize '7|3||||' 200 13 >/dev/null
+case "$(cat "$TP/log")" in WINDOW*) ok "and 13 lines is still a window" ;; *) bad "and 13 lines is still a window" "WINDOW ..." "$(cat "$TP/log")" ;; esac
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in

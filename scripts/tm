@@ -202,21 +202,27 @@ popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
   num "$n" && num "$nneed" || die "cockpit: tm --popup could not count the sessions"
   case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cw" -lt 100 ] && t=1 ;; esac
   rows=$n; [ -n "$needs" ] && [ "$nneed" -gt 0 ] && rows=$nneed
-  # 4 = the prompt, the header line, the footer and the border; the list takes
-  # the rows. 14 is the floor: the popup's border takes 2 and the screen needs
+  # 5 = the prompt, the header line, the footer and the popup's border (2); the
+  # list takes the rows. 14 is the floor: the border takes 2 and the screen needs
   # 12 inside it, or it draws its "too short" card.
   if [ "$t" = 1 ]; then
     w=$cw; ceiling w "$pw" "$cw"
-    h=$((rows + 4)); clamp h 14 "$ch"; ceiling h "$ph" "$ch"
+    h=$((rows + 5)); clamp h 14 "$ch"; ceiling h "$ph" "$ch"
   else
     w=$((cw * 70 / 100)); [ "$cw" -ge 160 ] || w=$((cw * 90 / 100))
     # The user's size options are ceilings, not sizes.
     ceiling w "$pw" "$cw"
-    hmax=$((ch * 70 / 100)); ceiling hmax "$ph" "$ch"
-    h=$((rows + 4)); clamp h 14 "$hmax"
+    hmax=$((ch * 70 / 100)); clamp hmax 14 "$ch"; ceiling hmax "$ph" "$ch"
+    h=$((rows + 5)); clamp h 14 "$hmax"
   fi
   local cmd
   printf -v cmd 'TM_POPUP=1 TM_SID=%q TM_CLIENT=%q %s%s' "$sid" "$client" "$QSELF" "${needs:+ --needs}"
+  # A client under 14 lines has no room for a popup and its border: a window of
+  # the client's session has it all.
+  if [ "$ch" -lt 14 ]; then
+    tmux new-window -t "$sid:" -n sessions "$cmd"
+    return
+  fi
   tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' -E "$cmd"
 }
 
