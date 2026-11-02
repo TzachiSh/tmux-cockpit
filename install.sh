@@ -104,6 +104,8 @@ if [ "$check" -eq 1 ]; then
     rv=$(PATH=${fp:-$PATH} command -v revdiff 2>/dev/null)
     v=''; [ -z "$rv" ] || v=$("$rv" --version 2>/dev/null)
     v=${v#version: }; v=${v%% *}
+    # A release build prints v1.13.0-<sha>-<date>: keep the leading x.y.z.
+    [ "$v" = unknown ] || { v=${v#v}; v=${v%%[!0-9.]*}; }
     revfix='bootstrap.sh, or brew install umputun/apps/revdiff, or'
     revfix="$revfix go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff);"
     revfix="$revfix see docs/install.md#requirements"

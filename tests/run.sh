@@ -12367,13 +12367,18 @@ for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do mkdi
 rvshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 rvshim revdiff "version: 1.13.0" "$RV/new"; rvshim revdiff "version: 1.12.9" "$RV/old"
 rvshim revdiff "unknown" "$RV/unk"
-for d in new old unk none; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
+mkdir -p "$RV/rel" "$RV/relold"
+rvshim revdiff "version: v1.13.0-abc1234-20260905T044327" "$RV/rel"
+rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
+for d in new old unk none rel relold; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
 rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
     env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
         PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
 }
 rvrow() { printf '%s\n' "$1" | sed -n 's/^\[ *\([a-z]*\) *\] *revdiff .*/\1/p'; }
 out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out")"
+out=$(rvdc "$RV/rel"); is "a release build's v1.13.0-sha-date is an ok row" "ok" "$(rvrow "$out")"
+out=$(rvdc "$RV/relold"); is "and v1.12.0-sha-date is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/old")
 is "revdiff below the tested version is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/unk"); is "an unknown version is a warn row" "warn" "$(rvrow "$out")"
@@ -12414,6 +12419,11 @@ out=$(rvbs "$RV/new"); rc=$?
 is "a revdiff at the pin on PATH is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 out=$(rvbs "$RV/unk")
 is "an unknown-version revdiff is present, not replaced" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/rel")
+is "a v-prefixed release build at the pin is skipped" "absent" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+out=$(rvbs "$RV/relold")
+is "a v-prefixed one below the pin is fetched" "present" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
+rm -f "$RVB/revdiff"
 out=$(rvbs "$RV/old")
 is "one below the pin is fetched" "present" "$([ -e "$RVB/revdiff" ] && echo present || echo absent)"
 rm -f "$RVB/revdiff"

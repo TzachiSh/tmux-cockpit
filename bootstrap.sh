@@ -337,6 +337,8 @@ fi
 REVDIFF=1.13.0
 step "revdiff"
 rv_have=$(revdiff --version 2>/dev/null); rv_have=${rv_have#version: }; rv_have=${rv_have%% *}
+# A release build prints v1.13.0-<sha>-<date>: keep the leading x.y.z.
+[ "$rv_have" = unknown ] || { rv_have=${rv_have#v}; rv_have=${rv_have%%[!0-9.]*}; }
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 if [ "$rv_have" = unknown ] || { [ -n "$rv_have" ] && ver_ge "$rv_have" 1 13; }; then
     note "revdiff $rv_have already present"
