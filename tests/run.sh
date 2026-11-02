@@ -2615,7 +2615,8 @@ is "and the run exits 0" "0" "$bsrc"
 # The probe is $BIN/<tool>, never PATH: the shimmed 0.44.1 fzf sits ahead of
 # $BIN here, and probing PATH would re-download all three on every run.
 bsout=$(bs --full)
-is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c 'already current')"
+# fetch_tool's own lines: tui-fetch says "already current" for cockpit-tui too.
+is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c '^  ok: .* already current')"
 
 # Without --full the 0.44.1 on PATH is below the pickers' 0.73: fzf alone.
 bsclear
