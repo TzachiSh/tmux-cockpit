@@ -18,6 +18,9 @@ log() {
     printf '%s cockpit-board: %s\n' "$ts" "$*" >> "$LOG"
 }
 
+sep=$'\037'
+sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
+
 PANE=
 case "${1:-}" in
     -p) PANE=${2:-} ;;
@@ -102,26 +105,28 @@ while :; do
             exit 0
             ;;
         # #228 verbs
-        # The board confirmed with the window's name on screen and wrote it to
-        # $f.expect first. A window renamed since is not the one the human
-        # agreed to lose, so it is refused, and the board comes back with a ✕.
+        # The board confirmed with the window's id (@N) and wrote it to $f.expect
+        # first. A name is no identity (automatic-rename gives agents the same
+        # one), so the id is compared: a pane moved to another window since is
+        # refused, and what dies is the window that id names, never a re-lookup.
         kill)
             want=
-            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 1100 -- "$f.expect" 2>/dev/null | head -n 1)
-            # The board drops control characters from what it writes (up to 1024
-            # bytes, one line), so the name tmux holds is cleaned the same way.
-            have=$(tmux display-message -p -t "$target" '#{?pane_id,#{window_name},}' 2>/dev/null | head -n 1 | tr -d '\000-\037\177')
+            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
+            info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{window_name}$sep#{session_name}:#{window_index},}" 2>/dev/null | head -n 1)
+            have=${info%%"$sep"*}; label=${info#*"$sep"}
+            label=$(printf %s "$label" | tr -d '\000-\037\177'); label=${label//"$sep"/ }
+            case "$want" in @[0-9]*) case "${want#@}" in *[!0-9]*) want= ;; esac ;; *) want= ;; esac
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
             elif [ -z "$want" ]; then
                 printf '✕ cockpit: not killed: the board named no window to confirm\n' > "$note"
             elif [ "$have" != "$want" ]; then
-                printf '✕ cockpit: not killed: the window is now "%s", you confirmed "%s"\n' \
-                    "$(printf %s "$have" | tr -d '\000-\037\177')" "$(printf %s "$want" | tr -d '\000-\037\177')" > "$note"
-            elif tmux kill-window -t "$target" 2>/dev/null; then
-                printf '✓ cockpit: killed window %s\n' "$(printf %s "$have" | tr -d '\000-\037\177')" > "$note"
+                printf '✕ cockpit: not killed: %s is now in window %s, you confirmed %s\n' "$target" "$have" "$want" > "$note"
+            elif tmux kill-window -t "$have" 2>/dev/null; then
+                printf '✓ cockpit: killed window %s (%s)\n' "$have" "${label#*"$sep"} ${label%%"$sep"*}" > "$note"
+                log "killed window $have $label via $target"
             else
-                printf '✕ cockpit: could not kill the window of %s\n' "$target" > "$note"
+                printf '✕ cockpit: could not kill window %s\n' "$have" > "$note"
             fi
             ;;
         # Today's --request path. It opens its own popup, and tmux silently
@@ -130,7 +135,9 @@ while :; do
         # waits for this wrapper to exit, then runs the request. Its output, the
         # composed batch on exit 10, is not shown anywhere.
         request)
-            tmux run-shell -b "while kill -0 $$ 2>/dev/null; do sleep 0.1; done; $(printf %q "$DIR/scripts/tmux-review") -p $target --request $target >/dev/null 2>&1"
+            # run-shell expands formats (# becomes ##) and hands the string to sh.
+            rq=$(sq "$DIR/scripts/tmux-review"); rq=${rq//#/##}
+            tmux run-shell -b "while kill -0 $$ 2>/dev/null; do sleep 0.1; done; $rq -p $target --request $target >/dev/null 2>&1"
             exit 0
             ;;
         # Version skew: an older binary's verb (the retired `fix`) or a newer one's.

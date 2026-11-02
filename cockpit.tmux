@@ -223,7 +223,7 @@ Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 bk=$(key @cockpit_board_key w)
 # Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
-    # Not SRC_PANE, for the same reason as the review window above (#45).
+    # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
         tmux bind-key "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$Q_BOARD -p '#{pane_id}'")"
     else

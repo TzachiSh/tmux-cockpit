@@ -48,9 +48,8 @@ shq() { printf '%q' "$1"; }
 # shellcheck disable=SC2034  # read by the libs
 CAP_SENTINEL='(diff too large)'
 
-# How a pane names itself, for the fleet queue and the delivery prompt alike; the
-# fallback convention (and why #{host_short} reads as "unset") is the note
-# above fleet_rows, examples/tmux.conf:42.
+# How a pane names itself in the delivery prompt; the fallback convention is that
+# an unset pane_title reads as #{host_short}, not empty, so the window name stands in.
 # shellcheck disable=SC2034  # read by the libs
 AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'
 

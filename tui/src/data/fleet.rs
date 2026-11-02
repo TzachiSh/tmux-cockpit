@@ -123,9 +123,9 @@ pub fn stat_text(loc: &str, pm: &str) -> String {
     if new.is_empty() { counts.into() } else { format!("{counts} {new}") }
 }
 
-/// The branch half of `repo⑂branch`; empty outside a repo.
+/// The branch half of `repo⑂branch`, split at the last mark; empty outside a repo.
 pub fn branch(loc: &str) -> &str {
-    loc.split_once('⑂').map_or("", |(_, b)| b)
+    loc.rsplit_once('⑂').map_or("", |(_, b)| b)
 }
 
 #[cfg(test)]
@@ -147,6 +147,8 @@ mod tests {
     fn the_branch_is_what_follows_the_mark() {
         assert_eq!(branch("api⑂feat/x"), "feat/x");
         assert_eq!(branch(""), "");
+        // a repo directory named with the mark: the branch is what follows the last one
+        assert_eq!(branch("a⑂b⑂main"), "main");
     }
 
     #[test]

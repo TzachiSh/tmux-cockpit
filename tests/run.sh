@@ -11548,7 +11548,11 @@ cat > "$KD/bin" <<KDBIN
 #!/bin/sh
 printf '%s\n' "\$*" >> "$KD/bargv"
 [ "\${5:-}" = "" ] || cat "\$5" >> "$KD/bargv"
-[ -e "$KD/once" ] && exit 0
+if [ -e "$KD/once" ]; then
+    # a second trip in the same wrapper, with no .expect of its own
+    [ -e "$KD/line2" ] && [ ! -e "$KD/twice" ] || exit 0
+    : > "$KD/twice"; cat "$KD/line2" > "\$COCKPIT_ACTION"; exit 0
+fi
 : > "$KD/once"
 if [ -e "$KD/link" ]; then ln -s "$KD/expect" "\$COCKPIT_ACTION.expect"
 elif [ -e "$KD/expect" ]; then cp "$KD/expect" "\$COCKPIT_ACTION.expect"; fi
@@ -11560,9 +11564,10 @@ KVHOME=$("$TMUX_REAL" -L "$KV" list-panes -t t -F '#{pane_id}')
 kv_win() {                    # <window-name> -> the pane id of a fresh one-pane window
     "$TMUX_REAL" -L "$KV" new-window -d -P -F '#{pane_id}' -n "$1" -t t: 'exec sleep 3600'
 }
+kv_id() { "$TMUX_REAL" -L "$KV" display-message -p -t "$1" '#{window_id}'; }
 kv_alive() { "$TMUX_REAL" -L "$KV" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" && echo alive || echo gone; }
 kv_run() {                    # <action-line> [expect]: one trip through the wrapper; the note it left
-    rm -f "$KD/once" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"; : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
+    rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/link" "$KD/expect" "$KD/rv"; : > "$KD/bargv"; printf '%s\n' "$1" > "$KD/line"
     [ $# -lt 2 ] || printf '%s\n' "$2" > "$KD/expect"
     [ "${KV_LINK:-}" != 1 ] || : > "$KD/link"
     "$TMUX_REAL" -L "$KV" new-window -d -t t: \
@@ -11572,43 +11577,61 @@ kv_run() {                    # <action-line> [expect]: one trip through the wra
     sed -n '3,$p' "$KD/bargv"
 }
 
-V=$(kv_win vic-one)
-case "$(kv_run "kill $V" vic-one)" in '✓ cockpit: killed window vic-one') ok "kill %N with the shown name kills that window, and the note says ✓" ;;
-    *) bad "kill %N with the shown name kills that window, and the note says ✓" "✓ cockpit: killed window vic-one" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+V=$(kv_win vic-one); VW=$(kv_id "$V")
+case "$(kv_run "kill $V" "$VW")" in "✓ cockpit: killed window $VW (vic-one"*) ok "kill %N with the shown window id kills that window, and the note says ✓" ;;
+    *) bad "kill %N with the shown window id kills that window, and the note says ✓" "✓ cockpit: killed window $VW (vic-one …)" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and the window is gone" "gone" "$(kv_alive "$V")"
 
-V=$(kv_win vic-two)
-"$TMUX_REAL" -L "$KV" rename-window -t "$V" renamed-since
-case "$(kv_run "kill $V" vic-two)" in '✕ cockpit: not killed: the window is now "renamed-since", you confirmed "vic-two"') ok ".expect naming another window refuses, with a ✕ note naming both" ;;
-    *) bad ".expect naming another window refuses, with a ✕ note naming both" "✕ ... is now \"renamed-since\", you confirmed \"vic-two\"" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
-is "and the renamed window survives" "alive" "$(kv_alive "$V")"
+# Two windows with one name, a pane moved from the first into the second between
+# the confirm and the verb: the id the human confirmed no longer holds the pane,
+# and the other window of that name must not die in its place.
+A=$(kv_win claude); AW=$(kv_id "$A"); A2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$A" 'exec sleep 3600')
+B=$(kv_win claude); BW=$(kv_id "$B")
+"$TMUX_REAL" -L "$KV" join-pane -d -s "$A" -t "$B"
+case "$(kv_run "kill $A" "$AW")" in "✕ cockpit: not killed: $A is now in window $BW, you confirmed $AW") ok "a pane moved into a window of the same name is refused, naming both ids" ;;
+    *) bad "a pane moved into a window of the same name is refused, naming both ids" "✕ ... $A is now in window $BW, you confirmed $AW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and nothing died: the first window's other pane, the moved pane, the other window" "alive alive alive" \
+   "$(kv_alive "$A2") $(kv_alive "$A") $(kv_alive "$B")"
 
-# What the board's write_expect leaves: one line, control characters dropped, up
-# to 1024 bytes. A long name and a name holding a tab must still match.
-LONGN=$(printf 'n%.0s' $(seq 1 900))
-V=$(kv_win "$LONGN")
-kv_run "kill $V" "$LONGN" >/dev/null
-is "a 900-byte window name is matched whole, not cut at the reader" "gone" "$(kv_alive "$V")"
-V=$(kv_win "tab"$'\t'"bed")
-kv_run "kill $V" "tabbed" >/dev/null
-is "a window name holding a control character matches the board's cleaned copy" "gone" "$(kv_alive "$V")"
 V=$(kv_win vic-two)
+case "$(kv_run "kill $V" "$BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
+    *) bad ".expect naming another window's id refuses" "✕ ... you confirmed $BW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and that window survives" "alive" "$(kv_alive "$V")"
+
 case "$(kv_run "kill $V")" in '✕ cockpit: not killed: the board named no window'*) ok "kill %N with no .expect refuses" ;;
     *) bad "kill %N with no .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and the window survives" "alive" "$(kv_alive "$V")"
 
-KV_LINK=1; case "$(kv_run "kill $V" renamed-since)" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
+case "$(kv_run "kill $V" "")" in '✕ cockpit: not killed: the board named no window'*) ok "an empty .expect refuses" ;;
+    *) bad "an empty .expect refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+case "$(kv_run "kill $V" "vic-two")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a window name, not an id, refuses" ;;
+    *) bad "a .expect that is a window name, not an id, refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and the window survives both" "alive" "$(kv_alive "$V")"
+
+KV_LINK=1; case "$(kv_run "kill $V" "$(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
     *) bad "a .expect that is a symlink is not read" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 KV_LINK=
 is "and that window survives too" "alive" "$(kv_alive "$V")"
 
-case "$(kv_run "kill %99999" anything)" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
+# The wrapper clears .expect before every board run: trip 1 leaves V2's id behind
+# (a refused kill of V), trip 2 asks to kill V2 with no .expect of its own.
+V2=$(kv_win vic-three); V2W=$(kv_id "$V2")
+rm -f "$KD/once" "$KD/twice" "$KD/done" "$KD/link" "$KD/rv"; : > "$KD/bargv"
+printf 'kill %s\n' "$V" > "$KD/line"; printf '%s\n' "$V2W" > "$KD/expect"; printf 'kill %s\n' "$V2" > "$KD/line2"
+"$TMUX_REAL" -L "$KV" new-window -d -t t: \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME; echo x > $KD/done"
+until_file "$KD/done" 'x'
+case "$(tail -n 1 "$KD/bargv")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect left by the last trip does not stand in for the next action's" ;;
+    *) bad "a .expect left by the last trip does not stand in for the next action's" "✕ ... named no window" "$(cat "$KD/bargv")" ;; esac
+is "and the window it named survives" "alive" "$(kv_alive "$V2")"
+
+case "$(kv_run "kill %99999" "@1")" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
     *) bad "kill of a pane that is gone says so and kills nothing" "✕ cockpit: %99999 is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 
 # a window holding a second pane: the whole window goes, as the confirm said
-V=$(kv_win vic-three); V2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
-kv_run "kill $V" vic-three >/dev/null
-is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive "$V") $(kv_alive "$V2")"
+V=$(kv_win vic-four); V3=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
+kv_run "kill $V" "$(kv_id "$V")" >/dev/null
+is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive "$V") $(kv_alive "$V3")"
 case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board returns after a kill, selecting the pane that was" ;;
     *) bad "the board returns after a kill, selecting the pane that was" "board --select $V --note <file>" "$(sed -n 2p "$KD/bargv")" ;; esac
 
@@ -11617,6 +11640,14 @@ kv_run "request $V" >/dev/null
 until_file "$KD/rv" '*--request*'
 is "request %N runs tmux-review's --request path on that pane, once the board has closed" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
 is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/bargv" | tr '\n' ';')"
+# run-shell expands formats and hands the string to sh: a plugin directory with a
+# # and a ' in its name must still reach tmux-review.
+KQ="$KD/q#{x}uo'te"; mkdir -p "$KQ"; cp -r "$KD/p/." "$KQ/"; : > "$KD/rv"
+rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/expect" "$KD/link"; printf 'request %s\n' "$V" > "$KD/line"
+"$TMUX_REAL" -L "$KV" new-window -d -t t: \
+    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log '${KQ//\'/\'\\\'\'}/scripts/cockpit-board' -p $KVHOME; echo x > $KD/done"
+until_file "$KD/rv" '*--request*'
+is "request %N finds tmux-review under a plugin directory holding #{x} and '" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
 
 # The request opens a popup, and tmux silently runs nothing for a popup opened
 # inside another (display-popup exits 0). So the wrapper must be gone first:
