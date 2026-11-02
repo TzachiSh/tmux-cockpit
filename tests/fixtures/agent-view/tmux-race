@@ -1,0 +1,8 @@
+#!/bin/sh
+# A tmux that lets another claimant take the poller slot between agent-poll's read and its
+# compare-and-set: on the first `if-shell` that names @cockpit_poll_pid it first writes
+# $AV_RACE into the slot. $AV_REAL is the real tmux.
+case "$*" in
+    if-shell*@cockpit_poll_pid*) "$AV_REAL" set-option -g @cockpit_poll_pid "$AV_RACE" ;;
+esac
+exec "$AV_REAL" "$@"

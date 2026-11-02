@@ -77,6 +77,9 @@ PATH="$SHIM:$PATH"; export PATH
 for v in thm_red:#ff6b6b thm_peach:#ff9838 thm_yellow:#ffcc33 thm_green:#3dea7d thm_overlay_0:#5b6272; do
     "$TMUX_REAL" -L "$SUITE_SOCK" set -g "@${v%%:*}" "${v#*:}" >/dev/null 2>&1
 done
+# No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
+# it runs the real `claude agents` (#174). The agent-view blocks use servers of their own.
+"$TMUX_REAL" -L "$SUITE_SOCK" set -g @cockpit_bg_poll off >/dev/null 2>&1
 # The repo's own config, so the rendering assertions below test what we ship.
 "$TMUX_REAL" -L "$SUITE_SOCK" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 
@@ -12293,6 +12296,504 @@ is "and so does the open picker"                                            "1 1
 if [ -n "$OPWAS" ]; then tmux set-option -p -t "$PANE" @cockpit_click_line "$OPWAS" 2>/dev/null
 else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
 
+av_setup() {                  # the fixtures every agent-view block needs; each calls it first
+    [ -n "${AVBIN:-}" ] && return 0
+    AVF="$DIR/tests/fixtures/agent-view"
+    AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
+    AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
+    cat > "$AVREC/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$AVLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+    chmod +x "$AVREC/tmux"
+}
+
+echo "== agent-view: a background worker's hooks touch nothing (#174) =="
+av_setup
+# A hook in an agent-view background worker (CLAUDE_CODE_SESSION_KIND=bg) has no TMUX_PANE and
+# the pane belongs to the front end, which relays its own notifications. The worker's hook
+# exits 0 and never reaches tmux.
+av_bg() {                     # av_bg <script> [args] -> "<rc> <tmux calls>", payload on stdin
+    : > "$AVLOG"
+    env -u TMUX -u TMUX_PANE CLAUDE_CODE_SESSION_KIND=bg PATH="$AVREC:$PATH" \
+        XDG_STATE_HOME="$AVREC/state" "$@" >/dev/null 2>&1
+    printf '%s %s' "$?" "$(wc -l < "$AVLOG" | tr -d ' ')"
+}
+AVPAY='{"notification_type":"agent_needs_input","message":"m","session_id":"s"}'
+is "agent-state running in a bg worker: exit 0, no tmux call" "0 0" \
+   "$(av_bg "$DIR/scripts/agent-state" running </dev/null)"
+is "agent-state notify in a bg worker: exit 0, no tmux call" "0 0" \
+   "$(printf '%s' "$AVPAY" | av_bg "$DIR/scripts/agent-state" notify)"
+is "agent-state off in a bg worker: exit 0, no tmux call" "0 0" \
+   "$(av_bg "$DIR/scripts/agent-state" off </dev/null)"
+is "review-gate Stop in a bg worker: exit 0, no tmux call" "0 0" \
+   "$(printf '%s' "$AVPAY" | av_bg "$DIR/scripts/review-gate")"
+is "agent-context in a bg worker: exit 0, no tmux call" "0 0" \
+   "$(av_bg "$DIR/scripts/agent-context" < "$DIR/tests/fixtures/statusline.json")"
+# --concede is the agent's own call, not a hook: it still says it recorded nothing.
+is "review-gate --concede in a bg worker still refuses, with no tmux call" "1 0" \
+   "$(av_bg "$DIR/scripts/review-gate" --concede why </dev/null)"
+
+echo "== agent-view: agent-poll --once writes the worst background state (#174) =="
+av_setup
+av_srv() {                    # av_srv <tag>: a private server; sets AV AVT AVP
+    AV="cockpit-av-$$-$1"; SOCKS="$SOCKS $AV"
+    "$TMUX_REAL" -L "$AV" -f /dev/null new-session -d -s t -x 80 -y 24 \
+        'exec -a claude bash' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$AV" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$AV" set-environment -g PATH "$AVBIN:$PATH" >/dev/null 2>&1
+    AVT="$SOCKDIR/$AV,0,0"
+    AVP=$("$TMUX_REAL" -L "$AV" list-panes -t t -F '#{pane_id}')
+}
+av_tm() { "$TMUX_REAL" -L "$AV" "$@"; }
+avo()   { av_tm show-option -pqv -t "${2:-$AVP}" "$1"; }
+av_once() {                   # av_once <fixture.json> [env NAME=value...]: one poll, its exit code
+    local j=$1; shift
+    env -u TMUX_PANE -u CLAUDE_CODE_SESSION_KIND TMUX="$AVT" PATH="$AVBIN:$PATH" \
+        AV_JSON="$AVF/$j" "$@" "$DIR/scripts/agent-poll" --once </dev/null >/dev/null 2>&1
+    echo $?
+}
+if need_tmux "agent-view poll"; then :; else
+av_srv once
+AVP2=$(av_tm new-window -d -P -F '#{pane_id}' 'exec -a claude bash')
+AVP3=$(av_tm new-window -d -P -F '#{pane_id}' 'exec -a claude bash')
+AVPS=$(av_tm new-window -d -P -F '#{pane_id}' 'sleep 300')
+av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+av_tm set-option -p -t "$AVP2" @cockpit_agentview 1
+av_tm set-option -p -t "$AVPS" @cockpit_agentview 1
+av_row() {                    # av_row <name> <fixture> <state before> <want state> <want msg>
+    if [ "$3" = needs-input ]; then av_tm set-option -p -t "$AVP" @panestate_msg "stale ask"
+    else av_tm set-option -pu -t "$AVP" @panestate_msg; fi
+    if [ -n "$3" ]; then av_tm set-option -p -t "$AVP" @panestate "$3"
+    else av_tm set-option -pu -t "$AVP" @panestate; fi
+    av_once "$2" >/dev/null
+    is "$1" "$4|$5" "$(avo @panestate)|$(avo @panestate_msg)"
+}
+av_row "a blocked session -> needs-input, with its name in the ask" blocked.json "" \
+    needs-input "fix the parser needs you"
+av_row "all done clears needs-input: the poller is not held by stickiness" done.json needs-input \
+    done ""
+av_row "a failed and a working session -> error" failed-working.json running error ""
+av_row "working and done -> running" working.json done running ""
+av_row "a stopped session counts as idle: the state is cleared" stopped.json running "" ""
+av_row "no background sessions: the state is cleared" none.json needs-input "" ""
+av_row "an interactive session's blocked state is not a background one" \
+    other-kinds.json running done ""
+av_row "an unknown state is ignored: idle" unknown-state.json running "" ""
+av_row "a stale ask is dropped once the pane is no longer blocked" \
+    working.json needs-input running ""
+av_tm set-option -p -t "$AVP" @panestate running
+for AVBAD in garbage.json error-object.json; do
+    is "$AVBAD: exit 0, no write" "0 running" "$(av_once "$AVBAD") $(avo @panestate)"
+done
+is "claude exiting 1: exit 0, no write" "0 running" \
+   "$(av_once done.json AV_RC=1) $(avo @panestate)"
+# Both marked panes are written; a claude pane that is not marked, and a marked pane that is no
+# longer an agent, are not.
+av_tm set-option -p -t "$AVP" @panestate running
+av_once blocked.json >/dev/null
+is "every marked agent pane is written" "needs-input needs-input" \
+   "$(avo @panestate) $(avo @panestate "$AVP2")"
+is "an unmarked agent pane is left alone" "" "$(avo @panestate "$AVP3")"
+is "a marked pane that is no longer an agent is left alone" "" "$(avo @panestate "$AVPS")"
+is "...and loses its mark, so a later plain session there is not the poller's" "" \
+   "$(avo @cockpit_agentview "$AVPS")"
+# The ask is bounded and clean whatever the session is named.
+av_tm set-option -pu -t "$AVP" @panestate_msg
+av_once hostile-name.json >/dev/null
+AVMSG=$(avo @panestate_msg)
+is "a hostile name is capped at 120 characters" "120" "${#AVMSG}"
+case "$AVMSG" in
+    "bad [31m name"xxx*) ok "...with its escape and newline flattened" ;;
+    *) bad "...with its escape and newline flattened" "bad [31m namexxx..." "$AVMSG" ;;
+esac
+# Compare-then-set: an unchanged state writes nothing, since every set redraws.
+AVSETS="$AVREC/sets"; : > "$AVSETS"
+av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_once blocked.json >/dev/null; av_once blocked.json >/dev/null
+: > "$AVSETS"; av_once blocked.json >/dev/null
+is "a poll that changes nothing writes nothing" "0" "$(wc -l < "$AVSETS" | tr -d ' ')"
+av_tm set-hook -gu after-set-option
+# Without jq, without claude: no write, and no error.
+AVMIN=$(mktmpd); AVMIN2=$(mktmpd); AVMIN3=$(mktmpd)
+for c in env bash timeout sleep cat; do
+    for m in "$AVMIN" "$AVMIN2" "$AVMIN3"; do ln -s "$(command -v $c)" "$m/$c"; done
+done
+for m in "$AVMIN" "$AVMIN2" "$AVMIN3"; do ln -s "$TMUX_REAL" "$m/tmux"; done
+ln -s "$(command -v jq)" "$AVMIN/jq"; ln -s "$(command -v jq)" "$AVMIN3/jq"
+ln -s "$AVF/claude" "$AVMIN/claude"; ln -s "$AVF/claude" "$AVMIN2/claude"
+av_tm set-option -p -t "$AVP" @panestate running
+av_min() {                    # av_min <PATH dir>: a poll with only that PATH -> "<rc> <state>"
+    env -u TMUX_PANE TMUX="$AVT" PATH="$1" AV_JSON="$AVF/blocked.json" \
+        "$DIR/scripts/agent-poll" --once </dev/null >/dev/null 2>&1
+    printf '%s %s' "$?" "$(avo @panestate)"
+}
+is "no jq on PATH: exit 0, no write" "0 running" "$(av_min "$AVMIN2")"
+is "no claude on PATH: exit 0, no write" "0 running" "$(av_min "$AVMIN3")"
+is "with jq and claude both on the minimal PATH the poll does write" "0 needs-input" \
+   "$(av_min "$AVMIN")"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: agent-state poll is compare-then-set and recomputes the counters (#174) =="
+av_setup
+if need_tmux "agent-view poll verb"; then :; else
+av_srv verb
+av_st() {
+    env -u TMUX_PANE TMUX="$AVT" "$DIR/scripts/agent-state" "$@" </dev/null >/dev/null 2>&1
+}
+av_st needs-input "$AVP"
+is "the hook's needs-input raises the window banner" "1" \
+   "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_needs)"
+av_st poll done "$AVP"
+is "poll done lifts a sticky needs-input" "done" "$(avo @panestate)"
+is "...and the window banner follows" "" "$(av_tm show-option -wqv -t "$AVP" @cockpit_win_needs)"
+av_tm set-option -p -t "$AVP" @cockpit_review pending
+av_st poll running "$AVP"
+is "poll running does not drop a pending review (nobody pressed Enter)" "running pending" \
+   "$(avo @panestate) $(avo @cockpit_review)"
+av_st poll bogus "$AVP"
+av_st poll "" "$AVP"
+av_st poll
+is "an unknown poll state, an empty one and no pane at all are ignored" "running" \
+   "$(avo @panestate)"
+av_st poll off "$AVP"
+is "poll off clears the state and keeps the pending review" " pending" \
+   "$(avo @panestate) $(avo @cockpit_review)"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: agent_needs_input / agent_completed mark the pane, start one poller (#174) =="
+av_setup
+if need_tmux "agent-view hook" || [ ! -d /proc/self ]; then :; else
+av_srv hook
+# AV_RC=1: the poller's first tick fails, so only the hook's own writes show.
+av_tm set-environment -g AV_RC 1
+av_tm set-option -g @cockpit_bg_poll 3600
+av_hook() {                   # av_hook <type>: a front end's relayed notification, as a hook
+    : > "$AVLOG"
+    printf '{"notification_type":"%s","message":"m1"}' "$1" \
+        | env TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+av_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
+av_polls() {                  # live agent-poll processes on this server
+    local d n=0
+    for d in /proc/[0-9]*; do
+        [ "$(cat "$d/comm" 2>/dev/null)" = agent-poll ] || continue
+        tr '\0' '\n' < "$d/environ" 2>/dev/null | grep -q "^TMUX=$SOCKDIR/$AV," && n=$((n + 1))
+    done
+    echo "$n"
+}
+av_wait() {                   # av_wait '<test command>': polls it up to 30s, the box may be loaded
+    local i; for i in $(seq 1 300); do eval "$1" && return 0; sleep 0.1; done; return 1
+}
+av_published() {              # the published pid is a live agent-poll
+    local p; p=$(av_tm show-option -gqv @cockpit_poll_pid)
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
+av_hook permission_prompt
+is "an ordinary permission prompt is not an agent view: no mark, no poller" "|0" \
+   "$(avo @cockpit_agentview)|$(av_runs)"
+av_tm set-option -pu -t "$AVP" @panestate
+av_hook agent_completed
+is "agent_completed marks the pane" "1" "$(avo @cockpit_agentview)"
+is "...writes no state of its own" "" "$(avo @panestate)"
+is "...and starts the poller, once" "1" "$(av_runs)"
+av_wait av_published
+is "the poller publishes its own pid, verified by name" "yes" \
+   "$(av_published && echo yes || echo no)"
+av_hook agent_needs_input
+is "agent_needs_input keeps today's write: needs-input and its text" "needs-input m1" \
+   "$(avo @panestate) $(avo @panestate_msg)"
+is "a second notification with a live poller starts none" "0" "$(av_runs)"
+is "...the hook cost one extra tmux read over the plain notify (msg + batch + read)" "3" \
+   "$(wc -l < "$AVLOG" | tr -d ' ')"
+is "...and exactly one poller is running" "1" "$(av_polls)"
+AVPOLLPID=$(av_tm show-option -gqv @cockpit_poll_pid)
+kill -TERM "$AVPOLLPID" 2>/dev/null
+av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+is "SIGTERM unpublishes the poller's pid" "" "$(av_tm show-option -gqv @cockpit_poll_pid)"
+# A published pid that is not an agent-poll is not trusted, and not signalled.
+sleep 300 & AVSLEEP=$!
+av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
+av_hook agent_needs_input
+is "a stale pid naming another process is not trusted: a poller starts" "1" "$(av_runs)"
+av_wait av_published
+is "...and takes the publication over" "yes" \
+   "$([ "$(av_tm show-option -gqv @cockpit_poll_pid)" != "$AVSLEEP" ] \
+        && av_published && echo yes || echo no)"
+is "...and the other process was never signalled" "yes" \
+   "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
+kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
+kill -TERM "$(av_tm show-option -gqv @cockpit_poll_pid)" 2>/dev/null
+av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+# off means never: no mark, no poller; the needs-input write is today's.
+av_tm set-option -g @cockpit_bg_poll off
+av_tm set-option -pu -t "$AVP" @cockpit_agentview
+av_hook agent_needs_input
+is "@cockpit_bg_poll off: no mark and no poller" "|0|needs-input" \
+   "$(avo @cockpit_agentview)|$(av_runs)|$(avo @panestate)"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: the poller owns one slot per server and lets go on every exit path (#174) =="
+av_setup
+if need_tmux "agent-view poller" || [ ! -d /proc/self ]; then :; else
+av_srv life
+av_tm set-environment -g AV_JSON "$AVF/done.json"
+av_tm set-option -g @cockpit_bg_poll 1
+av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+av_start() {                  # a poller outside the hook path; its pid in AVPID
+    env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+        "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
+    AVPID=$!
+}
+av_gone() { ! kill -0 "$1" 2>/dev/null; }
+av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
+av_start; AVA=$AVPID
+av_wait '[ "$(av_pub)" = "$AVA" ]'
+is "a poller publishes its own pid" "$AVA" "$(av_pub)"
+av_wait '[ "$(avo @panestate)" = done ]'
+is "...and its first tick has already written" "done" "$(avo @panestate)"
+av_start; AVB=$AVPID
+av_wait "av_gone \$AVB" || kill -9 "$AVB"; wait "$AVB" 2>/dev/null
+is "a second poller finds the slot taken and exits" "$AVA" "$(av_pub)"
+is "...without unpublishing the first one's pid on its way out" "yes" \
+   "$(kill -0 "$AVA" 2>/dev/null && echo yes || echo no)"
+# The slot is released only if it is still ours: a poller whose slot was taken over lets go
+# of nothing (the number written here stands for the later poller's).
+av_tm set-option -g @cockpit_poll_pid 999999
+kill -TERM "$AVA"; av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
+is "a poller whose slot was taken over does not release the new owner's pid" "999999" "$(av_pub)"
+av_tm set-option -gu @cockpit_poll_pid
+av_start; AVA=$AVPID
+av_wait '[ "$(av_pub)" = "$AVA" ]'
+av_tm respawn-pane -k -t "$AVP" 'sleep 300'
+av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
+is "when no marked pane is an agent any more the poller exits" "yes" \
+   "$(av_gone "$AVA" && echo yes || echo no)"
+is "...and unpublishes" "" "$(av_pub)"
+av_tm respawn-pane -k -t "$AVP" 'exec -a claude bash'
+av_start; AVC=$AVPID
+av_wait '[ "$(av_pub)" = "$AVC" ]'
+kill -TERM "$AVC"; av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGTERM unpublishes" "" "$(av_pub)"
+av_start; AVC=$AVPID
+av_wait '[ "$(av_pub)" = "$AVC" ]'
+kill -HUP "$AVC"; av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+is "SIGHUP unpublishes" "" "$(av_pub)"
+av_tm set-option -g @cockpit_bg_poll off
+av_start; AVC=$AVPID
+av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
+is "@cockpit_bg_poll off: the poller never publishes" "" "$(av_pub)"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: a plain session after an agent-view visit is not the poller's (#174) =="
+av_setup
+# The mark outlives the visit: the pane's next plain session would have its states overwritten
+# every tick. A hook of the pane's own session, other than the relayed agent_* notifications,
+# takes the mark away -- in the same tmux invocation, and even when the state would not change.
+if need_tmux "agent-view unmark" || [ ! -d /proc/self ]; then :; else
+av_srv plain
+av_tm set-environment -g AV_RC 1
+av_tm set-option -g @cockpit_bg_poll 3600
+av_plain() {                  # av_plain <verb> [args]: a hook of the pane's own session
+    : > "$AVLOG"
+    printf '{"notification_type":"permission_prompt","message":"Claude needs your permission"}' \
+        | env TMUX="$AVT" TMUX_PANE="$AVP" PATH="$AVREC:$PATH" \
+            "$DIR/scripts/agent-state" "$@" >/dev/null 2>&1
+}
+av_hook agent_needs_input
+av_wait av_published
+is "the visit marks the pane" "1 needs-input" "$(avo @cockpit_agentview) $(avo @panestate)"
+av_plain notify
+is "a plain permission prompt takes the mark away" "|needs-input" \
+   "$(avo @cockpit_agentview)|$(avo @panestate)"
+is "...with no tmux call beyond the two a permission prompt always made" "2" \
+   "$(wc -l < "$AVLOG" | tr -d ' ')"
+is "a poll tick then leaves the plain session's needs-input alone" "needs-input" \
+   "$(av_once done.json >/dev/null; avo @panestate)"
+# Outside `when`: the pane is already in the state the hook would write, and loses the mark.
+av_hook agent_completed
+is "marked again, already on needs-input" "1 needs-input" \
+   "$(avo @cockpit_agentview) $(avo @panestate)"
+av_plain notify
+is "a plain prompt for a state it already holds still unmarks" "" "$(avo @cockpit_agentview)"
+for AVV in running done off; do
+    av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+    av_plain "$AVV"
+    is "a plain $AVV hook unmarks, in its one tmux invocation" "|1" \
+       "$(avo @cockpit_agentview)|$(wc -l < "$AVLOG" | tr -d ' ')"
+done
+# What is not the pane's own session keeps the mark.
+av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+env -u TMUX_PANE TMUX="$AVT" "$DIR/scripts/agent-state" running "$AVP" </dev/null >/dev/null 2>&1
+is "a tmux hook that passes the pane, with no TMUX_PANE, keeps the mark" "1" \
+   "$(avo @cockpit_agentview)"
+env -u TMUX_PANE TMUX="$AVT" "$DIR/scripts/agent-state" poll done "$AVP" </dev/null >/dev/null 2>&1
+is "the poller's own write keeps the mark" "1" "$(avo @cockpit_agentview)"
+av_hook agent_needs_input
+is "a relayed agent_needs_input keeps the mark" "1" "$(avo @cockpit_agentview)"
+av_hook agent_completed
+is "a relayed agent_completed keeps the mark" "1" "$(avo @cockpit_agentview)"
+AVK=$(av_tm show-option -gqv @cockpit_poll_pid)
+kill -TERM "$AVK" 2>/dev/null
+av_wait '[ -z "$(av_tm show-option -gqv @cockpit_poll_pid)" ]'
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: the poller slot is a compare-and-set, rechecked each tick (#174) =="
+av_setup
+if need_tmux "agent-view slot" || [ ! -d /proc/self ]; then :; else
+av_srv slot
+av_tm set-environment -g AV_JSON "$AVF/done.json"
+av_tm set-option -g @cockpit_bg_poll 1
+av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+AVRACE=$(mktmpd); ln -s "$AVF/tmux-race" "$AVRACE/tmux"
+av_startx() {                 # av_startx [NAME=value...]: a poller of our own; pid in AVPID
+    env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" "$@" \
+        "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
+    AVPID=$!
+}
+av_gone() { ! kill -0 "$1" 2>/dev/null; }
+av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
+av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
+    local rc=0
+    av_wait "av_gone $1" || { rc=1; kill -9 "$1" 2>/dev/null; }
+    wait "$1" 2>/dev/null
+    return $rc
+}
+# Another claimant wins between this poller's read and its write (tmux-race does the write).
+av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
+AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "an empty slot taken by someone else meanwhile: the poller leaves" "yes" "$AVLEFT"
+is "...and the slot is still theirs" "999999" "$(av_pub)"
+sleep 300 & AVSLEEP=$!
+av_tm set-option -g @cockpit_poll_pid "$AVSLEEP"
+av_startx PATH="$AVRACE:$AVBIN:$PATH" AV_REAL="$TMUX_REAL" AV_RACE=999999
+AVA=$AVPID; av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a stale slot taken by someone else meanwhile: the poller leaves" "yes" "$AVLEFT"
+is "...the slot is still theirs" "999999" "$(av_pub)"
+is "...and the process the stale pid named was not signalled" "yes" \
+   "$(kill -0 "$AVSLEEP" 2>/dev/null && echo yes || echo no)"
+kill "$AVSLEEP" 2>/dev/null; wait "$AVSLEEP" 2>/dev/null
+# A poller that loses its slot after the claim notices on its next tick.
+av_tm set-option -gu @cockpit_poll_pid
+av_startx; AVA=$AVPID
+av_wait '[ "$(av_pub)" = "$AVA" ]'
+av_tm set-option -g @cockpit_poll_pid 999999
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a poller whose slot was taken over leaves by itself" "yes" "$AVLEFT"
+is "...without touching the new owner's pid" "999999" "$(av_pub)"
+# A poller that ends normally has no child to stop: its sleep was reaped by `wait`, and a kill
+# of that number would hit whatever the kernel handed it next (AGENTS.md). Traced with bash -x,
+# since kill is a builtin: after two full ticks the poller is told to stop by the option.
+AVTR="$AVREC/trace"; : > "$AVTR"
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTR" &
+AVA=$!
+av_wait '[ "$(grep -c "^+* tick\$" "$AVTR")" -ge 2 ]'
+av_tm set-option -g @cockpit_bg_poll off
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a poller told to stop by the option leaves by itself" "yes" "$AVLEFT"
+is "...and signals nothing on the way out" "0" "$(grep -c '^+* kill ' "$AVTR")"
+is "...after running its exit trap" "1" "$(grep -c '^+* release$' "$AVTR")"
+av_tm set-option -g @cockpit_bg_poll 1
+# A signal can land after `sleep &` has forked and before `sleeper=$!` has saved the pid. A DEBUG
+# trap (set -T carries it into the sourced script) makes that moment exact: it sends the poller
+# its own TERM just before that assignment.
+# The sleep (a shim that records its pid) must not outlive the poller.
+AVSP="$AVREC/sleep.pid"; rm -f "$AVSP"
+AVSLB=$(mktmpd); ln -s "$AVF/sleep-pid" "$AVSLB/sleep"
+av_tm set-option -g @cockpit_bg_poll 3600
+av_tm set-option -gu @cockpit_poll_pid
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVSLB:$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    AV_SLEEPPID="$AVSP" AV_REALSLEEP="$(command -v sleep)" \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" \
+    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && kill -TERM $$' </dev/null >/dev/null 2>&1 &
+AVA=$!
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a TERM between the fork and the saved pid still ends the poller" "yes" "$AVLEFT"
+AVSC=$(cat "$AVSP" 2>/dev/null)
+is "...the sleep it had started was reached" "yes" "$([ -n "$AVSC" ] && echo yes || echo no)"
+av_wait "av_gone ${AVSC:-0}" && AVLEFT=yes || AVLEFT=no
+[ -z "$AVSC" ] || av_gone "$AVSC" || kill "$AVSC" 2>/dev/null
+is "...and did not outlive it" "yes" "$AVLEFT"
+av_tm set-option -g @cockpit_bg_poll 1
+# A HUP that lands right after the claim has published the pid must not leave it there: the
+# traps are in place before the claim. The DEBUG trap sends it at the claim's read-back, the
+# first command after the set.
+AVHUP='case "$BASH_COMMAND" in "[ \"\$(tmux show-option -gqv @cockpit_poll_pid"*)'
+AVHUP="$AVHUP kill -HUP \$\$ ;; esac"
+av_tm set-option -g @cockpit_bg_poll 3600
+av_tm set-option -gu @cockpit_poll_pid
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
+    bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" "$AVHUP" \
+    </dev/null >/dev/null 2>&1 &
+AVA=$!
+av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
+is "a HUP right after the claim ends the poller" "yes" "$AVLEFT"
+is "...and the slot it had just taken is empty again" "" "$(av_pub)"
+av_tm set-option -g @cockpit_bg_poll 1
+# Two starts at once: one poller is left, and it holds the slot. From here the tick is an
+# hour, so only a signal can end a poller and only release can end its sleep.
+av_tm set-option -g @cockpit_bg_poll 3600
+av_tm set-option -gu @cockpit_poll_pid
+av_startx; AVA=$AVPID; av_startx; AVB=$AVPID
+av_alive_count() {
+    local n=0; av_gone "$AVA" || n=$((n + 1)); av_gone "$AVB" || n=$((n + 1)); echo "$n"
+}
+av_wait '[ "$(av_alive_count)" = 1 ]'
+is "two simultaneous starts leave exactly one poller" "1" "$(av_alive_count)"
+if av_gone "$AVA"; then AVL=$AVB; else AVL=$AVA; fi
+is "...and it holds the slot" "$AVL" "$(av_pub)"
+# Its sleep child goes with it.
+av_wait 'pgrep -P "$AVL" >/dev/null'
+AVCH=$(pgrep -P "$AVL" | head -1)
+kill -TERM "$AVL"; av_reap "$AVL"
+av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
+av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
+is "a poller stopped by a signal leaves no child behind" "yes" "$AVLEFT"
+wait "$AVA" "$AVB" 2>/dev/null
+av_tm kill-server >/dev/null 2>&1
+fi
+
+echo "== agent-view: a poller that cannot read the sessions leaves the reason (#174) =="
+av_setup
+if need_tmux "agent-view poll_err"; then :; else
+av_srv err
+av_tm set-option -p -t "$AVP" @cockpit_agentview 1
+av_path() {                   # av_path <dir> <jq|no> <claude|no>: a PATH of just what it needs
+    local c
+    for c in env bash timeout sleep cat; do ln -s "$(command -v $c)" "$1/$c"; done
+    ln -s "$TMUX_REAL" "$1/tmux"
+    [ "$2" = jq ] && ln -s "$(command -v jq)" "$1/jq"
+    [ "$3" = claude ] && ln -s "$AVF/claude" "$1/claude"
+    return 0
+}
+AVE1=$(mktmpd); av_path "$AVE1" no claude
+AVE2=$(mktmpd); av_path "$AVE2" jq no
+AVE3=$(mktmpd); av_path "$AVE3" jq claude
+av_err() {                    # av_err <PATH dir> <fixture> [env...] -> @cockpit_poll_err
+    local pdir=$1 j=$2; shift 2
+    env -u TMUX_PANE TMUX="$AVT" PATH="$pdir" AV_JSON="$AVF/$j" "$@" \
+        "$DIR/scripts/agent-poll" --once </dev/null >/dev/null 2>&1
+    av_tm show-option -gqv @cockpit_poll_err
+}
+is "no jq: the reason is recorded" "no jq on PATH" "$(av_err "$AVE1" blocked.json)"
+is "no claude: the reason is recorded" "no claude on PATH" "$(av_err "$AVE2" blocked.json)"
+is "claude failing: the reason is recorded" "claude agents failed" \
+   "$(av_err "$AVE3" blocked.json AV_RC=1)"
+is "unreadable json: the reason is recorded" "claude agents gave unreadable json" \
+   "$(av_err "$AVE3" garbage.json)"
+is "a good tick clears it" "" "$(av_err "$AVE3" blocked.json)"
+av_tm kill-server >/dev/null 2>&1
+fi
+
+
 echo "== transcript reader: doing, said and asked rows (#176) =="
 TRF="$DIR/tests/fixtures/transcript-reader"
 . "$DIR/scripts/lib/transcript.sh"
@@ -12645,6 +13146,51 @@ until_file "$PKD/rc" '?*'
 is "an unknown flag exits 2 and names it" "2:1" "$(cat "$PKD/rc" 2>/dev/null):$(grep -c -- '--bogus' "$PKD/err")"
 "$TMUX_REAL" -L "$PKS" kill-server >/dev/null 2>&1
 fi
+
+echo "== review store: revdiff context-line records parse and round-trip (#232) =="
+# Shared setup lives in a function so each block passes alone under tests/only.sh.
+rsa_load() { # source the lib, copy the revdiff fixture to a fresh dir, set RSAD/RSAF
+    # shellcheck disable=SC1090
+    . "$DIR/scripts/lib/review-store.sh"; declare -gA STORE=()
+    RSAD=$(mktmpd); RSAF="$RSAD/comments.md"; cp "$DIR/tests/fixtures/store-adapter/${1:-revdiff.md}" "$RSAF"
+}
+rsa_load; parse_store "$RSAF" 2>"$RSAD/err"
+is "a revdiff store with a ( ) record keeps every record" "5" "${STORE_N:-}"
+is "and sets no .bak aside" "" "$(ls "$RSAD" | grep '\.bak' || true)"
+is "and says nothing on stderr" "" "$(cat "$RSAD/err")"
+is "the context record stores side ' '" " " "${STORE[1.side]:-}"
+format_store "$RSAD/f1"; grep -qxF '## a.txt:1 ( )' "$RSAD/f1" && ok "a context record formats back as ( )" || bad "a context record formats back as ( )" "## a.txt:1 ( )" "$(cat "$RSAD/f1")"
+is "format of the fixture is byte-identical to revdiff's text (modulo the final blank)" "" "$(diff <(cat "$RSAF"; echo) "$RSAD/f1" 2>&1)"
+parse_store "$RSAD/f1"; format_store "$RSAD/f2"
+is "format(parse(x)) is stable across a second pass" "" "$(cmp "$RSAD/f1" "$RSAD/f2" 2>&1)"
+
+echo "== review store: a missing final blank line parses the same (#232) =="
+rsa_load; parse_store "$RSAF"; rsa_n1=${STORE_N:-}; rsa_b1=${STORE[4.body]:-}
+printf '\n' >> "$RSAF"; parse_store "$RSAF"
+is "with and without the last blank line the count matches" "$rsa_n1" "${STORE_N:-}"
+is "and the last body matches" "$rsa_b1" "${STORE[4.body]:-}"
+
+echo "== review store: ingest mode keeps a leading > line as body (#232) =="
+rsa_load quoted.md; parse_store_revdiff "$RSAF"
+is "ingest: a > first body line is body" "> quoted first"$'\n'"more" "${STORE[0.body]:-}"
+is "ingest: no fragment key is set" "unset" "${STORE[0.frag]-unset}"
+rsa_load quoted.md; parse_store "$RSAF"
+is "cockpit mode: the same line is still a fragment" "quoted first" "${STORE[0.frag]:-}"
+is "cockpit mode: the body is the rest" "more" "${STORE[0.body]:-}"
+rsa_load quoted.md; printf '## b.txt:9 ( )\ncomment\n' >> "$RSAF"; sed -i 's/^more$/more\n/' "$RSAF"; parse_store_revdiff "$RSAF"
+is "ingest: a quoted line in one record does not disturb the next" "2/comment" "${STORE_N:-}/${STORE[1.body]:-}"
+
+echo "== review store: stale_keys never judges a ( ) record, from real lines_mode rows (#232) =="
+rsa_load; . "$DIR/scripts/lib/review-diff.sh"
+RSAR="$RSAD/repo"
+(
+  git init -q -b main "$RSAR" && cd "$RSAR" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  seq 1 6 > a.txt; git add -A; git commit -q -m init; sed -i 5s/5/five/ a.txt
+) >/dev/null 2>&1
+lines_mode "$RSAR" > "$RSAD/rows" 2>/dev/null
+printf '## a.txt:4 ( )\nctx\n\n## a.txt:5 ( )\nctx on changed\n\n## a.txt:5 (+)\nlive\n\n## a.txt:9 (+)\ngone\n' > "$RSAF"
+is "stale_keys: a ( ) record is never reported; a (+) record is judged by its row" "## a.txt:9 (+)" "$(stale_keys "$RSAF" "$RSAD/rows")"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
