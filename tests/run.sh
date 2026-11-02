@@ -9041,7 +9041,9 @@ is "f, then esc on Home, returns on the same pane" "-p $RBX;-p $RBX;-p $RBX;" "$
 until_cap "$RB" "$RBW" '*board · 3 agents*'
 "$TMUX_REAL" -L "$RB" send-keys -t "$RBW" Enter
 rb_gone "$RBW" || bad "jump ends the loop" "the window closes" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
-is "jump ends the loop, on the pane it jumped to" "$RBX" "$("$TMUX_REAL" -L "$RB" display -p -t t '#{pane_id}')"
+# =t: and not t: a bare t is tried as a window name prefix before a session, and
+# automatic-rename can name an agent window "tmux" (the fork before its exec).
+is "jump ends the loop, on the pane it jumped to" "$RBX" "$("$TMUX_REAL" -L "$RB" display -p -t =t: '#{pane_id}')"
 is "board.state keeps the selection" "cockpit-board-state 1;sel $RBX;" \
    "$(tr '\n' ';' < "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
 is "created 0600" "600" "$(stat -c %a "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
