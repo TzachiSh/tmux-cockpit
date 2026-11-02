@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# cockpit-board — the shell half of the board.
+# cockpit-board — the shell half of the board, and the loop that brings it back.
 #   cockpit-board -p <pane>     the pane the key was pressed in
 # The action comes back through a file, never $(…): ratatui paints on stdout.
 set -u
 
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || exit 1
-BIN="$DIR/bin/cockpit-tui"
 LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 # shellcheck source=lib/pane.sh
 . "$DIR/scripts/lib/pane.sh" || exit 1
+# shellcheck source=lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
+BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
 log() {
@@ -25,55 +27,88 @@ esac
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
-# The binary is optional, so a missing one is not an error.
+# Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" 2>/dev/null
+    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh; prefix r is the fleet list" 2>/dev/null
     exit 0
 fi
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
-f=$(mktemp) || exit 1
-trap 'rm -f "$f"' EXIT
+# A private 0700 directory: the note is shown on the board, so no other user
+# may get to write it first.
+d=$(mktemp -d) || exit 1
+f="$d/act" note="$d/note"
+trap 'rm -rf "$d"' EXIT
 
-# The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
-# environment and must not mark the binary as its child.
-env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board 2>>"$LOG" || {
-    rc=$?
-    tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
-    exit 0
-}
+# @cockpit_board_return off: every action is one-way, as before the loop.
+back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]; }
 
-# One line, `<verb> <pane-id>`. Pre-set because a missing file skips the read
-# under set -u; no `|| exit`, as read fails on an unterminated line it did assign.
-verb='' target='' rest=''
-read -r verb target rest 2>/dev/null < "$f"
-[ -n "$verb" ] || exit 0                 # nothing chosen: the ordinary q
-bad=
-[ -z "$rest" ] || bad=1
-case "$verb" in *[!a-z]*) bad=1 ;; esac
-is_pane "$target" || bad=1
-# The binary ships on its own tag, so log grammar drift instead of ignoring it.
-if [ -n "$bad" ]; then
-    log "ignored action line [$verb $target $rest]"
-    exit 0
-fi
+# The board comes back after review, info and panel, on the pane it acted on and
+# with the action's last line as its note, until an action or an exit ends it.
+args=()
+while :; do
+    : > "$f" || exit 0
+    # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
+    # environment and must not mark the binary as its child.
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
+        rc=$?
+        tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
+        exit 0
+    }
 
-case "$verb" in
-    # switch-client fails without a client; the selection below still applies.
-    jump)
-        tmux switch-client -t "$target" 2>/dev/null || true
-        tmux select-window -t "$target" 2>/dev/null
-        tmux select-pane   -t "$target" 2>/dev/null
-        ;;
-    # These draw in the board's popup: tmux allows one popup per client.
-    review)  "$DIR/scripts/tmux-review" -p "$target" ;;
-    panel)   "$DIR/scripts/cockpit-panel" -p "$target" ;;
-    info)    "$DIR/scripts/tmux-review" -p "$target" --info; read -r _ ;;
-    deliver) tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null ;;
-    # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
-    *)
-        log "unknown verb [$verb $target]"
-        tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null
-        ;;
-esac
-exit 0
+    # One line, `<verb> <pane-id>`. Pre-set because a missing file skips the read
+    # under set -u; no `|| exit`, as read fails on an unterminated line it did assign.
+    verb='' target='' rest=''
+    read -r verb target rest 2>/dev/null < "$f"
+    [ -n "$verb" ] || exit 0                 # nothing chosen: the ordinary q
+    bad=
+    [ -z "$rest" ] || bad=1
+    case "$verb" in *[!a-z]*) bad=1 ;; esac
+    is_pane "$target" || bad=1
+    # The binary ships on its own tag, so log grammar drift instead of ignoring it.
+    if [ -n "$bad" ]; then
+        log "ignored action line [$verb $target $rest]"
+        exit 0
+    fi
+
+    # Each verb that returns writes at most one line to $note; a line starting
+    # with ✕ is a failure or a refusal, which the board keeps until a key.
+    : > "$note" || exit 0
+    case "$verb" in
+        # switch-client fails without a client; the selection below still applies.
+        jump)
+            tmux switch-client -t "$target" 2>/dev/null || true
+            tmux select-window -t "$target" 2>/dev/null
+            tmux select-pane   -t "$target" 2>/dev/null
+            exit 0
+            ;;
+        # These draw in the board's popup: tmux allows one popup per client.
+        # Its status is not a verdict: leaving the queue with esc is non-zero too.
+        review)
+            "$DIR/scripts/tmux-review" -p "$target"
+            ;;
+        panel)
+            COCKPIT_PANEL_NOTE="$note" "$DIR/scripts/cockpit-panel" -p "$target"
+            ;;
+        info)
+            "$DIR/scripts/tmux-review" -p "$target" --info || printf '✕ cockpit: no info for %s\n' "$target" > "$note"
+            # One key, named: the next screen draws over this one.
+            if back; then printf '\n  any key: back to the board'; else printf '\n  any key closes'; fi
+            read -rsn1 _
+            ;;
+        deliver)
+            tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null
+            exit 0
+            ;;
+        # #228 verbs
+        # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
+        *)
+            log "unknown verb [$verb $target]"
+            tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null
+            exit 0
+            ;;
+    esac
+    back || exit 0
+    args=(--select "$target")
+    [ -s "$note" ] && args+=(--note "$note")
+done

@@ -1,11 +1,9 @@
 name: tui
 
-# Path-filtered: the rest of the repo is shell and has no cargo to run.
+# Unfiltered: the shell scripts call the binary, so every change can break it.
 on:
   push:
-    paths: ['tui/**', 'Makefile', 'tests/run.sh', '.github/workflows/tui.yml']
   pull_request:
-    paths: ['tui/**', 'Makefile', 'tests/run.sh', '.github/workflows/tui.yml']
 
 jobs:
   tui-test:

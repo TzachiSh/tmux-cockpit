@@ -4,6 +4,13 @@
 set -u
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Required (#199), and make test builds it first. Exported, so a copy of the
+# plugin under test still runs the binary this tree built.
+export COCKPIT_TUI_BIN=${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}
+# Never the network: any tui-fetch a block reaches (install.sh, bootstrap.sh)
+# stops before gh, curl or cargo, whatever the pin and Cargo.toml say.
+export COCKPIT_TUI_OFFLINE=1
+[ -x "$COCKPIT_TUI_BIN" ] || { echo "tests/run.sh: no $COCKPIT_TUI_BIN; run make tui-bin" >&2; exit 1; }
 STATE=$(mktemp -d)
 export XDG_RUNTIME_DIR="$STATE"
 mkdir -p "$STATE/agent-state"
@@ -2387,7 +2394,6 @@ mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DOLD" "$DNO" "$DC/tmuxtmp"
 printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 dshim fzf "0.74.3 (15f64c49)" "$DSH"
-dshim gum "gum version v2.0.0 (b1f2)" "$DSH"
 dshim bat "bat 0.26.1 (a3c4)" "$DSH"
 dshim fzf "0.44.1 (debian)" "$DOLD"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
@@ -2428,12 +2434,20 @@ is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
 # failed in CI over a missing client would be ignored everywhere else.
 is "no client means truecolor skips"        "1" "$(dcrow "$dcout" "skip truecolor")"
 is "no server means popup-border skips"     "1" "$(dcrow "$dcout" "skip popup-border")"
+is "the suite's cockpit-tui is an ok row"   "1" "$(dcrow "$dcout" "ok cockpit-tui")"
 dctv=$(tmux -V 2>/dev/null); dctv=${dctv#tmux }
 if [ "$(dcge "$dctv" 3.8)" = no ]; then
     skip_ "install.sh --check exits 0 on a wired box (this tmux is below 3.8)"
 else
     is "and the whole run exits 0"          "0" "$dcrc"
 fi
+# Required since #199: missing or below TUI_MIN fails the doctor, not warns.
+dcout=$(COCKPIT_TUI_BIN="$DC/no-such-tui" dc "$DCP"); dcrc=$?
+is "a missing cockpit-tui is a fail row"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
+is "and it exits 2"                         "2" "$dcrc"
+dshim cockpit-tui "cockpit-tui 0.0.1" "$DC"
+dcout=$(COCKPIT_TUI_BIN="$DC/cockpit-tui" dc "$DCP")
+is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
 # Debian ships 0.44.1, below the 0.73 the pickers need.
 dcout=$(dc "$DOLD:$DCP"); dcrc=$?
 is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"
@@ -2445,9 +2459,10 @@ $DCS new-session -d 'sleep 300' >/dev/null 2>&1
 $DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
 is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
 $DCS kill-server >/dev/null 2>&1
-mkdir -p "$DC/oldgum"; dshim gum "gum version v1.0.0 (a1)" "$DC/oldgum"
-dcout=$(dc "$DC/oldgum:$DCP"); dcrc=$?
-is "an optional tool below its floor is a warn row" "1" "$(dcrow "$dcout" "warn gum")"
+# bat is the optional tool left, and a PATH without it is a warn row.
+mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"
+dcout=$(dc "$DBIN:$DC/nobat:$SHIM:$DNO"); dcrc=$?
+is "a missing optional tool is a warn row" "1" "$(dcrow "$dcout" "warn bat")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
@@ -2559,14 +2574,6 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         ( cd "$BS/pack" && tar -czf "$f/fzf-0.74.3-$a.tar.gz" fzf )
     done
     ( cd "$f" && sha256sum fzf-0.74.3-*.tar.gz > fzf_0.74.3_checksums.txt )
-    d="$REL/charmbracelet/gum/releases/download/v2.0.0"; mkdir -p "$d"
-    for a in Linux_x86_64 Linux_arm64 Darwin_x86_64 Darwin_arm64; do
-        rm -rf "$BS/pack"; mkdir -p "$BS/pack/gum_2.0.0_$a"
-        printf '#!/bin/sh\necho "gum version v2.0.0 (b1f2)"\n' > "$BS/pack/gum_2.0.0_$a/gum"
-        chmod +x "$BS/pack/gum_2.0.0_$a/gum"
-        ( cd "$BS/pack" && tar -czf "$d/gum_2.0.0_$a.tar.gz" "gum_2.0.0_$a" )
-    done
-    ( cd "$d" && sha256sum gum_2.0.0_*.tar.gz > checksums.txt )
     d="$REL/sharkdp/bat/releases/download/v0.26.1"; mkdir -p "$d"
     for a in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
              x86_64-apple-darwin aarch64-apple-darwin; do
@@ -2583,7 +2590,7 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         noasset) rm -f "$f"/fzf-0.74.3-*.tar.gz ;;
     esac
 }
-bsclear() { rm -f "$BB/fzf" "$BB/gum" "$BB/bat"; }
+bsclear() { rm -f "$BB/fzf" "$BB/bat"; }
 bssaid() {                    # bssaid <label> <literal line the freeze spells>
     case "$3" in
         *"$2"*) ok "$1" ;;
@@ -2593,20 +2600,21 @@ bssaid() {                    # bssaid <label> <literal line the freeze spells>
 
 mkrel
 bsout=$(bs --full); bsrc=$?
-is "--full installs all three pinned tools into \$BIN" "fzf gum bat" \
-   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+is "--full installs both pinned tools into \$BIN" "fzf bat" \
+   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
 is "and each is the version the pin names" "0.74.3 (15f64c49)" "$("$BB/fzf" --version 2>/dev/null)"
 is "and the run exits 0" "0" "$bsrc"
 # The probe is $BIN/<tool>, never PATH: the shimmed 0.44.1 fzf sits ahead of
-# $BIN here, and probing PATH would re-download all three on every run.
+# $BIN here, and probing PATH would re-download both on every run.
 bsout=$(bs --full)
-is "a second run fetches nothing" "3" "$(printf '%s\n' "$bsout" | grep -c 'already current')"
+# fetch_tool's own lines: tui-fetch says "already current" for cockpit-tui too.
+is "a second run fetches nothing" "2" "$(printf '%s\n' "$bsout" | grep -c '^  ok: .* already current')"
 
 # Without --full the 0.44.1 on PATH is below the pickers' 0.73: fzf alone.
 bsclear
 bsout=$(bs); bsrc=$?
 is "without --full an fzf below 0.73 fetches fzf alone" "fzf" \
-   "$(for t in fzf gum bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
+   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
 is "and the run exits 0" "0" "$bsrc"
 bsout=$(BPATH="$BB:$BPATH" bs)
 case "$bsout" in *"latest tools"*) bad "an fzf at 0.73+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
@@ -7206,6 +7214,51 @@ is "and nothing it names runs under tmux-review or the previews" "" "$(cat "$GHM
 case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
     *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
 
+echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
+# c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
+# old/git shim drops GIT_NO_LAZY_FETCH as git < 2.44 does, leaving only the protocol pin.
+LF=$(mktmpd); LFM="$LF/marker"; mkdir "$LF/old" "$LF/hb"
+printf '#!/bin/sh\necho up >> %s\nexit 1\n' "$LFM" > "$LF/up"; chmod +x "$LF/up"; ln -s "$LF/up" "$LF/hb/git-remote-foo"
+printf '#!/bin/sh\nunset GIT_NO_LAZY_FETCH\nexec %s "$@"\n' "$(command -v git)" > "$LF/old/git"; chmod +x "$LF/old/git"
+( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+  git init -q -b main "$LF/src" && cd "$LF/src" && git config uploadpack.allowFilter true \
+  && printf 'a\n' > f.txt && git add -A && git commit -qm 1 \
+  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c" \
+  && git switch -qc side && printf 'g\n' > g.txt && git add g.txt && git commit -qm g \
+  && git switch -qc side2 main && printf 'h\n' > h.txt && git add h.txt && git commit -qm h \
+  && git switch -q main && printf 'b\n' >> f.txt && git commit -qam 2 \
+  && git clone -q --filter=blob:none "file://$LF/src" "$LF/c2" \
+  && cd "$LF/c" && git fetch -q && git reset -q --soft origin/main \
+  && git config remote.origin.uploadpack "$LF/up" && git config core.sshCommand "$LF/up" \
+  && git config protocol.file.allow always && git config protocol.ssh.allow always \
+  && git config protocol.ext.allow always && git config protocol.foo.allow always ) >/dev/null 2>&1
+lf_paths() {
+    ( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c" diff --numstat HEAD ) >/dev/null 2>&1
+    is "not through git.sh's git$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    ( . "$DIR/scripts/lib/git.sh"; . "$DIR/scripts/lib/review-diff.sh"; tree_diff "$LF/c" --numstat ) >/dev/null 2>&1
+    is "nor through tree_diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    "$DIR/scripts/tmux-review" --lines "$LF/c" >/dev/null 2>&1
+    is "nor through tmux-review --lines$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    XDG_RUNTIME_DIR="$(mktmpd)" "$DIR/scripts/tmux-open-path" --preview-diff "$LF/c/f.txt" >/dev/null 2>&1
+    is "nor through the path picker's preview diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
+}
+# foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
+for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
+    git -C "$LF/c" config remote.origin.url "$lfu"
+    PATH="$LF/hb:$PATH" git -C "$LF/c" diff --numstat HEAD >/dev/null 2>&1
+    is "the planted remote fires under plain git (${lfu%%:*})" "up" "$(head -1 "$LFM" 2>/dev/null)"; rm -f "$LFM"
+    PATH="$LF/hb:$PATH" lf_paths " (${lfu%%:*})"
+    PATH="$LF/old:$LF/hb:$PATH" lf_paths " (${lfu%%:*}, git < 2.44)"
+done
+# A user's own switch or worktree add still fetches what it checks out; a diff does not.
+is "a diff through git.sh's git still cannot fetch a clean clone's blob" "" \
+   "$( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" diff --numstat main origin/side 2>/dev/null)"
+( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" switch -q --track origin/side ) >/dev/null 2>&1
+is "while switch --track through it fetches the branch's blob" "g" "$(cat "$LF/c2/g.txt" 2>/dev/null)"
+( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
+is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
+rm -rf "$LF"; unset lfu; unset -f lf_paths
+
 echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
 # The key used to be path+HEAD+mtime+size, with "path" whatever the caller
 # passed -- and every caller cd's into the review target first and hands a
@@ -9818,11 +9871,13 @@ fi
 echo "== cockpit-tui: tui-fetch verifies before it installs, and never breaks a working binary =="
 # No network: the release host is a file:// tree the block builds itself. The
 # binary is a stand-in shell script -- tui-fetch only ever asks it --version,
-# which is exactly the check a checksum cannot make.
+# which is exactly the check a checksum cannot make. env -u: this block alone
+# lifts the suite's offline switch, against a local host and stub gh and curl;
+# COCKPIT_TUI_BIN is the copy's own, never the suite's real binary.
 if ! command -v curl >/dev/null 2>&1; then skip_ "tui-fetch (no curl)"
 elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "tui-fetch (no sha256sum)"; else
 TF=$(mktmpd); mkdir -p "$TF/plugin/scripts/lib" "$TF/build" "$TF/curlshim" "$TF/shim"
-cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"; cp "$DIR/scripts/lib/vnum.sh" "$TF/plugin/scripts/lib/"
+cp "$DIR/scripts/tui-fetch" "$TF/plugin/scripts/"; cp "$DIR/scripts/lib/vnum.sh" "$DIR/scripts/lib/tui.sh" "$TF/plugin/scripts/lib/"
 TFB="$TF/plugin/bin/cockpit-tui"; TFR="file://$TF/rel"; TFGONE="file://$TF/no-such-host"
 # Counting curl, not timing it: "a 404 is retried" is a fork count, never a clock.
 printf '#!/bin/sh\necho x >> "%s"\nexec %s "$@"\n' "$TF/curlcount" "$(command -v curl)" > "$TF/curlshim/curl"
@@ -9870,7 +9925,7 @@ tf_release() {                # <tag> <version-it-reports> [flip|flat|broken|noa
 }
 tf() {                        # <release-base-url> <args...>
     local u=$1; shift
-    COCKPIT_TUI_RELEASES="$u" "$TF/plugin/scripts/tui-fetch" "$@" 2>&1
+    COCKPIT_TUI_RELEASES="$u" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" "$@" 2>&1
 }
 tf_ver() { "$TFB" --version 2>/dev/null; }
 tf_mark() { cat "$TF/plugin/bin/.tried" 2>/dev/null; }
@@ -9941,8 +9996,8 @@ is "so the next press fetches again instead of saying already tried" "2" "$(wc -
 # A box that could not ask must not fall through to a full cargo build.
 tfout=$(PATH="$TF/shim:$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
 case "$tfout" in
-    *"needs Rust"*|*CARGO_RAN*) bad "an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
-    *) ok "an unreachable host never starts a source build" ;;
+    *"needs Rust"*|*CARGO_RAN*) bad "without --required, an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
+    *) ok "without --required, an unreachable host never starts a source build" ;;
 esac
 
 # Deleting the binary after a good install must reinstall it, not report a
@@ -9992,6 +10047,32 @@ case "$tfout" in
     *"needs Rust >= 1.99"*) ok "the floor comes from Cargo.toml, not a second pin in the script" ;;
     *) bad "the floor comes from Cargo.toml, not a second pin in the script" "needs Rust >= 1.99" "$tfout" ;;
 esac
+# --required is the install path (#199): a binary that runs is success, and
+# none at all is exit 1 naming both ways out, whether settled or offline.
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+is "--required with a working binary left exits 0" "0" "$tfrc"
+mv "$TFB" "$TF/keep"
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+is "--required with no binary and no way to build one exits 1" "1" "$tfrc"
+case "$tfout" in
+    *"cockpit-tui is required"*"no Rust >= 1.99"*"gh auth login"*rustup*) ok "and names the floor, gh auth login and rustup" ;;
+    *) bad "and names the floor, gh auth login and rustup" "cockpit-tui is required ... Rust >= 1.99 ... gh auth login ... rustup" "$tfout" ;;
+esac
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0); tfrc=$?
+is "--required offline with no binary exits 1 too" "1" "$tfrc"
+# A gh 404 or no login is transient, yet a required binary must still try
+# cargo: a box with Rust and no gh login is the common source install.
+mkdir -p "$TF/shim99"
+printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TF/shim99/rustc"
+printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$TF/cargo99" > "$TF/shim99/cargo"
+chmod +x "$TF/shim99/rustc" "$TF/shim99/cargo"
+tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0)
+case "$(cat "$TF/cargo99" 2>/dev/null)" in
+    *"build --release --locked"*) ok "--required with an unreachable release and Rust >= the floor runs cargo" ;;
+    *) bad "--required with an unreachable release and Rust >= the floor runs cargo" "cargo build --release --locked" "$tfout" ;;
+esac
+is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = tui-v0.4.0 ] && echo yes || echo no)"
+mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a
 # broken release: source is the way out, so it must not exit 1 like a refusal.
@@ -10007,6 +10088,35 @@ is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
 tf_release tui-v0.9.0 0.9.0 flat
 tfout=$(tf "$TFR" --version tui-v0.9.0)
 is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(tf_ver)"
+# COCKPIT_TUI_BIN is where it reads and writes, as for the doctor and wrappers.
+tfout=$(env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TF/else/ct" COCKPIT_TUI_RELEASES="$TFR" \
+        "$TF/plugin/scripts/tui-fetch" --version tui-v0.9.0 2>&1)
+is "COCKPIT_TUI_BIN names the file it installs" "cockpit-tui 0.9.0" "$("$TF/else/ct" --version 2>/dev/null)"
+tfout=$(env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TF/else/ct" "$TF/plugin/scripts/tui-fetch" --version tui-v0.9.0 2>&1)
+case "$tfout" in
+    *"already current"*) ok "and the binary it reads" ;;
+    *) bad "and the binary it reads" "already current" "$tfout" ;;
+esac
+# Unpinned (no --version, no option), a newer binary is current: a make
+# tui-bin build ahead of the release must not be downgraded to it.
+mkdir -p "$TF/tmuxnone" "$TF/tmuxold"
+printf '#!/bin/sh\nexit 0\n' > "$TF/tmuxnone/tmux"
+printf '#!/bin/sh\necho cockpit-tui-v0.1.0\n' > "$TF/tmuxold/tmux"
+chmod +x "$TF/tmuxnone/tmux" "$TF/tmuxold/tmux"
+tfout=$(PATH="$TF/tmuxnone:$PATH"; tf "$TFGONE"); tfrc=$?
+case "$tfout" in
+    *"cockpit-tui 0.9.0 already current"*) ok "unpinned, a binary newer than the floor is already current" ;;
+    *) bad "unpinned, a binary newer than the floor is already current" "cockpit-tui 0.9.0 already current" "$tfout" ;;
+esac
+is "and exits 0 with it in place" "0 cockpit-tui 0.9.0" "$tfrc $(tf_ver)"
+# @cockpit_tui_version below TUI_MIN would reinstall a binary the scripts refuse.
+tfout=$(PATH="$TF/tmuxold:$PATH"; tf "$TFR"); tfrc=$?
+is "an @cockpit_tui_version below TUI_MIN is refused" "1" "$tfrc"
+case "$tfout" in
+    *"@cockpit_tui_version pins cockpit-tui-v0.1.0, below the required"*) ok "and says which pin and why" ;;
+    *) bad "and says which pin and why" "@cockpit_tui_version pins cockpit-tui-v0.1.0, below the required ..." "$tfout" ;;
+esac
+is "and the working binary is untouched" "cockpit-tui 0.9.0" "$(tf_ver)"
 
 # The repo is private (#84): the plain URL 404s without credentials, so the
 # fetch rides the user's own gh login when there is one. The shims serve the
@@ -10053,7 +10163,7 @@ chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 # a keypress: `gh auth token` reads the local config, `gh auth status` would
 # validate against api.github.com with no timeout to bound it.
 : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$PATH" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
+tfout=$(PATH="$TF/ghshim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
 is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
 case "$(cat "$TF/ghlog")" in
     *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
@@ -10063,7 +10173,7 @@ esac
 
 tf_release tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
 is "an authenticated gh is preferred over the plain URL" "0" "$tfrc"
 is "and installs the release it serves" "cockpit-tui 1.0.0" "$(tf_ver)"
 case "$tfout" in
@@ -10078,7 +10188,7 @@ esac
 tf_release tui-v1.1.0 1.1.0
 : > "$TF/ghlog"
 tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" COCKPIT_TUI_REPO=alice/example \
-    "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
+    env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
 case "$(cat "$TF/ghlog")" in
     *"-R alice/example"*) ok "COCKPIT_TUI_REPO overrides the repo gh asks" ;;
     *) bad "COCKPIT_TUI_REPO overrides the repo gh asks" "-R alice/example" "$(cat "$TF/ghlog")" ;;
@@ -10086,7 +10196,7 @@ esac
 
 tf_release tui-v1.2.0 1.2.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
 is "a gh that is not logged in falls back to curl" "0" "$tfrc"
 is "and still installs" "cockpit-tui 1.2.0" "$(tf_ver)"
 is "and paid exactly the two curl forks" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
@@ -10102,7 +10212,7 @@ esac
 # A tag gh has no release for: fall to the plain URL, then skip -- never a
 # source build, and no marker, so the next press may ask again.
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
 is "a tag gh has no release for still exits 0" "0" "$tfrc"
 case "$tfout" in
     *"no release tui-v9.9.0 via gh (or offline)"*) ok "and the skip names the gh path" ;;
@@ -10117,13 +10227,42 @@ is "and leaves no marker" "" "$(tf_mark)"
 unset -f tf tf_release tf_ver tf_mark
 fi
 
+# tests: scripts/tui-fetch
+echo "== the suite never reaches the network: install.sh fetches nothing under COCKPIT_TUI_OFFLINE =="
+# A plugin copy with no binary forces a fetch; gh, curl and cargo are recorders
+# that fail, so any call is a line here and never a request.
+NW=$(mktmpd); mkdir -p "$NW/p" "$NW/stub" "$NW/home" "$NW/bin"
+cp "$DIR/install.sh" "$NW/p/"; cp -r "$DIR/scripts" "$NW/p/"
+for t in gh curl cargo; do
+    printf '#!/bin/sh\necho "%s $*" >> %s/calls\nexit 1\n' "$t" "$NW" > "$NW/stub/$t"; chmod +x "$NW/stub/$t"
+done
+# -u COCKPIT_TUI_BIN: the copy's own empty bin/, not the suite's current binary.
+nw() { PATH="$NW/stub:$PATH" HOME="$NW/home" XDG_BIN_HOME="$NW/bin" "$@" -u COCKPIT_TUI_BIN "$NW/p/install.sh" </dev/null 2>&1; }
+nwout=$(nw env); nwrc=$?
+is "install.sh with no binary calls no gh, curl or cargo under the suite's switch" "" "$(cat "$NW/calls" 2>/dev/null)"
+is "and exits 1, since the binary is required" "1" "$nwrc"
+case "$nwout" in
+    *"cockpit-tui is required"*) ok "and says the binary is required" ;;
+    *) bad "and says the binary is required" "cockpit-tui is required ..." "$nwout" ;;
+esac
+# The control: without the switch the same run reaches the recorders, so the
+# first assertion can fail.
+nw env -u COCKPIT_TUI_OFFLINE >/dev/null
+case "$(cat "$NW/calls" 2>/dev/null)" in
+    *curl*|*gh*) ok "without the switch the same run would have fetched" ;;
+    *) bad "without the switch the same run would have fetched" "a gh or curl call" "none" ;;
+esac
+unset -f nw
+rm -rf "$NW"
+
 echo "== cockpit-tui: the tui row in tmux-review --info =="
 # A COPY of scripts/, so the row reads that copy's bin/ and the suite never
 # writes into the checkout it is running from (several sessions share it).
 if need_tmux "tui row in --info"; then :; else
 TI="cockpit-ti-$$"; SOCKS="$SOCKS $TI"; TIP=$(mktmpd)
 cp -r "$DIR/scripts" "$TIP/"
-"$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+# -u: run-shell has the server's environment, and the row must read the copy's bin/.
+env -u COCKPIT_TUI_BIN "$TMUX_REAL" -L "$TI" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
 TIAP=$("$TMUX_REAL" -L "$TI" list-panes -t t: -F '#{pane_id}')
 # The optional shim dir pins the row's credential word (#84) whatever gh on
 # the box would say; \$PATH is the server's, expanded by its own sh.
@@ -10189,13 +10328,7 @@ else
 fi
 
 echo "== cockpit-tui: --json names every agent pane and nothing else =="
-# The Rust binary is additive: no cargo on the box means no bin/cockpit-tui, and
-# `make check` must still be green, so this skips rather than fails. skip_ is
-# not a pass (tests/run.sh:76) -- a green run with this line absent from the
-# output means the binary was never exercised.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui --json (no bin/cockpit-tui; run make tui)"
-elif need_tmux "cockpit-tui --json"; then :; else
+if need_tmux "cockpit-tui --json"; then :; else
 TJ="cockpit-tj-$$"; SOCKS="$SOCKS $TJ"
 "$TMUX_REAL" -L "$TJ" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 TJSH=$("$TMUX_REAL" -L "$TJ" list-panes -t t:0 -F '#{pane_id}')
@@ -10213,14 +10346,14 @@ done
 # COCKPIT_TMUX still resolves `tmux` through the suite's PATH shim; tmux takes
 # the LAST -L, so the binary lands on this block's server, not the suite's
 # (tests/run.sh:31). $TJSH carries no option and must not appear.
-TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json 2>/dev/null)
+TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
 is "--json carries the 14 frozen keys, in order" \
    "id where state title doing said asked msg since loc diff review session path" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
-   "$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json >/dev/null 2>&1; printf '%s ' "$?"; \
+   "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
 
 # F1: a Bash tool_use whose command holds a TAB used to split --rows into 10
@@ -10239,10 +10372,10 @@ TJT=$("$TMUX_REAL" -L "$TJ" list-panes -a -F '#{pane_id} #{pane_current_path}' |
 "$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @panestate running          >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" set -p -t "$TJT" @cockpit_session "$TJUUID"  >/dev/null 2>&1
 is "a TAB in a tool_use keeps --rows at 8 fields" "8" \
-   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --rows \
       | awk -F'\t' -v p="$TJT" '$2==p{print NF; exit}')"
 is "and the tool text survives with the TAB as a space" "Bash: col1 col2" \
-   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --rows \
+   "$(HOME="$TJH" COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --rows \
       | awk -F'\t' -v p="$TJT" '$2==p{print $5; exit}')"
 
 # F4: the agent command list is @cockpit_agents_glob, which cockpit.tmux
@@ -10252,12 +10385,12 @@ TJZ=$(mktmpd); ln -sf "$(command -v bash)" "$TJZ/zzz"
 "$TMUX_REAL" -L "$TJ" set -g @cockpit_agents_glob '|zzz|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" new-window -d -t t: "exec $TJZ/zzz -c 'read -r _'" >/dev/null 2>&1
 "$TMUX_REAL" -L "$TJ" new-window -d -t t: 'exec sleep 3600'    >/dev/null 2>&1
-TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$DIR/bin/cockpit-tui" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
+TJIDS=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p')
 TJCMDS=$(for i in $TJIDS; do "$TMUX_REAL" -L "$TJ" display-message -p -t "$i" '#{pane_current_command}'; done | sort -u | tr '\n' ' ')
 is "@cockpit_agents_glob names zzz and not sleep" "claude zzz" "$(printf '%s' "$TJCMDS" | sed 's/ $//')"
 
 # F6: "no agents" ([] , exit 0) and "no tmux" (exit 1, no stdout) are different.
-TJOUT2=$(COCKPIT_TMUX="tmux -L cockpit-nosuch-$$" "$DIR/bin/cockpit-tui" --json 2>/dev/null); TJRC=$?
+TJOUT2=$(COCKPIT_TMUX="tmux -L cockpit-nosuch-$$" "$COCKPIT_TUI_BIN" --json 2>/dev/null); TJRC=$?
 is "an unreachable tmux is exit 1 with empty stdout" "1 empty" \
    "$TJRC $([ -z "$TJOUT2" ] && echo empty || echo "[$TJOUT2]")"
 
@@ -10310,11 +10443,12 @@ bloaded() {
 
 # --- the shipped default -------------------------------------------------------
 B="cockpit-bw-$$"; SOCKS="$SOCKS $B"; bshim "$BD/s1" "$B" ""
-PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
+# -u: the server's environment is what cockpit.tmux reads, and this copy has no binary.
+env -u COCKPIT_TUI_BIN PATH="$BD/s1:$PATH" "$TMUX_REAL" -L "$B" -f /dev/null new-session -d -s t 'exec -a claude sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$B" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$B"
 bw=$(bkey "$B" w)
-# bin/cockpit-tui is absent in this copy on purpose: the binary arrives by a
-# gesture, so the key is bound either way and the wrapper says so at press time.
+# This copy has no binary on purpose: a broken install still binds the key,
+# and the wrapper says so at press time.
 case "$bw" in *cockpit-board*) ok "prefix w opens the board, with no binary installed" ;;
     *) bad "prefix w opens the board, with no binary installed" "a display-popup running cockpit-board" "$bw" ;;
 esac
@@ -10326,8 +10460,14 @@ esac
 case "$bw" in *'"70%"'*) ok "and its height is @cockpit_popup_height, like every other cockpit popup" ;;
     *) bad "and its height is @cockpit_popup_height, like every other cockpit popup" "-h 70%" "$bw" ;;
 esac
-case "$bw" in *'#{session_name}'*) ok "the popup title leaves #{session_name} for tmux to expand" ;;
-    *) bad "the popup title leaves #{session_name} for tmux to expand" "#{session_name} in -T" "$bw" ;;
+# The client's session is not the agent's, so the title names neither (D9 step 2).
+case "$bw" in *'#{session_name}'*) bad "the popup title names no session" '-T " board "' "$bw" ;;
+    *'-T " board "'*) ok "the popup title names no session" ;;
+    *) bad "the popup title names no session" '-T " board "' "$bw" ;;
+esac
+# One option drives both screens: the board's popup hands the panel's mode on.
+case "$bw" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "the board popup passes -e COCKPIT_PANEL_MODE" ;;
+    *) bad "the board popup passes -e COCKPIT_PANEL_MODE" "-e COCKPIT_PANEL_MODE=auto" "$bw" ;;
 esac
 # display-popup expands only -T and -d, so the pane id cannot be a format here
 # (#38): the popup's own sh resolves it.
@@ -10341,7 +10481,33 @@ case "$(bkey "$B" a)" in *'Board of every agent'*) ok "the prefix a menu carries
     *) bad "the prefix a menu carries a board row that replays w" "a 'Board of every agent' item" "$(bkey "$B" a)" ;;
 esac
 is "and a plain load fetches nothing" "no" "$([ -e "$BD/fetched" ] && echo yes || echo no)"
+# Required since #199: the load says so, offline, and names the fix.
+case "$(grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null)" in
+    *"cockpit-tui is missing; run "*/install.sh) ok "a load with no binary says it is missing and names install.sh" ;;
+    *) bad "a load with no binary says it is missing and names install.sh" "cockpit-tui is missing; run .../install.sh" \
+         "$(grep display-message "$BD/argv" 2>/dev/null)" ;;
+esac
 "$TMUX_REAL" -L "$B" kill-server >/dev/null 2>&1
+
+# The version check: below TUI_MIN names tui-fetch; a current one says nothing.
+# Registered out here: bver runs in a $(…) subshell, which would drop its SOCKS.
+SOCKS="$SOCKS cockpit-bw7-0.0.1-$$ cockpit-bw7-99.0.0-$$"
+bver() {                      # <version> -> the load's cockpit-tui message, if any
+    local b="cockpit-bw7-$1-$$"
+    bshim "$BD/s7" "$b" ""; rm -f "$BD/argv"
+    printf '#!/bin/sh\necho "cockpit-tui %s"\n' "$1" > "$BD/vtui"; chmod +x "$BD/vtui"
+    COCKPIT_TUI_BIN="$BD/vtui" PATH="$BD/s7:$PATH" "$TMUX_REAL" -L "$b" -f /dev/null new-session -d -s t 'sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$b" run-shell "$BD/p/cockpit.tmux" >/dev/null 2>&1; bloaded "$b"
+    grep 'display-message tmux-cockpit: cockpit-tui' "$BD/argv" 2>/dev/null
+    "$TMUX_REAL" -L "$b" kill-server >/dev/null 2>&1
+}
+bmsg=$(bver 0.0.1)
+case "$bmsg" in
+    *"cockpit-tui 0.0.1 is older than "*"; run "*/install.sh) ok "a binary below TUI_MIN is named on load, with install.sh as the fix" ;;
+    *) bad "a binary below TUI_MIN is named on load, with install.sh as the fix" "cockpit-tui 0.0.1 is older than ...; run .../install.sh" "$bmsg" ;;
+esac
+is "a current binary loads without a word" "" "$(bver 99.0.0)"
+unset -f bver
 
 # --- off, the parked window, and the opt-in fetch ------------------------------
 # "off" cannot leave w EMPTY: stock tmux binds it to choose-tree, and not
@@ -10386,6 +10552,9 @@ PATH="$BD/s6:$PATH" "$TMUX_REAL" -L "$B6" -f /dev/null new-session -d -s t 'exec
 case "$(bkey "$B6" w)" in *new-window*cockpit-board*) ok "@cockpit_board_window on parks the board in a window" ;;
     *) bad "@cockpit_board_window on parks the board in a window" "a new-window running cockpit-board" "$(bkey "$B6" w)" ;;
 esac
+case "$(bkey "$B6" w)" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "and the window gets the panel mode too" ;;
+    *) bad "and the window gets the panel mode too" "-e COCKPIT_PANEL_MODE=auto" "$(bkey "$B6" w)" ;;
+esac
 "$TMUX_REAL" -L "$B6" kill-server >/dev/null 2>&1
 
 # --- the 3.8 floor -------------------------------------------------------------
@@ -10404,20 +10573,41 @@ esac
 # Every script the wrapper can reach is a stub that records its argv, and tmux
 # only records: the assertion is what ran, in full, not just that the right
 # thing did.
-printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/wargv\nexit 0\n' "$BD" > "$BD/rec/tmux"
+# The one read the loop makes, @cockpit_board_return, answers from $BD/ret and
+# is not recorded: what is asserted is what ran.
+cat > "$BD/rec/tmux" <<BDREC
+#!/bin/sh
+case "\$*" in "show-option -gqv @cockpit_board_return") cat "$BD/ret" 2>/dev/null; exit 0 ;; esac
+printf '%s\\n' "\$*" >> "$BD/wargv"
+exit 0
+BDREC
 chmod +x "$BD/rec/tmux"
 for s in tmux-jump tmux-review cockpit-panel; do
     printf '#!/bin/sh\nprintf "%s %%s\\n" "$*" >> %s/wargv\n' "$s" "$BD" > "$BD/p/scripts/$s"
     chmod +x "$BD/p/scripts/$s"
 done
+# The panel from the board writes its last line where the loop asks.
+printf '#!/bin/sh\nprintf "cockpit-panel %%s\\n" "$*" >> %s/wargv\n[ -z "$COCKPIT_PANEL_NOTE" ] || cat %s/pnote > "$COCKPIT_PANEL_NOTE"\n' "$BD" "$BD" > "$BD/p/scripts/cockpit-panel"
+printf 'cockpit: sent to %%1\n' > "$BD/pnote"
 # The line travels in a file rather than inside the fake binary's source: the
 # cases below are shell syntax, and re-quoting them into a script is the test
 # writing the very bug it is checking for.
+# The fake binary acts once and then exits with no action, the ordinary q, so a
+# verb that returns runs it exactly twice; $BD/bargv is every run's argv, and
+# the note it was handed.
 wact() {                      # <action-line> -> every argv the wrapper produced
-    : > "$BD/wargv"; printf '%s\n' "$1" > "$BD/line"
-    printf '#!/bin/sh\ncat %s/line > "$COCKPIT_ACTION"\n' "$BD" > "$BD/p/bin/cockpit-tui"
+    : > "$BD/wargv"; : > "$BD/bargv"; rm -f "$BD/once"; printf '%s\n' "$1" > "$BD/line"
+    cat > "$BD/p/bin/cockpit-tui" <<BDBIN
+#!/bin/sh
+printf '%s\\n' "\$*" >> "$BD/bargv"
+[ "\${5:-}" = "" ] || cat "\$5" >> "$BD/bargv"
+[ -e "$BD/once" ] && exit 0
+: > "$BD/once"
+cat "$BD/line" > "\$COCKPIT_ACTION"
+BDBIN
     chmod +x "$BD/p/bin/cockpit-tui"
-    PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+    # The copy's stub, named: the suite exports its own real binary.
+    PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$BD/wargv"
 }
 # jump is three tmux calls and NOT tmux-jump: that script cycles to the next
@@ -10439,6 +10629,34 @@ esac
 is "only the FIRST line of the action file is ever acted on" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact $'jump %9\nreview %1')"
 
+# The return trip (D9): review, info and panel bring the board back on the pane
+# they acted on; jump, q and the off switch end it.
+bruns() { tr '\n' ';' < "$BD/bargv"; }
+wact 'jump %9' >/dev/null
+is "jump ends the loop: the board ran once" "board;" "$(bruns)"
+wact 'review %1' >/dev/null
+is "review %1 brings the board back with --select %1, and no note" "board;board --select %1;" "$(bruns)"
+wact 'info %1' >/dev/null
+is "so does info %1" "board;board --select %1;" "$(bruns)"
+wact 'panel %1' >/dev/null
+case "$(bruns)" in "board;board --select %1 --note "*"/note;cockpit: sent to %1;") ok "panel %1 comes back with the panel's last line as the note" ;;
+    *) bad "panel %1 comes back with the panel's last line as the note" "board;board --select %1 --note .../note;cockpit: sent to %1;" "$(bruns)" ;;
+esac
+wact 'deliver %1' >/dev/null
+is "deliver, still reserved, ends the loop" "board;" "$(bruns)"
+printf 'off\n' > "$BD/ret"
+is "@cockpit_board_return off: review is one-way again" "tmux-review -p %1;" "$(wact 'review %1')"
+is "and the board ran once" "board;" "$(bruns)"
+is "@cockpit_board_return off: panel too" "cockpit-panel -p %1;" "$(wact 'panel %1')"
+is "and the board ran once again" "board;" "$(bruns)"
+rm -f "$BD/ret"
+# A board that fails ends the loop rather than spinning on it.
+printf '#!/bin/sh\nprintf x >> %s/bfail\nexit 3\n' "$BD" > "$BD/p/bin/cockpit-tui"
+: > "$BD/wargv"; rm -f "$BD/bfail"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+is "a board that exits non-zero runs once and says so" "x display-message -t %3 cockpit: the board exited 3 — see $BD/tui.log;" \
+   "$(cat "$BD/bfail") $(tr '\n' ';' < "$BD/wargv")"
+
 # The binary is the one piece of this plugin that is not shell, so its one line
 # of output is re-checked here rather than trusted. Empty means nothing ran.
 inject() { wact "${1//@/$BD/pwn}"; [ -e "$BD/pwn" ] && printf pwned; }
@@ -10458,22 +10676,22 @@ is "a rejected line leaves a trace instead of a silently dead key" "1" \
 
 : > "$BD/wargv"
 printf '#!/bin/sh\nrm -f "$COCKPIT_ACTION"\n' > "$BD/p/bin/cockpit-tui"; chmod +x "$BD/p/bin/cockpit-tui"
-bnoise=$(PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null 2>&1); brc=$?
+bnoise=$(PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null 2>&1); brc=$?
 is "a binary that deletes the action file exits 0, prints nothing, says nothing" "0  " \
    "$brc $bnoise $(cat "$BD/wargv" 2>/dev/null)"
 
 rm -f "$BD/p/bin/cockpit-tui"; : > "$BD/wargv"
-PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p 'not-a-pane' </dev/null >/dev/null 2>&1
 case "$(cat "$BD/wargv" 2>/dev/null)" in
     'display-message cockpit: board needs'*) ok "a -p that is not a pane id drops the -t rather than passing it on" ;;
     *) bad "a -p that is not a pane id drops the -t rather than passing it on" \
          "display-message cockpit: board needs ..." "$(cat "$BD/wargv" 2>/dev/null)" ;;
 esac
 : > "$BD/wargv"
-PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
 brc=$?
 is "a missing binary says so once, on the pane the key was pressed in, and exits 0" \
-   "0 display-message -t %3 cockpit: board needs cockpit-tui: prefix U fetches it; prefix r is the fleet list" \
+   "0 display-message -t %3 cockpit: board needs cockpit-tui: run $(cd -P "$BD/p" && pwd)/install.sh; prefix r is the fleet list" \
    "$brc $(cat "$BD/wargv" 2>/dev/null)"
 
 # --- a plugin directory that is shell syntax -----------------------------------
@@ -10508,12 +10726,114 @@ is "and its name never runs" "no" "$([ -e "$BI/OWNED" ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$BW_IN" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-board: the return trip lands on the same pane, and a ✕ note stays =="
+# The real binary in a real window: the loop, --select and board.state end to
+# end. tmux-review is a stub that records its argv; the panel is the real one.
+if need_tmux "the board's return trip"; then :; else
+RB="cockpit-rb-$$"; SOCKS="$SOCKS $RB"; RBD=$(mktmpd)
+mkdir -p "$RBD/p" "$RBD/state"
+cp -r "$DIR"/scripts "$RBD/p/"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s/rv\n' "$RBD" > "$RBD/p/scripts/tmux-review"
+chmod +x "$RBD/p/scripts/tmux-review"
+"$TMUX_REAL" -L "$RB" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 3600' >/dev/null 2>&1
+RBP=()
+for i in 1 2 3; do
+    RBP+=("$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')")
+done
+for p in "${RBP[@]}"; do
+    "$TMUX_REAL" -L "$RB" set -p -t "$p" @panestate running >/dev/null 2>&1
+done
+# Tiles sort by state, then pane id: all running, so tile 2 is the second pane.
+RBX=${RBP[1]}
+RBENV="env COCKPIT_TUI_BIN=$COCKPIT_TUI_BIN XDG_STATE_HOME=$RBD/state COCKPIT_LOG=$RBD/tui.log"
+rb_open() {                   # -> RBW, the wrapper's pane, with tiles drawn
+    RBW=$("$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: "$RBENV $RBD/p/scripts/cockpit-board -p ${RBP[0]}")
+    until_cap "$RB" "$RBW" '*board · 3 agents*'
+}
+rb_gone() {                   # <pane>
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$RB" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+rb_rv() { tr '\n' ';' < "$RBD/rv" 2>/dev/null; }
+
+rb_open || bad "the board opens in a window" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" 2 r
+until_file "$RBD/rv" '*-p*'
+is "r on tile 2 reviews its pane" "-p $RBX;" "$(rb_rv)"
+# the stub returns at once: the board must come back, on that same pane
+until_cap "$RB" "$RBW" '*board · 3 agents*' || bad "r returns to the board" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*'
+is "r, then the return, lands on the same pane" "-p $RBX;-p $RBX;" "$(rb_rv)"
+
+until_cap "$RB" "$RBW" '*board · 3 agents*'
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" f
+until_cap "$RB" "$RBW" '*will send*' || bad "f opens the panel in the same window" "will send" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" Escape
+until_cap "$RB" "$RBW" '*board · 3 agents*' || bad "esc on the panel's Home returns to the board" "board · 3 agents" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*-p*'
+is "f, then esc on Home, returns on the same pane" "-p $RBX;-p $RBX;-p $RBX;" "$(rb_rv)"
+
+until_cap "$RB" "$RBW" '*board · 3 agents*'
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" Enter
+rb_gone "$RBW" || bad "jump ends the loop" "the window closes" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+is "jump ends the loop, on the pane it jumped to" "$RBX" "$("$TMUX_REAL" -L "$RB" display -p -t t '#{pane_id}')"
+is "board.state keeps the selection" "cockpit-board-state 1;sel $RBX;" \
+   "$(tr '\n' ';' < "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
+is "created 0600" "600" "$(stat -c %a "$RBD/state/tmux-cockpit/board.state" 2>/dev/null)"
+
+# The next plain prefix w opens on it too; @cockpit_board_return off makes r one-way.
+"$TMUX_REAL" -L "$RB" set -g @cockpit_board_return off >/dev/null 2>&1
+rb_open
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBW" r
+until_file "$RBD/rv" '*-p*-p*-p*-p*'
+is "a fresh board opens on the saved pane" "-p $RBX" "$(tail -1 "$RBD/rv")"
+rb_gone "$RBW" || bad "@cockpit_board_return off keeps r one-way" "the window closes" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBW")"
+ok "@cockpit_board_return off keeps r one-way"
+"$TMUX_REAL" -L "$RB" set -gu @cockpit_board_return >/dev/null 2>&1
+
+# D20: two boards opened together, one with a success note, one with a ✕ note.
+# Once the success note has faded (5 s), the ✕ one must still be there.
+printf 'cockpit: sent to %s\n' "$RBX" > "$RBD/ok"
+printf '✕ cockpit: the pane now runs bash, not claude; nothing sent\n' > "$RBD/no"
+# A pane that is no agent: whatever a board would write over it is a real one.
+printf 'cockpit-board-state 1\nsel %%0\n' > "$RBD/state/tmux-cockpit/board.state"
+rb_bin() { "$TMUX_REAL" -L "$RB" new-window -d -P -F '#{pane_id}' -t t: "$RBENV COCKPIT_READONLY=1 $COCKPIT_TUI_BIN board --note $1"; }
+RBOK=$(rb_bin "$RBD/ok"); RBNO=$(rb_bin "$RBD/no")
+until_cap "$RB" "$RBOK" '*cockpit: sent to*' || bad "a success note shows" "cockpit: sent to" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBOK")"
+until_cap "$RB" "$RBNO" '*nothing sent · esc dismiss*' || bad "a ✕ note shows with its way out" "· esc dismiss" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")"
+rbfaded=
+for i in $(seq 1 $((POLLS * 2))); do
+    case "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBOK" 2>/dev/null)" in
+        *'cockpit: sent to'*) sleep 0.1 ;;
+        *'↵ jump'*) rbfaded=1; break ;;
+        *) sleep 0.1 ;;
+    esac
+done
+is "the success note fades" "1" "$rbfaded"
+case "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")" in
+    *'nothing sent · esc dismiss'*) ok "a ✕ note survives the ticks that fade a success note" ;;
+    *) bad "a ✕ note survives the ticks that fade a success note" "the ✕ note" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")" ;;
+esac
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBNO" Escape
+until_cap "$RB" "$RBNO" '*↵ jump*' || bad "esc only dismisses the ✕ note" "the key bar" "$("$TMUX_REAL" -L "$RB" capture-pane -p -t "$RBNO")"
+is "and leaves the board open" "$RBNO" "$("$TMUX_REAL" -L "$RB" list-panes -a -F '#{pane_id}' | grep -x "$RBNO")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBOK" q
+rb_gone "$RBOK"
+is "COCKPIT_READONLY writes no board.state" "sel %0" "$(tail -1 "$RBD/state/tmux-cockpit/board.state")"
+"$TMUX_REAL" -L "$RB" send-keys -t "$RBNO" q
+"$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-panel end to end (no bin/cockpit-tui; run make tui)"
-elif need_tmux "cockpit-panel end to end"; then :; else
+if need_tmux "cockpit-panel end to end"; then :; else
 PN="cockpit-pn-$$"; SOCKS="$SOCKS $PN"; PND=$(mktmpd)
 mkdir -p "$PND/bin" "$PND/cache" "$PND/cfg"
 # With $PND/hang present the fake records its pid and parent, then never answers.
@@ -10783,7 +11103,7 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     : > "$PND/pargv"; printf '%s\n' "$1" > "$PND/line"; printf '%s' "$2" > "$PND/text"
     [ "${3:-}" = notext ] && rm -f "$PND/text"
     printf '%s\n' "${4:-zsh}" > "$PND/cmd"; printf '%s\n' "${5:-zsh}" > "$PND/now"
-    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
@@ -10813,6 +11133,11 @@ is "and the files live in a private directory" "700" "$(pact 'paste %5' hi >/dev
 is "a missing text file pastes nothing" "" "$(pact 'send %5' hi notext)"
 is "a pane that runs something else by now gets nothing, and is told why" \
    "display-message -t %5 cockpit: the pane now runs zsh, not claude; nothing sent;" "$(pact 'send %5' hi '' claude zsh)"
+# From the board the refusal is its note, which must stay one line: the board
+# refuses a two-line note, and a pane's command can carry a newline.
+: > "$PND/note"; COCKPIT_PANEL_NOTE="$PND/note" pact 'send %5' hi '' claude $'zsh\nevil' >/dev/null
+is "a refusal from the board is one ✕ line in the note, never a status message" \
+   "1 ✕ cockpit: the pane now runs zsh evil, not claude; nothing sent" "$(wc -l < "$PND/note" | tr -d ' ') $(cat "$PND/note")"
 rm -f "$PND/caps"; pact 'send %5' hi >/dev/null
 is "send waits for the paste to show before Enter: one capture before, one after" "2" "$(wc -l < "$PND/caps" | tr -d ' ')"
 rm -f "$PND/caps"; touch "$PND/still"; pact 'send %5' hi >/dev/null; rm -f "$PND/still"
@@ -10850,9 +11175,7 @@ fi
 echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
 # crossterm rereads a hung-up tty forever, so a panel whose server died spun at
 # 80% CPU and shrugged off SIGTERM. Pids are named before anything acts on them.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "a dead server ends the panel (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ]; then
+if [ ! -d /proc/self ]; then
     skip_ "a dead server ends the panel (no /proc to check pids by name)"
 elif need_tmux "a dead server ends the panel"; then :; else
 for oscreen in panel board; do
@@ -10861,7 +11184,7 @@ for oscreen in panel board; do
     ora=$("$TMUX_REAL" -L "$OR" list-panes -F '#{pane_id}' | head -1)
     oarg=$ora; [ "$oscreen" = board ] && oarg=
     orb=$("$TMUX_REAL" -L "$OR" new-window -d -P -F '#{pane_id}' -t t: \
-        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $DIR/bin/cockpit-tui $oscreen $oarg")
+        "env COCKPIT_READONLY=1 COCKPIT_ACTION=/nonexistent/act $COCKPIT_TUI_BIN $oscreen $oarg")
     until_cap "$OR" "$orb" '*[a-z]*' || bad "the $oscreen draws before its server dies" "a frame" "$("$TMUX_REAL" -L "$OR" capture-pane -p -t "$orb")"
     orp=$("$TMUX_REAL" -L "$OR" display -p -t "$orb" '#{pane_pid}')
     ocomm=''
@@ -10884,9 +11207,7 @@ fi
 echo "== cockpit-panel: a hangup with no SIGHUP still ends the panel and the board =="
 # In a session of its own the binary has no controlling tty, so closing the pty
 # master sends no SIGHUP: only the hangup watch can end it.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "a hangup with no SIGHUP (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+if [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
     skip_ "a hangup with no SIGHUP (needs /proc and python3)"
 elif need_tmux "a hangup with no SIGHUP"; then :; else
 NH="cockpit-nohup-$$"; SOCKS="$SOCKS $NH"; NHPY=$(mktmpf)
@@ -10914,17 +11235,15 @@ if comm == 'cockpit-tui':                 # named before it is signalled
 NHPY
 nha=$("$TMUX_REAL" -L "$NH" list-panes -F '#{pane_id}' | head -1)
 is "the panel exits on a hangup that brings no signal" "exited" \
-   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" panel "$nha" 2>&1)"
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$COCKPIT_TUI_BIN" panel "$nha" 2>&1)"
 is "the board exits on a hangup that brings no signal" "exited" \
-   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$DIR/bin/cockpit-tui" board 2>&1)"
+   "$(python3 -I "$NHPY" "$TMUX_REAL" "$NH" "$COCKPIT_TUI_BIN" board 2>&1)"
 fi
 
 echo "== cockpit-panel: tablet mode turns the mouse off on every exit path =="
 # The modes are written to the tty, so the bytes are read off a pty: after the
 # last ?1000h there must be a ?1000l and a ?1006l, whichever way the panel ends.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "the mouse is off on every exit (no bin/cockpit-tui; run make tui)"
-elif [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
+if [ ! -d /proc/self ] || ! command -v python3 >/dev/null 2>&1; then
     skip_ "the mouse is off on every exit (needs /proc and python3)"
 elif need_tmux "the mouse is off on every exit"; then :; else
 MX="cockpit-mouse-$$"; SOCKS="$SOCKS $MX"; MXPY=$(mktmpf); MXD=$(mktmpd)
@@ -10991,14 +11310,14 @@ got = collections.Counter(once(how) for _ in range(runs))
 print(' '.join(k if runs == 1 else f'{n}x {k}' for k, n in sorted(got.items())))
 MXPY
 mxa=$("$TMUX_REAL" -L "$MX" list-panes -F '#{pane_id}' | head -1)
-mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$DIR/bin/cockpit-tui" "$mxa" "$@" 2>&1; }
+mx() { rm -f "$MXD"/act*; python3 -I "$MXPY" "$TMUX_REAL" "$MX" "$MXD/act" "$COCKPIT_TUI_BIN" "$mxa" "$@" 2>&1; }
 for how in q esc ctrl-c term hup tap-close action; do
     is "tablet mode: the exit by $how turns the mouse off" "on=1 off=1" "$(mx tablet "$how")"
 done
 is "and the action still goes" "paste $mxa" "$(mx tablet action >/dev/null; cat "$MXD/act" 2>/dev/null)"
 is "pc mode never turns the mouse on" "on=0 off=0" "$(mx pc q)"
 is "the Home tile turns it on in pc mode, and q turns it off" "on=1 off=1" "$(mx pc flip-then-q)"
-mxe=$(COCKPIT_PANEL_MODE=Tablet "$DIR/bin/cockpit-tui" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
+mxe=$(COCKPIT_PANEL_MODE=Tablet "$COCKPIT_TUI_BIN" panel "$mxa" </dev/null 2>&1 >/dev/null); mxr=$?
 # a signal exit that was read as "still running" 1 run in 30: 50 in a row, both signals
 is "50 SIGTERM exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet term 50)"
 is "50 SIGHUP exits in a row all turn the mouse off" "50x on=1 off=1" "$(mx tablet hup 50)"
@@ -11011,9 +11330,7 @@ echo "== cockpit-panel: a tap in the popup acts once, and x copies by OSC 52 =="
 # A real popup on a client: the outer server's pane is the client's terminal, so
 # an SGR click written there is what a touch screen sends. Coordinates are read
 # off the outer capture, 1-based as the wire wants them.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "taps in the popup (no bin/cockpit-tui; run make tui)"
-elif need_tmux "taps in the popup"; then :; else
+if need_tmux "taps in the popup"; then :; else
 TI="cockpit-tapi-$$"; TO="cockpit-tapo-$$"; SOCKS="$SOCKS $TI $TO"; TPD=$(mktmpd)
 mkdir -p "$TPD/bin"
 printf '#!/bin/sh\ncat >/dev/null\nprintf "<text>copied by tap</text>"\n' > "$TPD/bin/claude"
@@ -12958,13 +13275,7 @@ is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/nul
 rm -f "$TRBIN/timeout" "$TRBIN/bound"
 tmux_tr kill-server 2>/dev/null
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
-# Skipped, not failed, with no binary: bin/cockpit-tui is still optional here.
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui diffstat/git-flags parity (no bin/cockpit-tui; run make tui)"
-elif ! "$DIR/bin/cockpit-tui" git-flags >/dev/null 2>&1; then
-    skip_ "cockpit-tui diffstat/git-flags parity (bin/cockpit-tui predates the subcommand; run make tui)"
-else
-DSB="$DIR/bin/cockpit-tui"
+DSB=$COCKPIT_TUI_BIN
 # tree_diff's rows summed the way fleet_scan_root sums them, as diffstat's four
 # columns; review_base forced to HEAD, which is what diffstat with no --base reads.
 ds_shell() {
@@ -12988,8 +13299,8 @@ rm -rf "$GD"
 
 # git.sh keeps a static copy of the list (a missing binary must not break the
 # worktree hook); this pins the copy to the binary.
-is "git-flags is git.sh's GIT_SAFE plus --no-optional-locks" \
-   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}")" "$("$DSB" git-flags)"
+is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH plus --no-optional-locks" \
+   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
 # The filter overrides still differ until PR 5 moves git.sh onto the binary's:
 # git.sh sets clean/smudge=cat and a blank required, and only for the keys the
 # repo set; git-flags blanks all four keys of every driver, required=false.
@@ -13005,17 +13316,10 @@ is "git-flags --filters blanks every key of the driver" \
    "$("$DSB" git-flags --filters "$GD/r" | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
 rm -rf "$GD"
 unset -f ds_shell
-fi
 
 echo "== cockpit-tui transcript: byte-identical to the jq reader on every fixture (#199) =="
-if [ ! -x "$DIR/bin/cockpit-tui" ]; then
-    skip_ "cockpit-tui transcript parity (no bin/cockpit-tui; run make tui)"
-# A binary built before #199 calls `transcript` an unknown screen and exits 2.
-elif "$DIR/bin/cockpit-tui" transcript >/dev/null 2>&1; [ "$?" != 1 ]; then
-    skip_ "cockpit-tui transcript parity (bin/cockpit-tui predates the subcommand; run make tui)"
-else
 . "$DIR/scripts/lib/transcript.sh"
-TPB="$DIR/bin/cockpit-tui"; TPF="$DIR/tests/fixtures/transcript-reader"
+TPB=$COCKPIT_TUI_BIN; TPF="$DIR/tests/fixtures/transcript-reader"
 # The seconds field can tick between the two runs, so both sides read N.
 tpnorm() { awk -F'\t' -v OFS='\t' '($1=="doing"||$1=="asked") && $3 ~ /^[0-9]+$/ { $3="N" } 1'; }
 for f in "$TPF"/*.jsonl; do
@@ -13030,7 +13334,6 @@ for f in "$TPF"/*.jsonl; do
     done
 done
 unset -f tpnorm
-fi
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its

@@ -165,8 +165,13 @@ pub fn render(f: &mut Frame, area: Rect, v: &View) {
         return;
     }
     if v.panes.is_empty() {
-        let [head, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+        // no key bar here, but a note still has to be seen: a ✕ one takes the next esc
+        let foot = u16::from(v.note.is_some());
+        let [head, body, row] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(foot)]).areas(area);
         header(f, head, v, &grid(area, 0), 0);
+        if let Some(n) = v.note {
+            f.render_widget(note_line(v.th, n, row.width as usize), row);
+        }
         // the empty card's border would peek out from under the lost one
         if !v.lost {
             empty(f, body, v.th);
@@ -231,10 +236,33 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize) {
 fn footer(f: &mut Frame, area: Rect, v: &View, needs: bool) {
     let th = v.th;
     if let Some(n) = v.note {
-        f.render_widget(Line::from(Span::styled(format!(" {n}"), Style::new().fg(th.value))), area);
+        f.render_widget(note_line(th, n, area.width as usize), area);
         return;
     }
     f.render_widget(crate::chrome::footer(th, hints(&th.g, needs), area.width as usize, 3), area);
+}
+
+/// A failure note ends with its way out, `esc dismiss`, which the cut never
+/// takes (D20). The ascii tier gets its own `✕`.
+fn note_line(th: &Theme, n: &str, w: usize) -> Line<'static> {
+    let g = &th.g;
+    let Some(rest) = n.strip_prefix('✕') else {
+        return Line::from(Span::styled(
+            format!(" {}", g.trunc(n, w.saturating_sub(1))),
+            Style::new().fg(th.value),
+        ));
+    };
+    let tail = format!(" {} ", g.dot);
+    let text = g.trunc(
+        &format!("{}{rest}", g.error),
+        w.saturating_sub(1 + tail.width() + "esc dismiss".width()),
+    );
+    Line::from(vec![
+        Span::styled(format!(" {text}"), Style::new().fg(th.error)),
+        Span::styled(tail, Style::new().fg(th.value)),
+        Span::styled("esc", Style::new().fg(th.accent)),
+        Span::styled(" dismiss", Style::new().fg(th.value)),
+    ])
 }
 
 /// The footer's hints from the key table, in priority order, for the selection:
@@ -839,6 +867,204 @@ fn fit(area: Rect, n: usize, sel: usize, top: usize) -> (usize, usize, Grid) {
     (sel, follow(sel, top.min(g.rows.saturating_sub(1)), &g), g)
 }
 
+// ------------------------------------------------ the return trip (D9, D20)
+
+/// A return-trip note that reports success stays this long (D9).
+pub const NOTE_TTL: Duration = Duration::from_secs(5);
+/// D8's note on `a`, unchanged by D20.
+const SHORT_NOTE: Duration = Duration::from_secs(2);
+
+/// A footer note. `ttl: None` stays until a key.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Note {
+    pub text: String,
+    pub at: Instant,
+    pub ttl: Option<Duration>,
+}
+
+/// The wrapper starts a failure or a refusal with `✕`; the board keys on that (D20).
+pub fn failure(s: &str) -> bool {
+    s.starts_with('✕')
+}
+
+impl Note {
+    pub fn timed(text: String, ttl: Duration, now: Instant) -> Self {
+        Self {
+            text,
+            at: now,
+            ttl: Some(ttl),
+        }
+    }
+
+    /// A line `--note` handed over: 5 s, or until a key when it is a failure.
+    pub fn returned(text: String, now: Instant) -> Self {
+        let ttl = (!failure(&text)).then_some(NOTE_TTL);
+        Self { text, at: now, ttl }
+    }
+
+    pub fn gone(&self, now: Instant) -> bool {
+        self.ttl.is_some_and(|t| now.saturating_duration_since(self.at) >= t)
+    }
+}
+
+/// A key pressed under a note: `(the note goes, the key still runs)`. A sticky
+/// note goes on any key, which also does its job, except `esc` (D20).
+pub fn note_key(n: &Note, code: KeyCode) -> (bool, bool) {
+    if n.ttl.is_some() {
+        return (false, true);
+    }
+    (true, code != KeyCode::Esc)
+}
+
+/// `cockpit-tui board [--select %N] [--note <file>]`, each at most once.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Opts {
+    pub select: Option<String>,
+    pub note: Option<std::path::PathBuf>,
+}
+
+pub fn is_pane_id(s: &str) -> bool {
+    s.strip_prefix('%')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+pub fn opts(args: &[String]) -> Result<Opts, String> {
+    let mut o = Opts::default();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let v = it.next().ok_or(format!("{a} needs a value"))?;
+        match a.as_str() {
+            "--select" if o.select.is_none() && is_pane_id(v) => o.select = Some(v.clone()),
+            "--select" => return Err(format!("--select takes one pane id like %3, not [{v}]")),
+            "--note" if o.note.is_none() && !v.is_empty() => o.note = Some(v.into()),
+            "--note" => return Err("--note takes one file".into()),
+            _ => return Err(format!("board takes only --select %N and --note <file>, not [{a}]")),
+        }
+    }
+    Ok(o)
+}
+
+/// D5 on open, as a position in `order()`: the pane asked for, else the first
+/// `▲`, else the client's pane, else the first row.
+pub fn open_sel(ps: &[Pane], ord: &[usize], want: Option<&str>, active: &str) -> usize {
+    let at = |f: &dyn Fn(&Pane) -> bool| ord.iter().position(|&i| f(&ps[i]));
+    want.and_then(|w| at(&|p| p.id == w))
+        .or_else(|| at(&|p| p.state == State::NeedsInput))
+        .or_else(|| at(&|p| p.id == active))
+        .unwrap_or(0)
+}
+
+pub const STATE_HEAD: &str = "cockpit-board-state 1";
+pub const STATE_MAX: u64 = 64 * 1024;
+/// One line of the wrapper's; far over any message it writes.
+pub const NOTE_MAX: u64 = 4 * 1024;
+
+/// What `board.state` keeps. Steps 3 and 4 append their `fold` and `filter`
+/// lines to the same version.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Saved {
+    pub sel: Option<String>,
+}
+
+/// `None` with no usable HOME: a relative path would land in the cwd.
+pub fn state_path() -> Option<std::path::PathBuf> {
+    let p = crate::panel::xdg("XDG_STATE_HOME", ".local/state").join("tmux-cockpit/board.state");
+    p.is_absolute().then_some(p)
+}
+
+pub fn state_text(s: &Saved) -> String {
+    let mut b = format!("{STATE_HEAD}\n");
+    if let Some(p) = &s.sel {
+        b.push_str(&format!("sel {p}\n"));
+    }
+    b
+}
+
+/// Strict: the head, then known `key value` lines, each in its place.
+pub fn parse_state(body: &str) -> Result<Saved, String> {
+    let body = body.strip_suffix('\n').ok_or("cut short")?;
+    let mut lines = body.split('\n');
+    if lines.next() != Some(STATE_HEAD) {
+        return Err("not a version 1 state file".into());
+    }
+    let mut s = Saved::default();
+    for l in lines {
+        match l.split_once(' ') {
+            Some(("sel", p)) if s.sel.is_none() && is_pane_id(p) => s.sel = Some(p.to_string()),
+            _ => return Err(format!("a bad line [{}]", l.chars().take(40).collect::<String>())),
+        }
+    }
+    Ok(s)
+}
+
+/// The panel's state-file rules: no symlink, a small regular file, checked
+/// before the open (a FIFO would block it) and again on the open file.
+fn read_small(path: &std::path::Path, max: u64) -> Result<String, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let small = |m: std::fs::Metadata| m.is_file() && m.len() <= max;
+    if !std::fs::symlink_metadata(path).is_ok_and(small) {
+        return Err("not a small regular file".into());
+    }
+    let f = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    if !f.metadata().is_ok_and(small) {
+        return Err("not a small regular file".into());
+    }
+    let mut body = String::new();
+    f.take(max).read_to_string(&mut body).map_err(|e| e.to_string())?;
+    Ok(body)
+}
+
+/// `Ok(None)`: no file yet, which is a fresh board and no note.
+pub fn read_state(path: &std::path::Path) -> Result<Option<Saved>, String> {
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => {}
+    }
+    parse_state(&read_small(path, STATE_MAX)?).map(Some)
+}
+
+/// Created new beside it with `O_NOFOLLOW`, mode 0600, then renamed over it:
+/// a rename replaces a symlink rather than following it.
+pub fn write_state(path: &std::path::Path, s: &Saved) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    if let Some(d) = path.parent() {
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(d)?;
+    }
+    let tmp = path.with_extension(format!("state.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .mode(0o600)
+        .open(&tmp)?;
+    let r = f.write_all(state_text(s).as_bytes()).and_then(|_| std::fs::rename(&tmp, path));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+/// The note file's one line, control characters out; `Ok(None)` when empty.
+pub fn read_note(path: &std::path::Path) -> Result<Option<String>, String> {
+    let body = read_small(path, NOTE_MAX)?;
+    let line = match body.split_once('\n') {
+        Some((l, "")) => l,
+        Some(_) => return Err("more than one line".into()),
+        None if body.is_empty() => "",
+        None => return Err("cut short".into()),
+    };
+    let line: String = line.chars().filter(|c| !c.is_control()).collect();
+    let line = line.trim();
+    Ok((!line.is_empty()).then(|| line.to_string()))
+}
+
 const DRAW_BUDGET: u8 = 5;
 
 fn transient(e: &std::io::Error) -> bool {
@@ -910,7 +1136,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
     }
 }
 
-pub fn run() -> Option<String> {
+pub fn run(o: &Opts) -> Option<String> {
     // crossterm caches a failed event-reader init forever: probe before init, or
     // a run with no controlling terminal paints a TUI that ignores every key.
     if let Err(e) = event::poll(Duration::ZERO) {
@@ -924,6 +1150,27 @@ pub fn run() -> Option<String> {
         .unwrap_or_default()
         .trim()
         .to_string();
+    // read before the terminal is taken, so a refusal can still reach stderr
+    let t0 = Instant::now();
+    let mut note = o.note.as_deref().and_then(|f| match read_note(f) {
+        Ok(n) => n.map(|n| Note::returned(n, t0)),
+        Err(e) => {
+            eprintln!("cockpit-tui: cannot read the note {}: {e}", f.display());
+            None
+        }
+    });
+    let path = state_path();
+    let saved = match path.as_deref().map(read_state) {
+        Some(Ok(s)) => s.unwrap_or_default(),
+        Some(Err(e)) => {
+            eprintln!("cockpit-tui: board.state ignored: {e}");
+            note.get_or_insert(Note::timed(format!("board.state ignored ({e}); starting fresh"), NOTE_TTL, t0));
+            Saved::default()
+        }
+        None => Saved::default(),
+    };
+    // the selection to restore once the first good read names its pane
+    let mut want = Some(o.select.clone().or(saved.sel));
     let push = Push::start();
     // no text box to paste into: the board keeps the input it always had
     let mut term = match crate::backend::init(false, false) {
@@ -943,7 +1190,6 @@ pub fn run() -> Option<String> {
     let mut help: Option<usize> = None;
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
-    let mut note: Option<(String, Instant)> = None;
     let mut last_hash = 0u64;
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let mut action_line = None;
@@ -968,7 +1214,7 @@ pub fn run() -> Option<String> {
         if push.pending() {
             ask(area(term.size().unwrap_or_default()), sel, top);
         }
-        if note.as_ref().is_some_and(|(_, t)| t.elapsed() >= Duration::from_secs(2)) {
+        if note.as_ref().is_some_and(|n| n.gone(Instant::now())) {
             note = None;
             dirty = true;
         }
@@ -986,7 +1232,19 @@ pub fn run() -> Option<String> {
                     .iter()
                     .map(|p| seen.get(&p.id).cloned().unwrap_or(Some(String::new())))
                     .collect();
-                (sel, top, _) = fit(area(term.size().unwrap_or_default()), panes.len(), sel, top);
+                let here = area(term.size().unwrap_or_default());
+                if s.ok
+                    && !panes.is_empty()
+                    && let Some(w) = want.take()
+                {
+                    sel = open_sel(&panes, &order(&panes), w.as_deref(), &active);
+                }
+                let was = top;
+                (sel, top, _) = fit(here, panes.len(), sel, top);
+                // the restored selection can sit below the first fetch's viewport
+                if top != was {
+                    ask(here, sel, top);
+                }
                 let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
                 if h != last_hash || !loaded {
                     last_hash = h;
@@ -1026,7 +1284,7 @@ pub fn run() -> Option<String> {
                 sel,
                 top,
                 active: &active,
-                note: note.as_ref().map(|(s, _)| s.as_str()),
+                note: note.as_ref().map(|n| n.text.as_str()),
                 help,
                 stale,
                 lost: reads.lost(now),
@@ -1080,6 +1338,17 @@ pub fn run() -> Option<String> {
             help = crate::chrome::scroll(k.code, t, help_rows(&th.g).len().saturating_sub(rows), rows);
             continue;
         }
+        if !too_small(here)
+            && let Some(n) = &note
+        {
+            let (drop, run) = note_key(n, k.code);
+            if drop {
+                note = None;
+            }
+            if !run {
+                continue;
+            }
+        }
         let Some(a) = action(k) else { continue };
         // under the floor or with no tiles nobody can see what a key would do
         if too_small(here) || panes.is_empty() {
@@ -1125,7 +1394,7 @@ pub fn run() -> Option<String> {
                     "{} is not waiting on you {} {} jumps there, /btw asks it while it works",
                     p.wher, th.g.dot, th.g.enter
                 );
-                note = Some((msg, Instant::now()));
+                note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
             }
             _ => {
                 let was = top;
@@ -1138,5 +1407,13 @@ pub fn run() -> Option<String> {
         }
     }
     ratatui::restore();
+    // the selection the next board opens on, this trip's or the next prefix w's
+    // a quit before a good read placed the selection would save row 0 over the kept one
+    if let (Some(p), false) = (&path, crate::data::readonly() || panes.is_empty() || want.is_some()) {
+        let id = panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone();
+        if let Err(e) = write_state(p, &Saved { sel: Some(id) }) {
+            eprintln!("cockpit-tui: cannot write {}: {e}", p.display());
+        }
+    }
     action_line
 }

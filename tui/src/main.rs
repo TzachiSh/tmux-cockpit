@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board | pick | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
 
 /// Never publishes @cockpit_tui_pid: that pid is the board's, for its wakeups.
 fn panel(args: &[String]) {
@@ -82,7 +82,13 @@ fn panel(args: &[String]) {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action: Option<String> = match args.first().map(String::as_str) {
-        Some("board") => board::run(),
+        Some("board") => match board::opts(&args[1..]) {
+            Ok(o) => board::run(&o),
+            Err(e) => {
+                eprintln!("cockpit-tui: {e}\n{USAGE}");
+                std::process::exit(2);
+            }
+        },
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),
         Some("transcript") => std::process::exit(data::transcript::main(&args[1..])),
         Some("panel") => {
