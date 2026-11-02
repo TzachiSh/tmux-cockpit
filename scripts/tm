@@ -3,7 +3,7 @@
 #   tm <name>        attach to <name>, creating it if missing
 #   tm               pick a session; a name nothing matches + ↵ creates it
 #   tm --needs       pick among the sessions waiting on you or in error
-#   tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
+#   tm -k [name...]  kill sessions (no name = pick one: ^X twice)
 #   tm -l            list sessions
 #   tm -h            this help
 set -uo pipefail
@@ -26,18 +26,13 @@ command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmu
 # \037 between fields: tab is IFS whitespace and a run of empty fields would
 # collapse.
 US=$'\037'
-R=$'\033[0m'
-# The same agent test agent-state uses, so a stale @panestate is not believed.
-AGENT='#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}}'
-K_KILL='↵ kill · ⇥ mark · esc cancel'
 
-# lib/ sits beside the real script, not the install symlink. Loaded lazily:
-# --rows and the kill bindings run on every fzf reload.
-load_theme() {
+# lib/ sits beside the real script, not the install symlink. Loaded when the
+# picker opens: `tm <name>` and `tm -l` never need it.
+load_tui() {
   local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
-  # shellcheck source=lib/fzf.sh
-  . "${d%/*}/lib/fzf.sh" \
-    || die "cockpit: the fzf theme is missing · reinstall from the repo"
+  # shellcheck source=lib/tui.sh
+  . "$(cd -P "$(dirname "$d")" && pwd)/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ]
 }
 
 usage() {
@@ -46,11 +41,11 @@ tm — tmux session launcher.
   tm <name>        attach to <name>, creating it if missing
   tm               pick a session; a name nothing matches + ↵ creates it
   tm --needs       pick among the sessions waiting on you or in error
-  tm -k [name...]  kill sessions (no name = pick them, Tab selects several)
+  tm -k [name...]  kill sessions (no name = pick one: ^X twice)
   tm -l            list sessions
   tm -h            this help
 In the picker: ↵ switch · alt-↵ creates the typed name even when rows match ·
-^X twice kills · ^/ preview · 1-9 jump while the query is empty · esc close
+^X twice kills · F2 renames · 1-9 jump while the filter is empty · F1 keys · esc close
 USAGE
 }
 
@@ -180,414 +175,31 @@ own() {
   export TM_SID=${TM_SID:-}
 }
 
-# --- the picker's pieces; the fzf bindings call each one as tm --<piece> ------
-
-declare -A G=() C=()
-glyphs() {
-  case ${TM_GLYPHS:-} in
-    ascii) G=([needs-input]='!' [error]=x [running]='*' [done]=+ [idle]=. [att]=@) ;;
-    # Many Nerd Font builds draw these 2 cells wide while wcwidth says 1, so
-    # they are opt-in only.
-    nerd)  G=([needs-input]=$'\xef\x83\xb3' [error]=$'\xef\x81\x97' [running]=$'\xef\x85\x84'
-              [done]=$'\xef\x81\x98' [idle]=$'\xef\x84\x8c' [att]=$'\xef\x84\x88') ;;
-    *)     G=([needs-input]=▲ [error]=✕ [running]=● [done]=✓ [idle]=○ [att]=◉) ;;
-  esac
-  G[none]=' '    # an empty shell is not an idle agent
-}
-
-# Fills C with one SGR per role. TM_SGR carries them to the reloads, so the
-# palette costs one tmux call per picker, not one per reload.
-palette() {
-  local roles=(needs-input error running done dim soft fg) v=() i k h s=''
-  if [ -z "${TM_SGR:-}" ]; then
-    load_theme; _cockpit_fzf_thm
-    for k in red peach yellow green overlay_1 overlay_2 fg; do
-      h=${COCKPIT_THM[$k]#\#}
-      # Only #rrggbb becomes a colour; a named one leaves the role plain.
-      [[ $h =~ ^[0-9a-fA-F]{6}$ ]] &&
-        printf -v h '\033[38;2;%d;%d;%dm' "0x${h:0:2}" "0x${h:2:2}" "0x${h:4:2}" || h=''
-      s+=$h$US
-    done
-    export TM_SGR=$s
-  fi
-  IFS=$US read -r -a v <<<"$TM_SGR"
-  for i in "${!roles[@]}"; do C[${roles[$i]}]=${v[$i]:-}; done
-  C[idle]=${C[dim]} C[none]=''
-}
-
-# LW = the list's own width. The preview takes the right half while that half
-# is 60+ columns (the <60 alternative in pick), and starts hidden in touch mode.
-LW=0
-listw() {
-  local cols=${FZF_COLUMNS:-}
-  num "$cols" || cols=$(tput cols 2>/dev/null)
-  num "$cols" || cols=80
-  LW=$cols
-  [ "${TM_TOUCH:-0}" = 1 ] || [ $((cols / 2)) -lt 60 ] || LW=$((cols - cols / 2))
-}
-
-trunc() {  # trunc VAR TEXT WIDTH -- TEXT cut with … to at most WIDTH cells
-  local _t=$2 _w=$3
-  [ "$_w" -gt 0 ] || _w=1
-  [ "${#_t}" -le "$_w" ] || _t="${_t:0:_w-1}…"
-  printf -v "$1" '%s' "$_t"
-}
-
-fit() {  # fit VAR TEXT WIDTH -- trunc, then space-padded to WIDTH
-  local _f
-  trunc _f "$2" "$3"
-  printf -v "$1" '%s%*s' "$_f" $(($3 - ${#_f})) ''
-}
-
-ago() {  # ago VAR SECONDS
-  local s=$2
-  if   [ "$s" -lt 60 ];    then printf -v "$1" now
-  elif [ "$s" -lt 3600 ];  then printf -v "$1" '%dm' $((s / 60))
-  elif [ "$s" -lt 86400 ]; then printf -v "$1" '%dh' $((s / 3600))
-  else                          printf -v "$1" '%dd' $((s / 86400))
-  fi
-}
-
-# Untrusted agent text, read alone so no byte of it can reach a record split.
-ask_of() {  # ask_of VAR PANE_ID
-  local _a
-  _a=$(tmux show-options -pqv -t "$2" @panestate_msg 2>/dev/null)
-  printf -v "$1" '%s' "${_a//[$'\001'-$'\037'$'\177']/}"
-}
-
-# A header line, then id<TAB>number glyph<TAB>name<TAB>rest per session: fzf
-# shows 2.. and searches the name. NUL-ended in touch, so an ask fits in a row.
-rows() {
-  glyphs; palette; listw; own
-  # A printf escape, since a bash string cannot hold the NUL --read0 needs.
-  local touch=${TM_TOUCH:-0} now fmt end='\n'
-  [ "$touch" = 1 ] && end='\0'
-  printf -v now '%(%s)T' -1
-  # Only ids, counts and names: agent text never shares this output.
-  fmt="#{session_id}$US#{session_windows}$US#{session_attached}"
-  fmt+="$US#{?session_last_attached,#{session_last_attached},#{session_created}}"
-  fmt+="$US#{n:#{W:#{P:#{?$AGENT,x,}}}}"
-  fmt+="$US#{W:#{P:#{?#{==:#{@panestate},needs-input},#{?$AGENT,#{pane_id} ,},}}}"
-  fmt+="$US#{W:#{@cockpit_win_state} }$US#{session_name}"
-
-  local id name nw att last ws na wp st band nband=0
-  local -a recs=()
-  local -A n=([needs-input]=0 [error]=0 [running]=0)
-  while IFS=$US read -r id nw att last na wp ws name; do
-    [[ $id =~ ^\$[0-9]+$ ]] && num "$nw" && num "$att" && num "$last" && num "$na" || continue
-    case " $ws" in
-      *" needs-input "*) st=needs-input band=0 ;;
-      *" error "*)       st=error band=1 ;;
-      *" running "*)     st=running band=2 ;;
-      *" done "*)        st=done band=2 ;;
-      *)                 st=idle band=2 ;;
-    esac
-    [ "$na" -gt 0 ] || { st=none band=2; }
-    [ -n "${n[$st]:-}" ] && n[$st]=$((n[$st] + 1))
-    # Your own session goes last, and your own client is not "elsewhere".
-    [ "$id" = "$TM_SID" ] && { band=9; att=$((att - 1)); }
-    [ "$band" -le 1 ] && nband=$((nband + 1))
-    recs+=("$band$US$((now - last))$US$id$US$nw$US$att$US$st$US$na$US${wp%% *}$US$name")
-  done < <(tmux list-sessions -F "$fmt" 2>/dev/null)
-  local total=${#recs[@]}
-
-  # "7 sessions · ▲2 · ✕1 · ●1"; --needs reads "needs you · ▲2 ✕1".
-  local hdr sep=" ${C[dim]}·$R " k r
-  local -a counted=(needs-input error running)
-  if [ "${TM_NEEDS:-}" = 1 ] && [ "$nband" -gt 0 ]; then
-    local -a keep=()
-    for r in "${recs[@]}"; do case $r in [01]"$US"*) keep+=("$r") ;; esac; done
-    recs=("${keep[@]}")
-    hdr="${C[dim]}needs you ·$R"; sep=' '; counted=(needs-input error)
-  else
-    hdr="${C[dim]}$total session$([ "$total" = 1 ] || echo s)$R"
-    [ "$touch" = 1 ] && hdr="${C[dim]}$total$R"
-    # An empty band falls back to every session rather than an empty popup.
-    [ "${TM_NEEDS:-}" = 1 ] && hdr="${C[dim]}nothing needs you ·$R $hdr"
-  fi
-  for k in "${counted[@]}"; do
-    [ "${n[$k]}" -gt 0 ] || continue
-    hdr+="$sep${C[$k]}${G[$k]}${n[$k]}$R"
-  done
-  printf "\t%s$end" "$hdr"
-  [ "${#recs[@]}" -gt 0 ] || return 0
-
-  # Sort: needs-input, error, then most recently attached; your own last.
-  mapfile -t recs < <(printf '%s\n' "${recs[@]}" | sort -t "$US" -k1,1n -k2,2n)
-  # Frozen order: a reload reuses the first render's, so numbers and the cursor
-  # keep their session (fzf's --track --id-nth would block typing on each reload).
-  if [ -n "${TM_DIR:-}" ]; then
-    if [ -s "$TM_DIR/order" ]; then
-      local -A at=() ; local -a sorted=() late=() ids=()
-      mapfile -t ids < "$TM_DIR/order"
-      for k in "${!ids[@]}"; do at[${ids[$k]}]=$k; done
-      for r in "${recs[@]}"; do
-        IFS=$US read -r _ _ id _ <<<"$r"
-        if [ -n "${at[$id]:-}" ]; then sorted[${at[$id]}]=$r; else late+=("$r"); fi
-      done
-      recs=("${sorted[@]}" "${late[@]}")
-    else
-      for r in "${recs[@]}"; do IFS=$US read -r _ _ id _ <<<"$r"; printf '%s\n' "$id"; done > "$TM_DIR/order"
-    fi
-  fi
-
-  # The full name, never cut: fzf searches only what it shows, so a cut name
-  # would stop matching its own tail and ↵ would create a duplicate. The name
-  # column fits the longest name; past the room it has, that row alone sheds
-  # age, windows, agents.
-  local i=0 age num g a here hw=7 nw0 L=0 NW rest when ag wn ask k
-  [ "$LW" -ge 60 ] || hw=6
-  for r in "${recs[@]}"; do
-    IFS=$US read -r band _ _ _ _ _ _ _ name <<<"$r"
-    k=${#name}; [ "$band" = 9 ] && k=$((k + hw))
-    [ "$k" -le "$L" ] || L=$k
-  done
-  # 5 cells before the name, the tab inside NW, and fzf's pointer and gutter.
-  NW=$((L + 1))
-  if [ "$LW" -ge 60 ]; then clamp NW 22 $((LW - 33)); else clamp NW 24 $((LW - 9)); fi
-  for r in "${recs[@]}"; do
-    IFS=$US read -r band age id nw att st na wp name <<<"$r"
-    i=$((i + 1)); num=' '; [ "$i" -le 9 ] && num=$i
-    g="${C[$st]}${G[$st]}$R"
-    a=' '; [ "$att" -gt 0 ] && a="${C[dim]}${G[att]}$R"
-    here=''; [ "$band" = 9 ] && { here=" (here)"; [ "$LW" -ge 60 ] || here="‹here›"; }
-    k=$((NW - 1 - ${#name} - ${#here}))
-    if [ "$LW" -ge 60 ]; then
-      if [ "$na" -gt 0 ]; then ag="$na agent"; [ "$na" = 1 ] || ag+=s; else ag='—'; fi
-      wn="$nw win"; [ "$nw" = 1 ] || wn+=s
-      when=''; [ "$band" = 9 ] || ago when "$age"
-      fit ag "$ag" 10; fit wn "$wn" 7
-      if [ "$k" -ge 0 ]; then
-        printf -v rest '%s%*s%s%s %s  %s%4s%s' "${here:+${C[soft]}$here$R}" "$k" '' \
-          "$ag" "$wn" "$a" "${C[soft]}" "$when" "$R"
-      else
-        # ◉ moves up beside the name; the columns go from the right until it fits.
-        nw0=$((LW - 3 - 5 - ${#name} - 1 - (${#here} ? ${#here} + 1 : 0) - 2))
-        printf -v when '  %s%4s%s' "${C[soft]}" "$when" "$R"
-        [ "$nw0" -ge 23 ] || when=''
-        [ "$nw0" -ge 17 ] || wn=''
-        [ "$nw0" -ge 10 ] || ag=''
-        rest="${here:+${C[soft]}$here$R }$a${ag:+ $ag$wn$when}"
-      fi
-    elif [ "$k" -ge 0 ]; then
-      printf -v rest '%s%*s%s' "${here:+${C[soft]}$here$R}" "$k" '' "$a"
-    else
-      rest="${here:+${C[soft]}$here$R }$a"
-    fi
-    if [ "$touch" = 1 ] && [ "$st" = needs-input ]; then
-      # The ask sits under the name, inside the row so a tap on it selects it.
-      ask=''; [ -n "$wp" ] && ask_of ask "$wp"
-      trunc ask "${ask:-needs you}" $((LW - 8))
-      rest+=$'\n'"     ${C[soft]}$ask$R"
-    fi
-    printf "%s\t%s %s \t%s\t%s$end" "$id" "$num" "$g" "$name" "$rest"
-  done
-}
-
-# The session's windows with their state, then the tail of its most urgent pane.
-preview() {  # preview SESSION_ID
-  glyphs; palette
-  local s=$1 w=${FZF_PREVIEW_COLUMNS:-60} l=${FZF_PREVIEW_LINES:-20}
-  local wi pid pa wa st cmd rank best=9 worst='' active='' name sname=''
-  local -a order=() ; local -A wst=() wcmd=() wpane=() wrank=()
-  local -A rk=([needs-input]=0 [error]=1 [running]=2 [done]=3 [idle]=4 [none]=5)
-  while IFS=$US read -r wi pid pa wa st name cmd; do
-    num "$wi" && [[ $pid =~ ^%[0-9]+$ ]] || continue
-    sname=$name st=${st:-none}; rank=${rk[$st]:-5}
-    [ -n "${wrank[$wi]:-}" ] || { order+=("$wi"); wrank[$wi]=9; }
-    if [ "$rank" -lt "${wrank[$wi]}" ] || { [ "$pa" = 1 ] && [ "$rank" = "${wrank[$wi]}" ]; }; then
-      wrank[$wi]=$rank; wst[$wi]=$st; wcmd[$wi]=$cmd; wpane[$wi]=$pid
-    fi
-    [ "$rank" -lt "$best" ] && { best=$rank; worst=$pid; }
-    [ "$pa$wa" = 11 ] && active=$pid
-  done < <(tmux list-panes -s -t "$s" -F "#{window_index}$US#{pane_id}$US#{pane_active}$US#{window_active}$US#{?$AGENT,#{?@panestate,#{@panestate},idle},}$US#{session_name}$US#{pane_current_command}" 2>/dev/null)
-  [ "${#order[@]}" -gt 0 ] || return 0
-  # No agent anywhere: the pane you would land on.
-  [ "$best" -lt 5 ] || worst=$active
-
-  printf '%s%s · %d window%s%s\n' "${C[dim]}" "$sname" "${#order[@]}" "$([ "${#order[@]}" = 1 ] || echo s)" "$R"
-  local txt msg
-  for wi in "${order[@]}"; do
-    st=${wst[$wi]}
-    case $st in
-      needs-input) ask_of msg "${wpane[$wi]}"; txt="${C[needs-input]}needs you:$R $msg" ;;
-      error)       ask_of msg "${wpane[$wi]}"; txt="${C[error]}error:$R $msg" ;;
-      none)        txt="${C[dim]}no agent$R" ;;
-      *)           txt="${C[dim]}$st$R" ;;
-    esac
-    fit cmd "${wcmd[$wi]//[$'\001'-$'\037'$'\177']/}" 8
-    printf ' %s %s%s%s %s %s\n' "$wi" "${C[$st]}" "${G[$st]}" "$R" "$cmd" "$txt"
-  done
-  printf -v txt '%*s' "$w" ''
-  printf '%s%s%s\n' "${C[dim]}" "${txt// /─}" "$R"
-  # -J joins wrapped lines; no -e, so the agent's colours do not fight the theme.
-  local -a tail=()
-  mapfile -t tail < <(tmux capture-pane -p -J -t "$worst" 2>/dev/null)
-  while [ "${#tail[@]}" -gt 0 ] && [ -z "${tail[-1]// /}" ]; do unset 'tail[-1]'; done
-  local room=$((l - ${#order[@]} - 2))
-  [ "$room" -gt 0 ] && [ "${#tail[@]}" -gt 0 ] &&
-    printf '%s\n' "${tail[@]: -$((room < ${#tail[@]} ? room : ${#tail[@]}))}"
-}
-
-# Touch buttons: each owns an equal share of the footer, its label centred in
-# it, so a tap anywhere in the share counts. shares() is the one geometry both
-# the drawing and the tap use; the cells left over are an outer margin.
-SHARE=0 MARGIN=0
-shares() {  # shares N
-  listw
-  SHARE=$(( (LW - 3) / $1 )); MARGIN=$(( (LW - 3 - $1 * SHARE) / 2 ))
-}
-
-buttons() {  # buttons LABEL... -- the footer; a label starting with ! is a warning
-  shares $#
-  local l c t out
-  printf -v out '%*s' "$MARGIN" ''
-  for l; do
-    c=${C[fg]}; [ "${l:0:1}" = '!' ] && { c=${C[needs-input]}; l=${l:1}; }
-    trunc l "$l" $((SHARE - 4))
-    t=$(( (SHARE - ${#l} - 4) / 2 ))
-    printf -v out '%s%*s%s[ %s%s%s ]%s%*s' "$out" "$t" '' "${C[dim]}" "$c" "$l" "${C[dim]}" "$R" \
-      $((SHARE - ${#l} - 4 - t)) ''
-  done
-  printf '%s' "$out"
-}
-
-zone() {  # zone N -- which of N shares the tap fell in, or -1 in the margin
-  shares "$1"
-  local c=${FZF_CLICK_FOOTER_COLUMN:-0}
-  num "$c" && [ "$c" -gt "$MARGIN" ] && [ "$c" -le $((MARGIN + $1 * SHARE)) ] || { printf -- -1; return; }
-  printf '%s' $(( (c - 1 - MARGIN) / SHARE ))
-}
-
-footer() {  # the resting footer for the list's width
-  listw
-  if   [ "${TM_TOUCH:-0}" = 1 ]; then palette; buttons '+ new' kill view close
-  elif [ "$LW" -ge 80 ]; then printf '%s' '↵ switch · type a name + ↵ creates · ^X kill · ^/ preview · 1-9 jump · esc close'
-  elif [ "$LW" -ge 64 ]; then printf '%s' '↵ switch · type a name + ↵ creates · ^X kill · ^/ preview · esc'
-  else                        printf '%s' '↵ go · name+↵ new · ^X kill · esc'
-  fi
-}
-
-act() {  # act ACTION TEXT -- ACTION(TEXT) in a bracket pair TEXT does not contain
-  local p
-  for p in '()' '[]' '{}' '<>' '~~' '!!' '@@' '##' '$$' '%%' '^^' '&&' '**' '//' ';;' '||'; do
-    case $2 in *"${p:1}"*) continue ;; esac
-    printf '%s%s%s%s' "$1" "${p:0:1}" "$2" "${p:1}"; return
-  done
-}
-
-# $TM_DIR/armed holds the footer's state: empty when it rests, =ID while a kill
-# is armed, ! for a one-off message, + for the create hint.
-ARMED=''
-armed() { ARMED=''; [ -s "$TM_DIR/armed" ] && read -r ARMED < "$TM_DIR/armed"; }
-
-arm() {  # arm ID -- the fzf actions for ^X on that session
-  palette; armed; own
-  local id=$1 name att na nr nw what='' h
-  if [ "$ARMED" = "=$id" ]; then
-    # The reload goes last: fzf drops whatever a chain holds after it.
-    printf '%s+change-header()+%s+%s' "$(act execute-silent "$QSELF --kill-armed")" \
-      "$(act change-footer "$(footer)")" "$(act reload-sync "$QSELF --rows")"
-    return
-  fi
-  IFS=$US read -r name att na nr nw < <(tmux display-message -p -t "$id" \
-    "#{session_name}$US#{session_attached}$US#{n:#{W:#{P:#{?$AGENT,x,}}}}$US#{n:#{W:#{P:#{?$AGENT,#{?#{==:#{@panestate},running},x,},}}}}$US#{n:#{W:#{P:#{?$AGENT,#{?#{==:#{@panestate},needs-input},x,},}}}}" 2>/dev/null)
-  [ -n "${name:-}" ] || return 0
-  if [ "$id" = "$TM_SID" ]; then
-    printf '!\n' > "$TM_DIR/armed"
-    printf 'change-footer:%s%s is this session · detach or use tm -k%s' "${C[needs-input]}" "$name" "$R"
-    return
-  fi
-  printf '=%s\n' "$id" > "$TM_DIR/armed"
-  # What you would lose, the most surprising first: §3.3 wants "attached elsewhere" seen.
-  [ "$att" -gt 0 ] && what+=" · attached elsewhere"
-  [ "$nw" -gt 0 ] && what+=" · $nw waiting"
-  [ "$nr" -gt 0 ] && what+=" · $nr running"
-  if [ "$na" -gt 0 ]; then what+=" · $na agent"; [ "$na" = 1 ] || what+=s; else what+=' · no agents'; fi
-  h=$(act change-header "${C[needs-input]}kill $name?$R ${C[dim]}${what# · }$R")
-  [ -z "$h" ] || printf '%s+' "$h"
-  if [ "${TM_TOUCH:-0}" = 1 ]; then
-    printf 'change-footer:%s' "$(buttons "!kill $name" cancel)"
-  else
-    printf 'change-footer:%s^X again kills%s%s · any key cancels%s' "${C[needs-input]}" "$R" "${C[dim]}" "$R"
-  fi
-}
-
-disarm() {  # disarm [ID] -- restore the header and footer, unless ID is the armed row
-  armed
-  [ -n "$ARMED" ] || return 0
-  [ -n "${1:-}" ] && [ "$ARMED" = "=$1" ] && return 0
-  : > "$TM_DIR/armed"
-  printf 'change-header()+%s' "$(act change-footer "$(footer)")"
-}
-
-# The query matches nothing: say that ↵ creates it (§2.5).
-result() {
-  armed
-  if [ "${FZF_MATCH_COUNT:-1}" = 0 ] && [ -n "${FZF_QUERY:-}" ] && [ "${ARMED:0:1}" != = ]; then
-    printf '+\n' > "$TM_DIR/armed"
-    printf 'change-footer:↵ create "%s" · esc' "$(clean "$FZF_QUERY")"
-  elif [ "$ARMED" = + ]; then
-    disarm
-  fi
-}
-
-click() {  # click ID -- a tap on the touch footer
-  local pre=''
-  armed
-  # A message on the footer gives way, and the tap still counts.
-  [ "$ARMED" = '!' ] && { pre="$(disarm)+"; ARMED=''; }
-  if [ "${ARMED:0:1}" = = ]; then
-    case $(zone 2) in 0) arm "${ARMED#=}" ;; 1) disarm ;; esac
-    return
-  fi
-  case $(zone 4) in
-    0) if [ -n "${FZF_QUERY:-}" ]; then printf '%sprint(new)+accept' "$pre"
-       else printf '!\n' > "$TM_DIR/armed"; printf '%schange-footer:type a name, then tap + new' "$pre"; fi ;;
-    1) printf '%s' "$pre"; arm "$1" ;;
-    2) printf '%stoggle-preview' "$pre" ;;
-    3) printf '%sabort' "$pre" ;;
-    *) printf '%s' "${pre%+}" ;;
-  esac
-}
-
 # prefix+s runs this, as display-popup takes a size, not a format. The client
 # and its session come from the binding: the popup itself knows neither.
 popup() {  # popup CLIENT SESSION_ID CLIENT_WIDTH CLIENT_HEIGHT [--needs]
   local client=$1 sid=$2 cw=$3 ch=$4 needs=${5:-} st='#{W:#{@cockpit_win_state} }'
-  local n nwait nneed touch pw ph t=0 rows w h hmax pv spec=''
+  local n nneed touch pw ph t=0 rows w h hmax
   num "$cw" && num "$ch" || die "cockpit: tm --popup needs the client's width and height"
-  IFS=$US read -r n nwait nneed touch pw ph < <(tmux display-message -p \
-    "#{server_sessions}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,}}}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,#{?#{m:*error*,$st},x,}}}}$US#{@cockpit_touch}$US#{@cockpit_popup_width}$US#{@cockpit_popup_height}")
-  num "$n" && num "$nwait" && num "$nneed" || die "cockpit: tm --popup could not count the sessions"
+  IFS=$US read -r n nneed touch pw ph < <(tmux display-message -p \
+    "#{server_sessions}$US#{n:#{S:#{?#{m:*needs-input*,$st},x,#{?#{m:*error*,$st},x,}}}}$US#{@cockpit_touch}$US#{@cockpit_popup_width}$US#{@cockpit_popup_height}")
+  num "$n" && num "$nneed" || die "cockpit: tm --popup could not count the sessions"
   case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cw" -lt 100 ] && t=1 ;; esac
   rows=$n; [ -n "$needs" ] && [ "$nneed" -gt 0 ] && rows=$nneed
-  # 7 = the popup border, prompt, rule, header line, footer rule and footer.
+  # 4 = the prompt, the header line, the footer and the border; the list takes
+  # the rows, and 14 lines leave the preview room for a few windows.
   if [ "$t" = 1 ]; then
     w=$cw; ceiling w "$pw" "$cw"
-    h=$((2 * rows + nwait + 7)); clamp h 12 "$ch"; ceiling h "$ph" "$ch"
+    h=$((rows + 4)); clamp h 12 "$ch"; ceiling h "$ph" "$ch"
   else
     w=$((cw * 70 / 100)); [ "$cw" -ge 160 ] || w=$((cw * 90 / 100))
     # The user's size options are ceilings, not sizes.
     ceiling w "$pw" "$cw"
     hmax=$((ch * 70 / 100)); ceiling hmax "$ph" "$ch"
-    if [ $(((w - 2) / 2)) -ge 60 ]; then
-      # fzf puts the preview on the right; the list sets the height.
-      h=$((rows + 7)); clamp h 18 "$hmax"
-    else
-      # Below: the list gets its rows first, the preview what is left, up to
-      # 12 lines and its rule. Under 5 it starts hidden, and ^/ still shows it.
-      pv=$((hmax - rows - 8)); [ "$pv" -le 12 ] || pv=12
-      if [ "$pv" -ge 5 ]; then
-        h=$((rows + 8 + pv)); spec="down,$pv,border-top"
-      else
-        h=$((rows + 7)); clamp h 12 "$hmax"; spec='hidden,down,50%,border-top'
-      fi
-    fi
+    h=$((rows + 4)); clamp h 14 "$hmax"
   fi
   local cmd
-  printf -v cmd 'TM_POPUP=1 TM_TOUCH=%s TM_SID=%q TM_CLIENT=%q TM_PREVIEW=%q %s%s' \
-    "$t" "$sid" "$client" "$spec" "$QSELF" "${needs:+ --needs}"
+  printf -v cmd 'TM_POPUP=1 TM_SID=%q TM_CLIENT=%q %s%s' "$sid" "$client" "$QSELF" "${needs:+ --needs}"
   tmux display-popup -c "$client" -t "$sid" -w "$w" -h "$h" -T ' sessions ' -E "$cmd"
 }
 
@@ -608,84 +220,83 @@ ceiling() {  # ceiling VAR OPTION WHOLE -- OPTION as N% of WHOLE or N cells
   [ "${!1}" -le "$c" ] || printf -v "$1" '%d' "$c"
 }
 
-pick() {
-  local cols t glyph touch
-  load_theme
-  IFS=$US read -r glyph touch < <(tmux display-message -p "#{@cockpit_glyphs}$US#{@cockpit_touch}" 2>/dev/null)
-  cols=$(tput cols 2>/dev/null); num "$cols" || cols=80
-  t=${TM_TOUCH:-}
-  if [ -z "$t" ]; then
-    t=0; case ${touch:-auto} in on) t=1 ;; off) ;; *) [ "$cols" -lt 100 ] && t=1 ;; esac
-  fi
-  TM_DIR=$(mktemp -d) || die "cockpit: no temp dir for the picker"
-  trap 'rm -rf "$TM_DIR"' EXIT
-  trap 'exit 130' INT TERM HUP
-  export TM_DIR TM_TOUCH=$t TM_GLYPHS=${glyph:-} TM_NEEDS=${TM_NEEDS:-}
-  palette; own
-
-  local -a THEME args digits=()
-  local n foot
-  foot=$(FZF_COLUMNS=$cols footer)
-  mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$foot")
-  for n in 1 2 3 4 5 6 7 8 9; do
-    digits+=(--bind "$n:transform:[ -z \"\$FZF_QUERY\" ] && [ $n -le \"\$FZF_MATCH_COUNT\" ] && echo 'pos($n)+accept' || echo 'put($n)'")
-  done
-  args=(--height="$([ -n "${TM_POPUP:-}" ] && echo 100% || echo 40%)" --reverse --no-multi
-        --info=inline-right --cycle --scroll-off=2 --tiebreak=index
-        --delimiter=$'\t' --with-nth=2.. --nth=2 --header-lines=1 --footer-border=line
-        --print-query --prompt='session> '
-        --preview="$QSELF --preview {1}"
-        # fzf still starts a shell per event; the -s test spares it starting tm.
-        --bind "ctrl-/:toggle-preview+transform:[ ! -s \"\$TM_DIR/armed\" ] || $QSELF --disarm"
-        --bind "ctrl-x:transform:$QSELF --arm {1}"
-        --bind "focus:transform:[ ! -s \"\$TM_DIR/armed\" ] || $QSELF --disarm {1}"
-        --bind "change:transform:[ ! -s \"\$TM_DIR/armed\" ] || $QSELF --disarm"
-        --bind 'alt-enter:print(new)+accept'
-        --bind "resize:$(act transform "$QSELF --resized")+$(act reload-sync "$QSELF --rows")"
-        "${digits[@]}")
-  if [ "$t" = 1 ]; then
-    # One tap switches; no live refresh, since a row moving under a thumb is
-    # worse than a glyph 2 s stale.
-    args+=(--read0 --gap --gap-line=' ' --bind 'left-click:accept'
-           --bind "click-footer:transform:$QSELF --click {1}"
-           --preview-window='hidden,down,60%,border-top')
-  else
-    args+=(--bind "every(2):$(act reload-sync "$QSELF --rows")+refresh-preview"
-           --bind "result:transform:[ \"\$FZF_MATCH_COUNT\" != 0 ] && [ ! -s \"\$TM_DIR/armed\" ] || $QSELF --result"
-           --preview-window="${TM_PREVIEW:-right,50%,border-left,<60(down,12,border-top)}")
-  fi
-
-  local out rc query line
-  out=$(FZF_COLUMNS=$cols rows | fzf "${THEME[@]}" "${args[@]}"); rc=$?
-  # 0 picked, 1 nothing matched; 130 is esc, 2 an fzf error.
-  case $rc in 0|1) ;; 2) die "cockpit: fzf failed · tm needs fzf 0.73+" ;; *) exit 0 ;; esac
-  query=${out%%$'\n'*}
-  local -a lines=()
-  mapfile -t lines <<<"${out#*$'\n'}"
-  [ "$out" = "$query" ] && lines=()
-  for line in "${lines[@]}"; do [ "$line" = new ] && { go "$(clean "$query")"; return; }; done
-  for line in "${lines[@]}"; do
-    case $line in *$'\t'*) enter "${line%%$'\t'*}"; return ;; esac
-  done
-  go "$(clean "$query")"
+# Says why nothing happened: on stderr, and on the client's status line, since a
+# popup closes and takes its stderr with it.
+refuse() {
+  printf '✕ %s\n' "$*" >&2
+  [ -z "${TM_POPUP:-}" ] || tmux display-message ${TM_CLIENT:+-c "$TM_CLIENT"} "cockpit: ✕ $*" 2>/dev/null
+  return 1
 }
+
+# Re-checked here, not trusted from the picker: the id must be $N, and the name
+# the person saw must still be the live name, since a rename or a new session
+# with a reused id could have landed between the print and now.
+confirm() {  # confirm ID EXPECTED -- prints the live name; fails with a note
+  local live
+  [[ $1 =~ ^\$[0-9]+$ ]] || { refuse "the picker named '$1', which is not a session id; nothing changed"; return 1; }
+  live=$(tmux display-message -p -t "$1" '#{session_name}' 2>/dev/null)
+  [ -n "$live" ] || { refuse "session $1 is gone; nothing changed"; return 1; }
+  [ "$live" = "$2" ] || { refuse "session $1 is now called '$live', not '$2'; nothing changed"; return 1; }
+  printf '%s' "$live"
+}
+
+# The first line of a side file the picker wrote, or nothing.
+side() { local l=''; IFS= read -r l < "$1" 2>/dev/null; printf '%s' "$l"; }
+
+# Runs the picker and acts on the one action line it wrote. It never mutates
+# itself. kill and rename run again afterwards, in the same popup.
+pick() {
+  local verb arg rest rc live new glyphs d
+  local -a a
+  # Global, not local: the EXIT trap runs after this function has returned.
+  PICK_DIR=$(mktemp -d) || die "cockpit: no temp dir for the picker"
+  d=$PICK_DIR
+  trap 'rm -rf "$PICK_DIR"' EXIT
+  trap 'exit 130' INT TERM HUP
+  # ascii is the picker's only other glyph tier: any other value draws the default.
+  glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
+  while :; do
+    rm -f "$d"/act "$d"/act.text "$d"/act.expect
+    own
+    a=(sessions)
+    [ "${TM_NEEDS:-}" = 1 ] && a+=(--needs)
+    [[ ${TM_SID:-} =~ ^\$[0-9]+$ ]] && a+=(--current "$TM_SID")
+    # CLAUDECODE leaks in from an agent's shell and must not mark the binary as its child.
+    env -u CLAUDECODE COCKPIT_ACTION="$d/act" ${glyphs:+COCKPIT_GLYPHS=$glyphs} "$COCKPIT_TUI_BIN" "${a[@]}"; rc=$?
+    case $rc in 0) ;; 1) return 0 ;; *) die "cockpit: the sessions picker exited $rc · see the lines above" ;; esac
+    verb='' arg='' rest=''
+    read -r verb arg rest < "$d/act" 2>/dev/null
+    [ -z "$rest" ] || die "cockpit: the picker wrote an action line tm cannot read"
+    case $verb in
+      switch)
+        [[ $arg =~ ^\$[0-9]+$ ]] || die "cockpit: the picker named '$arg', which is not a session id"
+        enter "$arg"; return ;;
+      new-session)
+        [ "$arg" = - ] || die "cockpit: new-session takes '-', not '$arg'"
+        go "$(clean "$(side "$d/act.text")")"; return ;;
+      kill-session)
+        live=$(confirm "$arg" "$(side "$d/act.expect")") || return 1
+        own
+        [ "$arg" != "${TM_SID:-}" ] || { refuse "$live is the session you are in; nothing killed"; return 1; }
+        tmux kill-session -t "$arg" 2>/dev/null || { refuse "could not kill $live"; return 1; }
+        printf 'killed: %s\n' "$live" >&2 ;;
+      rename-session)
+        live=$(confirm "$arg" "$(side "$d/act.expect")") || return 1
+        new=$(clean "$(side "$d/act.text")")
+        [ -n "$new" ] || { refuse "no name to rename $live to; nothing changed"; return 1; }
+        tmux rename-session -t "$arg" -- "$new" 2>/dev/null || { refuse "could not rename $live to '$new'"; return 1; }
+        printf 'renamed: %s -> %s\n' "$live" "$new" >&2 ;;
+      *) die "cockpit: the picker wrote an action tm does not know: $verb" ;;
+    esac
+  done
+}
+
+# The picker needs a terminal and the binary; without either, list and ask.
+can_pick() { [ -t 0 ] && load_tui; }
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   -l|--list) list; exit 0 ;;
-  --rows)    rows; exit ;;
-  --preview) preview "${2:-}"; exit ;;
-  --footer)  footer; exit ;;
-  --arm)     arm "${2:-}"; exit ;;
-  --disarm)  disarm "${2:-}"; exit ;;
-  --result)  result; exit ;;
-  --click)   click "${2:-}"; exit ;;
-  --resized) : > "$TM_DIR/armed"; printf 'change-header()+%s' "$(act change-footer "$(footer)")"; exit ;;
-  --kill-armed)
-    # arm() never arms your own session, so this kills what the user confirmed.
-    armed; : > "$TM_DIR/armed"
-    [ "${ARMED:0:1}" != = ] || tmux kill-session -t "${ARMED#=}" 2>/dev/null
-    exit 0 ;;
   --popup)   shift; popup "$@"; exit ;;
   --needs)   export TM_NEEDS=1; shift ;;
   -k|--kill)
@@ -695,25 +306,10 @@ case "${1:-}" in
       exit 0
     fi
     [ -n "$(list)" ] || die "cockpit: no tmux sessions to kill"
-    doomed=()
-    if command -v fzf >/dev/null; then
-      load_theme
-      mapfile -t THEME < <(cockpit_fzf_args highlight-line "footer=$K_KILL")
-      # The red --color must come after the theme for fzf to let it win.
-      mapfile -t doomed < <(TM_TOUCH=0 rows \
-        | fzf "${THEME[@]}" \
-              --multi --height=40% --reverse --info=inline-right --cycle --scroll-off=2 \
-              --delimiter=$'\t' --with-nth=2.. --nth=2 --header-lines=1 \
-              --color=prompt:red,pointer:red,marker:red --marker='✗' \
-              --prompt='kill session> ')
-      for s in "${doomed[@]}"; do
-        IFS=$'\t' read -r id _ name _ <<<"$s"
-        tmux kill-session -t "$id" 2>/dev/null && printf 'killed: %s\n' "$name" >&2
-      done
-    else
-      printf 'Kill which session?\n' >&2; list >&2
-      kill_one "$(ask_name 'Name (empty cancels): ')"
-    fi
+    # In the picker ^X kills the highlighted session, twice to confirm.
+    if can_pick; then pick; exit; fi
+    printf 'Kill which session?\n' >&2; list >&2
+    kill_one "$(ask_name 'Name (empty cancels): ')"
     exit 0 ;;
 esac
 # An internal piece that failed part-way must never reach the name below:
@@ -733,7 +329,7 @@ if [ -z "$sessions" ]; then
   go "$(ask_name)"
   exit
 fi
-if ! command -v fzf >/dev/null; then
+if ! can_pick; then
   printf 'Sessions:\n%s\n' "$sessions" >&2
   go "$(ask_name 'Session (a new name creates it, empty cancels): ')"
   exit
