@@ -3,6 +3,8 @@
 # fsmonitor, filters, textconv, external diff and hooks there run as the user.
 
 GIT_SAFE=(-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false)
+GIT_NOFETCH=(-c protocol.allow=never -c protocol.file.allow=never -c protocol.ssh.allow=never -c protocol.git.allow=never
+    -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ext.allow=never)
 
 git() {
     local i=1 n=$# dir=. a
@@ -39,7 +41,10 @@ git() {
     case ${!i-} in
         diff|log|show) set -- "${@:1:i}" --no-ext-diff --no-textconv "${@:i+1}" ;;
     esac
-    # A partial clone fetches a missing blob through the remote the repo names
-    # (remote.*.uploadpack runs as the user); report it missing instead.
-    GIT_NO_LAZY_FETCH=1 command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@"
+    case ${!i-} in
+        # A lazy fetch runs the remote the repo names, as the user (git < 2.44 ignores the
+        # env, hence the pin); only the user's own switch or worktree add may fetch.
+        switch|worktree) command git "${GIT_SAFE[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+        *) GIT_NO_LAZY_FETCH=1 command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
+    esac
 }

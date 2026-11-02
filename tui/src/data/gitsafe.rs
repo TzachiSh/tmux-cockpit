@@ -6,8 +6,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// The board runs git in every agent's repo, and the agent owns that repo's
-/// config: nothing it planted there may run as the user.
-pub const SAFE: [&str; 9] = [
+/// config: nothing it planted there may run as the user. The protocol pin
+/// stops a lazy fetch on git < 2.44, which ignores GIT_NO_LAZY_FETCH.
+pub const SAFE: [&str; 23] = [
     "--no-optional-locks",
     "-c",
     "core.fsmonitor=false",
@@ -17,6 +18,20 @@ pub const SAFE: [&str; 9] = [
     "core.pager=cat",
     "-c",
     "log.showSignature=false",
+    "-c",
+    "protocol.allow=never",
+    "-c",
+    "protocol.file.allow=never",
+    "-c",
+    "protocol.ssh.allow=never",
+    "-c",
+    "protocol.git.allow=never",
+    "-c",
+    "protocol.http.allow=never",
+    "-c",
+    "protocol.https.allow=never",
+    "-c",
+    "protocol.ext.allow=never",
 ];
 
 /// stdout, and whether git exited 0: a failed diff must not read as clean.
