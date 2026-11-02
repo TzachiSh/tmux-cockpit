@@ -101,6 +101,45 @@ if [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
 fi
 
 # --- keys ---------------------------------------------------------------------
+# A key the plugin lets go of gets its stock 3.8 binding back, or is unbound if
+# stock has none.
+give_back() {
+    local k=$1
+    case "$k" in
+        C) set -- customize-mode -Z ;;          D) set -- choose-client -Z ;;
+        E) set -- select-layout -E ;;           L) set -- switch-client -l ;;
+        M) set -- select-pane -M ;;             c) set -- new-window ;;
+        T) set -- command-prompt -I '#T' 'select-pane -T "%%"' ;;
+        d) set -- detach-client ;;              f) set -- command-prompt 'find-window -Z "%%"' ;;
+        g) set -- switch-client -T move ;;      i) set -- display-message ;;
+        l) set -- last-window ;;                m) set -- select-pane -m ;;
+        n) set -- next-window ;;                o) set -- select-pane -t :.+ ;;
+        p) set -- previous-window ;;            q) set -- display-panes ;;
+        r) set -- refresh-client ;;             s) set -- choose-tree -Zs ;;
+        t) set -- clock-mode ;;                 w) set -- choose-tree -Zw ;;
+        x) set -- confirm-before -p 'kill-pane #P? (y/n)' kill-pane ;;
+        z) set -- resize-pane -Z ;;
+        *) set -- ;;
+    esac
+    if [ "$#" -gt 0 ]; then tmux bind-key -T prefix "$k" "$@"
+    else tmux unbind-key -T prefix "$k"; fi
+}
+
+# The menu's key, settled before any key is bound this load, so giving an old one
+# back can never undo a binding made below. @cockpit_ai_key was the agents menu's
+# key; it still works, with a notice.
+menuk=$(tmux show-option -gqv @cockpit_menu_key)
+aik=$(tmux show-option -gqv @cockpit_ai_key)
+if [ -z "$menuk" ] && [ -n "$aik" ]; then
+    menuk=$aik
+    tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
+fi
+case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
+mprev=$(tmux show-option -gqv @cockpit_menu_bound)
+if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
+    give_back "$mprev"
+    tmux set-option -gu @cockpit_menu_bound
+fi
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 Q_REVIEW=$(sq "$DIR/scripts/tmux-review")
@@ -164,11 +203,6 @@ rk=$(key @cockpit_review_key r)
 ik=$(key @cockpit_info_key i)
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$Q_REVIEW -p $SRC_PANE --info; read -r _"
 
-# A key the plugin lets go of: f gets stock find-window back, any other is unbound.
-give_back() {
-    if [ "$1" = f ]; then tmux bind-key -T prefix f command-prompt 'find-window -Z "%%"'
-    else tmux unbind-key -T prefix "$1"; fi
-}
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
     | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
@@ -305,20 +339,6 @@ fi
 # branch. A row replays its action's key (send-keys -K), so a rebound key moves
 # its row and an off key drops it. ##: display-menu expands an item's command
 # once, so a quote in a path or name reaches the command as data.
-# @cockpit_ai_key was the agents menu's key; it still works, with a notice.
-menuk=$(tmux show-option -gqv @cockpit_menu_key)
-aik=$(tmux show-option -gqv @cockpit_ai_key)
-if [ -z "$menuk" ] && [ -n "$aik" ]; then
-    menuk=$aik
-    tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
-fi
-case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
-# A reload that turns the key off or moves it must give the old one back.
-mprev=$(tmux show-option -gqv @cockpit_menu_bound)
-if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
-    give_back "$mprev"
-    tmux set-option -gu @cockpit_menu_bound
-fi
 rows=()
 row() { [ -z "$3" ] || rows+=("$1" "$2" "switch-client -T prefix ; send-keys -K $3"); }
 row 'Board of every agent'        w "$bk"

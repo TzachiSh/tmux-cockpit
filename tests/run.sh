@@ -3317,7 +3317,26 @@ case "$(ak n)" in *display-menu*) ok "a moved menu key binds the new key" ;;
 is "and gives a back" "" "$(ak a)"
 "$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key off >/dev/null 2>&1
 "$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "turning it off on a reload gives n back too" "" "$(ak n | grep display-menu)"
+is "turning it off on a reload gives n back, as stock next-window" "next-window" \
+   "$(ak n | awk '{print $5}')"
+# m is stock mark-pane: moving the menu off it must put mark-pane back, not unbind m.
+"$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key m >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$(ak m)" in *display-menu*) ok "the menu can take m" ;; *) bad "the menu can take m" "the menu on m" "$(ak m)" ;; esac
+"$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$(ak m)" in *"select-pane -m"*) ok "and moving it off m gives stock mark-pane back" ;;
+    *) bad "and moving it off m gives stock mark-pane back" "select-pane -m" "$(ak m)" ;; esac
+# A key this load binds is never given back: the menu moving from r to a must not
+# unbind the review key that this same load binds to r.
+"$TMUX_REAL" -L "$PA" set -g @cockpit_menu_key r >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -g @cockpit_review_key off >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -gu @cockpit_menu_key >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" set -gu @cockpit_review_key >/dev/null 2>&1
+"$TMUX_REAL" -L "$PA" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$(ak r)" in *tmux-review*) ok "giving r back does not undo the review key bound in the same load" ;;
+    *) bad "giving r back does not undo the review key bound in the same load" "tmux-review on r" "$(ak r)" ;; esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 # The old name still works, and says it was renamed.
 PA="cockpit-pa2-$$"; SOCKS="$SOCKS $PA"
@@ -9996,7 +10015,10 @@ pn_stock_f "turning the panel off on f gives f back to stock find-window"
 "$TMUX_REAL" -L "$PN" bind-key -T prefix g display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
 "$TMUX_REAL" -L "$PN" bind-key -T prefix f display-popup -E "/old/scripts/tmux-fixer -p %1" >/dev/null 2>&1
 pn_load
-is "a reload drops a dead tmux-fixer binding on another key" "" "$(pn_keys g)"
+# give_back restores tmux's own binding: g is stock 3.8's switch-client -T move.
+case "$(pn_keys g)" in *tmux-fixer*) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;;
+    *'switch-client -T move'*) ok "a reload drops a dead tmux-fixer binding on another key, for stock" ;;
+    *) bad "a reload drops a dead tmux-fixer binding on another key, for stock" "switch-client -T move" "$(pn_keys g)" ;; esac
 pn_stock_f "and gives f back to stock find-window"
 # @cockpit_fixer_key off was how a user kept stock f; the panel honours it.
 "$TMUX_REAL" -L "$PN" set -gu @cockpit_panel_key >/dev/null 2>&1
