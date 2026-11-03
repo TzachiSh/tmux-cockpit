@@ -1,7 +1,8 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
-#          agent-state session [pane-id]   save the payload's session_id and transcript_path (#302)
+#          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
+#                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep      every window's and session's summaries (tmux hooks)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
@@ -176,9 +177,10 @@ notify)
     ;;
 session)
     # SessionStart and UserPromptSubmit carry the session's identity (#302): the reader is
-    # then right from turn 1 and after /clear or --resume, before any Stop. No state change.
-    # Both values are untrusted: each is checked, then set with `set-option -p` (no format
-    # expansion) in a call of its own. last_assistant_message is free text: never stored.
+    # then right from turn 1 and after /clear or --resume, before any Stop. They and
+    # CwdChanged carry its cwd, the tree the board shows (#312). No state change. Every value
+    # is untrusted: each is checked, then set with `set-option -p` (no format expansion) in a
+    # call of its own. last_assistant_message is free text: never stored.
     d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
@@ -203,11 +205,11 @@ session)
     json_str transcript_path; tp=$REPLY
     # CwdChanged's new_cwd, else the cwd every event carries (#312). Only a whole JSON string:
     # one cut by the cap has no closing quote, and its prefix may well be a real directory.
-    str() {                   # <key> -> REPLY, the string value; empty when not one
+    json_whole() {            # <key> -> REPLY, the string value; empty when not one
         local LC_ALL=C re="\"$1\": ?\"([^\"\\\\]*)\""
         REPLY=""; [[ $payload =~ $re ]] && REPLY=${BASH_REMATCH[1]}
     }
-    str new_cwd; dir=$REPLY; [ -n "$dir" ] || { str cwd; dir=$REPLY; }
+    json_whole new_cwd; dir=$REPLY; [ -n "$dir" ] || { json_whole cwd; dir=$REPLY; }
     # Absolute, no control char (a newline would split the board's row), an existing directory.
     case "$dir" in /*) ;; *) dir="" ;; esac
     case "$dir" in *[$'\001'-$'\037\177']*) dir="" ;; esac

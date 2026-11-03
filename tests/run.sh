@@ -12784,7 +12784,8 @@ else
 SCD=$(mktmpd); SCH="$SCD/h"; mkdir -p "$SCH" "$SCD/a" "$SCD/b" "$SCD/w" "$SCD/cut" "$SCD/semi;"
 SCU1=11111111-2222-4333-8444-555555555555; SCU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 SCHASH="$SCD/x#(touch $SCD/F)"; SCTAB=$(printf '%s/t\tab' "$SCD"); SCSOH="$SCD/"$'\001'x
-mkdir -p "$SCHASH" "$SCTAB" "$SCSOH" "$SCD/b\\s"; : > "$SCD/file"
+SCDEL="$SCD/"$'\177'x
+mkdir -p "$SCHASH" "$SCTAB" "$SCSOH" "$SCDEL" "$SCD/b\\s"; : > "$SCD/file"
 SCP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
 sc_dir() { tmux show-option -pqv -t "$SCP" @cockpit_dir; }
 sc_clear() { local o; for o in dir cwd session transcript; do tmux set-option -pu -t "$SCP" "@cockpit_$o"; done; }
@@ -12802,7 +12803,7 @@ is "the hook exits 0 and prints nothing" "0:" "$(sc "$SCD/a" 2>&1; echo "$?:")"
 scc "$SCD/a" "$SCD/b"
 is "CwdChanged: new_cwd is the tree" "$SCD/b" "$(sc_dir)"
 for row in "gone:$SCD/gone" "a file:$SCD/file" "relative:a" "empty:" "a tab:$SCTAB" \
-           "a control char:$SCSOH" "a backslash:$SCD/b\\s"; do
+           "a control char:$SCSOH" "a DEL:$SCDEL" "a backslash:$SCD/b\\s"; do
     sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"
     sc "${row#*:}"
     is "cwd ${row%%:*}: not saved, the old @cockpit_dir kept" "$SCD/w" "$(sc_dir)"
@@ -12812,6 +12813,8 @@ is "a #(...) in the dir is stored as written" "$SCHASH" "$(tmux display-message 
 is "and no command in it ran" "none" "$([ -e "$SCD/F" ] && echo ran || echo none)"
 sc_clear; sc "$SCD/semi;"
 is "a dir ending in ; keeps its ; (tmux takes a trailing ; for a separator)" "$SCD/semi;" "$(sc_dir)"
+tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc "$SCD/semi;"
+is "and a prompt again there keeps a hand-set @cockpit_dir: @cockpit_cwd kept its ; too" "$SCD/w" "$(sc_dir)"
 sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"
 printf '{"session_id":"%s","cwd":null,"%s":"x"}\n' "$SCU1" "$SCD/a" | sc_raw
 is "a cwd that is not a string is not read" "$SCD/w" "$(sc_dir)"

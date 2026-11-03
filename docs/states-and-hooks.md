@@ -205,7 +205,7 @@ next prompt resumes it, `/goal clear` ends it.
 ## Session identity
 
 `agent-state session` runs at `SessionStart` (`startup|resume|clear|fork`: each can start a
-new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no
+new `session_id`; not `compact`, which keeps it), at `UserPromptSubmit` and at `CwdChanged`. It changes no
 state. It reads these fields of the hook payload and writes them with `set-option -p`, which does
 not expand formats:
 
