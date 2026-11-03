@@ -1657,6 +1657,8 @@ pub fn view_top(rows: &[Row], top: usize, r: usize, room: usize) -> usize {
     } else if r >= top + room {
         top = r + 1 - room;
     }
+    // a guard: the budget adds tree lines only to a list that fits, where top is
+    // 0, so no list reaches this today; it holds if that rule ever loosens
     if rows.get(top).is_some_and(Row::tree) {
         let up = lift(rows, top);
         top = if r < up + room {
@@ -1669,14 +1671,16 @@ pub fn view_top(rows: &[Row], top: usize, r: usize, room: usize) -> usize {
 }
 
 impl Nav {
-    /// The redraw gate's part for the open trees: their lines and printed ages,
-    /// which the data's hash skips (#313).
+    /// The redraw gate's part for the open trees: their lines, printed ages and
+    /// tokens, which the data's hash skips or keeps only by the thousand (#313).
     pub fn tree_gate(&self, ps: &[Pane]) -> String {
         let mut out = String::new();
         for r in self.rows(ps).iter().filter(|r| r.tree()) {
             out.push_str(&format!("{r:?}"));
             if let Row::Sub(i, j) = r {
-                out.push_str(&age_of(&ps[*i], &ps[*i].subs[*j], self.seen.now));
+                let s = &ps[*i].subs[*j];
+                out.push_str(&age_of(&ps[*i], s, self.seen.now));
+                out.push_str(&fmt_tokens(s.tokens));
             }
         }
         out
@@ -1966,7 +1970,7 @@ impl Nav {
                 };
                 let k = r.clamp(self.top, (self.top + room - 1).min(last));
                 self.put(&rows, ps, k);
-                // a no-op unless the page put a tree line on top
+                // a guard, as in view_top: a no-op while trees show only in a list that fits
                 self.clamp(&rows, room);
                 return;
             }

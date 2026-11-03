@@ -856,3 +856,40 @@ fn a_tree_whose_subagents_go_shuts() {
     n.settle(&ps, 20);
     assert!(tree_of(&ps, &n, "%4").is_empty(), "{:?}", n.trees);
 }
+
+// ---------------------------------------------------------------- pins
+
+/// The data's hash keeps tokens by the thousand; the line prints `12.4k`.
+#[test]
+fn an_open_trees_tokens_move_the_redraw_gate() {
+    let mut ps = mock();
+    let n = nav(&ps, "%4", &["%4"], 20);
+    let before = n.tree_gate(&ps);
+    let i = at(&ps, "%4");
+    let j = ps[i].subs.iter().position(|s| s.tokens == 12_400).unwrap();
+    ps[i].subs[j].tokens = 12_900;
+    assert_ne!(before, n.tree_gate(&ps));
+}
+
+/// A one-line tree is `+N more`, the fold's N counted in.
+#[test]
+fn a_one_line_tree_counts_every_subagent() {
+    let ps = mock();
+    let n = nav(&ps, "%4", &["%4"], 7);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:+6"], "2 folded and 4 lines");
+}
+
+/// The open find field shows a folded group unfolded (D7), its open trees too.
+#[test]
+fn the_find_field_shows_a_folded_groups_trees() {
+    let ps = mock();
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    n.folds.insert("api".into());
+    n.open_find(&ps, 20);
+    for c in "tests".chars() {
+        n.find_act(FindKey::Type(c), &ps, 20);
+    }
+    assert_eq!(tree_of(&ps, &n, "%4").len(), 5, "{:?}", shown(&ps, &n));
+    n.find_act(FindKey::Cancel, &ps, 20);
+    assert!(tree_of(&ps, &n, "%4").is_empty(), "the fold holds again");
+}
