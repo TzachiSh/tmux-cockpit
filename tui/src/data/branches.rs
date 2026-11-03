@@ -51,7 +51,8 @@ fn elsewhere(dir: &str) -> Vec<(String, String)> {
     let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
     let top = top.trim_end_matches('\n');
     let (mut path, mut out) = (String::new(), Vec::new());
-    for l in git(dir, &[], None, &["worktree", "list", "--porcelain"]).lines() {
+    // -z: a path with a newline in it stays one record
+    for l in git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]).split('\0') {
         if let Some(p) = l.strip_prefix("worktree ") {
             path = p.to_string();
         } else if let Some(b) = l.strip_prefix("branch refs/heads/")

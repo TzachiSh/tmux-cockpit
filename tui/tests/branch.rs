@@ -239,6 +239,25 @@ fn a_path_that_cannot_ride_one_line_gives_a_note_and_no_action() {
 }
 
 #[test]
+fn a_worktree_path_with_a_newline_is_listed_whole_and_gets_a_note() {
+    let (r, _rm, wt) = repo();
+    git(&r.0, "2020-01-01T00:00:00Z", &["worktree", "remove", "--force", wt.s()]);
+    let odd = r.0.join("wt\nnl");
+    git(
+        &r.0,
+        "2020-01-01T00:00:00Z",
+        &["worktree", "add", "-q", odd.to_str().unwrap(), "held"],
+    );
+    let bs = branches::list(r.s());
+    let held = bs.iter().find(|b| b.name == "held").unwrap();
+    assert_eq!(held.elsewhere.as_deref(), std::fs::canonicalize(&odd).unwrap().to_str());
+    let mut u = ui(bs);
+    type_str(&mut u, "held");
+    assert_eq!(press(&mut u, KeyCode::Enter, KeyModifiers::NONE), Outcome::Continue);
+    assert!(u.pick.header.starts_with("✕ held is checked out"), "{}", u.pick.header);
+}
+
+#[test]
 fn the_header_says_detached_head_when_no_branch_is_current() {
     let (r, _rm, _wt) = repo();
     let g = Theme::fixed().g;
@@ -250,7 +269,9 @@ fn the_header_says_detached_head_when_no_branch_is_current() {
 
 #[test]
 fn golden_detached_head() {
-    let mut u = Ui::new(".", fixture(), "on detached HEAD · repo", &Theme::fixed().g, None);
+    let mut bs = fixture();
+    bs[0].current = false;
+    let mut u = Ui::new(".", bs, "on detached HEAD · repo", &Theme::fixed().g, None);
     u.feed("main".into(), "* dea82ca Merge pull request #238\n");
     golden("branch-detached-80", &draw(80, 24, &u));
 }

@@ -14,6 +14,8 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/git.sh" || exit 1
 # shellcheck source=lib/tui.sh
 . "${d%/*}/lib/tui.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "${d%/*}/lib/fmt.sh" || exit 1
 
 PANE_CMD=""
 PANE_ID=""
@@ -105,20 +107,25 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # one, any pane in it, else a new window there. Never a cd of an existing pane.
 # The path comes off cockpit-tui's line, so it is checked against git's own list.
 goto() {
-    local path=$1 line w id agent cdir cwd ag='' sh='' found='' sep=$'\037' t=()
+    local path=$1 rec w id agent cdir cwd dir ag='' sh='' found='' sep=$'\037' t=()
     WORKTREES=()
-    while IFS= read -r line; do
-        [[ $line == "worktree "* ]] && WORKTREES+=("${line#worktree }")
-    done < <(git worktree list --porcelain 2>/dev/null)
+    # -z: a path with a newline in it stays one record (git 2.36+; older git lists none)
+    while IFS= read -r -d '' rec; do
+        [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
+    done < <(git worktree list --porcelain -z 2>/dev/null)
     for w in "${WORKTREES[@]}"; do [ "$w" = "$path" ] && found=1; done
-    if [[ $path != /* ]] || [ -z "$found" ]; then
+    if [ -z "$found" ]; then
         printf 'cockpit: not a worktree of this repository: %s\n' "$path" >&2; pause; return 1
     fi
+    if [ ! -d "$path" ]; then
+        printf 'cockpit: %s is gone · git worktree prune\n' "$path" >&2; pause; return 1
+    fi
     while IFS="$sep" read -r id agent cdir cwd; do
-        [[ $id == %* ]] || continue
-        owner_of "$cwd"; w=$OWNER
-        owner_of "$cdir"
-        [ "$w" = "$path" ] || [ "$OWNER" = "$path" ] || continue
+        [[ $id =~ ^%[0-9]+$ ]] || continue
+        # one tree per pane, as tmux-review's pane_dir: @cockpit_dir when it is a directory
+        dir=$cwd; [ -n "$cdir" ] && [ -d "$cdir" ] && dir=$cdir
+        owner_of "$dir"
+        [ "$OWNER" = "$path" ] || continue
         if [ "$agent" = 1 ]; then ag=${ag:-$id}; else sh=${sh:-$id}; fi
     done < <(tmux list-panes -a -F "#{pane_id}$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{@cockpit_dir}$sep#{pane_current_path}" 2>/dev/null)
     id=${ag:-$sh}
@@ -129,12 +136,14 @@ goto() {
         tmux select-pane   -t "$id" 2>/dev/null
         return 0
     fi
-    [[ $PANE_ID =~ ^%[0-9]+$ ]] && t=(-a -t "$PANE_ID")
-    path=${path//#/##}   # -c is expanded as a format: a # in the path is doubled
-    if tmux new-window "${t[@]}" -c "$path" 2>/dev/null || tmux new-window -c "$path" 2>/dev/null; then
-        return 0
+    # new-window -t takes a window, not a pane: beside the one the popup came from
+    if [[ $PANE_ID =~ ^%[0-9]+$ ]]; then
+        id=$(tmux display-message -p -t "$PANE_ID" '#{window_id}' 2>/dev/null)
+        [[ $id =~ ^@[0-9]+$ ]] && t=(-a -t "$id")
     fi
-    printf 'cockpit: could not open a window in %s\n' "${path//##/#}" >&2; pause; return 1
+    w=$(fesc "$path")   # -c is expanded as a format
+    if tmux new-window "${t[@]}" -c "$w" 2>/dev/null; then return 0; fi
+    printf 'cockpit: could not open a window in %s\n' "$path" >&2; pause; return 1
 }
 
 # cockpit-tui draws the picker and prints one action line. This script reads it as

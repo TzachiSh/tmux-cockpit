@@ -12458,18 +12458,18 @@ rm -rf "$BRN" "$BRR"
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
 # tui/tests/branch.rs. Everything here is the script's half, on private servers.
 bg_server() {                 # bg_server <socket> <dir>  one session, one pane in <dir>
-    "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 100 -y 30 -c "${2//#/##}" 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$(fesc "$2")" 'exec sleep 300' >/dev/null 2>&1
     "$TMUX_REAL" -L "$1" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 }
 bg_pane() {                   # bg_pane <socket> <dir> <cmd>  a new window in <dir>; prints its pane id
-    "$TMUX_REAL" -L "$1" new-window -P -F '#{pane_id}' -t t: -c "${2//#/##}" "$3" 2>/dev/null   # -c is a format
+    "$TMUX_REAL" -L "$1" new-window -P -F '#{pane_id}' -t t: -c "$(fesc "$2")" "$3" 2>/dev/null   # -c is a format
 }
 bg_goto() {                   # bg_goto <socket> <origin-pane> <repo> <path>  -> the script's exit code
     local sp mark; sp=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}')
     mark=$(mktmpd)
     printf '#!/bin/sh\n[ -e "%s/ran" ] && exit 1\n: > "%s/ran"\nprintf "goto %%s\\n" "$BG_GOTO"\n' "$mark" "$mark" > "$mark/cockpit-tui"
     chmod +x "$mark/cockpit-tui"
-    env TMUX="$sp,0,0" COCKPIT_TUI_BIN="$mark/cockpit-tui" BG_GOTO="$4" \
+    env ${BG_SHIM:+PATH="$BG_SHIM:$PATH"} TMUX="$sp,0,0" COCKPIT_TUI_BIN="$mark/cockpit-tui" BG_GOTO="$4" \
         timeout 30 "$DIR/scripts/tmux-branch" -p "$2" "$3" </dev/null >/dev/null 2>"$mark/err"
     BG_ERR=$(cat "$mark/err")
 }
@@ -12478,6 +12478,8 @@ bg_windows() { "$TMUX_REAL" -L "$1" list-windows -t t: 2>/dev/null | grep -c .; 
 
 echo "== tmux-branch (#303): ↵ on a branch another worktree holds goes to that worktree =="
 if need_tmux "branch goto"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
 BGR=$(mktmpd); BGM=$(mktmpd); br_repo "$BGR" "$BGM"
 BGD=$(mktmpd); BGF="$BGD/F"
 # A space and a tmux format in the path; -c would run the #( ) if it were not escaped.
@@ -12544,6 +12546,95 @@ bg_goto "$BGS2" "$BGO2" "$BGN" "$BGR"
 is "a pane in a nested worktree is not a pane of the enclosing checkout" "2" "$(bg_windows "$BGS2")"
 is "and the new window is the checkout" "$BGR" "$("$TMUX_REAL" -L "$BGS2" display-message -p -t t: '#{pane_current_path}')"
 "$TMUX_REAL" -L "$BGS2" kill-server >/dev/null 2>&1
+
+# One tree per pane (finding: @cockpit_dir over cwd). An agent that works in the worktree
+# from a cwd in the main checkout is a pane of the worktree, so `goto main` skips it.
+BGS3="cockpit-bg303c-$$"; SOCKS="$SOCKS $BGS3"
+bg_server "$BGS3" "$BGW"
+BGO3=$("$TMUX_REAL" -L "$BGS3" list-panes -a -F '#{pane_id}' | head -1)
+BGA3=$(bg_pane "$BGS3" "$BGR" 'exec -a claude sleep 300')
+"$TMUX_REAL" -L "$BGS3" set-option -p -t "$BGA3" @cockpit_dir "$BGW"
+BGM3=$(bg_pane "$BGS3" "$BGR" 'exec sleep 300')
+until_out claude "$TMUX_REAL" -L "$BGS3" display-message -p -t "$BGA3" '#{pane_current_command}'
+"$TMUX_REAL" -L "$BGS3" select-window -t "$BGO3"
+bg_goto "$BGS3" "$BGO3" "$BGR" "$BGR"
+is "an agent with cwd main and @cockpit_dir the worktree is not a pane of main" "$BGM3" "$(bg_active "$BGS3")"
+"$TMUX_REAL" -L "$BGS3" kill-server >/dev/null 2>&1
+
+# A worktree whose directory was deleted by hand is still listed.
+BGG="$BGD/gone"
+git -C "$BGR" worktree add -q -b gone303 "$BGG" >/dev/null 2>&1; rm -rf "$BGG"
+BGS4="cockpit-bg303d-$$"; SOCKS="$SOCKS $BGS4"
+bg_server "$BGS4" "$BGR"
+BGO4=$("$TMUX_REAL" -L "$BGS4" list-panes -a -F '#{pane_id}' | head -1)
+bg_goto "$BGS4" "$BGO4" "$BGR" "$BGG"
+case "$BG_ERR" in
+    *"is gone"*) ok "a listed worktree whose directory is gone is refused, by name" ;;
+    *) bad "a listed worktree whose directory is gone is refused, by name" "is gone" "$BG_ERR" ;;
+esac
+is "and opens no window" "1" "$(bg_windows "$BGS4")"
+
+# #[ in a directory name: fesc keeps it, and a sibling that differs by the doubling is not it.
+BGX="$BGD/a#[b]c"; mkdir -p "$BGD/a##[b]c"
+git -C "$BGR" worktree add -q -b brk303 "$BGX" >/dev/null 2>&1
+bg_goto "$BGS4" "$BGO4" "$BGR" "$BGX"
+is "a worktree named a#[b]c opens in that directory, not in a##[b]c" "$BGX" \
+   "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
+"$TMUX_REAL" -L "$BGS4" kill-server >/dev/null 2>&1
+
+# The deepest worktree holds a pane, whichever order git lists them in. Git lists them by
+# path, so a parent always precedes the tree nested in it; a git shim reverses the records.
+if command -v python3 >/dev/null 2>&1; then
+BGQ=$(mktmpd); BGSH=$(mktmpd); BGGIT=$(command -v git)
+git -C "$BGR" worktree add -q -b par303 "$BGQ/par" >/dev/null 2>&1
+git -C "$BGR" worktree add -q -b nest303 "$BGQ/par/nest" >/dev/null 2>&1
+printf '#!/bin/sh\ncase " $* " in\n *" worktree list "*) %s "$@" | python3 -c %s ;;\n *) exec %s "$@" ;;\nesac\n' \
+    "$BGGIT" "'import sys;r=[x for x in sys.stdin.buffer.read().split(b\"\\0\\0\") if x];r.reverse();sys.stdout.buffer.write(b\"\\0\\0\".join(r)+b\"\\0\\0\")'" "$BGGIT" > "$BGSH/git"
+chmod +x "$BGSH/git"
+is "the shim lists the nested tree before its parent" "$BGQ/par/nest" \
+   "$(PATH="$BGSH:$PATH" git -C "$BGR" worktree list --porcelain -z | tr '\0' '\n' | sed -n 's/^worktree //p' | grep "$BGQ" | head -1)"
+BGS5="cockpit-bg303e-$$"; SOCKS="$SOCKS $BGS5"
+bg_server "$BGS5" "$BGQ/par/nest"
+BGO5=$("$TMUX_REAL" -L "$BGS5" list-panes -a -F '#{pane_id}' | head -1)
+BG_SHIM=$BGSH bg_goto "$BGS5" "$BGO5" "$BGR" "$BGQ/par"
+is "a pane in a tree nested in a linked worktree is not a pane of it, nested listed first" "2" "$(bg_windows "$BGS5")"
+"$TMUX_REAL" -L "$BGS5" kill-server >/dev/null 2>&1
+else skip_ "no python3 for the git shim"; skip_ "nested-first order"; fi
+
+# Across sessions: the point of the feature. A control-mode client sits on s1; the
+# worktree's panes are in s2, in a window that has a second pane and is not current.
+# d0 is the first session ($0), which is what the script's $TMUX names: a new-window
+# that is not pinned to the origin pane lands there, not in s1.
+BGW2="$BGD/second"; git -C "$BGR" worktree add -q -b second303 "$BGW2" >/dev/null 2>&1
+BGS6="cockpit-bg303f-$$"; SOCKS="$SOCKS $BGS6"
+tx() { "$TMUX_REAL" -L "$BGS6" "$@"; }
+tx -f /dev/null new-session -d -s d0 -x 100 -y 30 -c "$BGD" 'exec sleep 300' >/dev/null 2>&1
+tx new-session -d -s s1 -x 100 -y 30 -c "$BGR" 'exec sleep 300' >/dev/null 2>&1
+tx new-session -d -s s2 -x 100 -y 30 -c "$BGD" 'exec sleep 300' >/dev/null 2>&1
+BGO6=$(tx list-panes -t s1 -F '#{pane_id}')
+BGT1=$(tx new-window -P -F '#{pane_id}' -t s2: -c "$(fesc "$BGW")" 'exec sleep 300')
+BGT2=$(tx split-window -P -F '#{pane_id}' -t "$BGT1" -c "$(fesc "$BGW")" 'exec sleep 300')
+BGTW=$(tx display-message -p -t "$BGT1" '#{window_id}')
+tx select-window -t s2:0
+BGFIFO=$(mktmpd)/in; mkfifo "$BGFIFO"
+tx -C attach -t s1 < "$BGFIFO" > /dev/null 2>&1 &
+exec 8> "$BGFIFO"
+until_out '?*' tx list-clients -F '#{client_name}'
+bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW"
+is "the client attached to s1 is switched to the worktree's session" "s2" "$(tx list-clients -F '#{client_session}')"
+is "and the window is the one holding the pane" "$BGTW" "$(tx display-message -p -t s2: '#{window_id}')"
+is "and the pane is the first one in the tree, though the other was active" "$BGT1" "$(tx display-message -p -t s2: '#{pane_id}')"
+exec 8>&-
+until_out '' tx list-clients -F '#{client_name}'
+# no client, so only select-window and select-pane can do it
+tx select-window -t s2:0; tx select-pane -t "$BGT2"
+bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW"
+is "with no client, the window is selected" "$BGTW" "$(tx display-message -p -t s2: '#{window_id}')"
+is "and so is the pane" "$BGT1" "$(tx display-message -p -t s2: '#{pane_id}')"
+bg_goto "$BGS6" "$BGO6" "$BGR" "$BGW2"
+is "a new window lands in the session of the pane the popup came from" "2" "$(tx list-windows -t s1 | grep -c .)"
+is "and not in the session \$TMUX names" "1" "$(tx list-windows -t d0 | grep -c .)"
+tx kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
 fi
 
