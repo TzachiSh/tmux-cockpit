@@ -41,12 +41,16 @@ pub struct Opts {
     pub header: String,
     /// A path, read once before the screen opens.
     pub preview: Option<String>,
+    /// `--copy`: alt-c answers with the row's key too, but exits 10 instead of 0.
+    pub copy: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Outcome {
     Continue,
     Choose(Vec<u8>),
+    /// alt-c on a row, when the caller asked for it (`Opts::copy`).
+    Copy(Vec<u8>),
     Cancel,
 }
 
@@ -62,6 +66,7 @@ pub struct Pick {
     pub prompt: String,
     pub header: String,
     pub preview: Option<String>,
+    pub copy: bool,
     /// Rows in the help this picker shows, to bound its scroll. A caller that
     /// brings its own `Look::help` sets it.
     pub help_len: usize,
@@ -138,11 +143,16 @@ pub fn cap_input(mut b: Vec<u8>, cap: usize) -> (Vec<u8>, bool) {
     (b, true)
 }
 
-/// Writes the answer. 0 for a chosen key, 1 for a cancel, 2 when stdout is gone.
+/// Writes the answer. 0 for a chosen key, 10 for a copied one (alt-c), 1 for a
+/// cancel, 2 when stdout is gone.
 pub fn answer(out: &mut impl Write, o: &Outcome) -> i32 {
-    let Outcome::Choose(k) = o else { return 1 };
+    let (k, ok) = match o {
+        Outcome::Choose(k) => (k, 0),
+        Outcome::Copy(k) => (k, 10),
+        _ => return 1,
+    };
     match out.write_all(k).and_then(|_| out.write_all(b"\n")).and_then(|_| out.flush()) {
-        Ok(()) => 0,
+        Ok(()) => ok,
         Err(e) => {
             eprintln!("cockpit-tui: pick: cannot write the key: {e}");
             2
@@ -163,12 +173,17 @@ pub fn parse_args(args: &[String]) -> Result<Opts, String> {
         prompt: "pick".into(),
         header: String::new(),
         preview: None,
+        copy: false,
     };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let slot = match a.as_str() {
             "--prompt" => &mut o.prompt,
             "--header" => &mut o.header,
+            "--copy" => {
+                o.copy = true;
+                continue;
+            }
             "--preview" => {
                 o.preview = Some(it.next().ok_or("--preview needs a file")?.clone());
                 continue;
@@ -234,6 +249,7 @@ impl Pick {
             prompt: clean(&o.prompt),
             header: clean(&o.header.replace('\n', " ")),
             preview: preview_text.map(|t| clean_lines(&t)),
+            copy: o.copy,
             help_len: help_rows(&Glyphs::unicode()).len(),
             entry: None,
             list_pct: 40,
@@ -284,6 +300,13 @@ impl Pick {
         }
     }
 
+    fn copy_row(&self) -> Outcome {
+        match self.choose() {
+            Outcome::Choose(k) => Outcome::Copy(k),
+            o => o,
+        }
+    }
+
     /// The picker is a text-entry screen: every printable key is a letter of the
     /// query, so nothing a person types first is a command.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
@@ -309,6 +332,9 @@ impl Pick {
         };
         match code {
             KeyCode::Enter => return self.choose(),
+            KeyCode::Char('c') if self.copy && k.modifiers.contains(KeyModifiers::ALT) => {
+                return self.copy_row();
+            }
             KeyCode::F(1) => self.help = Some(0),
             KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
                 if let Some(s) = chrome::scroll(code, self.sel, last, self.room(area)) {
@@ -391,15 +417,19 @@ pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
 
 /// ↵ and esc come first: at the narrowest popup they are all that fits, and
 /// `chrome::fit` would drop the choose key before the help key.
-fn hints(g: &Glyphs, w: usize) -> Vec<(String, String)> {
+fn hints(g: &Glyphs, w: usize, copy: bool) -> Vec<(String, String)> {
     let h = |k: &str, v: &str| (k.to_string(), v.to_string());
     let fitted = chrome::fit(
         vec![
             h(g.key_enter, "choose"),
             h(g.key_updown, "move"),
+            h("alt-c", "copy"),
             h("F1", "keys"),
             h("esc", "cancel"),
-        ],
+        ]
+        .into_iter()
+        .filter(|(k, _)| copy || k != "alt-c")
+        .collect(),
         w,
         3,
     );
@@ -478,7 +508,7 @@ pub fn render_with(f: &mut Frame, area: Rect, p: &Pick, th: &Theme, look: &Look)
     f.render_widget(
         Paragraph::new(chrome::footer(
             th,
-            look.hints.clone().unwrap_or_else(|| hints(&th.g, area.width as usize)),
+            look.hints.clone().unwrap_or_else(|| hints(&th.g, area.width as usize, p.copy)),
             area.width as usize,
             3,
         )),
@@ -542,7 +572,7 @@ fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme, look: &Look) {
     f.render_widget(Paragraph::new(lines), r);
 }
 
-const USAGE: &str = "cockpit-tui pick [--prompt <text>] [--header <text>] [--preview <file>]  (rows on stdin: <key>TAB<display>)";
+const USAGE: &str = "cockpit-tui pick [--prompt <text>] [--header <text>] [--preview <file>] [--copy]  (rows on stdin: <key>TAB<display>)";
 
 /// Leaves raw mode and the alternate screen, on the tty the screen was drawn on.
 pub fn restore_tty() {

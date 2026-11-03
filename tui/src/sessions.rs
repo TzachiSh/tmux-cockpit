@@ -127,6 +127,7 @@ impl View {
                 prompt: "session".into(),
                 header: String::new(),
                 preview: None,
+                copy: false,
             },
             Some(String::new()),
         );
