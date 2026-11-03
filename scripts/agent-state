@@ -41,6 +41,11 @@ fmt_nr="#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?$agent,x,},}}}}}"
 fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
+# ✦N, last: background subagents running, the sum of every agent pane's @cockpit_subs (#R
+# repeats a mark N times, #n counts them). Touch mode is a client's, so its test is stored
+# escaped (##{ #, #}) and runs when the bar draws #{E:@cockpit_fleet}.
+fmt_ns="#{n:#{S:#{W:#{P:#{?$agent,#{R:x,#{@cockpit_subs}},}}}}}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ns,0},##{?##{E:@cockpit_is_touch#}#,#,#[fg=themeyellow]✦$fmt_ns#[default] #},}"
 
 # The gauge cells the bar's tab budget takes off (see agent-context).
 fmt_cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
@@ -107,8 +112,8 @@ case "$pane" in
     *) exit 0 ;;
 esac
 
-# How many background subagents the Stop payload on stdin lists in flight (#310), in SUBS.
-# Only subagents: an idle teammate stays "running" in claude's registry for the life of
+# How many background subagents the Stop payload on stdin lists in flight (#310, #313), in
+# SUBS. Only subagents: an idle teammate stays "running" in claude's registry for the life of
 # its team, and a shell or monitor task may never end. Matched structurally: inside a JSON
 # string the quotes arrive escaped, so no message text can match. No payload, no head or no
 # array: 0.
@@ -139,6 +144,21 @@ subs_count() {
     # cannot match: its quotes arrive as \", so a backslash follows `type`.
     re='^(.*)"type": ?"subagent"'
     while [[ $arr =~ $re ]]; do SUBS=$((SUBS + 1)) arr=${BASH_REMATCH[1]}; done
+}
+
+# @cockpit_subs <- SUBS, compare-then-set, and the fleet's ✦ sum with it: a Stop that holds
+# the pane, or meets a sticky state, writes no state and so runs no sums of its own. Only
+# digits reach the formats.
+subs_write() {
+    local cond
+    if [ "$SUBS" -gt 0 ]; then
+        cond="#{!=:#{@cockpit_subs},$SUBS}" body="set-option -p -t $pane @cockpit_subs $SUBS"
+    else
+        cond='#{@cockpit_subs}' body="set-option -pu -t $pane @cockpit_subs"
+    fi
+    T=$pane body="$body ; $defs"
+    fleet_sums
+    tmux if-shell -F -t "$pane" "$cond" "$body" 2>/dev/null
 }
 
 case "$state" in
@@ -263,10 +283,10 @@ wake)
 done)
     # A Stop while background subagents run ends the turn, not the work (#310): claude wakes
     # the session as each reports back, and the last report-back turn's Stop writes done.
-    # Nothing is written meanwhile, so sticky states and the counters stay as they are.
-    # The poller has no payload, and a terminal is a person typing the command.
+    # No state is written meanwhile, so sticky states and the counters stay as they are; the
+    # count is (#313). The poller has no payload, and a terminal is a person typing the command.
     if [ -z "$poll" ] && [ ! -t 0 ]; then
-        subs_count
+        subs_count; subs_write
         [ "$SUBS" -gt 0 ] && exit 0
     fi
     ;;
@@ -309,8 +329,10 @@ fi
 if [ "$state" = off ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
-    # An ended session takes its review marks with it; an idle one keeps them.
-    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool"
+    # An ended session takes its review marks with it; an idle one keeps them. And its subagent
+    # count (#313): SessionStart's off is a new process, which runs none. Not at idle: the lead
+    # idles while its subagents work, and a report-back's UserPromptSubmit leaves the others.
+    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool ; set-option -pu -t $pane @cockpit_subs"
 elif [ "$state" = recount ]; then
     body=""
 else

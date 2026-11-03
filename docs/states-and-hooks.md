@@ -44,7 +44,7 @@ timer.
 | `SubagentStart` | `running` |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
-| `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then nothing changes (see [Background subagents](#background-subagents)) |
+| `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
@@ -158,11 +158,37 @@ it likes. Holding on work with no sure wake risks a pane stuck "working"; not
 holding only shows `done` early. A subagent that never stops is listed by
 every `Stop` until the session ends, and `SessionEnd` clears the pane.
 
-There is no subagent counter, so there is nothing to drift, lock or reset.
-Counting `SubagentStart` against `SubagentStop` would drift: `SubagentStart`
-also fires on a resumed subagent and on every message an in-process teammate
-handles, and `SubagentStop` also fires for Claude Code's internal agents
-(prompt suggestions, `/btw`), which never fired a start.
+There is no running subagent counter, so there is nothing to drift, lock or
+reset. Counting `SubagentStart` against `SubagentStop` would drift:
+`SubagentStart` also fires on a resumed subagent and on every message an
+in-process teammate handles, and `SubagentStop` also fires for Claude Code's
+internal agents (prompt suggestions, `/btw`), which never fired a start. The
+count below is read off each `Stop`'s list whole, so a wrong one lasts one turn.
+
+## Subagent count
+
+At every `Stop`, `agent-state done` writes `@cockpit_subs`, the number of
+`background_tasks` entries of type `subagent`, with the same structural match
+as the hold above. At 0 the option is unset. It is written whether or not the
+pane's state changes, so a sticky `needs-input` pane still takes it.
+
+- **Cleared** by `off` at `SessionStart` (`startup|resume|clear`; a new process
+  runs no subagent) and at `SessionEnd`.
+- **Not cleared** at `UserPromptSubmit`. A background subagent reporting back
+  fires one while the others still run, and so does a prompt you type while
+  they run. It is not cleared at the idle notification either, because the lead
+  idles while its subagents work.
+- `compact` keeps it: compaction does not stop a subagent, and the next `Stop`
+  rewrites the count.
+
+The bar's fleet summary, `#{E:@cockpit_fleet}`, ends with `✦N`, the sum over
+every agent pane, in the running colour. It is empty at 0 and hidden in touch
+mode. tmux has no sum over panes, so the format repeats a mark N times per pane
+(`#{R:x,N}`) and counts the marks (`#{n:}`). Touch mode belongs to a client, so
+its test is stored escaped and runs when the bar draws. The count is refreshed
+beside every write of `@cockpit_subs`, since a `Stop` that holds the pane or
+meets a sticky state runs no sums of its own. The sweep drops a killed pane's
+count. The mark is `✦` in every glyph tier, like `▲ ✕ ◆`.
 
 ## A goal that will not be met
 
