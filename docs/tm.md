@@ -50,4 +50,8 @@ A client under 14 lines high has no room for a popup and its border, so `prefix 
 Without a terminal, or without `cockpit-tui` (see `make tui`), `tm` lists the
 sessions and reads a name.
 
-Creating `foo` from the sessions picker starts it in `~/foo` when that holds a `.git` (a repo or a linked worktree) and `foo` has no `/`; otherwise in the pane's folder as before (#304).
+Creating `foo` from the sessions picker starts it in `~/foo` when that holds a
+`.git` (a repo or a linked worktree). The name as typed is looked up, so
+`my.repo` finds `~/my.repo` while the session is called `my_repo`. A name with a
+`/`, `..`, a leading `-` or a control character never matches. Otherwise the
+session starts in the pane's folder as before (#304).
