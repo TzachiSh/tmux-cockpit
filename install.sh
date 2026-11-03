@@ -95,19 +95,11 @@ if [ "$check" -eq 1 ]; then
     else row warn jq 'not found' 'needed by install.sh --hooks and the review gate'
     fi
 
-    # The pickers run under the server's PATH, not this shell's: Debian's
-    # /usr/bin/fzf can answer there while a fetched one wins here.
+    # revdiff runs under the server's PATH, not this shell's: a distro copy can
+    # answer there while a fetched one wins here.
     fp=$(tmux show-environment -g PATH 2>/dev/null); fp=${fp#PATH=}
-    fz=$(PATH=${fp:-$PATH} command -v fzf 2>/dev/null)
-    v=''; [ -z "$fz" ] || v=$(fld 1 "$("$fz" --version 2>/dev/null)")
-    if [ -z "$v" ]; then
-        row warn fzf 'not found' 'bootstrap.sh --full (pickers fall back to a menu)'
-    elif [ "$(vnum "$v")" -lt "$(vnum 0.73.0)" ]; then
-        row fail fzf "$v @ $fz" 'the pickers need 0.73+; bootstrap.sh fetches it'
-    else row ok fzf "$v"
-    fi
 
-    # Required: prefix r spawns it. Same server-PATH rule as fzf. A go install
+    # Required: prefix r spawns it. Same server-PATH rule. A go install
     # build prints "unknown": present, version unverifiable, so a warn.
     rv=$(PATH=${fp:-$PATH} command -v revdiff 2>/dev/null)
     v=''; [ -z "$rv" ] || v=$("$rv" --version 2>/dev/null)
@@ -116,28 +108,23 @@ if [ "$check" -eq 1 ]; then
     revfix="$revfix go install github.com/umputun/revdiff/app@v1.13.0 (rename app to revdiff);"
     revfix="$revfix see docs/install.md#requirements"
     if [ -z "$rv" ]; then row fail revdiff 'not found' "$revfix"
+    elif [ -z "$v" ]; then                    # prints nothing: not a go install build
+        row warn revdiff "no version @ $rv" "does not report a version; $revfix"
     elif [ "$(vnum "$v")" -eq 0 ]; then       # "unknown", "dev": no x.y.z to grade
         row warn revdiff "${v:-unknown} @ $rv" 'a go install build; tested with v1.13.0'
-    elif [ -z "$v" ] || [ "$(vnum "$v")" -lt "$(vnum 1.13.0)" ]; then
-        row warn revdiff "${v:-no version} @ $rv" "older than the tested v1.13.0; $revfix"
+    elif [ "$(vnum "$v")" -lt "$(vnum 1.13.0)" ]; then
+        row warn revdiff "$v @ $rv" "older than the tested v1.13.0; $revfix"
     else row ok revdiff "$v"
     fi
 
-    # Debian names it batcat; the path shows which one won.
-    bp=$(command -v bat 2>/dev/null) || bp=$(command -v batcat 2>/dev/null) || bp=''
-    if [ -n "$bp" ]; then row ok bat "$(fld 2 "$("$bp" --version 2>/dev/null)") @ $bp"
-    else row warn bat 'not found' 'optional; bootstrap.sh --full'
-    fi
-
-    # Order, not just presence: a fetched fzf in $BIN is useless if apt's answers first.
+    # Order, not just presence: a fetched revdiff in $BIN is useless if a distro's answers first.
     case ":$PATH:" in
         *":$BIN:"*)
             shadow=''; sdir=''
-            for t in fzf bat; do
-                [ -x "$BIN/$t" ] || continue
-                w=$(command -v "$t" 2>/dev/null) || w=''
-                [ -n "$w" ] && [ "$w" != "$BIN/$t" ] && { shadow=$t; sdir=${w%/*}; break; }
-            done
+            if [ -x "$BIN/revdiff" ]; then
+                w=$(command -v revdiff 2>/dev/null) || w=''
+                [ -n "$w" ] && [ "$w" != "$BIN/revdiff" ] && { shadow=revdiff; sdir=${w%/*}; }
+            fi
             if [ -n "$shadow" ]; then
                 row warn PATH "$BIN present" "put $BIN before $sdir in PATH"
             elif [ "${PATH%%:*}" = "$BIN" ]; then row ok PATH "$BIN first"

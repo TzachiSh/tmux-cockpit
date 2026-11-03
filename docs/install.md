@@ -30,20 +30,19 @@ file or by another tool's link, reports anything it could not create, and
 anything it could not remove). `install.sh --help` prints usage and exits.
 
 `install.sh --check` is the doctor. It writes nothing and fixes nothing: one
-row per thing that can be wrong (tmux, cockpit-tui, jq, fzf, bat, `$PATH` order, the
+row per thing that can be wrong (tmux, cockpit-tui, jq, revdiff, `$PATH` order, the
 config, the hooks, truecolor, the popup border), the fix beside it, and the
 exit is the worst row, 0 ok or skipped, 1 warnings, 2 something is broken.
 Rows it cannot answer from where you ran it, such as truecolor outside tmux,
 come out `skip` and count as 0. `bootstrap.sh --check` runs the same thing.
 
-`bootstrap.sh --full` is the opt-in tier: it fetches pinned versions of fzf
-and bat into `${XDG_BIN_HOME:-~/.local/bin}`, sha256 verified where the
-project publishes checksums, and shadows a distro copy rather than replacing
-it. Without `--full` it still fetches fzf alone when the one it finds is below
-0.73. No sudo, and nothing is downloaded when tmux loads the plugin or when you
-press a key. Add `--latest` for each project's newest tag instead of the pins.
+`bootstrap.sh` fetches the pinned revdiff into `${XDG_BIN_HOME:-~/.local/bin}`
+when none at the pinned version is on `PATH`, sha256 verified, with no sudo.
+Nothing is downloaded when tmux loads the plugin or when you press a key.
 Offline it skips the tool and carries on; a checksum it cannot fetch or cannot
-match installs nothing. On macOS with brew it runs `brew install fzf bat`.
+match installs nothing. On macOS with brew it runs `brew install` for revdiff.
+bat is not used any more (the previews it coloured went in #228), and `--full`
+and `--latest` went with it.
 
 The `cockpit-tui` binary is required: `install.sh` fetches it with your `gh`
 login or builds it from source, and stops with a message when it can do
@@ -107,12 +106,8 @@ The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.
   release through your `gh` login when it can reach it, and otherwise builds
   it, which needs **Rust >= 1.88**; the fetched binary needs neither Rust nor
   cargo. `make check` builds it, so the suite needs cargo.
-- **fzf >= 0.73** for the path picker and the folder browser. Debian 13 ships 0.60.3, Ubuntu 24.04
-  0.44.1 and Ubuntu 26.04 0.67.0, all below it, so `bootstrap.sh` fetches
-  0.74.3 into `~/.local/bin` when it finds an older one, and
-  `install.sh --check` fails below 0.73. `bat` (`batcat` on Debian) is
-  optional; `jq` is needed by `install.sh --hooks` and the review
-  gate.
+- No fzf: every picker is `cockpit-tui`. `jq` is needed by `install.sh --hooks` and
+  the review gate.
 - **revdiff** for the `prefix + r` review; tested with v1.13.0. Without it
   `prefix + r` says "revdiff not found" and `tmux-review --request` exits 1.
   Install it with `brew install umputun/apps/revdiff`, from a

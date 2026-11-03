@@ -18,7 +18,7 @@ a M`) opens it too. The row replays the key, so it follows `@cockpit_move_key`.
 One menu for the cockpit and the window: `prefix + a` opens it centred, and
 tapping `≡` at the top left of the border (or right-clicking `‹` or `›`)
 opens it where you tapped. Every row has its letter on screen: the board `w`,
-the panel `f`, what each agent is doing `t`, browse folder `o`,
+the panel `f`, what each agent is doing `t`, browse folder `o` (opens the pane's folder in the editor),
 switch branch `b`, new window `c`, split right `\` and down `-`, move window
 `M`, rename window `,`, kill pane (close window on a single pane) `x`, full
 screen `e`, pane info `i`, rename session `$`, detach `d`, reload `R`, kill

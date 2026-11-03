@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
 # tmux-cockpit bootstrap -- a working tmux on a machine that has nothing.
 #
-#   ./bootstrap.sh             ask before each step (fetches fzf if below 0.73)
+#   ./bootstrap.sh             ask before each step
 #   ./bootstrap.sh --yes       take every default, ask nothing
-#   ./bootstrap.sh --full      also fetch the pinned fzf and bat into $BIN
-#   ./bootstrap.sh --full --latest   the same, at each project's newest tag
 #   ./bootstrap.sh --check     run install.sh --check (the doctor) and exit
 #   ./bootstrap.sh --dry-run   print what would happen, change nothing
 #   ./bootstrap.sh --help
-# Lines 2-11 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
+# Lines 2-9 are the --help text. Every step is skippable and idempotent: a rerun upgrades.
 set -uo pipefail
 
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,21 +15,17 @@ PLUGINS="${XDG_CONFIG_HOME:-$HOME}/.tmux/plugins"
 
 TMUX_FLOOR_MAJ=3 TMUX_FLOOR_MIN=8 TMUX_BUILD=3.8
 
-USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--full [--latest]] [--check]'
-assume_yes=0 dry=0 full=0 latest=0 check=0
+USAGE='usage: bootstrap.sh [--yes] [--dry-run] [--check]'
+assume_yes=0 dry=0 check=0
 for a in "$@"; do case "$a" in
     "") ;;
     --yes|-y)  assume_yes=1 ;;
-    --full)    full=1 ;;
-    --latest)  latest=1 ;;
     --check)   check=1 ;;
     --dry-run) dry=1 ;;
-    --help|-h) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --help|-h) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) printf 'unknown option: %s\n\n%s\n' "$a" "$USAGE" >&2; exit 2 ;;
 esac; done
-[ "$latest" -eq 1 ] && [ "$full" -eq 0 ] && {
-    printf -- '--latest needs --full\n\n%s\n' "$USAGE" >&2; exit 2; }
-[ "$check" -eq 1 ] && [ $((full + latest + dry + assume_yes)) -gt 0 ] && {
+[ "$check" -eq 1 ] && [ $((dry + assume_yes)) -gt 0 ] && {
     printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
 [ "$check" -eq 1 ] && exec "$DIR/install.sh" --check
 
@@ -75,12 +69,10 @@ elif have zypper;  then PKG=zypper; PKG_INSTALL="sudo zypper -n install"
 elif have brew;    then PKG=brew;   PKG_INSTALL="brew install"
 fi
 
-# name:command:why -- the command is tested, since names differ (Debian's batcat).
+# name:command:why -- the command is tested, since names differ between distros.
 PACKAGES=(
     "git:git:cloning the plugins"
     "tmux:tmux:the whole point"
-    "fzf:fzf:the pickers (0.73+; an older one is fetched below)"
-    "bat:batcat:syntax-coloured file previews (falls back to plain text)"
     "jq:jq:merging the Claude Code hooks"
 )
 
@@ -226,27 +218,7 @@ else
     skipped+=("commands")
 fi
 
-# ----------------------------------------------------------- latest tools ----
-# Pinned, into $BIN, never over a distro binary or with sudo. An fzf below the
-# pickers' 0.73 is fetched even without --full.
-FZF=0.74.3 BAT=0.26.1
-fzf_old=0
-fzf_have=$(fzf --version 2>/dev/null | awk '{print $1}')
-[ -n "$fzf_have" ] && ! ver_ge "$fzf_have" 0 73 && fzf_old=1
-
-# The releases redirect, not the API: no token and no 60-per-hour quota.
-latest_tag() {                # latest_tag <owner/repo> <pin>
-    local u v
-    u=$(curl -fsSLI -o /dev/null -w '%{url_effective}' --max-time 30 \
-        "$G/$1/releases/latest" 2>/dev/null)
-    v=${u##*/tag/}; v=${v#v}
-    case "$v" in
-        ''|*/*) note "could not resolve the latest $1; keeping the pin $2" >&2
-                printf '%s\n' "$2" ;;
-        *) printf '%s\n' "$v" ;;
-    esac
-}
-
+# ------------------------------------------------------------- fetch_tool ----
 # An unreachable sums file fails closed; an unreachable asset is only a skip.
 fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <path-in-tar>
     local name=$1 ver=$2 have=$3 asset=$4 sums=$5 path=$6 tmp a depth
@@ -280,57 +252,8 @@ fetch_tool() {                # <name> <ver> <have> <asset-url> <sums-url|-> <pa
     printf '  ok:    %s -> %s %s\n' "$name" "$BIN/$name" "$ver"
 }
 
-if [ "$full" -eq 1 ] || [ "$fzf_old" -eq 1 ]; then
-    step "latest tools"
-    tools="fzf $FZF and bat $BAT"
-    [ "$full" -eq 1 ] || tools="fzf $FZF (found $fzf_have, the pickers need 0.73+)"
-    BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
-    G="${COCKPIT_GITHUB:-https://github.com}"
-    fz='' ba=''
-    case "$(uname -s)/$(uname -m)" in
-        Linux/x86_64|Linux/amd64)    fz=linux_amd64;  ba=x86_64-unknown-linux-musl ;;
-        Linux/aarch64|Linux/arm64)   fz=linux_arm64;  ba=aarch64-unknown-linux-musl ;;
-        Darwin/x86_64)               fz=darwin_amd64; ba=x86_64-apple-darwin ;;
-        Darwin/arm64|Darwin/aarch64) fz=darwin_arm64; ba=aarch64-apple-darwin ;;
-    esac
-    if [ -z "$fz" ]; then
-        note "no prebuilt binaries for $(uname -s)/$(uname -m), use your package manager"
-        skipped+=("latest tools: no prebuilt binaries")
-    elif [ "$(uname -s)" = Darwin ] && have brew; then
-        # A fetched copy would shadow the one brew upgrades.
-        if [ "$full" -eq 0 ] && ask "upgrade fzf $fzf_have with brew?" y; then
-            run "brew upgrade fzf" brew upgrade fzf
-        elif [ "$full" -eq 1 ] && ask "install fzf and bat with brew?" y; then
-            run "brew install fzf bat" brew install fzf bat
-        else
-            skipped+=("latest tools")
-        fi
-    elif ! have curl; then
-        note "curl is missing; nothing to fetch with"
-        skipped+=("latest tools: no curl")
-    elif ask "fetch $tools into $BIN?" y; then
-        # Not in a dry run: a preview opens no connection, and the redirect is one.
-        if [ "$latest" -eq 1 ] && [ "$dry" -eq 0 ]; then
-            FZF=$(latest_tag junegunn/fzf "$FZF")
-            BAT=$(latest_tag sharkdp/bat "$BAT")
-        elif [ "$latest" -eq 1 ]; then
-            note "would: resolve the latest tags first; the pins are shown"
-        fi
-        # Probe "$BIN/<tool>", not PATH, where a distro copy may answer first.
-        fetch_tool fzf "$FZF" "$("$BIN/fzf" --version 2>/dev/null | awk '{print $1}')" \
-            "$G/junegunn/fzf/releases/download/v$FZF/fzf-$FZF-$fz.tar.gz" \
-            "$G/junegunn/fzf/releases/download/v$FZF/fzf_${FZF}_checksums.txt" \
-            fzf || failed+=("fetch fzf")
-        [ "$full" -eq 0 ] || fetch_tool bat "$BAT" "$("$BIN/bat" --version 2>/dev/null | awk '{print $2}')" \
-            "$G/sharkdp/bat/releases/download/v$BAT/bat-v$BAT-$ba.tar.gz" - \
-            "bat-v$BAT-$ba/bat" || failed+=("fetch bat")
-    else
-        skipped+=("latest tools")
-    fi
-fi
-
 # --------------------------------------------------------------- revdiff ----
-# Required: prefix r spawns it. Pinned like fzf; a copy at or above the pin
+# Required: prefix r spawns it. Pinned; a copy at or above the pin
 # anywhere on PATH (brew, go install) is left alone. "unknown" is a go install
 # build: present, so not replaced.
 REVDIFF=1.13.0
@@ -389,12 +312,6 @@ step "summary"
 for x in "${did[@]:-}";     do [ -n "$x" ] && printf '  done     %s\n' "$x"; done
 for x in "${skipped[@]:-}"; do [ -n "$x" ] && printf '  skipped  %s\n' "$x"; done
 for x in "${failed[@]:-}";  do [ -n "$x" ] && printf '  FAILED   %s\n' "$x" >&2; done
-
-# Advisory: the doctor grades the box, not this run, so its exit is not ours.
-if [ "$full" -eq 1 ] && [ "$dry" -eq 0 ]; then
-    printf '\n'
-    "$DIR/install.sh" --check || :
-fi
 
 if [ "${#failed[@]}" -gt 0 ] && [ -n "${failed[0]:-}" ]; then
     printf '\nSome steps failed. Fix them and re-run: this script is idempotent.\n' >&2

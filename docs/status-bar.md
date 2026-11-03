@@ -111,7 +111,7 @@ With `@cockpit_statusbar off`, the plugin still publishes these options:
 
 Some ranges you can mark with `#[range=control|N]…#[norange]`:
 
-- `control|2` opens the folder browser;
+- `control|2` opens the pane's folder in the editor;
 - `control|3` opens the branch popup;
 - `control|1` opens the menu;
 - `control|0` opens the sessions screen.

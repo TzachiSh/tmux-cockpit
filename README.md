@@ -58,7 +58,7 @@ screenshot and a red/green colourblind reader.
 - [revdiff](https://github.com/umputun/revdiff), for the `prefix + r` review
   (tested with v1.13.0). Without it `prefix + r` says "revdiff not found".
   Install details: [docs/install.md](docs/install.md#requirements).
-- Optional: `bat`. A Nerd Font is not needed.
+- A Nerd Font is not needed.
 
 ### With tpm
 

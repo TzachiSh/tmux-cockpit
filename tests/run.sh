@@ -137,6 +137,16 @@ until_cap() {                 # <socket> <pane> <pattern>
     done
     return 1
 }
+# A cockpit-tui that answers a pick with PICK_KEY (default the first row) and
+# draws nothing: the driver for tmux-open-path's tail when no pty is wanted.
+# Sets OPTUI, not printed: a $(...) would lose the variable. Shell builtins only,
+# since some callers' PATH holds a tmux stub and nothing else.
+optui_setup() {
+    [ -n "${OPTUI:-}" ] && [ -x "$OPTUI" ] && return 0
+    OPTUI=$(mktmpd)/cockpit-tui
+    printf '#!/bin/sh\nwhile read -r _; do :; done\nprintf "%%s\\n" "${PICK_KEY-0}"\nexit "${PICK_RC:-0}"\n' > "$OPTUI"
+    chmod +x "$OPTUI"
+}
 review_enter() {              # <socket> <ctl-pane>  tmux-review -p opens the pane's review loop at once
     until_cap "$1" "$2" '*review · base*'
 }
@@ -1755,7 +1765,6 @@ oxf='x#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).txt'   # no spaces: the line
 OXP=$("$TMUX_REAL" -L "$OX" list-panes -t t -F '#{pane_id}')
 "$TMUX_REAL" -L "$OX" set -g @cockpit_editor true
 "$TMUX_REAL" -L "$OX" set -g remain-on-exit on    # the editor (true) exits at once
-"$TMUX_REAL" -L "$OX" set -g @cockpit_open_single always
 "$TMUX_REAL" -L "$OX" set -p -t "$OXP" @cockpit_click_line "error in $oxf:3"
 "$TMUX_REAL" -L "$OX" run-shell "$(printf %q "$DIR/scripts/tmux-open-path") $OXP" >/dev/null 2>&1
 ox_n=0; until [ "$("$TMUX_REAL" -L "$OX" list-windows -t t 2>/dev/null | wc -l)" -ge 2 ] || [ "$ox_n" -ge 50 ]; do
@@ -1769,6 +1778,7 @@ fi
 
 # group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
+optui_setup
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
 # read as shell syntax, so the editor opened the wrong file -- or ran a word of
@@ -1783,7 +1793,6 @@ case "$1" in
   show-options)
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
-          *@cockpit_open_single*) printf '%s\n' "${OPEN_SINGLE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
           *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
@@ -1806,8 +1815,8 @@ ln -s "$(command -v bash)" "$ETMUX/bash"
 LOG="$ETMUX/log"
 
 : > "$LOG"
-env PATH="$ETMUX" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
-    OPEN_EDITOR=nvim "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+env COCKPIT_TUI_BIN="$OPTUI" PATH="$ETMUX" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+    OPEN_EDITOR=nvim "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 cmd=$(sed -n 's/^NEWWIN //p' "$LOG")
 if eval "set -- $cmd" 2>/dev/null; then
     is "a quote in the name reaches the editor intact" "$EQ/it's.txt" "${*: -1}"
@@ -1826,8 +1835,8 @@ fi
 # all and the answer is the same either way -- that is an accident of the stub
 # PATH, not something to rest an assertion on.)
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
-    EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+    EDITOR=vi bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *NEWWIN*vi*) ok "no code(1): falls back to \$EDITOR" ;;
     *) bad "no code(1): falls back to \$EDITOR" "a new window running vi" "$(cat "$LOG")" ;;
@@ -1835,8 +1844,8 @@ esac
 
 # ...and with no editor at all it must say so, not claim success.
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$ETMUX" HOME="$EQ" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *"no editor"*) ok "no editor at all: says so instead of claiming success" ;;
     *) bad "no editor at all: says so instead of claiming success" "a 'no editor' message" "$(cat "$LOG")" ;;
@@ -1850,8 +1859,8 @@ esac
 # the & child never survives, the run-shell -b one always does.
 printf '#!/bin/sh\nexit 0\n' > "$ETMUX/code"; chmod +x "$ETMUX/code"
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *"RUNSHELL run-shell -b"*"--goto"*) ok "code is launched by the server, not the dying popup" ;;
     *) bad "code is launched by the server, not the dying popup" \
@@ -1860,118 +1869,32 @@ esac
 # A folder must open as a workspace, not a file spec: --goto on a directory
 # parses it as file:line and opens nothing.
 : > "$LOG"
-env -i PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$DIR" CLICK_LINE="scripts" \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$ETMUX" HOME="$HOME" TMUX_LOG="$LOG" CLICK_DIR="$DIR" CLICK_LINE="scripts" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$LOG")" in
     *"--goto"*) bad "a folder opens whole, not as a --goto spec" "code <dir>" "$(cat "$LOG")" ;;
     *"RUNSHELL run-shell -b"*scripts*) ok "a folder opens whole, not as a --goto spec" ;;
     *) bad "a folder opens whole, not as a --goto spec" "a run-shell carrying the dir" "$(cat "$LOG")" ;;
 esac
 rm -f "$ETMUX/code"
-# One candidate must still reach the picker. This is the behaviour the whole
-# gesture exists for -- see what the line resolved to, then decide -- and the
-# easiest one to regress back into "just open it".
+# One candidate is not a question (#228): it opens at once, with no popup.
 : > "$LOG"
-env PATH="$ETMUX:$PATH" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" \
+env PATH="$ETMUX:$PATH" TMUX_LOG="$LOG" CLICK_DIR="$EQ" CLICK_LINE="it's.txt:12" OPEN_EDITOR=nvim \
     "$DIR/scripts/tmux-open-path" %1 >/dev/null 2>&1
 case "$(cat "$LOG")" in
-    *POPUP*--pick*) ok "a single candidate still opens the picker" ;;
-    *) bad "a single candidate still opens the picker" "a display-popup ... --pick" "$(cat "$LOG")" ;;
+    *NEWWIN*) ok "a single candidate opens straight away" ;;
+    *) bad "a single candidate opens straight away" "a new-window" "$(cat "$LOG")" ;;
 esac
-# ...and nothing is opened behind the popup's back.
 case "$(cat "$LOG")" in
-    *NEWWIN*) bad "and nothing opens behind the picker" "no new-window" "$(cat "$LOG")" ;;
-    *) ok "and nothing opens behind the picker" ;;
+    *POPUP*) bad "and no picker opens for it" "no display-popup" "$(cat "$LOG")" ;;
+    *) ok "and no picker opens for it" ;;
 esac
-# --preview is a documented subcommand, so it gets whatever a user types. A
-# non-numeric line reached the arithmetic and `set -u` killed the preview.
-PV=$(mktmpd); printf 'one\ntwo\nthree\n' > "$PV/f.txt"
-for bad in abc -5 1.5 '' 2; do
-    out=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" "$bad" 2>&1)
-    case "$out" in
-        *"unbound variable"*|*"syntax error"*)
-            bad "preview survives line=[$bad]" "a rendered file" "$out" ;;
-        *one*) ok "preview survives line=[$bad]" ;;
-        *) bad "preview survives line=[$bad]" "the file contents" "$out" ;;
-    esac
-done
-is "preview of a missing file says so" "gone: $PV/nope" "$("$DIR/scripts/tmux-open-path" --preview "$PV/nope")"
-# The target line carries a real marker column: bat's own highlight band
-# measured 1.4:1 against dark themes -- found by counting rows, not looking.
-mk=$("$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g')
-if command -v batcat >/dev/null 2>&1 || command -v bat >/dev/null 2>&1; then
-case "$(printf '%s' "$mk" | sed -n 2p)" in
-    "▸"*) ok "the target line starts with the marker" ;;
-    *) bad "the target line starts with the marker" "a leading ▸" "$(printf '%s' "$mk" | sed -n 2p)" ;;
-esac
-else skip_ "the target line starts with the marker (no bat)"; fi
-# Debian's batcat is often an older bat than one installed by hand: bat wins.
-PVB=$(mktmpd)
-for b in bat batcat; do printf '#!/bin/sh\necho %s\n' "$b" > "$PVB/$b"; chmod +x "$PVB/$b"; done
-is "the preview runs bat over batcat when both exist" " bat" \
-   "$(PATH="$PVB:$PATH" "$DIR/scripts/tmux-open-path" --preview "$PV/f.txt" 2 2>/dev/null)"
-case "$(printf '%s' "$mk" | sed -n 1p)" in
-    " "*) ok "and its neighbours keep alignment" ;;
-    *) bad "and its neighbours keep alignment" "a leading space" "$(printf '%s' "$mk" | sed -n 1p)" ;;
-esac
-# An empty file has no lines, so the binary test matched nothing and accused it
-# of being a blob. A file of only blank lines has lines but no characters, which
-# a "." pattern rejects for the same reason.
-: > "$PV/empty.txt"; printf '\n\n\n' > "$PV/blanks.txt"
-# A minified bundle is one line of megabytes. bat --wrap=never declines to WRAP
-# but does not truncate, so the whole line was piped into the preview pane on
-# every cursor move -- 3.2MB for one 3MB line, per keystroke.
-awk 'BEGIN { s=""; for (i=0;i<20000;i++) s = s "var x=1;"; print s }' > "$PV/min.js"
-n=$("$DIR/scripts/tmux-open-path" --preview "$PV/min.js" 2>/dev/null | wc -c)
-if [ "$n" -lt 20000 ]; then ok "a minified one-liner is capped, not dumped"
-else bad "a minified one-liner is capped, not dumped" "<20000 bytes" "$n bytes"; fi
-# ...and a normal file is unaffected: still rendered, still in full.
-is "a normal file still renders every line" "3" \
-   "$(printf 'a\nb\nc\n' > "$PV/three.txt"; "$DIR/scripts/tmux-open-path" --preview "$PV/three.txt" | grep -c .)"
-
-is "an empty file is not called binary" "empty file" \
-   "$("$DIR/scripts/tmux-open-path" --preview "$PV/empty.txt")"
-case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blanks.txt")" in
-    *binary*) bad "blank lines are not called binary" "the blank lines" "binary file" ;;
-    *) ok "blank lines are not called binary" ;;
-esac
-# Explicit NUL bytes, not /dev/urandom: 200 random bytes are sometimes valid
-# text as far as grep is concerned, which made this assertion flaky.
-printf 'ELF\0\0\0binary\0payload\n' > "$PV/blob.dat"
-case "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat")" in
-    *"binary file"*) ok "a real binary still is" ;;
-    *) bad "a real binary still is" "binary file" "$("$DIR/scripts/tmux-open-path" --preview "$PV/blob.dat" | head -1)" ;;
-esac
-rm -rf "$PV"
-
-# The long-line guard used to measure "longest" over a fixed lines 1-200,
-# but bat renders whatever RENDER WINDOW the target line puts it in (up to
-# 2000). A giant line sitting past line 200 but inside that window sailed
-# past the guard and got dumped whole into the preview on every cursor move
-# -- the exact failure the guard exists to prevent. Now "longest" is measured
-# over the same [first,last] window bat is about to draw.
-GL=$(mktmpd)
-{
-    for i in $(seq 1 499); do printf 'line %d\n' "$i"; done
-    head -c 3000000 /dev/zero | tr '\0' 'x'; printf '\n'
-    for i in $(seq 501 700); do printf 'line %d\n' "$i"; done
-} > "$GL/big.txt"
-# line 495 -> above=min(40/3,10)=10 -> window [485,535], which contains the
-# 3,000,000-char line at 500.
-glout=$("$DIR/scripts/tmux-open-path" --preview "$GL/big.txt" 495 2>/dev/null | wc -c)
-if [ "$glout" -lt 50000 ]; then
-    ok "a huge line inside the render window (not lines 1-200) is still guarded"
-else
-    bad "a huge line inside the render window (not lines 1-200) is still guarded" \
-        "<50000 bytes" "$glout bytes"
-fi
-rm -rf "$GL"
-
 # later blocks reuse this stub
 ETMUX_TEMPLATE=$(mktmpf); cp "$ETMUX/tmux" "$ETMUX_TEMPLATE"; chmod +x "$ETMUX_TEMPLATE"
 rm -rf "$EQ" "$ETMUX"
 
 echo "== tmux-open-path: with no code on PATH, a click opens through VS Code's remote shim on the live socket =="
+optui_setup
 # Remote-SSH and Coder put no code(1) on tmux's PATH: the CLI is a shim under
 # ~/.vscode-server that only reaches a window through VSCODE_IPC_HOOK_CLI, and
 # only when that socket is LIVE. The shim is its own probe -- a dead socket
@@ -1988,7 +1911,6 @@ case "$1" in
   show-options)
       case " $* " in
           *@cockpit_click_line*)  printf '%s\n' "${CLICK_LINE:-}" ;;
-          *@cockpit_open_single*) printf '%s\n' "${OPEN_SINGLE:-}" ;;
           *@cockpit_editor*)      printf '%s\n' "${OPEN_EDITOR:-}" ;;
           *@open-editor*) printf '%s\n' "${OPEN_EDITOR2:-}" ;;
       esac ;;
@@ -2030,9 +1952,9 @@ chmod +x "$VSHIM/code"
 : > "$VSK/vscode-ipc-live.sock"; touch -t 202001010000 "$VSK/vscode-ipc-live.sock"
 : > "$VSK/vscode-ipc-dead.sock"
 : > "$VOUT"
-env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
     CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 vcmd=$(sed -n 's/^RUNSHELL run-shell -b //p' "$VOUT" | head -1)
 # The quote in the name is shell-quoted for run-shell (it\'s.txt), so a glob
 # for the plain name stops at the escape. The shim's own log below is where the
@@ -2053,60 +1975,44 @@ case "$(cat "$VLOG")" in
     *) bad "the newer dead socket is tried first and skipped, the live one takes the file" \
          "dead then live" "$(cat "$VLOG")" ;;
 esac
+# run-shell expands formats in its command, so a clicked name like h#(touch F)
+# must reach the --vscode re-entry with every # doubled; a live # would run it.
+VHN='h#(touch${IFS}F)#S.txt'; : > "$VQ/$VHN"; : > "$VOUT"
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="$VHN:12" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
+vhs=$(grep -F 'RUNSHELL' "$VOUT")
+is "the remote-shim run-shell carries the hostile name, doubled" "1" "$(printf '%s\n' "$vhs" | grep -c -F 'touch')"
+is "and no # in it is live" "0" "$(printf '%s\n' "$vhs" | sed 's/##//g' | grep -c '#')"
+VHD='d#(touch${IFS}F)#S'; mkdir "$VQ/$VHD"; : > "$VOUT"
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+    CLICK_DIR="$VQ" CLICK_LINE="$VHD" \
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
+vhs=$(grep -F 'RUNSHELL' "$VOUT")
+is "a hostile directory name reaches the shim's run-shell, doubled, none live" "1 0" \
+   "$(printf '%s\n' "$vhs" | grep -c -F 'touch') $(printf '%s\n' "$vhs" | sed 's/##//g' | grep -c '#')"
 # The shim sits BETWEEN code(1) and $VISUAL/$EDITOR, so the two things it must
 # never displace are the ones above it: an explicit @cockpit_editor, and a real
 # code(1) on a host that has one.
 : > "$VOUT"
-env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
     CLICK_DIR="$VQ" CLICK_LINE="it's.txt" OPEN_EDITOR=nvim \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$VOUT")" in
     *NEWWIN*nvim*) ok "@cockpit_editor still wins over the shim" ;;
     *) bad "@cockpit_editor still wins over the shim" "a new window running nvim" "$(cat "$VOUT")" ;;
 esac
 printf '#!/bin/sh\nexit 0\n' > "$VTMUX/code"; chmod +x "$VTMUX/code"
 : > "$VOUT"
-env -i PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
+env -i COCKPIT_TUI_BIN="$OPTUI" PATH="$VTMUX" HOME="$VH" VLOG="$VLOG" XDG_RUNTIME_DIR="$VSK" TMUX_LOG="$VOUT" \
     CLICK_DIR="$VQ" CLICK_LINE="it's.txt:12" \
-    bash "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+    bash "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
 case "$(cat "$VOUT")" in
     *"--vscode"*) bad "code(1) on PATH still beats the shim" "code --goto" "$(cat "$VOUT")" ;;
     *"RUNSHELL run-shell -b code --goto"*) ok "code(1) on PATH still beats the shim" ;;
     *) bad "code(1) on PATH still beats the shim" "a run-shell carrying code --goto" "$(cat "$VOUT")" ;;
 esac
 rm -f "$VTMUX/code"
-
-echo "== tmux-open-path: alt-c copies the marked paths to the tmux buffer =="
-if need_tmux "tmux-open-path alt-c"; then :; else
-# Under $HOME on purpose, not mktmpd's /tmp: field 2 of the list is the
-# ~-abbreviated path, so only a fixture below $HOME makes the picker's own
-# un-abbreviation the thing under test. Removed at the end of the block.
-PC="cockpit-pc-$$"; SOCKS="$SOCKS $PC"; PCD="$HOME/.cache/cockpit-test-$$"
-mkdir -p "$PCD"; : > "$PCD/a.txt"; : > "$PCD/b.txt"; : > "$PCD/c.txt"
-PCS=$(mktmpd); cat > "$PCS/tmux" <<'STUB'
-case "$1" in
-  show-options) printf '%s\n' "${CLICK_LINE:-}" ;;   # every option query answers the clicked line; only @cockpit_click_line is read here
-  display-message) case " $* " in *pane_current_path*) printf '%s\n' "$CLICK_DIR" ;; *window_id*) printf '@0\n' ;; *) printf 'MSG %s\n' "$*" >> "$TMUX_LOG" ;; esac ;;
-  load-buffer) printf 'LOADBUF %s\n' "$*" >> "$TMUX_LOG"; cat > "$TMUX_LOG.buf" ;;
-  *) printf '%s\n' "$*" >> "$TMUX_LOG" ;;
-esac
-exit 0
-STUB
-# sh too: fzf runs an execute-silent() body through `sh -c`, and env -i leaves
-# only this dir on PATH -- without it alt-c dies as `exec: "sh": not found`.
-chmod +x "$PCS/tmux"; for t in bash sh fzf ls head grep sort sed awk cat tput; do ln -sf "$(command -v $t)" "$PCS/$t"; done
-"$TMUX_REAL" -L "$PC" -f /dev/null new-session -d -s t -x 100 -y 30 "env -i PATH=$(printf '%q' "$PCS") HOME=$(printf '%q' "$HOME") TMUX_LOG=$(printf '%q' "$PCS/log") CLICK_DIR=$(printf '%q' "$PCD") CLICK_LINE='a.txt b.txt c.txt' TERM=xterm bash $(printf '%q' "$DIR/scripts/tmux-open-path") --pick %1; sleep 30" >/dev/null 2>&1
-PCP=$("$TMUX_REAL" -L "$PC" list-panes -t t: -F '#{pane_id}')
-until_cap "$PC" "$PCP" '*open>*' || bad "the picker comes up" "open>" "$("$TMUX_REAL" -L "$PC" capture-pane -p -t "$PCP")"
-"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" Tab Tab; until_cap "$PC" "$PCP" '*(2)*'
-"$TMUX_REAL" -L "$PC" send-keys -t "$PCP" M-c
-until_file "$PCS/log.buf" '*a.txt*'
-# Read raw: un-abbreviating HERE would pass whether the bind copies ~/… or the
-# absolute path, which is the one thing this block exists to tell apart.
-is "alt-c copies the marked paths, one per line, absolute" "$PCD/a.txt"$'\n'"$PCD/b.txt" "$(cat "$PCS/log.buf" 2>/dev/null)"
-is "and loads them with -w, so the clipboard gets them too" "LOADBUF load-buffer -w -" "$(grep LOADBUF "$PCS/log" 2>/dev/null)"
-"$TMUX_REAL" -L "$PC" kill-server >/dev/null 2>&1; rm -rf "$PCD"
-fi
 
 echo "== agent-state: notify must not hang on a silent stdin =="
 # The Notification hook piped JSON in and the script read it with cat, which
@@ -2538,10 +2444,6 @@ mkdir -p "$DH/locked"; echo "gitdir: x" > "$DH/locked/.git"; chmod 000 "$DH/lock
 is "an unreadable .git file is quiet, not a bash error" "" \
    "$("$DIR/scripts/tmux-where" branch 1 "$DH/locked" claude 2>&1 >/dev/null)"
 chmod 600 "$DH/locked/.git"
-echo b >> "$DH/a"; chmod 000 "$DH/a"
-is "the diff preview of an unreadable changed file is quiet" "" \
-   "$("$DIR/scripts/tmux-open-path" --preview-diff "$DH/a" 2>&1 >/dev/null)"
-chmod 600 "$DH/a"
 rm -rf "$DH"
 echo "== install.sh only ever touches its own links =="
 IB=$(mktmpd); IL="$IB/link"; ln -s "$DIR" "$IL"; IBIN="$IB/bin"; mkdir -p "$IBIN"
@@ -2574,14 +2476,11 @@ echo "== install.sh --check: one row per thing that can be wrong, exit on the wo
 # machine's, and the doctor cannot read the live server.
 if ! command -v jq >/dev/null 2>&1; then skip_ "install.sh --check (no jq)"; else
 DC=$(mktmpd)
-DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DOLD="$DC/old"; DNO="$DC/notmux"
-mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DOLD" "$DNO" "$DC/tmuxtmp"
+DH="$DC/home"; DBIN="$DC/bin"; DSH="$DC/shim"; DNO="$DC/notmux"
+mkdir -p "$DH/.claude" "$DBIN" "$DSH" "$DNO" "$DC/tmuxtmp"
 printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$DH/.tmux.conf"
 dshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
-dshim fzf "0.74.3 (15f64c49)" "$DSH"
-dshim bat "bat 0.26.1 (a3c4)" "$DSH"
 dshim revdiff "version: 1.13.0" "$DSH"
-dshim fzf "0.44.1 (debian)" "$DOLD"
 # The no-tmux PATH carries only what install.sh itself needs, so "no tmux on
 # PATH" is the absence itself rather than a shim standing in for it.
 for u in bash dirname jq; do ln -s "$(command -v "$u")" "$DNO/$u" 2>/dev/null; done
@@ -2606,14 +2505,14 @@ dcge() { [ "$(vnum "$1" 2>/dev/null)" -ge "$(vnum "$2" 2>/dev/null)" ] 2>/dev/nu
          && echo yes || echo no; }
 is "vnum: a letter suffix is not a component (3.7c)" "3007000" "$(vnum 3.7c 2>/dev/null)"
 is "vnum: 0.73.0 is not below itself" "yes" "$(dcge 0.73.0 0.73.0)"
-is "vnum: the debian fzf is below the 0.73.0 floor, and only that way" "no yes" \
-   "$(dcge '0.44.1 (debian)' 0.73.0) $(dcge 0.73.0 '0.44.1 (debian)')"
+is "vnum: 1.12.9 is below the 1.13.0 floor, and only that way" "no yes" \
+   "$(dcge 1.12.9 1.13.0) $(dcge 1.13.0 1.12.9)"
 
 DCP="$DBIN:$DSH:$SHIM:/usr/bin:/bin"
 before=$(find "$DH" "$DBIN" | sort)
 dcout=$(dc "$DCP"); dcrc=$?
 is "the doctor writes nothing" "$before" "$(find "$DH" "$DBIN" | sort)"
-is "fzf at the pinned version is an ok row" "1" "$(dcrow "$dcout" "ok fzf")"
+is "revdiff at the pinned version is an ok row" "1" "$(dcrow "$dcout" "ok revdiff")"
 is "a wired config is an ok row"            "1" "$(dcrow "$dcout" "ok config")"
 is "a config with no #{agent_*} token is an ok row" "1" "$(dcrow "$dcout" "ok tokens")"
 is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
@@ -2635,21 +2534,11 @@ is "and it exits 2"                         "2" "$dcrc"
 dshim cockpit-tui "cockpit-tui 0.0.1" "$DC"
 dcout=$(COCKPIT_TUI_BIN="$DC/cockpit-tui" dc "$DCP")
 is "one below TUI_MIN is a fail row too"    "1" "$(dcrow "$dcout" "fail cockpit-tui")"
-# Debian ships 0.44.1, below the 0.73 the pickers need.
-dcout=$(dc "$DOLD:$DCP"); dcrc=$?
-is "an fzf below the floor is a fail row"   "1" "$(dcrow "$dcout" "fail fzf")"
-is "and it exits 2"                         "2" "$dcrc"
-# A server holds the PATH it started with, so its fzf is the one the pickers
-# run: an old one there fails even when this shell finds a new one first.
-DCS="env -u TMUX TMUX_TMPDIR=$DC/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
-$DCS new-session -d 'sleep 300' >/dev/null 2>&1
-$DCS set-environment -g PATH "$DOLD:$DCP" >/dev/null 2>&1
-is "the fzf on the server's PATH is the one graded" "1" "$(dcrow "$(dc "$DCP")" "fail fzf")"
-$DCS kill-server >/dev/null 2>&1
-# bat is the optional tool left, and a PATH without it is a warn row.
-mkdir -p "$DC/nobat"; dshim fzf "0.74.3 (15f64c49)" "$DC/nobat"; dshim revdiff "version: 1.13.0" "$DC/nobat"
-dcout=$(dc "$DBIN:$DC/nobat:$SHIM:$DNO"); dcrc=$?
-is "a missing optional tool is a warn row" "1" "$(dcrow "$dcout" "warn bat")"
+# No optional tool is left (bat went with the previews, #228): a warn row is a
+# revdiff older than the tested one.
+mkdir -p "$DC/oldrd"; dshim revdiff "version: 1.12.0" "$DC/oldrd"
+dcout=$(dc "$DBIN:$DC/oldrd:$SHIM:$DNO"); dcrc=$?
+is "an older revdiff is a warn row" "1" "$(dcrow "$dcout" "warn revdiff")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
@@ -2725,12 +2614,12 @@ esac
 rm -rf "$DC"
 fi
 
-echo "== bootstrap.sh --full: verified before it installs, and the first backup kept =="
+echo "== bootstrap.sh: no bat and no --full (#228); the first backup kept =="
 # A file:// release tree, a faked box, and a sudo shim that would exit 99 if
 # anything reached for it. Nothing here opens a socket, touches the real HOME
 # or talks to a tmux server.
-if ! command -v curl >/dev/null 2>&1; then skip_ "bootstrap.sh --full (no curl)"
-elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh --full (no sha256sum)"; else
+if ! command -v curl >/dev/null 2>&1; then skip_ "bootstrap.sh (no curl)"
+elif ! command -v sha256sum >/dev/null 2>&1; then skip_ "bootstrap.sh (no sha256sum)"; else
 BS=$(mktmpd)
 BH="$BS/home"; BB="$BS/bin"; BB2="$BS/bin2"; BSH="$BS/shim"; REL="$BS/rel"; BSBIN=""
 mkdir -p "$BH/.tmux/plugins" "$BB" "$BB2" "$BSH" "$BS/tmuxtmp"
@@ -2741,9 +2630,7 @@ for d in tpm tmux-sensible tmux-yank tmux-resurrect tmux-continuum tmux; do
     mkdir -p "$BH/.tmux/plugins/$d/.git"
 done
 printf '#!/bin/sh\ntouch "%s"\nexit 99\n' "$BS/SUDO_RAN" > "$BSH/sudo"
-printf '#!/bin/sh\necho "0.44.1 (debian)"\n' > "$BSH/fzf"
-printf '#!/bin/sh\necho "bat 0.24.0"\n' > "$BSH/batcat"
-chmod +x "$BSH/sudo" "$BSH/fzf" "$BSH/batcat"
+chmod +x "$BSH/sudo"
 BPATH="$BSH:$SHIM:/usr/bin:/bin"
 printf '# mine\nrun-shell %s/cockpit.tmux\n' "$DIR" > "$BH/.tmux.conf"
 bs() {                        # bs <args...> -- bootstrap.sh on the faked box
@@ -2754,22 +2641,9 @@ bs() {                        # bs <args...> -- bootstrap.sh on the faked box
 # One tarball per published asset name, so the block never repeats the uname
 # mapping the script under test owns. The binaries are shell scripts: the only
 # thing asked of them is --version, which is what a checksum cannot answer.
-mkrel() {                     # mkrel [flip|nosums|noasset]
-    local a d f="$REL/junegunn/fzf/releases/download/v0.74.3"
-    rm -rf "$REL" "$BS/pack"; mkdir -p "$f" "$BS/pack"
-    printf '#!/bin/sh\necho "0.74.3 (15f64c49)"\n' > "$BS/pack/fzf"; chmod +x "$BS/pack/fzf"
-    for a in linux_amd64 linux_arm64 darwin_amd64 darwin_arm64; do
-        ( cd "$BS/pack" && tar -czf "$f/fzf-0.74.3-$a.tar.gz" fzf )
-    done
-    ( cd "$f" && sha256sum fzf-0.74.3-*.tar.gz > fzf_0.74.3_checksums.txt )
-    d="$REL/sharkdp/bat/releases/download/v0.26.1"; mkdir -p "$d"
-    for a in x86_64-unknown-linux-musl aarch64-unknown-linux-musl \
-             x86_64-apple-darwin aarch64-apple-darwin; do
-        rm -rf "$BS/pack"; mkdir -p "$BS/pack/bat-v0.26.1-$a"
-        printf '#!/bin/sh\necho "bat 0.26.1 (a3c4)"\n' > "$BS/pack/bat-v0.26.1-$a/bat"
-        chmod +x "$BS/pack/bat-v0.26.1-$a/bat"
-        ( cd "$BS/pack" && tar -czf "$d/bat-v0.26.1-$a.tar.gz" "bat-v0.26.1-$a" )
-    done
+mkrel() {                     # mkrel [noasset]
+    local a d
+    rm -rf "$REL" "$BS/pack"; mkdir -p "$BS/pack"
     # revdiff is fetched on every run, so a release tree without it would fail them all.
     d="$REL/umputun/revdiff/releases/download/v1.13.0"; mkdir -p "$d"
     printf '#!/bin/sh\necho "version: 1.13.0"\n' > "$BS/pack/revdiff"; chmod +x "$BS/pack/revdiff"
@@ -2777,15 +2651,7 @@ mkrel() {                     # mkrel [flip|nosums|noasset]
         ( cd "$BS/pack" && tar -czf "$d/revdiff_1.13.0_$a.tar.gz" revdiff )
     done
     ( cd "$d" && sha256sum revdiff_1.13.0_*.tar.gz > revdiff_1.13.0_checksums.txt )
-    case "${1:-}" in
-        flip) awk '{ c=substr($0,1,1); print (c=="0" ? "1" : "0") substr($0,2) }' \
-                  "$f/fzf_0.74.3_checksums.txt" > "$f/s2" &&
-              mv "$f/s2" "$f/fzf_0.74.3_checksums.txt" ;;
-        nosums)  rm -f "$f/fzf_0.74.3_checksums.txt" "$f"/fzf-0.74.3-*.tar.gz ;;
-        noasset) rm -f "$f"/fzf-0.74.3-*.tar.gz ;;
-    esac
 }
-bsclear() { rm -f "$BB/fzf" "$BB/bat"; }
 bssaid() {                    # bssaid <label> <literal line the freeze spells>
     case "$3" in
         *"$2"*) ok "$1" ;;
@@ -2794,56 +2660,17 @@ bssaid() {                    # bssaid <label> <literal line the freeze spells>
 }
 
 mkrel
-bsout=$(bs --full); bsrc=$?
-is "--full installs both pinned tools into \$BIN" "fzf bat" \
-   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
-is "and each is the version the pin names" "0.74.3 (15f64c49)" "$("$BB/fzf" --version 2>/dev/null)"
+# bat went with tmux-open-path's previews (#228), and --full with it: that tier
+# fetched nothing else. A bootstrap run names no bat anywhere.
+bsout=$(bs --dry-run); bsrc=$?
+is "a run names no bat" "0" "$(printf '%s\n' "$bsout" | grep -ci 'bat\b')"
+is "and names no latest-tools step" "0" "$(printf '%s\n' "$bsout" | grep -c 'latest tools')"
 is "and the run exits 0" "0" "$bsrc"
-# The probe is $BIN/<tool>, never PATH: the shimmed 0.44.1 fzf sits ahead of
-# $BIN here, and probing PATH would re-download both on every run.
-bsout=$(bs --full)
-# fetch_tool's own lines: tui-fetch says "already current" for cockpit-tui too.
-is "a second run fetches nothing" "2" "$(printf '%s\n' "$bsout" | grep -c '^  ok: .* already current')"
-
-# Without --full the 0.44.1 on PATH is below the pickers' 0.73: fzf alone.
-bsclear
-bsout=$(bs); bsrc=$?
-is "without --full an fzf below 0.73 fetches fzf alone" "fzf" \
-   "$(for t in fzf bat; do [ -x "$BB/$t" ] && printf '%s ' "$t"; done | sed 's/ $//')"
-is "and the run exits 0" "0" "$bsrc"
-bsout=$(BPATH="$BB:$BPATH" bs)
-case "$bsout" in *"latest tools"*) bad "an fzf at 0.73+ first on PATH fetches nothing" "no latest tools step" "$bsout" ;;
-    *) ok "an fzf at 0.73+ first on PATH fetches nothing" ;; esac
-
-bsclear; mkrel flip
-bsout=$(bs --full); bsrc=$?
-bssaid "a flipped checksum installs nothing" \
-       "FAIL:  fzf checksum mismatch -- NOT installed" "$bsout"
-is "and \$BIN/fzf stays absent" "absent" "$([ -e "$BB/fzf" ] && echo present || echo absent)"
-is "and the run exits 1" "1" "$bsrc"
-
-# Offline is not a failure: the tools are optional and the run has to end 0.
-bsclear; mkrel noasset
-bsout=$(bs --full); bsrc=$?
-bssaid "an asset it cannot fetch is a skip" "skip:  fzf (download failed -- offline?)" "$bsout"
-is "and the run still exits 0" "0" "$bsrc"
-
-# Fail closed the other way round: "could not verify" is not "verified". The
-# asset is gone too, so taking it before the sums would say skip, not FAIL.
-bsclear; mkrel nosums
-bsout=$(bs --full)
-bssaid "unreachable checksums refuse the install" "FAIL:  fzf checksums unreachable" "$bsout"
-
-mkrel; BSBIN="$BB2"
-bsout=$(bs --full --dry-run); BSBIN=""
-bssaid "--dry-run names the fetch" "would: fetch fzf 0.74.3" "$bsout"
-is "and creates nothing under \$BIN" "0" "$(ls -A "$BB2" | wc -l)"
-
-bsclear; bsout=$(bs --check --full); is "--check with --full exits 2" "2" "$?"
-bssaid "and says which flag it refused" "--check runs alone" "$bsout"
-is "and fetches nothing" "absent" "$([ -e "$BB/fzf" ] && echo present || echo absent)"
-bsout=$(bs --latest); is "--latest without --full exits 2" "2" "$?"
-bssaid "and says which flag it needs" "--latest needs --full" "$bsout"
+bsout=$(bs --full); is "--full is gone (exit 2)" "2" "$?"
+bssaid "and the refusal prints the usage" "usage: bootstrap.sh" "$bsout"
+bsout=$(bs --latest); is "--latest is gone too (exit 2)" "2" "$?"
+bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
+bssaid "and says so" "--check runs alone" "$bsclear_check"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
 
 # The re-append: the run-shell line was removed, so bootstrap appends again --
@@ -2872,8 +2699,6 @@ echo "== HOME unset must not kill the path picker =="
 HU=$(mktmpd); : > "$HU/f.txt"
 is "a ~ token with HOME unset still resolves the real file" "$HU/f.txt::" \
    "$(env -u HOME "$DIR/scripts/tmux-open-path" --dry-run "$HU" 'see f.txt and ~/nothing' 2>&1)"
-is "and the preview does not crash"     "empty file" \
-   "$(env -u HOME "$DIR/scripts/tmux-open-path" --preview "$HU/f.txt" 2>&1)"
 rm -rf "$HU"
 
 echo "== notify's deadline covers the whole read, not each line =="
@@ -3315,6 +3140,7 @@ esac
 fi
 
 echo "== @open-editor still works under its new name =="
+optui_setup
 # Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
 # another plugin could reasonably claim it, but people have it in their configs,
 # so it keeps working for a release and says so.
@@ -3340,8 +3166,8 @@ exit 0
 RSTUB
 chmod +x "$RT/tmux"; ln -s "$(command -v bash)" "$RT/bash"
 ed_run() { : > "$RT/log"
-    env PATH="$RT" TMUX_LOG="$RT/log" CLICK_DIR="$RN" CLICK_LINE="f.txt" "$@" \
-        "$DIR/scripts/tmux-open-path" --pick %1 <<<1 >/dev/null 2>&1
+    env COCKPIT_TUI_BIN="$OPTUI" PATH="$RT" TMUX_LOG="$RT/log" CLICK_DIR="$RN" CLICK_LINE="f.txt" "$@" \
+        "$DIR/scripts/tmux-open-path" --pick %1 </dev/null >/dev/null 2>&1
     cat "$RT/log"; }
 case "$(ed_run NEW_ED=nvim)" in
     *"NEWWIN nvim"*) ok "@cockpit_editor is used" ;;
@@ -3733,28 +3559,10 @@ case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep MouseUp1Contr
          "$("$TMUX_REAL" -L "$DB" list-keys -T root | grep MouseUp1Control2)" ;;
 esac
 case "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit 2>/dev/null | awk '$4=="o"')" in
-    *--browse*) ok "which opens the browser popup" ;;
-    *) bad "which opens the browser popup" "a display-popup running --browse" \
+    *"tmux-open-path"*"--folder"*) ok "which opens the pane's folder in the editor" ;;
+    *) bad "which opens the pane's folder in the editor" "a run-shell running --folder" \
          "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit | awk '$4=="o"')" ;;
 esac
-DBLOG=$(mktmpf); DBED=$(mktmpf)
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$DBLOG" > "$DBED"; chmod +x "$DBED"
-"$TMUX_REAL" -L "$DB" set -g @cockpit_editor "$DBED" >/dev/null 2>&1
-DP=$("$TMUX_REAL" -L "$DB" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "'$DIR/scripts/tmux-open-path' --browse '$DIR'" Enter
-until_cap "$DB" "$DP" '*↵ enter*'
-case "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP")" in
-    *"↵ enter"*) ok "--browse opens the browser at the dir" ;;
-    *) bad "--browse opens the browser at the dir" "the browse header" \
-         "$("$TMUX_REAL" -L "$DB" capture-pane -p -t "$DP" | head -3)" ;;
-esac
-# The query has to be in the prompt before Enter, or Enter opens whatever the
-# unfiltered list had selected.
-"$TMUX_REAL" -L "$DB" send-keys -t "$DP" "LICENSE"
-until_cap "$DB" "$DP" '*/ LICENSE*'
-"$TMUX_REAL" -L "$DB" send-keys -t "$DP" Enter
-until_file "$DBLOG" '*OPEN *'
-is "and a file opens from it" "OPEN $DIR/LICENSE" "$(cat "$DBLOG")"
 "$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
 fi
 
@@ -3767,10 +3575,10 @@ PG="cockpit-geom-$$"; SOCKS="$SOCKS $PG"
 "$TMUX_REAL" -L "$PG" set -g @cockpit_popup_width 55% >/dev/null 2>&1
 "$TMUX_REAL" -L "$PG" set -g @cockpit_popup_height 45% >/dev/null 2>&1
 "$TMUX_REAL" -L "$PG" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-case "$("$TMUX_REAL" -L "$PG" list-keys -T cockpit | awk '$4=="o"')" in
+case "$("$TMUX_REAL" -L "$PG" list-keys -T prefix | awk '$4=="b"')" in
     *'-h "45%" -w "55%"'*) ok "a custom size reaches the binding" ;;
     *) bad "a custom size reaches the binding" '-h 45% -w 55%' \
-         "$("$TMUX_REAL" -L "$PG" list-keys -T cockpit | awk '$4=="o"')" ;;
+         "$("$TMUX_REAL" -L "$PG" list-keys -T prefix | awk '$4=="b"')" ;;
 esac
 "$TMUX_REAL" -L "$PG" kill-server >/dev/null 2>&1
 fi
@@ -3796,206 +3604,6 @@ case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseUp1Control3)" in
          "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseUp1Control3)" ;;
 esac
 "$TMUX_REAL" -L "$BPI" kill-server >/dev/null 2>&1
-fi
-
-echo "== tab marks several files and opens them all =="
-# --multi: a compiler error naming a header and its source, a git diff naming
-# two files -- mark both, open both. Tab already means "mark several" in tm's
-# kill picker, so the gesture is one thing suite-wide. Driven through a real
-# pty because fzf needs one.
-if need_tmux "multi-open"; then :; else
-if command -v fzf >/dev/null 2>&1; then
-MO="cockpit-mo-$$"; SOCKS="$SOCKS $MO"
-MOLOG=$(mktmpf); MOED=$(mktmpf)
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MOLOG" > "$MOED"; chmod +x "$MOED"
-"$TMUX_REAL" -L "$MO" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
-"$TMUX_REAL" -L "$MO" set -g @cockpit_editor "$MOED" >/dev/null 2>&1
-MP=$("$TMUX_REAL" -L "$MO" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$MO" set-option -p -t "$MP" @cockpit_click_line \
-    "see README.md and LICENSE and Makefile" >/dev/null 2>&1
-"$TMUX_REAL" -L "$MO" send-keys -t "$MP" "'$DIR/scripts/tmux-open-path' --pick '$MP'" Enter
-until_cap "$MO" "$MP" '*open>*'
-# The prompt must be visible first, or the keys land in a bare shell and the
-# assertion could pass without fzf ever running.
-case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
-    *"open>"*) ok "the picker really came up" ;;
-    *) bad "the picker really came up" "an open> prompt" \
-         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | head -3)" ;;
-esac
-# The preview separator names the mode, so ^G/^F visibly do something even
-# when the two views look alike.
-case "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP")" in
-    *"─ content "*) ok "the preview names its mode on the separator" ;;
-    *) bad "the preview names its mode on the separator" "a ' content ' label" \
-         "$("$TMUX_REAL" -L "$MO" capture-pane -p -t "$MP" | grep '^─' | head -1)" ;;
-esac
-# One send-keys: fzf reads its keys in order, so the gaps between three calls
-# were wall time and nothing else. The log is what the assertion reads.
-"$TMUX_REAL" -L "$MO" send-keys -t "$MP" Tab Tab Enter
-until_file "$MOLOG" '*OPEN*OPEN*'
-is "two marked files both open" "2" "$(grep -c OPEN "$MOLOG")"
-"$TMUX_REAL" -L "$MO" kill-server >/dev/null 2>&1
-rm -f "$MOLOG" "$MOED"
-else
-  skip_ "the picker really came up"; skip_ "two marked files both open"
-fi
-fi
-
-echo "== picking a folder browses into it =="
-# A directory is a place, not a file. Enter used to hand it straight to the
-# editor; now it descends -- .. climbs, a file opens, ^O is the deliberate
-# "open this folder in the editor". Driven end to end through a real pty.
-if need_tmux "folder browse"; then :; else
-if command -v fzf >/dev/null 2>&1; then
-BR="cockpit-br-$$"; SOCKS="$SOCKS $BR"
-BRLOG=$(mktmpf); BRED=$(mktmpf)
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$BRLOG" > "$BRED"; chmod +x "$BRED"
-"$TMUX_REAL" -L "$BR" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
-"$TMUX_REAL" -L "$BR" set -g @cockpit_editor "$BRED" >/dev/null 2>&1
-BP=$("$TMUX_REAL" -L "$BR" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$BR" set-option -p -t "$BP" @cockpit_click_line "look in scripts/ now" >/dev/null 2>&1
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "'$DIR/scripts/tmux-open-path' --pick '$BP'" Enter
-until_cap "$BR" "$BP" '*open>*'
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter          # the one candidate is a dir
-until_cap "$BR" "$BP" '*↵ enter*'
-case "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP")" in
-    *"↵ enter"*) ok "enter on a folder opens the browser, not the editor" ;;
-    *) bad "enter on a folder opens the browser, not the editor" "the browse header" \
-         "$("$TMUX_REAL" -L "$BR" capture-pane -p -t "$BP" | head -3)" ;;
-esac
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" "tmux-where"
-# The query has to be in the prompt before Enter, or Enter opens whatever the
-# unfiltered list had selected.
-until_cap "$BR" "$BP" '*/ tmux-where*'
-"$TMUX_REAL" -L "$BR" send-keys -t "$BP" Enter
-until_file "$BRLOG" '*OPEN *'
-is "and a file inside it opens" "OPEN $DIR/scripts/tmux-where" "$(cat "$BRLOG")"
-"$TMUX_REAL" -L "$BR" kill-server >/dev/null 2>&1
-rm -f "$BRLOG" "$BRED"
-else
-  skip_ "enter on a folder opens the browser, not the editor"; skip_ "and a file inside it opens"
-fi
-fi
-
-# group: serial
-echo "== the preview shows what changed, not just that it changed =="
-# The bat rewrite kept the thin git gutter but lost the actual diff view. For a
-# modified file with no target line, the diff is nearly always why the file is
-# on the line you clicked -- lead with it. A target line wins: the jump is the
-# point then. ^G forces the diff anywhere, and a clean file says so instead of
-# showing an empty pane.
-DV=$(mktmpd)
-(
-  cd "$DV" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'alpha\nbeta\ngamma\n' > f.txt; git add f.txt
-  c=$(git commit-tree "$(git write-tree)" -m init); git update-ref refs/heads/main "$c"
-  git symbolic-ref HEAD refs/heads/main; git reset -q --hard
-  printf 'alpha\nCHANGED\ngamma\n' > f.txt
-) >/dev/null 2>&1
-pv() { "$DIR/scripts/tmux-open-path" "$@" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g'; }
-case "$(pv --preview "$DV/f.txt")" in
-    *'+CHANGED'*) ok "a modified file with no line leads with its diff" ;;
-    *) bad "a modified file with no line leads with its diff" "+CHANGED" "$(pv --preview "$DV/f.txt" | head -3)" ;;
-esac
-case "$(pv --preview "$DV/f.txt" 2)" in
-    *'+CHANGED'*) bad "a target line beats the diff" "the content window" "a diff" ;;
-    *CHANGED*)    ok  "a target line beats the diff" ;;
-    *) bad "a target line beats the diff" "the line content" "$(pv --preview "$DV/f.txt" 2 | head -2)" ;;
-esac
-case "$(pv --preview-diff "$DV/f.txt")" in
-    *'+CHANGED'*) ok "^G shows the diff on demand" ;;
-    *) bad "^G shows the diff on demand" "+CHANGED" "$(pv --preview-diff "$DV/f.txt" | head -3)" ;;
-esac
-( cd "$DV" && git checkout -q f.txt ) 2>/dev/null
-is "a clean file says so rather than an empty pane" "no uncommitted changes in f.txt" \
-   "$(pv --preview-diff "$DV/f.txt")"
-case "$(pv --preview "$DV/f.txt")" in
-    *alpha*) ok "and its default preview is the content again" ;;
-    *) bad "and its default preview is the content again" "the file" "$(pv --preview "$DV/f.txt" | head -2)" ;;
-esac
-is "outside a repo, the diff view is honest too" "not in a git repository" \
-   "$("$DIR/scripts/tmux-open-path" --preview-diff /tmp 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g' )"
-rm -rf "$DV"
-
-# --preview-diff used to capture the WHOLE coloured diff into a shell variable
-# and run git diff a second time for --stat, both before ever checking the
-# result was non-empty. Measured here: a 22.9MB/400000-line single-file diff
-# was 3.32s + 191MB RSS on the pre-fix build, 0.76s + 76MB RSS after streaming
-# the diff and deriving the stat from --numstat instead. Both halves of that
-# are the teeth, and maxRSS is the one no amount of box load can move.
-GD=$(mktmpd)
-(
-  cd "$GD" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  awk 'BEGIN{for(i=1;i<=200000;i++) print "line " i " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' > big.txt
-  git add -A; git commit -q -m init
-  awk 'BEGIN{for(i=1;i<=200000;i++) print "line " i " bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' > big.txt
-) >/dev/null 2>&1
-gdout=$(mktmpf)
-# One measured run, not two: --preview-diff caches its render under
-# $XDG_RUNTIME_DIR, so a second pass would grade the cache instead. GNU time
-# reports maxRSS and CPU from that single run; POSIX time reports neither.
-GDCPU="a 400000-line single-file diff renders in well under 2.5s of CPU"
-GDRSS="and it streams that diff instead of capturing it (maxRSS under 120MB)"
-if /usr/bin/time -f '%M %U %S' -o /dev/null true 2>/dev/null; then
-    /usr/bin/time -f '%M %U %S' -o "$STATE/gd.time" \
-        timeout 10 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt" \
-        >"$gdout" 2>/dev/null
-    # A killed command burns almost no CPU and holds almost no memory, so both
-    # gates below would pass it. GNU time prepends a line when it kills, hence
-    # END rather than the first record.
-    gdrc=$?
-    if [ "$gdrc" -eq 124 ]; then
-        bad "$GDCPU" "under 2.5s of CPU" "hung: killed at 10s"
-        bad "$GDRSS" "under 120000 kB" "hung: killed at 10s"
-    else
-        cpu_is "$GDCPU" 2.5 "$(awk 'END{printf "%.3f", $2+$3}' "$STATE/gd.time")"
-        gdrss=$(awk 'END{print $1+0}' "$STATE/gd.time")
-        if [ "$gdrss" -lt 120000 ]; then ok "$GDRSS"
-        else bad "$GDRSS" "under 120000 kB" "$gdrss kB"; fi
-    fi
-else
-    cpu_under "$GDCPU" 2.5 "$DIR/scripts/tmux-open-path" --preview-diff "$GD/big.txt"
-    cat "$CPUOUT" > "$gdout"
-    skip_ "$GDRSS (no GNU time)"
-fi
-case "$(head -1 "$gdout")" in
-    *'insertion(s)'*) ok "and still leads with a real stat summary" ;;
-    *) bad "and still leads with a real stat summary" \
-        "N insertion(s), M deletion(s)" "$(head -1 "$gdout")" ;;
-esac
-rm -rf "$GD"
-
-echo "== ^O opens a folder whole; the list names the line =="
-if need_tmux "^O folder open"; then :; else
-if command -v fzf >/dev/null 2>&1; then
-OO="cockpit-oo-$$"; SOCKS="$SOCKS $OO"
-OOLOG=$(mktmpf); OOED=$(mktmpf)
-printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OOLOG" > "$OOED"; chmod +x "$OOED"
-"$TMUX_REAL" -L "$OO" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$DIR" >/dev/null 2>&1
-"$TMUX_REAL" -L "$OO" set -g @cockpit_editor "$OOED" >/dev/null 2>&1
-OP=$("$TMUX_REAL" -L "$OO" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$OO" set-option -p -t "$OP" @cockpit_click_line "scripts/tm:30 and scripts/" >/dev/null 2>&1
-"$TMUX_REAL" -L "$OO" send-keys -t "$OP" "'$DIR/scripts/tmux-open-path' --pick '$OP'" Enter
-until_cap "$OO" "$OP" '*tm:30*'
-# A clicked "file:31" must read as file:31 in the list, not as a bare filename
-# stripped of the very thing that anchored it.
-case "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP")" in
-    *"tm:30"*) ok "the row keeps its line number" ;;
-    *) bad "the row keeps its line number" "scripts/tm:30" \
-         "$("$TMUX_REAL" -L "$OO" capture-pane -p -t "$OP" | sed -n 3p)" ;;
-esac
-"$TMUX_REAL" -L "$OO" send-keys -t "$OP" Down C-o
-until_file "$OOLOG" '*OPEN *'
-is "^O hands the folder to the editor whole" "OPEN $DIR/scripts/" "$(cat "$OOLOG")"
-"$TMUX_REAL" -L "$OO" kill-server >/dev/null 2>&1
-rm -f "$OOLOG" "$OOED"
-else
-  skip_ "the row keeps its line number"; skip_ "^O hands the folder to the editor whole"
-fi
 fi
 
 echo "== first-run: no theme installed, still works =="
@@ -4205,32 +3813,44 @@ is "full.tmux.conf leaves the outer terminal title off" "off" \
 fi
 
 # group: etmux
-echo "== @cockpit_open_single skips the popup for machine output =="
-# Opt-in: a lone candidate that carried an explicit :line is a stack trace or
-# compiler error, not a guess. "line" opens those directly; "always" opens any
-# lone candidate; unset keeps the picker.
-OS=$(mktmpd); OST=$(mktmpd); : > "$OS/f.txt"
+echo "== tmux-open-path: one match opens at once, several ask (#228) =="
+# A single candidate is not a question, a directory included; only a line with
+# several candidates reaches the popup.
+optui_setup
+OS=$(mktmpd); OST=$(mktmpd); : > "$OS/f.txt"; : > "$OS/g.txt"; mkdir "$OS/d"
 cp "$ETMUX_TEMPLATE" "$OST/tmux" 2>/dev/null || true
 chmod +x "$OST/tmux" 2>/dev/null
-if [ ! -x "$OST/tmux" ]; then skip_ "open_single line opens directly"; skip_ "without a line it still asks"; skip_ "always opens any lone file"
+if [ ! -x "$OST/tmux" ]; then skip_ "one match opens at once"; skip_ "several ask"
 else
 ln -s "$(command -v bash)" "$OST/bash"
 os_run() { : > "$OST/log"
     env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" \
-        OPEN_SINGLE="$1" CLICK_LINE="$2" OPEN_EDITOR=nvim \
+        CLICK_LINE="$1" OPEN_EDITOR=nvim COCKPIT_TUI_BIN="$OPTUI" \
         bash "$DIR/scripts/tmux-open-path" %1 >/dev/null 2>&1
     cat "$OST/log"; }
-case "$(os_run line 'f.txt:7')" in
-    *NEWWIN*) ok "open_single line opens directly" ;;
-    *) bad "open_single line opens directly" "the editor, no popup" "$(os_run line 'f.txt:7')" ;;
+case "$(os_run 'f.txt:7')" in
+    *NEWWIN*) ok "one match with a line opens at once" ;;
+    *) bad "one match with a line opens at once" "the editor, no popup" "$(os_run 'f.txt:7')" ;;
 esac
-case "$(os_run line 'f.txt')" in
-    *POPUP*) ok "without a line it still asks" ;;
-    *) bad "without a line it still asks" "the picker popup" "$(os_run line 'f.txt')" ;;
+case "$(os_run 'f.txt')" in
+    *NEWWIN*) ok "one match without a line opens at once" ;;
+    *) bad "one match without a line opens at once" "the editor, no popup" "$(os_run 'f.txt')" ;;
 esac
-case "$(os_run always 'f.txt')" in
-    *NEWWIN*) ok "always opens any lone file" ;;
-    *) bad "always opens any lone file" "the editor, no popup" "$(os_run always 'f.txt')" ;;
+case "$(os_run 'd')" in
+    *NEWWIN*) ok "a lone directory opens at once" ;;
+    *) bad "a lone directory opens at once" "the editor, no popup" "$(os_run 'd')" ;;
+esac
+case "$(os_run 'f.txt g.txt')" in
+    *POPUP*) ok "two matches ask" ;;
+    *) bad "two matches ask" "the picker popup" "$(os_run 'f.txt g.txt')" ;;
+esac
+# The folder browser's keys (--folder, bound to prefix o) open the pane's folder.
+: > "$OST/log"
+env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" OPEN_EDITOR=nvim \
+    bash "$DIR/scripts/tmux-open-path" --folder %1 >/dev/null 2>&1
+case "$(cat "$OST/log")" in
+    *NEWWIN*"nvim  $OS"*|*NEWWIN*"nvim $OS"*) ok "--folder opens the pane's folder in the editor" ;;
+    *) bad "--folder opens the pane's folder in the editor" "a new-window running nvim $OS" "$(cat "$OST/log")" ;;
 esac
 fi
 
@@ -4956,10 +4576,8 @@ rm -rf "$RV1"
 
 echo "== tmux-review --lines: staged and unstaged changes are one review, not either/or =="
 # `git diff` alone answers about the WORKING TREE only, so the moment one
-# unstaged edit existed the whole index went missing from the list -- while
-# --preview-diff, which falls back to --cached, still showed the staged file.
-# The list and the preview disagreed about the same file. `git diff HEAD` is
-# both halves in one call. FAIL-first: on the old code no staged.txt row exists.
+# unstaged edit existed the whole index went missing from the list. `git diff
+# HEAD` is both halves in one call. FAIL-first: on the old code no staged.txt row exists.
 RVMIX=$(mktmpd)
 (
   cd "$RVMIX" || exit
@@ -4975,21 +4593,6 @@ case "$rvmix" in *"staged.txt"$'\t'2$'\t'"STAGED-CHANGE"*) ok "the staged half i
     *) bad "the staged half is reviewable" "a staged.txt:2 STAGED-CHANGE row" "$rvmix" ;; esac
 case "$rvmix" in *"unstaged.txt"$'\t'2$'\t'"UNSTAGED-CHANGE"*) ok "and so is the unstaged half" ;;
     *) bad "and so is the unstaged half" "an unstaged.txt:2 row" "$rvmix" ;; esac
-case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" in
-    *STAGED-CHANGE*) ok "the preview agrees with the list about the staged file" ;;
-    *) bad "the preview agrees with the list about the staged file" "STAGED-CHANGE in the preview" \
-         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX/staged.txt")" ;; esac
-# The directory branch of --preview-diff used to render an
-# unstaged-only `git diff --stat`, disagreeing with the list (which shows
-# staged+unstaged+untracked as one set since the fix above): staged.txt is
-# already reported by `git status --short` in the same output, so a mere
-# substring check for its name does not discriminate the bug -- the STAT
-# SUMMARY's file count does. FAIL-first: `git diff --stat` (unstaged only)
-# counts one file here, `git diff --stat HEAD` (staged+unstaged) counts two.
-case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" in
-    *"2 files changed"*) ok "the directory preview's stat counts the staged file too" ;;
-    *) bad "the directory preview's stat counts the staged file too" "2 files changed in the preview" \
-         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVMIX")" ;; esac
 rm -rf "$RVMIX"
 
 echo "== tmux-review --lines: a brand-new file is reviewable, line by line =="
@@ -5010,9 +4613,7 @@ case "$rvnew" in *"new.txt"$'\t'1$'\t'"first"*"new.txt"$'\t'2$'\t'"second"*) ok 
     *) bad "untracked lines are + rows with their own numbers" "new.txt:1 first, new.txt:2 second" "$rvnew" ;; esac
 # ls-files C-quotes a non-ASCII path the same way diff headers do ("caf\303\251-new.txt"),
 # and a quoted name is not a file that exists: [ -f ] failed and the file was
-# dropped from the list WITHOUT a word -- while --preview-diff, which asks with
-# core.quotePath=false, rendered it. The same list-vs-preview disagreement this
-# whole block exists to end. FAIL-first: no café-new.txt row at all.
+# dropped from the list WITHOUT a word. FAIL-first: no café-new.txt row at all.
 case "$rvnew" in *'café-new.txt'$'\t'1$'\t'"NEW-LINE"*) ok "a new file with a non-ASCII name is listed too, not silently dropped" ;;
     *) bad "a new file with a non-ASCII name is listed too, not silently dropped" \
          "café-new.txt<TAB>1<TAB>NEW-LINE" "$rvnew" ;; esac
@@ -5071,9 +4672,8 @@ rm -rf "$RVMANY"
 echo "== tmux-review --lines: every row knows where it sits in its file's preview =="
 # The preview opened every file at its top, so reviewing a change 900 lines down
 # meant scrolling by hand for every row. Each row now carries a 5th field: its
-# own 1-based line inside `tmux-open-path --preview-diff <file>` (one stat line,
-# then the diff from that file's first @@), which the loop hands to fzf as the
-# preview scroll offset. FAIL-first: rows have four fields, so $5 is empty.
+# own 1-based line inside a per-file preview (one stat line, then the diff from
+# that file's first @@). FAIL-first: rows have four fields, so $5 is empty.
 RVOFF=$(mktmpd)
 (
   cd "$RVOFF" || exit
@@ -5087,60 +4687,6 @@ want=$(( 1 + $(git -C "$RVOFF" diff HEAD -- f.txt | awk '/^@@/{h=1} h' | grep -n
 is "the second hunk's row offset matches the preview's line" "$want" "$rvoff"
 rm -rf "$RVOFF"
 
-# An untracked file's preview has the same two prefixes as a tracked one -- the
-# stat line AND the hunk header of its --no-index diff -- so its rows sit two
-# lines below their own file line, not one.
-RVOFFN=$(mktmpd)
-(
-  cd "$RVOFFN" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'seed\n' > seed.txt; git add -A; git commit -q -m init
-  printf 'first\nsecond\nthird\n' > new.txt
-) >/dev/null 2>&1
-rvoffn=$("$DIR/scripts/tmux-review" --lines "$RVOFFN" | awk -F'\t' '$1=="new.txt" && $3=="second" {print $5}')
-rvoffnwant=$( (cd "$RVOFFN" && "$DIR/scripts/tmux-open-path" --preview-diff new.txt) \
-    | awk '{ gsub(/\033\[[0-9;]*m/, ""); print }' | grep -n '│ +second' | cut -d: -f1)
-is "an untracked row's offset is its real line in that file's preview" "$rvoffnwant" "$rvoffn"
-rm -rf "$RVOFFN"
-
-echo "== tmux-open-path --preview-diff: old and new line numbers on every hunk line, one prefix per line, ▸ on the asked line =="
-RPG=$(mktmpd)
-(
-  cd "$RPG" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  seq 1 40 > f.txt; git add -A; git commit -q -m init
-  sed -i '3s/.*/THREE/; 30s/.*/THIRTY/; 10d' f.txt
-) >/dev/null 2>&1
-rpg=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g')
-rpgraw=$(git -C "$RPG" diff HEAD -- f.txt | awk '/^@@/{h=1} h')
-is "the gutter adds no line and removes none" "$(( $(printf '%s\n' "$rpgraw" | wc -l) + 1 ))" "$(printf '%s\n' "$rpg" | wc -l)"
-is "a context line carries both numbers"   "     1      1 │  1"      "$(printf '%s\n' "$rpg" | grep '│  1$')"
-is "a removed line carries the old number" "     3        │ -3"      "$(printf '%s\n' "$rpg" | grep '│ -3$')"
-is "an added line carries the new number"  "            3 │ +THREE" "$(printf '%s\n' "$rpg" | grep '│ +THREE$')"
-is "a deletion keeps the old side counting" "    10        │ -10"    "$(printf '%s\n' "$rpg" | grep '│ -10$')"
-is "and the new side skips it"              "    11     10 │  11"    "$(printf '%s\n' "$rpg" | grep '│  11$')"
-rpgm=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt 5) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgm" in "▸"*) ok "the asked line is marked ▸" ;; *) bad "the asked line is marked ▸" "▸..." "$rpgm" ;; esac
-rpgc=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | sed 's/\x1b\[[0-9;]*m//g' | sed -n 5p)
-case "$rpgc" in "▸"*) bad "the mark is not cached" "an unmarked line" "$rpgc" ;; *) ok "the mark is not cached" ;; esac
-# Every check above strips ANSI first, so a gutter that printed the stripped
-# copy instead of the raw line would pass them all with the colour gone. Peel
-# the 13-column prefix back off and the diff's own bytes must be left.
-rpgrawc=$(git -C "$RPG" diff --color=always HEAD -- f.txt | awk '/^\033\[[0-9;]*m@@|^@@/{h=1} h')
-rpgcol=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff f.txt) | tail -n +2 | sed 's/^.\{13\} │ //')
-is "the gutter is a prefix and nothing else, colour included" "$rpgrawc" "$rpgcol"
-# %5 overflowed past 9999 lines, and ▶ (ambiguous-width) then overwrote a
-# digit: a 12340 read ▶2340 (#22 item 7). A missing trailing newline is a
-# gutter row of its own (test debt from the same issue).
-(cd "$RPG" && export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e && seq 1 12345 > big.txt && git add big.txt && git commit -q -m big && sed -i '12340s/.*/X/' big.txt && printf 'tail' >> big.txt) >/dev/null 2>&1
-rpgb=$( (cd "$RPG" && "$DIR/scripts/tmux-open-path" --preview-diff big.txt 6) | sed 's/\x1b\[[0-9;]*m//g')
-is "a five-digit line number keeps every digit next to the mark" "▸12340        │ -12340" "$(printf '%s\n' "$rpgb" | grep '│ -12340$')"
-is "and a no-newline marker gets a blank gutter" "              │ \\ No newline at end of file" "$(printf '%s\n' "$rpgb" | grep 'No newline' | tail -1)"
-rm -rf "$RPG"
-
-# group: serial
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -5554,9 +5100,8 @@ RVGOLD=$(mktmpd)
   printf 'a\nZED\nc\nADDED\n' > app.go
   printf 'p\nQQ\n' > tests/unit_test.go
 ) >/dev/null 2>&1
-# The trailing column is the row's line in `--preview-diff <file>` output
-# (one stat line, then the diff from that file's first @@). Hand-derived and
-# cross-checked against the preview itself: app.go renders -b at line 4, +ZED
+# The trailing column is the row's line in a per-file preview
+# (one stat line, then the diff from that file's first @@). Hand-derived: app.go renders -b at line 4, +ZED
 # at 5, +ADDED at 7; unit_test.go renders -q at 4 and +QQ at 5.
 rvgoldwant=$(printf '%s\n' \
   'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q	4' \
@@ -5646,14 +5191,6 @@ if printf '%s\n' "$rvqout" | grep -q '^alpha\.txt	.*CC'; then
 else
     ok "café's row is not smeared onto the previous file"
 fi
-# git C-quotes non-ASCII paths in `status --short` too, so a directory preview
-# (the git status --short / git diff --stat branch) used to render
-# "caf\303\251.txt" instead of the real name. FAIL-first: the octal escape
-# shows up in the directory preview's output.
-case "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" in
-    *'\303'*) bad "the directory preview prints the name, not octal" "café in the preview" \
-         "$("$DIR/scripts/tmux-open-path" --preview-diff "$RVQ")" ;;
-    *) ok "the directory preview prints the name, not octal" ;; esac
 rm -rf "$RVQ"
 
 # The first-file-in-diff variant: when the odd-named file leads the diff, the
@@ -5726,14 +5263,6 @@ is "the aligned fragment keeps all 160 of its bytes" "160" \
 rm -rf "$RVU"
 
 rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-revdiff.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
-echo "== every picker paints its preview border: fzf 0.44's 16-colour theme draws it black (#22 item 6) =="
-for f in tm tmux-open-path tmux-review; do
-    if [ "$f" = tmux-review ]; then src=$(rv_src); else src=$(cat "$DIR/scripts/$f"); fi
-    is "$f: every --color=16 carries border:8" \
-       "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16')" \
-       "$(grep -v '^ *#' <<<"$src" | grep -c -- '--color=16,[^ ]*border:8')"
-done
-
 echo "== review-store: parse is the inverse of format over the full grammar =="
 # The one module that knows what "## path:line (+)" means. Sourced, pure:
 # no tmux, no git (the boundary test below). A record is a header, an
@@ -5968,7 +5497,7 @@ case "$rv7out" in
 esac
 rm -rf "$RV7"
 
-echo "== tmux-review --lines / preview: a subdir pane's cwd still resolves to the repo root =="
+echo "== tmux-review --lines: a subdir pane's cwd still resolves to the repo root =="
 # git -C <dir> diff always emits paths relative to the repo ROOT, not <dir> --
 # so a pane whose cwd is a subdirectory used to hand --lines rows that
 # --preview-diff (cd <dir> && ...) could never find: "gone: root.txt"
@@ -5997,26 +5526,6 @@ case "$rv8lines" in
          "sub/foo.sh<TAB>2<TAB>..." "$rv8lines" ;;
 esac
 
-# Confirms the fixture actually exercises the seam before trusting the fix
-# below: --lines' own row path ("root.txt") is repo-root-relative, but a
-# preview `cd`'d into the pane's raw cwd (sub/) can't find it there.
-rv8rawpreview=$(cd "$RV8/sub" && "$DIR/scripts/tmux-open-path" --preview-diff root.txt)
-case "$rv8rawpreview" in
-    gone:*) ok "the fixture reproduces the seam: root.txt is not found from the pane's raw cwd" ;;
-    *) bad "the fixture reproduces the seam: root.txt is not found from the pane's raw cwd" \
-         "gone: root.txt" "$rv8rawpreview" ;;
-esac
-# The actual fix: resolve the pane's cwd to its repo root first (what
-# review_pane/main_entry now do before ever calling --loop or previewing),
-# then the same row path resolves to a real diff.
-rv8root=$(git -C "$RV8/sub" rev-parse --show-toplevel)
-rv8rootpreview=$(cd "$rv8root" && "$DIR/scripts/tmux-open-path" --preview-diff root.txt \
-    | sed 's/\x1b\[[0-9;]*m//g')
-case "$rv8rootpreview" in
-    *'+root'*) ok "previewing from the resolved root shows a real diff, not 'gone:'" ;;
-    *) bad "previewing from the resolved root shows a real diff, not 'gone:'" \
-         "a diff containing +root" "$rv8rootpreview" ;;
-esac
 rm -rf "$RV8"
 
 echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
@@ -6073,12 +5582,6 @@ printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.
 rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
 is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
 case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
-# Same conversion: hashing 64 MB is CPU and nothing else here is. 3x this
-# site's 0.022s under twelve spinners, in this exact wrapped form.
-cpu_under "the preview answers without hashing the file (under 0.07s of CPU)" 0.07 \
-    sh -c 'cd "$1" && exec "$2" --preview-diff core' sh "$RB" "$DIR/scripts/tmux-open-path"
-rbpv=$(cat "$CPUOUT")
-is "the preview of a big file is a one-line notice" "core (64 MB, not diffed: over 32 MB)" "$rbpv"
 rm -rf "$RB"
 
 # A stand-in for revdiff, which is interactive and so cannot be driven here. Each
@@ -6382,75 +5885,7 @@ is "and leaves no revdiff.err behind" "no" "$([ -e "$RQSESS/revdiff.err" ] && ec
 "$TMUX_REAL" -L "$RQ" kill-server >/dev/null 2>&1
 fi
 
-echo "== tmux-open-path --preview-diff: a nested file's diff is not lost to path-doubling =="
-PD=$(mktmpd)
-(
-  cd "$PD" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  mkdir -p scripts
-  printf 'echo one\n' > scripts/foo.sh
-  git add -A; git commit -q -m init
-  printf 'echo one\necho two\n' > scripts/foo.sh
-) >/dev/null 2>&1
-pdout=$(cd "$PD" && "$DIR/scripts/tmux-open-path" --preview-diff scripts/foo.sh)
-case "$pdout" in
-    *'echo two'*) ok "a nested file's diff shows, not 'no uncommitted changes'" ;;
-    *) bad "a nested file's diff shows, not 'no uncommitted changes'" \
-         "a diff containing echo two" "$pdout" ;;
-esac
-# The exact mechanism tmux-review's picker preview uses: cd into the review's
-# target dir, then hand tmux-open-path the row's own dir-relative path -- the
-# same path --lines already emits, not a hand-typed one.
-rv5path=$("$DIR/scripts/tmux-review" --lines "$PD" | head -1 | cut -f1)
-is "the --lines row path is dir-relative, exactly what --preview-diff expects" \
-   "scripts/foo.sh" "$rv5path"
-rv5preview=$(cd "$PD" && "$DIR/scripts/tmux-open-path" --preview-diff "$rv5path")
-case "$rv5preview" in
-    *'echo two'*) ok "the review-loop preview path shows the same diff" ;;
-    *) bad "the review-loop preview path shows the same diff" \
-         "a diff containing echo two" "$rv5preview" ;;
-esac
-rm -rf "$PD"
-
-# group: serial
-echo "== tmux-open-path --preview-diff: the second render of a file is a cache hit =="
-# Hermetic: XDG_RUNTIME_DIR points at a throwaway dir for every call this
-# block makes, so the memoised cache lives and dies with the test.
-RTD=$(mktmpd)
-PV=$(mktmpd); ( cd "$PV" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; seq 1 2000 > big.txt; git add -A; git commit -q -m init; sed -i '1000s/.*/CHANGED/' big.txt ) >/dev/null 2>&1
-XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv1"
-if XDG_RUNTIME_DIR="$RTD" timeout 5 "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" > "$STATE/pv2" 2>/dev/null; then ok "a repeat render exits 0"
-else bad "a repeat render exits 0" "rc 0 within 5s" "rc $?"; fi
-is "and is identical" "" "$(cmp "$STATE/pv1" "$STATE/pv2" 2>&1)"
-# A clock does not prove the cache is READ. On this fixture a HIT costs
-# 24-29ms and a MISS 39-43ms, so no budget separates them, and the old
-# `timeout 0.05` only ever went red under peer load, emptying pv2 for the cmp
-# above (issue #36); timeout 5 is a hang guard. A mutant copy of the script
-# whose cache read is dead passes all three assertions above unchanged.
-# Only a row that could not have come from anywhere else
-# proves the memo was used. Plant one -- the hermetic dir holds exactly the
-# single entry the first render wrote -- and demand the next render hand it
-# back verbatim. Same trick as the SENTINEL row in the row-snapshot block.
-pvcdir="$RTD/tmux-cockpit-preview-$(id -u)"
-is "the hermetic cache dir holds exactly the one entry the first render wrote" \
-   "1" "$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')"
-pventry=$(find "$pvcdir" -mindepth 1 -maxdepth 1 -type f 2>/dev/null | head -1)
-printf 'PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS\n' > "$pventry"
-is "and a repeat render is served FROM that entry, not re-rendered" \
-   "PV_CACHE_SENTINEL_NO_RENDER_CAN_PRODUCE_THIS" \
-   "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")"
-sed -i '1001s/.*/ALSO/' "$PV/big.txt"
-case "$(XDG_RUNTIME_DIR="$RTD" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt")" in *ALSO*) ok "an edited file misses the cache" ;;
-    *) bad "an edited file misses the cache" "ALSO in the preview" "stale" ;; esac
-pvgone="$RTD/swept"
-XDG_RUNTIME_DIR="$pvgone" "$DIR/scripts/tmux-open-path" --preview-diff "$PV/big.txt" >/dev/null 2>&1
-is "a vanished XDG_RUNTIME_DIR is not recreated by the cache (#136)" "" \
-   "$(find "$pvgone" 2>/dev/null)"
-rm -rf "$PV"
-
-echo "== repo git config cannot run commands through a review or preview =="
+echo "== repo git config cannot run commands through a review =="
 GH=$(mktmpd); GHM="$GH/marker"
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
     printf '#!/bin/sh\necho %s >> %s\ncat\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
@@ -6468,9 +5903,7 @@ case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under 
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
 "$DIR/scripts/tmux-review" --lines "$GH/r" >/dev/null 2>&1
-XDG_RUNTIME_DIR="$GH" "$DIR/scripts/tmux-open-path" --preview-diff "$GH/r/f.txt" >/dev/null 2>&1
-"$DIR/scripts/tmux-open-path" --preview "$GH/r/f.txt" 1 >/dev/null 2>&1
-is "and nothing it names runs under tmux-review or the previews" "" "$(cat "$GHM" 2>/dev/null)"
+is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
 case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
     *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
 
@@ -6499,8 +5932,6 @@ lf_paths() {
     is "nor through tree_diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
     "$DIR/scripts/tmux-review" --lines "$LF/c" >/dev/null 2>&1
     is "nor through tmux-review --lines$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
-    XDG_RUNTIME_DIR="$(mktmpd)" "$DIR/scripts/tmux-open-path" --preview-diff "$LF/c/f.txt" >/dev/null 2>&1
-    is "nor through the path picker's preview diff$1" "" "$(cat "$LFM" 2>/dev/null)"; rm -f "$LFM"
 }
 # foo:: is a remote helper on PATH (hb/), which no protocol.<p>.allow pin can name.
 for lfu in "file://$LF/src" ssh://h/r "ext::$LF/up" foo::x; do
@@ -6518,94 +5949,6 @@ is "while switch --track through it fetches the branch's blob" "g" "$(cat "$LF/c
 ( . "$DIR/scripts/lib/git.sh"; git -C "$LF/c2" worktree add -q --detach "$LF/wt" origin/side2 ) >/dev/null 2>&1
 is "and so does worktree add" "h" "$(cat "$LF/wt/h.txt" 2>/dev/null)"
 rm -rf "$LF"; unset lfu; unset -f lf_paths
-
-echo "== tmux-open-path --preview-diff: two worktrees of one repo never share a cache entry =="
-# The key used to be path+HEAD+mtime+size, with "path" whatever the caller
-# passed -- and every caller cd's into the review target first and hands a
-# DIR-RELATIVE path (the same one --lines emits). Two worktrees of the same
-# repo, checked out to the same commit, have identical relative paths and can
-# land the same mtime+size on an edit of the same shape -- reproduced: one
-# worktree's preview served the other's cached diff. $d/$base (the file's own
-# resolved directory, already computed above) is absolute and worktree-
-# specific, so it now anchors the key.
-WTBASE=$(mktmpd)
-(
-  cd "$WTBASE" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  mkdir -p sub; printf 'x\n' > sub/f.txt
-  git add -A; git commit -q -m init
-) >/dev/null 2>&1
-wtsha=$(git -C "$WTBASE" rev-parse main)
-WTA=$(mktmpd); rm -rf "$WTA"
-WTB=$(mktmpd); rm -rf "$WTB"
-git -C "$WTBASE" worktree add -q --detach "$WTA" "$wtsha" >/dev/null 2>&1
-git -C "$WTBASE" worktree add -q --detach "$WTB" "$wtsha" >/dev/null 2>&1
-# Same-second, same-size edits in each -- the axis the old key could not see
-# past even before this fix (both are 9 bytes).
-sed -i '1s/.*/ONLY_IN_A/' "$WTA/sub/f.txt"
-sed -i '1s/.*/ONLY_IN_B/' "$WTB/sub/f.txt"
-RTDW=$(mktmpd)
-wta_out=$(cd "$WTA" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
-wtb_out=$(cd "$WTB" && XDG_RUNTIME_DIR="$RTDW" "$DIR/scripts/tmux-open-path" --preview-diff sub/f.txt)
-case "$wta_out" in *ONLY_IN_A*) ok "worktree A's preview shows its own edit" ;;
-    *) bad "worktree A's preview shows its own edit" "ONLY_IN_A" "$wta_out" ;; esac
-case "$wtb_out" in *ONLY_IN_B*) ok "worktree B's preview shows its own edit, not a cache hit from A" ;;
-    *) bad "worktree B's preview shows its own edit, not a cache hit from A" "ONLY_IN_B" "$wtb_out" ;; esac
-case "$wtb_out" in *ONLY_IN_A*) bad "worktree B's cache never leaks worktree A's content" "no ONLY_IN_A" "$wtb_out" ;;
-    *) ok "worktree B's cache never leaks worktree A's content" ;; esac
-git -C "$WTBASE" worktree remove -f "$WTA" >/dev/null 2>&1
-git -C "$WTBASE" worktree remove -f "$WTB" >/dev/null 2>&1
-rm -rf "$WTBASE"
-
-echo "== tmux-open-path --preview-diff: staging alone (no edit) is not served a stale render =="
-# An unborn-HEAD repo's --numstat is computed against two different bases
-# depending on index state: unstaged (index vs worktree) when the working
-# tree still differs from the index, --cached (index vs the implicit empty
-# tree) once it doesn't -- two genuinely different renders of the SAME file
-# bytes at the SAME mtime, since `git add` never touches the file itself.
-# The old key (no index component) could not tell these apart.
-UB=$(mktmpd)
-(
-  cd "$UB" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  printf 'a\n' > f.txt; git add f.txt
-  printf 'a\nb\n' > f.txt
-) >/dev/null 2>&1
-RTDU=$(mktmpd)
-ub_pre=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
-case "$ub_pre" in *'1 insertion(s)'*) ok "before staging, only the unstaged line is the diff" ;;
-    *) bad "before staging, only the unstaged line is the diff" "1 insertion(s)" "$ub_pre" ;; esac
-( cd "$UB" && git add f.txt ) >/dev/null 2>&1
-ub_post=$(XDG_RUNTIME_DIR="$RTDU" "$DIR/scripts/tmux-open-path" --preview-diff "$UB/f.txt")
-case "$ub_post" in *'2 insertion(s)'*) ok "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" ;;
-    *) bad "staging alone (same bytes, same mtime) is not served the pre-stage cache hit" "2 insertion(s)" "$ub_post" ;; esac
-rm -rf "$UB"
-
-echo "== tmux-open-path --preview-diff: a hostile cache dir is never read from or written into =="
-# XDG_RUNTIME_DIR falling back to /tmp means the cache dir's own path can
-# already be claimed: as a symlink elsewhere, or as a pre-existing dir this
-# uid does not own or that is wider than 700. Both must still render
-# correctly (uncached) and touch nothing at either path.
-HC=$(mktmpd); ( cd "$HC" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .; printf 'one\n' > h.txt; git add -A; git commit -q -m init; printf 'one\nTWO\n' > h.txt ) >/dev/null 2>&1
-
-RTD4=$(mktmpd); EVILTARGET=$(mktmpd)
-ln -s "$EVILTARGET" "$RTD4/tmux-cockpit-preview-$(id -u)"
-symout=$(XDG_RUNTIME_DIR="$RTD4" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
-case "$symout" in *TWO*) ok "a symlinked cache dir still renders the real diff" ;;
-    *) bad "a symlinked cache dir still renders the real diff" "TWO" "$symout" ;; esac
-is "and nothing is written through the symlink into its target" "0" \
-   "$(find "$EVILTARGET" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
-
-RTD5=$(mktmpd); mkdir -m 777 "$RTD5/tmux-cockpit-preview-$(id -u)"
-wideout=$(XDG_RUNTIME_DIR="$RTD5" "$DIR/scripts/tmux-open-path" --preview-diff "$HC/h.txt")
-case "$wideout" in *TWO*) ok "a world-writable pre-existing cache dir still renders the real diff" ;;
-    *) bad "a world-writable pre-existing cache dir still renders the real diff" "TWO" "$wideout" ;; esac
-is "and nothing is written into it either" "0" \
-   "$(find "$RTD5/tmux-cockpit-preview-$(id -u)" -mindepth 1 2>/dev/null | wc -l | tr -d ' ')"
-rm -rf "$HC"
 
 echo "== tmux-review: a pane id that is not %<digits> never reaches tmux =="
 # The glob %[0-9]* let "%1;display-message PWNED" through, and deliver() splices
@@ -9990,102 +9333,23 @@ is "full.tmux.conf hardcodes no ~/.local/bin path" "0" \
    "$(grep -c '~/.local/bin' "$DIR/examples/full.tmux.conf")"
 
 
-# --- #104 fzf theme ---------------------------------------------------------
-echo "== the shared fzf theme: one argv, key hints (#104) =="
+# --- old-fzf notice, and tm without a terminal --------------------------------
+echo "== tm without a terminal lists and asks; cockpit.tmux's old-fzf notice fires once =="
 FZTD=$(mktmpd)
-FZLIB="$DIR/scripts/lib/fzf.sh"
-# A fake fzf: answers --version, then records its argv one argument per line and
-# exits 130 -- the code a real esc returns, so each picker walks its own way out.
-# The suffix is the fake's own pid, so a picker that opens twice keeps both files.
+# A fake fzf that only answers --version: all the notice in cockpit.tmux reads.
 fzfake() {                    # fzfake <dir> <version string>
     mkdir -p "$1"
-    cat > "$1/fzf" <<EOS
-#!/bin/sh
-case "\${1:-}" in --version) [ -n "\${FZ_VLOG:-}" ] && printf 'v\n' >> "\$FZ_VLOG"
-    printf '%s\n' '$2'; exit 0 ;; esac
-cat >/dev/null
-[ -n "\${FZ_ARGV:-}" ] && { printf '%s\n' "\$@" > "\$FZ_ARGV.\$\$"; printf '%s\n' "\$#" > "\$FZ_ARGV"n."\$\$"; }
-exit 130
-EOS
-    chmod +x "$1/fzf"
+    printf '#!/bin/sh\necho "%s"\n' "$2" > "$1/fzf"; chmod +x "$1/fzf"
 }
 fznew="$FZTD/new"; fzold="$FZTD/old"
 fzfake "$fznew" "0.74.3 (15f64c49)"
 fzfake "$fzold" "0.44.1 (debian)"
-
-# Every picker this lane owns, driven to the point where it hands off to fzf.
-FZP="$FZTD/bin"; fzfake "$FZP" "0.74.3 (15f64c49)"
 FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
 for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename mktemp rm; do
     p=$(command -v "$c" 2>/dev/null) || continue
-    ln -sf "$p" "$FZP/$c"; ln -sf "$p" "$FZNB/$c"
+    ln -sf "$p" "$FZNB/$c"
 done
-ln -sf "$SHIM/tmux" "$FZP/tmux"; ln -sf "$SHIM/tmux" "$FZNB/tmux"
-FZG=$(mktmpd)
-( cd "$FZG" && git init -q -b main . && : > a && git add a &&
-  GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e \
-      git commit -q -m init ) >/dev/null 2>&1
-: > "$FZTD/clicked.txt"
-tmux set-option -p -t "$PANE" @cockpit_click_line "see $FZTD/clicked.txt:1" 2>/dev/null
-
-# The suite server is what tm lists and what --pick reads the click line from;
-# a lost session here is the picker "not reaching fzf" three assertions later
-# (#128), so it is named before any picker runs.
-is "the suite server still holds its session before the pickers run" "suite" \
-   "$(tmux display-message -p -t "$PANE" '#{session_name}' 2>&1)"
-fzrun() {                     # fzrun <tag> <cmd...> -- capture that picker's argv, rc and stderr
-    local tag=$1; shift
-    env -u TMUX -u TMUX_PANE PATH="$FZP" FZ_ARGV="$FZTD/argv-$tag-$$" \
-        FZ_VLOG="$FZTD/vlog-$tag" "$@" </dev/null >/dev/null 2>"$FZTD/err-$tag"
-    printf '%s\n' "$?" > "$FZTD/rc-$tag"
-    # Name the step when a picker never reaches fzf (#128): its exit code, its
-    # stderr and what the suite server listed at that moment, not a count.
-    [ -n "$(ls "$FZTD"/argv-"$tag"-"$$".* 2>/dev/null)" ] ||
-        bad "$tag reaches fzf" "an argv file" \
-            "rc=$(cat "$FZTD/rc-$tag") stderr=[$(tail -c 200 "$FZTD/err-$tag" | tr '\n' ' ')] sessions=[$(tmux list-sessions -F '#{session_id}=#{session_name}' 2>&1 | tr '\n' ' ')]"
-}
-fzrun path      "$DIR/scripts/tmux-open-path" --pick "$PANE"
-fzrun browse    "$DIR/scripts/tmux-open-path" --browse "$FZTD"
-fzn=0; fzboth=0
-for f in "$FZTD"/argv-*-"$$".*; do
-    [ -e "$f" ] || continue
-    fzn=$((fzn+1))
-    grep -qx -- '--ansi' "$f" && grep -qx -- '--tabstop=1' "$f" && fzboth=$((fzboth+1))
-done
-is "both remaining pickers reach fzf, and every argv carries --ansi and --tabstop=1" "2 2" "$fzn $fzboth"
-
-# The open picker's two key lines must be ONE --footer argument (#116): the
-# lib prints one argument per line, so a footer asked of it with a newline
-# arrives as two, and fzf rejects the second as an unknown option (exit 2).
-# Lines minus argc is the count of embedded newlines the fake was handed.
-fzrun styled-open "$DIR/scripts/tmux-open-path" --pick "$PANE"
-is "styled: the open picker's two key lines are one --footer argument" "1" \
-   "$(( $(cat "$FZTD"/argv-styled-open-"$$".* 2>/dev/null | wc -l) - $(cat "$FZTD"/argv-styled-open-"$$"n.* 2>/dev/null || echo 0) ))"
-
-# A gapped palette: two of the tokens the theme reads set, the rest unset. With
-# a whitespace separator the gaps collapse and every later colour shifts onto
-# the wrong key.
-FZGS="cockpit-fzfgap-$$"; SOCKS="$SOCKS $FZGS"
-"$TMUX_REAL" -L "$FZGS" -f /dev/null new-session -d 'sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZGS" set -g @thm_error '#ff9838' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZGS" set -g @thm_accent '#c9a2ff' >/dev/null 2>&1
-FZGB="$FZTD/gapbin"; mkdir -p "$FZGB"
-printf '#!/bin/sh\nexec %s -L %s "$@"\n' "$TMUX_REAL" "$FZGS" > "$FZGB/tmux"
-chmod +x "$FZGB/tmux"; ln -sf "$FZP/fzf" "$FZGB/fzf"
-fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
-        "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
-is "two set tokens with gaps between them: no colour lands on its neighbour's key" \
-   "fg:#e6e4df hl:#ff9838 bg+:#2a2f3a prompt:#c9a2ff" \
-   "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
-# tmux's own `theme light` picks the _light roles: a popup cannot ask its client.
-"$TMUX_REAL" -L "$FZGS" set -s theme light >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZGS" set -g @thm_accent_light '#0b0c0d' >/dev/null 2>&1
-fzc=$(env -u TMUX -u TMUX_PANE PATH="$FZGB" \
-        "$BASH" -c '. "$1" && cockpit_fzf_args' _ "$FZLIB" 2>/dev/null | grep '^--color=')
-is "under theme light the pickers read the light roles and defaults" \
-   "fg:#1b1e24 hl:#9a4c00 bg+:#e1e5ec prompt:#0b0c0d" \
-   "$(printf '%s\n' "$fzc" | tr ',' '\n' | grep -E '^(fg|hl|bg\+|prompt):' | tr '\n' ' ' | sed 's/ $//')"
-"$TMUX_REAL" -L "$FZGS" kill-server >/dev/null 2>&1
+ln -sf "$SHIM/tmux" "$FZNB/tmux"
 
 fzh=$(env -u TMUX "$DIR/scripts/tm" -h 2>&1)
 is "tm -h names the picker's ^X and no longer a k kill key" "yes no" \
@@ -10106,16 +9370,12 @@ fznofzf() {                   # fznofzf <tag> <cmd...> -- which stream got the p
     printf '%s%s\n' "$o" "$e"
 }
 FZWANT='Kill which session'
-is "tm -k without fzf prompts on stderr, where the menu goes" "err" \
+is "tm -k without a terminal prompts on stderr, where the menu goes" "err" \
    "$(fznofzf tmk "$DIR/scripts/tm" -k)"
 FZWANT='Sessions:'
-is "tm without fzf prompts on stderr" "err" \
+is "tm without a terminal prompts on stderr" "err" \
    "$(fznofzf tma "$DIR/scripts/tm")"
-FZWANT='Open which path'
-is "tmux-open-path without fzf prompts on stderr" "err" \
-   "$(fznofzf tmo "$DIR/scripts/tmux-open-path" --pick "$PANE")"
 
-tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null
 FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
@@ -10132,7 +9392,7 @@ env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/nu
 is "and a 0.73+ fzf is never told anything" "0" \
    "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')"
 "$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
-rm -rf "$FZTD" "$FZG"
+rm -rf "$FZTD"
 # --- #105 review rows ---------------------------------------------------------
 # Width-aware review and fleet rows, the tab-safe pane record, and the delivery
 # notice that names the configured jump key. Every width here comes from a FAKE
@@ -10309,34 +9569,6 @@ is "and says who found no sessions" "1" \
    "$(grep -c "printf 'cockpit: No tmux sessions running" "$DIR/scripts/tm")"
 
 # --- #125 suite leftovers ---------------------------------------------------
-
-echo "== #125: ^G shows the diff and ^F the content, in both open-path pickers =="
-# The other half of defect 14. Both fzf calls in tmux-open-path carry the pair;
-# the argv is read off a fake fzf, the same shape the #104 block uses.
-OPD=$(mktmpd)
-fzfake "$OPD/bin" "0.44.1 (debian)"
-: > "$OPD/opened.txt"
-OPWAS=$(tmux show-option -pqv -t "$PANE" @cockpit_click_line 2>/dev/null)
-tmux set-option -p -t "$PANE" @cockpit_click_line "see $OPD/opened.txt:1" 2>/dev/null
-oprun() {                     # oprun <tag> <tmux-open-path args...>
-    local tag=$1; shift
-    env -u TMUX -u TMUX_PANE PATH="$OPD/bin:$PATH" FZ_ARGV="$OPD/argv-$tag" \
-        "$DIR/scripts/tmux-open-path" "$@" </dev/null >/dev/null 2>&1
-}
-opkeys() {                    # opkeys <tag> -> "<ctrl-g binds> <ctrl-f binds>"
-    local a; a=$(cat "$OPD"/argv-"$1".* 2>/dev/null)
-    printf '%s %s' \
-        "$(printf '%s\n' "$a" | grep -c '^ctrl-g:.*change-preview-label( diff )$')" \
-        "$(printf '%s\n' "$a" | grep -c '^ctrl-f:.*change-preview-label( content )$')"
-}
-oprun browse --browse "$OPD"
-oprun pick   --pick "$PANE"
-is "the folder browser binds ^G to the diff preview and ^F back to content" "1 1" \
-   "$(opkeys browse)"
-is "and so does the open picker"                                            "1 1" \
-   "$(opkeys pick)"
-if [ -n "$OPWAS" ]; then tmux set-option -p -t "$PANE" @cockpit_click_line "$OPWAS" 2>/dev/null
-else tmux set-option -pu -t "$PANE" @cockpit_click_line 2>/dev/null; fi
 
 av_setup() {                  # the fixtures every agent-view block needs; each calls it first
     [ -n "${AVBIN:-}" ] && return 0
@@ -12055,12 +11287,11 @@ rvshim() { printf '#!/bin/sh\necho "%s"\n' "$2" > "$3/$1"; chmod +x "$3/$1"; }
 rvshim revdiff "version: 1.13.0" "$RV/new"; rvshim revdiff "version: 1.12.9" "$RV/old"
 rvshim revdiff "unknown" "$RV/unk"
 mkdir -p "$RV/rel" "$RV/relold" "$RV/dev" "$RV/un" "$RV/brew"
-rvshim revdiff "dev" "$RV/dev"
+rvshim revdiff "dev" "$RV/dev"; mkdir -p "$RV/empty"; printf '#!/bin/sh\nexit 1\n' > "$RV/empty/revdiff"; chmod +x "$RV/empty/revdiff"
 printf '#!/bin/sh\ncase "$1" in -s) echo "$FAKE_S" ;; -m) echo "$FAKE_M" ;; *) exec /usr/bin/uname "$@" ;; esac\n' > "$RV/un/uname"
 printf '#!/bin/sh\necho "$*" >> "%s"\n' "$RV/brew.log" > "$RV/brew/brew"; chmod +x "$RV/un/uname" "$RV/brew/brew"
 rvshim revdiff "version: v1.13.0-abc1234-20260905T044327" "$RV/rel"
 rvshim revdiff "version: v1.12.0-abc1234-20260905T044327" "$RV/relold"
-for d in new old unk none rel relold dev; do rvshim fzf "0.74.3 (15f64c49)" "$RV/$d"; done
 rvdc() {                      # rvdc <dir holding the fake revdiff> -- the doctor's rows
     env -u TMUX -u TMUX_PANE HOME="$RVH" XDG_BIN_HOME="$RVB" TMUX_TMPDIR="$RV/tmuxtmp" \
         PATH="$1:$SHIM:/usr/bin:/bin" "$DIR/install.sh" --check 2>&1
@@ -12070,6 +11301,9 @@ out=$(rvdc "$RV/new"); is "revdiff at the pin is an ok row" "ok" "$(rvrow "$out"
 out=$(rvdc "$RV/rel"); is "a release build's v1.13.0-sha-date is an ok row" "ok" "$(rvrow "$out")"
 out=$(rvdc "$RV/relold"); is "and v1.12.0-sha-date is a warn row" "warn" "$(rvrow "$out")"
 out=$(rvdc "$RV/dev"); is "an unparseable version (dev) is a warn row" "warn" "$(rvrow "$out")"
+is "and is called a go install build" "1" "$(printf '%s\n' "$out" | grep -c 'dev @.*a go install build')"
+out=$(rvdc "$RV/empty"); is "a revdiff that prints no version is a warn row" "warn" "$(rvrow "$out")"
+is "and is not called a go install build" "1 0" "$(printf '%s\n' "$out" | grep -c 'no version @') $(printf '%s\n' "$out" | grep -c 'go install build')"
 # A server holds the PATH it started with: its revdiff is the one prefix r runs, even when
 # this shell finds a newer one first.
 RVS="env -u TMUX TMUX_TMPDIR=$RV/tmuxtmp $TMUX_REAL -L $SUITE_SOCK -f /dev/null"
@@ -12938,6 +12172,178 @@ is "only.sh: no match exits 2 naming the pattern" "tests/only.sh: no block match
 oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'zzzq(' 2>&1 </dev/null); oorc=$?
 is "only.sh: an invalid regex says bad pattern, exits 4" "tests/only.sh: bad pattern zzzq(|4" "$(printf '%s' "$oo" | tail -1)|$oorc"
 rm -rf "$OD"
+# ---- #264 (fzf removal) blocks ----
+echo "== tmux-open-path (#264): several candidates go through cockpit-tui pick =="
+# A real pty and the real cockpit-tui, on a private socket: the picker draws, a
+# key is pressed, and the editor shim's log is the only thing the asserts read.
+if need_tmux "open-at-line via pick"; then :; else
+OL="cockpit-ol-$$"; SOCKS="$SOCKS $OL"
+OLD=$(mktmpd); OLLOG="$OLD/log"; OLED="$OLD/ed"; : > "$OLLOG"
+mkdir -p "$OLD/w/sub"; : > "$OLD/w/one.txt"; : > "$OLD/w/two.txt"; : > "$OLD/w/three.txt"
+printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$OLLOG" > "$OLED"; chmod +x "$OLED"
+"$TMUX_REAL" -L "$OL" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$OLD/w" >/dev/null 2>&1
+"$TMUX_REAL" -L "$OL" set -g @cockpit_editor "$OLED" >/dev/null 2>&1
+OLP=$("$TMUX_REAL" -L "$OL" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$OL" set-option -p -t "$OLP" @cockpit_click_line \
+    "one.txt two.txt:7 sub/ three.txt" >/dev/null 2>&1
+olrun() {                     # olrun <n> -- start the picker; wait for its rows
+    "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "clear; '$DIR/scripts/tmux-open-path' --pick '$OLP'; echo OLDONE$1=\$?" Enter
+    until_cap "$OL" "$OLP" '*three.txt*'
+}
+oldone() { until_cap "$OL" "$OLP" "*OLDONE$1=[0-9]*"; }
+olcap() { "$TMUX_REAL" -L "$OL" capture-pane -p -J -t "$OLP"; }
+olkey() { "$TMUX_REAL" -L "$OL" send-keys -t "$OLP" "$@"; }
+
+olrun 1
+case "$(olcap)" in
+    *"two.txt:7"*"sub/"*) ok "the list shows each candidate relative to the pane, with its :line" ;;
+    *) bad "the list shows each candidate relative to the pane, with its :line" \
+         "two.txt:7 then sub/" "$(olcap | head -8)" ;;
+esac
+olkey Down Enter; oldone 1
+is "down + enter opens the second candidate at its line" "OPEN +7 $OLD/w/two.txt" "$(cat "$OLLOG")"
+
+: > "$OLLOG"; olrun 2
+olkey -l three; until_cap "$OL" "$OLP" '*open> three*|*three*'
+olkey Enter; oldone 2
+is "typing a filter then enter opens the filtered row, not the first" \
+   "OPEN $OLD/w/three.txt" "$(cat "$OLLOG")"
+
+: > "$OLLOG"; olrun 3
+olkey Down Down Enter; oldone 3
+is "a directory candidate is handed to the editor whole" "OPEN $OLD/w/sub/" "$(cat "$OLLOG")"
+
+: > "$OLLOG"; olrun 4
+olkey Escape; oldone 4
+is "esc opens nothing and exits 0" "0 " "$(olcap | sed -n 's/.*OLDONE4=//p' | tail -1) $(cat "$OLLOG")"
+"$TMUX_REAL" -L "$OL" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path (#264): the key from pick is checked, a missing binary is named =="
+# The stub answers with PICK_KEY. Anything that is not an index into the list is
+# refused with a message and nothing opens.
+optui_setup
+OKT=$(mktmpd); OKL="$OKT/log"; : > "$OKL"; mkdir -p "$OKT/w"; : > "$OKT/w/a.txt"; : > "$OKT/w/b.txt"
+cat > "$OKT/tmux" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  show-options)
+      case " $* " in
+          *@cockpit_click_line*) printf '%s\n' "${CLICK_LINE:-}" ;;
+          *@cockpit_editor*)     printf '%s\n' "${OPEN_EDITOR:-}" ;;
+      esac ;;
+  display-message)
+      case " $* " in
+          *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
+          *window_id*)         printf '@0\n' ;;
+          *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
+      esac ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  display-popup) printf 'POPUP\n' >> "$TMUX_LOG" ;;
+  load-buffer) IFS= read -r l; printf 'LOADBUF %s\n' "$l" >> "$TMUX_LOG" ;;
+esac
+exit 0
+STUB
+chmod +x "$OKT/tmux"; ln -s "$(command -v bash)" "$OKT/bash"
+for t in mktemp rm cat; do ln -s "$(command -v $t)" "$OKT/$t"; done   # the stderr capture
+okrun() {                     # okrun <key> [bin] -- the log after a pick answering <key>
+    : > "$OKL"
+    env -i PATH="$OKT" HOME="$OKT" TMUX_LOG="$OKL" CLICK_DIR="$OKT/w" CLICK_LINE="a.txt b.txt" \
+        OPEN_EDITOR=ed PICK_KEY="$1" PICK_RC="${PICK_RC:-0}" COCKPIT_TUI_BIN="${2:-$OPTUI}" \
+        bash "$DIR/scripts/tmux-open-path" ${OKARG---pick} %1 </dev/null >/dev/null 2>"$OKT/err"
+    echo "rc=$?"; cat "$OKL"
+}
+is "key 1 opens the second candidate" "rc=0"$'\n'"NEWWIN ed  $OKT/w/b.txt" "$(okrun 1)"
+for k in 2 99 -1 abc '0;x' ''; do
+    case "$(okrun "$k")" in
+        *NEWWIN*) bad "key [$k] is not a candidate: nothing opens" "no new window" "opened" ;;
+        *"not a candidate"*) ok "key [$k] is not a candidate: nothing opens, and it says so" ;;
+        *) bad "key [$k] is not a candidate: nothing opens, and it says so" "a 'not a candidate' message" "$(okrun "$k")" ;;
+    esac
+done
+case "$(okrun 0 "$OKT/no-such-tui")" in
+    *NEWWIN*) bad "no cockpit-tui: nothing opens" "no new window" "opened" ;;
+    *"cockpit-tui is missing"*) ok "no cockpit-tui: the message names it, nothing opens" ;;
+    *) bad "no cockpit-tui: the message names it, nothing opens" "cockpit-tui is missing" "$(okrun 0 "$OKT/no-such-tui")" ;;
+esac
+# alt-c (pick's exit 10) copies the absolute path and opens nothing.
+is "alt-c copies the chosen candidate's path and opens nothing" \
+   "rc=0"$'\n'"LOADBUF $OKT/w/b.txt"$'\n'"MSG cockpit: copied ~/w/b.txt" "$(PICK_RC=10 okrun 1)"
+case "$(PICK_RC=10 okrun 7)" in
+    *LOADBUF*) bad "alt-c on a key that is not a candidate copies nothing" "no load-buffer" "copied" ;;
+    *) ok "alt-c on a key that is not a candidate copies nothing" ;;
+esac
+# Any other exit of 2 or more is not a choice: say so on stderr, exit 1, open nothing.
+PICK_RC=2 okrun 0 >/dev/null
+is "pick exiting 2 exits 1 with its own line, opening nothing" "rc=1 yes no" \
+   "$(PICK_RC=2 okrun 0 | head -1) $(grep -q 'cockpit: pick exited 2' "$OKT/err" && echo yes || echo no) $(PICK_RC=2 okrun 0 | grep -q NEWWIN && echo yes || echo no)"
+# A cockpit-tui that predates --copy is stale, not crashed: the plugin says so.
+printf '#!/bin/sh\nwhile read -r _; do :; done\necho "cockpit-tui: pick: unknown argument --copy" >&2\nexit 2\n' > "$OKT/old-tui"
+chmod +x "$OKT/old-tui"
+case "$(okrun 0 "$OKT/old-tui")" in
+    "rc=1"*"older than the plugin"*) ok "a cockpit-tui without --copy is called stale, exit 1" ;;
+    *) bad "a cockpit-tui without --copy is called stale, exit 1" "rc=1 and the stale message" "$(okrun 0 "$OKT/old-tui")" ;;
+esac
+# Missing is said before the popup opens, so the user never sees it flash.
+case "$(OKARG= okrun 0 "$OKT/no-such-tui")" in
+    *POPUP*) bad "no cockpit-tui: no popup opens to say so" "no display-popup" "a popup" ;;
+    *) ok "no cockpit-tui: no popup opens to say so" ;;
+esac
+is "no pane argument is a usage error (exit 2)" "2" \
+   "$(env -i PATH="$OKT" bash "$DIR/scripts/tmux-open-path" </dev/null >/dev/null 2>&1; echo $?)"
+is "--pick with no pane is a usage error too" "2" \
+   "$(env -i PATH="$OKT" bash "$DIR/scripts/tmux-open-path" --pick </dev/null >/dev/null 2>&1; echo $?)"
+
+echo "== tmux-open-path (#264): a path with #(...), #{...} and #S in it reaches tmux right =="
+# tmux expands #() and #{} in a display-message text, a window name, a start
+# directory and a run-shell command, and #(cmd) runs cmd; it does NOT expand a
+# new-window command. So -n, -c and the other sinks carry ## for a #, and the
+# editor's command carries the real name. A shim editor logs the argv it got; the
+# window's own fields come from the real server. An argv-logging tmux first on
+# PATH records what the script gave tmux (a #() job would run async, #255).
+if need_tmux "hostile path escape"; then :; else
+HX="cockpit-hx-$$"; SOCKS="$SOCKS $HX"
+HXD=$(mktmpd); HXB="$HXD/bin"; HXL="$HXD/argv.log"; HXA="$HXD/editor.log"
+mkdir -p "$HXB" "$HXD/w/d#S"
+optui_setup
+HXED="$HXD/ed"; printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$HXA" > "$HXED"; chmod +x "$HXED"
+HN='a#(touch${IFS}F)#{pid}#S.txt'; HW="$HXD/w/d#S"; : > "$HW/$HN"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\nexec %s "$@"\n' "$HXL" "$TMUX_REAL" > "$HXB/tmux"
+printf '#!/bin/sh\nexit 0\n' > "$HXB/code"; chmod +x "$HXB/tmux" "$HXB/code"
+"$TMUX_REAL" -L "$HX" -f /dev/null new-session -d -s t -x 100 -y 28 -c "$HXD/w" >/dev/null 2>&1
+"$TMUX_REAL" -L "$HX" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
+HXP=$("$TMUX_REAL" -L "$HX" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$HX" send-keys -t "$HXP" "cd 'd#S'" Enter
+until_out "*d#S" "$TMUX_REAL" -L "$HX" display-message -p -t "$HXP" '#{pane_current_path}'
+"$TMUX_REAL" -L "$HX" set-option -p -t "$HXP" @cockpit_click_line "see $HN" >/dev/null 2>&1
+hxgo() {                      # hxgo <n> -- run the pick re-entry; wait for it
+    : > "$HXL"; : > "$HXA"
+    "$TMUX_REAL" -L "$HX" send-keys -t "$HXP" "clear; PATH='$HXB':\$PATH COCKPIT_TUI_BIN='$OPTUI' '$DIR/scripts/tmux-open-path' --pick '$HXP'; echo HXDONE$1=\$?" Enter
+    until_cap "$HX" "$HXP" "*HXDONE$1=[0-9]*"
+}
+# The script's own formats (#{window_id}) are legitimate, so only the lines that
+# carry the hostile name count; with every doubled ## taken out, any # left is
+# live: #(..) and #{..} but also the one-letter #S, which shq does not touch.
+# $1 drops the editor command's line, which must carry the real name.
+hxlive() { grep -F 'touch' "$HXL" | grep -v "^$HXED " | sed 's/##//g' | grep -c '#'; }
+hxseen() { grep -c -F 'touch' "$HXL"; }
+"$TMUX_REAL" -L "$HX" set -g @cockpit_editor "$HXED" >/dev/null 2>&1
+hxgo 1
+is "terminal editor: the name and directory arguments carry no live # format" "0" "$(hxlive)"
+is "and the hostile name did reach tmux (the check saw it)" "yes" "$([ "$(hxseen)" -ge 2 ] && echo yes || echo no)"
+is "the editor was handed the real name, not a doubled one" "$HW/$HN" "$(cat "$HXA")"
+HXW=$("$TMUX_REAL" -L "$HX" list-windows -t t -F '#{window_index}' | tail -n 1)
+is "the window is named for the file, literally" "$HN" \
+   "$("$TMUX_REAL" -L "$HX" display-message -p -t "t:$HXW" '#{window_name}')"
+is "and it started in the folder, literally" "$HW" \
+   "$("$TMUX_REAL" -L "$HX" display-message -p -t "t:$HXW" '#{pane_start_path}')"
+"$TMUX_REAL" -L "$HX" set -gu @cockpit_editor >/dev/null 2>&1
+hxgo 2
+is "code(1): the run-shell command and the status message carry no live # format" "0" "$(hxlive)"
+is "and the status message spells every # of the name as ##" "1" \
+   "$(grep -c -F "cockpit: opened ${HW//#/##}/a##(touch\${IFS}F)##{pid}##S.txt" "$HXL")"
+"$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
