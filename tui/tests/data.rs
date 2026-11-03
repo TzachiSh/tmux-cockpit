@@ -712,3 +712,26 @@ fn the_log_rotates_past_its_cap() {
     assert!(now.lines().count() == 2 && now.ends_with(" again\n"), "{now:?}");
     assert_eq!(std::fs::metadata(&rot).unwrap().len(), full.len() as u64);
 }
+
+/// #294: `claude agents --json` runs on the fetch thread, so one that hangs
+/// (here a script whose child holds stdout open) is killed at the deadline
+/// and the read goes on without it, instead of never returning.
+#[test]
+fn a_hanging_claude_agents_does_not_hang_the_read() {
+    let r = Rig::new("agents-hang");
+    let d = r.dir.display();
+    write_exec(
+        &r.dir.join("bin/claude"),
+        &format!("#!/bin/sh\necho $$ > {d}/claude.pid\nsleep 60\nprintf '[]'\n"),
+    );
+    r.ps("400 1 claude\n");
+    r.rows(&[row("%1", "claude", "running", "-", "400")]);
+    let t = std::time::Instant::now();
+    let ps = list_panes().unwrap();
+    let took = t.elapsed();
+    assert_eq!(ids(&ps), ["%1"]);
+    assert_eq!(get(&ps, "%1").sess, "");
+    assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
+    // the fake ran, so the deadline was what ended it
+    assert!(r.dir.join("claude.pid").exists());
+}

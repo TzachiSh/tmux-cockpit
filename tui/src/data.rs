@@ -460,12 +460,12 @@ fn agent_sessions_cached() -> HashMap<String, String> {
 
 /// `claude agents --json` maps a pid to a session id, for panes whose
 /// @cockpit_session the hooks never set.
+///
+/// #294: on the fetch thread, so a `claude` that hangs must not hang the board.
+/// It gets `AGENTS_DEADLINE` (agent-poll's `timeout 5`), then its process
+/// group is killed and the answer is empty.
 fn agent_sessions() -> HashMap<String, String> {
-    let out = Command::new("claude")
-        .args(["agents", "--json"])
-        .output()
-        .map(|o| o.stdout)
-        .unwrap_or_default();
+    let out = claude_agents_json(AGENTS_DEADLINE).unwrap_or_default();
     let v: Value = serde_json::from_slice(&out).unwrap_or(Value::Null);
     v.as_array()
         .map(|a| {
@@ -474,6 +474,45 @@ fn agent_sessions() -> HashMap<String, String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+const AGENTS_DEADLINE: Duration = Duration::from_secs(5);
+
+/// `claude agents --json`'s stdout, or `None` on a spawn failure or when it
+/// has not closed by the deadline.
+fn claude_agents_json(deadline: Duration) -> Option<Vec<u8>> {
+    use std::os::unix::process::CommandExt;
+    use std::process::Stdio;
+    let mut child = Command::new("claude")
+        .args(["agents", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        // its own group, so the kill takes anything it forked that holds stdout
+        .process_group(0)
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stdout.read_to_end(&mut b);
+        let _ = tx.send(b);
+    });
+    let end = Instant::now() + deadline;
+    let out = rx.recv_timeout(deadline).ok();
+    // stdout closed is not exited: wait out what is left of the deadline
+    while out.is_some() && Instant::now() < end {
+        if !matches!(child.try_wait(), Ok(None)) {
+            return out;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Not reaped yet, so the pid and its group are still this child's.
+    // SAFETY: killpg takes a plain integer and touches no memory.
+    unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+    let _ = child.wait();
+    out
 }
 
 /// One `ps` for the whole fleet, serving both the agent classifier and the
