@@ -9,4 +9,4 @@
 "│                                      │"
 "│                                      │"
 "│                                      │"
-"╰ r retry  ? keys  esc back ───────────╯"
+"╰ r retry  ^Z hide  ? keys  esc back ──╯"

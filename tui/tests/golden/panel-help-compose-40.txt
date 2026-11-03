@@ -1,4 +1,4 @@
-"╭ keys ──────────────────── 1-10 of 14 ╮"
+"╭ keys ──────────────────── 1-10 of 15 ╮"
 "│ ^S F2     write it with Claude       │"
 "│ ^F        fix the spelling           │"
 "│ ^T        insert as typed            │"

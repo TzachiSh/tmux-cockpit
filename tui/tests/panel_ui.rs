@@ -1671,14 +1671,14 @@ fn a_short_help_scrolls() {
     key(&mut a, KeyCode::F(1));
     let f = shown(&mut a, 40, 9);
     assert!(
-        f.contains("1-7 of 14") && f.contains("any other key closes") && !f.contains("close the panel"),
+        f.contains("1-7 of 15") && f.contains("any other key closes") && !f.contains("close the panel"),
         "{f}"
     );
-    for _ in 0..7 {
+    for _ in 0..8 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 9);
-    assert!(f.contains("8-14 of 14") && f.contains("close the panel"), "{f}");
+    assert!(f.contains("9-15 of 15") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
 }
@@ -1693,9 +1693,9 @@ fn an_overscrolled_help_moves_back_at_once() {
         key(&mut a, KeyCode::Down);
         shown(&mut a, 40, 9);
     }
-    assert_eq!(a.help, Some(7), "14 keys in 7 rows: 7 is the last offset");
+    assert_eq!(a.help, Some(8), "15 keys in 7 rows: 8 is the last offset");
     key(&mut a, KeyCode::Up);
-    assert!(shown(&mut a, 40, 9).contains("7-13 of 14"), "the first Up moves");
+    assert!(shown(&mut a, 40, 9).contains("8-14 of 15"), "the first Up moves");
 }
 
 #[test]

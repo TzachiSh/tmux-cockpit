@@ -21,4 +21,4 @@
 "│                                                                                                                      │"
 "│                                                                                                                      │"
 "│                                                                                                                      │"
-"╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  ^N model  F1 keys  esc home ──────────────────────────────────╯"
+"╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  ^N model  ^Z hide  F1 keys  esc home ─────────────────────────╯"

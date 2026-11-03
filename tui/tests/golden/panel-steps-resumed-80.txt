@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ i insert  s send  ↑↓ pick  r retry  ? keys  esc home ────────────────────────╯"
+"╰ i insert  s send  ↑↓ pick  r retry  ^Z hide  ? keys  esc home ───────────────╯"

@@ -16,5 +16,5 @@
 "│                                      │"
 "│ [ write ] [ fix spelling ]           │"
 "│ [ insert as typed ] [ type ]         │"
-"│ [ model ] [ keys ] [ home ]          │"
+"│ [ model ] [ hide ] [ keys ] [ home ] │"
 "╰──────────────────────────────────────╯"

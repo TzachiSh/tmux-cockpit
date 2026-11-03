@@ -783,6 +783,12 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
     if app.tablet && copies {
         b.footer.insert(2.min(b.footer.len()), ("x".into(), "copy".into()));
     }
+    // before the help key, so a narrow footer drops it first; not where the view is
+    // not kept as it is: a call out, a confirm, an armed answer
+    let hides = !matches!(app.view, View::Busy | View::Confirm { .. } | View::Answer { armed: true, .. });
+    if hides && let Some(i) = b.footer.iter().position(|p| p.0 == "?" || p.0 == "F1") {
+        b.footer.insert(i, ("^Z".into(), "hide".into()));
+    }
     b
 }
 
@@ -956,7 +962,15 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             quit,
         ],
     };
-    all.into_iter().filter(|(k, _)| !k.is_empty()).collect()
+    let mut all: Vec<_> = all.into_iter().filter(|(k, _)| !k.is_empty()).collect();
+    let hide = if app.view == View::Busy {
+        s("^Z", "hide, once the call is back")
+    } else {
+        s("^Z", "hide; prefix f on this pane brings it back")
+    };
+    let at = all.iter().position(|(k, _)| k == "? F1" || k == "F1").unwrap_or(all.len());
+    all.insert(at, hide);
+    all
 }
 
 /// The `?` overlay over the whole panel. Returns the key count and rows, for

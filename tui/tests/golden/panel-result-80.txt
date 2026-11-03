@@ -17,4 +17,4 @@
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"
-"╰ i insert  s send  r retry  c edit  ↑↓ scroll  ? keys  esc draft ─────────────╯"
+"╰ i insert  s send  r retry  c edit  ↑↓ scroll  ^Z hide  ? keys  esc draft ────╯"
