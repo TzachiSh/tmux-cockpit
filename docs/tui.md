@@ -81,8 +81,27 @@ Inside the board, the list (the default layout):
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
 | `a` `r` `f` `i` `x` `R` | as in the tiles, on an agent; a header does not take them |
+| `/` | find: open the field and filter as you type (see [Find](#find)) |
 | `v` | the tiles |
-| `?` `^L` `q` `esc` | as in the tiles |
+| `?` `^L` `q` | as in the tiles |
+| `esc` | the first that applies: dismiss a `✕` note, close the info overlay, close the find field (clearing it), clear a kept filter, close the board |
+| `^C` | close the board from anywhere, the find field included |
+
+In the find field every printable key is text, `q`, `?` and the act and
+`EXTRAS` keys included:
+
+| key | does |
+|-----|------|
+| letters, digits, space | type; the list narrows as you type |
+| `↑` `↓` `^N` `^P` | next / previous row |
+| `⇥` `⇧⇥` | next / previous agent |
+| `⌫` | delete the last character |
+| `^U` | clear the text; the field stays |
+| `↵` | keep the filter and close the field |
+| `esc` | clear the filter and close the field |
+| `F1` | the keys |
+| `^L` | refetch and redraw now |
+| `^C` | close the board |
 
 In the tiles (`v`):
 
@@ -105,7 +124,7 @@ In the tiles (`v`):
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
-| `q` `esc` | close the board. With `?` open, any key only closes the help; with a `✕` note up, `esc` only dismisses it |
+| `q` `esc` `^C` | close the board. With `?` open, any key only closes the help; with a `✕` note up, `esc` only dismisses it |
 
 `h`/`l` fold in the list and move a column in the tiles: tree-view convention
 in one, grid convention in the other. `?` lists the keys of the layout on
@@ -116,10 +135,14 @@ reads, so a renamed key cannot go stale in one and not the other.
 frame carries a hint. It lists only keys that work on what is selected, in
 priority order, and drops one whole hint at a time from the right as the width
 shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
-`r review`, `f panel`, `i info`, then `space fold` in the list, then `x kill`
-and `R request`, which the cut drops first. On a list
+`r review`, `f panel`, `i info`, then `space fold` and `/ find` in the list,
+then `x kill` and `R request`, which the cut drops first. On a list
 header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
-`n p sessions`. The footer, the `?` help and the floor card are the panel's
+`n p sessions`, `/ find`. With a kept filter, `esc clear filter` comes before
+`? keys`. In the find field the bar is the field's:
+`type to filter   ↑↓ move   ⌫ edit   ^U clear   ↵ keep   esc clear`, `↑↓ move`
+left out when nothing matches; as it narrows, `type to filter` goes first, then
+`⌫ edit`, `^U clear` and `↑↓ move`, never `↵ keep` or `esc clear`. The footer, the `?` help and the floor card are the panel's
 own, from `chrome`.
 
 **Extra actions.** `EXTRAS` in `board.rs`, the `// #228:` registry, holds the
@@ -157,7 +180,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 |--------|---------|------|
 | `@cockpit_board_key` | `w` | rebinds the board. `off` leaves stock tmux alone |
 | `@cockpit_board_window` | unset | `on` parks the board in a window instead of a popup, mirroring `@cockpit_review_window` |
-| `@cockpit_board_return` | `on` | `off` makes `r`, `f` and `i` one-way: the board closes and stays closed, as before the return trip. Read by `scripts/cockpit-board` after each action |
+| `@cockpit_board_return` | `on` | `off` makes `r` and `f` one-way: the board closes and stays closed, as before the return trip. Read by `scripts/cockpit-board` after each action |
 | `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
 | `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
@@ -298,6 +321,57 @@ renumbered as the list scrolls; a header takes no digit. `[` `]` scroll a
 screenful and the selection only moves to stay on screen. When the list does
 not fit, its frame's title says `N-M of T`, counted in rows.
 
+**Find.** `/` opens a field at the top of the list, above a rule, and the list
+narrows as you type. Find reads each agent's session, window index, window
+name, title, state word (`needs`, `error`, `running`, `done`, `idle`) and its
+message or doing line. Space-separated terms must all match, each anywhere in
+those fields, ignoring case; it is a substring narrowing, with no fuzzy
+ranking. A session with no match hides; one with a match shows unfolded while
+the field is open, and its fold is kept for after. The matches are renumbered
+`1`-`9` as any rows are, and the frame's title says `4 of 13`, the agents that
+match out of all of them:
+
+```
+┌ sessions ─────────────────────────────────────────────────────────────────────────────── 4 of 13 ┐
+│ / test▏                                                                                          │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│  ▾ api ─────────────────────────────────────────────────────────────────────────────── ▲1 ●2 ✓1  │
+│  1 ▲◆ 0 server         Do you want to run npm test?                +42 -7 ⑂feat/rate-limit 4m12s │
+│▎ 2 ●  1 tests          Bash: cargo test --workspace                +42 -7 ⑂feat/rate-limit 1m03s │
+│  ▾ web ──────────────────────────────────────────────────────────────────────────── ▲1 ●1 ✓1 ○1  │
+│  3 ●  0 ui             Bash: pnpm test Board                         +120 -33 ?2 new ⑂main 3m40s◂│
+│  ▾ ml ─────────────────────────────────────────────────────────────────────────────────── ●1 ✓1  │
+│  4 ✓  1 eval             Wrote eval/test_report.md                          +15 -4 ⑂exp-40 2h05m │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+ type to filter   ↑↓ move   ⌫ edit   ^U clear   ↵ keep   esc clear
+```
+
+The selection stays on its agent while it matches; when the filter drops it,
+it moves to the first match. `esc` clears the filter and closes the field, and
+the selection stays on the agent find took it to. `↵` keeps the filter: the
+field closes, the list stays narrowed and the frame's title names it,
+`/ test · 4 of 13`. Kept, the folds apply again, except the group of the agent
+you picked, which unfolds (as a digit's pick does). `/` edits a kept filter,
+and `esc` on the list clears it before it would close the board. The kept
+filter is written to `board.state`, so the next board opens narrowed.
+
+With no match the field stays, and the list says so, what find reads, and the
+way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
+
+```
+│ / terrafrom▏                                                                                     │
+├──────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                  │
+│ no agent matches "terrafrom"                                                                     │
+│                                                                                                  │
+│ find reads the session, name, title, state word and last line.                                   │
+│                                                                                                  │
+│ ⌫ edits   ^U clears   esc clears                                                                 │
+```
+
+The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
+the list for `v` to come back.
+
 The list has no preview: the right-hand preview pane is a later step, so the
 list takes the board's whole width, and it captures no pane.
 
@@ -391,7 +465,10 @@ with `O_NOFOLLOW`, mode 0600, and renamed over it; `COCKPIT_READONLY` skips the
 write. It is read back strictly: no symlink, a regular file of at most 64 KiB,
 the head `cockpit-board-state 1`, then known `key value` lines: `sel %N` at
 most once, then one `fold <session>` line per folded session, each name once,
-with no control character. Anything else is a fresh board and a 5 s note
+with no control character, then at most one `filter <text>` line, the kept
+find filter: at most 200 bytes, more than spaces, no control character. The
+`filter` line is a line kind appended to version 1, so a file without one
+still reads. Anything else is a fresh board and a 5 s note
 `board.state ignored (<why>); starting fresh`. A header selection is saved as
 its group's first agent, and a fold whose tmux session is gone is dropped on the
 next write; a session that is still there keeps its fold even while it has no
@@ -402,11 +479,12 @@ cockpit-board-state 1
 sel %7
 fold infra
 fold web
+filter test
 ```
 
 The design's first frame drawn from `board.state` before the first fetch is
 not built: it would need the fleet's rows in the file, and the file keeps the
-selection and the folds only. The reopened board shows the loading card for its first fetch.
+selection, the folds and the filter only. The reopened board shows the loading card for its first fetch.
 
 ### The help
 
@@ -724,6 +802,34 @@ sends `prefix + f`.
 - Two marked seams for #228 in `board.rs`: `row_extra(&Pane, &Theme) ->
   Vec<Span>`, extra cells on a list row (none today), and `info(&str) ->
   Option<String>`, where `i` opens a view (today `info %N`).
+
+### Contract changes for find (for #61)
+
+- New list key `/` (`Act::Find`) opens the find field; it is in the footer as
+  `/ find` after `space fold` on an agent and after `n p sessions` on a header,
+  and in `?`, which gains an "in the find field" section.
+- `^C` closes the board from anywhere (`action` maps it to `Act::Quit`); the
+  `?` row reads `q esc ^C`.
+- `esc` on the list is a ladder (7.1): a `✕` note, the info overlay, the find
+  field, a kept filter, then the board. `board::{esc_step, EscStep}` hold it.
+- In the field every printable key is text, `q`, `?` and the `EXTRAS` keys
+  included; `esc` and `^C` replace `q`, `F1` replaces `?` (D14).
+  `board::{find_key, FindKey}` map the keys.
+- `board.state` version 1 gains an optional last line, `filter <text>`, read
+  strictly; `board::Saved` gains `filter: Option<String>`.
+- `board::Nav` gains `filter`, `field` and the methods `rows`, `fit`,
+  `filtering`, `open_find`, `clear_find`, `find_act`; `board::{find_match,
+  rows_with, state_word, find_hints}` are new. The open field takes two list
+  rows.
+- The tiles take no filter: `/` is list-only.
+- Goldens: new `board-find-{60,100,180}` and `board-find-none-{60,100}`. The
+  footer gains `/ find` in `board-list-{100,180}`, `board-folded-{100,180}`
+  and `board-extra-120`; the help's new `/` row, the find section and
+  `q esc ^C` move `board-help-{60,100,180}`, and `q esc ^C` moves
+  `board-help-tiles-100`.
+- Not built here: the 100/180 mockups' right pane (step 7), the tablet chips
+  and `[ keep ]` `[ clear ]` (step 8), and the filter in the top line's right
+  end; the list's frame title carries it.
 
 ### Contract changes for the board's extra actions (for #61)
 

@@ -283,7 +283,12 @@ fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
         f.render_widget(note_line(th, n, area.width as usize), area);
         return;
     }
-    let ks = hints(&th.g, v.list.is_some(), focus);
+    let mut ks = hints(&th.g, v.list.is_some(), focus);
+    // a kept filter: esc clears it before it closes anything (7.1)
+    if v.list.is_some_and(|n| n.filtering()) {
+        let at = ks.iter().position(|(k, _)| k == "?").unwrap_or(ks.len());
+        ks.insert(at, ("esc".into(), "clear filter".into()));
+    }
     f.render_widget(crate::chrome::footer(th, ks, area.width as usize, 3), area);
 }
 
@@ -709,6 +714,25 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
             out.extend(EXTRAS.iter().map(|e| (e.key.to_string(), e.help.to_string())));
         }
     }
+    if list {
+        // a text field: these keys are its own, and every printable key is text (D14)
+        out.push((String::new(), String::new()));
+        out.push(head("in the find field (/)"));
+        out.extend(
+            [
+                ("letters", "type, q and every act key included"),
+                ("↑ ↓ ^N ^P", "move"),
+                ("⇥ ⇧⇥", "next / previous agent"),
+                ("⌫", "edit"),
+                ("^U", "clear the text"),
+                ("↵", "keep the filter, close the field"),
+                ("esc", "clear the filter, close the field"),
+                ("F1", "this help"),
+                ("^C", "close the board"),
+            ]
+            .map(|(k, v)| (names(g, k).replace('⌫', g.key_bksp), v.to_string())),
+        );
+    }
     out.push((String::new(), String::new()));
     out.push(head(if list { "on a row" } else { "on a tile" }));
     let mut legend = vec![
@@ -758,6 +782,8 @@ pub enum Act {
     NextSess,
     PrevSess,
     Layout,
+    /// `/`: open the find field (D7)
+    Find,
     /// one of [`EXTRAS`], by its key
     Extra(char),
 }
@@ -995,6 +1021,15 @@ pub const KEYS: &[Key] = &[
         on: On::List,
     },
     Key {
+        keys: "/",
+        desc: "find: filter the list as you type",
+        grp: Grp::Move,
+        acts: &[Act::Find],
+        hint: "find",
+        head: "find",
+        on: On::List,
+    },
+    Key {
         keys: "?",
         desc: "this help",
         grp: Grp::View,
@@ -1022,8 +1057,8 @@ pub const KEYS: &[Key] = &[
         on: On::Both,
     },
     Key {
-        keys: "q esc",
-        desc: "close the board",
+        keys: "q esc ^C",
+        desc: "close the board; esc clears a kept filter first",
         grp: Grp::View,
         acts: &[Act::Quit],
         hint: "close",
@@ -1037,7 +1072,11 @@ pub const KEYS: &[Key] = &[
 pub fn action(k: KeyEvent, list: bool) -> Option<Act> {
     use KeyCode as C;
     if k.modifiers.contains(KeyModifiers::CONTROL) {
-        return matches!(k.code, C::Char('l')).then_some(Act::Refresh);
+        return match k.code {
+            C::Char('l') => Some(Act::Refresh),
+            C::Char('c') => Some(Act::Quit),
+            _ => None,
+        };
     }
     Some(match k.code {
         C::Char('h') | C::Left if list => Act::Fold,
@@ -1047,6 +1086,7 @@ pub fn action(k: KeyEvent, list: bool) -> Option<Act> {
         C::Char('=') if list => Act::UnfoldAll,
         C::Char('n') if list => Act::NextSess,
         C::Char('p') if list => Act::PrevSess,
+        C::Char('/') if list => Act::Find,
         C::Char('h') | C::Left => Act::Left,
         C::Char('l') | C::Right => Act::Right,
         C::Char('k') | C::Up => Act::Up,
@@ -1196,6 +1236,130 @@ pub fn rows(ps: &[Pane], folds: &BTreeSet<String>) -> Vec<Row> {
     out
 }
 
+// ------------------------------------------------ find (D7, D21)
+
+/// The word find reads for a state, the one the legend uses.
+pub fn state_word(s: State) -> &'static str {
+    match s {
+        State::NeedsInput => "needs",
+        State::Error => "error",
+        State::Running => "running",
+        State::Done => "done",
+        State::Unknown => "idle",
+    }
+}
+
+/// D7: every space-separated term is a substring, ignoring case, of one of
+/// the session, the window index, the window name, the title, the state word,
+/// or the message or doing line. An empty filter matches everything.
+pub fn find_match(p: &Pane, filter: &str) -> bool {
+    let fields = [session(p), window(p), &p.name, &p.title, state_word(p.state), &p.msg, &p.doing];
+    // one line per field: a term holds no newline, so it never spans two
+    let hay = fields.join("\n").to_lowercase();
+    filter.to_lowercase().split_whitespace().all(|t| hay.contains(t))
+}
+
+/// The longest filter the field takes; a `filter` line holds it whole.
+const FILTER_MAX: usize = 200;
+
+/// The rows under a filter: only matching agents, and a group with none is
+/// hidden. While the field is open (`open`) every group with a match shows
+/// unfolded, its fold kept for later; a kept filter folds as `rows` does.
+pub fn rows_with(ps: &[Pane], folds: &BTreeSet<String>, filter: &str, open: bool) -> Vec<Row> {
+    if filter.trim().is_empty() {
+        return rows(ps, folds);
+    }
+    let mut out = vec![];
+    for (s, v) in groups(ps) {
+        let hit: Vec<usize> = v.into_iter().filter(|&i| find_match(&ps[i], filter)).collect();
+        if hit.is_empty() {
+            continue;
+        }
+        let shut = !open && folds.contains(s);
+        out.push(Row::Head(s.to_string()));
+        out.extend(hit.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+    }
+    out
+}
+
+/// What a key does in the find field (D7, D14): every printable key is text,
+/// `q` and the registry's keys included; `esc` and `^C` replace `q`, and `F1`
+/// replaces `?`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FindKey {
+    Type(char),
+    /// `⌫`
+    Back,
+    /// `^U`
+    Clear,
+    /// `↑↓ ^N ^P ⇥ ⇧⇥`, as the list's own move
+    Move(Act),
+    /// `↵`: close the field, keep the filter
+    Keep,
+    /// `esc`: close the field, clear the filter
+    Cancel,
+    /// `^C`: close the board
+    Close,
+    /// `F1`
+    Help,
+    /// `^L`
+    Refresh,
+}
+
+pub fn find_key(k: KeyEvent) -> Option<FindKey> {
+    use KeyCode as C;
+    if k.modifiers.contains(KeyModifiers::CONTROL) {
+        return match k.code {
+            C::Char('c') => Some(FindKey::Close),
+            C::Char('u') => Some(FindKey::Clear),
+            C::Char('n') => Some(FindKey::Move(Act::Down)),
+            C::Char('p') => Some(FindKey::Move(Act::Up)),
+            C::Char('l') => Some(FindKey::Refresh),
+            _ => None,
+        };
+    }
+    if k.modifiers.contains(KeyModifiers::ALT) {
+        return None;
+    }
+    Some(match k.code {
+        C::Esc => FindKey::Cancel,
+        C::Enter => FindKey::Keep,
+        C::Backspace => FindKey::Back,
+        C::Up => FindKey::Move(Act::Up),
+        C::Down => FindKey::Move(Act::Down),
+        C::Tab => FindKey::Move(Act::Next),
+        C::BackTab => FindKey::Move(Act::Prev),
+        C::F(1) => FindKey::Help,
+        C::Char(c) if !c.is_control() => FindKey::Type(c),
+        _ => return None,
+    })
+}
+
+/// The step `esc` takes, first that applies (7.1): a failure note, the
+/// overlay, the find field, the kept filter, the board.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EscStep {
+    Note,
+    Overlay,
+    Field,
+    Filter,
+    Board,
+}
+
+pub fn esc_step(sticky_note: bool, overlay: bool, field: bool, filter: bool) -> EscStep {
+    if sticky_note {
+        EscStep::Note
+    } else if overlay {
+        EscStep::Overlay
+    } else if field {
+        EscStep::Field
+    } else if filter {
+        EscStep::Filter
+    } else {
+        EscStep::Board
+    }
+}
+
 /// The selection is an identity, never an index (D5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Sel {
@@ -1218,6 +1382,10 @@ pub struct Nav {
     at: (String, usize),
     /// no row yet: the first placement scrolls only as far as it must
     placed: bool,
+    /// the find filter, typed or kept (D7); empty is no filter
+    pub filter: String,
+    /// the find field is open and has the keys
+    pub field: bool,
 }
 
 /// The list rows a screen of `area` shows: the header, the frame's two
@@ -1244,7 +1412,65 @@ impl Nav {
             row: 0,
             at: (String::new(), 0),
             placed: false,
+            filter: String::new(),
+            field: false,
         }
+    }
+
+    /// The rows on screen: the folds, under the filter when there is one.
+    pub fn rows(&self, ps: &[Pane]) -> Vec<Row> {
+        rows_with(ps, &self.folds, &self.filter, self.field)
+    }
+
+    /// The rows the list shows in `room`: the open field and its rule take two.
+    pub fn fit(&self, room: usize) -> usize {
+        room.saturating_sub(if self.field { 2 } else { 0 })
+    }
+
+    /// A filter is set, typed or kept.
+    pub fn filtering(&self) -> bool {
+        !self.filter.trim().is_empty()
+    }
+
+    /// `/`: open the field on the filter there is, so a kept one is edited.
+    pub fn open_find(&mut self, ps: &[Pane], room: usize) {
+        self.field = true;
+        self.settle(ps, room);
+    }
+
+    /// `esc` on a kept filter, or the field's `esc`: no filter, no field. The
+    /// selection stays on the agent it was on.
+    pub fn clear_find(&mut self, ps: &[Pane], room: usize) {
+        self.filter.clear();
+        self.field = false;
+        self.settle(ps, room);
+    }
+
+    /// One key in the field. Close, Help and Refresh are the caller's.
+    pub fn find_act(&mut self, k: FindKey, ps: &[Pane], room: usize) {
+        match k {
+            FindKey::Type(c) if self.filter.len() + c.len_utf8() <= FILTER_MAX => self.filter.push(c),
+            FindKey::Back => {
+                self.filter.pop();
+            }
+            FindKey::Clear => self.filter.clear(),
+            FindKey::Move(a) => return self.act(a, ps, room),
+            FindKey::Keep => {
+                self.field = false;
+                if !self.filtering() {
+                    self.filter.clear();
+                }
+                // a pick from find that lands in a folded group unfolds it (D4)
+                if let Sel::Pane(id) = &self.sel
+                    && let Some(p) = ps.iter().find(|p| p.id == *id)
+                {
+                    self.folds.remove(session(p));
+                }
+            }
+            FindKey::Cancel => return self.clear_find(ps, room),
+            _ => return,
+        }
+        self.settle(ps, room);
     }
 
     /// The selection's row: by identity; a pane a fold hides, its header; a
@@ -1252,11 +1478,17 @@ impl Nav {
     /// session's header; else the first row (D5). Pure, so render can call it.
     pub fn find(&self, rows: &[Row], ps: &[Pane]) -> usize {
         let head = |s: &str| rows.iter().position(|r| matches!(r, Row::Head(h) if h == s));
+        let first = || rows.iter().position(|r| matches!(r, Row::Agent(_)));
         let hit = match &self.sel {
             Sel::Pane(id) => rows
                 .iter()
                 .position(|r| matches!(r, Row::Agent(i) if ps[*i].id == *id))
-                .or_else(|| ps.iter().find(|p| p.id == *id).and_then(|p| head(session(p)))),
+                .or_else(|| match ps.iter().find(|p| p.id == *id) {
+                    // the filter hid it: the first match, as the list narrows (D7)
+                    Some(p) if !find_match(p, &self.filter) => first().or_else(|| head(session(p))),
+                    Some(p) => head(session(p)),
+                    None => None,
+                }),
             Sel::Head(s) => head(s),
         };
         hit.or_else(|| {
@@ -1300,7 +1532,12 @@ impl Nav {
     /// fold: by identity, on the screen row it had where that fits, so the
     /// viewport moves and the cursor does not (D5).
     pub fn settle(&mut self, ps: &[Pane], room: usize) {
-        let rows = rows(ps, &self.folds);
+        self.settle_in(ps, self.fit(room));
+    }
+
+    /// `settle` with `room` already net of the field.
+    fn settle_in(&mut self, ps: &[Pane], room: usize) {
+        let rows = self.rows(ps);
         let r = self.find(&rows, ps);
         if self.placed {
             let screen = self.row.saturating_sub(self.top);
@@ -1321,7 +1558,7 @@ impl Nav {
 
     /// What has the keys, for the footer.
     pub fn focus(&self, ps: &[Pane]) -> Focus {
-        let rows = rows(ps, &self.folds);
+        let rows = self.rows(ps);
         match rows.get(self.find(&rows, ps)) {
             Some(Row::Head(s)) => Focus::Head(self.folds.contains(s)),
             Some(Row::Agent(i)) => Focus::Agent(ps[*i].state == State::NeedsInput),
@@ -1331,7 +1568,7 @@ impl Nav {
 
     /// The selected agent; `None` on a header.
     pub fn pane<'p>(&self, ps: &'p [Pane]) -> Option<&'p Pane> {
-        let rows = rows(ps, &self.folds);
+        let rows = self.rows(ps);
         match rows.get(self.find(&rows, ps)) {
             Some(Row::Agent(i)) => Some(&ps[*i]),
             _ => None,
@@ -1340,9 +1577,9 @@ impl Nav {
 
     /// One key on the list, `room` rows on screen (D4, D6).
     pub fn act(&mut self, a: Act, ps: &[Pane], room: usize) {
-        let rows = rows(ps, &self.folds);
+        let rows = self.rows(ps);
         let Some(last) = rows.len().checked_sub(1) else { return };
-        let room = room.max(1);
+        let room = self.fit(room).max(1);
         // the viewport render draws, which a resize may have moved
         let r = self.find(&rows, ps);
         self.row = r;
@@ -1395,7 +1632,7 @@ impl Nav {
             && let Some((s, _)) = self.group_of(&rows, ps, t)
             && self.folds.remove(&s)
         {
-            return self.settle(ps, room);
+            return self.settle_in(ps, room);
         }
         self.clamp(rows.len(), room);
     }
@@ -1431,7 +1668,7 @@ impl Nav {
             _ => self.folds.clear(),
         }
         // a selected agent the fold hid gives way to its header (find's rule)
-        self.settle(ps, room);
+        self.settle_in(ps, room);
     }
 }
 
@@ -1603,12 +1840,13 @@ fn head_row(name: &str, members: &[usize], ps: &[Pane], folded: bool, sel: bool,
 
 fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     let th = v.th;
+    let g = &th.g;
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let gs = groups(v.panes);
     header(f, head, v, &grid(area, 0), v.panes.len(), Some(gs.len()));
 
-    let rows = rows(v.panes, &nav.folds);
-    let room = list_room(area).max(1);
+    let rows = nav.rows(v.panes);
+    let room = nav.fit(list_room(area)).max(1);
     let r = nav.find(&rows, v.panes);
     // the same clamp Nav applies; a resize can land between a key and a draw
     let mut top = nav.top.min(rows.len().saturating_sub(room));
@@ -1619,48 +1857,177 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     }
     // a confirm holds the rows still, and the title says so (D18)
     let title = if v.confirm.is_some() {
-        format!(" sessions {} held ", th.g.dot)
+        format!(" sessions {} held ", g.dot)
     } else {
         " sessions ".to_string()
     };
     let mut block = Block::bordered()
-        .border_set(th.g.plain)
+        .border_set(g.plain)
         .border_style(Style::new().fg(th.faint))
         .title(Line::from(Span::styled(title, Style::new().fg(th.label))));
     let last = rows.len().min(top + room);
-    if top > 0 || last < rows.len() {
-        // where the list is, when it does not fit (D19, P10)
-        let n = format!(" {}-{last} of {} ", top + 1, rows.len());
-        block = block.title(Line::from(Span::styled(n, Style::new().fg(th.value))).right_aligned());
+    // what the filter keeps, then where the list is when it does not fit (D19, P10)
+    let mut right = vec![];
+    if nav.field || nav.filtering() {
+        let hits = v.panes.iter().filter(|p| find_match(p, &nav.filter)).count();
+        let of = format!("{hits} of {}", v.panes.len());
+        right.push(if nav.field {
+            of
+        } else {
+            format!("/ {} {} {of}", g.trunc(nav.filter.trim(), 24), g.dot)
+        });
     }
-    let inner = block.inner(body);
+    if top > 0 || last < rows.len() {
+        right.push(format!("{}-{last} of {}", top + 1, rows.len()));
+    }
+    if !right.is_empty() {
+        let t = format!(" {} ", right.join(&format!(" {} ", g.dot)));
+        block = block.title(Line::from(Span::styled(t, Style::new().fg(th.value))).right_aligned());
+    }
+    let mut inner = block.inner(body);
     f.render_widget(block, body);
 
-    let w = inner.width as usize;
-    let ww = win_w(v.panes);
-    let mut digit = 0;
-    let lines: Vec<Line> = rows[top..last]
-        .iter()
-        .enumerate()
-        .map(|(k, row)| {
-            let sel = top + k == r;
-            match row {
-                Row::Head(s) => {
-                    let members = gs.iter().find(|(n, _)| n == s).map(|(_, m)| m.as_slice()).unwrap_or(&[]);
-                    head_row(s, members, v.panes, nav.folds.contains(s), sel, w, th)
+    if nav.field && inner.height >= 2 {
+        let [field, rule, rest] = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+        f.render_widget(find_field(th, &nav.filter, field.width as usize), field);
+        // the rule meets the frame: `├───┤`, over the borders
+        let (l, r) = if g.ascii { ("+", "+") } else { ("├", "┤") };
+        let line = format!("{l}{}{r}", g.plain.horizontal_top.repeat(body.width.saturating_sub(2) as usize));
+        let at = Rect {
+            x: body.x,
+            width: body.width,
+            ..rule
+        };
+        f.render_widget(Line::from(Span::styled(line, Style::new().fg(th.faint))), at);
+        inner = rest;
+    }
+
+    if rows.is_empty() && nav.filtering() {
+        f.render_widget(Paragraph::new(no_match(th, nav, inner.width as usize)), inner);
+    } else {
+        let w = inner.width as usize;
+        let ww = win_w(v.panes);
+        let mut digit = 0;
+        let lines: Vec<Line> = rows[top..last]
+            .iter()
+            .enumerate()
+            .map(|(k, row)| {
+                let sel = top + k == r;
+                match row {
+                    Row::Head(s) => {
+                        let members = gs.iter().find(|(n, _)| n == s).map(|(_, m)| m.as_slice()).unwrap_or(&[]);
+                        // folded only where the fold applies: the open field shows every group
+                        let shut = nav.folds.contains(s) && !(nav.field && nav.filtering());
+                        head_row(s, members, v.panes, shut, sel, w, th)
+                    }
+                    Row::Agent(i) => {
+                        // the first nine agent rows on screen carry a digit (D6)
+                        digit += 1;
+                        let num = (digit <= 9).then_some(digit);
+                        let p = &v.panes[*i];
+                        agent_row(p, num, sel, p.id == v.active, ww, w, th)
+                    }
                 }
-                Row::Agent(i) => {
-                    // the first nine agent rows on screen carry a digit (D6)
-                    digit += 1;
-                    let num = (digit <= 9).then_some(digit);
-                    let p = &v.panes[*i];
-                    agent_row(p, num, sel, p.id == v.active, ww, w, th)
-                }
-            }
-        })
-        .collect();
-    f.render_widget(Paragraph::new(lines), inner);
+            })
+            .collect();
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+    if nav.field && v.confirm.is_none() {
+        // the field has the keys, so its keys are the bar (D19), under any note
+        if let Some(n) = v.note {
+            f.render_widget(note_line(th, n, foot.width as usize), foot);
+        } else {
+            f.render_widget(find_footer(th, !rows.is_empty(), foot.width as usize), foot);
+        }
+        return;
+    }
+    if rows.is_empty() && nav.filtering() && v.confirm.is_none() && v.note.is_none() {
+        let ks = [("/", "edit"), ("esc", "clear"), ("?", "keys"), ("q", "close")];
+        let ks = ks.map(|(k, v)| (k.to_string(), v.to_string())).to_vec();
+        f.render_widget(crate::chrome::footer(th, ks, foot.width as usize, 3), foot);
+        return;
+    }
     footer(f, foot, v, nav.focus(v.panes));
+}
+
+/// The field's line: ` / text▏`. A filter wider than the line shows its end,
+/// where the typing is.
+fn find_field(th: &Theme, filter: &str, w: usize) -> Line<'static> {
+    let g = &th.g;
+    let room = w.saturating_sub(3 + g.cursor.width());
+    let mut shown: Vec<char> = vec![];
+    let mut used = 0;
+    for c in filter.chars().rev() {
+        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + cw > room {
+            break;
+        }
+        used += cw;
+        shown.push(c);
+    }
+    let shown: String = shown.into_iter().rev().collect();
+    Line::from(vec![
+        Span::styled(" / ", Style::new().fg(th.accent)),
+        Span::styled(shown, Style::new().fg(th.value)),
+        Span::styled(g.cursor, Style::new().fg(th.accent)),
+    ])
+}
+
+/// D21: the field stays, and the list says what find reads and the way out.
+fn no_match(th: &Theme, nav: &Nav, w: usize) -> Vec<Line<'static>> {
+    let g = &th.g;
+    let tw = w.saturating_sub(2);
+    let say = |t: &str| Line::from(Span::styled(format!(" {t}"), Style::new().fg(th.value)));
+    let mut out = vec![Line::default()];
+    out.push(say(&g.trunc(&format!("no agent matches \"{}\"", nav.filter.trim()), tw)));
+    out.push(Line::default());
+    out.extend(
+        wrap("find reads the session, name, title, state word and last line.", tw)
+            .iter()
+            .map(|l| say(l)),
+    );
+    out.push(Line::default());
+    let keys: &[(&str, &str)] = if nav.field {
+        &[(g.key_bksp, "edits"), ("^U", "clears"), ("esc", "clears")]
+    } else {
+        &[("/", "edits"), ("esc", "clears")]
+    };
+    let mut spans = vec![Span::raw(" ")];
+    for (i, (k, v)) in keys.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(k.to_string(), Style::new().fg(th.accent)));
+        spans.push(Span::styled(format!(" {v} "), Style::new().fg(th.value)));
+    }
+    out.push(Line::from(spans));
+    out
+}
+
+/// The field's key bar (D19). `move` only with a row to move to (D21). The
+/// cut takes the least needed first, never `↵ keep` or `esc clear`.
+pub fn find_hints(g: &Glyphs, any: bool, w: usize) -> Vec<(String, String)> {
+    let mut ks: Vec<(String, String)> = vec![("type".into(), "to filter".into())];
+    if any {
+        ks.push((g.key_updown.into(), "move".into()));
+    }
+    ks.extend([
+        (g.key_bksp.to_string(), "edit".to_string()),
+        ("^U".into(), "clear".into()),
+        (g.key_enter.into(), "keep".into()),
+        ("esc".into(), "clear".into()),
+    ]);
+    for drop in ["type", g.key_bksp, "^U", g.key_updown] {
+        if crate::chrome::fit(ks.clone(), w, 3).len() == ks.len() {
+            break;
+        }
+        ks.retain(|(k, _)| k != drop);
+    }
+    ks
+}
+
+fn find_footer(th: &Theme, any: bool, w: usize) -> Line<'static> {
+    crate::chrome::footer(th, find_hints(&th.g, any, w), w, 3)
 }
 
 // ------------------------------------------------ the return trip (D9, D20)
@@ -1756,11 +2123,13 @@ pub const STATE_MAX: u64 = 64 * 1024;
 pub const NOTE_MAX: u64 = 4 * 1024;
 
 /// What `board.state` keeps: the selection, then one `fold <session>` line per
-/// folded session. Step 4 appends its `filter` line to the same version.
+/// folded session, then the kept find filter (D7), a line kind appended to
+/// version 1, so an older file still reads.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Saved {
     pub sel: Option<String>,
     pub folds: BTreeSet<String>,
+    pub filter: Option<String>,
 }
 
 /// `None` with no usable HOME: a relative path would land in the cwd.
@@ -1777,7 +2146,16 @@ pub fn state_text(s: &Saved) -> String {
     for f in &s.folds {
         b.push_str(&format!("fold {f}\n"));
     }
+    if let Some(t) = &s.filter {
+        b.push_str(&format!("filter {t}\n"));
+    }
     b
+}
+
+/// A kept filter as its line holds it: one line, no control character, as
+/// long as the field takes, and more than spaces.
+fn filter_text(s: &str) -> bool {
+    !s.trim().is_empty() && s.len() <= FILTER_MAX && !s.chars().any(char::is_control)
 }
 
 /// A session name as a `fold` line holds it: one line, no control character.
@@ -1795,8 +2173,9 @@ pub fn parse_state(body: &str) -> Result<Saved, String> {
     let mut s = Saved::default();
     for l in lines {
         match l.split_once(' ') {
-            Some(("sel", p)) if s.sel.is_none() && s.folds.is_empty() && is_pane_id(p) => s.sel = Some(p.to_string()),
-            Some(("fold", n)) if fold_name(n) && s.folds.insert(n.to_string()) => {}
+            Some(("sel", p)) if s.sel.is_none() && s.folds.is_empty() && s.filter.is_none() && is_pane_id(p) => s.sel = Some(p.to_string()),
+            Some(("fold", n)) if s.filter.is_none() && fold_name(n) && s.folds.insert(n.to_string()) => {}
+            Some(("filter", t)) if s.filter.is_none() && filter_text(t) => s.filter = Some(t.to_string()),
             _ => return Err(format!("a bad line [{}]", l.chars().take(40).collect::<String>())),
         }
     }
@@ -1891,7 +2270,8 @@ fn sel_id(ps: &[Pane], nav: &Nav) -> String {
     let lo = list_order(ps);
     let first = match &nav.sel {
         Sel::Head(s) => lo.iter().find(|&&i| session(&ps[i]) == s),
-        Sel::Pane(_) => None,
+        // a filter that matches nothing shows no row: the pane is still the selection
+        Sel::Pane(id) => lo.iter().find(|&&i| ps[i].id == *id),
     };
     ps[*first.unwrap_or(&lo[0])].id.clone()
 }
@@ -2236,6 +2616,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
     let mut want = Some(o.select.clone().or(saved.sel));
     // the list is the default layout; `v` swaps to the tiles (D2)
     let (mut list, mut nav) = (true, Nav::new(Sel::Head(String::new()), saved.folds));
+    // a kept filter comes back kept: the list narrowed, the field closed
+    nav.filter = saved.filter.unwrap_or_default();
     let push = Push::start();
     // no text box to paste into: the board keeps the input it always had
     let mut term = match crate::backend::init(false, false) {
@@ -2435,11 +2817,9 @@ pub fn run(o: &Opts) -> Option<Exit> {
         if too_small(here) {
             help = None;
         }
-        if let Some(o) = &mut overlay {
-            if let crate::info::Out::Close = crate::info::key(o, &th, k.code, here) {
-                overlay = None;
-            }
-            continue;
+        // ^C closes the board from anywhere, the find field included (D22)
+        if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
+            break;
         }
         if let Some(t) = help {
             // a help screen you have to learn a key to leave is a joke: any
@@ -2473,6 +2853,30 @@ pub fn run(o: &Opts) -> Option<Exit> {
             }
             continue;
         }
+        // the esc ladder (7.1); under the floor the card's esc closes
+        if k.code == KeyCode::Esc && k.modifiers.is_empty() && !too_small(here) {
+            let sticky = note.as_ref().is_some_and(|n| n.ttl.is_none());
+            match esc_step(sticky, overlay.is_some(), list && nav.field, list && nav.filtering()) {
+                EscStep::Note => note = None,
+                // the overlay's own help takes its esc first
+                EscStep::Overlay => {
+                    if let Some(o) = &mut overlay
+                        && let crate::info::Out::Close = crate::info::key(o, &th, k.code, here)
+                    {
+                        overlay = None;
+                    }
+                }
+                EscStep::Field | EscStep::Filter => nav.clear_find(&panes, list_room(here)),
+                EscStep::Board => break,
+            }
+            continue;
+        }
+        if let Some(o) = &mut overlay {
+            if let crate::info::Out::Close = crate::info::key(o, &th, k.code, here) {
+                overlay = None;
+            }
+            continue;
+        }
         if !too_small(here)
             && let Some(n) = &note
         {
@@ -2483,6 +2887,17 @@ pub fn run(o: &Opts) -> Option<Exit> {
             if !run {
                 continue;
             }
+        }
+        // the field has the keys: every printable key is text, q and x included (D14)
+        if list && nav.field && !too_small(here) && !panes.is_empty() {
+            match find_key(k) {
+                Some(FindKey::Close) => break,
+                Some(FindKey::Help) => help = Some(0),
+                Some(FindKey::Refresh) => ask(here, sel, top, list),
+                Some(fk) => nav.find_act(fk, &panes, list_room(here)),
+                None => {}
+            }
+            continue;
         }
         let Some(a) = action(k, list) else { continue };
         // under the floor or with no tiles nobody can see what a key would do
@@ -2505,6 +2920,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             (Act::Quit, _) => break,
             (Act::Help, _) => help = Some(0),
             (Act::Refresh, _) => ask(here, sel, top, list),
+            (Act::Find, _) => nav.open_find(&panes, room),
             (Act::Layout, _) => {
                 // the selection crosses over by identity; a header gives its first agent
                 if list {
@@ -2585,7 +3001,15 @@ pub fn run(o: &Opts) -> Option<Exit> {
             panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone()
         };
         let folds = kept_folds(&nav.folds, &sessions);
-        if let Err(e) = write_state(p, &Saved { sel: Some(id), folds }) {
+        let filter = nav.filtering().then(|| nav.filter.clone());
+        if let Err(e) = write_state(
+            p,
+            &Saved {
+                sel: Some(id),
+                folds,
+                filter,
+            },
+        ) {
             eprintln!("cockpit-tui: cannot write {}: {e}", p.display());
         }
     }

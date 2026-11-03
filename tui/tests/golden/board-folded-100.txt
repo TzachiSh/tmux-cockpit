@@ -27,4 +27,4 @@
 "│                                                                                                  │"
 "│                                                                                                  │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" space unfold   l open   - fold all   = open all   n p sessions   ? keys   q close                  "
+" space unfold   l open   - fold all   = open all   n p sessions   / find   ? keys   q close         "
