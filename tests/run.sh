@@ -13091,19 +13091,54 @@ is "and the base is the merge-base with origin/develop, not main" \
 rm -rf "$ROH"
 
 echo "== git.sh refusal is shown by tmux-review (#330) =="
-GD=$(mktmpd); ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
+# Every tmux call goes through a shim onto a private socket: never the user's server.
+if need_tmux "git.sh refusal in tmux-review"; then :; else
+RF="cockpit-rf-$$"; SOCKS="$SOCKS $RF"; GD=$(mktmpd); RFS=$(mktmpd)
+( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
   && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
-git -C "$GD/r" read-tree --empty
-# #330: the callers say why instead of reading as an empty or clean repo.
+( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > y ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RF" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" 'exec -a claude bash' >/dev/null 2>&1
+RFP=$("$TMUX_REAL" -L "$RF" list-panes -t t: -F '#{pane_id}')
+RFSESS="$RFS/tmux-cockpit/review/${RFP#%}-$(git -C "$GD/r" rev-parse --show-toplevel | cksum | cut -d' ' -f1)"
+mkdir -p "$GD/bin"
+printf '#!/bin/sh\ntouch "%s/revdiff-ran"\n' "$GD" > "$GD/bin/revdiff"
+cat > "$GD/bin/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; sh -c "\$a" >/dev/null 2>&1; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac; printf '%s\\n' "\$a" >> "$GD/msgs" ;;
+esac
+exec "$TMUX_REAL" -L "$RF" "\$@"
+SHIMEOF
+chmod +x "$GD/bin/revdiff" "$GD/bin/tmux"
+rf() { env -u TMUX PATH="$GD/bin:$PATH" XDG_STATE_HOME="$RFS" "$@"; }
 RFL="cockpit: refusing this repo: a git filter driver name contains '=' (see #331)"
-mkdir -p "$GD/bin"; printf '#!/bin/sh\ntouch "%s/revdiff-ran"\n' "$GD" > "$GD/bin/revdiff"; chmod +x "$GD/bin/revdiff"
-is "tmux-review --lines names the refusal on stderr, no rows, status 1" "$RFL
-|1|" \
-   "$("$DIR/scripts/tmux-review" --lines "$GD/r" 2>&1 >"$GD/rows"; printf '|%s|%s' "$?" "$(cat "$GD/rows")")"
-is "tmux-review --loop names the refusal and never starts revdiff" "$RFL|" \
-   "$(env -u TMUX PATH="$GD/bin:$PATH" "$DIR/scripts/tmux-review" --loop "$GD/r" "$GD/store" 2>&1 </dev/null | tr '\n' '|')$(ls "$GD/revdiff-ran" 2>/dev/null)"
-is "and the plant never ran" "" "$(ls "$GD/PWNED" 2>/dev/null)"
-rm -rf "$GD"
+# Control: the plant fires when git runs unguarded, so the absences below mean something.
+command git -C "$GD/r" add -A >/dev/null 2>&1
+is "control: unguarded git add fires the plant" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
+command git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
+is "--lines: the refusal on stderr, no rows, status 1" "$RFL
+|1|" "$(rf "$DIR/scripts/tmux-review" --lines "$GD/r" 2>&1 >"$GD/rows"; printf '|%s|%s' "$?" "$(cat "$GD/rows")")"
+mkdir -p "$RFSESS"; : > "$RFSESS/comments.md"
+rf "$DIR/scripts/tmux-review" --loop "$GD/r" "$RFSESS/comments.md" >"$GD/loop.out" 2>&1 </dev/null; rfrc=$?
+is "--loop: the refusal on stderr, status 125" "$RFL|125" "$(tr '\n' '|' < "$GD/loop.out" | sed 's/|$//')|$rfrc"
+is "--loop: revdiff never started" "" "$(ls "$GD/revdiff-ran" 2>/dev/null)"
+rf "$DIR/scripts/tmux-review" --request "$RFP" >"$GD/req.out" 2>"$GD/req.err" </dev/null; rfrc=$?
+is "--request: the refusal on stderr, status 1, nothing on stdout" "$RFL|1|" "$(cat "$GD/req.err")|$rfrc|$(cat "$GD/req.out")"
+is "the plant never ran under any of them" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+# Negatives: a clean-config repo, a non-repo and a missing dir are not refused.
+mkdir "$GD/plain"
+is "git_refused: false for a repo, a non-repo and a missing dir" "no no no" \
+   "$(bash -c '. "$1/git.sh"; for d in "$2" "$3" "$4"; do git_refused "$d" && printf "yes " || printf "no "; done' _ \
+      "$DIR/scripts/lib" "$GD/ok" "$GD/plain" "$GD/missing" | sed 's/ $//')"
+rf "$DIR/scripts/tmux-review" --lines "$GD/ok" >"$GD/ok.rows" 2>/dev/null; rfrc=$?
+is "--lines on a dirty clean repo: rows, status 0" "y|0" "$(head -1 "$GD/ok.rows" | cut -f1)|$rfrc"
+git -C "$GD/ok" checkout -q y; : > "$GD/msgs"
+rf "$DIR/scripts/tmux-review" --loop "$GD/ok" "$RFS/ok-store" >"$GD/ok.out" 2>&1 </dev/null; rfrc=$?
+is "--loop on a clean repo: still 'no uncommitted changes', status 0" "cockpit: no uncommitted changes in $GD/ok|0" "$(head -1 "$GD/msgs")|$rfrc"
+fi
+rm -rf "${GD:-/nonexistent-gd}"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
