@@ -398,7 +398,8 @@ The files give no finish time, so the board keeps its own: it stamps each
 subagent when a read first sees it failed or done. A failure first seen before
 the agent's newest prompt is an earlier turn's: it leaves the badge and the
 tree at the same moment, so the two always agree. A background subagent that
-started last turn and failed this one stays. The newest prompt is a human one;
+started last turn and failed this one stays, while the board stays open: each
+popup is a new process and starts with no memory (#338). The newest prompt is a human one;
 a subagent's `<task-notification>` report-back does not count. Once the prompt
 is out of the transcript's tail the read has none, and the board keeps the
 newest it saw. On the first read of a pane, when the board opens, a subagent
