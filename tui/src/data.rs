@@ -41,16 +41,32 @@ pub fn tmux_set(args: &[&str]) {
     let _ = tmux(args); // best effort: a failed unpublish is not actionable
 }
 
+/// #291: past this, `tui.log` becomes `tui.log.1` (one generation kept).
+pub const LOG_CAP: u64 = 1 << 20;
+
 pub fn log(s: &str) {
-    if let Ok(p) = std::env::var("COCKPIT_LOG")
-        && let Ok(mut f) = OpenOptions::new().append(true).create(true).open(p)
+    let Ok(p) = std::env::var("COCKPIT_LOG") else { return };
+    let open = || OpenOptions::new().append(true).create(true).open(&p);
+    let Ok(mut f) = open() else { return };
+    // One fstat per line, on the fd already open. The inode check keeps two
+    // writers that both see a full log from rotating twice: the second would
+    // move the first one's fresh file over the full `.1`.
+    if let Ok(m) = f.metadata()
+        && m.len() > LOG_CAP
     {
-        let us = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_micros();
-        let _ = writeln!(f, "{us} {s}");
+        use std::os::unix::fs::MetadataExt;
+        let rotated =
+            std::fs::metadata(&p).is_ok_and(|n| n.ino() == m.ino() && n.dev() == m.dev()) && std::fs::rename(&p, format!("{p}.1")).is_ok();
+        if rotated && let Ok(g) = open() {
+            f = g;
+        }
     }
+    let us = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_micros();
+    // one write(2) on an O_APPEND fd: lines from several processes never interleave
+    let _ = f.write_all(format!("{us} {s}\n").as_bytes());
 }
 
 /// Declared in rank order: the derived `Ord` is the fleet sort.

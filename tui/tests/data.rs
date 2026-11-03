@@ -691,3 +691,24 @@ fn the_window_id_is_the_thirteenth_field() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(ps[0].win, "@1");
 }
+
+/// #291: past `LOG_CAP` the log moves to `.1` and the line starts a new one;
+/// under it the line is appended. One generation is kept: `.1` is replaced.
+#[test]
+fn the_log_rotates_past_its_cap() {
+    let r = Rig::new("logrot");
+    let log = r.dir.join("tui.log");
+    let _env = Env::set(&[("COCKPIT_LOG", log.display().to_string())]);
+    let rot = r.dir.join("tui.log.1");
+    std::fs::write(&rot, "older\n").unwrap();
+    let full = "x".repeat(cockpit_tui::data::LOG_CAP as usize + 1);
+    std::fs::write(&log, &full).unwrap();
+    cockpit_tui::data::log("after");
+    assert_eq!(std::fs::read_to_string(&rot).unwrap(), full);
+    let now = std::fs::read_to_string(&log).unwrap();
+    assert!(now.ends_with(" after\n") && now.lines().count() == 1, "{now:?}");
+    cockpit_tui::data::log("again");
+    let now = std::fs::read_to_string(&log).unwrap();
+    assert!(now.lines().count() == 2 && now.ends_with(" again\n"), "{now:?}");
+    assert_eq!(std::fs::metadata(&rot).unwrap().len(), full.len() as u64);
+}

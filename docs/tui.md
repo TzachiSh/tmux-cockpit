@@ -1429,7 +1429,9 @@ or `POLLERR` and exits when it comes; the action file is left unwritten. A
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log`, on by default, and
-the binding appends stderr to it.
+the binding appends stderr to it. Past 1 MiB the binary moves it to `tui.log.1`
+and starts a new one (#291); the board logs a tick only when the fetch took over
+500 ms or the read started or stopped failing.
 
 **The glyphs shift the columns.** `▲ ● ✓ ◆` are East-Asian Ambiguous: a terminal
 with an emoji-preferring fallback draws them two cells wide. The 2-column gutter

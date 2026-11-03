@@ -52,6 +52,8 @@ pub struct View<'a> {
 
 /// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
 const HUNG: Duration = Duration::from_secs(3);
+/// #291: a fetch slower than this is logged; a quick one is not
+const SLOW_TICK: Duration = Duration::from_millis(500);
 
 /// What the key loop knows about its reads. The clock is passed in, so the
 /// stale rules are tested without one.
@@ -2635,6 +2637,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
+    // #291: the read's last outcome, so a tick is logged when it changes
+    let mut last_ok = None::<bool>;
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let (mut action_line, mut expect) = (None, None::<String>);
     let mut confirm: Option<Confirm> = None;
@@ -2721,13 +2725,19 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     dirty = true;
                 }
                 loaded = true;
-                log(&format!(
-                    "board tick {} tiles fetch {:?} apply {:?} redraw={}",
-                    panes.len(),
-                    s.took,
-                    t0.elapsed(),
-                    dirty
-                ));
+                // #291: one line a second filled tui.log; log only a slow fetch
+                // or a read that started or stopped failing
+                if s.took > SLOW_TICK || last_ok != Some(s.ok) {
+                    log(&format!(
+                        "board tick {} tiles fetch {:?} apply {:?} redraw={} ok={}",
+                        panes.len(),
+                        s.took,
+                        t0.elapsed(),
+                        dirty,
+                        s.ok
+                    ));
+                }
+                last_ok = Some(s.ok);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,
