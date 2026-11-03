@@ -11666,13 +11666,15 @@ R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: 
 case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $R") ok "a target running its agent again is not resumed" ;;
     *) bad "a target running its agent again is not resumed" "✕ cockpit: ${SID:0:8} is already running in $R" "$(cat "$RSD/bargv")" ;; esac
 "$TMUX_REAL" -L "$RS" kill-pane -t "$R"
-# an agent command holding the id with no @panestate (no hook ever ran) does not block
+# an agent holding the id with no @panestate still blocks: SessionStart and idle
+# run `agent-state off`, so the copy `o` just opened has none
 RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')
 "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
 R=$(rs_agent "$SID")
-rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
-is "an agent holding the id with no @panestate does not block" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $RL") ok "a live agent holding the id with no @panestate is not resumed twice" ;;
+    *) bad "a live agent holding the id with no @panestate is not resumed twice" "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;; esac
 "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+"$TMUX_REAL" -L "$RS" kill-pane -t "$R" 2>/dev/null
 # the same id live under a command that is no agent (a shell left over) does not block
 RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec sleep 3600')
 "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running

@@ -154,15 +154,17 @@ while :; do
             info=$(tmux display-message -p -t "$target" "#{?pane_id,=#{@cockpit_session}$sep#{pane_current_path},}" 2>/dev/null | head -n 1)
             have=${info%%"$sep"*} dir=${info#*"$sep"}
             # A second copy of a live session: any pane, this one included, holds
-            # the id, carries @panestate and runs an agent (its command in
+            # the id and runs an agent (its command in
             # @cockpit_agents_glob, or a claude renamed to its version). Checked
             # here, at the key, so a stale board cannot skip it. The command only,
             # not the process tree the board reads. It goes last: free-form.
+            # Not @panestate: SessionStart and idle run `agent-state off`, so a
+            # live claude (the one `o` just opened, too) often has none.
             live=
-            fmt="#{pane_id}$sep#{@cockpit_session}$sep#{?#{@panestate},1,0}"
+            fmt="#{pane_id}$sep#{@cockpit_session}"
             fmt+="$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}"
-            [ -z "$want" ] || while IFS="$sep" read -r p s st g cmd; do
-                [ "$s" = "$want" ] && [ "$st" = 1 ] || continue
+            [ -z "$want" ] || while IFS="$sep" read -r p s g cmd; do
+                [ "$s" = "$want" ] || continue
                 if [ "$g" = 1 ] || [[ $cmd =~ ^[0-9]+([._][0-9]+){2,}$ ]]; then live=$p; break; fi
             done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
             if [ -z "$have" ]; then
