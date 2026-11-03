@@ -46,7 +46,7 @@ trap 'rm -rf "$d"' EXIT
 # @cockpit_board_return off: every action is one-way, as before the loop.
 back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]; }
 
-# The board comes back after review, info and panel, on the pane it acted on and
+# The board comes back after review and panel, on the pane it acted on and
 # with the action's last line as its note, until an action or an exit ends it.
 args=()
 while :; do
@@ -95,12 +95,6 @@ while :; do
             ;;
         panel)
             COCKPIT_PANEL_NOTE="$note" "$DIR/scripts/cockpit-panel" -p "$target"
-            ;;
-        info)
-            "$DIR/scripts/tmux-review" -p "$target" --info || printf '✕ cockpit: no info for %s\n' "$target" > "$note"
-            # One key, named: the next screen draws over this one.
-            if back; then printf '\n  any key: back to the board'; else printf '\n  any key closes'; fi
-            read -rsn1 _
             ;;
         deliver)
             tmux "${say[@]}" "cockpit: replying from the board is not wired up yet" 2>/dev/null

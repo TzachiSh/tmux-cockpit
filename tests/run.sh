@@ -8294,22 +8294,19 @@ case "$(wact 'fix %1')" in
 esac
 case "$(tail -1 "$BD/tui.log" 2>/dev/null)" in *'cockpit-board: unknown verb [fix %1]') ok "and logs the unknown verb" ;;
     *) bad "and logs the unknown verb" "cockpit-board: unknown verb [fix %1]" "$(tail -1 "$BD/tui.log" 2>/dev/null)" ;; esac
-is "info %1 runs the info screen and nothing else" "tmux-review -p %1 --info;" "$(wact 'info %1')"
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
     *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;
 esac
 is "only the FIRST line of the action file is ever acted on" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact $'jump %9\nreview %1')"
 
-# The return trip (D9): review, info and panel bring the board back on the pane
+# The return trip (D9): review and panel bring the board back on the pane
 # they acted on; jump, q and the off switch end it.
 bruns() { tr '\n' ';' < "$BD/bargv"; }
 wact 'jump %9' >/dev/null
 is "jump ends the loop: the board ran once" "board;" "$(bruns)"
 wact 'review %1' >/dev/null
 is "review %1 brings the board back with --select %1, and no note" "board;board --select %1;" "$(bruns)"
-wact 'info %1' >/dev/null
-is "so does info %1" "board;board --select %1;" "$(bruns)"
 wact 'panel %1' >/dev/null
 case "$(bruns)" in "board;board --select %1 --note "*"/note;cockpit: sent to %1;") ok "panel %1 comes back with the panel's last line as the note" ;;
     *) bad "panel %1 comes back with the panel's last line as the note" "board;board --select %1 --note .../note;cockpit: sent to %1;" "$(bruns)" ;;
@@ -8637,6 +8634,61 @@ until_cap "$BF" "$BFW" '*▾ beta*' || bad "= unfolds every group" "▾ beta" "$
 bf_quit
 is "and the unfolded board saves no fold line" "cockpit-board-state 1;" "$(bf_state)"
 "$TMUX_REAL" -L "$BF" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: the filter survives a reopen (board.state filter line) =="
+# Step 4 of the board design (D7): / opens a field that filters as you type,
+# every printable key is text there, and a filter kept with enter is written to
+# board.state, so the next board opens narrowed the same way.
+if need_tmux "the board's find"; then :; else
+BN="cockpit-bn-$$"; SOCKS="$SOCKS $BN"; BND=$(mktmpd)
+"$TMUX_REAL" -L "$BN" -f /dev/null new-session -d -s alpha -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BN" new-session -d -s beta 'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta; do
+    bnp=$("$TMUX_REAL" -L "$BN" new-window -d -P -F '#{pane_id}' -t "$s:" 'exec -a claude sleep 3600')
+    "$TMUX_REAL" -L "$BN" set -p -t "$bnp" @panestate running >/dev/null 2>&1
+done
+bn_open() {                   # -> BNW, a board in its own window, its list drawn
+    BNW=$("$TMUX_REAL" -L "$BN" new-window -d -P -F '#{pane_id}' -t alpha: \
+        "env XDG_STATE_HOME=$BND COCKPIT_LOG=$BND/tui.log $COCKPIT_TUI_BIN board")
+    until_cap "$BN" "$BNW" '*2 sessions*'
+}
+bn_cap() { "$TMUX_REAL" -L "$BN" capture-pane -p -t "$BNW"; }
+bn_quit() {                   # q, then wait for the window to go
+    local i
+    "$TMUX_REAL" -L "$BN" send-keys -t "$BNW" q
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$BN" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$BNW" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+bn_state() { tr '\n' ';' < "$BND/tmux-cockpit/board.state" 2>/dev/null | sed 's/sel %[0-9]*;//'; }
+bn_open || bad "the board opens on the list" "2 sessions" "$(bn_cap)"
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" /
+until_cap "$BN" "$BNW" '*type to filter*' || bad "/ opens the find field" "type to filter" "$(bn_cap)"
+# q is text in the field, not close; backspace takes it back out
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" q
+until_cap "$BN" "$BNW" '*/ q▏*' || bad "q types in the find field" "/ q▏" "$(bn_cap)"
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" BSpace
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" -l beta
+until_cap "$BN" "$BNW" '*1 of 2*' || bad "typing narrows the list" "1 of 2" "$(bn_cap)"
+case "$(bn_cap)" in *'▾ alpha'*) bad "a session with no match hides" "no alpha header" "$(bn_cap)" ;;
+    *) ok "a session with no match hides" ;; esac
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" Enter
+until_cap "$BN" "$BNW" '*/ beta · 1 of 2*' || bad "enter keeps the filter, named in the title" "/ beta · 1 of 2" "$(bn_cap)"
+bn_quit || bad "q closes the board once the field is closed" "the window gone" "$(bn_cap)"
+is "board.state keeps the filter after the folds" "cockpit-board-state 1;filter beta;" "$(bn_state)"
+bn_open
+until_cap "$BN" "$BNW" '*/ beta · 1 of 2*' || bad "a reopened board is narrowed the same way" "/ beta · 1 of 2" "$(bn_cap)"
+case "$(bn_cap)" in *'▾ alpha'*|*'▏'*) bad "and opens with the field closed, alpha still hidden" "no alpha, no cursor" "$(bn_cap)" ;;
+    *) ok "and opens with the field closed, alpha still hidden" ;; esac
+# esc clears a kept filter before it closes the board (7.1)
+"$TMUX_REAL" -L "$BN" send-keys -t "$BNW" Escape
+until_cap "$BN" "$BNW" '*▾ alpha*' || bad "esc clears the kept filter and the board stays" "▾ alpha" "$(bn_cap)"
+bn_quit
+is "and the cleared board saves no filter line" "cockpit-board-state 1;" "$(bn_state)"
+"$TMUX_REAL" -L "$BN" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="

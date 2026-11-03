@@ -21,7 +21,7 @@
 "│ ?         this help                                                                              │"
 "│ v         tiles / list                                                                           │"
 "│ ^L        refresh now                                                                            │"
-"│ q esc     close the board                                                                        │"
+"│ q esc ^C  close the board; esc clears a kept filter first                                        │"
 "│                                                                                                  │"
 "│ on a tile                                                                                        │"
 "│ ▲         needs you                                                                              │"

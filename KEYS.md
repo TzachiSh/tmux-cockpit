@@ -18,7 +18,7 @@ layout.
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |
 | `prefix b` | the branch popup (`cockpit-tui branch`) for this pane's repo. |
 | `prefix s` | the sessions screen (`cockpit-tui sessions`, what `tm` shows), with each session's agents previewed. Replaces stock `choose-tree`. |
-| `prefix w` | the board: every agent pane in a list grouped by session, blocked first; `v` shows them as live tiles. `r`, `f` and `i` come back to it (`@cockpit_board_return off` makes them one-way). Needs the `cockpit-tui` binary. |
+| `prefix w` | the board: every agent pane in a list grouped by session, blocked first; `v` shows them as live tiles, `/` filters the list as you type (`↵` keeps the filter, `esc` clears it). `r` and `f` come back to it (`@cockpit_board_return off` makes them one-way); `i` shows the pane's info over it. Needs the `cockpit-tui` binary. |
 | `prefix M` | move this window to another session, or a new one. The client follows. |
 | `prefix R` | reload every config file tmux loaded. |
 

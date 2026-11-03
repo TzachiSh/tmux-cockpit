@@ -27,4 +27,4 @@
 "│                                                                                                  │"
 "│                                                                                                  │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" ↵ jump   a answer   r review   f panel   i info   space fold   x kill   ? keys   q close           "
+" ↵ jump   a answer   r review   f panel   i info   space fold   / find   x kill   ? keys   q close  "

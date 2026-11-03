@@ -6,7 +6,9 @@
 state glyph, what the agent is doing and how long it has been doing it. The
 sessions holding a blocked agent sort first, and a folded session still shows
 its blocked agents. `v` swaps to the tiles, one live `capture-pane` per agent.
-`↵` jumps to the agent you are on and closes the board.
+`↵` jumps to the agent you are on and closes the board. `/` narrows the list
+as you type, over the session, window, title, state word and last line; `↵`
+keeps the filter and `esc` clears it.
 
 See [the board screen](tui.md#the-board) for what it looks like.
 
@@ -18,10 +20,11 @@ the one place to act on them, one agent at a time.
 
 The binary renders and decides; it never acts. It writes one line,
 `<verb> <pane-id>`, and the binding runs the same `tmux-jump` / `tmux-review`
-script the keys already use. After `r` review, `f` panel or `i` info the board
-comes back on the same pane, with the outcome as a note in its footer; a
-failure (`✕`) stays until a key. `@cockpit_board_return off` makes them
-one-way. The last selection and the folds are kept in
+script the keys already use. After `r` review or `f` panel the board comes
+back on the same pane, with the outcome as a note in its footer; a failure
+(`✕`) stays until a key. `i` never leaves it: the pane's info draws over the
+board. `@cockpit_board_return off` makes `r` and `f` one-way. The last
+selection, the folds and a kept filter are kept in
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/board.state`, so the next
 `prefix + w` opens the same way.
 

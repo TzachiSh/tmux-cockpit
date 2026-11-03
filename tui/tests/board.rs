@@ -463,7 +463,7 @@ fn dispatch_matches_help(list: bool) {
     let mut codes: Vec<KeyEvent> = ('a'..='z')
         .chain('A'..='Z')
         .chain('0'..='9')
-        .chain("[]? -=".chars())
+        .chain("[]? -=/".chars())
         .map(|c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE))
         .collect();
     codes.extend(
@@ -482,6 +482,7 @@ fn dispatch_matches_help(list: bool) {
         .map(|c| KeyEvent::new(c, KeyModifiers::NONE)),
     );
     codes.push(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+    codes.push(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
     let bound: HashSet<Act> = codes.iter().filter_map(|k| board::action(*k, list)).map(norm).collect();
 
     assert_eq!(bound, documented, "the dispatch table and the help overlay disagree (list: {list})");
@@ -1729,6 +1730,7 @@ fn the_footer_follows_the_focus() {
             "f panel",
             "i info",
             "space fold",
+            "/ find",
             "x kill",
             "R request",
             "? keys",
@@ -1743,6 +1745,7 @@ fn the_footer_follows_the_focus() {
             "- fold all",
             "= open all",
             "n p sessions",
+            "/ find",
             "? keys",
             "q close"
         ]
@@ -1777,10 +1780,10 @@ fn the_footer_follows_the_focus() {
     assert_eq!(nav.focus(&ps), Focus::Head(true));
 }
 
-/// D17: the selected row is ▎ plus reverse video, its text in fg; that reads
-/// with no colour at all.
+/// D17: the selected row is ▎ plus the `sel` band, its text in fg; under
+/// NO_COLOR the band is reverse video, which reads with no colour at all.
 #[test]
-fn the_selected_row_is_a_bar_and_reverse_video() {
+fn the_selected_row_is_a_bar_and_a_band() {
     for th in [Theme::fixed(), Theme::no_color()] {
         let ps = fleet();
         let nav = nav_on(&ps, Sel::Pane("%6".into()), &[], 26);
@@ -1795,7 +1798,12 @@ fn the_selected_row_is_a_bar_and_reverse_video() {
         assert!(line.contains("auth"), "{line}");
         let k = line.find("Pushed").unwrap();
         let k = line[..k].chars().count() as u16;
-        assert!(b[(k, y)].modifier.contains(Modifier::REVERSED));
+        if th.sel == Color::Reset {
+            assert!(b[(k, y)].modifier.contains(Modifier::REVERSED), "NO_COLOR keeps reverse video");
+        } else {
+            assert!(!b[(k, y)].modifier.contains(Modifier::REVERSED), "the band is a background");
+            assert_eq!(b[(k, y)].bg, th.sel);
+        }
         assert_eq!(b[(k, y)].fg, th.value, "never the dim role");
         assert!(!b[(x, y)].modifier.contains(Modifier::REVERSED), "the bar itself is not reversed");
     }
@@ -1909,6 +1917,7 @@ fn board_state_keeps_the_folds() {
     let s = board::Saved {
         sel: Some("%7".into()),
         folds: folds(&["web", "my session"]),
+        filter: None,
     };
     board::write_state(&p, &s).unwrap();
     assert_eq!(
@@ -1930,7 +1939,8 @@ fn board_state_keeps_the_folds() {
         board::read_state(&p),
         Ok(Some(board::Saved {
             sel: None,
-            folds: folds(&["web"])
+            folds: folds(&["web"]),
+            filter: None,
         })),
         "folds with no selection"
     );
@@ -2244,4 +2254,337 @@ fn no_window_id_refuses_the_kill() {
     assert_eq!(board::refused(board::extra('R').unwrap(), &p), None);
     p.win = "@12".into();
     assert_eq!(board::refused(kill(), &p), None);
+}
+
+/// The list's top line drops whole parts, never a word: the session count
+/// first, then the agent count; the needs and error counts stay longest.
+#[test]
+fn the_top_line_drops_whole_parts_in_priority_order() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    for (w, want) in [
+        (60u16, " board · 13 agents · 4 sessions · 2 needs you · 1 error"),
+        (55, " board · 13 agents · 4 sessions · 2 needs you · 1 error"),
+        (54, " board · 13 agents · 2 needs you · 1 error"),
+        (42, " board · 13 agents · 2 needs you · 1 error"),
+        (41, " board · 2 needs you · 1 error"),
+        (40, " board · 2 needs you · 1 error"),
+    ] {
+        let out = draw(w, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        assert_eq!(rows(&out)[0].trim_end(), want, "at {w}");
+    }
+}
+
+/// A fold is saved while its tmux session exists, agents or not, and dropped
+/// once the session is gone.
+#[test]
+fn a_fold_outlives_its_agents_but_not_its_session() {
+    let ss = folds(&["api", "web", "scratch"]);
+    assert_eq!(
+        board::kept_folds(&folds(&["web", "gone", "scratch"]), &ss),
+        folds(&["scratch", "web"])
+    );
+    assert_eq!(board::kept_folds(&folds(&["web"]), &folds(&[])), folds(&[]));
+}
+
+// ------------------------------------------------------------- find (D7, D21)
+
+fn ctrl(c: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+}
+
+/// The list as text under a filter, the field open or not.
+fn found(nav: &Nav, ps: &[Pane]) -> Vec<String> {
+    nav.rows(ps)
+        .into_iter()
+        .map(|r| match r {
+            Row::Head(s) => format!("[{s}]"),
+            Row::Agent(i) => ps[i].id.clone(),
+        })
+        .collect()
+}
+
+/// Type `s` into an open field, one key at a time, as the board does.
+fn typed(nav: &mut Nav, ps: &[Pane], s: &str) {
+    for c in s.chars() {
+        let k = board::find_key(key(KeyCode::Char(c))).unwrap();
+        assert_eq!(k, board::FindKey::Type(c));
+        nav.find_act(k, ps, 26);
+    }
+}
+
+/// D7: every term must match, each in any field, ignoring case; the state
+/// reads as its word.
+#[test]
+fn find_terms_all_match_over_every_field() {
+    let ps = fleet();
+    let hits = |f: &str| -> Vec<&str> {
+        let mut v: Vec<&str> = ps.iter().filter(|p| board::find_match(p, f)).map(|p| p.id.as_str()).collect();
+        v.sort_by_key(|id| id[1..].parse::<u32>().unwrap());
+        v
+    };
+    assert_eq!(hits("test"), ["%3", "%4", "%8", "%15"], "title, message and doing line");
+    assert_eq!(hits("test api"), ["%3", "%4"], "the session narrows it");
+    assert_eq!(hits("TEST Running"), ["%4", "%8"], "case and the state word");
+    assert_eq!(hits("needs"), ["%3", "%7"]);
+    assert_eq!(hits("error"), ["%11"]);
+    assert_eq!(hits("done"), ["%6", "%9", "%15"]);
+    assert_eq!(hits("idle"), ["%10", "%13"]);
+    assert_eq!(hits("infra 2"), ["%13"], "the window index");
+    assert_eq!(hits("test nothing-here"), Vec::<&str>::new(), "every term, not any");
+    assert_eq!(hits("  ").len(), ps.len(), "no term matches everything");
+    // a term never spans two fields
+    assert_eq!(hits("api\nserver"), ["%3"], "whitespace splits terms, newline included");
+    assert!(hits("0server").is_empty());
+}
+
+/// A group with no match hides; one with a match shows unfolded while the
+/// field is open, and its fold is kept for after.
+#[test]
+fn find_hides_empty_groups_and_opens_folded_ones_for_the_field() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &["api", "ml", "web"], 26);
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "test");
+    assert_eq!(found(&nav, &ps), ["[api]", "%3", "%4", "[web]", "%8", "[ml]", "%15"]);
+    assert_eq!(nav.folds, folds(&["api", "ml", "web"]), "the folds are kept");
+    // kept with ↵, the folds apply again, and the pick's group opens (D4)
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    assert!(!nav.field);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()));
+    assert_eq!(nav.folds, folds(&["ml", "web"]));
+    assert_eq!(found(&nav, &ps), ["[api]", "%3", "%4", "[web]", "[ml]"]);
+    // and clearing it brings every group back, folds as they were
+    nav.clear_find(&ps, 26);
+    assert_eq!(found(&nav, &ps), shown(&ps, &folds(&["ml", "web"])));
+}
+
+/// ↵ with nothing picked (an empty field, or no match) opens no folded group.
+#[test]
+fn find_keep_with_no_pick_opens_no_fold() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &["api", "ml", "web"], 26);
+    nav.open_find(&ps, 26);
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    assert_eq!(nav.folds, folds(&["api", "ml", "web"]), "an empty field picks nothing");
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "zzzz-no-such-agent");
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    assert_eq!(nav.folds, folds(&["api", "ml", "web"]), "no match picks nothing");
+}
+
+/// Narrowing keeps the selection while it matches, else takes the first
+/// match; clearing leaves it on the agent it was on.
+#[test]
+fn find_selection_narrows_and_clears() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%8".into()), &[], 26);
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "te");
+    assert_eq!(nav.sel, Sel::Pane("%8".into()), "ui still matches");
+    typed(&mut nav, &ps, "st api");
+    assert_eq!(nav.sel, Sel::Pane("%3".into()), "ui is gone: the first match");
+    nav.find_act(board::FindKey::Move(Act::Down), &ps, 26);
+    assert_eq!(nav.sel, Sel::Pane("%4".into()), "↓ moves in the field");
+    nav.find_act(board::find_key(ctrl('p')).unwrap(), &ps, 26);
+    assert_eq!(nav.sel, Sel::Pane("%3".into()), "^P moves too");
+    nav.find_act(board::find_key(key(KeyCode::Tab)).unwrap(), &ps, 26);
+    assert_eq!(nav.sel, Sel::Pane("%4".into()), "⇥ is the next agent");
+    nav.find_act(board::find_key(key(KeyCode::Backspace)).unwrap(), &ps, 26);
+    assert_eq!(nav.filter, "test ap");
+    nav.find_act(board::find_key(ctrl('u')).unwrap(), &ps, 26);
+    assert_eq!((nav.filter.as_str(), nav.field), ("", true), "^U clears the text, the field stays");
+    assert_eq!(nav.sel, Sel::Pane("%4".into()), "and the selection stays put");
+    assert_eq!(found(&nav, &ps), shown(&ps, &folds(&[])));
+}
+
+/// D14: in the field every printable key is text: `q`, the act keys and the
+/// registry's keys type, and never act.
+#[test]
+fn in_the_field_q_and_the_registry_keys_type() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 26);
+    nav.open_find(&ps, 26);
+    let mut word = String::from("qarfi?vjk-= /1");
+    word.extend(EXTRAS.iter().map(|e| e.key));
+    typed(&mut nav, &ps, &word);
+    assert_eq!(nav.filter, word);
+    assert!(nav.field, "no key closed the field");
+    // the keys that are not text
+    assert_eq!(board::find_key(ctrl('c')), Some(board::FindKey::Close));
+    assert_eq!(board::find_key(key(KeyCode::Esc)), Some(board::FindKey::Cancel));
+    assert_eq!(board::find_key(key(KeyCode::Enter)), Some(board::FindKey::Keep));
+    assert_eq!(board::find_key(key(KeyCode::F(1))), Some(board::FindKey::Help));
+    assert_eq!(board::find_key(ctrl('n')), Some(board::FindKey::Move(Act::Down)));
+    assert_eq!(board::find_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)), None);
+    // on the list ^C closes the board too, and `/` opens the field
+    assert_eq!(board::action(ctrl('c'), true), Some(Act::Quit));
+    assert_eq!(board::action(key(KeyCode::Char('/')), true), Some(Act::Find));
+}
+
+/// 7.1: esc dismisses a failure note, else closes the overlay, else the
+/// field, else the kept filter, else the board.
+#[test]
+fn the_esc_ladder() {
+    use board::EscStep::*;
+    assert_eq!(board::esc_step(true, true, true, true), Note);
+    assert_eq!(board::esc_step(false, true, true, true), Overlay);
+    assert_eq!(board::esc_step(false, false, true, true), Field);
+    assert_eq!(board::esc_step(false, false, false, true), Filter);
+    assert_eq!(board::esc_step(false, false, false, false), Board);
+    // the field's esc clears the filter and closes the field, in one step
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 26);
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "dns");
+    assert_eq!(nav.sel, Sel::Pane("%12".into()));
+    nav.find_act(board::FindKey::Cancel, &ps, 26);
+    assert_eq!((nav.filter.as_str(), nav.field), ("", false));
+    assert_eq!(nav.sel, Sel::Pane("%12".into()), "the selection stays where find took it");
+}
+
+/// The field and its rule take two rows from the list while it is open.
+#[test]
+fn the_open_field_takes_two_rows() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%15".into()), &[], 10);
+    assert_eq!(nav.fit(10), 10);
+    nav.open_find(&ps, 10);
+    assert_eq!(nav.fit(10), 8);
+    let out = draw(60, 14, |f| board::render(f, f.area(), &list_view(&ps, &th_fixed(), &nav)));
+    assert!(out.contains("eval"), "the selection is still on screen:\n{out}");
+}
+
+fn th_fixed() -> Theme {
+    Theme::fixed()
+}
+
+fn find_view<'a>(ps: &'a [Pane], th: &'a Theme, nav: &'a Nav) -> View<'a> {
+    list_view(ps, th, nav)
+}
+
+/// 6.3: the field, the match count, the narrowed list renumbered, and the
+/// field's own key bar; then no match (D21).
+#[test]
+fn find_goldens() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    for (w, h) in SIZES {
+        let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], h as usize - 4);
+        nav.open_find(&ps, h as usize - 4);
+        typed(&mut nav, &ps, "test");
+        let out = draw(w, h, |f| board::render(f, f.area(), &find_view(&ps, &th, &nav)));
+        golden(&format!("board-find-{w}"), &out);
+        assert!(out.contains(" / test▏") && out.contains(" 4 of 13 "), "{out}");
+        assert!(!out.contains("infra"), "a group with no match hides:\n{out}");
+        let foot = rows(&out)[h as usize - 1];
+        assert!(foot.contains("↵ keep") && foot.contains("esc clear"), "{foot}");
+        if w >= 100 {
+            assert!(
+                foot.starts_with(" type to filter   ↑↓ move   ⌫ edit   ^U clear   ↵ keep   esc clear"),
+                "{foot}"
+            );
+        }
+    }
+    for (w, h) in [(60u16, 24u16), (100, 30)] {
+        let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], h as usize - 4);
+        nav.open_find(&ps, h as usize - 4);
+        typed(&mut nav, &ps, "terrafrom");
+        let out = draw(w, h, |f| board::render(f, f.area(), &find_view(&ps, &th, &nav)));
+        golden(&format!("board-find-none-{w}"), &out);
+        assert!(out.contains("no agent matches \"terrafrom\"") && out.contains(" 0 of 13 "), "{out}");
+        assert!(out.contains("^U clears") && !out.contains("move"), "{out}");
+    }
+}
+
+/// A kept filter shows in the list's title, and esc's hint says it clears it.
+#[test]
+fn a_kept_filter_is_named_in_the_title() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 26);
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "test");
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &find_view(&ps, &th, &nav)));
+    assert!(out.contains(" / test · 4 of 13 ┐"), "{out}");
+    assert!(!out.contains("▏"), "the field is closed:\n{out}");
+    assert!(rows(&out)[29].contains("esc clear filter"), "{out}");
+    // kept with no match: the list says so, and / edits it
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "zz");
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &find_view(&ps, &th, &nav)));
+    assert!(out.contains("no agent matches \"testzz\"") && out.contains("0 of 13"), "{out}");
+    assert!(rows(&out)[29].starts_with(" / edit   esc clear"), "{out}");
+}
+
+/// board.state's `filter` line: appended to version 1, after the folds, read
+/// strictly, and an older file without one still reads.
+#[test]
+fn board_state_keeps_the_filter() {
+    let d = scratch("state-filter");
+    let p = d.join("board.state");
+    let s = board::Saved {
+        sel: Some("%7".into()),
+        folds: folds(&["web"]),
+        filter: Some("test api".into()),
+    };
+    board::write_state(&p, &s).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "cockpit-board-state 1\nsel %7\nfold web\nfilter test api\n"
+    );
+    assert_eq!(board::read_state(&p), Ok(Some(s)));
+    for (body, why) in [
+        ("cockpit-board-state 1\nfilter a\nfilter b\n", "a filter twice"),
+        ("cockpit-board-state 1\nfilter   \n", "a filter of spaces"),
+        ("cockpit-board-state 1\nfilter \n", "an empty filter"),
+        ("cockpit-board-state 1\nfilter a\nfold web\n", "a fold after the filter"),
+        ("cockpit-board-state 1\nfilter a\nsel %1\n", "the selection after the filter"),
+        ("cockpit-board-state 1\nfilter a\tb\n", "a control character"),
+        ("cockpit-board-state 2\nfilter a\n", "another version"),
+    ] {
+        std::fs::write(&p, body).unwrap();
+        assert!(board::read_state(&p).is_err(), "{why}");
+    }
+    std::fs::write(&p, format!("cockpit-board-state 1\nfilter {}\n", "x".repeat(201))).unwrap();
+    assert!(board::read_state(&p).is_err(), "longer than the field takes");
+    std::fs::write(&p, "cockpit-board-state 1\nfilter needs\n").unwrap();
+    assert_eq!(
+        board::read_state(&p),
+        Ok(Some(board::Saved {
+            filter: Some("needs".into()),
+            ..Default::default()
+        })),
+        "a filter alone"
+    );
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The field, its rule and the no-match text never run past the area, in
+/// either glyph tier, however long the filter.
+#[test]
+fn no_find_row_exceeds_the_area() {
+    use unicode_width::UnicodeWidthStr;
+    let ps = fleet();
+    for th in [Theme::fixed(), {
+        let mut t = Theme::fixed();
+        t.g = Glyphs::ascii();
+        t
+    }] {
+        for w in [40u16, 41, 60, 100, 180] {
+            for text in ["test", "terrafrom", &"long words ".repeat(18)] {
+                let mut nav = nav_on(&ps, Sel::Pane("%7".into()), &["api"], 20);
+                nav.open_find(&ps, 20);
+                typed(&mut nav, &ps, text);
+                let out = draw(w, 24, |fr| board::render(fr, fr.area(), &find_view(&ps, &th, &nav)));
+                for (i, r) in rows(&out).iter().enumerate() {
+                    assert_eq!(r.width(), w as usize, "row {i} at {w}:\n{out}");
+                }
+                assert!(out.contains(th.g.cursor), "the cursor stays on screen:\n{out}");
+            }
+        }
+    }
 }

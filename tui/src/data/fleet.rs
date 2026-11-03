@@ -3,7 +3,6 @@
 //! One diff scan per distinct repo root however many panes share it, at most
 //! `PARALLEL` git processes in flight (the old `COCKPIT_FLEET_PARALLEL=8`).
 use super::gitsafe::{git, tree_stat};
-use super::tmux;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -45,25 +44,18 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 
 /// The tree a pane works in: `@cockpit_dir` when it names a directory (a
 /// worktree made by hand keeps the process in the main checkout), else the
-/// cwd. tmux-review's `pane_dir` rule.
-pub fn work_dirs(panes: &[(String, String)]) -> Vec<String> {
-    let fmt = "#{pane_id}\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_dir}}}}";
-    choose_dirs(panes, &tmux(&["list-panes", "-a", "-F", fmt]).unwrap_or_default())
-}
-
-/// `work_dirs` over tmux's answer: `<pane id>US<@cockpit_dir>` per line. A
+/// cwd. tmux-review's `pane_dir` rule. Each pane is `(cwd, @cockpit_dir)`, both
+/// off the `list-panes` the fetch already made, so this forks nothing; a
 /// dangling option (the tree was removed) falls back to the cwd.
-pub fn choose_dirs(panes: &[(String, String)], listed: &str) -> Vec<String> {
-    let set: HashMap<&str, &str> = listed
-        .lines()
-        .filter_map(|l| l.split_once('\u{1f}'))
-        .filter(|(_, d)| !d.is_empty())
-        .collect();
+pub fn work_dirs(panes: &[(String, String)]) -> Vec<String> {
     panes
         .iter()
-        .map(|(id, cwd)| match set.get(id.as_str()) {
-            Some(d) if std::path::Path::new(d).is_dir() => d.to_string(),
-            _ => cwd.clone(),
+        .map(|(cwd, dir)| {
+            if !dir.is_empty() && std::path::Path::new(dir).is_dir() {
+                dir.clone()
+            } else {
+                cwd.clone()
+            }
         })
         .collect()
 }
