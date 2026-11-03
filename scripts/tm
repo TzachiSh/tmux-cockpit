@@ -158,13 +158,21 @@ enter() {  # enter SESSION_ID
   fi
 }
 
-go() {  # go NAME -- that session, created first when missing
-  local name=$1 dir="" id
+# ~/NAME when it is a git repo (a worktree's .git is a file), else empty. A name with
+# a slash would walk out of ~, so it never qualifies.
+home_repo() {
+  case $1 in ''|*/*) return 0 ;; esac
+  [ -n "${HOME:-}" ] && [ -e "$HOME/$1/.git" ] && printf '%s' "$HOME/$1"
+  return 0
+}
+
+go() {  # go NAME [DIR] -- that session, created first at DIR (else the pane's folder) when missing
+  local name=$1 dir=${2:-} id
   [ -n "$name" ] || exit 0    # a cancelled prompt, or a name clean() emptied
   id=$(sid_of "$name")
   if [ -z "$id" ]; then
     # In a popup $PWD is the session's start dir, not the active pane's (#41).
-    [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
+    [ -z "$dir" ] && [ -n "${TMUX:-}" ] && dir=$(tmux display-message -p -t "\$${TMUX##*,}" '#{pane_current_path}' 2>/dev/null)
     id=$(tmux new-session -d -P -F '#{session_id}' -s "$(fesc "$name")" -c "$(fesc "${dir:-$PWD}")") && [ -n "$id" ] ||
       die "cockpit: could not create session '$name'"
   fi
@@ -296,7 +304,7 @@ pick() {
         enter "$arg"; return ;;
       new-session)
         [ "$arg" = - ] || die "cockpit: new-session takes '-', not '$arg'"
-        go "$(clean "$(side "$d/act.text")")"; return ;;
+        new=$(clean "$(side "$d/act.text")"); go "$new" "$(home_repo "$new")"; return ;;
       kill-session)
         live=$(confirm "$arg" "$(side "$d/act.expect")") || return 1
         own

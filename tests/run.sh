@@ -12108,5 +12108,29 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
+# The picker is a stub that answers "new-session -" with NAME; tmux is a stub that logs
+# new-session's argv. A pty on stdin makes tm take the picker path.
+HR=$(mktmpd); mkdir -p "$HR/home/foo/.git" "$HR/home/plain" "$HR/home/a/b/.git" "$HR/home/#(id)/.git" "$HR/cwd"
+printf 'x' > "$HR/wt" ; mkdir -p "$HR/home/wt"; cp "$HR/wt" "$HR/home/wt/.git"
+printf '#!/bin/sh\ncase "$1" in new-session) shift; printf "%%s\\n" "$*" >> "$HR_LOG" ;; list-sessions) echo alpha ;; display-message) echo 0 ;; has-session) exit 1 ;; esac\nexit 0\n' > "$HR/tmux"
+printf '#!/bin/sh\nprintf "new-session -\\n" > "$COCKPIT_ACTION"\nprintf "%%s" "$HR_NAME" > "$COCKPIT_ACTION.text"\nexit 0\n' > "$HR/ct"
+chmod +x "$HR/tmux" "$HR/ct"
+hr_new() {    # hr_new <typed name> -> the new-session argv tm logged
+    : > "$HR/log"
+    (cd "$HR/cwd" && env -u TMUX -u TMUX_PANE PATH="$HR:$PATH" HOME="$HR/home" HR_LOG="$HR/log" HR_NAME="$1" \
+        COCKPIT_TUI_BIN="$HR/ct" script -qec "$DIR/scripts/tm" /dev/null </dev/null >/dev/null 2>&1)
+    cat "$HR/log"
+}
+case $(hr_new foo) in *"-s foo -c $HR/home/foo"*) ok "a git repo at ~/foo is the start dir" ;; *) bad "a git repo at ~/foo is the start dir" "-c $HR/home/foo" "$(cat "$HR/log")" ;; esac
+case $(hr_new wt) in *"-c $HR/home/wt"*) ok "a worktree's .git file counts" ;; *) bad "a worktree's .git file counts" "-c $HR/home/wt" "$(cat "$HR/log")" ;; esac
+case $(hr_new plain) in *"-c $HR/home/plain"*) bad "a plain ~/plain keeps today's dir" "-c $HR/cwd" "$(cat "$HR/log")" ;; *"-c $HR/cwd"*) ok "a plain ~/plain keeps today's dir" ;; *) bad "a plain ~/plain keeps today's dir" "-c $HR/cwd" "$(cat "$HR/log")" ;; esac
+case $(hr_new nothing) in *"-c $HR/cwd"*) ok "no ~/nothing keeps today's dir" ;; *) bad "no ~/nothing keeps today's dir" "-c $HR/cwd" "$(cat "$HR/log")" ;; esac
+# A slash would walk out of ~: ~/a/b is a repo, "a/b" must not reach it.
+case $(hr_new a/b) in *"-c $HR/cwd"*) ok "a name with a slash never reaches ~/a/b" ;; *) bad "a name with a slash never reaches ~/a/b" "-c $HR/cwd" "$(cat "$HR/log")" ;; esac
+# A name made of format characters: the dir passes through fesc, so # doubles.
+case $(hr_new '#(id)') in *"-c $HR/home/##(id)"*) ok "a hostile name reaches -c with # doubled" ;; *) bad "a hostile name reaches -c with # doubled" "-c $HR/home/##(id)" "$(cat "$HR/log")" ;; esac
+rm -rf "$HR"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
