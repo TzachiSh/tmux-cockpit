@@ -152,6 +152,8 @@ pub struct Glyphs {
     pub review_sent: &'static str,
     /// #313: the subagent badge on a list row; nerd-font's nf-oct-workflow in the nerd tier
     pub sub: &'static str,
+    /// #313: a subagent the user stopped, neither done nor failed
+    pub stopped: &'static str,
     pub active: &'static str,
     pub enter: &'static str,
     pub ellipsis: &'static str,
@@ -221,6 +223,7 @@ impl Glyphs {
             review_sent: "↵",
             // U+2726, one cell, never followed by U+FE0F
             sub: "\u{2726}",
+            stopped: "■",
             active: "▎",
             enter: "↵",
             ellipsis: "…",
@@ -267,6 +270,7 @@ impl Glyphs {
             review_pending: "#",
             review_sent: "<",
             sub: "&",
+            stopped: "#",
             active: ">",
             enter: "<",
             ellipsis: "...",

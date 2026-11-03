@@ -782,7 +782,7 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
         legend.extend([
             (fold_mark(g, false), "an open group"),
             (fold_mark(g, true), "a folded group"),
-            (g.sub, "subagents: running, failed, done; s opens the tree"),
+            (g.sub, "subagents running, failed; s opens the tree"),
         ]);
     }
     legend.extend([(g.active, "the selection"), (pane_mark(g), "tmux's active pane")]);
@@ -1312,22 +1312,35 @@ fn place(p: &Pane, s: &Sub, now: u64) -> Place {
     }
 }
 
-/// The badge's `(running, failed, done)`. Running is the subagents whose files say
-/// so; with no files to read (no transcript, no `subagents/` dir) it is the hook's
-/// `@cockpit_subs`, the background subagents in flight at the agent's last Stop.
-pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize, usize) {
+/// The badge's `(running, failed)`: a done subagent never counts. Running is the
+/// subagents whose files say so; with no files to read (no transcript, no
+/// `subagents/` dir) it is the hook's `@cockpit_subs`, the background subagents in
+/// flight at the agent's last Stop. A failure leaves the count at the agent's next
+/// prompt, when it leaves the tree.
+pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
     if p.subs.is_empty() {
-        return (p.subs_n as usize, 0, 0);
+        return (p.subs_n as usize, 0);
     }
-    let mut c = (0, 0, 0);
+    let mut c = (0, 0);
     for s in p.subs.iter().filter(|s| place(p, s, now) != Place::Gone) {
+        // a stopped subagent (when the reader tells one apart) counts as neither
         match s.state {
             SubState::Running => c.0 += 1,
             SubState::Failed => c.1 += 1,
-            SubState::Done => c.2 += 1,
+            SubState::Done => {}
         }
     }
     c
+}
+
+/// A tree line's state glyph and role. Exhaustive, so a new state (the reader's
+/// coming `Stopped`: [`Glyphs::stopped`] in the meta role) has to be placed here.
+fn sub_glyph(th: &Theme, st: SubState) -> (&'static str, ratatui::style::Color) {
+    match st {
+        SubState::Running => (th.g.running, th.running),
+        SubState::Failed => (th.g.error, th.error),
+        SubState::Done => (th.g.done, th.done),
+    }
 }
 
 /// Agent `i`'s tree with room for every line: the `✓ N done` fold first, as its
@@ -1941,31 +1954,23 @@ impl Nav {
     }
 }
 
-/// The subagent badge (#313), widest that fits `left` with a column of air:
-/// `✦2·1✕·1✓` (running, failed, done), then `✦2·1✕`, then the total `✦4`. The
-/// failed role when one failed, the running one while one runs. `None` with no
-/// subagents, or no room.
+/// The subagent badge (#313), running and failed only, the wider that fits `left`
+/// with a column of air: `✦2·1✕`, then their total `✦3`. The failed role when one
+/// failed, else the running one. `None` with none running or failed, done ones
+/// or not, or with no room.
 fn badge(p: &Pane, th: &Theme, left: usize, now: u64) -> Option<Span<'static>> {
     let g = &th.g;
-    let (r, f, d) = sub_counts(p, now);
-    if r + f + d == 0 {
+    let (r, f) = sub_counts(p, now);
+    if r + f == 0 {
         return None;
     }
-    let mid = match f {
+    let wide = match f {
         0 => format!("{}{r}", g.sub),
         _ => format!("{}{r}{}{f}{}", g.sub, g.dot, g.error),
     };
-    let wide = match d {
-        0 => mid.clone(),
-        _ => format!("{mid}{}{d}{}", g.dot, g.done),
-    };
-    let total = format!("{}{}", g.sub, r + f + d);
-    let c = match (f, r) {
-        (1.., _) => th.error,
-        (0, 1..) => th.running,
-        _ => th.meta,
-    };
-    let t = [wide, mid, total].into_iter().find(|t| t.width() < left)?;
+    let total = format!("{}{}", g.sub, r + f);
+    let c = if f > 0 { th.error } else { th.running };
+    let t = [wide, total].into_iter().find(|t| t.width() < left)?;
     Some(Span::styled(format!(" {t}"), Style::new().fg(c)))
 }
 
@@ -2223,11 +2228,7 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
         ),
         Row::Sub(i, j) => {
             let s = &ps[i].subs[j];
-            let (gl, c) = match s.state {
-                SubState::Running => (g.running, th.running),
-                SubState::Failed => (g.error, th.error),
-                SubState::Done => (g.done, th.done),
-            };
+            let (gl, c) = sub_glyph(th, s.state);
             spans.push(Span::styled(gl, Style::new().fg(c)));
             let (tw, dw, tok) = tree_cols(avail, tcol);
             let mut t = vec![Span::styled(

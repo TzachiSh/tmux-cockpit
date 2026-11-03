@@ -158,27 +158,33 @@ fn ascii() -> Theme {
 // ---------------------------------------------------------------- the badge
 
 #[test]
-fn the_badge_has_three_tiers_by_room() {
+/// Running and failed only: a done subagent never counts in the badge.
+fn the_badge_has_two_tiers_by_room() {
     let (p, th) = (badge_pane(2, 1, 1), Theme::fixed());
-    assert_eq!(badge(&p, &th, 40), " ✦2·1✕·1✓");
-    assert_eq!(badge(&p, &th, 9), " ✦2·1✕·1✓");
-    assert_eq!(badge(&p, &th, 8), " ✦2·1✕", "a cell leaves one column of air");
-    assert_eq!(badge(&p, &th, 6), " ✦2·1✕");
-    assert_eq!(badge(&p, &th, 5), " ✦4", "the narrow tier is the total");
-    assert_eq!(badge(&p, &th, 3), " ✦4");
+    assert_eq!(badge(&p, &th, 40), " ✦2·1✕");
+    assert_eq!(badge(&p, &th, 6), " ✦2·1✕", "a cell leaves one column of air");
+    assert_eq!(badge(&p, &th, 5), " ✦3", "the narrow tier is running plus failed");
+    assert_eq!(badge(&p, &th, 3), " ✦3");
     assert_eq!(badge(&p, &th, 2), "");
+}
+
+#[test]
+fn done_subagents_alone_show_no_badge() {
+    assert_eq!(extra(&badge_pane(0, 0, 3), &Theme::fixed(), 40), " no repo");
+    assert_eq!(badge(&badge_pane(2, 0, 3), &Theme::fixed(), 40), " ✦2");
+    assert_eq!(badge(&badge_pane(2, 0, 3), &Theme::fixed(), 3), " ✦2", "done is not in the total");
 }
 
 #[test]
 fn the_badge_in_the_ascii_and_nerd_tiers() {
     let p = badge_pane(2, 1, 1);
-    assert_eq!(badge(&p, &ascii(), 40), " &2.1x.1+");
-    assert_eq!(badge(&p, &ascii(), 3), " &4");
+    assert_eq!(badge(&p, &ascii(), 40), " &2.1x");
+    assert_eq!(badge(&p, &ascii(), 3), " &3");
     let nerd = Theme {
         g: Glyphs::nerd(),
         ..Theme::fixed()
     };
-    assert_eq!(badge(&p, &nerd, 40), " \u{f52e}2·1✕·1✓");
+    assert_eq!(badge(&p, &nerd, 40), " \u{f52e}2·1✕");
 }
 
 #[test]
@@ -229,7 +235,7 @@ fn the_badge_on_the_row_at_40_60_and_100() {
     let ps = mock();
     let th = Theme::fixed();
     let n = nav(&ps, "%3", &[], 12);
-    for (w, want) in [(40u16, "✦6"), (60, "✦2·1✕·3✓"), (100, "✦2·1✕·3✓ +42 -7 ⑂main")] {
+    for (w, want) in [(40u16, "✦3"), (60, "✦2·1✕"), (100, "✦2·1✕ +42 -7 ⑂main")] {
         let out = draw(w, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
         let row = lines(&out).into_iter().find(|l| l.contains("tests")).unwrap();
         assert!(row.contains(want), "{w}: {row}");
@@ -682,4 +688,23 @@ fn a_narrowing_tree_line_drops_tokens_then_description() {
     assert!(wide.contains("find auth callers in src/auth") && wide.contains("12.4k"), "{wide}");
     assert!(!mid.contains("12.4k") && mid.contains("find auth call"), "{mid}");
     assert!(narrow.contains("Explore") && narrow.contains("find au…"), "{narrow}");
+}
+
+/// Off until the reader has `SubState::Stopped` (#324's data owner adds it); then
+/// drop the `cfg` and add its arm in `sub_counts` and `sub_glyph`. A subagent the
+/// user stopped is neither failed nor running: no badge, no red, `■` in the tree.
+#[cfg(any())]
+#[test]
+fn a_stopped_subagent_is_not_a_failure() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    ps[i].subs = vec![sub("Plan", "stopped one", SubState::Stopped, 30, 1)];
+    assert_eq!(extra(&ps[i], &Theme::fixed(), 40), " +42 -7 ⑂main", "no badge");
+    ps[i].subs.push(sub("Plan", "running", SubState::Running, 10, 1));
+    let th = Theme::fixed();
+    let b = &board::row_extra(&ps[i], &th, 40, NOW)[0];
+    assert_eq!((b.content.as_ref(), b.style.fg), (" ✦1", Some(th.running)));
+    let n = nav(&ps, "%4", &["%4"], 12);
+    let out = draw(100, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
+    assert!(lines(&out).iter().any(|l| l.contains("├ ■ Plan")), "{out}");
 }

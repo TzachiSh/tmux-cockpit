@@ -2,7 +2,7 @@
 "┌ sessions ────────────────────────────┐"
 "│  ▾ api ────────────────────── ▲1 ●2  │"
 "│▎ 1 ▲  0 server Do you want to… 4m12s │"
-"│  2 ●  1 tests  Bash: …space ✦6 1m03s │"
+"│  2 ●  1 tests  Bash: …space ✦3 1m03s │"
 "│     ├ ✓ 2 done                       │"
 "│     ├ ● Explore       find au… 2m12s │"
 "│     ├ ✓ Explore       map cal… 1m35s │"

@@ -379,19 +379,21 @@ way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
 The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
 the list for `v` to come back.
 
-**Subagents (#313).** An agent running subagents carries a badge, the first of
-its row's extra cells, in three widths by the room the row has: `✦2·1✕·3✓`
-(running, failed, done), then `✦2·1✕`, then the total, `✦6`, which takes 3
-cells at 40 columns and leaves the name its 6 and the message its 12. Each
-count leaves out what is zero, but the running one. The badge is in the error
-role while a subagent has failed, the running role while one runs. A row with
-no subagents shows none. `&` is the badge in the ascii tier.
+**Subagents (#313).** An agent with subagents running or failed carries a
+badge, the first of its row's extra cells, in two widths by the room the row
+has: `✦2·1✕` (running, failed; the failed count only when there is one), then
+their total, `✦3`, which takes 3 cells at 40 columns and leaves the name its 6
+and the message its 12. Done subagents never count: an agent whose subagents
+are all done shows no badge, and its tree still lists them. The badge is in
+the error role while a subagent has failed, else the running role. `&` is the
+badge in the ascii tier.
 
 Running is the subagents whose `subagents/` files say they run. With no files
 to read, it is the hook's `@cockpit_subs`, the background subagents in flight
 at the agent's last Stop. A failure from before the agent's newest prompt is an
-earlier turn's: it leaves the badge and the tree. The newest prompt is a human
-one; a subagent's `<task-notification>` report-back does not count.
+earlier turn's: it leaves the badge and the tree at the same moment, so the two
+always agree. The newest prompt is a human one; a subagent's
+`<task-notification>` report-back does not count.
 
 `s` opens the selected agent's tree under its row; on a header, every tree in
 the session. Trees never open on their own, and which are open is kept in
@@ -401,7 +403,7 @@ when the tree is open, on an agent that has subagents:
 ```
 │  ▾ api ────────────────────────────────────────────────────────────────────────────────── ▲1 ●2  │
 │▎ 1 ▲  0 server             Do you want to run npm test?                            no repo 4m12s │
-│  2 ●  1 tests          Bash: cargo test --workspace                  ✦2·1✕·3✓ +42 -7 ⑂main 1m03s │
+│  2 ●  1 tests           Bash: cargo test --workspace                    ✦2·1✕ +42 -7 ⑂main 1m03s │
 │     ├ ✓ 2 done                                                                                   │
 │     ├ ● Explore         find auth callers in src/auth                                12.4k 2m12s │
 │     ├ ✓ Explore         map callers                                                     9k 1m35s │
