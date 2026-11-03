@@ -62,19 +62,26 @@ pub(crate) fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&st
 
 /// Filter drivers are named in config, so each one the repo defines is blanked
 /// by name; an empty driver is no filter, and `required=false` keeps it legal.
-pub fn no_filters(root: &str) -> Vec<String> {
+/// None when a name holds `=`: git splits `-c` at the first one, so
+/// `filter.a=b.clean=` would set `filter.a` and leave the planted driver live.
+pub fn no_filters(root: &str) -> Option<Vec<String>> {
     let out = git(root, &[], None, &["config", "-z", "--get-regexp", r"^filter\."]);
     let mut names: Vec<&str> = out
         .split('\0')
         .filter_map(|r| r.split('\n').next()?.strip_prefix("filter.")?.rsplit_once('.').map(|(n, _)| n))
         .collect();
+    if names.iter().any(|n| n.contains('=')) {
+        return None;
+    }
     names.sort_unstable();
     names.dedup();
-    names
-        .iter()
-        .flat_map(|n| ["clean=", "smudge=", "process=", "required=false"].map(|k| ["-c".to_string(), format!("filter.{n}.{k}")]))
-        .flatten()
-        .collect()
+    Some(
+        names
+            .iter()
+            .flat_map(|n| ["clean=", "smudge=", "process=", "required=false"].map(|k| ["-c".to_string(), format!("filter.{n}.{k}")]))
+            .flatten()
+            .collect(),
+    )
 }
 
 /// tmux-review's BIGCAP: past this a file is never hashed, only reported.
@@ -92,7 +99,7 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
     if base.is_some_and(|b| b.starts_with('-')) {
         return None; // git would read it as an option: `--output=<file>` writes
     }
-    let filters = no_filters(root);
+    let filters = no_filters(root)?;
     // -m re-hashes a touched tracked file, and hashing runs its clean filter
     let listed = git(root, &filters, None, &["ls-files", "-o", "-m", "--exclude-standard", "-z"]);
     let big: Vec<&str> = listed
@@ -169,7 +176,13 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
 pub fn git_flags(args: &[String]) -> i32 {
     let words: Vec<String> = match args {
         [] => SAFE.iter().map(|s| s.to_string()).collect(),
-        [f, dir] if f == "--filters" => no_filters(dir),
+        [f, dir] if f == "--filters" => match no_filters(dir) {
+            Some(w) => w,
+            None => {
+                eprintln!("cockpit-tui: refusing: filter driver name contains '='");
+                return 1;
+            }
+        },
         _ => {
             eprintln!("usage: cockpit-tui git-flags [--filters <dir>]");
             return 2;

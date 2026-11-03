@@ -11032,23 +11032,44 @@ is "diffstat on a dir that is not a repo: nothing, status 1" "1" \
    "$(rm -rf "$GD/.git"; "$DSB" diffstat "$GD"; printf '%s' "$?")"
 rm -rf "$GD"
 
-# git.sh keeps a static copy of the list (a missing binary must not break the
-# worktree hook); this pins the copy to the binary.
-is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH plus --no-optional-locks" \
-   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
-# The filter overrides still differ until PR 5 moves git.sh onto the binary's:
-# git.sh sets clean/smudge=cat and a blank required, and only for the keys the
-# repo set; git-flags blanks all four keys of every driver, required=false.
+# git.sh keeps a static copy of the lists, so the worktree hook runs with no
+# binary; these pin what it actually hands git to the binary's.
 GD=$(mktmpd); git init -q "$GD/r" >/dev/null 2>&1
 git -C "$GD/r" config filter.evil.clean 'echo pwned'; git -C "$GD/r" config filter.evil.required true
+git -C "$GD/r" config filter.lfs.smudge 'echo pwned'; git -C "$GD/r" config filter.a/b.process 'echo pwned'
+git -C "$GD/r" config filter.x.y.clean 'echo pwned'; git -C "$GD/r" config filter.noted.foo 1
 mkdir "$GD/bin"
-printf '#!/bin/sh\n[ "$3" = config ] && exec %s "$@"\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
+printf '#!/bin/sh\ncase " $* " in *" --get-regexp "*) exec %s "$@" ;; esac\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
 chmod +x "$GD/bin/git"
-is "git.sh's filter overrides today (PR 5 aligns them)" "filter.evil.clean=cat filter.evil.required=" \
-   "$( ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" status ) | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
-is "git-flags --filters blanks every key of the driver" \
-   "filter.evil.clean= filter.evil.smudge= filter.evil.process= filter.evil.required=false" \
-   "$("$DSB" git-flags --filters "$GD/r" | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
+gs_argv() { ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" "$@" ); }
+is "git.sh hands git exactly git-flags before the caller's -C" \
+   "$("$DSB" git-flags)" "$(gs_argv rev-parse HEAD | sed '/^-C$/,$d')"
+is "git.sh blanks the same drivers as git-flags --filters" \
+   "$("$DSB" git-flags --filters "$GD/r" | paste -d' ' - - | LC_ALL=C sort)" \
+   "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
+# The worktree hook needs no binary: a cockpit-tui on PATH and at COCKPIT_TUI_BIN
+# that only leaves a mark, and git.sh still hands git every flag.
+printf '#!/bin/sh\necho ran >> %s/tuiran\n' "$GD" > "$GD/bin/cockpit-tui"; chmod +x "$GD/bin/cockpit-tui"
+is "git.sh never runs cockpit-tui, and still hands git every flag" "$("$DSB" git-flags)" \
+   "$(COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" gs_argv status | sed '/^-c$/{N;/\nfilter\./d}' | sed '/^-C$/,$d')$(cat "$GD/tuiran" 2>/dev/null)"
+# git splits -c at the first `=`: filter.a=b.clean= would set filter.a, so both refuse.
+git -C "$GD/r" config 'filter.a=b.clean' 'echo pwned'
+is "a driver named a=b: git.sh and git-flags --filters both refuse, status 1 and no flags" "1: 1:" \
+   "$(gs_argv status 2>/dev/null | tr -d '\n'; printf '%s:' "${PIPESTATUS[0]}"
+      printf ' '; "$DSB" git-flags --filters "$GD/r" 2>/dev/null | tr -d '\n'; printf '%s:' "${PIPESTATUS[0]}")"
+rm -rf "$GD"
+unset -f gs_argv
+# The repro: the planted clean runs under a blanked -c, and never under git.sh or diffstat.
+GD=$(mktmpd); ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
+  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+git -C "$GD/r" -c 'filter.a=b.clean=' add x >/dev/null 2>&1
+is "a=b's plant fires under git -c filter.a=b.clean=" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
+git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
+is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter driver name contains '='
+1" "$( ( . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" add x ) 2>&1; printf '%s' "$?")"
+"$DSB" diffstat "$GD/r" >/dev/null 2>&1
+"$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
+is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
 unset -f ds_shell
 
