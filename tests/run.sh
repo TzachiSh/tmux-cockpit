@@ -8247,22 +8247,19 @@ case "$(wact 'fix %1')" in
 esac
 case "$(tail -1 "$BD/tui.log" 2>/dev/null)" in *'cockpit-board: unknown verb [fix %1]') ok "and logs the unknown verb" ;;
     *) bad "and logs the unknown verb" "cockpit-board: unknown verb [fix %1]" "$(tail -1 "$BD/tui.log" 2>/dev/null)" ;; esac
-is "info %1 runs the info screen and nothing else" "tmux-review -p %1 --info;" "$(wact 'info %1')"
 case "$(wact 'deliver %1')" in *'not wired up yet'*) ok "deliver %1 is reserved and says so" ;;
     *) bad "deliver %1 is reserved and says so" "a display-message" "$(wact 'deliver %1')" ;;
 esac
 is "only the FIRST line of the action file is ever acted on" \
    "switch-client -t %9;select-window -t %9;select-pane -t %9;" "$(wact $'jump %9\nreview %1')"
 
-# The return trip (D9): review, info and panel bring the board back on the pane
+# The return trip (D9): review and panel bring the board back on the pane
 # they acted on; jump, q and the off switch end it.
 bruns() { tr '\n' ';' < "$BD/bargv"; }
 wact 'jump %9' >/dev/null
 is "jump ends the loop: the board ran once" "board;" "$(bruns)"
 wact 'review %1' >/dev/null
 is "review %1 brings the board back with --select %1, and no note" "board;board --select %1;" "$(bruns)"
-wact 'info %1' >/dev/null
-is "so does info %1" "board;board --select %1;" "$(bruns)"
 wact 'panel %1' >/dev/null
 case "$(bruns)" in "board;board --select %1 --note "*"/note;cockpit: sent to %1;") ok "panel %1 comes back with the panel's last line as the note" ;;
     *) bad "panel %1 comes back with the panel's last line as the note" "board;board --select %1 --note .../note;cockpit: sent to %1;" "$(bruns)" ;;

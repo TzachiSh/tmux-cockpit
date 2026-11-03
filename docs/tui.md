@@ -961,7 +961,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 `$COCKPIT_ACTION` on exit. Nothing else is ever written there:
 
 ```
-jump %N · review %N · panel %N · info %N · deliver %N   (deliver reserved for phase 2)
+jump %N · review %N · panel %N · deliver %N            (deliver reserved for phase 2)
 kill %N · request %N                                    (the board's EXTRAS, #228's arms)
 paste %N · send %N                                      (the panel)
 ```
@@ -1255,7 +1255,8 @@ note on `alt-↵`.
 `cockpit-tui info %N` is what `prefix i` opens, in a popup (`@cockpit_info_key`
 still names the key; `off` unbinds it). In the board, `i` draws the same screen
 as an overlay over the selected pane and `esc` returns to the board; the board
-no longer exits with `info %N` for the wrapper. The module is `info` (the
+no longer exits with `info %N` for the wrapper, and `cockpit-board` has no
+`info` arm: an `info` line from an old binary is an unknown verb. The module is `info` (the
 screen) and `data::info` (the facts); both are in the module table.
 
 It shows what `tmux-review --info` showed, in the same order: `pane`, `cwd`,
