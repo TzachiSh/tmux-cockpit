@@ -2,6 +2,7 @@
 //! figure off `agent-<id>.jsonl`. Its own test binary: the reader keeps a thread-local
 //! cache and a read counter, and each test runs on a thread of its own.
 use cockpit_tui::data::subagents::{Sub, SubKind, SubState, read, reads};
+use std::fs::{FileTimes, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 
@@ -91,6 +92,7 @@ fn a_running_subagent_has_its_type_description_start_and_tokens() {
         desc: "map the hooks".into(),
         state: SubState::Running,
         started: Some(T0),
+        finished_at: None,
         tokens: 100,
     };
     assert_eq!(s, want);
@@ -149,6 +151,96 @@ fn stopped_hashes_apart_from_failed_and_done() {
     for other in [SubState::Failed, SubState::Done, SubState::Running] {
         assert_ne!(h(&s), h(&Sub { state: other, ..s.clone() }), "{other:?}");
     }
+}
+
+/// A row of a type that carries no usage, `secs` after `T0` (10:00:00Z).
+fn tick(secs: u64) -> String {
+    let at = format!("2026-11-03T10:{:02}:{:02}Z", secs / 60, secs % 60);
+    format!(r#"{{"type":"attachment","timestamp":"{at}"}}"#)
+}
+
+/// Set the transcript's mtime to `T0 + secs`.
+fn touch(dir: &Path, id: &str, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(T0 + secs);
+    let f = OpenOptions::new().write(true).open(dir.join(format!("agent-{id}.jsonl"))).unwrap();
+    f.set_times(FileTimes::new().set_modified(t)).unwrap();
+}
+
+#[test]
+fn finished_at_is_the_newest_rows_timestamp_not_the_files_mtime() {
+    let d = fixture("fin-row");
+    meta(&d, "a", r#"{"agentType":"x","finished":true}"#);
+    rows(&d, "a", &[FIRST, &usage(1, 1, 0, 0), &tick(30)]);
+    touch(&d, "a", 5000);
+    assert_eq!(one(&d).finished_at, Some(T0 + 30), "a copy or touch moves mtime, not rows");
+}
+
+#[test]
+fn finished_at_is_none_while_running_and_set_for_every_other_state() {
+    let d = fixture("fin-states");
+    meta(&d, "r", r#"{"agentType":"x"}"#);
+    meta(&d, "d", r#"{"agentType":"x","finished":true}"#);
+    meta(&d, "s", r#"{"agentType":"x","stoppedByUser":true}"#);
+    meta(&d, "f", r#"{"agentType":"x","finished":true}"#);
+    let err = r#"{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-11-03T10:00:20Z"}"#;
+    for id in ["r", "d", "s"] {
+        rows(&d, id, &[FIRST, &tick(20)]);
+    }
+    rows(&d, "f", &[FIRST, err]);
+    let mut got: Vec<_> = read(&d).into_iter().map(|s| (s.id, s.state, s.finished_at)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    let at = Some(T0 + 20);
+    let want = [
+        ("d", SubState::Done, at),
+        ("f", SubState::Failed, at),
+        ("r", SubState::Running, None),
+        ("s", SubState::Stopped, at),
+    ];
+    let want: Vec<_> = want.iter().map(|(i, st, f)| (i.to_string(), *st, *f)).collect();
+    assert_eq!(got, want);
+}
+
+#[test]
+fn finished_at_falls_back_to_the_mtime_when_no_row_has_a_timestamp() {
+    let d = fixture("fin-mtime");
+    meta(&d, "a", r#"{"agentType":"x","finished":true}"#);
+    rows(&d, "a", &[r#"{"type":"assistant","message":{"role":"assistant"}}"#]);
+    touch(&d, "a", 77);
+    assert_eq!(one(&d).finished_at, Some(T0 + 77));
+}
+
+#[test]
+fn finished_at_is_none_for_a_finished_subagent_with_no_transcript() {
+    let d = fixture("fin-nofile");
+    meta(&d, "a", r#"{"agentType":"x","finished":true}"#);
+    let s = one(&d);
+    assert_eq!((s.state, s.finished_at), (SubState::Done, None));
+}
+
+#[test]
+fn finished_at_follows_the_meta_flipping_without_the_transcript_changing() {
+    let d = fixture("fin-flip");
+    meta(&d, "a", r#"{"agentType":"x"}"#);
+    rows(&d, "a", &[FIRST, &tick(40)]);
+    assert_eq!(one(&d).finished_at, None);
+    meta(&d, "a", r#"{"agentType":"x","finished":true,"pad":"changes the length"}"#);
+    assert_eq!(one(&d).finished_at, Some(T0 + 40));
+}
+
+#[test]
+fn the_hash_ignores_finished_at() {
+    let s = Sub {
+        ty: "x".into(),
+        state: SubState::Done,
+        ..Default::default()
+    };
+    assert_eq!(
+        h(&s),
+        h(&Sub {
+            finished_at: Some(9),
+            ..s.clone()
+        })
+    );
 }
 
 #[test]
