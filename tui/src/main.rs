@@ -139,7 +139,6 @@ fn main() {
         Some("branch") => std::process::exit(cockpit_tui::branch::main(&args[1..])),
         // sessions view (#245): writes its own action files, like panel
         Some("sessions") => std::process::exit(cockpit_tui::sessions::main(&args[1..])),
-        Some("transcript") => std::process::exit(data::transcript::main(&args[1..])),
         Some("panel") => {
             panel(&args[1..]);
             None

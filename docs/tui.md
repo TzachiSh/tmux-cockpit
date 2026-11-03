@@ -1329,23 +1329,23 @@ as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
 **CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last ok|failed:<why>|hidden] |
-transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
+--rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
 board reaches those through the action file and the shell scripts.
 
-**Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
-tail <jsonl> [max]` is the transcript reader; no script calls it. It is byte-identical to the jq reader it replaced (Freeze 1 on #54)
-with two #193 changes: a row whose `message` is not an object is skipped where jq
-failed the whole read, and
+**The transcript reader (#199):** `data::transcript` (`file`, `doing`, `tail`) is a library
+module the board and the info screen read in-process; there is no `transcript`
+subcommand and no shell shim. It is byte-identical to the jq reader it replaced
+(Freeze 1 on #54) with two #193 changes: a row whose `message` is not an object is
+skipped where jq failed the whole read, and
 `<bash-input>`, `<bash-stdout>` and `<bash-stderr>` prompts are dropped like the
 other harness tags. It also departs from jq in three declared places:
 - a content item that would raise a jq runtime error is skipped, not fatal;
 - JSON only jq accepts (NaN, leading zeros, nesting deeper than 128) skips the line;
 - `file` sorts project directories in byte order, not the locale's.
 
-Its exit-code rule overrides the one below: every failure, a usage error
-included, is no output, status 1 and nothing on stderr.
+Every failure is `None`.
 
-The git helpers keep the exit-code rule below:
+**Helper subcommands (#199):** the git helpers keep the exit-code rule below:
 
 - `cockpit-tui git-flags` prints the fixed git safety flags, one word per line,
   without starting git. `git-flags --filters <dir>` prints the `-c` overrides
