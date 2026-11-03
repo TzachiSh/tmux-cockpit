@@ -586,6 +586,138 @@ tmux set-option -pu -t "$PANE" @cockpit_review >/dev/null 2>&1
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
 fi
 
+echo "== agent-state: a Stop with background subagents in flight is not done (#310) =="
+# The main turn ends while background subagents work ("Waiting for 3 background agents to
+# finish"). Claude Code wakes the session when each reports back, so that Stop is a pause:
+# its payload's background_tasks lists them. The hook payloads below are the ones Claude Code
+# pipes in, on a private server, with HOME and CLAUDE_CONFIG_DIR away from the owner's.
+if need_tmux "background subagents"; then :; else
+BG="cockpit-bg-$$"; SOCKS="$SOCKS $BG"
+BGCFG="$(mktmpd)/claude"
+bg_real=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)
+[ -n "$bg_real" ] || bg_real=$(eval "printf '%s' ~$(id -un)")
+bg_iso=ok
+case "$HOME/" in "$bg_real/"|"$bg_real/.claude/"*) bg_iso="HOME=$HOME" ;; esac
+case "$BGCFG/" in "$bg_real/.claude/"*) bg_iso="CLAUDE_CONFIG_DIR=$BGCFG" ;; esac
+[ -n "$bg_real" ] && [ -n "$HOME" ] || bg_iso="no home to compare"
+is "the block runs away from the owner's home and ~/.claude" ok "$bg_iso"
+if [ "$bg_iso" != ok ]; then skip_ "background subagents: the rest, not isolated"; else
+"$TMUX_REAL" -L "$BG" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BG" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+BGP=$("$TMUX_REAL" -L "$BG" list-panes -t t -F '#{pane_id}')
+bgst() {                      # <state> <payload>: one hook, its payload on stdin
+    printf '%s\n' "$2" | HOME="$HOME" CLAUDE_CONFIG_DIR="$BGCFG" TMUX="$SOCKDIR/$BG,0,0" \
+        "$DIR/scripts/agent-state" "$1" "$BGP" >/dev/null 2>&1; }
+bgo() { "$TMUX_REAL" -L "$BG" display-message -p -t "$BGP" "#{$1}"; }
+bgis() {                      # <name> <pane> <window> <session needs-input count>
+    is "$1: pane" "$2" "$(bgo @panestate)"
+    is "$1: window" "$3" "$(bgo @cockpit_win_state)"
+    is "$1: session ▲ count" "$4" "$(bgo @cockpit_sess_nb)"; }
+bgstop() {                    # <tasks json> [assistant text]: a Stop payload
+    printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,%s%s%s}' \
+        "\"last_assistant_message\":\"${2:-ok}\"," "\"background_tasks\":[$1]," \
+        '"session_crons":[]'; }
+BGT='{"id":"a1","type":"subagent","status":"running","description":"lane",'
+BGT=$BGT'"agent_type":"general-purpose"}'
+BGSH='{"id":"b1","type":"shell","status":"running"'
+BGU='{"hook_event_name":"UserPromptSubmit","prompt":"go"}'
+
+bgst running "$BGU"
+for a in a1 a2 a3; do
+    bgst running "{\"hook_event_name\":\"SubagentStart\",\"agent_id\":\"$a\"}"
+done
+bgst done "$(bgstop "$BGT,$BGT,$BGT")"
+bgis "Stop with 3 background subagents" running running 0
+bgst running "$BGU"; bgst done "$(bgstop "$BGT,$BGT")"
+bgis "a report-back turn ending with 2 left" running running 0
+bgst running "$BGU"; bgst done "$(bgstop "")"
+bgis "the turn after the last reports back" done done 0
+
+bgcase() {                    # <name> <want> <stop payload>: from running, one Stop
+    bgst running "$BGU"; bgst done "$3"; is "$1" "$2" "$(bgo @panestate)"; }
+bgcase "a Stop with no background_tasks field is done" done \
+    '{"hook_event_name":"Stop","stop_hook_active":false}'
+bgcase "a Stop with an empty payload is done" done ""
+bgcase "a Stop with an unparseable payload is done" done 'not json {'
+bgcase "a shell task alone does not hold the pane" done \
+    "$(bgstop "$BGSH"',"description":"tail","command":"tail -f x"}')"
+bgcase "an idle teammate alone does not hold the pane" done \
+    "$(bgstop '{"id":"t1","type":"teammate","status":"running","description":"researcher"}')"
+bgcase "a subagent entry with a space after the colon holds it" running \
+    "$(bgstop '{"id":"a1", "type": "subagent", "status": "running"}')"
+# Only a structural key counts: inside a JSON string the quotes arrive escaped.
+BGQ='said \"type\":\"subagent\" here'
+bgcase "subagent text in the message beside a shell task is done" done \
+    "$(bgstop "$BGSH}" "$BGQ")"
+bgcase "the same text beside a real subagent still holds it" running "$(bgstop "$BGT" "$BGQ")"
+bgcase "subagent text in a task's description alone is done" done \
+    "$(bgstop "$BGSH"',"description":"\"type\":\"subagent\""}')"
+# Only background_tasks counts: a subagent-typed object in any other field is not in flight.
+bgcase "a subagent object outside background_tasks, with no such field, is done" done \
+    '{"hook_event_name":"Stop","other":{"type":"subagent"}}'
+bgcase "the same object before a background_tasks of one shell task is done" done \
+    '{"hook_event_name":"Stop","other":{"type":"subagent"},"background_tasks":[{"type":"shell"}]}'
+
+# Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
+bgst running "$BGU"
+bgst needs-input '{"hook_event_name":"PermissionRequest","agent_id":"a1","tool_name":"Bash"}'
+bgst done "$(bgstop "$BGT")"
+bgis "a subagent's needs-input through the main Stop" needs-input needs-input 1
+bgst done "$(bgstop "")"
+bgis "and through the last Stop" needs-input needs-input 1
+bgst running "$BGU"; bgst error '{"hook_event_name":"PostToolUseFailure","agent_id":"a1"}'
+bgst done "$(bgstop "$BGT")"
+bgis "a subagent's error through the main Stop" error error 0
+
+# Concurrent hooks: several report-back Stops and subagent tool calls at once.
+bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
+    local i pids=""
+    for i in $(seq 1 "$1"); do bgst "$2" "$3" & pids="$pids $!"; done
+    # shellcheck disable=SC2086  # one pid per word
+    wait $pids; }
+bgst running "$BGU"
+bgjobs 8 done "$(bgstop "$BGT")" &
+bgjobs 8 running '{"hook_event_name":"PreToolUse","agent_id":"a2"}'
+wait $!
+bgis "8 concurrent Stops with subagents beside 8 subagent tool calls" running running 0
+bgjobs 8 done "$(bgstop "$BGT")"
+bgis "8 concurrent Stops with subagents alone" running running 0
+bgst needs-input '{"hook_event_name":"PermissionRequest","agent_id":"a1"}'
+bgjobs 8 done "$(bgstop "$BGT")" & bgjobs 8 done "$(bgstop "")"
+wait $!
+bgis "16 concurrent Stops on a blocked pane" needs-input needs-input 1
+bgst running "$BGU"; bgjobs 8 done "$(bgstop "")"
+bgis "8 concurrent Stops with nothing in flight" done done 0
+
+# A subagent that never stops is listed by every Stop until claude ends; SessionEnd clears.
+bgst running "$BGU"; bgst done "$(bgstop "$BGT")"
+bgst off '{"hook_event_name":"SessionEnd","reason":"exit"}'
+bgis "SessionEnd with a subagent still listed" "" idle 0
+# The poller owns an agent-view pane (#174) and has no payload: its done stays done.
+bgst running "$BGU"
+printf '%s\n' "$(bgstop "$BGT")" | TMUX="$SOCKDIR/$BG,0,0" \
+    "$DIR/scripts/agent-state" poll done "$BGP" >/dev/null 2>&1
+is "the agent-view poller's done is not held by a payload" done "$(bgo @panestate)"
+# Typed at a terminal, done reads no payload: the line typed next is the shell's, not eaten.
+# util-linux script(1) gives the call a terminal; read's -t is a hang guard, not a measure.
+if script -qec true /dev/null </dev/null >/dev/null 2>&1; then
+    bgst running "$BGU"
+    out=$(printf 'XYZ\n' | BGA="$DIR/scripts/agent-state" BGP="$BGP" TMUX="$SOCKDIR/$BG,0,0" \
+        script -qec 'bash -c '\''"$BGA" done "$BGP" >/dev/null 2>&1
+            IFS= read -r -t 5 l; printf "got=%s.\n" "$l"'\''' /dev/null)
+    case "$out" in
+        *got=XYZ.*) ok "done at a terminal leaves the next typed line to the shell" ;;
+        *) bad "done at a terminal leaves the next typed line to the shell" "got=XYZ." "$out" ;;
+    esac
+    is "and the pane is done" done "$(bgo @panestate)"
+else
+    skip_ "done at a terminal (no util-linux script)"; skip_ "and the pane is done"
+fi
+"$TMUX_REAL" -L "$BG" kill-server >/dev/null 2>&1
+fi
+fi
+
 echo "== state ranking: needs-input > error > running > done =="
 if need_tmux "state ranking"; then :; else
 rk() { tmux set -p -t "$PANE" @panestate "$1" >/dev/null 2>&1; st "$2" "$PANE" 2>/dev/null; sv; }

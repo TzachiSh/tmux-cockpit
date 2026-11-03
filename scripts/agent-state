@@ -106,6 +106,22 @@ case "$pane" in
     *) exit 0 ;;
 esac
 
+# Does the Stop payload on stdin list a background subagent still in flight (#310)? Only a
+# subagent: an idle teammate stays "running" in claude's registry for the life of its team,
+# and a shell or monitor task may never end. Matched structurally: inside a JSON string the
+# quotes arrive escaped, so no message text can match. No payload or no lib: not in flight.
+subagent_in_flight() {
+    local d=${BASH_SOURCE[0]} rest
+    [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    . "${d%/*}/lib/hook.sh" 2>/dev/null || return 1
+    read_payload true                 # compact JSON: the first line is the whole payload
+    rest=${payload#*\"background_tasks\"}
+    [ "$rest" != "$payload" ] || return 1
+    case "$rest" in *'"type":"subagent"'*|*'"type": "subagent"'*) return 0 ;; esac
+    return 1
+}
+
 case "$state" in
 notify)
     # ESC-cancel fires no hook at all; the idle Notification is the only way out of running.
@@ -199,6 +215,13 @@ session)
     ;;
 wake)
     # TeammateIdle wakes the lead with no hook of its own, so lift done back to running.
+    ;;
+done)
+    # A Stop while background subagents run ends the turn, not the work (#310): claude wakes
+    # the session as each reports back, and the last report-back turn's Stop writes done.
+    # Nothing is written meanwhile, so sticky states and the counters stay as they are.
+    # The poller has no payload, and a terminal is a person typing the command.
+    [ -z "$poll" ] && [ ! -t 0 ] && subagent_in_flight && exit 0
     ;;
 esac
 
