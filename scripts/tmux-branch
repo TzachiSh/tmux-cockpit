@@ -89,6 +89,54 @@ create() {
     printf '%s\n' "$out" >&2; pause; return 1
 }
 
+# A pane's directory belongs to the deepest worktree that contains it, so a pane
+# in a worktree nested under the checkout is not a pane of the checkout.
+owner_of() {                  # <dir>  sets OWNER to the worktree path holding it, or ""
+    local w
+    OWNER=
+    for w in "${WORKTREES[@]}"; do
+        if [ "$1" = "$w" ] || [[ $1 == "$w"/* ]]; then
+            [ ${#w} -gt ${#OWNER} ] && OWNER=$w
+        fi
+    done
+}
+
+# Jump to the worktree that holds a branch (#303): the agent pane in it if there is
+# one, any pane in it, else a new window there. Never a cd of an existing pane.
+# The path comes off cockpit-tui's line, so it is checked against git's own list.
+goto() {
+    local path=$1 line w id agent cdir cwd ag='' sh='' found='' sep=$'\037' t=()
+    WORKTREES=()
+    while IFS= read -r line; do
+        [[ $line == "worktree "* ]] && WORKTREES+=("${line#worktree }")
+    done < <(git worktree list --porcelain 2>/dev/null)
+    for w in "${WORKTREES[@]}"; do [ "$w" = "$path" ] && found=1; done
+    if [[ $path != /* ]] || [ -z "$found" ]; then
+        printf 'cockpit: not a worktree of this repository: %s\n' "$path" >&2; pause; return 1
+    fi
+    while IFS="$sep" read -r id agent cdir cwd; do
+        [[ $id == %* ]] || continue
+        owner_of "$cwd"; w=$OWNER
+        owner_of "$cdir"
+        [ "$w" = "$path" ] || [ "$OWNER" = "$path" ] || continue
+        if [ "$agent" = 1 ]; then ag=${ag:-$id}; else sh=${sh:-$id}; fi
+    done < <(tmux list-panes -a -F "#{pane_id}$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{@cockpit_dir}$sep#{pane_current_path}" 2>/dev/null)
+    id=${ag:-$sh}
+    if [ -n "$id" ]; then
+        # switch-client fails without a client; the selection below still applies.
+        tmux switch-client -t "$id" 2>/dev/null || true
+        tmux select-window -t "$id" 2>/dev/null
+        tmux select-pane   -t "$id" 2>/dev/null
+        return 0
+    fi
+    [[ $PANE_ID =~ ^%[0-9]+$ ]] && t=(-a -t "$PANE_ID")
+    path=${path//#/##}   # -c is expanded as a format: a # in the path is doubled
+    if tmux new-window "${t[@]}" -c "$path" 2>/dev/null || tmux new-window -c "$path" 2>/dev/null; then
+        return 0
+    fi
+    printf 'cockpit: could not open a window in %s\n' "${path//##/#}" >&2; pause; return 1
+}
+
 # cockpit-tui draws the picker and prints one action line. This script reads it as
 # untrusted text: a fixed verb, one line, a name git accepts and a ref that exists.
 act() {
@@ -98,6 +146,7 @@ act() {
         switch) ns=heads ;;
         track)  ns=remotes ;;
         create) ns= ;;
+        goto)   goto "$arg"; return ;;
         *)      printf 'cockpit: unexpected answer from cockpit-tui: %s\n' "$line" >&2; pause; return 1 ;;
     esac
     if [ "$line" = "$verb" ] || [ -z "$arg" ] || [[ $line == *$'\n'* ]] \

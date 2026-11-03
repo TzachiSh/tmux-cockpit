@@ -9,7 +9,7 @@ pub struct Branch {
     pub remote: bool,
     pub age: String,
     pub current: bool,
-    /// The directory name of the other worktree that has it checked out.
+    /// The full path of the other worktree that has it checked out.
     pub elsewhere: Option<String>,
 }
 
@@ -45,7 +45,7 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
     .collect()
 }
 
-/// Branch name to the other worktree's directory name, for every linked
+/// Branch name to the other worktree's full path, for every linked
 /// worktree that is not `dir`'s own: git refuses to switch to those.
 fn elsewhere(dir: &str) -> Vec<(String, String)> {
     let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
@@ -57,7 +57,7 @@ fn elsewhere(dir: &str) -> Vec<(String, String)> {
         } else if let Some(b) = l.strip_prefix("branch refs/heads/")
             && path != top
         {
-            out.push((b.to_string(), path.rsplit('/').next().unwrap_or_default().to_string()));
+            out.push((b.to_string(), path.clone()));
         }
     }
     out

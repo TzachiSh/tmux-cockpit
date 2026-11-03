@@ -109,8 +109,8 @@ fn current_and_other_worktree_are_marked() {
     let get = |n: &str| bs.iter().find(|b| b.name == n).unwrap();
     assert!(get("main").current);
     assert!(!get("old").current);
-    let leaf = wt.0.file_name().unwrap().to_str().unwrap();
-    assert_eq!(get("held").elsewhere.as_deref(), Some(leaf));
+    let full = std::fs::canonicalize(&wt.0).unwrap();
+    assert_eq!(get("held").elsewhere.as_deref(), full.to_str(), "the full path, not its leaf");
     assert_eq!(get("old").elsewhere, None);
     // from inside the linked worktree its own branch is current, and main is the one held elsewhere
     let inside = branches::list(wt.s());
@@ -179,7 +179,7 @@ fn fixture() -> Vec<Branch> {
         b("origin/release/0.2", true, "5 weeks ago"),
     ];
     v[0].current = true;
-    v[2].elsewhere = Some("wt-fix".into());
+    v[2].elsewhere = Some("/work/wt-fix".into());
     v
 }
 
@@ -215,18 +215,44 @@ fn enter_prints_switch_for_a_local_and_track_for_a_remote_only() {
 }
 
 #[test]
-fn a_branch_held_by_another_worktree_gives_a_note_and_no_action() {
+fn enter_on_a_branch_held_by_another_worktree_prints_goto_with_its_full_path() {
     let mut u = ui(fixture());
+    type_str(&mut u, "left");
+    assert_eq!(choose(&mut u), "goto /work/wt-fix");
+}
+
+#[test]
+fn a_path_that_cannot_ride_one_line_gives_a_note_and_no_action() {
+    let mut bs = fixture();
+    bs[2].elsewhere = Some("/work/wt\nfix".into());
+    let mut u = ui(bs);
     type_str(&mut u, "left");
     assert_eq!(press(&mut u, KeyCode::Enter, KeyModifiers::NONE), Outcome::Continue);
     assert!(
-        u.pick.header.starts_with("✕ fix/Left-Click is checked out in the worktree wt-fix"),
+        u.pick.header.starts_with("✕ fix/Left-Click is checked out in the worktree"),
         "{}",
         u.pick.header
     );
     // the next key clears the note
     type_str(&mut u, "x");
     assert!(!u.pick.header.starts_with('✕'));
+}
+
+#[test]
+fn the_header_says_detached_head_when_no_branch_is_current() {
+    let (r, _rm, _wt) = repo();
+    let g = Theme::fixed().g;
+    let on = |r: &Scratch| branch::header(r.s(), &branches::list(r.s()), &g);
+    assert!(on(&r).starts_with("on main "), "{}", on(&r));
+    git(&r.0, "2020-01-01T00:00:00Z", &["checkout", "-q", "--detach"]);
+    assert!(on(&r).starts_with("on detached HEAD "), "{}", on(&r));
+}
+
+#[test]
+fn golden_detached_head() {
+    let mut u = Ui::new(".", fixture(), "on detached HEAD · repo", &Theme::fixed().g, None);
+    u.feed("main".into(), "* dea82ca Merge pull request #238\n");
+    golden("branch-detached-80", &draw(80, 24, &u));
 }
 
 #[test]
@@ -326,7 +352,9 @@ fn goldens() {
 
 #[test]
 fn golden_with_a_note() {
-    let mut u = ui(fixture());
+    let mut bs = fixture();
+    bs[2].elsewhere = Some("/work/wt-fix\n".into());
+    let mut u = ui(bs);
     type_str(&mut u, "left");
     press(&mut u, KeyCode::Enter, KeyModifiers::NONE);
     u.feed("fix/Left-Click".into(), "* 1a2b3c4 Fix the click\n");

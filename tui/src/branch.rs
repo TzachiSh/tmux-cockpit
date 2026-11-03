@@ -2,7 +2,8 @@
 //! the shared picker, previews the selection's graph, and prints one action
 //! line. It never mutates; `scripts/tmux-branch` validates the line and acts.
 //!
-//! The line is `switch <branch>`, `track <remote>/<branch>` or `create <name>`.
+//! The line is `switch <branch>`, `track <remote>/<branch>`, `create <name>` or,
+//! for a branch another worktree holds, `goto <worktree path>` (#303).
 //! A name is validated here with git's own rule (the same one the script runs
 //! again), so a bad name is a note on this screen and not a failed action.
 use crate::chrome;
@@ -15,7 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use unicode_width::UnicodeWidthStr;
 
-/// A key that is no action: the branch is held by another worktree.
+/// A key that is no action: the branch is held by another worktree whose path
+/// cannot ride on one line.
 const BUSY: &str = "busy ";
 const NAME_COL: usize = 20;
 
@@ -35,16 +37,26 @@ fn pad(s: &str, w: usize) -> String {
     format!("{s}{}", " ".repeat(w.saturating_sub(n)))
 }
 
+/// The directory name of a worktree path, for the eye.
+fn leaf(d: &str) -> &str {
+    d.rsplit('/').next().unwrap_or(d)
+}
+
 /// The row's key is the action line itself, exact bytes; its text is for the eye.
 fn row(b: &Branch, g: &Glyphs) -> Row {
     let (cur, wt) = if g.ascii { ("*", "w") } else { ("●", "⑂") };
     let key = match (&b.elsewhere, b.remote) {
+        (Some(d), _) if d.starts_with('/') && !d.contains('\n') => format!("goto {d}"),
         (Some(_), _) => format!("{BUSY}{}", b.name),
         (None, true) => format!("track {}", b.name),
         (None, false) => format!("switch {}", b.name),
     };
     let (m1, m2) = (if b.current { cur } else { " " }, if b.elsewhere.is_some() { wt } else { " " });
-    let held = b.elsewhere.as_deref().map(|d| format!(" {}", pick::clean(d))).unwrap_or_default();
+    let held = b
+        .elsewhere
+        .as_deref()
+        .map(|d| format!(" {}", pick::clean(leaf(d))))
+        .unwrap_or_default();
     let text = format!("{m1}{m2} {} ({}){held}", pad(&pick::clean(&b.name), NAME_COL), pick::clean(&b.age));
     Row {
         key: key.into_bytes(),
@@ -119,7 +131,7 @@ impl Ui {
                 Outcome::Choose(key) if key.starts_with(BUSY.as_bytes()) => {
                     let name = String::from_utf8_lossy(&key[BUSY.len()..]).into_owned();
                     let d = self.selected().and_then(|b| b.elsewhere.clone()).unwrap_or_default();
-                    self.note(&format!("{name} is checked out in the worktree {d}"));
+                    self.note(&format!("{name} is checked out in the worktree {}", leaf(&d)));
                     Outcome::Continue
                 }
                 o => o,
@@ -215,7 +227,7 @@ pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Ui, th: &Theme) {
     pick::render_with(f, area, &u.pick, th, &look);
 }
 
-fn header(dir: &str, bs: &[Branch], g: &Glyphs) -> String {
+pub fn header(dir: &str, bs: &[Branch], g: &Glyphs) -> String {
     let cur = bs.iter().find(|b| b.current).map_or("detached HEAD", |b| b.name.as_str());
     let leaf = std::fs::canonicalize(dir)
         .ok()

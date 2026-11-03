@@ -11978,10 +11978,11 @@ case "$(br_cap)" in
     *⑂*) ok "a branch held by another worktree wears ⑂" ;;
     *) bad "a branch held by another worktree wears ⑂" "a ⑂ mark" "$(br_cap | sed -n 1,6p)" ;;
 esac
-br_key Enter
-if until_cap "$BRS" "$BRP" '*checked out in the worktree*'; then ok "↵ on it shows a ✕ note"
-else bad "↵ on it shows a ✕ note" "checked out in the worktree" "$(br_cap | sed -n 1,4p)"; fi
-br_key Escape; br_done
+br_key Enter; br_done
+# #303: not a note any more; with no pane in that worktree, a window opens there.
+is "↵ on it opens a window in that worktree (#303)" "$BRW" \
+   "$("$TMUX_REAL" -L "$BRS" list-panes -a -F '#{window_index} #{pane_current_path}' | sed -n 's/^1 //p')"
+"$TMUX_REAL" -L "$BRS" kill-window -t t:1; "$TMUX_REAL" -L "$BRS" select-window -t "$BRP"
 is "and nothing was switched" "main" "$(br_cur "$BRR")"
 
 # A name made of shell syntax: printed as itself, handled as itself.
@@ -12107,6 +12108,99 @@ printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$BRN/cockpit-tui"; chm
 out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" </dev/null 2>&1)
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
+
+# --- #303 branch popup: a branch another worktree holds jumps there -----------
+# cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
+# tui/tests/branch.rs. Everything here is the script's half, on private servers.
+bg_server() {                 # bg_server <socket> <dir>  one session, one pane in <dir>
+    "$TMUX_REAL" -L "$1" -f /dev/null new-session -d -s t -x 100 -y 30 -c "${2//#/##}" 'exec sleep 300' >/dev/null 2>&1
+    "$TMUX_REAL" -L "$1" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+}
+bg_pane() {                   # bg_pane <socket> <dir> <cmd>  a new window in <dir>; prints its pane id
+    "$TMUX_REAL" -L "$1" new-window -P -F '#{pane_id}' -t t: -c "${2//#/##}" "$3" 2>/dev/null   # -c is a format
+}
+bg_goto() {                   # bg_goto <socket> <origin-pane> <repo> <path>  -> the script's exit code
+    local sp mark; sp=$("$TMUX_REAL" -L "$1" display-message -p '#{socket_path}')
+    mark=$(mktmpd)
+    printf '#!/bin/sh\n[ -e "%s/ran" ] && exit 1\n: > "%s/ran"\nprintf "goto %%s\\n" "$BG_GOTO"\n' "$mark" "$mark" > "$mark/cockpit-tui"
+    chmod +x "$mark/cockpit-tui"
+    env TMUX="$sp,0,0" COCKPIT_TUI_BIN="$mark/cockpit-tui" BG_GOTO="$4" \
+        timeout 30 "$DIR/scripts/tmux-branch" -p "$2" "$3" </dev/null >/dev/null 2>"$mark/err"
+    BG_ERR=$(cat "$mark/err")
+}
+bg_active() { "$TMUX_REAL" -L "$1" display-message -p -t t: '#{pane_id}'; }
+bg_windows() { "$TMUX_REAL" -L "$1" list-windows -t t: 2>/dev/null | grep -c .; }
+
+echo "== tmux-branch (#303): ↵ on a branch another worktree holds goes to that worktree =="
+if need_tmux "branch goto"; then :; else
+BGR=$(mktmpd); BGM=$(mktmpd); br_repo "$BGR" "$BGM"
+BGD=$(mktmpd); BGF="$BGD/F"
+# A space and a tmux format in the path; -c would run the #( ) if it were not escaped.
+BGW="$BGD/wt #(touch $BGF) x"
+git -C "$BGR" worktree add -q "$BGW" held >/dev/null 2>&1
+mkdir -p "$BGW/sub"
+BGS="cockpit-bg303-$$"; SOCKS="$SOCKS $BGS"
+bg_server "$BGS" "$BGR"
+BGO=$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id}' | head -1)
+BGP=$(bg_pane "$BGS" "$BGW" 'exec sleep 300')
+"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
+bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
+is "a goto to a worktree with a pane in it says nothing on stderr" "" "$BG_ERR"
+is "it selects the pane already in that worktree" "$BGP" "$(bg_active "$BGS")"
+is "and opens no new window" "2" "$(bg_windows "$BGS")"
+is "and no #( ) in the path ran" "none" "$([ -e "$BGF" ] && echo ran || echo none)"
+
+# An agent pane in a subdirectory of the tree, in a later window than the shell.
+BGA=$(bg_pane "$BGS" "$BGW/sub" 'exec -a claude sleep 300')
+until_out claude "$TMUX_REAL" -L "$BGS" display-message -p -t "$BGA" '#{pane_current_command}'
+"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
+bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
+is "an agent pane is preferred over a shell in the same tree" "$BGA" "$(bg_active "$BGS")"
+
+# An agent whose cwd is the main checkout but whose @cockpit_dir names the worktree.
+"$TMUX_REAL" -L "$BGS" kill-pane -t "$BGA"; "$TMUX_REAL" -L "$BGS" kill-pane -t "$BGP"
+BGC=$(bg_pane "$BGS" "$BGR" 'exec -a claude sleep 300')
+"$TMUX_REAL" -L "$BGS" set-option -p -t "$BGC" @cockpit_dir "$BGW"
+until_out claude "$TMUX_REAL" -L "$BGS" display-message -p -t "$BGC" '#{pane_current_command}'
+"$TMUX_REAL" -L "$BGS" select-window -t "$BGO"
+bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
+is "a pane whose @cockpit_dir is the worktree counts, whatever its cwd" "$BGC" "$(bg_active "$BGS")"
+
+# No pane there: a new window in the tree. No pane's cwd is touched.
+"$TMUX_REAL" -L "$BGS" kill-pane -t "$BGC"
+before=$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id} #{pane_current_path}')
+bg_goto "$BGS" "$BGO" "$BGR" "$BGW"
+is "with no pane there it opens one more window" "2" "$(bg_windows "$BGS")"
+is "starting in the worktree, space and #( ) intact" "$BGW" \
+   "$("$TMUX_REAL" -L "$BGS" display-message -p -t t: '#{pane_current_path}')"
+is "and no #( ) in the path ran" "none" "$([ -e "$BGF" ] && echo ran || echo none)"
+is "and the pane it came from keeps its cwd" "$before" \
+   "$("$TMUX_REAL" -L "$BGS" list-panes -a -F '#{pane_id} #{pane_current_path}' | grep -F -x -f <(printf '%s\n' "$before"))"
+
+# The line is untrusted: only a worktree of this repo is a place to go.
+n=$(bg_windows "$BGS")
+bg_goto "$BGS" "$BGO" "$BGR" "$BGD"
+case "$BG_ERR" in
+    *"not a worktree"*) ok "a directory that is no worktree of the repo is refused, by name" ;;
+    *) bad "a directory that is no worktree of the repo is refused, by name" "not a worktree" "$BG_ERR" ;;
+esac
+is "and opens no window" "$n" "$(bg_windows "$BGS")"
+bg_goto "$BGS" "$BGO" "$BGR" "relative/path"
+is "a relative path opens no window either" "$n" "$(bg_windows "$BGS")"
+"$TMUX_REAL" -L "$BGS" kill-server >/dev/null 2>&1
+
+# A worktree nested inside the checkout: a pane there belongs to it, not to the checkout.
+BGN="$BGR/nested"
+git -C "$BGR" worktree add -q "$BGN" old >/dev/null 2>&1
+BGS2="cockpit-bg303b-$$"; SOCKS="$SOCKS $BGS2"
+bg_server "$BGS2" "$BGN"
+BGO2=$("$TMUX_REAL" -L "$BGS2" list-panes -a -F '#{pane_id}' | head -1)
+bg_goto "$BGS2" "$BGO2" "$BGN" "$BGR"
+is "a pane in a nested worktree is not a pane of the enclosing checkout" "2" "$(bg_windows "$BGS2")"
+is "and the new window is the checkout" "$BGR" "$("$TMUX_REAL" -L "$BGS2" display-message -p -t t: '#{pane_current_path}')"
+"$TMUX_REAL" -L "$BGS2" kill-server >/dev/null 2>&1
+rm -rf "$BGR" "$BGM" "$BGD"
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
