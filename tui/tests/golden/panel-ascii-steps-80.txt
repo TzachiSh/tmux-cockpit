@@ -17,4 +17,4 @@
 "|                                                                              |"
 "|                                                                              |"
 "|                                                                              |"
-"+ i insert  s send  up/dn pick  r retry  ? keys  esc draft --------------------+"
+"+ i insert  s send  up/dn pick  r retry  ^Z hide  ? keys  esc draft -----------+"

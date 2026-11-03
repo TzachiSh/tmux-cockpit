@@ -62,6 +62,14 @@ file and the answer to a private temp file for the paste.
 - `?` lists every key of the screen you are on (`F1` inside a text box, where
   `?` is text). `esc` steps back one screen, and the footer names where to:
   Home, the draft, the answer. On Home it closes the panel.
+- `^Z` hides the panel, so you can switch windows while it is open: the
+  popup closes and keeps where you were (the draft and its cursor, the
+  question, the result, the steps, the answer). The next `prefix + f` on the
+  same pane brings it back as it was; nothing is inserted or sent until you
+  press the key. Another pane's panel starts fresh and the hidden one stays.
+  Not while Claude is working: `esc` cancels the call first. From the board,
+  `^Z` goes back to the board. A hidden panel is dropped after 24 hours, or
+  once its pane is gone.
 - Under 28x7 (28x12 in tablet mode) the panel asks for a larger window. `esc` and `q` still act as on
   the screen underneath and `^C` quits; other keys are dropped.
 

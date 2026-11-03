@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # cockpit-panel — the shell half of the panel: it does the paste the binary prints.
 #   cockpit-panel -p <pane>     the pane the key was pressed in
+# ^Z in the panel hides it: the state is kept per pane and the next run on the
+# same pane brings it back (#278).
 # The action comes back through a file, never $(…): ratatui paints on stdout.
 set -u
 
@@ -50,6 +52,25 @@ fi
 is_pane "$PANE" || { tell "cockpit: the panel needs a pane id, not [$PANE]"; exit 0; }
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
+
+# A hidden panel is one file per pane, keyed on the server's pid too: a new
+# server hands out %0 again, and other -L servers share this directory. One the
+# binary would refuse as over a day old (its HIDE_AGE) goes here, any server's.
+HDIR=${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel
+spid=$(tmux display -p '#{pid}' 2>/dev/null) saved='' dropped=''
+case "$spid" in ''|*[!0-9]*) ;; *) saved="$HDIR/$spid-${PANE#%}.state" ;; esac
+if [ -n "$saved" ] && [ -d "$HDIR" ]; then
+    find "$HDIR" -maxdepth 1 -name '*.state' -mmin +1440 -exec rm -f {} + 2>/dev/null
+    # This server's other panes: one that is gone can never be brought back.
+    for s in "$HDIR/$spid-"*.state; do
+        n=${s##*/"$spid"-}; n=${n%.state}
+        case "$n" in ''|*[!0-9]*) continue ;; esac
+        [ "%$n" = "$PANE" ] && continue
+        # display exits 0 on a gone pane, printing nothing: the id is what tells
+        [ "$(tmux display -p -t "%$n" '#{pane_id}' 2>/dev/null)" = "%$n" ] && continue
+        rm -f "$s" && dropped="$dropped %$n"
+    done
+fi
 # A private 0700 directory: a name beside a mktemp file in a shared /tmp is
 # one another user can create first, and its text would be pasted.
 d=$(mktemp -d) || exit 1
@@ -128,15 +149,34 @@ strip() { LC_ALL=C tr -d '\000-\010\013-\037\177' < "$f.text"; }
 # Steps stay open across actions: the binary leaves $f.state beside the action
 # line and is run again on it, in this same popup, until it exits with none.
 resume=() last=
+# Moved, not read in place: the run that takes it owns it, and a second client's
+# prefix f on the same pane finds nothing.
+if [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && mv -f "$saved" "$d/resume" 2>/dev/null; then
+    resume=(--resume "$d/resume" --last hidden)
+fi
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
         exit 0
     }
-    rm -f "$d/resume"
+    rm -f "$d/resume"; dropped=
+    # No action line and a state file: ^Z hid the panel. From the board the note
+    # is the board's, and the board loop goes on as after esc.
+    if [ ! -s "$f" ] && [ -s "$f.state" ]; then
+        if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
+            hk=$(tmux show-option -gqv @cockpit_panel_bound 2>/dev/null)
+            if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
+            msg="cockpit: hidden · $hk on $PANE brings it back"
+            if [ -n "${COCKPIT_READONLY:-}" ] && [ -z "${COCKPIT_PANEL_NOTE:-}" ]; then log "readonly, not said: $msg"; else said ok "$msg" "${say[@]}"; fi
+        else
+            log "could not keep the hidden panel of $PANE at [${saved:-no server pid}]"
+            tell "cockpit: could not keep the hidden panel; it is lost"
+        fi
+        exit 0
+    fi
     act || exit 0
     [ -s "$f.state" ] || exit 0
     mv -f "$f.state" "$d/resume" || exit 0

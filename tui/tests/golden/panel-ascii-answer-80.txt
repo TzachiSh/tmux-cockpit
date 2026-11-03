@@ -17,4 +17,4 @@
 "|                                                                              |"
 "|                                                                              |"
 "|                                                                              |"
-"+ i insert  s send  f follow up  up/dn scroll  ? keys  esc home ---------------+"
+"+ i insert  s send  f follow up  up/dn scroll  ^Z hide  ? keys  esc home ------+"

@@ -17,4 +17,4 @@
 "|                                                                              |"
 "|                                                                              |"
 "|                                                                              |"
-"+ 1-2 pick  o other  g best guess  bksp back  ? keys  esc draft ---------------+"
+"+ 1-2 pick  o other  g best guess  bksp back  ^Z hide  ? keys  esc draft ------+"

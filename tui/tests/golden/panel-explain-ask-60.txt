@@ -13,4 +13,4 @@
 "│                                                          │"
 "│                                                          │"
 "│                                                          │"
-"╰ 1-5 pick  ↵ ask  ? keys  esc home ───────────────────────╯"
+"╰ 1-5 pick  ↵ ask  ^Z hide  ? keys  esc home ──────────────╯"

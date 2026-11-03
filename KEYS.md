@@ -14,7 +14,7 @@ layout.
 | `prefix u` | jump to the pane that needs you; again for the next one. |
 | `prefix r` | the board: every agent, blocked ones first; `r` on a row reviews its diff. |
 | `prefix i` | one screen about this pane: cwd, git root, state, review. |
-| `prefix f` | the panel: Claude writes, fixes or explains for this pane and pastes the answer in. Needs `cockpit-tui`. |
+| `prefix f` | the panel: Claude writes, fixes or explains for this pane and pastes the answer in. `^Z` in it hides it; `prefix f` on the same pane brings it back. Needs `cockpit-tui`. |
 | `prefix e` | hide the status line and pane borders for this session; again restores them. |
 | `prefix b` | the branch popup (`cockpit-tui branch`) for this pane's repo. |
 | `prefix s` | the sessions screen (`cockpit-tui sessions`, what `tm` shows), with each session's agents previewed. Replaces stock `choose-tree`. |

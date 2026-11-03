@@ -9,4 +9,4 @@
 "│ a usage or rate limit: wait a        │"
 "│ minute, then r retries               │"
 "│                                      │"
-"╰ r retry  ? keys  esc back ───────────╯"
+"╰ r retry  ^Z hide  ? keys  esc back ──╯"

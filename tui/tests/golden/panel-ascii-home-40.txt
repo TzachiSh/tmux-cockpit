@@ -9,4 +9,4 @@
 "| will send: screen 4 lines, 0 hidden  |"
 "|                                      |"
 "|                                      |"
-"+ 1-5 pick  ? keys  esc close ---------+"
+"+ 1-5 pick  ^Z hide  ? keys  esc close +"

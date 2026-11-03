@@ -14,7 +14,18 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>] | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | --rows | --json | --version | -h";
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn is_pane(p: &str) -> bool {
+    p.strip_prefix('%')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
 
 /// Never publishes @cockpit_tui_pid: that pid is the board's, for its wakeups.
 fn panel(args: &[String]) {
@@ -26,10 +37,7 @@ fn panel(args: &[String]) {
             std::process::exit(2);
         }
     };
-    let Some(pane) = args.first().map(String::as_str).filter(|p| {
-        p.strip_prefix('%')
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-    }) else {
+    let Some(pane) = args.first().map(String::as_str).filter(|p| is_pane(p)) else {
         eprintln!("cockpit-tui: panel needs a pane id like %3\n{USAGE}");
         std::process::exit(2);
     };
@@ -49,7 +57,26 @@ fn panel(args: &[String]) {
     let mut a = app::App::new(pane, cap);
     a.tablet = tablet;
     a.termux = cockpit_tui::panel::is_termux();
-    if let Some((f, last)) = resume {
+    // other panes' hidden panels the wrapper dropped: their panes are gone
+    if let Ok(gone) = std::env::var("COCKPIT_PANEL_DROPPED") {
+        let gone: Vec<&str> = gone.split(' ').filter(|p| is_pane(p)).take(8).collect();
+        if !gone.is_empty() {
+            a.say(
+                app::Level::Info,
+                format!("dropped the panel hidden on {}: the pane is gone", gone.join(" ")),
+            );
+        }
+    }
+    if let Some((f, "hidden")) = resume {
+        a.reopened = true;
+        match action::read_hidden(std::path::Path::new(f), pane, unix_now()) {
+            Ok(h) => a.unhide(h),
+            Err(e) => {
+                eprintln!("cockpit-tui: cannot bring the hidden panel back from {f}: {e}");
+                a.say(app::Level::Warn, format!("the hidden panel was dropped: {e}"));
+            }
+        }
+    } else if let Some((f, last)) = resume {
         a.reopened = true;
         match action::read_state(std::path::Path::new(f), pane) {
             Ok((cmd, r)) => a.resumed(cmd, r, last),
@@ -60,6 +87,18 @@ fn panel(args: &[String]) {
         }
     }
     view::run(&mut a);
+    if a.hide {
+        let Some(f) = std::env::var_os("COCKPIT_ACTION").filter(|f| !f.is_empty()) else {
+            eprintln!("cockpit-tui: hiding needs COCKPIT_ACTION to carry the state; it is lost");
+            std::process::exit(1);
+        };
+        let kept = action::hide_body(&a, unix_now()).ok_or_else(|| "too much to keep".to_string());
+        if let Err(e) = kept.and_then(|b| action::write_hidden(std::path::Path::new(&f), &b).map_err(|e| e.to_string())) {
+            eprintln!("cockpit-tui: cannot keep the hidden panel: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let Some(act) = a.action else { return };
     // The text needs a file beside the action line; stdout has nowhere to put it.
     let Some(f) = std::env::var_os("COCKPIT_ACTION").filter(|f| !f.is_empty()) else {

@@ -1,6 +1,6 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
-use super::action::{sanitize, state_body};
+use super::action::{Hidden, hide_body, sanitize, state_body};
 use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
 use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
@@ -218,6 +218,8 @@ pub struct App {
     pub reopened: bool,
     /// Set with an action taken from Steps: what `<action>.state` carries.
     pub resume: Option<Resume>,
+    /// ^Z: out with no action, and the whole state in `<action>.state` (#278).
+    pub hide: bool,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -269,6 +271,7 @@ impl App {
             said: 0,
             action: None,
             resume: None,
+            hide: false,
             reopened: false,
             quit: false,
             last_step: None,
@@ -319,6 +322,30 @@ impl App {
             None => self.say(Level::Error, format!("step {n}: no word on how it went")),
         }
         self.view = View::Steps { label, items, sel, done };
+    }
+
+    /// Back where ^Z left it. Nothing is inserted or sent: the draft and the
+    /// reply wait for a key, and the first view gets the resume's tap guard.
+    pub fn unhide(&mut self, h: Hidden) {
+        // as in a steps resume: the wrapper's guard checks what it was written for
+        let now = std::mem::replace(&mut self.cap.cmd, h.cmd);
+        self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
+        (self.view, self.busy_back, self.run) = (h.view, h.busy_back, h.run);
+        (self.draft, self.cur, self.out, self.model) = (h.draft, h.cur, h.out, h.model);
+        let last = self.tiles().len() - 1;
+        if let View::Home { sel } = &mut self.view {
+            *sel = (*sel).min(last);
+        }
+        self.first_guard = RESUME_GUARD_MS;
+        if now == self.cap.cmd {
+            self.say(Level::Info, "back where you left it");
+        } else {
+            let was = self.cap.cmd.clone();
+            self.say(
+                Level::Warn,
+                format!("back where you left it; the pane now runs {now}, not {was}, so a paste is refused"),
+            );
+        }
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -472,6 +499,10 @@ impl App {
         if ctrl && k.code == KeyCode::Char('c') {
             return self.exit();
         }
+        // before the card and the overlay: hiding loses nothing, whatever is on screen
+        if ctrl && k.code == KeyCode::Char('z') {
+            return self.hide_key();
+        }
         if let Some(top) = self.help.take() {
             self.help = self.scrolled(k.code, top);
             return;
@@ -582,6 +613,23 @@ impl App {
     pub fn stop(&mut self) {
         self.action = None;
         self.resume = None;
+        self.hide = false;
+        self.exit();
+    }
+
+    /// ^Z: out with no action and the state kept for the next `prefix f` on
+    /// this pane. Never while a call is out: `claude -p` cannot outlive the
+    /// process, and running it again on the way back would be a second paid call.
+    fn hide_key(&mut self) {
+        if self.view == View::Busy {
+            return self.say(Level::Warn, "a call is out: esc cancels it, then ^Z hides");
+        }
+        // u64::MAX: the longest timestamp the file can carry
+        if hide_body(self, u64::MAX).is_none() {
+            return self.say(Level::Warn, "too much to keep hidden: q closes the panel");
+        }
+        self.help = None;
+        self.hide = true;
         self.exit();
     }
 

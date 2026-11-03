@@ -9036,6 +9036,78 @@ is "the log says what it would have said" "1" "$(grep -c 'readonly, not said: co
 rm -f "$PND/crash"
 fi
 
+echo "== cockpit-panel: ^Z hides the panel and the next run on the pane brings it back (#278) =="
+# The wrapper in a window stands in for the popup prefix f opens: the window
+# closing is the popup closing, and a second run on the same pane is prefix f again.
+if need_tmux "cockpit-panel hide and resume"; then :; else
+PH="cockpit-ph-$$"; SOCKS="$SOCKS $PH"; PHD=$(mktmpd)
+mkdir -p "$PHD/bin" "$PHD/state"
+# Never asked: nothing in this block sends a request.
+printf '#!/bin/sh\ncat >/dev/null\necho "<text>NEVER CALLED</text>"\n' > "$PHD/bin/claude"
+chmod +x "$PHD/bin/claude"
+"$TMUX_REAL" -L "$PH" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 300' >/dev/null 2>&1
+PHENV="env -u COCKPIT_CLAUDE 'PATH=$PHD/bin:$SHIM:/usr/bin:/bin' XDG_STATE_HOME=$PHD/state XDG_CACHE_HOME=$PHD XDG_CONFIG_HOME=$PHD COCKPIT_LOG=$PHD/tui.log"
+ph_open() {                   # <target>  -> PHB, the panel's pane, once it has drawn
+    PHB=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: "$PHENV $DIR/scripts/cockpit-panel -p $1")
+    until_cap "$PH" "$PHB" '*panel*'
+}
+ph_gone() {                   # <pane>
+    until_out '' sh -c "'$TMUX_REAL' -L '$PH' list-panes -a -F '#{pane_id}' | grep -x '$1'"
+}
+ph_cap() { "$TMUX_REAL" -L "$PH" capture-pane -p -t "$PHB" 2>/dev/null; }
+PHA=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
+PHC=$("$TMUX_REAL" -L "$PH" new-window -d -P -F '#{pane_id}' -t t: 'exec cat')
+PHF="$PHD/state/tmux-cockpit/panel/$("$TMUX_REAL" -L "$PH" display -p '#{pid}')-${PHA#%}.state"
+ph_open "$PHA"
+until_cap "$PH" "$PHB" '*will send*' || bad "the panel opens on Home" "will send" "$(ph_cap)"
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" 1
+until_cap "$PH" "$PHB" '*type what you want*'
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" -l 'keep this draft'
+until_cap "$PH" "$PHB" '*keep this draft*'
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" C-z
+if ph_gone "$PHB"; then ok "^Z closes the panel"; else bad "^Z closes the panel" "the window gone" "$(ph_cap)"; fi
+until_out '?*' ls -- "$PHF" >/dev/null
+is "and keeps its state in the pane's own 0600 file, version 2" "600 cockpit-panel-state 2" \
+   "$({ stat -c %a "$PHF" 2>/dev/null || stat -f %Lp "$PHF"; }) $(head -n 1 "$PHF" 2>/dev/null)"
+
+# Another pane starts fresh and leaves the hidden one alone.
+ph_open "$PHC"
+until_cap "$PH" "$PHB" '*will send*'
+case "$(ph_cap)" in *'keep this draft'*) bad "another pane's panel starts fresh" "Home" "$(ph_cap)" ;;
+    *) ok "another pane's panel starts fresh" ;; esac
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+ph_gone "$PHB"
+is "and the hidden one stays saved" "yes" "$([ -f "$PHF" ] && echo yes)"
+
+ph_open "$PHA"
+if until_cap "$PH" "$PHB" '*back where you left it*keep this draft*'; then
+    ok "the next run on the pane brings the draft back, in Compose"
+else
+    bad "the next run on the pane brings the draft back, in Compose" "back where you left it ... keep this draft" "$(ph_cap)"
+fi
+is "nothing was pasted into the pane on the way back" "0" \
+   "$("$TMUX_REAL" -L "$PH" capture-pane -p -t "$PHA" | grep -c 'keep this draft')"
+is "and no paste buffer was loaded" "" "$("$TMUX_REAL" -L "$PH" list-buffers -F '#{buffer_name}' 2>/dev/null)"
+is "the run that took the state owns it: the file is gone" "" "$([ -e "$PHF" ] && echo there)"
+
+# Hidden again, and its pane killed: the next panel anywhere drops it and says so.
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" C-z
+ph_gone "$PHB"
+until_out '?*' ls -- "$PHF" >/dev/null
+"$TMUX_REAL" -L "$PH" kill-pane -t "$PHA"
+ph_open "$PHC"
+if until_cap "$PH" "$PHB" "*dropped the panel hidden on $PHA*"; then
+    ok "a hidden panel whose pane is gone is dropped with a note"
+else
+    bad "a hidden panel whose pane is gone is dropped with a note" "dropped the panel hidden on $PHA" "$(ph_cap)"
+fi
+is "and its file is removed" "" "$([ -e "$PHF" ] && echo there)"
+"$TMUX_REAL" -L "$PH" send-keys -t "$PHB" q
+ph_gone "$PHB"
+unset -f ph_open ph_gone ph_cap
+"$TMUX_REAL" -L "$PH" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: a dead tmux server takes the panel and the board with it =="
 # crossterm rereads a hung-up tty forever, so a panel whose server died spun at
 # 80% CPU and shrugged off SIGTERM. Pids are named before anything acts on them.
@@ -9120,8 +9192,8 @@ env = dict(os.environ, COCKPIT_ACTION=act, COCKPIT_PANEL_MODE=mode)
 env['TMUX'] = subprocess.check_output([tmux, '-L', sock, 'display', '-p', '#{socket_path},#{pid},0']).decode().strip()
 send = {
     'q': b'q', 'esc': b'\x1b', 'ctrl-c': b'\x03',
-    # 4 tall tiles on an 80x24 tty: the button row is the last inside the border
-    'tap-close': b'\x1b[<0;13;23M\x1b[<0;13;23m',
+    # 4 tall tiles on an 80x24 tty: the button row is the last inside the border, [ close ] third
+    'tap-close': b'\x1b[<0;24;23M\x1b[<0;24;23m',
     'flip-then-q': b'3q',
     'action': b'1hi\x14',
 }
