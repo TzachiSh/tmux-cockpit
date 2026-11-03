@@ -12417,6 +12417,43 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
+# The picker is a stub that answers "new-session -" with NAME; tmux is a stub that logs
+# new-session's argv. A pty on stdin makes tm take the picker path.
+HR=$(mktmpd); mkdir -p "$HR/home/foo/.git" "$HR/home/plain" "$HR/home/a/b/.git" "$HR/home/#(id)/.git" "$HR/home/my.repo/.git" "$HR/pane" "$HR/.git" "$HR/cwd"
+printf 'x' > "$HR/wt" ; mkdir -p "$HR/home/wt"; cp "$HR/wt" "$HR/home/wt/.git"
+printf '#!/bin/sh\ncase "$1" in new-session) shift; printf "%%s\\n" "$*" >> "$HR_LOG" ;; list-sessions) echo alpha ;; display-message) case "$*" in *pane_current_path*) echo "$HR_PANE" ;; *) echo 0 ;; esac ;; has-session) exit 1 ;; esac\nexit 0\n' > "$HR/tmux"
+printf '#!/bin/sh\nprintf "new-session -\\n" > "$COCKPIT_ACTION"\nprintf "%%s" "$HR_NAME" > "$COCKPIT_ACTION.text"\nexit 0\n' > "$HR/ct"
+chmod +x "$HR/tmux" "$HR/ct"
+HR_TENV=(-u TMUX)
+hr_new() {    # hr_new <typed name> -> the new-session argv tm logged
+    : > "$HR/log"
+    (cd "$HR/cwd" && env -u TMUX_PANE "${HR_TENV[@]}" PATH="$HR:$PATH" HOME="$HR/home" HR_LOG="$HR/log" HR_NAME="$1" HR_PANE="$HR/pane" \
+        COCKPIT_TUI_BIN="$HR/ct" script -qec "$DIR/scripts/tm" /dev/null </dev/null >/dev/null 2>&1)
+    cat "$HR/log"
+}
+hr_c() {       # hr_c <typed name> -> the -c field of new-session, whole
+    local l; l=$(hr_new "$1"); printf '%s' "${l##* -c }"
+}
+hr_is() { is "$1" "$2" "$(hr_c "$3")"; }
+hr_is "a git repo at ~/foo is the start dir" "$HR/home/foo" foo
+hr_is "a worktree's .git file counts" "$HR/home/wt" wt
+hr_is "a dotted repo name matches ~/my.repo (clean turns the dot into _)" "$HR/home/my.repo" my.repo
+case $(hr_new my.repo) in *"-s my_repo -c"*) ok "the session is named by the cleaned name" ;; *) bad "the session is named by the cleaned name" "-s my_repo" "$(cat "$HR/log")" ;; esac
+hr_is "a plain ~/plain keeps today's dir" "$HR/cwd" plain
+hr_is "no ~/nothing keeps today's dir" "$HR/cwd" nothing
+# Not one path component: a slash would walk out of ~ ("a/b" is a repo), a dot name is ~ itself.
+hr_is "a name with a slash never reaches ~/a/b" "$HR/cwd" a/b
+hr_is "'..' names no folder (~/.. is a repo here)" "$HR/cwd" ..
+# A name made of format characters: the dir passes through fesc, so # doubles.
+hr_is "a hostile name reaches -c with # doubled" "$HR/home/##(id)" '#(id)'
+# In a client $TMUX is set and the pane's folder is the default; ~/NAME still wins.
+HR_TENV=("TMUX=x,0,1")
+hr_is "with TMUX set, ~/foo wins over the pane's folder" "$HR/home/foo" foo
+hr_is "with TMUX set, no repo means the pane's folder" "$HR/pane" plain
+HR_TENV=(-u TMUX)
+rm -rf "$HR"
+
 echo "== a stale cockpit-tui: tm and tmux-branch name the fix, not 'exited 2' (#276) =="
 # A binary built before a screen existed prints "unknown screen <name>" and exits 2.
 # The stub prints that line; the wrappers must say the binary is old and what to run.
