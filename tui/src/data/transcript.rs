@@ -1,4 +1,4 @@
-//! `cockpit-tui transcript`, behind the scripts/lib/transcript.sh shim: its output is
+//! `cockpit-tui transcript`: its output is
 //! byte-identical to the jq reader it replaced (Freeze 1, #54). Every failure is no output
 //! and status 1, nothing on stderr.
 use serde_json::Value;
@@ -318,8 +318,7 @@ fn human(v: &Value) -> Option<&str> {
 }
 
 /// Which input field says what a tool is doing, in preference order: the
-/// concrete argument first, the prose last. Shared with the board (data.rs) and
-/// mirrored by `desc` in scripts/lib/transcript.sh; change all three together.
+/// concrete argument first, the prose last. Shared with the board (data.rs).
 const DETAIL: [&str; 12] = [
     "command",
     "file_path",
