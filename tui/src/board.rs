@@ -1460,9 +1460,12 @@ impl Nav {
                 if !self.filtering() {
                     self.filter.clear();
                 }
-                // a pick from find that lands in a folded group unfolds it (D4)
-                if let Sel::Pane(id) = &self.sel
+                // a pick from find that lands in a folded group unfolds it (D4); with no
+                // match, or an empty field, nothing was picked and no fold opens
+                if self.filtering()
+                    && let Sel::Pane(id) = &self.sel
                     && let Some(p) = ps.iter().find(|p| p.id == *id)
+                    && find_match(p, &self.filter)
                 {
                     self.folds.remove(session(p));
                 }

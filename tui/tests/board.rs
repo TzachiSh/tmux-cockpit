@@ -2360,6 +2360,20 @@ fn find_hides_empty_groups_and_opens_folded_ones_for_the_field() {
     assert_eq!(found(&nav, &ps), shown(&ps, &folds(&["ml", "web"])));
 }
 
+/// ↵ with nothing picked (an empty field, or no match) opens no folded group.
+#[test]
+fn find_keep_with_no_pick_opens_no_fold() {
+    let ps = fleet();
+    let mut nav = nav_on(&ps, Sel::Pane("%3".into()), &["api", "ml", "web"], 26);
+    nav.open_find(&ps, 26);
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    assert_eq!(nav.folds, folds(&["api", "ml", "web"]), "an empty field picks nothing");
+    nav.open_find(&ps, 26);
+    typed(&mut nav, &ps, "zzzz-no-such-agent");
+    nav.find_act(board::FindKey::Keep, &ps, 26);
+    assert_eq!(nav.folds, folds(&["api", "ml", "web"]), "no match picks nothing");
+}
+
 /// Narrowing keeps the selection while it matches, else takes the first
 /// match; clearing leaves it on the agent it was on.
 #[test]
