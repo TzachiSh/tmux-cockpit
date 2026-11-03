@@ -20,6 +20,10 @@ fi
 # Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
 # %q's backslashes before sh sees them.
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
+# fesc: run-shell expands its command as a format, so a # in the install path
+# must reach sh as a #.
+# shellcheck source=scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh" || exit 1
 
 # Never left empty: tmux treats an empty pattern as matching every command.
 if [ -z "$(tmux show-option -gqv @cockpit_agents)" ]; then
@@ -181,15 +185,18 @@ key() {                       # <option> <default> -> the key, empty when off
 # which a display-popup size cannot express.
 Q_TM=$(sq "$DIR/scripts/tm")
 sk=$(key @cockpit_sessions_key s)
-[ -z "$sk" ] || tmux bind-key "$sk" run-shell -b "$Q_TM --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
+[ -z "$sk" ] || tmux bind-key "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
 jk=$(key @cockpit_jump_key u)
-[ -z "$jk" ] || tmux bind-key "$jk" run-shell "'$DIR/scripts/tmux-jump' '#{pane_id}'"
+[ -z "$jk" ] || tmux bind-key "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}'"
 
 ik=$(key @cockpit_info_key i)
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
-[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
+# The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
+# setting the option needs no reload.
+[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
 
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
@@ -225,7 +232,7 @@ bk=$(key @cockpit_board_key w)
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        tmux bind-key "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$Q_BOARD -p '#{pane_id}'")"
+        tmux bind-key "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
     else
         # No #{session_name}: it named the client's session, not the agent's.
         tmux bind-key "$bk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
@@ -239,7 +246,7 @@ fi
 rk=$(key @cockpit_review_key r)
 if [ -n "$rk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-        tmux bind-key "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$Q_BOARD -p '#{pane_id}'")"
+        tmux bind-key "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
     else
         tmux bind-key "$rk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
@@ -256,7 +263,7 @@ esac
 
 # Opt-in: this runs on every config reload, which must not wait on curl.
 if [ "$(tmux show-option -gqv @cockpit_tui_fetch)" = on ]; then
-    tmux run-shell -b "$(sq "$DIR/scripts/tui-fetch")"
+    tmux run-shell -b "$(fesc "$(sq "$DIR/scripts/tui-fetch")")"
 fi
 
 # Reload sources every file in #{config_files}, resolved once at bind time.
@@ -353,15 +360,19 @@ rows+=('New window' c "new-window -c '##{pane_current_path}'")
 rows+=('#{?#{E:@cockpit_is_touch},,Split right}' "\\" "split-window -h -c '##{pane_current_path}'")
 rows+=('#{?#{E:@cockpit_is_touch},,Split down}' - "split-window -v -c '##{pane_current_path}'")
 row 'Move window to a session...' M "$mk"
-# -t is the id the menu was opened on (a closed form, expanded once here); -- keeps
-# a typed name that starts with - from reading as a flag.
-rows+=('Rename window' ',' "command-prompt -I '##W' 'rename-window -t #{window_id} -- \"%%\"'")
+# The typed name is staged with %%% (quotes kept) and renamed by tmux-rename,
+# which escapes it: rename-window and rename-session expand formats, and a bare
+# %% let a " end the string (#289). The id is the one the menu was opened on
+# (expanded once here). The path is escaped twice: the menu expands the
+# item, then run-shell its command.
+Q_REN=$(fesc "$(fesc "$(sq "$DIR/scripts/tmux-rename")")")
+rows+=('Rename window' ',' "command-prompt -p '(rename-window)' -I '##W' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN window '#{window_id}'\\\"\"")
 rows+=('#{?#{e|>:#{window_panes},1},Kill pane…,Close window…}' x \
        "confirm-before -p '#{?#{e|>:#{window_panes},1},Kill pane ##P?,Close window ##I?} (y/n)' kill-pane")
 rows+=('')
 row 'Full screen (hide the bar)'  e "$fsk"
 row 'Pane info'                   i "$ik"
-rows+=('Rename session' '$' "command-prompt -I '##S' 'rename-session -t #{session_id} -- \"%%\"'")
+rows+=('Rename session' '$' "command-prompt -p '(rename-session)' -I '##S' \"set -g @cockpit_rename_to \\\"%%%\\\" ; run-shell \\\"$Q_REN session '#{session_id}'\\\"\"")
 rows+=('Detach' d detach-client)
 row 'Reload config'               R "$rlk"
 rows+=('Kill session' Q "confirm-before -p 'kill session ##S? (y/n)' kill-session")
@@ -396,7 +407,7 @@ tmux bind-key -n MouseUp3Status if-shell -F '#{m:cp-*,#{mouse_status_range}}' \
 # Bound from argv, not a sourced file: in a tmux "..." string sq()'s '\'' loses its \.
 pick_on() {
     tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
-        '\;' run-shell -b "$Q_OPEN #{pane_id}"
+        '\;' run-shell -b "$(fesc "$Q_OPEN") #{pane_id}"
 }
 # Stock swap-pane fires on the first press and moves the second click to another
 # pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.

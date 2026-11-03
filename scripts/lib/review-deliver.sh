@@ -110,7 +110,7 @@ deliver() {
 
     is_pane "$pane" || {
         tmux display-message \
-            "cockpit: not a pane id, refusing to deliver$(keep_hint '' "$store")" \
+            "$(fesc "cockpit: not a pane id, refusing to deliver$(keep_hint '' "$store")")" \
             2>/dev/null; return 1; }
 
     local is_agent
@@ -119,7 +119,7 @@ deliver() {
         2>/dev/null)
     [ "$is_agent" = 1 ] || {
         tmux display-message \
-            "cockpit: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")" \
+            "$(fesc "cockpit: $pane is not an agent pane, refusing to deliver$(keep_hint "$pane" "$store")")" \
             2>/dev/null
         return 1
     }
@@ -141,7 +141,7 @@ deliver() {
     local spool="$store.deliver"
     if ! (umask 077; [ ! -L "$spool" ] && printf '%s' "$payload" > "$spool"); then
         tmux display-message \
-            "cockpit: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")" \
+            "$(fesc "cockpit: could not write the review spool, refusing to deliver$(keep_hint "$pane" "$store")")" \
             2>/dev/null
         return 1
     fi
@@ -167,7 +167,7 @@ deliver() {
         runtime=${XDG_RUNTIME_DIR:-/tmp}
         file=$(umask 077 && mktemp "$runtime/tmux-cockpit-review-${pane#%}-XXXXXX") || {
             tmux display-message \
-                "cockpit: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")" \
+                "$(fesc "cockpit: could not create the review file, refusing to deliver$(keep_hint "$pane" "$store")")" \
                 2>/dev/null
             return 1
         }
@@ -253,7 +253,7 @@ deliver() {
     where=$(tmux display-message -p -t "$pane" \
         '#{session_name}:#{window_index} #{window_name}' 2>/dev/null)
     where=${where//\'/}
-    where=${where//#/##}
+    where=$(fesc "$where")
     [ -n "$where" ] || where="the agent pane"   # display-message failed; still read as a sentence
 
     # Armed FIRST, disarmed by the idle arm below: the busy/idle choice is made

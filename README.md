@@ -146,7 +146,7 @@ None is required.
 | `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
 | `@cockpit_touch` | `auto` | the touch layout (bar and sessions screen) below 100 columns |
 | `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |
-| `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, `tm` and sessions; `nerd` draws the default there |
+| `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, the panel, info, the branch picker, `tm` and sessions; `nerd` draws the default there |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
 | `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |

@@ -174,3 +174,40 @@ fn q_unpublishes_its_own_pid_and_only_its_own() {
     drop(p);
     assert_eq!(rig.published(), "999999", "q unpublished another board's pid");
 }
+
+/// #295: a cockpit-tui that is not the board ignores SIGUSR1, so a hook that
+/// signals a recycled pid cannot kill it. `info` is held inside its tmux read
+/// (a stub that waits for `go`), signalled there, then let go.
+#[test]
+fn a_non_board_cockpit_tui_survives_sigusr1() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::ExitStatusExt;
+    let dir = std::env::temp_dir().join(format!("cockpit-tui-usr1-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stub = dir.join("tmux");
+    let d = dir.display();
+    std::fs::write(
+        &stub,
+        format!("#!/bin/sh\n: > {d}/ready\nwhile [ ! -e {d}/go ]; do sleep 0.05; done\nexit 1\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["info", "--text", "%1"])
+        .env("COCKPIT_TMUX", &stub)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let ready = until(|| dir.join("ready").exists());
+    // our own unreaped child: the pid cannot have been recycled
+    unsafe { libc::kill(child.id() as i32, libc::SIGUSR1) };
+    std::fs::write(dir.join("go"), "").unwrap();
+    let st = child.wait().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(ready, "info never reached its tmux read");
+    assert_eq!(st.signal(), None, "SIGUSR1 killed a non-board cockpit-tui: {st:?}");
+}

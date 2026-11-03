@@ -52,6 +52,8 @@ pub struct View<'a> {
 
 /// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
 const HUNG: Duration = Duration::from_secs(3);
+/// #291: a fetch slower than this is logged; a quick one is not
+const SLOW_TICK: Duration = Duration::from_millis(500);
 
 /// What the key loop knows about its reads. The clock is passed in, so the
 /// stale rules are tested without one.
@@ -2306,26 +2308,16 @@ pub struct Extra {
 // #228: the board's extra actions. A key here must not clash with KEYS, D6's
 // keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
 // scripts/cockpit-board, which ends the loop on a verb it does not know.
-pub static EXTRAS: &[Extra] = &[
-    Extra {
-        key: 'x',
-        label: "kill",
-        help: "kill its window, after a confirm",
-        verb: "kill",
-        confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-        // the id, never the name: agent windows tend to share one (`claude`),
-        // and a pane moved into a namesake would pass a name check
-        expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
-    },
-    Extra {
-        key: 'R',
-        label: "request",
-        help: "review it and hand the review to its agent",
-        verb: "request",
-        confirm: None,
-        expect: None,
-    },
-];
+pub static EXTRAS: &[Extra] = &[Extra {
+    key: 'x',
+    label: "kill",
+    help: "kill its window, after a confirm",
+    verb: "kill",
+    confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
+    // the id, never the name: agent windows tend to share one (`claude`),
+    // and a pane moved into a namesake would pass a name check
+    expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
+}];
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
@@ -2645,6 +2637,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
+    // #291: the read's last outcome, so a tick is logged when it changes
+    let mut last_ok = None::<bool>;
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let (mut action_line, mut expect) = (None, None::<String>);
     let mut confirm: Option<Confirm> = None;
@@ -2731,13 +2725,19 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     dirty = true;
                 }
                 loaded = true;
-                log(&format!(
-                    "board tick {} tiles fetch {:?} apply {:?} redraw={}",
-                    panes.len(),
-                    s.took,
-                    t0.elapsed(),
-                    dirty
-                ));
+                // #291: one line a second filled tui.log; log only a slow fetch
+                // or a read that started or stopped failing
+                if s.took > SLOW_TICK || last_ok != Some(s.ok) {
+                    log(&format!(
+                        "board tick {} tiles fetch {:?} apply {:?} redraw={} ok={}",
+                        panes.len(),
+                        s.took,
+                        t0.elapsed(),
+                        dirty,
+                        s.ok
+                    ));
+                }
+                last_ok = Some(s.ok);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,

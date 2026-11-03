@@ -20,24 +20,16 @@ fi
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 printf -v QSELF '%q' "$SELF"
 
-# tmux expands #{...} and #(...) in a session name, a start directory and a
-# display-message text, and #(cmd) runs cmd. Every name, path or question that
-# reaches one of those goes through here: ## is a literal #. A run of # before
-# a [ goes as it is: tmux keeps #[ and ##[ verbatim, and doubling them would
-# add a #.
-fesc() {
-  local s=$1 out='' run='' c
-  while [ -n "$s" ]; do
-    c=${s:0:1}; s=${s:1}
-    if [ "$c" = '#' ]; then run+='#'; continue; fi
-    if [ "$c" = '[' ]; then out+=$run; else out+=${run//#/##}; fi
-    out+=$c; run=''
-  done
-  printf '%s' "$out${run//#/##}"
-}
-
 die() { printf '%s\n' "$*" >&2; exit 1; }
 command -v tmux >/dev/null || die "cockpit: tmux is not installed · install tmux, then rerun"
+
+# fesc, the format escaper: lib/ sits beside the real script, not the install
+# symlink. Parameter expansion, not dirname: tm runs on a PATH that may hold
+# nothing but tmux.
+tm_d=${BASH_SOURCE[0]}; [ -L "$tm_d" ] && tm_d=$(readlink "$tm_d")
+case $tm_d in */*) tm_d=${tm_d%/*} ;; *) tm_d=. ;; esac
+# shellcheck source=lib/fmt.sh
+. "$tm_d/lib/fmt.sh" || die "cockpit: tm could not load lib/fmt.sh"
 
 # \037 between fields: tab is IFS whitespace and a run of empty fields would
 # collapse.
