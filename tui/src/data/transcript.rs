@@ -33,13 +33,36 @@ pub fn main(args: &[String]) -> i32 {
     }
 }
 
-/// The transcript of a pane's session: @cockpit_session, else `claude agents
-/// --json` joined on the pane's process tree; the first `~/.claude/projects/*/<sid>.jsonl`.
+/// Claude Code's projects directory: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
+fn projects_dir() -> PathBuf {
+    match std::env::var("CLAUDE_CONFIG_DIR") {
+        Ok(d) if !d.is_empty() => PathBuf::from(d).join("projects"),
+        _ => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
+    }
+}
+
+/// `path` as a regular file inside `root`, symlinks resolved, or None. The hooks check the
+/// same rule before writing @cockpit_transcript; the reader does not trust the option.
+fn under(root: &Path, path: &str) -> Option<PathBuf> {
+    if path.is_empty() || path.split('/').any(|c| c == "..") {
+        return None;
+    }
+    let p = std::fs::canonicalize(path).ok()?;
+    let root = std::fs::canonicalize(root).ok()?;
+    (p.starts_with(&root) && p.is_file()).then_some(p)
+}
+
+/// The transcript of a pane's session: @cockpit_transcript (the hook's `transcript_path`),
+/// else @cockpit_session, else `claude agents --json` joined on the pane's process tree;
+/// the first `<projects_dir()>/*/<sid>.jsonl`.
 pub fn file(pane: &str) -> Option<PathBuf> {
     if pane.is_empty() {
         return None;
     }
     let one = |args: &[&str]| super::tmux(args).unwrap_or_default().trim_end_matches('\n').to_string();
+    if let Some(p) = under(&projects_dir(), &one(&["show-option", "-pqv", "-t", pane, "@cockpit_transcript"])) {
+        return Some(p);
+    }
     let mut sid = one(&["show-option", "-pqv", "-t", pane, "@cockpit_session"]);
     if sid.is_empty() {
         let pp: i64 = one(&["display-message", "-p", "-t", pane, "#{pane_pid}"]).parse().ok()?;
@@ -49,7 +72,7 @@ pub fn file(pane: &str) -> Option<PathBuf> {
     if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         return None;
     }
-    let dir = PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default()));
+    let dir = projects_dir();
     // The shell's glob: sorted, dot directories left out.
     let mut names: Vec<_> = std::fs::read_dir(&dir)
         .ok()?
@@ -499,6 +522,48 @@ mod tests {
             n += 1;
         }
         assert_eq!(n, 19);
+    }
+
+    /// Removes the tree when dropped, so a failing assert leaves nothing in /tmp.
+    struct Tmp(PathBuf);
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tree() -> (PathBuf, Tmp) {
+        let t = std::env::temp_dir().join(format!("tx-under-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&t);
+        std::fs::create_dir_all(t.join("projects/-p")).unwrap();
+        std::fs::write(t.join("projects/-p/a.jsonl"), "{}").unwrap();
+        std::fs::write(t.join("out.jsonl"), "{}").unwrap();
+        (t.join("projects"), Tmp(t))
+    }
+
+    #[test]
+    fn under_accepts_a_file_inside_the_tree() {
+        let (root, _t) = tree();
+        let p = format!("{}/-p/a.jsonl", root.display());
+        assert_eq!(under(&root, &p), std::fs::canonicalize(&p).ok());
+    }
+
+    #[test]
+    fn under_refuses_outside_dotdot_symlink_directory_and_empty() {
+        let (root, t) = tree();
+        let t = &t.0;
+        let r = root.display();
+        std::os::unix::fs::symlink(t.join("out.jsonl"), root.join("-p/link.jsonl")).unwrap();
+        for bad in [
+            format!("{}/out.jsonl", t.display()),
+            format!("{r}/-p/../../out.jsonl"),
+            format!("{r}/-p/../-p/a.jsonl"),
+            format!("{r}/-p/link.jsonl"),
+            format!("{r}/-p"),
+            String::new(),
+        ] {
+            assert_eq!(under(&root, &bad), None, "{bad:?}");
+        }
     }
 
     #[test]
