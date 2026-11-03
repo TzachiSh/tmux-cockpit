@@ -91,10 +91,10 @@ fn only_the_last_parallel_tool_use_is_reported() {
 #[test]
 fn the_tail_cap_drops_whole_lines_from_the_top() {
     let open = Path::new(FIX).join("open.jsonl");
-    assert_eq!(tail(&open, 60).unwrap(), "TOOL Bash: Run the widget tests\n");
+    assert_eq!(tail(&open, 40).unwrap(), "TOOL Bash: make test\n");
     assert_eq!(
-        tail(&open, 80).unwrap(),
-        "AGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests\n"
+        tail(&open, 60).unwrap(),
+        "AGENT: Looking at the widget now.\nTOOL Bash: make test\n"
     );
     assert_eq!(tail(&open, 5), None);
 }

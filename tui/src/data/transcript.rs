@@ -294,15 +294,54 @@ fn human(v: &Value) -> Option<&str> {
     (kind(v) == "user" && !meta).then(|| v["message"]["content"].as_str()).flatten()
 }
 
-fn tlabel(it: &Value) -> String {
-    let input = &it["input"];
-    let d = ["description", "command", "file_path", "pattern", "url"]
+/// Which input field says what a tool is doing, in preference order: the
+/// concrete argument first, the prose last. Shared with the board (data.rs) and
+/// mirrored by `desc` in scripts/lib/transcript.sh; change all three together.
+const DETAIL: [&str; 12] = [
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "description",
+    "summary",
+    "subject",
+    "prompt",
+    "query",
+    "url",
+    "skill",
+    "task_id",
+];
+
+/// The raw detail of a tool_use as (prefix, text): the first DETAIL field holding
+/// a non-blank string; else SendMessage's `to` as "to <to>"; else, for an
+/// `mcp__*` tool, the first string-valued input field by key order. Nested
+/// objects and arrays never count. None gives the bare tool name.
+pub(crate) fn pick<'a>(name: &str, input: &'a Value) -> Option<(&'static str, &'a str)> {
+    let ok = |s: &&str| s.chars().any(|c| !c.is_whitespace());
+    DETAIL
         .iter()
-        .find_map(|k| input[k].as_str().filter(|s| s.chars().any(|c| !c.is_whitespace())))
-        .map(clean)
-        .unwrap_or_default();
+        .find_map(|k| input[k].as_str().filter(ok).map(|s| ("", s)))
+        .or_else(|| input["to"].as_str().filter(ok).map(|s| ("to ", s)))
+        .or_else(|| {
+            if !name.starts_with("mcp__") {
+                return None;
+            }
+            let mut kv: Vec<_> = input.as_object()?.iter().filter_map(|(k, v)| Some((k, v.as_str()?))).collect();
+            kv.sort_by_key(|(k, _)| *k);
+            kv.into_iter().map(|(_, s)| s).find(ok).map(|s| ("", s))
+        })
+}
+
+fn tlabel(it: &Value) -> String {
     let n = it["name"].as_str().unwrap_or("");
-    clean(&if d.is_empty() { n.to_string() } else { format!("{n}: {d}") })
+    let d = pick(n, &it["input"])
+        .map(|(p, s)| (p, clean(s)))
+        .filter(|(_, d)| !d.is_empty())
+        .map(|(p, d)| format!("{p}{d}"));
+    clean(&match d {
+        Some(d) => format!("{n}: {d}"),
+        None => n.to_string(),
+    })
 }
 
 /// jq reads a lone low-surrogate escape as U+FFFD where serde_json refuses the
@@ -440,4 +479,34 @@ pub fn tail(path: &Path, max: i64) -> Option<String> {
         })
         .count();
     (keep > 0).then(|| lines[lines.len() - keep..].iter().map(|l| format!("{l}\n")).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One case per line: [tool name, input, expected label]. tests/run.sh feeds the
+    /// same file to the jq reader, so the two must agree.
+    const CASES: &str = include_str!("../../../tests/fixtures/tool-labels/cases.jsonl");
+
+    #[test]
+    fn tlabel_names_what_each_tool_is_doing() {
+        let mut n = 0;
+        for l in CASES.lines() {
+            let c: Value = serde_json::from_str(l).unwrap();
+            let it = serde_json::json!({"type": "tool_use", "name": c[0], "input": c[1]});
+            assert_eq!(tlabel(&it), c[2].as_str().unwrap(), "{l}");
+            n += 1;
+        }
+        assert_eq!(n, 19);
+    }
+
+    #[test]
+    fn a_label_never_ends_in_a_colon() {
+        for l in CASES.lines() {
+            let c: Value = serde_json::from_str(l).unwrap();
+            let it = serde_json::json!({"name": c[0], "input": c[1]});
+            assert!(!tlabel(&it).trim_end().ends_with(':'), "{l}");
+        }
+    }
 }

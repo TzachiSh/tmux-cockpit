@@ -284,18 +284,6 @@ fn read_facts(path: &str) -> Facts {
     fa
 }
 
-/// In preference order: the concrete argument first, the prose last.
-const DOING: [&str; 8] = [
-    "command",
-    "file_path",
-    "path",
-    "pattern",
-    "description",
-    "prompt",
-    "query",
-    "subject",
-];
-
 /// Ends the turn without closing anything: neither a prompt nor an answer.
 /// It arrives as a `text` block in the array form.
 const INTERRUPT: &str = "[Request interrupted by user";
@@ -356,10 +344,12 @@ fn parse(lines: Vec<String>) -> Facts {
                 for b in blocks {
                     match b["type"].as_str() {
                         Some("tool_use") => {
-                            let i = &b["input"];
-                            let d = DOING.iter().find_map(|k| i[k].as_str().filter(|s| !s.is_empty())).unwrap_or("");
                             let name = b["name"].as_str().unwrap_or("");
-                            fa.tool = format!("{name}: {}", first_line(d));
+                            // The name alone when no field says more: never a bare `name:`.
+                            fa.tool = match transcript::pick(name, &b["input"]).map(|(p, s)| (p, first_line(s))) {
+                                Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
+                                _ => name.to_string(),
+                            };
                             if name == "AskUserQuestion"
                                 && let Some(id) = b["id"].as_str()
                             {
@@ -825,3 +815,21 @@ pub fn wrap(s: &str, w: usize, max: usize) -> Vec<String> {
 
 // branch popup (#246)
 pub mod branches;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The board's doing line for each tool shape must equal the history reader's
+    /// label (tlabel), save for the 160-char cap and control handling: the cases
+    /// are short and clean.
+    #[test]
+    fn read_facts_labels_each_tool_by_what_it_does() {
+        for l in include_str!("../../tests/fixtures/tool-labels/cases.jsonl").lines() {
+            let c: Value = serde_json::from_str(l).unwrap();
+            let row = serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": c[0], "input": c[1]}]}});
+            assert_eq!(parse(vec![row.to_string()]).tool, c[2].as_str().unwrap(), "{l}");
+        }
+    }
+}

@@ -10585,8 +10585,8 @@ TRF="$DIR/tests/fixtures/transcript-reader"
 . "$DIR/scripts/lib/transcript.sh"
 trrow() { transcript_doing "$1" 2>/dev/null | awk -F'\t' -v k="$2" -v n="$3" '$1==k { print $n }'; }
 trnum() { case "$1" in ''|*[!0-9]*) echo "not-a-number:$1";; *) echo number;; esac; }
-is "an open Bash tool_use gives the doing row 'Bash: <description>'" \
-   "Bash: Run the widget tests" "$(trrow "$TRF/open.jsonl" doing 2)"
+is "an open Bash tool_use gives the doing row 'Bash: <command>' (command outranks description)" \
+   "Bash: make test" "$(trrow "$TRF/open.jsonl" doing 2)"
 is "the doing row's third field is whole seconds since the tool started" \
    number "$(trnum "$(trrow "$TRF/open.jsonl" doing 3)")"
 is "a tool_use with a tool_result after it is closed: no doing row" \
@@ -10605,6 +10605,17 @@ is "a tool without a description falls back to its file_path" \
    "Read: /tmp/x" "$(trrow "$TRF/noisy.jsonl" doing 2)"
 is "control characters are stripped and only the first line is kept" \
    "first bell" "$(trrow "$TRF/noisy.jsonl" asked 2)"
+# The same cases the Rust tlabel and read_facts tests read: one label per tool shape (#280).
+TLF="$DIR/tests/fixtures/tool-labels/cases.jsonl"
+TLJ="$(mktmpf)"; TLGOT=""; TLWANT=""
+while IFS= read -r tlc; do
+    jq -nc --argjson c "$tlc" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
+        message:{content:[{type:"tool_use",id:"t1",name:$c[0],input:$c[1]}]}}' > "$TLJ"
+    TLGOT+="$(trrow "$TLJ" doing 2)"$'\n'
+    TLWANT+="$(jq -r '.[2]' <<<"$tlc")"$'\n'
+done < "$TLF"
+is "the jq reader labels every tool shape as the Rust readers do, never with a bare 'Name:'" \
+   "$TLWANT" "$TLGOT"
 TRL="$(mktmpf)"
 for n in 160 161 300; do
     jq -nc --argjson n "$n" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
@@ -10672,15 +10683,15 @@ echo "== transcript reader: tail (#176) =="
 TRF="$DIR/tests/fixtures/transcript-reader"
 . "$DIR/scripts/lib/transcript.sh"
 is "the tail is USER/AGENT/TOOL lines, oldest first" \
-   $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests' \
+   $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: make test' \
    "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null)"
 is "the tail leaves out lines that are not turns" \
    3 "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
-is "a cap of 60 bytes drops the oldest lines whole" \
-   $'TOOL Bash: Run the widget tests' "$(transcript_tail "$TRF/open.jsonl" 60 2>/dev/null)"
-is "a cap of 80 keeps the two newest lines" \
-   $'AGENT: Looking at the widget now.\nTOOL Bash: Run the widget tests' \
-   "$(transcript_tail "$TRF/open.jsonl" 80 2>/dev/null)"
+is "a cap of 40 bytes drops the oldest lines whole" \
+   $'TOOL Bash: make test' "$(transcript_tail "$TRF/open.jsonl" 40 2>/dev/null)"
+is "a cap of 60 keeps the two newest lines" \
+   $'AGENT: Looking at the widget now.\nTOOL Bash: make test' \
+   "$(transcript_tail "$TRF/open.jsonl" 60 2>/dev/null)"
 is "the output never exceeds the cap" "ok" \
    "$([ "$(transcript_tail "$TRF/open.jsonl" 80 2>/dev/null | wc -c)" -le 80 ] && echo ok)"
 is "a cap smaller than the newest line prints nothing, status 1" "1:" \
