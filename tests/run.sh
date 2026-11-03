@@ -12112,7 +12112,7 @@ echo "== a stale cockpit-tui: tm and tmux-branch name the fix, not 'exited 2' (#
 # A binary built before a screen existed prints "unknown screen <name>" and exits 2.
 # The stub prints that line; the wrappers must say the binary is old and what to run.
 SD=$(mktmpd)
-printf '#!/bin/sh\ncase "$1" in list-sessions) echo alpha ;; esac\nexit 0\n' > "$SD/tmux"
+printf '#!/bin/sh\ncase "$1" in list-sessions) echo alpha ;; display-message) printf "%%s\\n" "$*" >> "$SD_LOG" ;; esac\nexit 0\n' > "$SD/tmux"
 chmod +x "$SD/tmux"
 git -C "$SD" init -q . >/dev/null 2>&1
 sd_has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1" "contains [$2]" "$3" ;; esac; }
@@ -12120,7 +12120,7 @@ sd_stub() {   # sd_stub <exit code> <stderr text>: a cockpit-tui that only fails
     printf '#!/bin/sh\nprintf "%%s\\n" "$SD_ERR" >&2\nexit %s\n' "$1" > "$SD/ct"; chmod +x "$SD/ct"; SD_ERR=$2
 }
 sd_tm() {     # a pty on stdin so tm takes the picker path
-    env -u TMUX PATH="$SD:$PATH" HOME="$SD" SD_ERR="$SD_ERR" COCKPIT_TUI_BIN="$SD/ct" \
+    env -u TMUX PATH="$SD:$PATH" HOME="$SD" SD_ERR="$SD_ERR" SD_LOG="$SD/log" ${SD_POPUP:+TM_POPUP=1} COCKPIT_TUI_BIN="$SD/ct" \
         script -qec "$DIR/scripts/tm -k" /dev/null </dev/null 2>&1
 }
 sd_br() { (cd "$SD" && env PATH="$SD:$PATH" SD_ERR="$SD_ERR" COCKPIT_TUI_BIN="$SD/ct" "$DIR/scripts/tmux-branch" </dev/null 2>&1); }
@@ -12148,9 +12148,20 @@ sd_has "plain exit 2 shows the tui's stderr (tmux-branch)" "stdout is closed" "$
 case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tmux-branch)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tmux-branch)" ;; esac
 # The words in the middle of another line, or a different exit code, are not the signal.
 sd_stub 2 'cockpit-tui: skipped 3 rows: unknown screen'
-case $(sd_tm) in *"$SDMSG"*) bad "the phrase mid-line is not stale" "no stale text" "x" ;; *) ok "the phrase mid-line is not stale" ;; esac
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "the phrase mid-line is not stale" "no stale text" "$sdo" ;; *) ok "the phrase mid-line is not stale" ;; esac
 sd_stub 1 'cockpit-tui: unknown screen sessions'
-case $(sd_tm) in *"$SDMSG"*) bad "exit 1 with the line is not stale" "no stale text" "x" ;; *) ok "exit 1 with the line is not stale" ;; esac
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "exit 1 with the line is not stale" "no stale text" "$sdo" ;; *) ok "exit 1 with the line is not stale" ;; esac
+# A popup also gets the message from display-message, through refuse.
+: > "$SD/log"; sd_stub 2 'cockpit-tui: unknown screen sessions'; SD_POPUP=1 sd_tm >/dev/null
+sd_has "a popup also gets the stale message by display-message" "$SDMSG" "$(cat "$SD/log")"
+# The capture file is gone after every exit path.
+mkdir "$SD/tmpd"
+for sdcase in "2|cockpit-tui: unknown screen branch" "2|cockpit-tui: stdout is closed" "1|oops"; do
+    sd_stub "${sdcase%%|*}" "${sdcase#*|}"; TMPDIR=$SD/tmpd sd_br >/dev/null
+    is "tmux-branch leaves no capture file (${sdcase%%|*}, ${sdcase#*|})" "" "$(ls -A "$SD/tmpd")"
+done
 rm -rf "$SD"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

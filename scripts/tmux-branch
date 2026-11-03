@@ -115,14 +115,18 @@ act() {
 
 [ -x "$COCKPIT_TUI_BIN" ] || fail "cockpit: cockpit-tui is missing ($COCKPIT_TUI_BIN) · run scripts/tui-fetch"
 
+# One stderr capture for the whole loop, removed on any exit. Without mktemp the
+# picker runs as before, and a stale binary is just "exited".
+err=$(mktemp 2>/dev/null) || err=
+if [ -n "$err" ]; then trap 'rm -f -- "$err"' EXIT; trap 'exit 130' INT TERM HUP; fi
+
 # A failed action returns to the picker; esc leaves.
 while :; do
-    # Without mktemp the picker runs as before, and a stale binary is just "exited".
-    if err=$(mktemp 2>/dev/null); then
+    if [ -n "$err" ]; then
+        : > "$err"
         pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD" 2>"$err"); rc=$?
         [ ! -s "$err" ] || cat "$err" >&2
-        tui_stale "$rc" "$err" && { rm -f "$err"; fail "cockpit: $TUI_STALE_MSG"; }
-        rm -f "$err"
+        ! tui_stale "$rc" "$err" || fail "cockpit: $TUI_STALE_MSG"
     else
         pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD"); rc=$?
     fi
