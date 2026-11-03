@@ -146,9 +146,11 @@ subs_count() {
     while [[ $arr =~ $re ]]; do SUBS=$((SUBS + 1)) arr=${BASH_REMATCH[1]}; done
 }
 
-# @cockpit_subs <- SUBS, compare-then-set, and the fleet's ✦ sum with it: a Stop that holds
-# the pane, or meets a sticky state, writes no state and so runs no sums of its own. Only
-# digits reach the formats.
+# subs_cmd <- the tmux command for @cockpit_subs <- SUBS, compare-then-set, and the fleet's
+# ✦ sum with it: a Stop that holds the pane, or meets a sticky state, writes no state and so
+# runs no sums of its own. Only digits reach the formats. A Stop that holds runs it alone;
+# any other rides in the one invocation below, so done still costs one tmux call.
+subs_cmd=()
 subs_write() {
     local cond
     if [ "$SUBS" -gt 0 ]; then
@@ -158,7 +160,7 @@ subs_write() {
     fi
     T=$pane body="$body ; $defs"
     fleet_sums
-    tmux if-shell -F -t "$pane" "$cond" "$body" 2>/dev/null
+    subs_cmd=(if-shell -F -t "$pane" "$cond" "$body")
 }
 
 case "$state" in
@@ -287,7 +289,7 @@ done)
     # count is (#313). The poller has no payload, and a terminal is a person typing the command.
     if [ -z "$poll" ] && [ ! -t 0 ]; then
         subs_count; subs_write
-        [ "$SUBS" -gt 0 ] && exit 0
+        if [ "$SUBS" -gt 0 ]; then tmux "${subs_cmd[@]}" 2>/dev/null; exit 0; fi
     fi
     ;;
 esac
@@ -364,7 +366,8 @@ if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
         "set-option -pu -t $pane @cockpit_agentview" ';')
 fi
-tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} if-shell -F -t "$pane" "$when" "${body# ; }" \
+tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
+    if-shell -F -t "$pane" "$when" "${body# ; }" \
     2>/dev/null || true)
 
 # A published pid outlives its process and SIGUSR1 terminates by default, so verify
