@@ -25,7 +25,8 @@ happening.
   A cut label never leaves a space before its `…`.
 - **The top border, at the top-left pane (or the zoomed pane), shows the
   corner:**
-  - `≡`, which opens the menu;
+  - `≡`, which opens the menu. While the tmux prefix is held it turns into a
+    reversed accent block of the same width, so you can see the prefix is on;
   - the session name, which opens the sessions screen;
   - `▲ elsewhere` while an agent in another session needs you. If none does
     but one has failed, it shows `✕ elsewhere`.
