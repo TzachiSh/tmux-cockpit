@@ -901,3 +901,56 @@ fn the_remembered_prompt_belongs_to_its_own_transcript() {
     assert!(asked_of(&r, "%1").1.is_some());
     assert_eq!(asked_of(&r, "%2"), (String::new(), None));
 }
+
+/// "YYYY-MM-DDTHH:MM:SS.000Z" for `secs` from now (negative: the past).
+fn stamp(secs: i64) -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + secs;
+    let (days, rem) = (t.div_euclid(86400), t.rem_euclid(86400));
+    // civil-from-days (Hinnant), the inverse of the reader's own
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+fn prompt_stamped(text: &str, secs: i64) -> String {
+    format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":{{\"content\":\"{text}\"}}}}\n",
+        stamp(secs)
+    )
+}
+
+/// A slow read must not push the prompt later: the time is the row's, so a
+/// prompt written 100 s ago is at least 100 s old however late it is read,
+/// including from the remembered copy.
+#[test]
+fn the_prompt_age_is_counted_from_the_row_and_not_from_the_read() {
+    let r = Rig::new("askedrow");
+    let p = r.transcript("s1", &(prompt_stamped("go", -100) + &turn_output(1)));
+    let first = asked_of(&r, "%1").1.expect("a prompt in the window has an age");
+    assert!(first >= 100, "the age is {first}, under the 100 s the row says");
+    append(&p, &turn_output(300));
+    let kept = asked_of(&r, "%1").1.expect("the kept prompt has an age");
+    assert!(kept >= 100, "the kept age is {kept}, under the 100 s the row says");
+}
+
+/// A wall clock stepped back leaves the prompt in the future. The reader says
+/// nothing then, and never a kept 0 that hides a failure; the same on the kept path.
+#[test]
+fn a_prompt_dated_after_now_has_no_age_in_the_window_or_kept() {
+    let r = Rig::new("askedfuture");
+    let p = r.transcript("s1", &(prompt_stamped("go", 300) + &turn_output(1)));
+    assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
+}
