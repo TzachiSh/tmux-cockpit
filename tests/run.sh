@@ -354,6 +354,40 @@ until_cap "$MO" o '*(rename-window)*'
 until_out '-x name' "$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}' >/dev/null
 is "Rename window takes a name that starts with -" "-x name" \
    "$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}')"
+# #289: rename-window and rename-session expand formats in the new name, and a
+# bare %% let a " close the string. Through the menu, each name lands exactly
+# as typed and nothing in it runs.
+"$TMUX_REAL" -L "$MI" set-environment -g MIMK "$MIDIR/pwned" >/dev/null 2>&1
+MISID=$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{session_id}')
+mi_rename() {                 # <key> <prompt> <format> <name>
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-b a
+    until_cap "$MO" o "*Rename window*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o "$1"
+    until_cap "$MO" o "*($2)*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-u
+    "$TMUX_REAL" -L "$MO" send-keys -t o -l -- "$4"
+    "$TMUX_REAL" -L "$MO" send-keys -t o Enter
+    until_out "$(printf '%q' "$4")" "$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3" >/dev/null
+    is "$2 applies [$4] exactly" "$4" "$("$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3")"
+}
+for mi_name in 'w"x; set -g @pwned Q;"' 'w#(touch $MIMK)' 'w#{session_name}' 'w#1 #[x]'; do
+    mi_rename , rename-window '#{window_name}' "$mi_name"
+done
+for mi_name in 's"x; set -g @pwned Q;"' 's#(touch $MIMK)' 's#{session_name}' 's#1'; do
+    mi_rename '$' rename-session '#{session_name}' "$mi_name"
+done
+# The renames' own run-shell finished before each name landed, so a payload
+# job had its chance; this run-shell holds its client until that is sure.
+"$TMUX_REAL" -L "$MI" run-shell "touch '$MIDIR/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$MIDIR/after' ] && echo yes"
+is "and no renamed name ran anything" "none " \
+   "$([ -e "$MIDIR/pwned" ] && echo ran || echo none) $("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+is "and the staging option is cleared" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+# A rejected id still consumes the staged name: nothing is left for a later call.
+"$TMUX_REAL" -L "$MI" set -g @cockpit_rename_to stale >/dev/null 2>&1
+"$TMUX_REAL" -L "$MI" run-shell "$(printf %q "$DIR/scripts/tmux-rename") session 'x;y'" >/dev/null 2>&1
+is "tmux-rename with a bad id clears the staged name too" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+"$TMUX_REAL" -L "$MI" rename-session -t "$MISID" t >/dev/null 2>&1
 # The runtime case above proves the mechanism on one row. The others that
 # re-expand a format are guarded structurally: the menu must carry the doubled
 # form, never the single one that a quote in a cwd or a name turned into a command.
@@ -1511,6 +1545,29 @@ cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
     "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
 
 # group: etmux
+echo "== tmux-open-path: a clicked file name is never run as a tmux format (#289) =="
+# new-window -n/-c and display-message expand #(): a repo file named for a
+# command ran it on the click. Real server, since only tmux knows what it expands.
+if need_tmux "open-path format escaping"; then :; else
+OX="cockpit-ox-$$"; SOCKS="$SOCKS $OX"; OXD=$(mktmpd)
+oxf='x#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).txt'   # no spaces: the line splits on them
+: > "$OXD/$oxf"
+"$TMUX_REAL" -L "$OX" -f /dev/null new-session -d -s t -c "$OXD" -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+OXP=$("$TMUX_REAL" -L "$OX" list-panes -t t -F '#{pane_id}')
+"$TMUX_REAL" -L "$OX" set -g @cockpit_editor true
+"$TMUX_REAL" -L "$OX" set -g remain-on-exit on    # the editor (true) exits at once
+"$TMUX_REAL" -L "$OX" set -g @cockpit_open_single always
+"$TMUX_REAL" -L "$OX" set -p -t "$OXP" @cockpit_click_line "error in $oxf:3"
+"$TMUX_REAL" -L "$OX" run-shell "$(printf %q "$DIR/scripts/tmux-open-path") $OXP" >/dev/null 2>&1
+ox_n=0; until [ "$("$TMUX_REAL" -L "$OX" list-windows -t t 2>/dev/null | wc -l)" -ge 2 ] || [ "$ox_n" -ge 50 ]; do
+    sleep 0.1; ox_n=$((ox_n + 1)); done
+sleep 0.5    # a #() job, had one started, runs in the background
+is "the click opened a window named for the file, literally" "$oxf" \
+   "$("$TMUX_REAL" -L "$OX" list-windows -t t -F '#{window_name}' 2>/dev/null | tail -n 1)"
+is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$OX" show -gqv @pwned 2>/dev/null)"
+"$TMUX_REAL" -L "$OX" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
@@ -7296,7 +7353,7 @@ esac
 # source pane into @cockpit_review_src first and the window reads that (#45).
 # A copy of the plugin whose tmux-review is a stub records the -p it got.
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
-mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
+mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
 printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"; chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
@@ -12195,6 +12252,79 @@ printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$BRN/cockpit-tui"; chm
 out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" </dev/null 2>&1)
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
+
+echo "== a name, path or error line never runs as a tmux format (#289) =="
+# tmux expands #{...} and #(...) in display-message, run-shell and -T text,
+# so a directory, branch or session name like x#(cmd) ran cmd. Every site goes
+# through lib/fmt.sh's fesc: the text shows as written and nothing runs.
+if need_tmux "format escape"; then :; else
+FE="cockpit-fesc-$$"; FEO="cockpit-fesco-$$"; SOCKS="$SOCKS $FE $FEO"; FED=$(mktmpd)
+# The payload runs `touch $FEMK`: a path inside a name cannot hold a /.
+"$TMUX_REAL" -L "$FE" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$FED" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FE" set-environment -g FEMK "$FED/pwned" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FEO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $FE attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$FE" list-clients -F '#{client_name}'
+FEP=$("$TMUX_REAL" -L "$FE" display-message -p -t t: '#{pane_id}')
+FETMUX="$SOCKDIR/$FE,1,0"
+fe_msgs() { "$TMUX_REAL" -L "$FE" show-messages 2>/dev/null | grep -v ' command: '; }
+fe_ran() { [ -e "$FED/pwned" ] && echo ran || echo none; }
+# A positive control first: the payload does run where tmux expands it. tmux
+# kills a #() job when the client that expanded it goes, so this run-shell
+# holds its client until the job has landed (or 5 s pass).
+"$TMUX_REAL" -L "$FE" run-shell "true '#(touch \$FEMK)'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+until_out ran fe_ran; is "control: an unescaped #() in run-shell runs" "ran" "$(fe_ran)"
+rm -f "$FED/pwned"
+
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+is "fesc doubles # before { and (, keeps #[ and a lone # as tmux reads them" \
+    'a##{b}##(c)#[d]##[e]x##' "$(fesc 'a#{b}#(c)#[d]##[e]x#')"
+fe_lit='x#(touch $FEMK) #{session_name} ##{y} #[fg=red] # end'
+is "and tmux renders the escaped text as written" "$fe_lit" \
+    "$("$TMUX_REAL" -L "$FE" display-message -p -t t: "$(fesc "$fe_lit")")"
+# The escaped one, holding its client the same way (2 s): nothing may land.
+"$TMUX_REAL" -L "$FE" run-shell "printf '%s' '$(fesc 'rs#(touch $FEMK)')'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 20 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+
+# tm: the session name goes through fesc (now from lib/fmt.sh). No space in
+# the payload: tm turns one into _.
+TMUX=$FETMUX "$DIR/scripts/tm" 'tm#(>$FEMK)' </dev/null >/dev/null 2>&1
+until_out '*tm#(>$FEMK)*' "$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}'
+case "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" in
+    *'tm#(>$FEMK)'*) ok "tm names a session literally" ;;
+    *) bad "tm names a session literally" 'tm#(>$FEMK)' "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" ;;
+esac
+
+# review-revdiff: the no-diff message names the repo dir (a worktree is named
+# after its branch). A stub revdiff: the message comes before it would run.
+FEBIN=$(mktmpd); printf '#!/bin/sh\nexit 0\n' > "$FEBIN/revdiff"; chmod +x "$FEBIN/revdiff"
+FER="$FED/x#(touch \$FEMK)"; mkdir -p "$FER"
+( cd "$FER" && git init -q -b main . && git -c user.name=t -c user.email=t@e commit -q --allow-empty -m init ) >/dev/null 2>&1
+mkdir -p "$FED/rs"
+TMUX=$FETMUX PATH="$FEBIN:$PATH" "$DIR/scripts/tmux-review" --loop "$FER" "$FED/rs/comments.md" </dev/null >/dev/null 2>&1
+fe_want="cockpit: no uncommitted changes in $FER"
+until_out "*no uncommitted changes in $FED/x*" fe_msgs
+case "$(fe_msgs)" in
+    *"$fe_want"*) ok "review-revdiff's no-diff message shows the dir literally" ;;
+    *) bad "review-revdiff's no-diff message shows the dir literally" "$fe_want" "$(fe_msgs | tail -1)" ;;
+esac
+
+# review-fleet: the session dir in "could not create" (XDG_STATE_HOME is a file).
+FES="$FED/st#(touch \$FEMK)"; : > "$FES"
+TMUX=$FETMUX XDG_STATE_HOME=$FES REVIEW_PANE_ID=$FEP "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
+until_out "*could not create $FED/st*" fe_msgs
+case "$(fe_msgs)" in
+    *"cockpit: could not create $FES/"*) ok "review-fleet's could-not-create message shows the path literally" ;;
+    *) bad "review-fleet's could-not-create message shows the path literally" "cockpit: could not create $FES/..." "$(fe_msgs | tail -1)" ;;
+esac
+
+# Nothing above ran the payload. The run-shell is the one tmux would run, and
+# it went first; this control proves the job finished before the check.
+"$TMUX_REAL" -L "$FE" run-shell "touch '$FED/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$FED/after' ] && echo yes"
+is "and no payload ran" "none" "$(fe_ran)"
+"$TMUX_REAL" -L "$FEO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FE" kill-server >/dev/null 2>&1
+rm -rf "$FED" "$FEBIN"
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

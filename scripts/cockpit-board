@@ -10,6 +10,8 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/pane.sh" || exit 1
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
@@ -32,7 +34,7 @@ say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
 # Required, but a broken install gets a message rather than a dead key.
 if [ ! -x "$BIN" ]; then
-    tmux "${say[@]}" "cockpit: board needs cockpit-tui: run $DIR/install.sh" 2>/dev/null
+    tmux "${say[@]}" "$(fesc "cockpit: board needs cockpit-tui: run $DIR/install.sh")" 2>/dev/null
     exit 0
 fi
 
@@ -60,7 +62,7 @@ while :; do
     # environment and must not mark the binary as its child.
     env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
         rc=$?
-        tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
+        tmux "${say[@]}" "$(fesc "cockpit: the board exited $rc — see $LOG")" 2>/dev/null
         exit 0
     }
 
@@ -137,7 +139,7 @@ while :; do
         # `request`, #288) or a newer one's.
         *)
             log "unknown verb [$verb $target]"
-            tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null
+            tmux "${say[@]}" "$(fesc "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui")" 2>/dev/null
             exit 0
             ;;
     esac

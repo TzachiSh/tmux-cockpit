@@ -133,7 +133,7 @@ review_loop() {
     set_base_line
 
     if [ -z "$(tree_diff "$dir" --numstat)" ]; then
-        tmux display-message "cockpit: no uncommitted changes in $dir" 2>/dev/null
+        tmux display-message "$(fesc "cockpit: no uncommitted changes in $dir")" 2>/dev/null
         drop_store "$store"
         exit 0
     fi
@@ -160,7 +160,7 @@ review_loop() {
             0)  ;;                      # no comments, or Q: nothing changes
             *)  # Kept, for --request to print once the popup is gone.
                 tmux display-message \
-                    "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)" 2>/dev/null
+                    "$(fesc "cockpit: revdiff exited $rc: $(head -n 1 -- "$errf" 2>/dev/null)")" 2>/dev/null
                 printf 'revdiff exited %s\n' "$rc" >&2; cat -- "$errf" >&2 2>/dev/null
                 drop_rows "$store"; exit 126 ;;
         esac
@@ -198,7 +198,7 @@ review_loop() {
                    COCKPIT_REVIEW_BASE=$nxt; export COCKPIT_REVIEW_BASE
                    set_base_line
                    [ -n "$(tree_diff "$dir" --numstat)" ] || \
-                       tmux display-message "cockpit: nothing to review against $label" 2>/dev/null
+                       tmux display-message "$(fesc "cockpit: nothing to review against $label")" 2>/dev/null
                    break ;;
                 x) [ "$n" -gt 0 ] || continue
                    printf ' discard %d comment(s)? y/N ' "$n"
