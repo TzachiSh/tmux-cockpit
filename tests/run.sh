@@ -8053,6 +8053,19 @@ case "$(cat "$TF/cargo99" 2>/dev/null)" in
     *) bad "--required with an unreachable release and Rust >= the floor runs cargo" "cargo build --release --locked" "$tfout" ;;
 esac
 is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = tui-v0.4.0 ] && echo yes || echo no)"
+# A binary that runs but is below TUI_MIN is no binary (#269): with the release
+# unreachable, --required must still build, not exit 0 on the stale one.
+mkdir -p "${TFB%/*}"; printf '#!/bin/sh\necho "cockpit-tui 0.2.0"\n' > "$TFB"; chmod +x "$TFB"
+rm -f "$TF/cargo99"
+tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required); tfrc=$?
+case "$(cat "$TF/cargo99" 2>/dev/null)" in
+    *"build --release --locked"*) ok "--required with a binary below TUI_MIN and no release runs cargo" ;;
+    *) bad "--required with a binary below TUI_MIN and no release runs cargo" "cargo build --release --locked" "$tfout" ;;
+esac
+case "$tfout" in
+    *"--required builds from source next"*) ok "and the skip line says the source build follows" ;;
+    *) bad "and the skip line says the source build follows" "... --required builds from source next" "$tfout" ;;
+esac
 mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a

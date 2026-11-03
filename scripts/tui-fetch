@@ -51,7 +51,7 @@ fi
 
 FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 2>/dev/null | head -1)
 
-works() { [ -n "$("$COCKPIT_TUI_BIN" --version 2>/dev/null)" ]; }
+works() { tui_check >/dev/null; }     # runs AND meets TUI_MIN: a too-old binary is no binary
 
 # Every non-error exit: under --required, only a binary that runs is success.
 finish() {
@@ -92,8 +92,8 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     # Checksums before the tarball: "could not verify" is not "verified".
     fetch sha256.sum "$tmp/sums" || {
         case $VIA in
-            'via gh') say "skip: no release $TAG via gh (or offline)" ;;
-            *)        say "skip: no release $TAG (private repository, or offline)" ;;
+            'via gh') say "skip: no release $TAG via gh (or offline); --required builds from source next" ;;
+            *)        say "skip: no release $TAG (private repository, or offline); --required builds from source next" ;;
         esac
         return 3; }
     # cargo-dist lists every asset, so a missing name was never built.
