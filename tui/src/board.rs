@@ -1724,8 +1724,9 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
             full
         } else if fits(&short, left) {
             short
-        } else if fit > g.ellipsis.width() {
-            // a cut keeps at least one character beside the ellipsis
+        } else if fit > g.ellipsis.width() && g.trunc(wt, fit) != g.ellipsis {
+            // a cut keeps at least one character beside the ellipsis; a wide
+            // first character that cannot fit leaves only the ellipsis: drop it
             format!("{cell}{sep}{}", g.trunc(wt, fit))
         } else {
             cell

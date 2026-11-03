@@ -2614,6 +2614,9 @@ fn a_narrowing_worktree_row_drops_repo_then_worktree_then_branch() {
     assert_eq!(t(20), " clean ⑂feat · wt f…", "one real char survives");
     assert_eq!(t(19), " clean ⑂feat", "a lone … is no name: dropped");
     assert_eq!(t(8), " clean", "branch dropped last");
+    // a wide first character that cannot fit beside the ellipsis is no cut either
+    let w = extra("m⑂feat · wt 日本語の木の名前", 20);
+    assert_eq!(w, " clean ⑂feat", "a lone … after a wide char: dropped");
 }
 
 /// In ascii the branch mark is `@`, so a detached HEAD's `@sha` takes none.
