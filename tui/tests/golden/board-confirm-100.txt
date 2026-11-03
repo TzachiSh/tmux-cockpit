@@ -21,7 +21,7 @@
 "│                                                                                                  │"
 "│                                                                                                  │"
 "│                  ┏ kill · api:0 · server ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ confirm ┓                  │"
-"│                  ┃ kill window api:0 · server?                                ┃                  │"
+"│                  ┃ kill pane %3 (api:0 server)?                               ┃                  │"
 "│                  ┃                                                            ┃                  │"
 "│                  ┃ ↵ is off here, so a held Enter cannot send.                ┃                  │"
 "│                  ┃ the list holds still while this is open.                   ┃                  │"

@@ -155,6 +155,9 @@ pub struct Pane {
     pub subs_n: u32,
     /// every subagent in the session's `subagents/` dir, oldest first (data::subagents)
     pub subs: Vec<subagents::Sub>,
+    /// #301: @panestate is set but no agent runs in the pane any more (a crash
+    /// or a kill that let no hook run). The board draws it dimmed as ended.
+    pub ended: bool,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -188,12 +191,13 @@ impl Hash for Pane {
             win,
             subs_n,
             subs,
+            ended,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n).hash(h);
+        (state, pinned, delivered, subs_n, ended).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -684,6 +688,13 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| g.contains(&format!("|{cmd}|")))
 }
 
+/// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
+/// it is an agent. With no agent list (the plugin not loaded) a live `claude`
+/// cannot be told from a shell, so nothing is called ended.
+pub fn ended(raw: &str, live: bool, glob_known: bool) -> bool {
+    !raw.is_empty() && !live && glob_known
+}
+
 const SEP: char = '\u{1f}';
 
 /// Split on `\037`, not tab: a tab in a cwd shifts every later field. tmux never
@@ -736,11 +747,11 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let raw = unsentinel(f[4]);
         // The name is a fast path that skips the `ps` fork; the tree decides.
-        let agent = !raw.is_empty() || agentish(f[3]) || {
+        let live = agentish(f[3]) || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
         };
-        if !agent {
+        if raw.is_empty() && !live {
             continue;
         }
         let mut p = Pane {
@@ -757,6 +768,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
             review: unsentinel(f[10]),
             spool: unsentinel(f[11]),
             win: f[12].into(),
+            ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
             ..Default::default()
         };
         if p.sess.is_empty() {

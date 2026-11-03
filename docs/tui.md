@@ -80,7 +80,7 @@ Inside the board, the list (the default layout):
 | `u` | the next `▲` agent, wrapping; unfolds its group |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
-| `a` `r` `f` `i` `x` | as in the tiles, on an agent; a header does not take them |
+| `a` `r` `f` `i` `x` `o` | as in the tiles, on an agent; a header does not take them |
 | `/` | find: open the field and filter as you type (see [Find](#find)) |
 | `v` | the tiles |
 | `?` `^L` `q` | as in the tiles |
@@ -119,7 +119,8 @@ In the tiles (`v`):
 | `f` | the panel for it (`cockpit-panel`); the board comes back after |
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
-| `x` | kill the pane's window, after a confirm (`kill %N`, for #228's wrapper arm) |
+| `x` | kill the agent's pane, after a confirm (`kill %N`); the window's other panes stay. On an ended agent it closes the pane left behind |
+| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, in the tree it worked in (`resume %N`). Not offered anywhere else |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -135,7 +136,8 @@ frame carries a hint. It lists only keys that work on what is selected, in
 priority order, and drops one whole hint at a time from the right as the width
 shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
 `r review`, `f panel`, `i info`, then `space fold` and `/ find` in the list,
-then `x kill`, which the cut drops first. On a list
+then `x kill`, and `o resume` on an ended agent that has a session id; the
+cut drops those first. On a list
 header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
 `n p sessions`, `/ find`. With a kept filter, `esc clear filter` comes before
 `? keys`. In the find field the bar is the field's:
@@ -146,16 +148,19 @@ own, from `chrome`.
 
 **Extra actions.** `EXTRAS` in `board.rs`, the `// #228:` registry, holds the
 actions beyond the key table: a key, the footer's label, the `?` help row, the
-verb, and two optional functions of the selected `Pane`, `confirm` (the
-question) and `expect` (the value for `.expect`). Each entry is in the footer on
-an agent (never a header), in `?` under "act on the selected agent", and in the
-dispatch; its key may not be one the table, D6, D7's `/` or D8's `a` takes.
-`x` → `kill`, with a confirm and the window id as `.expect`, is #228's and the
-only entry (#288 removed `R` → `request`). An entry with no `confirm` exits at once.
+verb, two optional functions of the selected `Pane`, `confirm` (the question)
+and `expect` (the value for `.expect`), and `offered`, whether the agent gets
+the key at all, with `not_here`, the note the key leaves where it does not.
+Each entry is in the footer on an agent it is offered on (never a header), in
+`?` under "act on the selected agent", and in the dispatch; its key may not be
+one the table, D6, D7's `/` or D8's `a` takes. `x` → `kill`, with a confirm and
+`%N @W` (the pane and its window's id) as `.expect`, is #228's, scoped to the
+pane by #301; `o` → `resume`, with no confirm and the session id as `.expect`,
+is #301's (#288 removed `R` → `request`). An entry with no `confirm` exits at once.
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
 over the foot of the list or the tiles: the action and the target in its title,
-`confirm` at its right, the question (`kill window api:2 · server?`) and what
+`confirm` at its right, the question (`kill pane %12 (api:2 server)?`) and what
 the keys do, all in fg. It owns the keyboard (D18): `y` exits with the action,
 `n` and `esc` go back with nothing written, `?` shows its keys, `q` and `^C`
 close the board; every other key does nothing, `↵` included, so a held Enter
@@ -962,6 +967,47 @@ reason in a warn note.
   `board-list-180`, `board-nocolor`, `board-nocolor-100`, `board-stale-100` and
   `board-tiles-100`; the help in `board-help-{60,100,180,tiles-100}`.
 
+### Contract changes for ended agents, a pane kill and resume (for #61)
+
+- #301: `data::Pane` gains `ended: bool`, appended last: `@panestate` is set
+  but no process in the pane is an agent (`agentish` on the command and the
+  process tree, the test the fleet read already made). It is never set while
+  `@cockpit_agents_glob` is empty, as a live `claude` cannot be told from a
+  shell then. `data::ended(raw, live, glob_known)` is new. Nothing is written
+  to tmux for it; `--json` and `--rows` do not carry it.
+- An ended row draws dimmed (name and text in the dim role plus `DIM`, off the
+  selection band), `◌` (ascii `~`) for its glyph and `ended` for its text, never
+  `▲`. It is out of "needs you", the hot band, a fold's kept rows, `u`, the
+  open selection and `a answer`; it sorts after the live rows of its group,
+  and a header counts it under `◌`. Find reads `ended` as its state word. The
+  tiles draw it the same way. `tm --needs` already skipped it: the sessions
+  view believes `@panestate` only on a pane whose command is an agent.
+- The fleet read evaluates `agentish` for every row now, not only for rows
+  with no `@panestate`, so the first fetch on a thread also reads
+  `@cockpit_agents_glob` (one `show-option`, once per thread).
+- `x` kills the pane, not the window: the confirm reads `kill pane %N
+  (<sess:idx> <window name>)?`, `.expect` is `%N @W`, and the wrapper runs
+  `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
+  is `killed pane %N (<sess:idx> <name>)`. An older binary's bare `@W` is
+  refused, and an older wrapper refuses this binary's `%N @W`, so neither skew
+  kills more or less than its confirm said.
+- New key `o` → verb `resume`, no confirm, `.expect` the session id; offered
+  only on an ended agent whose `@cockpit_session` is a lowercase UUID
+  (`board::{resumable, is_session_id}`). Pressed elsewhere it leaves a 2 s note.
+  `Extra` gains `offered` and `not_here`; `board::hints_on` lists the extras
+  one agent is offered, and `board::hints` is it on a live agent.
+- `scripts/cockpit-board` gains `resume)`: it splits the target's window with
+  `claude --resume '<id>'` (quoted with `sq`) at `tmux-review --dir` of the
+  target (`@cockpit_dir` when it is a directory, else the cwd), the directory
+  through `fesc` as `-c` expands formats, then selects the new pane and ends
+  the board. It refuses with a `✕` note a pane that is gone, an id that is not
+  a lowercase UUID, an id the pane no longer holds, or no directory.
+- The `?` legend gains `◌ ended: its agent is gone`.
+- Goldens: the confirm's question in `board-confirm-{60,100}`; the `x` and `o`
+  rows and the legend in `board-help-{60,100,180,tiles-100}`. No list or tile
+  golden moved: their fixtures hold no ended agent, and a live agent's footer
+  is unchanged.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -1182,7 +1228,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 
 ```
 jump %N · review %N · panel %N · deliver %N            (deliver reserved for phase 2)
-kill %N                                                 (the board's EXTRAS, #228's arm)
+kill %N · resume %N                                     (the board's EXTRAS, #228's arm, #301)
 paste %N · send %N                                      (the panel)
 ```
 
@@ -1197,10 +1243,12 @@ new with `O_NOFOLLOW`, mode 0600, never over a file that is there. It is one
 `\n`-terminated line, every control character dropped (`\t` and `\n` too), at
 most 1 KiB (`EXPECT_MAX`); a longer value is refused, not cut, and the board
 exits 1 with nothing written, as is an empty one. For `kill` it is the target
-pane's `#{window_id}` (`@9`) when the confirm opened, not its name: agent
-windows tend to share one (`claude`), and a pane moved into a namesake would
-pass a name check. The wrapper reads the pane's `#{window_id}` again and
-refuses with a `✕` note when it differs. A pane with no `@N` window id is
+pane's id and `#{window_id}` (`%12 @9`) when the confirm opened, not its name:
+agent windows tend to share one (`claude`), and a pane moved into a namesake
+would pass a name check. The wrapper reads the pane's `#{window_id}` again and
+refuses with a `✕` note when it differs. For `resume` it is the session id the
+row showed; the wrapper resumes only a lowercase UUID (`8-4-4-4-12` hex) that
+the pane's `@cockpit_session` still holds. A pane with no `@N` window id is
 not offered the kill: `x` shows `✕ nothing done: <sess:idx> has no window id
 to check, kill not sent` and opens no confirm. Only ASCII control characters
 are dropped (`is_ascii_control`), so the bytes match what a shell `read` sees;
@@ -1526,13 +1574,15 @@ at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
 the gitsafe flags. The list still makes no pane capture.
 
 **Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
-`kill %N` kills the pane's window. The board writes the `#{window_id}` it
-showed (`@9`, not the name: automatic-rename gives agents the same name) to
-`$COCKPIT_ACTION.expect` first. The wrapper compares it with the window the pane
-is in now and kills the window that id names; it refuses with a `✕` note if the
-pane moved to another window, if the file is missing, empty, not an `@<digits>`
-id or a symlink, or if the pane is gone. The `✓` note and the log carry the id
-and `session:index` of what died.
+`kill %N` kills the pane, not its window (#301). The board writes the pane id
+and the `#{window_id}` it showed (`%12 @9`, not the name: automatic-rename gives
+agents the same name) to `$COCKPIT_ACTION.expect` first. The wrapper checks the
+pane id is the action's, compares the window id with the window the pane is in
+now, and kills the pane in the same tmux call; it refuses with a `✕` note if
+the pane moved to another window, if the file is missing, empty, names another
+pane, is a bare `@<digits>` (an older binary's, whose confirm promised the
+window) or a symlink, or if the pane is gone. The `✓` note and the log carry
+the pane and the `session:index` and name of its window.
 The board key waits on the board's verb hook (not shipped).
 
 ## Sessions

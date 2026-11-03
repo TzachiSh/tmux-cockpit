@@ -1995,7 +1995,10 @@ fn every_extra_has_a_key_of_its_own() {
             assert_eq!(board::action(key(KeyCode::Char(e.key)), list), Some(Act::Extra(e.key)));
         }
     }
-    assert_eq!(EXTRAS.iter().map(|e| (e.key, e.verb)).collect::<Vec<_>>(), [('x', "kill")]);
+    assert_eq!(
+        EXTRAS.iter().map(|e| (e.key, e.verb)).collect::<Vec<_>>(),
+        [('x', "kill"), ('o', "resume")]
+    );
 }
 
 /// On an agent the footer and `?` list every entry; a header lists none.
@@ -2003,7 +2006,8 @@ fn every_extra_has_a_key_of_its_own() {
 fn the_footer_and_the_help_list_the_extras() {
     let g = Glyphs::unicode();
     for list in [false, true] {
-        let ks = board::hints(&g, list, Focus::Agent(false));
+        // an ended agent with a session id is offered every entry (#301)
+        let ks = board::hints_on(&g, list, Focus::Agent(false), &ended("%3", SID));
         let help = board::help_rows(&g, list);
         for e in EXTRAS {
             assert!(ks.contains(&(e.key.to_string(), e.label.to_string())), "{ks:?}");
@@ -2067,18 +2071,19 @@ fn the_confirm_owns_the_keys() {
     );
 }
 
-/// `x` asks, naming what dies, and `y` exits with `kill %N` and the shown
-/// window name as `.expect`; an entry with no confirm exits at once.
+/// `x` asks, naming the pane that dies (#301), and `y` exits with `kill %N`
+/// and `%N @W`, the pane and its window's id, as `.expect`; an entry with no
+/// confirm exits at once.
 #[test]
 fn y_writes_the_verb_and_the_expected_name() {
     let ps = named();
     let c = board::Confirm::open(kill(), &id(&ps, "%3")).unwrap();
-    assert_eq!(c.ask, "kill window api:0 · server?");
+    assert_eq!(c.ask, "kill pane %3 (api:0 server)?");
     assert_eq!(
         c.exit(),
         board::Exit {
             line: "kill %3".into(),
-            expect: Some("@3".into())
+            expect: Some("%3 @3".into())
         }
     );
     // #288: `R` is gone; an entry with no confirm still exits at once
@@ -2090,6 +2095,8 @@ fn y_writes_the_verb_and_the_expected_name() {
         verb: "zap",
         confirm: None,
         expect: None,
+        offered: |_| true,
+        not_here: "",
     };
     assert!(board::Confirm::open(&r, &id(&ps, "%3")).is_none());
     assert_eq!(
@@ -2103,7 +2110,7 @@ fn y_writes_the_verb_and_the_expected_name() {
     let d = scratch("expect-y");
     let f = d.join("act");
     cockpit_tui::panel::action::write_expect(&f, c.expect.as_deref().unwrap()).unwrap();
-    assert_eq!(std::fs::read_to_string(d.join("act.expect")).unwrap(), "@3\n");
+    assert_eq!(std::fs::read_to_string(d.join("act.expect")).unwrap(), "%3 @3\n");
 }
 
 /// `.expect` follows `.text`'s rules: control characters out (here `\t` and
@@ -2193,7 +2200,7 @@ fn confirm_goldens() {
         golden(&format!("board-confirm-{w}"), &out);
         let r = rows(&out);
         assert!(
-            out.contains("kill window api:0 · server?") && out.contains("sessions · held"),
+            out.contains("kill pane %3 (api:0 server)?") && out.contains("sessions · held"),
             "{out}"
         );
         assert!(r[h as usize - 1].starts_with(" y kill"), "{out}");
@@ -2206,7 +2213,7 @@ fn confirm_goldens() {
     };
     let out = draw(100, 30, |f| board::render(f, f.area(), &v));
     assert!(
-        out.contains("kill window api:0 · server?") && rows(&out)[29].starts_with(" y kill"),
+        out.contains("kill pane %3 (api:0 server)?") && rows(&out)[29].starts_with(" y kill"),
         "{out}"
     );
     // its `?` is its own keys
@@ -2216,8 +2223,8 @@ fn confirm_goldens() {
     assert!(out.contains("on the confirm") && !out.contains("fold all"), "{out}");
 }
 
-/// Agent windows share a name (`claude`): the kill's `.expect` is the window
-/// id, so a pane moved into a namesake window fails the wrapper's check.
+/// Agent windows share a name (`claude`): the kill's `.expect` carries the
+/// window id, so a pane moved into a namesake window fails the wrapper's check.
 #[test]
 fn two_windows_with_one_name_expect_different_ids() {
     let mut a = pane("%8", "api:1", "one", "running");
@@ -2227,9 +2234,9 @@ fn two_windows_with_one_name_expect_different_ids() {
     let (ca, cb) = (board::Confirm::open(kill(), &a).unwrap(), board::Confirm::open(kill(), &b).unwrap());
     assert_eq!(
         (ca.ask.as_str(), cb.ask.as_str()),
-        ("kill window api:1 · claude?", "kill window api:2 · claude?")
+        ("kill pane %8 (api:1 claude)?", "kill pane %9 (api:2 claude)?")
     );
-    assert_eq!((ca.expect.as_deref(), cb.expect.as_deref()), (Some("@8"), Some("@9")));
+    assert_eq!((ca.expect.as_deref(), cb.expect.as_deref()), (Some("%8 @8"), Some("%9 @9")));
 }
 
 /// A pane with no window id, or a malformed one, is never offered a kill:
@@ -2627,4 +2634,210 @@ fn an_ascii_detached_head_shows_one_at() {
     assert_eq!(extra_in(&th, "api⑂@1b94824", 40), " clean @1b94824");
     assert_eq!(extra_in(&th, "api⑂main", 40), " clean @main");
     assert_eq!(extra("api⑂@1b94824", 40), " clean ⑂@1b94824");
+}
+
+// ------------------------------------------- ended agents, kill a pane, resume (#301)
+
+const SID: &str = "0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c";
+
+/// An agent whose process is gone, left on `needs-input`: the worst state it
+/// could have died on, so every ▲ rule has something to get wrong.
+fn ended(id: &str, sess: &str) -> Pane {
+    let mut p = pane(id, "api:0", "server", "needs-input");
+    (p.msg, p.sess, p.win, p.ended) = ("Do you want to run npm test?".into(), sess.into(), "@3".into(), true);
+    p
+}
+
+/// The fleet with `%3` (api's ▲) ended.
+fn fleet_ended() -> Vec<Pane> {
+    let mut ps = fleet();
+    ps.iter_mut().find(|p| p.id == "%3").unwrap().ended = true;
+    ps
+}
+
+fn list_line(ps: &[Pane], sel: &str, id: &str) -> (Buffer, u16) {
+    let (th, nav) = (Theme::fixed(), nav_on(ps, Sel::Pane(sel.into()), &[], 26));
+    let b = render_to_buffer(100, 30, |f| board::render(f, f.area(), &list_view(ps, &th, &nav)));
+    let p = ps.iter().find(|p| p.id == id).unwrap();
+    let y = (0..30).find(|&y| (0..100).map(|x| b[(x, y)].symbol()).collect::<String>().contains(p.title.as_str()));
+    (b.clone(), y.unwrap())
+}
+
+#[test]
+fn an_ended_row_says_ended_with_its_own_glyph_and_no_needs_mark() {
+    let ps = fleet_ended();
+    let (b, y) = list_line(&ps, "%4", "%3");
+    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    assert!(line.contains("◌") && line.contains("ended") && !line.contains("▲"), "{line}");
+    assert!(!line.contains("npm test"), "the message it died on is not shown: {line}");
+}
+
+#[test]
+fn an_ended_row_is_dimmed_name_and_text_off_the_band() {
+    let ps = fleet_ended();
+    let th = Theme::fixed();
+    let (b, y) = list_line(&ps, "%4", "%3");
+    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    for word in ["server", "ended"] {
+        let x = line[..line.find(word).unwrap()].chars().count() as u16;
+        assert!(b[(x, y)].modifier.contains(Modifier::DIM), "{word} is DIM");
+        assert_eq!(b[(x, y)].fg, th.quote, "{word} is in the dim role");
+    }
+}
+
+#[test]
+fn a_selected_ended_row_keeps_fg_and_no_dim() {
+    let ps = fleet_ended();
+    let (b, y) = list_line(&ps, "%3", "%3");
+    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    let x = line[..line.find("server").unwrap()].chars().count() as u16;
+    assert!(!b[(x, y)].modifier.contains(Modifier::DIM), "D17: the band is never dim");
+    assert_eq!(b[(x, y)].fg, Theme::fixed().value);
+}
+
+/// "needs you", the hot band, the fold's keep and `u` all skip an ended ▲.
+#[test]
+fn an_ended_agent_is_never_needs_or_urgent() {
+    let ps = fleet_ended();
+    let th = Theme::fixed();
+    let nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 26);
+    let out = draw(120, 30, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    assert!(rows(&out)[0].contains(" 1 needs you"), "only web's ▲ is counted: {}", rows(&out)[0]);
+    // api held only the ▲ that ended: it drops out of the hot band
+    assert_eq!(names(&ps), ["infra", "web", "api", "ml"]);
+    // a folded api hides its ended row, which a live ▲ never is
+    assert!(!shown(&ps, &folds(&["api"])).contains(&"%3".to_string()));
+}
+
+#[test]
+fn u_and_the_open_selection_skip_an_ended_needs_row() {
+    let ps = fleet_ended();
+    let mut nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 26);
+    nav.act(Act::NextNeeds, &ps, 26);
+    assert_eq!(nav.sel, Sel::Pane("%7".into()), "u lands on web's live ▲");
+    let lo = board::list_order(&ps);
+    assert_eq!(ps[lo[board::open_sel(&ps, &lo, None, "")]].id, "%7");
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 26);
+    assert_eq!(nav.focus(&ps), Focus::Agent(false), "a answers nothing on it");
+}
+
+#[test]
+fn an_ended_agent_sorts_after_the_live_ones() {
+    let ps = vec![ended("%1", SID), pane("%2", "api:1", "b", "done"), pane("%3", "api:2", "c", "")];
+    let ids: Vec<&str> = board::order(&ps).into_iter().map(|i| ps[i].id.as_str()).collect();
+    assert_eq!(ids, ["%2", "%3", "%1"]);
+}
+
+#[test]
+fn an_ended_tile_has_no_needs_border_and_says_ended() {
+    let ps = vec![ended("%1", SID)];
+    let th = Theme::fixed();
+    let pvs = vec![Some("$".to_string())];
+    let b = render_to_buffer(60, 24, |f| board::render(f, f.area(), &view(&ps, &pvs, &th, 0, 0)));
+    let out: String = (0..24)
+        .map(|y| (0..60).map(|x| b[(x, y)].symbol()).collect::<String>() + "\n")
+        .collect();
+    assert!(out.contains("ended") && !out.contains("▲"), "{out}");
+    assert_ne!(b[(0, 1)].fg, th.needs, "the border is not the needs colour");
+}
+
+#[test]
+fn the_header_counts_ended_agents_under_their_own_glyph() {
+    let ps = fleet_ended();
+    let th = Theme::fixed();
+    let nav = nav_on(&ps, Sel::Pane("%4".into()), &[], 26);
+    let out = draw(100, 30, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+    let api = rows(&out).into_iter().find(|r| r.contains(" api ")).unwrap().to_string();
+    assert!(api.contains("◌1") && !api.contains("▲"), "{api}");
+}
+
+#[test]
+fn find_reads_ended_as_the_state_word() {
+    let ps = fleet_ended();
+    let p = ps.iter().find(|p| p.id == "%3").unwrap();
+    assert!(board::find_match(p, "ended") && !board::find_match(p, "needs"));
+}
+
+/// D18 holds `ended` as it holds the state: a row must not move under a confirm.
+#[test]
+fn a_refresh_while_asked_holds_ended() {
+    let old = named();
+    let c = board::Confirm::open(kill(), &id(&old, "%4")).unwrap();
+    let mut new = named();
+    new.iter_mut().find(|p| p.id == "%4").unwrap().ended = true;
+    let held = board::held(&c, &old, &new).unwrap();
+    assert!(!held.iter().find(|p| p.id == "%4").unwrap().ended);
+}
+
+/// `o` is in the footer only on an ended agent whose session is a UUID.
+#[test]
+fn resume_is_offered_only_on_an_ended_agent_with_a_session_id() {
+    let g = Glyphs::unicode();
+    let has_o = |p: &Pane| {
+        board::hints_on(&g, true, Focus::Agent(false), p)
+            .iter()
+            .any(|(k, v)| k == "o" && v == "resume")
+    };
+    assert!(has_o(&ended("%3", SID)));
+    let mut live = ended("%3", SID);
+    live.ended = false;
+    assert!(!has_o(&live), "a live agent");
+    for bad in [
+        "",
+        "-",
+        "abc",
+        &SID.to_uppercase(),
+        &format!("{SID};id"),
+        &format!("$(id){}", &SID[5..]),
+    ] {
+        assert!(!has_o(&ended("%3", bad)), "{bad:?} offered a resume");
+    }
+}
+
+#[test]
+fn a_session_id_is_strictly_a_lowercase_uuid() {
+    let ok = [SID, "00000000-0000-0000-0000-000000000000"];
+    let no = [
+        "",
+        "0b5e7c1a3f2d4e8b9a6c1d2e3f4a5b6c",
+        "0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6",
+        "0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c0",
+        "0b5e7c1a-3f2d-4e8b-9a6c1-d2e3f4a5b6c",
+        "0B5E7C1A-3F2D-4E8B-9A6C-1D2E3F4A5B6C",
+        "0b5e7c1g-3f2d-4e8b-9a6c-1d2e3f4a5b6c",
+        "0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c\n",
+        "#(id)c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c",
+        "０b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6",
+    ];
+    assert!(ok.iter().all(|s| board::is_session_id(s)));
+    for s in no {
+        assert!(!board::is_session_id(s), "{s:?}");
+    }
+}
+
+/// `o` writes `resume %N` at once, the session id as `.expect`; on a live
+/// agent the dispatch leaves it to `offered`, which says no.
+#[test]
+fn o_writes_resume_and_the_session_id() {
+    let o = board::extra('o').unwrap();
+    let p = ended("%3", SID);
+    assert!(board::Confirm::open(o, &p).is_none(), "resume asks nothing");
+    assert_eq!(
+        board::at_once(o, &p),
+        board::Exit {
+            line: "resume %3".into(),
+            expect: Some(SID.into())
+        }
+    );
+    let mut live = p.clone();
+    live.ended = false;
+    assert!(!(o.offered)(&live));
+}
+
+/// `x` is offered on an ended agent too, and closes its pane like any other.
+#[test]
+fn x_is_offered_on_an_ended_agent() {
+    let p = ended("%3", SID);
+    assert!((kill().offered)(&p) && board::refused(kill(), &p).is_none());
+    assert_eq!(board::Confirm::open(kill(), &p).unwrap().expect.as_deref(), Some("%3 @3"));
 }

@@ -105,10 +105,12 @@ while :; do
             exit 0
             ;;
         # #228 verbs
-        # The board confirmed with the window's id (@N) and wrote it to $f.expect
-        # first. A name is no identity (automatic-rename gives agents the same
-        # one), so the id is compared: a pane moved to another window since is
-        # refused, and what dies is the window that id names, never a re-lookup.
+        # The board confirmed with `%N @W`, the pane and its window's id, and wrote
+        # it to $f.expect first. A name is no identity (automatic-rename gives
+        # agents the same one), so the ids are compared: a pane moved to another
+        # window since is refused. Only the pane dies (#301), never its window.
+        # An older binary's bare `@W` names no pane, so it is refused too: its
+        # confirm promised the whole window.
         kill)
             want=
             [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
@@ -116,6 +118,7 @@ while :; do
             info=$(tmux display-message -p -t "$target" "#{?pane_id,#{window_id}$sep#{session_name}:#{window_index}$sep#{window_name},}" 2>/dev/null | head -n 1)
             have=${info%%"$sep"*}; label=${info#*"$sep"}
             where=${label%%"$sep"*}; label="$where $(printf %s "${label#*"$sep"}" | tr -d '\000-\037\177')"
+            [ "${want%% *}" = "$target" ] && want=${want#"$target" } || want=
             case "$want" in @[0-9]*) case "${want#@}" in *[!0-9]*) want= ;; esac ;; *) want= ;; esac
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing killed\n' "$target" > "$note"
@@ -125,14 +128,50 @@ while :; do
                 printf '✕ cockpit: not killed: %s is now in window %s, you confirmed %s\n' "$target" "$have" "$want" > "$note"
             else
                 # The check and the kill are one tmux call: a pane that moves in the
-                # gap makes the format false and nothing dies. $want is @digits.
-                tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-window -t $want" 2>/dev/null
-                if tmux list-windows -a -F '#{window_id}' 2>/dev/null | grep -qx -- "$want"; then
+                # gap makes the format false and nothing dies. $want is @digits and
+                # $target %digits, as is_pane checked.
+                tmux if-shell -F -t "$target" "#{==:#{window_id},$want}" "kill-pane -t $target" 2>/dev/null
+                if tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx -- "$target"; then
                     printf '✕ cockpit: not killed: %s left window %s or it would not close\n' "$target" "$want" > "$note"
                 else
-                    printf '✓ cockpit: killed window %s (%s)\n' "$want" "$label" > "$note"
-                    log "killed window $want $label via $target"
+                    printf '✓ cockpit: killed pane %s (%s)\n' "$target" "$label" > "$note"
+                    log "killed pane $target in window $want $label"
                 fi
+            fi
+            ;;
+        # #301: `claude --resume <id>` in a new pane beside an ended agent, in
+        # the tree it worked in (tmux-review --dir: @cockpit_dir, else the cwd).
+        # $f.expect is the session id the row showed; the pane must hold it
+        # still, and it must be a UUID, as it goes on a command line.
+        resume)
+            want=
+            [ -f "$f.expect" ] && [ ! -L "$f.expect" ] && want=$(head -c 64 -- "$f.expect" 2>/dev/null | head -n 1)
+            # 8-4-4-4-12 lowercase hex, spelled out: a range can take more under a locale
+            h='[0123456789abcdef]'
+            [[ $want =~ ^$h{8}-$h{4}-$h{4}-$h{4}-$h{12}$ ]] || want=
+            have=$(tmux display-message -p -t "$target" "#{?pane_id,=#{@cockpit_session},}" 2>/dev/null | head -n 1)
+            dir=$("$DIR/scripts/tmux-review" --dir "$target" 2>/dev/null)
+            if [ -z "$have" ]; then
+                printf '✕ cockpit: %s is gone, nothing resumed\n' "$target" > "$note"
+            elif [ -z "$want" ]; then
+                printf '✕ cockpit: not resumed: the board named no session id\n' > "$note"
+            elif [ "${have#=}" != "$want" ]; then
+                printf '✕ cockpit: not resumed: %s no longer holds session %s\n' "$target" "$want" > "$note"
+            elif [ ! -d "$dir" ]; then
+                printf '✕ cockpit: not resumed: %s has no directory to start in\n' "$target" > "$note"
+            else
+                # -c expands formats, so the directory goes through fesc; the
+                # command does not, and $want is hex and dashes, quoted anyway.
+                new=$(tmux split-window -P -F '#{pane_id}' -t "$target" -c "$(fesc "$dir")" \
+                    "claude --resume $(sq "$want")" 2>/dev/null)
+                if is_pane "$new"; then
+                    log "resumed session $want in $new beside $target"
+                    tmux switch-client -t "$new" 2>/dev/null || true
+                    tmux select-window -t "$new" 2>/dev/null
+                    tmux select-pane -t "$new" 2>/dev/null
+                    exit 0
+                fi
+                printf '✕ cockpit: not resumed: tmux would not split %s\n' "$target" > "$note"
             fi
             ;;
         # Version skew: an older binary's verb (the retired `fix` and
