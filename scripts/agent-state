@@ -160,7 +160,9 @@ session)
     # and bash reads a pipe a byte at a time. The ids come first in what claude sends; one
     # that falls past the cap is skipped (the old value stays). Ends early on both keys.
     have_ids() { case "$payload" in *'"session_id"'*'"transcript_path"'*|*'"transcript_path"'*'"session_id"'*) return 0 ;; esac; return 1; }
-    payload="" chunk=""
+    # Bytes, not characters: a UTF-8 locale would count `read -n` in characters.
+    payload="" chunk="" lc_was=${LC_ALL-} lc_set=${LC_ALL+1}
+    LC_ALL=C
     cap=4096 deadline=$(( SECONDS + 2 ))
     while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] && [ ${#payload} -lt $cap ]; do
         IFS= read -r -n $(( cap - ${#payload} )) -t "$left" chunk || { payload="$payload$chunk"; break; }
@@ -168,6 +170,7 @@ session)
 "; chunk=""
         have_ids && break
     done
+    if [ -n "$lc_set" ]; then LC_ALL=$lc_was; else unset LC_ALL; fi
     # A value cut by the cap fails the UUID test or names no file, so it is never saved.
     json_str session_id; sid=$REPLY
     json_str transcript_path; tp=$REPLY

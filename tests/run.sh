@@ -12135,21 +12135,29 @@ is "a new session whose transcript is not valid drops the old transcript (/clear
 ss_clear
 ss $SSU1 "$SSD/out.jsonl"
 is "a path outside the projects tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSROOT/-p/../-p/$SSU1.jsonl"
 is "a path with .. is not saved, even when it resolves inside the tree" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSROOT/-p/link.jsonl"
 is "a symlink out of the tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"
 is "a path with a #(...) component is not saved" "" "$(ss_opt transcript)"
 is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
 ss $SSU1 "$SSROOT/-p/viaq.jsonl"
 is "a symlink inside the tree to a path with #(...) is not saved either" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSTAB"
 is "a path with a control character is not saved" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSBS"
 is "a path with a backslash is not saved" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "$SSROOT/-p"
 is "a directory is not saved" "" "$(ss_opt transcript)"
+ss_clear
 ss $SSU1 "relative/$SSU1.jsonl"
 is "a relative path is not saved" "" "$(ss_opt transcript)"
 ss_clear
@@ -12168,9 +12176,31 @@ ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prom
 is "last_assistant_message and the prompt never reach a tmux option" "0" "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
 ss_clear
 SSBIG="$SSD/big.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; head -c 500000 /dev/zero | tr '\0' x; printf '"}\n'; } > "$SSBIG"
-ss_t0=$(date +%s%N); cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; ss_ms=$(( ($(date +%s%N) - ss_t0) / 1000000 ))
+cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
 is "a 500 KB prompt after the ids: both still found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
-is "and the hook returns in under 200 ms, not in time proportional to the prompt" "fast" "$([ "$ss_ms" -lt 200 ] && echo fast || echo "slow:$ss_ms")"
+ss_unread() { { env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; wc -c; } < "$1" | tail -n 1 | tr -d ' '; }
+ss_want=$(( $(wc -c < "$SSBIG") - 4096 ))
+is "and the hook leaves all but 4096 bytes of it unread" "$ss_want" "$(ss_unread "$SSBIG")"
+SSEMO="$SSD/emoji.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; for _ in $(seq 1 20000); do printf '\360\237\230\200\342\202\254\303\251'; done; printf '"}\n'; } > "$SSEMO"
+ss_clear
+is "a multibyte prompt (UTF-8 locale): the cap is 4096 bytes, not characters" "$(( $(wc -c < "$SSEMO") - 4096 ))" \
+   "$(LC_ALL=C.utf8 ss_unread "$SSEMO")"
+is "and its ids are found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+# The closing quote of transcript_path at byte N: in the cap saved, past it the path is cut.
+ss_edge() {                   # <closing-quote byte> <pad char bytes: 1|2|3|4>
+    local pre="{\"pad\":\"" mid sfx pad n
+    sfx="\",\"session_id\":\"$SSU1\",\"transcript_path\":\"$SSROOT/-p/$SSU1.jsonl"
+    n=$(( $1 - ${#pre} - ${#sfx} - 1 ))
+    case $2 in 1) mid=x ;; 2) mid=$'\303\251' ;; 3) mid=$'\342\202\254' ;; 4) mid=$'\360\237\230\200' ;; esac
+    pad=$(for _ in $(seq 1 $(( n / $2 ))); do printf '%s' "$mid"; done; for _ in $(seq 1 $(( n % $2 ))); do printf x; done)
+    printf '%s%s%s"}\n' "$pre" "$pad" "$sfx" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+}
+for w in 1 2 3 4; do
+    ss_clear; ss_edge 4096 $w
+    is "ids ending with their quote at byte 4096, ${w}-byte chars before: saved" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+    ss_clear; ss_edge 4100 $w
+    is "a transcript_path cut inside by the cap, ${w}-byte chars before: not saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+done
 ss_clear
 { printf '{"prompt":"'; head -c 5000 /dev/zero | tr '\0' x; printf '","session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; } \
     | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"

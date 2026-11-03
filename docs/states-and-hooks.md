@@ -33,8 +33,8 @@ timer.
 | hook | state |
 |------|-------|
 | `SessionStart` | `off` — a resumed pane must not inherit old state |
-| `SessionStart` (3rd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
 | `SessionStart` (2nd) | `session` — saves the payload's `session_id` as `@cockpit_session` and `transcript_path` as `@cockpit_transcript` (see [Session identity](#session-identity)) |
+| `SessionStart` (3rd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `PermissionRequest` | `needs-input` |
@@ -178,8 +178,9 @@ next prompt resumes it, `/goal clear` ends it.
 ## Session identity
 
 `agent-state session` runs at `SessionStart` (`startup|resume|clear|fork`: each can start a
-new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no state. It reads two fields
-of the hook payload and writes them with `set-option -p`, which does not expand formats:
+new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no
+state. It reads two fields of the hook payload and writes them with `set-option -p`, which does
+not expand formats:
 
 | option | from | saved when |
 |--------|------|------------|
