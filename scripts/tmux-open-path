@@ -118,7 +118,8 @@ open_one() {
             # parses it as file:line and does not open the folder.
             tmux run-shell -b "$(fesc "code $(shq "$file") >/dev/null 2>&1")"
         else
-            tmux run-shell -b "$(fesc "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
+            tmux run-shell -b \
+                "$(fesc "code --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
         fi
         note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
@@ -131,7 +132,8 @@ open_one() {
         if [ -d "$file" ]; then
             tmux run-shell -b "$(fesc "$(shq "$0") --vscode $(shq "$file") >/dev/null 2>&1")"
         else
-            tmux run-shell -b "$(fesc "$(shq "$0") --vscode --goto $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
+            tmux run-shell -b "$(fesc "$(shq "$0") --vscode --goto \
+$(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
         fi
         note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
@@ -163,7 +165,8 @@ else
     fi
 fi
 
-[ -n "$line" ] || { note "cockpit: no line under the click · click a line that names a path"; exit 0; }
+[ -n "$line" ] || {
+    note "cockpit: no line under the click · click a line that names a path"; exit 0; }
 
 # --- candidates ---------------------------------------------------------------
 # Every token on the line that resolves to something on disk, in the order they
@@ -347,8 +350,12 @@ key=$(printf '%s' "$rows" | "$COCKPIT_TUI_BIN" pick --copy --prompt 'open' \
       --header 'open which path' 2>"$err"); rc=$?
 [ ! -s "$err" ] || cat "$err" >&2
 if tui_stale "$rc" "$err"; then note "cockpit: $TUI_STALE_MSG"; exit 1; fi
-case "$rc" in 0|10) ;; 1) exit 0 ;; *) printf 'cockpit: pick exited %s · see the lines above\n' "$rc" >&2
-    read -rsn1 -p '[any key]'; exit 1 ;; esac
+case "$rc" in
+    0|10) ;;
+    1)    exit 0 ;;
+    *)    printf 'cockpit: pick exited %s · see the lines above\n' "$rc" >&2
+          read -rsn1 -p '[any key]'; exit 1 ;;
+esac
 # The picker is untrusted text until proven an index into FILES.
 [[ $key =~ ^[0-9]+$ ]] && [ "$key" -lt "${#FILES[@]}" ] \
     || { note "cockpit: the picker named something that is not a candidate"; exit 1; }

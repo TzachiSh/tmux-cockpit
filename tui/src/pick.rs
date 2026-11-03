@@ -572,7 +572,8 @@ fn list(f: &mut Frame, r: Rect, p: &Pick, th: &Theme, look: &Look) {
     f.render_widget(Paragraph::new(lines), r);
 }
 
-const USAGE: &str = "cockpit-tui pick [--prompt <text>] [--header <text>] [--preview <file>] [--copy]  (rows on stdin: <key>TAB<display>)";
+const USAGE: &str = "cockpit-tui pick [--prompt <text>] [--header <text>] \
+[--preview <file>] [--copy]  (rows on stdin: <key>TAB<display>)";
 
 /// Leaves raw mode and the alternate screen, on the tty the screen was drawn on.
 pub fn restore_tty() {

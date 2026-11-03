@@ -12286,7 +12286,7 @@ case "$(okrun 0 "$OKT/old-tui")" in
     *) bad "a cockpit-tui without --copy is called stale, exit 1" "rc=1 and the stale message" "$(okrun 0 "$OKT/old-tui")" ;;
 esac
 # Missing is said before the popup opens, so the user never sees it flash.
-case "$(OKARG= okrun 0 "$OKT/no-such-tui")" in
+case "$(OKARG='' okrun 0 "$OKT/no-such-tui")" in
     *POPUP*) bad "no cockpit-tui: no popup opens to say so" "no display-popup" "a popup" ;;
     *) ok "no cockpit-tui: no popup opens to say so" ;;
 esac
