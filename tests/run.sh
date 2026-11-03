@@ -664,6 +664,19 @@ bgcase "a subagent object in a key after the array is done" done \
     '{"background_tasks":[],"session_crons":[],"later":[{"type":"subagent","status":"done"}]}'
 bgcase "a subagent after a string holding ], in the array still holds it" running \
     "$(bgstop '{"type":"shell","description":"a ], \"b\" ]"},{"type":"subagent"}')"
+# A string ending in an escaped backslash ends there: the next entry is still read.
+bgcase "a subagent after a command ending in an escaped backslash still holds it" running \
+    "$(bgstop "$BGSH"',"command":"dir C:\\tmp\\"},{"type":"subagent"}')"
+# Bytes, not characters: under a UTF-8 locale a byte that is not UTF-8 must not end the match.
+if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
+    bgst running "$BGU"
+    printf '%s\n' "$(bgstop "$BGSH"',"description":"a'$'\377''b"},{"type":"subagent"}')" \
+        | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
+        >/dev/null 2>&1
+    is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
+else
+    skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
+fi
 # A long final message comes before the key and is read whole: no cap cuts the array off.
 BGBIG=$(printf '%01048576d' 0)
 is "the long message is 1 MB" 1048576 "${#BGBIG}"

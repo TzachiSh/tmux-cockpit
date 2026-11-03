@@ -154,8 +154,8 @@ wake. A `workflow`, `cloud session` or `MCP task` does not hold it either: the
 hooks reference names only a background subagent's report-back as a wake of
 the main session, and a cloud session runs on another machine for as long as
 it likes. Holding on work with no sure wake risks a pane stuck "working"; not
-holding only shows `done` early. A subagent that never stops is listed by every `Stop` until the session
-ends, and `SessionEnd` clears the pane.
+holding only shows `done` early. A subagent that never stops is listed by
+every `Stop` until the session ends, and `SessionEnd` clears the pane.
 
 There is no subagent counter, so there is nothing to drift, lock or reset.
 Counting `SubagentStart` against `SubagentStop` would drift: `SubagentStart`

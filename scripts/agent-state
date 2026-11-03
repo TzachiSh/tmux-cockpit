@@ -119,7 +119,10 @@ subagent_in_flight() {
     # One regex, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
     # the final message, any size, comes before the key. After `[`, whole strings or single
     # bytes other than `]`, so the match ends with the array (its entries are flat objects,
-    # no nested array) and a `]` inside a string does not end it.
+    # no nested array) and a `]` inside a string does not end it. Bytes, not characters: in a
+    # UTF-8 locale glibc's multibyte matcher is quadratic on a long array, and a byte that is
+    # not UTF-8 ends the match. Restored on return; nothing below forks.
+    local LC_ALL=C
     re='"background_tasks": ?\[("([^"\\]|\\.)*"|[^]"])*"type": ?"subagent"'
     [[ $payload =~ $re ]]
 }
