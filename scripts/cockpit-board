@@ -131,18 +131,7 @@ while :; do
                 fi
             fi
             ;;
-        # Today's --request path. It opens its own popup, and tmux silently
-        # refuses a popup inside the board's (measured: display-popup returns 0 and
-        # runs nothing), so the board closes first, like jump: a background job
-        # waits for this wrapper to exit, then runs the request. Its output, the
-        # composed batch on exit 10, is not shown anywhere.
-        request)
-            # run-shell expands formats (# becomes ##) and hands the string to sh.
-            rq=$(sq "$DIR/scripts/tmux-review"); rq=${rq//#/##}
-            tmux run-shell -b "while kill -0 $$ 2>/dev/null; do sleep 0.1; done; $rq -p $target --request $target >/dev/null 2>&1"
-            exit 0
-            ;;
-        # Version skew: an older binary's verb (the retired `fix`) or a newer one's.
+        # Version skew: an older binary's verb (the retired `fix` and `request`, #288) or a newer one's.
         *)
             log "unknown verb [$verb $target]"
             tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null

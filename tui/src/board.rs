@@ -2306,26 +2306,16 @@ pub struct Extra {
 // #228: the board's extra actions. A key here must not clash with KEYS, D6's
 // keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
 // scripts/cockpit-board, which ends the loop on a verb it does not know.
-pub static EXTRAS: &[Extra] = &[
-    Extra {
-        key: 'x',
-        label: "kill",
-        help: "kill its window, after a confirm",
-        verb: "kill",
-        confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-        // the id, never the name: agent windows tend to share one (`claude`),
-        // and a pane moved into a namesake would pass a name check
-        expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
-    },
-    Extra {
-        key: 'R',
-        label: "request",
-        help: "review it and hand the review to its agent",
-        verb: "request",
-        confirm: None,
-        expect: None,
-    },
-];
+pub static EXTRAS: &[Extra] = &[Extra {
+    key: 'x',
+    label: "kill",
+    help: "kill its window, after a confirm",
+    verb: "kill",
+    confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
+    // the id, never the name: agent windows tend to share one (`claude`),
+    // and a pane moved into a namesake would pass a name check
+    expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
+}];
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
