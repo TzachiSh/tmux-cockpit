@@ -81,7 +81,7 @@ Inside the board, the list (the default layout):
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
 | `a` `r` `f` `i` `x` `o` | as in the tiles, on an agent; a header does not take them |
-| `/` | find: open the field and filter as you type (see [Find](#find)) |
+| `/` | find: open the field and filter as you type (see [Find](#the-board)) |
 | `v` | the tiles |
 | `?` `^L` `q` | as in the tiles |
 | `esc` | the first that applies: dismiss a `✕` note, close the info overlay, close the find field (clearing it), clear a kept filter, close the board |
