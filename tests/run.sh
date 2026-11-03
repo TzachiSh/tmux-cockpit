@@ -12951,6 +12951,21 @@ is "a sticky needs-input pane's last Stop takes the ✦ away" "▲1 " "$(sbf)"
 sbst done "$(sbstop "$SBT,$SBT")" "$SBQ"; "$TMUX_REAL" -L "$SB" kill-pane -t "$SBQ"
 TMUX="$SOCKDIR/$SB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
 is "a killed pane's subagents leave the sum at the sweep" "▲1 " "$(sbf)"
+# Compare-then-set: every set redraws. A server hook sees the writes inside the one call.
+sbst done "$(sbstop "$SBT,$SBT")"; SBSETS=$(mktmpf)
+"$TMUX_REAL" -L "$SB" set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $SBSETS'"
+sbst done "$(sbstop "$SBT,$SBT")"
+is "an unchanged count is not set again" "0" "$(grep -c '@cockpit_subs' "$SBSETS")"
+sbst done "$(sbstop "$SBT,$SBT,$SBT")"
+is "a changed one is, once" "1" "$(grep -c '@cockpit_subs 3' "$SBSETS")"
+"$TMUX_REAL" -L "$SB" set-hook -gu after-set-option
+# A bound, not a clock: CPU time. The count was a regex pass per subagent, 24 s at 3000.
+SB3K=$(mktmpf); { printf '{"hook_event_name":"Stop","background_tasks":['
+    for _ in $(seq 1 2999); do printf '%s,' "$SBT"; done; printf '%s]}\n' "$SBT"; } > "$SB3K"
+cpu_under "3000 subagents are counted in under 1 s of CPU" 1 \
+    env TMUX="$SOCKDIR/$SB,0,0" bash -c '"$1" done "$2" < "$3"' _ "$DIR/scripts/agent-state" "$SBP" "$SB3K"
+is "and every one of them counts" "3000" "$(sbn)"
+rm -f "$SBSETS" "$SB3K"
 "$TMUX_REAL" -L "$SB" kill-server >/dev/null 2>&1
 fi
 fi

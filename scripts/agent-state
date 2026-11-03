@@ -139,11 +139,14 @@ subs_count() {
     re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]"])*)'
     [[ $payload =~ $re ]] || return 0
     arr=${BASH_REMATCH[1]}
-    # Counted from the end: the longest prefix before a marker ends at the last one, so each
-    # pass drops one marker and what follows it, with no `#*` cut. A marker inside a string
-    # cannot match: its quotes arrive as \", so a backslash follows `type`.
-    re='^(.*)"type": ?"subagent"'
-    while [[ $arr =~ $re ]]; do SUBS=$((SUBS + 1)) arr=${BASH_REMATCH[1]}; done
+    # Counted by length, in one pass per spelling: deleting every marker shortens the array by
+    # the marker's length per hit (a regex per hit was quadratic, 24 s at 3000). A marker
+    # inside a string cannot match: its quotes arrive as \", so a backslash follows `type`.
+    local m n
+    for m in '"type":"subagent"' '"type": "subagent"'; do
+        n=${#arr} arr=${arr//"$m"/}
+        SUBS=$((SUBS + (n - ${#arr}) / ${#m}))
+    done
 }
 
 # subs_cmd <- the tmux command for @cockpit_subs <- SUBS, compare-then-set, and the fleet's
