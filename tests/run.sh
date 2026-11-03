@@ -11039,7 +11039,7 @@ git -C "$GD/r" config filter.evil.clean 'echo pwned'; git -C "$GD/r" config filt
 git -C "$GD/r" config filter.lfs.smudge 'echo pwned'; git -C "$GD/r" config filter.a/b.process 'echo pwned'
 git -C "$GD/r" config filter.x.y.clean 'echo pwned'; git -C "$GD/r" config filter.noted.foo 1
 mkdir "$GD/bin"
-printf '#!/bin/sh\n[ "$3" = config ] && exec %s "$@"\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
+printf '#!/bin/sh\ncase " $* " in *" --get-regexp "*) exec %s "$@" ;; esac\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
 chmod +x "$GD/bin/git"
 gs_argv() { ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" "$@" ); }
 is "git.sh hands git exactly git-flags before the caller's -C" \
@@ -11049,8 +11049,25 @@ is "git.sh blanks the same drivers as git-flags --filters" \
    "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
 is "with no binary git.sh still hands git every safety flag" \
    "$("$DSB" git-flags)" "$(COCKPIT_TUI_BIN=/nonexistent gs_argv rev-parse HEAD | sed '/^-C$/,$d')"
+# git splits -c at the first `=`: filter.a=b.clean= would set filter.a, so both refuse.
+git -C "$GD/r" config 'filter.a=b.clean' 'echo pwned'
+is "a driver named a=b: git.sh and git-flags --filters both refuse, status 1 and no flags" "1: 1:" \
+   "$(gs_argv status 2>/dev/null | tr -d '\n'; printf '%s:' "${PIPESTATUS[0]}"
+      printf ' '; "$DSB" git-flags --filters "$GD/r" 2>/dev/null | tr -d '\n'; printf '%s:' "${PIPESTATUS[0]}")"
 rm -rf "$GD"
 unset -f gs_argv
+# The repro: the planted clean runs under a blanked -c, and never under git.sh or diffstat.
+GD=$(mktmpd); ( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
+  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+git -C "$GD/r" -c 'filter.a=b.clean=' add x >/dev/null 2>&1
+is "a=b's plant fires under git -c filter.a=b.clean=" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
+git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
+is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter driver name contains '='
+1" "$( ( . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" add x ) 2>&1; printf '%s' "$?")"
+"$DSB" diffstat "$GD/r" >/dev/null 2>&1
+"$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
+is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+rm -rf "$GD"
 unset -f ds_shell
 
 echo "== transcript reader: the frozen output of every fixture (#199) =="

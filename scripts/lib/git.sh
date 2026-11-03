@@ -29,17 +29,25 @@ git() {
         # Anything else might; the repo names the driver, so neutralise it by name.
         *)
             # git-flags --filters: every key of every driver blanked, and an empty
-            # driver is no filter; required=false keeps that legal.
+            # driver is no filter; required=false keeps that legal. A name with `=`
+            # cannot be blanked (git splits -c at the first `=`), so it is refused.
+            # Cached for the shell's lifetime per dir, which assumes a single -C.
             if [ "${_git_dir-}" != "$dir" ]; then
-                _git_dir=$dir _git_drv=()
+                _git_dir=$dir _git_drv=() _git_bad=
                 local k n nl=$'\n' seen=$'\n'   # a config name holds no newline
                 while IFS= read -r -d '' k; do
                     k=${k#filter.}
                     case $k in *.*) n=${k%.*} ;; *) continue ;; esac
+                    case $n in *=*) _git_bad=1; break ;; esac
                     case $seen in *"$nl$n$nl"*) continue ;; esac
                     seen+=$n$nl
                     _git_drv+=(-c "filter.$n.clean=" -c "filter.$n.smudge=" -c "filter.$n.process=" -c "filter.$n.required=false")
-                done < <(command git -C "$dir" config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
+                done < <(GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' command git -C "$dir" "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" \
+                             config -z --name-only --get-regexp '^filter\.' 2>/dev/null </dev/null)
+            fi
+            if [ -n "$_git_bad" ]; then
+                echo "git.sh: refusing: filter driver name contains '='" >&2
+                return 1
             fi
             drv=(${_git_drv[@]+"${_git_drv[@]}"}) ;;
     esac
