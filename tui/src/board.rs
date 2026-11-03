@@ -2,7 +2,7 @@
 //! live-preview tile per agent behind `v`. `render` is pure over `&[Pane]` (no
 //! tmux, no clock); `run` is the only impure entry.
 use crate::data::fleet as facts;
-use crate::data::{Pane, State, fmt_dur, hash_rows, list_panes, log, preview};
+use crate::data::{Pane, State, fmt_dur, hash_rows, list_fleet, log, preview};
 use crate::panel::view::wrap;
 use crate::push::Push;
 use crate::theme::{Glyphs, Theme};
@@ -1871,6 +1871,12 @@ pub fn read_note(path: &std::path::Path) -> Result<Option<String>, String> {
     Ok((!line.is_empty()).then(|| line.to_string()))
 }
 
+/// The folds a save keeps: a fold outlives its tmux session only until the
+/// next save, but not a moment with no agent in a session that is still there.
+pub fn kept_folds(folds: &BTreeSet<String>, sessions: &BTreeSet<String>) -> BTreeSet<String> {
+    folds.intersection(sessions).cloned().collect()
+}
+
 /// The tile a pane id sits on, `0` when it is gone.
 fn tile_of(ps: &[Pane], id: &str) -> usize {
     order(ps).iter().position(|&i| ps[i].id == id).unwrap_or(0)
@@ -2140,20 +2146,22 @@ struct Snapshot {
     took: Duration,
     /// the list-panes read worked; `panes` is the last good one either way
     ok: bool,
+    /// every tmux session, agents or not, off the last good read
+    sessions: BTreeSet<String>,
 }
 
 /// The fetch is fork-heavy, so it runs here and never on the key thread. A wake
 /// during a fetch queues one more, not many.
 fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
-    let mut panes: Vec<Pane> = vec![];
+    let (mut panes, mut sessions): (Vec<Pane>, BTreeSet<String>) = Default::default();
     loop {
         let t0 = Instant::now();
         // None is "tmux did not answer"; keep the last good tile list rather
         // than blanking the board on one failed read
-        let got = list_panes();
+        let got = list_fleet();
         let ok = got.is_some();
-        if let Some(ps) = got {
-            panes = ps;
+        if let Some(got) = got {
+            (panes, sessions) = got;
         }
         let (_, top, g) = fit(want.area, panes.len(), want.sel, want.top);
         let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
@@ -2177,6 +2185,7 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
             pvs,
             took: t0.elapsed(),
             ok,
+            sessions: sessions.clone(),
         };
         if tx.send(snap).is_err() {
             return;
@@ -2239,6 +2248,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
         }
     };
     let (mut panes, mut pvs) = (Vec::<Pane>::new(), Vec::<Option<String>>::new());
+    // every tmux session at the last good read, for which folds to keep
+    let mut sessions = BTreeSet::<String>::new();
     // previews survive between snapshots, so a tile scrolled into view shows
     // its last capture instead of a false "capture failed"
     let mut seen: HashMap<String, Option<String>> = HashMap::new();
@@ -2289,6 +2300,9 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 let s = snap_rx.try_iter().last().unwrap_or(s);
                 reads.got(s.ok, Instant::now());
                 dirty |= !s.ok;
+                if s.ok {
+                    sessions = s.sessions;
+                }
                 // D18: a confirm holds the rows still, and closes if its target went
                 match confirm.as_ref().map(|c| held(c, &panes, &s.panes)) {
                     None => panes = s.panes,
@@ -2570,13 +2584,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         } else {
             panes[order(&panes)[sel.min(panes.len() - 1)]].id.clone()
         };
-        // a fold outlives its session only until the next save
-        let folds = nav
-            .folds
-            .iter()
-            .filter(|f| panes.iter().any(|p| session(p) == *f))
-            .cloned()
-            .collect();
+        let folds = kept_folds(&nav.folds, &sessions);
         if let Err(e) = write_state(p, &Saved { sel: Some(id), folds }) {
             eprintln!("cockpit-tui: cannot write {}: {e}", p.display());
         }

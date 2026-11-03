@@ -655,7 +655,14 @@ fn unsentinel(s: &str) -> String {
 
 /// `None` when the list-panes call itself failed: no tmux, not "no agents".
 pub fn list_panes() -> Option<Vec<Pane>> {
+    list_fleet().map(|(ps, _)| ps)
+}
+
+/// `list_panes`, plus every tmux session name off the same read, agents or
+/// not: a session always holds a pane, so these are all of them.
+pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
+    let mut sessions = std::collections::BTreeSet::new();
     let (mut agents, mut procs_t) = (None, None);
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
@@ -663,6 +670,8 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         if f.len() < 13 {
             continue;
         }
+        // `session:window`; a session name never holds a `:` (tmux swaps it)
+        sessions.insert(f[1].rsplit_once(':').map_or(f[1], |(s, _)| s).to_string());
         // A pane carrying @panestate counts whatever it runs: the hooks are the
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let raw = unsentinel(f[4]);
@@ -702,7 +711,7 @@ pub fn list_panes() -> Option<Vec<Pane>> {
     }
     fill_git(&mut ps, &dirs);
     ps.sort_by_key(|p| p.state);
-    Some(ps)
+    Some((ps, sessions))
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the

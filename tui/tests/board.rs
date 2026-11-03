@@ -2270,3 +2270,12 @@ fn the_top_line_drops_whole_parts_in_priority_order() {
         assert_eq!(rows(&out)[0].trim_end(), want, "at {w}");
     }
 }
+
+/// A fold is saved while its tmux session exists, agents or not, and dropped
+/// once the session is gone.
+#[test]
+fn a_fold_outlives_its_agents_but_not_its_session() {
+    let ss = folds(&["api", "web", "scratch"]);
+    assert_eq!(board::kept_folds(&folds(&["web", "gone", "scratch"]), &ss), folds(&["scratch", "web"]));
+    assert_eq!(board::kept_folds(&folds(&["web"]), &folds(&[])), folds(&[]));
+}

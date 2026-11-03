@@ -393,8 +393,9 @@ the head `cockpit-board-state 1`, then known `key value` lines: `sel %N` at
 most once, then one `fold <session>` line per folded session, each name once,
 with no control character. Anything else is a fresh board and a 5 s note
 `board.state ignored (<why>); starting fresh`. A header selection is saved as
-its group's first agent, and a fold whose session is gone is dropped on the
-next write. The layout is not kept: every board opens on the list.
+its group's first agent, and a fold whose tmux session is gone is dropped on the
+next write; a session that is still there keeps its fold even while it has no
+agent pane. The layout is not kept: every board opens on the list.
 
 ```
 cockpit-board-state 1
