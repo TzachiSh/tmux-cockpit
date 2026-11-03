@@ -3,8 +3,8 @@
 # file launches it, ingests what it wrote, and asks what to do next.
 # Sourced by tmux-review, never run. Bash 4+.
 #
-# The exit codes are the loop's contract with review_pane and --request, the
-# same as the fzf picker had: 20 deliver, 21 approved, anything else leave.
+# The exit codes are the loop's contract with review_pane and --request:
+# 20 deliver, 21 approved, anything else leave.
 # 127 is new: revdiff is not installed. 126: revdiff failed (its stderr is left
 # in <session dir>/revdiff.err for the caller to print).
 

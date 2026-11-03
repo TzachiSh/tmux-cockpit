@@ -97,8 +97,8 @@ carries a comment, `^E` opens that comment instead and replaces it; saving an
 empty file deletes it. Several comments on one row open as one buffer and
 save back as one: the agent reads them as paragraphs under one anchor either
 way. `^E` uses `@cockpit_editor` when set
-(`set -g @cockpit_editor nano`; a **terminal** editor, because the path picker
-opens the same option in a tmux window), else `$VISUAL`, else `$EDITOR`. With
+(`set -g @cockpit_editor nano`; a **terminal** editor, because it opens in
+the review's own terminal), else `$VISUAL`, else `$EDITOR`. With
 none of the three set it tries VS Code's remote shim, and falls back to `vi`.
 A GUI editor goes in `VISUAL`: `tmux set-environment -g VISUAL 'code --wait'`.
 The popup's children see the tmux *server's* environment, so a shell `export`
@@ -108,10 +108,8 @@ either, and where `vi` in a popup is the wrong answer next to the VS Code
 window the diff is being read in. It takes `--wait`, so the buffer comes back
 the way `vi`'s does, and `^S`'s confirm offers
 `edit the batch in VS Code first`. From a plain ssh session nothing can reach
-the laptop's VS Code. The list reloads in place and marks the row `●` (the
-digit instead, when more than one comment sits there), so five comments cost
-one popup, not five — the same `execute-silent(...)+reload(...)` shape `tm`'s
-kill picker already uses.
+the laptop's VS Code. The review marks the row `●` (the digit instead, when more than one comment
+sits there), so five comments cost one popup, not five.
 `^S` delivers the whole batch, and asks first: it names the count and the
 target pane by its title, and offers the batch to your editor as text before it
 goes (`deliver N comment(s) to fix the parser (%7)` /
@@ -155,17 +153,17 @@ The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
 diff too large to anchor line-by-line leaves. The file itself is untouched, and
 the tree still counts as dirty because of it, so a pane whose only change is a
 skipped file stays on the board and its review opens on that notice
-rather than on an empty diff. The path picker's `^G` diff preview refuses any
-file over 32 MB, naming the size. Put core dumps in `.gitignore`, as git's own
+rather than on an empty diff. Put core dumps in `.gitignore`, as git's own
 templates do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of
 this branch was approved (only what moved since), the merge-base with the
-upstream when that is not `HEAD` itself (the branch plus its uncommitted work),
+upstream (else `origin/HEAD`'s branch, else `main`, else `master`) when that is
+not `HEAD` itself (the branch plus its uncommitted work),
 else `HEAD` (today's uncommitted view). An agent that commits as it goes stays
 on the board that way instead of dropping out of it the moment it commits. `^B`
-cycles the bases that hold, the picker's header names the one in force
+cycles the bases that hold, the prompt's header names the one in force
 (`base: since last review`), and the choice is remembered beside the comments,
 so a resumed review reads the same diff it did before.
 
