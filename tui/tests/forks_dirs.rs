@@ -47,9 +47,12 @@ fn one_fetch_is_one_tmux_call_and_cockpit_dir_comes_off_it() {
     }
 
     assert_eq!(list_panes().unwrap().len(), 3);
+    assert_eq!(list_panes().unwrap().len(), 3);
 
+    // #301 reads the agent list for every row, so the first fetch also makes
+    // the thread's one `show-option` for it; every fetch after is one call
     let calls = std::fs::read_to_string(dir.join("tmux")).unwrap_or_default();
-    assert_eq!(calls, "list-panes\n", "one fetch, one tmux call");
+    assert_eq!(calls, "list-panes\nshow-option\nlist-panes\n", "one tmux call per fetch");
     let mut trees: Vec<String> = std::fs::read_to_string(dir.join("git"))
         .unwrap_or_default()
         .lines()

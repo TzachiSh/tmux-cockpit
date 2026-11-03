@@ -116,9 +116,10 @@ fn pane_num(id: &str) -> u64 {
 
 /// `(state rank, pane id)`. Never a clock: rank changes are rare and
 /// event-driven, ages tick every second and would reorder tiles as you read.
+/// #301: an ended agent sorts after every live one, whatever state it was left in.
 pub fn order(ps: &[Pane]) -> Vec<usize> {
     let mut o: Vec<usize> = (0..ps.len()).collect();
-    o.sort_by_key(|&i| (ps[i].state, pane_num(&ps[i].id)));
+    o.sort_by_key(|&i| (ps[i].ended, ps[i].state, pane_num(&ps[i].id)));
     o
 }
 
@@ -214,8 +215,8 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
 
     header(f, head, v, &g, ord.len(), None);
     tiles(f, body, v, &ord, &g);
-    let needs = v.panes[ord[v.sel.min(ord.len() - 1)]].state == State::NeedsInput;
-    footer(f, foot, v, Focus::Agent(needs));
+    let p = &v.panes[ord[v.sel.min(ord.len() - 1)]];
+    footer(f, foot, v, Focus::Agent(needs(p)), Some(p));
 }
 
 /// `sessions` is the list's: it adds the session and error counts (6.1).
@@ -224,8 +225,8 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
 /// age goes last, as it is the one that says the rest may be wrong.
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Option<usize>) {
     let th = v.th;
-    let needs = v.panes.iter().filter(|p| p.state == State::NeedsInput).count();
-    let errors = v.panes.iter().filter(|p| p.state == State::Error).count();
+    let needs = v.panes.iter().filter(|p| self::needs(p)).count();
+    let errors = v.panes.iter().filter(|p| p.state == State::Error && !p.ended).count();
     let d = th.g.dot;
     let plural = |k: usize| if k == 1 { "" } else { "s" };
     let part = |rank: u8, t: String, c| (rank, Span::styled(t, Style::new().fg(c)));
@@ -274,7 +275,8 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Opt
     f.render_widget(Line::from(Span::styled(right, Style::new().fg(th.meta))).right_aligned(), area);
 }
 
-fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
+/// `p` is the selected agent, which decides the extras offered (#301).
+fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus, p: Option<&Pane>) {
     let th = v.th;
     // the confirm owns the keys, so its keys are the bar, over any note (D19)
     if let Some(c) = v.confirm {
@@ -285,7 +287,8 @@ fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
         f.render_widget(note_line(th, n, area.width as usize), area);
         return;
     }
-    let mut ks = hints(&th.g, v.list.is_some(), focus);
+    let live = Pane::default();
+    let mut ks = hints_on(&th.g, v.list.is_some(), focus, p.unwrap_or(&live));
     // a kept filter: esc clears it before it closes anything (7.1)
     if v.list.is_some_and(|n| n.filtering()) {
         let at = ks.iter().position(|(k, _)| k == "?").unwrap_or(ks.len());
@@ -329,6 +332,12 @@ pub enum Focus {
 /// keys (D19): `a` answers a ▲ and asks anything else (D14), and a header
 /// lists the fold keys instead. Only keys the dispatch takes there.
 pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
+    hints_on(g, list, focus, &Pane::default())
+}
+
+/// [`hints`] on the agent `p`: only the extras it is offered (#301). `hints`
+/// is this on a live agent, which `o` is not offered on.
+pub fn hints_on(g: &Glyphs, list: bool, focus: Focus, p: &Pane) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = KEYS
         .iter()
         .filter(|k| k.on.shown(list))
@@ -357,7 +366,8 @@ pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
     // #228's actions need an agent; they go last before `?`, so the cut takes them first
     if let Focus::Agent(_) = focus {
         let at = out.iter().position(|(k, _)| k == "?").unwrap_or(out.len());
-        out.splice(at..at, EXTRAS.iter().map(|e| (e.key.to_string(), e.label.to_string())));
+        let on = EXTRAS.iter().filter(|e| (e.offered)(p));
+        out.splice(at..at, on.map(|e| (e.key.to_string(), e.label.to_string())));
     }
     out
 }
@@ -409,9 +419,22 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
     }
 }
 
-fn dimmed(state: State) -> bool {
-    state >= State::Done
+fn dimmed(p: &Pane) -> bool {
+    p.ended || p.state >= State::Done
 }
+
+/// #301: an ended agent waits on nobody, whatever @panestate it was left with.
+fn needs(p: &Pane) -> bool {
+    p.state == State::NeedsInput && !p.ended
+}
+
+/// The row's state glyph: an ended agent has its own, never the `▲` it died on.
+fn glyph(th: &Theme, p: &Pane) -> (&'static str, ratatui::style::Color) {
+    if p.ended { (th.g.ended, th.meta) } else { th.glyph(p.state) }
+}
+
+/// The word an ended agent shows where the doing line goes.
+const ENDED: &str = "ended";
 
 #[allow(clippy::too_many_arguments)]
 fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>>, focused: bool, active: bool, full: bool, th: &Theme) {
@@ -421,13 +444,13 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         return;
     }
     let g = &th.g;
-    let needs = p.state == State::NeedsInput;
-    let (gl, gl_c) = th.glyph(p.state);
+    let needs = needs(p);
+    let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
 
     let border_c = if needs {
         th.needs
-    } else if p.state == State::Error {
+    } else if p.state == State::Error && !p.ended {
         th.error
     } else if focused {
         th.accent
@@ -443,7 +466,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     let sep = format!(" {} ", g.dot);
     let title_w = inner_w.saturating_sub(fixed + wher.width() + sep.width() + 1);
 
-    let title_c = if dimmed(p.state) { th.meta } else { th.value };
+    let title_c = if dimmed(p) { th.meta } else { th.value };
     // the selection is ▎ plus reverse, so it survives NO_COLOR (D17)
     let num_st = if focused {
         Style::new().fg(th.accent).add_modifier(Modifier::REVERSED)
@@ -495,7 +518,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         Some(None) => Paragraph::new(Line::from(Span::styled("capture failed", Style::new().fg(th.error)))),
         None => return,
     };
-    if dimmed(p.state) {
+    if dimmed(p) {
         // expressed twice: a terminal that ignores DIM still gets the meta title
         para = para.style(Style::new().add_modifier(Modifier::DIM));
     }
@@ -530,16 +553,15 @@ fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<
         }
     } else {
         // never the word "unknown": a pane with no transcript reads as a dash
-        let doing = if p.doing.is_empty() {
+        let doing = if p.ended {
+            g.trunc(ENDED, text_w)
+        } else if p.doing.is_empty() {
             g.trunc(g.dash, text_w)
         } else {
             g.trunc_middle(&p.doing, text_w)
         };
         out.push(Line::from(vec![
-            Span::styled(
-                pad(doing, text_w),
-                Style::new().fg(if dimmed(p.state) { th.meta } else { th.value }),
-            ),
+            Span::styled(pad(doing, text_w), Style::new().fg(if dimmed(p) { th.meta } else { th.value })),
             rail,
         ]));
         if rows > 1 && !p.said.is_empty() {
@@ -743,6 +765,7 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
         (g.running, "running"),
         (g.done, "done"),
         (g.idle, "idle"),
+        (g.ended, "ended: its agent is gone"),
         (g.review_pending, "review pending"),
         (g.review_sent, "review sent"),
     ];
@@ -1131,10 +1154,7 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::First => 0,
         Act::Last => last,
         Act::Tile(t) => (t.max(1) as usize - 1).min(last),
-        Act::NextNeeds => (1..=n)
-            .map(|d| (sel + d) % n)
-            .find(|&k| ps[ord[k]].state == State::NeedsInput)
-            .unwrap_or(sel),
+        Act::NextNeeds => (1..=n).map(|d| (sel + d) % n).find(|&k| needs(&ps[ord[k]])).unwrap_or(sel),
         Act::PageUp => sel.saturating_sub(g.cols * g.rows_shown),
         Act::PageDown => (sel + g.cols * g.rows_shown).min(last),
         _ => sel,
@@ -1192,9 +1212,10 @@ fn window(p: &Pane) -> &str {
     p.wher.rsplit_once(':').map_or("", |(_, w)| w)
 }
 
-/// `▲` and `✕`: the rows a fold never hides (D4) and the hot band (D3).
-fn urgent(s: State) -> bool {
-    matches!(s, State::NeedsInput | State::Error)
+/// `▲` and `✕`: the rows a fold never hides (D4) and the hot band (D3). An
+/// ended agent is neither, whatever it was left with (#301).
+fn urgent(p: &Pane) -> bool {
+    matches!(p.state, State::NeedsInput | State::Error) && !p.ended
 }
 
 /// D3: one group per session. Sessions holding a `▲` or `✕` first, then the
@@ -1209,7 +1230,7 @@ pub fn groups(ps: &[Pane]) -> Vec<(&str, Vec<usize>)> {
             None => gs.push((s, vec![i])),
         }
     }
-    gs.sort_by_key(|(n, v)| (!v.iter().any(|&i| urgent(ps[i].state)), *n));
+    gs.sort_by_key(|(n, v)| (!v.iter().any(|&i| urgent(&ps[i])), *n));
     gs
 }
 
@@ -1233,14 +1254,15 @@ pub fn rows(ps: &[Pane], folds: &BTreeSet<String>) -> Vec<Row> {
     for (s, v) in groups(ps) {
         let shut = folds.contains(s);
         out.push(Row::Head(s.to_string()));
-        out.extend(v.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+        out.extend(v.into_iter().filter(|&i| !shut || urgent(&ps[i])).map(Row::Agent));
     }
     out
 }
 
 // ------------------------------------------------ find (D7, D21)
 
-/// The word find reads for a state, the one the legend uses.
+/// The word find reads for a state, the one the legend uses. An ended
+/// agent's is `ended` (#301), which `find_match` reads instead.
 pub fn state_word(s: State) -> &'static str {
     match s {
         State::NeedsInput => "needs",
@@ -1255,7 +1277,8 @@ pub fn state_word(s: State) -> &'static str {
 /// the session, the window index, the window name, the title, the state word,
 /// or the message or doing line. An empty filter matches everything.
 pub fn find_match(p: &Pane, filter: &str) -> bool {
-    let fields = [session(p), window(p), &p.name, &p.title, state_word(p.state), &p.msg, &p.doing];
+    let word = if p.ended { ENDED } else { state_word(p.state) };
+    let fields = [session(p), window(p), &p.name, &p.title, word, &p.msg, &p.doing];
     // one line per field: a term holds no newline, so it never spans two
     let hay = fields.join("\n").to_lowercase();
     filter.to_lowercase().split_whitespace().all(|t| hay.contains(t))
@@ -1279,7 +1302,7 @@ pub fn rows_with(ps: &[Pane], folds: &BTreeSet<String>, filter: &str, open: bool
         }
         let shut = !open && folds.contains(s);
         out.push(Row::Head(s.to_string()));
-        out.extend(hit.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+        out.extend(hit.into_iter().filter(|&i| !shut || urgent(&ps[i])).map(Row::Agent));
     }
     out
 }
@@ -1566,7 +1589,7 @@ impl Nav {
         let rows = self.rows(ps);
         match rows.get(self.find(&rows, ps)) {
             Some(Row::Head(s)) => Focus::Head(self.folds.contains(s)),
-            Some(Row::Agent(i)) => Focus::Agent(ps[*i].state == State::NeedsInput),
+            Some(Row::Agent(i)) => Focus::Agent(needs(&ps[*i])),
             None => Focus::Agent(false),
         }
     }
@@ -1604,7 +1627,7 @@ impl Nav {
                 let needs: Vec<usize> = agents
                     .iter()
                     .copied()
-                    .filter(|&k| matches!(rows[k], Row::Agent(i) if ps[i].state == State::NeedsInput))
+                    .filter(|&k| matches!(rows[k], Row::Agent(i) if needs(&ps[i])))
                     .collect();
                 cycle(&needs, r, true)
             }
@@ -1762,7 +1785,7 @@ fn band(st: Style, sel: bool, th: &Theme) -> Style {
 #[allow(clippy::too_many_arguments)]
 fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
-    let (gl, gl_c) = th.glyph(p.state);
+    let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
     // a third of what the name and message would share, and never so much that
     // the name keeps under 6 cells and the message under 12
@@ -1775,6 +1798,7 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     let name_w = (flex / 4).clamp(6, 20).min(flex);
     let msg_w = flex.saturating_sub(name_w);
     let msg = match p.state {
+        _ if p.ended => ENDED.to_string(),
         State::Unknown => "idle".to_string(),
         State::NeedsInput | State::Error if !p.msg.is_empty() => g.trunc(&p.msg, msg_w),
         _ if p.doing.is_empty() => g.trunc(g.dash, msg_w),
@@ -1785,12 +1809,18 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         State::Unknown => String::new(),
         _ => p.since.map(fmt_dur).unwrap_or_default(),
     };
-    let rail_c = match (p.state == State::NeedsInput, p.since) {
+    let rail_c = match (needs(p), p.since) {
         (true, Some(s)) if s >= 300 => th.needs,
         (true, Some(s)) if s >= 60 => th.error,
         _ => th.meta,
     };
-    let text_c = if dimmed(p.state) { th.quote } else { th.value };
+    let text_c = if dimmed(p) { th.quote } else { th.value };
+    // #301: the whole row, the name too; DIM besides the colour, off the band (D17)
+    let (name_c, dim) = if p.ended && !sel {
+        (th.quote, Modifier::DIM)
+    } else {
+        (th.value, Modifier::empty())
+    };
     let num = num.map_or(" ".to_string(), |n| n.to_string());
     let mut spans = vec![
         Span::styled(if sel { g.active } else { " " }, Style::new().fg(th.accent)),
@@ -1802,7 +1832,7 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
             band(
                 Style::new()
                     .fg(gl_c)
-                    .add_modifier(if urgent(p.state) { Modifier::BOLD } else { Modifier::empty() }),
+                    .add_modifier(if urgent(p) { Modifier::BOLD } else { Modifier::empty() }),
                 sel,
                 th,
             ),
@@ -1815,9 +1845,9 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         ),
         Span::styled(
             pad(g.trunc(p.label(), name_w), name_w + 1),
-            band(Style::new().fg(th.value), sel, th),
+            band(Style::new().fg(name_c).add_modifier(dim), sel, th),
         ),
-        Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c), sel, th)),
+        Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c).add_modifier(dim), sel, th)),
     ];
     spans.extend(extra.into_iter().map(|s| {
         let st = band(s.style, sel, th);
@@ -1838,16 +1868,21 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
 fn head_row(name: &str, members: &[usize], ps: &[Pane], folded: bool, sel: bool, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
     let mut counts: Vec<Span> = vec![];
-    for st in [State::NeedsInput, State::Error, State::Running, State::Done, State::Unknown] {
-        let n = members.iter().filter(|&&i| ps[i].state == st).count();
+    let live = [State::NeedsInput, State::Error, State::Running, State::Done, State::Unknown].map(Some);
+    // #301: ended agents count under their own glyph, last
+    for st in live.into_iter().chain([None]) {
+        let n = members
+            .iter()
+            .filter(|&&i| st.map_or(ps[i].ended, |s| !ps[i].ended && ps[i].state == s))
+            .count();
         if n > 0 {
-            let (gl, c) = th.glyph(st);
+            let (gl, c) = st.map_or((g.ended, th.meta), |s| th.glyph(s));
             counts.push(Span::styled(format!(" {gl}"), band(Style::new().fg(c), sel, th)));
             counts.push(Span::styled(n.to_string(), band(Style::new().fg(th.value), sel, th)));
         }
     }
     if folded {
-        let hid = members.iter().filter(|&&i| !urgent(ps[i].state)).count();
+        let hid = members.iter().filter(|&&i| !urgent(&ps[i])).count();
         let lead = if hid > 0 {
             format!(" {hid} folded {}", g.dot)
         } else {
@@ -1982,7 +2017,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
         f.render_widget(crate::chrome::footer(th, ks, foot.width as usize, 3), foot);
         return;
     }
-    footer(f, foot, v, nav.focus(v.panes));
+    footer(f, foot, v, nav.focus(v.panes), nav.pane(v.panes));
 }
 
 /// The field's line: ` / text▏`. A filter wider than the line shows its end,
@@ -2147,7 +2182,7 @@ pub fn opts(args: &[String]) -> Result<Opts, String> {
 pub fn open_sel(ps: &[Pane], ord: &[usize], want: Option<&str>, active: &str) -> usize {
     let at = |f: &dyn Fn(&Pane) -> bool| ord.iter().position(|&i| f(&ps[i]));
     want.and_then(|w| at(&|p| p.id == w))
-        .or_else(|| at(&|p| p.state == State::NeedsInput))
+        .or_else(|| at(&|p| needs(p)))
         .or_else(|| at(&|p| p.id == active))
         .unwrap_or(0)
 }
@@ -2333,21 +2368,66 @@ pub struct Extra {
     pub confirm: Option<fn(&Pane) -> String>,
     /// `$COCKPIT_ACTION.expect`, for the wrapper to check the target against
     pub expect: Option<fn(&Pane) -> String>,
+    /// whether the agent is offered the key at all: the footer lists it, and
+    /// the key acts, only where this holds (#301)
+    pub offered: fn(&Pane) -> bool,
+    /// the note when the key is pressed where it is not offered
+    pub not_here: &'static str,
 }
 
 // #228: the board's extra actions. A key here must not clash with KEYS, D6's
 // keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
 // scripts/cockpit-board, which ends the loop on a verb it does not know.
-pub static EXTRAS: &[Extra] = &[Extra {
-    key: 'x',
-    label: "kill",
-    help: "kill its window, after a confirm",
-    verb: "kill",
-    confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-    // the id, never the name: agent windows tend to share one (`claude`),
-    // and a pane moved into a namesake would pass a name check
-    expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
-}];
+pub static EXTRAS: &[Extra] = &[
+    Extra {
+        key: 'x',
+        label: "kill",
+        help: "kill its pane, after a confirm; on an ended agent, close the pane",
+        verb: "kill",
+        // #301: the pane dies, never the window, so the question names the pane
+        confirm: Some(|p| format!("kill pane {} ({} {})?", p.id, p.wher, p.name)),
+        // `%N @W`: ids, never the name, as agent windows tend to share one
+        // (`claude`). The pane must still be in the window the person saw; and
+        // a wrapper from before #301, which kills the window, reads no `@W` here
+        // and refuses rather than kill more than was asked.
+        expect: Some(|p| {
+            if is_window_id(&p.win) && is_pane_id(&p.id) {
+                format!("{} {}", p.id, p.win)
+            } else {
+                String::new()
+            }
+        }),
+        offered: |_| true,
+        not_here: "",
+    },
+    Extra {
+        key: 'o',
+        label: "resume",
+        help: "on an ended agent: claude --resume its session in a new pane",
+        verb: "resume",
+        confirm: None,
+        // the session the row showed; the wrapper resumes only if the pane holds it still
+        expect: Some(|p| p.sess.clone()),
+        offered: resumable,
+        not_here: "resume is for an ended agent with a session id",
+    },
+];
+
+/// #301: `o` is offered on an ended agent whose @cockpit_session is a session id.
+pub fn resumable(p: &Pane) -> bool {
+    p.ended && is_session_id(&p.sess)
+}
+
+/// A Claude session id as the hooks publish it: a UUID, lowercase hex in
+/// 8-4-4-4-12. Strict, as it ends up in a command line.
+pub fn is_session_id(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
@@ -2476,9 +2556,11 @@ pub fn held(c: &Confirm, old: &[Pane], new: &[Pane]) -> Result<Vec<Pane>, String
     Ok(old
         .iter()
         .map(|o| match new.iter().find(|n| n.id == o.id) {
+            // ended moves a row as a state does (#301), so it is held too
             Some(n) => Pane {
                 state: o.state,
                 wher: o.wher.clone(),
+                ended: o.ended,
                 ..n.clone()
             },
             None => o.clone(),
@@ -2971,6 +3053,11 @@ pub fn run(o: &Opts) -> Option<Exit> {
             (Act::Ask | Act::Review | Act::Panel | Act::Info | Act::Extra(_), None) => {}
             (Act::Extra(c), Some(p)) => {
                 let Some(e) = extra(c) else { continue };
+                if !(e.offered)(p) {
+                    let msg = format!("{} {} {}", p.wher, th.g.dot, e.not_here);
+                    note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
+                    continue;
+                }
                 if let Some(msg) = refused(e, p) {
                     note = Some(Note::returned(msg, Instant::now()));
                     continue;
@@ -3002,7 +3089,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 overlay = Some(crate::info::Screen::open(&id));
             }
             // `a` on a blocked agent jumps; there is no inline reply yet
-            (Act::Ask, Some(p)) if p.state == State::NeedsInput => {
+            (Act::Ask, Some(p)) if needs(p) => {
                 action_line = Some(format!("jump {id}"));
                 break;
             }

@@ -8696,7 +8696,7 @@ is "COCKPIT_READONLY writes no board.state" "sel %0" "$(tail -1 "$RBD/state/tmux
 "$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
 fi
 
-echo "== cockpit-board: x asks first, y writes kill %N and its window id as .expect =="
+echo "== cockpit-board: x asks first, y writes kill %N and its pane and window ids as .expect =="
 # The real binary in a real window, with COCKPIT_ACTION as the wrapper sets it:
 # the confirm owns the keys (D18), ↵ never sends (D8), and a pane that goes
 # while it is open closes it with a note.
@@ -8730,9 +8730,9 @@ kb_gone() {                   # <pane>
 KA=$(mktmpd)
 kb_open "${KBP[0]}" "$KA" || bad "the board opens on the first" "board · 2 agents" "$(kb_cap)"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" '*kill window t:1 · claude?*' || bad "x asks, naming the window" "kill window t:1 · claude?" "$(kb_cap)"
-case "$(kb_cap)" in *'y kill   n back   esc back   ? keys   q close'*) ok "x asks, naming the window, and the bar lists only its keys" ;;
-    *) bad "x asks, naming the window, and the bar lists only its keys" "y kill   n back ..." "$(kb_cap)" ;; esac
+until_cap "$KB" "$KBW" "*kill pane ${KBP[0]} (t:1 claude)?*" || bad "x asks, naming the pane" "kill pane ${KBP[0]} (t:1 claude)?" "$(kb_cap)"
+case "$(kb_cap)" in *'y kill   n back   esc back   ? keys   q close'*) ok "x asks, naming the pane, and the bar lists only its keys" ;;
+    *) bad "x asks, naming the pane, and the bar lists only its keys" "y kill   n back ..." "$(kb_cap)" ;; esac
 # ↵ and j do nothing; n goes back with nothing written
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" Enter j
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" n
@@ -8740,13 +8740,13 @@ until_cap "$KB" "$KBW" '*x kill*' || bad "n goes back to the board" "the board's
 is "↵ sends nothing and n backs out: no action, no .expect" "open  " \
    "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -qx "$KBW" && printf open) $(cat "$KA/act" 2>/dev/null) $(cat "$KA/act.expect" 2>/dev/null)"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" '*kill window t:1 · claude?*'
+until_cap "$KB" "$KBW" "*kill pane ${KBP[0]} (t:1 claude)?*"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" y
 kb_gone "$KBW" || bad "y closes the board" "the window closes" "$(kb_cap)"
 is "y writes kill %N" "kill ${KBP[0]}" "$(cat "$KA/act" 2>/dev/null)"
 KBW0=$("$TMUX_REAL" -L "$KB" display -p -t "${KBP[0]}" '#{window_id}')
 KBW1=$("$TMUX_REAL" -L "$KB" display -p -t "${KBP[1]}" '#{window_id}')
-is "and its window id, not the shared name, as .expect, 0600" "$KBW0 600" "$(cat "$KA/act.expect" 2>/dev/null) $(stat -c %a "$KA/act.expect" 2>/dev/null)"
+is "and the pane and its window id, not the shared name, as .expect, 0600" "${KBP[0]} $KBW0 600" "$(cat "$KA/act.expect" 2>/dev/null) $(stat -c %a "$KA/act.expect" 2>/dev/null)"
 is "which tells it from the other window named claude" "yes" "$([ -n "$KBW0" ] && [ "$KBW0" != "$KBW1" ] && echo yes)"
 is "and the board killed nothing itself" "${KBP[0]}" "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -x "${KBP[0]}")"
 
@@ -8762,10 +8762,10 @@ is "R writes no action and no .expect" " no" \
 KG=$(mktmpd)
 kb_open "${KBP[1]}" "$KG"
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
-until_cap "$KB" "$KBW" '*kill window t:2 · claude?*' || bad "x asks about the second" "kill window t:2 · claude?" "$(kb_cap)"
+until_cap "$KB" "$KBW" "*kill pane ${KBP[1]} (t:2 claude)?*" || bad "x asks about the second" "kill pane ${KBP[1]} (t:2 claude)?" "$(kb_cap)"
 "$TMUX_REAL" -L "$KB" kill-pane -t "${KBP[1]}" >/dev/null 2>&1
 until_cap "$KB" "$KBW" '*nothing done: t:2 is gone, kill not sent*' || bad "a gone target closes the confirm with a note" "the ✕ note" "$(kb_cap)"
-case "$(kb_cap)" in *'kill window'*) bad "a gone target closes the confirm with a note" "no confirm" "$(kb_cap)" ;;
+case "$(kb_cap)" in *'kill pane'*) bad "a gone target closes the confirm with a note" "no confirm" "$(kb_cap)" ;;
     *) ok "a gone target closes the confirm with a note" ;; esac
 "$TMUX_REAL" -L "$KB" send-keys -t "$KBW" q
 kb_gone "$KBW"
@@ -11448,7 +11448,7 @@ case "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)" in *"info · %"*) bad "th
 "$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
 fi
 
-echo "== cockpit-board: kill %N re-checks the window name; request %N is unknown (#288) =="
+echo "== cockpit-board: kill %N re-checks the pane's window id, kills the pane only (#301); request %N is unknown (#288) =="
 # The wrapper half of the two verbs, driven by writing the action file directly
 # (a stub binary does the writing). A real private server, real windows; the
 # only stub besides the binary is tmux-review, which records its argv.
@@ -11494,9 +11494,9 @@ kv_run() {                    # <action-line> [expect]: one trip through the wra
 }
 
 V=$(kv_win vic-one); VW=$(kv_id "$V"); VI=$("$TMUX_REAL" -L "$KV" display-message -p -t "$V" '#{session_name}:#{window_index}')
-KVNOTE="✓ cockpit: killed window $VW ($VI vic-one)"
-is "kill %N with the shown window id kills that window, and the whole ✓ note names id, place and name" "$KVNOTE" "$(kv_run "kill $V" "$VW")"
-is "and the window is gone" "gone" "$(kv_alive "$V")"
+KVNOTE="✓ cockpit: killed pane $V ($VI vic-one)"
+is "kill %N with the shown pane and window ids kills the pane, and the whole ✓ note names pane, place and name" "$KVNOTE" "$(kv_run "kill $V" "$V $VW")"
+is "and the pane is gone" "gone" "$(kv_alive "$V")"
 
 # Two windows with one name, a pane moved from the first into the second between
 # the confirm and the verb: the id the human confirmed no longer holds the pane,
@@ -11504,7 +11504,7 @@ is "and the window is gone" "gone" "$(kv_alive "$V")"
 A=$(kv_win claude); AW=$(kv_id "$A"); A2=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$A" 'exec sleep 3600')
 B=$(kv_win claude); BW=$(kv_id "$B")
 "$TMUX_REAL" -L "$KV" join-pane -d -s "$A" -t "$B"
-case "$(kv_run "kill $A" "$AW")" in "✕ cockpit: not killed: $A is now in window $BW, you confirmed $AW") ok "a pane moved into a window of the same name is refused, naming both ids" ;;
+case "$(kv_run "kill $A" "$A $AW")" in "✕ cockpit: not killed: $A is now in window $BW, you confirmed $AW") ok "a pane moved into a window of the same name is refused, naming both ids" ;;
     *) bad "a pane moved into a window of the same name is refused, naming both ids" "✕ ... $A is now in window $BW, you confirmed $AW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and nothing died: the first window's other pane, the moved pane, the other window" "alive alive alive" \
    "$(kv_alive "$A2") $(kv_alive "$A") $(kv_alive "$B")"
@@ -11517,13 +11517,13 @@ D=$(kv_win claude)
 mkdir -p "$KD/shim"
 printf '#!/bin/sh\nif [ "$1" = if-shell ] && [ -e %s/race ]; then rm -f %s/race; %s join-pane -d -s %s -t %s; fi\nexec %s "$@"\n' "$KD" "$KD" "$TMUX_REAL" "$C" "$D" "$TMUX_REAL" > "$KD/shim/tmux"
 chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
-kv_run "kill $C" "$CW" >/dev/null
+kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
 is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
 is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | cut -c1-1)"
 
 V=$(kv_win vic-two)
-case "$(kv_run "kill $V" "$BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
+case "$(kv_run "kill $V" "$V $BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
     *) bad ".expect naming another window's id refuses" "✕ ... you confirmed $BW" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and that window survives" "alive" "$(kv_alive "$V")"
 
@@ -11537,7 +11537,7 @@ case "$(kv_run "kill $V" "vic-two")" in '✕ cockpit: not killed: the board name
     *) bad "a .expect that is a window name, not an id, refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 is "and the window survives both" "alive" "$(kv_alive "$V")"
 
-KV_LINK=1; case "$(kv_run "kill $V" "$(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
+KV_LINK=1; case "$(kv_run "kill $V" "$V $(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok "a .expect that is a symlink is not read" ;;
     *) bad "a .expect that is a symlink is not read" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 KV_LINK=
 is "and that window survives too" "alive" "$(kv_alive "$V")"
@@ -11546,7 +11546,7 @@ is "and that window survives too" "alive" "$(kv_alive "$V")"
 # (a refused kill of V), trip 2 asks to kill V2 with no .expect of its own.
 V2=$(kv_win vic-three); V2W=$(kv_id "$V2")
 rm -f "$KD/once" "$KD/twice" "$KD/done" "$KD/link" "$KD/rv"; : > "$KD/bargv"
-printf 'kill %s\n' "$V" > "$KD/line"; printf '%s\n' "$V2W" > "$KD/expect"; printf 'kill %s\n' "$V2" > "$KD/line2"
+printf 'kill %s\n' "$V" > "$KD/line"; printf '%s %s\n' "$V2" "$V2W" > "$KD/expect"; printf 'kill %s\n' "$V2" > "$KD/line2"
 "$TMUX_REAL" -L "$KV" new-window -d -t t: \
     "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KVHOME 2>$KD/err; echo x > $KD/done"
 until_file "$KD/done" 'x'
@@ -11554,13 +11554,26 @@ case "$(tail -n 1 "$KD/bargv")" in '✕ cockpit: not killed: the board named no 
     *) bad "a .expect left by the last trip does not stand in for the next action's" "✕ ... named no window" "$(cat "$KD/bargv")" ;; esac
 is "and the window it named survives" "alive" "$(kv_alive "$V2")"
 
-case "$(kv_run "kill %99999" "@1")" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
+case "$(kv_run "kill %99999" "%99999 @1")" in '✕ cockpit: %99999 is gone, nothing killed') ok "kill of a pane that is gone says so and kills nothing" ;;
     *) bad "kill of a pane that is gone says so and kills nothing" "✕ cockpit: %99999 is gone, nothing killed" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
 
-# a window holding a second pane: the whole window goes, as the confirm said
+# #301: a window holding a second pane: only the agent's pane goes, as the
+# confirm said, and the window's other pane survives
 V=$(kv_win vic-four); V3=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
-kv_run "kill $V" "$(kv_id "$V")" >/dev/null
-is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive "$V") $(kv_alive "$V3")"
+kv_run "kill $V" "$V $(kv_id "$V")" >/dev/null
+is "kill %N takes only its pane; the window's other pane survives" "gone alive" "$(kv_alive "$V") $(kv_alive "$V3")"
+
+# #301: an older binary's .expect is a bare @W, and its confirm promised the
+# whole window: the pane-only wrapper refuses rather than do less than asked
+V=$(kv_win vic-five)
+case "$(kv_run "kill $V" "$(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok "a bare window id (an older binary's .expect) refuses" ;;
+    *) bad "a bare window id (an older binary's .expect) refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and that pane survives" "alive" "$(kv_alive "$V")"
+# and .expect naming another pane in the same window refuses: the ids pair up
+V4=$("$TMUX_REAL" -L "$KV" split-window -d -P -F '#{pane_id}' -t "$V" 'exec sleep 3600')
+case "$(kv_run "kill $V" "$V4 $(kv_id "$V")")" in '✕ cockpit: not killed: the board named no window'*) ok ".expect naming another pane of the window refuses" ;;
+    *) bad ".expect naming another pane of the window refuses" "✕ ... named no window" "$(sed -n '3,$p' "$KD/bargv")" ;; esac
+is "and both panes survive" "alive alive" "$(kv_alive "$V") $(kv_alive "$V4")"
 case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board returns after a kill, selecting the pane that was" ;;
     *) bad "the board returns after a kill, selecting the pane that was" "board --select $V --note <file>" "$(sed -n 2p "$KD/bargv")" ;; esac
 
@@ -11573,6 +11586,189 @@ is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/ba
 grep -q 'unknown verb \[request ' "$KD/tui.log" && ok "and the log names the verb it did not know" \
     || bad "and the log names the verb it did not know" "unknown verb [request ...]" "$(tail -n 3 "$KD/tui.log")"
 "$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: resume %N runs claude --resume <id> in a new pane at the agent's tree (#301) =="
+# The wrapper half of `o`, driven by a stub binary that writes the action file
+# and .expect, as the kill block does. A stub `claude` on the wrapper's PATH
+# (tmux gives a new pane the environment of the client that asked for it)
+# records its cwd and argv; RSPWN is the file a format job would create.
+if need_tmux "the board's resume verb"; then :; else
+RS="cockpit-rs-$$"; SOCKS="$SOCKS $RS"; RSD=$(mktmpd)
+mkdir -p "$RSD/stub" "$RSD/state" "$RSD/work" "$RSD/wt" "$RSD/d#(touch \$RSPWN)"
+printf '#!/bin/sh\nprintf "[%%s]" "$PWD" "$@" > %s/ran\nexec sleep 3600\n' "$RSD" > "$RSD/stub/claude"
+chmod +x "$RSD/stub/claude"
+cat > "$RSD/bin" <<RSBIN
+#!/bin/sh
+printf '%s\n' "\$*" >> "$RSD/bargv"
+[ "\${5:-}" = "" ] || cat "\$5" >> "$RSD/bargv"
+[ ! -e "$RSD/once" ] || exit 0
+: > "$RSD/once"
+cp "$RSD/expect" "\$COCKPIT_ACTION.expect"
+cat "$RSD/line" > "\$COCKPIT_ACTION"
+RSBIN
+chmod +x "$RSD/bin"
+SID=0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c
+RSPWN="$RSD/pwned" "$TMUX_REAL" -L "$RS" -f /dev/null new-session -d -s t -x 120 -y 40 'exec sleep 3600' >/dev/null 2>&1
+RSHOME=$("$TMUX_REAL" -L "$RS" list-panes -t t -F '#{pane_id}')
+rs_agent() {                  # <session-id> -> an ended agent's pane, in a window of its own, cwd work
+    local p
+    p=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: 'exec sleep 3600')
+    "$TMUX_REAL" -L "$RS" set -p -t "$p" @panestate needs-input
+    "$TMUX_REAL" -L "$RS" set -p -t "$p" @cockpit_session "$1"
+    printf '%s' "$p"
+}
+rs_panes() { "$TMUX_REAL" -L "$RS" display -p -t "$1" '#{window_panes}'; }
+rs_run() {                    # <action-line> <expect>: one trip; the note it left
+    rm -f "$RSD/once" "$RSD/done" "$RSD/ran"; : > "$RSD/bargv"
+    printf '%s\n' "$1" > "$RSD/line"; printf '%s\n' "$2" > "$RSD/expect"
+    "$TMUX_REAL" -L "$RS" new-window -d -t t: \
+        "env PATH=\"$RSD/stub:\$PATH\" COCKPIT_TUI_BIN=$RSD/bin XDG_STATE_HOME=$RSD/state COCKPIT_LOG=$RSD/tui.log $DIR/scripts/cockpit-board -p $RSHOME; echo x > $RSD/done"
+    until_file "$RSD/done" 'x'
+    sed -n '3,$p' "$RSD/bargv"
+}
+
+R=$(rs_agent "$SID")
+rs_run "resume $R" "$SID" >/dev/null
+is "resume %N with the session it holds closes the board: one trip, no return" "1" "$(grep -c '^board' "$RSD/bargv")"
+until_file "$RSD/ran" '?*'
+is "claude --resume <id> runs at the pane's cwd" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+is "in a new pane beside it, the agent's pane kept" "2 $R" \
+   "$(rs_panes "$R") $("$TMUX_REAL" -L "$RS" list-panes -t "$R" -F '#{pane_id}' | grep -x -- "$R")"
+
+# Claude Code never moves its cwd (#312): the session lives under the pane's
+# cwd, so @cockpit_dir, a worktree the agent works in, does not move the resume
+R=$(rs_agent "$SID"); "$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_dir "$RSD/wt"
+rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
+is "@cockpit_dir does not move it: it runs at the pane's cwd" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+
+# A cwd named with a tmux format: -c expands formats, so an unescaped name
+# would run the #() job and start in the directory its output makes instead.
+# The test's own -c spells it ##( for the same reason.
+R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/d##(touch \$RSPWN)" -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate needs-input
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
+rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
+is "a cwd named with #(...) is the directory, not a format" "[$RSD/d#(touch \$RSPWN)][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+
+# A session id that is no UUID never reaches a command line, whatever the pane
+# holds: the wrapper checks the shape itself, not only the board.
+for bad in "x'; touch \$RSPWN; '" '$(touch $RSPWN)' "$(printf %s "$SID" | tr a-f A-F)" "$SID; touch \$RSPWN" ""; do
+    R=$(rs_agent "$bad")
+    case "$(rs_run "resume $R" "$bad")" in '✕ cockpit: not resumed: the board named no session id') ok "a hostile session id is refused: [$bad]" ;;
+        *) bad "a hostile session id is refused: [$bad]" "✕ ... named no session id" "$(cat "$RSD/bargv")" ;; esac
+    is "and nothing ran for it: no pane, no claude" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
+done
+
+R=$(rs_agent "$SID")
+case "$(rs_run "resume $R" "${SID%c}d")" in "✕ cockpit: not resumed: $R no longer holds session ${SID%c}d") ok "a session the pane no longer holds is refused" ;;
+    *) bad "a session the pane no longer holds is refused" "✕ ... no longer holds" "$(cat "$RSD/bargv")" ;; esac
+is "and nothing ran" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
+case "$(rs_run "resume %99999" "$SID")" in '✕ cockpit: %99999 is gone, nothing resumed') ok "resume of a pane that is gone says so" ;;
+    *) bad "resume of a pane that is gone says so" "✕ cockpit: %99999 is gone, nothing resumed" "$(cat "$RSD/bargv")" ;; esac
+# A second copy of a live session is refused: a pane whose command is an
+# agent (by @cockpit_agents_glob, or a claude renamed to its version) holding
+# the id. The ended panes above held it too and never blocked a resume.
+"$TMUX_REAL" -L "$RS" set -g @cockpit_agents_glob '|claude|'
+for argv0 in claude 2.1.246; do
+    RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $argv0 sleep 3600")
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+    R=$(rs_agent "$SID")
+    case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $RL") ok "a session live in another pane ($argv0) is not resumed twice" ;;
+        *) bad "a session live in another pane ($argv0) is not resumed twice" "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;; esac
+    is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
+    "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+done
+# the target itself running an agent again (a stale board's row) is refused too
+R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: 'exec -a claude sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate running
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
+case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $R") ok "a target running its agent again is not resumed" ;;
+    *) bad "a target running its agent again is not resumed" "✕ cockpit: ${SID:0:8} is already running in $R" "$(cat "$RSD/bargv")" ;; esac
+"$TMUX_REAL" -L "$RS" kill-pane -t "$R"
+# an agent holding the id with no @panestate still blocks: SessionStart and idle
+# run `agent-state off`, so the copy `o` just opened has none
+RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+R=$(rs_agent "$SID")
+case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $RL") ok "a live agent holding the id with no @panestate is not resumed twice" ;;
+    *) bad "a live agent holding the id with no @panestate is not resumed twice" "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;; esac
+"$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+"$TMUX_REAL" -L "$RS" kill-pane -t "$R" 2>/dev/null
+# the same id live under a command that is no agent (a shell left over) does not block
+RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+R=$(rs_agent "$SID")
+rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
+is "an ended pane holding the id does not block the resume" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+is "no format job ran in the whole block" "absent" "$([ -e "$RSD/pwned" ] && echo present || echo absent)"
+"$TMUX_REAL" -L "$RS" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: an ended agent shows dimmed as ended, offers o, and o writes resume %N (#301) =="
+# The real binary on a server that knows its agents (@cockpit_agents_glob, as
+# cockpit.tmux sets it): one live claude, one ended pane with a session id,
+# one ended pane whose session is no UUID.
+if need_tmux "the board's ended rows"; then :; else
+EB="cockpit-eb-$$"; SOCKS="$SOCKS $EB"; EBD=$(mktmpd)
+mkdir -p "$EBD/state"
+"$TMUX_REAL" -L "$EB" -f /dev/null new-session -d -s t -x 120 -y 30 'exec sleep 3600' >/dev/null 2>&1
+"$TMUX_REAL" -L "$EB" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+EBL=$("$TMUX_REAL" -L "$EB" new-window -d -n live -c "$EBD" -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')
+EBE=$("$TMUX_REAL" -L "$EB" new-window -d -n gone -c "$EBD" -P -F '#{pane_id}' -t t: 'exec sleep 3600')
+EBX=$("$TMUX_REAL" -L "$EB" new-window -d -n nosid -c "$EBD" -P -F '#{pane_id}' -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$EB" set -p -t "$EBL" @panestate running
+"$TMUX_REAL" -L "$EB" set -p -t "$EBE" @panestate needs-input
+"$TMUX_REAL" -L "$EB" set -p -t "$EBE" @panestate_msg 'Do you want to proceed?'
+"$TMUX_REAL" -L "$EB" set -p -t "$EBE" @cockpit_session 0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c
+"$TMUX_REAL" -L "$EB" set -p -t "$EBX" @panestate running
+"$TMUX_REAL" -L "$EB" set -p -t "$EBX" @cockpit_session 'not-a-uuid'
+# A live claude that is not the foreground (an editor over it, say): `claude`
+# in the pane's process tree under a foreground `sleep`. Live, so it keeps ▲.
+ln -s "$(command -v sleep)" "$EBD/claude"
+EBT=$("$TMUX_REAL" -L "$EB" new-window -d -n editing -c "$EBD" -P -F '#{pane_id}' -t t: "sh -c '$EBD/claude 3600 & exec sleep 3600'")
+"$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate needs-input
+"$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate_msg 'Allow this edit?'
+until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}' \
+    || bad "the tree pane's foreground is sleep" "sleep" "$("$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}')"
+eb_open() {                   # <pane> <action-dir> -> EBW, a board on that pane
+    EBW=$("$TMUX_REAL" -L "$EB" new-window -d -P -F '#{pane_id}' -t t: \
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$EBD/state COCKPIT_ACTION=$2/act $COCKPIT_TUI_BIN board --select $1")
+    until_cap "$EB" "$EBW" '*board · 4 agents*'
+}
+eb_cap() { "$TMUX_REAL" -L "$EB" capture-pane -p -J -t "$EBW" 2>/dev/null; }
+eb_row() { eb_cap | grep -- " $1 "; }  # <window-name> -> its list row
+EA=$(mktmpd)
+eb_open "$EBE" "$EA" || bad "the board opens on the ended agent" "board · 4 agents" "$(eb_cap)"
+until_cap "$EB" "$EBW" '*o resume*' || bad "the ended row's footer offers o resume" "o resume" "$(eb_cap)"
+case "$(eb_row gone)" in *◌*' ended '*) ok "the ended row says ended under its own glyph" ;; *) bad "the ended row says ended under its own glyph" "◌ ... ended" "$(eb_cap)" ;; esac
+case "$(eb_cap)" in *'Do you want'*) bad "an ended needs-input pane shows no message" "no message" "$(eb_cap)" ;;
+    *) ok "an ended needs-input pane shows no message" ;; esac
+case "$(eb_row gone)" in *▲*) bad "an ended needs-input pane is no ▲" "no ▲" "$(eb_cap)" ;; *) ok "an ended needs-input pane is no ▲" ;; esac
+case "$(eb_row editing)" in *▲*'Allow this edit?'*) ok "a claude in the tree, not the foreground, is live and keeps its ▲" ;;
+    *) bad "a claude in the tree, not the foreground, is live and keeps its ▲" "▲ ... Allow this edit?" "$(eb_cap)" ;; esac
+case "$(eb_cap)" in *' 1 needs you'*) ok "and only it is counted in needs you" ;; *) bad "and only it is counted in needs you" "1 needs you" "$(eb_cap)" ;; esac
+# the panes sit outside any repo: a branch name could hold the word
+case "$(eb_row live)" in *' ended '*) bad "a live claude is not ended" "running" "$(eb_cap)" ;; *) ok "a live claude is not ended" ;; esac
+"$TMUX_REAL" -L "$EB" send-keys -t "$EBW" o
+until_file "$EA/act" '?*'
+is "o writes resume %N and the session id as .expect" "resume $EBE 0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c" \
+   "$(cat "$EA/act" 2>/dev/null) $(cat "$EA/act.expect" 2>/dev/null)"
+for p in "$EBL" "$EBX"; do
+    EO=$(mktmpd)
+    eb_open "$p" "$EO"
+    until_cap "$EB" "$EBW" '*x kill*'
+    case "$(eb_cap)" in *'o resume'*) bad "no o resume on $p" "no o" "$(eb_cap)" ;; *) ok "no o resume in the footer on $p" ;; esac
+    "$TMUX_REAL" -L "$EB" send-keys -t "$EBW" o
+    until_cap "$EB" "$EBW" '*resume is for an ended agent*' || bad "o there says why" "resume is for an ended agent" "$(eb_cap)"
+    "$TMUX_REAL" -L "$EB" send-keys -t "$EBW" q
+    until_out '' sh -c "'$TMUX_REAL' -L '$EB' list-panes -a -F '#{pane_id}' | grep -x -- '$EBW'" \
+        || bad "q closes the board" "the window closes" "$(eb_cap)"
+    is "and q leaves no action from it" "" "$(cat "$EO/act" 2>/dev/null)$(cat "$EO/act.expect" 2>/dev/null)"
+done
+"$TMUX_REAL" -L "$EB" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-board: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#293) =="

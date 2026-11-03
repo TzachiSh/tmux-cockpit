@@ -760,3 +760,21 @@ fn a_hanging_claude_agents_does_not_hang_the_read() {
     // the fake ran, so the deadline was what ended it
     assert!(r.dir.join("claude.pid").exists());
 }
+
+// --- ended agents (#301) -----------------------------------------------------
+
+/// Ended: the hooks marked the pane, no agent runs in it, and the agent list is
+/// known, without which a live `claude` cannot be told from a shell.
+#[test]
+fn ended_needs_a_mark_no_agent_and_a_known_agent_list() {
+    use cockpit_tui::data::ended;
+    for (raw, live, glob, want) in [
+        ("needs-input", false, true, true),
+        ("running", false, true, true),
+        ("running", true, true, false),
+        ("", false, true, false),
+        ("running", false, false, false),
+    ] {
+        assert_eq!(ended(raw, live, glob), want, "{raw:?} live={live} glob={glob}");
+    }
+}

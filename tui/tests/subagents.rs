@@ -335,6 +335,8 @@ fn a_panes_hash_follows_its_count_and_its_subs_drawing() {
         ..s.clone()
     };
     assert_ne!(hp(&p), hp(&Pane { subs_n: 2, ..p.clone() }), "the hook's count");
+    // #301: an ended row draws dimmed, so the redraw gate must see it turn
+    assert_ne!(hp(&p), hp(&Pane { ended: true, ..p.clone() }), "ended");
     assert_ne!(
         hp(&p),
         hp(&Pane {

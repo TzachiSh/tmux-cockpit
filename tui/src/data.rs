@@ -155,6 +155,9 @@ pub struct Pane {
     pub subs_n: u32,
     /// every subagent in the session's `subagents/` dir, oldest first (data::subagents)
     pub subs: Vec<subagents::Sub>,
+    /// #301: @panestate is set but no agent runs in the pane any more (a crash
+    /// or a kill that let no hook run). The board draws it dimmed as ended.
+    pub ended: bool,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -188,12 +191,13 @@ impl Hash for Pane {
             win,
             subs_n,
             subs,
+            ended,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
-        (state, pinned, delivered, subs_n).hash(h);
+        (state, pinned, delivered, subs_n, ended).hash(h);
         // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
         subs.hash(h);
     }
@@ -684,6 +688,13 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| g.contains(&format!("|{cmd}|")))
 }
 
+/// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
+/// it is an agent. With no agent list (the plugin not loaded) a live `claude`
+/// cannot be told from a shell, so nothing is called ended.
+pub fn ended(raw: &str, live: bool, glob_known: bool) -> bool {
+    !raw.is_empty() && !live && glob_known
+}
+
 const SEP: char = '\u{1f}';
 
 /// Split on `\037`, not tab: a tab in a cwd shifts every later field. tmux never
@@ -712,6 +723,44 @@ fn unsentinel(s: &str) -> String {
     if s == "-" { String::new() } else { s.to_string() }
 }
 
+/// (pane id, pane pid, command): what a tree verdict is good for
+type TreeKey = (String, String, String);
+
+thread_local! {
+    /// #301: whether an agent runs anywhere in a marked pane's process tree, by
+    /// (pane id, pane pid, command): a new command or process asks again, else
+    /// one `ps` per pane per [`GIT_TTL`] rather than one per tick.
+    static TREES: std::cell::RefCell<HashMap<TreeKey, (Instant, bool)>> = std::cell::RefCell::default();
+    /// each pane's last `ended`, so a flip is logged once
+    static ENDED: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::default();
+}
+
+fn tree_cached(key: (&str, &str, &str), look: impl FnOnce() -> bool) -> bool {
+    let key = (key.0.to_string(), key.1.to_string(), key.2.to_string());
+    TREES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
+        if let Some((_, v)) = c.get(&key) {
+            return *v;
+        }
+        let v = look();
+        c.insert(key, (Instant::now(), v));
+        v
+    })
+}
+
+/// One line when a pane turns ended or back, with what found the agent
+/// (`command`, `tree`) or `none`, so a false "ended" can be traced.
+fn log_ended_flip(p: &Pane, live_by: &str) {
+    let was = ENDED.with(|c| c.borrow_mut().insert(p.id.clone(), p.ended));
+    if was.unwrap_or(false) != p.ended {
+        log(&format!(
+            "fleet ended-flip pane={} ended={} live_by={live_by} cmd={:?} pid={}",
+            p.id, p.ended, p.cmd, p.pid
+        ));
+    }
+}
+
 /// `None` when the list-panes call itself failed: no tmux, not "no agents".
 pub fn list_panes() -> Option<Vec<Pane>> {
     list_fleet().map(|(ps, _)| ps)
@@ -736,11 +785,20 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let raw = unsentinel(f[4]);
         // The name is a fast path that skips the `ps` fork; the tree decides.
-        let agent = !raw.is_empty() || agentish(f[3]) || {
+        let by_cmd = agentish(f[3]);
+        let mut in_tree = || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
         };
-        if !agent {
+        // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
+        let by_tree = !by_cmd
+            && if raw.is_empty() {
+                in_tree()
+            } else {
+                tree_cached((f[0], f[9], f[3]), in_tree)
+            };
+        let live = by_cmd || by_tree;
+        if raw.is_empty() && !live {
             continue;
         }
         let mut p = Pane {
@@ -757,8 +815,19 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
             review: unsentinel(f[10]),
             spool: unsentinel(f[11]),
             win: f[12].into(),
+            ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
             ..Default::default()
         };
+        log_ended_flip(
+            &p,
+            if by_cmd {
+                "command"
+            } else if by_tree {
+                "tree"
+            } else {
+                "none"
+            },
+        );
         if p.sess.is_empty() {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
             p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);

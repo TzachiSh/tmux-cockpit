@@ -114,7 +114,7 @@ until they restart.
 |-----|------|
 | `prefix + a` | the menu: every action, one letter each; also `≡` on the border |
 | `prefix + u` | jump to the pane that needs you; again for the next |
-| `prefix + w` | the board: every agent pane, grouped by session, blocked first; `/` filters it as you type, `v` for live tiles (needs `cockpit-tui`) |
+| `prefix + w` | the board: every agent pane, grouped by session, blocked first; `/` filters it as you type, `v` for live tiles, `x` kills an agent's pane, `o` resumes an ended one (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`); `^Z` in it hides it, and `prefix + f` on the pane brings it back |
 | `prefix + r` | the board again, as the review queue: `r` on a row opens that agent's uncommitted diff in revdiff (needs `cockpit-tui`) |
 | `prefix + i` | info about this pane: cwd, git root, state, review (`cockpit-tui info`; `i` in the board shows the same) |
