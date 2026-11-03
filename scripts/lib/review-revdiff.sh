@@ -132,6 +132,12 @@ review_loop() {
     }
     set_base_line
 
+    if git_refused "$dir"; then
+        tmux display-message "$(fesc "$GIT_REFUSAL")" 2>/dev/null
+        printf '%s\n' "$GIT_REFUSAL" >&2
+        drop_store "$store"
+        exit 0
+    fi
     if [ -z "$(tree_diff "$dir" --numstat)" ]; then
         tmux display-message "$(fesc "cockpit: no uncommitted changes in $dir")" 2>/dev/null
         drop_store "$store"

@@ -11070,6 +11070,20 @@ is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter
 "$DSB" diffstat "$GD/r" >/dev/null 2>&1
 "$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
 is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+# #330: the callers say why instead of reading as an empty or clean repo.
+RFL="cockpit: refusing this repo: a git filter driver name contains '=' (see #331)"
+mkdir -p "$GD/bin"; printf '#!/bin/sh\ntouch "%s/revdiff-ran"\n' "$GD" > "$GD/bin/revdiff"; chmod +x "$GD/bin/revdiff"
+is "tmux-review --lines names the refusal on stderr, no rows, status 1" "$RFL
+|1|" \
+   "$("$DIR/scripts/tmux-review" --lines "$GD/r" 2>&1 >"$GD/rows"; printf '|%s|%s' "$?" "$(cat "$GD/rows")")"
+is "tmux-review --loop names the refusal and never starts revdiff" "$RFL|" \
+   "$(env -u TMUX PATH="$GD/bin:$PATH" "$DIR/scripts/tmux-review" --loop "$GD/r" "$GD/store" 2>&1 </dev/null | tr '\n' '|')$(ls "$GD/revdiff-ran" 2>/dev/null)"
+is "the diff preview of a file in it says so, not 'no uncommitted changes'" "$RFL" \
+   "$("$DIR/scripts/tmux-open-path" --preview-diff "$GD/r/x" 2>&1)"
+is "and so does a folder's" "$RFL" "$("$DIR/scripts/tmux-open-path" --preview-diff "$GD/r" 2>&1)"
+is "a plain repo still previews as before" "no uncommitted changes in y" \
+   "$(git init -q "$GD/ok" && printf 'a\n' > "$GD/ok/y" && git -C "$GD/ok" add y && git -C "$GD/ok" -c user.name=t -c user.email=t@t commit -qm i && "$DIR/scripts/tmux-open-path" --preview-diff "$GD/ok/y" 2>&1)"
+is "none of it ran the plant" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
 unset -f ds_shell
 

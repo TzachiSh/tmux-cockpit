@@ -203,6 +203,8 @@ bytelen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
 lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
+    # Rows only on stdout: the refusal goes to stderr, with a status a reader can test.
+    if git_refused "$dir"; then printf '%s\n' "$GIT_REFUSAL" >&2; return 1; fi
 
     # core.quotePath=false: with git's default (true) a path holding any
     # non-ASCII byte comes out C-quoted and octal-escaped -- `--- "a/caf\303\251.txt"`
