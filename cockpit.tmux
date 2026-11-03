@@ -189,7 +189,10 @@ jk=$(key @cockpit_jump_key u)
 
 ik=$(key @cockpit_info_key i)
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
-[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' "$(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
+# The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
+# setting the option needs no reload.
+[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
 
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
