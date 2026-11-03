@@ -151,8 +151,8 @@ subs_count() {
 # runs no sums of its own. Only digits reach the formats. A Stop that holds runs it alone;
 # any other rides in the one invocation below, so done still costs one tmux call.
 subs_cmd=()
-subs_write() {
-    local cond
+subs_build() {
+    local cond body T
     if [ "$SUBS" -gt 0 ]; then
         cond="#{!=:#{@cockpit_subs},$SUBS}" body="set-option -p -t $pane @cockpit_subs $SUBS"
     else
@@ -288,7 +288,7 @@ done)
     # No state is written meanwhile, so sticky states and the counters stay as they are; the
     # count is (#313). The poller has no payload, and a terminal is a person typing the command.
     if [ -z "$poll" ] && [ ! -t 0 ]; then
-        subs_count; subs_write
+        subs_count; subs_build
         if [ "$SUBS" -gt 0 ]; then tmux "${subs_cmd[@]}" 2>/dev/null; exit 0; fi
     fi
     ;;
