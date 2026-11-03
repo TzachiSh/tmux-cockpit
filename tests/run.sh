@@ -8052,18 +8052,6 @@ exec cp "$TF/rel/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 
-# The tmux-review tui row runs --auth on both "not installed" branches, i.e. on
-# a keypress: `gh auth token` reads the local config, `gh auth status` would
-# validate against api.github.com with no timeout to bound it.
-: > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
-is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
-case "$(cat "$TF/ghlog")" in
-    *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
-    *"auth token"*)  ok "and asks the local token, never the network auth status" ;;
-    *) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
-esac
-
 tf_release tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
 tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
@@ -10834,181 +10822,6 @@ av_tm kill-server >/dev/null 2>&1
 fi
 
 
-echo "== transcript reader: doing, said and asked rows (#176) =="
-TRF="$DIR/tests/fixtures/transcript-reader"
-. "$DIR/scripts/lib/transcript.sh"
-trrow() { transcript_doing "$1" 2>/dev/null | awk -F'\t' -v k="$2" -v n="$3" '$1==k { print $n }'; }
-trnum() { case "$1" in ''|*[!0-9]*) echo "not-a-number:$1";; *) echo number;; esac; }
-is "an open Bash tool_use gives the doing row 'Bash: <command>' (command outranks description)" \
-   "Bash: make test" "$(trrow "$TRF/open.jsonl" doing 2)"
-is "the doing row's third field is whole seconds since the tool started" \
-   number "$(trnum "$(trrow "$TRF/open.jsonl" doing 3)")"
-is "a tool_use with a tool_result after it is closed: no doing row" \
-   "" "$(trrow "$TRF/closed.jsonl" doing 2)"
-is "the said row is the last assistant text, first line only" \
-   "Looking at the widget now." "$(trrow "$TRF/open.jsonl" said 2)"
-is "the asked row is the last string prompt" \
-   "fix the widget" "$(trrow "$TRF/open.jsonl" asked 2)"
-is "the asked row's third field is whole seconds since the prompt" \
-   number "$(trnum "$(trrow "$TRF/open.jsonl" asked 3)")"
-is "rows come out in the order doing, said, asked" \
-   "doing said asked" "$(transcript_doing "$TRF/open.jsonl" 2>/dev/null | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
-is "a closed fixture still reports said and asked, status 0" \
-   "said asked 0" "$(transcript_doing "$TRF/closed.jsonl" 2>/dev/null | cut -f1 | tr '\n' ' '; echo "${PIPESTATUS[0]}")"
-is "a tool without a description falls back to its file_path" \
-   "Read: /tmp/x" "$(trrow "$TRF/noisy.jsonl" doing 2)"
-is "control characters are stripped and only the first line is kept" \
-   "first bell" "$(trrow "$TRF/noisy.jsonl" asked 2)"
-# The same cases the Rust tlabel and read_facts tests read: one label per tool shape (#280).
-TLF="$DIR/tests/fixtures/tool-labels/cases.jsonl"
-TLJ="$(mktmpf)"; TLGOT=""; TLWANT=""
-while IFS= read -r tlc; do
-    jq -nc --argjson c "$tlc" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
-        message:{content:[{type:"tool_use",id:"t1",name:$c[0],input:$c[1]}]}}' > "$TLJ"
-    TLGOT+="$(trrow "$TLJ" doing 2)"$'\n'
-    TLWANT+="$(jq -r '.[2]' <<<"$tlc")"$'\n'
-done < "$TLF"
-is "the jq reader labels every tool shape as the Rust readers do, never with a bare 'Name:'" \
-   "$TLWANT" "$TLGOT"
-TRL="$(mktmpf)"
-for n in 160 161 300; do
-    jq -nc --argjson n "$n" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
-        message:{content:[{type:"text",text:([range($n)|"x"]|join(""))}]}}' > "$TRL"
-    is "a $n-char text is said as 160 chars" 160 "$(trrow "$TRL" said 2 | tr -d '\n' | wc -m | tr -d ' ')"
-done
-jq -nc '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",message:{content:[
-    {type:"tool_use",id:"t9",name:"Ba\u0007sh",input:{description:([range(300)|"d"]|join(""))}}]}}' > "$TRL"
-is "the doing row's tool name and description are stripped and capped at 160 together" \
-   "160 Bash" "$(trrow "$TRL" doing 2 | awk '{ print length($0), substr($0, 1, 4) }')"
-is "a version older than 2.1.246 is refused: status 1, no output" \
-   "1:" "$(transcript_doing "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
-is "a version newer than any known one is still read" \
-   "future prompt" "$(trrow "$TRF/newer.jsonl" asked 2)"
-is "transcript_tail also refuses the old version" \
-   "1:" "$(transcript_tail "$TRF/old.jsonl" 2>/dev/null; echo -n "$?" | sed 's/$/:/')"
-# shellcheck disable=SC2123  # emptying the search path is the test
-NOJQ=$(PATH=/nonexistent; for f in transcript_doing transcript_tail; do
-        o=$($f "$TRF/open.jsonl" 2>&1); r=$?; mapfile -t l <<<"$o"; echo -n "${#l[@]}:$r "; done)
-is "works with no jq: with an empty PATH doing and tail still read, status 0" \
-   "3:0 3:0 " "$NOJQ"
-EMPTY="$(mktmpf)"
-is "an empty transcript: status 1, no output" "1:" "$(transcript_doing "$EMPTY" 2>&1; echo -n "$?:")"
-is "a missing transcript: status 1, no output" "1:" \
-   "$(transcript_doing "$EMPTY.nope" 2>&1; echo -n "$?:")"
-is "a zero-argument call: status 1, no output" "1:1:1:" \
-   "$(transcript_doing 2>&1; echo -n "$?:"; transcript_tail 2>&1; echo -n "$?:"; transcript_file 2>&1; echo -n "$?:")"
-printf 'not json at all\n{"half":\n' > "$TRL"
-is "a transcript that is not JSON: status 1, no output" "1:" "$(transcript_doing "$TRL" 2>&1; echo -n "$?:")"
-
-trver() { sed "s/2\.1\.316/$1/" "$TRF/open.jsonl" > "$TRL"
-          transcript_doing "$TRL" 2>/dev/null | cut -f1 | tr '\n' ' '; }
-is "version 2.1.99 is older than 2.1.246 (numeric compare): refused" "" "$(trver 2.1.99)"
-is "version 2.1.1000 is newer than 2.1.246 (numeric compare): read" "doing said asked " "$(trver 2.1.1000)"
-is "version 2.1.250-beta compares on its leading x.y.z: read" "doing said asked " "$(trver 2.1.250-beta)"
-is "version 2.1 counts as 2.1.0: refused" "" "$(trver 2.1)"
-trpr() {                      # <content> [isMeta]: a real prompt, then this one
-    { jq -nc '{type:"user",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",message:{content:"real prompt"}}'
-      jq -nc --arg c "$1" --argjson m "${2:-false}" '{type:"user",version:"2.1.316",isMeta:$m,
-          timestamp:"2026-01-01T10:00:05Z",message:{content:$c}}'; } > "$TRL"; }
-for c in '<task-notification>done' '<system-reminder>hook' '<local-command-stdout>x' '<command-name>/x'; do
-    trpr "$c"
-    is "a prompt starting $c is harness-injected: asked and USER skip it" \
-       "real prompt|USER: real prompt" "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
-done
-trpr "meta text" true
-is "an isMeta prompt is skipped by asked and by the tail" \
-   "real prompt|USER: real prompt" "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
-trpr '<pasted_content id="1">a long paste'
-is "a <pasted_content> prompt shows as [pasted text] in asked and in the tail" \
-   "[pasted text]|USER: real prompt"$'\n'"USER: [pasted text]" \
-   "$(trrow "$TRL" asked 2)|$(transcript_tail "$TRL" 2>/dev/null)"
-trsay() { jq -nc --arg t "$1" '{type:"assistant",version:"2.1.316",timestamp:"2026-01-01T10:00:00Z",
-              message:{content:[{type:"text",text:$t}]}}' > "$TRL"; }
-trsay $'a\u0085b\u009bc'
-is "C1 controls (U+0080-U+009F) are stripped" "abc" "$(trrow "$TRL" said 2)"
-trsay $'a\tb'
-is "a TAB inside a text field becomes a space" "a b" "$(trrow "$TRL" said 2)"
-{ echo '{"type":"assistant","version":"2.1.316","timestamp":"2026-01-01T10:00:00Z","message":{"content":[{"type":"tool_use","id":"far","name":"Bash","input":{"description":"too old to see"}}]}}'
-  for _ in $(seq 350); do echo '{"type":"user","version":"2.1.316","timestamp":"2026-01-01T10:00:01Z","message":{"content":"p"}}'; done; } > "$TRL"
-is "only the last 300 lines are read: an open tool_use 350 lines back gives no doing row" \
-   "" "$(trrow "$TRL" doing 2)"
-
-echo "== transcript reader: tail (#176) =="
-TRF="$DIR/tests/fixtures/transcript-reader"
-. "$DIR/scripts/lib/transcript.sh"
-is "the tail is USER/AGENT/TOOL lines, oldest first" \
-   $'USER: fix the widget\nAGENT: Looking at the widget now.\nTOOL Bash: make test' \
-   "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null)"
-is "the tail leaves out lines that are not turns" \
-   3 "$(transcript_tail "$TRF/open.jsonl" 2>/dev/null | wc -l | tr -d ' ')"
-is "a cap of 40 bytes drops the oldest lines whole" \
-   $'TOOL Bash: make test' "$(transcript_tail "$TRF/open.jsonl" 40 2>/dev/null)"
-is "a cap of 60 keeps the two newest lines" \
-   $'AGENT: Looking at the widget now.\nTOOL Bash: make test' \
-   "$(transcript_tail "$TRF/open.jsonl" 60 2>/dev/null)"
-is "the output never exceeds the cap" "ok" \
-   "$([ "$(transcript_tail "$TRF/open.jsonl" 80 2>/dev/null | wc -c)" -le 80 ] && echo ok)"
-is "a cap smaller than the newest line prints nothing, status 1" "1:" \
-   "$(transcript_tail "$TRF/open.jsonl" 5 2>&1; echo -n "$?:")"
-is "a non-numeric cap prints nothing, status 1" "1:" \
-   "$(transcript_tail "$TRF/open.jsonl" many 2>&1; echo -n "$?:")"
-
-echo "== transcript reader: which transcript (#176) =="
-. "$DIR/scripts/lib/transcript.sh"
-TRH="$(mktmpd)"; mkdir -p "$TRH/.claude/projects/-some-proj"
-: > "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl"
-: > "$TRH/.claude/projects/-some-proj/sid-bbb.jsonl"
-TRSOCK="cockpit-trf-$$"; SOCKS="$SOCKS $TRSOCK"
-tmux_tr() { "$TMUX_REAL" -L "$TRSOCK" "$@"; }
-"$TMUX_REAL" -L "$TRSOCK" -f /dev/null new-session -d -s t 'sleep 600 & wait' >/dev/null 2>&1
-TRP=$(tmux_tr display-message -p -t t '#{pane_id}' 2>/dev/null)
-TRPID=$(tmux_tr display-message -p -t t '#{pane_pid}' 2>/dev/null)
-TRBIN="$(mktmpd)"
-TRKID=
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-    TRKID=$(pgrep -P "$TRPID" sleep | head -1); [ -n "$TRKID" ] && break
-    read -r -t 0.2 <> <(:) 2>/dev/null
-done
-cat > "$TRBIN/claude" <<FAKE
-#!/bin/sh
-echo '[{"pid":1,"sessionId":"sid-aaa","cwd":"/x","status":"idle"},{"pid":$TRKID,"sessionId":"sid-bbb","cwd":"/y","status":"busy"}]'
-FAKE
-chmod +x "$TRBIN/claude"
-trfile() { ( COCKPIT_TMUX="$TMUX_REAL -L $TRSOCK" HOME="$TRH" PATH="$TRBIN:$PATH" transcript_file "$1" 2>&1; echo -n "$?" ); }
-is "the fake claude's child pid was found under the pane (rig check)" "yes" \
-   "$([ -n "$TRKID" ] && echo yes)"
-is "with no @cockpit_session the agents list is joined on the pane's process tree" \
-   "$TRH/.claude/projects/-some-proj/sid-bbb.jsonl
-0" "$(trfile "$TRP")"
-tmux_tr set-option -p -t "$TRP" @cockpit_session sid-aaa 2>/dev/null
-is "@cockpit_session wins over the agents list" \
-   "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl
-0" "$(trfile "$TRP")"
-tmux_tr set-option -p -t "$TRP" @cockpit_session sid-gone 2>/dev/null
-is "a session id with no transcript file: nothing, status 1" "1" "$(trfile "$TRP")"
-tmux_tr set-option -p -t "$TRP" @cockpit_session '../*' 2>/dev/null
-is "a session id carrying glob or path characters is refused" "1" "$(trfile "$TRP")"
-tmux_tr set-option -pu -t "$TRP" @cockpit_session 2>/dev/null
-tmux_tr set-option -p -t "$TRP" @cockpit_session 'sid-*' 2>/dev/null
-is "a session id of sid-* (two matching files) is refused, not globbed" "1" "$(trfile "$TRP")"
-touch "$TRH/.claude/projects/outside.jsonl"
-tmux_tr set-option -p -t "$TRP" @cockpit_session '../outside' 2>/dev/null
-is "a session id that climbs out of its project directory is refused" "1" "$(trfile "$TRP")"
-tmux_tr set-option -p -t "$TRP" @cockpit_session sid-aaa 2>/dev/null
-is "works with no jq: an empty PATH still finds the @cockpit_session transcript" \
-   "$TRH/.claude/projects/-some-proj/sid-aaa.jsonl
-0" "$( ( COCKPIT_TMUX="$TMUX_REAL -L $TRSOCK" HOME="$TRH" PATH=/nonexistent transcript_file "$TRP" 2>&1; echo -n "$?" ) )"
-tmux_tr set-option -pu -t "$TRP" @cockpit_session 2>/dev/null
-printf '#!/bin/sh\necho '"'"'[{"pid":%d,"sessionId":"sid-aaa"}]'"'"'\n' "$$" > "$TRBIN/claude"   # a live pid that is not under the pane
-is "an agents entry outside the pane's process tree is not joined" "1" "$(trfile "$TRP")"
-printf '#!/bin/sh\necho garbage\n' > "$TRBIN/claude"
-is "garbage from claude agents: nothing, status 1" "1" "$(trfile "$TRP")"
-printf '#!/bin/sh\necho "$1" > "%s/bound"; shift; exec "$@"\n' "$TRBIN" > "$TRBIN/timeout"
-printf '#!/bin/sh\necho "[]"\n' > "$TRBIN/claude"; chmod +x "$TRBIN/timeout"
-trfile "$TRP" >/dev/null
-is "claude agents runs under a 2 s timeout" "2" "$(cat "$TRBIN/bound" 2>/dev/null)"
-rm -f "$TRBIN/timeout" "$TRBIN/bound"
-tmux_tr kill-server 2>/dev/null
 echo "== cockpit-tui diffstat and git-flags match the shell they will replace (#199) =="
 DSB=$COCKPIT_TUI_BIN
 # tree_diff's rows summed the way the board's scan sums them, as diffstat's four
@@ -11072,21 +10885,6 @@ is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter
 is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
 unset -f ds_shell
-
-echo "== transcript reader: the frozen output of every fixture (#199) =="
-. "$DIR/scripts/lib/transcript.sh"
-TPF="$DIR/tests/fixtures/transcript-reader"
-# The frozen files read N for the seconds field; an empty one means status 1.
-tpnorm() { awk -F'\t' -v OFS='\t' '($1=="doing"||$1=="asked") && $3 ~ /^[0-9]+$/ { $3="N" } 1'; }
-tprc() { [ -s "$1" ] && echo rc=0 || echo rc=1; }
-for f in "$TPF"/*.jsonl; do
-    n=${f##*/}
-    is "doing on $n gives ${n%.jsonl}.doing" "$(cat "${f%.jsonl}.doing"; tprc "${f%.jsonl}.doing")" \
-       "$(transcript_doing "$f" 2>&1 | tpnorm; echo "rc=${PIPESTATUS[0]}")"
-    is "tail on $n gives ${n%.jsonl}.tail" "$(cat "${f%.jsonl}.tail"; tprc "${f%.jsonl}.tail")" \
-       "$(transcript_tail "$f" 2>&1; echo "rc=$?")"
-done
-unset -f tpnorm tprc
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
@@ -12760,31 +12558,6 @@ is "SessionStart saves the session on startup, resume, clear and fork (a new ses
 is "but not on compact, which keeps its session_id" "0" "$(sss compact)"
 is "UserPromptSubmit saves it too" "1" \
    "$(jq '[.hooks.UserPromptSubmit[].hooks[].command | select(test("agent-state session$"))] | length' "$DIR/examples/claude-hooks.json")"
-
-echo "== transcript reader prefers @cockpit_transcript, then @cockpit_session (#302) =="
-. "$DIR/scripts/lib/transcript.sh"
-TQH=$(mktmpd); mkdir -p "$TQH/.claude/projects/-a" "$TQH/.claude/projects/-b"
-TQU=cccccccc-1111-4111-8111-111111111111
-: > "$TQH/.claude/projects/-a/$TQU.jsonl"; : > "$TQH/.claude/projects/-b/direct.jsonl"; : > "$TQH/out.jsonl"
-TQS="cockpit-tq-$$"; SOCKS="$SOCKS $TQS"
-"$TMUX_REAL" -L "$TQS" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
-TQP=$("$TMUX_REAL" -L "$TQS" display-message -p -t t '#{pane_id}')
-tq() { ( COCKPIT_TMUX="$TMUX_REAL -L $TQS" HOME="$TQH" PATH="/nonexistent" transcript_file "$TQP" 2>&1; echo -n "$?" ); }
-tq_set() { "$TMUX_REAL" -L "$TQS" set-option -p -t "$TQP" "$@"; }
-tq_set @cockpit_session $TQU; tq_set @cockpit_transcript "$TQH/.claude/projects/-b/direct.jsonl"
-is "with both options set the transcript path wins" "$TQH/.claude/projects/-b/direct.jsonl
-0" "$(tq)"
-tq_set @cockpit_transcript "$TQH/out.jsonl"
-is "a transcript option outside the tree is not trusted: the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
-0" "$(tq)"
-tq_set @cockpit_transcript "$TQH/.claude/projects/-b/../-b/direct.jsonl"
-is "a transcript option with .. is not trusted either" "$TQH/.claude/projects/-a/$TQU.jsonl
-0" "$(tq)"
-"$TMUX_REAL" -L "$TQS" set-option -pu -t "$TQP" @cockpit_transcript
-is "with no transcript option the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
-0" "$(tq)"
-"$TMUX_REAL" -L "$TQS" kill-server 2>/dev/null
-rm -rf "$TQH"
 
 echo "== a name, path or error line never runs as a tmux format (#289) =="
 # tmux expands #{...} and #(...) in display-message, run-shell and -T text,

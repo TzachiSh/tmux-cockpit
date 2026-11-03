@@ -261,7 +261,7 @@ not expand formats:
 
 A new `session_id` drops the old `@cockpit_transcript` first, so a pane never points at the
 previous session's file. A missing or refused field leaves the option as it was. The reader
-(`cockpit-tui transcript file`) takes `@cockpit_transcript` if it still resolves under the
+(`data::transcript::file`) takes `@cockpit_transcript` if it still resolves under the
 projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
 is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
 `@cockpit_session` through `review-gate`.

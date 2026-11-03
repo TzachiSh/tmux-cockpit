@@ -1,6 +1,6 @@
-//! `cockpit-tui transcript` against outputs frozen from the jq reader it
+//! The transcript reader against outputs frozen from the jq reader it
 //! replaced, plus #193's cases. Seconds are normalised to N.
-use cockpit_tui::data::transcript::{doing, file, main, tail};
+use cockpit_tui::data::transcript::{doing, file, tail};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
@@ -100,18 +100,20 @@ fn the_tail_cap_drops_whole_lines_from_the_top() {
 }
 
 #[test]
-fn every_failure_is_status_1() {
+fn every_failure_is_none() {
     let open = format!("{FIX}/open.jsonl");
-    let run = |a: &[&str]| main(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-    assert_eq!(run(&[]), 1);
-    assert_eq!(run(&["nope"]), 1);
-    assert_eq!(run(&["doing"]), 1);
-    assert_eq!(run(&["doing", "/nonexistent"]), 1);
-    assert_eq!(run(&["doing", &format!("{FIX}/old.jsonl")]), 1);
-    assert_eq!(run(&["tail", &open, "many"]), 1);
-    assert_eq!(run(&["tail", &open, "-1"]), 1);
-    assert_eq!(run(&["file"]), 1);
-    assert_eq!(run(&["file", ""]), 1);
+    let old = PathBuf::from(format!("{FIX}/old.jsonl"));
+    assert_eq!(doing(&old), None);
+    assert_eq!(tail(&old, 4096), None);
+    assert_eq!(tail(Path::new(&open), 5), None);
+    assert_eq!(file(""), None);
+    let missing = Path::new("/nonexistent/t.jsonl");
+    let empty = Tmp::new("empty", "");
+    let junk = Tmp::new("junk", "this is not json\n{oops\n");
+    for p in [missing, empty.0.as_path(), junk.0.as_path()] {
+        assert_eq!(doing(p), None, "doing {}", p.display());
+        assert_eq!(tail(p, 4096), None, "tail {}", p.display());
+    }
 }
 
 /// HOME, PATH and COCKPIT_TMUX are process-global while tests run on threads.
@@ -213,17 +215,17 @@ fn file_joins_claude_agents_on_the_pane_process_tree() {
 }
 
 #[test]
-fn a_blank_cockpit_tmux_is_status_1_not_a_panic() {
+fn a_blank_cockpit_tmux_is_none_not_a_panic() {
+    let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let old = std::env::var_os("COCKPIT_TMUX");
     for v in ["", " "] {
-        let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
-            .args(["transcript", "file", "%1"])
-            .env("COCKPIT_TMUX", v)
-            .output()
-            .unwrap();
-        assert_eq!(
-            (o.status.code(), o.stdout.len(), o.stderr.len()),
-            (Some(1), 0, 0),
-            "COCKPIT_TMUX={v:?}"
-        );
+        unsafe { std::env::set_var("COCKPIT_TMUX", v) };
+        assert_eq!(file("%1"), None, "COCKPIT_TMUX={v:?}");
+    }
+    unsafe {
+        match old {
+            Some(o) => std::env::set_var("COCKPIT_TMUX", o),
+            None => std::env::remove_var("COCKPIT_TMUX"),
+        }
     }
 }
