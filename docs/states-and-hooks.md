@@ -34,7 +34,9 @@ timer.
 |------|-------|
 | `SessionStart` | `off` — a resumed pane must not inherit old state |
 | `SessionStart` (2nd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
+| `SessionStart` (3rd) | `session` — saves the payload's `session_id` as `@cockpit_session` and `transcript_path` as `@cockpit_transcript` (see [Session identity](#session-identity)) |
 | `UserPromptSubmit` | `running` |
+| `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
@@ -172,3 +174,21 @@ next prompt resumes it, `/goal clear` ends it.
 - A long "thinking" phase fires no hook, so a working pane can read as idle.
   CPU is not a usable substitute: an agent waiting on the API is
   indistinguishable from an idle one.
+
+## Session identity
+
+`agent-state session` runs at `SessionStart` (`startup|resume|clear`, not `compact`, which
+keeps its `session_id`) and at `UserPromptSubmit`. It changes no state. It reads two fields
+of the hook payload and writes them with `set-option -p`, which does not expand formats:
+
+| option | from | saved when |
+|--------|------|------------|
+| `@cockpit_session` | `session_id` | it is a UUID |
+| `@cockpit_transcript` | `transcript_path` | it is an absolute path with no `..` and no `#`, and resolves (`realpath`, symlinks followed) to a regular file under `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
+
+A new `session_id` drops the old `@cockpit_transcript` first, so a pane never points at the
+previous session's file. A missing or refused field leaves the option as it was. The reader
+(`cockpit-tui transcript file`) takes `@cockpit_transcript` if it still resolves under the
+projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
+is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
+`@cockpit_session` through `review-gate`.

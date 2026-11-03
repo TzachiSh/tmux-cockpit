@@ -4020,7 +4020,7 @@ case "$(cat "$HK/.claude/settings.json")" in
 esac
 is "the unslop skill is injected on SessionStart" "1" \
    "$(jq '[.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))] | length' "$HK/.claude/settings.json")"
-is "beside agent-state off, not instead of it" "2" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
+is "beside agent-state off and session, not instead of them" "3" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
 # Run the shipped command itself: the string landing in settings.json says
 # nothing about the JSON it emits, and a jq typo would otherwise ship green.
 is "and the shipped command emits a SessionStart context" "SessionStart 1" \
@@ -12107,6 +12107,108 @@ printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$BRN/cockpit-tui"; chm
 out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" </dev/null 2>&1)
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
+
+echo "== agent-state session: the payload's session_id and transcript_path become pane options (#302) =="
+if need_tmux "agent-state session"; then :; else
+SSD=$(mktmpd); SSH="$SSD/h"; SSROOT="$SSH/.claude/projects"; mkdir -p "$SSROOT/-p" "$SSROOT/-q/#(touch $SSD/F)"
+SSU1=11111111-2222-4333-8444-555555555555; SSU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+for u in $SSU1 $SSU2; do : > "$SSROOT/-p/$u.jsonl"; done
+: > "$SSD/out.jsonl"; : > "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"; ln -s "$SSD/out.jsonl" "$SSROOT/-p/link.jsonl"
+SSP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
+ss_opt() { tmux show-option -pqv -t "$SSP" "@cockpit_$1"; }
+ss_clear() { tmux set-option -pu -t "$SSP" @cockpit_session; tmux set-option -pu -t "$SSP" @cockpit_transcript; }
+ss() {                        # <session_id> <transcript_path> [extra json]  one payload through the hook
+    printf '{"session_id":"%s","transcript_path":"%s","hook_event_name":"UserPromptSubmit"%s}\n' "$1" "$2" "${3:-}" \
+        | env -u CLAUDE_CONFIG_DIR HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; }
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"
+is "a valid payload saves the session id" "$SSU1" "$(ss_opt session)"
+is "and the transcript path" "$SSROOT/-p/$SSU1.jsonl" "$(ss_opt transcript)"
+is "the hook exits 0 and prints nothing" "0:" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" 2>&1; echo "$?:")"
+ss $SSU2 "$SSROOT/-p/$SSU2.jsonl"
+is "a second prompt in a new session replaces both" "$SSU2 $SSROOT/-p/$SSU2.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+ss $SSU1 "$SSD/gone.jsonl"
+is "a new session whose transcript is not valid drops the old transcript (/clear)" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSD/out.jsonl"
+is "a path outside the projects tree is not saved" "" "$(ss_opt transcript)"
+ss $SSU1 "$SSROOT/-p/../-p/$SSU1.jsonl"
+is "a path with .. is not saved, even when it resolves inside the tree" "" "$(ss_opt transcript)"
+ss $SSU1 "$SSROOT/-p/link.jsonl"
+is "a symlink out of the tree is not saved" "" "$(ss_opt transcript)"
+ss $SSU1 "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"
+is "a path with a #(...) component is not saved" "" "$(ss_opt transcript)"
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss $SSU1 "$SSROOT/-p"
+is "a directory is not saved" "" "$(ss_opt transcript)"
+ss $SSU1 "relative/$SSU1.jsonl"
+is "a relative path is not saved" "" "$(ss_opt transcript)"
+ss_clear
+printf '{"transcript_path":"%s"}\n' "$SSROOT/-p/$SSU1.jsonl" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no session_id saves no session" "" "$(ss_opt session)"
+printf '{"session_id":"%s"}\n' "$SSU1" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no transcript_path saves the session alone" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+for bad in sid-123 "../x" "#(touch $SSD/F)" "${SSU1}0" "${SSU1%?}" ""; do
+    ss "$bad" "$SSROOT/-p/$SSU1.jsonl"
+    is "session_id '$bad' is not a UUID: not saved" "" "$(ss_opt session)"
+done
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prompt":"SECRETPROMPT"'
+is "last_assistant_message and the prompt never reach a tmux option" "0" "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
+ss_clear
+SSCFG="$SSD/cfg"; mkdir -p "$SSCFG/projects/-p"; : > "$SSCFG/projects/-p/$SSU2.jsonl"
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU2 "$SSCFG/projects/-p/$SSU2.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "CLAUDE_CONFIG_DIR's projects dir is the tree when set" "$SSCFG/projects/-p/$SSU2.jsonl" "$(ss_opt transcript)"
+ss_clear
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "and ~/.claude/projects is then outside it" "" "$(ss_opt transcript)"
+ss_clear
+tmux set-option -p -t "$SSP" @cockpit_transcript "#(touch $SSD/F)"
+is "set-option -p stores #(...) literally, without running it" "#(touch $SSD/F) none" \
+   "$(ss_opt transcript) $([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+is "the pane's state is untouched" "" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"; tmux show-option -pqv -t "$SSP" @panestate)"
+ss_clear
+tmux kill-pane -t "$SSP" >/dev/null 2>&1
+fi
+
+echo "== hook wiring: session is saved at SessionStart (not compact) and UserPromptSubmit (#302) =="
+sss() { jq -r --arg s "$1" '[.hooks.SessionStart[]
+        | select(.hooks[].command | test("agent-state session$"))
+        | select((.matcher // "") as $m | $m == "" or ($s | test("^(" + $m + ")$")))] | length' \
+        "$DIR/examples/claude-hooks.json"; }
+is "SessionStart saves the session on startup, resume and clear" "1 1 1" "$(sss startup) $(sss resume) $(sss clear)"
+is "but not on compact, which keeps its session_id" "0" "$(sss compact)"
+is "UserPromptSubmit saves it too" "1" \
+   "$(jq '[.hooks.UserPromptSubmit[].hooks[].command | select(test("agent-state session$"))] | length' "$DIR/examples/claude-hooks.json")"
+
+echo "== transcript reader prefers @cockpit_transcript, then @cockpit_session (#302) =="
+. "$DIR/scripts/lib/transcript.sh"
+TQH=$(mktmpd); mkdir -p "$TQH/.claude/projects/-a" "$TQH/.claude/projects/-b"
+TQU=cccccccc-1111-4111-8111-111111111111
+: > "$TQH/.claude/projects/-a/$TQU.jsonl"; : > "$TQH/.claude/projects/-b/direct.jsonl"; : > "$TQH/out.jsonl"
+TQS="cockpit-tq-$$"; SOCKS="$SOCKS $TQS"
+"$TMUX_REAL" -L "$TQS" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
+TQP=$("$TMUX_REAL" -L "$TQS" display-message -p -t t '#{pane_id}')
+tq() { ( COCKPIT_TMUX="$TMUX_REAL -L $TQS" HOME="$TQH" PATH="/nonexistent" transcript_file "$TQP" 2>&1; echo -n "$?" ); }
+tq_set() { "$TMUX_REAL" -L "$TQS" set-option -p -t "$TQP" "$@"; }
+tq_set @cockpit_session $TQU; tq_set @cockpit_transcript "$TQH/.claude/projects/-b/direct.jsonl"
+is "with both options set the transcript path wins" "$TQH/.claude/projects/-b/direct.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/out.jsonl"
+is "a transcript option outside the tree is not trusted: the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/.claude/projects/-b/../-b/direct.jsonl"
+is "a transcript option with .. is not trusted either" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" set-option -pu -t "$TQP" @cockpit_transcript
+is "with no transcript option the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" kill-server 2>/dev/null
+rm -rf "$SSD" "$TQH"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
