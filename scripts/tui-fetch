@@ -53,7 +53,7 @@ FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 
 
 works() { tui_check >/dev/null; }     # runs AND meets TUI_MIN: a too-old binary is no binary
 
-# Every non-error exit: under --required, only a binary that runs is success.
+# Every non-error exit: under --required, only a binary that runs and meets TUI_MIN is success.
 finish() {
     if [ "$REQUIRED" -eq 1 ] && ! works; then
         say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
@@ -82,7 +82,7 @@ fetch() {                     # <asset> <dest>
 
 # 2 is settled (remembered, build from source); 3 is transient (ask again).
 download() {                  # 0 installed · 1 refused · 2 nothing for this platform · 3 could not ask
-    local tmp asset line bin got
+    local tmp asset line bin got nxt
     asset="cockpit-tui-$TARGET.tar.gz"
     command -v curl >/dev/null 2>&1 || { say "skip: curl is not installed"; return 3; }
     command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || {
@@ -91,9 +91,11 @@ download() {                  # 0 installed · 1 refused · 2 nothing for this p
     trap 'rm -rf "$tmp"' RETURN
     # Checksums before the tarball: "could not verify" is not "verified".
     fetch sha256.sum "$tmp/sums" || {
+        if [ "$REQUIRED" -eq 1 ] && ! works; then nxt="--required builds from source next"
+        else nxt="keeping cockpit-tui ${have:-none}"; fi
         case $VIA in
-            'via gh') say "skip: no release $TAG via gh (or offline); --required builds from source next" ;;
-            *)        say "skip: no release $TAG (private repository, or offline); --required builds from source next" ;;
+            'via gh') say "skip: no release $TAG via gh (or offline); $nxt" ;;
+            *)        say "skip: no release $TAG (private repository, or offline); $nxt" ;;
         esac
         return 3; }
     # cargo-dist lists every asset, so a missing name was never built.

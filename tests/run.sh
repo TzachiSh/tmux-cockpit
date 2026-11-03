@@ -8058,6 +8058,7 @@ is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = 
 mkdir -p "${TFB%/*}"; printf '#!/bin/sh\necho "cockpit-tui 0.2.0"\n' > "$TFB"; chmod +x "$TFB"
 rm -f "$TF/cargo99"
 tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required); tfrc=$?
+is "and the failed build leaves nothing at TUI_MIN, so it exits 1" "1" "$tfrc"
 case "$(cat "$TF/cargo99" 2>/dev/null)" in
     *"build --release --locked"*) ok "--required with a binary below TUI_MIN and no release runs cargo" ;;
     *) bad "--required with a binary below TUI_MIN and no release runs cargo" "cargo build --release --locked" "$tfout" ;;
