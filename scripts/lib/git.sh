@@ -61,3 +61,13 @@ git() {
         *) GIT_NO_LAZY_FETCH=1 GIT_ALLOW_PROTOCOL='' command git "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}" ${drv[@]+"${drv[@]}"} "$@" ;;
     esac
 }
+
+# One line for every caller that would otherwise show an empty or "no changes" result
+# for a repo git() refuses. `version` is not on the allowlist above, so it takes the
+# same driver scan and fails the same way; the scan is cached for the dir.
+# shellcheck disable=SC2034  # read by the callers
+GIT_REFUSAL="cockpit: refusing this repo: a git filter driver name contains '=' (see #331)"
+git_refused() {                # <dir>: 0 when git() would refuse that dir
+    git -C "$1" version >/dev/null 2>&1
+    [ $? -eq 1 ]               # 128 is a bad -C, not a refusal
+}
