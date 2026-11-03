@@ -73,6 +73,7 @@ Inside the board, the list (the default layout):
 | `l` `→` | unfold the selected group; on an open header, enter it |
 | `space` | fold / unfold the selected group |
 | `-` `=` | fold all / unfold all |
+| `s` | open or close the selected agent's subagent tree; on a header, every tree in that session (one shut opens them all, else all shut). See [Subagents](#the-board) |
 | `⇥` `⇧⇥` | next / previous agent, skipping headers, wrapping |
 | `n` `p` | next / previous session header, wrapping |
 | `1`-`9` | the Nth agent row on screen. Selects, does not jump; a row in a folded group unfolds it |
@@ -214,7 +215,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
-| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). `nerd` draws the default, but for the subagent badge's nf-oct-workflow (U+F52E) in place of `✦`. The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
@@ -331,7 +332,8 @@ narrows as you type. Find reads each agent's session, window index, window
 name, title, state word (`needs`, `error`, `running`, `done`, `idle`) and its
 message or doing line. Space-separated terms must all match, each anywhere in
 those fields, ignoring case; it is a substring narrowing, with no fuzzy
-ranking. A session with no match hides; one with a match shows unfolded while
+ranking. Find also reads each agent's subagents' types and descriptions, so
+`explore` finds the agents running an Explore subagent. A session with no match hides; one with a match shows unfolded while
 the field is open, and its fold is kept for after. The matches are renumbered
 `1`-`9` as any rows are, and the frame's title says `4 of 13`, the agents that
 match out of all of them:
@@ -376,6 +378,74 @@ way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
 
 The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
 the list for `v` to come back.
+
+**Subagents (#313).** An agent with subagents running or failed carries a
+badge, the first of its row's extra cells, in two widths by the room the row
+has: `✦2·1✕` (running, failed; the failed count only when there is one), then
+their total, `✦3`, which takes 3 cells at 40 columns and leaves the name its 6
+and the message its 12. Done subagents never count: an agent whose subagents
+are all done shows no badge, and its tree still lists them. The badge is in
+the error role while a subagent has failed, else the running role. `&` is the
+badge in the ascii tier.
+
+Running is the subagents whose `subagents/` files say they run. With no files
+to read, it is the hook's `@cockpit_subs`, the background subagents in flight
+at the agent's last Stop. An ended agent (#301) runs no subagent, whatever its
+files say: its badge counts none running, shows only a failure, in the meta
+role and dim, and its tree draws those subagents with `◌` and no age.
+
+The files give no finish time, so the board keeps its own: it stamps each
+subagent when a read first sees it failed or done. A failure first seen before
+the agent's newest prompt is an earlier turn's: it leaves the badge and the
+tree at the same moment, so the two always agree. A background subagent that
+started last turn and failed this one stays, while the board stays open: each
+popup is a new process and starts with no memory (#338). The newest prompt is a human one;
+a subagent's `<task-notification>` report-back does not count. Once the prompt
+is out of the transcript's tail the read has none, and the board keeps the
+newest it saw. On the first read of a pane, when the board opens, a subagent
+already failed or done is stamped old unless it started after the newest
+prompt.
+
+`s` opens the selected agent's tree under its row; on a header, every tree in
+the session. Trees never open on their own, and which are open is kept in
+memory only, not in `board.state`, and a tree whose subagents all go (`/clear`)
+shuts, so the next session's do not open it. The footer offers `s tree`, or
+`s hide` when the tree is open, only where the tree gets a line: not in a
+folded group, nor in a list too long to leave a row spare. There `s` opens
+nothing and says `no room for its subagent tree` for 2 seconds:
+
+```
+│  ▾ api ────────────────────────────────────────────────────────────────────────────────── ▲1 ●2  │
+│▎ 1 ▲  0 server             Do you want to run npm test?                            no repo 4m12s │
+│  2 ●  1 tests           Bash: cargo test --workspace                    ✦2·1✕ +42 -7 ⑂main 1m03s │
+│     ├ ✓ 2 done                                                                                   │
+│     ├ ● Explore         find auth callers in src/auth                                12.4k 2m12s │
+│     ├ ✓ Explore         map callers                                                     9k 1m35s │
+│     ├ ✕ general-purpose fix lint in tui/src                                            842 1m08s │
+│     └ ● Plan            draft the migration plan                                      3.1k   45s │
+│  3 ●  3 migrate           Edit src/db/migrate.rs                                ✦1 no repo 1m03s │
+```
+
+A tree line is `├` (`|-` in ascii), the subagent's state glyph, its type, its
+description, its tokens (the context of its last request: `842`, `12.4k`,
+`3.1M`) and its age since it started. As the row narrows the tokens go first,
+then the description shortens to 8 cells, then the type to 6; the age stays.
+A done subagent folds into one `✓ N done` line, first in the tree, 2 minutes
+after a read first saw it done. A tree takes at most 5
+lines, the last reading `+N more` when it has more.
+
+Tree lines take only the rows the list leaves empty, and never more than half
+of them, so they never push a row off screen and never make the list scroll:
+`N-M of T` counts them, but a list that does not fit has no room for any. The
+selected agent's tree gets rows first, then the blocked agents', then the rest
+in board order; an agent that gets none keeps its badge. A folded group's trees
+stay shut, only the badges show.
+
+No key selects a tree line. `↑` `↓` step over a tree, `⇥`, the digits, `u`,
+`n` `p`, `g` `G`, the page keys and find's moves land on headers and agents
+only, so `↵` `a` `r` `f` `i` `x` `o` act on the agent the tree hangs from. The
+top of the list is never a tree line: the viewport moves up to the agent, or
+down past its tree when the selection would leave the screen.
 
 The list has no preview: the right-hand preview pane is a later step, so the
 list takes the board's whole width, and it captures no pane.
@@ -1681,5 +1751,5 @@ name against `tmux display-message -p -t $N '#{session_name}'`, and refuses with
 session is gone, was renamed between the print and the act (`session $3 is now
 called 'x', not 'y'; nothing changed`), or is the one `tm` runs in. A kill or a
 rename that goes through puts the picker back, in the same popup. `@cockpit_glyphs
-ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` is not a tier of the
-Rust screens and draws the default.
+ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` draws the default
+there, its one glyph of its own being the board's subagent badge.

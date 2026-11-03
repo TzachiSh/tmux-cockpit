@@ -1455,6 +1455,7 @@ fn shown(ps: &[Pane], f: &BTreeSet<String>) -> Vec<String> {
         .map(|r| match r {
             Row::Head(s) => format!("[{s}]"),
             Row::Agent(i) => ps[i].id.clone(),
+            r => format!("{r:?}"),
         })
         .collect()
 }
@@ -2300,6 +2301,7 @@ fn found(nav: &Nav, ps: &[Pane]) -> Vec<String> {
         .map(|r| match r {
             Row::Head(s) => format!("[{s}]"),
             Row::Agent(i) => ps[i].id.clone(),
+            r => format!("{r:?}"),
         })
         .collect()
 }
@@ -2595,7 +2597,10 @@ fn extra_in(th: &Theme, loc: &str, room: u16) -> String {
         pm: "clean".into(),
         ..Pane::default()
     };
-    board::row_extra(&p, th, room).iter().map(|s| s.content.to_string()).collect()
+    board::row_extra(&p, th, room, &Default::default())
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect()
 }
 
 fn extra(loc: &str, room: u16) -> String {
