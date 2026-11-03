@@ -107,7 +107,7 @@ With `@cockpit_statusbar off`, the plugin still publishes these options:
 |---|---|
 | `#{E:@cockpit_where_path}` | the pane's path with `~` for home, or the ssh destination |
 | `#{E:@cockpit_where_branch}` | the pane's branch, blank in an ssh pane |
-| `#{E:@cockpit_fleet}` | `▲N ✕N ◆N`: agents waiting, failed, and unreviewed, across every session; empty when nothing needs you |
+| `#{E:@cockpit_fleet}` | `▲N ✕N ◆N ✦N`: agents waiting, failed, and unreviewed, and background subagents running (hidden in touch mode), across every session; empty when none |
 
 Some ranges you can mark with `#[range=control|N]…#[norange]`:
 
