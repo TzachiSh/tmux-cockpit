@@ -1,6 +1,6 @@
 [package]
 name = "cockpit-tui"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 # ratatui 0.30.2's MSRV, written once: the .tmux source-build fallback and CI
 # both read the floor from here (Debian 13 ships 1.85, Ubuntu 24.04 ships 1.75).
