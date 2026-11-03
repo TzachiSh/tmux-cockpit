@@ -11034,8 +11034,8 @@ rm -rf "$GD"
 
 # git.sh keeps a static copy of the list (a missing binary must not break the
 # worktree hook); this pins the copy to the binary.
-is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH plus --no-optional-locks" \
-   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' --no-optional-locks "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
+is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH" \
+   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
 # The filter overrides still differ until PR 5 moves git.sh onto the binary's:
 # git.sh sets clean/smudge=cat and a blank required, and only for the keys the
 # repo set; git-flags blanks all four keys of every driver, required=false.

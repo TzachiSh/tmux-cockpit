@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Sourced, never run. Shadows git: an agent can write its repo's config, and
 # fsmonitor, filters, textconv, external diff and hooks there run as the user.
+# The lists are cockpit-tui's (tui/src/data/gitsafe.rs), copied so the worktree
+# hook runs with no binary; tests/run.sh pins the copy to `cockpit-tui git-flags`.
 
-GIT_SAFE=(-c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false)
+GIT_SAFE=(--no-optional-locks -c core.fsmonitor=false -c core.hooksPath=/dev/null -c core.pager=cat -c log.showSignature=false)
 GIT_NOFETCH=(-c protocol.allow=never -c protocol.file.allow=never -c protocol.ssh.allow=never -c protocol.git.allow=never
     -c protocol.http.allow=never -c protocol.https.allow=never -c protocol.ext.allow=never)
 
