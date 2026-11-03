@@ -11032,24 +11032,25 @@ is "diffstat on a dir that is not a repo: nothing, status 1" "1" \
    "$(rm -rf "$GD/.git"; "$DSB" diffstat "$GD"; printf '%s' "$?")"
 rm -rf "$GD"
 
-# git.sh keeps a static copy of the list (a missing binary must not break the
-# worktree hook); this pins the copy to the binary.
-is "git-flags is git.sh's GIT_SAFE and GIT_NOFETCH" \
-   "$(. "$DIR/scripts/lib/git.sh"; printf '%s\n' "${GIT_SAFE[@]}" "${GIT_NOFETCH[@]}")" "$("$DSB" git-flags)"
-# The filter overrides still differ until PR 5 moves git.sh onto the binary's:
-# git.sh sets clean/smudge=cat and a blank required, and only for the keys the
-# repo set; git-flags blanks all four keys of every driver, required=false.
+# git.sh keeps a static copy of the lists, so the worktree hook runs with no
+# binary; these pin what it actually hands git to the binary's.
 GD=$(mktmpd); git init -q "$GD/r" >/dev/null 2>&1
 git -C "$GD/r" config filter.evil.clean 'echo pwned'; git -C "$GD/r" config filter.evil.required true
+git -C "$GD/r" config filter.lfs.smudge 'echo pwned'; git -C "$GD/r" config filter.a/b.process 'echo pwned'
+git -C "$GD/r" config filter.x.y.clean 'echo pwned'; git -C "$GD/r" config filter.noted.foo 1
 mkdir "$GD/bin"
 printf '#!/bin/sh\n[ "$3" = config ] && exec %s "$@"\nprintf "%%s\\n" "$@"\n' "$(command -v git)" > "$GD/bin/git"
 chmod +x "$GD/bin/git"
-is "git.sh's filter overrides today (PR 5 aligns them)" "filter.evil.clean=cat filter.evil.required=" \
-   "$( ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" status ) | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
-is "git-flags --filters blanks every key of the driver" \
-   "filter.evil.clean= filter.evil.smudge= filter.evil.process= filter.evil.required=false" \
-   "$("$DSB" git-flags --filters "$GD/r" | grep '^filter\.' | tr '\n' ' ' | sed 's/ $//')"
+gs_argv() { ( PATH="$GD/bin:$PATH"; . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" "$@" ); }
+is "git.sh hands git exactly git-flags before the caller's -C" \
+   "$("$DSB" git-flags)" "$(gs_argv rev-parse HEAD | sed '/^-C$/,$d')"
+is "git.sh blanks the same drivers as git-flags --filters" \
+   "$("$DSB" git-flags --filters "$GD/r" | paste -d' ' - - | LC_ALL=C sort)" \
+   "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
+is "with no binary git.sh still hands git every safety flag" \
+   "$("$DSB" git-flags)" "$(COCKPIT_TUI_BIN=/nonexistent gs_argv rev-parse HEAD | sed '/^-C$/,$d')"
 rm -rf "$GD"
+unset -f gs_argv
 unset -f ds_shell
 
 echo "== transcript reader: the frozen output of every fixture (#199) =="

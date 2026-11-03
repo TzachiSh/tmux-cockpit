@@ -28,15 +28,18 @@ git() {
         rev-parse|symbolic-ref|for-each-ref|show-ref|config|log|show|cat-file|merge-base|rev-list|ls-tree|describe|name-rev|update-ref|branch|worktree) ;;
         # Anything else might; the repo names the driver, so neutralise it by name.
         *)
+            # git-flags --filters: every key of every driver blanked, and an empty
+            # driver is no filter; required=false keeps that legal.
             if [ "${_git_dir-}" != "$dir" ]; then
                 _git_dir=$dir _git_drv=()
-                local k
-                while read -r k _; do
-                    case $k in
-                        *.clean|*.smudge) _git_drv+=(-c "$k=cat") ;;
-                        *) _git_drv+=(-c "$k=") ;;
-                    esac
-                done < <(command git -C "$dir" config --get-regexp '^filter\..*\.(clean|smudge|process|required)$' 2>/dev/null)
+                local k n nl=$'\n' seen=$'\n'   # a config name holds no newline
+                while IFS= read -r -d '' k; do
+                    k=${k#filter.}
+                    case $k in *.*) n=${k%.*} ;; *) continue ;; esac
+                    case $seen in *"$nl$n$nl"*) continue ;; esac
+                    seen+=$n$nl
+                    _git_drv+=(-c "filter.$n.clean=" -c "filter.$n.smudge=" -c "filter.$n.process=" -c "filter.$n.required=false")
+                done < <(command git -C "$dir" config -z --name-only --get-regexp '^filter\.' 2>/dev/null)
             fi
             drv=(${_git_drv[@]+"${_git_drv[@]}"}) ;;
     esac
