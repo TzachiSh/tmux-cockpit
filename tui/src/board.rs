@@ -52,6 +52,8 @@ pub struct View<'a> {
 
 /// Three missed 1 s ticks: a read that hangs is as stale as three that failed.
 const HUNG: Duration = Duration::from_secs(3);
+/// #291: a fetch slower than this is logged; a quick one is not
+const SLOW_TICK: Duration = Duration::from_millis(500);
 
 /// What the key loop knows about its reads. The clock is passed in, so the
 /// stale rules are tested without one.
@@ -1678,9 +1680,12 @@ impl Nav {
 /// The list row's extra cells (#253), drawn between the message and the age:
 /// the diff stat, then the branch (the review mark is the leading column's).
 /// `room` is the width they may take, which `agent_row` sizes so the name and
-/// message keep at least 18 cells; a cell that does not fit is dropped, with every cell
-/// to its right, rather than cut. The facts come off `Pane`, filled on the
-/// fetch thread by `data::fleet`: nothing here forks.
+/// message keep at least 18 cells; a cell that does not fit is dropped, with
+/// every cell to its right. A linked worktree's branch cell is
+/// `repo⑂branch · wt name` (#312) and narrows in steps: the repo goes, then
+/// the worktree name is cut to at least one character, then it goes, then the
+/// branch. Any other row's branch cell is `⑂branch`. The facts come off
+/// `Pane`, filled on the fetch thread by `data::fleet`: nothing here forks.
 pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
     let g = &th.g;
     let stat = facts::stat_text(&p.loc, &p.pm);
@@ -1688,20 +1693,47 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
         "clean" | "no repo" | "?" => th.meta,
         _ => th.running,
     };
-    let br = facts::branch(&p.loc);
-    let mut cells = vec![(stat, stat_c)];
-    if !br.is_empty() {
-        cells.push((format!("{}{}", if g.ascii { "@" } else { "⑂" }, g.trunc(br, 16)), th.label));
+    let left = room as usize;
+    let fits = |t: &str, left: usize| t.width() < left;
+    if !fits(&stat, left) {
+        return vec![];
     }
-    let mut left = room as usize;
-    let mut out = vec![];
-    for (text, c) in cells {
-        let w = text.width() + 1;
-        if w > left {
-            break;
+    let left = left - stat.width() - 1;
+    let mut out = vec![Span::styled(format!(" {stat}"), Style::new().fg(stat_c))];
+    let br = facts::branch(&p.loc);
+    if br.is_empty() {
+        return out;
+    }
+    // ascii's mark is `@`, which a detached HEAD's `@sha` already starts with
+    let mark = match (g.ascii, br.starts_with('@')) {
+        (false, _) => "⑂",
+        (true, false) => "@",
+        (true, true) => "",
+    };
+    let cell = format!("{mark}{}", g.trunc(br, 16));
+    let wt = facts::worktree(&p.loc);
+    let cell = if wt.is_empty() {
+        cell
+    } else {
+        let sep = format!(" {} wt ", g.dot);
+        let name = g.trunc(wt, 16);
+        let full = format!("{}{cell}{sep}{name}", g.trunc(facts::repo(&p.loc), 16));
+        let short = format!("{cell}{sep}{name}");
+        let fit = left.saturating_sub(1 + cell.width() + sep.width());
+        if fits(&full, left) {
+            full
+        } else if fits(&short, left) {
+            short
+        } else if fit > g.ellipsis.width() && g.trunc(wt, fit) != g.ellipsis {
+            // a cut keeps at least one character beside the ellipsis; a wide
+            // first character that cannot fit leaves only the ellipsis: drop it
+            format!("{cell}{sep}{}", g.trunc(wt, fit))
+        } else {
+            cell
         }
-        left -= w;
-        out.push(Span::styled(format!(" {text}"), Style::new().fg(c)));
+    };
+    if fits(&cell, left) {
+        out.push(Span::styled(format!(" {cell}"), Style::new().fg(th.label)));
     }
     out
 }
@@ -2306,26 +2338,16 @@ pub struct Extra {
 // #228: the board's extra actions. A key here must not clash with KEYS, D6's
 // keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
 // scripts/cockpit-board, which ends the loop on a verb it does not know.
-pub static EXTRAS: &[Extra] = &[
-    Extra {
-        key: 'x',
-        label: "kill",
-        help: "kill its window, after a confirm",
-        verb: "kill",
-        confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-        // the id, never the name: agent windows tend to share one (`claude`),
-        // and a pane moved into a namesake would pass a name check
-        expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
-    },
-    Extra {
-        key: 'R',
-        label: "request",
-        help: "review it and hand the review to its agent",
-        verb: "request",
-        confirm: None,
-        expect: None,
-    },
-];
+pub static EXTRAS: &[Extra] = &[Extra {
+    key: 'x',
+    label: "kill",
+    help: "kill its window, after a confirm",
+    verb: "kill",
+    confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
+    // the id, never the name: agent windows tend to share one (`claude`),
+    // and a pane moved into a namesake would pass a name check
+    expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
+}];
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
@@ -2645,6 +2667,8 @@ pub fn run(o: &Opts) -> Option<Exit> {
     // D16: when the last good read was, and how many have failed since
     let (mut reads, mut stale_shown) = (Reads::new(Instant::now()), None::<u64>);
     let mut last_hash = 0u64;
+    // #291: the read's last outcome, so a tick is logged when it changes
+    let mut last_ok = None::<bool>;
     let (mut dirty, mut draw_fails) = (true, 0u8);
     let (mut action_line, mut expect) = (None, None::<String>);
     let mut confirm: Option<Confirm> = None;
@@ -2731,13 +2755,19 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     dirty = true;
                 }
                 loaded = true;
-                log(&format!(
-                    "board tick {} tiles fetch {:?} apply {:?} redraw={}",
-                    panes.len(),
-                    s.took,
-                    t0.elapsed(),
-                    dirty
-                ));
+                // #291: one line a second filled tui.log; log only a slow fetch
+                // or a read that started or stopped failing
+                if s.took > SLOW_TICK || last_ok != Some(s.ok) {
+                    log(&format!(
+                        "board tick {} tiles fetch {:?} apply {:?} redraw={} ok={}",
+                        panes.len(),
+                        s.took,
+                        t0.elapsed(),
+                        dirty,
+                        s.ok
+                    ));
+                }
+                last_ok = Some(s.ok);
             }
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,

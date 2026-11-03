@@ -119,6 +119,11 @@ fn panel(args: &[String]) {
 }
 
 fn main() {
+    // #295: SIGUSR1's default action is terminate, and a hook that signals a
+    // recycled @cockpit_tui_pid can land on any cockpit-tui. Only the board
+    // wants it; its handler (push.rs) replaces this when it starts.
+    // SAFETY: signal() with SIG_IGN installs no code and touches no memory.
+    unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
     let args: Vec<String> = std::env::args().skip(1).collect();
     let action: Option<board::Exit> = match args.first().map(String::as_str) {
         Some("board") => match board::opts(&args[1..]) {

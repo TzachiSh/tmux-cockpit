@@ -5,6 +5,9 @@ popup (#246). The keys, the preview and what `scripts/tmux-branch` checks before
 it acts are in [tui.md](tui.md#cockpit-tui-branch-246). The folder browser is
 still fzf, opened from the path (below).
 
+If `cockpit-tui` is older than the plugin (it exits 2 with `unknown screen`),
+the popup says so and names `make tui` and `scripts/tui-fetch` (#276).
+
 ## Click the branch to switch branch
 
 Type to filter. `↵` switches; `alt-↵` creates a branch named by what you typed;

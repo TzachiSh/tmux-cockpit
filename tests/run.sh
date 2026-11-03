@@ -63,6 +63,8 @@ chmod +x "$SHIM/tmux"
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
+# The hooks and the transcript reader take the projects tree from it: the tests use $HOME's.
+unset CLAUDE_CONFIG_DIR
 PATH="$SHIM:$PATH"; export PATH
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
@@ -354,6 +356,40 @@ until_cap "$MO" o '*(rename-window)*'
 until_out '-x name' "$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}' >/dev/null
 is "Rename window takes a name that starts with -" "-x name" \
    "$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}')"
+# #289: rename-window and rename-session expand formats in the new name, and a
+# bare %% let a " close the string. Through the menu, each name lands exactly
+# as typed and nothing in it runs.
+"$TMUX_REAL" -L "$MI" set-environment -g MIMK "$MIDIR/pwned" >/dev/null 2>&1
+MISID=$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{session_id}')
+mi_rename() {                 # <key> <prompt> <format> <name>
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-b a
+    until_cap "$MO" o "*Rename window*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o "$1"
+    until_cap "$MO" o "*($2)*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-u
+    "$TMUX_REAL" -L "$MO" send-keys -t o -l -- "$4"
+    "$TMUX_REAL" -L "$MO" send-keys -t o Enter
+    until_out "$(printf '%q' "$4")" "$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3" >/dev/null
+    is "$2 applies [$4] exactly" "$4" "$("$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3")"
+}
+for mi_name in 'w"x; set -g @pwned Q;"' 'w#(touch $MIMK)' 'w#{session_name}' 'w#1 #[x]'; do
+    mi_rename , rename-window '#{window_name}' "$mi_name"
+done
+for mi_name in 's"x; set -g @pwned Q;"' 's#(touch $MIMK)' 's#{session_name}' 's#1'; do
+    mi_rename '$' rename-session '#{session_name}' "$mi_name"
+done
+# The renames' own run-shell finished before each name landed, so a payload
+# job had its chance; this run-shell holds its client until that is sure.
+"$TMUX_REAL" -L "$MI" run-shell "touch '$MIDIR/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$MIDIR/after' ] && echo yes"
+is "and no renamed name ran anything" "none " \
+   "$([ -e "$MIDIR/pwned" ] && echo ran || echo none) $("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+is "and the staging option is cleared" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+# A rejected id still consumes the staged name: nothing is left for a later call.
+"$TMUX_REAL" -L "$MI" set -g @cockpit_rename_to stale >/dev/null 2>&1
+"$TMUX_REAL" -L "$MI" run-shell "$(printf %q "$DIR/scripts/tmux-rename") session 'x;y'" >/dev/null 2>&1
+is "tmux-rename with a bad id clears the staged name too" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+"$TMUX_REAL" -L "$MI" rename-session -t "$MISID" t >/dev/null 2>&1
 # The runtime case above proves the mechanism on one row. The others that
 # re-expand a format are guarded structurally: the menu must carry the doubled
 # form, never the single one that a quote in a cwd or a name turned into a command.
@@ -548,6 +584,204 @@ tmux set-option -p -t "$PANE" @cockpit_review pending >/dev/null 2>&1
 st wake "$PANE"; is "and a pending review survives the wake" "pending" "$(tmux show-option -pqv -t "$PANE" @cockpit_review)"
 tmux set-option -pu -t "$PANE" @cockpit_review >/dev/null 2>&1
 tmux set -pu -t "$PANE" @panestate >/dev/null 2>&1
+fi
+
+echo "== agent-state: a Stop with background subagents in flight is not done (#310) =="
+# The main turn ends while background subagents work ("Waiting for 3 background agents to
+# finish"). Claude Code wakes the session when each reports back, so that Stop is a pause:
+# its payload's background_tasks lists them. The hook payloads below are the ones Claude Code
+# pipes in, on a private server, with HOME and CLAUDE_CONFIG_DIR away from the owner's.
+if need_tmux "background subagents"; then :; else
+BG="cockpit-bg-$$"; SOCKS="$SOCKS $BG"
+BGCFG="$(mktmpd)/claude"
+bg_real=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)
+[ -n "$bg_real" ] || bg_real=$(eval "printf '%s' ~$(id -un)")
+bg_iso=ok
+case "$HOME/" in "$bg_real/"|"$bg_real/.claude/"*) bg_iso="HOME=$HOME" ;; esac
+case "$BGCFG/" in "$bg_real/.claude/"*) bg_iso="CLAUDE_CONFIG_DIR=$BGCFG" ;; esac
+[ -n "$bg_real" ] && [ -n "$HOME" ] || bg_iso="no home to compare"
+is "the block runs away from the owner's home and ~/.claude" ok "$bg_iso"
+if [ "$bg_iso" != ok ]; then skip_ "background subagents: the rest, not isolated"; else
+"$TMUX_REAL" -L "$BG" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BG" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+BGP=$("$TMUX_REAL" -L "$BG" list-panes -t t -F '#{pane_id}')
+bgst() {                      # <state> <payload>: one hook, its payload on stdin
+    printf '%s\n' "$2" | HOME="$HOME" CLAUDE_CONFIG_DIR="$BGCFG" TMUX="$SOCKDIR/$BG,0,0" \
+        "$DIR/scripts/agent-state" "$1" "$BGP" >/dev/null 2>&1; }
+bgo() { "$TMUX_REAL" -L "$BG" display-message -p -t "$BGP" "#{$1}"; }
+bgis() {                      # <name> <pane> <window> <session needs-input count>
+    is "$1: pane" "$2" "$(bgo @panestate)"
+    is "$1: window" "$3" "$(bgo @cockpit_win_state)"
+    is "$1: session ▲ count" "$4" "$(bgo @cockpit_sess_nb)"; }
+bgstop() {                    # <tasks json> [assistant text]: a Stop payload
+    printf '{"session_id":"s1","hook_event_name":"Stop","stop_hook_active":false,%s%s%s}' \
+        "\"last_assistant_message\":\"${2:-ok}\"," "\"background_tasks\":[$1]," \
+        '"session_crons":[]'; }
+BGT='{"id":"a1","type":"subagent","status":"running","description":"lane",'
+BGT=$BGT'"agent_type":"general-purpose"}'
+BGSH='{"id":"b1","type":"shell","status":"running"'
+BGU='{"hook_event_name":"UserPromptSubmit","prompt":"go"}'
+
+bgst running "$BGU"
+for a in a1 a2 a3; do
+    bgst running "{\"hook_event_name\":\"SubagentStart\",\"agent_id\":\"$a\"}"
+done
+bgst done "$(bgstop "$BGT,$BGT,$BGT")"
+bgis "Stop with 3 background subagents" running running 0
+bgst running "$BGU"; bgst done "$(bgstop "$BGT,$BGT")"
+bgis "a report-back turn ending with 2 left" running running 0
+bgst running "$BGU"; bgst done "$(bgstop "")"
+bgis "the turn after the last reports back" done done 0
+
+bgcase() {                    # <name> <want> <stop payload>: from running, one Stop
+    bgst running "$BGU"; bgst done "$3"; is "$1" "$2" "$(bgo @panestate)"; }
+bgcase "a Stop with no background_tasks field is done" done \
+    '{"hook_event_name":"Stop","stop_hook_active":false}'
+bgcase "a Stop with an empty payload is done" done ""
+bgcase "a Stop with an unparseable payload is done" done 'not json {'
+bgcase "a shell task alone does not hold the pane" done \
+    "$(bgstop "$BGSH"',"description":"tail","command":"tail -f x"}')"
+bgcase "an idle teammate alone does not hold the pane" done \
+    "$(bgstop '{"id":"t1","type":"teammate","status":"running","description":"researcher"}')"
+bgcase "a subagent entry with a space after the colon holds it" running \
+    "$(bgstop '{"id":"a1", "type": "subagent", "status": "running"}')"
+# Only a structural key counts: inside a JSON string the quotes arrive escaped.
+BGQ='said \"type\":\"subagent\" here'
+bgcase "subagent text in the message beside a shell task is done" done \
+    "$(bgstop "$BGSH}" "$BGQ")"
+bgcase "the same text beside a real subagent still holds it" running "$(bgstop "$BGT" "$BGQ")"
+bgcase "subagent text in a task's description alone is done" done \
+    "$(bgstop "$BGSH"',"description":"\"type\":\"subagent\""}')"
+# Only background_tasks counts: a subagent-typed object in any other field is not in flight.
+bgcase "a subagent object outside background_tasks, with no such field, is done" done \
+    '{"hook_event_name":"Stop","other":{"type":"subagent"}}'
+bgcase "the same object before a background_tasks of one shell task is done" done \
+    '{"hook_event_name":"Stop","other":{"type":"subagent"},"background_tasks":[{"type":"shell"}]}'
+# The match ends with the background_tasks array: a later key never holds the pane, and a
+# `]` inside one of the array's strings does not end it early.
+bgcase "a subagent object in a key after the array is done" done \
+    '{"background_tasks":[],"session_crons":[],"later":[{"type":"subagent","status":"done"}]}'
+bgcase "a subagent after a string holding ], in the array still holds it" running \
+    "$(bgstop '{"type":"shell","description":"a ], \"b\" ]"},{"type":"subagent"}')"
+# A string ending in an escaped backslash ends there: the next entry is still read.
+bgcase "a subagent after a command ending in an escaped backslash still holds it" running \
+    "$(bgstop "$BGSH"',"command":"dir C:\\tmp\\"},{"type":"subagent"}')"
+# Bytes, not characters: under a UTF-8 locale a byte that is not UTF-8 must not end the match.
+if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
+    bgst running "$BGU"
+    printf '%s\n' "$(bgstop "$BGSH"',"description":"a'$'\377''b"},{"type":"subagent"}')" \
+        | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
+        >/dev/null 2>&1
+    is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
+    # A 1 MB array with no subagent, then the same array ending in one, both under C.UTF-8.
+    BGARR=$(yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," \
+        | head -n 1000 | tr -d '\n')
+    is "the long array has 1000 shell entries" 1000 \
+        "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
+    for bgw in done running; do
+        bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
+        bgst running "$BGU"
+        printf '%s\n' "$(bgstop "$bgx")" | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" \
+            "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1
+        is "a 1 MB array under C.UTF-8 ends $bgw" "$bgw" "$(bgo @panestate)"
+    done
+else
+    skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
+    skip_ "the long array has 1000 shell entries (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends done (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends running (no C.UTF-8 locale)"
+fi
+# A long final message comes before the key and is read whole: no cap cuts the array off.
+BGBIG=$(printf '%01048576d' 0)
+is "the long message is 1 MB" 1048576 "${#BGBIG}"
+bgcase "a subagent after a 1 MB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
+bgcase "an empty array after a 1 MB message is done" done "$(bgstop "" "$BGBIG")"
+# stdin held open past the payload: the writer's read -t is a hang guard, released once
+# agent-state exits (opened read-write, so a writer gone at its guard cannot block the
+# release). Past the newline, head returns there and the whole line is matched.
+BGF="$(mktmpd)/hold"; mkfifo "$BGF"; BGIN="${BGF%/*}/in"; mkfifo "$BGIN"
+bgheld() {                    # <payload> <end> [dir first on PATH]: done on a held pipe
+    { printf '%s%s' "$1" "$2"; read -r -t 30 _ <> "$BGF"; } > "$BGIN" &
+    local w=$!
+    PATH="${3:+$3:}$PATH" TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
+        < "$BGIN" >/dev/null 2>&1
+    printf 'x\n' 1<> "$BGF"; wait "$w"; }
+bgst running "$BGU"; bgheld "$(bgstop "$BGT")" $'\n'
+is "a Stop with stdin held open past its newline still holds" running "$(bgo @panestate)"
+# No newline and stdin held for 10 s (#320): the read gives up at its 2 s bound and the
+# Stop is done. Polled for half the hold, so an unbounded read is still waiting when it ends.
+if command -v timeout >/dev/null 2>&1; then
+    bgst running "$BGU"
+    { { printf '%s' "$(bgstop "$BGT")"; read -r -t 10 _ <> "$BGF"; } \
+        | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
+    bghold=$!
+    POLLS=50 until_out done bgo @panestate
+    is "a Stop with no newline and stdin held open returns within its bound" done \
+        "$(bgo @panestate)"
+    printf 'x\n' 1<> "$BGF"; wait "$bghold"
+    # A head that passes on part of a line before it is killed: the cut payload is not read.
+    BGHD=$(mktmpd); printf '#!/bin/sh\nexec cat\n' > "$BGHD/head"; chmod +x "$BGHD/head"
+    bgst running "$BGU"; bgheld "$(bgstop "$BGT")" "" "$BGHD"
+    is "a timed-out read that got part of the payload is done" done "$(bgo @panestate)"
+else
+    skip_ "a Stop with no newline and stdin held open returns within its bound (no timeout)"
+    skip_ "a timed-out read that got part of the payload is done (no timeout)"
+fi
+
+# Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
+bgst running "$BGU"
+bgst needs-input '{"hook_event_name":"PermissionRequest","agent_id":"a1","tool_name":"Bash"}'
+bgst done "$(bgstop "$BGT")"
+bgis "a subagent's needs-input through the main Stop" needs-input needs-input 1
+bgst done "$(bgstop "")"
+bgis "and through the last Stop" needs-input needs-input 1
+bgst running "$BGU"; bgst error '{"hook_event_name":"PostToolUseFailure","agent_id":"a1"}'
+bgst done "$(bgstop "$BGT")"
+bgis "a subagent's error through the main Stop" error error 0
+
+# Concurrent hooks: several report-back Stops and subagent tool calls at once.
+bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wait for them
+    local i pids=""
+    for i in $(seq 1 "$1"); do bgst "$2" "$3" & pids="$pids $!"; done
+    # shellcheck disable=SC2086  # one pid per word
+    wait $pids; }
+bgst running "$BGU"
+bgjobs 8 done "$(bgstop "$BGT")"
+bgis "8 concurrent Stops with subagents alone" running running 0
+bgst needs-input '{"hook_event_name":"PermissionRequest","agent_id":"a1"}'
+bgjobs 8 done "$(bgstop "$BGT")" & bgjobs 8 done "$(bgstop "")"
+wait $!
+bgis "16 concurrent Stops on a blocked pane" needs-input needs-input 1
+bgst running "$BGU"; bgjobs 8 done "$(bgstop "")"
+bgis "8 concurrent Stops with nothing in flight" done done 0
+
+# A subagent that never stops is listed by every Stop until claude ends; SessionEnd clears.
+bgst running "$BGU"; bgst done "$(bgstop "$BGT")"
+bgst off '{"hook_event_name":"SessionEnd","reason":"exit"}'
+bgis "SessionEnd with a subagent still listed" "" idle 0
+# The poller owns an agent-view pane (#174) and has no payload: its done stays done.
+bgst running "$BGU"
+printf '%s\n' "$(bgstop "$BGT")" | TMUX="$SOCKDIR/$BG,0,0" \
+    "$DIR/scripts/agent-state" poll done "$BGP" >/dev/null 2>&1
+is "the agent-view poller's done is not held by a payload" done "$(bgo @panestate)"
+# Typed at a terminal, done reads no payload: the line typed next is the shell's, not eaten.
+# util-linux script(1) gives the call a terminal; read's -t is a hang guard, not a measure.
+if script -qec true /dev/null </dev/null >/dev/null 2>&1; then
+    bgst running "$BGU"
+    out=$(printf 'XYZ\n' | BGA="$DIR/scripts/agent-state" BGP="$BGP" TMUX="$SOCKDIR/$BG,0,0" \
+        script -qec 'bash -c '\''"$BGA" done "$BGP" >/dev/null 2>&1
+            IFS= read -r -t 5 l; printf "got=%s.\n" "$l"'\''' /dev/null)
+    case "$out" in
+        *got=XYZ.*) ok "done at a terminal leaves the next typed line to the shell" ;;
+        *) bad "done at a terminal leaves the next typed line to the shell" "got=XYZ." "$out" ;;
+    esac
+    is "and the pane is done" done "$(bgo @panestate)"
+else
+    skip_ "done at a terminal (no util-linux script)"; skip_ "and the pane is done"
+fi
+"$TMUX_REAL" -L "$BG" kill-server >/dev/null 2>&1
+fi
 fi
 
 echo "== state ranking: needs-input > error > running > done =="
@@ -1509,6 +1743,29 @@ echo "== tmux-open-path: a pathologically long clicked line is bounded, not just
 BIGLINE=$(awk 'BEGIN{s="";for(i=1;i<=4000;i++) s = s "nope" i "xxxxxxxxxxxxxxxx ";print s}')
 cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
     "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
+
+echo "== tmux-open-path: a clicked file name is never run as a tmux format (#289) =="
+# new-window -n/-c and display-message expand #(): a repo file named for a
+# command ran it on the click. Real server, since only tmux knows what it expands.
+if need_tmux "open-path format escaping"; then :; else
+OX="cockpit-ox-$$"; SOCKS="$SOCKS $OX"; OXD=$(mktmpd)
+oxf='x#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).txt'   # no spaces: the line splits on them
+: > "$OXD/$oxf"
+"$TMUX_REAL" -L "$OX" -f /dev/null new-session -d -s t -c "$OXD" -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+OXP=$("$TMUX_REAL" -L "$OX" list-panes -t t -F '#{pane_id}')
+"$TMUX_REAL" -L "$OX" set -g @cockpit_editor true
+"$TMUX_REAL" -L "$OX" set -g remain-on-exit on    # the editor (true) exits at once
+"$TMUX_REAL" -L "$OX" set -g @cockpit_open_single always
+"$TMUX_REAL" -L "$OX" set -p -t "$OXP" @cockpit_click_line "error in $oxf:3"
+"$TMUX_REAL" -L "$OX" run-shell "$(printf %q "$DIR/scripts/tmux-open-path") $OXP" >/dev/null 2>&1
+ox_n=0; until [ "$("$TMUX_REAL" -L "$OX" list-windows -t t 2>/dev/null | wc -l)" -ge 2 ] || [ "$ox_n" -ge 50 ]; do
+    sleep 0.1; ox_n=$((ox_n + 1)); done
+sleep 0.5    # a #() job, had one started, runs in the background
+is "the click opened a window named for the file, literally" "$oxf" \
+   "$("$TMUX_REAL" -L "$OX" list-windows -t t -F '#{window_name}' 2>/dev/null | tail -n 1)"
+is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$OX" show -gqv @pwned 2>/dev/null)"
+"$TMUX_REAL" -L "$OX" kill-server >/dev/null 2>&1
+fi
 
 # group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
@@ -4020,7 +4277,7 @@ case "$(cat "$HK/.claude/settings.json")" in
 esac
 is "the unslop skill is injected on SessionStart" "1" \
    "$(jq '[.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))] | length' "$HK/.claude/settings.json")"
-is "beside agent-state off, not instead of it" "2" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
+is "beside agent-state off and session, not instead of them" "3" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
 # Run the shipped command itself: the string landing in settings.json says
 # nothing about the JSON it emits, and a jq typo would otherwise ship green.
 is "and the shipped command emits a SessionStart context" "SessionStart 1" \
@@ -4058,7 +4315,7 @@ rm -rf "$HKN"
 HKG=$(mktmpd); mkdir -p "$HKG/.claude"
 cat > "$HKG/.claude/settings.json" <<'EOF'
 { "hooks": { "Stop": [
-    { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 330 } ] },
+    { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 330 } ] },
     { "matcher": "", "hooks": [ { "type": "command", "command": "/usr/local/bin/mywrap --log /scripts/review-gate-audit.log" } ] }
   ] } }
 EOF
@@ -4332,18 +4589,74 @@ rm -rf "$HKR" "$JQSHIM"
 else
     skip_ "hooks merge (jq not installed)"
 fi
-# --uninstall does NOT touch hooks -- the combination must be a hard usage
-# error, not a silent skip of --hooks. This is a pure argument-parsing exit,
-# so it needs no jq and must never create or touch settings.json.
-HK3=$(mktmpd)
-HOME="$HK3" "$DIR/install.sh" --uninstall --hooks >/dev/null 2>&1
-is "--uninstall --hooks is a usage error" "2" "$?"
-if [ -e "$HK3/.claude/settings.json" ]; then
-    bad "--uninstall --hooks touches no settings.json" "no settings.json" "one was created"
+rm -rf "$HK"
+
+# --uninstall --hooks (#292): remove exactly the entries --hooks added. Every
+# run points HOME and XDG_BIN_HOME at a temp dir, never the real settings.json.
+echo "== install.sh --uninstall --hooks removes only cockpit's entries =="
+if command -v jq >/dev/null 2>&1; then
+UH=$(mktmpd); mkdir -p "$UH/.claude"
+cat > "$UH/.claude/settings.json" <<'EOF'
+{ "model": "opus",
+  "hooks": {
+    "Stop": [ { "hooks": [ { "type": "command", "command": "my-own-tool" } ] } ],
+    "Other": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "/usr/bin/scripts/agent-state done" } ] } ] },
+  "zkey": { "keep": true } }
+EOF
+cp "$UH/.claude/settings.json" "$UH/orig.json"
+uhrun() { HOME="$UH" XDG_BIN_HOME="$UH/bin" "$DIR/install.sh" "$@"; }
+uhrun --hooks >/dev/null 2>&1
+cp "$UH/.claude/settings.json" "$UH/merged.json"
+out=$(uhrun --uninstall --hooks --dry-run 2>&1)
+case "$out" in *agent-state*"dry-run: nothing written"*) ok "--dry-run previews the removal" ;;
+    *) bad "--dry-run previews the removal" "a diff naming agent-state" "$out" ;; esac
+is "and --dry-run writes nothing" "$(cat "$UH/merged.json")" "$(cat "$UH/.claude/settings.json")"
+uhrun >/dev/null 2>&1
+out=$(uhrun --hooks --remove 2>&1); is "removal exits clean" "0" "$?"
+[ -L "$UH/bin/tm" ] && ok "--hooks --remove leaves the symlinks in place" || bad "--hooks --remove leaves the symlinks in place" "$UH/bin/tm a link" "gone"
+uhrun --remove >/dev/null 2>&1; is "--remove without --hooks is a usage error" "2" "$?"
+uhrun --uninstall --hooks --remove >/dev/null 2>&1; is "--remove with --uninstall is a usage error" "2" "$?"
+case "$out" in *"removed   cockpit hooks"*) ok "and says what it did" ;; *) bad "and says what it did" "removed cockpit hooks" "$out" ;; esac
+is "only the cockpit entries are gone" "$(jq -S . "$UH/orig.json")" "$(jq -S . "$UH/.claude/settings.json")"
+is "key order is kept" "$(jq -c 'keys_unsorted' "$UH/orig.json")" "$(jq -c 'keys_unsorted' "$UH/.claude/settings.json")"
+is "a timestamped backup holds the pre-removal file" "$(cat "$UH/merged.json")" \
+   "$(cat "$UH"/.claude/settings.json.bak-* 2>/dev/null)"
+uhrun --hooks >/dev/null 2>&1
+is "--hooks adds them back identically (round trip)" "$(cat "$UH/merged.json")" "$(cat "$UH/.claude/settings.json")"
+uhrun --uninstall --hooks >/dev/null 2>&1
+out=$(uhrun --uninstall --hooks 2>&1)
+case "$out" in *"no cockpit hooks"*"nothing to remove"*) ok "no cockpit hooks is a no-op that says so" ;;
+    *) bad "no cockpit hooks is a no-op that says so" "nothing to remove" "$out" ;; esac
+
+# --hooks replaces only cockpit's own review-gate / agent-state off, never a foreign one.
+UF=$(mktmpd); mkdir -p "$UF/.claude"
+cat > "$UF/.claude/settings.json" <<'EOF'
+{ "hooks": {
+  "Stop": [ { "hooks": [ { "type": "command", "command": "\"/home/u/my dir/foo/scripts/review-gate\"" } ] } ],
+  "SessionStart": [ { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "/opt/x/scripts/agent-state off" } ] } ] } }
+EOF
+HOME="$UF" XDG_BIN_HOME="$UF/bin" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a foreign review-gate survives --hooks" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("my dir/foo/scripts/review-gate"))] | length' "$UF/.claude/settings.json")"
+is "a foreign agent-state off survives --hooks" "1" \
+   "$(jq '[.hooks.SessionStart[].hooks[].command | select(. == "/opt/x/scripts/agent-state off")] | length' "$UF/.claude/settings.json")"
+is "and cockpit's own review-gate was added beside it" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("^\"\\$\\{TMUX_COCKPIT_DIR.*/scripts/review-gate$"))] | length' "$UF/.claude/settings.json")"
+
+UB=$(mktmpd); mkdir -p "$UB/.claude"; printf '{ "hooks": [ broken' > "$UB/.claude/settings.json"
+out=$(HOME="$UB" XDG_BIN_HOME="$UB/bin" "$DIR/install.sh" --uninstall --hooks 2>&1); urc=$?
+is "invalid JSON is refused" "1" "$urc"
+case "$out" in *"not valid JSON"*) ok "with a clear message" ;; *) bad "with a clear message" "not valid JSON" "$out" ;; esac
+is "and the file is unchanged" '{ "hooks": [ broken' "$(cat "$UB/.claude/settings.json")"
+case "$(ls "$UB/.claude")" in *bak*) bad "and no backup is made" "none" "$(ls "$UB/.claude")" ;; *) ok "and no backup is made" ;; esac
+
+UM=$(mktmpd)
+out=$(HOME="$UM" XDG_BIN_HOME="$UM/bin" "$DIR/install.sh" --uninstall --hooks 2>&1); is "a missing settings.json exits 0" "0" "$?"
+case "$out" in *"nothing to remove"*) ok "and says so" ;; *) bad "and says so" "nothing to remove" "$out" ;; esac
+[ -e "$UM/.claude/settings.json" ] && bad "and creates nothing" "no settings.json" "created" || ok "and creates nothing"
 else
-    ok "--uninstall --hooks touches no settings.json"
+    skip_ "hooks removal (jq not installed)"
 fi
-rm -rf "$HK3"
 
 # I4: --uninstall on a read-only $BIN used to exit 0 and print nothing when
 # rm failed -- the mirror image of the install-side FAILED handling above.
@@ -4369,7 +4682,6 @@ is "--help exits 0" "0" "$?"
 case "$out" in *usage:*) ok "and it prints usage" ;;
     *) bad "and it prints usage" "a usage: line" "$out" ;; esac
 
-rm -rf "$HK"
 echo "== prefix u jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
 # The bind runs the script under run-shell, which sets no $TMUX_PANE: read
@@ -7241,7 +7553,7 @@ esac
 # source pane into @cockpit_review_src first and the window reads that (#45).
 # A copy of the plugin whose tmux-review is a stub records the -p it got.
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
-mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
+mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
 printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"; chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
@@ -8245,11 +8557,12 @@ esac
 # Every script the wrapper can reach is a stub that records its argv, and tmux
 # only records: the assertion is what ran, in full, not just that the right
 # thing did.
-# The one read the loop makes, @cockpit_board_return, answers from $BD/ret and
-# is not recorded: what is asserted is what ran.
+# The reads the loop makes, @cockpit_board_return (from $BD/ret) and
+# @cockpit_glyphs (#293, unset), are not recorded: what is asserted is what ran.
 cat > "$BD/rec/tmux" <<BDREC
 #!/bin/sh
 case "\$*" in "show-option -gqv @cockpit_board_return") cat "$BD/ret" 2>/dev/null; exit 0 ;; esac
+case "\$*" in "show-option -gqv @cockpit_glyphs") exit 0 ;; esac
 printf '%s\\n' "\$*" >> "$BD/wargv"
 exit 0
 BDREC
@@ -8570,12 +8883,12 @@ is "and its window id, not the shared name, as .expect, 0600" "$KBW0 600" "$(cat
 is "which tells it from the other window named claude" "yes" "$([ -n "$KBW0" ] && [ "$KBW0" != "$KBW1" ] && echo yes)"
 is "and the board killed nothing itself" "${KBP[0]}" "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -x "${KBP[0]}")"
 
-# R asks nothing and writes request %N, with no .expect
+# #288: R is no longer a board key: it writes nothing, and q then closes
 KR=$(mktmpd)
 kb_open "${KBP[1]}" "$KR"
-"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" R
-kb_gone "$KBW" || bad "R closes the board" "the window closes" "$(kb_cap)"
-is "R writes request %N at once, with no .expect" "request ${KBP[1]} no" \
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" R q
+kb_gone "$KBW" || bad "q closes the board after R" "the window closes" "$(kb_cap)"
+is "R writes no action and no .expect" " no" \
    "$(cat "$KR/act" 2>/dev/null) $([ -e "$KR/act.expect" ] && echo yes || echo no)"
 
 # the target goes while it is asked about: the confirm closes with a ✕ note
@@ -8934,6 +9247,8 @@ cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
 [ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# the @cockpit_glyphs read (#293) is not an action: unset, unrecorded
+[ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
 if [ "\$1" = capture-pane ]; then
     echo x >> "$PND/caps"
@@ -11191,6 +11506,9 @@ case "$(pk_i)" in
     *) bad "prefix i is bound to a popup running cockpit-tui info" "display-popup ... cockpit-tui info" "$(pk_i)" ;;
 esac
 case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-review --info" "no tmux-review" "$(pk_i)" ;; *) ok "prefix i no longer runs tmux-review --info" ;; esac
+# #293: the binary reads $COCKPIT_GLYPHS only, so the popup passes the option on
+case "$(pk_i)" in *@cockpit_glyphs*COCKPIT_GLYPHS*) ok "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" ;;
+    *) bad "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" "COCKPIT_GLYPHS from @cockpit_glyphs" "$(pk_i)" ;; esac
 "$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
@@ -11239,11 +11557,11 @@ case "$("$TMUX_REAL" -L "$PO" capture-pane -p -t t:b)" in *"info · %"*) bad "th
 "$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
 fi
 
-echo "== cockpit-board: kill %N re-checks the window name, request %N runs the request path =="
+echo "== cockpit-board: kill %N re-checks the window name; request %N is unknown (#288) =="
 # The wrapper half of the two verbs, driven by writing the action file directly
 # (a stub binary does the writing). A real private server, real windows; the
 # only stub besides the binary is tmux-review, which records its argv.
-if need_tmux "the board's kill and request verbs"; then :; else
+if need_tmux "the board's kill verb"; then :; else
 KV="cockpit-kv-$$"; SOCKS="$SOCKS $KV"; KD=$(mktmpd)
 mkdir -p "$KD/p" "$KD/state"
 cp -r "$DIR"/scripts "$KD/p/"
@@ -11355,41 +11673,68 @@ is "kill %N takes the whole window, its other pane too" "gone gone" "$(kv_alive 
 case "$(sed -n 2p "$KD/bargv")" in "board --select $V --note "*) ok "the board returns after a kill, selecting the pane that was" ;;
     *) bad "the board returns after a kill, selecting the pane that was" "board --select $V --note <file>" "$(sed -n 2p "$KD/bargv")" ;; esac
 
-: > "$KD/rv"; rm -f "$KD/rvrc" "$KD/rvout"
+# #288: request is no verb of the wrapper's any more. An older binary's
+# request %N hits the unknown-verb arm: tmux-review is not run, the board ends.
+: > "$KD/rv"
 kv_run "request $V" >/dev/null
-until_file "$KD/rv" '*--request*'
-is "request %N runs tmux-review's --request path on that pane, once the board has closed" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
+is "request %N from an older binary runs nothing" "" "$(cat "$KD/rv")"
 is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/bargv" | tr '\n' ';')"
-# run-shell expands formats and hands the string to sh: a plugin directory with a
-# # and a ' in its name must still reach tmux-review.
-KQ="$KD/q#{x}uo'te"; mkdir -p "$KQ"; cp -r "$KD/p/." "$KQ/"; : > "$KD/rv"
-rm -f "$KD/once" "$KD/twice" "$KD/line2" "$KD/done" "$KD/expect" "$KD/link"; printf 'request %s\n' "$V" > "$KD/line"
-"$TMUX_REAL" -L "$KV" new-window -d -t t: \
-    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log '${KQ//\'/\'\\\'\'}/scripts/cockpit-board' -p $KVHOME 2>$KD/err; echo x > $KD/done"
-until_file "$KD/rv" '*--request*'
-is "request %N finds tmux-review under a plugin directory holding #{x} and '" "-p $V --request $V" "$(head -n 1 "$KD/rv")"
-
-# The request opens a popup, and tmux silently runs nothing for a popup opened
-# inside another (display-popup exits 0). So the wrapper must be gone first:
-# a real client on the private server, the board in a popup, tmux-review a stub
-# that opens a popup of its own and leaves a file.
-KN="cockpit-kn-$$"; KNO="cockpit-kno-$$"; SOCKS="$SOCKS $KN $KNO"
-"$TMUX_REAL" -L "$KN" -f /dev/null new-session -d -s s -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
-KNP=$("$TMUX_REAL" -L "$KN" list-panes -F '#{pane_id}')
-printf '#!/bin/sh\n"%s" -L %s display-popup -E -t %s "echo ran > %s/nested; sleep 0.2"\n' "$TMUX_REAL" "$KN" "$KNP" "$KD" > "$KD/p/scripts/tmux-review"
-"$TMUX_REAL" -L "$KNO" -f /dev/null new-session -d -s o -x 100 -y 32 \
-    "TERM=xterm-256color exec $TMUX_REAL -L $KN attach -t s" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$KN" list-clients -F '#{client_name}'
-rm -f "$KD/once" "$KD/nested" "$KD/expect" "$KD/link"; printf 'request %s\n' "$KNP" > "$KD/line"
-"$TMUX_REAL" -L "$KN" display-popup -E -w 80 -h 20 \
-    "env COCKPIT_TUI_BIN=$KD/bin XDG_STATE_HOME=$KD/state COCKPIT_LOG=$KD/tui.log $KD/p/scripts/cockpit-board -p $KNP" >/dev/null 2>&1 &
-KNJOB=$!
-until_file "$KD/nested" 'ran'; knr=$?
-is "request %N from inside the board's popup gets its own popup open" "0" "$knr"
-kill "$KNJOB" 2>/dev/null; wait "$KNJOB" 2>/dev/null
-"$TMUX_REAL" -L "$KNO" kill-server >/dev/null 2>&1
-"$TMUX_REAL" -L "$KN" kill-server >/dev/null 2>&1
+grep -q 'unknown verb \[request ' "$KD/tui.log" && ok "and the log names the verb it did not know" \
+    || bad "and the log names the verb it did not know" "unknown verb [request ...]" "$(tail -n 3 "$KD/tui.log")"
 "$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#293) =="
+# theme.rs reads only the env, so the wrapper must pass the option on. A stub
+# binary records what it got and exits with no action.
+if need_tmux "the board's glyphs"; then :; else
+GL="cockpit-gl-$$"; SOCKS="$SOCKS $GL"; GD=$(mktmpd)
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s/g\n' "$GD" > "$GD/bin"; chmod +x "$GD/bin"
+"$TMUX_REAL" -L "$GL" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+GLP=$("$TMUX_REAL" -L "$GL" list-panes -t t -F '#{pane_id}')
+gl_run() {
+    rm -f "$GD/g"
+    "$TMUX_REAL" -L "$GL" new-window -d -t t: \
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GD/bin XDG_STATE_HOME=$GD COCKPIT_LOG=$GD/tui.log $DIR/scripts/cockpit-board -p $GLP"
+    until_file "$GD/g" '\[*\]'
+    cat "$GD/g" 2>/dev/null
+}
+"$TMUX_REAL" -L "$GL" set -g @cockpit_glyphs ascii
+is "@cockpit_glyphs ascii reaches the board as COCKPIT_GLYPHS" "[ascii]" "$(gl_run)"
+"$TMUX_REAL" -L "$GL" set -gu @cockpit_glyphs
+is "and unset passes nothing" "[]" "$(gl_run)"
+# an odd value stays one word: it reaches the binary whole and runs nothing
+"$TMUX_REAL" -L "$GL" set -g @cockpit_glyphs "ascii touch $GD/ran"
+is "a value with spaces reaches the binary as one word" "[ascii touch $GD/ran]" "$(gl_run)"
+[ -e "$GD/ran" ] && bad "and runs nothing" "no $GD/ran" "it exists" || ok "and runs nothing"
+"$TMUX_REAL" -L "$GL" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-panel: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#293) =="
+# The panel's env line carries the glyphs word beside COCKPIT_PANEL_DROPPED
+# (#272); the stub records both, so neither can fall out of the merged line.
+if need_tmux "the panel's glyphs"; then :; else
+GP="cockpit-gp-$$"; SOCKS="$SOCKS $GP"; GPD=$(mktmpd)
+printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s/g\n' "$GPD" > "$GPD/bin"; chmod +x "$GPD/bin"
+"$TMUX_REAL" -L "$GP" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+GPP=$("$TMUX_REAL" -L "$GP" list-panes -t t -F '#{pane_id}')
+GPS=$("$TMUX_REAL" -L "$GP" display -p '#{pid}')
+gp_run() {
+    rm -f "$GPD/g"; mkdir -p "$GPD/tmux-cockpit/panel"
+    : > "$GPD/tmux-cockpit/panel/$GPS-9999.state"     # a hide left by a pane that is gone
+    "$TMUX_REAL" -L "$GP" new-window -d -t t: \
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GPD/bin XDG_STATE_HOME=$GPD COCKPIT_LOG=$GPD/tui.log $DIR/scripts/cockpit-panel -p $GPP"
+    until_file "$GPD/g" '\[*\]'
+    cat "$GPD/g" 2>/dev/null
+}
+"$TMUX_REAL" -L "$GP" set -g @cockpit_glyphs ascii
+is "@cockpit_glyphs ascii reaches the panel as COCKPIT_GLYPHS, beside the dropped hides" "[ascii] D=[%9999]" "$(gp_run)"
+"$TMUX_REAL" -L "$GP" set -gu @cockpit_glyphs
+is "and unset passes nothing" "[] D=[%9999]" "$(gp_run)"
+"$TMUX_REAL" -L "$GP" set -g @cockpit_glyphs "ascii touch $GPD/ran"
+is "a value with spaces reaches the panel as one word" "[ascii touch $GPD/ran] D=[%9999]" "$(gp_run)"
+[ -e "$GPD/ran" ] && bad "and runs nothing" "no $GPD/ran" "it exists" || ok "and runs nothing"
+"$TMUX_REAL" -L "$GP" kill-server >/dev/null 2>&1
 fi
 
 # --- sessions view (#245): cockpit-tui sessions and the tm that runs it -------
@@ -12200,6 +12545,325 @@ is "a pane in a nested worktree is not a pane of the enclosing checkout" "2" "$(
 is "and the new window is the checkout" "$BGR" "$("$TMUX_REAL" -L "$BGS2" display-message -p -t t: '#{pane_current_path}')"
 "$TMUX_REAL" -L "$BGS2" kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
+fi
+
+echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
+# The picker is a stub that answers "new-session -" with NAME; tmux is a stub that logs
+# new-session's argv. A pty on stdin makes tm take the picker path.
+HR=$(mktmpd); mkdir -p "$HR/home/foo/.git" "$HR/home/plain" "$HR/home/a/b/.git" "$HR/home/#(id)/.git" "$HR/home/my.repo/.git" "$HR/pane" "$HR/.git" "$HR/cwd"
+printf 'x' > "$HR/wt" ; mkdir -p "$HR/home/wt"; cp "$HR/wt" "$HR/home/wt/.git"
+printf '#!/bin/sh\ncase "$1" in new-session) shift; printf "%%s\\n" "$*" >> "$HR_LOG" ;; list-sessions) echo alpha ;; display-message) case "$*" in *pane_current_path*) echo "$HR_PANE" ;; *) echo 0 ;; esac ;; has-session) exit 1 ;; esac\nexit 0\n' > "$HR/tmux"
+printf '#!/bin/sh\nprintf "new-session -\\n" > "$COCKPIT_ACTION"\nprintf "%%s" "$HR_NAME" > "$COCKPIT_ACTION.text"\nexit 0\n' > "$HR/ct"
+chmod +x "$HR/tmux" "$HR/ct"
+HR_TENV=(-u TMUX)
+hr_new() {    # hr_new <typed name> -> the new-session argv tm logged
+    : > "$HR/log"
+    (cd "$HR/cwd" && env -u TMUX_PANE "${HR_TENV[@]}" PATH="$HR:$PATH" HOME="$HR/home" HR_LOG="$HR/log" HR_NAME="$1" HR_PANE="$HR/pane" \
+        COCKPIT_TUI_BIN="$HR/ct" script -qec "$DIR/scripts/tm" /dev/null </dev/null >/dev/null 2>&1)
+    cat "$HR/log"
+}
+hr_c() {       # hr_c <typed name> -> the -c field of new-session, whole
+    local l; l=$(hr_new "$1"); printf '%s' "${l##* -c }"
+}
+hr_is() { is "$1" "$2" "$(hr_c "$3")"; }
+hr_is "a git repo at ~/foo is the start dir" "$HR/home/foo" foo
+hr_is "a worktree's .git file counts" "$HR/home/wt" wt
+hr_is "a dotted repo name matches ~/my.repo (clean turns the dot into _)" "$HR/home/my.repo" my.repo
+case $(hr_new my.repo) in *"-s my_repo -c"*) ok "the session is named by the cleaned name" ;; *) bad "the session is named by the cleaned name" "-s my_repo" "$(cat "$HR/log")" ;; esac
+hr_is "a plain ~/plain keeps today's dir" "$HR/cwd" plain
+hr_is "no ~/nothing keeps today's dir" "$HR/cwd" nothing
+# Not one path component: a slash would walk out of ~ ("a/b" is a repo), a dot name is ~ itself.
+hr_is "a name with a slash never reaches ~/a/b" "$HR/cwd" a/b
+hr_is "'..' names no folder (~/.. is a repo here)" "$HR/cwd" ..
+# A name made of format characters: the dir passes through fesc, so # doubles.
+hr_is "a hostile name reaches -c with # doubled" "$HR/home/##(id)" '#(id)'
+# In a client $TMUX is set and the pane's folder is the default; ~/NAME still wins.
+HR_TENV=("TMUX=x,0,1")
+hr_is "with TMUX set, ~/foo wins over the pane's folder" "$HR/home/foo" foo
+hr_is "with TMUX set, no repo means the pane's folder" "$HR/pane" plain
+HR_TENV=(-u TMUX)
+rm -rf "$HR"
+
+echo "== a stale cockpit-tui: tm and tmux-branch name the fix, not 'exited 2' (#276) =="
+# A binary built before a screen existed prints "unknown screen <name>" and exits 2.
+# The stub prints that line; the wrappers must say the binary is old and what to run.
+SD=$(mktmpd)
+printf '#!/bin/sh\ncase "$1" in list-sessions) echo alpha ;; display-message) printf "%%s\\n" "$*" >> "$SD_LOG" ;; esac\nexit 0\n' > "$SD/tmux"
+chmod +x "$SD/tmux"
+git -C "$SD" init -q . >/dev/null 2>&1
+sd_has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1" "contains [$2]" "$3" ;; esac; }
+sd_stub() {   # sd_stub <exit code> <stderr text>: a cockpit-tui that only fails
+    printf '#!/bin/sh\nprintf "%%s\\n" "$SD_ERR" >&2\nexit %s\n' "$1" > "$SD/ct"; chmod +x "$SD/ct"; SD_ERR=$2
+}
+sd_tm() {     # a pty on stdin so tm takes the picker path
+    env -u TMUX PATH="$SD:$PATH" HOME="$SD" SD_ERR="$SD_ERR" SD_LOG="$SD/log" ${SD_POPUP:+TM_POPUP=1} COCKPIT_TUI_BIN="$SD/ct" \
+        script -qec "$DIR/scripts/tm -k" /dev/null </dev/null 2>&1
+}
+sd_br() { (cd "$SD" && env PATH="$SD:$PATH" SD_ERR="$SD_ERR" COCKPIT_TUI_BIN="$SD/ct" "$DIR/scripts/tmux-branch" </dev/null 2>&1); }
+SDMSG="cockpit-tui is older than the plugin"
+sd_stub 2 $'cockpit-tui: unknown screen sessions\nusage: cockpit-tui <screen>'
+sdo=$(sd_tm)
+sd_has "tm names the stale binary" "$SDMSG" "$sdo"
+sd_has "tm names make tui" "make tui" "$sdo"
+sd_has "tm still shows the tui's own stderr" "unknown screen sessions" "$sdo"
+case $sdo in *"exited 2"*) bad "tm no longer says 'exited 2'" "no 'exited 2'" "$sdo" ;; *) ok "tm no longer says 'exited 2'" ;; esac
+sdo=$(sd_br)
+sd_has "tmux-branch names the stale binary" "$SDMSG" "$sdo"
+sd_has "tmux-branch names make tui" "make tui" "$sdo"
+# One stderr holding the exempt line and a real one: still stale, and both reach the terminal.
+sd_stub 2 $'cockpit-tui: warning: something else\ncockpit-tui: unknown screen branch'
+sd_has "stale is found among other stderr lines (tm)" "$SDMSG" "$(sd_tm)"
+sd_has "stale is found among other stderr lines (tmux-branch)" "$SDMSG" "$(sd_br)"
+# Exit 2 alone is not stale: pick exits 2 when stdout is gone.
+sd_stub 2 'cockpit-tui: stdout is closed'
+sdo=$(sd_tm)
+sd_has "plain exit 2 keeps the old message (tm)" "the sessions picker exited 2" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tm)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tm)" ;; esac
+sdo=$(sd_br)
+sd_has "plain exit 2 shows the tui's stderr (tmux-branch)" "stdout is closed" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tmux-branch)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tmux-branch)" ;; esac
+# The words in the middle of another line, or a different exit code, are not the signal.
+sd_stub 2 'cockpit-tui: skipped 3 rows: unknown screen'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "the phrase mid-line is not stale" "no stale text" "$sdo" ;; *) ok "the phrase mid-line is not stale" ;; esac
+sd_stub 1 'cockpit-tui: unknown screen sessions'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "exit 1 with the line is not stale" "no stale text" "$sdo" ;; *) ok "exit 1 with the line is not stale" ;; esac
+# A popup also gets the message from display-message, through refuse.
+: > "$SD/log"; sd_stub 2 'cockpit-tui: unknown screen sessions'; SD_POPUP=1 sd_tm >/dev/null
+sd_has "a popup also gets the stale message by display-message" "$SDMSG" "$(cat "$SD/log")"
+# The capture file is gone after every exit path.
+mkdir "$SD/tmpd"
+for sdcase in "2|cockpit-tui: unknown screen branch" "2|cockpit-tui: stdout is closed" "1|oops"; do
+    sd_stub "${sdcase%%|*}" "${sdcase#*|}"; TMPDIR=$SD/tmpd sd_br >/dev/null
+    is "tmux-branch leaves no capture file (${sdcase%%|*}, ${sdcase#*|})" "" "$(ls -A "$SD/tmpd")"
+done
+rm -rf "$SD"
+
+echo "== agent-state session: the payload's session_id and transcript_path become pane options (#302) =="
+if need_tmux "agent-state session"; then :; else
+SSD=$(mktmpd); SSH="$SSD/h"; SSROOT="$SSH/.claude/projects"; mkdir -p "$SSROOT/-p" "$SSROOT/-q/#(touch $SSD/F)"
+SSU1=11111111-2222-4333-8444-555555555555; SSU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+for u in $SSU1 $SSU2; do : > "$SSROOT/-p/$u.jsonl"; done
+: > "$SSD/out.jsonl"; : > "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"; ln -s "$SSD/out.jsonl" "$SSROOT/-p/link.jsonl"
+ln -s "$SSROOT/-q/#(touch $SSD/F)/x.jsonl" "$SSROOT/-p/viaq.jsonl"
+SSTAB=$(printf '%s/-p/t\tab.jsonl' "$SSROOT"); : > "$SSTAB"; SSBS="$SSROOT/-p/b\\s.jsonl"; : > "$SSBS"
+SSP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
+ss_opt() { tmux show-option -pqv -t "$SSP" "@cockpit_$1"; }
+ss_clear() { tmux set-option -pu -t "$SSP" @cockpit_session; tmux set-option -pu -t "$SSP" @cockpit_transcript; }
+ss() {                        # <session_id> <transcript_path> [extra json]  one payload through the hook
+    printf '{"session_id":"%s","transcript_path":"%s","hook_event_name":"UserPromptSubmit"%s}\n' "$1" "$2" "${3:-}" \
+        | env -u CLAUDE_CONFIG_DIR HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; }
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"
+is "a valid payload saves the session id" "$SSU1" "$(ss_opt session)"
+is "and the transcript path" "$SSROOT/-p/$SSU1.jsonl" "$(ss_opt transcript)"
+is "the hook exits 0 and prints nothing" "0:" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" 2>&1; echo "$?:")"
+ss $SSU2 "$SSROOT/-p/$SSU2.jsonl"
+is "a second prompt in a new session replaces both" "$SSU2 $SSROOT/-p/$SSU2.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+ss $SSU1 "$SSD/gone.jsonl"
+is "a new session whose transcript is not valid drops the old transcript (/clear)" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSD/out.jsonl"
+is "a path outside the projects tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/../-p/$SSU1.jsonl"
+is "a path with .. is not saved, even when it resolves inside the tree" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/link.jsonl"
+is "a symlink out of the tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"
+is "a path with a #(...) component is not saved" "" "$(ss_opt transcript)"
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/viaq.jsonl"
+is "a symlink inside the tree to a path with #(...) is not saved either" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSTAB"
+is "a path with a control character is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSBS"
+is "a path with a backslash is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p"
+is "a directory is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "relative/$SSU1.jsonl"
+is "a relative path is not saved" "" "$(ss_opt transcript)"
+ss_clear
+printf '{"transcript_path":"%s"}\n' "$SSROOT/-p/$SSU1.jsonl" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no session_id saves no session" "" "$(ss_opt session)"
+printf '{"session_id":"%s"}\n' "$SSU1" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no transcript_path saves the session alone" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+for bad in sid-123 "../x" "#(touch $SSD/F)" "${SSU1}0" "${SSU1%?}" ""; do
+    ss "$bad" "$SSROOT/-p/$SSU1.jsonl"
+    is "session_id '$bad' is not a UUID: not saved" "" "$(ss_opt session)"
+done
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prompt":"SECRETPROMPT"'
+is "last_assistant_message and the prompt never reach a tmux option" "0" "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
+ss_clear
+SSBIG="$SSD/big.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; head -c 500000 /dev/zero | tr '\0' x; printf '"}\n'; } > "$SSBIG"
+cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a 500 KB prompt after the ids: both still found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+ss_unread() { { env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; wc -c; } < "$1" | tail -n 1 | tr -d ' '; }
+ss_want=$(( $(wc -c < "$SSBIG") - 4096 ))
+is "and the hook leaves all but 4096 bytes of it unread" "$ss_want" "$(ss_unread "$SSBIG")"
+SSEMO="$SSD/emoji.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; for _ in $(seq 1 20000); do printf '\360\237\230\200\342\202\254\303\251'; done; printf '"}\n'; } > "$SSEMO"
+ss_clear
+is "a multibyte prompt (UTF-8 locale): the cap is 4096 bytes, not characters" "$(( $(wc -c < "$SSEMO") - 4096 ))" \
+   "$(LC_ALL=C.utf8 ss_unread "$SSEMO")"
+is "and its ids are found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+# The closing quote of transcript_path at byte N: in the cap saved, past it the path is cut.
+ss_edge() {                   # <closing-quote byte> <pad char bytes: 1|2|3|4>
+    local pre="{\"pad\":\"" mid sfx pad n
+    sfx="\",\"session_id\":\"$SSU1\",\"transcript_path\":\"$SSROOT/-p/$SSU1.jsonl"
+    n=$(( $1 - ${#pre} - ${#sfx} - 1 ))
+    case $2 in 1) mid=x ;; 2) mid=$'\303\251' ;; 3) mid=$'\342\202\254' ;; 4) mid=$'\360\237\230\200' ;; esac
+    pad=$(for _ in $(seq 1 $(( n / $2 ))); do printf '%s' "$mid"; done; for _ in $(seq 1 $(( n % $2 ))); do printf x; done)
+    printf '%s%s%s"}\n' "$pre" "$pad" "$sfx" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+}
+for w in 1 2 3 4; do
+    ss_clear; ss_edge 4096 $w
+    is "ids ending with their quote at byte 4096, ${w}-byte chars before: saved" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+    ss_clear; ss_edge 4100 $w
+    is "a transcript_path cut inside by the cap, ${w}-byte chars before: not saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+done
+ss_clear
+{ printf '{"prompt":"'; head -c 5000 /dev/zero | tr '\0' x; printf '","session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "ids past the 4 KB cap are skipped: nothing is saved" "" "$(ss_opt session)$(ss_opt transcript)"
+{ printf '{"session_id":"%s","transcript_path":"%s' $SSU1 "$SSROOT/-p/"; head -c 5000 /dev/zero | tr '\0' x; printf '"}\n'; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a transcript_path cut by the cap is not a value: the session alone is saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+SSCFG="$SSD/cfg"; mkdir -p "$SSCFG/projects/-p"; : > "$SSCFG/projects/-p/$SSU2.jsonl"
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU2 "$SSCFG/projects/-p/$SSU2.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "CLAUDE_CONFIG_DIR's projects dir is the tree when set" "$SSCFG/projects/-p/$SSU2.jsonl" "$(ss_opt transcript)"
+ss_clear
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "and ~/.claude/projects is then outside it" "" "$(ss_opt transcript)"
+ss_clear
+tmux set-option -p -t "$SSP" @cockpit_transcript "#(touch $SSD/F)"
+is "set-option -p stores #(...) literally, without running it" "#(touch $SSD/F) none" \
+   "$(ss_opt transcript) $([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+is "the pane's state is untouched" "" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"; tmux show-option -pqv -t "$SSP" @panestate)"
+ss_clear
+tmux kill-pane -t "$SSP" >/dev/null 2>&1
+rm -rf "$SSD"
+fi
+
+echo "== hook wiring: session is saved at SessionStart (not compact) and UserPromptSubmit (#302) =="
+sss() { jq -r --arg s "$1" '[.hooks.SessionStart[]
+        | select(.hooks[].command | test("agent-state session$"))
+        | select((.matcher // "") as $m | $m == "" or ($s | test("^(" + $m + ")$")))] | length' \
+        "$DIR/examples/claude-hooks.json"; }
+is "SessionStart saves the session on startup, resume, clear and fork (a new session_id)" "1 1 1 1" "$(sss startup) $(sss resume) $(sss clear) $(sss fork)"
+is "but not on compact, which keeps its session_id" "0" "$(sss compact)"
+is "UserPromptSubmit saves it too" "1" \
+   "$(jq '[.hooks.UserPromptSubmit[].hooks[].command | select(test("agent-state session$"))] | length' "$DIR/examples/claude-hooks.json")"
+
+echo "== transcript reader prefers @cockpit_transcript, then @cockpit_session (#302) =="
+. "$DIR/scripts/lib/transcript.sh"
+TQH=$(mktmpd); mkdir -p "$TQH/.claude/projects/-a" "$TQH/.claude/projects/-b"
+TQU=cccccccc-1111-4111-8111-111111111111
+: > "$TQH/.claude/projects/-a/$TQU.jsonl"; : > "$TQH/.claude/projects/-b/direct.jsonl"; : > "$TQH/out.jsonl"
+TQS="cockpit-tq-$$"; SOCKS="$SOCKS $TQS"
+"$TMUX_REAL" -L "$TQS" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
+TQP=$("$TMUX_REAL" -L "$TQS" display-message -p -t t '#{pane_id}')
+tq() { ( COCKPIT_TMUX="$TMUX_REAL -L $TQS" HOME="$TQH" PATH="/nonexistent" transcript_file "$TQP" 2>&1; echo -n "$?" ); }
+tq_set() { "$TMUX_REAL" -L "$TQS" set-option -p -t "$TQP" "$@"; }
+tq_set @cockpit_session $TQU; tq_set @cockpit_transcript "$TQH/.claude/projects/-b/direct.jsonl"
+is "with both options set the transcript path wins" "$TQH/.claude/projects/-b/direct.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/out.jsonl"
+is "a transcript option outside the tree is not trusted: the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/.claude/projects/-b/../-b/direct.jsonl"
+is "a transcript option with .. is not trusted either" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" set-option -pu -t "$TQP" @cockpit_transcript
+is "with no transcript option the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" kill-server 2>/dev/null
+rm -rf "$TQH"
+
+echo "== a name, path or error line never runs as a tmux format (#289) =="
+# tmux expands #{...} and #(...) in display-message, run-shell and -T text,
+# so a directory, branch or session name like x#(cmd) ran cmd. Every site goes
+# through lib/fmt.sh's fesc: the text shows as written and nothing runs.
+if need_tmux "format escape"; then :; else
+FE="cockpit-fesc-$$"; FEO="cockpit-fesco-$$"; SOCKS="$SOCKS $FE $FEO"; FED=$(mktmpd)
+# The payload runs `touch $FEMK`: a path inside a name cannot hold a /.
+"$TMUX_REAL" -L "$FE" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$FED" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FE" set-environment -g FEMK "$FED/pwned" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FEO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $FE attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$FE" list-clients -F '#{client_name}'
+FEP=$("$TMUX_REAL" -L "$FE" display-message -p -t t: '#{pane_id}')
+FETMUX="$SOCKDIR/$FE,1,0"
+fe_msgs() { "$TMUX_REAL" -L "$FE" show-messages 2>/dev/null | grep -v ' command: '; }
+fe_ran() { [ -e "$FED/pwned" ] && echo ran || echo none; }
+# A positive control first: the payload does run where tmux expands it. tmux
+# kills a #() job when the client that expanded it goes, so this run-shell
+# holds its client until the job has landed (or 5 s pass).
+"$TMUX_REAL" -L "$FE" run-shell "true '#(touch \$FEMK)'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+until_out ran fe_ran; is "control: an unescaped #() in run-shell runs" "ran" "$(fe_ran)"
+rm -f "$FED/pwned"
+
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+is "fesc doubles # before { and (, keeps #[ and a lone # as tmux reads them" \
+    'a##{b}##(c)#[d]##[e]x##' "$(fesc 'a#{b}#(c)#[d]##[e]x#')"
+fe_lit='x#(touch $FEMK) #{session_name} ##{y} #[fg=red] # end'
+is "and tmux renders the escaped text as written" "$fe_lit" \
+    "$("$TMUX_REAL" -L "$FE" display-message -p -t t: "$(fesc "$fe_lit")")"
+# The escaped one, holding its client the same way (2 s): nothing may land.
+"$TMUX_REAL" -L "$FE" run-shell "printf '%s' '$(fesc 'rs#(touch $FEMK)')'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 20 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+
+# tm: the session name goes through fesc (now from lib/fmt.sh). No space in
+# the payload: tm turns one into _.
+TMUX=$FETMUX "$DIR/scripts/tm" 'tm#(>$FEMK)' </dev/null >/dev/null 2>&1
+until_out '*tm#(>$FEMK)*' "$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}'
+case "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" in
+    *'tm#(>$FEMK)'*) ok "tm names a session literally" ;;
+    *) bad "tm names a session literally" 'tm#(>$FEMK)' "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" ;;
+esac
+
+# review-revdiff: the no-diff message names the repo dir (a worktree is named
+# after its branch). A stub revdiff: the message comes before it would run.
+FEBIN=$(mktmpd); printf '#!/bin/sh\nexit 0\n' > "$FEBIN/revdiff"; chmod +x "$FEBIN/revdiff"
+FER="$FED/x#(touch \$FEMK)"; mkdir -p "$FER"
+( cd "$FER" && git init -q -b main . && git -c user.name=t -c user.email=t@e commit -q --allow-empty -m init ) >/dev/null 2>&1
+mkdir -p "$FED/rs"
+TMUX=$FETMUX PATH="$FEBIN:$PATH" "$DIR/scripts/tmux-review" --loop "$FER" "$FED/rs/comments.md" </dev/null >/dev/null 2>&1
+fe_want="cockpit: no uncommitted changes in $FER"
+until_out "*no uncommitted changes in $FED/x*" fe_msgs
+case "$(fe_msgs)" in
+    *"$fe_want"*) ok "review-revdiff's no-diff message shows the dir literally" ;;
+    *) bad "review-revdiff's no-diff message shows the dir literally" "$fe_want" "$(fe_msgs | tail -1)" ;;
+esac
+
+# review-fleet: the session dir in "could not create" (XDG_STATE_HOME is a file).
+FES="$FED/st#(touch \$FEMK)"; : > "$FES"
+TMUX=$FETMUX XDG_STATE_HOME=$FES REVIEW_PANE_ID=$FEP "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
+until_out "*could not create $FED/st*" fe_msgs
+case "$(fe_msgs)" in
+    *"cockpit: could not create $FES/"*) ok "review-fleet's could-not-create message shows the path literally" ;;
+    *) bad "review-fleet's could-not-create message shows the path literally" "cockpit: could not create $FES/..." "$(fe_msgs | tail -1)" ;;
+esac
+
+# Nothing above ran the payload. The run-shell is the one tmux would run, and
+# it went first; this control proves the job finished before the check.
+"$TMUX_REAL" -L "$FE" run-shell "touch '$FED/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$FED/after' ] && echo yes"
+is "and no payload ran" "none" "$(fe_ran)"
+"$TMUX_REAL" -L "$FEO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FE" kill-server >/dev/null 2>&1
+rm -rf "$FED" "$FEBIN"
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

@@ -634,9 +634,7 @@ fn footer_drops_whole_hints_in_priority_order() {
             .collect()
     };
     for (w, want) in [
-        (200, vec!["↵", "a", "r", "f", "i", "x", "R", "?", "q"]),
-        (86, vec!["↵", "a", "r", "f", "i", "x", "R", "?", "q"]),
-        (85, vec!["↵", "a", "r", "f", "i", "x", "?", "q"]),
+        (200, vec!["↵", "a", "r", "f", "i", "x", "?", "q"]),
         (74, vec!["↵", "a", "r", "f", "i", "x", "?", "q"]),
         (73, vec!["↵", "a", "r", "f", "i", "?", "q"]),
         (65, vec!["↵", "a", "r", "f", "i", "?", "q"]),
@@ -708,7 +706,7 @@ fn the_footer_lists_only_keys_the_dispatch_accepts() {
         .into_iter()
         .map(|(k, _)| k)
         .collect();
-    for k in ["↵", "a", "r", "f", "i", "x", "R"] {
+    for k in ["↵", "a", "r", "f", "i", "x"] {
         assert!(!head.contains(&k.to_string()), "a header's footer offers {k}");
     }
 }
@@ -1732,7 +1730,6 @@ fn the_footer_follows_the_focus() {
             "space fold",
             "/ find",
             "x kill",
-            "R request",
             "? keys",
             "q close"
         ]
@@ -1758,17 +1755,7 @@ fn the_footer_follows_the_focus() {
         .collect();
     assert_eq!(
         t,
-        [
-            "↵ jump",
-            "a ask",
-            "r review",
-            "f panel",
-            "i info",
-            "x kill",
-            "R request",
-            "? keys",
-            "q close"
-        ]
+        ["↵ jump", "a ask", "r review", "f panel", "i info", "x kill", "? keys", "q close"]
     );
 
     // and the drawn footer is the one for the selection
@@ -2008,10 +1995,7 @@ fn every_extra_has_a_key_of_its_own() {
             assert_eq!(board::action(key(KeyCode::Char(e.key)), list), Some(Act::Extra(e.key)));
         }
     }
-    assert_eq!(
-        EXTRAS.iter().map(|e| (e.key, e.verb)).collect::<Vec<_>>(),
-        [('x', "kill"), ('R', "request")]
-    );
+    assert_eq!(EXTRAS.iter().map(|e| (e.key, e.verb)).collect::<Vec<_>>(), [('x', "kill")]);
 }
 
 /// On an agent the footer and `?` list every entry; a header lists none.
@@ -2027,7 +2011,7 @@ fn the_footer_and_the_help_list_the_extras() {
         }
         // after the act keys, before `?`: the cut drops them first
         let at = |k: &str| ks.iter().position(|(x, _)| x == k).unwrap();
-        assert!(at("i") < at("x") && at("R") < at("?"), "{ks:?}");
+        assert!(at("i") < at("x") && at("x") < at("?"), "{ks:?}");
     }
     let head = board::hints(&g, true, Focus::Head(false));
     assert!(
@@ -2084,7 +2068,7 @@ fn the_confirm_owns_the_keys() {
 }
 
 /// `x` asks, naming what dies, and `y` exits with `kill %N` and the shown
-/// window name as `.expect`; `R` asks nothing and exits at once.
+/// window name as `.expect`; an entry with no confirm exits at once.
 #[test]
 fn y_writes_the_verb_and_the_expected_name() {
     let ps = named();
@@ -2097,12 +2081,21 @@ fn y_writes_the_verb_and_the_expected_name() {
             expect: Some("@3".into())
         }
     );
-    let r = board::extra('R').unwrap();
-    assert!(board::Confirm::open(r, &id(&ps, "%3")).is_none());
+    // #288: `R` is gone; an entry with no confirm still exits at once
+    assert!(board::extra('R').is_none());
+    let r = board::Extra {
+        key: 'Z',
+        label: "zap",
+        help: "",
+        verb: "zap",
+        confirm: None,
+        expect: None,
+    };
+    assert!(board::Confirm::open(&r, &id(&ps, "%3")).is_none());
     assert_eq!(
-        board::at_once(r, &id(&ps, "%3")),
+        board::at_once(&r, &id(&ps, "%3")),
         board::Exit {
-            line: "request %3".into(),
+            line: "zap %3".into(),
             expect: None
         }
     );
@@ -2240,7 +2233,7 @@ fn two_windows_with_one_name_expect_different_ids() {
 }
 
 /// A pane with no window id, or a malformed one, is never offered a kill:
-/// the confirm does not open and a `✕` note says why. `R` needs none.
+/// the confirm does not open and a `✕` note says why.
 #[test]
 fn no_window_id_refuses_the_kill() {
     for w in ["", "claude", "@", "@9x", "%9"] {
@@ -2251,7 +2244,6 @@ fn no_window_id_refuses_the_kill() {
         assert!(board::failure(&msg));
     }
     let mut p = pane("%8", "api:1", "one", "running");
-    assert_eq!(board::refused(board::extra('R').unwrap(), &p), None);
     p.win = "@12".into();
     assert_eq!(board::refused(kill(), &p), None);
 }
@@ -2587,4 +2579,52 @@ fn no_find_row_exceeds_the_area() {
             }
         }
     }
+}
+
+/// The extra cells as text: a worktree row's branch cell (#312).
+fn extra_in(th: &Theme, loc: &str, room: u16) -> String {
+    let p = Pane {
+        loc: loc.into(),
+        pm: "clean".into(),
+        ..Pane::default()
+    };
+    board::row_extra(&p, th, room).iter().map(|s| s.content.to_string()).collect()
+}
+
+fn extra(loc: &str, room: u16) -> String {
+    extra_in(&Theme::fixed(), loc, room)
+}
+
+/// With room, a worktree row names the repo, the branch and the worktree;
+/// a main checkout's row keeps its `⑂branch` alone.
+#[test]
+fn a_roomy_worktree_row_names_repo_branch_and_worktree() {
+    assert_eq!(extra("m⑂feat · wt w1", 40), " clean m⑂feat · wt w1");
+    assert_eq!(extra("api⑂main", 40), " clean ⑂main");
+}
+
+/// As the room shrinks: the repo goes first, then the worktree name is cut,
+/// then dropped, and the branch goes last. `" clean"` takes 6 of the room.
+#[test]
+fn a_narrowing_worktree_row_drops_repo_then_worktree_then_branch() {
+    let t = |room| extra("m⑂feat · wt fix-312-row", room);
+    assert_eq!(t(30), " clean m⑂feat · wt fix-312-row", "everything");
+    assert_eq!(t(29), " clean ⑂feat · wt fix-312-row", "repo dropped");
+    assert_eq!(t(24), " clean ⑂feat · wt fix-3…", "worktree cut");
+    assert_eq!(t(20), " clean ⑂feat · wt f…", "one real char survives");
+    assert_eq!(t(19), " clean ⑂feat", "a lone … is no name: dropped");
+    assert_eq!(t(8), " clean", "branch dropped last");
+    // a wide first character that cannot fit beside the ellipsis is no cut either
+    let w = extra("m⑂feat · wt 日本語の木の名前", 20);
+    assert_eq!(w, " clean ⑂feat", "a lone … after a wide char: dropped");
+}
+
+/// In ascii the branch mark is `@`, so a detached HEAD's `@sha` takes none.
+#[test]
+fn an_ascii_detached_head_shows_one_at() {
+    let mut th = Theme::fixed();
+    th.g = Glyphs::ascii();
+    assert_eq!(extra_in(&th, "api⑂@1b94824", 40), " clean @1b94824");
+    assert_eq!(extra_in(&th, "api⑂main", 40), " clean @main");
+    assert_eq!(extra("api⑂@1b94824", 40), " clean ⑂@1b94824");
 }

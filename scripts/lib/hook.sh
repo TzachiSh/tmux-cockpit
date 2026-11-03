@@ -2,7 +2,8 @@
 # The hooks' stdin payload. Sourced, never run; no forks, and bash 3.2 safe:
 # agent-state has no bash-4 floor.
 
-# Bounded read, not `cat`: Claude Code can hold the pipe open past the payload.
+# Bounded read, not `cat`: a hook must never wait on its writer. Claude Code 2.1.317 ends
+# the payload with a newline and closes stdin; nothing promises either.
 # Newlines are put back so two lines cannot fuse into a match never sent.
 read_payload() {              # <stop-cmd...>: ends the read early once it succeeds
     payload="" chunk=""
@@ -54,6 +55,9 @@ mark_agentview() {            # <pane> <scripts dir>
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     poll_alive "$pid" && return 0
     printf -v q '%q' "$2/agent-poll"
-    tmux run-shell -b "$q" 2>/dev/null
+    # run-shell expands formats: a # in the install path must stay a #.
+    # shellcheck source=fmt.sh
+    . "${BASH_SOURCE[0]%/*}/fmt.sh" 2>/dev/null || return 0
+    tmux run-shell -b "$(fesc "$q")" 2>/dev/null
     return 0
 }

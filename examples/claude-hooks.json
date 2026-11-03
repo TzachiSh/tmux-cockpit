@@ -8,6 +8,8 @@
     "",
     "TeammateIdle -> wake: an idle teammate's message wakes its lead with no hook.",
     "SessionStart -> off skips compact, so compaction keeps the pane's review marks.",
+    "SessionStart and UserPromptSubmit -> session save the payload's session_id and",
+    "transcript_path in pane options, so the transcript reader is right from turn 1.",
     "PreToolUse runs before the permission prompt, so PostToolUse clears needs-input.",
     "",
     "Stop also runs review-gate: it flags an unreviewed diff (◆), hands over a queued",
@@ -34,10 +36,12 @@
   "hooks": {
     "SessionStart": [
       { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
+      { "matcher": "startup|resume|clear|fork", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] },
       { "matcher": "", "hooks": [ { "type": "command", "command": "jq -Rs '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:.}}' \"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/skills/unslop/SKILL.md 2>/dev/null" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] }
     ],
     "PermissionRequest": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state needs-input" } ] }

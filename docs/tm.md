@@ -49,3 +49,14 @@ A client under 14 lines high has no room for a popup and its border, so `prefix 
 
 Without a terminal, or without `cockpit-tui` (see `make tui`), `tm` lists the
 sessions and reads a name.
+
+Creating `foo` from the sessions picker starts it in `~/foo` when that holds a
+`.git` (a repo or a linked worktree). The name as typed is looked up, so
+`my.repo` finds `~/my.repo` while the session is called `my_repo`. A name with a
+`/`, `..`, a leading `-` or a control character never matches. Otherwise the
+session starts in the pane's folder as before (#304).
+
+A `cockpit-tui` built before the plugin gained a screen exits 2 with `unknown
+screen sessions` (#276). `tm` then says "cockpit-tui is older than the plugin"
+and names `make tui` and `scripts/tui-fetch`; `prefix U` fixes it only with
+`@cockpit_tui_fetch on`. Exit 2 without that line keeps the plain "exited 2".
