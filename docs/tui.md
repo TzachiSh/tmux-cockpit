@@ -359,7 +359,7 @@ a scrollbar.
 
 ### The return trip
 
-`scripts/cockpit-board` is a loop. After `review`, `info` and `panel` it runs
+`scripts/cockpit-board` is a loop. After `review` and `panel` it runs
 the board again in the same popup, as
 `cockpit-tui board --select %N --note <file>`: the selection is back on the pane
 just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
@@ -369,7 +369,7 @@ adds their arms under `# #228 verbs`), a board that exits non-zero, and
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`
 would have put in the status line (`cockpit: sent to %3`); `review` writes
-none; `info` writes one only when the pane is gone. A line that starts with
+none. `i` never leaves the board: it draws the info card in-process. A line that starts with
 `✕` reports a failure or a refusal and stays until the next key, which also
 does its job, except `esc`, which only dismisses it; the note ends with
 `· esc dismiss`. Any other note fades after 5 s.
