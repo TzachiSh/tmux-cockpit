@@ -1015,9 +1015,10 @@ reason in a warn note.
   refuses with a `✕` note a pane that is gone, an id that is not
   a lowercase UUID, an id the pane no longer holds, or no directory; and a
   second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
-  any pane, the target included, holds the id and runs an agent, with or
-  without `@panestate` (SessionStart and idle clear it), an agent (its command in `@cockpit_agents_glob`, or version-shaped), read
-  with one `list-panes -a` at the key so a stale board cannot skip it. An ended
+  any pane, the target included, holds the id and runs an agent (its command
+  in `@cockpit_agents_glob`, or version-shaped), with or without `@panestate`
+  (SessionStart and idle clear it), read with one `list-panes -a` at the key
+  so a stale board cannot skip it. An ended
   pane holding it does not block. The wrapper reads the command only, not the
   process tree the board reads: a live agent under a foreground editor is not
   seen there.
