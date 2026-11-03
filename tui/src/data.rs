@@ -562,9 +562,10 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
-fn fill_git(ps: &mut [Pane]) {
+/// `dirs` is each pane's `(cwd, @cockpit_dir)`, in `ps` order.
+fn fill_git(ps: &mut [Pane], dirs: &[(String, String)]) {
     // the tree each pane works in: @cockpit_dir over the cwd (#253)
-    let dirs = fleet::work_dirs(&ps.iter().map(|p| (p.id.clone(), p.path.clone())).collect::<Vec<_>>());
+    let dirs = fleet::work_dirs(dirs);
     GIT.with(|c| {
         let GitCache { facts, seen } = &mut *c.borrow_mut();
         let stale: HashSet<&String> = ps
@@ -643,6 +644,7 @@ const FIELDS: &str = concat!(
     "\u{1f}#{?#{@cockpit_review},#{@cockpit_review},-}",
     "\u{1f}#{?#{@cockpit_review_spool},#{@cockpit_review_spool},-}",
     "\u{1f}#{window_id}",
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_dir}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -655,7 +657,7 @@ fn unsentinel(s: &str) -> String {
 pub fn list_panes() -> Option<Vec<Pane>> {
     let out = tmux(&["list-panes", "-a", "-F", FIELDS])?;
     let (mut agents, mut procs_t) = (None, None);
-    let mut ps = vec![];
+    let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
         if f.len() < 13 {
@@ -694,9 +696,11 @@ pub fn list_panes() -> Option<Vec<Pane>> {
         }
         read_transcript(&mut p);
         (p.pinned, p.delivered) = spool_counts(&p.spool);
+        // @cockpit_dir, last so a 13-field row from an older format still reads
+        dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
         ps.push(p);
     }
-    fill_git(&mut ps);
+    fill_git(&mut ps, &dirs);
     ps.sort_by_key(|p| p.state);
     Some(ps)
 }
