@@ -54,6 +54,9 @@ mark_agentview() {            # <pane> <scripts dir>
     [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
     poll_alive "$pid" && return 0
     printf -v q '%q' "$2/agent-poll"
-    tmux run-shell -b "$q" 2>/dev/null
+    # run-shell expands formats: a # in the install path must stay a #.
+    # shellcheck source=fmt.sh
+    . "${BASH_SOURCE[0]%/*}/fmt.sh" 2>/dev/null || return 0
+    tmux run-shell -b "$(fesc "$q")" 2>/dev/null
     return 0
 }

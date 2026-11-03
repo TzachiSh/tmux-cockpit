@@ -12196,5 +12196,78 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== a name, path or error line never runs as a tmux format (#289) =="
+# tmux expands #{...} and #(...) in display-message, run-shell and -T text,
+# so a directory, branch or session name like x#(cmd) ran cmd. Every site goes
+# through lib/fmt.sh's fesc: the text shows as written and nothing runs.
+if need_tmux "format escape"; then :; else
+FE="cockpit-fesc-$$"; FEO="cockpit-fesco-$$"; SOCKS="$SOCKS $FE $FEO"; FED=$(mktmpd)
+# The payload runs `touch $FEMK`: a path inside a name cannot hold a /.
+"$TMUX_REAL" -L "$FE" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$FED" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$FE" set-environment -g FEMK "$FED/pwned" >/dev/null 2>&1
+"$TMUX_REAL" -L "$FEO" -f /dev/null new-session -d -s o -x 120 -y 32 "TERM=xterm-256color exec $TMUX_REAL -L $FE attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$FE" list-clients -F '#{client_name}'
+FEP=$("$TMUX_REAL" -L "$FE" display-message -p -t t: '#{pane_id}')
+FETMUX="$SOCKDIR/$FE,1,0"
+fe_msgs() { "$TMUX_REAL" -L "$FE" show-messages 2>/dev/null | grep -v ' command: '; }
+fe_ran() { [ -e "$FED/pwned" ] && echo ran || echo none; }
+# A positive control first: the payload does run where tmux expands it. tmux
+# kills a #() job when the client that expanded it goes, so this run-shell
+# holds its client until the job has landed (or 5 s pass).
+"$TMUX_REAL" -L "$FE" run-shell "true '#(touch \$FEMK)'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 50 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+until_out ran fe_ran; is "control: an unescaped #() in run-shell runs" "ran" "$(fe_ran)"
+rm -f "$FED/pwned"
+
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+is "fesc doubles # before { and (, keeps #[ and a lone # as tmux reads them" \
+    'a##{b}##(c)#[d]##[e]x##' "$(fesc 'a#{b}#(c)#[d]##[e]x#')"
+fe_lit='x#(touch $FEMK) #{session_name} ##{y} #[fg=red] # end'
+is "and tmux renders the escaped text as written" "$fe_lit" \
+    "$("$TMUX_REAL" -L "$FE" display-message -p -t t: "$(fesc "$fe_lit")")"
+# The escaped one, holding its client the same way (2 s): nothing may land.
+"$TMUX_REAL" -L "$FE" run-shell "printf '%s' '$(fesc 'rs#(touch $FEMK)')'; i=0; while [ ! -e '$FED/pwned' ] && [ \$i -lt 20 ]; do sleep 0.1; i=\$((i+1)); done" >/dev/null 2>&1
+
+# tm: the session name goes through fesc (now from lib/fmt.sh). No space in
+# the payload: tm turns one into _.
+TMUX=$FETMUX "$DIR/scripts/tm" 'tm#(>$FEMK)' </dev/null >/dev/null 2>&1
+until_out '*tm#(>$FEMK)*' "$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}'
+case "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" in
+    *'tm#(>$FEMK)'*) ok "tm names a session literally" ;;
+    *) bad "tm names a session literally" 'tm#(>$FEMK)' "$("$TMUX_REAL" -L "$FE" list-sessions -F '#{session_name}')" ;;
+esac
+
+# review-revdiff: the no-diff message names the repo dir (a worktree is named
+# after its branch). A stub revdiff: the message comes before it would run.
+FEBIN=$(mktmpd); printf '#!/bin/sh\nexit 0\n' > "$FEBIN/revdiff"; chmod +x "$FEBIN/revdiff"
+FER="$FED/x#(touch \$FEMK)"; mkdir -p "$FER"
+( cd "$FER" && git init -q -b main . && git -c user.name=t -c user.email=t@e commit -q --allow-empty -m init ) >/dev/null 2>&1
+mkdir -p "$FED/rs"
+TMUX=$FETMUX PATH="$FEBIN:$PATH" "$DIR/scripts/tmux-review" --loop "$FER" "$FED/rs/comments.md" </dev/null >/dev/null 2>&1
+fe_want="cockpit: no uncommitted changes in $FER"
+until_out "*no uncommitted changes in $FED/x*" fe_msgs
+case "$(fe_msgs)" in
+    *"$fe_want"*) ok "review-revdiff's no-diff message shows the dir literally" ;;
+    *) bad "review-revdiff's no-diff message shows the dir literally" "$fe_want" "$(fe_msgs | tail -1)" ;;
+esac
+
+# review-fleet: the session dir in "could not create" (XDG_STATE_HOME is a file).
+FES="$FED/st#(touch \$FEMK)"; : > "$FES"
+TMUX=$FETMUX XDG_STATE_HOME=$FES REVIEW_PANE_ID=$FEP "$DIR/scripts/tmux-review" </dev/null >/dev/null 2>&1
+until_out "*could not create $FED/st*" fe_msgs
+case "$(fe_msgs)" in
+    *"cockpit: could not create $FES/"*) ok "review-fleet's could-not-create message shows the path literally" ;;
+    *) bad "review-fleet's could-not-create message shows the path literally" "cockpit: could not create $FES/..." "$(fe_msgs | tail -1)" ;;
+esac
+
+# Nothing above ran the payload. The run-shell is the one tmux would run, and
+# it went first; this control proves the job finished before the check.
+"$TMUX_REAL" -L "$FE" run-shell "touch '$FED/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$FED/after' ] && echo yes"
+is "and no payload ran" "none" "$(fe_ran)"
+"$TMUX_REAL" -L "$FEO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$FE" kill-server >/dev/null 2>&1
+rm -rf "$FED" "$FEBIN"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
