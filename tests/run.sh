@@ -63,6 +63,8 @@ chmod +x "$SHIM/tmux"
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
+# The hooks and the transcript reader take the projects tree from it: the tests use $HOME's.
+unset CLAUDE_CONFIG_DIR
 PATH="$SHIM:$PATH"; export PATH
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
@@ -1544,7 +1546,6 @@ BIGLINE=$(awk 'BEGIN{s="";for(i=1;i<=4000;i++) s = s "nope" i "xxxxxxxxxxxxxxxx 
 cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
     "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
 
-# group: etmux
 echo "== tmux-open-path: a clicked file name is never run as a tmux format (#289) =="
 # new-window -n/-c and display-message expand #(): a repo file named for a
 # command ran it on the click. Real server, since only tmux knows what it expands.
@@ -1568,6 +1569,7 @@ is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$OX" show -gqv @pwned 2>
 "$TMUX_REAL" -L "$OX" kill-server >/dev/null 2>&1
 fi
 
+# group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
@@ -4077,7 +4079,7 @@ case "$(cat "$HK/.claude/settings.json")" in
 esac
 is "the unslop skill is injected on SessionStart" "1" \
    "$(jq '[.hooks.SessionStart[].hooks[].command | select(test("unslop/SKILL.md"))] | length' "$HK/.claude/settings.json")"
-is "beside agent-state off, not instead of it" "2" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
+is "beside agent-state off and session, not instead of them" "3" "$(jq '.hooks.SessionStart | length' "$HK/.claude/settings.json")"
 # Run the shipped command itself: the string landing in settings.json says
 # nothing about the JSON it emits, and a jq typo would otherwise ship green.
 is "and the shipped command emits a SessionStart context" "SessionStart 1" \
@@ -12289,6 +12291,215 @@ hr_is "with TMUX set, ~/foo wins over the pane's folder" "$HR/home/foo" foo
 hr_is "with TMUX set, no repo means the pane's folder" "$HR/pane" plain
 HR_TENV=(-u TMUX)
 rm -rf "$HR"
+
+echo "== a stale cockpit-tui: tm and tmux-branch name the fix, not 'exited 2' (#276) =="
+# A binary built before a screen existed prints "unknown screen <name>" and exits 2.
+# The stub prints that line; the wrappers must say the binary is old and what to run.
+SD=$(mktmpd)
+printf '#!/bin/sh\ncase "$1" in list-sessions) echo alpha ;; display-message) printf "%%s\\n" "$*" >> "$SD_LOG" ;; esac\nexit 0\n' > "$SD/tmux"
+chmod +x "$SD/tmux"
+git -C "$SD" init -q . >/dev/null 2>&1
+sd_has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1" "contains [$2]" "$3" ;; esac; }
+sd_stub() {   # sd_stub <exit code> <stderr text>: a cockpit-tui that only fails
+    printf '#!/bin/sh\nprintf "%%s\\n" "$SD_ERR" >&2\nexit %s\n' "$1" > "$SD/ct"; chmod +x "$SD/ct"; SD_ERR=$2
+}
+sd_tm() {     # a pty on stdin so tm takes the picker path
+    env -u TMUX PATH="$SD:$PATH" HOME="$SD" SD_ERR="$SD_ERR" SD_LOG="$SD/log" ${SD_POPUP:+TM_POPUP=1} COCKPIT_TUI_BIN="$SD/ct" \
+        script -qec "$DIR/scripts/tm -k" /dev/null </dev/null 2>&1
+}
+sd_br() { (cd "$SD" && env PATH="$SD:$PATH" SD_ERR="$SD_ERR" COCKPIT_TUI_BIN="$SD/ct" "$DIR/scripts/tmux-branch" </dev/null 2>&1); }
+SDMSG="cockpit-tui is older than the plugin"
+sd_stub 2 $'cockpit-tui: unknown screen sessions\nusage: cockpit-tui <screen>'
+sdo=$(sd_tm)
+sd_has "tm names the stale binary" "$SDMSG" "$sdo"
+sd_has "tm names make tui" "make tui" "$sdo"
+sd_has "tm still shows the tui's own stderr" "unknown screen sessions" "$sdo"
+case $sdo in *"exited 2"*) bad "tm no longer says 'exited 2'" "no 'exited 2'" "$sdo" ;; *) ok "tm no longer says 'exited 2'" ;; esac
+sdo=$(sd_br)
+sd_has "tmux-branch names the stale binary" "$SDMSG" "$sdo"
+sd_has "tmux-branch names make tui" "make tui" "$sdo"
+# One stderr holding the exempt line and a real one: still stale, and both reach the terminal.
+sd_stub 2 $'cockpit-tui: warning: something else\ncockpit-tui: unknown screen branch'
+sd_has "stale is found among other stderr lines (tm)" "$SDMSG" "$(sd_tm)"
+sd_has "stale is found among other stderr lines (tmux-branch)" "$SDMSG" "$(sd_br)"
+# Exit 2 alone is not stale: pick exits 2 when stdout is gone.
+sd_stub 2 'cockpit-tui: stdout is closed'
+sdo=$(sd_tm)
+sd_has "plain exit 2 keeps the old message (tm)" "the sessions picker exited 2" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tm)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tm)" ;; esac
+sdo=$(sd_br)
+sd_has "plain exit 2 shows the tui's stderr (tmux-branch)" "stdout is closed" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tmux-branch)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tmux-branch)" ;; esac
+# The words in the middle of another line, or a different exit code, are not the signal.
+sd_stub 2 'cockpit-tui: skipped 3 rows: unknown screen'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "the phrase mid-line is not stale" "no stale text" "$sdo" ;; *) ok "the phrase mid-line is not stale" ;; esac
+sd_stub 1 'cockpit-tui: unknown screen sessions'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "exit 1 with the line is not stale" "no stale text" "$sdo" ;; *) ok "exit 1 with the line is not stale" ;; esac
+# A popup also gets the message from display-message, through refuse.
+: > "$SD/log"; sd_stub 2 'cockpit-tui: unknown screen sessions'; SD_POPUP=1 sd_tm >/dev/null
+sd_has "a popup also gets the stale message by display-message" "$SDMSG" "$(cat "$SD/log")"
+# The capture file is gone after every exit path.
+mkdir "$SD/tmpd"
+for sdcase in "2|cockpit-tui: unknown screen branch" "2|cockpit-tui: stdout is closed" "1|oops"; do
+    sd_stub "${sdcase%%|*}" "${sdcase#*|}"; TMPDIR=$SD/tmpd sd_br >/dev/null
+    is "tmux-branch leaves no capture file (${sdcase%%|*}, ${sdcase#*|})" "" "$(ls -A "$SD/tmpd")"
+done
+rm -rf "$SD"
+
+echo "== agent-state session: the payload's session_id and transcript_path become pane options (#302) =="
+if need_tmux "agent-state session"; then :; else
+SSD=$(mktmpd); SSH="$SSD/h"; SSROOT="$SSH/.claude/projects"; mkdir -p "$SSROOT/-p" "$SSROOT/-q/#(touch $SSD/F)"
+SSU1=11111111-2222-4333-8444-555555555555; SSU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+for u in $SSU1 $SSU2; do : > "$SSROOT/-p/$u.jsonl"; done
+: > "$SSD/out.jsonl"; : > "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"; ln -s "$SSD/out.jsonl" "$SSROOT/-p/link.jsonl"
+ln -s "$SSROOT/-q/#(touch $SSD/F)/x.jsonl" "$SSROOT/-p/viaq.jsonl"
+SSTAB=$(printf '%s/-p/t\tab.jsonl' "$SSROOT"); : > "$SSTAB"; SSBS="$SSROOT/-p/b\\s.jsonl"; : > "$SSBS"
+SSP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
+ss_opt() { tmux show-option -pqv -t "$SSP" "@cockpit_$1"; }
+ss_clear() { tmux set-option -pu -t "$SSP" @cockpit_session; tmux set-option -pu -t "$SSP" @cockpit_transcript; }
+ss() {                        # <session_id> <transcript_path> [extra json]  one payload through the hook
+    printf '{"session_id":"%s","transcript_path":"%s","hook_event_name":"UserPromptSubmit"%s}\n' "$1" "$2" "${3:-}" \
+        | env -u CLAUDE_CONFIG_DIR HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; }
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"
+is "a valid payload saves the session id" "$SSU1" "$(ss_opt session)"
+is "and the transcript path" "$SSROOT/-p/$SSU1.jsonl" "$(ss_opt transcript)"
+is "the hook exits 0 and prints nothing" "0:" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" 2>&1; echo "$?:")"
+ss $SSU2 "$SSROOT/-p/$SSU2.jsonl"
+is "a second prompt in a new session replaces both" "$SSU2 $SSROOT/-p/$SSU2.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+ss $SSU1 "$SSD/gone.jsonl"
+is "a new session whose transcript is not valid drops the old transcript (/clear)" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSD/out.jsonl"
+is "a path outside the projects tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/../-p/$SSU1.jsonl"
+is "a path with .. is not saved, even when it resolves inside the tree" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/link.jsonl"
+is "a symlink out of the tree is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"
+is "a path with a #(...) component is not saved" "" "$(ss_opt transcript)"
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/viaq.jsonl"
+is "a symlink inside the tree to a path with #(...) is not saved either" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSTAB"
+is "a path with a control character is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSBS"
+is "a path with a backslash is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "$SSROOT/-p"
+is "a directory is not saved" "" "$(ss_opt transcript)"
+ss_clear
+ss $SSU1 "relative/$SSU1.jsonl"
+is "a relative path is not saved" "" "$(ss_opt transcript)"
+ss_clear
+printf '{"transcript_path":"%s"}\n' "$SSROOT/-p/$SSU1.jsonl" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no session_id saves no session" "" "$(ss_opt session)"
+printf '{"session_id":"%s"}\n' "$SSU1" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a payload with no transcript_path saves the session alone" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+for bad in sid-123 "../x" "#(touch $SSD/F)" "${SSU1}0" "${SSU1%?}" ""; do
+    ss "$bad" "$SSROOT/-p/$SSU1.jsonl"
+    is "session_id '$bad' is not a UUID: not saved" "" "$(ss_opt session)"
+done
+is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prompt":"SECRETPROMPT"'
+is "last_assistant_message and the prompt never reach a tmux option" "0" "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
+ss_clear
+SSBIG="$SSD/big.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; head -c 500000 /dev/zero | tr '\0' x; printf '"}\n'; } > "$SSBIG"
+cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a 500 KB prompt after the ids: both still found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+ss_unread() { { env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; wc -c; } < "$1" | tail -n 1 | tr -d ' '; }
+ss_want=$(( $(wc -c < "$SSBIG") - 4096 ))
+is "and the hook leaves all but 4096 bytes of it unread" "$ss_want" "$(ss_unread "$SSBIG")"
+SSEMO="$SSD/emoji.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; for _ in $(seq 1 20000); do printf '\360\237\230\200\342\202\254\303\251'; done; printf '"}\n'; } > "$SSEMO"
+ss_clear
+is "a multibyte prompt (UTF-8 locale): the cap is 4096 bytes, not characters" "$(( $(wc -c < "$SSEMO") - 4096 ))" \
+   "$(LC_ALL=C.utf8 ss_unread "$SSEMO")"
+is "and its ids are found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+# The closing quote of transcript_path at byte N: in the cap saved, past it the path is cut.
+ss_edge() {                   # <closing-quote byte> <pad char bytes: 1|2|3|4>
+    local pre="{\"pad\":\"" mid sfx pad n
+    sfx="\",\"session_id\":\"$SSU1\",\"transcript_path\":\"$SSROOT/-p/$SSU1.jsonl"
+    n=$(( $1 - ${#pre} - ${#sfx} - 1 ))
+    case $2 in 1) mid=x ;; 2) mid=$'\303\251' ;; 3) mid=$'\342\202\254' ;; 4) mid=$'\360\237\230\200' ;; esac
+    pad=$(for _ in $(seq 1 $(( n / $2 ))); do printf '%s' "$mid"; done; for _ in $(seq 1 $(( n % $2 ))); do printf x; done)
+    printf '%s%s%s"}\n' "$pre" "$pad" "$sfx" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+}
+for w in 1 2 3 4; do
+    ss_clear; ss_edge 4096 $w
+    is "ids ending with their quote at byte 4096, ${w}-byte chars before: saved" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+    ss_clear; ss_edge 4100 $w
+    is "a transcript_path cut inside by the cap, ${w}-byte chars before: not saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+done
+ss_clear
+{ printf '{"prompt":"'; head -c 5000 /dev/zero | tr '\0' x; printf '","session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "ids past the 4 KB cap are skipped: nothing is saved" "" "$(ss_opt session)$(ss_opt transcript)"
+{ printf '{"session_id":"%s","transcript_path":"%s' $SSU1 "$SSROOT/-p/"; head -c 5000 /dev/zero | tr '\0' x; printf '"}\n'; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a transcript_path cut by the cap is not a value: the session alone is saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
+ss_clear
+SSCFG="$SSD/cfg"; mkdir -p "$SSCFG/projects/-p"; : > "$SSCFG/projects/-p/$SSU2.jsonl"
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU2 "$SSCFG/projects/-p/$SSU2.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "CLAUDE_CONFIG_DIR's projects dir is the tree when set" "$SSCFG/projects/-p/$SSU2.jsonl" "$(ss_opt transcript)"
+ss_clear
+printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl" \
+    | env CLAUDE_CONFIG_DIR="$SSCFG" HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "and ~/.claude/projects is then outside it" "" "$(ss_opt transcript)"
+ss_clear
+tmux set-option -p -t "$SSP" @cockpit_transcript "#(touch $SSD/F)"
+is "set-option -p stores #(...) literally, without running it" "#(touch $SSD/F) none" \
+   "$(ss_opt transcript) $([ -e "$SSD/F" ] && echo ran || echo none)"
+ss_clear
+is "the pane's state is untouched" "" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"; tmux show-option -pqv -t "$SSP" @panestate)"
+ss_clear
+tmux kill-pane -t "$SSP" >/dev/null 2>&1
+rm -rf "$SSD"
+fi
+
+echo "== hook wiring: session is saved at SessionStart (not compact) and UserPromptSubmit (#302) =="
+sss() { jq -r --arg s "$1" '[.hooks.SessionStart[]
+        | select(.hooks[].command | test("agent-state session$"))
+        | select((.matcher // "") as $m | $m == "" or ($s | test("^(" + $m + ")$")))] | length' \
+        "$DIR/examples/claude-hooks.json"; }
+is "SessionStart saves the session on startup, resume, clear and fork (a new session_id)" "1 1 1 1" "$(sss startup) $(sss resume) $(sss clear) $(sss fork)"
+is "but not on compact, which keeps its session_id" "0" "$(sss compact)"
+is "UserPromptSubmit saves it too" "1" \
+   "$(jq '[.hooks.UserPromptSubmit[].hooks[].command | select(test("agent-state session$"))] | length' "$DIR/examples/claude-hooks.json")"
+
+echo "== transcript reader prefers @cockpit_transcript, then @cockpit_session (#302) =="
+. "$DIR/scripts/lib/transcript.sh"
+TQH=$(mktmpd); mkdir -p "$TQH/.claude/projects/-a" "$TQH/.claude/projects/-b"
+TQU=cccccccc-1111-4111-8111-111111111111
+: > "$TQH/.claude/projects/-a/$TQU.jsonl"; : > "$TQH/.claude/projects/-b/direct.jsonl"; : > "$TQH/out.jsonl"
+TQS="cockpit-tq-$$"; SOCKS="$SOCKS $TQS"
+"$TMUX_REAL" -L "$TQS" -f /dev/null new-session -d -s t 'sleep 600' >/dev/null 2>&1
+TQP=$("$TMUX_REAL" -L "$TQS" display-message -p -t t '#{pane_id}')
+tq() { ( COCKPIT_TMUX="$TMUX_REAL -L $TQS" HOME="$TQH" PATH="/nonexistent" transcript_file "$TQP" 2>&1; echo -n "$?" ); }
+tq_set() { "$TMUX_REAL" -L "$TQS" set-option -p -t "$TQP" "$@"; }
+tq_set @cockpit_session $TQU; tq_set @cockpit_transcript "$TQH/.claude/projects/-b/direct.jsonl"
+is "with both options set the transcript path wins" "$TQH/.claude/projects/-b/direct.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/out.jsonl"
+is "a transcript option outside the tree is not trusted: the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+tq_set @cockpit_transcript "$TQH/.claude/projects/-b/../-b/direct.jsonl"
+is "a transcript option with .. is not trusted either" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" set-option -pu -t "$TQP" @cockpit_transcript
+is "with no transcript option the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
+0" "$(tq)"
+"$TMUX_REAL" -L "$TQS" kill-server 2>/dev/null
+rm -rf "$TQH"
 
 echo "== a name, path or error line never runs as a tmux format (#289) =="
 # tmux expands #{...} and #(...) in display-message, run-shell and -T text,

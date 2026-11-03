@@ -55,3 +55,8 @@ Creating `foo` from the sessions picker starts it in `~/foo` when that holds a
 `my.repo` finds `~/my.repo` while the session is called `my_repo`. A name with a
 `/`, `..`, a leading `-` or a control character never matches. Otherwise the
 session starts in the pane's folder as before (#304).
+
+A `cockpit-tui` built before the plugin gained a screen exits 2 with `unknown
+screen sessions` (#276). `tm` then says "cockpit-tui is older than the plugin"
+and names `make tui` and `scripts/tui-fetch`; `prefix U` fixes it only with
+`@cockpit_tui_fetch on`. Exit 2 without that line keeps the plain "exited 2".
