@@ -12173,6 +12173,7 @@ ss_clear
 is "the pane's state is untouched" "" "$(ss $SSU1 "$SSROOT/-p/$SSU1.jsonl"; tmux show-option -pqv -t "$SSP" @panestate)"
 ss_clear
 tmux kill-pane -t "$SSP" >/dev/null 2>&1
+rm -rf "$SSD"
 fi
 
 echo "== hook wiring: session is saved at SessionStart (not compact) and UserPromptSubmit (#302) =="
@@ -12208,7 +12209,7 @@ is "a transcript option with .. is not trusted either" "$TQH/.claude/projects/-a
 is "with no transcript option the session id answers" "$TQH/.claude/projects/-a/$TQU.jsonl
 0" "$(tq)"
 "$TMUX_REAL" -L "$TQS" kill-server 2>/dev/null
-rm -rf "$SSD" "$TQH"
+rm -rf "$TQH"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
