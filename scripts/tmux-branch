@@ -117,7 +117,15 @@ act() {
 
 # A failed action returns to the picker; esc leaves.
 while :; do
-    pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD"); rc=$?
+    # Without mktemp the picker runs as before, and a stale binary is just "exited".
+    if err=$(mktemp 2>/dev/null); then
+        pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD" 2>"$err"); rc=$?
+        [ ! -s "$err" ] || cat "$err" >&2
+        tui_stale "$rc" "$err" && { rm -f "$err"; fail "cockpit: $TUI_STALE_MSG"; }
+        rm -f "$err"
+    else
+        pick=$("$COCKPIT_TUI_BIN" branch -C "$PWD"); rc=$?
+    fi
     case "$rc" in
         0) ;;
         1) exit 0 ;;
