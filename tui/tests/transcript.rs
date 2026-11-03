@@ -1,5 +1,5 @@
-//! `cockpit-tui transcript` against outputs frozen from the jq reader
-//! (scripts/lib/transcript.sh), plus #193's cases. Seconds are normalised to N.
+//! `cockpit-tui transcript` against outputs frozen from the jq reader it
+//! replaced, plus #193's cases. Seconds are normalised to N.
 use cockpit_tui::data::transcript::{doing, file, main, tail};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

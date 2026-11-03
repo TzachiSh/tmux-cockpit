@@ -1043,9 +1043,10 @@ transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`
 board reaches those through the action file and the shell scripts.
 
 **Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
-tail <jsonl> [max]` is the transcript reader of `scripts/lib/transcript.sh`,
-byte-identical to the jq version (Freeze 1 on #54) with two #193 changes: a row
-whose `message` is not an object is skipped where jq failed the whole read, and
+tail <jsonl> [max]` is the transcript reader; `scripts/lib/transcript.sh` is a
+shim over it. It is byte-identical to the jq reader it replaced (Freeze 1 on #54)
+with two #193 changes: a row whose `message` is not an object is skipped where jq
+failed the whole read, and
 `<bash-input>`, `<bash-stdout>` and `<bash-stderr>` prompts are dropped like the
 other harness tags. It also departs from jq in three declared places:
 - a content item that would raise a jq runtime error is skipped, not fatal;
