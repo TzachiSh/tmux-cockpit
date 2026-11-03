@@ -81,7 +81,21 @@ is written before the first change (an existing `.bak` is never overwritten).
 `--hooks --dry-run` previews the merge without writing or creating anything,
 even on a fresh install with no `~/.claude` yet. Requires `jq`; without it, or
 without Claude Code's settings.json at that path, merge the `hooks` object
-from `examples/claude-hooks.json` by hand:
+from `examples/claude-hooks.json` by hand.
+
+`install.sh --uninstall --hooks` takes the hooks out again, besides removing
+the links; `install.sh --hooks --remove` removes only the hooks and keeps the
+links (`--remove` needs `--hooks`). It deletes only hook entries whose command
+is one of this plugin's scripts (`agent-state`, `review-gate`, `worktree-create`,
+`worktree-remove`, or the unslop `SKILL.md` injection) at the shipped
+`${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}` path or this checkout's
+path, matched whole. A matcher group left empty and an event left empty are
+dropped; other hooks, other keys and key order stay. It writes a temp file in
+the same directory and renames it over `settings.json`, after a
+`settings.json.bak-<date>` backup. A missing file, or one with no cockpit
+hooks, is a no-op that says so; invalid JSON is refused and left unchanged.
+`--dry-run` with either prints the diff. `install.sh --hooks` adds
+them back identically.
 
 The hooks and the state each one writes: [states-and-hooks.md](states-and-hooks.md#hooks).
 
