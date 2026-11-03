@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# tmux-rename — the menu's Rename session / Rename window rows (#289).
+#   tmux-rename session <$id>   rename to @cockpit_rename_to, taken literally
+#   tmux-rename window <@id>
+# The prompt stages the typed text with %%% (quotes kept, nothing run) into
+# @cockpit_rename_to; rename-session and rename-window expand formats in the
+# new name, so it goes through fesc here: a " ; # or #(...) is just a name.
+set -u
+
+d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+case $d in */*) d=${d%/*} ;; *) d=. ;; esac
+# shellcheck source=lib/fmt.sh
+. "$d/lib/fmt.sh" || exit 1
+
+# Take the staged name first, so a rejected id leaves nothing behind.
+name=$(tmux show-option -gqv @cockpit_rename_to 2>/dev/null)
+tmux set-option -gu @cockpit_rename_to 2>/dev/null
+kind=${1:-} id=${2:-}
+case "$kind:$id" in
+    session:\$*) n=${id#\$} ;;
+    window:@*)   n=${id#@} ;;
+    *) n=x ;;
+esac
+case "$n" in ''|*[!0-9]*)
+    printf 'usage: tmux-rename session <$id> | window <@id>\n' >&2; exit 2 ;;
+esac
+
+[ -n "$name" ] || exit 0          # an empty prompt renames nothing
+tmux "rename-$kind" -t "$id" -- "$(fesc "$name")" 2>/dev/null ||
+    tmux display-message "$(fesc "cockpit: could not rename $kind $id to $name")" 2>/dev/null

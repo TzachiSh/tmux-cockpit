@@ -45,7 +45,8 @@ real window (`new-window -n board`) instead.
 The order is that question's answer: agents grouped by session, blocked ones
 first (see the board's own docs). A blocked pane is listed even with a clean
 tree; there is nothing to review there, only someone to unblock. The row's
-`where` is `repo⑂branch`, which tells two worktrees of the same repo apart.
+`where` is `repo⑂branch`, plus ` · wt <name>` in a linked worktree, which
+tells two worktrees of the same repo apart; a detached HEAD reads `@<short sha>`.
 
 The row's leading column carries the review mark: `◆` a finished diff nobody has read
 yet (the `Stop` gate flagged it), `↵` a review already pasted into that pane

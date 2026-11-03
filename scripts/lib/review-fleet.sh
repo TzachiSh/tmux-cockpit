@@ -21,7 +21,7 @@ review_pane() {
     # path is derivable (session_dir() is a pane id and a root's cksum), so a
     # planted symlink must be refused here too, not just followed.
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
-        tmux display-message "cockpit: could not create $sess" 2>/dev/null
+        tmux display-message "$(fesc "cockpit: could not create $sess")" 2>/dev/null
         return 1
     }
     REVIEW_PANE_ID=$pane "$SELF" --loop "$dir" "$store"
@@ -49,7 +49,7 @@ review_pane() {
         # the bash expansion that is building the string. Every path is still
         # shq-quoted.
         cleanup="rc=\$?; if [ \$rc -eq 0 ]; then $(shq "$SELF") --done $(shq "$store"); else rm -f -- $(shq "$store.rows"); fi"
-        tmux run-shell -b "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup"
+        tmux run-shell -b "$(fesc "$(shq "$SELF") --deliver $(shq "$pane") $(shq "$store") $(shq "$dir"); $cleanup")"
     elif [ "$rc" -eq 21 ]; then
         # Approved: the ref is written (the loop did it, in the popup); the
         # pane's attention state and the review dir end here -- by NAME, not
@@ -104,9 +104,10 @@ request() {                   # <pane>
     rm -f -- "$sess/rc"
     # -E: this returns when the loop exits. display-popup runs the string
     # through sh, so the escaped \$? is the LOOP's code, not tmux's.
-    # -T is a tmux format: a # in the path would be expanded, so double it.
-    t=${root/#"$HOME/"/\~/}; t=${t//\#/\#\#}
-    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T " review · requested · $t " \
+    # -T is a tmux format: a # in the path would be expanded. The command
+    # itself is not (measured on 3.8), so it is only shell-quoted.
+    t=${root/#"$HOME/"/\~/}
+    tmux display-popup -E -t "$pane" -w "$pw" -h "$ph" -T "$(fesc " review · requested · $t ")" \
         "REVIEW_PANE_ID=$(shq "$pane") $(shq "$SELF") --loop $(shq "$root") $(shq "$store"); echo \$? > $(shq "$sess/rc")" 2>/dev/null
     rc=$(cat -- "$sess/rc" 2>/dev/null); rm -f -- "$sess/rc"
     case "$rc" in
@@ -259,7 +260,7 @@ main_entry() {
     fi
     dir=$(pane_dir "$pane")
     if [ -z "$dir" ]; then
-        tmux display-message "cockpit: pane $pane is gone" 2>/dev/null
+        tmux display-message "$(fesc "cockpit: pane $pane is gone")" 2>/dev/null
         return 0
     fi
     review_pane "$pane" "$(git_root "$dir")"
