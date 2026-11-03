@@ -1001,7 +1001,12 @@ reason in a warn note.
   target (`@cockpit_dir` when it is a directory, else the cwd), the directory
   through `fesc` as `-c` expands formats, then selects the new pane and ends
   the board. It refuses with a `✕` note a pane that is gone, an id that is not
-  a lowercase UUID, an id the pane no longer holds, or no directory.
+  a lowercase UUID, an id the pane no longer holds, or no directory; and a
+  second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
+  another pane holds the id and runs an agent (its command in
+  `@cockpit_agents_glob`, or version-shaped), read with one `list-panes -a` at
+  the key so a stale board cannot skip it. An ended pane holding it does not
+  block.
 - The `?` legend gains `◌ ended: its agent is gone`.
 - Goldens: the confirm's question in `board-confirm-{60,100}`; the `x` and `o`
   rows and the legend in `board-help-{60,100,180,tiles-100}`. No list or tile

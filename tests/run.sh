@@ -11640,6 +11640,25 @@ case "$(rs_run "resume $R" "${SID%c}d")" in "✕ cockpit: not resumed: $R no lon
 is "and nothing ran" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
 case "$(rs_run "resume %99999" "$SID")" in '✕ cockpit: %99999 is gone, nothing resumed') ok "resume of a pane that is gone says so" ;;
     *) bad "resume of a pane that is gone says so" "✕ cockpit: %99999 is gone, nothing resumed" "$(cat "$RSD/bargv")" ;; esac
+# A second copy of a live session is refused: a pane whose command is an
+# agent (by @cockpit_agents_glob, or a claude renamed to its version) holding
+# the id. The ended panes above held it too and never blocked a resume.
+"$TMUX_REAL" -L "$RS" set -g @cockpit_agents_glob '|claude|'
+for argv0 in claude 2.1.246; do
+    RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $argv0 sleep 3600")
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+    R=$(rs_agent "$SID")
+    case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $RL") ok "a session live in another pane ($argv0) is not resumed twice" ;;
+        *) bad "a session live in another pane ($argv0) is not resumed twice" "✕ cockpit: ${SID:0:8} is already running in $RL" "$(cat "$RSD/bargv")" ;; esac
+    is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
+    "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
+done
+# the same id live under a command that is no agent (a shell left over) does not block
+RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+R=$(rs_agent "$SID")
+rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
+is "an ended pane holding the id does not block the resume" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
 is "no format job ran in the whole block" "absent" "$([ -e "$RSD/pwned" ] && echo present || echo absent)"
 "$TMUX_REAL" -L "$RS" kill-server >/dev/null 2>&1
 fi
