@@ -4,7 +4,7 @@
 # shellcheck source=tui.sh
 . "${BASH_SOURCE[0]%/*}/tui.sh" || return 1
 
-# The pane's transcript path: @cockpit_session, else `claude agents --json`.
+# The pane's transcript path: @cockpit_transcript, else @cockpit_session, else `claude agents --json`.
 transcript_file() {           # <pane-id>
     "$COCKPIT_TUI_BIN" transcript file "${1:-}" 2>/dev/null || return 1
 }

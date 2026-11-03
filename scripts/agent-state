@@ -156,9 +156,19 @@ session)
     d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
-    # Ends on both keys, not on EOF: claude can hold the pipe open (see read_payload).
+    # A capped read, not read_payload: the UserPromptSubmit payload carries the whole prompt,
+    # and bash reads a pipe a byte at a time. The ids come first in what claude sends; one
+    # that falls past the cap is skipped (the old value stays). Ends early on both keys.
     have_ids() { case "$payload" in *'"session_id"'*'"transcript_path"'*|*'"transcript_path"'*'"session_id"'*) return 0 ;; esac; return 1; }
-    read_payload have_ids
+    payload="" chunk=""
+    cap=4096 deadline=$(( SECONDS + 2 ))
+    while left=$(( deadline - SECONDS )); [ "$left" -gt 0 ] && [ ${#payload} -lt $cap ]; do
+        IFS= read -r -n $(( cap - ${#payload} )) -t "$left" chunk || { payload="$payload$chunk"; break; }
+        payload="$payload$chunk
+"; chunk=""
+        have_ids && break
+    done
+    # A value cut by the cap fails the UUID test or names no file, so it is never saved.
     json_str session_id; sid=$REPLY
     json_str transcript_path; tp=$REPLY
     uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
@@ -169,15 +179,16 @@ session)
         tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
     fi
     # Only a regular file inside the projects tree, symlinks and `..` resolved. '#' never
-    # appears in a real one (claude turns it into '-'), so it is refused outright too.
+    # appears in a real one (claude turns it into '-'), so it is refused outright, in the
+    # path given and in the path it resolves to.
     root=${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/projects
+    odd() { case "/$1/" in */../*|*'#'*|*[$'\001'-$'\037\177']*|*\\*) return 0 ;; esac; return 1; }
     if [ -n "$tp" ] && [ -n "${HOME:-}" ] && command -v realpath >/dev/null 2>&1; then
-        case "/$tp/" in */../*|*'#'*|*[$'\001'-$'\037\177']*|*\\*) tp="" ;; esac
-        case "$tp" in /*) ;; *) tp="" ;; esac
+        case "$tp" in /*) odd "$tp" && tp="" ;; *) tp="" ;; esac
         if [ -n "$tp" ]; then
             tp=$(realpath -- "$tp" 2>/dev/null) && root=$(realpath -- "$root" 2>/dev/null) || tp=""
         fi
-        if [ -n "$tp" ] && [ -f "$tp" ]; then
+        if [ -n "$tp" ] && ! odd "$tp" && [ -f "$tp" ]; then
             case "$tp" in "$root"/*) tmux set-option -p -t "$pane" @cockpit_transcript "$tp" 2>/dev/null ;; esac
         fi
     fi

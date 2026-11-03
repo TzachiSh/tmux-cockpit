@@ -33,8 +33,8 @@ timer.
 | hook | state |
 |------|-------|
 | `SessionStart` | `off` — a resumed pane must not inherit old state |
-| `SessionStart` (2nd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
-| `SessionStart` (3rd) | `session` — saves the payload's `session_id` as `@cockpit_session` and `transcript_path` as `@cockpit_transcript` (see [Session identity](#session-identity)) |
+| `SessionStart` (3rd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
+| `SessionStart` (2nd) | `session` — saves the payload's `session_id` as `@cockpit_session` and `transcript_path` as `@cockpit_transcript` (see [Session identity](#session-identity)) |
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
 | `PermissionRequest` | `needs-input` |
@@ -177,8 +177,8 @@ next prompt resumes it, `/goal clear` ends it.
 
 ## Session identity
 
-`agent-state session` runs at `SessionStart` (`startup|resume|clear`, not `compact`, which
-keeps its `session_id`) and at `UserPromptSubmit`. It changes no state. It reads two fields
+`agent-state session` runs at `SessionStart` (`startup|resume|clear|fork`: each can start a
+new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no state. It reads two fields
 of the hook payload and writes them with `set-option -p`, which does not expand formats:
 
 | option | from | saved when |
@@ -192,3 +192,10 @@ previous session's file. A missing or refused field leaves the option as it was.
 projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
 is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
 `@cockpit_session` through `review-gate`.
+
+The read is capped at 4 KB: `UserPromptSubmit` carries the whole prompt and bash reads a pipe
+a byte at a time. Claude sends the ids first; one past the cap, or cut by it, is skipped and the
+old value stays. The hook checks the path against the projects tree of the `CLAUDE_CONFIG_DIR`
+claude runs with; the reader uses its own environment's (usually the tmux server's). Export
+`CLAUDE_CONFIG_DIR` where tmux starts, not only in a shell, or the reader refuses the stored path
+and falls back to `@cockpit_session`.

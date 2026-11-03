@@ -63,6 +63,8 @@ chmod +x "$SHIM/tmux"
 # The suite itself runs inside the user's tmux, so its own $TMUX would send
 # every bare call straight back to the live server. Drop it.
 unset TMUX TMUX_PANE
+# The hooks and the transcript reader take the projects tree from it: the tests use $HOME's.
+unset CLAUDE_CONFIG_DIR
 PATH="$SHIM:$PATH"; export PATH
 
 "$TMUX_REAL" -L "$SUITE_SOCK" -f /dev/null new-session -d -s suite \
@@ -12114,6 +12116,8 @@ SSD=$(mktmpd); SSH="$SSD/h"; SSROOT="$SSH/.claude/projects"; mkdir -p "$SSROOT/-
 SSU1=11111111-2222-4333-8444-555555555555; SSU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
 for u in $SSU1 $SSU2; do : > "$SSROOT/-p/$u.jsonl"; done
 : > "$SSD/out.jsonl"; : > "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"; ln -s "$SSD/out.jsonl" "$SSROOT/-p/link.jsonl"
+ln -s "$SSROOT/-q/#(touch $SSD/F)/x.jsonl" "$SSROOT/-p/viaq.jsonl"
+SSTAB=$(printf '%s/-p/t\tab.jsonl' "$SSROOT"); : > "$SSTAB"; SSBS="$SSROOT/-p/b\\s.jsonl"; : > "$SSBS"
 SSP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
 ss_opt() { tmux show-option -pqv -t "$SSP" "@cockpit_$1"; }
 ss_clear() { tmux set-option -pu -t "$SSP" @cockpit_session; tmux set-option -pu -t "$SSP" @cockpit_transcript; }
@@ -12138,6 +12142,12 @@ is "a symlink out of the tree is not saved" "" "$(ss_opt transcript)"
 ss $SSU1 "$SSROOT/-q/#(touch $SSD/F)/x.jsonl"
 is "a path with a #(...) component is not saved" "" "$(ss_opt transcript)"
 is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none)"
+ss $SSU1 "$SSROOT/-p/viaq.jsonl"
+is "a symlink inside the tree to a path with #(...) is not saved either" "" "$(ss_opt transcript)"
+ss $SSU1 "$SSTAB"
+is "a path with a control character is not saved" "" "$(ss_opt transcript)"
+ss $SSU1 "$SSBS"
+is "a path with a backslash is not saved" "" "$(ss_opt transcript)"
 ss $SSU1 "$SSROOT/-p"
 is "a directory is not saved" "" "$(ss_opt transcript)"
 ss $SSU1 "relative/$SSU1.jsonl"
@@ -12156,6 +12166,18 @@ is "and no command in it ran" "none" "$([ -e "$SSD/F" ] && echo ran || echo none
 ss_clear
 ss $SSU1 "$SSROOT/-p/$SSU1.jsonl" ',"last_assistant_message":"SECRETREPLY","prompt":"SECRETPROMPT"'
 is "last_assistant_message and the prompt never reach a tmux option" "0" "$(tmux show-options -p -t "$SSP" | grep -c SECRET)"
+ss_clear
+SSBIG="$SSD/big.json"; { printf '{"session_id":"%s","transcript_path":"%s","prompt":"' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; head -c 500000 /dev/zero | tr '\0' x; printf '"}\n'; } > "$SSBIG"
+ss_t0=$(date +%s%N); cat "$SSBIG" | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"; ss_ms=$(( ($(date +%s%N) - ss_t0) / 1000000 ))
+is "a 500 KB prompt after the ids: both still found" "$SSU1 $SSROOT/-p/$SSU1.jsonl" "$(ss_opt session) $(ss_opt transcript)"
+is "and the hook returns in under 200 ms, not in time proportional to the prompt" "fast" "$([ "$ss_ms" -lt 200 ] && echo fast || echo "slow:$ss_ms")"
+ss_clear
+{ printf '{"prompt":"'; head -c 5000 /dev/zero | tr '\0' x; printf '","session_id":"%s","transcript_path":"%s"}\n' $SSU1 "$SSROOT/-p/$SSU1.jsonl"; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "ids past the 4 KB cap are skipped: nothing is saved" "" "$(ss_opt session)$(ss_opt transcript)"
+{ printf '{"session_id":"%s","transcript_path":"%s' $SSU1 "$SSROOT/-p/"; head -c 5000 /dev/zero | tr '\0' x; printf '"}\n'; } \
+    | env HOME="$SSH" "$DIR/scripts/agent-state" session "$SSP"
+is "a transcript_path cut by the cap is not a value: the session alone is saved" "$SSU1 ." "$(ss_opt session) .$(ss_opt transcript)"
 ss_clear
 SSCFG="$SSD/cfg"; mkdir -p "$SSCFG/projects/-p"; : > "$SSCFG/projects/-p/$SSU2.jsonl"
 printf '{"session_id":"%s","transcript_path":"%s"}\n' $SSU2 "$SSCFG/projects/-p/$SSU2.jsonl" \
@@ -12181,7 +12203,7 @@ sss() { jq -r --arg s "$1" '[.hooks.SessionStart[]
         | select(.hooks[].command | test("agent-state session$"))
         | select((.matcher // "") as $m | $m == "" or ($s | test("^(" + $m + ")$")))] | length' \
         "$DIR/examples/claude-hooks.json"; }
-is "SessionStart saves the session on startup, resume and clear" "1 1 1" "$(sss startup) $(sss resume) $(sss clear)"
+is "SessionStart saves the session on startup, resume, clear and fork (a new session_id)" "1 1 1 1" "$(sss startup) $(sss resume) $(sss clear) $(sss fork)"
 is "but not on compact, which keeps its session_id" "0" "$(sss compact)"
 is "UserPromptSubmit saves it too" "1" \
    "$(jq '[.hooks.UserPromptSubmit[].hooks[].command | select(test("agent-state session$"))] | length' "$DIR/examples/claude-hooks.json")"
