@@ -12,6 +12,8 @@ LOG=${COCKPIT_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log}
 . "$DIR/scripts/lib/pane.sh" || exit 1
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh" || exit 1
 BIN=$COCKPIT_TUI_BIN
 
 # $EPOCHREALTIME needs bash 5, and no portable `date` flag gives microseconds.
@@ -37,7 +39,8 @@ said() {                      # <ok|fail> <text> <display-message argv...>
         text=$(printf '%s' "$text" | LC_ALL=C tr '\000-\037\177' ' ')
         printf '%s\n' "$text" > "$COCKPIT_PANEL_NOTE" 2>/dev/null
     else
-        tmux "$@" "$text" 2>/dev/null
+        # A format: the pane's command, a path or a pane id must not expand.
+        tmux "$@" "$(fesc "$text")" 2>/dev/null
     fi
 }
 # The messages outside a paste; under COCKPIT_READONLY they go to the log only.
@@ -154,10 +157,11 @@ resume=() last=
 if [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && mv -f "$saved" "$d/resume" 2>/dev/null; then
     resume=(--resume "$d/resume" --last hidden)
 fi
+glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
         exit 0

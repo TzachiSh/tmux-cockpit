@@ -691,3 +691,47 @@ fn the_window_id_is_the_thirteenth_field() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(ps[0].win, "@1");
 }
+
+/// #291: past `LOG_CAP` the log moves to `.1` and the line starts a new one;
+/// under it the line is appended. One generation is kept: `.1` is replaced.
+#[test]
+fn the_log_rotates_past_its_cap() {
+    let r = Rig::new("logrot");
+    let log = r.dir.join("tui.log");
+    let _env = Env::set(&[("COCKPIT_LOG", log.display().to_string())]);
+    let rot = r.dir.join("tui.log.1");
+    std::fs::write(&rot, "older\n").unwrap();
+    let full = "x".repeat(cockpit_tui::data::LOG_CAP as usize + 1);
+    std::fs::write(&log, &full).unwrap();
+    cockpit_tui::data::log("after");
+    assert_eq!(std::fs::read_to_string(&rot).unwrap(), full);
+    let now = std::fs::read_to_string(&log).unwrap();
+    assert!(now.ends_with(" after\n") && now.lines().count() == 1, "{now:?}");
+    cockpit_tui::data::log("again");
+    let now = std::fs::read_to_string(&log).unwrap();
+    assert!(now.lines().count() == 2 && now.ends_with(" again\n"), "{now:?}");
+    assert_eq!(std::fs::metadata(&rot).unwrap().len(), full.len() as u64);
+}
+
+/// #294: `claude agents --json` runs on the fetch thread, so one that hangs
+/// (here a script whose child holds stdout open) is killed at the deadline
+/// and the read goes on without it, instead of never returning.
+#[test]
+fn a_hanging_claude_agents_does_not_hang_the_read() {
+    let r = Rig::new("agents-hang");
+    let d = r.dir.display();
+    write_exec(
+        &r.dir.join("bin/claude"),
+        &format!("#!/bin/sh\necho $$ > {d}/claude.pid\nsleep 60\nprintf '[]'\n"),
+    );
+    r.ps("400 1 claude\n");
+    r.rows(&[row("%1", "claude", "running", "-", "400")]);
+    let t = std::time::Instant::now();
+    let ps = list_panes().unwrap();
+    let took = t.elapsed();
+    assert_eq!(ids(&ps), ["%1"]);
+    assert_eq!(get(&ps, "%1").sess, "");
+    assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
+    // the fake ran, so the deadline was what ended it
+    assert!(r.dir.join("claude.pid").exists());
+}

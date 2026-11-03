@@ -41,6 +41,8 @@ shq() { printf '%q' "$1"; }
 
 # shellcheck source=lib/pane.sh
 . "$LIBDIR/pane.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "$LIBDIR/fmt.sh" || exit 1
 
 # lines_mode's own "diff too large" row (below) is not a real anchor -- no
 # file, no line -- so it shares this one string with every reader, which refuses
