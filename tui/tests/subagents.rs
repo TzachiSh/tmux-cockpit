@@ -352,3 +352,20 @@ fn a_panes_hash_follows_its_count_and_its_subs_drawing() {
         "a sub's start"
     );
 }
+
+#[test]
+fn a_shorter_transcript_was_replaced_and_its_start_is_read_again() {
+    let d = fixture("replaced");
+    meta(&d, "a", r#"{"agentType":"x"}"#);
+    rows(&d, "a", &[FIRST, &usage(1, 1, 0, 0), &usage(2, 2, 0, 0)]);
+    assert_eq!(one(&d).started, Some(T0));
+    rows(&d, "a", &[r#"{"timestamp":"2026-11-03T10:00:05Z"}"#]);
+    assert_eq!(one(&d).started, Some(T0 + 5));
+}
+
+#[test]
+fn an_empty_team_name_is_no_teammate() {
+    let d = fixture("noteam");
+    meta(&d, "a", r#"{"agentType":"x","teamName":""}"#);
+    assert_eq!(one(&d).kind, SubKind::Subagent);
+}
