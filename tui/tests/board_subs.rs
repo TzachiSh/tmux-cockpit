@@ -689,22 +689,3 @@ fn a_narrowing_tree_line_drops_tokens_then_description() {
     assert!(!mid.contains("12.4k") && mid.contains("find auth call"), "{mid}");
     assert!(narrow.contains("Explore") && narrow.contains("find au…"), "{narrow}");
 }
-
-/// Off until the reader has `SubState::Stopped` (#324's data owner adds it); then
-/// drop the `cfg` and add its arm in `sub_counts` and `sub_glyph`. A subagent the
-/// user stopped is neither failed nor running: no badge, no red, `■` in the tree.
-#[cfg(any())]
-#[test]
-fn a_stopped_subagent_is_not_a_failure() {
-    let mut ps = mock();
-    let i = at(&ps, "%4");
-    ps[i].subs = vec![sub("Plan", "stopped one", SubState::Stopped, 30, 1)];
-    assert_eq!(extra(&ps[i], &Theme::fixed(), 40), " +42 -7 ⑂main", "no badge");
-    ps[i].subs.push(sub("Plan", "running", SubState::Running, 10, 1));
-    let th = Theme::fixed();
-    let b = &board::row_extra(&ps[i], &th, 40, NOW)[0];
-    assert_eq!((b.content.as_ref(), b.style.fg), (" ✦1", Some(th.running)));
-    let n = nav(&ps, "%4", &["%4"], 12);
-    let out = draw(100, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
-    assert!(lines(&out).iter().any(|l| l.contains("├ ■ Plan")), "{out}");
-}

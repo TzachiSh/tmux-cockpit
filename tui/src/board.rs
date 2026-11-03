@@ -1323,7 +1323,6 @@ pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
     }
     let mut c = (0, 0);
     for s in p.subs.iter().filter(|s| place(p, s, now) != Place::Gone) {
-        // a stopped subagent (when the reader tells one apart) counts as neither
         match s.state {
             SubState::Running => c.0 += 1,
             SubState::Failed => c.1 += 1,
@@ -1333,8 +1332,8 @@ pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
     c
 }
 
-/// A tree line's state glyph and role. Exhaustive, so a new state (the reader's
-/// coming `Stopped`: [`Glyphs::stopped`] in the meta role) has to be placed here.
+/// A tree line's state glyph and role. Exhaustive, as every match on
+/// `SubState` here is: a new state fails to compile until it is placed.
 fn sub_glyph(th: &Theme, st: SubState) -> (&'static str, ratatui::style::Color) {
     match st {
         SubState::Running => (th.g.running, th.running),
