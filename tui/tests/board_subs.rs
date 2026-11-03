@@ -689,3 +689,55 @@ fn a_narrowing_tree_line_drops_tokens_then_description() {
     assert!(!mid.contains("12.4k") && mid.contains("find auth call"), "{mid}");
     assert!(narrow.contains("Explore") && narrow.contains("find au…"), "{narrow}");
 }
+
+// ---------------------------------------------------------------- an ended agent (#301)
+
+/// A crash leaves its subagents `Running` and `@cockpit_subs` set: none runs.
+fn ended_pane() -> Vec<Pane> {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    ps[i].ended = true;
+    ps[i].subs_n = 2;
+    ps[i].subs = vec![sub("Explore", "orphan", SubState::Running, 5000, 1)];
+    ps
+}
+
+#[test]
+fn an_ended_agent_counts_no_running_subagent() {
+    let ps = ended_pane();
+    let p = &ps[at(&ps, "%4")];
+    assert!(!extra(p, &Theme::fixed(), 40).contains('✦'), "{}", extra(p, &Theme::fixed(), 40));
+    let empty = Pane {
+        ended: true,
+        subs_n: 2,
+        ..Default::default()
+    };
+    assert!(!extra(&empty, &Theme::fixed(), 40).contains('✦'), "nor the hook's count");
+}
+
+#[test]
+fn an_ended_agents_failure_shows_dimmed_in_meta() {
+    let mut ps = ended_pane();
+    let i = at(&ps, "%4");
+    ps[i].subs.push(sub("Plan", "broke", SubState::Failed, 10, 1));
+    let th = Theme::fixed();
+    let b = &board::row_extra(&ps[i], &th, 40, NOW)[0];
+    assert_eq!(b.content, " ✦0·1✕");
+    assert_eq!(b.style.fg, Some(th.meta));
+    assert!(b.style.add_modifier.contains(ratatui::style::Modifier::DIM));
+}
+
+/// Its tree's `Running` lines take the ended glyph and print no age.
+#[test]
+fn an_ended_agents_running_subagent_is_drawn_ended() {
+    let ps = ended_pane();
+    let th = Theme::fixed();
+    let n = nav(&ps, "%3", &["%4"], 12);
+    let out = draw(100, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
+    let line = lines(&out).into_iter().find(|l| l.contains("orphan")).unwrap();
+    assert!(line.contains("└ ◌ Explore"), "{line}");
+    assert!(!line.contains("1h23m"), "no age ticks: {line}");
+    let mut later = n.clone();
+    later.now += 60;
+    assert_eq!(n.tree_gate(&ps), later.tree_gate(&ps));
+}

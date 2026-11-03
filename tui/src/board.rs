@@ -1319,11 +1319,13 @@ fn place(p: &Pane, s: &Sub, now: u64) -> Place {
 /// prompt, when it leaves the tree.
 pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
     if p.subs.is_empty() {
-        return (p.subs_n as usize, 0);
+        return (if p.ended { 0 } else { p.subs_n as usize }, 0);
     }
     let mut c = (0, 0);
     for s in p.subs.iter().filter(|s| place(p, s, now) != Place::Gone) {
         match s.state {
+            // #301: a crash leaves its subagents `Running`, and none runs
+            SubState::Running if p.ended => {}
             SubState::Running => c.0 += 1,
             SubState::Failed => c.1 += 1,
             SubState::Done => {}
@@ -1333,9 +1335,11 @@ pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
 }
 
 /// A tree line's state glyph and role. Exhaustive, as every match on
-/// `SubState` here is: a new state fails to compile until it is placed.
-fn sub_glyph(th: &Theme, st: SubState) -> (&'static str, ratatui::style::Color) {
+/// `SubState` here is: a new state fails to compile until it is placed. An
+/// ended agent's (#301) running subagents are ended too.
+fn sub_glyph(th: &Theme, p: &Pane, st: SubState) -> (&'static str, ratatui::style::Color) {
     match st {
+        SubState::Running if p.ended => (th.g.ended, th.meta),
         SubState::Running => (th.g.running, th.running),
         SubState::Failed => (th.g.error, th.error),
         SubState::Done => (th.g.done, th.done),
@@ -1599,7 +1603,7 @@ impl Nav {
         for r in self.rows(ps).iter().filter(|r| r.tree()) {
             out.push_str(&format!("{r:?}"));
             if let Row::Sub(i, j) = r {
-                out.push_str(&age_of(&ps[*i].subs[*j], self.now));
+                out.push_str(&age_of(&ps[*i], &ps[*i].subs[*j], self.now));
             }
         }
         out
@@ -1968,9 +1972,14 @@ fn badge(p: &Pane, th: &Theme, left: usize, now: u64) -> Option<Span<'static>> {
         _ => format!("{}{r}{}{f}{}", g.sub, g.dot, g.error),
     };
     let total = format!("{}{}", g.sub, r + f);
-    let c = if f > 0 { th.error } else { th.running };
+    // #301: an ended agent's badge is meta and dim, as the rest of its row
+    let st = match (p.ended, f) {
+        (true, _) => Style::new().fg(th.meta).add_modifier(Modifier::DIM),
+        (false, 1..) => Style::new().fg(th.error),
+        (false, 0) => Style::new().fg(th.running),
+    };
     let t = [wide, total].into_iter().find(|t| t.width() < left)?;
-    Some(Span::styled(format!(" {t}"), Style::new().fg(c)))
+    Some(Span::styled(format!(" {t}"), st))
 }
 
 /// The list row's extra cells (#253), drawn between the message and the age:
@@ -2151,7 +2160,11 @@ fn sub_type(s: &Sub) -> &str {
 }
 
 /// A subagent's age off its start, as the rail prints it; empty before its first row.
-fn age_of(s: &Sub, now: u64) -> String {
+/// An ended agent's (#301) running subagent has none: nothing runs to age.
+fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
+    if p.ended && s.state == SubState::Running {
+        return String::new();
+    }
     s.started.map(|t| fmt_dur(now.saturating_sub(t))).unwrap_or_default()
 }
 
@@ -2227,8 +2240,9 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
         ),
         Row::Sub(i, j) => {
             let s = &ps[i].subs[j];
-            let (gl, c) = sub_glyph(th, s.state);
-            spans.push(Span::styled(gl, Style::new().fg(c)));
+            let (gl, c) = sub_glyph(th, &ps[i], s.state);
+            let dim = if ps[i].ended { Modifier::DIM } else { Modifier::empty() };
+            spans.push(Span::styled(gl, Style::new().fg(c).add_modifier(dim)));
             let (tw, dw, tok) = tree_cols(avail, tcol);
             let mut t = vec![Span::styled(
                 format!(" {}", pad(g.trunc(sub_type(s), tw), tw)),
@@ -2244,7 +2258,10 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
                 let n = if s.tokens > 0 { fmt_tokens(s.tokens) } else { String::new() };
                 t.push(Span::styled(format!(" {:>6}", g.trunc(&n, 6)), Style::new().fg(th.meta)));
             }
-            (t, age_of(s, now))
+            (
+                t.into_iter().map(|sp| sp.patch_style(Style::new().add_modifier(dim))).collect(),
+                age_of(&ps[i], s, now),
+            )
         }
         Row::Head(_) | Row::Agent(_) => return Line::default(),
     };
