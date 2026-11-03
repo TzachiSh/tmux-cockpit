@@ -133,7 +133,8 @@ while :; do
                 fi
             fi
             ;;
-        # Version skew: an older binary's verb (the retired `fix` and `request`, #288) or a newer one's.
+        # Version skew: an older binary's verb (the retired `fix` and
+        # `request`, #288) or a newer one's.
         *)
             log "unknown verb [$verb $target]"
             tmux "${say[@]}" "cockpit: the board sent \"$verb\", which this plugin does not know; prefix U updates the plugin and cockpit-tui" 2>/dev/null

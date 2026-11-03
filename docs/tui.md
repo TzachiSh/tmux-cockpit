@@ -80,7 +80,7 @@ Inside the board, the list (the default layout):
 | `u` | the next `▲` agent, wrapping; unfolds its group |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
-| `a` `r` `f` `i` `x` `R` | as in the tiles, on an agent; a header does not take them |
+| `a` `r` `f` `i` `x` | as in the tiles, on an agent; a header does not take them |
 | `/` | find: open the field and filter as you type (see [Find](#find)) |
 | `v` | the tiles |
 | `?` `^L` `q` | as in the tiles |

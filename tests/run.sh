@@ -11452,6 +11452,33 @@ is "a value with spaces reaches the binary as one word" "[ascii touch $GD/ran]" 
 "$TMUX_REAL" -L "$GL" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-panel: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#293) =="
+# The panel's env line carries the glyphs word beside COCKPIT_PANEL_DROPPED
+# (#272); the stub records both, so neither can fall out of the merged line.
+if need_tmux "the panel's glyphs"; then :; else
+GP="cockpit-gp-$$"; SOCKS="$SOCKS $GP"; GPD=$(mktmpd)
+printf '#!/bin/sh\nprintf "[%%s] D=[%%s]" "${COCKPIT_GLYPHS:-}" "${COCKPIT_PANEL_DROPPED:-}" > %s/g\n' "$GPD" > "$GPD/bin"; chmod +x "$GPD/bin"
+"$TMUX_REAL" -L "$GP" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+GPP=$("$TMUX_REAL" -L "$GP" list-panes -t t -F '#{pane_id}')
+GPS=$("$TMUX_REAL" -L "$GP" display -p '#{pid}')
+gp_run() {
+    rm -f "$GPD/g"; mkdir -p "$GPD/tmux-cockpit/panel"
+    : > "$GPD/tmux-cockpit/panel/$GPS-9999.state"     # a hide left by a pane that is gone
+    "$TMUX_REAL" -L "$GP" new-window -d -t t: \
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GPD/bin XDG_STATE_HOME=$GPD COCKPIT_LOG=$GPD/tui.log $DIR/scripts/cockpit-panel -p $GPP"
+    until_file "$GPD/g" '\[*\]'
+    cat "$GPD/g" 2>/dev/null
+}
+"$TMUX_REAL" -L "$GP" set -g @cockpit_glyphs ascii
+is "@cockpit_glyphs ascii reaches the panel as COCKPIT_GLYPHS, beside the dropped hides" "[ascii] D=[%9999]" "$(gp_run)"
+"$TMUX_REAL" -L "$GP" set -gu @cockpit_glyphs
+is "and unset passes nothing" "[] D=[%9999]" "$(gp_run)"
+"$TMUX_REAL" -L "$GP" set -g @cockpit_glyphs "ascii touch $GPD/ran"
+is "a value with spaces reaches the panel as one word" "[ascii touch $GPD/ran] D=[%9999]" "$(gp_run)"
+[ -e "$GPD/ran" ] && bad "and runs nothing" "no $GPD/ran" "it exists" || ok "and runs nothing"
+"$TMUX_REAL" -L "$GP" kill-server >/dev/null 2>&1
+fi
+
 # --- sessions view (#245): cockpit-tui sessions and the tm that runs it -------
 # A private server of sessions (SVS) and a second one (SVO) whose panes are the
 # ptys the picker and tm run in, so nothing here touches the suite's own server.
