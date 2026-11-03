@@ -120,6 +120,9 @@ act() {
 err=$(mktemp 2>/dev/null) || err=
 if [ -n "$err" ]; then trap 'rm -f -- "$err"' EXIT; trap 'exit 130' INT TERM HUP; fi
 
+# The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
+glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
+[ -z "$glyphs" ] || export COCKPIT_GLYPHS="$glyphs"
 # A failed action returns to the picker; esc leaves.
 while :; do
     if [ -n "$err" ]; then

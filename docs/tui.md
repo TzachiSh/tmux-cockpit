@@ -80,7 +80,7 @@ Inside the board, the list (the default layout):
 | `u` | the next `▲` agent, wrapping; unfolds its group |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
-| `a` `r` `f` `i` `x` `R` | as in the tiles, on an agent; a header does not take them |
+| `a` `r` `f` `i` `x` | as in the tiles, on an agent; a header does not take them |
 | `/` | find: open the field and filter as you type (see [Find](#find)) |
 | `v` | the tiles |
 | `?` `^L` `q` | as in the tiles |
@@ -120,7 +120,6 @@ In the tiles (`v`):
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
 | `x` | kill the pane's window, after a confirm (`kill %N`, for #228's wrapper arm) |
-| `R` | `request %N`, at once (for #228's wrapper arm) |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -136,7 +135,7 @@ frame carries a hint. It lists only keys that work on what is selected, in
 priority order, and drops one whole hint at a time from the right as the width
 shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
 `r review`, `f panel`, `i info`, then `space fold` and `/ find` in the list,
-then `x kill` and `R request`, which the cut drops first. On a list
+then `x kill`, which the cut drops first. On a list
 header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
 `n p sessions`, `/ find`. With a kept filter, `esc clear filter` comes before
 `? keys`. In the find field the bar is the field's:
@@ -151,8 +150,8 @@ verb, and two optional functions of the selected `Pane`, `confirm` (the
 question) and `expect` (the value for `.expect`). Each entry is in the footer on
 an agent (never a header), in `?` under "act on the selected agent", and in the
 dispatch; its key may not be one the table, D6, D7's `/` or D8's `a` takes.
-`x` → `kill`, with a confirm and the window id as `.expect`, and `R` →
-`request`, with neither, are #228's. An entry with no `confirm` exits at once.
+`x` → `kill`, with a confirm and the window id as `.expect`, is #228's and the
+only entry (#288 removed `R` → `request`). An entry with no `confirm` exits at once.
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
 over the foot of the list or the tiles: the action and the target in its title,
@@ -210,7 +209,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
-| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`) |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
@@ -438,8 +437,8 @@ a scrollbar.
 the board again in the same popup, as
 `cockpit-tui board --select %N --note <file>`: the selection is back on the pane
 just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
-reserved), a verb the plugin does not know (`kill` and `request` until #228
-adds their arms under `# #228 verbs`), a board that exits non-zero, and
+reserved), a verb the plugin does not know (`request` from a binary older than
+#288), a board that exits non-zero, and
 `@cockpit_board_return off` end the loop.
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`
@@ -951,6 +950,18 @@ reason in a warn note.
   `panel-help-{compose,steps}-{40,60,80,120}`. Home's `[ close ]` button moved
   right by the new one; the suite's tap-close exit taps it at its new column.
 
+### Contract changes for removing request (for #61)
+
+- #288: the board's `R` key and the `request` verb are gone. `EXTRAS` holds `x`
+  (`kill`) alone; the footer on an agent ends `x kill   ? keys   q close`, and
+  `?` loses the `R` row. `prefix R` (reload) and the board's `r` are unchanged.
+- `scripts/cockpit-board` drops its `request)` arm: a `request %N` from an older
+  binary is logged as an unknown verb and ends the board. `tmux-review
+  --request`, the agent's own path (the cockpit-review skill), stays.
+- Goldens: the footer moved in `board-{100,120,160,180}`, `board-extra-120`,
+  `board-list-180`, `board-nocolor`, `board-nocolor-100`, `board-stale-100` and
+  `board-tiles-100`; the help in `board-help-{60,100,180,tiles-100}`.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -1171,7 +1182,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 
 ```
 jump %N · review %N · panel %N · deliver %N            (deliver reserved for phase 2)
-kill %N · request %N                                    (the board's EXTRAS, #228's arms)
+kill %N                                                 (the board's EXTRAS, #228's arm)
 paste %N · send %N                                      (the panel)
 ```
 
@@ -1418,7 +1429,9 @@ or `POLLERR` and exits when it comes; the action file is left unwritten. A
 **A crash left nothing behind.** `display-popup -E` closes the popup the moment
 the command exits, so a panic disappears with it. The log is at
 `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log`, on by default, and
-the binding appends stderr to it.
+the binding appends stderr to it. Past 1 MiB the binary moves it to `tui.log.1`
+and starts a new one (#291); the board logs a tick only when the fetch took over
+500 ms or the read started or stopped failing.
 
 **The glyphs shift the columns.** `▲ ● ✓ ◆` are East-Asian Ambiguous: a terminal
 with an emoji-preferring fallback draws them two cells wide. The 2-column gutter
@@ -1505,7 +1518,7 @@ scan per distinct repo root however many panes share it, at most 8 git processes
 at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
 the gitsafe flags. The list still makes no pane capture.
 
-**Verbs.** `cockpit-board` gains two lines, `kill %N` and `request %N`.
+**Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
 `kill %N` kills the pane's window. The board writes the `#{window_id}` it
 showed (`@9`, not the name: automatic-rename gives agents the same name) to
 `$COCKPIT_ACTION.expect` first. The wrapper compares it with the window the pane
@@ -1513,10 +1526,7 @@ is in now and kills the window that id names; it refuses with a `✕` note if th
 pane moved to another window, if the file is missing, empty, not an `@<digits>`
 id or a symlink, or if the pane is gone. The `✓` note and the log carry the id
 and `session:index` of what died.
-`request %N` ends the board, like `jump`, and then runs `tmux-review --request`
-for that pane: tmux silently refuses a popup opened inside the board's popup.
-Its output (the composed batch on exit 10) is not shown.
-The board keys for both wait on the board's verb hook (not shipped).
+The board key waits on the board's verb hook (not shipped).
 
 ## Sessions
 

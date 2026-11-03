@@ -4,6 +4,8 @@
 #   ./install.sh --uninstall  remove only the symlinks that point back here
 #   ./install.sh --check      the doctor: one row per thing that can be wrong
 #   ./install.sh --hooks [--dry-run]  merge examples/claude-hooks.json into ~/.claude/settings.json
+#   ./install.sh --uninstall --hooks [--dry-run]  also remove exactly the hooks --hooks added
+#   ./install.sh --hooks --remove [--dry-run]     remove only those hooks, keep the links
 set -uo pipefail
 
 # Resolved (-P), so the uninstall guard matches links made through a symlinked checkout.
@@ -15,12 +17,15 @@ if [ -z "${XDG_BIN_HOME:-}" ] && [ -z "${HOME:-}" ]; then
 fi
 COMMANDS=(tm tmux-branch tmux-open-path)
 
-USAGE='usage: install.sh [--check] [--uninstall] [--hooks [--dry-run]]'
-uninstall=0; hooks=0; dry=0; check=0
+USAGE='usage: install.sh [--check] [--uninstall] [--hooks [--dry-run]]
+       install.sh --uninstall --hooks [--dry-run]   also drop cockpit'"'"'s hook entries from settings.json
+       install.sh --hooks --remove [--dry-run]      drop only the hook entries, keep the links'
+uninstall=0; hooks=0; dry=0; check=0; remove=0; links=1
 for a in "$@"; do case "$a" in
     "") ;;
     -h|--help) printf '%s\n' "$USAGE"; exit 0 ;;
     --uninstall) uninstall=1 ;;
+    --remove)    remove=1 ;;
     --check)     check=1 ;;
     --hooks)     hooks=1 ;;
     --dry-run)   dry=1 ;;
@@ -29,8 +34,11 @@ esac; done
 # Flag combinations that would silently ignore one half are refused.
 [ "$check" -eq 1 ] && [ $((uninstall + hooks + dry)) -gt 0 ] && {
     printf -- '--check runs alone\n\n%s\n' "$USAGE" >&2; exit 2; }
+[ "$remove" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--remove needs --hooks\n' >&2; exit 2; }
+[ "$remove" -eq 1 ] && [ "$uninstall" -eq 1 ] && { printf -- '--remove removes only the hooks; --uninstall --hooks removes the links too, use one\n' >&2; exit 2; }
+# --hooks --remove: the hook removal below, with the links left alone.
+[ "$remove" -eq 1 ] && { uninstall=1; links=0; }
 [ "$dry" -eq 1 ] && [ "$hooks" -eq 0 ] && { printf -- '--dry-run needs --hooks\n' >&2; exit 2; }
-[ "$uninstall" -eq 1 ] && [ "$hooks" -eq 1 ] && { printf -- '--uninstall does not touch hooks; drop --hooks or run it separately\n' >&2; exit 2; }
 
 
 # ---------------------------------------------------------------- doctor ----
@@ -272,7 +280,9 @@ link_one() {                  # <link> <target>
     fi
 }
 
-if [ "$dry" -eq 0 ]; then
+if [ "$links" -eq 0 ]; then
+    :
+elif [ "$dry" -eq 0 ]; then
 for c in "${COMMANDS[@]}"; do link_one "$BIN/$c" "$DIR/scripts/$c"; done
 # Skills only where Claude Code is installed, so a plain shell box gets no stray dir.
 if [ -d "${HOME:-}/.claude" ]; then
@@ -291,6 +301,80 @@ if [ "$uninstall" -eq 0 ] && [ "$dry" -eq 0 ]; then
     "$DIR/scripts/tui-fetch" --required || rc=1
 fi
 
+# readlink -f is GNU-only, so the chain is resolved by hand.
+resolve_link() {
+    local p="$1" d b
+    while [ -L "$p" ]; do
+        d=$(dirname "$p"); b=$(readlink "$p")
+        case "$b" in /*) p="$b" ;; *) p="$d/$b" ;; esac
+    done
+    printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
+}
+
+
+# cockpit's own root in a command: the shipped ${TMUX_COCKPIT_DIR:-...} form (as a regex)
+# or this checkout's path, so a foreign .../scripts/review-gate is never ours.
+pre='\$\{TMUX_COCKPIT_DIR:-\$HOME/\.tmux/plugins/tmux-cockpit\}'
+
+if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
+    command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual removal in docs/install.md still works)\n' >&2; exit 1; }
+    [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
+    settings="$HOME/.claude/settings.json"
+    if [ ! -e "$settings" ]; then
+        printf 'hooks     no %s, nothing to remove\n' "$settings"
+        exit "$rc"
+    fi
+    real=$(resolve_link "$settings")
+    orig=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+    printf '%s' "$orig" | jq -e . >/dev/null 2>&1 \
+        || { printf '%s is not valid JSON; refusing to touch it\n' "$settings" >&2; exit 1; }
+    # A hook is cockpit's only when its command is one of this plugin's scripts at
+    # the path the shipped examples use (or this checkout's), anchored at both ends.
+    stripped=$(printf '%s' "$orig" | jq --arg dir "$DIR" --arg pre "$pre" '
+        def esc: gsub("(?<c>[.\\[\\]()*+?{}|^$\\\\])"; "\\\(.c)");
+        ($pre + "|" + ($dir | esc)) as $root
+        | ("^\"?(" + $root + ")\"?/scripts/(agent-state( [a-z-]+)?|review-gate( --pretool)?|worktree-(create|remove))$") as $script
+        | ("^jq -Rs .* \"?(" + $root + ")\"?/skills/unslop/SKILL\\.md 2>/dev/null$") as $unslop
+        | def mine: (.command // "") | (test($script) or test($unslop));
+        if (.hooks | type) == "object" then
+            .hooks |= (with_entries(
+                .value |= (if type == "array" then
+                    map(if (.hooks | type) == "array" then
+                            (.hooks | length) as $n | .hooks |= map(select(mine | not))
+                            | if $n > 0 and (.hooks | length) == 0 then empty else . end
+                        else . end)
+                  else . end)
+                | select(((.value | type) != "array") or ((.value | length) > 0) or (($orig_hooks[.key] // []) | length) == 0)))
+        else . end' --argjson orig_hooks "$(printf '%s' "$orig" | jq -c '.hooks // {} | if type == "object" then . else {} end')") \
+        || { printf 'removal failed; %s untouched\n' "$settings" >&2; exit 1; }
+    if [ "$(printf '%s' "$stripped" | jq -S -c .)" = "$(printf '%s' "$orig" | jq -S -c .)" ]; then
+        printf 'hooks     no cockpit hooks in %s, nothing to remove\n' "$settings"
+    elif [ "$dry" -eq 1 ]; then
+        if command -v diff >/dev/null 2>&1; then
+            diff -u -L "$settings" -L "$settings (cockpit hooks removed)" <(printf '%s\n' "$orig") <(printf '%s\n' "$stripped")
+            [ $? -le 1 ] || printf 'diff failed; result would be:\n%s\n' "$stripped"
+        else
+            printf 'diff not found; result would be:\n%s\n' "$stripped"
+        fi
+        printf 'dry-run: nothing written\n'
+    else
+        now=$(cat "$real") || { printf 'cannot read %s\n' "$settings" >&2; exit 1; }
+        if [ "$now" != "$orig" ]; then
+            printf '%s changed since this run started (a concurrent writer raced the removal); nothing written -- re-run to remove from the current content\n' "$settings" >&2
+            exit 1
+        fi
+        bak="$settings.bak-$(date +%Y%m%d-%H%M%S)"
+        cp -p -- "$real" "$bak" || { printf 'cannot write the backup %s; %s untouched\n' "$bak" "$settings" >&2; exit 1; }
+        tmp=$(mktemp "$real.XXXXXX") || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap 'rm -f -- "$tmp"' EXIT
+        cp -p -- "$real" "$tmp" && printf '%s\n' "$stripped" > "$tmp" && mv -- "$tmp" "$real" \
+            || { printf 'write failed; %s untouched\n' "$settings" >&2; exit 1; }
+        trap - EXIT
+        printf 'removed   cockpit hooks from %s (backup: %s)\n' "$settings" "$bak"
+    fi
+    exit "$rc"
+fi
+
 if [ "$hooks" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual merge in README still works)\n' >&2; exit 1; }
     have_diff=1
@@ -298,16 +382,6 @@ if [ "$hooks" -eq 1 ]; then
     # settings.json has no XDG override, so $HOME is required here.
     [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
     settings="$HOME/.claude/settings.json"
-
-    # readlink -f is GNU-only, so the chain is resolved by hand.
-    resolve_link() {
-        local p="$1" d b
-        while [ -L "$p" ]; do
-            d=$(dirname "$p"); b=$(readlink "$p")
-            case "$b" in /*) p="$b" ;; *) p="$d/$b" ;; esac
-        done
-        printf '%s/%s\n' "$(cd -P "$(dirname "$p")" && pwd)" "$(basename "$p")"
-    }
 
     if [ -e "$settings" ]; then
         # Write at the resolved target: replacing a dotfiles-managed symlink with
@@ -334,12 +408,15 @@ if [ "$hooks" -eq 1 ]; then
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         def runs($re): (.command // "") | test($re);
+        def esc: gsub("(?<c>[.\\[\\]()*+?{}|^$\\\\])"; "\\\(.c)");
+        ($pre + "|" + ($dir | esc)) as $root
+        | def ours($tail): runs("^\"?(" + $root + ")\"?" + $tail);
         .[0].hooks as $mine | .[1] as $theirs
-        | ([$mine.SessionStart[]? | select(any(.hooks[]?; runs("/scripts/agent-state off\"?$"))) | .matcher // ""] | first) as $offm
+        | ([$mine.SessionStart[]? | select(any(.hooks[]?; ours("/scripts/agent-state off$"))) | .matcher // ""] | first) as $offm
         | ($theirs.hooks // {} | with_entries(.key as $k | .value |=
             (map(if $k == "SessionStart" and $offm != null and (.matcher // "") != $offm
-                 then .hooks |= map(select(runs("/scripts/agent-state off\"?$") | not)) else . end)
-             | map(.hooks |= map(select(runs("/scripts/review-gate( --pretool)?\"?$") | not)))
+                 then .hooks |= map(select(ours("/scripts/agent-state off$") | not)) else . end)
+             | map(.hooks |= map(select(ours("/scripts/review-gate( --pretool)?$") | not)))
              | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
             $h + ($mine | with_entries(
@@ -347,7 +424,7 @@ if [ "$hooks" -eq 1 ]; then
                 | .value = (($h[$k] // []) + [ .value[]
                     | select(. as $e | (($h[$k] // []) | map(norm) | index($e | norm)) == null) ])
               ))
-          ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
+          ) }' --arg dir "$DIR" --arg pre "$pre" "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
         || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
 
     # Only .hooks, structurally, so a formatting-only difference is not a change.
