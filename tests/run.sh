@@ -2513,6 +2513,7 @@ before=$(find "$DH" "$DBIN" | sort)
 dcout=$(dc "$DCP"); dcrc=$?
 is "the doctor writes nothing" "$before" "$(find "$DH" "$DBIN" | sort)"
 is "revdiff at the pinned version is an ok row" "1" "$(dcrow "$dcout" "ok revdiff")"
+is "no bat row at all (nothing uses it, #228)" "0" "$(printf '%s\n' "$dcout" | dcrows | grep -c ' bat$')"
 is "a wired config is an ok row"            "1" "$(dcrow "$dcout" "ok config")"
 is "a config with no #{agent_*} token is an ok row" "1" "$(dcrow "$dcout" "ok tokens")"
 is "merged hooks are an ok row"             "1" "$(dcrow "$dcout" "ok hooks")"
