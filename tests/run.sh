@@ -11047,8 +11047,11 @@ is "git.sh hands git exactly git-flags before the caller's -C" \
 is "git.sh blanks the same drivers as git-flags --filters" \
    "$("$DSB" git-flags --filters "$GD/r" | paste -d' ' - - | LC_ALL=C sort)" \
    "$(gs_argv status | grep -x -B1 'filter\..*' | grep -v '^--$' | paste -d' ' - - | LC_ALL=C sort)"
-is "with no binary git.sh still hands git every safety flag" \
-   "$("$DSB" git-flags)" "$(COCKPIT_TUI_BIN=/nonexistent gs_argv rev-parse HEAD | sed '/^-C$/,$d')"
+# The worktree hook needs no binary: a cockpit-tui on PATH and at COCKPIT_TUI_BIN
+# that only leaves a mark, and git.sh still hands git every flag.
+printf '#!/bin/sh\necho ran >> %s/tuiran\n' "$GD" > "$GD/bin/cockpit-tui"; chmod +x "$GD/bin/cockpit-tui"
+is "git.sh never runs cockpit-tui, and still hands git every flag" "$("$DSB" git-flags)" \
+   "$(COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" gs_argv status | sed '/^-c$/{N;/\nfilter\./d}' | sed '/^-C$/,$d')$(cat "$GD/tuiran" 2>/dev/null)"
 # git splits -c at the first `=`: filter.a=b.clean= would set filter.a, so both refuse.
 git -C "$GD/r" config 'filter.a=b.clean' 'echo pwned'
 is "a driver named a=b: git.sh and git-flags --filters both refuse, status 1 and no flags" "1: 1:" \
