@@ -10,6 +10,8 @@
     "SessionStart -> off skips compact, so compaction keeps the pane's review marks.",
     "SessionStart and UserPromptSubmit -> session save the payload's session_id and",
     "transcript_path in pane options, so the transcript reader is right from turn 1.",
+    "They and CwdChanged also save the payload's cwd as @cockpit_dir, the tree the",
+    "board reads, when the agent moved or a new session began (#312).",
     "PreToolUse runs before the permission prompt, so PostToolUse clears needs-input.",
     "",
     "Stop also runs review-gate: it flags an unreviewed diff (◆), hands over a queued",
@@ -76,6 +78,9 @@
     ],
     "WorktreeRemove": [
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-remove" } ] }
+    ],
+    "CwdChanged": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] }
     ],
     "SessionEnd": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }
