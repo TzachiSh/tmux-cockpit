@@ -34,7 +34,7 @@ pub fn main(args: &[String]) -> i32 {
 }
 
 /// Claude Code's projects directory: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
-fn projects_dir() -> PathBuf {
+pub(crate) fn projects_dir() -> PathBuf {
     match std::env::var("CLAUDE_CONFIG_DIR") {
         Ok(d) if !d.is_empty() => PathBuf::from(d).join("projects"),
         _ => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
@@ -43,7 +43,7 @@ fn projects_dir() -> PathBuf {
 
 /// `path` as a regular file inside `root`, symlinks resolved, or None. The hooks check the
 /// same rule before writing @cockpit_transcript; the reader does not trust the option.
-fn under(root: &Path, path: &str) -> Option<PathBuf> {
+pub(crate) fn under(root: &Path, path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.split('/').any(|c| c == "..") {
         return None;
     }

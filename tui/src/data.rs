@@ -3,6 +3,8 @@ pub mod fleet;
 pub mod gitsafe;
 pub mod info;
 pub mod sessions;
+// the subagent tree (#313)
+pub mod subagents;
 pub mod transcript;
 
 use serde_json::Value;
@@ -148,6 +150,11 @@ pub struct Pane {
     pub idle_since: Option<u64>,
     /// `#{window_id}`, `@N`, as tmux gave it; the board checks it before use
     pub win: String,
+    /// `@cockpit_subs` (#313): background subagents in flight at the agent's last Stop, the
+    /// count of `type: "subagent"` in its `background_tasks`; 0 when unset or not a number
+    pub subs_n: u32,
+    /// every subagent in the session's `subagents/` dir, oldest first (data::subagents)
+    pub subs: Vec<subagents::Sub>,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -179,12 +186,16 @@ impl Hash for Pane {
             asked_since: _,
             idle_since: _,
             win,
+            subs_n,
+            subs,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
-        (state, pinned, delivered).hash(h);
+        (state, pinned, delivered, subs_n).hash(h);
+        // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
+        subs.hash(h);
     }
 }
 
@@ -690,6 +701,9 @@ const FIELDS: &str = concat!(
     "\u{1f}#{?#{@cockpit_review_spool},#{@cockpit_review_spool},-}",
     "\u{1f}#{window_id}",
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_dir}}}}",
+    // #313: 14 the hook's subagent count, 15 the session's transcript, for its subagents/ dir
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_subs}}}}",
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_transcript}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
@@ -712,6 +726,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
+        // FIELDS has 16; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -750,8 +765,13 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         read_transcript(&mut p);
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        // @cockpit_dir, last so a 13-field row from an older format still reads
+        // @cockpit_dir, @cockpit_subs and @cockpit_transcript come after the 13 a row from an
+        // older format has, so such a row still reads: 13, 14 and 15 are optional
         dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
+        p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
+        if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
+            p.subs = subagents::read(&d);
+        }
         ps.push(p);
     }
     fill_git(&mut ps, &dirs);

@@ -190,6 +190,24 @@ beside every write of `@cockpit_subs`, since a `Stop` that holds the pane or
 meets a sticky state runs no sums of its own. The sweep drops a killed pane's
 count. The mark is `✦` in every glyph tier, like `▲ ✕ ◆`.
 
+The board's subagent tree reads Claude Code's own files, not the hooks:
+`<session>/subagents/agent-<id>.meta.json` and `agent-<id>.jsonl`, beside
+`@cockpit_transcript` (`<sid>.jsonl` -> `<sid>/subagents/`, used when it still
+resolves to a file in the projects tree), else beside the transcript the board
+reads for `@cockpit_session`. `data::subagents` caches each file on (mtime,
+length), and a pane with no such dir costs one failed `opendir`.
+
+| field | from |
+|-------|------|
+| `ty`, `desc` | `agentType`, `description` (control characters dropped) |
+| `kind` | `isFork: true` is a fork; a `teamName` is a teammate; else a subagent |
+| `state` | `stoppedByUser: true`, or `finished: true` with an API error as the newest assistant row, is failed; `finished: true` is done; else running |
+| `started` | the first transcript row's `timestamp` |
+| `tokens` | the newest usage row's input, output and cache tokens summed, the figure Claude Code reports as `totalTokens`, not a sum over turns |
+
+Claude Code 2.1.317 sets `finished` when a task leaves `running`, for success and
+failure alike, so a failed run that left no API error row reads as done.
+
 ## A goal that will not be met
 
 Claude Code's `/goal` is a Stop hook: after every turn an evaluator reads the
