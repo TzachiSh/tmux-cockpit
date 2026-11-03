@@ -11322,6 +11322,23 @@ PISESS="$PISTATE/tmux-cockpit/review/${PIAP#%}-$(printf '%s' "$PIDIR" | cksum | 
 mkdir -p "$PISESS"; printf '## f:2 (+)\n> b\nx\n\n' > "$PISESS/comments.md"; printf '## f:1 (+)\n> a\ny\n\n## f:1 (+)\n> a\nz\n\n' > "$PISESS/delivered.md"
 pi_rs()  { XDG_STATE_HOME="$PISTATE" COCKPIT_TMUX="tmux -L $PI" "$COCKPIT_TUI_BIN" info --text "${1:-$PIAP}" 2>&1; }
 is "the Rust base row is uncommitted" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
+# Every field gather() reads from tmux, the spool and the review dir, as a literal.
+"$TMUX_REAL" -L "$PI" set-option -p -t "$PIAP" @cockpit_review_spool "$PISTATE/spool.md" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -g @cockpit_tui_version 9.9.9 >/dev/null 2>&1
+PIOUT=$(pi_rs)
+is "the pane row" "pane      $PIAP  t:0 w  (claude)" "$(printf '%s\n' "$PIOUT" | grep '^pane ')"
+is "the cwd row" "cwd       $PIDIR" "$(printf '%s\n' "$PIOUT" | grep '^cwd ')"
+is "the root row" "root      $PIDIR" "$(printf '%s\n' "$PIOUT" | grep '^root ')"
+is "the state row carries the message" "state     needs-input  · run-make" "$(printf '%s\n' "$PIOUT" | grep '^state ')"
+is "the review row names the queued spool" "review    pending  · queued: $PISTATE/spool.md" "$(printf '%s\n' "$PIOUT" | grep '^review ' | head -n 1)"
+is "the session row" "session   sid-9" "$(printf '%s\n' "$PIOUT" | grep '^session ')"
+is "the title row" "title     Fix-the-parser" "$(printf '%s\n' "$PIOUT" | grep '^title ')"
+case "$(printf '%s\n' "$PIOUT" | grep '^tui ')" in
+    *"(want 9.9.9 -- prefix U updates it)") ok "the tui row names a version that differs" ;;
+    *) bad "the tui row names a version that differs" "(want 9.9.9 -- prefix U updates it)" "$(printf '%s\n' "$PIOUT" | grep '^tui ')" ;;
+esac
+is "the review dir counts pinned and delivered" "1 pinned · 2 delivered · a at the prompt removes it" \
+   "$(printf '%s\n' "$PIOUT" | grep -A1 '^review dir' | tail -n 1 | sed 's/^ *//')"
 ( cd "$PIDIR" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
   git checkout -q -b feat; printf 'a\nb\n' > f; git commit -q -am two ) >/dev/null 2>&1
 case "$(pi_rs | grep '^base ')" in 'base      vs main  ('*) ok "the Rust base row is vs main" ;; *) bad "the Rust base row is vs main" "vs main" "$(pi_rs | grep '^base ')" ;; esac
@@ -12829,6 +12846,17 @@ is "origin/HEAD is the base: a branch commit is a review row" "1" \
    "$("$DIR/scripts/tmux-review" --lines "$ROH/work" | grep -c 'ON-TOPIC')"
 is "and the base names origin/develop" "vs origin/develop" \
    "$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$ROH/work" | cut -f2)"
+# origin/HEAD outranks a local main: main one commit past origin/develop, topic cut from main.
+(
+  cd "$ROH/work" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git checkout -q develop; git checkout -q -b main; printf 'a\nM\n' > f; git commit -q -am main-moved
+  git checkout -q -B topic; printf 'a\nM\nT\n' > f; git commit -q -am topic2
+) >/dev/null 2>&1
+ROHB=$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$ROH/work")
+is "origin/HEAD outranks a local main: the label" "vs origin/develop" "$(printf '%s' "$ROHB" | cut -f2)"
+is "and the base is the merge-base with origin/develop, not main" \
+   "$(git -C "$ROH/work" rev-parse origin/develop)" "$(printf '%s' "$ROHB" | cut -f1)"
 rm -rf "$ROH"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
