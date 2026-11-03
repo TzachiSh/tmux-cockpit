@@ -12772,5 +12772,92 @@ is "and no payload ran" "none" "$(fe_ran)"
 rm -rf "$FED" "$FEBIN"
 fi
 
+echo "== agent-state session: the payload's cwd becomes @cockpit_dir, the tree the board reads (#312) =="
+# A claude started in ~ that works in a repo showed "no repo": tmux reports the process cwd,
+# which never moves. The hook payload's cwd does. Throwaway HOME, suite-private server.
+SCREAL=$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6)
+if need_tmux "agent-state session cwd"; then :
+elif [ -n "${CLAUDE_CONFIG_DIR:-}" ] || [ -z "$SCREAL" ] || [ "${HOME%/}" = "${SCREAL%/}" ]; then
+    bad "the cwd block runs on a private HOME with CLAUDE_CONFIG_DIR unset" "HOME!=$SCREAL, unset" \
+        "HOME=$HOME CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-}"
+else
+SCD=$(mktmpd); SCH="$SCD/h"; mkdir -p "$SCH" "$SCD/a" "$SCD/b" "$SCD/w" "$SCD/cut" "$SCD/semi;"
+SCU1=11111111-2222-4333-8444-555555555555; SCU2=aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee
+SCHASH="$SCD/x#(touch $SCD/F)"; SCTAB=$(printf '%s/t\tab' "$SCD"); SCSOH="$SCD/"$'\001'x
+SCDEL="$SCD/"$'\177'x
+mkdir -p "$SCHASH" "$SCTAB" "$SCSOH" "$SCDEL" "$SCD/b\\s"; : > "$SCD/file"
+SCP=$(tmux new-window -d -P -F '#{pane_id}' 'exec -a claude sleep 600')
+sc_dir() { tmux show-option -pqv -t "$SCP" @cockpit_dir; }
+sc_clear() { local o; for o in dir cwd session transcript; do tmux set-option -pu -t "$SCP" "@cockpit_$o"; done; }
+# Run from $SCD, so the relative row names a directory that exists from where the hook runs.
+sc_raw() { ( cd "$SCD" && env -u CLAUDE_CONFIG_DIR HOME="$SCH" "$DIR/scripts/agent-state" session "$SCP" ); }
+sc() {                        # <cwd> [session id]  one UserPromptSubmit through the hook
+    printf '{"session_id":"%s","cwd":"%s","hook_event_name":"UserPromptSubmit","prompt":"hi"}\n' \
+        "${2:-$SCU1}" "$1" | sc_raw; }
+scc() {                       # <cwd> <new_cwd>  one CwdChanged
+    printf '{"session_id":"%s","cwd":"%s","hook_event_name":"CwdChanged","old_cwd":"/","new_cwd":"%s"}\n' \
+        "$SCU1" "$1" "$2" | sc_raw; }
+sc "$SCD/a"
+is "a cwd that is a directory is saved as @cockpit_dir" "$SCD/a" "$(sc_dir)"
+is "the hook exits 0 and prints nothing" "0:" "$(sc "$SCD/a" 2>&1; echo "$?:")"
+scc "$SCD/a" "$SCD/b"
+is "CwdChanged: new_cwd is the tree" "$SCD/b" "$(sc_dir)"
+for row in "gone:$SCD/gone" "a file:$SCD/file" "relative:a" "empty:" "a tab:$SCTAB" \
+           "a control char:$SCSOH" "a DEL:$SCDEL" "a backslash:$SCD/b\\s"; do
+    sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"
+    sc "${row#*:}"
+    is "cwd ${row%%:*}: not saved, the old @cockpit_dir kept" "$SCD/w" "$(sc_dir)"
+done
+sc_clear; sc "$SCHASH"
+is "a #(...) in the dir is stored as written" "$SCHASH" "$(tmux display-message -p -t "$SCP" '#{@cockpit_dir}')"
+is "and no command in it ran" "none" "$([ -e "$SCD/F" ] && echo ran || echo none)"
+sc_clear; sc "$SCD/semi;"
+is "a dir ending in ; keeps its ; (tmux takes a trailing ; for a separator)" "$SCD/semi;" "$(sc_dir)"
+tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc "$SCD/semi;"
+is "and a prompt again there keeps a hand-set @cockpit_dir: @cockpit_cwd kept its ; too" "$SCD/w" "$(sc_dir)"
+sc_clear; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"
+printf '{"session_id":"%s","cwd":null,"%s":"x"}\n' "$SCU1" "$SCD/a" | sc_raw
+is "a cwd that is not a string is not read" "$SCD/w" "$(sc_dir)"
+printf '{"session_id":"%s","cwd":7,"new_cwd":5,"x":"%s"}\n' "$SCU1" "$SCD/a" | sc_raw
+is "nor a number in either key" "$SCD/w" "$(sc_dir)"
+printf '{"session_id":"%s","cwd":"%s' "$SCU1" "$SCD/cut" | sc_raw
+is "a payload that ends inside the cwd (its writer died) is not saved" "$SCD/w" "$(sc_dir)"
+# The cap cuts the value right after "$SCD/cut", a real directory: a cut value is not a value.
+sc_cut() {                    # <bytes before the cut> <tail>
+    local pre='{"pad":"' sfx="\",\"cwd\":\"$SCD/cut" pad
+    pad=$(head -c $(( $1 - ${#pre} - ${#sfx} )) /dev/zero | tr '\0' x)
+    printf '%s%s%s%s"}\n' "$pre" "$pad" "$sfx" "$2" | sc_raw; }
+sc_clear; sc_cut 4095 '"'
+is "a cwd whose closing quote is byte 4096 is saved" "$SCD/cut" "$(sc_dir)"
+sc_clear; sc_cut 4096 '/deeper"'
+is "a cwd cut by the 4 KB cap is not saved, though its prefix is a directory" "" "$(sc_dir)"
+sc_clear
+printf '{"session_id":"%s",\n"transcript_path":"%s",\n"cwd":"%s"}\n' "$SCU1" "$SCH/t.jsonl" "$SCD/a" | sc_raw
+is "a payload over several lines: the cwd after both ids is still read" "$SCD/a" "$(sc_dir)"
+sc_clear; sc "$SCD/a"; tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"
+sc "$SCD/a"
+is "a prompt in the same cwd keeps a @cockpit_dir the agent set by hand" "$SCD/w" "$(sc_dir)"
+scc "$SCD/a" "$SCD/b"
+is "a move takes it over" "$SCD/b" "$(sc_dir)"
+tmux set-option -p -t "$SCP" @cockpit_dir "$SCD/w"; sc "$SCD/b" "$SCU2"
+is "a new session in the same cwd takes it back" "$SCD/b" "$(sc_dir)"
+sc_clear
+is "no payload: exit 0, nothing printed, nothing saved" "0:." "$(sc_raw < /dev/null 2>&1; echo "$?:.$(sc_dir)")"
+is "no pane: exit 0, nothing printed" "0:" \
+   "$(printf '{"cwd":"%s"}\n' "$SCD/a" | env -u TMUX_PANE "$DIR/scripts/agent-state" session 2>&1; echo "$?:")"
+is "a pane that is gone: exit 0, nothing printed" "0:" \
+   "$(printf '{"cwd":"%s"}\n' "$SCD/a" | "$DIR/scripts/agent-state" session %999999 2>&1; echo "$?:")"
+sc_clear; sc "$SCD/a"
+is "the pane's state is untouched" "" "$(tmux show-option -pqv -t "$SCP" @panestate)"
+is "tmux-review --dir follows the saved tree" "$SCD/a" "$("$DIR/scripts/tmux-review" --dir "$SCP" 2>/dev/null)"
+tmux kill-pane -t "$SCP" >/dev/null 2>&1
+rm -rf "$SCD"
+fi
+
+echo "== hook wiring: CwdChanged saves the cwd (#312) =="
+is "CwdChanged runs agent-state session, with no matcher (it takes none)" "1 0" \
+   "$(jq -r '[.hooks.CwdChanged[]? | select(.hooks[].command | test("agent-state session$"))]
+        | "\(length) \(map(select(has("matcher"))) | length)"' "$DIR/examples/claude-hooks.json")"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

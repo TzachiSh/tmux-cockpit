@@ -22,6 +22,9 @@ for the Stop hook's ◆, `prefix + i`) follows it:
 tmux set-option -p -t "$TMUX_PANE" @cockpit_dir ~/.cache/cockpit-wt/my-branch
 ```
 
+Run it as a command of its own, after any `cd`: the `CwdChanged` hook that follows a `cd` sets
+`@cockpit_dir` to the new cwd.
+
 `-p` is not optional: a window or global `@cockpit_dir` is inherited by every
 pane, and then every row diffs that one tree.
 

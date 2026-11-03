@@ -37,6 +37,7 @@ timer.
 | `SessionStart` (3rd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
+| `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
@@ -204,14 +205,15 @@ next prompt resumes it, `/goal clear` ends it.
 ## Session identity
 
 `agent-state session` runs at `SessionStart` (`startup|resume|clear|fork`: each can start a
-new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no
-state. It reads two fields of the hook payload and writes them with `set-option -p`, which does
+new `session_id`; not `compact`, which keeps it), at `UserPromptSubmit` and at `CwdChanged`. It changes no
+state. It reads these fields of the hook payload and writes them with `set-option -p`, which does
 not expand formats:
 
 | option | from | saved when |
 |--------|------|------------|
 | `@cockpit_session` | `session_id` | it is a UUID |
 | `@cockpit_transcript` | `transcript_path` | it is an absolute path with no `..` and no `#`, and resolves (`realpath`, symlinks followed) to a regular file under `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
+| `@cockpit_dir` | `new_cwd`, else `cwd` | it is a whole JSON string naming an existing directory by an absolute path with no control character or backslash, and the agent moved or a new session began (see [Working tree](#working-tree)) |
 
 A new `session_id` drops the old `@cockpit_transcript` first, so a pane never points at the
 previous session's file. A missing or refused field leaves the option as it was. The reader
@@ -226,3 +228,24 @@ old value stays. The hook checks the path against the projects tree of the `CLAU
 claude runs with; the reader uses its own environment's (usually the tmux server's). Export
 `CLAUDE_CONFIG_DIR` where tmux starts, not only in a shell, or the reader refuses the stored path
 and falls back to `@cockpit_session`.
+
+## Working tree
+
+tmux reports a pane's process cwd, and a Claude Code session never moves it: a `claude`
+started in `~` that `cd`s into a repo read `no repo` on the board. Every hook payload carries
+the session's own `cwd`, so `agent-state session` saves it as `@cockpit_dir`, the option the
+board, `prefix + i` and `tmux-review` already read ahead of the pane's cwd. It runs at
+`CwdChanged` (a `cd` in the main conversation; subagents fire none), with `SessionStart` and
+`UserPromptSubmit` as backstops for a missed event and for installs that predate the
+`CwdChanged` entry.
+
+`@cockpit_cwd` keeps the cwd the hooks saw last. `@cockpit_dir` is written only when the
+payload's cwd differs from it, or when a new `session_id` arrives. An agent that drives a
+hand-made worktree with `git -C` sets `@cockpit_dir` itself ([review.md](review.md)), and a
+prompt in the same cwd leaves that value alone; its next `cd` replaces it.
+
+A value is refused, and the old option kept, when it is not a whole JSON string (a payload cut
+by the 4 KB cap, or by a writer that died), not absolute, holds a control character or a
+backslash, or names no directory. `#` is allowed: a directory may be named `x#y`, and
+`set-option -p` stores `#(...)` as written. tmux reads an argument's trailing `;` as a command
+separator, so a directory ending in `;` is passed as `\;`.

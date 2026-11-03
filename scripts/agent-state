@@ -1,7 +1,8 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
-#          agent-state session [pane-id]   save the payload's session_id and transcript_path (#302)
+#          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
+#                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep      every window's and session's summaries (tmux hooks)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
@@ -176,16 +177,18 @@ notify)
     ;;
 session)
     # SessionStart and UserPromptSubmit carry the session's identity (#302): the reader is
-    # then right from turn 1 and after /clear or --resume, before any Stop. No state change.
-    # Both values are untrusted: each is checked, then set with `set-option -p` (no format
-    # expansion) in a call of its own. last_assistant_message is free text: never stored.
+    # then right from turn 1 and after /clear or --resume, before any Stop. They and
+    # CwdChanged carry its cwd, the tree the board shows (#312). No state change. Every value
+    # is untrusted: each is checked, then set with `set-option -p` (no format expansion) in a
+    # call of its own. last_assistant_message is free text: never stored.
     d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || exit 0
     # A capped read, not read_payload: the UserPromptSubmit payload carries the whole prompt,
     # and bash reads a pipe a byte at a time. The ids come first in what claude sends; one
-    # that falls past the cap is skipped (the old value stays). Ends early on both keys.
-    have_ids() { case "$payload" in *'"session_id"'*'"transcript_path"'*|*'"transcript_path"'*'"session_id"'*) return 0 ;; esac; return 1; }
+    # that falls past the cap is skipped (the old value stays). Ends early on all three keys.
+    has() { case "$payload" in *"\"$1\""*) return 0 ;; esac; return 1; }
+    have_ids() { has session_id && has transcript_path && has cwd; }
     # Bytes, not characters: a UTF-8 locale would count `read -n` in characters.
     payload="" chunk="" lc_was=${LC_ALL-} lc_set=${LC_ALL+1}
     LC_ALL=C
@@ -200,12 +203,35 @@ session)
     # A value cut by the cap fails the UUID test or names no file, so it is never saved.
     json_str session_id; sid=$REPLY
     json_str transcript_path; tp=$REPLY
+    # CwdChanged's new_cwd, else the cwd every event carries (#312). Only a whole JSON string:
+    # one cut by the cap has no closing quote, and its prefix may well be a real directory.
+    json_whole() {            # <key> -> REPLY, the string value; empty when not one
+        local LC_ALL=C re="\"$1\": ?\"([^\"\\\\]*)\""
+        REPLY=""; [[ $payload =~ $re ]] && REPLY=${BASH_REMATCH[1]}
+    }
+    json_whole new_cwd; dir=$REPLY; [ -n "$dir" ] || { json_whole cwd; dir=$REPLY; }
+    # Absolute, no control char (a newline would split the board's row), an existing directory.
+    case "$dir" in /*) ;; *) dir="" ;; esac
+    case "$dir" in *[$'\001'-$'\037\177']*) dir="" ;; esac
+    [ -n "$dir" ] && [ ! -d "$dir" ] && dir=""
+    # One read for both: the session saved before and the cwd the hooks saw last.
+    had=$(tmux display-message -p -t "$pane" '#{@cockpit_session}'$'\037''#{@cockpit_cwd}' 2>/dev/null)
+    cur=${had%%$'\037'*} seen=${had#*$'\037'}
     uuid='^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    new=""
     if [[ $sid =~ $uuid ]]; then
-        cur=$(tmux show-option -pqv -t "$pane" @cockpit_session 2>/dev/null)
         # A new session (/clear, --resume): the old transcript is not its transcript.
-        [ "$cur" != "$sid" ] && tmux set-option -pu -t "$pane" @cockpit_transcript 2>/dev/null
+        [ "$cur" != "$sid" ] && new=1 && tmux set-option -pu -t "$pane" @cockpit_transcript 2>/dev/null
         tmux set-option -p -t "$pane" @cockpit_session "$sid" 2>/dev/null
+    fi
+    # @cockpit_dir is written when the agent moved or a new session began, not on every prompt:
+    # an agent driving a hand-made worktree with `git -C` sets it itself (docs/review.md), and
+    # that holds until it cds. tmux takes an argument's trailing `;` for a separator; `\;` is a
+    # literal one.
+    if [ -n "$dir" ] && { [ "$dir" != "$seen" ] || [ -n "$new" ]; }; then
+        arg=$dir; case "$arg" in *\;) arg="${arg%;}\\;" ;; esac
+        tmux set-option -p -t "$pane" @cockpit_dir "$arg" 2>/dev/null
+        tmux set-option -p -t "$pane" @cockpit_cwd "$arg" 2>/dev/null
     fi
     # Only a regular file inside the projects tree, symlinks and `..` resolved. '#' never
     # appears in a real one (claude turns it into '-'), so it is refused outright, in the
