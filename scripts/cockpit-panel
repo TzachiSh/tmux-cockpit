@@ -158,7 +158,7 @@ glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" ${glyphs:+COCKPIT_GLYPHS=$glyphs} "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
         exit 0

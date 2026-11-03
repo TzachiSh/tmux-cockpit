@@ -462,8 +462,8 @@ fn agent_sessions_cached() -> HashMap<String, String> {
 /// @cockpit_session the hooks never set.
 ///
 /// #294: on the fetch thread, so a `claude` that hangs must not hang the board.
-/// It gets `AGENTS_DEADLINE` (agent-poll's `timeout 5`), then its process
-/// group is killed and the answer is empty.
+/// It gets `AGENTS_DEADLINE`, under the board's 3 s stale threshold (the call
+/// takes about 0.2 s), then its process group is killed and the answer is empty.
 fn agent_sessions() -> HashMap<String, String> {
     let out = claude_agents_json(AGENTS_DEADLINE).unwrap_or_default();
     let v: Value = serde_json::from_slice(&out).unwrap_or(Value::Null);
@@ -476,7 +476,7 @@ fn agent_sessions() -> HashMap<String, String> {
         .unwrap_or_default()
 }
 
-const AGENTS_DEADLINE: Duration = Duration::from_secs(5);
+const AGENTS_DEADLINE: Duration = Duration::from_millis(2500);
 
 /// `claude agents --json`'s stdout, or `None` on a spawn failure or when it
 /// has not closed by the deadline.

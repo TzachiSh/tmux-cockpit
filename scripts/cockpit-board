@@ -58,7 +58,7 @@ while :; do
     rm -f -- "$f.expect"
     # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
     # environment and must not mark the binary as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" ${glyphs:+COCKPIT_GLYPHS=$glyphs} "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
         rc=$?
         tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
         exit 0

@@ -11445,6 +11445,10 @@ gl_run() {
 is "@cockpit_glyphs ascii reaches the board as COCKPIT_GLYPHS" "[ascii]" "$(gl_run)"
 "$TMUX_REAL" -L "$GL" set -gu @cockpit_glyphs
 is "and unset passes nothing" "[]" "$(gl_run)"
+# an odd value stays one word: it reaches the binary whole and runs nothing
+"$TMUX_REAL" -L "$GL" set -g @cockpit_glyphs "ascii touch $GD/ran"
+is "a value with spaces reaches the binary as one word" "[ascii touch $GD/ran]" "$(gl_run)"
+[ -e "$GD/ran" ] && bad "and runs nothing" "no $GD/ran" "it exists" || ok "and runs nothing"
 "$TMUX_REAL" -L "$GL" kill-server >/dev/null 2>&1
 fi
 
