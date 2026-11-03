@@ -91,8 +91,8 @@ request() {                   # <pane>
     local pane=$1 dir root sess store pw ph rc t cmd
     is_pane "$pane" || { usage; exit 2; }
     if [ "$(tmux display-message -p -t "$pane" '#{session_attached}' 2>/dev/null)" = 0 ]; then
-        printf 'tmux-review: no client is attached to %s'"'"'s session — nowhere to open the review\n' \
-            "$pane" >&2
+        printf 'tmux-review: no client is attached to %s'"'"'s session' "$pane" >&2
+        printf ' — nowhere to open the review\n' >&2
         exit 1
     fi
     dir=$(pane_dir "$pane")
