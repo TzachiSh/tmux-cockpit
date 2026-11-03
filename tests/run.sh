@@ -674,8 +674,23 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
         | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
         >/dev/null 2>&1
     is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
+    # A 1 MB array with no subagent, then the same array ending in one, both under C.UTF-8.
+    BGARR=$(yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," \
+        | head -n 1000 | tr -d '\n')
+    is "the long array has 1000 shell entries" 1000 \
+        "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
+    for bgw in done running; do
+        bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
+        bgst running "$BGU"
+        printf '%s\n' "$(bgstop "$bgx")" | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" \
+            "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1
+        is "a 1 MB array under C.UTF-8 ends $bgw" "$bgw" "$(bgo @panestate)"
+    done
 else
     skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
+    skip_ "the long array has 1000 shell entries (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends done (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends running (no C.UTF-8 locale)"
 fi
 # A long final message comes before the key and is read whole: no cap cuts the array off.
 BGBIG=$(printf '%01048576d' 0)

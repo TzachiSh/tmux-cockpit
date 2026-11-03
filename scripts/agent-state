@@ -121,7 +121,9 @@ subagent_in_flight() {
     # bytes other than `]`, so the match ends with the array (its entries are flat objects,
     # no nested array) and a `]` inside a string does not end it. Bytes, not characters: in a
     # UTF-8 locale glibc's multibyte matcher is quadratic on a long array, and a byte that is
-    # not UTF-8 ends the match. Restored on return; nothing below forks.
+    # not UTF-8 ends the match. Restored on return; nothing below forks. Still quadratic, even
+    # under C: a payload repeating an unclosed `"background_tasks":[`, which valid JSON with
+    # the key once cannot be.
     local LC_ALL=C
     re='"background_tasks": ?\[("([^"\\]|\\.)*"|[^]"])*"type": ?"subagent"'
     [[ $payload =~ $re ]]
