@@ -43,7 +43,7 @@ timer.
 | `SubagentStart` | `running` |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
-| `Stop` | `done` |
+| `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then nothing changes (see [Background subagents](#background-subagents)) |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
@@ -136,6 +136,32 @@ no state) to `running` and leaves a blocked or errored lead exactly as it is.
 Measured with in-process teammates (the default); in split-pane team mode the
 hook lands on the teammate's own pane, so an idle teammate may read `running`
 until its next turn.
+
+## Background subagents
+
+A main turn can end while background subagents still work ("Waiting for 3
+background agents to finish"). That `Stop` is a pause: Claude Code wakes the
+session when each subagent reports back, which fires `UserPromptSubmit`, and
+the `Stop` that ends the last report-back turn writes `done`. Claude Code
+puts the in-flight work in the `Stop` payload's `background_tasks`, so
+`agent-state done` reads it and leaves the pane as it is while any entry has
+type `subagent`. `needs-input` and `error` stay sticky, since nothing is written.
+
+Only subagents hold the pane. An idle teammate stays `running` in Claude Code's
+task registry for the life of the team, and a background shell or monitor can
+run forever; holding on either would leave a pane "working" that nothing will
+wake. A `workflow`, `cloud session` or `MCP task` does not hold it either: the
+hooks reference names only a background subagent's report-back as a wake of
+the main session, and a cloud session runs on another machine for as long as
+it likes. Holding on work with no sure wake risks a pane stuck "working"; not
+holding only shows `done` early. A subagent that never stops is listed by
+every `Stop` until the session ends, and `SessionEnd` clears the pane.
+
+There is no subagent counter, so there is nothing to drift, lock or reset.
+Counting `SubagentStart` against `SubagentStop` would drift: `SubagentStart`
+also fires on a resumed subagent and on every message an in-process teammate
+handles, and `SubagentStop` also fires for Claude Code's internal agents
+(prompt suggestions, `/btw`), which never fired a start.
 
 ## A goal that will not be met
 

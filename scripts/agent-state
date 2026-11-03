@@ -106,6 +106,27 @@ case "$pane" in
     *) exit 0 ;;
 esac
 
+# Does the Stop payload on stdin list a background subagent still in flight (#310)? Only a
+# subagent: an idle teammate stays "running" in claude's registry for the life of its team,
+# and a shell or monitor task may never end. Matched structurally: inside a JSON string the
+# quotes arrive escaped, so no message text can match. No payload or no head: not in flight.
+subagent_in_flight() {
+    local payload re
+    # head, not read_payload: bash reads a pipe a byte per syscall, about 2.4 s a MB, and the
+    # 2 s deadline then cut the array off a long final message. The payload is compact JSON,
+    # one line: claude writes it with a newline and closes stdin (2.1.317), so head returns.
+    payload=$(head -n 1 2>/dev/null) || return 1
+    # One regex, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
+    # the final message, any size, comes before the key. After `[`, whole strings or single
+    # bytes other than `]`, so the match ends with the array (its entries are flat objects,
+    # no nested array) and a `]` inside a string does not end it. Bytes, not characters: in a
+    # UTF-8 locale glibc's multibyte matcher is quadratic on a long array, and a byte that is
+    # not UTF-8 ends the match. Restored on return; nothing below forks.
+    local LC_ALL=C
+    re='"background_tasks": ?\[("([^"\\]|\\.)*"|[^]"])*"type": ?"subagent"'
+    [[ $payload =~ $re ]]
+}
+
 case "$state" in
 notify)
     # ESC-cancel fires no hook at all; the idle Notification is the only way out of running.
@@ -199,6 +220,13 @@ session)
     ;;
 wake)
     # TeammateIdle wakes the lead with no hook of its own, so lift done back to running.
+    ;;
+done)
+    # A Stop while background subagents run ends the turn, not the work (#310): claude wakes
+    # the session as each reports back, and the last report-back turn's Stop writes done.
+    # Nothing is written meanwhile, so sticky states and the counters stay as they are.
+    # The poller has no payload, and a terminal is a person typing the command.
+    [ -z "$poll" ] && [ ! -t 0 ] && subagent_in_flight && exit 0
     ;;
 esac
 
