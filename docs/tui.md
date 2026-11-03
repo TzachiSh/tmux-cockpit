@@ -80,7 +80,7 @@ Inside the board, the list (the default layout):
 | `u` | the next `▲` agent, wrapping; unfolds its group |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
-| `a` `r` `f` `i` | as in the tiles, on an agent; a header does not take them |
+| `a` `r` `f` `i` `x` `R` | as in the tiles, on an agent; a header does not take them |
 | `v` | the tiles |
 | `?` `^L` `q` `esc` | as in the tiles |
 
@@ -100,6 +100,8 @@ In the tiles (`v`):
 | `f` | the panel for it (`cockpit-panel`); the board comes back after |
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
+| `x` | kill the pane's window, after a confirm (`kill %N`, for #228's wrapper arm) |
+| `R` | `request %N`, at once (for #228's wrapper arm) |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -114,10 +116,33 @@ reads, so a renamed key cannot go stale in one and not the other.
 frame carries a hint. It lists only keys that work on what is selected, in
 priority order, and drops one whole hint at a time from the right as the width
 shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
-`r review`, `f panel`, `i info`, then `space fold` in the list. On a list
+`r review`, `f panel`, `i info`, then `space fold` in the list, then `x kill`
+and `R request`, which the cut drops first. On a list
 header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
 `n p sessions`. The footer, the `?` help and the floor card are the panel's
 own, from `chrome`.
+
+**Extra actions.** `EXTRAS` in `board.rs`, the `// #228:` registry, holds the
+actions beyond the key table: a key, the footer's label, the `?` help row, the
+verb, and two optional functions of the selected `Pane`, `confirm` (the
+question) and `expect` (the value for `.expect`). Each entry is in the footer on
+an agent (never a header), in `?` under "act on the selected agent", and in the
+dispatch; its key may not be one the table, D6, D7's `/` or D8's `a` takes.
+`x` → `kill`, with a confirm and the window id as `.expect`, and `R` →
+`request`, with neither, are #228's. An entry with no `confirm` exits at once.
+
+**The confirm.** An entry with a `confirm` opens one frame, the focus frame,
+over the foot of the list or the tiles: the action and the target in its title,
+`confirm` at its right, the question (`kill window api:2 · server?`) and what
+the keys do, all in fg. It owns the keyboard (D18): `y` exits with the action,
+`n` and `esc` go back with nothing written, `?` shows its keys, `q` and `^C`
+close the board; every other key does nothing, `↵` included, so a held Enter
+cannot send (D8). The footer lists those keys only (D19):
+`y kill   n back   esc back   ? keys   q close`. While it is open a refresh
+updates each row's age and text but no row moves, folds or goes; the list's
+title reads `sessions · held`. If the target's pane goes, the confirm closes
+itself with the note `✕ nothing done: api:2 is gone, kill not sent`. Step 6's
+`deliver` is meant to open the same confirm.
 
 **No mouse on the board.** Enabling SGR capture inside a popup takes the wheel
 and text selection away from you for as long as the board is open, and the board
@@ -333,7 +358,8 @@ a scrollbar.
 the board again in the same popup, as
 `cockpit-tui board --select %N --note <file>`: the selection is back on the pane
 just acted on, and the footer row shows the note. `jump`, `q`, `deliver` (still
-reserved), a verb the plugin does not know, a board that exits non-zero, and
+reserved), a verb the plugin does not know (`kill` and `request` until #228
+adds their arms under `# #228 verbs`), a board that exits non-zero, and
 `@cockpit_board_return off` end the loop.
 
 The note is the action's last line. For `panel` it is what `cockpit-panel`
@@ -693,6 +719,29 @@ sends `prefix + f`.
   Vec<Span>`, extra cells on a list row (none today), and `info(&str) ->
   Option<String>`, where `i` opens a view (today `info %N`).
 
+### Contract changes for the board's extra actions (for #61)
+
+- New board keys `x` (`kill %N`, after a confirm) and `R` (`request %N`), from
+  the `EXTRAS` registry; new verbs `kill` and `request` on the action line.
+- New sidecar `$COCKPIT_ACTION.expect` (rules under [the action
+  file](#the-freeze)); `panel::action::{write_expect, expect_body, EXPECT_MAX}`
+  are new. For `kill` it holds the target's window id (`@N`), never the name.
+- The fleet read appends a 13th `list-panes -F` field, `#{window_id}`, kept in
+  `data::Pane::win`; a row with fewer than 13 fields is skipped. `--json` and
+  `--rows` do not carry it. `board::{is_window_id, refused}` are new: a pane
+  with no `@N` id gets a `✕` note on `x` instead of a confirm.
+- `board::run` returns `Option<board::Exit>` (`line`, `expect`), not
+  `Option<String>`; `board::View` gains `confirm: Option<&Confirm>`;
+  `Act::Extra(char)` is new.
+- The confirm: `y n esc ? q ^C` only, `↵` off; a refresh holds the rows; a gone
+  target closes it with a `✕` note. The footer while it is open lists those
+  keys; on an agent the footer gains `x kill` and `R request` before `?`.
+- `scripts/cockpit-board` removes `$f.expect` before each run of the board.
+- Goldens: new `board-confirm-{60,100}`; the footer or the help moved in
+  `board-{80,80-scrolled,100,120,160,180}`, `board-ascii`, `board-nocolor`,
+  `board-nocolor-100`, `board-stale-100`, `board-list-{100,180}`,
+  `board-tiles-100` and `board-help-{60,100,180,tiles-100}`.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -913,6 +962,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 
 ```
 jump %N · review %N · panel %N · info %N · deliver %N   (deliver reserved for phase 2)
+kill %N · request %N                                    (the board's EXTRAS, #228's arms)
 paste %N · send %N                                      (the panel)
 ```
 
@@ -920,6 +970,23 @@ The verb is `[a-z]+`, the argument is a tmux pane id. The binary executes
 nothing. `paste` and `send` carry text, which goes to `$COCKPIT_ACTION.text`,
 mode 0600, control characters stripped; with `COCKPIT_ACTION` unset the panel
 refuses them and exits 1.
+
+An action whose `EXTRAS` entry has an `expect` also writes
+`$COCKPIT_ACTION.expect` before the action line, under `.text`'s rules: created
+new with `O_NOFOLLOW`, mode 0600, never over a file that is there. It is one
+`\n`-terminated line, every control character dropped (`\t` and `\n` too), at
+most 1 KiB (`EXPECT_MAX`); a longer value is refused, not cut, and the board
+exits 1 with nothing written, as is an empty one. For `kill` it is the target
+pane's `#{window_id}` (`@9`) when the confirm opened, not its name: agent
+windows tend to share one (`claude`), and a pane moved into a namesake would
+pass a name check. The wrapper reads the pane's `#{window_id}` again and
+refuses with a `✕` note when it differs. A pane with no `@N` window id is
+not offered the kill: `x` shows `✕ nothing done: <sess:idx> has no window id
+to check, kill not sent` and opens no confirm. Only ASCII control characters
+are dropped (`is_ascii_control`), so the bytes match what a shell `read` sees;
+a C1 character such as U+009B stays. With `COCKPIT_ACTION` unset such an action is refused,
+exit 1. `scripts/cockpit-board` removes `act.expect` before each run of the
+board, so one trip's value never stands in for the next.
 
 Beside it, `$COCKPIT_ACTION.cmd` is one line: the pane's
 `#{pane_current_command}` when the panel captured it. Both files are written

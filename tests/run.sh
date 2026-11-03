@@ -8269,6 +8269,21 @@ case "$(bruns)" in "board;board --select %1 --note "*"/note;cockpit: sent to %1;
 esac
 wact 'deliver %1' >/dev/null
 is "deliver, still reserved, ends the loop" "board;" "$(bruns)"
+# The binary creates .expect new and refuses one that is there: the loop
+# clears the last trip's before each run, so it never stands in for the next.
+cat > "$BD/p/bin/cockpit-tui" <<BDBIN
+#!/bin/sh
+if [ -e "$BD/once" ]; then
+    [ -e "\$COCKPIT_ACTION.expect" ] && printf stale >> "$BD/bexp"
+    exit 0
+fi
+: > "$BD/once"
+printf 'server\n' > "\$COCKPIT_ACTION.expect"
+printf 'review %%1\n' > "\$COCKPIT_ACTION"
+BDBIN
+chmod +x "$BD/p/bin/cockpit-tui"; rm -f "$BD/once" "$BD/bexp"
+PATH="$BD/rec:$PATH" COCKPIT_LOG="$BD/tui.log" COCKPIT_TUI_BIN="$BD/p/bin/cockpit-tui" "$BD/p/scripts/cockpit-board" -p %3 </dev/null >/dev/null 2>&1
+is "a trip's .expect is gone before the board runs again" "" "$(cat "$BD/bexp" 2>/dev/null)"
 printf 'off\n' > "$BD/ret"
 is "@cockpit_board_return off: review is one-way again" "tmux-review -p %1;" "$(wact 'review %1')"
 is "and the board ran once" "board;" "$(bruns)"
@@ -8455,6 +8470,83 @@ rb_gone "$RBOK"
 is "COCKPIT_READONLY writes no board.state" "sel %0" "$(tail -1 "$RBD/state/tmux-cockpit/board.state")"
 "$TMUX_REAL" -L "$RB" send-keys -t "$RBNO" q
 "$TMUX_REAL" -L "$RB" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: x asks first, y writes kill %N and its window id as .expect =="
+# The real binary in a real window, with COCKPIT_ACTION as the wrapper sets it:
+# the confirm owns the keys (D18), ↵ never sends (D8), and a pane that goes
+# while it is open closes it with a note.
+if need_tmux "the board's confirm"; then :; else
+KB="cockpit-kb-$$"; SOCKS="$SOCKS $KB"; KBD=$(mktmpd)
+mkdir -p "$KBD/state"
+"$TMUX_REAL" -L "$KB" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+KBP=()
+# Both windows are named claude, as agent windows tend to be: the name cannot
+# tell them apart, so .expect is the window id.
+for n in claude claude; do
+    KBP+=("$("$TMUX_REAL" -L "$KB" new-window -d -n "$n" -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')")
+done
+for p in "${KBP[@]}"; do
+    "$TMUX_REAL" -L "$KB" set -p -t "$p" @panestate running >/dev/null 2>&1
+done
+kb_open() {                   # <pane> <action-dir> -> KBW, a board on that pane
+    KBW=$("$TMUX_REAL" -L "$KB" new-window -d -P -F '#{pane_id}' -t t: \
+        "env COCKPIT_READONLY=1 XDG_STATE_HOME=$KBD/state COCKPIT_ACTION=$2/act $COCKPIT_TUI_BIN board --select $1")
+    until_cap "$KB" "$KBW" '*board · 2 agents*'
+}
+kb_cap() { "$TMUX_REAL" -L "$KB" capture-pane -p -J -t "$KBW" 2>/dev/null; }
+kb_gone() {                   # <pane>
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        "$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$1" || return 0
+        sleep 0.1
+    done
+    return 1
+}
+KA=$(mktmpd)
+kb_open "${KBP[0]}" "$KA" || bad "the board opens on the first" "board · 2 agents" "$(kb_cap)"
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
+until_cap "$KB" "$KBW" '*kill window t:1 · claude?*' || bad "x asks, naming the window" "kill window t:1 · claude?" "$(kb_cap)"
+case "$(kb_cap)" in *'y kill   n back   esc back   ? keys   q close'*) ok "x asks, naming the window, and the bar lists only its keys" ;;
+    *) bad "x asks, naming the window, and the bar lists only its keys" "y kill   n back ..." "$(kb_cap)" ;; esac
+# ↵ and j do nothing; n goes back with nothing written
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" Enter j
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" n
+until_cap "$KB" "$KBW" '*x kill*' || bad "n goes back to the board" "the board's bar" "$(kb_cap)"
+is "↵ sends nothing and n backs out: no action, no .expect" "open  " \
+   "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -qx "$KBW" && printf open) $(cat "$KA/act" 2>/dev/null) $(cat "$KA/act.expect" 2>/dev/null)"
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
+until_cap "$KB" "$KBW" '*kill window t:1 · claude?*'
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" y
+kb_gone "$KBW" || bad "y closes the board" "the window closes" "$(kb_cap)"
+is "y writes kill %N" "kill ${KBP[0]}" "$(cat "$KA/act" 2>/dev/null)"
+KBW0=$("$TMUX_REAL" -L "$KB" display -p -t "${KBP[0]}" '#{window_id}')
+KBW1=$("$TMUX_REAL" -L "$KB" display -p -t "${KBP[1]}" '#{window_id}')
+is "and its window id, not the shared name, as .expect, 0600" "$KBW0 600" "$(cat "$KA/act.expect" 2>/dev/null) $(stat -c %a "$KA/act.expect" 2>/dev/null)"
+is "which tells it from the other window named claude" "yes" "$([ -n "$KBW0" ] && [ "$KBW0" != "$KBW1" ] && echo yes)"
+is "and the board killed nothing itself" "${KBP[0]}" "$("$TMUX_REAL" -L "$KB" list-panes -a -F '#{pane_id}' | grep -x "${KBP[0]}")"
+
+# R asks nothing and writes request %N, with no .expect
+KR=$(mktmpd)
+kb_open "${KBP[1]}" "$KR"
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" R
+kb_gone "$KBW" || bad "R closes the board" "the window closes" "$(kb_cap)"
+is "R writes request %N at once, with no .expect" "request ${KBP[1]} no" \
+   "$(cat "$KR/act" 2>/dev/null) $([ -e "$KR/act.expect" ] && echo yes || echo no)"
+
+# the target goes while it is asked about: the confirm closes with a ✕ note
+KG=$(mktmpd)
+kb_open "${KBP[1]}" "$KG"
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" x
+until_cap "$KB" "$KBW" '*kill window t:2 · claude?*' || bad "x asks about the second" "kill window t:2 · claude?" "$(kb_cap)"
+"$TMUX_REAL" -L "$KB" kill-pane -t "${KBP[1]}" >/dev/null 2>&1
+until_cap "$KB" "$KBW" '*nothing done: t:2 is gone, kill not sent*' || bad "a gone target closes the confirm with a note" "the ✕ note" "$(kb_cap)"
+case "$(kb_cap)" in *'kill window'*) bad "a gone target closes the confirm with a note" "no confirm" "$(kb_cap)" ;;
+    *) ok "a gone target closes the confirm with a note" ;; esac
+"$TMUX_REAL" -L "$KB" send-keys -t "$KBW" q
+kb_gone "$KBW"
+is "and nothing was written" "" "$(cat "$KG/act" 2>/dev/null)$(cat "$KG/act.expect" 2>/dev/null)"
+"$TMUX_REAL" -L "$KB" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-board: folds survive a reopen (board.state fold lines) =="

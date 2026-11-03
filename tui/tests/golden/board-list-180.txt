@@ -37,4 +37,4 @@
 "│                                                                                                                                                                                  │"
 "│                                                                                                                                                                                  │"
 "└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘"
-" ↵ jump   a answer   r review   f panel   i info   space fold   ? keys   q close                                                                                                    "
+" ↵ jump   a answer   r review   f panel   i info   space fold   x kill   R request   ? keys   q close                                                                               "

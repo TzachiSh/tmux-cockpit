@@ -13,8 +13,8 @@ See [the board screen](tui.md#the-board) for what it looks like.
 It is the plugin's required binary, `bin/cockpit-tui`, fetched by `install.sh`
 (or by `scripts/tui-fetch` by hand, or built with `make tui`, Rust >= 1.88).
 Without it the binding prints one message and exits 0.
-`prefix + r` remains the fleet list: fuzzy filter, multi-select and the wheel
-come free from fzf, and the board is the grid of previews fzf cannot draw.
+The board is the fleet view: every agent pane, in the list or the tiles, and
+the one place to act on them, one agent at a time.
 
 The binary renders and decides; it never acts. It writes one line,
 `<verb> <pane-id>`, and the binding runs the same `tmux-jump` / `tmux-review`

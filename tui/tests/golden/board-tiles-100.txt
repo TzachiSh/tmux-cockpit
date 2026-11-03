@@ -27,4 +27,4 @@
 "│                                                ││                                                │"
 "│                                                ││                                                │"
 "└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘"
-" ↵ jump   a answer   r review   f panel   i info   ? keys   q close                                 "
+" ↵ jump   a answer   r review   f panel   i info   x kill   R request   ? keys   q close            "
