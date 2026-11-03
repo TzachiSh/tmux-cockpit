@@ -2250,3 +2250,23 @@ fn no_window_id_refuses_the_kill() {
     p.win = "@12".into();
     assert_eq!(board::refused(kill(), &p), None);
 }
+
+/// The list's top line drops whole parts, never a word: the session count
+/// first, then the agent count; the needs and error counts stay longest.
+#[test]
+fn the_top_line_drops_whole_parts_in_priority_order() {
+    let th = Theme::fixed();
+    let ps = fleet();
+    let nav = nav_on(&ps, Sel::Pane("%3".into()), &[], 20);
+    for (w, want) in [
+        (60u16, " board · 13 agents · 4 sessions · 2 needs you · 1 error"),
+        (55, " board · 13 agents · 4 sessions · 2 needs you · 1 error"),
+        (54, " board · 13 agents · 2 needs you · 1 error"),
+        (42, " board · 13 agents · 2 needs you · 1 error"),
+        (41, " board · 2 needs you · 1 error"),
+        (40, " board · 2 needs you · 1 error"),
+    ] {
+        let out = draw(w, 24, |f| board::render(f, f.area(), &list_view(&ps, &th, &nav)));
+        assert_eq!(rows(&out)[0].trim_end(), want, "at {w}");
+    }
+}

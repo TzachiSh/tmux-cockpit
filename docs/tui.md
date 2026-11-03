@@ -248,6 +248,11 @@ The list, at 100 columns: 13 agents in 4 sessions, the first `▲` selected.
  ↵ jump   a answer   r review   f panel   i info   space fold   ? keys   q close
 ```
 
+The top line is the agent count, the session count, how many need you and
+how many are in error, and `· stale` while reads fail. When it does not fit,
+whole parts drop, never a cut word: the session count first, then the agent
+count, then the error and needs counts.
+
 A row is the selection mark, its digit, the state glyph and review mark, the
 window index, the title, what the agent asks (`▲`, `✕`) or is doing, and its
 age; an idle agent says `idle`. `◂` marks tmux's active pane. The selection is

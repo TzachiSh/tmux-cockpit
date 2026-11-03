@@ -1,4 +1,4 @@
-" board · 13 agents · 4 sessions · 2 need"
+" board · 2 needs you · 1 error          "
 "┌ sessions ────────────────────────────┐"
 "│  ▾ api ─────────────────── ▲1 ●2 ✓1  │"
 "│▎ 1 ▲◆ 0 server Do you want to… 4m12s │"

@@ -217,35 +217,40 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
 }
 
 /// `sessions` is the list's: it adds the session and error counts (6.1).
+/// Parts that do not fit drop whole, never cut mid-word: the session count
+/// first, then the agent count, then the error and needs counts; the stale
+/// age goes last, as it is the one that says the rest may be wrong.
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Option<usize>) {
     let th = v.th;
     let needs = v.panes.iter().filter(|p| p.state == State::NeedsInput).count();
-    let mut left = vec![Span::styled(
-        format!(" board {} {n} agent{}", th.g.dot, if n == 1 { "" } else { "s" }),
-        Style::new().fg(th.label),
-    )];
+    let errors = v.panes.iter().filter(|p| p.state == State::Error).count();
+    let d = th.g.dot;
+    let plural = |k: usize| if k == 1 { "" } else { "s" };
+    let part = |rank: u8, t: String, c| (rank, Span::styled(t, Style::new().fg(c)));
+    // (drop rank, text): the lowest rank goes first; " board" never does
+    let mut parts = vec![
+        part(u8::MAX, " board".into(), th.label),
+        part(1, format!(" {d} {n} agent{}", plural(n)), th.label),
+    ];
     if let Some(s) = sessions {
-        left.push(Span::styled(
-            format!(" {} {s} session{}", th.g.dot, if s == 1 { "" } else { "s" }),
-            Style::new().fg(th.label),
-        ));
+        parts.push(part(0, format!(" {d} {s} session{}", plural(s)), th.label));
     }
     if needs > 0 {
-        left.push(Span::styled(format!(" {} {needs} needs you", th.g.dot), Style::new().fg(th.needs)));
+        parts.push(part(3, format!(" {d} {needs} needs you"), th.needs));
     }
-    let errors = v.panes.iter().filter(|p| p.state == State::Error).count();
     if sessions.is_some() && errors > 0 {
-        left.push(Span::styled(
-            format!(" {} {errors} error{}", th.g.dot, if errors == 1 { "" } else { "s" }),
-            Style::new().fg(th.error),
-        ));
+        parts.push(part(2, format!(" {d} {errors} error{}", plural(errors)), th.error));
     }
     if let Some(s) = v.stale.filter(|_| !v.never) {
-        left.push(Span::styled(
-            format!(" {} stale {}", th.g.dot, fmt_dur(s)),
-            Style::new().fg(th.error),
-        ));
+        parts.push(part(4, format!(" {d} stale {}", fmt_dur(s)), th.error));
     }
+    while parts.iter().map(|p| p.1.width()).sum::<usize>() > area.width as usize {
+        let Some(k) = (0..parts.len()).filter(|&k| parts[k].0 < u8::MAX).min_by_key(|&k| parts[k].0) else {
+            break;
+        };
+        parts.remove(k);
+    }
+    let left: Vec<Span> = parts.into_iter().map(|p| p.1).collect();
     f.render_widget(Line::from(left), area);
     // the list says where it is in its own frame's title (D19)
     if sessions.is_some() {
