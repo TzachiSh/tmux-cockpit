@@ -4058,7 +4058,7 @@ rm -rf "$HKN"
 HKG=$(mktmpd); mkdir -p "$HKG/.claude"
 cat > "$HKG/.claude/settings.json" <<'EOF'
 { "hooks": { "Stop": [
-    { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 330 } ] },
+    { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 330 } ] },
     { "matcher": "", "hooks": [ { "type": "command", "command": "/usr/local/bin/mywrap --log /scripts/review-gate-audit.log" } ] }
   ] } }
 EOF
@@ -4332,18 +4332,72 @@ rm -rf "$HKR" "$JQSHIM"
 else
     skip_ "hooks merge (jq not installed)"
 fi
-# --uninstall does NOT touch hooks -- the combination must be a hard usage
-# error, not a silent skip of --hooks. This is a pure argument-parsing exit,
-# so it needs no jq and must never create or touch settings.json.
-HK3=$(mktmpd)
-HOME="$HK3" "$DIR/install.sh" --uninstall --hooks >/dev/null 2>&1
-is "--uninstall --hooks is a usage error" "2" "$?"
-if [ -e "$HK3/.claude/settings.json" ]; then
-    bad "--uninstall --hooks touches no settings.json" "no settings.json" "one was created"
+# --uninstall --hooks (#292): remove exactly the entries --hooks added. Every
+# run points HOME and XDG_BIN_HOME at a temp dir, never the real settings.json.
+echo "== install.sh --uninstall --hooks removes only cockpit's entries =="
+if command -v jq >/dev/null 2>&1; then
+UH=$(mktmpd); mkdir -p "$UH/.claude"
+cat > "$UH/.claude/settings.json" <<'EOF'
+{ "model": "opus",
+  "hooks": {
+    "Stop": [ { "hooks": [ { "type": "command", "command": "my-own-tool" } ] } ],
+    "Other": [ { "matcher": "Bash", "hooks": [ { "type": "command", "command": "/usr/bin/scripts/agent-state done" } ] } ] },
+  "zkey": { "keep": true } }
+EOF
+cp "$UH/.claude/settings.json" "$UH/orig.json"
+uhrun() { HOME="$UH" XDG_BIN_HOME="$UH/bin" "$DIR/install.sh" "$@"; }
+uhrun --hooks >/dev/null 2>&1
+cp "$UH/.claude/settings.json" "$UH/merged.json"
+out=$(uhrun --uninstall --hooks --dry-run 2>&1)
+case "$out" in *agent-state*"dry-run: nothing written"*) ok "--dry-run previews the removal" ;;
+    *) bad "--dry-run previews the removal" "a diff naming agent-state" "$out" ;; esac
+is "and --dry-run writes nothing" "$(cat "$UH/merged.json")" "$(cat "$UH/.claude/settings.json")"
+uhrun >/dev/null 2>&1
+out=$(uhrun --hooks --remove 2>&1); is "removal exits clean" "0" "$?"
+[ -L "$UH/bin/tm" ] && ok "--hooks --remove leaves the symlinks in place" || bad "--hooks --remove leaves the symlinks in place" "$UH/bin/tm a link" "gone"
+uhrun --remove >/dev/null 2>&1; is "--remove without --hooks is a usage error" "2" "$?"
+uhrun --uninstall --hooks --remove >/dev/null 2>&1; is "--remove with --uninstall is a usage error" "2" "$?"
+case "$out" in *"removed   cockpit hooks"*) ok "and says what it did" ;; *) bad "and says what it did" "removed cockpit hooks" "$out" ;; esac
+is "only the cockpit entries are gone" "$(jq -S . "$UH/orig.json")" "$(jq -S . "$UH/.claude/settings.json")"
+is "key order is kept" "$(jq -c 'keys_unsorted' "$UH/orig.json")" "$(jq -c 'keys_unsorted' "$UH/.claude/settings.json")"
+is "a timestamped backup holds the pre-removal file" "$(cat "$UH/merged.json")" \
+   "$(cat "$UH"/.claude/settings.json.bak-* 2>/dev/null)"
+uhrun --hooks >/dev/null 2>&1
+is "--hooks adds them back identically (round trip)" "$(cat "$UH/merged.json")" "$(cat "$UH/.claude/settings.json")"
+uhrun --uninstall --hooks >/dev/null 2>&1
+out=$(uhrun --uninstall --hooks 2>&1)
+case "$out" in *"no cockpit hooks"*"nothing to remove"*) ok "no cockpit hooks is a no-op that says so" ;;
+    *) bad "no cockpit hooks is a no-op that says so" "nothing to remove" "$out" ;; esac
+
+# --hooks replaces only cockpit's own review-gate / agent-state off, never a foreign one.
+UF=$(mktmpd); mkdir -p "$UF/.claude"
+cat > "$UF/.claude/settings.json" <<'EOF'
+{ "hooks": {
+  "Stop": [ { "hooks": [ { "type": "command", "command": "\"/home/u/my dir/foo/scripts/review-gate\"" } ] } ],
+  "SessionStart": [ { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "/opt/x/scripts/agent-state off" } ] } ] } }
+EOF
+HOME="$UF" XDG_BIN_HOME="$UF/bin" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a foreign review-gate survives --hooks" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("my dir/foo/scripts/review-gate"))] | length' "$UF/.claude/settings.json")"
+is "a foreign agent-state off survives --hooks" "1" \
+   "$(jq '[.hooks.SessionStart[].hooks[].command | select(. == "/opt/x/scripts/agent-state off")] | length' "$UF/.claude/settings.json")"
+is "and cockpit's own review-gate was added beside it" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("^\"\\$\\{TMUX_COCKPIT_DIR.*/scripts/review-gate$"))] | length' "$UF/.claude/settings.json")"
+
+UB=$(mktmpd); mkdir -p "$UB/.claude"; printf '{ "hooks": [ broken' > "$UB/.claude/settings.json"
+out=$(HOME="$UB" XDG_BIN_HOME="$UB/bin" "$DIR/install.sh" --uninstall --hooks 2>&1); urc=$?
+is "invalid JSON is refused" "1" "$urc"
+case "$out" in *"not valid JSON"*) ok "with a clear message" ;; *) bad "with a clear message" "not valid JSON" "$out" ;; esac
+is "and the file is unchanged" '{ "hooks": [ broken' "$(cat "$UB/.claude/settings.json")"
+case "$(ls "$UB/.claude")" in *bak*) bad "and no backup is made" "none" "$(ls "$UB/.claude")" ;; *) ok "and no backup is made" ;; esac
+
+UM=$(mktmpd)
+out=$(HOME="$UM" XDG_BIN_HOME="$UM/bin" "$DIR/install.sh" --uninstall --hooks 2>&1); is "a missing settings.json exits 0" "0" "$?"
+case "$out" in *"nothing to remove"*) ok "and says so" ;; *) bad "and says so" "nothing to remove" "$out" ;; esac
+[ -e "$UM/.claude/settings.json" ] && bad "and creates nothing" "no settings.json" "created" || ok "and creates nothing"
 else
-    ok "--uninstall --hooks touches no settings.json"
+    skip_ "hooks removal (jq not installed)"
 fi
-rm -rf "$HK3"
 
 # I4: --uninstall on a read-only $BIN used to exit 0 and print nothing when
 # rm failed -- the mirror image of the install-side FAILED handling above.
