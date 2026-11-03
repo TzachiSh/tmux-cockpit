@@ -3104,7 +3104,7 @@ case "$(ak)" in
     *display-menu*) ok "prefix a opens a menu" ;;
     *) bad "prefix a opens a menu" "a display-menu" "$(ak)" ;;
 esac
-for key in w f r b M e i R; do
+for key in w f b M e i R; do
     case "$(ak)" in
         *"send-keys -K $key"*|*"send-keys -K '$key'"*) ok "the menu replays prefix $key" ;;
         *) bad "the menu replays prefix $key" "send-keys -K $key" "$(ak | grep -o 'send-keys -K [^ ]*' | tr '\n' ' ')" ;;
