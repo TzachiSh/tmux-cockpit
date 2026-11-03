@@ -12255,6 +12255,62 @@ out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scr
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
 
+echo "== a stale cockpit-tui: tm and tmux-branch name the fix, not 'exited 2' (#276) =="
+# A binary built before a screen existed prints "unknown screen <name>" and exits 2.
+# The stub prints that line; the wrappers must say the binary is old and what to run.
+SD=$(mktmpd)
+printf '#!/bin/sh\ncase "$1" in list-sessions) echo alpha ;; display-message) printf "%%s\\n" "$*" >> "$SD_LOG" ;; esac\nexit 0\n' > "$SD/tmux"
+chmod +x "$SD/tmux"
+git -C "$SD" init -q . >/dev/null 2>&1
+sd_has() { case $3 in *"$2"*) ok "$1" ;; *) bad "$1" "contains [$2]" "$3" ;; esac; }
+sd_stub() {   # sd_stub <exit code> <stderr text>: a cockpit-tui that only fails
+    printf '#!/bin/sh\nprintf "%%s\\n" "$SD_ERR" >&2\nexit %s\n' "$1" > "$SD/ct"; chmod +x "$SD/ct"; SD_ERR=$2
+}
+sd_tm() {     # a pty on stdin so tm takes the picker path
+    env -u TMUX PATH="$SD:$PATH" HOME="$SD" SD_ERR="$SD_ERR" SD_LOG="$SD/log" ${SD_POPUP:+TM_POPUP=1} COCKPIT_TUI_BIN="$SD/ct" \
+        script -qec "$DIR/scripts/tm -k" /dev/null </dev/null 2>&1
+}
+sd_br() { (cd "$SD" && env PATH="$SD:$PATH" SD_ERR="$SD_ERR" COCKPIT_TUI_BIN="$SD/ct" "$DIR/scripts/tmux-branch" </dev/null 2>&1); }
+SDMSG="cockpit-tui is older than the plugin"
+sd_stub 2 $'cockpit-tui: unknown screen sessions\nusage: cockpit-tui <screen>'
+sdo=$(sd_tm)
+sd_has "tm names the stale binary" "$SDMSG" "$sdo"
+sd_has "tm names make tui" "make tui" "$sdo"
+sd_has "tm still shows the tui's own stderr" "unknown screen sessions" "$sdo"
+case $sdo in *"exited 2"*) bad "tm no longer says 'exited 2'" "no 'exited 2'" "$sdo" ;; *) ok "tm no longer says 'exited 2'" ;; esac
+sdo=$(sd_br)
+sd_has "tmux-branch names the stale binary" "$SDMSG" "$sdo"
+sd_has "tmux-branch names make tui" "make tui" "$sdo"
+# One stderr holding the exempt line and a real one: still stale, and both reach the terminal.
+sd_stub 2 $'cockpit-tui: warning: something else\ncockpit-tui: unknown screen branch'
+sd_has "stale is found among other stderr lines (tm)" "$SDMSG" "$(sd_tm)"
+sd_has "stale is found among other stderr lines (tmux-branch)" "$SDMSG" "$(sd_br)"
+# Exit 2 alone is not stale: pick exits 2 when stdout is gone.
+sd_stub 2 'cockpit-tui: stdout is closed'
+sdo=$(sd_tm)
+sd_has "plain exit 2 keeps the old message (tm)" "the sessions picker exited 2" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tm)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tm)" ;; esac
+sdo=$(sd_br)
+sd_has "plain exit 2 shows the tui's stderr (tmux-branch)" "stdout is closed" "$sdo"
+case $sdo in *"$SDMSG"*) bad "plain exit 2 is not called stale (tmux-branch)" "no stale text" "$sdo" ;; *) ok "plain exit 2 is not called stale (tmux-branch)" ;; esac
+# The words in the middle of another line, or a different exit code, are not the signal.
+sd_stub 2 'cockpit-tui: skipped 3 rows: unknown screen'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "the phrase mid-line is not stale" "no stale text" "$sdo" ;; *) ok "the phrase mid-line is not stale" ;; esac
+sd_stub 1 'cockpit-tui: unknown screen sessions'
+sdo=$(sd_tm)
+case $sdo in *"$SDMSG"*) bad "exit 1 with the line is not stale" "no stale text" "$sdo" ;; *) ok "exit 1 with the line is not stale" ;; esac
+# A popup also gets the message from display-message, through refuse.
+: > "$SD/log"; sd_stub 2 'cockpit-tui: unknown screen sessions'; SD_POPUP=1 sd_tm >/dev/null
+sd_has "a popup also gets the stale message by display-message" "$SDMSG" "$(cat "$SD/log")"
+# The capture file is gone after every exit path.
+mkdir "$SD/tmpd"
+for sdcase in "2|cockpit-tui: unknown screen branch" "2|cockpit-tui: stdout is closed" "1|oops"; do
+    sd_stub "${sdcase%%|*}" "${sdcase#*|}"; TMPDIR=$SD/tmpd sd_br >/dev/null
+    is "tmux-branch leaves no capture file (${sdcase%%|*}, ${sdcase#*|})" "" "$(ls -A "$SD/tmpd")"
+done
+rm -rf "$SD"
+
 echo "== agent-state session: the payload's session_id and transcript_path become pane options (#302) =="
 if need_tmux "agent-state session"; then :; else
 SSD=$(mktmpd); SSH="$SSD/h"; SSROOT="$SSH/.claude/projects"; mkdir -p "$SSROOT/-p" "$SSROOT/-q/#(touch $SSD/F)"
