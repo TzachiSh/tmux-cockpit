@@ -578,14 +578,39 @@ fn the_flag_lists() {
         )
     );
     let r = Repo::new("flags");
-    assert_eq!(no_filters(&r.path()), Vec::<String>::new());
+    assert_eq!(no_filters(&r.path()), Some(Vec::new()));
     r.git(&["config", "filter.lfs.clean", "git-lfs clean -- %f"]);
     r.git(&["config", "filter.a.b.process", "x"]);
     assert_eq!(
-        no_filters(&r.path()).join(" "),
+        no_filters(&r.path()).unwrap().join(" "),
         "-c filter.a.b.clean= -c filter.a.b.smudge= -c filter.a.b.process= -c filter.a.b.required=false \
          -c filter.lfs.clean= -c filter.lfs.smudge= -c filter.lfs.process= -c filter.lfs.required=false"
     );
+}
+
+/// git splits `-c` at the first `=`, so no `-c` can blank a driver named `a=b`:
+/// a repo that declares one is refused, and its planted clean never runs.
+#[test]
+fn a_filter_driver_named_with_an_equals_sign_is_refused() {
+    let r = Repo::new("eqdrv");
+    let pwned = r.dir.join("PWNED");
+    r.write(".gitattributes", "x filter=a=b\n");
+    r.write("x", "hi\n");
+    r.git(&["config", "filter.a=b.clean", &format!("touch {}", pwned.display())]);
+    // what blanking it would look like: git reads that as filter.a, and the plant runs
+    r.git(&["-c", "filter.a=b.clean=", "add", "x"]);
+    assert!(pwned.exists(), "the plant never fired under a blanked -c, so this proves nothing");
+    std::fs::remove_file(&pwned).unwrap();
+
+    assert_eq!(no_filters(&r.path()), None);
+    assert_eq!(stat(&r, None), None, "a refused driver is a failure, not a count");
+    assert_eq!(diffstat(&[&r.path()]), (String::new(), 1));
+    let o = std::process::Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["git-flags", "--filters", &r.path()])
+        .output()
+        .unwrap();
+    assert_eq!((o.stdout.is_empty(), o.status.code()), (true, Some(1)));
+    assert!(!pwned.exists(), "the planted clean ran");
 }
 
 /// A HEAD that resolves but cannot be diffed is a broken repo, not an unborn
