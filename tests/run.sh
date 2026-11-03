@@ -3010,6 +3010,53 @@ fi
 "$TMUX_REAL" -L "$TI" kill-server >/dev/null 2>&1
 fi
 
+echo "== a held prefix turns the corner's ≡ into a reversed accent block (#271) =="
+# #{client_prefix} in a border format resolves for the client drawing it, and
+# tmux redraws borders when the key table changes, so the mark appears on the
+# prefix key and clears on the next one, with no wait for status-interval.
+if need_tmux "prefix mark"; then :; else
+PI="cockpit-pfxi-$$"; PO="cockpit-pfxo-$$"; SOCKS="$SOCKS $PI $PO"
+"$TMUX_REAL" -L "$PI" -f /dev/null new-session -d -s cockpit -x 80 -y 20 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$PO" -f /dev/null new-session -d -s o -x 80 -y 20 \
+    "TERM=xterm-256color exec $TMUX_REAL -L $PI attach -t cockpit" >/dev/null 2>&1
+until_cap "$PO" o '*≡*cockpit*'
+top() { "$TMUX_REAL" -L "$PO" capture-pane -p -e -t o | head -1; }
+until_top() {                 # <glob>: the top line, with escapes, matches
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        # shellcheck disable=SC2254
+        case "$(top)" in $1) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+RV=$'\033[7m'
+case "$(top)" in *"$RV"*) bad "idle: no reversed block" "plain ≡" "$(top)" ;; *) ok "idle: ≡ is plain" ;; esac
+"$TMUX_REAL" -L "$PO" send-keys -t o C-b
+if until_top "*${RV}*≡*"; then ok "prefix held: ≡ is drawn in reverse"
+else bad "prefix held: ≡ is drawn in reverse" "ESC[7m before ≡" "$(top)"; fi
+case "$(top)" in *"range"*) bad "range markup is consumed" "no literal range" "$(top)" ;; *) ok "no range markup leaks into the border" ;; esac
+"$TMUX_REAL" -L "$PO" send-keys -t o Escape
+for _ in $(seq 1 "$POLLS"); do case "$(top)" in *"$RV"*) sleep 0.1 ;; *) break ;; esac; done
+case "$(top)" in *"$RV"*) bad "prefix released: the mark clears" "no ESC[7m" "$(top)" ;; *) ok "prefix released: the mark clears" ;; esac
+# the tap range works while the prefix is held
+"$TMUX_REAL" -L "$PO" send-keys -t o C-b
+until_top "*${RV}*" >/dev/null
+# shellcheck disable=SC2046
+"$TMUX_REAL" -L "$PO" send-keys -t o -H $(printf '\033[<0;5;1M\033[<0;5;1m' | od -An -tx1)
+if until_cap "$PO" o '*New window*'; then ok "tapping ≡ with the prefix held opens the menu"
+else bad "tapping ≡ with the prefix held opens the menu" "the menu's New window row" "$("$TMUX_REAL" -L "$PO" capture-pane -p -t o | head -3)"; fi
+# the format itself: the range wraps the block, the block is reversed accent
+F=$("$TMUX_REAL" -L "$PI" show-option -gqv @cockpit_corner_fmt)
+case "$F" in
+    "#[range=control|1]#{?client_prefix,#[fg=themeblue]#[reverse],#[fg=themewhite]}"*"#[norange]"*) ok "the corner format: range around a prefix-aware ≡ style" ;;
+    *) bad "the corner format: range around a prefix-aware ≡ style" "range, then client_prefix style" "$F" ;;
+esac
+"$TMUX_REAL" -L "$PO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
+fi
+
 echo "== @open-editor still works under its new name =="
 # Renamed to @cockpit_editor. The old name is unprefixed and generic enough that
 # another plugin could reasonably claim it, but people have it in their configs,

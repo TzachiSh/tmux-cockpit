@@ -25,7 +25,8 @@ happening.
   A cut label never leaves a space before its `…`.
 - **The top border, at the top-left pane (or the zoomed pane), shows the
   corner:**
-  - `≡`, which opens the menu;
+  - `≡`, which opens the menu. While the tmux prefix is held it turns into a
+    reversed accent block of the same width, so you can see the prefix is on;
   - the session name, which opens the sessions screen;
   - `▲ elsewhere` while an agent in another session needs you. If none does
     but one has failed, it shows `✕ elsewhere`.
@@ -70,7 +71,7 @@ light value. Set any of them before the `run-shell` line to override it.
 | `@thm_fg` | `#e6e4df` | `#1b1e24` | text |
 | `@thm_surface` | `#2a2f3a` | `#e1e5ec` | the current tab, menus, popups |
 | `@thm_dim` | `#9097a3` | `#5c626c` | other tabs, the path, idle |
-| `@thm_accent` | `#6cb6ff` | `#0a5fc2` | the session name, the branch, the active border |
+| `@thm_accent` | `#6cb6ff` | `#0a5fc2` | the session name, the branch, the active border, the held-prefix ≡ |
 | `@thm_needs` | `#ff5f6d` | `#c4122f` | `▲` |
 | `@thm_error` | `#ff9e3d` | `#9a4c00` | `✕` |
 | `@thm_running` | `#e6c84f` | `#806200` | `●` |
