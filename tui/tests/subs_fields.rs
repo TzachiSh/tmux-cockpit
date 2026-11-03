@@ -21,10 +21,20 @@ fn descs(p: &Pane) -> Vec<String> {
     p.subs.iter().map(|s| s.desc.clone()).collect()
 }
 
+/// Removes the fixture when the test ends, pass or fail.
+struct Gone(std::path::PathBuf);
+
+impl Drop for Gone {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[test]
 fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_session() {
     let dir = std::env::temp_dir().join(format!("cockpit-tui-subs-fields-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    let _gone = Gone(dir.clone());
     std::fs::create_dir_all(dir.join("bin")).unwrap();
     let d = dir.display().to_string();
     let pj = dir.join(".claude/projects");
@@ -86,5 +96,4 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
         ("%5".to_string(), 0, v(&[])),
     ];
     assert_eq!(got, want);
-    let _ = std::fs::remove_dir_all(&dir);
 }
