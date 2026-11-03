@@ -49,6 +49,8 @@ back() { [ "$(tmux show-option -gqv @cockpit_board_return 2>/dev/null)" != off ]
 # The board comes back after review and panel, on the pane it acted on and
 # with the action's last line as its note, until an action or an exit ends it.
 args=()
+# The binary reads $COCKPIT_GLYPHS, never the option (#293), as tm passes it.
+glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)
 while :; do
     : > "$f" || exit 0
     # The binary creates its sidecars new and refuses a stale one: a kill's
@@ -56,7 +58,7 @@ while :; do
     rm -f -- "$f.expect"
     # The popup closes on exit, so log stderr. CLAUDECODE leaks in from the agent's
     # environment and must not mark the binary as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" ${glyphs:+COCKPIT_GLYPHS=$glyphs} "$BIN" board ${args[@]+"${args[@]}"} 2>>"$LOG" || {
         rc=$?
         tmux "${say[@]}" "cockpit: the board exited $rc — see $LOG" 2>/dev/null
         exit 0

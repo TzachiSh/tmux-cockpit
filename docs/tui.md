@@ -209,7 +209,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
-| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`) |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |

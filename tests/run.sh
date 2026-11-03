@@ -8299,11 +8299,12 @@ esac
 # Every script the wrapper can reach is a stub that records its argv, and tmux
 # only records: the assertion is what ran, in full, not just that the right
 # thing did.
-# The one read the loop makes, @cockpit_board_return, answers from $BD/ret and
-# is not recorded: what is asserted is what ran.
+# The reads the loop makes, @cockpit_board_return (from $BD/ret) and
+# @cockpit_glyphs (#293, unset), are not recorded: what is asserted is what ran.
 cat > "$BD/rec/tmux" <<BDREC
 #!/bin/sh
 case "\$*" in "show-option -gqv @cockpit_board_return") cat "$BD/ret" 2>/dev/null; exit 0 ;; esac
+case "\$*" in "show-option -gqv @cockpit_glyphs") exit 0 ;; esac
 printf '%s\\n' "\$*" >> "$BD/wargv"
 exit 0
 BDREC
@@ -8988,6 +8989,8 @@ cp -r "$DIR/scripts/lib" "$PND/p/scripts/"
 cat > "$PND/rec/tmux" <<PNREC
 #!/bin/sh
 [ "\$1" = display ] && { cat "$PND/now"; exit 0; }
+# the @cockpit_glyphs read (#293) is not an action: unset, unrecorded
+[ "\$*" = "show-option -gqv @cockpit_glyphs" ] && exit 0
 # capture-pane counts its calls; "still" mode answers the same screen each time.
 if [ "\$1" = capture-pane ]; then
     echo x >> "$PND/caps"
@@ -11245,6 +11248,9 @@ case "$(pk_i)" in
     *) bad "prefix i is bound to a popup running cockpit-tui info" "display-popup ... cockpit-tui info" "$(pk_i)" ;;
 esac
 case "$(pk_i)" in *tmux-review*|*--info*) bad "prefix i no longer runs tmux-review --info" "no tmux-review" "$(pk_i)" ;; *) ok "prefix i no longer runs tmux-review --info" ;; esac
+# #293: the binary reads $COCKPIT_GLYPHS only, so the popup passes the option on
+case "$(pk_i)" in *@cockpit_glyphs*COCKPIT_GLYPHS*) ok "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" ;;
+    *) bad "prefix i passes @cockpit_glyphs to the binary as COCKPIT_GLYPHS" "COCKPIT_GLYPHS from @cockpit_glyphs" "$(pk_i)" ;; esac
 "$TMUX_REAL" -L "$PK" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" -f /dev/null new-session -d -s t -x 100 -y 30 'exec bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PK" set -g @cockpit_info_key off >/dev/null 2>&1
@@ -11418,6 +11424,28 @@ is "and the board does not come back after it" "board;" "$(cut -d' ' -f1 "$KD/ba
 grep -q 'unknown verb \[request ' "$KD/tui.log" && ok "and the log names the verb it did not know" \
     || bad "and the log names the verb it did not know" "unknown verb [request ...]" "$(tail -n 3 "$KD/tui.log")"
 "$TMUX_REAL" -L "$KV" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: @cockpit_glyphs reaches the binary as COCKPIT_GLYPHS (#293) =="
+# theme.rs reads only the env, so the wrapper must pass the option on. A stub
+# binary records what it got and exits with no action.
+if need_tmux "the board's glyphs"; then :; else
+GL="cockpit-gl-$$"; SOCKS="$SOCKS $GL"; GD=$(mktmpd)
+printf '#!/bin/sh\nprintf "[%%s]" "${COCKPIT_GLYPHS:-}" > %s/g\n' "$GD" > "$GD/bin"; chmod +x "$GD/bin"
+"$TMUX_REAL" -L "$GL" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+GLP=$("$TMUX_REAL" -L "$GL" list-panes -t t -F '#{pane_id}')
+gl_run() {
+    rm -f "$GD/g"
+    "$TMUX_REAL" -L "$GL" new-window -d -t t: \
+        "env -u COCKPIT_GLYPHS COCKPIT_TUI_BIN=$GD/bin XDG_STATE_HOME=$GD COCKPIT_LOG=$GD/tui.log $DIR/scripts/cockpit-board -p $GLP"
+    until_file "$GD/g" '\[*\]'
+    cat "$GD/g" 2>/dev/null
+}
+"$TMUX_REAL" -L "$GL" set -g @cockpit_glyphs ascii
+is "@cockpit_glyphs ascii reaches the board as COCKPIT_GLYPHS" "[ascii]" "$(gl_run)"
+"$TMUX_REAL" -L "$GL" set -gu @cockpit_glyphs
+is "and unset passes nothing" "[]" "$(gl_run)"
+"$TMUX_REAL" -L "$GL" kill-server >/dev/null 2>&1
 fi
 
 # --- sessions view (#245): cockpit-tui sessions and the tm that runs it -------
