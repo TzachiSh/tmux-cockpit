@@ -120,7 +120,7 @@ In the tiles (`v`):
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
 | `x` | kill the agent's pane, after a confirm (`kill %N`); the window's other panes stay. On an ended agent it closes the pane left behind |
-| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, in the tree it worked in (`resume %N`). Not offered anywhere else |
+| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, at the pane's cwd (`resume %N`). Not offered anywhere else |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -985,6 +985,16 @@ reason in a warn note.
 - The fleet read evaluates `agentish` for every row now, not only for rows
   with no `@panestate`, so the first fetch on a thread also reads
   `@cockpit_agents_glob` (one `show-option`, once per thread).
+- A pane with `@panestate` whose command is no agent is looked up in the
+  process tree, which is one `ps -axww` for the fetch. Every ended row is such a
+  pane, so the verdict is kept per (pane id, `#{pane_pid}`, command) for
+  `GIT_TTL` (10 s): an ended row costs one `ps` per 10 s, not one per tick. A
+  new command or process in the pane asks again at once; an agent that exits
+  under an unchanged foreground (an editor) reads ended up to 10 s late. A pane
+  with no `@panestate` keeps the uncached tree test it had.
+- When a pane's `ended` turns, `tui.log` gets one line,
+  `fleet ended-flip pane=%N ended=true|false live_by=command|tree|none cmd=… pid=…`,
+  naming what found the agent, so a false "ended" can be traced.
 - `x` kills the pane, not the window: the confirm reads `kill pane %N
   (<sess:idx> <window name>)?`, `.expect` is `%N @W`, and the wrapper runs
   `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
@@ -997,16 +1007,19 @@ reason in a warn note.
   `Extra` gains `offered` and `not_here`; `board::hints_on` lists the extras
   one agent is offered, and `board::hints` is it on a live agent.
 - `scripts/cockpit-board` gains `resume)`: it splits the target's window with
-  `claude --resume '<id>'` (quoted with `sq`) at `tmux-review --dir` of the
-  target (`@cockpit_dir` when it is a directory, else the cwd), the directory
-  through `fesc` as `-c` expands formats, then selects the new pane and ends
-  the board. It refuses with a `✕` note a pane that is gone, an id that is not
+  `claude --resume '<id>'` (quoted with `sq`) at the target's
+  `#{pane_current_path}`, never `@cockpit_dir`: Claude Code never moves its
+  process's cwd (#312), so the pane's cwd is the project the session started
+  in, where `--resume` looks it up. The directory goes through `fesc`, as `-c`
+  expands formats; then the new pane is selected and the board ends. It refuses with a `✕` note a pane that is gone, an id that is not
   a lowercase UUID, an id the pane no longer holds, or no directory; and a
   second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
-  another pane holds the id and runs an agent (its command in
-  `@cockpit_agents_glob`, or version-shaped), read with one `list-panes -a` at
-  the key so a stale board cannot skip it. An ended pane holding it does not
-  block.
+  any pane, the target included, holds the id, has `@panestate` set and runs
+  an agent (its command in `@cockpit_agents_glob`, or version-shaped), read
+  with one `list-panes -a` at the key so a stale board cannot skip it. An ended
+  pane holding it does not block. The wrapper reads the command only, not the
+  process tree the board reads: a live agent under a foreground editor is not
+  seen there.
 - The `?` legend gains `◌ ended: its agent is gone`.
 - Goldens: the confirm's question in `board-confirm-{60,100}`; the `x` and `o`
   rows and the legend in `board-help-{60,100,180,tiles-100}`. No list or tile

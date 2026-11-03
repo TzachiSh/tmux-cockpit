@@ -11615,15 +11615,20 @@ is "claude --resume <id> runs at the pane's cwd" "[$RSD/work][--resume][$SID]" "
 is "in a new pane beside it, the agent's pane kept" "2 $R" \
    "$(rs_panes "$R") $("$TMUX_REAL" -L "$RS" list-panes -t "$R" -F '#{pane_id}' | grep -x -- "$R")"
 
+# Claude Code never moves its cwd (#312): the session lives under the pane's
+# cwd, so @cockpit_dir, a worktree the agent works in, does not move the resume
 R=$(rs_agent "$SID"); "$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_dir "$RSD/wt"
 rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
-is "@cockpit_dir, when it names a directory, is where it runs" "[$RSD/wt][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+is "@cockpit_dir does not move it: it runs at the pane's cwd" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
 
-# A tree named with a tmux format: -c expands formats, so an unescaped name
+# A cwd named with a tmux format: -c expands formats, so an unescaped name
 # would run the #() job and start in the directory its output makes instead.
-R=$(rs_agent "$SID"); "$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_dir "$RSD/d#(touch \$RSPWN)"
+# The test's own -c spells it ##( for the same reason.
+R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/d##(touch \$RSPWN)" -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate needs-input
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
 rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
-is "a directory named with #(...) is the directory, not a format" "[$RSD/d#(touch \$RSPWN)][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+is "a cwd named with #(...) is the directory, not a format" "[$RSD/d#(touch \$RSPWN)][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
 
 # A session id that is no UUID never reaches a command line, whatever the pane
 # holds: the wrapper checks the shape itself, not only the board.
@@ -11646,6 +11651,7 @@ case "$(rs_run "resume %99999" "$SID")" in '✕ cockpit: %99999 is gone, nothing
 "$TMUX_REAL" -L "$RS" set -g @cockpit_agents_glob '|claude|'
 for argv0 in claude 2.1.246; do
     RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: "exec -a $argv0 sleep 3600")
+    "$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
     "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
     R=$(rs_agent "$SID")
     case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $RL") ok "a session live in another pane ($argv0) is not resumed twice" ;;
@@ -11653,8 +11659,23 @@ for argv0 in claude 2.1.246; do
     is "and nothing ran for it" "1 " "$(rs_panes "$R") $(cat "$RSD/ran" 2>/dev/null)"
     "$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
 done
+# the target itself running an agent again (a stale board's row) is refused too
+R=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -c "$RSD/work" -t t: 'exec -a claude sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @panestate running
+"$TMUX_REAL" -L "$RS" set -p -t "$R" @cockpit_session "$SID"
+case "$(rs_run "resume $R" "$SID")" in "✕ cockpit: ${SID:0:8} is already running in $R") ok "a target running its agent again is not resumed" ;;
+    *) bad "a target running its agent again is not resumed" "✕ cockpit: ${SID:0:8} is already running in $R" "$(cat "$RSD/bargv")" ;; esac
+"$TMUX_REAL" -L "$RS" kill-pane -t "$R"
+# an agent command holding the id with no @panestate (no hook ever ran) does not block
+RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
+R=$(rs_agent "$SID")
+rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
+is "an agent holding the id with no @panestate does not block" "[$RSD/work][--resume][$SID]" "$(cat "$RSD/ran" 2>/dev/null)"
+"$TMUX_REAL" -L "$RS" kill-pane -t "$RL"
 # the same id live under a command that is no agent (a shell left over) does not block
 RL=$("$TMUX_REAL" -L "$RS" new-window -d -P -F '#{pane_id}' -t t: 'exec sleep 3600')
+"$TMUX_REAL" -L "$RS" set -p -t "$RL" @panestate running
 "$TMUX_REAL" -L "$RS" set -p -t "$RL" @cockpit_session "$SID"
 R=$(rs_agent "$SID")
 rs_run "resume $R" "$SID" >/dev/null; until_file "$RSD/ran" '?*'
@@ -11681,19 +11702,31 @@ EBX=$("$TMUX_REAL" -L "$EB" new-window -d -n nosid -c "$EBD" -P -F '#{pane_id}' 
 "$TMUX_REAL" -L "$EB" set -p -t "$EBE" @cockpit_session 0b5e7c1a-3f2d-4e8b-9a6c-1d2e3f4a5b6c
 "$TMUX_REAL" -L "$EB" set -p -t "$EBX" @panestate running
 "$TMUX_REAL" -L "$EB" set -p -t "$EBX" @cockpit_session 'not-a-uuid'
+# A live claude that is not the foreground (an editor over it, say): `claude`
+# in the pane's process tree under a foreground `sleep`. Live, so it keeps ▲.
+ln -s "$(command -v sleep)" "$EBD/claude"
+EBT=$("$TMUX_REAL" -L "$EB" new-window -d -n editing -c "$EBD" -P -F '#{pane_id}' -t t: "sh -c '$EBD/claude 3600 & exec sleep 3600'")
+"$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate needs-input
+"$TMUX_REAL" -L "$EB" set -p -t "$EBT" @panestate_msg 'Allow this edit?'
+until_out sleep "$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}' \
+    || bad "the tree pane's foreground is sleep" "sleep" "$("$TMUX_REAL" -L "$EB" display -p -t "$EBT" '#{pane_current_command}')"
 eb_open() {                   # <pane> <action-dir> -> EBW, a board on that pane
     EBW=$("$TMUX_REAL" -L "$EB" new-window -d -P -F '#{pane_id}' -t t: \
         "env COCKPIT_READONLY=1 XDG_STATE_HOME=$EBD/state COCKPIT_ACTION=$2/act $COCKPIT_TUI_BIN board --select $1")
-    until_cap "$EB" "$EBW" '*board · 3 agents*'
+    until_cap "$EB" "$EBW" '*board · 4 agents*'
 }
 eb_cap() { "$TMUX_REAL" -L "$EB" capture-pane -p -J -t "$EBW" 2>/dev/null; }
 eb_row() { eb_cap | grep -- " $1 "; }  # <window-name> -> its list row
 EA=$(mktmpd)
-eb_open "$EBE" "$EA" || bad "the board opens on the ended agent" "board · 3 agents" "$(eb_cap)"
+eb_open "$EBE" "$EA" || bad "the board opens on the ended agent" "board · 4 agents" "$(eb_cap)"
 until_cap "$EB" "$EBW" '*o resume*' || bad "the ended row's footer offers o resume" "o resume" "$(eb_cap)"
 case "$(eb_row gone)" in *◌*' ended '*) ok "the ended row says ended under its own glyph" ;; *) bad "the ended row says ended under its own glyph" "◌ ... ended" "$(eb_cap)" ;; esac
-case "$(eb_cap)" in *▲*|*'needs you'*|*'Do you want'*) bad "an ended needs-input pane is no ▲ and no needs-you" "no ▲" "$(eb_cap)" ;;
-    *) ok "an ended needs-input pane is no ▲ and no needs-you" ;; esac
+case "$(eb_cap)" in *'Do you want'*) bad "an ended needs-input pane shows no message" "no message" "$(eb_cap)" ;;
+    *) ok "an ended needs-input pane shows no message" ;; esac
+case "$(eb_row gone)" in *▲*) bad "an ended needs-input pane is no ▲" "no ▲" "$(eb_cap)" ;; *) ok "an ended needs-input pane is no ▲" ;; esac
+case "$(eb_row editing)" in *▲*'Allow this edit?'*) ok "a claude in the tree, not the foreground, is live and keeps its ▲" ;;
+    *) bad "a claude in the tree, not the foreground, is live and keeps its ▲" "▲ ... Allow this edit?" "$(eb_cap)" ;; esac
+case "$(eb_cap)" in *' 1 needs you'*) ok "and only it is counted in needs you" ;; *) bad "and only it is counted in needs you" "1 needs you" "$(eb_cap)" ;; esac
 # the panes sit outside any repo: a branch name could hold the word
 case "$(eb_row live)" in *' ended '*) bad "a live claude is not ended" "running" "$(eb_cap)" ;; *) ok "a live claude is not ended" ;; esac
 "$TMUX_REAL" -L "$EB" send-keys -t "$EBW" o

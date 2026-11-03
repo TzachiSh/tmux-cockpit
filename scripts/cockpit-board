@@ -139,8 +139,9 @@ while :; do
                 fi
             fi
             ;;
-        # #301: `claude --resume <id>` in a new pane beside an ended agent, in
-        # the tree it worked in (tmux-review --dir: @cockpit_dir, else the cwd).
+        # #301: `claude --resume <id>` in a new pane beside an ended agent, at
+        # its pane's cwd: Claude Code never moves its process's cwd (#312), so
+        # that is the project the session started in, where --resume looks.
         # $f.expect is the session id the row showed; the pane must hold it
         # still, and it must be a UUID, as it goes on a command line.
         resume)
@@ -149,17 +150,21 @@ while :; do
             # 8-4-4-4-12 lowercase hex, spelled out: a range can take more under a locale
             h='[0123456789abcdef]'
             [[ $want =~ ^$h{8}-$h{4}-$h{4}-$h{4}-$h{12}$ ]] || want=
-            have=$(tmux display-message -p -t "$target" "#{?pane_id,=#{@cockpit_session},}" 2>/dev/null | head -n 1)
-            dir=$("$DIR/scripts/tmux-review" --dir "$target" 2>/dev/null)
-            # A second copy of a live session: another pane holds the id and runs an
-            # agent (its command in @cockpit_agents_glob, or a claude renamed to its
-            # version). Checked here, at the key, so a stale board cannot skip it.
-            # The command goes last: it is the one free-form field.
+            # the cwd last: it is the free-form field
+            info=$(tmux display-message -p -t "$target" "#{?pane_id,=#{@cockpit_session}$sep#{pane_current_path},}" 2>/dev/null | head -n 1)
+            have=${info%%"$sep"*} dir=${info#*"$sep"}
+            # A second copy of a live session: any pane, this one included, holds
+            # the id, carries @panestate and runs an agent (its command in
+            # @cockpit_agents_glob, or a claude renamed to its version). Checked
+            # here, at the key, so a stale board cannot skip it. The command only,
+            # not the process tree the board reads. It goes last: free-form.
             live=
-            [ -z "$want" ] || while IFS="$sep" read -r p s g cmd; do
-                [ "$p" != "$target" ] && [ "$s" = "$want" ] || continue
+            fmt="#{pane_id}$sep#{@cockpit_session}$sep#{?#{@panestate},1,0}"
+            fmt+="$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}"
+            [ -z "$want" ] || while IFS="$sep" read -r p s st g cmd; do
+                [ "$s" = "$want" ] && [ "$st" = 1 ] || continue
                 if [ "$g" = 1 ] || [[ $cmd =~ ^[0-9]+([._][0-9]+){2,}$ ]]; then live=$p; break; fi
-            done < <(tmux list-panes -a -F "#{pane_id}$sep#{@cockpit_session}$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{pane_current_command}" 2>/dev/null)
+            done < <(tmux list-panes -a -F "$fmt" 2>/dev/null)
             if [ -z "$have" ]; then
                 printf '✕ cockpit: %s is gone, nothing resumed\n' "$target" > "$note"
             elif [ -z "$want" ]; then
