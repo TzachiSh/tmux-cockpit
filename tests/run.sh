@@ -665,10 +665,20 @@ bgcase "a subagent object in a key after the array is done" done \
 bgcase "a subagent after a string holding ], in the array still holds it" running \
     "$(bgstop '{"type":"shell","description":"a ], \"b\" ]"},{"type":"subagent"}')"
 # A long final message comes before the key and is read whole: no cap cuts the array off.
-BGBIG=$(printf '%0262144d' 0)
-is "the long message is 256 KB" 262144 "${#BGBIG}"
-bgcase "a subagent after a 256 KB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
-bgcase "an empty array after a 256 KB message is done" done "$(bgstop "" "$BGBIG")"
+BGBIG=$(printf '%01048576d' 0)
+is "the long message is 1 MB" 1048576 "${#BGBIG}"
+bgcase "a subagent after a 1 MB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
+bgcase "an empty array after a 1 MB message is done" done "$(bgstop "" "$BGBIG")"
+# stdin held open past the payload's newline: done returns at the newline, not at EOF. The
+# writer's read -t is a hang guard; until_out polls the state the return writes.
+BGF="$(mktmpd)/hold"; mkfifo "$BGF"
+bgst running "$BGU"
+{ { printf '%s\n' "$(bgstop "")"; read -r -t 30 _ <> "$BGF"; } \
+    | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
+bghold=$!
+until_out done bgo @panestate
+is "a Stop with stdin held open past its newline returns" done "$(bgo @panestate)"
+printf 'x\n' > "$BGF"; wait "$bghold"
 
 # Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
 bgst running "$BGU"

@@ -109,13 +109,13 @@ esac
 # Does the Stop payload on stdin list a background subagent still in flight (#310)? Only a
 # subagent: an idle teammate stays "running" in claude's registry for the life of its team,
 # and a shell or monitor task may never end. Matched structurally: inside a JSON string the
-# quotes arrive escaped, so no message text can match. No payload or no lib: not in flight.
+# quotes arrive escaped, so no message text can match. No payload or no head: not in flight.
 subagent_in_flight() {
-    local d=${BASH_SOURCE[0]} re
-    [ -L "$d" ] && d=$(readlink "$d")
-    # shellcheck source=lib/hook.sh
-    . "${d%/*}/lib/hook.sh" 2>/dev/null || return 1
-    read_payload true                 # compact JSON: the first line is the whole payload
+    local payload re
+    # head, not read_payload: bash reads a pipe a byte per syscall, about 2.4 s a MB, and the
+    # 2 s deadline then cut the array off a long final message. The payload is compact JSON,
+    # one line: claude writes it with a newline and closes stdin (2.1.317), so head returns.
+    payload=$(head -n 1 2>/dev/null) || return 1
     # One regex, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
     # the final message, any size, comes before the key. After `[`, whole strings or single
     # bytes other than `]`, so the match ends with the array (its entries are flat objects,
