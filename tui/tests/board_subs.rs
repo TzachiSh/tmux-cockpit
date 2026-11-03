@@ -804,3 +804,55 @@ fn an_ended_agents_running_subagent_is_drawn_ended() {
     later.seen.now += 60;
     assert_eq!(n.tree_gate(&ps), later.tree_gate(&ps));
 }
+
+// ---------------------------------------------------------------- s where no tree can show
+
+#[test]
+fn s_on_an_agent_without_subagents_does_nothing() {
+    let ps = mock();
+    let mut n = nav(&ps, "%5", &[], 20);
+    n.act(Act::Tree, &ps, 20);
+    assert!(n.trees.is_empty(), "%5 has only the hook's count");
+}
+
+/// A ▲ in a folded group shows, its tree does not: `s` neither opens it nor is offered.
+#[test]
+fn s_is_not_offered_where_the_tree_cannot_show() {
+    let ps = mock();
+    let mut n = nav(&ps, "%3", &[], 12);
+    let i = at(&ps, "%3");
+    let mut ps = ps;
+    ps[i].subs = vec![sub("Plan", "p", SubState::Running, 5, 1)];
+    n.folds.insert("api".into());
+    n.settle(&ps, 12);
+    assert!(!n.shows(&ps, "%3"));
+    n.act(Act::Tree, &ps, 12);
+    assert!(n.trees.is_empty(), "{:?}", n.trees);
+    assert!(!foot(&ps, &n, 100).contains(" s "), "{}", foot(&ps, &n, 100));
+}
+
+/// A list that does not fit leaves no slack for any tree line.
+#[test]
+fn s_does_nothing_on_a_list_that_does_not_fit() {
+    let ps = crowd();
+    let mut n = nav(&ps, "%1", &[], 11);
+    assert!(!n.shows(&ps, "%1"));
+    n.act(Act::Tree, &ps, 11);
+    assert!(n.trees.is_empty());
+    let n = nav(&ps, "%1", &[], 14);
+    assert!(n.shows(&ps, "%1"));
+}
+
+/// `/clear` empties the subagents: the tree shuts, and the new session's first
+/// subagent does not open it again.
+#[test]
+fn a_tree_whose_subagents_go_shuts() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    let subs = std::mem::take(&mut ps[i].subs);
+    n.settle(&ps, 20);
+    ps[i].subs = subs;
+    n.settle(&ps, 20);
+    assert!(tree_of(&ps, &n, "%4").is_empty(), "{:?}", n.trees);
+}

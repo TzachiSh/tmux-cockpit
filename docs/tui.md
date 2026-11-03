@@ -407,8 +407,11 @@ prompt.
 
 `s` opens the selected agent's tree under its row; on a header, every tree in
 the session. Trees never open on their own, and which are open is kept in
-memory only, not in `board.state`. The footer offers `s tree`, or `s hide`
-when the tree is open, on an agent that has subagents:
+memory only, not in `board.state`, and a tree whose subagents all go (`/clear`)
+shuts, so the next session's do not open it. The footer offers `s tree`, or
+`s hide` when the tree is open, only where the tree gets a line: not in a
+folded group, nor in a list too long to leave a row spare. There `s` opens
+nothing and says `no room for its subagent tree` for 2 seconds:
 
 ```
 │  ▾ api ────────────────────────────────────────────────────────────────────────────────── ▲1 ●2  │

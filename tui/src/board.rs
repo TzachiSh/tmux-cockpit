@@ -290,9 +290,9 @@ fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus, p: Option<&Pane>) {
     }
     let live = Pane::default();
     let mut ks = hints_on(&th.g, v.list.is_some(), focus, p.unwrap_or(&live));
-    // #313: `s` on an agent with a tree, its verb the tree's state, after `a` as drawn
+    // #313: `s` where the agent's tree gets a line, its verb the tree's state, after `a`
     if let (Some(nav), Focus::Agent(_), Some(p)) = (v.list, focus, p)
-        && !p.subs.is_empty()
+        && nav.shows(v.panes, &p.id)
     {
         let verb = if nav.trees.contains(&p.id) { "hide" } else { "tree" };
         let at = ks.iter().position(|(k, _)| k == "a").map_or(0, |k| k + 1);
@@ -1704,6 +1704,16 @@ impl Nav {
         self.rows_in(ps, self.room)
     }
 
+    /// Whether agent `id`'s tree gets a line, open, in the room of the last
+    /// placement: not in a folded group, nor in a list with no slack (#313).
+    pub fn shows(&self, ps: &[Pane], id: &str) -> bool {
+        let mut trees = self.trees.clone();
+        trees.insert(id.to_string());
+        self.rows_for(ps, self.room, &trees)
+            .iter()
+            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) if ps[*i].id == id))
+    }
+
     /// The rows in `room`, net of the field. Tree lines take only the rows the list
     /// leaves empty, and at most half of `room`, so they never push a row off
     /// screen (#313). The selected agent's tree gets them first, then the blocked
@@ -1711,9 +1721,14 @@ impl Nav {
     /// in `+N more`, and one with none shows its badge only. A folded group's trees
     /// stay shut.
     fn rows_in(&self, ps: &[Pane], room: usize) -> Vec<Row> {
+        self.rows_for(ps, room, &self.trees)
+    }
+
+    /// [`Nav::rows_in`] with `trees` open.
+    fn rows_for(&self, ps: &[Pane], room: usize, trees: &BTreeSet<String>) -> Vec<Row> {
         let base = rows_with(ps, &self.folds, &self.filter, self.field);
         let budget = room.saturating_sub(base.len()).min(room / 2);
-        if budget == 0 || self.trees.is_empty() {
+        if budget == 0 || trees.is_empty() {
             return base;
         }
         let shut = |i: usize| self.folds.contains(session(&ps[i])) && !(self.field && self.filtering());
@@ -1725,7 +1740,7 @@ impl Nav {
             .iter()
             .enumerate()
             .filter_map(|(k, r)| match r {
-                Row::Agent(i) if self.trees.contains(&ps[*i].id) && !shut(*i) => Some((k, *i)),
+                Row::Agent(i) if trees.contains(&ps[*i].id) && !shut(*i) => Some((k, *i)),
                 _ => None,
             })
             .collect();
@@ -1865,6 +1880,8 @@ impl Nav {
     /// `settle` with `room` already net of the field.
     fn settle_in(&mut self, ps: &[Pane], room: usize) {
         self.room = room;
+        // a tree whose subagents went (`/clear`) shuts, so the next ones do not reopen it
+        self.trees.retain(|id| ps.iter().any(|p| p.id == *id && !p.subs.is_empty()));
         let rows = self.rows(ps);
         let r = self.find(&rows, ps);
         if self.placed {
@@ -1975,7 +1992,8 @@ impl Nav {
     /// shut opens them all, else all shut. Only agents with subagents have one.
     fn tree(&mut self, rows: &[Row], ps: &[Pane], r: usize, room: usize) {
         match rows.get(r) {
-            Some(Row::Agent(i)) if !ps[*i].subs.is_empty() => {
+            // only a tree that gets a line: the caller says why not
+            Some(Row::Agent(i)) if self.shows(ps, &ps[*i].id) => {
                 let id = &ps[*i].id;
                 if !self.trees.remove(id) {
                     self.trees.insert(id.clone());
@@ -3548,6 +3566,11 @@ pub fn run(o: &Opts) -> Option<Exit> {
             // ↵ on a header toggles its fold (D4)
             (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
             (Act::Ask | Act::Review | Act::Panel | Act::Info | Act::Extra(_), None) => {}
+            // #313: a tree that would get no line: a folded group, or no slack
+            (Act::Tree, Some(p)) if !p.subs.is_empty() && !nav.shows(&panes, &p.id) => {
+                let msg = format!("{} {} no room for its subagent tree", p.wher, th.g.dot);
+                note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
+            }
             (Act::Extra(c), Some(p)) => {
                 let Some(e) = extra(c) else { continue };
                 if !(e.offered)(p) {
