@@ -41,6 +41,11 @@ fmt_nr="#{n:#{S:#{W:#{P:#{?#{==:#{@cockpit_review},pending},#{?$agent,x,},}}}}}"
 fmt_fleet="#{?#{e|>:$fmt_nb,0},#[fg=themered bold]▲$fmt_nb#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ne,0},#[fg=themecyan]✕$fmt_ne#[default] ,}"
 fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_nr,0},#[fg=thememagenta]◆$fmt_nr#[default] ,}"
+# ✦N, last: background subagents running, the sum of every agent pane's @cockpit_subs (#R
+# repeats a mark N times, #n counts them). Touch mode is a client's, so its test is stored
+# escaped (##{ #, #}) and runs when the bar draws #{E:@cockpit_fleet}.
+fmt_ns="#{n:#{S:#{W:#{P:#{?$agent,#{R:x,#{@cockpit_subs}},}}}}}"
+fmt_fleet="$fmt_fleet#{?#{e|>:$fmt_ns,0},##{?##{E:@cockpit_is_touch#}#,#,#[fg=themeyellow]✦$fmt_ns#[default] #},}"
 
 # The gauge cells the bar's tab budget takes off (see agent-context).
 fmt_cells='#{n:#{W:#{?#{E:@cockpit_ctx_on},xx#{@panestate_ctx}x,}}}'
@@ -107,20 +112,22 @@ case "$pane" in
     *) exit 0 ;;
 esac
 
-# Does the Stop payload on stdin list a background subagent still in flight (#310)? Only a
-# subagent: an idle teammate stays "running" in claude's registry for the life of its team,
-# and a shell or monitor task may never end. Matched structurally: inside a JSON string the
-# quotes arrive escaped, so no message text can match. No payload or no head: not in flight.
-subagent_in_flight() {
-    local payload re
+# How many background subagents the Stop payload on stdin lists in flight (#310, #313), in
+# SUBS. Only subagents: an idle teammate stays "running" in claude's registry for the life of
+# its team, and a shell or monitor task may never end. Matched structurally: inside a JSON
+# string the quotes arrive escaped, so no message text can match. No payload, no head or no
+# array: 0.
+subs_count() {
+    local payload re arr
+    SUBS=0
     # head, not read_payload: bash reads a pipe a byte per syscall, about 2.4 s a MB, and the
     # 2 s deadline then cut the array off a long final message. The payload is compact JSON,
     # one line: claude writes it with a newline and closes stdin (2.1.317), so head returns.
     # Bounded all the same (#320): a writer that sends neither must not hold the Stop. A
     # timeout fails open to done. timeout is GNU coreutils; a box without it reads unbounded.
     local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 2"
-    payload=$($to head -n 1 2>/dev/null) || return 1
-    # One regex, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
+    payload=$($to head -n 1 2>/dev/null) || return 0
+    # Regexes, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
     # the final message, any size, comes before the key. After `[`, whole strings or single
     # bytes other than `]`, so the match ends with the array (its entries are flat objects,
     # no nested array) and a `]` inside a string does not end it. Bytes, not characters: in a
@@ -129,8 +136,34 @@ subagent_in_flight() {
     # under C: a payload repeating an unclosed `"background_tasks":[`, which valid JSON with
     # the key once cannot be.
     local LC_ALL=C
-    re='"background_tasks": ?\[("([^"\\]|\\.)*"|[^]"])*"type": ?"subagent"'
-    [[ $payload =~ $re ]]
+    re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]"])*)'
+    [[ $payload =~ $re ]] || return 0
+    arr=${BASH_REMATCH[1]}
+    # Counted by length, in one pass per spelling: deleting every marker shortens the array by
+    # the marker's length per hit (a regex per hit was quadratic, 24 s at 3000). A marker
+    # inside a string cannot match: its quotes arrive as \", so a backslash follows `type`.
+    local m n
+    for m in '"type":"subagent"' '"type": "subagent"'; do
+        n=${#arr} arr=${arr//"$m"/}
+        SUBS=$((SUBS + (n - ${#arr}) / ${#m}))
+    done
+}
+
+# subs_cmd <- the tmux command for @cockpit_subs <- SUBS, compare-then-set, and the fleet's
+# ✦ sum with it: a Stop that holds the pane, or meets a sticky state, writes no state and so
+# runs no sums of its own. Only digits reach the formats. A Stop that holds runs it alone;
+# any other rides in the one invocation below, so done still costs one tmux call.
+subs_cmd=()
+subs_build() {
+    local cond body T
+    if [ "$SUBS" -gt 0 ]; then
+        cond="#{!=:#{@cockpit_subs},$SUBS}" body="set-option -p -t $pane @cockpit_subs $SUBS"
+    else
+        cond='#{@cockpit_subs}' body="set-option -pu -t $pane @cockpit_subs"
+    fi
+    T=$pane body="$body ; $defs"
+    fleet_sums
+    subs_cmd=(if-shell -F -t "$pane" "$cond" "$body")
 }
 
 case "$state" in
@@ -255,9 +288,12 @@ wake)
 done)
     # A Stop while background subagents run ends the turn, not the work (#310): claude wakes
     # the session as each reports back, and the last report-back turn's Stop writes done.
-    # Nothing is written meanwhile, so sticky states and the counters stay as they are.
-    # The poller has no payload, and a terminal is a person typing the command.
-    [ -z "$poll" ] && [ ! -t 0 ] && subagent_in_flight && exit 0
+    # No state is written meanwhile, so sticky states and the counters stay as they are; the
+    # count is (#313). The poller has no payload, and a terminal is a person typing the command.
+    if [ -z "$poll" ] && [ ! -t 0 ]; then
+        subs_count; subs_build
+        if [ "$SUBS" -gt 0 ]; then tmux "${subs_cmd[@]}" 2>/dev/null; exit 0; fi
+    fi
     ;;
 esac
 
@@ -298,8 +334,10 @@ fi
 if [ "$state" = off ]; then
     # No early exit when already clear: a fresh agent's SessionStart must still light its ○ dot.
     body="if -F -t $pane '$cur' { set-option -pu -t $pane @panestate }"
-    # An ended session takes its review marks with it; an idle one keeps them.
-    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool"
+    # An ended session takes its review marks with it; an idle one keeps them. And its subagent
+    # count (#313): SessionStart's off is a new process, which runs none. Not at idle: the lead
+    # idles while its subagents work, and a report-back's UserPromptSubmit leaves the others.
+    [ -n "$idle" ] || body="$body ; set-option -pu -t $pane @cockpit_review ; set-option -pu -t $pane @cockpit_review_spool ; set-option -pu -t $pane @cockpit_subs"
 elif [ "$state" = recount ]; then
     body=""
 else
@@ -331,7 +369,8 @@ if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
         "set-option -pu -t $pane @cockpit_agentview" ';')
 fi
-tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} if-shell -F -t "$pane" "$when" "${body# ; }" \
+tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
+    if-shell -F -t "$pane" "$when" "${body# ; }" \
     2>/dev/null || true)
 
 # A published pid outlives its process and SIGUSR1 terminates by default, so verify

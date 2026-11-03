@@ -12859,5 +12859,116 @@ is "CwdChanged runs agent-state session, with no matcher (it takes none)" "1 0" 
    "$(jq -r '[.hooks.CwdChanged[]? | select(.hooks[].command | test("agent-state session$"))]
         | "\(length) \(map(select(has("matcher"))) | length)"' "$DIR/examples/claude-hooks.json")"
 
+echo "== agent-state: @cockpit_subs counts the Stop's background subagents, and the bar's ✦N sums them (#313) =="
+# No SubagentStart/Stop counter: #317 found it drifts. Each Stop's background_tasks is the
+# registry's own list, so the count is rewritten whole at every Stop. Private server, HOME
+# and CLAUDE_CONFIG_DIR away from the owner's.
+if need_tmux "subagent count"; then :; else
+SB="cockpit-sb-$$"; SOCKS="$SOCKS $SB"; SBCFG="$(mktmpd)/claude"
+sb_real=$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)
+sb_iso=ok
+case "$HOME/" in "$sb_real/"|"$sb_real/.claude/"*) sb_iso="HOME=$HOME" ;; esac
+case "$SBCFG/" in "$sb_real/.claude/"*) sb_iso="CLAUDE_CONFIG_DIR=$SBCFG" ;; esac
+[ -n "$sb_real" ] && [ -n "$HOME" ] || sb_iso="no home to compare"
+is "the block runs away from the owner's home and ~/.claude" ok "$sb_iso"
+if [ "$sb_iso" != ok ]; then skip_ "subagent count: the rest, not isolated"; else
+"$TMUX_REAL" -L "$SB" -f /dev/null new-session -d -s t -x 80 -y 24 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SB" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+SBP=$("$TMUX_REAL" -L "$SB" list-panes -t t -F '#{pane_id}')
+SBQ=$("$TMUX_REAL" -L "$SB" split-window -d -P -F '#{pane_id}' -t t 'exec -a claude sleep 300')
+SBX=$("$TMUX_REAL" -L "$SB" split-window -d -P -F '#{pane_id}' -t t 'exec sleep 300')
+sbst() {                      # <state> <payload> [pane]: one hook, its payload on stdin
+    printf '%s\n' "$2" | HOME="$HOME" CLAUDE_CONFIG_DIR="$SBCFG" TMUX="$SOCKDIR/$SB,0,0" \
+        "$DIR/scripts/agent-state" "$1" "${3:-$SBP}" >/dev/null 2>&1; }
+sbn() { "$TMUX_REAL" -L "$SB" show-option -pqv -t "${1:-$SBP}" @cockpit_subs; }
+sbo() { "$TMUX_REAL" -L "$SB" display-message -p -t "$SBP" "#{$1}"; }
+sbstop() {                    # <tasks json> [assistant text]: a Stop payload
+    printf '{"session_id":"s1","hook_event_name":"Stop","last_assistant_message":"%s","background_tasks":[%s],"session_crons":[]}' \
+        "${2:-ok}" "$1"; }
+SBT='{"id":"a1","type":"subagent","status":"running","description":"lane","agent_type":"general-purpose"}'
+SBSH='{"id":"b1","type":"shell","status":"running","description":"npm test"}'
+SBTM='{"id":"c1","type":"teammate","status":"running","description":"helper"}'
+SBU='{"hook_event_name":"UserPromptSubmit","prompt":"go"}'
+sbst running "$SBU"; sbst done "$(sbstop "$SBT,$SBT,$SBT")"
+is "a Stop with 3 background subagents writes @cockpit_subs 3" "3" "$(sbn)"
+sbst running "$SBU"
+is "a report-back UserPromptSubmit leaves it: the others still run" "3" "$(sbn)"
+sbst done "$(sbstop "$SBT,$SBSH,$SBT,$SBTM")"
+is "only type subagent counts, not a shell or a teammate" "2" "$(sbn)"
+sbst done "$(sbstop '{"id":"f1","type":"shell","description":"subagent"},'"$SBT")"
+is "a description that reads subagent is not a type" "1" "$(sbn)"
+sbst done "$(sbstop "")"
+is "an empty array clears it" "" "$(sbn)"
+sbst done "$(sbstop "$SBT")"; sbst done '{"hook_event_name":"Stop","stop_hook_active":false}'
+is "a Stop with no background_tasks clears it" "" "$(sbn)"
+sbst done "$(sbstop "" 'say \"type\":\"subagent\" twice: \"type\": \"subagent\"')"
+is "subagent in the message text is not counted" "" "$(sbn)"
+sbst done '{"hook_event_name":"Stop","background_tasks":['"$SBSH"'],"later":['"$SBT"']}'
+is "nor a subagent object in a key after the array" "" "$(sbn)"
+sbst done "$(sbstop '{"id":"d1","type":"shell","description":"a ] b \"]\""},'"$SBT")"
+is "a ] inside a string does not end the array" "1" "$(sbn)"
+sbst done "$(sbstop '{"id":"e1","type": "subagent","description":"x \"type\":\"subagent\""}')"
+is "a space after the colon counts; an escaped one in a string does not" "1" "$(sbn)"
+SB12=$(for _ in $(seq 1 12); do printf '%s,' "$SBT"; done); sbst done "$(sbstop "${SB12%,}")"
+is "12 subagents: 12" "12" "$(sbn)"
+SBBIG=$(head -c 1048576 /dev/zero | tr '\0' x); sbst done "$(sbstop "$SBT,$SBT" "$SBBIG")"
+is "a 1 MB final message before the array: still 2" "2" "$(sbn)"
+"$TMUX_REAL" -L "$SB" set -p -t "$SBP" @panestate needs-input
+sbst done "$(sbstop "$SBT,$SBT,$SBT,$SBT")"
+is "a needs-input pane keeps its state" "needs-input" "$(sbo @panestate)"
+is "and still takes the count" "4" "$(sbn)"
+sbst running "$SBU"
+sbst notify '{"hook_event_name":"Notification","notification_type":"idle_prompt","message":"waiting for your input"}'
+is "the idle notification goes off" "" "$(sbo @panestate)"
+is "and leaves the count: subagents run while the lead idles" "4" "$(sbn)"
+printf '%s\n' "$(sbstop "")" | HOME="$HOME" TMUX="$SOCKDIR/$SB,0,0" "$DIR/scripts/agent-state" poll done "$SBP" >/dev/null 2>&1
+is "the poller's done writes no count" "4" "$(sbn)"
+sbst off '{"hook_event_name":"SessionStart","source":"startup"}'
+is "SessionStart (off) clears it: a new process runs no subagent" "" "$(sbn)"
+sbst done "$(sbstop "$SBT,$SBT")"; sbst off '{"hook_event_name":"SessionEnd","reason":"exit"}'
+is "SessionEnd clears it" "" "$(sbn)"
+# The bar: ✦N, the sum over agent panes, last in @cockpit_fleet; a non-agent pane is not one.
+sbst done "$(sbstop "$SBT,$SBT,$SBT")"; sbst done "$(sbstop "$SBT,$SBT")" "$SBQ"
+"$TMUX_REAL" -L "$SB" set -p -t "$SBX" @cockpit_subs 7
+sbst done "$(sbstop "$SBT,$SBT,$SBT")"
+sbf() { "$TMUX_REAL" -L "$SB" display-message -p -t "$SBP" '#{E:@cockpit_fleet}' | plain; }
+is "the fleet string ends with ✦5 for 3 and 2 running" "✦5 " "$(sbf)"
+"$TMUX_REAL" -L "$SB" set -p -t "$SBP" @panestate needs-input; sbst recount '' "$SBP"
+is "after the other marks: ▲1 then ✦5" "▲1 ✦5 " "$(sbf)"
+# The bar's own touch test, from the file the plugin sources.
+"$TMUX_REAL" -L "$SB" set -g @cockpit_is_touch \
+    "$(sed -n 's/^set -g @cockpit_is_touch "\(.*\)"$/\1/p' "$DIR/scripts/lib/statusbar.conf")"
+"$TMUX_REAL" -L "$SB" set -g @cockpit_touch on
+is "touch mode hides it" "▲1 " "$(sbf)"
+"$TMUX_REAL" -L "$SB" set -g @cockpit_touch off
+is "and shows it again out of touch mode" "▲1 ✦5 " "$(sbf)"
+sbst done "$(sbstop "$SBT")"
+is "a Stop that holds the pane still refreshes the sum (1 and 2)" "▲1 ✦3 " "$(sbf)"
+sbst done "$(sbstop "")" "$SBQ"
+is "a Stop that ends one pane's subagents takes them off" "▲1 ✦1 " "$(sbf)"
+sbst done "$(sbstop "")"
+is "a sticky needs-input pane's last Stop takes the ✦ away" "▲1 " "$(sbf)"
+sbst done "$(sbstop "$SBT,$SBT")" "$SBQ"; "$TMUX_REAL" -L "$SB" kill-pane -t "$SBQ"
+TMUX="$SOCKDIR/$SB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
+is "a killed pane's subagents leave the sum at the sweep" "▲1 " "$(sbf)"
+# Compare-then-set: every set redraws. A server hook sees the writes inside the one call.
+sbst done "$(sbstop "$SBT,$SBT")"; SBSETS=$(mktmpf)
+"$TMUX_REAL" -L "$SB" set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $SBSETS'"
+sbst done "$(sbstop "$SBT,$SBT")"
+is "an unchanged count is not set again" "0" "$(grep -c '@cockpit_subs' "$SBSETS")"
+sbst done "$(sbstop "$SBT,$SBT,$SBT")"
+is "a changed one is, once" "1" "$(grep -c '@cockpit_subs 3' "$SBSETS")"
+"$TMUX_REAL" -L "$SB" set-hook -gu after-set-option
+# A bound, not a clock: CPU time. The count was a regex pass per subagent, 24 s at 3000.
+SB3K=$(mktmpf); { printf '{"hook_event_name":"Stop","background_tasks":['
+    for _ in $(seq 1 2999); do printf '%s,' "$SBT"; done; printf '%s]}\n' "$SBT"; } > "$SB3K"
+cpu_under "3000 subagents are counted in under 1 s of CPU" 1 \
+    env TMUX="$SOCKDIR/$SB,0,0" bash -c '"$1" done "$2" < "$3"' _ "$DIR/scripts/agent-state" "$SBP" "$SB3K"
+is "and every one of them counts" "3000" "$(sbn)"
+rm -f "$SBSETS" "$SB3K"
+"$TMUX_REAL" -L "$SB" kill-server >/dev/null 2>&1
+fi
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
