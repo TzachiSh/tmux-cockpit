@@ -1671,14 +1671,14 @@ fn a_short_help_scrolls() {
     key(&mut a, KeyCode::F(1));
     let f = shown(&mut a, 40, 9);
     assert!(
-        f.contains("1-7 of 13") && f.contains("any other key closes") && !f.contains("close the panel"),
+        f.contains("1-7 of 14") && f.contains("any other key closes") && !f.contains("close the panel"),
         "{f}"
     );
-    for _ in 0..6 {
+    for _ in 0..7 {
         key(&mut a, KeyCode::Down);
     }
     let f = shown(&mut a, 40, 9);
-    assert!(f.contains("7-13 of 13") && f.contains("close the panel"), "{f}");
+    assert!(f.contains("8-14 of 14") && f.contains("close the panel"), "{f}");
     key(&mut a, KeyCode::Char('x'));
     assert_eq!((a.help, a.draft.as_str()), (None, ""), "the closing key types nothing");
 }
@@ -1693,9 +1693,9 @@ fn an_overscrolled_help_moves_back_at_once() {
         key(&mut a, KeyCode::Down);
         shown(&mut a, 40, 9);
     }
-    assert_eq!(a.help, Some(6), "13 keys in 7 rows: 6 is the last offset");
+    assert_eq!(a.help, Some(7), "14 keys in 7 rows: 7 is the last offset");
     key(&mut a, KeyCode::Up);
-    assert!(shown(&mut a, 40, 9).contains("6-12 of 13"), "the first Up moves");
+    assert!(shown(&mut a, 40, 9).contains("7-13 of 14"), "the first Up moves");
 }
 
 #[test]
@@ -3300,4 +3300,81 @@ fn the_tablet_tile_refuses_a_window_under_the_tablet_floor() {
     a.view = View::Home { sel: mode(&a) };
     key(&mut a, KeyCode::Enter);
     assert!(!a.tablet && note(&a) == Some("pc mode until the panel closes"));
+}
+
+// ---------------------------------------------------------------- #279: Up and Down in Compose
+
+/// Compose holding `draft` with the cursor at the first `|`, `cols` wide.
+fn upd(draft: &str, cols: u16) -> App {
+    let cur = draft.find('|').unwrap();
+    let mut a = composing(&draft.replacen('|', "", 1));
+    a.size = Some((cols, 20));
+    a.cur = cur;
+    a
+}
+
+fn up_down(a: &mut App, up: bool) -> String {
+    key(a, if up { KeyCode::Up } else { KeyCode::Down });
+    at_cur(a)
+}
+
+#[test]
+fn up_and_down_keep_the_column_in_plain_ascii() {
+    let mut a = upd("hello world\nfoo b|ar baz\nlast line", 80);
+    assert_eq!(up_down(&mut a, true), "hello| world\nfoo bar baz\nlast line");
+    assert_eq!(up_down(&mut a, false), "hello world\nfoo b|ar baz\nlast line");
+    assert_eq!(up_down(&mut a, false), "hello world\nfoo bar baz\nlast |line");
+}
+
+#[test]
+fn up_and_down_land_before_a_wide_char_they_split() {
+    let mut a = upd("ab中文de\nxyz|wvu", 80);
+    assert_eq!(up_down(&mut a, true), "ab|中文de\nxyzwvu", "column 3 is the right half of 中");
+    let mut a = upd("ab中|文de\nxyzwvu", 80);
+    assert_eq!(up_down(&mut a, false), "ab中文de\nxyzw|vu", "after 中 is column 4");
+}
+
+#[test]
+fn up_and_down_take_a_zwj_family_whole() {
+    let fam = "👨\u{200d}👩\u{200d}👧";
+    let mut a = upd(&format!("a{fam}bc\nxy|z"), 80);
+    assert_eq!(up_down(&mut a, true), format!("a|{fam}bc\nxyz"), "never inside the family");
+    let mut a = upd(&format!("a{fam}|bc\nxyz"), 80);
+    assert_eq!(up_down(&mut a, false), format!("a{fam}bc\nxyz|"), "the family is 2 columns");
+}
+
+#[test]
+fn up_and_down_clamp_to_a_short_line_end() {
+    let mut a = upd("a long line here|\nab\nanother long", 80);
+    assert_eq!(up_down(&mut a, false), "a long line here\nab|\nanother long");
+    assert_eq!(up_down(&mut a, false), "a long line here\nab\nan|other long");
+    let mut a = upd("first\n\nla|st", 80);
+    assert_eq!(up_down(&mut a, true), "first\n|\nlast", "an empty line takes the cursor");
+}
+
+#[test]
+fn up_and_down_stay_put_on_the_first_and_last_line() {
+    let mut a = upd("to|p\nbottom", 80);
+    assert_eq!(up_down(&mut a, true), "to|p\nbottom");
+    let mut a = upd("top\nbot|tom", 80);
+    assert_eq!(up_down(&mut a, false), "top\nbot|tom");
+    let mut a = upd("on|e line", 80);
+    assert_eq!(
+        (up_down(&mut a, true), up_down(&mut a, false)),
+        ("on|e line".into(), "on|e line".into())
+    );
+}
+
+#[test]
+fn up_and_down_move_by_wrapped_row_as_drawn() {
+    // 32 columns draw a 28-column box: the line wraps after "jumps"
+    let draft = "the quick brown fox jumps over the lazy dog|";
+    let mut a = upd(draft, 32);
+    assert_eq!(up_down(&mut a, true), "the quick brown f|ox jumps over the lazy dog");
+    let f = frame(&a, 32, 12, 0);
+    assert!(f.contains("the quick brown f▏ox jumps"), "the cursor is where Up put it:\n{f}");
+    assert_eq!(up_down(&mut a, true), "the quick brown f|ox jumps over the lazy dog", "the top row");
+    assert_eq!(up_down(&mut a, false), draft, "back down: column 17 ends \"over the lazy dog\"");
+    let mut a = upd(draft, 80);
+    assert_eq!(up_down(&mut a, true), draft, "unwrapped, it is one row");
 }

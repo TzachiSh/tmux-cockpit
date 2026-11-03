@@ -229,9 +229,9 @@ if [ -n "$rp" ]; then
         *cockpit_pstate*) ok "repo config guards against stale state" ;;
         *) bad "repo config guards against stale state" "@cockpit_pstate" "absent" ;;
     esac
-    # A stray co-client at a different width makes tmux over-draw the narrower
-    # one; smallest sizes the window to the smallest client so none is (#144, #145).
-    is "repo config sets window-size smallest" "smallest" \
+    # latest sizes the window to the client that typed last, so a PC attached
+    # after a phone gets its full size (#277; reverses #147's smallest).
+    is "repo config sets window-size latest" "latest" \
        "$(tmux -L "$SOCK" show-options -gv window-size 2>/dev/null)"
 else
     for i in 1 2 3 4 5 6; do skip_ "repo config (no scratch server)"; done

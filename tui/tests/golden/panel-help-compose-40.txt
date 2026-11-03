@@ -1,4 +1,4 @@
-"╭ keys ──────────────────── 1-10 of 13 ╮"
+"╭ keys ──────────────────── 1-10 of 14 ╮"
 "│ ^S F2     write it with Claude       │"
 "│ ^F        fix the spelling           │"
 "│ ^T        insert as typed            │"
@@ -7,6 +7,6 @@
 "│ ↵         new line                   │"
 "│ ⌫ ^W ^U   delete a char, a word, al… │"
 "│ ← →       move; ^← ^→ by a word      │"
+"│ ↑↓        the row above, below       │"
 "│ Home End  line start, end; ^A ^E too │"
-"│ Del       delete the char after      │"
 "╰ ↑↓ scroll  any other key closes ─────╯"
