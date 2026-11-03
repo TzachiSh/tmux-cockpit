@@ -150,7 +150,11 @@ type `subagent`. `needs-input` and `error` stay sticky, since nothing is written
 Only subagents hold the pane. An idle teammate stays `running` in Claude Code's
 task registry for the life of the team, and a background shell or monitor can
 run forever; holding on either would leave a pane "working" that nothing will
-wake. A subagent that never stops is listed by every `Stop` until the session
+wake. A `workflow`, `cloud session` or `MCP task` does not hold it either: the
+hooks reference names only a background subagent's report-back as a wake of
+the main session, and a cloud session runs on another machine for as long as
+it likes. Holding on work with no sure wake risks a pane stuck "working"; not
+holding only shows `done` early. A subagent that never stops is listed by every `Stop` until the session
 ends, and `SessionEnd` clears the pane.
 
 There is no subagent counter, so there is nothing to drift, lock or reset.

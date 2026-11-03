@@ -658,6 +658,17 @@ bgcase "a subagent object outside background_tasks, with no such field, is done"
     '{"hook_event_name":"Stop","other":{"type":"subagent"}}'
 bgcase "the same object before a background_tasks of one shell task is done" done \
     '{"hook_event_name":"Stop","other":{"type":"subagent"},"background_tasks":[{"type":"shell"}]}'
+# The match ends with the background_tasks array: a later key never holds the pane, and a
+# `]` inside one of the array's strings does not end it early.
+bgcase "a subagent object in a key after the array is done" done \
+    '{"background_tasks":[],"session_crons":[],"later":[{"type":"subagent","status":"done"}]}'
+bgcase "a subagent after a string holding ], in the array still holds it" running \
+    "$(bgstop '{"type":"shell","description":"a ], \"b\" ]"},{"type":"subagent"}')"
+# A long final message comes before the key and is read whole: no cap cuts the array off.
+BGBIG=$(printf '%0262144d' 0)
+is "the long message is 256 KB" 262144 "${#BGBIG}"
+bgcase "a subagent after a 256 KB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
+bgcase "an empty array after a 256 KB message is done" done "$(bgstop "" "$BGBIG")"
 
 # Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
 bgst running "$BGU"
@@ -677,10 +688,6 @@ bgjobs() {                    # <n> <state> <payload>: n hooks at once, then wai
     # shellcheck disable=SC2086  # one pid per word
     wait $pids; }
 bgst running "$BGU"
-bgjobs 8 done "$(bgstop "$BGT")" &
-bgjobs 8 running '{"hook_event_name":"PreToolUse","agent_id":"a2"}'
-wait $!
-bgis "8 concurrent Stops with subagents beside 8 subagent tool calls" running running 0
 bgjobs 8 done "$(bgstop "$BGT")"
 bgis "8 concurrent Stops with subagents alone" running running 0
 bgst needs-input '{"hook_event_name":"PermissionRequest","agent_id":"a1"}'

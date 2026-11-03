@@ -111,15 +111,17 @@ esac
 # and a shell or monitor task may never end. Matched structurally: inside a JSON string the
 # quotes arrive escaped, so no message text can match. No payload or no lib: not in flight.
 subagent_in_flight() {
-    local d=${BASH_SOURCE[0]} rest
+    local d=${BASH_SOURCE[0]} re
     [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/hook.sh
     . "${d%/*}/lib/hook.sh" 2>/dev/null || return 1
     read_payload true                 # compact JSON: the first line is the whole payload
-    rest=${payload#*\"background_tasks\"}
-    [ "$rest" != "$payload" ] || return 1
-    case "$rest" in *'"type":"subagent"'*|*'"type": "subagent"'*) return 0 ;; esac
-    return 1
+    # One regex, linear in the payload: a `${payload#*key}` cut rescans it once per byte, and
+    # the final message, any size, comes before the key. After `[`, whole strings or single
+    # bytes other than `]`, so the match ends with the array (its entries are flat objects,
+    # no nested array) and a `]` inside a string does not end it.
+    re='"background_tasks": ?\[("([^"\\]|\\.)*"|[^]"])*"type": ?"subagent"'
+    [[ $payload =~ $re ]]
 }
 
 case "$state" in
