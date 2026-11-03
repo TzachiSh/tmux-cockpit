@@ -33,6 +33,8 @@ fi
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "${d%/*}/lib/fmt.sh" || exit 1   # fesc (#289)
 
 # Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
 # run-shell from a stripped environment, or a systemd-launched tmux. tmux-where
@@ -439,7 +441,8 @@ PICK=0 DRY=0 BROWSE=0
 [ "${1:-}" = --pick ]    && { PICK=1; shift; }   # re-entry from the popup below
 [ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
 
-note() { [ "$DRY" -eq 1 ] || tmux display-message "$*"; }
+# display-message expands formats: a clicked name like x#(cmd).txt must show, not run (#289)
+note() { [ "$DRY" -eq 1 ] || tmux display-message "$(fesc "$*")"; }
 
 # One order for every cockpit picker: ↵, alt-↵, ⇥, ^-verbs, ^/, esc. Both lines
 # stay under 48 columns, which is what a 70% popup shows at 80 columns.
@@ -633,7 +636,9 @@ open_one() {
         # whichever session tmux considers current, which is the session with the
         # most recent client -- not necessarily the one you clicked in. It takes a
         # WINDOW, not a pane, so -a puts the new one right after the clicked one.
-        tmux new-window -t "$win" -a -c "$dir" -n "${file##*/}" \
+        # -c and -n expand formats, the command body does not (#289): escape
+        # the first two only, or a # in the name reaches the editor doubled.
+        tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "${file##*/}")" \
              "$editor ${ln:++$ln} $(shq "$file")"
         return
     fi

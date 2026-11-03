@@ -407,7 +407,7 @@ tmux bind-key -n MouseUp3Status if-shell -F '#{m:cp-*,#{mouse_status_range}}' \
 # Bound from argv, not a sourced file: in a tmux "..." string sq()'s '\'' loses its \.
 pick_on() {
     tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
-        '\;' run-shell -b "$Q_OPEN #{pane_id}"
+        '\;' run-shell -b "$(fesc "$Q_OPEN") #{pane_id}"
 }
 # Stock swap-pane fires on the first press and moves the second click to another
 # pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.

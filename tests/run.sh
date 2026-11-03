@@ -383,6 +383,10 @@ until_out yes sh -c "[ -e '$MIDIR/after' ] && echo yes"
 is "and no renamed name ran anything" "none " \
    "$([ -e "$MIDIR/pwned" ] && echo ran || echo none) $("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
 is "and the staging option is cleared" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+# A rejected id still consumes the staged name: nothing is left for a later call.
+"$TMUX_REAL" -L "$MI" set -g @cockpit_rename_to stale >/dev/null 2>&1
+"$TMUX_REAL" -L "$MI" run-shell "$(printf %q "$DIR/scripts/tmux-rename") session 'x;y'" >/dev/null 2>&1
+is "tmux-rename with a bad id clears the staged name too" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
 "$TMUX_REAL" -L "$MI" rename-session -t "$MISID" t >/dev/null 2>&1
 # The runtime case above proves the mechanism on one row. The others that
 # re-expand a format are guarded structurally: the menu must carry the doubled
@@ -1541,6 +1545,29 @@ cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
     "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
 
 # group: etmux
+echo "== tmux-open-path: a clicked file name is never run as a tmux format (#289) =="
+# new-window -n/-c and display-message expand #(): a repo file named for a
+# command ran it on the click. Real server, since only tmux knows what it expands.
+if need_tmux "open-path format escaping"; then :; else
+OX="cockpit-ox-$$"; SOCKS="$SOCKS $OX"; OXD=$(mktmpd)
+oxf='x#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).txt'   # no spaces: the line splits on them
+: > "$OXD/$oxf"
+"$TMUX_REAL" -L "$OX" -f /dev/null new-session -d -s t -c "$OXD" -x 100 -y 30 'exec sleep 3600' >/dev/null 2>&1
+OXP=$("$TMUX_REAL" -L "$OX" list-panes -t t -F '#{pane_id}')
+"$TMUX_REAL" -L "$OX" set -g @cockpit_editor true
+"$TMUX_REAL" -L "$OX" set -g remain-on-exit on    # the editor (true) exits at once
+"$TMUX_REAL" -L "$OX" set -g @cockpit_open_single always
+"$TMUX_REAL" -L "$OX" set -p -t "$OXP" @cockpit_click_line "error in $oxf:3"
+"$TMUX_REAL" -L "$OX" run-shell "$(printf %q "$DIR/scripts/tmux-open-path") $OXP" >/dev/null 2>&1
+ox_n=0; until [ "$("$TMUX_REAL" -L "$OX" list-windows -t t 2>/dev/null | wc -l)" -ge 2 ] || [ "$ox_n" -ge 50 ]; do
+    sleep 0.1; ox_n=$((ox_n + 1)); done
+sleep 0.5    # a #() job, had one started, runs in the background
+is "the click opened a window named for the file, literally" "$oxf" \
+   "$("$TMUX_REAL" -L "$OX" list-windows -t t -F '#{window_name}' 2>/dev/null | tail -n 1)"
+is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$OX" show -gqv @pwned 2>/dev/null)"
+"$TMUX_REAL" -L "$OX" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
