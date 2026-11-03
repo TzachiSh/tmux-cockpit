@@ -354,6 +354,36 @@ until_cap "$MO" o '*(rename-window)*'
 until_out '-x name' "$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}' >/dev/null
 is "Rename window takes a name that starts with -" "-x name" \
    "$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{window_name}')"
+# #289: rename-window and rename-session expand formats in the new name, and a
+# bare %% let a " close the string. Through the menu, each name lands exactly
+# as typed and nothing in it runs.
+"$TMUX_REAL" -L "$MI" set-environment -g MIMK "$MIDIR/pwned" >/dev/null 2>&1
+MISID=$("$TMUX_REAL" -L "$MI" display-message -p -t t: '#{session_id}')
+mi_rename() {                 # <key> <prompt> <format> <name>
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-b a
+    until_cap "$MO" o "*Rename window*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o "$1"
+    until_cap "$MO" o "*($2)*"
+    "$TMUX_REAL" -L "$MO" send-keys -t o C-u
+    "$TMUX_REAL" -L "$MO" send-keys -t o -l -- "$4"
+    "$TMUX_REAL" -L "$MO" send-keys -t o Enter
+    until_out "$(printf '%q' "$4")" "$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3" >/dev/null
+    is "$2 applies [$4] exactly" "$4" "$("$TMUX_REAL" -L "$MI" display-message -p -t "$MISID:" "$3")"
+}
+for mi_name in 'w"x; set -g @pwned Q;"' 'w#(touch $MIMK)' 'w#{session_name}' 'w#1 #[x]'; do
+    mi_rename , rename-window '#{window_name}' "$mi_name"
+done
+for mi_name in 's"x; set -g @pwned Q;"' 's#(touch $MIMK)' 's#{session_name}' 's#1'; do
+    mi_rename '$' rename-session '#{session_name}' "$mi_name"
+done
+# The renames' own run-shell finished before each name landed, so a payload
+# job had its chance; this run-shell holds its client until that is sure.
+"$TMUX_REAL" -L "$MI" run-shell "touch '$MIDIR/after'" >/dev/null 2>&1
+until_out yes sh -c "[ -e '$MIDIR/after' ] && echo yes"
+is "and no renamed name ran anything" "none " \
+   "$([ -e "$MIDIR/pwned" ] && echo ran || echo none) $("$TMUX_REAL" -L "$MI" show-option -gqv @pwned)"
+is "and the staging option is cleared" "" "$("$TMUX_REAL" -L "$MI" show-option -gqv @cockpit_rename_to)"
+"$TMUX_REAL" -L "$MI" rename-session -t "$MISID" t >/dev/null 2>&1
 # The runtime case above proves the mechanism on one row. The others that
 # re-expand a format are guarded structurally: the menu must carry the doubled
 # form, never the single one that a quote in a cwd or a name turned into a command.
@@ -7296,7 +7326,7 @@ esac
 # source pane into @cockpit_review_src first and the window reads that (#45).
 # A copy of the plugin whose tmux-review is a stub records the -p it got.
 RB3O="cockpit-rb3o-$$"; SOCKS="$SOCKS $RB3O"
-mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp "$DIR"/scripts/* "$RB3D/p/scripts/" 2>/dev/null
+mkdir -p "$RB3D/p/scripts"; cp "$DIR/cockpit.tmux" "$RB3D/p/"; cp -r "$DIR"/scripts/. "$RB3D/p/scripts/"
 printf '#!/bin/sh\nprintf %%s "$*" > %s/args; sleep 30\n' "$RB3D" > "$RB3D/p/scripts/cockpit-board"; chmod +x "$RB3D/p/scripts/cockpit-board"
 "$TMUX_REAL" -L "$RB3" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" run-shell "$RB3D/p/cockpit.tmux" >/dev/null 2>&1
