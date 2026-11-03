@@ -1508,10 +1508,17 @@ close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 
 **Row cells.** The list draws, between the message and the age: the diff stat
 (`+a -d`, `clean`, `no repo`, `?N new` for untracked files) and the branch
-(`⑂name`). The review mark stays in the row's leading column. A cell that does
-not fit is dropped with every cell to its right; the cells take at most a third
-of the width the name and message share, and leave the name 6 cells and the
-message 12, so a 40-column row may show none.
+(`⑂name`, or `⑂@<short sha>` on a detached HEAD). The review mark stays in the
+row's leading column. A cell that does not fit is dropped with every cell to its
+right; the cells take at most a third of the width the name and message share,
+and leave the name 6 cells and the message 12, so a 40-column row may show none.
+
+A pane in a linked worktree (#312) gets `repo⑂branch · wt <name>`, the repo
+being the main checkout's. As the row narrows the repo goes first, then the
+worktree name is cut (to at least one character) and then dropped, and the
+branch goes last. `--rows` and `--json` carry the same string as `loc`:
+`repo⑂branch`, plus ` · wt <name>` in a linked worktree, `@<short sha>` for
+the branch when HEAD is detached.
 
 **Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
 scan per distinct repo root however many panes share it, at most 8 git processes

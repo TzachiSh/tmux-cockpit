@@ -89,6 +89,71 @@ fn the_branch_and_root_come_back_with_the_stat() {
     assert_eq!(root, r.path());
 }
 
+fn loc(path: &str) -> String {
+    scan(&[path.to_string()]).facts.remove(path).unwrap().0
+}
+
+fn name(r: &Repo) -> String {
+    r.0.file_name().unwrap().to_string_lossy().into_owned()
+}
+
+#[test]
+fn a_linked_worktree_reads_main_repo_branch_and_worktree_name() {
+    let r = Repo::new("wtrow");
+    let wt = r.0.with_file_name(format!("{}-wt", name(&r)));
+    let _ = std::fs::remove_dir_all(&wt);
+    r.git(&["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()]);
+    let p = wt.display().to_string();
+    let (l, _, root) = scan(std::slice::from_ref(&p)).facts.remove(&p).unwrap();
+    let wt_name = wt.file_name().unwrap().to_string_lossy().into_owned();
+    std::fs::remove_dir_all(&wt).unwrap();
+    assert_eq!(l, format!("{}⑂feat · wt {wt_name}", name(&r)));
+    assert_eq!(root, p);
+}
+
+#[test]
+fn a_subdirectory_of_the_main_checkout_is_not_a_worktree() {
+    // rev-parse prints the common dir relative to the subdirectory: `../.git`
+    let r = Repo::new("wtsub");
+    std::fs::create_dir(r.0.join("sub")).unwrap();
+    let sub = r.0.join("sub").display().to_string();
+    assert_eq!(loc(&sub), format!("{}⑂main", name(&r)));
+}
+
+#[test]
+fn a_detached_head_reads_as_its_short_sha() {
+    let r = Repo::new("detached");
+    r.git(&["checkout", "-q", "--detach"]);
+    let sha = Command::new("git")
+        .arg("-C")
+        .arg(&r.0)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let sha = String::from_utf8(sha).unwrap();
+    assert_eq!(loc(&r.path()), format!("{}⑂@{}", name(&r), &sha[..7]));
+}
+
+#[test]
+fn an_unborn_repo_keeps_its_row() {
+    let d = std::env::temp_dir().join(format!("cockpit-fleet-unborn-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(&d)
+        .args(["init", "-q", "-b", "main"])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .status()
+        .unwrap();
+    let got = loc(&d.display().to_string());
+    std::fs::remove_dir_all(&d).unwrap();
+    assert!(ok.success());
+    assert_eq!(got, format!("cockpit-fleet-unborn-{}⑂HEAD", std::process::id()));
+}
+
 #[test]
 fn two_panes_on_one_root_are_scanned_once() {
     let r = Repo::new("shared");
