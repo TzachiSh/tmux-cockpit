@@ -1544,7 +1544,6 @@ BIGLINE=$(awk 'BEGIN{s="";for(i=1;i<=4000;i++) s = s "nope" i "xxxxxxxxxxxxxxxx 
 cpu_under "a 4000-token clicked line is bounded, not just slow" 1.0 \
     "$DIR/scripts/tmux-open-path" --dry-run "$DIR" "$BIGLINE"
 
-# group: etmux
 echo "== tmux-open-path: a clicked file name is never run as a tmux format (#289) =="
 # new-window -n/-c and display-message expand #(): a repo file named for a
 # command ran it on the click. Real server, since only tmux knows what it expands.
@@ -1568,6 +1567,7 @@ is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$OX" show -gqv @pwned 2>
 "$TMUX_REAL" -L "$OX" kill-server >/dev/null 2>&1
 fi
 
+# group: etmux
 echo "== tmux-open-path: the editor command survives odd filenames =="
 # open_one built a shell string by wrapping the path in single quotes. A path
 # containing a single quote closed that quote early and the rest of the name was
