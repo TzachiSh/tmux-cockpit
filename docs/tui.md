@@ -390,10 +390,20 @@ badge in the ascii tier.
 
 Running is the subagents whose `subagents/` files say they run. With no files
 to read, it is the hook's `@cockpit_subs`, the background subagents in flight
-at the agent's last Stop. A failure from before the agent's newest prompt is an
-earlier turn's: it leaves the badge and the tree at the same moment, so the two
-always agree. The newest prompt is a human one; a subagent's
-`<task-notification>` report-back does not count.
+at the agent's last Stop. An ended agent (#301) runs no subagent, whatever its
+files say: its badge counts none running, shows only a failure, in the meta
+role and dim, and its tree draws those subagents with `◌` and no age.
+
+The files give no finish time, so the board keeps its own: it stamps each
+subagent when a read first sees it failed or done. A failure first seen before
+the agent's newest prompt is an earlier turn's: it leaves the badge and the
+tree at the same moment, so the two always agree. A background subagent that
+started last turn and failed this one stays. The newest prompt is a human one;
+a subagent's `<task-notification>` report-back does not count. Once the prompt
+is out of the transcript's tail the read has none, and the board keeps the
+newest it saw. On the first read of a pane, when the board opens, a subagent
+already failed or done is stamped old unless it started after the newest
+prompt.
 
 `s` opens the selected agent's tree under its row; on a header, every tree in
 the session. Trees never open on their own, and which are open is kept in
@@ -416,8 +426,8 @@ A tree line is `├` (`|-` in ascii), the subagent's state glyph, its type, its
 description, its tokens (the context of its last request: `842`, `12.4k`,
 `3.1M`) and its age since it started. As the row narrows the tokens go first,
 then the description shortens to 8 cells, then the type to 6; the age stays.
-A done subagent more than 2 minutes past its start folds into one `✓ N done`
-line, first in the tree: the files give no finish time. A tree takes at most 5
+A done subagent folds into one `✓ N done` line, first in the tree, 2 minutes
+after a read first saw it done. A tree takes at most 5
 lines, the last reading `+N more` when it has more.
 
 Tree lines take only the rows the list leaves empty, and never more than half

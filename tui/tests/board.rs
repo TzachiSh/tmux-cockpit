@@ -2597,7 +2597,10 @@ fn extra_in(th: &Theme, loc: &str, room: u16) -> String {
         pm: "clean".into(),
         ..Pane::default()
     };
-    board::row_extra(&p, th, room, 0).iter().map(|s| s.content.to_string()).collect()
+    board::row_extra(&p, th, room, &Default::default())
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect()
 }
 
 fn extra(loc: &str, room: u16) -> String {

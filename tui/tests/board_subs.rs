@@ -96,7 +96,7 @@ fn at(ps: &[Pane], id: &str) -> usize {
 
 fn nav(ps: &[Pane], sel: &str, open: &[&str], room: usize) -> Nav {
     let mut n = Nav::new(Sel::Pane(sel.into()), BTreeSet::new());
-    n.now = NOW;
+    n.seen.now = NOW;
     n.trees = open.iter().map(|s| s.to_string()).collect();
     n.settle(ps, room);
     n
@@ -127,12 +127,15 @@ fn tree_of(ps: &[Pane], n: &Nav, id: &str) -> Vec<String> {
 
 /// The extra cells as text; a pane with no `loc` ends in the ` no repo` stat.
 fn extra(p: &Pane, th: &Theme, room: u16) -> String {
-    board::row_extra(p, th, room, NOW).iter().map(|s| s.content.to_string()).collect()
+    board::row_extra(p, th, room, &board::Seen::at(NOW))
+        .iter()
+        .map(|s| s.content.to_string())
+        .collect()
 }
 
 /// The first extra cell, which is the badge when there is one.
 fn badge(p: &Pane, th: &Theme, room: u16) -> String {
-    board::row_extra(p, th, room, NOW)
+    board::row_extra(p, th, room, &board::Seen::at(NOW))
         .first()
         .map(|s| s.content.to_string())
         .unwrap_or_default()
@@ -213,7 +216,7 @@ fn with_no_subagent_files_the_hook_count_is_the_running_count() {
 #[test]
 fn the_badge_is_the_failed_role_when_one_failed() {
     let th = Theme::fixed();
-    let style = |p: &Pane| board::row_extra(p, &th, 40, NOW)[0].style.fg;
+    let style = |p: &Pane| board::row_extra(p, &th, 40, &board::Seen::at(NOW))[0].style.fg;
     assert_eq!(style(&badge_pane(2, 1, 0)), Some(th.error));
     assert_eq!(style(&badge_pane(2, 0, 1)), Some(th.running));
 }
@@ -272,16 +275,76 @@ fn an_open_tree_folds_old_done_and_drops_an_earlier_turns_failure() {
     );
 }
 
+/// One more read of `ps` at `now`, as the run loop makes every second.
+fn read(n: &mut Nav, ps: &[Pane], now: u64) {
+    n.seen.now = now;
+    n.settle(ps, 20);
+}
+
+/// A done subagent folds 2 minutes after a read first saw it done, however
+/// long ago it started: a 10-minute run that just finished is a line.
 #[test]
-fn a_done_subagent_folds_at_two_minutes() {
+fn a_done_subagent_folds_two_minutes_after_it_is_seen_done() {
     let mut ps = mock();
     let i = at(&ps, "%4");
-    ps[i].subs = vec![
-        sub("Explore", "fresh", SubState::Done, board::SUB_FOLD, 1),
-        sub("Explore", "old", SubState::Done, board::SUB_FOLD + 1, 1),
-    ];
+    ps[i].subs = vec![sub("Explore", "long", SubState::Running, 600, 1)];
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    ps[i].subs[0].state = SubState::Done;
+    read(&mut n, &ps, NOW + 5);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/long"]);
+    read(&mut n, &ps, NOW + 5 + board::SUB_FOLD);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/long"]);
+    read(&mut n, &ps, NOW + 6 + board::SUB_FOLD);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 1"]);
+}
+
+/// On the board's first read, a done subagent with no start, or one that
+/// started before the newest prompt, is old: its finish is unknown.
+#[test]
+fn a_done_subagent_already_done_at_the_first_read() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    let mut unstarted = sub("Plan", "unstarted", SubState::Done, 0, 1);
+    unstarted.started = None;
+    ps[i].subs = vec![unstarted, sub("Plan", "this turn", SubState::Done, 200, 1)];
     let n = nav(&ps, "%4", &["%4"], 20);
-    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 1", "%4/fresh"]);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 1", "%4/this turn"]);
+}
+
+/// A background subagent started last turn and failed this one stays until
+/// the next prompt.
+#[test]
+fn a_failure_after_the_prompt_stays_whenever_it_started() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    ps[i].asked_since = Some(60);
+    ps[i].subs = vec![sub("Explore", "bg", SubState::Running, 600, 1)];
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    ps[i].subs[0].state = SubState::Failed;
+    ps[i].asked_since = Some(65);
+    read(&mut n, &ps, NOW + 5);
+    assert_eq!(board::row_extra(&ps[i], &Theme::fixed(), 40, &n.seen)[0].content, " ✦0·1✕");
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/bg"]);
+    // the next prompt clears it from both
+    ps[i].asked_since = Some(1);
+    read(&mut n, &ps, NOW + 10);
+    assert!(tree_of(&ps, &n, "%4").is_empty());
+    assert!(!extra(&ps[i], &Theme::fixed(), 40).contains('✦'));
+}
+
+/// A prompt out of the transcript's tail reads as no prompt: the board keeps
+/// the newest it saw, so an earlier turn's failure stays gone.
+#[test]
+fn a_prompt_out_of_the_tail_is_remembered() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    ps[i].asked_since = Some(300);
+    ps[i].subs = vec![sub("Plan", "old", SubState::Failed, 900, 1)];
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    ps[i].asked_since = None;
+    read(&mut n, &ps, NOW + 1);
+    assert!(!board::row_extra(&ps[i], &Theme::fixed(), 40, &n.seen)[0].content.contains('✦'));
+    assert!(tree_of(&ps, &n, "%4").is_empty());
 }
 
 #[test]
@@ -609,11 +672,11 @@ fn an_open_trees_ages_move_the_redraw_gate() {
     let ps = mock();
     let shut = nav(&ps, "%4", &[], 20);
     let mut later = shut.clone();
-    later.now += 1;
+    later.seen.now += 1;
     assert_eq!(shut.tree_gate(&ps), later.tree_gate(&ps), "a shut tree prints no age");
     let open = nav(&ps, "%4", &["%4"], 20);
     let mut later = open.clone();
-    later.now += 1;
+    later.seen.now += 1;
     assert_ne!(open.tree_gate(&ps), later.tree_gate(&ps));
 }
 
@@ -721,7 +784,7 @@ fn an_ended_agents_failure_shows_dimmed_in_meta() {
     let i = at(&ps, "%4");
     ps[i].subs.push(sub("Plan", "broke", SubState::Failed, 10, 1));
     let th = Theme::fixed();
-    let b = &board::row_extra(&ps[i], &th, 40, NOW)[0];
+    let b = &board::row_extra(&ps[i], &th, 40, &board::Seen::at(NOW))[0];
     assert_eq!(b.content, " ✦0·1✕");
     assert_eq!(b.style.fg, Some(th.meta));
     assert!(b.style.add_modifier.contains(ratatui::style::Modifier::DIM));
@@ -738,6 +801,6 @@ fn an_ended_agents_running_subagent_is_drawn_ended() {
     assert!(line.contains("└ ◌ Explore"), "{line}");
     assert!(!line.contains("1h23m"), "no age ticks: {line}");
     let mut later = n.clone();
-    later.now += 60;
+    later.seen.now += 60;
     assert_eq!(n.tree_gate(&ps), later.tree_gate(&ps));
 }

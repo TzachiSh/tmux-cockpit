@@ -1285,8 +1285,8 @@ impl Row {
     }
 }
 
-/// A done subagent this old, by its start, folds into its tree's `✓ N done` line:
-/// the data has no finish time.
+/// A done subagent this long after a read first saw it done folds into its
+/// tree's `✓ N done` line: the data has no finish time.
 pub const SUB_FOLD: u64 = 120;
 /// The most lines one agent's tree takes, its `+N more` included.
 const TREE_MAX: usize = 5;
@@ -1295,20 +1295,93 @@ const TREE_MAX: usize = 5;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
     Line,
-    /// done and older than [`SUB_FOLD`]: counted on the `✓ N done` line
+    /// seen done for longer than [`SUB_FOLD`]: counted on the `✓ N done` line
     Old,
-    /// failed before the agent's newest prompt: an earlier turn's, on no line and off the badge
+    /// first seen failed before the agent's newest prompt: an earlier turn's, on no
+    /// line and off the badge
     Gone,
+}
+
+/// What the board has seen of the subagents across reads (#313), as one read
+/// cannot say when a subagent failed or finished, and its prompt can be out of
+/// the transcript's tail.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Seen {
+    /// unix seconds, set at each read: the subagent lines' ages and folds
+    pub now: u64,
+    /// pane id -> its newest prompt known, unix seconds
+    prompts: HashMap<String, u64>,
+    /// pane id -> sub id -> its state and when a read first saw it in that state
+    first: HashMap<String, HashMap<String, (SubState, u64)>>,
+}
+
+impl Seen {
+    pub fn at(now: u64) -> Self {
+        Self { now, ..Self::default() }
+    }
+
+    /// One read's panes. A pane's newest prompt is the newest any read gave:
+    /// `asked_since` is `None` once the prompt is out of the transcript's tail.
+    /// A subagent's state is stamped when a read first sees it in that state; on
+    /// the first read of its pane, an already done or failed one is stamped old
+    /// (0) unless it started after the newest prompt. Gone panes are forgotten.
+    pub fn observe(&mut self, ps: &[Pane]) {
+        for p in ps {
+            if let Some(q) = self.prompt(p) {
+                self.prompts.insert(p.id.clone(), q);
+            }
+            let fresh = !self.first.contains_key(&p.id);
+            let stamps: Vec<(String, (SubState, u64))> = p
+                .subs
+                .iter()
+                .filter(|s| self.stamp(p, s).is_none())
+                .map(|s| (s.id.clone(), (s.state, if fresh { self.unknown(p, s) } else { self.now })))
+                .collect();
+            let subs = self.first.entry(p.id.clone()).or_default();
+            subs.retain(|id, _| p.subs.iter().any(|s| s.id == *id));
+            subs.extend(stamps);
+        }
+        self.first.retain(|id, _| ps.iter().any(|p| p.id == *id));
+        self.prompts.retain(|id, _| ps.iter().any(|p| p.id == *id));
+    }
+
+    /// The newest prompt known, unix seconds: this read's, or an earlier one's.
+    fn prompt(&self, p: &Pane) -> Option<u64> {
+        let this = p.asked_since.map(|a| self.now.saturating_sub(a));
+        this.into_iter().chain(self.prompts.get(&p.id).copied()).max()
+    }
+
+    /// When a read first saw `s` in its state, if one did.
+    fn stamp(&self, p: &Pane, s: &Sub) -> Option<u64> {
+        let (st, t) = self.first.get(&p.id)?.get(&s.id)?;
+        (*st == s.state).then_some(*t)
+    }
+
+    /// A first sight's stamp: now if it started after the newest prompt, else old.
+    fn unknown(&self, p: &Pane, s: &Sub) -> u64 {
+        match (s.started, self.prompt(p)) {
+            (Some(t), Some(q)) if t > q => self.now,
+            _ => 0,
+        }
+    }
+
+    /// The stamp, or what the first read would give it.
+    fn since(&self, p: &Pane, s: &Sub) -> u64 {
+        self.stamp(p, s).unwrap_or_else(|| self.unknown(p, s))
+    }
 }
 
 /// The agent's next turn is its next prompt: `asked_since` is the age of the newest
 /// human prompt, which a subagent's `<task-notification>` report-back never moves.
-fn place(p: &Pane, s: &Sub, now: u64) -> Place {
-    let age = s.started.map(|t| now.saturating_sub(t));
+/// A failure first seen before that prompt is an earlier turn's. Exhaustive, so a
+/// new state fails to compile until it is placed.
+fn place(p: &Pane, s: &Sub, seen: &Seen) -> Place {
     match s.state {
-        SubState::Failed if age.zip(p.asked_since).is_some_and(|(a, q)| a > q) => Place::Gone,
-        SubState::Done if age.is_none_or(|a| a > SUB_FOLD) => Place::Old,
-        _ => Place::Line,
+        SubState::Running => Place::Line,
+        SubState::Failed if seen.prompt(p).is_some_and(|q| seen.since(p, s) < q) => Place::Gone,
+        SubState::Failed => Place::Line,
+        SubState::Done if seen.now.saturating_sub(seen.since(p, s)) > SUB_FOLD => Place::Old,
+        SubState::Done => Place::Line,
     }
 }
 
@@ -1317,12 +1390,12 @@ fn place(p: &Pane, s: &Sub, now: u64) -> Place {
 /// `subagents/` dir) it is the hook's `@cockpit_subs`, the background subagents in
 /// flight at the agent's last Stop. A failure leaves the count at the agent's next
 /// prompt, when it leaves the tree.
-pub fn sub_counts(p: &Pane, now: u64) -> (usize, usize) {
+pub fn sub_counts(p: &Pane, seen: &Seen) -> (usize, usize) {
     if p.subs.is_empty() {
         return (if p.ended { 0 } else { p.subs_n as usize }, 0);
     }
     let mut c = (0, 0);
-    for s in p.subs.iter().filter(|s| place(p, s, now) != Place::Gone) {
+    for s in p.subs.iter().filter(|s| place(p, s, seen) != Place::Gone) {
         match s.state {
             // #301: a crash leaves its subagents `Running`, and none runs
             SubState::Running if p.ended => {}
@@ -1348,16 +1421,16 @@ fn sub_glyph(th: &Theme, p: &Pane, st: SubState) -> (&'static str, ratatui::styl
 
 /// Agent `i`'s tree with room for every line: the `✓ N done` fold first, as its
 /// subagents are the oldest, then one line per subagent, oldest first.
-fn tree_lines(ps: &[Pane], i: usize, now: u64) -> Vec<Row> {
+fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
     let p = &ps[i];
-    let old = p.subs.iter().filter(|s| place(p, s, now) == Place::Old).count();
+    let old = p.subs.iter().filter(|s| place(p, s, seen) == Place::Old).count();
     let mut out = vec![];
     if old > 0 {
         out.push(Row::Done(i, old));
     }
     out.extend(
         (0..p.subs.len())
-            .filter(|&j| place(p, &p.subs[j], now) == Place::Line)
+            .filter(|&j| place(p, &p.subs[j], seen) == Place::Line)
             .map(|j| Row::Sub(i, j)),
     );
     out
@@ -1552,8 +1625,8 @@ pub struct Nav {
     /// #313: the agents whose subagent tree is open, by pane id. Memory only,
     /// never `board.state`: nothing unfolds by itself (D4)
     pub trees: BTreeSet<String>,
-    /// unix seconds, set at each read: the subagent lines' ages and folds
-    pub now: u64,
+    /// #313: the read's clock and what earlier reads saw of the subagents
+    pub seen: Seen,
     /// the list rows on screen at the last placement, net of the field
     room: usize,
 }
@@ -1603,7 +1676,7 @@ impl Nav {
         for r in self.rows(ps).iter().filter(|r| r.tree()) {
             out.push_str(&format!("{r:?}"));
             if let Row::Sub(i, j) = r {
-                out.push_str(&age_of(&ps[*i], &ps[*i].subs[*j], self.now));
+                out.push_str(&age_of(&ps[*i], &ps[*i].subs[*j], self.seen.now));
             }
         }
         out
@@ -1620,7 +1693,7 @@ impl Nav {
             filter: String::new(),
             field: false,
             trees: BTreeSet::new(),
-            now: 0,
+            seen: Seen::default(),
             room: 0,
         }
     }
@@ -1660,7 +1733,7 @@ impl Nav {
         let mut left = budget;
         let mut got: HashMap<usize, Vec<Row>> = HashMap::new();
         for (_, i) in want {
-            let lines = tree_lines(ps, i, self.now);
+            let lines = tree_lines(ps, i, &self.seen);
             let k = lines.len().min(TREE_MAX).min(left);
             if k > 0 {
                 left -= k;
@@ -1785,6 +1858,7 @@ impl Nav {
     /// fold: by identity, on the screen row it had where that fits, so the
     /// viewport moves and the cursor does not (D5).
     pub fn settle(&mut self, ps: &[Pane], room: usize) {
+        self.seen.observe(ps);
         self.settle_in(ps, self.fit(room));
     }
 
@@ -1961,9 +2035,9 @@ impl Nav {
 /// with a column of air: `✦2·1✕`, then their total `✦3`. The failed role when one
 /// failed, else the running one. `None` with none running or failed, done ones
 /// or not, or with no room.
-fn badge(p: &Pane, th: &Theme, left: usize, now: u64) -> Option<Span<'static>> {
+fn badge(p: &Pane, th: &Theme, left: usize, seen: &Seen) -> Option<Span<'static>> {
     let g = &th.g;
-    let (r, f) = sub_counts(p, now);
+    let (r, f) = sub_counts(p, seen);
     if r + f == 0 {
         return None;
     }
@@ -1992,7 +2066,7 @@ fn badge(p: &Pane, th: &Theme, left: usize, now: u64) -> Option<Span<'static>> {
 /// the worktree name is cut to at least one character, then it goes, then the
 /// branch. Any other row's branch cell is `⑂branch`. The facts come off
 /// `Pane`, filled on the fetch thread by `data::fleet`: nothing here forks.
-pub fn row_extra(p: &Pane, th: &Theme, room: u16, now: u64) -> Vec<Span<'static>> {
+pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'static>> {
     let g = &th.g;
     let stat = facts::stat_text(&p.loc, &p.pm);
     let stat_c = match stat.as_str() {
@@ -2000,7 +2074,7 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, now: u64) -> Vec<Span<'static>
         _ => th.running,
     };
     let mut left = room as usize;
-    let mut out: Vec<Span<'static>> = badge(p, th, left, now).into_iter().collect();
+    let mut out: Vec<Span<'static>> = badge(p, th, left, seen).into_iter().collect();
     left -= out.iter().map(|s| s.content.width()).sum::<usize>();
     let fits = |t: &str, left: usize| t.width() < left;
     if !fits(&stat, left) {
@@ -2068,14 +2142,14 @@ fn band(st: Style, sel: bool, th: &Theme) -> Style {
 
 /// One agent row (6.1): `▎ 1 ▲◆ 0 server  Do you want…  4m12◂`.
 #[allow(clippy::too_many_arguments)]
-fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, now: u64, th: &Theme) -> Line<'static> {
+fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, seen: &Seen, th: &Theme) -> Line<'static> {
     let g = &th.g;
     let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
     // a third of what the name and message would share, and never so much that
     // the name keeps under 6 cells and the message under 12
     let flex0 = w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1);
-    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16, now);
+    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16, seen);
     let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
@@ -2399,7 +2473,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
                         digit += 1;
                         let num = (digit <= 9).then_some(digit);
                         let p = &v.panes[*i];
-                        agent_row(p, num, sel, p.id == v.active, ww, w, nav.now, th)
+                        agent_row(p, num, sel, p.id == v.active, ww, w, &nav.seen, th)
                     }
                     Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => {
                         let last = !rows.get(top + k + 1).is_some_and(Row::tree);
@@ -2413,7 +2487,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
                             .max()
                             .unwrap_or(0)
                             .min(TYPE_MAX);
-                        tree_row(v.panes, row, last, tcol, w, nav.now, th)
+                        tree_row(v.panes, row, last, tcol, w, nav.seen.now, th)
                     }
                 }
             })
@@ -3242,7 +3316,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     sel = tile_of(&panes, &id);
                     nav.sel = Sel::Pane(id);
                 }
-                nav.now = crate::data::sessions::now();
+                nav.seen.now = crate::data::sessions::now();
                 nav.settle(&panes, list_room(here));
                 let was = top;
                 (sel, top, _) = fit(here, panes.len(), sel, top);
