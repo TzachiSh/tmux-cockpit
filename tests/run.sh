@@ -8052,18 +8052,6 @@ exec cp "$TF/rel/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 
-# The tmux-review tui row runs --auth on both "not installed" branches, i.e. on
-# a keypress: `gh auth token` reads the local config, `gh auth status` would
-# validate against api.github.com with no timeout to bound it.
-: > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --auth 2>&1)
-is "--auth names the gh login the fetch would ride" "via gh" "$tfout"
-case "$(cat "$TF/ghlog")" in
-    *"auth status"*) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
-    *"auth token"*)  ok "and asks the local token, never the network auth status" ;;
-    *) bad "and asks the local token, never the network auth status" "auth token" "$(cat "$TF/ghlog")" ;;
-esac
-
 tf_release tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
 tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?

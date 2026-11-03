@@ -30,7 +30,6 @@ while [ $# -gt 0 ]; do
     case $1 in
         --version)  TAG=${2:-}; [ -n "$TAG" ] || { say "$USAGE" >&2; exit 2; }; shift ;;
         --required) REQUIRED=1 ;;
-        --auth)     auth_path; echo; exit 0 ;;    # the tmux-review tui row asks
         -h|--help)  sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)          say "$USAGE" >&2; exit 2 ;;
     esac
