@@ -4332,6 +4332,8 @@ rm -rf "$HKR" "$JQSHIM"
 else
     skip_ "hooks merge (jq not installed)"
 fi
+rm -rf "$HK"
+
 # --uninstall --hooks (#292): remove exactly the entries --hooks added. Every
 # run points HOME and XDG_BIN_HOME at a temp dir, never the real settings.json.
 echo "== install.sh --uninstall --hooks removes only cockpit's entries =="
@@ -4423,7 +4425,6 @@ is "--help exits 0" "0" "$?"
 case "$out" in *usage:*) ok "and it prints usage" ;;
     *) bad "and it prints usage" "a usage: line" "$out" ;; esac
 
-rm -rf "$HK"
 echo "== prefix u jumps to the pane that needs you =="
 if need_tmux "tmux-jump"; then :; else
 # The bind runs the script under run-shell, which sets no $TMUX_PANE: read
