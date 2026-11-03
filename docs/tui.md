@@ -216,6 +216,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
 | `COCKPIT_PANEL_MODE` | `auto`, `pc` or `tablet`, from `@cockpit_panel_mode`. Unset or empty is `auto`. Any other value: the panel exits 2 before it draws. The board's popup passes it too, so a panel opened from the board gets the same mode |
 | `COCKPIT_PANEL_NOTE` | set by `scripts/cockpit-board` for `scripts/cockpit-panel`: the file the panel wrapper writes its last line to instead of a `display-message`, a failure starting with `✕`. Unset (`prefix f`), the message goes to the status line as before |
+| `COCKPIT_PANEL_DROPPED` | set by `scripts/cockpit-panel` for the binary: the pane ids, space-separated, whose hidden panels it just dropped because the pane is gone. The binary shows them in an info note; anything but `%N` words is ignored |
 | `COCKPIT_PANEL_CALL` | set to `1` in the panel's `claude -p` child, never read by the binary: a hook can skip the call by it |
 
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
@@ -744,6 +745,81 @@ is still sent, with a warn note that it may be cut.
 **Termux.** `examples/termux.properties` has an extra-keys row with a key that
 sends `prefix + f`.
 
+### Hiding the panel (#278)
+
+The panel is a modal popup: while it is open tmux gives it every key, so no
+other window can be reached. `^Z` hides it instead of closing it. The popup
+closes and its whole working state is kept for that pane; the next `prefix f`
+on the same pane opens it again where it was. Picked because it is free in
+every view (no box types a control character, and no view binds it), reads as
+"suspend" to a terminal user, and is a `^` key, so tablet mode makes it a
+`[ hide ]` button like `^S` and `^T`. `^H` was not: many terminals send it for
+Backspace.
+
+- **Kept:** the view (Home, Compose, Question, a one-line box, Result, Steps,
+  Explain's questions, Answer, Error) with its selection and scroll, the draft
+  and its cursor, the output type, the model, and the run: the flow, the
+  turns, the question rounds and their stack, the options, Explain's log, the
+  prompt for the agent, the model the call went to and why. A Confirm is kept
+  as the view it was opened from, so a resumed panel never opens on a yes. An
+  armed Answer comes back unarmed. The `?` overlay is not kept.
+- **Not while Busy.** A running `claude -p` dies with the process, so `^Z`
+  then says `a call is out: esc cancels it, then ^Z hides` and changes
+  nothing. Saving the request and offering to run it again on the way back
+  was the other choice; refusing is the safer one: a re-run is a second paid
+  call, its answer can differ, and it would go out on a screen captured
+  later than the one the question was about.
+- **Nothing is sent on the way back.** The panel opens on the kept view with
+  an info note, `back where you left it`; the draft, a result or a step waits
+  for its key. The first view gets the 800 ms tap guard of a steps resume,
+  and the keys typed during the reopen are dropped, as there.
+- **The captured command is kept**, as in a steps resume, so the wrapper's
+  pane guard compares against what the draft or the reply was written for.
+  When the pane runs something else by now the note says so, warn level:
+  `...; the pane now runs vim, not bash, so a paste is refused`.
+- **One state per pane.** `prefix f` on another pane opens a fresh panel and
+  the hidden one stays. The wrapper says `cockpit: hidden · prefix f on %N
+  brings it back` (the bound key, from `@cockpit_panel_bound`); opened from
+  the board, that is the board's note and the board comes back, as after `esc`.
+- **Stale state is dropped, with a note.** A file older than 24 h
+  (`action::HIDE_AGE`) is refused (`the hidden panel was dropped: it is older
+  than 24 h`), and the wrapper also deletes any older than a day. A hidden
+  panel whose pane is gone is deleted the next time the panel opens on any
+  pane of that server, which says `dropped the panel hidden on %N: the pane is
+  gone`. A corrupt file is refused whole, with the reason in the same note.
+- **Too much to keep** (over 1 MiB): `^Z` says so and the panel stays open.
+
+**The state file.** The binary writes `$COCKPIT_ACTION.state` and no action
+line; the wrapper takes that pair as a hide and moves the file to
+
+```
+${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/panel/<server pid>-<N>.state
+```
+
+in a 0700 directory, `<N>` the pane id without its `%`. The server pid is in
+the name because pane ids start again at `%0` with a new server and every `-L`
+server shares the directory. The next run on the pane moves the file into its
+private directory before the binary starts (a second client's `prefix f` finds
+nothing) and passes it back:
+
+```
+cockpit-tui panel %N --resume <state> --last hidden
+```
+
+It is version 2 of the panel's state file: a `cockpit-panel-state 2` line,
+then one line of JSON, an object with `pane`, `saved` (unix seconds), `cmd`,
+`draft`, `cur`, `out`, `model`, `view`, `busy_back` and `run`. Version 1, the
+steps resume, is unchanged and still read by `--last ok|failed:<why>`; each
+reader refuses the other's version. The read has version 1's rules (no
+symlink, a regular file, checked before the non-blocking open and again on
+it, created new with `O_NOFOLLOW`, mode 0600) with a 1 MiB cap, and is as
+strict: one body line, the pane must be the one opened on, at most 24 h old
+and not more than a minute in the future, every key present and none unknown,
+every cursor on a character boundary of its text, the model and the type
+known, steps 1 to 64 with the selection among them, and a Question or Answer
+only with the run it is drawn from. Any failure opens a fresh panel with the
+reason in a warn note.
+
 ### Contract changes for tablet mode (for #61)
 
 - New option `@cockpit_panel_mode auto|pc|tablet`, read at load; the binding
@@ -853,6 +929,27 @@ sends `prefix + f`.
   `board-{80,80-scrolled,100,120,160,180}`, `board-ascii`, `board-nocolor`,
   `board-nocolor-100`, `board-stale-100`, `board-list-{100,180}`,
   `board-tiles-100` and `board-help-{60,100,180,tiles-100}`.
+
+### Contract changes for hide and resume (for #61)
+
+- New key `^Z` in every panel view: hide (see [Hiding the panel](#hiding-the-panel-278)).
+  Every footer but Busy, Confirm and an armed Answer gains `^Z hide` before
+  the help key, so a narrow footer drops it first; in tablet mode that is a
+  `[ hide ]` button. Every `?` list gains a `^Z` row.
+- `--last hidden` is new on `cockpit-tui panel %N --resume <state>`: it reads
+  a version 2 state file. `--last ok|failed:<why>` and version 1 are unchanged.
+- `panel::action::{Hidden, hide_body, write_hidden, read_hidden, HIDE_MAX,
+  HIDE_AGE}` and `App::{hide, unhide}` are new; `read_state` shares its file
+  checks with `read_hidden`.
+- `scripts/cockpit-panel` treats a `.state` with no action line as a hide,
+  keeps it under `tmux-cockpit/panel/` in the state directory, passes
+  `COCKPIT_PANEL_DROPPED`, and asks tmux for `#{pid}` once per run.
+- Goldens: the footer gained `^Z hide` in `panel-{home,error,error-long,input}-{40,60,80,120}`,
+  `panel-explain-ask-{60,80,120}`, `panel-{answer,question,result,steps,steps-resumed}-{80,120}`,
+  `panel-compose{,-count,-cursor,-empty}-120`, `panel-ascii-{home-40,home-80,answer-80,question-80,steps-80}`;
+  the button in `panel-tablet-{home,compose,steps}-{40,80}`; the key count in
+  `panel-help-{compose,steps}-{40,60,80,120}`. Home's `[ close ]` button moved
+  right by the new one; the suite's tap-close exit taps it at its new column.
 
 ### The triage overlay
 
@@ -1120,6 +1217,8 @@ wrapper moves it aside and runs the binary again in the same popup:
 cockpit-tui panel %N --resume <state> --last ok|failed:<why>
 ```
 
+(`--last hidden` is the other resume: [Hiding the panel](#hiding-the-panel-278).)
+
 `ok` marks that step `✓ inserted` or `✓ sent`, by the verb (earlier rounds' steps `✓ done`:
 the state file keeps no verb per step), and selects the next one with a command;
 `failed:<why>` shows why as an error note and marks nothing. The loop ends when
@@ -1150,7 +1249,7 @@ Neither returns an empty string for a failure. A `None` from `preview` renders
 as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
-**CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last <how>] |
+**CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last ok|failed:<why>|hidden] |
 transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
 board reaches those through the action file and the shell scripts.
 
