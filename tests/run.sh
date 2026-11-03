@@ -674,24 +674,60 @@ if locale -a 2>/dev/null | grep -qix 'c\.utf-\?8'; then
         | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
         >/dev/null 2>&1
     is "a subagent after a non-UTF-8 byte holds it under C.UTF-8" running "$(bgo @panestate)"
+    # A 1 MB array with no subagent, then the same array ending in one, both under C.UTF-8.
+    BGARR=$(yes "{\"type\":\"shell\",\"command\":\"$(printf '%01000d' 0)\"}," \
+        | head -n 1000 | tr -d '\n')
+    is "the long array has 1000 shell entries" 1000 \
+        "$(grep -o '"type":"shell"' <<< "$BGARR" | wc -l | tr -d ' ')"
+    for bgw in done running; do
+        bgx=${BGARR%,}; [ "$bgw" = running ] && bgx="$BGARR$BGT"
+        bgst running "$BGU"
+        printf '%s\n' "$(bgstop "$bgx")" | LC_ALL=C.UTF-8 TMUX="$SOCKDIR/$BG,0,0" \
+            "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1
+        is "a 1 MB array under C.UTF-8 ends $bgw" "$bgw" "$(bgo @panestate)"
+    done
 else
     skip_ "a subagent after a non-UTF-8 byte holds it under C.UTF-8 (no C.UTF-8 locale)"
+    skip_ "the long array has 1000 shell entries (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends done (no C.UTF-8 locale)"
+    skip_ "a 1 MB array under C.UTF-8 ends running (no C.UTF-8 locale)"
 fi
 # A long final message comes before the key and is read whole: no cap cuts the array off.
 BGBIG=$(printf '%01048576d' 0)
 is "the long message is 1 MB" 1048576 "${#BGBIG}"
 bgcase "a subagent after a 1 MB message still holds it" running "$(bgstop "$BGT" "$BGBIG")"
 bgcase "an empty array after a 1 MB message is done" done "$(bgstop "" "$BGBIG")"
-# stdin held open past the payload's newline: done returns at the newline, not at EOF. The
-# writer's read -t is a hang guard; until_out polls the state the return writes.
-BGF="$(mktmpd)/hold"; mkfifo "$BGF"
-bgst running "$BGU"
-{ { printf '%s\n' "$(bgstop "")"; read -r -t 30 _ <> "$BGF"; } \
-    | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
-bghold=$!
-until_out done bgo @panestate
-is "a Stop with stdin held open past its newline returns" done "$(bgo @panestate)"
-printf 'x\n' > "$BGF"; wait "$bghold"
+# stdin held open past the payload: the writer's read -t is a hang guard, released once
+# agent-state exits (opened read-write, so a writer gone at its guard cannot block the
+# release). Past the newline, head returns there and the whole line is matched.
+BGF="$(mktmpd)/hold"; mkfifo "$BGF"; BGIN="${BGF%/*}/in"; mkfifo "$BGIN"
+bgheld() {                    # <payload> <end> [dir first on PATH]: done on a held pipe
+    { printf '%s%s' "$1" "$2"; read -r -t 30 _ <> "$BGF"; } > "$BGIN" &
+    local w=$!
+    PATH="${3:+$3:}$PATH" TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" \
+        < "$BGIN" >/dev/null 2>&1
+    printf 'x\n' 1<> "$BGF"; wait "$w"; }
+bgst running "$BGU"; bgheld "$(bgstop "$BGT")" $'\n'
+is "a Stop with stdin held open past its newline still holds" running "$(bgo @panestate)"
+# No newline and stdin held for 10 s (#320): the read gives up at its 2 s bound and the
+# Stop is done. Polled for half the hold, so an unbounded read is still waiting when it ends.
+if command -v timeout >/dev/null 2>&1; then
+    bgst running "$BGU"
+    { { printf '%s' "$(bgstop "$BGT")"; read -r -t 10 _ <> "$BGF"; } \
+        | TMUX="$SOCKDIR/$BG,0,0" "$DIR/scripts/agent-state" done "$BGP" >/dev/null 2>&1; } &
+    bghold=$!
+    POLLS=50 until_out done bgo @panestate
+    is "a Stop with no newline and stdin held open returns within its bound" done \
+        "$(bgo @panestate)"
+    printf 'x\n' 1<> "$BGF"; wait "$bghold"
+    # A head that passes on part of a line before it is killed: the cut payload is not read.
+    BGHD=$(mktmpd); printf '#!/bin/sh\nexec cat\n' > "$BGHD/head"; chmod +x "$BGHD/head"
+    bgst running "$BGU"; bgheld "$(bgstop "$BGT")" "" "$BGHD"
+    is "a timed-out read that got part of the payload is done" done "$(bgo @panestate)"
+else
+    skip_ "a Stop with no newline and stdin held open returns within its bound (no timeout)"
+    skip_ "a timed-out read that got part of the payload is done (no timeout)"
+fi
 
 # Sticky states stay sticky: a subagent's PermissionRequest lands on the main pane.
 bgst running "$BGU"

@@ -2,7 +2,8 @@
 # The hooks' stdin payload. Sourced, never run; no forks, and bash 3.2 safe:
 # agent-state has no bash-4 floor.
 
-# Bounded read, not `cat`: Claude Code can hold the pipe open past the payload.
+# Bounded read, not `cat`: a hook must never wait on its writer. Claude Code 2.1.317 ends
+# the payload with a newline and closes stdin; nothing promises either.
 # Newlines are put back so two lines cannot fuse into a match never sent.
 read_payload() {              # <stop-cmd...>: ends the read early once it succeeds
     payload="" chunk=""
