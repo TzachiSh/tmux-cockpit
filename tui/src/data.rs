@@ -723,11 +723,14 @@ fn unsentinel(s: &str) -> String {
     if s == "-" { String::new() } else { s.to_string() }
 }
 
+/// (pane id, pane pid, command): what a tree verdict is good for
+type TreeKey = (String, String, String);
+
 thread_local! {
     /// #301: whether an agent runs anywhere in a marked pane's process tree, by
     /// (pane id, pane pid, command): a new command or process asks again, else
     /// one `ps` per pane per [`GIT_TTL`] rather than one per tick.
-    static TREES: std::cell::RefCell<HashMap<(String, String, String), (Instant, bool)>> = std::cell::RefCell::default();
+    static TREES: std::cell::RefCell<HashMap<TreeKey, (Instant, bool)>> = std::cell::RefCell::default();
     /// each pane's last `ended`, so a flip is logged once
     static ENDED: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::default();
 }
