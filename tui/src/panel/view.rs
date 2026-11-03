@@ -64,6 +64,74 @@ pub fn wrap(text: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// The cursor after Up or Down in a text box `w` columns wide: the same column
+/// on the row above or below, as drawn. Rows are visual: the box word-wraps
+/// with the cursor glyph in it (`typed`), so this lays the text out the same way
+/// and reads each grapheme's column back off the rows [`wrap`] made. A column
+/// inside a wide symbol takes the symbol, a short row takes its end, and the
+/// first or last row keeps the cursor where it is.
+pub fn vertical(text: &str, cur: usize, w: usize, up: bool) -> usize {
+    // one unit per drawn grapheme: (text, the offset a cursor there takes)
+    let c = boundary(text, cur);
+    let mut units: Vec<(&str, Option<usize>)> = Vec::new();
+    let mut glyph = 0;
+    for (o, g) in text.grapheme_indices(true).chain([(text.len(), "")]) {
+        if o == c {
+            glyph = units.len();
+            units.push(("|", None));
+        }
+        match g {
+            "" => {}
+            // `many` makes a tab 4 spaces before wrapping
+            "\t" => units.extend([(" ", Some(o)), (" ", None), (" ", None), (" ", None)]),
+            g => units.push((g, Some(o))),
+        }
+    }
+    units.push(("\n", Some(text.len())));
+    // each row's stops, (offset, column), and the cursor's row and column
+    let (mut rows, mut here) = (Vec::new(), (0, 0));
+    let mut i = 0;
+    while i < units.len() {
+        let n = units[i..].iter().position(|u| u.0 == "\n").expect("ends in a newline");
+        let para = &units[i..i + n];
+        let lines = wrap(&para.iter().map(|u| u.0).collect::<String>(), w);
+        let indent = para.iter().take_while(|u| u.0 == " ").count();
+        let mut j = 0;
+        for (r, line) in lines.iter().enumerate() {
+            let (mut stops, mut rest, mut col) = (Vec::new(), line.as_str(), 0);
+            if r == 0 {
+                // wrap keeps half a row of indent at most: the rest share its last column
+                let k = line.len() - line.trim_start_matches(' ').len();
+                for (x, u) in para[..indent].iter().enumerate() {
+                    stops.extend(u.1.map(|o| (o, x.min(k))));
+                }
+                (j, col, rest) = (indent, k, &line[k..]);
+            }
+            while let Some(u) = para.get(j) {
+                let Some(more) = rest.strip_prefix(u.0) else { break };
+                if i + j == glyph {
+                    here = (rows.len(), col);
+                }
+                stops.extend(u.1.map(|o| (o, col)));
+                (col, rest, j) = (col + u.0.width(), more, j + 1);
+            }
+            if r + 1 == lines.len() {
+                stops.extend(units[i + n].1.map(|o| (o, col)));
+            } else if para.get(j).is_some_and(|u| u.0 == " ") {
+                // the space a word break dropped: a cursor on it ends this row
+                stops.extend(para[j].1.map(|o| (o, col)));
+                j += 1;
+            }
+            rows.push(stops);
+        }
+        i += n + 1;
+    }
+    let (row, col) = here;
+    let to = if up { row.checked_sub(1) } else { Some(row + 1) };
+    let Some(stops) = to.and_then(|t| rows.get(t)) else { return c };
+    stops.iter().rev().find(|s| s.1 <= col).or(stops.first()).map_or(c, |s| s.0)
+}
+
 struct Body {
     head: Vec<Line<'static>>,
     /// The note's rows at the head's top: they never scroll away.
@@ -796,6 +864,7 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s(ret, "new line"),
             s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
             s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
+            s(g.key_updown, "the row above, below"),
             s("Home End", "line start, end; ^A ^E too"),
             s("Del", "delete the char after"),
             s("F1", "this help"),

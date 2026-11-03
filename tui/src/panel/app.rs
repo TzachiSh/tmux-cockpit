@@ -415,8 +415,8 @@ impl App {
         }
     }
 
-    /// The wheel is Up and Down, except in a text box, where those keys do nothing
-    /// but drop the note.
+    /// The wheel is Up and Down, except in a text box, where those keys move the
+    /// cursor (Compose) or do nothing: a scroll is never read as an edit.
     pub fn wheel(&mut self, up: bool) {
         if self.help.is_none() && matches!(self.view, View::Compose | View::Input { .. }) {
             return;
@@ -717,6 +717,11 @@ impl App {
                 }
             }
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
+            // by row as drawn, so the box's width as `render` wraps it; before a frame, unwrapped
+            KeyCode::Up | KeyCode::Down => {
+                let w = self.size.map_or(usize::MAX, |(w, _)| usize::from(w).saturating_sub(4));
+                self.cur = super::view::vertical(&self.draft, self.cur, w, k.code == KeyCode::Up);
+            }
             KeyCode::Tab => {
                 let i = OUT_CYCLE.iter().position(|o| *o == self.out).unwrap_or(0);
                 self.out = OUT_CYCLE[(i + 1) % OUT_CYCLE.len()];
