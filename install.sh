@@ -312,6 +312,10 @@ resolve_link() {
 }
 
 
+# cockpit's own root in a command: the shipped ${TMUX_COCKPIT_DIR:-...} form (as a regex)
+# or this checkout's path, so a foreign .../scripts/review-gate is never ours.
+pre='\$\{TMUX_COCKPIT_DIR:-\$HOME/\.tmux/plugins/tmux-cockpit\}'
+
 if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
     command -v jq >/dev/null 2>&1 || { printf 'jq is required for --hooks (the manual removal in docs/install.md still works)\n' >&2; exit 1; }
     [ -n "${HOME:-}" ] || { printf 'HOME is not set; cannot locate ~/.claude/settings.json\n' >&2; exit 1; }
@@ -326,7 +330,6 @@ if [ "$hooks" -eq 1 ] && [ "$uninstall" -eq 1 ]; then
         || { printf '%s is not valid JSON; refusing to touch it\n' "$settings" >&2; exit 1; }
     # A hook is cockpit's only when its command is one of this plugin's scripts at
     # the path the shipped examples use (or this checkout's), anchored at both ends.
-    pre='\$\{TMUX_COCKPIT_DIR:-\$HOME/\.tmux/plugins/tmux-cockpit\}'
     stripped=$(printf '%s' "$orig" | jq --arg dir "$DIR" --arg pre "$pre" '
         def esc: gsub("(?<c>[.\\[\\]()*+?{}|^$\\\\])"; "\\\(.c)");
         ($pre + "|" + ($dir | esc)) as $root
@@ -405,12 +408,15 @@ if [ "$hooks" -eq 1 ]; then
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         def runs($re): (.command // "") | test($re);
+        def esc: gsub("(?<c>[.\\[\\]()*+?{}|^$\\\\])"; "\\\(.c)");
+        ($pre + "|" + ($dir | esc)) as $root
+        | def ours($tail): runs("^\"?(" + $root + ")\"?" + $tail);
         .[0].hooks as $mine | .[1] as $theirs
-        | ([$mine.SessionStart[]? | select(any(.hooks[]?; runs("/scripts/agent-state off\"?$"))) | .matcher // ""] | first) as $offm
+        | ([$mine.SessionStart[]? | select(any(.hooks[]?; ours("/scripts/agent-state off$"))) | .matcher // ""] | first) as $offm
         | ($theirs.hooks // {} | with_entries(.key as $k | .value |=
             (map(if $k == "SessionStart" and $offm != null and (.matcher // "") != $offm
-                 then .hooks |= map(select(runs("/scripts/agent-state off\"?$") | not)) else . end)
-             | map(.hooks |= map(select(runs("/scripts/review-gate( --pretool)?\"?$") | not)))
+                 then .hooks |= map(select(ours("/scripts/agent-state off$") | not)) else . end)
+             | map(.hooks |= map(select(ours("/scripts/review-gate( --pretool)?$") | not)))
              | map(select((.hooks | length) > 0))))) as $h
         | $theirs + { hooks: (
             $h + ($mine | with_entries(
@@ -418,7 +424,7 @@ if [ "$hooks" -eq 1 ]; then
                 | .value = (($h[$k] // []) + [ .value[]
                     | select(. as $e | (($h[$k] // []) | map(norm) | index($e | norm)) == null) ])
               ))
-          ) }' "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
+          ) }' --arg dir "$DIR" --arg pre "$pre" "$DIR/examples/claude-hooks.json" <(printf '%s' "$orig")) \
         || { printf 'merge failed; %s untouched\n' "$settings" >&2; exit 1; }
 
     # Only .hooks, structurally, so a formatting-only difference is not a change.

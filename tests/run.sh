@@ -4058,7 +4058,7 @@ rm -rf "$HKN"
 HKG=$(mktmpd); mkdir -p "$HKG/.claude"
 cat > "$HKG/.claude/settings.json" <<'EOF'
 { "hooks": { "Stop": [
-    { "matcher": "", "hooks": [ { "type": "command", "command": "/old/path/scripts/review-gate", "timeout": 330 } ] },
+    { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 330 } ] },
     { "matcher": "", "hooks": [ { "type": "command", "command": "/usr/local/bin/mywrap --log /scripts/review-gate-audit.log" } ] }
   ] } }
 EOF
@@ -4368,6 +4368,21 @@ uhrun --uninstall --hooks >/dev/null 2>&1
 out=$(uhrun --uninstall --hooks 2>&1)
 case "$out" in *"no cockpit hooks"*"nothing to remove"*) ok "no cockpit hooks is a no-op that says so" ;;
     *) bad "no cockpit hooks is a no-op that says so" "nothing to remove" "$out" ;; esac
+
+# --hooks replaces only cockpit's own review-gate / agent-state off, never a foreign one.
+UF=$(mktmpd); mkdir -p "$UF/.claude"
+cat > "$UF/.claude/settings.json" <<'EOF'
+{ "hooks": {
+  "Stop": [ { "hooks": [ { "type": "command", "command": "\"/home/u/my dir/foo/scripts/review-gate\"" } ] } ],
+  "SessionStart": [ { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "/opt/x/scripts/agent-state off" } ] } ] } }
+EOF
+HOME="$UF" XDG_BIN_HOME="$UF/bin" "$DIR/install.sh" --hooks >/dev/null 2>&1
+is "a foreign review-gate survives --hooks" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("my dir/foo/scripts/review-gate"))] | length' "$UF/.claude/settings.json")"
+is "a foreign agent-state off survives --hooks" "1" \
+   "$(jq '[.hooks.SessionStart[].hooks[].command | select(. == "/opt/x/scripts/agent-state off")] | length' "$UF/.claude/settings.json")"
+is "and cockpit's own review-gate was added beside it" "1" \
+   "$(jq '[.hooks.Stop[].hooks[].command | select(test("^\"\\$\\{TMUX_COCKPIT_DIR.*/scripts/review-gate$"))] | length' "$UF/.claude/settings.json")"
 
 UB=$(mktmpd); mkdir -p "$UB/.claude"; printf '{ "hooks": [ broken' > "$UB/.claude/settings.json"
 out=$(HOME="$UB" XDG_BIN_HOME="$UB/bin" "$DIR/install.sh" --uninstall --hooks 2>&1); urc=$?
