@@ -251,9 +251,9 @@ The list, at 100 columns: 13 agents in 4 sessions, the first `▲` selected.
 A row is the selection mark, its digit, the state glyph and review mark, the
 window index, the title, what the agent asks (`▲`, `✕`) or is doing, and its
 age; an idle agent says `idle`. `◂` marks tmux's active pane. The selection is
-`▎` plus reverse video, its text in the value colour, so it shows under
-`NO_COLOR` too; a `sel` background role replaces the reverse once the theme
-gains one.
+`▎` plus a band in the `sel` role (`@thm_sel`, `@thm_sel_light` on a light
+theme), its text in the value colour: dim on `sel` is only 3.4:1. Under
+`NO_COLOR` the band is reverse video, so the selection still shows.
 
 **Order.** One group per tmux session. Sessions holding a `▲` or `✕` come
 first, then the rest, each band by session name; inside a group,

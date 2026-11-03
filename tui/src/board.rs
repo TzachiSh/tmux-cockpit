@@ -1466,15 +1466,18 @@ fn win_w(ps: &[Pane]) -> usize {
     ps.iter().map(|p| window(p).width()).max().unwrap_or(1).max(1)
 }
 
-/// The selected row's text: the bar's colour is fg, never the dim role (D17).
-/// The band is reverse video, which reads in every tier and under NO_COLOR.
-/// #222 adds a `sel` background role to theme.rs; once it lands, the band
-/// becomes that background and REVERSED goes.
+/// The selected row's text is fg, never the dim role: dim on `sel` is only
+/// 3.4:1 (D17). The band is the `sel` background; under NO_COLOR, where every
+/// role is Reset, it is reverse video, which reads with no colour at all.
 fn band(st: Style, sel: bool, th: &Theme) -> Style {
-    if sel {
+    if !sel {
+        return st;
+    }
+    // Reset, the default colour, is NO_COLOR's every role
+    if th.sel == Default::default() {
         st.fg(th.value).add_modifier(Modifier::REVERSED)
     } else {
-        st
+        st.fg(th.value).bg(th.sel)
     }
 }
 

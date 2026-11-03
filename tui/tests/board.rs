@@ -1777,10 +1777,10 @@ fn the_footer_follows_the_focus() {
     assert_eq!(nav.focus(&ps), Focus::Head(true));
 }
 
-/// D17: the selected row is ▎ plus reverse video, its text in fg; that reads
-/// with no colour at all.
+/// D17: the selected row is ▎ plus the `sel` band, its text in fg; under
+/// NO_COLOR the band is reverse video, which reads with no colour at all.
 #[test]
-fn the_selected_row_is_a_bar_and_reverse_video() {
+fn the_selected_row_is_a_bar_and_a_band() {
     for th in [Theme::fixed(), Theme::no_color()] {
         let ps = fleet();
         let nav = nav_on(&ps, Sel::Pane("%6".into()), &[], 26);
@@ -1795,7 +1795,12 @@ fn the_selected_row_is_a_bar_and_reverse_video() {
         assert!(line.contains("auth"), "{line}");
         let k = line.find("Pushed").unwrap();
         let k = line[..k].chars().count() as u16;
-        assert!(b[(k, y)].modifier.contains(Modifier::REVERSED));
+        if th.sel == Color::Reset {
+            assert!(b[(k, y)].modifier.contains(Modifier::REVERSED), "NO_COLOR keeps reverse video");
+        } else {
+            assert!(!b[(k, y)].modifier.contains(Modifier::REVERSED), "the band is a background");
+            assert_eq!(b[(k, y)].bg, th.sel);
+        }
         assert_eq!(b[(k, y)].fg, th.value, "never the dim role");
         assert!(!b[(x, y)].modifier.contains(Modifier::REVERSED), "the bar itself is not reversed");
     }

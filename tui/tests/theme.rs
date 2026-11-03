@@ -52,3 +52,14 @@ fn faint_is_its_own_role_and_meta_stays_dim() {
     let f = Theme::fixed();
     assert_ne!(f.faint, f.label);
 }
+
+#[test]
+fn sel_reads_its_option_and_its_light_twin() {
+    let th = load("@thm_sel \"#0d0e0f\"\n@thm_sel_light \"#101112\"\ntheme detect\n");
+    assert_eq!(th.sel, Color::Rgb(13, 14, 15));
+    let th = load("@thm_sel \"#0d0e0f\"\n@thm_sel_light \"#101112\"\ntheme light\n");
+    assert_eq!(th.sel, Color::Rgb(16, 17, 18));
+    // statusbar.conf's defaults, and nothing at all without colour
+    assert_eq!(Theme::fixed().sel, Color::Rgb(0x3a, 0x42, 0x52));
+    assert_eq!(Theme::no_color().sel, Color::Reset);
+}

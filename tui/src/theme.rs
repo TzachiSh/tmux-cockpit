@@ -20,6 +20,8 @@ pub struct Theme {
     pub sky: Color,
     /// frames, rules and separators only: never text (@thm_faint, 3:1)
     pub faint: Color,
+    /// the selected list row's band (@thm_sel); its text stays `value`
+    pub sel: Color,
     pub g: Glyphs,
 }
 
@@ -27,7 +29,7 @@ pub struct Theme {
 /// shared with the status line (scripts/lib/statusbar.conf). The light set is
 /// `<option>_light`. Must-read text is fg or dim, and dim holds 4.5:1 on bg;
 /// faint (3:1) is for frames, rules and separators, never for text.
-const ROLES: [(&str, &str, &str); 11] = [
+const ROLES: [(&str, &str, &str); 12] = [
     ("@thm_dim", "#9097a3", "#5c626c"),     // label
     ("@thm_fg", "#e6e4df", "#1b1e24"),      // value
     ("@thm_fg", "#e6e4df", "#1b1e24"),      // quote
@@ -39,6 +41,7 @@ const ROLES: [(&str, &str, &str); 11] = [
     ("@thm_done", "#5fd38d", "#1d7439"),    // done
     ("@thm_review", "#5fd3d3", "#00737a"),  // sky
     ("@thm_faint", "#717885", "#7c828c"),   // faint
+    ("@thm_sel", "#3a4252", "#c8d1df"),     // sel
 ];
 
 fn hex(s: &str) -> Option<Color> {
@@ -62,7 +65,7 @@ impl Theme {
         }
         let opts = tmux(&["show-options", "-g", ";", "show-options", "-s", "theme"]).unwrap_or_default();
         let light = opts.lines().any(|l| l == "theme light");
-        let mut c = [Color::Reset; 11];
+        let mut c = [Color::Reset; 12];
         for (i, (opt, dark, lite)) in ROLES.iter().enumerate() {
             let (name, fallback) = if light {
                 (format!("{opt}_light"), lite)
@@ -78,7 +81,7 @@ impl Theme {
         }
     }
 
-    fn from_roles(c: [Color; 11]) -> Self {
+    fn from_roles(c: [Color; 12]) -> Self {
         Self {
             label: c[0],
             value: c[1],
@@ -91,6 +94,7 @@ impl Theme {
             done: c[8],
             sky: c[9],
             faint: c[10],
+            sel: c[11],
             g: Glyphs::unicode(),
         }
     }
@@ -98,7 +102,7 @@ impl Theme {
     /// The test fixture: the shipped defaults with no tmux read, so a snapshot
     /// never moves with the user's palette.
     pub fn fixed() -> Self {
-        let mut c = [Color::Reset; 11];
+        let mut c = [Color::Reset; 12];
         for (i, (_, fallback, _)) in ROLES.iter().enumerate() {
             c[i] = hex(fallback).unwrap_or(Color::Reset);
         }
@@ -108,7 +112,7 @@ impl Theme {
     /// NO_COLOR, honoured in-app: crossterm's own support emits an empty SGR that
     /// also drops bold, dim and reverse, which the colourless fallback relies on.
     pub fn no_color() -> Self {
-        Self::from_roles([Color::Reset; 11])
+        Self::from_roles([Color::Reset; 12])
     }
 
     /// Per-state glyph and colour, on an urgency ramp.

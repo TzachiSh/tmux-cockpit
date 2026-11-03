@@ -76,7 +76,7 @@ light value. Set any of them before the `run-shell` line to override it.
 | `@thm_running` | `#e6c84f` | `#806200` | `●` |
 | `@thm_done` | `#5fd38d` | `#1d7439` | `✓` |
 | `@thm_review` | `#5fd3d3` | `#00737a` | `◆` |
-| `@thm_sel` | `#3a4252` | `#c8d1df` | the selected row in the pickers |
+| `@thm_sel` | `#3a4252` | `#c8d1df` | the selected row in the pickers, and the band on the selected row of cockpit-tui's board list |
 | `@thm_faint` | `#717885` | `#7c828c` | cockpit-tui's frames and separators only, never text: 4.0 / 3.6 on bg, 3.0 / 3.1 on surface |
 
 The light values are the same names with `_light` added, for example
