@@ -213,7 +213,9 @@ fn read_rows(p: &Path, len: u64, old: Option<&Rows>) -> Rows {
             break;
         }
     }
-    r.last = last.or(r.last);
+    // Not `last.or(r.last)`: a window with no timestamped row falls back to the mtime, and a
+    // warm cache must say what a fresh read says.
+    r.last = last;
     if let Some(t) = usage {
         r.tokens = t;
     }
@@ -290,13 +292,14 @@ pub fn read(dir: &Path) -> Vec<Sub> {
             } else {
                 SubState::Running
             };
-            // the newest row says when it stopped; the mtime only when no tail row has a time
+            // the newest row says when it stopped; the mtime only when no tail row has a time.
+            // A user stop is the write that set `stoppedByUser`, the meta file's mtime, which a
+            // stop during a long tool call puts after the newest row.
+            let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
             let finished_at = (state != SubState::Running)
                 .then(|| {
-                    r.last.or_else(|| {
-                        let t = e.rows.as_ref()?.0.0;
-                        t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs())
-                    })
+                    let rows = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
+                    if state == SubState::Stopped { rows.max(secs(ms.0)) } else { rows }
                 })
                 .flatten();
             subs.push(Sub {

@@ -159,6 +159,16 @@ fn tick(secs: u64) -> String {
     format!(r#"{{"type":"attachment","timestamp":"{at}"}}"#)
 }
 
+/// Set the meta file's mtime to `T0 + secs`: the write that set its flags.
+fn touch_meta(dir: &Path, id: &str, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(T0 + secs);
+    let f = OpenOptions::new()
+        .write(true)
+        .open(dir.join(format!("agent-{id}.meta.json")))
+        .unwrap();
+    f.set_times(FileTimes::new().set_modified(t)).unwrap();
+}
+
 /// Set the transcript's mtime to `T0 + secs`.
 fn touch(dir: &Path, id: &str, secs: u64) {
     let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(T0 + secs);
@@ -176,6 +186,38 @@ fn finished_at_is_the_newest_rows_timestamp_not_the_files_mtime() {
 }
 
 #[test]
+fn finished_at_is_the_same_on_a_warm_cache_and_a_fresh_read() {
+    let d = fixture("fin-warm");
+    meta(&d, "a", r#"{"agentType":"x"}"#);
+    rows(&d, "a", &[FIRST, &tick(10)]);
+    assert_eq!(one(&d).finished_at, None);
+    // a row past the tail window with no timestamp: the tail holds no row with a time
+    let big = format!(r#"{{"type":"assistant","message":{{"content":"{}"}}}}"#, "x".repeat(300_000));
+    rows(&d, "a", &[FIRST, &tick(10), &big]);
+    touch(&d, "a", 900);
+    meta(&d, "a", r#"{"agentType":"x","finished":true,"pad":"changes the length"}"#);
+    let warm = one(&d).finished_at;
+    let path = d.to_path_buf();
+    let fresh = std::thread::spawn(move || one(&path).finished_at).join().unwrap();
+    assert_eq!((warm, fresh), (Some(T0 + 900), Some(T0 + 900)));
+}
+
+#[test]
+fn a_stopped_subagent_finishes_at_the_later_of_its_stop_and_its_newest_row() {
+    for (name, row, stop, want) in [
+        ("stop during a long call: the stop is later", 20, 300, 300),
+        ("a closing row after the stop: the row is later", 500, 300, 500),
+    ] {
+        let d = fixture("fin-stop");
+        meta(&d, "s", r#"{"agentType":"x","stoppedByUser":true}"#);
+        rows(&d, "s", &[FIRST, &tick(row)]);
+        touch_meta(&d, "s", stop);
+        let s = one(&d);
+        assert_eq!((s.state, s.finished_at), (SubState::Stopped, Some(T0 + want)), "{name}");
+    }
+}
+
+#[test]
 fn finished_at_is_none_while_running_and_set_for_every_other_state() {
     let d = fixture("fin-states");
     meta(&d, "r", r#"{"agentType":"x"}"#);
@@ -186,6 +228,7 @@ fn finished_at_is_none_while_running_and_set_for_every_other_state() {
     for id in ["r", "d", "s"] {
         rows(&d, id, &[FIRST, &tick(20)]);
     }
+    touch_meta(&d, "s", 5);
     rows(&d, "f", &[FIRST, err]);
     let mut got: Vec<_> = read(&d).into_iter().map(|s| (s.id, s.state, s.finished_at)).collect();
     got.sort_by(|a, b| a.0.cmp(&b.0));
