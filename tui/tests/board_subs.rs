@@ -896,3 +896,12 @@ fn the_find_field_shows_a_folded_groups_trees() {
     n.find_act(FindKey::Cancel, &ps, 20);
     assert!(tree_of(&ps, &n, "%4").is_empty(), "the fold holds again");
 }
+
+#[test]
+fn a_user_stop_counts_as_neither_running_nor_failed() {
+    let mut p = agent("%9", "api:9", "t", "running", "x");
+    p.subs = vec![sub("Plan", "stopped", SubState::Stopped, 30, 1)];
+    let mut seen = board::Seen::at(NOW);
+    seen.observe(std::slice::from_ref(&p));
+    assert_eq!(board::sub_counts(&p, &seen), (0, 0));
+}

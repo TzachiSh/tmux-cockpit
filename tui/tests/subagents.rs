@@ -111,16 +111,18 @@ fn finished_is_done_an_api_error_row_is_failed_and_a_user_stop_is_stopped() {
     );
     meta(&d, "u", r#"{"agentType":"x","stoppedByUser":true}"#);
     meta(&d, "y", r#"{"agentType":"x","finished":"yes"}"#);
+    meta(&d, "v", r#"{"agentType":"x","stoppedByUser":"true"}"#);
     let mut got: Vec<(String, SubState)> = read(&d).into_iter().map(|s| (s.id, s.state)).collect();
     got.sort_by(|a, b| a.0.cmp(&b.0));
     let want = [
         ("d", SubState::Done),
         ("e", SubState::Failed),
         ("u", SubState::Stopped),
+        ("v", SubState::Running),
         ("y", SubState::Running),
     ];
     let want: Vec<(String, SubState)> = want.iter().map(|(i, s)| (i.to_string(), *s)).collect();
-    assert_eq!(got, want, "finished must be the boolean true");
+    assert_eq!(got, want, "finished and stoppedByUser must be the boolean true");
 }
 
 #[test]
