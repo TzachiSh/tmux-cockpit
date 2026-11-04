@@ -1,0 +1,12 @@
+╭ panel · %3 · work ──── 3-12 of 12 ▲2 ╮
+│ If the file is there, the loop runs  │
+│ once:                                │
+│ ```bash                              │
+│ for f in *.log; do                   │
+│     grep -c "error: $f" "$f" # count │
+│ them                                 │
+│ done                                 │
+│ ```                                  │
+│ Then 3 lines                         │
+│                                      │
+╰ f follow up  ? keys  esc home ───────╯
