@@ -224,6 +224,9 @@ impl Screen {
             return;
         }
         let keep = self.want.take().or_else(|| self.rows.get(self.top).map(|r| r.line));
+        // the old rows go before the new are built, or a resize holds both
+        self.rows = Vec::new();
+        self.texts = Vec::new();
         self.rows = match (&self.doc, self.mode) {
             (Ok(s), Mode::Markdown) => render::render(s, w, self.opts),
             (Ok(s), Mode::Code(lang)) => code::render(s, lang, w),
