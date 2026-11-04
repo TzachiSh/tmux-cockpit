@@ -6467,6 +6467,9 @@ AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_comma
      | awk '$2 == "claude" { print $1 }')
 NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
      | awk '$2 == "bash" { print $1 }')
+# Both shells' prompts, before anything is typed or pasted into them: see pane B below.
+until_cap "$RDS" "$AP" '*[$#]*'
+until_cap "$RDS" "$NP" '*[$#]*'
 
 RDSTORE="$STATE/deliver-store-$$"
 printf '## src.go:1 (+)\n> foo\nfix this\n\n' > "$RDSTORE"
@@ -6481,7 +6484,7 @@ rundeliver() {
     local n0 i; n0=$(npcap | grep -c 'RC=[0-9-]')
     "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
         "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$1") $(shq_test "$2"); echo RC=\$?" Enter
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         [ "$(npcap | grep -c 'RC=[0-9-]')" -gt "$n0" ] && return 0
         sleep 0.1
     done
@@ -6629,6 +6632,12 @@ AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claud
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
 until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
+# pane_current_command reads claude the moment exec -a runs, before bash has read
+# its rc files. A paste that lands before readline is up is echoed by the tty,
+# unbracketed, and bash then runs its lines: pane B showed only the prompt and
+# the review's first line (#215). The prompt is drawn by readline, so wait for it.
+until_cap "$RDS" "$AP2" '*[$#]*'
+until_cap "$RDS" "$NP2" '*[$#]*'
 
 ASTORE="$STATE/deliver-race-a-$$"
 BSTORE="$STATE/deliver-race-b-$$"
