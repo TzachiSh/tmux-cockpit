@@ -5,7 +5,7 @@
 # defined anywhere in run.sh, the matching blocks, and the summary tail.
 # Blocks that read variables another block set (AP/NP from the deliver
 # block, RVS from the loop block) need that block matched too -- widen the
-# pattern.  A "\(" in PATTERN is a literal paren.  No match: status 2.
+# pattern.  A "\(" in PATTERN is a literal paren.  No match: status 2; invalid ERE: status 4.
 # ONLY_RUN=FILE reads blocks from FILE instead of tests/run.sh (the tests).
 # Usage: tests/only.sh 'tmux-review --attach|--deliver'
 set -u
@@ -34,6 +34,11 @@ PAT="$1" awk '
     END { if (!nblk) exit 3
           print "printf '"'"'  %d passed, %d failed, %d skipped\\n'"'"' \"$pass\" \"$fail\" \"$skipped\""
           print "[ \"$fail\" -eq 0 ] || exit 1" }
-' "$RUN" > "$OUT" || { echo "tests/only.sh: no block matches $1" >&2; exit 2; }
+' "$RUN" > "$OUT"
+case $? in   # awk: 3 is our no-match; any other failure is awk dying on the ERE
+    0) ;;
+    3) echo "tests/only.sh: no block matches $1" >&2; exit 2 ;;
+    *) echo "tests/only.sh: bad pattern $1" >&2; exit 4 ;;
+esac
 bash -n "$OUT" || exit 2
 cd "$DIR" && bash "$OUT"

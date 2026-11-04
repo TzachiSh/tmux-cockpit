@@ -12921,6 +12921,8 @@ oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'foo \(#216\) \^x' 2>&1 </dev/nul
 is "only.sh: an escaped-paren, caret title is selected, the other block is not" "ran-foo|0" "$(printf '%s' "$oo" | grep '^ran-' | tr '\n' '|' | sed 's/|$//')|$oorc"
 oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'nomatch \(x\)' 2>&1 </dev/null); oorc=$?
 is "only.sh: no match exits 2 naming the pattern" "tests/only.sh: no block matches nomatch \\(x\\)|2" "$oo|$oorc"
+oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'zzzq(' 2>&1 </dev/null); oorc=$?
+is "only.sh: an invalid regex says bad pattern, exits 4" "tests/only.sh: bad pattern zzzq(|4" "$(printf '%s' "$oo" | tail -1)|$oorc"
 rm -rf "$OD"
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
