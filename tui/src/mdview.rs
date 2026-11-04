@@ -9,7 +9,7 @@ pub mod render;
 
 use crate::chrome;
 use crate::pick::{clean, open_screen, restore_tty, screen};
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -165,6 +165,17 @@ pub enum Out {
     Close,
     /// `e`: the editor, at this source line
     Edit(usize),
+    /// `?` (#365): ask about source lines `.0` to `.1`, `.0 <= .1`
+    Ask(usize, usize),
+}
+
+/// A line selection (#365), in source lines: `anchor` stays, `cursor` moves.
+/// `live` while the keys or a drag still move the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sel {
+    pub anchor: usize,
+    pub cursor: usize,
+    pub live: bool,
 }
 
 pub struct Screen {
@@ -190,6 +201,15 @@ pub struct Screen {
     pub note: Option<String>,
     /// the source line to open at, until the first layout finds its row
     want: Option<usize>,
+    /// the line selection, if any (#365)
+    pub sel: Option<Sel>,
+    /// the line the last click landed on: where `v` and a bare `?` start
+    pub point: Option<usize>,
+    /// a drag moved the selection's end since the button went down
+    dragged: bool,
+    /// the launcher routes `ask <a> <b>` (`COCKPIT_VIEW_ASK=1`); without it `?`
+    /// says so and stays, rather than close on a line nothing reads
+    pub can_ask: bool,
 }
 
 impl Screen {
@@ -210,6 +230,10 @@ impl Screen {
             cur: None,
             note: None,
             want: None,
+            sel: None,
+            point: None,
+            dragged: false,
+            can_ask: false,
         }
     }
 
@@ -223,6 +247,116 @@ impl Screen {
     pub fn at_line(mut self, n: usize) -> Self {
         self.want = Some(n);
         self
+    }
+
+    /// The selection's source lines, low to high.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.sel.map(|s| (s.anchor.min(s.cursor), s.anchor.max(s.cursor)))
+    }
+
+    /// The lines an ask covers: the selection, or the start line alone, out to the
+    /// end of the last block it touches (a markdown row carries its block's first
+    /// line), blank lines off its end.
+    pub fn ask_range(&self) -> (usize, usize) {
+        let (a, b) = self.selection().unwrap_or_else(|| {
+            let l = self.start_line();
+            (l, l)
+        });
+        let src: Vec<&str> = match &self.doc {
+            Ok(t) => t.lines().collect(),
+            Err(_) => vec![],
+        };
+        let next = self.rows.iter().find(|r| r.line > b).map(|r| r.line - 1);
+        let mut end = next.unwrap_or(src.len()).max(b);
+        while end > b && src.get(end - 1).is_some_and(|l| l.trim().is_empty()) {
+            end -= 1;
+        }
+        (a, end)
+    }
+
+    /// Where `v` and a bare `?` start: the line last clicked, else the top row's.
+    fn start_line(&self) -> usize {
+        self.point.unwrap_or_else(|| self.line())
+    }
+
+    /// The source lines the rows carry, each once, in order.
+    fn row_lines(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.rows.iter().map(|r| r.line).collect();
+        v.dedup();
+        v
+    }
+
+    /// The row line `n` steps from line `from` (negative is up), held to the file.
+    fn step(&self, from: usize, n: isize) -> usize {
+        let ls = self.row_lines();
+        let Some(&last) = ls.last() else { return from };
+        let i = ls.iter().rposition(|&l| l <= from).unwrap_or(0) as isize;
+        ls[(i + n).clamp(0, ls.len() as isize - 1) as usize].min(last)
+    }
+
+    /// Moves the selection's end to `l`, keeping its first row on screen.
+    fn reach(&mut self, l: usize, room: usize) {
+        let Some(s) = &mut self.sel else { return };
+        s.cursor = l;
+        let r = self.rows.iter().position(|r| r.line == l).unwrap_or(0);
+        if r < self.top {
+            self.top = r;
+        } else if r >= self.top + room.max(1) {
+            self.top = r + 1 - room.max(1);
+        }
+        self.top = self.top.min(self.bottom(room));
+    }
+
+    /// A key that moves a live selection's end, as it would scroll the view.
+    fn extend(&mut self, c: KeyCode, room: usize) -> bool {
+        let Some(cur) = self.sel.filter(|s| s.live).map(|s| s.cursor) else {
+            return false;
+        };
+        let page = room.saturating_sub(1).max(1) as isize;
+        let to = match c {
+            KeyCode::Up | KeyCode::Char('k') => self.step(cur, -1),
+            KeyCode::Down | KeyCode::Char('j') => self.step(cur, 1),
+            KeyCode::PageUp => self.step(cur, -page),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.step(cur, page),
+            KeyCode::Char('g') | KeyCode::Home => self.step(0, 0),
+            KeyCode::Char('G') | KeyCode::End => self.step(usize::MAX, 0),
+            KeyCode::Char('n' | 'N') => {
+                self.next(c == KeyCode::Char('N'), room);
+                match self.cur {
+                    Some(i) => self.rows[self.hits[i].row].line,
+                    None => return true,
+                }
+            }
+            _ => return false,
+        };
+        self.reach(to, room);
+        true
+    }
+
+    /// `v`: start a selection at the start line, end the live one, or take an ended
+    /// one up again.
+    fn toggle(&mut self) {
+        self.sel = match self.sel {
+            None => {
+                let l = self.start_line();
+                Some(Sel {
+                    anchor: l,
+                    cursor: l,
+                    live: true,
+                })
+            }
+            Some(s) => Some(Sel { live: !s.live, ..s }),
+        };
+    }
+
+    /// The source line of the body row at screen row `y`, if one is there.
+    fn line_at(&self, y: u16, area: Rect) -> Option<usize> {
+        let first = area.y + 1;
+        let k = usize::from(y.checked_sub(first)?);
+        if k >= body_rows(area) {
+            return None;
+        }
+        self.rows.get(self.top + k).map(|r| r.line)
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -359,17 +493,31 @@ impl Screen {
             return Out::Stay;
         }
         let small = area.width < MIN_W || area.height < MIN_H;
+        if !small && self.extend(k.code, room) {
+            return Out::Stay;
+        }
         match k.code {
             KeyCode::Char('q') => return Out::Close,
+            // esc takes one layer at a time: the selection, then the matches, then the viewer
+            KeyCode::Esc if !small && self.sel.is_some() => self.sel = None,
             KeyCode::Esc if !small && !self.query.is_empty() => {
                 self.query.clear();
                 self.refind();
                 self.cur = None;
             }
             KeyCode::Esc => return Out::Close,
-            KeyCode::Char('e') => return Out::Edit(self.line()),
+            KeyCode::Char('e') => return Out::Edit(self.sel.map_or_else(|| self.line(), |s| s.cursor)),
             _ if small => {}
-            KeyCode::Char('?') | KeyCode::F(1) => self.help = Some(0),
+            // `?` asks (#365); the help is on F1 and h
+            KeyCode::Char('?') if !self.can_ask => {
+                self.note = Some("asking needs the panel's ask, which this launcher has not wired; h shows the keys".into());
+            }
+            KeyCode::Char('?') => {
+                let (a, b) = self.ask_range();
+                return Out::Ask(a, b);
+            }
+            KeyCode::Char('h') | KeyCode::F(1) => self.help = Some(0),
+            KeyCode::Char('v') => self.toggle(),
             KeyCode::Char('/') => self.field = Some((String::new(), self.top)),
             KeyCode::Char('n') => self.next(false, room),
             KeyCode::Char('N') => self.next(true, room),
@@ -393,14 +541,79 @@ impl Screen {
         }
     }
 
-    /// The wheel scrolls; a click does nothing.
-    pub fn mouse(&mut self, m: MouseEvent, area: Rect) {
+    /// The wheel scrolls. On a row, a click drops a selection's anchor and a
+    /// second ends it (two taps, the phone's way), a drag moves its end, and a
+    /// shift-click extends it. On the footer, a hint is its key.
+    pub fn mouse(&mut self, m: MouseEvent, area: Rect) -> Out {
         let room = body_rows(area);
+        let left = MouseEventKind::Down(crossterm::event::MouseButton::Left);
         match m.kind {
             MouseEventKind::ScrollUp => self.top = self.top.saturating_sub(WHEEL),
             MouseEventKind::ScrollDown => self.top = (self.top + WHEEL).min(self.bottom(room)),
+            k if k == left && m.row + 1 == area.y + area.height => return self.tap_footer(m.column, area),
+            k if k == left => {
+                let Some(l) = self.line_at(m.row, area) else { return Out::Stay };
+                self.point = Some(l);
+                self.dragged = false;
+                self.sel = Some(match self.sel {
+                    Some(s) if m.modifiers.contains(KeyModifiers::SHIFT) => Sel {
+                        cursor: l,
+                        live: false,
+                        ..s
+                    },
+                    Some(s) if s.live => Sel {
+                        cursor: l,
+                        live: false,
+                        ..s
+                    },
+                    _ => Sel {
+                        anchor: l,
+                        cursor: l,
+                        live: true,
+                    },
+                });
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                if let (Some(l), Some(s)) = (self.line_at(m.row, area), self.sel.as_mut())
+                    && s.live
+                {
+                    s.cursor = l;
+                    self.dragged = true;
+                }
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) if self.dragged => {
+                self.dragged = false;
+                if let Some(s) = &mut self.sel {
+                    s.live = false;
+                }
+            }
             _ => {}
         }
+        Out::Stay
+    }
+
+    /// A tap on the footer: the hint under it, pressed. Laid out as
+    /// `chrome::footer` lays it out: a space, then each hint 3 apart.
+    fn tap_footer(&mut self, x: u16, area: Rect) -> Out {
+        if self.field.is_some() || self.note.is_some() {
+            return Out::Stay;
+        }
+        let g = if self.opts.ascii { Glyphs::ascii() } else { Glyphs::unicode() };
+        let shown = chrome::fit(hints(self, &g), area.width as usize, 3);
+        let mut at = 1;
+        for (k, v) in shown {
+            let w = render::cols(&k) + 1 + render::cols(&v) + 1;
+            if (at..at + w).contains(&usize::from(x)) {
+                let code = match k.as_str() {
+                    "esc" => KeyCode::Esc,
+                    k if k.chars().count() == 1 => KeyCode::Char(k.chars().next().unwrap_or(' ')),
+                    _ => return Out::Stay,
+                };
+                return self.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+            }
+            at += w + 2;
+        }
+        Out::Stay
     }
 }
 
@@ -435,11 +648,16 @@ pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
         kv("", "find"),
         kv("/", "find; a capital makes case count"),
         kv("n N", "the next, the previous match"),
-        kv("esc", "clear the matches"),
+        kv("", "select and ask"),
+        kv("v", "select lines; v again ends it"),
+        kv(&format!("{ud} n N"), "while selecting: move its end"),
+        kv("tap tap", "tap a line, tap another; or drag"),
+        kv("?", "ask about the selection or top line"),
+        kv("esc", "clear the selection, then the matches"),
         kv("", "the file"),
-        kv("e", "close, and edit it at the top line"),
+        kv("e", "close; edit at the top or selected line"),
         kv("u", "show or hide link addresses"),
-        kv("?", "this help"),
+        kv("h F1", "this help"),
         kv("q esc ^C", "close"),
     ]
 }
@@ -500,15 +718,40 @@ fn line(th: &Theme, row: &Row, hits: &[(usize, usize, bool)]) -> Line<'static> {
     Line::from(out)
 }
 
-fn hints(s: &Screen, th: &Theme) -> Vec<(String, String)> {
+/// The footer's hints. A selection leads with its lines, as `?` would ask
+/// about them, and says what `v` does next.
+fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
     let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
-    let mut h = vec![kv("/", "find")];
-    if !s.hits.is_empty() {
-        h.push(kv("n N", "next"));
+    let mut h = vec![];
+    match s.sel {
+        Some(sel) => {
+            let (a, b) = s.ask_range();
+            let n = b - a + 1;
+            h.push((format!("{a}-{b}"), format!("{} {n} line{}", g.dot, if n == 1 { "" } else { "s" })));
+            if s.can_ask {
+                h.push(kv("?", "ask"));
+            }
+            h.push(kv("v", if sel.live { "end" } else { "extend" }));
+            h.push(kv("esc", "clear"));
+            h.push(kv("e", "edit"));
+        }
+        None => {
+            h.push(kv("/", "find"));
+            if !s.hits.is_empty() {
+                h.push(kv("n N", "next"));
+            }
+            h.push(kv("v", "select"));
+            if s.can_ask {
+                h.push(kv("?", "ask"));
+            }
+            h.push(kv("h", "keys"));
+            h.push(kv("e", "edit"));
+            h.push(kv(g.key_updown, "scroll"));
+        }
     }
-    h.push(kv("e", "edit"));
-    h.push(kv(th.g.key_updown, "scroll"));
-    h.push(kv("?", "keys"));
+    if s.sel.is_some() {
+        h.push(kv("h", "keys"));
+    }
     h.push(kv("q", "close"));
     h
 }
@@ -592,11 +835,31 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
             .collect(),
     };
     f.render_widget(Paragraph::new(lines), inner);
+    // the selected rows: a bar in the padding column, and the sel band where there is colour
+    if let (Ok(_), Some((a, b))) = (&s.doc, s.sel.map(|_| s.ask_range())) {
+        let live = s.sel.filter(|x| x.live).map(|x| x.cursor);
+        for (k, r) in (s.top..last).enumerate() {
+            let l = s.rows[r].line;
+            if l < a || l > b {
+                continue;
+            }
+            let y = inner.y + k as u16;
+            let mut st = Style::new().fg(th.accent);
+            if live == Some(l) {
+                st = st.add_modifier(Modifier::BOLD);
+            }
+            f.render_widget(Span::styled(th.g.active, st), Rect::new(inner.x - 1, y, 1, 1));
+            if th.sel != Color::Reset {
+                f.buffer_mut()
+                    .set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(th.sel));
+            }
+        }
+    }
     let w = area.width as usize;
     let foot_line = match (&s.field, &s.note) {
         (Some((text, _)), _) => field_line(th, s, text, w),
         (None, Some(n)) => Line::styled(format!(" {}", th.g.trunc(n, w.saturating_sub(2))), Style::new().fg(th.needs)),
-        _ => chrome::footer(th, hints(s, th), w, 3),
+        _ => chrome::footer(th, hints(s, &th.g), w, 3),
     };
     f.render_widget(Paragraph::new(foot_line), foot);
 }
@@ -641,6 +904,7 @@ pub fn main(args: &[String]) -> i32 {
     let doc = load(path, MAX_FILE);
     let m = mode(&name, doc.as_deref().unwrap_or(""));
     let mut s = Screen::new(&name, doc, opts).with_mode(m);
+    s.can_ask = std::env::var("COCKPIT_VIEW_ASK").as_deref() == Ok("1");
     if let Some(n) = line {
         s = s.at_line(n);
     }
@@ -657,7 +921,10 @@ pub fn main(args: &[String]) -> i32 {
                 Out::Stay => {}
                 o => break o,
             },
-            Ok(Event::Mouse(m)) => s.mouse(m, screen(&term)),
+            Ok(Event::Mouse(m)) => match s.mouse(m, screen(&term)) {
+                Out::Stay => {}
+                o => break o,
+            },
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break Out::Close,
@@ -665,8 +932,10 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     restore_tty();
-    if let Out::Edit(n) = out {
-        println!("edit {n}");
+    match out {
+        Out::Edit(n) => println!("edit {n}"),
+        Out::Ask(a, b) => println!("ask {a} {b}"),
+        _ => {}
     }
     0
 }

@@ -1888,8 +1888,8 @@ board to start drops it.
 any other text file as numbered code (#365). The
 path picker opens it for a lone `.md`, `.markdown`, `.mdown` or `.mkd` file
 (see [the path picker](path-picker.md)); `@cockpit_md_view off` turns that off.
-It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`,
-goes to stdout.
+It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`
+or `ask <a> <b>` (#365), goes to stdout.
 
 | key | does |
 |---|---|
@@ -1899,10 +1899,13 @@ goes to stdout.
 | the wheel | three rows |
 | `/` | find: every key but `^C` is text until `↵` keeps the matches or `esc` drops them and goes back |
 | `n` `N` | the next and the previous match, round the end |
-| `e` | close, and open the file in the editor at the top row's source line |
-| `u` | show or hide link addresses |
-| `?` | the keys |
-| `q` `esc` `^C` | close; `esc` first clears the matches, and `^C` closes from the find field too |
+| `v` | select lines from the top row's (or the clicked) line; the move keys, `g` `G` and `n` `N` then move its end, and `v` again ends it |
+| a tap, a second tap | the first drops a selection's anchor, the second ends it there; a drag selects, a shift-click extends |
+| `?` | ask about the selection, or the top line: close with `ask <a> <b>` (#365) |
+| `e` | close, and open the file in the editor at the selection's end, else the top row's source line |
+| `u` | show or hide link addresses (markdown) |
+| `h` `F1` | the keys |
+| `q` `esc` `^C` | close; `esc` first clears the selection, then the matches, and `^C` closes from the find field too |
 
 - **What it draws.** Headings with their `#`s, paragraphs, emphasis, strong,
   strikethrough, inline code, lists nested to any depth (`•` `◦` `▪`, numbers
@@ -1967,6 +1970,21 @@ or a `*ptr` is drawn as written:
   A word a hard wrap splits is not found, as in markdown.
 - **`u`** does nothing in a code file, which has no links, and its help leaves
   it out.
+
+### Selecting and asking (#365)
+
+`v`, or a tap on a line, starts a line selection; the move keys (or a second
+tap, or a drag) set its other end. The selected rows carry `▎` in the frame's
+padding column, and the footer says which lines an ask would take
+(`6-12 · 7 lines`); the hints there are taps too. `?` closes the viewer with
+`ask <a> <b>`, the selection's lines (or the top line's), widened to the end of
+the last markdown block it touches with blank lines off the end. Only a launcher
+that routes that line sets `COCKPIT_VIEW_ASK=1`, and only then is `? ask`
+offered: without it `?` leaves a note and the viewer stays, so a launcher that
+reads only `edit` never loses the screen to it. `tmux-open-path` routes it to
+the panel's ask in a later change.
+`esc` clears the selection before the matches, and the help moved from `?` to
+`h` and `F1`.
 - **Memory.** A row stores its cells and its line, and the gutter is drawn
   from the line: 1 MB of empty lines, the most rows the cap allows, peaks at
   about 77 MB resident (release, measured), under markdown's worst.
