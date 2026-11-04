@@ -265,6 +265,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("json", "json for user"),
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
+        ("no-expected", "the export is broken"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
     ];
@@ -274,7 +275,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
 
 #[test]
 fn the_core_examples_always_go_and_the_fill_order_tops_up() {
-    let core = ["crash", "investigate", "message", "which-file", "unclear", "steps"];
+    let core = ["crash", "investigate", "message", "which-file", "unclear", "no-expected", "steps"];
     let got = picked(Ctx {
         window: "shell",
         ..Ctx::default()
@@ -287,9 +288,9 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
             "plan",
             "math",
             "message",
-            "json",
             "which-file",
             "unclear",
+            "no-expected",
             "steps"
         ]
     );
@@ -302,10 +303,10 @@ fn the_examples_follow_the_picked_type_then_the_window() {
         "crash",
         "investigate",
         "plan",
-        "math",
         "message",
         "which-file",
         "unclear",
+        "no-expected",
         "command",
         "steps",
     ];
