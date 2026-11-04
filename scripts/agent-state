@@ -1,6 +1,7 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
+#          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's subagent log (#361)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
@@ -8,6 +9,19 @@
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
 set -u
+
+# sub-start|sub-stop|sub-idle|sub-end: the documented subagent hooks (SubagentStart,
+# SubagentStop, TeammateIdle, SessionEnd) append to a per-session log the board reads
+# (#361). No pane, no tmux call, no state; always exit 0. Before the formats below: it needs none.
+case "${1:-}" in
+sub-start|sub-stop|sub-idle|sub-end)
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/subslog.sh
+    . "${d%/*}/lib/subslog.sh" 2>/dev/null || exit 0
+    case "$1" in sub-end) subs_end ;; *) subs_record "${1#sub-}" ;; esac
+    exit 0
+    ;;
+esac
 
 state="${1:-off}"
 poll="" view=""

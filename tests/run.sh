@@ -13519,5 +13519,113 @@ is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state sub-*: the documented subagent hooks append to a per-session log (#361) =="
+# SubagentStart, SubagentStop and TeammateIdle each append one line to
+# $XDG_STATE_HOME/tmux-cockpit/subs/<session_id>.log; SessionEnd drops it. No tmux call.
+SLD=$(mktmpd); SLS=aaaaaaaa-1111-4222-8333-444444444444; SLT=bbbbbbbb-1111-4222-8333-444444444444
+SLDIR="$SLD/state/tmux-cockpit/subs"
+sl() {                        # <cmd> <json>  one payload through the hook, exit status last
+    printf '%s\n' "$2" | env XDG_STATE_HOME="$SLD/state" "$DIR/scripts/agent-state" "$1" 2>&1
+    echo "rc=$?"
+}
+slp() { printf '{"session_id":"%s","hook_event_name":"%s","agent_id":"%s","agent_type":"x"}' "$1" "$2" "$3"; }
+sl_modes() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+is "sub-start exits 0 and prints nothing" "rc=0" "$(sl sub-start "$(slp $SLS SubagentStart afix-224)")"
+sl sub-stop "$(slp $SLS SubagentStop afix-224)" >/dev/null
+sl sub-idle "$(slp $SLS TeammateIdle afix-224)" >/dev/null
+sl sub-start "$(slp $SLS SubagentStart arev-224)" >/dev/null
+is "each event is one line: event and agent id, in order" "start afix-224|stop afix-224|idle afix-224|start arev-224" \
+   "$(awk -F'\t' 'NF == 3 { printf "%s%s %s", (NR > 1 ? "|" : ""), $2, $3 }' "$SLDIR/$SLS.log")"
+is "and the first field is the epoch second" "0" \
+   "$(awk -F'\t' '$1 !~ /^[0-9]+$/ || $1 < 1700000000 { n++ } END { print n + 0 }' "$SLDIR/$SLS.log")"
+is "the dir is 0700 and the log 0600" "700 600" "$(sl_modes "$SLDIR") $(sl_modes "$SLDIR/$SLS.log")"
+rm -rf "$SLD/state"; (umask 022; sl sub-start "$(slp $SLS SubagentStart a1)" >/dev/null)
+is "a permissive umask still gives 0700 and 0600" "700 600" "$(sl_modes "$SLDIR") $(sl_modes "$SLDIR/$SLS.log")"
+is "another session has a log of its own" "1 1" \
+   "$(sl sub-start "$(slp $SLT SubagentStart b1)" >/dev/null; grep -c . "$SLDIR/$SLS.log") $(grep -c . "$SLDIR/$SLT.log")"
+# Anything that is not a plain id is dropped: no file, no output, exit 0.
+rm -rf "$SLD/state"
+SLLONG=$(printf 'x%.0s' $(seq 1 65))
+for row in "path in the agent id|$(slp $SLS SubagentStart '../../evil')" \
+           "path in the session id|$(slp '../evil' SubagentStart a1)" \
+           "a space in the agent id|$(slp $SLS SubagentStart 'a b')" \
+           "an id over 64 bytes|$(slp $SLS SubagentStart "$SLLONG")" \
+           "an empty agent id|$(slp $SLS SubagentStart '')" \
+           "no agent id|{\"session_id\":\"$SLS\"}" \
+           "no session id|{\"agent_id\":\"a1\"}" \
+           "not JSON|garbage" "an empty payload|"; do
+    out=$(sl sub-start "${row#*|}"); n=$(find "$SLD/state" -type f 2>/dev/null | grep -c .)
+    is "malformed: ${row%%|*}: exit 0, silent, no log" "rc=0 0" "$out $n"
+done
+# The payload's own free text cannot forge an id: its quotes arrive escaped.
+rm -rf "$SLD/state"
+sl sub-stop "{\"session_id\":\"$SLS\",\"last_assistant_message\":\"\\\"agent_id\\\":\\\"evil\\\"\",\"agent_id\":\"real1\"}" >/dev/null
+is "an agent_id inside a message that comes before the real one is not taken" "stop real1" "$(awk -F'\t' '{ print $2, $3 }' "$SLDIR/$SLS.log")"
+# A symlink where the log goes is never followed.
+rm -rf "$SLD/state"; mkdir -p "$SLDIR"; : > "$SLD/victim"; ln -s "$SLD/victim" "$SLDIR/$SLS.log"
+is "a symlinked log: exit 0" "rc=0" "$(sl sub-start "$(slp $SLS SubagentStart a1)")"
+is "and the link target is untouched" "0" "$(wc -c < "$SLD/victim" | tr -d ' ')"
+# A writer that never ends the payload must not hold the hook.
+rm -rf "$SLD/state"; SLFIFO="$SLD/fifo"; mkfifo "$SLFIFO"
+env XDG_STATE_HOME="$SLD/state" "$DIR/scripts/agent-state" sub-start < "$SLFIFO" >/dev/null 2>&1 &
+SLPID=$!; exec 8> "$SLFIFO"; printf '{"session_id":"%s","agent_id":"a1"' "$SLS" >&8
+slgone() { kill -0 "$SLPID" 2>/dev/null || echo gone; }
+until_out gone slgone; is "an unclosed payload does not hold the hook" "gone" "$(slgone)"
+exec 8>&-; wait "$SLPID" 2>/dev/null; is "and it still exits 0" "0" "$?"
+# SessionEnd: this session's log goes, another's stays, and logs past 7 days are swept.
+rm -rf "$SLD/state"
+sl sub-start "$(slp $SLS SubagentStart a1)" >/dev/null; sl sub-start "$(slp $SLT SubagentStart b1)" >/dev/null
+: > "$SLDIR/old.log"; : > "$SLDIR/recent.log"; : > "$SLDIR/old.keep"
+touch -d '8 days ago' "$SLDIR/old.log" "$SLDIR/old.keep" 2>/dev/null || touch -t "$(date -v-8d +%Y%m%d%H%M)" "$SLDIR/old.log" "$SLDIR/old.keep"
+touch -d '6 days ago' "$SLDIR/recent.log" 2>/dev/null || touch -t "$(date -v-6d +%Y%m%d%H%M)" "$SLDIR/recent.log"
+is "sub-end exits 0" "rc=0" "$(sl sub-end "{\"session_id\":\"$SLS\",\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}")"
+is "it drops its own session's log and the logs past 7 days, and nothing else" "b1 old.keep recent.log" \
+   "$(ls "$SLDIR" | sed "s/^$SLT.log$/b1/" | tr '\n' ' ' | sed 's/ $//')"
+SLBEFORE=$(ls "$SLDIR" | tr '\n' ' ')
+sl sub-end '{}' >/dev/null; sl sub-end '{"session_id":"../x"}' >/dev/null
+is "sub-end on no session id, or a malformed one, removes nothing" "$SLBEFORE" "$(ls "$SLDIR" | tr '\n' ' ')"
+# No tmux call: a PATH with a tmux that records its use sees none.
+SLBIN="$SLD/bin"; mkdir -p "$SLBIN"; printf '#!/bin/sh\ntouch "%s/tmux-ran"\n' "$SLD" > "$SLBIN/tmux"; chmod +x "$SLBIN/tmux"
+for c in sub-start sub-stop sub-idle sub-end; do
+    printf '%s\n' "$(slp $SLS X a1)" | env PATH="$SLBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$SLD/state" "$DIR/scripts/agent-state" "$c" >/dev/null 2>&1
+done
+is "none of the four commands calls tmux" "" "$(ls "$SLD/tmux-ran" 2>/dev/null)"
+
+echo "== hook wiring: the subagent hooks, install.sh --hooks, --check and --uninstall --hooks (#361) =="
+if command -v jq >/dev/null 2>&1; then
+SLEX="$DIR/examples/claude-hooks.json"
+slcmds() { jq -r '.hooks | to_entries[] | .key as $k | .value[].hooks[].command
+    | select(test("agent-state ")) | "\($k):" + sub(".*agent-state "; "")' "$1" | sort | tr '\n' ' ' | sed 's/ $//'; }
+is "the example wires each new command once, on its event, and keeps the old ones" \
+   "SessionEnd:off SessionEnd:sub-end SubagentStart:running SubagentStart:sub-start SubagentStop:sub-stop TeammateIdle:sub-idle TeammateIdle:wake" \
+   "$(slcmds "$SLEX" | tr ' ' '\n' | grep -E '^(SessionEnd|SubagentStart|SubagentStop|TeammateIdle):' | tr '\n' ' ' | sed 's/ $//')"
+SLH=$(mktmpd); mkdir -p "$SLH/.claude"
+cat > "$SLH/.claude/settings.json" <<'JSON'
+{ "hooks": {
+  "SubagentStop": [ { "hooks": [ { "type": "command", "command": "my-own-stop" } ] } ],
+  "TeammateIdle": [ { "matcher": "", "hooks": [ { "type": "command", "command": "/opt/x/scripts/agent-state sub-idle" } ] } ] } }
+JSON
+cp "$SLH/.claude/settings.json" "$SLH/orig.json"
+slrun() { env -u TMUX -u TMUX_PANE HOME="$SLH" XDG_BIN_HOME="$SLH/bin" XDG_CONFIG_HOME="$SLH/cfg" TMUX_TMPDIR="$SLH" "$DIR/install.sh" "$@" 2>&1; }
+slrun --hooks >/dev/null; slrun --hooks >/dev/null
+slown() { jq -r --arg c "$1" '[.. | strings | select(test("TMUX_COCKPIT_DIR.*/scripts/agent-state " + $c + "$"))] | length' "$SLH/.claude/settings.json"; }
+is "--hooks twice: each of the four commands once in cockpit's own path" "1 1 1 1" \
+   "$(for c in sub-start sub-stop sub-idle sub-end; do slown $c; done | tr '\n' ' ' | sed 's/ $//')"
+is "and the foreign hooks, the lookalike sub-idle included, are all still there" "1 1" \
+   "$(jq '[.. | strings | select(. == "my-own-stop")] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "/opt/x/scripts/agent-state sub-idle")] | length' "$SLH/.claude/settings.json")"
+slhooks_dc() { slrun --check | sed -n 's/^\[ *\([a-z]*\) *\] *subhooks.*/\1/p'; }
+is "--check: a wired box has an ok subhooks row" "ok" "$(slhooks_dc)"
+cp "$SLH/.claude/settings.json" "$SLH/wired.json"
+jq 'del(.. | objects | select((.command // "") | test("agent-state sub-")))' "$SLH/wired.json" > "$SLH/.claude/settings.json"
+is "--check: cockpit hooks without the four are a warn subhooks row" "warn" "$(slhooks_dc)"
+printf '{}' > "$SLH/.claude/settings.json"
+is "--check: no cockpit hooks at all is a skip subhooks row (the hooks row speaks)" "skip" "$(slhooks_dc)"
+cp "$SLH/wired.json" "$SLH/.claude/settings.json"
+slrun --uninstall --hooks >/dev/null
+is "--uninstall --hooks removes every cockpit command and nothing foreign" "0 1 1" \
+   "$(jq '[.. | strings | select(test("TMUX_COCKPIT_DIR"))] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "my-own-stop")] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "/opt/x/scripts/agent-state sub-idle")] | length' "$SLH/.claude/settings.json")"
+is "and the file is the one it started as" "$(jq -S . "$SLH/orig.json")" "$(jq -S . "$SLH/.claude/settings.json")"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
