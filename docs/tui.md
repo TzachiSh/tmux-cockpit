@@ -1735,7 +1735,11 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   own `NO_COLOR` handling off: it emits an empty SGR, which also drops bold, dim
   and reverse, the three attributes the colourless fallback is built on.
 - **Actions are printed, never executed.** The panel's `claude -p` fork is a
-  read only because it runs with `--tools ""`: adding a tool breaks this rule.
+  read only because of its `request::Profile`: the panel's calls run with
+  `--tools ""`, and a read-only profile (#365) has only Read, Grep and Glob (and,
+  for research, WebSearch, WebFetch and skills), each pre-approved, with Bash,
+  Edit, Write, NotebookEdit and Agent denied by rule as well and every permission
+  prompt refused. A tool that writes or runs a command breaks this rule.
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.

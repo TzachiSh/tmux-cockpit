@@ -1,6 +1,7 @@
 //! One `claude -p` call on a thread of its own, writing nothing to tmux. Its
 //! [`Profile`] says what it may use: [`Profile::TEXT`], the panel's calls, runs
-//! no tools.
+//! no tools; [`Profile::read_only`] reads the repo (and, for research, the web
+//! and skills) and can never write, run a command or start an agent (#365).
 use std::fs::{DirBuilder, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Write};
@@ -76,6 +77,12 @@ pub struct Profile {
     pub timeout: Option<Duration>,
 }
 
+const READ: &[&str] = &["Read", "Grep", "Glob"];
+const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill"];
+/// Never in a read-only call. Agent is here too: the CLI cannot keep it to the
+/// read-only Explore type (a rule can deny an agent type, not allow only one).
+const WRITERS: &[&str] = &["Bash", "Edit", "Write", "NotebookEdit", "Agent"];
+
 impl Profile {
     pub const TEXT: Profile = Profile {
         tools: &[],
@@ -87,6 +94,21 @@ impl Profile {
         budget_usd: None,
         timeout: None,
     };
+
+    /// Read the repo at `cwd`; with `research`, search and fetch the web and load
+    /// skills too. No budget or timeout of its own: the caller sets them.
+    pub fn read_only(cwd: PathBuf, research: bool) -> Profile {
+        let tools = if research { RESEARCH } else { READ };
+        Profile {
+            tools,
+            allow: tools,
+            deny: WRITERS,
+            skills: research,
+            no_prompts: true,
+            cwd: Some(cwd),
+            ..Profile::TEXT
+        }
+    }
 
     /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
     /// argv from before profiles, byte for byte.

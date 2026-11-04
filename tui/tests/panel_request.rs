@@ -297,6 +297,78 @@ fn the_text_profile_is_todays_argv() {
     assert_eq!(rig.read("cwd").trim(), cwd.display().to_string());
 }
 
+/// Read-only: three tools, each pre-approved, the writers denied, no prompt to wait on,
+/// slash commands off, and the cwd the profile's.
+#[test]
+fn the_read_only_profile_reads_and_never_writes() {
+    let rig = Rig::new("ro", ECHO_ARGV);
+    let repo = rig.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut req = spawn_with(&rig.call(30), &Profile::read_only(repo.clone(), false), "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    assert_eq!(
+        argv_after_prompt(&rig),
+        [
+            "--tools",
+            "Read,Grep,Glob",
+            "--allowedTools",
+            "Read,Grep,Glob",
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit,Agent",
+            "--permission-prompts",
+            "none",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--disable-slash-commands"
+        ]
+    );
+    assert_eq!(rig.read("cwd").trim(), std::fs::canonicalize(&repo).unwrap().display().to_string());
+}
+
+/// Research adds the web and skills, and so drops `--disable-slash-commands`.
+#[test]
+fn the_research_profile_adds_the_web_and_skills() {
+    let rig = Rig::new("research", ECHO_ARGV);
+    let p = Profile {
+        budget_usd: Some(0.5),
+        ..Profile::read_only(rig.dir.clone(), true)
+    };
+    let mut req = spawn_with(&rig.call(30), &p, "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let tools = "Read,Grep,Glob,WebSearch,WebFetch,Skill";
+    assert_eq!(
+        argv_after_prompt(&rig),
+        [
+            "--tools",
+            tools,
+            "--allowedTools",
+            tools,
+            "--disallowedTools",
+            "Bash,Edit,Write,NotebookEdit,Agent",
+            "--permission-prompts",
+            "none",
+            "--max-budget-usd",
+            "0.5",
+            "--no-session-persistence",
+            "--strict-mcp-config"
+        ]
+    );
+}
+
+/// No profile reaches a writer: every read-only one denies all five.
+#[test]
+fn every_read_only_profile_denies_the_writers() {
+    for research in [false, true] {
+        let p = Profile::read_only(PathBuf::from("/"), research);
+        for t in ["Bash", "Edit", "Write", "NotebookEdit", "Agent"] {
+            assert!(
+                p.deny.contains(&t) && !p.tools.contains(&t) && !p.allow.contains(&t),
+                "{t}, research {research}"
+            );
+        }
+    }
+}
+
 /// A profile's own timeout wins over the call's: an ask may run longer than a write.
 #[test]
 fn a_profile_timeout_overrides_the_calls() {
