@@ -4,6 +4,8 @@
 #   kind:    bug, feature, investigate, plan, refactor, review, research, message, command, ops, hint, format
 #   window:  name · cmd · path, as the panel captures them
 #   out:     the output type picked in the panel (default auto)
+#   out_is:  for write or either, a reply that is not a question must be this type
+#            (prompt, steps, command, text, format or hint); auto is not one
 #   expect:  ask    - the right first move is a question
 #            write  - the input settles it: no question
 #            either - an on-target question, or a reply with every must, both serve
@@ -532,8 +534,9 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: write
 must: node; source|sources|cite|nodejs.org
+out_is: prompt
 holdout: yes
-note: a current fact: web search with sources
+note: a current fact: web search with sources; a hint from memory can name nodejs.org and still be stale, so only a prompt passes
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 

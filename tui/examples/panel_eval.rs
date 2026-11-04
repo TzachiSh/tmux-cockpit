@@ -51,6 +51,9 @@ struct Case {
     cmd: String,
     path: String,
     out: OutType,
+    /// For a reply that is not a question: the type it must be, a prompt for a
+    /// fact that needs a search, so a hint written from memory fails.
+    out_is: Option<OutType>,
     expect: Expect,
     /// For `ask`: the question or an option names one of these.
     ask_any: Vec<String>,
@@ -108,6 +111,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             cmd: String::new(),
             path: String::new(),
             out: OutType::Auto,
+            out_is: None,
             expect: Expect::Write,
             ask_any: vec![],
             must: vec![],
@@ -136,6 +140,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     (c.name, c.cmd, c.path) = (name.into(), cmd.into(), path.into());
                 }
                 "out" => c.out = out_type(v).ok_or_else(|| err(&format!("unknown out {v}")))?,
+                "out_is" => {
+                    let t = out_type(v).filter(|t| *t != OutType::Auto);
+                    c.out_is = Some(t.ok_or_else(|| err(&format!("unknown out_is {v}")))?)
+                }
                 "expect" => {
                     expect = Some(match v {
                         "ask" => Expect::Ask,
@@ -198,6 +206,9 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         }
         if c.expect == Expect::Ask && !c.must.is_empty() {
             return Err(err("must is for write cases"));
+        }
+        if c.expect == Expect::Ask && c.out_is.is_some() {
+            return Err(err("out_is is for write or either cases"));
         }
         if c.expect == Expect::Write && !c.ask_any.is_empty() {
             return Err(err("ask_any is for ask cases"));
@@ -272,6 +283,34 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
     })
 }
 
+/// The output type a reply is, for `out_is`; `None` for a question.
+fn reply_type(r: &Reply) -> Option<&'static str> {
+    Some(match r {
+        Reply::Question { .. } => return None,
+        Reply::Prompt(_) => "prompt",
+        Reply::Text(_) => "text",
+        Reply::Format { .. } => "format",
+        Reply::Steps { command: false, .. } => "steps",
+        Reply::Steps { command: true, .. } => "command",
+        Reply::Hint(_) => "hint",
+        Reply::Untagged(_) => "untagged",
+        Reply::Answer { .. } => "answer",
+        Reply::Unsupported(k) => k,
+    })
+}
+
+fn out_name(t: OutType) -> &'static str {
+    match t {
+        OutType::Auto => "auto",
+        OutType::Prompt => "prompt",
+        OutType::Steps => "steps",
+        OutType::Command => "command",
+        OutType::Text => "text",
+        OutType::Format => "format",
+        OutType::Hint => "hint",
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 struct Grade {
     asked: bool,
@@ -280,6 +319,8 @@ struct Grade {
     on_target: bool,
     /// For `write`: the `must` facts the reply lacks.
     missing: Vec<String>,
+    /// A reply of another type than the case's `out_is`: the type it was.
+    wrong_type: Option<&'static str>,
     /// The `must_not` words the reply has.
     forbidden: Vec<String>,
     /// A reply the panel refuses or that was cut off: it fails every case.
@@ -307,9 +348,10 @@ fn grade(c: &Case, raw: &str) -> Grade {
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
+    g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
     g.forbidden = c.must_not.iter().filter(|m| has(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
-    let wrote_well = !g.asked && g.missing.is_empty();
+    let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none();
     g.pass = g.forbidden.is_empty()
         && match c.expect {
             Expect::Ask => asked_well,
@@ -473,6 +515,9 @@ fn main() {
                 (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
                 (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
                 (_, Some(g)) if g.asked => format!("asked: {}", g.question),
+                (_, Some(g)) if g.wrong_type.is_some() => {
+                    format!("wrote a {}, want {}", g.wrong_type.unwrap_or(""), c.out_is.map_or("", out_name))
+                }
                 (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
                 _ => "wrote".into(),
             };
@@ -486,6 +531,7 @@ fn main() {
                     "question": g.as_ref().map(|g| g.question.clone()),
                     "missing": g.as_ref().map(|g| g.missing.clone()),
                     "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
+                    "wrong_type": g.as_ref().and_then(|g| g.wrong_type),
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
@@ -863,6 +909,32 @@ mod tests {
         std::fs::write(p.join("write.txt"), [0xff, 0xfe]).unwrap();
         assert!(prompt_source(&d).contains("unreadable"), "{}", prompt_source(&d));
         std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn out_is_fails_a_reply_of_another_type_but_not_a_question() {
+        let mut c = parse_cases(&ONE.replace("expect: write", "expect: either\nout_is: prompt"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(c.out_is, Some(OutType::Prompt));
+        let hint = grade(&c, "<hint>net-proxy, line 88</hint>");
+        assert_eq!((hint.wrong_type, hint.pass), (Some("hint"), false));
+        let text = grade(&c, "<text>net-proxy, line 88</text>");
+        assert_eq!((text.wrong_type, text.pass), (Some("text"), false));
+        assert!(grade(&c, "<prompt>Fix net-proxy at line 88.</prompt>").pass);
+        c.ask_any = vec!["which line".into()];
+        assert!(grade(&c, "<question>Which line?</question>").pass);
+    }
+
+    #[test]
+    fn out_is_is_read_and_checked() {
+        assert_eq!(parse_cases(ONE).unwrap()[0].out_is, None);
+        let bad = ONE.replace("expect: write", "expect: write\nout_is: poem");
+        assert!(parse_cases(&bad).unwrap_err().contains("unknown out_is poem"));
+        let auto = ONE.replace("expect: write", "expect: write\nout_is: auto");
+        assert!(parse_cases(&auto).unwrap_err().contains("unknown out_is auto"));
+        let ask = ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nout_is: prompt");
+        assert!(parse_cases(&ask).unwrap_err().contains("out_is is for write"));
     }
 
     #[test]
