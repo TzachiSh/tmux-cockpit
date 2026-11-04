@@ -193,7 +193,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
-| `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered and highlighted (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
+| `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered, and highlighted when the language is known (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
@@ -1924,7 +1924,8 @@ goes to stdout.
 
 ### A code file (#365)
 
-Only `.md`, `.markdown`, `.mdown` and `.mkd` are read as markdown. Any other
+Only a name ending in `.md`, `.markdown`, `.mdown` or `.mkd` (a bare `.md`
+included, as `tmux-open-path`'s `*.md` glob reads it) is markdown. Any other
 file is shown whole as code, with no markdown read into it, so a `# comment`
 or a `*ptr` is drawn as written:
 
@@ -1938,14 +1939,22 @@ or a `*ptr` is drawn as written:
 - **The language.** The extension names it for the lexer the panel uses
   (`highlight`): Rust, Python, JavaScript and TypeScript, JSON and shell. With
   no extension it knows, a first line's `#!` does (`#!/usr/bin/env python3`,
-  `#!/bin/bash`, `node`); `env`'s flags and a version (`python3.11`) are
-  skipped. Anything else, Go or a `.txt` included, is plain text, numbered.
+  `#!/bin/bash`, `dash`, `node`, `ts-node`); `env`'s flags, its `-u NAME`,
+  `NAME=value` words and a version (`python3.11`) are skipped. A known
+  extension wins over the `#!`. Anything else, Go or a `.txt` included, is
+  plain text, numbered.
 - **Rows.** Each source line is one row behind its line number, right aligned
   to the widest; a line wider than the body wraps hard, its later rows under a
   blank gutter. Tabs go out to 4-column stops. A row keeps its source line, so
   `e`, `--line` and a resize work as in markdown, and the selection of #365's
   next step sits on these rows.
 - **Find** reads the code, never the line numbers: `/2` does not match line 2.
+  A word a hard wrap splits is not found, as in markdown.
+- **`u`** does nothing in a code file, which has no links, and its help leaves
+  it out.
+- **Memory.** A row stores its cells and its line, and the gutter is drawn
+  from the line: 1 MB of empty lines, the most rows the cap allows, peaks at
+  about 77 MB resident (release, measured), under markdown's worst.
 - **What it refuses** is the markdown viewer's: over 1 MB, a NUL byte, invalid
   UTF-8, not a regular file. The note says so, and `e` still opens the editor.
 
