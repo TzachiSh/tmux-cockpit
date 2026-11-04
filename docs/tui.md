@@ -259,8 +259,9 @@ case), with either cases in neither; `pass^k`, the share of cases that passed
 all k runs, with its Wilson 95% interval, since cases and not runs are the
 independent trials; and the cost of the calls, from `claude -p --output-format
 json`. `--compare A.jsonl B.jsonl` reads two `--out` files and makes no calls:
-per case each side's pass count, the cases whose pass rate moved, and each
-side's `pass^k` and cost. The case format, with its `expect: ask|write|either`,
+per case each side's pass count, the cases whose pass rate moved, `pass^k` for
+both sides over the cases both graded in full, and each side's own (unpaired)
+`pass^k` and cost. The case format, with its `expect: ask|write|either`,
 `must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
 the cases file; holdout cases are written after the prompt they run on, so a
 gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
