@@ -6345,8 +6345,11 @@ fi
 
 echo "== repo git config cannot run commands through a review =="
 GH=$(mktmpd); GHM="$GH/marker"
+# The marker is the whole signal, so a plant never reads stdin (#214): git hands
+# core.fsmonitor, textconv and the diff commands its caller's stdin, and a bare
+# cat there blocked forever whenever that was an open terminal or socket.
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
-    printf '#!/bin/sh\necho %s >> %s\ncat\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
 done
 ( cd "$GH" && mkdir r && cd r && git init -q -b main . \
   && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
@@ -6356,8 +6359,8 @@ done
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
   && git config filter.evil.clean "$GH/clean" && git config log.showSignature true \
   && git config gpg.program "$GH/gpg" && git config core.hooksPath hk && git config core.pager "$GH/pager" ) >/dev/null 2>&1
-# Every call below reads /dev/null (#214): git hands a hook such as core.fsmonitor
-# the caller's stdin, so the helpers' `cat` would block forever on an open terminal.
+# Plain git on purpose: the control that proves the plants fire. Its </dev/null and
+# the ones below are the second guard, should a plant ever read stdin again.
 git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
