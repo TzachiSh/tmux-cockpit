@@ -1304,7 +1304,9 @@ reason in a warn note.
   the parser.
 - New option `@cockpit_md_view` (`on`). `scripts/tmux-open-path` gains
   `md_view` and its call at the top of `open_one`, and a `--view <pane>
-  <file> <line>` re-entry for the viewer's popup.
+  <file> <line>` re-entry for the viewer's popup. The popup's `-T` title is
+  the name with control and bidi characters dropped, then `fesc`; a popup
+  tmux refuses (no client) opens the editor instead.
 - `panel::view::role_style` is `pub(crate)`: the viewer colours code with the
   panel's roles.
 - Goldens: new `view-{40,80,120}`, `view-ascii-80`, `view-nocolor-80`,
@@ -1885,8 +1887,8 @@ goes to stdout.
 - **Lines.** Each row carries the source line of its block (a code row, its
   own line), which `e` and `--line` use. A resize keeps the top row's line on
   top.
-- **What it refuses.** A file over 1 MB (worst case about 100 MB of rows, a
-  `- a` list of that size), one with a NUL byte, invalid UTF-8, or anything but
+- **What it refuses.** A file over 1 MB (a `- a` list of that size peaks at
+  about 105 MB resident, measured), one with a NUL byte, invalid UTF-8, or anything but
   a regular file (opened non-blocking, so a FIFO never hangs it) is a note in
   the frame. `e` still opens it in the editor. Control and bidi characters are
   dropped from everything drawn, the title included, as `pick` drops them.

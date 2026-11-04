@@ -12976,7 +12976,8 @@ echo "== tmux-open-path (#283): a lone markdown file opens in the viewer, the re
 # A tmux stub logs what the script asks of tmux, and a cockpit-tui stub answers
 # pick with PICK_KEY and view with VIEW_OUT, logging its own argv. No server.
 MV=$(mktmpd); MVL="$MV/log"; mkdir -p "$MV/bin" "$MV/w/d.md"
-for f in a.md B.MD c.markdown e.mdown g.mkd n.md.txt t.txt 'h#(x)#{y}.md'; do : > "$MV/w/$f"; done
+MVB=$'b\xe2\x80\xaeq\x1b[2Jz.md'   # a bidi override and an escape in the name
+for f in a.md B.MD c.markdown e.mdown g.mkd n.md.txt t.txt 'h#(x)#{y}.md' "$MVB"; do : > "$MV/w/$f"; done
 cat > "$MV/bin/tmux" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -12994,7 +12995,7 @@ case "$1" in
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
   new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
-  display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG" ;;
+  display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
 esac
 exit 0
 STUB
@@ -13013,7 +13014,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
     : > "$MVL"
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR=ed \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
-        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" \
+        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
@@ -13034,9 +13035,15 @@ for f in n.md.txt t.txt d.md; do
     is "$f is not markdown: the editor, at once" "NEWWIN ed  $MV/w/$f" "$(mvrun "$f" %1)"
 done
 is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" "$(MD_VIEW=off mvrun a.md %1)"
+case "$(POPUP_RC=1 mvrun a.md %1)" in
+    "POPUP"*$'\n'"NEWWIN ed  $MV/w/a.md") ok "a popup tmux refuses (no client) opens the editor instead" ;;
+    *) bad "a popup tmux refuses (no client) opens the editor instead" "the popup, then the editor" "$(POPUP_RC=1 mvrun a.md %1)" ;;
+esac
 is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" "$(MV_BIN="$MV/none" mvrun a.md %1)"
 is "the popup's title and directory spell each # as ##" "[-d] [$MV/w] [-T] [ h##(x)##{y}.md ]" \
    "$(mvrun 'h#(x)#{y}.md' %1 | grep -o '\[-d\] \[[^]]*\] \[-T\] \[[^]]*\]')"
+is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2Jz.md ]" \
+   "$(mvrun "$MVB" %1 | grep -o '\[-T\] \[[^]]*\]')"
 # --view is the popup's re-entry: the viewer runs in it, and e comes back here.
 is "--view runs the viewer at the line and opens the editor where e left it" \
    "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
@@ -13086,9 +13093,11 @@ mvcap() { "$TMUX_REAL" -L "$MVO" capture-pane -p -t o; }
 mvclick
 if until_cap "$MVO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
 else bad "a click on a .md shows it rendered in a popup" "# Heading, then p1" "$(mvcap | head -8)"; fi
+# The client's top row is the popup's border, so the -T title is what is
+# read here; the viewer's own frame title is a row lower and is not the gate.
 case "$(mvcap | head -1)" in
-    *"$MVN"*) ok "the popup's title is the file's name, literally" ;;
-    *) bad "the popup's title is the file's name, literally" "$MVN" "$(mvcap | head -1)" ;;
+    *"$MVN"*) ok "the popup border's -T title (the client's top row) is the file's name, literally" ;;
+    *) bad "the popup border's -T title (the client's top row) is the file's name, literally" "$MVN" "$(mvcap | head -1)" ;;
 esac
 # rows: # Heading (line 1), gap, p0 (line 3), gap, p1 (line 5): four down, p1 is on top
 "$TMUX_REAL" -L "$MVO" send-keys -t o j j j j e
