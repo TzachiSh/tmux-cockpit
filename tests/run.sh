@@ -13861,5 +13861,38 @@ is "an ended session clears it" "" "$(wscall off "$WSP" >/dev/null; wssince)"
 "$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
 fi
 
+echo "== sessions view: waiting sessions sort longest-first and say 'waiting Nm' (#225) =="
+# The stamps are agent-state's @panestate_since, set here by hand on a private server:
+# beta has waited 5 minutes, delta 30 seconds, and both sort ahead of the rest.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "cockpit-tui sessions waiting timers (no bin/cockpit-tui; run make tui)"
+elif need_tmux "cockpit-tui sessions waiting timers"; then :; else
+sv_server w; SVD=$(mktmpd)
+"$TMUX_REAL" -L "$SVS" new-session -d -s delta 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SVS" set -p -t delta: @panestate needs-input
+svnow=$(date +%s)
+"$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate_since $((svnow - 300))
+"$TMUX_REAL" -L "$SVS" set -p -t delta: @panestate_since $((svnow - 30))
+SVCOLS=140 sv_ui "$SVD"
+if sv_cap '*beta*waiting 5m*delta*waiting 3?s*gamma*'; then
+    ok "the longest wait sorts first, and each waiting row says how long"
+else
+    bad "the longest wait sorts first, and each waiting row says how long" "beta waiting 5m, delta waiting 3Ns, then gamma" \
+        "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)"
+fi
+sv_key Enter; until_file "$SVD/rc" '?*'
+is "enter switches to the longest-waiting session" "switch $SVB" "$(cat "$SVD/act" 2>/dev/null)"
+SVCOLS=60 sv_ui "$SVD"
+sv_cap '*beta*delta*gamma*'
+case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
+    *waiting*) bad "at 60 columns the label goes and the names stay" "no 'waiting'" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)" ;;
+    *beta*5m*delta*3?s*) ok "at 60 columns the label goes and the names stay" ;;
+    *) bad "at 60 columns the label goes and the names stay" "beta 5m, delta 3Ns" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)" ;;
+esac
+sv_key Escape; until_file "$SVD/rc" '?*'
+"$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
+"$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

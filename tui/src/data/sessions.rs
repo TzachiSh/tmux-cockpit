@@ -8,7 +8,8 @@ const US: char = '\u{1f}';
 /// One pane per line. The name fields come last and are split with a limit, so
 /// a separator inside a name cannot shift the fields before it. An agent is a
 /// pane whose command is in `@cockpit_agents_glob`, the test agent-state uses:
-/// a stale `@panestate` on a shell is not believed.
+/// a stale `@panestate` on a shell is not believed. `@panestate_since` (#225) is
+/// the epoch second a pane entered needs-input, written by agent-state alone.
 fn format() -> String {
     let agent = "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}";
     let msg = "#{?#{@panestate_msg},#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@panestate_msg}}}},}";
@@ -22,6 +23,7 @@ fn format() -> String {
         agent,
         "#{@panestate}",
         msg,
+        "#{@panestate_since}",
         "#{window_name}",
         "#{session_name}",
     ]
@@ -40,6 +42,8 @@ pub struct Win {
     pub state: State,
     /// The worst pane's message, when it needs you or failed.
     pub ask: String,
+    /// The oldest `@panestate_since` of its waiting agent panes (#225).
+    pub since: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +75,21 @@ impl Sess {
         self.wins.iter().map(|w| w.waiting).sum()
     }
 
+    /// When its longest-waiting pane entered needs-input; `None` when nothing waits
+    /// or no waiting pane carries a stamp (one from before #225).
+    pub fn since(&self) -> Option<u64> {
+        if self.state() != Some(State::NeedsInput) {
+            return None;
+        }
+        self.wins.iter().filter_map(|w| w.since).min()
+    }
+
+    /// Seconds its longest-waiting pane has waited. Wall clock: a stamp from the
+    /// future (the clock went back) reads 0.
+    pub fn wait(&self, now: u64) -> Option<u64> {
+        self.since().map(|t| now.saturating_sub(t))
+    }
+
     /// Seconds since last used.
     pub fn age(&self, now: u64) -> u64 {
         now.saturating_sub(self.last)
@@ -92,8 +111,8 @@ pub fn is_sid(s: &str) -> bool {
 pub fn parse(out: &str) -> Vec<Sess> {
     let mut v: Vec<Sess> = vec![];
     for l in out.lines() {
-        let f: Vec<&str> = l.splitn(11, US).collect();
-        let [id, att, last, widx, wact, _pane, agent, st, msg, wname, name] = f[..] else {
+        let f: Vec<&str> = l.splitn(12, US).collect();
+        let [id, att, last, widx, wact, _pane, agent, st, msg, since, wname, name] = f[..] else {
             continue;
         };
         let (Ok(att), Ok(last)) = (att.parse(), last.parse()) else {
@@ -127,6 +146,7 @@ pub fn parse(out: &str) -> Vec<Sess> {
                     waiting: 0,
                     state: State::Unknown,
                     ask: String::new(),
+                    since: None,
                 });
                 s.wins.len() - 1
             }
@@ -147,6 +167,11 @@ pub fn parse(out: &str) -> Vec<Sess> {
         }
         w.agents += 1;
         w.waiting += usize::from(st == State::NeedsInput);
+        if st == State::NeedsInput
+            && let Ok(t) = since.parse::<u64>()
+        {
+            w.since = Some(w.since.map_or(t, |o| o.min(t)));
+        }
     }
     v
 }
@@ -160,15 +185,18 @@ pub fn fetch() -> Option<Vec<Sess>> {
     tmux(&["list-panes", "-a", "-F", &format()]).map(|o| parse(&o))
 }
 
-/// Needs-you first (waiting, then failed), then the most recently used; the
-/// session this popup was opened from goes last.
+/// Needs-you first (waiting, the longest wait first and the unstamped after
+/// them, then failed), then the most recently used; the session this popup was
+/// opened from goes last.
 pub fn order(v: &mut [Sess], current: Option<&str>, now: u64) {
     let band = |s: &Sess| match s.state() {
         Some(State::NeedsInput) => 0,
         Some(State::Error) => 1,
         _ => 2,
     };
-    v.sort_by_key(|s| (current == Some(s.id.as_str()), band(s), s.age(now)));
+    // the earliest stamp is the longest wait; None sorts after every Some
+    let wait = |s: &Sess| s.since().map_or((1, 0), |t| (0, t));
+    v.sort_by_key(|s| (current == Some(s.id.as_str()), band(s), wait(s), s.age(now)));
 }
 
 /// The frozen order: the ids in the order of the first read. A refresh keeps
