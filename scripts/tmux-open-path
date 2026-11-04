@@ -163,7 +163,8 @@ touch_client() {
 # A terminal editor in a window of its own, in the file's folder. Unlike open_one
 # this never reaches for VS Code: the caller decided the client cannot see it.
 term_edit() {
-    local file=$1 editor=$(tmux show-options -gqv @cockpit_editor) fd
+    local file=$1 editor fd
+    editor=$(tmux show-options -gqv @cockpit_editor)
     [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
     if [ -z "$editor" ]; then
         if command -v nvim >/dev/null 2>&1; then editor=nvim
