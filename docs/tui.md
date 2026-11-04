@@ -1869,7 +1869,8 @@ board to start drops it.
 
 ## The markdown viewer (#283)
 
-`cockpit-tui view <file>` shows a markdown file rendered and read-only. The
+`cockpit-tui view <file>` shows a markdown file rendered and read-only, and
+any other text file as numbered code (#365). The
 path picker opens it for a lone `.md`, `.markdown`, `.mdown` or `.mkd` file
 (see [the path picker](path-picker.md)); `@cockpit_md_view off` turns that off.
 It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`,
@@ -1920,6 +1921,33 @@ goes to stdout.
 - **NO_COLOR and ascii.** Without colour, inline code keeps its backticks and
   the other kinds lean on bold, italics, underline and the marks. The ascii
   tier draws `-` `*` `+` bullets, `[x]`, `|` bars and `-+-` table rules.
+
+### A code file (#365)
+
+Only `.md`, `.markdown`, `.mdown` and `.mkd` are read as markdown. Any other
+file is shown whole as code, with no markdown read into it, so a `# comment`
+or a `*ptr` is drawn as written:
+
+```
+╭ view-sample.rs ──────────────────────────────────────────────────────────────╮
+│  5 /// Counts each word, ignoring case. "# not a heading", *not emphasis*.   │
+│  6 pub fn count(text: &str) -> HashMap<String, usize> {                      │
+│  7     let mut out = HashMap::new();                                         │
+```
+
+- **The language.** The extension names it for the lexer the panel uses
+  (`highlight`): Rust, Python, JavaScript and TypeScript, JSON and shell. With
+  no extension it knows, a first line's `#!` does (`#!/usr/bin/env python3`,
+  `#!/bin/bash`, `node`); `env`'s flags and a version (`python3.11`) are
+  skipped. Anything else, Go or a `.txt` included, is plain text, numbered.
+- **Rows.** Each source line is one row behind its line number, right aligned
+  to the widest; a line wider than the body wraps hard, its later rows under a
+  blank gutter. Tabs go out to 4-column stops. A row keeps its source line, so
+  `e`, `--line` and a resize work as in markdown, and the selection of #365's
+  next step sits on these rows.
+- **Find** reads the code, never the line numbers: `/2` does not match line 2.
+- **What it refuses** is the markdown viewer's: over 1 MB, a NUL byte, invalid
+  UTF-8, not a regular file. The note says so, and `e` still opens the editor.
 
 ## `cockpit-tui branch` (#246)
 

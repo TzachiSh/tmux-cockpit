@@ -1,8 +1,10 @@
 //! The markdown viewer (#283): `cockpit-tui view [--line N] [--] <file>`, what
-//! the path picker opens a lone `.md` in. It renders the file read-only on
+//! the path picker opens a lone `.md` in. Any other file is numbered code
+//! through `highlight` (#365, [`code`]). It renders the file read-only on
 //! /dev/tty and prints `edit <line>` when `e` hands it to the editor. Nothing in
 //! the file is run or followed; a file that is too big, binary or not UTF-8 is
 //! a note, never a hang.
+pub mod code;
 pub mod render;
 
 use crate::chrome;
@@ -55,6 +57,43 @@ pub fn load(path: &std::path::Path, cap: u64) -> Result<String, String> {
     }
     let s = String::from_utf8(b).map_err(|_| "not UTF-8 text".to_string())?;
     Ok(s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s))
+}
+
+/// What the viewer draws a file as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Markdown,
+    /// whole, numbered, through `highlight`; `None` is plain text
+    Code(Option<crate::highlight::Lang>),
+}
+
+/// The name's extension decides: markdown's four, else a language the lexer
+/// knows. With no extension it knows, the first line's `#!` names the
+/// interpreter (`env` and its flags skipped, a version cut off). Anything else
+/// is plain text, numbered: never markdown.
+pub fn mode(name: &str, text: &str) -> Mode {
+    let ext = std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase());
+    if let Some("md" | "markdown" | "mdown" | "mkd") = ext.as_deref() {
+        return Mode::Markdown;
+    }
+    Mode::Code(ext.as_deref().and_then(crate::highlight::lang).or_else(|| shebang(text)))
+}
+
+fn shebang(text: &str) -> Option<crate::highlight::Lang> {
+    let first = text.lines().next()?.strip_prefix("#!")?;
+    let mut words = first.split_whitespace();
+    let mut prog = words.next()?.rsplit('/').next()?;
+    if prog == "env" {
+        prog = words.find(|w| !w.starts_with('-'))?;
+    }
+    let prog = prog.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let tag = match prog {
+        "node" | "nodejs" | "deno" | "bun" => "js",
+        p => p,
+    };
+    crate::highlight::lang(tag)
 }
 
 /// A search match: a row and a byte range of its text.
@@ -119,6 +158,8 @@ pub enum Out {
 pub struct Screen {
     /// the file's name as the title shows it, made safe to draw
     pub name: String,
+    /// markdown, or code (#365)
+    pub mode: Mode,
     pub doc: Result<String, String>,
     pub opts: Opts,
     rows: Vec<Row>,
@@ -143,6 +184,7 @@ impl Screen {
     pub fn new(name: &str, doc: Result<String, String>, opts: Opts) -> Self {
         Screen {
             name: clean(name),
+            mode: Mode::Markdown,
             doc,
             opts,
             rows: vec![],
@@ -157,6 +199,12 @@ impl Screen {
             note: None,
             want: None,
         }
+    }
+
+    /// Draws the file as `m`.
+    pub fn with_mode(mut self, m: Mode) -> Self {
+        self.mode = m;
+        self
     }
 
     /// Opens at the first row of the block holding source line `n`.
@@ -176,11 +224,13 @@ impl Screen {
             return;
         }
         let keep = self.want.take().or_else(|| self.rows.get(self.top).map(|r| r.line));
-        self.rows = match &self.doc {
-            Ok(s) => render::render(s, w, self.opts),
-            Err(_) => vec![],
+        self.rows = match (&self.doc, self.mode) {
+            (Ok(s), Mode::Markdown) => render::render(s, w, self.opts),
+            (Ok(s), Mode::Code(lang)) => code::render(s, lang, w),
+            (Err(_), _) => vec![],
         };
-        self.texts = self.rows.iter().map(Row::text).collect();
+        // a code row's line number is drawn, never found
+        self.texts = self.rows.iter().map(Row::body).collect();
         self.width = w;
         if let Some(l) = keep {
             // the block holding line l is the last to start at or before it
@@ -559,7 +609,9 @@ pub fn main(args: &[String]) -> i32 {
         urls: true,
         colour: th.accent != Color::Reset,
     };
-    let mut s = Screen::new(&name, load(path, MAX_FILE), opts);
+    let doc = load(path, MAX_FILE);
+    let m = mode(&name, doc.as_deref().unwrap_or(""));
+    let mut s = Screen::new(&name, doc, opts).with_mode(m);
     if let Some(n) = line {
         s = s.at_line(n);
     }
