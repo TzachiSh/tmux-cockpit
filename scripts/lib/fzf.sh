@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One fzf theme for the fzf pickers left (tmux-open-path's path picker and
-# folder browser; the rest are cockpit-tui). Sourced, never run. Bash 4+.
+# folder browser; the rest are cockpit-tui). Sourced, never run. Bash 4.2+ for declare -g.
 #
 # No `bg`, `list-bg` or `input-bg` anywhere below: the popup's background
 # belongs to the user's popup-style. `16` stays the base so an unset key
