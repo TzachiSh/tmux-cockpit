@@ -19,6 +19,7 @@ use cockpit_tui::panel::parse::{self, Reply};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Request};
 use cockpit_tui::panel::route::route;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -424,17 +425,20 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
 /// the call unchanged and the reply carries its cost.
 const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
 
+/// What the rig runs as the call's claude: the real one, json first, then the
+/// call's own argv, with the variable gone so claude's children never see it.
+fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+    let mut c = std::process::Command::new(real);
+    c.args(["--output-format", "json"]).args(args).env_remove(AS_CLAUDE);
+    c
+}
+
 /// The rig as the call's claude: exec, so the pid, its process group and its
 /// death signal stay the ones Request set up.
-fn exec_claude(real: &str) -> ! {
+fn exec_claude(real: &OsStr) -> ! {
     use std::os::unix::process::CommandExt;
-    let e = std::process::Command::new(real)
-        .arg("--output-format")
-        .arg("json")
-        .args(std::env::args_os().skip(1))
-        .env_remove(AS_CLAUDE)
-        .exec();
-    eprintln!("panel_eval: {real}: {e}");
+    let e = claude_command(real, std::env::args_os().skip(1)).exec();
+    eprintln!("panel_eval: {}: {e}", real.to_string_lossy());
     std::process::exit(127);
 }
 
@@ -450,7 +454,7 @@ struct Job {
 
 fn main() {
     if let Some(real) = std::env::var_os(AS_CLAUDE) {
-        exec_claude(&real.to_string_lossy());
+        exec_claude(&real);
     }
     let o = match opts(std::env::args().skip(1)) {
         Ok(o) => o,
@@ -1488,6 +1492,17 @@ mod tests {
         let rows = [row("a"), row("b"), row("a"), row(""), row("c"), row("b")];
         assert_eq!(prompts_of(&rows), ["a", "b", "c"]);
         assert!(prompts_of(&[row("")]).is_empty());
+    }
+
+    #[test]
+    fn the_wrapped_call_puts_json_first_and_drops_the_variable() {
+        let call = ["-p", "--model", "sonnet"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call);
+        assert_eq!(c.get_program(), "/bin/claude");
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args, ["--output-format", "json", "-p", "--model", "sonnet"]);
+        let envs: Vec<_> = c.get_envs().collect();
+        assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None)]);
     }
 
     #[test]
