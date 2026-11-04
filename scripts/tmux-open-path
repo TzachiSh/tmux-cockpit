@@ -157,8 +157,8 @@ else
     line=$(tmux show-options -p -t "$pane" -qv @cockpit_click_line)
     dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
-    # The folder browser's keys (prefix o, the status-bar path, the menu row)
-    # open the pane's folder where a clicked directory would open (#228).
+    # The cockpit table's o (the menu's Browse folder row and the status-bar path
+    # tap replay it) opens the pane's folder where a clicked directory would (#228).
     if [ "$FOLDER" -eq 1 ]; then
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
         open_one "$dir" "" ""; exit 0
@@ -260,7 +260,7 @@ for raw in $line; do
     ntok=$((ntok + 1))
     # 0.31ms/token, linear: a real clicked line has a handful of tokens, but a
     # 112KB line (4000 path-shaped tokens) measured 1.59s in this loop alone.
-    # Capped like the preview guard above -- degrade, don't stall the click.
+    # Capped: degrade, don't stall the click.
     [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue

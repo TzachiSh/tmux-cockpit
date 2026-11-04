@@ -2667,9 +2667,11 @@ bsout=$(bs --dry-run); bsrc=$?
 is "a run names no bat" "0" "$(printf '%s\n' "$bsout" | grep -ci 'bat\b')"
 is "and names no latest-tools step" "0" "$(printf '%s\n' "$bsout" | grep -c 'latest tools')"
 is "and the run exits 0" "0" "$bsrc"
-bsout=$(bs --full); is "--full is gone (exit 2)" "2" "$?"
-bssaid "and the refusal prints the usage" "usage: bootstrap.sh" "$bsout"
-bsout=$(bs --latest); is "--latest is gone too (exit 2)" "2" "$?"
+bsout=$(bs --full --dry-run); bsrc=$?
+is "--full is a no-op: the run still exits 0" "0" "$bsrc"
+bssaid "and says so on one line" "bootstrap.sh: --full does nothing now: fzf and bat are not used" "$bsout"
+is "and the normal run happened (the revdiff step ran)" "1" "$(printf '%s\n' "$bsout" | grep -c '== revdiff ==')"
+bsout=$(bs --latest --dry-run); is "--latest is a no-op too (exit 0)" "0" "$?"
 bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
 bssaid "and says so" "--check runs alone" "$bsclear_check"
 is "no run reached for sudo" "absent" "$([ -e "$BS/SUDO_RAN" ] && echo present || echo absent)"
@@ -3538,9 +3540,9 @@ else bad "and the window moves into it" "#(touch $MHD/pwned):editor" \
 "$TMUX_REAL" -L "$MH" kill-server >/dev/null 2>&1
 fi
 
-echo "== tapping the path on the border browses the working dir =="
-# range=control|2 on the border's path opens the folder browser at the pane's
-# cwd -- the same popup the path picker descends into, entered from the top.
+echo "== tapping the path on the border opens the pane's folder in the editor =="
+# range=control|2 on the border's path replays the cockpit table's o, which opens
+# the pane's cwd in the editor (#228).
 if need_tmux "directory click"; then :; else
 DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"
 "$TMUX_REAL" -L "$DB" -f /dev/null new-session -d -s t -x 90 -y 24 -c "$DIR" >/dev/null 2>&1
@@ -3564,6 +3566,22 @@ case "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit 2>/dev/null | awk '$4=="o"')"
     *) bad "which opens the pane's folder in the editor" "a run-shell running --folder" \
          "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit | awk '$4=="o"')" ;;
 esac
+# The key itself, through a real client: an attached client in the outer
+# server's pane gets the cockpit table and an o; a shim editor logs its argv.
+DBD=$(mktmpd); DBLOG="$DBD/argv"; : > "$DBLOG"
+printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$DBLOG" > "$DBD/ed"
+chmod +x "$DBD/ed"
+"$TMUX_REAL" -L "$DB" set -g @cockpit_editor "$DBD/ed" >/dev/null 2>&1
+DBO="cockpit-dbo-$$"; SOCKS="$SOCKS $DBO"
+"$TMUX_REAL" -L "$DBO" -f /dev/null new-session -d -s o -x 90 -y 24 -c "$DBD" \
+    "$TMUX_REAL -L $DB attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}'
+DBC=$("$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}' | head -1)
+"$TMUX_REAL" -L "$DB" switch-client -c "$DBC" -T cockpit >/dev/null 2>&1
+"$TMUX_REAL" -L "$DBO" send-keys -t o o
+until_file "$DBLOG" '?*'
+is "pressing o in the cockpit table hands the pane's folder to the editor" "$DIR" "$(cat "$DBLOG")"
+"$TMUX_REAL" -L "$DBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
 fi
 
@@ -3845,7 +3863,7 @@ case "$(os_run 'f.txt g.txt')" in
     *POPUP*) ok "two matches ask" ;;
     *) bad "two matches ask" "the picker popup" "$(os_run 'f.txt g.txt')" ;;
 esac
-# The folder browser's keys (--folder, bound to prefix o) open the pane's folder.
+# --folder (the cockpit table's o, the menu's Browse folder) opens the pane's folder.
 : > "$OST/log"
 env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" OPEN_EDITOR=nvim \
     bash "$DIR/scripts/tmux-open-path" --folder %1 >/dev/null 2>&1

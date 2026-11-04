@@ -27,10 +27,10 @@ To copy something no key already copies, hold **shift** and drag. A tmux popup
 has no copy mode, so in any of these popups the terminal's own selection is the
 one that works.
 
-**The folder keys open the pane's folder.** `prefix + o`, a tap on the path in
-the status bar and the menu's Browse folder row open the pane's current
-folder in the editor (VS Code opens it as a workspace). There is no folder
-browser to descend into; click a path in the output instead.
+**The folder keys open the pane's folder.** The menu's `o` row (Browse folder)
+and a tap on the path in the status bar open the pane's current folder in the
+editor (VS Code opens it as a workspace). There is no folder browser to descend
+into; click a path in the output instead.
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as
 `src/app.ts:31` in the list, not a bare filename.

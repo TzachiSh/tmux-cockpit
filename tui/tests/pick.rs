@@ -779,3 +779,21 @@ fn the_footer_names_alt_c_only_when_copy_is_on() {
     assert!(draw(80, 24, &on).contains("alt-c"));
     assert!(!draw(80, 24, &picker("p", "", None)).contains("alt-c"));
 }
+
+#[test]
+fn the_help_lists_alt_c_only_when_copy_is_on() {
+    let g = cockpit_tui::theme::Glyphs::unicode();
+    let has = |c| pick::help_rows_for(&g, c).iter().any(|(k, _)| k == "alt-c");
+    assert!(has(true));
+    assert!(!has(false));
+    assert_eq!(pick::help_rows_for(&g, true).len(), pick::help_rows(&g).len() + 1);
+    let on = Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    );
+    assert_eq!(on.help_len, pick::help_rows(&g).len() + 1);
+}

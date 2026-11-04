@@ -250,7 +250,7 @@ impl Pick {
             header: clean(&o.header.replace('\n', " ")),
             preview: preview_text.map(|t| clean_lines(&t)),
             copy: o.copy,
-            help_len: help_rows(&Glyphs::unicode()).len(),
+            help_len: help_rows_for(&Glyphs::unicode(), o.copy).len(),
             entry: None,
             list_pct: 40,
         }
@@ -396,8 +396,13 @@ impl Pick {
 
 /// Section heading rows have an empty key (see `chrome::help`).
 pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
+    help_rows_for(g, false)
+}
+
+/// `copy`: the picker was started with `--copy`, so alt-c is a key.
+pub fn help_rows_for(g: &Glyphs, copy: bool) -> Vec<(String, String)> {
     let r = |k: &str, v: &str| (k.to_string(), v.to_string());
-    vec![
+    let mut rows = vec![
         r("", "type"),
         r("any key", "adds to the filter, j k q ? included"),
         r("⌫  ^U", "delete a letter / clear the filter"),
@@ -412,7 +417,11 @@ pub fn help_rows(g: &Glyphs) -> Vec<(String, String)> {
         r("", "leave"),
         r("esc  ^C", "cancel, print nothing"),
         r("F1", "this help"),
-    ]
+    ];
+    if copy {
+        rows.insert(11, r("alt-c", "copy: print this row's key, exit 10"));
+    }
+    rows
 }
 
 /// ↵ and esc come first: at the narrowest popup they are all that fits, and
@@ -473,7 +482,7 @@ pub fn render_with(f: &mut Frame, area: Rect, p: &Pick, th: &Theme, look: &Look)
     if let Some(top) = p.help {
         match &look.help {
             Some(h) => chrome::help(f, area, th, h, top),
-            None => chrome::help(f, area, th, &help_rows(&th.g), top),
+            None => chrome::help(f, area, th, &help_rows_for(&th.g, p.copy), top),
         };
         return;
     }
