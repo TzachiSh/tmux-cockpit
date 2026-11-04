@@ -13333,6 +13333,7 @@ if need_tmux "folder browser"; then :; else
 FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
 FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"
+FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
 printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
 for e in ed-cockpit ed-visual ed-editor nvim; do
     printf '#!/bin/sh\nprintf "%%s" "$0" >> "%s/ed.log"; printf " [%%s]" "$@" >> "%s/ed.log"; echo >> "%s/ed.log"\n' "$FB" "$FB" "$FB" > "$FB/bin/$e"
@@ -13363,10 +13364,10 @@ fb() {
     local touch=$1 ans=$2 rc=${3:-0}; shift 3
     "$TMUX_REAL" -L "$FBS" set -g @cockpit_touch "$touch"
     "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
-    printf "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
+    printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
     : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"
-    env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
-        "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
+    ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
+        "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
 }
 fbn() { grep -c "^$1 " "$FB/calls"; }          # calls of one tmux subcommand
 fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done; }
@@ -13436,7 +13437,7 @@ is "esc: nothing runs and nothing is said" "0|0|0|0" \
 
 # the printed line is untrusted: each of these must open and copy nothing
 for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
-           "relative path|open a.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
+           "relative path|open proj/sub/n.md" "newline in the name|open $FBD/two\\nlines.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
            "missing past dotdot|open $FBD/../nope"; do
     for t in on off; do
         fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
