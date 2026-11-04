@@ -2,7 +2,7 @@
 "| type: command   model: auto                                                  |"
 "| fix the flaky test|                                                          |"
 "|                                                                              |"
-"| -> haiku . short request - the fast model is enough                          |"
+"| -> sonnet . rough words into a prompt - sonnet asks and steers better        |"
 "|                                                                              |"
 "|                                                                              |"
 "|                                                                              |"

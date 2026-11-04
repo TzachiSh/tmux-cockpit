@@ -2,7 +2,7 @@
 "│ type: auto   model: auto                                                     │"
 "│ ▏type what you want…                                                         │"
 "│                                                                              │"
-"│ → haiku · short request - the fast model is enough                           │"
+"│ → sonnet · rough words into a prompt - sonnet asks and steers better         │"
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"

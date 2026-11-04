@@ -20,5 +20,5 @@
 "│ word word word word word word word word word word word word word word word word word word word word word word word   │"
 "│ word word word word word word word word word word word word ▏                                                        │"
 "│                                                                                                                      │"
-"│ → sonnet · long, multi-step request                                                                                  │"
+"│ → sonnet · rough words into a prompt - sonnet asks and steers better                                                 │"
 "╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  ^N model  ^Z hide  F1 keys  esc home ─────────────────────────╯"
