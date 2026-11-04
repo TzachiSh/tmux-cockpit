@@ -111,27 +111,22 @@ if [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
 fi
 
 # --- keys ---------------------------------------------------------------------
-# A key the plugin lets go of gets its stock 3.8 binding back, or is unbound if
-# stock has none.
+# A key the plugin lets go of gets its stock binding back, or is unbound if stock
+# has none (#258). Stock is read from a throwaway server started with no config on
+# a private socket, so every key works (Space, ?, digits, punctuation, not only the
+# letters a table listed) and a reload cannot mistake an earlier load's binding for
+# stock. The server has no session, so it exits after the one call.
 give_back() {
-    local k=$1
-    case "$k" in
-        C) set -- customize-mode -Z ;;          D) set -- choose-client -Z ;;
-        E) set -- select-layout -E ;;           L) set -- switch-client -l ;;
-        M) set -- select-pane -M ;;             c) set -- new-window ;;
-        T) set -- command-prompt -I '#T' 'select-pane -T "%%"' ;;
-        d) set -- detach-client ;;              f) set -- command-prompt 'find-window -Z "%%"' ;;
-        g) set -- switch-client -T move ;;      i) set -- display-message ;;
-        l) set -- last-window ;;                m) set -- select-pane -m ;;
-        n) set -- next-window ;;                o) set -- select-pane -t :.+ ;;
-        p) set -- previous-window ;;            q) set -- display-panes ;;
-        r) set -- refresh-client ;;             s) set -- choose-tree -Zs ;;
-        t) set -- clock-mode ;;                 w) set -- choose-tree -Zw ;;
-        x) set -- confirm-before -p 'kill-pane #P? (y/n)' kill-pane ;;
-        z) set -- resize-pane -Z ;;
-        *) set -- ;;
-    esac
-    if [ "$#" -gt 0 ]; then tmux bind-key -T prefix "$k" "$@"
+    local k=$1 d r="" note="" cmd=""
+    # tmux reads a lone ; argument as a command separator.
+    [ "$k" = ';' ] && k='\;'
+    if d=$(mktemp -d 2>/dev/null); then
+        IFS=$'\037' read -r r note cmd < <(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
+            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>/dev/null)
+        rm -rf -- "$d"
+    fi
+    [ "$r" = 1 ] && r=-r || r=""
+    if [ -n "$cmd" ]; then tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
     else tmux unbind-key -T prefix "$k"; fi
 }
 

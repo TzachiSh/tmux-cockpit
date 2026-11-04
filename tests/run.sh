@@ -12725,5 +12725,39 @@ is "the newest one does" "2" "$(dbt show-option -gqv @cockpit_fleet_ne)"
 dbt kill-server >/dev/null 2>&1
 fi
 
+echo "== a key the plugin lets go of gets its stock binding back, letter or not (#258) =="
+# give_back knew stock bindings for prefix letters only, so moving the menu off
+# Space, ?, a digit or " left that key unbound.
+if need_tmux "non-letter give-back"; then :; else
+GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
+gbt() { "$TMUX_REAL" -L "$GB" "$@"; }
+# The reference: a configless server's own prefix table, with notes.
+gbstock() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -N -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
+gbline() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
+gbt -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
+gbload() { gbt set -g "$1" "$2" >/dev/null 2>&1; gbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
+for gbk in Space '?' 1 '"' '$' ','; do
+    gbload @cockpit_menu_key "$gbk"
+    case "$(gbt list-keys -T prefix -- "$gbk")" in *display-menu*) ok "the menu takes [$gbk]" ;;
+        *) bad "the menu takes [$gbk]" "display-menu" "$(gbt list-keys -T prefix -- "$gbk")" ;; esac
+    # A second load on the same key: the stock given back later is still tmux's, not this binding.
+    gbload @cockpit_menu_key "$gbk"
+    gbload @cockpit_menu_key a
+    is "moving the menu off [$gbk] gives its stock binding back" "$(gbline "$gbk")" "$(gbt list-keys -T prefix -- "$gbk")"
+    is "with its note" "$(gbstock "$gbk")" "$(gbt list-keys -N -T prefix -- "$gbk")"
+done
+# A repeatable stock key keeps its -r; the panel key gives back the same way.
+gbload @cockpit_panel_key Up
+case "$(gbt list-keys -T prefix Up)" in *cockpit-panel*) ok "the panel takes Up" ;;
+    *) bad "the panel takes Up" "cockpit-panel" "$(gbt list-keys -T prefix Up)" ;; esac
+gbload @cockpit_panel_key off
+is "turning the panel off gives Up back, repeat flag and all" "$(gbline Up)" "$(gbt list-keys -T prefix Up)"
+# A key stock leaves unbound is unbound again.
+gbload @cockpit_menu_key F5
+gbload @cockpit_menu_key a
+is "a key stock does not bind is unbound again" "" "$(gbt list-keys -T prefix F5 2>/dev/null)"
+gbt kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
