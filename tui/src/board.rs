@@ -2108,13 +2108,7 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'stat
     if br.is_empty() {
         return out;
     }
-    // ascii's mark is `@`, which a detached HEAD's `@sha` already starts with
-    let mark = match (g.ascii, br.starts_with('@')) {
-        (false, _) => "⑂",
-        (true, false) => "@",
-        (true, true) => "",
-    };
-    let cell = format!("{mark}{}", g.trunc(br, 16));
+    let cell = format!("{}{}", branch_mark(g, br), g.trunc(br, 16));
     let wt = facts::worktree(&p.loc);
     let cell = if wt.is_empty() {
         cell
@@ -2140,6 +2134,16 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'stat
         out.push(Span::styled(format!(" {cell}"), Style::new().fg(th.label)));
     }
     out
+}
+
+/// The mark before a branch name: ascii's is `@`, which a detached HEAD's
+/// `@sha` already starts with.
+fn branch_mark(g: &Glyphs, br: &str) -> &'static str {
+    match (g.ascii, br.starts_with('@')) {
+        (false, _) => "⑂",
+        (true, false) => "@",
+        (true, true) => "",
+    }
 }
 
 /// The window index column: as wide as the widest index in the fleet.
@@ -3131,13 +3135,30 @@ fn transient(e: &std::io::Error) -> bool {
 }
 
 /// What the worker needs from the key loop to capture the visible tiles.
-#[derive(Clone, Copy)]
-struct Want {
-    area: Rect,
-    sel: usize,
-    top: usize,
+#[derive(Clone, Copy, Debug)]
+pub struct Want {
+    pub area: Rect,
+    pub sel: usize,
+    pub top: usize,
     /// the list draws no preview, so it needs no capture
-    tiles: bool,
+    pub tiles: bool,
+}
+
+/// The captures one fetch makes, `(pane id, rows)`, for the panes `ps` the
+/// read gave (`ok`: the read worked). Each is a fork, so only what is on
+/// screen: the visible tiles. A server that did not answer list-panes fails
+/// every capture too, and the last ones stay.
+pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
+    let (_, top, g) = fit(want.area, ps.len(), want.sel, want.top);
+    let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
+    let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
+    let ord = order(ps);
+    let shown = if ok && want.tiles {
+        top * g.cols..ps.len().min((top + g.rows_shown) * g.cols)
+    } else {
+        0..0
+    };
+    shown.map(|k| (ps[ord[k]].id.clone(), rows)).collect()
 }
 
 struct Snapshot {
@@ -3164,21 +3185,11 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         if let Some(got) = got {
             (panes, sessions) = got;
         }
-        let (_, top, g) = fit(want.area, panes.len(), want.sel, want.top);
-        let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
-        let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
-        let ord = order(&panes);
-        // visible tiles only: each capture is a fork. A server that did not
-        // answer list-panes fails every capture too, and the last ones stay
-        let shown = if ok && want.tiles {
-            top * g.cols..panes.len().min((top + g.rows_shown) * g.cols)
-        } else {
-            0..0
-        };
-        let pvs = shown
-            .map(|k| {
-                let id = &panes[ord[k]].id;
-                (id.clone(), preview(id, rows))
+        let pvs = captures(&panes, ok, &want)
+            .into_iter()
+            .map(|(id, rows)| {
+                let pv = preview(&id, rows);
+                (id, pv)
             })
             .collect();
         let snap = Snapshot {
