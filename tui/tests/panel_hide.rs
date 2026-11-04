@@ -382,3 +382,15 @@ fn a_hidden_correction_at_zero_questions_comes_back() {
     assert_eq!(r.rounds, r.max, "at the budget, not past it");
     round(&mut a, "zero");
 }
+
+#[test]
+fn a_correction_box_on_a_fix_run_is_refused() {
+    let mut a = replied("fix it", ASSUMED);
+    key(&mut a, KeyCode::Char('a'));
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    let run = "\"flow\":\"write\",\"draft\":\"fix it\",\"out\":\"auto\"";
+    assert!(good.contains(run), "{good}");
+    let fix = good.replace(run, "\"flow\":\"fix\",\"draft\":\"fix it\",\"out\":null");
+    assert!(refused("fixflow", &fix).contains("not a write"), "{fix}");
+}

@@ -263,23 +263,18 @@ fn view_out(v: &View) -> Option<Value> {
         View::Home { sel } => json!({"v": "home", "sel": sel}),
         View::Compose => json!({"v": "compose"}),
         View::Question { sel, .. } => json!({"v": "question", "sel": sel}),
-        View::Input {
-            kind: InputKind::Correct(i),
-            text,
-            cur,
-            back,
-        } => {
-            let back = view_out(back)?;
-            json!({"v": "input", "kind": "correct", "which": i, "text": text, "cur": cur, "back": back})
-        }
         View::Input { kind, text, cur, back } => {
-            let kind = match kind {
+            let name = match kind {
                 InputKind::Other => "other",
                 InputKind::Explain => "explain",
                 InputKind::FollowUp => "followup",
-                InputKind::Correct(_) => unreachable!("written above"),
+                InputKind::Correct(_) => "correct",
             };
-            json!({"v": "input", "kind": kind, "text": text, "cur": cur, "back": view_out(back)?})
+            let mut j = json!({"v": "input", "kind": name, "text": text, "cur": cur, "back": view_out(back)?});
+            if let InputKind::Correct(i) = kind {
+                j["which"] = json!(i);
+            }
+            j
         }
         View::Result { label, text, scroll } => json!({"v": "result", "label": label, "text": text, "scroll": scroll}),
         View::Steps { label, items, sel, done } => {
@@ -607,6 +602,16 @@ pub fn read_hidden(path: &Path, pane: &str, now: u64) -> Result<Hidden, String> 
         (View::Question { sel, .. }, Some(r)) if *sel < r.options.len().max(1) => {}
         (View::Answer { .. }, Some(_)) => {}
         (View::Question { .. } | View::Answer { .. }, _) => return Err("a view with no run to show".into()),
+        // a correction is one more round of a write
+        (
+            View::Input {
+                kind: InputKind::Correct(_),
+                ..
+            },
+            r,
+        ) if !r.as_ref().is_some_and(|r| matches!(r.flow, Flow::Write { .. })) => {
+            return Err("a correction on a run that is not a write".into());
+        }
         _ => {}
     }
     Ok(Hidden {

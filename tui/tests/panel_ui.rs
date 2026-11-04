@@ -3451,6 +3451,24 @@ fn assumed_finds_the_lines_indented_or_not_and_no_mention_mid_line() {
 }
 
 #[test]
+fn assumed_takes_only_the_closing_run_not_a_line_mid_prompt() {
+    let t = "Check the log:\n```\nAssumed: cached (old)\n```\nThen fix it.\nAssumed: a (b)\n\n";
+    assert_eq!(cockpit_tui::panel::app::assumed(t), ["Assumed: a (b)"]);
+    let mid = "Check the log:\n```\nAssumed: cached (old)\n```\nThen fix it.";
+    assert!(cockpit_tui::panel::app::assumed(mid).is_empty(), "no closing run, none");
+}
+
+#[test]
+fn a_mid_prompt_assumed_line_offers_no_correction() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix it");
+    a.reply(Ok("<prompt>Look at:\n```\nAssumed: cached (old)\n```\nFix it.</prompt>".into()));
+    let before = a.view.clone();
+    ch(&mut a, 'a');
+    assert_eq!(a.view, before);
+}
+
+#[test]
 fn a_correction_goes_in_as_a_turn_and_takes_a_question() {
     let mut a = assumed_result();
     ch(&mut a, 'a');
@@ -3637,6 +3655,11 @@ fn a_write_asking_again_after_the_retry_shows_the_error() {
     a.reply(Ok(q(5)));
     let line = "no questions left, and Claude still asks: Q5?";
     assert!(matches!(&a.view, View::Error { line: l, .. } if l == line), "{:?}", a.view);
+    let View::Error { hint: Some(h), .. } = &a.view else { panic!() };
+    assert!(
+        !h.contains("draft"),
+        "esc goes to the view the call left, not always the draft: {h}"
+    );
     key(&mut a, KeyCode::Esc);
     assert_eq!(a.view, View::Question { sel: 0, scroll: None });
     assert_eq!(

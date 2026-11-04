@@ -174,6 +174,14 @@ pub struct Resume {
     pub verb: &'static str,
 }
 
+/// What a call carried when its reply came: the turn in flight, and the rounds
+/// to give back if it is dropped.
+#[derive(Clone, Copy)]
+struct Carried {
+    pending: bool,
+    from: Option<usize>,
+}
+
 /// One request's conversation: the question rounds and, for Explain, the log.
 pub struct Run {
     pub flow: Flow,
@@ -950,7 +958,10 @@ impl App {
         };
         let Some(r) = self.run.as_mut() else { return };
         // what the call carried, for a write that asks with no questions left
-        let carried = (std::mem::take(&mut r.pending_turn), r.guessed_from.take());
+        let carried = Carried {
+            pending: std::mem::take(&mut r.pending_turn),
+            from: r.guessed_from.take(),
+        };
         let (rounds, max) = (r.rounds, r.max);
         let mut cut = None;
         let reply = match &r.flow {
@@ -1023,7 +1034,7 @@ impl App {
     /// A write that asks with no questions left is told once to write with its
     /// assumptions stated. Asked again, or a fix, the error; esc then drops what
     /// the call carried.
-    fn write_now(&mut self, text: String, (pending, from): (bool, Option<usize>)) {
+    fn write_now(&mut self, text: String, Carried { pending, from }: Carried) {
         let Some(r) = self.run.as_mut() else { return };
         (r.pending_turn, r.guessed_from) = (pending, from);
         let write = matches!(r.flow, Flow::Write { .. });
@@ -1031,10 +1042,11 @@ impl App {
         if !write || last.as_ref().is_some_and(|t| t.text.ends_with(WRITE_NOW)) {
             self.view = View::Error {
                 line: format!("no questions left, and Claude still asks: {text}"),
-                hint: Some("esc goes back: add what it asks to the draft and write again".into()),
+                hint: Some("esc goes back; put what it asks in your request and write again".into()),
             };
             return;
         }
+        eprintln!("cockpit-tui: a write asked with no questions left, retrying once");
         // into the turn in flight, so a cancel drops the answer with it
         match last {
             Some(t) => t.text = format!("{}\n\n{WRITE_NOW}", t.text),
@@ -1468,9 +1480,18 @@ impl App {
     }
 }
 
-/// The result's `Assumed: <what> (<why>)` lines, trimmed, in order.
+/// The `Assumed: <what> (<why>)` lines the result ends with, trimmed, in order.
+/// Only the closing run: one inside the prompt, a quoted log say, is the prompt's.
 pub fn assumed(text: &str) -> Vec<&str> {
-    text.lines().map(str::trim).filter(|l| l.starts_with("Assumed:")).collect()
+    let mut all: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .rev()
+        .skip_while(|l| l.is_empty())
+        .take_while(|l| l.starts_with("Assumed:"))
+        .collect();
+    all.reverse();
+    all
 }
 
 /// The shared text-box keys, at the cursor `cur`. `multi` makes Enter a
