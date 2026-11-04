@@ -95,10 +95,8 @@ pub fn session_dir(id: &str, root: &str) -> PathBuf {
 /// since-review, branch and uncommitted, starting at `mode`. `br` and `head`
 /// are the branch and its sha when the caller already has them.
 ///
-/// One quirk is kept on purpose: the shell reads the ref rows with a tab IFS,
-/// which folds the empty fields, so origin/HEAD's target never lands in its
-/// own variable and that fallback never fires there. The same here, or the
-/// screen would name a base `prefix r` does not diff against.
+/// The upstream, else origin/HEAD's target, else main, else master: the shell
+/// and this agree, so the screen names the base `prefix r` diffs against.
 pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
     let mode = if mode.is_empty() { "auto" } else { mode };
     let mut br = br.to_string();
@@ -116,20 +114,23 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
         None,
         &[
             "for-each-ref",
-            "--format=%(refname)%09%(objectname)%09%(upstream:short)%09%(upstream:track)",
+            "--format=%(refname)%09%(objectname)%09%(upstream:short)%09%(upstream:track)%09%(symref:short)",
             "--",
             &rname,
             &bref,
+            "refs/remotes/origin/HEAD",
             "refs/heads/main",
             "refs/heads/master",
         ],
     );
     let (mut ckpt, mut bups, mut btrack) = (String::new(), String::new(), String::new());
     let (mut mainsha, mut mastersha) = (String::new(), String::new());
+    let (mut ohead, mut osha) = (String::new(), String::new());
     for l in rows.lines() {
         let mut f = l.split('\t');
         let (name, sha) = (f.next().unwrap_or(""), f.next().unwrap_or("").to_string());
         let (ups, track) = (f.next().unwrap_or("").to_string(), f.next().unwrap_or("").to_string());
+        let sym = f.next().unwrap_or("").to_string();
         if name == rname {
             ckpt = sha;
         } else if name == bref {
@@ -137,6 +138,8 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
                 head = sha;
             }
             (bups, btrack) = (ups, track);
+        } else if name == "refs/remotes/origin/HEAD" {
+            (ohead, osha) = (sym, sha);
         } else if name == "refs/heads/main" {
             mainsha = sha;
         } else if name == "refs/heads/master" {
@@ -155,6 +158,8 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
         let (up, upsha) = if !bups.is_empty() && btrack != "[gone]" {
             let s = if btrack.contains("ahead") { String::new() } else { head.clone() };
             (bups.clone(), s)
+        } else if !ohead.is_empty() {
+            (ohead, osha)
         } else if !mainsha.is_empty() {
             ("main".to_string(), mainsha)
         } else if !mastersha.is_empty() {

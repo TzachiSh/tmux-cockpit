@@ -2,6 +2,7 @@
 //! live-preview tile per agent behind `v`. `render` is pure over `&[Pane]` (no
 //! tmux, no clock); `run` is the only impure entry.
 use crate::data::fleet as facts;
+use crate::data::subagents::{Sub, SubKind, SubState};
 use crate::data::{Pane, State, fmt_dur, hash_rows, list_fleet, log, preview};
 use crate::panel::view::wrap;
 use crate::push::Push;
@@ -116,9 +117,10 @@ fn pane_num(id: &str) -> u64 {
 
 /// `(state rank, pane id)`. Never a clock: rank changes are rare and
 /// event-driven, ages tick every second and would reorder tiles as you read.
+/// #301: an ended agent sorts after every live one, whatever state it was left in.
 pub fn order(ps: &[Pane]) -> Vec<usize> {
     let mut o: Vec<usize> = (0..ps.len()).collect();
-    o.sort_by_key(|&i| (ps[i].state, pane_num(&ps[i].id)));
+    o.sort_by_key(|&i| (ps[i].ended, ps[i].state, pane_num(&ps[i].id)));
     o
 }
 
@@ -214,8 +216,8 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
 
     header(f, head, v, &g, ord.len(), None);
     tiles(f, body, v, &ord, &g);
-    let needs = v.panes[ord[v.sel.min(ord.len() - 1)]].state == State::NeedsInput;
-    footer(f, foot, v, Focus::Agent(needs));
+    let p = &v.panes[ord[v.sel.min(ord.len() - 1)]];
+    footer(f, foot, v, Focus::Agent(needs(p)), Some(p));
 }
 
 /// `sessions` is the list's: it adds the session and error counts (6.1).
@@ -224,8 +226,8 @@ fn grid_board(f: &mut Frame, area: Rect, v: &View) {
 /// age goes last, as it is the one that says the rest may be wrong.
 fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Option<usize>) {
     let th = v.th;
-    let needs = v.panes.iter().filter(|p| p.state == State::NeedsInput).count();
-    let errors = v.panes.iter().filter(|p| p.state == State::Error).count();
+    let needs = v.panes.iter().filter(|p| self::needs(p)).count();
+    let errors = v.panes.iter().filter(|p| p.state == State::Error && !p.ended).count();
     let d = th.g.dot;
     let plural = |k: usize| if k == 1 { "" } else { "s" };
     let part = |rank: u8, t: String, c| (rank, Span::styled(t, Style::new().fg(c)));
@@ -274,7 +276,8 @@ fn header(f: &mut Frame, area: Rect, v: &View, g: &Grid, n: usize, sessions: Opt
     f.render_widget(Line::from(Span::styled(right, Style::new().fg(th.meta))).right_aligned(), area);
 }
 
-fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
+/// `p` is the selected agent, which decides the extras offered (#301).
+fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus, p: Option<&Pane>) {
     let th = v.th;
     // the confirm owns the keys, so its keys are the bar, over any note (D19)
     if let Some(c) = v.confirm {
@@ -285,7 +288,16 @@ fn footer(f: &mut Frame, area: Rect, v: &View, focus: Focus) {
         f.render_widget(note_line(th, n, area.width as usize), area);
         return;
     }
-    let mut ks = hints(&th.g, v.list.is_some(), focus);
+    let live = Pane::default();
+    let mut ks = hints_on(&th.g, v.list.is_some(), focus, p.unwrap_or(&live));
+    // #313: `s` where the agent's tree gets a line, its verb the tree's state, after `a`
+    if let (Some(nav), Focus::Agent(_), Some(p)) = (v.list, focus, p)
+        && nav.shows(v.panes, &p.id)
+    {
+        let verb = if nav.trees.contains(&p.id) { "hide" } else { "tree" };
+        let at = ks.iter().position(|(k, _)| k == "a").map_or(0, |k| k + 1);
+        ks.insert(at, ("s".into(), verb.into()));
+    }
     // a kept filter: esc clears it before it closes anything (7.1)
     if v.list.is_some_and(|n| n.filtering()) {
         let at = ks.iter().position(|(k, _)| k == "?").unwrap_or(ks.len());
@@ -329,6 +341,12 @@ pub enum Focus {
 /// keys (D19): `a` answers a ▲ and asks anything else (D14), and a header
 /// lists the fold keys instead. Only keys the dispatch takes there.
 pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
+    hints_on(g, list, focus, &Pane::default())
+}
+
+/// [`hints`] on the agent `p`: only the extras it is offered (#301). `hints`
+/// is this on a live agent, which `o` is not offered on.
+pub fn hints_on(g: &Glyphs, list: bool, focus: Focus, p: &Pane) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = KEYS
         .iter()
         .filter(|k| k.on.shown(list))
@@ -357,7 +375,8 @@ pub fn hints(g: &Glyphs, list: bool, focus: Focus) -> Vec<(String, String)> {
     // #228's actions need an agent; they go last before `?`, so the cut takes them first
     if let Focus::Agent(_) = focus {
         let at = out.iter().position(|(k, _)| k == "?").unwrap_or(out.len());
-        out.splice(at..at, EXTRAS.iter().map(|e| (e.key.to_string(), e.label.to_string())));
+        let on = EXTRAS.iter().filter(|e| (e.offered)(p));
+        out.splice(at..at, on.map(|e| (e.key.to_string(), e.label.to_string())));
     }
     out
 }
@@ -409,9 +428,22 @@ fn tiles(f: &mut Frame, area: Rect, v: &View, ord: &[usize], g: &Grid) {
     }
 }
 
-fn dimmed(state: State) -> bool {
-    state >= State::Done
+fn dimmed(p: &Pane) -> bool {
+    p.ended || p.state >= State::Done
 }
+
+/// #301: an ended agent waits on nobody, whatever @panestate it was left with.
+fn needs(p: &Pane) -> bool {
+    p.state == State::NeedsInput && !p.ended
+}
+
+/// The row's state glyph: an ended agent has its own, never the `▲` it died on.
+fn glyph(th: &Theme, p: &Pane) -> (&'static str, ratatui::style::Color) {
+    if p.ended { (th.g.ended, th.meta) } else { th.glyph(p.state) }
+}
+
+/// The word an ended agent shows where the doing line goes.
+const ENDED: &str = "ended";
 
 #[allow(clippy::too_many_arguments)]
 fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>>, focused: bool, active: bool, full: bool, th: &Theme) {
@@ -421,13 +453,13 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         return;
     }
     let g = &th.g;
-    let needs = p.state == State::NeedsInput;
-    let (gl, gl_c) = th.glyph(p.state);
+    let needs = needs(p);
+    let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
 
     let border_c = if needs {
         th.needs
-    } else if p.state == State::Error {
+    } else if p.state == State::Error && !p.ended {
         th.error
     } else if focused {
         th.accent
@@ -443,7 +475,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     let sep = format!(" {} ", g.dot);
     let title_w = inner_w.saturating_sub(fixed + wher.width() + sep.width() + 1);
 
-    let title_c = if dimmed(p.state) { th.meta } else { th.value };
+    let title_c = if dimmed(p) { th.meta } else { th.value };
     // the selection is ▎ plus reverse, so it survives NO_COLOR (D17)
     let num_st = if focused {
         Style::new().fg(th.accent).add_modifier(Modifier::REVERSED)
@@ -495,7 +527,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
         Some(None) => Paragraph::new(Line::from(Span::styled("capture failed", Style::new().fg(th.error)))),
         None => return,
     };
-    if dimmed(p.state) {
+    if dimmed(p) {
         // expressed twice: a terminal that ignores DIM still gets the meta title
         para = para.style(Style::new().add_modifier(Modifier::DIM));
     }
@@ -530,16 +562,15 @@ fn head_lines(p: &Pane, iw: usize, rows: usize, needs: bool, th: &Theme) -> Vec<
         }
     } else {
         // never the word "unknown": a pane with no transcript reads as a dash
-        let doing = if p.doing.is_empty() {
+        let doing = if p.ended {
+            g.trunc(ENDED, text_w)
+        } else if p.doing.is_empty() {
             g.trunc(g.dash, text_w)
         } else {
             g.trunc_middle(&p.doing, text_w)
         };
         out.push(Line::from(vec![
-            Span::styled(
-                pad(doing, text_w),
-                Style::new().fg(if dimmed(p.state) { th.meta } else { th.value }),
-            ),
+            Span::styled(pad(doing, text_w), Style::new().fg(if dimmed(p) { th.meta } else { th.value })),
             rail,
         ]));
         if rows > 1 && !p.said.is_empty() {
@@ -743,11 +774,16 @@ pub fn help_rows(g: &Glyphs, list: bool) -> Vec<(String, String)> {
         (g.running, "running"),
         (g.done, "done"),
         (g.idle, "idle"),
+        (g.ended, "ended: its agent is gone"),
         (g.review_pending, "review pending"),
         (g.review_sent, "review sent"),
     ];
     if list {
-        legend.extend([(fold_mark(g, false), "an open group"), (fold_mark(g, true), "a folded group")]);
+        legend.extend([
+            (fold_mark(g, false), "an open group"),
+            (fold_mark(g, true), "a folded group"),
+            (g.sub, "subagents running, failed; s opens the tree"),
+        ]);
     }
     legend.extend([(g.active, "the selection"), (pane_mark(g), "tmux's active pane")]);
     out.extend(legend.into_iter().map(|(k, v)| (k.to_string(), v.to_string())));
@@ -788,6 +824,8 @@ pub enum Act {
     Find,
     /// one of [`EXTRAS`], by its key
     Extra(char),
+    /// `s`: open or close the selected agent's subagent tree, or a session's (#313)
+    Tree,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1014,6 +1052,15 @@ pub const KEYS: &[Key] = &[
         on: On::List,
     },
     Key {
+        keys: "s",
+        desc: "toggle its subagent tree; on a header, all",
+        grp: Grp::Fold,
+        acts: &[Act::Tree],
+        hint: "",
+        head: "",
+        on: On::List,
+    },
+    Key {
         keys: "n p",
         desc: "next / previous session",
         grp: Grp::Move,
@@ -1089,6 +1136,7 @@ pub fn action(k: KeyEvent, list: bool) -> Option<Act> {
         C::Char('n') if list => Act::NextSess,
         C::Char('p') if list => Act::PrevSess,
         C::Char('/') if list => Act::Find,
+        C::Char('s') if list => Act::Tree,
         C::Char('h') | C::Left => Act::Left,
         C::Char('l') | C::Right => Act::Right,
         C::Char('k') | C::Up => Act::Up,
@@ -1131,10 +1179,7 @@ pub fn moved(a: Act, sel: usize, n: usize, g: &Grid, top: usize, ps: &[Pane], or
         Act::First => 0,
         Act::Last => last,
         Act::Tile(t) => (t.max(1) as usize - 1).min(last),
-        Act::NextNeeds => (1..=n)
-            .map(|d| (sel + d) % n)
-            .find(|&k| ps[ord[k]].state == State::NeedsInput)
-            .unwrap_or(sel),
+        Act::NextNeeds => (1..=n).map(|d| (sel + d) % n).find(|&k| needs(&ps[ord[k]])).unwrap_or(sel),
         Act::PageUp => sel.saturating_sub(g.cols * g.rows_shown),
         Act::PageDown => (sel + g.cols * g.rows_shown).min(last),
         _ => sel,
@@ -1192,9 +1237,10 @@ fn window(p: &Pane) -> &str {
     p.wher.rsplit_once(':').map_or("", |(_, w)| w)
 }
 
-/// `▲` and `✕`: the rows a fold never hides (D4) and the hot band (D3).
-fn urgent(s: State) -> bool {
-    matches!(s, State::NeedsInput | State::Error)
+/// `▲` and `✕`: the rows a fold never hides (D4) and the hot band (D3). An
+/// ended agent is neither, whatever it was left with (#301).
+fn urgent(p: &Pane) -> bool {
+    matches!(p.state, State::NeedsInput | State::Error) && !p.ended
 }
 
 /// D3: one group per session. Sessions holding a `▲` or `✕` first, then the
@@ -1209,7 +1255,7 @@ pub fn groups(ps: &[Pane]) -> Vec<(&str, Vec<usize>)> {
             None => gs.push((s, vec![i])),
         }
     }
-    gs.sort_by_key(|(n, v)| (!v.iter().any(|&i| urgent(ps[i].state)), *n));
+    gs.sort_by_key(|(n, v)| (!v.iter().any(|&i| urgent(&ps[i])), *n));
     gs
 }
 
@@ -1224,6 +1270,188 @@ pub enum Row {
     Head(String),
     /// an index into the panes
     Agent(usize),
+    /// #313: a subagent line under agent `.0`, `.1` indexing its `subs`
+    Sub(usize, usize),
+    /// the `✓ N done` line: agent `.0`'s `.1` done subagents past [`SUB_FOLD`]
+    Done(usize, usize),
+    /// the `+N more` line: `.1` of agent `.0`'s subagents on no line
+    More(usize, usize),
+}
+
+impl Row {
+    /// A subagent tree's line, which no key selects (#313).
+    pub fn tree(&self) -> bool {
+        matches!(self, Row::Sub(..) | Row::Done(..) | Row::More(..))
+    }
+}
+
+/// A done subagent this long after a read first saw it done folds into its
+/// tree's `✓ N done` line: the data has no finish time.
+pub const SUB_FOLD: u64 = 120;
+/// The most lines one agent's tree takes, its `+N more` included.
+const TREE_MAX: usize = 5;
+
+/// Where a subagent goes in its agent's tree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Place {
+    Line,
+    /// seen done for longer than [`SUB_FOLD`]: counted on the `✓ N done` line
+    Old,
+    /// first seen failed before the agent's newest prompt: an earlier turn's, on no
+    /// line and off the badge
+    Gone,
+}
+
+/// What the board has seen of the subagents across reads (#313), as one read
+/// cannot say when a subagent failed or finished, and its prompt can be out of
+/// the transcript's tail.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Seen {
+    /// unix seconds, set at each read: the subagent lines' ages and folds
+    pub now: u64,
+    /// pane id -> its newest prompt known, unix seconds
+    prompts: HashMap<String, u64>,
+    /// pane id -> sub id -> its state and when a read first saw it in that state
+    first: HashMap<String, HashMap<String, (SubState, u64)>>,
+}
+
+impl Seen {
+    pub fn at(now: u64) -> Self {
+        Self { now, ..Self::default() }
+    }
+
+    /// One read's panes. A pane's newest prompt is the newest any read gave:
+    /// `asked_since` is `None` once the prompt is out of the transcript's tail.
+    /// A subagent's state is stamped when a read first sees it in that state; on
+    /// the first read of its pane, an already done or failed one is stamped old
+    /// (0) unless it started after the newest prompt. Gone panes are forgotten.
+    pub fn observe(&mut self, ps: &[Pane]) {
+        for p in ps {
+            if let Some(q) = self.prompt(p) {
+                self.prompts.insert(p.id.clone(), q);
+            }
+            let fresh = !self.first.contains_key(&p.id);
+            let stamps: Vec<(String, (SubState, u64))> = p
+                .subs
+                .iter()
+                .filter(|s| self.stamp(p, s).is_none())
+                .map(|s| (s.id.clone(), (s.state, if fresh { self.unknown(p, s) } else { self.now })))
+                .collect();
+            let subs = self.first.entry(p.id.clone()).or_default();
+            subs.retain(|id, _| p.subs.iter().any(|s| s.id == *id));
+            subs.extend(stamps);
+        }
+        self.first.retain(|id, _| ps.iter().any(|p| p.id == *id));
+        self.prompts.retain(|id, _| ps.iter().any(|p| p.id == *id));
+    }
+
+    /// The newest prompt known, unix seconds: this read's, or an earlier one's.
+    fn prompt(&self, p: &Pane) -> Option<u64> {
+        let this = p.asked_since.map(|a| self.now.saturating_sub(a));
+        this.into_iter().chain(self.prompts.get(&p.id).copied()).max()
+    }
+
+    /// When a read first saw `s` in its state, if one did.
+    fn stamp(&self, p: &Pane, s: &Sub) -> Option<u64> {
+        let (st, t) = self.first.get(&p.id)?.get(&s.id)?;
+        (*st == s.state).then_some(*t)
+    }
+
+    /// A first sight's stamp: now if it started after the newest prompt, else old.
+    fn unknown(&self, p: &Pane, s: &Sub) -> u64 {
+        match (s.started, self.prompt(p)) {
+            (Some(t), Some(q)) if t > q => self.now,
+            _ => 0,
+        }
+    }
+
+    /// The stamp, or what the first read would give it.
+    fn since(&self, p: &Pane, s: &Sub) -> u64 {
+        self.stamp(p, s).unwrap_or_else(|| self.unknown(p, s))
+    }
+}
+
+/// The agent's next turn is its next prompt: `asked_since` is the age of the newest
+/// human prompt, which a subagent's `<task-notification>` report-back never moves.
+/// A failure first seen before that prompt is an earlier turn's. Exhaustive, so a
+/// new state fails to compile until it is placed.
+fn place(p: &Pane, s: &Sub, seen: &Seen) -> Place {
+    match s.state {
+        SubState::Running => Place::Line,
+        SubState::Failed if seen.prompt(p).is_some_and(|q| seen.since(p, s) < q) => Place::Gone,
+        SubState::Failed => Place::Line,
+        SubState::Done if seen.now.saturating_sub(seen.since(p, s)) > SUB_FOLD => Place::Old,
+        SubState::Done => Place::Line,
+    }
+}
+
+/// The badge's `(running, failed)`: a done subagent never counts. Running is the
+/// subagents whose files say so; with no files to read (no transcript, no
+/// `subagents/` dir) it is the hook's `@cockpit_subs`, the background subagents in
+/// flight at the agent's last Stop. A failure leaves the count at the agent's next
+/// prompt, when it leaves the tree.
+pub fn sub_counts(p: &Pane, seen: &Seen) -> (usize, usize) {
+    if p.subs.is_empty() {
+        return (if p.ended { 0 } else { p.subs_n as usize }, 0);
+    }
+    let mut c = (0, 0);
+    for s in p.subs.iter().filter(|s| place(p, s, seen) != Place::Gone) {
+        match s.state {
+            // #301: a crash leaves its subagents `Running`, and none runs
+            SubState::Running if p.ended => {}
+            SubState::Running => c.0 += 1,
+            SubState::Failed => c.1 += 1,
+            SubState::Done => {}
+        }
+    }
+    c
+}
+
+/// A tree line's state glyph and role. Exhaustive, as every match on
+/// `SubState` here is: a new state fails to compile until it is placed. An
+/// ended agent's (#301) running subagents are ended too.
+fn sub_glyph(th: &Theme, p: &Pane, st: SubState) -> (&'static str, ratatui::style::Color) {
+    match st {
+        SubState::Running if p.ended => (th.g.ended, th.meta),
+        SubState::Running => (th.g.running, th.running),
+        SubState::Failed => (th.g.error, th.error),
+        SubState::Done => (th.g.done, th.done),
+    }
+}
+
+/// Agent `i`'s tree with room for every line: the `✓ N done` fold first, as its
+/// subagents are the oldest, then one line per subagent, oldest first.
+fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
+    let p = &ps[i];
+    let old = p.subs.iter().filter(|s| place(p, s, seen) == Place::Old).count();
+    let mut out = vec![];
+    if old > 0 {
+        out.push(Row::Done(i, old));
+    }
+    out.extend(
+        (0..p.subs.len())
+            .filter(|&j| place(p, &p.subs[j], seen) == Place::Line)
+            .map(|j| Row::Sub(i, j)),
+    );
+    out
+}
+
+/// `lines` in `k` rows: when they do not fit, the last says how many subagents got none.
+fn cut(mut lines: Vec<Row>, i: usize, k: usize) -> Vec<Row> {
+    if lines.len() <= k {
+        return lines;
+    }
+    let keep = k.saturating_sub(1);
+    let more = lines[keep..].iter().map(|r| if let Row::Done(_, n) = r { *n } else { 1 }).sum();
+    lines.truncate(keep);
+    lines.push(Row::More(i, more));
+    lines
+}
+
+/// The selectable row at or above `r`: a tree line gives way to its agent.
+fn lift(rows: &[Row], r: usize) -> usize {
+    let r = r.min(rows.len().saturating_sub(1));
+    (0..=r).rev().find(|&k| rows.get(k).is_some_and(|row| !row.tree())).unwrap_or(r)
 }
 
 /// The rows on the list: each header, then its agents. A folded group keeps
@@ -1233,14 +1461,15 @@ pub fn rows(ps: &[Pane], folds: &BTreeSet<String>) -> Vec<Row> {
     for (s, v) in groups(ps) {
         let shut = folds.contains(s);
         out.push(Row::Head(s.to_string()));
-        out.extend(v.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+        out.extend(v.into_iter().filter(|&i| !shut || urgent(&ps[i])).map(Row::Agent));
     }
     out
 }
 
 // ------------------------------------------------ find (D7, D21)
 
-/// The word find reads for a state, the one the legend uses.
+/// The word find reads for a state, the one the legend uses. An ended
+/// agent's is `ended` (#301), which `find_match` reads instead.
 pub fn state_word(s: State) -> &'static str {
     match s {
         State::NeedsInput => "needs",
@@ -1253,9 +1482,14 @@ pub fn state_word(s: State) -> &'static str {
 
 /// D7: every space-separated term is a substring, ignoring case, of one of
 /// the session, the window index, the window name, the title, the state word,
-/// or the message or doing line. An empty filter matches everything.
+/// the message or doing line, or a subagent's type or description (#313). An
+/// empty filter matches everything.
 pub fn find_match(p: &Pane, filter: &str) -> bool {
-    let fields = [session(p), window(p), &p.name, &p.title, state_word(p.state), &p.msg, &p.doing];
+    let word = if p.ended { ENDED } else { state_word(p.state) };
+    // #313: and its subagents' types and descriptions
+    let subs: Vec<&str> = p.subs.iter().flat_map(|s| [s.ty.as_str(), s.desc.as_str()]).collect();
+    let subs = subs.join("\n");
+    let fields = [session(p), window(p), &p.name, &p.title, word, &p.msg, &p.doing, &subs];
     // one line per field: a term holds no newline, so it never spans two
     let hay = fields.join("\n").to_lowercase();
     filter.to_lowercase().split_whitespace().all(|t| hay.contains(t))
@@ -1279,7 +1513,7 @@ pub fn rows_with(ps: &[Pane], folds: &BTreeSet<String>, filter: &str, open: bool
         }
         let shut = !open && folds.contains(s);
         out.push(Row::Head(s.to_string()));
-        out.extend(hit.into_iter().filter(|&i| !shut || urgent(ps[i].state)).map(Row::Agent));
+        out.extend(hit.into_iter().filter(|&i| !shut || urgent(&ps[i])).map(Row::Agent));
     }
     out
 }
@@ -1388,6 +1622,13 @@ pub struct Nav {
     pub filter: String,
     /// the find field is open and has the keys
     pub field: bool,
+    /// #313: the agents whose subagent tree is open, by pane id. Memory only,
+    /// never `board.state`: nothing unfolds by itself (D4)
+    pub trees: BTreeSet<String>,
+    /// #313: the read's clock and what earlier reads saw of the subagents
+    pub seen: Seen,
+    /// the list rows on screen at the last placement, net of the field
+    room: usize,
 }
 
 /// The list rows a screen of `area` shows: the header, the frame's two
@@ -1405,7 +1646,46 @@ fn cycle(ks: &[usize], r: usize, fwd: bool) -> Option<usize> {
     }
 }
 
+/// The viewport's first row: in the list, with selection `r` on screen, and never
+/// a tree line (#313), so a tree shows under its agent. A top on one goes up to the
+/// agent when `r` still fits, else down past the tree; `r` is never a tree line.
+pub fn view_top(rows: &[Row], top: usize, r: usize, room: usize) -> usize {
+    let room = room.max(1);
+    let mut top = top.min(rows.len().saturating_sub(room));
+    if r < top {
+        top = r;
+    } else if r >= top + room {
+        top = r + 1 - room;
+    }
+    // a guard: the budget adds tree lines only to a list that fits, where top is
+    // 0, so no list reaches this today; it holds if that rule ever loosens
+    if rows.get(top).is_some_and(Row::tree) {
+        let up = lift(rows, top);
+        top = if r < up + room {
+            up
+        } else {
+            (top..r).find(|&k| !rows[k].tree()).unwrap_or(r)
+        };
+    }
+    top
+}
+
 impl Nav {
+    /// The redraw gate's part for the open trees: their lines, printed ages and
+    /// tokens, which the data's hash skips or keeps only by the thousand (#313).
+    pub fn tree_gate(&self, ps: &[Pane]) -> String {
+        let mut out = String::new();
+        for r in self.rows(ps).iter().filter(|r| r.tree()) {
+            out.push_str(&format!("{r:?}"));
+            if let Row::Sub(i, j) = r {
+                let s = &ps[*i].subs[*j];
+                out.push_str(&age_of(&ps[*i], s, self.seen.now));
+                out.push_str(&fmt_tokens(s.tokens));
+            }
+        }
+        out
+    }
+
     pub fn new(sel: Sel, folds: BTreeSet<String>) -> Self {
         Self {
             sel,
@@ -1416,12 +1696,76 @@ impl Nav {
             placed: false,
             filter: String::new(),
             field: false,
+            trees: BTreeSet::new(),
+            seen: Seen::default(),
+            room: 0,
         }
     }
 
-    /// The rows on screen: the folds, under the filter when there is one.
+    /// The rows on screen: the folds, under the filter when there is one, and the
+    /// open trees in the room of the last placement.
     pub fn rows(&self, ps: &[Pane]) -> Vec<Row> {
-        rows_with(ps, &self.folds, &self.filter, self.field)
+        self.rows_in(ps, self.room)
+    }
+
+    /// Whether agent `id`'s tree gets a line, open, in the room of the last
+    /// placement: not in a folded group, nor in a list with no slack (#313).
+    pub fn shows(&self, ps: &[Pane], id: &str) -> bool {
+        let mut trees = self.trees.clone();
+        trees.insert(id.to_string());
+        self.rows_for(ps, self.room, &trees)
+            .iter()
+            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) if ps[*i].id == id))
+    }
+
+    /// The rows in `room`, net of the field. Tree lines take only the rows the list
+    /// leaves empty, and at most half of `room`, so they never push a row off
+    /// screen (#313). The selected agent's tree gets them first, then the blocked
+    /// agents', then the rest in board order; a tree with fewer than it wants ends
+    /// in `+N more`, and one with none shows its badge only. A folded group's trees
+    /// stay shut.
+    fn rows_in(&self, ps: &[Pane], room: usize) -> Vec<Row> {
+        self.rows_for(ps, room, &self.trees)
+    }
+
+    /// [`Nav::rows_in`] with `trees` open.
+    fn rows_for(&self, ps: &[Pane], room: usize, trees: &BTreeSet<String>) -> Vec<Row> {
+        let base = rows_with(ps, &self.folds, &self.filter, self.field);
+        let budget = room.saturating_sub(base.len()).min(room / 2);
+        if budget == 0 || trees.is_empty() {
+            return base;
+        }
+        let shut = |i: usize| self.folds.contains(session(&ps[i])) && !(self.field && self.filtering());
+        let sel = match &self.sel {
+            Sel::Pane(id) => Some(id.as_str()),
+            Sel::Head(_) => None,
+        };
+        let mut want: Vec<(usize, usize)> = base
+            .iter()
+            .enumerate()
+            .filter_map(|(k, r)| match r {
+                Row::Agent(i) if trees.contains(&ps[*i].id) && !shut(*i) => Some((k, *i)),
+                _ => None,
+            })
+            .collect();
+        want.sort_by_key(|&(k, i)| (Some(ps[i].id.as_str()) != sel, !needs(&ps[i]), k));
+        let mut left = budget;
+        let mut got: HashMap<usize, Vec<Row>> = HashMap::new();
+        for (_, i) in want {
+            let lines = tree_lines(ps, i, &self.seen);
+            let k = lines.len().min(TREE_MAX).min(left);
+            if k > 0 {
+                left -= k;
+                got.insert(i, cut(lines, i, k));
+            }
+        }
+        let mut out = Vec::with_capacity(base.len() + budget - left);
+        for r in base {
+            let tree = if let Row::Agent(i) = r { got.remove(&i) } else { None };
+            out.push(r);
+            out.extend(tree.into_iter().flatten());
+        }
+        out
     }
 
     /// The rows the list shows in `room`: the open field and its rule take two.
@@ -1508,12 +1852,14 @@ impl Nav {
         .unwrap_or(0)
     }
 
-    /// Make row `r` the selection, and remember where it sat.
+    /// Make row `r` the selection, and remember where it sat: a tree line's
+    /// agent, as no tree line is selected (#313).
     fn put(&mut self, rows: &[Row], ps: &[Pane], r: usize) {
+        let r = lift(rows, r);
         let Some(row) = rows.get(r) else { return };
         self.sel = match row {
             Row::Head(s) => Sel::Head(s.clone()),
-            Row::Agent(i) => Sel::Pane(ps[*i].id.clone()),
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => Sel::Pane(ps[*i].id.clone()),
         };
         let h = rows[..=r].iter().rposition(|r| matches!(r, Row::Head(_))).unwrap_or(0);
         if let Row::Head(s) = &rows[h] {
@@ -1523,25 +1869,23 @@ impl Nav {
     }
 
     /// Keep the viewport in the list and the selection in the viewport.
-    fn clamp(&mut self, n: usize, room: usize) {
-        let room = room.max(1);
-        self.top = self.top.min(n.saturating_sub(room));
-        if self.row < self.top {
-            self.top = self.row;
-        } else if self.row >= self.top + room {
-            self.top = self.row + 1 - room;
-        }
+    fn clamp(&mut self, rows: &[Row], room: usize) {
+        self.top = view_top(rows, self.top, self.row, room);
     }
 
     /// Re-place the selection after the rows changed under it, a refresh or a
     /// fold: by identity, on the screen row it had where that fits, so the
     /// viewport moves and the cursor does not (D5).
     pub fn settle(&mut self, ps: &[Pane], room: usize) {
+        self.seen.observe(ps);
         self.settle_in(ps, self.fit(room));
     }
 
     /// `settle` with `room` already net of the field.
     fn settle_in(&mut self, ps: &[Pane], room: usize) {
+        self.room = room;
+        // a tree whose subagents went (`/clear`) shuts, so the next ones do not reopen it
+        self.trees.retain(|id| ps.iter().any(|p| p.id == *id && !p.subs.is_empty()));
         let rows = self.rows(ps);
         let r = self.find(&rows, ps);
         if self.placed {
@@ -1550,14 +1894,14 @@ impl Nav {
         }
         self.placed = !rows.is_empty();
         self.put(&rows, ps, r);
-        self.clamp(rows.len(), room);
+        self.clamp(&rows, room);
     }
 
     /// The selection's session and whether it is a header.
     fn group_of(&self, rows: &[Row], ps: &[Pane], r: usize) -> Option<(String, bool)> {
         match rows.get(r)? {
             Row::Head(s) => Some((s.clone(), true)),
-            Row::Agent(i) => Some((session(&ps[*i]).to_string(), false)),
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => Some((session(&ps[*i]).to_string(), false)),
         }
     }
 
@@ -1566,8 +1910,8 @@ impl Nav {
         let rows = self.rows(ps);
         match rows.get(self.find(&rows, ps)) {
             Some(Row::Head(s)) => Focus::Head(self.folds.contains(s)),
-            Some(Row::Agent(i)) => Focus::Agent(ps[*i].state == State::NeedsInput),
-            None => Focus::Agent(false),
+            Some(Row::Agent(i)) => Focus::Agent(needs(&ps[*i])),
+            _ => Focus::Agent(false),
         }
     }
 
@@ -1582,18 +1926,21 @@ impl Nav {
 
     /// One key on the list, `room` rows on screen (D4, D6).
     pub fn act(&mut self, a: Act, ps: &[Pane], room: usize) {
+        self.room = self.fit(room);
         let rows = self.rows(ps);
         let Some(last) = rows.len().checked_sub(1) else { return };
         let room = self.fit(room).max(1);
         // the viewport render draws, which a resize may have moved
         let r = self.find(&rows, ps);
         self.row = r;
-        self.clamp(rows.len(), room);
+        self.clamp(&rows, room);
         let agents: Vec<usize> = (0..rows.len()).filter(|&k| matches!(rows[k], Row::Agent(_))).collect();
         let heads: Vec<usize> = (0..rows.len()).filter(|&k| matches!(rows[k], Row::Head(_))).collect();
         let to = match a {
+            // a tree line is never selected (#313): `put` gives one to its agent,
+            // which is ↑'s row, and ↓ steps over the tree
             Act::Up => Some(r.saturating_sub(1)),
-            Act::Down => Some((r + 1).min(last)),
+            Act::Down => (r + 1..=last).find(|&k| !rows[k].tree()).or(Some(r)),
             Act::First => Some(0),
             Act::Last => Some(last),
             Act::Next => cycle(&agents, r, true),
@@ -1604,7 +1951,7 @@ impl Nav {
                 let needs: Vec<usize> = agents
                     .iter()
                     .copied()
-                    .filter(|&k| matches!(rows[k], Row::Agent(i) if ps[i].state == State::NeedsInput))
+                    .filter(|&k| matches!(rows[k], Row::Agent(i) if needs(&ps[i])))
                     .collect();
                 cycle(&needs, r, true)
             }
@@ -1623,11 +1970,14 @@ impl Nav {
                 };
                 let k = r.clamp(self.top, (self.top + room - 1).min(last));
                 self.put(&rows, ps, k);
+                // a guard, as in view_top: a no-op while trees show only in a list that fits
+                self.clamp(&rows, room);
                 return;
             }
             Act::Fold | Act::Unfold | Act::Toggle | Act::FoldAll | Act::UnfoldAll => {
                 return self.fold(a, &rows, ps, r, room);
             }
+            Act::Tree => return self.tree(&rows, ps, r, room),
             _ => None,
         };
         let Some(t) = to else { return };
@@ -1639,7 +1989,33 @@ impl Nav {
         {
             return self.settle_in(ps, room);
         }
-        self.clamp(rows.len(), room);
+        self.clamp(&rows, room);
+    }
+
+    /// `s` (#313): an agent's tree, or on a header every tree in its session: one
+    /// shut opens them all, else all shut. Only agents with subagents have one.
+    fn tree(&mut self, rows: &[Row], ps: &[Pane], r: usize, room: usize) {
+        match rows.get(r) {
+            // only a tree that gets a line: the caller says why not
+            Some(Row::Agent(i)) if self.shows(ps, &ps[*i].id) => {
+                let id = &ps[*i].id;
+                if !self.trees.remove(id) {
+                    self.trees.insert(id.clone());
+                }
+            }
+            Some(Row::Head(s)) => {
+                let ids: Vec<&String> = ps.iter().filter(|p| session(p) == s && !p.subs.is_empty()).map(|p| &p.id).collect();
+                if ids.iter().all(|id| self.trees.contains(*id)) {
+                    ids.into_iter().for_each(|id| {
+                        self.trees.remove(id);
+                    });
+                } else {
+                    self.trees.extend(ids.into_iter().cloned());
+                }
+            }
+            _ => return,
+        }
+        self.settle_in(ps, room);
     }
 
     fn fold(&mut self, a: Act, rows: &[Row], ps: &[Pane], r: usize, room: usize) {
@@ -1650,7 +2026,7 @@ impl Nav {
             Act::Unfold if on_head && !folded => {
                 if let Some(Row::Agent(_)) = rows.get(r + 1) {
                     self.put(rows, ps, r + 1);
-                    self.clamp(rows.len(), room);
+                    self.clamp(rows, room);
                 }
                 return;
             }
@@ -1668,7 +2044,7 @@ impl Nav {
             }
             Act::FoldAll => self.folds.extend(rows.iter().filter_map(|r| match r {
                 Row::Head(h) => Some(h.clone()),
-                Row::Agent(_) => None,
+                _ => None,
             })),
             _ => self.folds.clear(),
         }
@@ -1677,29 +2053,57 @@ impl Nav {
     }
 }
 
+/// The subagent badge (#313), running and failed only, the wider that fits `left`
+/// with a column of air: `✦2·1✕`, then their total `✦3`. The failed role when one
+/// failed, else the running one. `None` with none running or failed, done ones
+/// or not, or with no room.
+fn badge(p: &Pane, th: &Theme, left: usize, seen: &Seen) -> Option<Span<'static>> {
+    let g = &th.g;
+    let (r, f) = sub_counts(p, seen);
+    if r + f == 0 {
+        return None;
+    }
+    let wide = match f {
+        0 => format!("{}{r}", g.sub),
+        _ => format!("{}{r}{}{f}{}", g.sub, g.dot, g.error),
+    };
+    let total = format!("{}{}", g.sub, r + f);
+    // #301: an ended agent's badge is meta and dim, as the rest of its row
+    let st = match (p.ended, f) {
+        (true, _) => Style::new().fg(th.meta).add_modifier(Modifier::DIM),
+        (false, 1..) => Style::new().fg(th.error),
+        (false, 0) => Style::new().fg(th.running),
+    };
+    let t = [wide, total].into_iter().find(|t| t.width() < left)?;
+    Some(Span::styled(format!(" {t}"), st))
+}
+
 /// The list row's extra cells (#253), drawn between the message and the age:
-/// the diff stat, then the branch (the review mark is the leading column's).
-/// `room` is the width they may take, which `agent_row` sizes so the name and
-/// message keep at least 18 cells; a cell that does not fit is dropped, with
+/// the subagent badge (#313), the diff stat, then the branch (the review mark
+/// is the leading column's). `room` is the width they may take, which
+/// `agent_row` sizes so the name and message keep at least 18 cells: 3 at 40
+/// columns, the narrow badge's. A cell that does not fit is dropped, with
 /// every cell to its right. A linked worktree's branch cell is
 /// `repo⑂branch · wt name` (#312) and narrows in steps: the repo goes, then
 /// the worktree name is cut to at least one character, then it goes, then the
 /// branch. Any other row's branch cell is `⑂branch`. The facts come off
 /// `Pane`, filled on the fetch thread by `data::fleet`: nothing here forks.
-pub fn row_extra(p: &Pane, th: &Theme, room: u16) -> Vec<Span<'static>> {
+pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'static>> {
     let g = &th.g;
     let stat = facts::stat_text(&p.loc, &p.pm);
     let stat_c = match stat.as_str() {
         "clean" | "no repo" | "?" => th.meta,
         _ => th.running,
     };
-    let left = room as usize;
+    let mut left = room as usize;
+    let mut out: Vec<Span<'static>> = badge(p, th, left, seen).into_iter().collect();
+    left -= out.iter().map(|s| s.content.width()).sum::<usize>();
     let fits = |t: &str, left: usize| t.width() < left;
     if !fits(&stat, left) {
-        return vec![];
+        return out;
     }
     let left = left - stat.width() - 1;
-    let mut out = vec![Span::styled(format!(" {stat}"), Style::new().fg(stat_c))];
+    out.push(Span::styled(format!(" {stat}"), Style::new().fg(stat_c)));
     let br = facts::branch(&p.loc);
     if br.is_empty() {
         return out;
@@ -1760,14 +2164,14 @@ fn band(st: Style, sel: bool, th: &Theme) -> Style {
 
 /// One agent row (6.1): `▎ 1 ▲◆ 0 server  Do you want…  4m12◂`.
 #[allow(clippy::too_many_arguments)]
-fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, th: &Theme) -> Line<'static> {
+fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w: usize, seen: &Seen, th: &Theme) -> Line<'static> {
     let g = &th.g;
-    let (gl, gl_c) = th.glyph(p.state);
+    let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
     // a third of what the name and message would share, and never so much that
     // the name keeps under 6 cells and the message under 12
     let flex0 = w.saturating_sub(7 + ww + 1 + 1 + 1 + RAIL_W + 1);
-    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16);
+    let extra = row_extra(p, th, (flex0 / 3).min(flex0.saturating_sub(18)) as u16, seen);
     let extra_w: usize = extra.iter().map(|s| s.content.width()).sum();
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
@@ -1775,6 +2179,7 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     let name_w = (flex / 4).clamp(6, 20).min(flex);
     let msg_w = flex.saturating_sub(name_w);
     let msg = match p.state {
+        _ if p.ended => ENDED.to_string(),
         State::Unknown => "idle".to_string(),
         State::NeedsInput | State::Error if !p.msg.is_empty() => g.trunc(&p.msg, msg_w),
         _ if p.doing.is_empty() => g.trunc(g.dash, msg_w),
@@ -1785,12 +2190,18 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         State::Unknown => String::new(),
         _ => p.since.map(fmt_dur).unwrap_or_default(),
     };
-    let rail_c = match (p.state == State::NeedsInput, p.since) {
+    let rail_c = match (needs(p), p.since) {
         (true, Some(s)) if s >= 300 => th.needs,
         (true, Some(s)) if s >= 60 => th.error,
         _ => th.meta,
     };
-    let text_c = if dimmed(p.state) { th.quote } else { th.value };
+    let text_c = if dimmed(p) { th.quote } else { th.value };
+    // #301: the whole row, the name too; DIM besides the colour, off the band (D17)
+    let (name_c, dim) = if p.ended && !sel {
+        (th.quote, Modifier::DIM)
+    } else {
+        (th.value, Modifier::empty())
+    };
     let num = num.map_or(" ".to_string(), |n| n.to_string());
     let mut spans = vec![
         Span::styled(if sel { g.active } else { " " }, Style::new().fg(th.accent)),
@@ -1802,7 +2213,7 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
             band(
                 Style::new()
                     .fg(gl_c)
-                    .add_modifier(if urgent(p.state) { Modifier::BOLD } else { Modifier::empty() }),
+                    .add_modifier(if urgent(p) { Modifier::BOLD } else { Modifier::empty() }),
                 sel,
                 th,
             ),
@@ -1815,9 +2226,9 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
         ),
         Span::styled(
             pad(g.trunc(p.label(), name_w), name_w + 1),
-            band(Style::new().fg(th.value), sel, th),
+            band(Style::new().fg(name_c).add_modifier(dim), sel, th),
         ),
-        Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c), sel, th)),
+        Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c).add_modifier(dim), sel, th)),
     ];
     spans.extend(extra.into_iter().map(|s| {
         let st = band(s.style, sel, th);
@@ -1834,20 +2245,149 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     Line::from(spans)
 }
 
+/// A subagent's type column: its `agentType`, else what kind it is.
+fn sub_type(s: &Sub) -> &str {
+    match (s.ty.is_empty(), s.kind) {
+        (false, _) => &s.ty,
+        (true, SubKind::Fork) => "fork",
+        (true, SubKind::Teammate) => "teammate",
+        (true, SubKind::Subagent) => "agent",
+    }
+}
+
+/// A subagent's age off its start, as the rail prints it; empty before its first row.
+/// An ended agent's (#301) running subagent has none: nothing runs to age.
+fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
+    if p.ended && s.state == SubState::Running {
+        return String::new();
+    }
+    s.started.map(|t| fmt_dur(now.saturating_sub(t))).unwrap_or_default()
+}
+
+/// A token count in at most six cells: `842`, `12.4k`, `9k`, `3.1M`.
+pub fn fmt_tokens(n: u64) -> String {
+    let one = |v: f64, unit: &str| {
+        let s = format!("{v:.1}");
+        format!("{}{unit}", s.strip_suffix(".0").unwrap_or(&s))
+    };
+    match n {
+        0..1000 => n.to_string(),
+        1000..999_950 => one(n as f64 / 1e3, "k"),
+        _ => one(n as f64 / 1e6, "M"),
+    }
+}
+
+/// The type column's widest, a description's narrowest before the type gives
+/// way, and the narrowest the type gets while there is any description.
+const TYPE_MAX: usize = 16;
+const DESC_MIN: usize = 12;
+const DESC_SHORT: usize = 8;
+const TYPE_MIN: usize = 6;
+/// ` 12.4k`: the token column, a space and six cells.
+const TOK_W: usize = 7;
+
+/// The tree's columns in `avail` cells for a type column `tcol` wide:
+/// `(type, description, tokens shown)`. Tokens go first, then the description
+/// narrows to [`DESC_SHORT`], then the type to [`TYPE_MIN`], then the
+/// description goes; the age is the rail's and stays.
+fn tree_cols(avail: usize, tcol: usize) -> (usize, usize, bool) {
+    let tcol = tcol.min(avail);
+    if avail >= tcol + 1 + DESC_MIN + TOK_W {
+        return (tcol, avail - tcol - 1 - TOK_W, true);
+    }
+    if avail >= tcol + 1 + DESC_SHORT {
+        return (tcol, avail - tcol - 1, false);
+    }
+    let tcol = TYPE_MIN.max(avail.saturating_sub(1 + DESC_SHORT)).min(avail).min(tcol);
+    (tcol, avail.saturating_sub(tcol + 1), false)
+}
+
+/// One tree line (#313) under its agent, `last` its tree's last: `├ ● Explore
+/// find auth callers  12.4k  2m12s`, the rail and the mark column where the
+/// agent row has them. `tcol` is the type column the tree's lines share.
+fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64, th: &Theme) -> Line<'static> {
+    let g = &th.g;
+    let branch = match (g.ascii, last) {
+        (false, false) => "     ├ ",
+        (false, true) => "     └ ",
+        (true, false) => "    |- ",
+        (true, true) => "    `- ",
+    };
+    let mut spans = vec![Span::styled(branch, Style::new().fg(th.faint))];
+    // `     ├ ● ` + text + ` ` + rail + the mark column
+    let avail = w.saturating_sub(9 + 1 + RAIL_W + 1);
+    let (text, age) = match *row {
+        Row::Done(_, n) => {
+            spans.push(Span::styled(g.done, Style::new().fg(th.done)));
+            (
+                vec![Span::styled(
+                    pad(g.trunc(&format!(" {n} done"), avail + 1), avail + 1),
+                    Style::new().fg(th.value),
+                )],
+                String::new(),
+            )
+        }
+        Row::More(_, n) => (
+            vec![Span::styled(
+                pad(g.trunc(&format!("+{n} more"), avail + 2), avail + 2),
+                Style::new().fg(th.meta),
+            )],
+            String::new(),
+        ),
+        Row::Sub(i, j) => {
+            let s = &ps[i].subs[j];
+            let (gl, c) = sub_glyph(th, &ps[i], s.state);
+            let dim = if ps[i].ended { Modifier::DIM } else { Modifier::empty() };
+            spans.push(Span::styled(gl, Style::new().fg(c).add_modifier(dim)));
+            let (tw, dw, tok) = tree_cols(avail, tcol);
+            let mut t = vec![Span::styled(
+                format!(" {}", pad(g.trunc(sub_type(s), tw), tw)),
+                Style::new().fg(th.label),
+            )];
+            if dw > 0 {
+                t.push(Span::styled(
+                    format!(" {}", pad(g.trunc(&s.desc, dw), dw)),
+                    Style::new().fg(th.value),
+                ));
+            }
+            if tok {
+                let n = if s.tokens > 0 { fmt_tokens(s.tokens) } else { String::new() };
+                t.push(Span::styled(format!(" {:>6}", g.trunc(&n, 6)), Style::new().fg(th.meta)));
+            }
+            (
+                t.into_iter().map(|sp| sp.patch_style(Style::new().add_modifier(dim))).collect(),
+                age_of(&ps[i], s, now),
+            )
+        }
+        Row::Head(_) | Row::Agent(_) => return Line::default(),
+    };
+    spans.extend(text);
+    spans.push(Span::styled(
+        format!(" {:>RAIL_W$} ", g.trunc(&age, RAIL_W)),
+        Style::new().fg(th.meta),
+    ));
+    Line::from(spans)
+}
+
 /// One header (6.1, 6.2): `▾ api ──── ▲1 ●2 ✓1`, folded `▸ web ── 3 folded · ▲1 ●1`.
 fn head_row(name: &str, members: &[usize], ps: &[Pane], folded: bool, sel: bool, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
     let mut counts: Vec<Span> = vec![];
-    for st in [State::NeedsInput, State::Error, State::Running, State::Done, State::Unknown] {
-        let n = members.iter().filter(|&&i| ps[i].state == st).count();
+    let live = [State::NeedsInput, State::Error, State::Running, State::Done, State::Unknown].map(Some);
+    // #301: ended agents count under their own glyph, last
+    for st in live.into_iter().chain([None]) {
+        let n = members
+            .iter()
+            .filter(|&&i| st.map_or(ps[i].ended, |s| !ps[i].ended && ps[i].state == s))
+            .count();
         if n > 0 {
-            let (gl, c) = th.glyph(st);
+            let (gl, c) = st.map_or((g.ended, th.meta), |s| th.glyph(s));
             counts.push(Span::styled(format!(" {gl}"), band(Style::new().fg(c), sel, th)));
             counts.push(Span::styled(n.to_string(), band(Style::new().fg(th.value), sel, th)));
         }
     }
     if folded {
-        let hid = members.iter().filter(|&&i| !urgent(ps[i].state)).count();
+        let hid = members.iter().filter(|&&i| !urgent(&ps[i])).count();
         let lead = if hid > 0 {
             format!(" {hid} folded {}", g.dot)
         } else {
@@ -1880,16 +2420,11 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     let gs = groups(v.panes);
     header(f, head, v, &grid(area, 0), v.panes.len(), Some(gs.len()));
 
-    let rows = nav.rows(v.panes);
     let room = nav.fit(list_room(area)).max(1);
+    let rows = nav.rows_in(v.panes, room);
     let r = nav.find(&rows, v.panes);
     // the same clamp Nav applies; a resize can land between a key and a draw
-    let mut top = nav.top.min(rows.len().saturating_sub(room));
-    if r < top {
-        top = r;
-    } else if r >= top + room {
-        top = r + 1 - room;
-    }
+    let top = view_top(&rows, nav.top, r, room);
     // a confirm holds the rows still, and the title says so (D18)
     let title = if v.confirm.is_some() {
         format!(" sessions {} held ", g.dot)
@@ -1960,7 +2495,21 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
                         digit += 1;
                         let num = (digit <= 9).then_some(digit);
                         let p = &v.panes[*i];
-                        agent_row(p, num, sel, p.id == v.active, ww, w, th)
+                        agent_row(p, num, sel, p.id == v.active, ww, w, &nav.seen, th)
+                    }
+                    Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => {
+                        let last = !rows.get(top + k + 1).is_some_and(Row::tree);
+                        // the type column: the widest type among the tree's lines
+                        let tcol = rows
+                            .iter()
+                            .filter_map(|r| match r {
+                                Row::Sub(a, j) if a == i => Some(sub_type(&v.panes[*a].subs[*j]).width()),
+                                _ => None,
+                            })
+                            .max()
+                            .unwrap_or(0)
+                            .min(TYPE_MAX);
+                        tree_row(v.panes, row, last, tcol, w, nav.seen.now, th)
                     }
                 }
             })
@@ -1982,7 +2531,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
         f.render_widget(crate::chrome::footer(th, ks, foot.width as usize, 3), foot);
         return;
     }
-    footer(f, foot, v, nav.focus(v.panes));
+    footer(f, foot, v, nav.focus(v.panes), nav.pane(v.panes));
 }
 
 /// The field's line: ` / text▏`. A filter wider than the line shows its end,
@@ -2147,7 +2696,7 @@ pub fn opts(args: &[String]) -> Result<Opts, String> {
 pub fn open_sel(ps: &[Pane], ord: &[usize], want: Option<&str>, active: &str) -> usize {
     let at = |f: &dyn Fn(&Pane) -> bool| ord.iter().position(|&i| f(&ps[i]));
     want.and_then(|w| at(&|p| p.id == w))
-        .or_else(|| at(&|p| p.state == State::NeedsInput))
+        .or_else(|| at(&|p| needs(p)))
         .or_else(|| at(&|p| p.id == active))
         .unwrap_or(0)
 }
@@ -2333,21 +2882,66 @@ pub struct Extra {
     pub confirm: Option<fn(&Pane) -> String>,
     /// `$COCKPIT_ACTION.expect`, for the wrapper to check the target against
     pub expect: Option<fn(&Pane) -> String>,
+    /// whether the agent is offered the key at all: the footer lists it, and
+    /// the key acts, only where this holds (#301)
+    pub offered: fn(&Pane) -> bool,
+    /// the note when the key is pressed where it is not offered
+    pub not_here: &'static str,
 }
 
 // #228: the board's extra actions. A key here must not clash with KEYS, D6's
 // keys, D7's `/` or D8's `a`; the wrapper's arms live under `# #228 verbs` in
 // scripts/cockpit-board, which ends the loop on a verb it does not know.
-pub static EXTRAS: &[Extra] = &[Extra {
-    key: 'x',
-    label: "kill",
-    help: "kill its window, after a confirm",
-    verb: "kill",
-    confirm: Some(|p| format!("kill window {} · {}?", p.wher, p.name)),
-    // the id, never the name: agent windows tend to share one (`claude`),
-    // and a pane moved into a namesake would pass a name check
-    expect: Some(|p| if is_window_id(&p.win) { p.win.clone() } else { String::new() }),
-}];
+pub static EXTRAS: &[Extra] = &[
+    Extra {
+        key: 'x',
+        label: "kill",
+        help: "kill its pane, after a confirm; on an ended agent, close the pane",
+        verb: "kill",
+        // #301: the pane dies, never the window, so the question names the pane
+        confirm: Some(|p| format!("kill pane {} ({} {})?", p.id, p.wher, p.name)),
+        // `%N @W`: ids, never the name, as agent windows tend to share one
+        // (`claude`). The pane must still be in the window the person saw; and
+        // a wrapper from before #301, which kills the window, reads no `@W` here
+        // and refuses rather than kill more than was asked.
+        expect: Some(|p| {
+            if is_window_id(&p.win) && is_pane_id(&p.id) {
+                format!("{} {}", p.id, p.win)
+            } else {
+                String::new()
+            }
+        }),
+        offered: |_| true,
+        not_here: "",
+    },
+    Extra {
+        key: 'o',
+        label: "resume",
+        help: "on an ended agent: claude --resume its session in a new pane",
+        verb: "resume",
+        confirm: None,
+        // the session the row showed; the wrapper resumes only if the pane holds it still
+        expect: Some(|p| p.sess.clone()),
+        offered: resumable,
+        not_here: "resume is for an ended agent with a session id",
+    },
+];
+
+/// #301: `o` is offered on an ended agent whose @cockpit_session is a session id.
+pub fn resumable(p: &Pane) -> bool {
+    p.ended && is_session_id(&p.sess)
+}
+
+/// A Claude session id as the hooks publish it: a UUID, lowercase hex in
+/// 8-4-4-4-12. Strict, as it ends up in a command line.
+pub fn is_session_id(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5
+        && parts
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(p, n)| p.len() == n && p.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+}
 
 pub fn extra(key: char) -> Option<&'static Extra> {
     EXTRAS.iter().find(|e| e.key == key)
@@ -2476,9 +3070,11 @@ pub fn held(c: &Confirm, old: &[Pane], new: &[Pane]) -> Result<Vec<Pane>, String
     Ok(old
         .iter()
         .map(|o| match new.iter().find(|n| n.id == o.id) {
+            // ended moves a row as a state does (#301), so it is held too
             Some(n) => Pane {
                 state: o.state,
                 wher: o.wher.clone(),
+                ended: o.ended,
                 ..n.clone()
             },
             None => o.clone(),
@@ -2742,6 +3338,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     sel = tile_of(&panes, &id);
                     nav.sel = Sel::Pane(id);
                 }
+                nav.seen.now = crate::data::sessions::now();
                 nav.settle(&panes, list_room(here));
                 let was = top;
                 (sel, top, _) = fit(here, panes.len(), sel, top);
@@ -2749,7 +3346,11 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 if top != was && !list {
                     ask(here, sel, top, list);
                 }
-                let h = hash_rows(&panes, &gate_extra(&panes, &pvs));
+                let mut extra = gate_extra(&panes, &pvs);
+                if list {
+                    extra.push_str(&nav.tree_gate(&panes));
+                }
+                let h = hash_rows(&panes, &extra);
                 if h != last_hash || !loaded {
                     last_hash = h;
                     dirty = true;
@@ -2969,8 +3570,18 @@ pub fn run(o: &Opts) -> Option<Exit> {
             // ↵ on a header toggles its fold (D4)
             (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
             (Act::Ask | Act::Review | Act::Panel | Act::Info | Act::Extra(_), None) => {}
+            // #313: a tree that would get no line: a folded group, or no slack
+            (Act::Tree, Some(p)) if !p.subs.is_empty() && !nav.shows(&panes, &p.id) => {
+                let msg = format!("{} {} no room for its subagent tree", p.wher, th.g.dot);
+                note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
+            }
             (Act::Extra(c), Some(p)) => {
                 let Some(e) = extra(c) else { continue };
+                if !(e.offered)(p) {
+                    let msg = format!("{} {} {}", p.wher, th.g.dot, e.not_here);
+                    note = Some(Note::timed(msg, SHORT_NOTE, Instant::now()));
+                    continue;
+                }
                 if let Some(msg) = refused(e, p) {
                     note = Some(Note::returned(msg, Instant::now()));
                     continue;
@@ -3002,7 +3613,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 overlay = Some(crate::info::Screen::open(&id));
             }
             // `a` on a blocked agent jumps; there is no inline reply yet
-            (Act::Ask, Some(p)) if p.state == State::NeedsInput => {
+            (Act::Ask, Some(p)) if needs(p) => {
                 action_line = Some(format!("jump {id}"));
                 break;
             }

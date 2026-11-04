@@ -37,13 +37,14 @@ timer.
 | `SessionStart` (3rd) | injects `skills/unslop/SKILL.md` as context (through `jq`): the writing rules every agent on the box follows, with no per-machine paste |
 | `UserPromptSubmit` | `running` |
 | `UserPromptSubmit` (2nd) | `session` — the same save, so `/clear` and `--resume` (a new `session_id`) are followed from the first prompt |
+| `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
-| `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then nothing changes (see [Background subagents](#background-subagents)) |
+| `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
@@ -157,11 +158,55 @@ it likes. Holding on work with no sure wake risks a pane stuck "working"; not
 holding only shows `done` early. A subagent that never stops is listed by
 every `Stop` until the session ends, and `SessionEnd` clears the pane.
 
-There is no subagent counter, so there is nothing to drift, lock or reset.
-Counting `SubagentStart` against `SubagentStop` would drift: `SubagentStart`
-also fires on a resumed subagent and on every message an in-process teammate
-handles, and `SubagentStop` also fires for Claude Code's internal agents
-(prompt suggestions, `/btw`), which never fired a start.
+There is no running subagent counter, so there is nothing to drift, lock or
+reset. Counting `SubagentStart` against `SubagentStop` would drift:
+`SubagentStart` also fires on a resumed subagent and on every message an
+in-process teammate handles, and `SubagentStop` also fires for Claude Code's
+internal agents (prompt suggestions, `/btw`), which never fired a start. The
+count below is read off each `Stop`'s list whole, so a wrong one lasts one turn.
+
+## Subagent count
+
+At every `Stop`, `agent-state done` writes `@cockpit_subs`, the number of
+`background_tasks` entries of type `subagent`, with the same structural match
+as the hold above. At 0 the option is unset. It is written whether or not the
+pane's state changes, so a sticky `needs-input` pane still takes it.
+
+- **Cleared** by `off` at `SessionStart` (`startup|resume|clear`; a new process
+  runs no subagent) and at `SessionEnd`.
+- **Not cleared** at `UserPromptSubmit`. A background subagent reporting back
+  fires one while the others still run, and so does a prompt you type while
+  they run. It is not cleared at the idle notification either, because the lead
+  idles while its subagents work.
+- `compact` keeps it: compaction does not stop a subagent, and the next `Stop`
+  rewrites the count.
+
+The bar's fleet summary, `#{E:@cockpit_fleet}`, ends with `✦N`, the sum over
+every agent pane, in the running colour. It is empty at 0 and hidden in touch
+mode. tmux has no sum over panes, so the format repeats a mark N times per pane
+(`#{R:x,N}`) and counts the marks (`#{n:}`). Touch mode belongs to a client, so
+its test is stored escaped and runs when the bar draws. The count is refreshed
+beside every write of `@cockpit_subs`, since a `Stop` that holds the pane or
+meets a sticky state runs no sums of its own. The sweep drops a killed pane's
+count. The mark is `✦` in every glyph tier, like `▲ ✕ ◆`.
+
+The board's subagent tree reads Claude Code's own files, not the hooks:
+`<session>/subagents/agent-<id>.meta.json` and `agent-<id>.jsonl`, beside
+`@cockpit_transcript` (`<sid>.jsonl` -> `<sid>/subagents/`, used when it still
+resolves to a file in the projects tree), else beside the transcript the board
+reads for `@cockpit_session`. `data::subagents` caches each file on (mtime,
+length), and a pane with no such dir costs one failed `opendir`.
+
+| field | from |
+|-------|------|
+| `ty`, `desc` | `agentType`, `description` (control characters dropped) |
+| `kind` | `isFork: true` is a fork; a `teamName` is a teammate; else a subagent |
+| `state` | `stoppedByUser: true`, or `finished: true` with an API error as the newest assistant row, is failed; `finished: true` is done; else running |
+| `started` | the first transcript row's `timestamp` |
+| `tokens` | the newest usage row's input, output and cache tokens summed, the figure Claude Code reports as `totalTokens`, not a sum over turns |
+
+Claude Code 2.1.317 sets `finished` when a task leaves `running`, for success and
+failure alike, so a failed run that left no API error row reads as done.
 
 ## A goal that will not be met
 
@@ -204,18 +249,19 @@ next prompt resumes it, `/goal clear` ends it.
 ## Session identity
 
 `agent-state session` runs at `SessionStart` (`startup|resume|clear|fork`: each can start a
-new `session_id`; not `compact`, which keeps it) and at `UserPromptSubmit`. It changes no
-state. It reads two fields of the hook payload and writes them with `set-option -p`, which does
+new `session_id`; not `compact`, which keeps it), at `UserPromptSubmit` and at `CwdChanged`. It changes no
+state. It reads these fields of the hook payload and writes them with `set-option -p`, which does
 not expand formats:
 
 | option | from | saved when |
 |--------|------|------------|
 | `@cockpit_session` | `session_id` | it is a UUID |
 | `@cockpit_transcript` | `transcript_path` | it is an absolute path with no `..` and no `#`, and resolves (`realpath`, symlinks followed) to a regular file under `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects` |
+| `@cockpit_dir` | `new_cwd`, else `cwd` | it is a whole JSON string naming an existing directory by an absolute path with no control character or backslash, and the agent moved or a new session began (see [Working tree](#working-tree)) |
 
 A new `session_id` drops the old `@cockpit_transcript` first, so a pane never points at the
 previous session's file. A missing or refused field leaves the option as it was. The reader
-(`cockpit-tui transcript file`) takes `@cockpit_transcript` if it still resolves under the
+(`data::transcript::file`) takes `@cockpit_transcript` if it still resolves under the
 projects tree, then `@cockpit_session`, then `claude agents --json`. `last_assistant_message`
 is never stored: free text in an option is the #289 hazard. `Stop` still refreshes
 `@cockpit_session` through `review-gate`.
@@ -226,3 +272,24 @@ old value stays. The hook checks the path against the projects tree of the `CLAU
 claude runs with; the reader uses its own environment's (usually the tmux server's). Export
 `CLAUDE_CONFIG_DIR` where tmux starts, not only in a shell, or the reader refuses the stored path
 and falls back to `@cockpit_session`.
+
+## Working tree
+
+tmux reports a pane's process cwd, and a Claude Code session never moves it: a `claude`
+started in `~` that `cd`s into a repo read `no repo` on the board. Every hook payload carries
+the session's own `cwd`, so `agent-state session` saves it as `@cockpit_dir`, the option the
+board, `prefix + i` and `tmux-review` already read ahead of the pane's cwd. It runs at
+`CwdChanged` (a `cd` in the main conversation; subagents fire none), with `SessionStart` and
+`UserPromptSubmit` as backstops for a missed event and for installs that predate the
+`CwdChanged` entry.
+
+`@cockpit_cwd` keeps the cwd the hooks saw last. `@cockpit_dir` is written only when the
+payload's cwd differs from it, or when a new `session_id` arrives. An agent that drives a
+hand-made worktree with `git -C` sets `@cockpit_dir` itself ([review.md](review.md)), and a
+prompt in the same cwd leaves that value alone; its next `cd` replaces it.
+
+A value is refused, and the old option kept, when it is not a whole JSON string (a payload cut
+by the 4 KB cap, or by a writer that died), not absolute, holds a control character or a
+backslash, or names no directory. `#` is allowed: a directory may be named `x#y`, and
+`set-option -p` stores `#(...)` as written. tmux reads an argument's trailing `;` as a command
+separator, so a directory ending in `;` is passed as `\;`.

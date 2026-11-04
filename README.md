@@ -114,7 +114,7 @@ until they restart.
 |-----|------|
 | `prefix + a` | the menu: every action, one letter each; also `≡` on the border |
 | `prefix + u` | jump to the pane that needs you; again for the next |
-| `prefix + w` | the board: every agent pane, grouped by session, blocked first; `/` filters it as you type, `v` for live tiles (needs `cockpit-tui`) |
+| `prefix + w` | the board: every agent pane, grouped by session, blocked first; `/` filters it as you type, `v` for live tiles, `x` kills an agent's pane, `o` resumes an ended one (needs `cockpit-tui`) |
 | `prefix + f` | the panel: ask `claude -p` about this pane, paste the answer in (needs `cockpit-tui`); `^Z` in it hides it, and `prefix + f` on the pane brings it back |
 | `prefix + r` | the board again, as the review queue: `r` on a row opens that agent's uncommitted diff in revdiff (needs `cockpit-tui`) |
 | `prefix + i` | info about this pane: cwd, git root, state, review (`cockpit-tui info`; `i` in the board shows the same) |
@@ -146,7 +146,7 @@ None is required.
 | `@cockpit_statusbar` | on | `off` keeps your own status line and borders |
 | `@cockpit_touch` | `auto` | the touch layout (bar and sessions screen) below 100 columns |
 | `@cockpit_icons` | unset | `ascii` or `nerd` for the menu and branch icons |
-| `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, the panel, info, the branch picker, `tm` and sessions; `nerd` draws the default there |
+| `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, the panel, info, the branch picker, `tm` and sessions; `nerd` draws the default there, but for the board's subagent badge |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
 | `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |

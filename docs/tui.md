@@ -73,6 +73,7 @@ Inside the board, the list (the default layout):
 | `l` `→` | unfold the selected group; on an open header, enter it |
 | `space` | fold / unfold the selected group |
 | `-` `=` | fold all / unfold all |
+| `s` | open or close the selected agent's subagent tree; on a header, every tree in that session (one shut opens them all, else all shut). See [Subagents](#the-board) |
 | `⇥` `⇧⇥` | next / previous agent, skipping headers, wrapping |
 | `n` `p` | next / previous session header, wrapping |
 | `1`-`9` | the Nth agent row on screen. Selects, does not jump; a row in a folded group unfolds it |
@@ -80,8 +81,8 @@ Inside the board, the list (the default layout):
 | `u` | the next `▲` agent, wrapping; unfolds its group |
 | `[` `]` `PgUp` `PgDn` | scroll a screenful; the selection only moves to stay on screen |
 | `↵` | jump to the selected pane, close the board; on a header, fold / unfold |
-| `a` `r` `f` `i` `x` | as in the tiles, on an agent; a header does not take them |
-| `/` | find: open the field and filter as you type (see [Find](#find)) |
+| `a` `r` `f` `i` `x` `o` | as in the tiles, on an agent; a header does not take them |
+| `/` | find: open the field and filter as you type (see [Find](#the-board)) |
 | `v` | the tiles |
 | `?` `^L` `q` | as in the tiles |
 | `esc` | the first that applies: dismiss a `✕` note, close the info overlay, close the find field (clearing it), clear a kept filter, close the board |
@@ -119,7 +120,8 @@ In the tiles (`v`):
 | `f` | the panel for it (`cockpit-panel`); the board comes back after |
 | `i` | info for the selected pane; any key comes back to the board |
 | `a` | answer a `▲` agent, ask any other; the footer says which. Phase 1 jumps on a `▲` and notes it on the rest; phase 2 opens the reply overlay |
-| `x` | kill the pane's window, after a confirm (`kill %N`, for #228's wrapper arm) |
+| `x` | kill the agent's pane, after a confirm (`kill %N`); the window's other panes stay. On an ended agent it closes the pane left behind |
+| `o` | on an ended agent whose `@cockpit_session` is a session id: `claude --resume <id>` in a new pane beside it, at the pane's cwd (`resume %N`). Not offered anywhere else |
 | `?` | the keys: full-popup, one column, generated from the key table itself, with a legend of the tile glyphs. `↑↓` `j` `k` `PgUp` `PgDn` scroll it; any other key closes it |
 | `v` | the list |
 | `^L` | refetch and redraw now |
@@ -135,7 +137,8 @@ frame carries a hint. It lists only keys that work on what is selected, in
 priority order, and drops one whole hint at a time from the right as the width
 shrinks; `?` and `q` always stay. On an agent: `↵ jump`, `a answer` or `a ask`,
 `r review`, `f panel`, `i info`, then `space fold` and `/ find` in the list,
-then `x kill`, which the cut drops first. On a list
+then `x kill`, and `o resume` on an ended agent that has a session id; the
+cut drops those first. On a list
 header: `space fold` or `space unfold`, `l open`, `- fold all`, `= open all`,
 `n p sessions`, `/ find`. With a kept filter, `esc clear filter` comes before
 `? keys`. In the find field the bar is the field's:
@@ -146,16 +149,19 @@ own, from `chrome`.
 
 **Extra actions.** `EXTRAS` in `board.rs`, the `// #228:` registry, holds the
 actions beyond the key table: a key, the footer's label, the `?` help row, the
-verb, and two optional functions of the selected `Pane`, `confirm` (the
-question) and `expect` (the value for `.expect`). Each entry is in the footer on
-an agent (never a header), in `?` under "act on the selected agent", and in the
-dispatch; its key may not be one the table, D6, D7's `/` or D8's `a` takes.
-`x` → `kill`, with a confirm and the window id as `.expect`, is #228's and the
-only entry (#288 removed `R` → `request`). An entry with no `confirm` exits at once.
+verb, two optional functions of the selected `Pane`, `confirm` (the question)
+and `expect` (the value for `.expect`), and `offered`, whether the agent gets
+the key at all, with `not_here`, the note the key leaves where it does not.
+Each entry is in the footer on an agent it is offered on (never a header), in
+`?` under "act on the selected agent", and in the dispatch; its key may not be
+one the table, D6, D7's `/` or D8's `a` takes. `x` → `kill`, with a confirm and
+`%N @W` (the pane and its window's id) as `.expect`, is #228's, scoped to the
+pane by #301; `o` → `resume`, with no confirm and the session id as `.expect`,
+is #301's (#288 removed `R` → `request`). An entry with no `confirm` exits at once.
 
 **The confirm.** An entry with a `confirm` opens one frame, the focus frame,
 over the foot of the list or the tiles: the action and the target in its title,
-`confirm` at its right, the question (`kill window api:2 · server?`) and what
+`confirm` at its right, the question (`kill pane %12 (api:2 server)?`) and what
 the keys do, all in fg. It owns the keyboard (D18): `y` exits with the action,
 `n` and `esc` go back with nothing written, `?` shows its keys, `q` and `^C`
 close the board; every other key does nothing, `↵` included, so a held Enter
@@ -209,7 +215,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
-| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
+| `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). `nerd` draws the default, but for the subagent badge's nf-oct-workflow (U+F52E) in place of `✦`. The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
 | `COCKPIT_PANEL_TIMEOUT` | seconds before the panel kills its `claude -p` call. Default 120 |
 | `COCKPIT_PANEL_MODEL` | forces the panel's model, over the rules and the model picked on screen |
@@ -326,7 +332,8 @@ narrows as you type. Find reads each agent's session, window index, window
 name, title, state word (`needs`, `error`, `running`, `done`, `idle`) and its
 message or doing line. Space-separated terms must all match, each anywhere in
 those fields, ignoring case; it is a substring narrowing, with no fuzzy
-ranking. A session with no match hides; one with a match shows unfolded while
+ranking. Find also reads each agent's subagents' types and descriptions, so
+`explore` finds the agents running an Explore subagent. A session with no match hides; one with a match shows unfolded while
 the field is open, and its fold is kept for after. The matches are renumbered
 `1`-`9` as any rows are, and the frame's title says `4 of 13`, the agents that
 match out of all of them:
@@ -371,6 +378,74 @@ way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
 
 The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
 the list for `v` to come back.
+
+**Subagents (#313).** An agent with subagents running or failed carries a
+badge, the first of its row's extra cells, in two widths by the room the row
+has: `✦2·1✕` (running, failed; the failed count only when there is one), then
+their total, `✦3`, which takes 3 cells at 40 columns and leaves the name its 6
+and the message its 12. Done subagents never count: an agent whose subagents
+are all done shows no badge, and its tree still lists them. The badge is in
+the error role while a subagent has failed, else the running role. `&` is the
+badge in the ascii tier.
+
+Running is the subagents whose `subagents/` files say they run. With no files
+to read, it is the hook's `@cockpit_subs`, the background subagents in flight
+at the agent's last Stop. An ended agent (#301) runs no subagent, whatever its
+files say: its badge counts none running, shows only a failure, in the meta
+role and dim, and its tree draws those subagents with `◌` and no age.
+
+The files give no finish time, so the board keeps its own: it stamps each
+subagent when a read first sees it failed or done. A failure first seen before
+the agent's newest prompt is an earlier turn's: it leaves the badge and the
+tree at the same moment, so the two always agree. A background subagent that
+started last turn and failed this one stays, while the board stays open: each
+popup is a new process and starts with no memory (#338). The newest prompt is a human one;
+a subagent's `<task-notification>` report-back does not count. Once the prompt
+is out of the transcript's tail the read has none, and the board keeps the
+newest it saw. On the first read of a pane, when the board opens, a subagent
+already failed or done is stamped old unless it started after the newest
+prompt.
+
+`s` opens the selected agent's tree under its row; on a header, every tree in
+the session. Trees never open on their own, and which are open is kept in
+memory only, not in `board.state`, and a tree whose subagents all go (`/clear`)
+shuts, so the next session's do not open it. The footer offers `s tree`, or
+`s hide` when the tree is open, only where the tree gets a line: not in a
+folded group, nor in a list too long to leave a row spare. There `s` opens
+nothing and says `no room for its subagent tree` for 2 seconds:
+
+```
+│  ▾ api ────────────────────────────────────────────────────────────────────────────────── ▲1 ●2  │
+│▎ 1 ▲  0 server             Do you want to run npm test?                            no repo 4m12s │
+│  2 ●  1 tests           Bash: cargo test --workspace                    ✦2·1✕ +42 -7 ⑂main 1m03s │
+│     ├ ✓ 2 done                                                                                   │
+│     ├ ● Explore         find auth callers in src/auth                                12.4k 2m12s │
+│     ├ ✓ Explore         map callers                                                     9k 1m35s │
+│     ├ ✕ general-purpose fix lint in tui/src                                            842 1m08s │
+│     └ ● Plan            draft the migration plan                                      3.1k   45s │
+│  3 ●  3 migrate           Edit src/db/migrate.rs                                ✦1 no repo 1m03s │
+```
+
+A tree line is `├` (`|-` in ascii), the subagent's state glyph, its type, its
+description, its tokens (the context of its last request: `842`, `12.4k`,
+`3.1M`) and its age since it started. As the row narrows the tokens go first,
+then the description shortens to 8 cells, then the type to 6; the age stays.
+A done subagent folds into one `✓ N done` line, first in the tree, 2 minutes
+after a read first saw it done. A tree takes at most 5
+lines, the last reading `+N more` when it has more.
+
+Tree lines take only the rows the list leaves empty, and never more than half
+of them, so they never push a row off screen and never make the list scroll:
+`N-M of T` counts them, but a list that does not fit has no room for any. The
+selected agent's tree gets rows first, then the blocked agents', then the rest
+in board order; an agent that gets none keeps its badge. A folded group's trees
+stay shut, only the badges show.
+
+No key selects a tree line. `↑` `↓` step over a tree, `⇥`, the digits, `u`,
+`n` `p`, `g` `G`, the page keys and find's moves land on headers and agents
+only, so `↵` `a` `r` `f` `i` `x` `o` act on the agent the tree hangs from. The
+top of the list is never a tree line: the viewport moves up to the agent, or
+down past its tree when the selection would leave the screen.
 
 The list has no preview: the right-hand preview pane is a later step, so the
 list takes the board's whole width, and it captures no pane.
@@ -962,6 +1037,67 @@ reason in a warn note.
   `board-list-180`, `board-nocolor`, `board-nocolor-100`, `board-stale-100` and
   `board-tiles-100`; the help in `board-help-{60,100,180,tiles-100}`.
 
+### Contract changes for ended agents, a pane kill and resume (for #61)
+
+- #301: `data::Pane` gains `ended: bool`, appended last: `@panestate` is set
+  but no process in the pane is an agent (`agentish` on the command and the
+  process tree, the test the fleet read already made). It is never set while
+  `@cockpit_agents_glob` is empty, as a live `claude` cannot be told from a
+  shell then. `data::ended(raw, live, glob_known)` is new. Nothing is written
+  to tmux for it; `--json` and `--rows` do not carry it.
+- An ended row draws dimmed (name and text in the dim role plus `DIM`, off the
+  selection band), `◌` (ascii `~`) for its glyph and `ended` for its text, never
+  `▲`. It is out of "needs you", the hot band, a fold's kept rows, `u`, the
+  open selection and `a answer`; it sorts after the live rows of its group,
+  and a header counts it under `◌`. Find reads `ended` as its state word. The
+  tiles draw it the same way. `tm --needs` already skipped it: the sessions
+  view believes `@panestate` only on a pane whose command is an agent.
+- The fleet read evaluates `agentish` for every row now, not only for rows
+  with no `@panestate`, so the first fetch on a thread also reads
+  `@cockpit_agents_glob` (one `show-option`, once per thread).
+- A pane with `@panestate` whose command is no agent is looked up in the
+  process tree, which is one `ps -axww` for the fetch. Every ended row is such a
+  pane, so the verdict is kept per (pane id, `#{pane_pid}`, command) for
+  `GIT_TTL` (10 s): an ended row costs one `ps` per 10 s, not one per tick. A
+  new command or process in the pane asks again at once; an agent that exits
+  under an unchanged foreground (an editor) reads ended up to 10 s late. A pane
+  with no `@panestate` keeps the uncached tree test it had.
+- When a pane's `ended` turns, `tui.log` gets one line,
+  `fleet ended-flip pane=%N ended=true|false live_by=command|tree|none cmd=… pid=…`,
+  naming what found the agent, so a false "ended" can be traced.
+- `x` kills the pane, not the window: the confirm reads `kill pane %N
+  (<sess:idx> <window name>)?`, `.expect` is `%N @W`, and the wrapper runs
+  `kill-pane` inside the `if-shell -F` that checks the window id. Its `✓` note
+  is `killed pane %N (<sess:idx> <name>)`. An older binary's bare `@W` is
+  refused, and an older wrapper refuses this binary's `%N @W`, so neither skew
+  kills more or less than its confirm said.
+- New key `o` → verb `resume`, no confirm, `.expect` the session id; offered
+  only on an ended agent whose `@cockpit_session` is a lowercase UUID
+  (`board::{resumable, is_session_id}`). Pressed elsewhere it leaves a 2 s note.
+  `Extra` gains `offered` and `not_here`; `board::hints_on` lists the extras
+  one agent is offered, and `board::hints` is it on a live agent.
+- `scripts/cockpit-board` gains `resume)`: it splits the target's window with
+  `claude --resume '<id>'` (quoted with `sq`) at the target's
+  `#{pane_current_path}`, never `@cockpit_dir`: Claude Code never moves its
+  process's cwd (#312), so the pane's cwd is the project the session started
+  in, where `--resume` looks it up. The directory goes through `fesc`, as `-c`
+  expands formats; then the new pane is selected and the board ends. It
+  refuses with a `✕` note a pane that is gone, an id that is not
+  a lowercase UUID, an id the pane no longer holds, or no directory; and a
+  second copy, `✕ cockpit: <first 8 of the id> is already running in %N`, when
+  any pane, the target included, holds the id and runs an agent (its command
+  in `@cockpit_agents_glob`, or version-shaped), with or without `@panestate`
+  (SessionStart and idle clear it), read with one `list-panes -a` at the key
+  so a stale board cannot skip it. An ended
+  pane holding it does not block. The wrapper reads the command only, not the
+  process tree the board reads: a live agent under a foreground editor is not
+  seen there.
+- The `?` legend gains `◌ ended: its agent is gone`.
+- Goldens: the confirm's question in `board-confirm-{60,100}`; the `x` and `o`
+  rows and the legend in `board-help-{60,100,180,tiles-100}`. No list or tile
+  golden moved: their fixtures hold no ended agent, and a live agent's footer
+  is unchanged.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -1182,7 +1318,7 @@ glyph \t id \t where \t title \t (msg if needs-input else doing) \t since \t loc
 
 ```
 jump %N · review %N · panel %N · deliver %N            (deliver reserved for phase 2)
-kill %N                                                 (the board's EXTRAS, #228's arm)
+kill %N · resume %N                                     (the board's EXTRAS, #228's arm, #301)
 paste %N · send %N                                      (the panel)
 ```
 
@@ -1197,10 +1333,12 @@ new with `O_NOFOLLOW`, mode 0600, never over a file that is there. It is one
 `\n`-terminated line, every control character dropped (`\t` and `\n` too), at
 most 1 KiB (`EXPECT_MAX`); a longer value is refused, not cut, and the board
 exits 1 with nothing written, as is an empty one. For `kill` it is the target
-pane's `#{window_id}` (`@9`) when the confirm opened, not its name: agent
-windows tend to share one (`claude`), and a pane moved into a namesake would
-pass a name check. The wrapper reads the pane's `#{window_id}` again and
-refuses with a `✕` note when it differs. A pane with no `@N` window id is
+pane's id and `#{window_id}` (`%12 @9`) when the confirm opened, not its name:
+agent windows tend to share one (`claude`), and a pane moved into a namesake
+would pass a name check. The wrapper reads the pane's `#{window_id}` again and
+refuses with a `✕` note when it differs. For `resume` it is the session id the
+row showed; the wrapper resumes only a lowercase UUID (`8-4-4-4-12` hex) that
+the pane's `@cockpit_session` still holds. A pane with no `@N` window id is
 not offered the kill: `x` shows `✕ nothing done: <sess:idx> has no window id
 to check, kill not sent` and opens no confirm. Only ASCII control characters
 are dropped (`is_ascii_control`), so the bytes match what a shell `read` sees;
@@ -1261,24 +1399,23 @@ as one line, `capture failed`, never a blank tile: an empty preview and a dead
 pane are different facts and a blank tile tells you which one it is.
 
 **CLI:** `cockpit-tui board [--select %N] [--note <file>] | panel %N [--resume <state> --last ok|failed:<why>|hidden] |
-transcript ... | --rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
+--rows | --json | --version | -h | --help`. There is no `fleet`, `info` or `ask` subcommand: the
 board reaches those through the action file and the shell scripts.
 
-**Helper subcommands (#199):** `cockpit-tui transcript file %N | doing <jsonl> |
-tail <jsonl> [max]` is the transcript reader; `scripts/lib/transcript.sh` is a
-shim over it. It is byte-identical to the jq reader it replaced (Freeze 1 on #54)
-with two #193 changes: a row whose `message` is not an object is skipped where jq
-failed the whole read, and
+**The transcript reader (#199):** `data::transcript` (`file`, `doing`, `tail`) is a library
+module the board and the info screen read in-process; there is no `transcript`
+subcommand and no shell shim. It is byte-identical to the jq reader it replaced
+(Freeze 1 on #54) with two #193 changes: a row whose `message` is not an object is
+skipped where jq failed the whole read, and
 `<bash-input>`, `<bash-stdout>` and `<bash-stderr>` prompts are dropped like the
 other harness tags. It also departs from jq in three declared places:
 - a content item that would raise a jq runtime error is skipped, not fatal;
 - JSON only jq accepts (NaN, leading zeros, nesting deeper than 128) skips the line;
 - `file` sorts project directories in byte order, not the locale's.
 
-Its exit-code rule overrides the one below: every failure, a usage error
-included, is no output, status 1 and nothing on stderr.
+Every failure is `None`.
 
-The git helpers keep the exit-code rule below:
+**Helper subcommands (#199):** the git helpers keep the exit-code rule below:
 
 - `cockpit-tui git-flags` prints the fixed git safety flags, one word per line,
   without starting git. `git-flags --filters <dir>` prints the `-c` overrides
@@ -1486,22 +1623,22 @@ no longer exits with `info %N` for the wrapper, and `cockpit-board` has no
 `info` arm: an `info` line from an old binary is an unknown verb. The module is `info` (the
 screen) and `data::info` (the facts); both are in the module table.
 
-It shows what `tmux-review --info` showed, in the same order: `pane`, `cwd`,
+It shows, in this order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), `root`,
 `state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
 `base`, `session`, `title`, `tui` and the review dir with its pinned and
 delivered counts. The git root and the review base are Rust, on the `gitsafe`
 flags: the base is `review_base` from `review-diff.sh` (since-review, branch,
-uncommitted), so the screen names what `prefix r` diffs against. One quirk is
-kept on purpose: `review_base` reads its ref rows with a tab `IFS`, which
-folds empty fields, so `origin/HEAD` never serves as the upstream there; it
-does not here either.
+uncommitted), so the screen names what `prefix r` diffs against. Both read
+their ref rows split on the US byte, so an empty upstream field keeps its
+place and `origin/HEAD` serves as the base when the branch has no upstream,
+ahead of a local `main` or `master`.
 
 Text from outside (a transcript, a title, a path) is stripped of control
 characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
-`tmux-review --info` stays until #228's cleanup removes it.
+`tmux-review --info` is gone.
 
 ## The board as the review queue (#253)
 
@@ -1529,13 +1666,15 @@ at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
 the gitsafe flags. The list still makes no pane capture.
 
 **Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
-`kill %N` kills the pane's window. The board writes the `#{window_id}` it
-showed (`@9`, not the name: automatic-rename gives agents the same name) to
-`$COCKPIT_ACTION.expect` first. The wrapper compares it with the window the pane
-is in now and kills the window that id names; it refuses with a `✕` note if the
-pane moved to another window, if the file is missing, empty, not an `@<digits>`
-id or a symlink, or if the pane is gone. The `✓` note and the log carry the id
-and `session:index` of what died.
+`kill %N` kills the pane, not its window (#301). The board writes the pane id
+and the `#{window_id}` it showed (`%12 @9`, not the name: automatic-rename gives
+agents the same name) to `$COCKPIT_ACTION.expect` first. The wrapper checks the
+pane id is the action's, compares the window id with the window the pane is in
+now, and kills the pane in the same tmux call; it refuses with a `✕` note if
+the pane moved to another window, if the file is missing, empty, names another
+pane, is a bare `@<digits>` (an older binary's, whose confirm promised the
+window) or a symlink, or if the pane is gone. The `✓` note and the log carry
+the pane and the `session:index` and name of its window.
 The board key waits on the board's verb hook (not shipped).
 
 ## Sessions
@@ -1615,5 +1754,5 @@ name against `tmux display-message -p -t $N '#{session_name}'`, and refuses with
 session is gone, was renamed between the print and the act (`session $3 is now
 called 'x', not 'y'; nothing changed`), or is the one `tm` runs in. A kill or a
 rename that goes through puts the picker back, in the same popup. `@cockpit_glyphs
-ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` is not a tier of the
-Rust screens and draws the default.
+ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` draws the default
+there, its one glyph of its own being the board's subagent badge.

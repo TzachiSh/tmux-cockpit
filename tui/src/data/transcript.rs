@@ -1,40 +1,14 @@
-//! `cockpit-tui transcript`, behind the scripts/lib/transcript.sh shim: its output is
-//! byte-identical to the jq reader it replaced (Freeze 1, #54). Every failure is no output
-//! and status 1, nothing on stderr.
+//! The transcript reader: `file`, `doing` and `tail`. Its output is byte-identical to the jq
+//! reader it replaced (Freeze 1, #54). Every failure is `None`.
 use serde_json::Value;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
-/// `transcript file %N | doing <jsonl> | tail <jsonl> [max]`; returns the exit status.
-pub fn main(args: &[String]) -> i32 {
-    let a: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = match a.as_slice() {
-        ["file", pane, ..] => file(pane).map(|p| [p.as_os_str().as_bytes(), b"\n"].concat()),
-        ["doing", path, ..] => doing(Path::new(path)).map(String::into_bytes),
-        // `${2:-4096}`: an empty max is the default too.
-        ["tail", path, rest @ ..] => match rest.first().copied().unwrap_or("") {
-            "" => tail(Path::new(path), 4096),
-            m if m.bytes().all(|b| b.is_ascii_digit()) => m.parse().ok().and_then(|m| tail(Path::new(path), m)),
-            _ => None,
-        }
-        .map(String::into_bytes),
-        _ => None,
-    };
-    match out {
-        Some(b) => {
-            // A closed pipe is the reader's business, never a panic on stderr.
-            let _ = std::io::stdout().lock().write_all(&b);
-            0
-        }
-        None => 1,
-    }
-}
-
 /// Claude Code's projects directory: `$CLAUDE_CONFIG_DIR/projects`, else `~/.claude/projects`.
-fn projects_dir() -> PathBuf {
+pub(crate) fn projects_dir() -> PathBuf {
     match std::env::var("CLAUDE_CONFIG_DIR") {
         Ok(d) if !d.is_empty() => PathBuf::from(d).join("projects"),
         _ => PathBuf::from(format!("{}/.claude/projects", std::env::var("HOME").unwrap_or_default())),
@@ -43,7 +17,7 @@ fn projects_dir() -> PathBuf {
 
 /// `path` as a regular file inside `root`, symlinks resolved, or None. The hooks check the
 /// same rule before writing @cockpit_transcript; the reader does not trust the option.
-fn under(root: &Path, path: &str) -> Option<PathBuf> {
+pub(crate) fn under(root: &Path, path: &str) -> Option<PathBuf> {
     if path.is_empty() || path.split('/').any(|c| c == "..") {
         return None;
     }
@@ -318,8 +292,7 @@ fn human(v: &Value) -> Option<&str> {
 }
 
 /// Which input field says what a tool is doing, in preference order: the
-/// concrete argument first, the prose last. Shared with the board (data.rs) and
-/// mirrored by `desc` in scripts/lib/transcript.sh; change all three together.
+/// concrete argument first, the prose last. Shared with the board (data.rs).
 const DETAIL: [&str; 12] = [
     "command",
     "file_path",

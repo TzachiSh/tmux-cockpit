@@ -15,7 +15,7 @@
 "│    ✓◆ 1 checkout Opened PR #88…rd form a11y ?1 new   25m │"
 "│    ○  5 a11y    idle                   clean ⑂main       │"
 "┏ kill · api:0 · server ━━━━━━━━━━━━━━━━━━━━━━━━━━ confirm ┓"
-"┃ kill window api:0 · server?                              ┃"
+"┃ kill pane %3 (api:0 server)?                             ┃"
 "┃                                                          ┃"
 "┃ ↵ is off here, so a held Enter cannot send.              ┃"
 "┃ the list holds still while this is open.                 ┃"

@@ -10,6 +10,8 @@ the wrong tree:
 
     tmux set-option -p -t "$TMUX_PANE" @cockpit_dir <path-to-that-worktree>
 
+Run it as a command of its own, after any `cd`: the hook that follows a `cd` sets it to the new cwd.
+
 Keep the `-p`: without it the option is inherited by every pane on the server.
 
 Run this, with a long timeout (the human is reading and annotating; do not

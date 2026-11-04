@@ -3,8 +3,8 @@
 # file launches it, ingests what it wrote, and asks what to do next.
 # Sourced by tmux-review, never run. Bash 4+.
 #
-# The exit codes are the loop's contract with review_pane and --request, the
-# same as the fzf picker had: 20 deliver, 21 approved, anything else leave.
+# The exit codes are the loop's contract with review_pane and --request:
+# 20 deliver, 21 approved, 125 refused by git.sh (#330), anything else leave.
 # 127 is new: revdiff is not installed. 126: revdiff failed (its stderr is left
 # in <session dir>/revdiff.err for the caller to print).
 
@@ -113,6 +113,14 @@ review_loop() {
     }
     # shellcheck source=lib/review-store.sh
     . "$LIBDIR/review-store.sh" || exit 1
+
+    # 125: refused, so --request can tell it from "reviewed, no comments" (0). A pinned batch stays.
+    if git_refused "$dir"; then
+        tmux display-message "$(fesc "$GIT_REFUSAL")" 2>/dev/null
+        printf '%s\n' "$GIT_REFUSAL" >&2
+        [ -s "$store" ] || drop_store "$store"
+        exit 125
+    fi
 
     # The base this review diffs against: the choice made at the prompt,
     # remembered beside the store so a resumed review keeps it.

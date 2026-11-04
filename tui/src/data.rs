@@ -3,6 +3,8 @@ pub mod fleet;
 pub mod gitsafe;
 pub mod info;
 pub mod sessions;
+// the subagent tree (#313)
+pub mod subagents;
 pub mod transcript;
 
 use serde_json::Value;
@@ -148,6 +150,14 @@ pub struct Pane {
     pub idle_since: Option<u64>,
     /// `#{window_id}`, `@N`, as tmux gave it; the board checks it before use
     pub win: String,
+    /// `@cockpit_subs` (#313): background subagents in flight at the agent's last Stop, the
+    /// count of `type: "subagent"` in its `background_tasks`; 0 when unset or not a number
+    pub subs_n: u32,
+    /// every subagent in the session's `subagents/` dir, oldest first (data::subagents)
+    pub subs: Vec<subagents::Sub>,
+    /// #301: @panestate is set but no agent runs in the pane any more (a crash
+    /// or a kill that let no hook run). The board draws it dimmed as ended.
+    pub ended: bool,
 }
 
 /// Skips the three ages, which change every tick and would defeat the redraw
@@ -179,12 +189,17 @@ impl Hash for Pane {
             asked_since: _,
             idle_since: _,
             win,
+            subs_n,
+            subs,
+            ended,
         } = self;
         [
             id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
-        (state, pinned, delivered).hash(h);
+        (state, pinned, delivered, subs_n, ended).hash(h);
+        // Sub hashes only what changes its drawing: never `started`, tokens by the thousand.
+        subs.hash(h);
     }
 }
 
@@ -673,6 +688,13 @@ fn is_agent_cmd(cmd: &str) -> bool {
     AGENT_GLOB.with(|g| g.contains(&format!("|{cmd}|")))
 }
 
+/// #301: the hooks marked the pane (`raw`, its @panestate) but no process in
+/// it is an agent. With no agent list (the plugin not loaded) a live `claude`
+/// cannot be told from a shell, so nothing is called ended.
+pub fn ended(raw: &str, live: bool, glob_known: bool) -> bool {
+    !raw.is_empty() && !live && glob_known
+}
+
 const SEP: char = '\u{1f}';
 
 /// Split on `\037`, not tab: a tab in a cwd shifts every later field. tmux never
@@ -690,12 +712,53 @@ const FIELDS: &str = concat!(
     "\u{1f}#{?#{@cockpit_review_spool},#{@cockpit_review_spool},-}",
     "\u{1f}#{window_id}",
     "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_dir}}}}",
+    // #313: 14 the hook's subagent count, 15 the session's transcript, for its subagents/ dir
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_subs}}}}",
+    "\u{1f}#{s/\n/ /:#{s/\t/ /:#{s/\u{1f}/ /:#{@cockpit_transcript}}}}",
 );
 
 /// `-` back to empty. A sentinelled option whose real value is a bare `-` would
 /// read as unset; none of these ever holds one.
 fn unsentinel(s: &str) -> String {
     if s == "-" { String::new() } else { s.to_string() }
+}
+
+/// (pane id, pane pid, command): what a tree verdict is good for
+type TreeKey = (String, String, String);
+
+thread_local! {
+    /// #301: whether an agent runs anywhere in a marked pane's process tree, by
+    /// (pane id, pane pid, command): a new command or process asks again, else
+    /// one `ps` per pane per [`GIT_TTL`] rather than one per tick.
+    static TREES: std::cell::RefCell<HashMap<TreeKey, (Instant, bool)>> = std::cell::RefCell::default();
+    /// each pane's last `ended`, so a flip is logged once
+    static ENDED: std::cell::RefCell<HashMap<String, bool>> = std::cell::RefCell::default();
+}
+
+fn tree_cached(key: (&str, &str, &str), look: impl FnOnce() -> bool) -> bool {
+    let key = (key.0.to_string(), key.1.to_string(), key.2.to_string());
+    TREES.with(|c| {
+        let mut c = c.borrow_mut();
+        c.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
+        if let Some((_, v)) = c.get(&key) {
+            return *v;
+        }
+        let v = look();
+        c.insert(key, (Instant::now(), v));
+        v
+    })
+}
+
+/// One line when a pane turns ended or back, with what found the agent
+/// (`command`, `tree`) or `none`, so a false "ended" can be traced.
+fn log_ended_flip(p: &Pane, live_by: &str) {
+    let was = ENDED.with(|c| c.borrow_mut().insert(p.id.clone(), p.ended));
+    if was.unwrap_or(false) != p.ended {
+        log(&format!(
+            "fleet ended-flip pane={} ended={} live_by={live_by} cmd={:?} pid={}",
+            p.id, p.ended, p.cmd, p.pid
+        ));
+    }
 }
 
 /// `None` when the list-panes call itself failed: no tmux, not "no agents".
@@ -712,6 +775,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     let (mut ps, mut dirs) = (vec![], vec![]);
     for l in out.lines() {
         let f: Vec<&str> = l.split(SEP).collect();
+        // FIELDS has 16; the 13 before @cockpit_dir are the floor, so an older format reads
         if f.len() < 13 {
             continue;
         }
@@ -721,11 +785,20 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         // source of truth, and a wrapper hides `claude` behind its own argv0.
         let raw = unsentinel(f[4]);
         // The name is a fast path that skips the `ps` fork; the tree decides.
-        let agent = !raw.is_empty() || agentish(f[3]) || {
+        let by_cmd = agentish(f[3]);
+        let mut in_tree = || {
             let t = procs_t.get_or_insert_with(procs);
             tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
         };
-        if !agent {
+        // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
+        let by_tree = !by_cmd
+            && if raw.is_empty() {
+                in_tree()
+            } else {
+                tree_cached((f[0], f[9], f[3]), in_tree)
+            };
+        let live = by_cmd || by_tree;
+        if raw.is_empty() && !live {
             continue;
         }
         let mut p = Pane {
@@ -742,16 +815,32 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
             review: unsentinel(f[10]),
             spool: unsentinel(f[11]),
             win: f[12].into(),
+            ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
             ..Default::default()
         };
+        log_ended_flip(
+            &p,
+            if by_cmd {
+                "command"
+            } else if by_tree {
+                "tree"
+            } else {
+                "none"
+            },
+        );
         if p.sess.is_empty() {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
             p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
         }
         read_transcript(&mut p);
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        // @cockpit_dir, last so a 13-field row from an older format still reads
+        // @cockpit_dir, @cockpit_subs and @cockpit_transcript come after the 13 a row from an
+        // older format has, so such a row still reads: 13, 14 and 15 are optional
         dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
+        p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
+        if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
+            p.subs = subagents::read(&d);
+        }
         ps.push(p);
     }
     fill_git(&mut ps, &dirs);

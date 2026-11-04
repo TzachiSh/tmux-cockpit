@@ -117,7 +117,10 @@ review_base() {               # <dir> [auto|since-review|branch|uncommitted] [br
     # master. Rows come back sorted by name, not by our preference, so they
     # are collected first and chosen after. A pattern also matches refs BELOW
     # it (refs/heads/main/x when no main exists), hence the exact names.
-    while IFS=$'\t' read -r name sha ups track sym; do
+    # US, not tab: tab is IFS whitespace, which folds the empty upstream and
+    # track fields of origin/HEAD's row and shifted its symref into the wrong
+    # variable -- the origin/HEAD fallback below never fired.
+    while IFS=$'\037' read -r name sha ups track sym; do
         case "$name" in
             "$ref")                   ckpt=$sha ;;
             "refs/heads/$br")         [ -n "$head" ] || head=$sha; bups=$ups; btrack=$track ;;
@@ -126,7 +129,7 @@ review_base() {               # <dir> [auto|since-review|branch|uncommitted] [br
             refs/heads/master)        mastersha=$sha ;;
         esac
     done < <(git -C "$dir" --no-optional-locks for-each-ref \
-        --format='%(refname)%09%(objectname)%09%(upstream:short)%09%(upstream:track)%09%(symref:short)' \
+        --format='%(refname)%1f%(objectname)%1f%(upstream:short)%1f%(upstream:track)%1f%(symref:short)' \
         -- "$ref" "refs/heads/$br" refs/remotes/origin/HEAD refs/heads/main refs/heads/master 2>/dev/null)
     case "$mode" in auto|since-review)
         [ -z "$ckpt" ] || { printf '%s\tsince last review\tsince-review\n' "$ckpt"; return 0; } ;;
@@ -200,6 +203,8 @@ bytelen() { local LC_ALL=C; printf '%s\n' "${#1}"; }
 lines_mode() {
     local dir=$1
     [ -n "$dir" ] || return 0
+    # Rows only on stdout: the refusal goes to stderr, with a status a reader can test.
+    if git_refused "$dir"; then printf '%s\n' "$GIT_REFUSAL" >&2; return 1; fi
 
     # core.quotePath=false: with git's default (true) a path holding any
     # non-ASCII byte comes out C-quoted and octal-escaped -- `--- "a/caf\303\251.txt"`
@@ -239,8 +244,8 @@ lines_mode() {
     #
     # Rows are not the only way a diff gets too big to hand a reviewer. 4000
     # rows of a 1500-column minified line sit comfortably under the row cap
-    # and are still 5.7 MB to capture, parse into shell rows, and render as an
-    # fzf list of 1500-column entries. So the same pass caps on BYTES too --
+    # and are still 5.7 MB to capture, parse into shell rows, and render as a
+    # list of 1500-column entries. So the same pass caps on BYTES too --
     # 4 MB -- and it MEASURES those bytes rather than estimating them.
     #
     # Two estimators were tried here first and both broke, in opposite
@@ -488,14 +493,14 @@ lines_mode() {
             # partition used, ported exactly.
             if (!(p in part)) part[p] = (index(p, "test") > 0 ? 0 : 1)
             # Control-char strip + 160 cap, the agent-state:82-86 discipline:
-            # this text reaches an fzf display column and a comment-store
+            # this text reaches a display column and a comment-store
             # header next.
             frag = substr($0, length($1) + length($2) + length($3) + length($4) + 5)
             gsub(/[\001-\037\177]/, "", frag)
             # 160 BYTES, backed off to a character boundary. A blind byte cut
             # ends a fragment mid-sequence -- 200 "e-acute" after one ASCII
             # byte put a lead byte C3 at 160 and its continuation at 161, so
-            # the fzf column and the comment-store quote header got an
+            # the display column and the comment-store quote header got an
             # undecodable trailing byte. The byte AFTER the cut says whether
             # the cut split anything: only a continuation byte there means it
             # landed inside a sequence, and then the whole partial sequence at

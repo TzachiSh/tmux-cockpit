@@ -214,7 +214,7 @@ pub fn key(s: &mut Screen, th: &Theme, code: KeyCode, area: Rect) -> Out {
 
 /// The rows as the shell printed them: a label padded to ten, a space, the
 /// value, nothing wrapped. `cockpit-tui info --text %N` prints these, for a
-/// script and for the suite's parity check against `tmux-review --info`.
+/// script and for the suite's field checks.
 pub fn text(x: &Facts) -> String {
     rows(x, &Glyphs::unicode(), 100_000)
         .iter()

@@ -146,8 +146,12 @@ pub struct Glyphs {
     pub running: &'static str,
     pub done: &'static str,
     pub idle: &'static str,
+    /// #301: an agent whose process is gone; the board's, never a hook state
+    pub ended: &'static str,
     pub review_pending: &'static str,
     pub review_sent: &'static str,
+    /// #313: the subagent badge on a list row; nerd-font's nf-oct-workflow in the nerd tier
+    pub sub: &'static str,
     pub active: &'static str,
     pub enter: &'static str,
     pub ellipsis: &'static str,
@@ -197,10 +201,10 @@ const ASCII_THICK: border::Set = border::Set {
 
 impl Glyphs {
     pub fn from_env() -> Self {
-        if std::env::var("COCKPIT_GLYPHS").as_deref() == Ok("ascii") {
-            Self::ascii()
-        } else {
-            Self::unicode()
+        match std::env::var("COCKPIT_GLYPHS").as_deref() {
+            Ok("ascii") => Self::ascii(),
+            Ok("nerd") => Self::nerd(),
+            _ => Self::unicode(),
         }
     }
 
@@ -212,8 +216,11 @@ impl Glyphs {
             running: "●",
             done: "✓",
             idle: "○",
+            ended: "◌",
             review_pending: "◆",
             review_sent: "↵",
+            // U+2726, one cell, never followed by U+FE0F
+            sub: "\u{2726}",
             active: "▎",
             enter: "↵",
             ellipsis: "…",
@@ -239,6 +246,15 @@ impl Glyphs {
         }
     }
 
+    /// The unicode tier with a Nerd Font's glyph where one says more: the subagent
+    /// badge only. Every other mark stays the shape that carries the state.
+    pub const fn nerd() -> Self {
+        Self {
+            sub: "\u{f52e}",
+            ..Self::unicode()
+        }
+    }
+
     pub const fn ascii() -> Self {
         Self {
             ascii: true,
@@ -247,8 +263,10 @@ impl Glyphs {
             running: "*",
             done: "+",
             idle: ".",
+            ended: "~",
             review_pending: "#",
             review_sent: "<",
+            sub: "&",
             active: ">",
             enter: "<",
             ellipsis: "...",
