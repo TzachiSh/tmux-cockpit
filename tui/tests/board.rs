@@ -1782,7 +1782,7 @@ fn the_selected_row_is_a_bar_and_a_band() {
             .collect();
         assert_eq!(marks.len(), 1, "one selection");
         let (x, y) = marks[0];
-        let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+        let line: String = (0..95).map(|x| b[(x, y)].symbol()).collect();
         assert!(line.contains("auth"), "{line}");
         let k = line.find("Pushed").unwrap();
         let k = line[..k].chars().count() as u16;
@@ -2660,11 +2660,12 @@ fn fleet_ended() -> Vec<Pane> {
     ps
 }
 
+/// At 95 columns, the widest list with no right pane (#284) to name the title too.
 fn list_line(ps: &[Pane], sel: &str, id: &str) -> (Buffer, u16) {
     let (th, nav) = (Theme::fixed(), nav_on(ps, Sel::Pane(sel.into()), &[], 26));
-    let b = render_to_buffer(100, 30, |f| board::render(f, f.area(), &list_view(ps, &th, &nav)));
+    let b = render_to_buffer(95, 30, |f| board::render(f, f.area(), &list_view(ps, &th, &nav)));
     let p = ps.iter().find(|p| p.id == id).unwrap();
-    let y = (0..30).find(|&y| (0..100).map(|x| b[(x, y)].symbol()).collect::<String>().contains(p.title.as_str()));
+    let y = (0..30).find(|&y| (0..95).map(|x| b[(x, y)].symbol()).collect::<String>().contains(p.title.as_str()));
     (b.clone(), y.unwrap())
 }
 
@@ -2672,7 +2673,7 @@ fn list_line(ps: &[Pane], sel: &str, id: &str) -> (Buffer, u16) {
 fn an_ended_row_says_ended_with_its_own_glyph_and_no_needs_mark() {
     let ps = fleet_ended();
     let (b, y) = list_line(&ps, "%4", "%3");
-    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    let line: String = (0..95).map(|x| b[(x, y)].symbol()).collect();
     assert!(line.contains("◌") && line.contains("ended") && !line.contains("▲"), "{line}");
     assert!(!line.contains("npm test"), "the message it died on is not shown: {line}");
 }
@@ -2682,7 +2683,7 @@ fn an_ended_row_is_dimmed_name_and_text_off_the_band() {
     let ps = fleet_ended();
     let th = Theme::fixed();
     let (b, y) = list_line(&ps, "%4", "%3");
-    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    let line: String = (0..95).map(|x| b[(x, y)].symbol()).collect();
     for word in ["server", "ended"] {
         let x = line[..line.find(word).unwrap()].chars().count() as u16;
         assert!(b[(x, y)].modifier.contains(Modifier::DIM), "{word} is DIM");
@@ -2694,7 +2695,7 @@ fn an_ended_row_is_dimmed_name_and_text_off_the_band() {
 fn a_selected_ended_row_keeps_fg_and_no_dim() {
     let ps = fleet_ended();
     let (b, y) = list_line(&ps, "%3", "%3");
-    let line: String = (0..100).map(|x| b[(x, y)].symbol()).collect();
+    let line: String = (0..95).map(|x| b[(x, y)].symbol()).collect();
     let x = line[..line.find("server").unwrap()].chars().count() as u16;
     assert!(!b[(x, y)].modifier.contains(Modifier::DIM), "D17: the band is never dim");
     assert_eq!(b[(x, y)].fg, Theme::fixed().value);

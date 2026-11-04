@@ -233,12 +233,13 @@ fn a_failure_before_the_last_prompt_leaves_the_badge() {
 }
 
 /// At 40 columns the badge is 3 cells and the name keeps 6, the message 12.
+/// 95, not 100: at 96 the list shares the board with the right pane (#284).
 #[test]
-fn the_badge_on_the_row_at_40_60_and_100() {
+fn the_badge_on_the_row_at_40_60_and_95() {
     let ps = mock();
     let th = Theme::fixed();
     let n = nav(&ps, "%3", &[], 12);
-    for (w, want) in [(40u16, "✦3"), (60, "✦2·1✕"), (100, "✦2·1✕ +42 -7 ⑂main")] {
+    for (w, want) in [(40u16, "✦3"), (60, "✦2·1✕"), (95, "✦2·1✕ +42 -7 ⑂main")] {
         let out = draw(w, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
         let row = lines(&out).into_iter().find(|l| l.contains("tests")).unwrap();
         assert!(row.contains(want), "{w}: {row}");
@@ -719,7 +720,8 @@ fn subagent_goldens() {
     }
     let n = nav(&ps, "%4", &["%4"], 12);
     let th = Theme::fixed();
-    let out = draw(100, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
+    // 95: the widest list with no right pane (#284), room for the token column
+    let out = draw(95, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
     let l = lines(&out);
     assert!(l.iter().any(|l| l.contains("├ ✓ 2 done")), "{out}");
     assert!(l.iter().any(|l| l.contains("12.4k") && l.contains("2m12s")), "{out}");
@@ -747,7 +749,8 @@ fn a_narrowing_tree_line_drops_tokens_then_description() {
         let out = draw(w, 16, |f| board::render(f, f.area(), &list_view(&ps, &th, &n)));
         lines(&out).into_iter().find(|l| l.contains("2m12s")).unwrap()
     };
-    let (wide, mid, narrow) = (line(100), line(50), line(40));
+    // 95: the widest list with no right pane (#284)
+    let (wide, mid, narrow) = (line(95), line(50), line(40));
     assert!(wide.contains("find auth callers in src/auth") && wide.contains("12.4k"), "{wide}");
     assert!(!mid.contains("12.4k") && mid.contains("find auth call"), "{mid}");
     assert!(narrow.contains("Explore") && narrow.contains("find au…"), "{narrow}");

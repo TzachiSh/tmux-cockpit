@@ -2423,6 +2423,14 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(0), Constraint::Length(1)]).areas(area);
     let gs = groups(v.panes);
     header(f, head, v, &grid(area, 0), v.panes.len(), Some(gs.len()));
+    // D1: at 96 columns and over the selection's pane takes the right of the body
+    let (body, side) = match list_w(area.width) {
+        Some(lw) => {
+            let [l, r] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(0)]).areas(body);
+            (l, Some(r))
+        }
+        None => (body, None),
+    };
 
     let room = nav.fit(list_room(area)).max(1);
     let rows = nav.rows_in(v.panes, room);
@@ -2520,6 +2528,13 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
             .collect();
         f.render_widget(Paragraph::new(lines), inner);
     }
+    if let Some(side) = side {
+        let i = match rows.get(r) {
+            Some(Row::Agent(i)) => Some(*i),
+            _ => None,
+        };
+        side_pane(f, side, v, i);
+    }
     if nav.field && v.confirm.is_none() {
         // the field has the keys, so its keys are the bar (D19), under any note
         if let Some(n) = v.note {
@@ -2536,6 +2551,271 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
         return;
     }
     footer(f, foot, v, nav.focus(v.panes), nav.pane(v.panes));
+}
+
+// ------------------------------------------------ the right pane (D1, #284)
+
+/// D1: from this board width the list shares the body with the selection's pane.
+pub const SPLIT_W: u16 = 96;
+
+/// The list's width when the board splits, `clamp(w/3 + 8, 40, 64)`: 41 at 100
+/// and 64 at 180, which leaves the pane 116. `None` below [`SPLIT_W`], where the
+/// list takes the whole width.
+pub fn list_w(w: u16) -> Option<u16> {
+    (w >= SPLIT_W).then(|| (w / 3 + 8).clamp(40, 64))
+}
+
+/// The pane's rows above the screen: where, asked, said, doing, a blank, the rule.
+const PANE_HEAD: u16 = 6;
+
+/// The screen rows the pane shows on a board of `area`, which is what the worker
+/// captures: the top line, the frame and the footer take four.
+pub fn pane_rows(area: Rect) -> usize {
+    area.height.saturating_sub(4 + PANE_HEAD) as usize
+}
+
+/// The mark on a screen line cut at the pane's edge, one cell in both tiers:
+/// the ellipsis is three in ascii, and a pane line may end in `…` of its own.
+const CLIP_MARK: (&str, &str) = ("›", ">");
+
+/// The selection's pane: its frame titled as the list names it, its state and age;
+/// where it runs, what was asked, said, and is being done; then its screen, the
+/// newest line on the last row. `i` indexes the panes; `None` is no agent selected.
+fn side_pane(f: &mut Frame, area: Rect, v: &View, i: Option<usize>) {
+    let th = v.th;
+    let g = &th.g;
+    let Some(i) = i else {
+        let block = Block::bordered()
+            .border_set(g.plain)
+            .border_style(Style::new().fg(th.faint))
+            .padding(Padding::horizontal(1))
+            .title(Line::from(Span::styled(" no agent selected ", Style::new().fg(th.label))));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let say = Span::styled(
+            g.trunc("the agent you pick shows here.", inner.width as usize),
+            Style::new().fg(th.value),
+        );
+        f.render_widget(Paragraph::new(Line::from(say)), inner);
+        return;
+    };
+    let p = &v.panes[i];
+    let urgent_c = if needs(p) {
+        Some(th.needs)
+    } else if p.state == State::Error && !p.ended {
+        Some(th.error)
+    } else {
+        None
+    };
+    let word = if p.ended {
+        ENDED
+    } else if needs(p) {
+        "needs you"
+    } else {
+        state_word(p.state)
+    };
+    // the list row's age rule: idle has none worth reading
+    let right = match (p.state, p.since) {
+        (State::Unknown, _) | (_, None) => format!(" {word} "),
+        (_, Some(s)) => format!(" {word} {} {} ", g.dot, fmt_dur(s)),
+    };
+    let (gl, gl_c) = glyph(th, p);
+    let (rv, rv_c) = th.review_mark(&p.review);
+    let room = (area.width as usize).saturating_sub(2 + right.width() + 1 + 1 + gl.width() + rv.width() + 1);
+    let name = g.trunc(&format!("{} {} {}", p.wher, g.dot, p.label()), room);
+    let block = Block::bordered()
+        .border_set(g.thick)
+        .border_style(Style::new().fg(urgent_c.unwrap_or(th.accent)))
+        .padding(Padding::horizontal(1))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(gl, Style::new().fg(gl_c)),
+            Span::styled(rv, Style::new().fg(rv_c)),
+            Span::raw(" "),
+            Span::styled(format!("{name} "), Style::new().fg(if dimmed(p) { th.meta } else { th.value })),
+        ]))
+        .title(Line::from(Span::styled(right, Style::new().fg(urgent_c.unwrap_or(th.meta)))).right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let w = inner.width as usize;
+    let head_h = PANE_HEAD.min(inner.height);
+    let [hd, body] = Layout::vertical([Constraint::Length(head_h), Constraint::Min(0)]).areas(inner);
+    let pv = v.pvs.get(i).map(|o| o.as_deref());
+    let (screen, shot) = screen_lines(pv, body.height as usize, w, th);
+    let mut head = vec![where_line(p, w, th)];
+    head.extend(said_lines(p, w, th));
+    head.push(Line::default());
+    head.push(rule(&shot, w, th));
+    f.render_widget(Paragraph::new(head), hd);
+    let mut para = Paragraph::new(screen);
+    if dimmed(p) {
+        // as the tile's: a terminal that ignores DIM still has the meta title
+        para = para.style(Style::new().add_modifier(Modifier::DIM));
+    }
+    f.render_widget(para, body);
+}
+
+/// `/src/api · ⑂feat/rate-limit · %3   ◆ review pending`: the path gives way
+/// first, cut in its middle, then goes, so the branch and the id stay.
+fn where_line(p: &Pane, w: usize, th: &Theme) -> Line<'static> {
+    let g = &th.g;
+    let (rv, rv_c) = th.review_mark(&p.review);
+    let review = match p.review.as_str() {
+        "pending" => format!("{rv} review pending"),
+        "sent" | "pasted" => format!("{rv} review sent"),
+        _ => String::new(),
+    };
+    let sep = format!(" {} ", g.dot);
+    let br = facts::branch(&p.loc);
+    let mut tail = vec![];
+    if !br.is_empty() {
+        tail.push(format!("{}{}", branch_mark(g, br), g.trunc(br, 32)));
+    }
+    tail.push(p.id.clone());
+    let tail = tail.join(&sep);
+    let gap = if review.is_empty() { 0 } else { 3 + review.width() };
+    let room = w.saturating_sub(gap);
+    let path_w = room.saturating_sub(tail.width() + sep.width());
+    let text = if p.path.is_empty() || path_w < 8 {
+        g.trunc(&tail, room)
+    } else {
+        format!("{}{sep}{tail}", g.trunc_middle(&p.path, path_w))
+    };
+    let mut spans = vec![Span::styled(text, Style::new().fg(th.meta))];
+    if !review.is_empty() && w >= gap {
+        spans.push(Span::raw("   "));
+        spans.push(Span::styled(review, Style::new().fg(rv_c)));
+    }
+    Line::from(spans)
+}
+
+/// The `asked`, `said` and `doing` rows: the info screen's three. A blocked
+/// agent's third row is its question, an erring one's its error, and an ended
+/// agent's says `ended`.
+fn said_lines(p: &Pane, w: usize, th: &Theme) -> Vec<Line<'static>> {
+    let g = &th.g;
+    let tw = w.saturating_sub(7);
+    let urgent = !p.msg.is_empty() && urgent(p);
+    let (label, text, c) = match p.state {
+        _ if p.ended => ("doing", ENDED.to_string(), th.meta),
+        State::NeedsInput if urgent => ("needs", g.trunc(&p.msg, tw), th.needs),
+        State::Error if urgent => ("error", g.trunc(&p.msg, tw), th.error),
+        _ if p.doing.is_empty() => ("doing", String::new(), th.value),
+        _ => ("doing", g.trunc_middle(&p.doing, tw), th.value),
+    };
+    let row = |label: &str, text: String, c| {
+        // never the word "unknown": nothing there reads as a dash
+        let (text, c) = if text.is_empty() {
+            (g.trunc(g.dash, tw), th.meta)
+        } else {
+            (text, c)
+        };
+        Line::from(vec![
+            Span::styled(format!("{label:<7}"), Style::new().fg(th.label)),
+            Span::styled(text, Style::new().fg(c)),
+        ])
+    };
+    vec![
+        row("asked", g.trunc(&p.asked, tw), th.value),
+        row("said", g.trunc(&p.said, tw), th.quote),
+        row(label, text, c),
+    ]
+}
+
+/// What the screen part shows, for the rule over it.
+enum Shot {
+    /// no capture has come back yet
+    Unread,
+    Failed,
+    Blank,
+    Lines(usize),
+}
+
+/// `── live · last 17 lines ───`, in the faint role but for its words.
+fn rule(s: &Shot, w: usize, th: &Theme) -> Line<'static> {
+    let g = &th.g;
+    let words = match s {
+        Shot::Unread | Shot::Failed => "live".to_string(),
+        Shot::Blank => format!("live {} blank", g.dot),
+        Shot::Lines(1) => format!("live {} last line", g.dot),
+        Shot::Lines(n) => format!("live {} last {n} lines", g.dot),
+    };
+    let bar = g.plain.horizontal_top;
+    let words = g.trunc(&words, w.saturating_sub(4));
+    let rest = w.saturating_sub(3 + words.width() + 1);
+    Line::from(vec![
+        Span::styled(format!("{bar}{bar} "), Style::new().fg(th.faint)),
+        Span::styled(words, Style::new().fg(th.meta)),
+        Span::styled(format!(" {}", bar.repeat(rest)), Style::new().fg(th.faint)),
+    ])
+}
+
+/// The screen in `h` rows of `w` cells: ANSI kept, never wrapped, its last line
+/// on the last row (a short screen leaves the top empty, not the bottom), and a
+/// line cut at the edge ends in [`CLIP_MARK`]. `pv` is as `View::pvs` holds it.
+fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Vec<Line<'static>>, Shot) {
+    let say = |t: &str, c| vec![Line::from(Span::styled(th.g.trunc(t, w), Style::new().fg(c)))];
+    let text = match pv {
+        None => return (say("reading the screen \u{2026}", th.meta), Shot::Unread),
+        // a failed capture is a gone pane, never a quiet one (the tiles' rule)
+        Some(None) => return (say("capture failed", th.error), Shot::Failed),
+        Some(Some(t)) => t,
+    };
+    let lines = text.as_bytes().into_text().unwrap_or_default().lines;
+    if lines.iter().all(|l| l.width() == trailing_blanks(l)) {
+        return (vec![], Shot::Blank);
+    }
+    let n = lines.len().min(h);
+    let mark = Span::styled(if th.g.ascii { CLIP_MARK.1 } else { CLIP_MARK.0 }, Style::new().fg(th.meta));
+    let mut out = vec![Line::default(); h - n];
+    out.extend(lines[lines.len() - n..].iter().map(|l| clip(l, w, &mark)));
+    (out, Shot::Lines(n))
+}
+
+/// `l` in `w` cells, or cut to `w - 1` and marked. Trailing blanks do not count:
+/// a TUI pads its lines to its own width, which is not a cut.
+fn clip(l: &Line<'static>, w: usize, mark: &Span<'static>) -> Line<'static> {
+    let used: usize = l.width() - trailing_blanks(l);
+    if used <= w {
+        return l.clone();
+    }
+    let mut room = w.saturating_sub(mark.width());
+    let mut spans = vec![];
+    for sp in &l.spans {
+        let mut kept = String::new();
+        for c in sp.content.chars() {
+            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+            if cw > room {
+                room = 0;
+                break;
+            }
+            room -= cw;
+            kept.push(c);
+        }
+        spans.push(Span::styled(kept, sp.style));
+        if room == 0 {
+            break;
+        }
+    }
+    // a wide glyph that would straddle the cut leaves a cell: pad it, so the
+    // mark sits on the last column
+    let pad = w.saturating_sub(mark.width()) - spans.iter().map(|s| s.width()).sum::<usize>();
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(mark.clone());
+    Line::from(spans).style(l.style)
+}
+
+/// The blank cells at the end of `l`.
+fn trailing_blanks(l: &Line) -> usize {
+    let mut n = 0;
+    for sp in l.spans.iter().rev() {
+        let t = sp.content.trim_end_matches(' ');
+        n += sp.content.len() - t.len();
+        if !t.is_empty() {
+            break;
+        }
+    }
+    n
 }
 
 /// The field's line: ` / text▏`. A filter wider than the line shows its end,
@@ -3134,21 +3414,31 @@ fn transient(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
 }
 
-/// What the worker needs from the key loop to capture the visible tiles.
-#[derive(Clone, Copy, Debug)]
+/// What the worker needs from the key loop to capture what is on screen.
+#[derive(Clone, Debug)]
 pub struct Want {
     pub area: Rect,
     pub sel: usize,
     pub top: usize,
-    /// the list draws no preview, so it needs no capture
+    /// the tiles are on screen; else the list, which captures `pick` only
     pub tiles: bool,
+    /// the list's selected agent, by pane id; `None` on a header
+    pub pick: Option<String>,
 }
 
 /// The captures one fetch makes, `(pane id, rows)`, for the panes `ps` the
 /// read gave (`ok`: the read worked). Each is a fork, so only what is on
-/// screen: the visible tiles. A server that did not answer list-panes fails
-/// every capture too, and the last ones stay.
+/// screen: the visible tiles, or the list's selection when its right pane
+/// shows (#284), one capture at most. A server that did not answer
+/// list-panes fails every capture too, and the last ones stay.
 pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
+    if !want.tiles {
+        let rows = pane_rows(want.area);
+        return match &want.pick {
+            Some(id) if ok && list_w(want.area.width).is_some() && rows > 0 && ps.iter().any(|p| p.id == *id) => vec![(id.clone(), rows)],
+            _ => vec![],
+        };
+    }
     let (_, top, g) = fit(want.area, ps.len(), want.sel, want.top);
     let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
     let rows = tile_h.saturating_sub(if g.full { 4 } else { 3 }).max(1);
@@ -3163,7 +3453,7 @@ pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
 
 struct Snapshot {
     panes: Vec<Pane>,
-    /// visible tiles only, by pane id
+    /// what `captures` chose, by pane id
     pvs: Vec<(String, Option<String>)>,
     took: Duration,
     /// the list-panes read worked; `panes` is the last good one either way
@@ -3288,23 +3578,27 @@ pub fn run(o: &Opts) -> Option<Exit> {
         sel,
         top,
         tiles: !list,
+        pick: None,
     };
     std::thread::spawn(move || worker(want_rx, snap_tx, first));
     // a failed send means the worker is gone, which the snapshot arm notices
-    let ask = |a: Rect, sel: usize, top: usize, list: bool| {
+    let ask = |a: Rect, sel: usize, top: usize, list: bool, pick: &Option<String>| {
         let _ = want_tx.send(Want {
             area: a,
             sel,
             top,
             tiles: !list,
+            pick: pick.clone(),
         });
     };
+    // #284: the agent whose screen the list's right pane shows, as last asked for
+    let mut pick: Option<String> = None;
 
     loop {
         // a push only pulls the next fetch forward, so a missed wake costs
         // one second and never a hang
         if push.pending() {
-            ask(area(term.size().unwrap_or_default()), sel, top, list);
+            ask(area(term.size().unwrap_or_default()), sel, top, list, &pick);
         }
         if note.as_ref().is_some_and(|n| n.gone(Instant::now())) {
             note = None;
@@ -3355,7 +3649,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 (sel, top, _) = fit(here, panes.len(), sel, top);
                 // the restored selection can sit below the first fetch's viewport
                 if top != was && !list {
-                    ask(here, sel, top, list);
+                    ask(here, sel, top, list, &pick);
                 }
                 let mut extra = gate_extra(&panes, &pvs);
                 if list {
@@ -3384,6 +3678,17 @@ pub fn run(o: &Opts) -> Option<Exit> {
             Err(TryRecvError::Empty) => {}
             Err(TryRecvError::Disconnected) => break,
         }
+        // #284: a new selection needs its screen now, not at the next second
+        if dirty {
+            let here = area(term.size().unwrap_or_default());
+            let cur = (list && list_w(here.width).is_some())
+                .then(|| nav.pane(&panes).map(|p| p.id.clone()))
+                .flatten();
+            if cur != pick {
+                pick = cur;
+                ask(here, sel, top, list, &pick);
+            }
+        }
         if dirty && !loaded && stale_shown.is_none() {
             // the first fetch can take most of a second, and a popup that is a
             // blank rectangle until it returns reads as a hang
@@ -3399,9 +3704,12 @@ pub fn run(o: &Opts) -> Option<Exit> {
         }
         // a first read that hangs must not leave the loading card up forever
         if dirty && (loaded || stale.is_some()) {
+            // a selection whose screen no capture has brought yet is a short
+            // pvs, "not read yet", never a blank screen
+            let unread = pick.as_ref().is_some_and(|id| !seen.contains_key(id));
             let v = View {
                 panes: &panes,
-                pvs: &pvs,
+                pvs: if unread { &[] } else { &pvs },
                 th: &th,
                 sel,
                 top,
@@ -3450,7 +3758,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         if let Some(Event::Resize(..)) = &ev {
             let here = area(term.size().unwrap_or_default());
             nav.settle(&panes, list_room(here));
-            ask(here, sel, top, list);
+            ask(here, sel, top, list, &pick);
             dirty = true;
         }
         let Some(Event::Key(k)) = ev else { continue };
@@ -3490,7 +3798,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 }
                 Some(Answer::Back) => {
                     confirm = None;
-                    ask(here, sel, top, list);
+                    ask(here, sel, top, list, &pick);
                 }
                 Some(Answer::Help) if !too_small(here) => help = Some(0),
                 Some(Answer::Close) => break,
@@ -3538,7 +3846,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             match find_key(k) {
                 Some(FindKey::Close) => break,
                 Some(FindKey::Help) => help = Some(0),
-                Some(FindKey::Refresh) => ask(here, sel, top, list),
+                Some(FindKey::Refresh) => ask(here, sel, top, list, &pick),
                 Some(fk) => nav.find_act(fk, &panes, list_room(here)),
                 None => {}
             }
@@ -3550,7 +3858,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             match a {
                 Act::Quit => break,
                 Act::Help if !too_small(here) => help = Some(0),
-                Act::Refresh => ask(here, sel, top, list),
+                Act::Refresh => ask(here, sel, top, list, &pick),
                 _ => {}
             }
             continue;
@@ -3564,7 +3872,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         match (a, p) {
             (Act::Quit, _) => break,
             (Act::Help, _) => help = Some(0),
-            (Act::Refresh, _) => ask(here, sel, top, list),
+            (Act::Refresh, _) => ask(here, sel, top, list, &pick),
             (Act::Find, _) => nav.open_find(&panes, room),
             (Act::Layout, _) => {
                 // the selection crosses over by identity; a header gives its first agent
@@ -3576,7 +3884,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                     nav.settle(&panes, room);
                 }
                 list = !list;
-                ask(here, sel, top, list);
+                ask(here, sel, top, list, &pick);
             }
             // ↵ on a header toggles its fold (D4)
             (Act::Jump, None) => nav.act(Act::Toggle, &panes, room),
@@ -3641,7 +3949,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 (sel, top) = moved(a, sel, panes.len(), &g, top, &panes, &ord);
                 // newly visible tiles need a capture now, not at the next second
                 if top != was {
-                    ask(here, sel, top, list);
+                    ask(here, sel, top, list, &pick);
                 }
             }
         }

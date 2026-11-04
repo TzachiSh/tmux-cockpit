@@ -250,7 +250,9 @@ changes.
 
 ### The board
 
-The list, at 100 columns: 13 agents in 4 sessions, the first `▲` selected.
+The list alone, as a board under 96 columns draws it, shown here 100 columns
+wide so every cell fits: 13 agents in 4 sessions, the first `▲` selected. At 96
+columns and over the list shares the body with the [right pane](#the-right-pane).
 
 ```
  board · 13 agents · 4 sessions · 2 needs you · 1 error
@@ -446,8 +448,82 @@ only, so `↵` `a` `r` `f` `i` `x` `o` act on the agent the tree hangs from. The
 top of the list is never a tree line: the viewport moves up to the agent, or
 down past its tree when the selection would leave the screen.
 
-The list has no preview: the right-hand preview pane is a later step, so the
-list takes the board's whole width, and it captures no pane.
+### The right pane
+
+At 96 columns and over (D1) the list takes the left of the body,
+`clamp(w/3 + 8, 40, 64)` wide: 40 at 96, 41 at 100, 48 at 120 and 64 at 180,
+which leaves the pane 116. The selected agent fills the right, at 100 columns:
+
+```
+ board · 6 agents · 3 sessions · 2 needs you · 1 error                                              
+┌ sessions ─────────────────────────────┐┏ ▲◆ api:0 · server ━━━━━━━━━━━━━━━━━━━ needs you · 4m12s ┓
+│  ▾ api ─────────────────────── ▲1 ●2  │┃ /src/api · ⑂feat/rate-limit · %3   ◆ review pending     ┃
+│▎ 1 ▲◆ 0 server Do you want to … 4m12s │┃ asked  add a token-bucket rate limiter to the router    ┃
+│  2 ●  1 tests  Bash: ca…rkspace 1m03s◂│┃ said   I added the token-bucket limiter and wired it i… ┃
+│  3 ●  3 migra… Edit src…rate.rs   22s │┃ needs  Do you want to run npm test?                     ┃
+│  ▾ infra ──────────────────────── ✕1  │┃                                                         ┃
+│  4 ✕  0 terra… terraform plan:… 6m02s │┃ ── live · last 13 lines ─────────────────────────────── ┃
+│  ▾ web ─────────────────────── ▲1 ◌1  │┃                                                         ┃
+│  5 ▲  2 docs   plan ready: app…   38s │┃                                                         ┃
+│  6 ◌  0 ui     ended                  │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃ ⏺ I added the token-bucket limiter and wired it into t› ┃
+│                                       │┃                                                         ┃
+│                                       │┃ ⏺ Bash(npm test -- --runInBand)                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃  Bash command                                           ┃
+│                                       │┃                                                         ┃
+│                                       │┃    npm test -- --runInBand                              ┃
+│                                       │┃    Run the API test suite serially                      ┃
+│                                       │┃                                                         ┃
+│                                       │┃  Do you want to proceed?                                ┃
+│                                       │┃  ❯ 1. Yes                                               ┃
+│                                       │┃    2. Yes, and don't ask again for npm test commands i› ┃
+│                                       │┃    3. No, and tell Claude what to do differently (esc)  ┃
+└───────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+ ↵ jump   a answer   r review   f panel   i info   space fold   / find   x kill   ? keys   q close  
+```
+
+The frame is thick, in the needs or error role on a `▲` or `✕` agent and the
+accent otherwise. Its title is the row's glyph and review mark, `session:window`
+and the title; its right end the state, `needs you` on a `▲`, `ended` on an
+ended agent, and the age, which an idle agent does not have. Then five rows:
+
+- where it runs: the path, `⑂branch` and the pane id, then `◆ review pending`
+  or `↵ review sent`. The path is cut in its middle and goes first.
+- `asked`, the newest human prompt; `said`, the agent's last text; `doing`, its
+  tool. On a `▲` the third row is `needs` and the question, in the needs role;
+  on a `✕`, `error` and the error; on an ended agent, `doing ended`. Nothing to
+  show reads `—`.
+- a blank row, then the rule `── live · last N lines ──`.
+
+The rest is the pane's screen: `capture-pane -e`, ANSI kept, never wrapped,
+capped at 64 KB, as many rows as the pane shows. Its last line sits on the last
+row, so a short screen leaves the top empty, not the bottom. A line cut at the
+pane's edge ends in `›` (`>` in ascii); blanks a TUI pads its lines with are not
+a cut. A wide TUI still shows its left part only, marked. A done, idle or
+ended agent's screen is dim, as its tile is. A capture that failed says `capture failed` in the error role,
+which is a gone pane; a blank screen is `live · blank`; and before the first
+capture of a newly selected agent, `reading the screen …`.
+
+On a header, or under a find with no match, the pane is a plain frame titled
+`no agent selected` that reads `the agent you pick shows here.`
+
+Only the selection is captured: one `capture-pane` per fetch, on the fetch
+thread, never at 95 columns or under and never on a header. A new selection
+asks the worker at once rather than waiting for the next second.
+
+The list column draws what a board of its width would draw: a subagent tree
+(#313), an ended row (#301) and a worktree cell (#312) narrow by the list's
+width, not the board's. Under 96 columns the board is the list alone, byte for
+byte what it was.
+
+Not built here: the panel docked in the right pane at 164 columns and over
+(D10); `f` still opens it full-area. The tiles' previews keep their own rules:
+top-aligned, and a cut line unmarked.
 
 ### The tiles (`v`)
 
@@ -979,6 +1055,7 @@ reason in a warn note.
 - The list's header line adds the session count and the error count; the
   tiles' header is unchanged.
 - The list captures no pane: the worker skips `capture-pane` until `v`.
+  #284 changes this at 96 columns and over: see its contract below.
 - The `?` help is generated per layout; `board-help-{60,100,180}` are the
   list's, and the tiles' is `board-help-tiles-100`.
 - Two marked seams for #228 in `board.rs`: `row_extra(&Pane, &Theme) ->
@@ -1009,7 +1086,7 @@ reason in a warn note.
   and `board-extra-120`; the help's new `/` row, the find section and
   `q esc ^C` move `board-help-{60,100,180}`, and `q esc ^C` moves
   `board-help-tiles-100`.
-- Not built here: the 100/180 mockups' right pane (step 7), the tablet chips
+- Not built here: the 100/180 mockups' right pane (step 7, built in #284), the tablet chips
   and `[ keep ]` `[ clear ]` (step 8), and the filter in the top line's right
   end; the list's frame title carries it.
 
@@ -1129,6 +1206,29 @@ reason in a warn note.
   rows and the legend in `board-help-{60,100,180,tiles-100}`. No list or tile
   golden moved: their fixtures hold no ended agent, and a live agent's footer
   is unchanged.
+
+### Contract changes for the right pane (#284, for #61)
+
+- Design step 7's right pane is built; its docked panel (D10) is not.
+- At 96 columns and over, the list draws [the right pane](#the-right-pane);
+  under 96, nothing changes on screen.
+- The list captures again: the selected agent's pane only, one capture per
+  fetch, `board::pane_rows(area)` rows (the board's height less ten), through
+  `data::preview` and its 64 KB cap. `board::Want` gains `pick: Option<String>`
+  and is public, with `board::captures(&[Pane], ok, &Want)`, the worker's
+  choice of what to capture. A pane that went, a header, or a board under 96
+  columns captures nothing.
+- `board::{SPLIT_W, list_w, pane_rows, captures}` are new. `View` is unchanged:
+  a `pvs` with no entry for the selection is "not read yet", as in the tiles.
+- Goldens: new `board-preview-{100,180}`, from the 100/180 mockups. Moved, the
+  right pane now beside the list: `board-list-{100,180}`,
+  `board-folded-{100,180}`, `board-find-{100,180}`, `board-find-none-100`,
+  `board-confirm-100`, `board-extra-120` and `board-subs-100`. No golden under
+  96 columns moved, and no tiles golden.
+- Six tests that read a full-width list row at 100 columns read it at 95: the
+  three that find the ended row through `list_line` in `board.rs`, and in
+  `board_subs.rs` the badge (now `the_badge_on_the_row_at_40_60_and_95`), the
+  narrowing tree line and the token check in `subagent_goldens`.
 
 ### The triage overlay
 
