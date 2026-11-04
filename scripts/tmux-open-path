@@ -176,7 +176,7 @@ touch_client() {
 
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
-    local file=$1 ln=${2:-} editor fd at=
+    local file=$1 ln=${2:-} editor fd bin at=
     [[ $ln =~ ^[0-9]+$ ]] || ln=
     editor=$(tmux show-options -gqv @cockpit_editor)
     [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
@@ -186,7 +186,8 @@ term_edit() {
     fi
     [ -n "$editor" ] || { note "cockpit: no terminal editor · set @cockpit_editor, \$VISUAL or \$EDITOR"; return 1; }
     # +N is the vi family's, nano's and emacs's way to a line; others get the file only
-    case $(basename -- "${editor%% *}") in vi|vim|nvim|nano|emacs|micro) at=${ln:++$ln} ;; esac
+    bin=${editor%% *}; bin=${bin##*/}
+    case $bin in vi|vim|nvim|nano|emacs|micro) at=${ln:++$ln} ;; esac
     fd=${file%/*}; fd=${fd:-/}
     tmux new-window -t "$win" -a -c "$(fesc "$fd")" -n "$(fesc "${file##*/}")" \
          "$editor ${at:+$at }$(shq "$file")"

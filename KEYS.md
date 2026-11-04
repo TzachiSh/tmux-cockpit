@@ -73,8 +73,13 @@ Taps on the bar act on release.
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
 A markdown file the picker opens shows in the viewer, and so does any file the
-file browser's `↵` picks (`@cockpit_md_view off` sends both to the editor): `/` finds, `n` `N` move between matches, `e` opens the
-editor at the top line, `?` lists the rest. See [docs/tui.md](docs/tui.md#the-markdown-viewer-283).
+file browser's `↵` picks (`@cockpit_md_view off` sends both to the editor).
+`cockpit-tui view` shows a markdown file rendered, and any other text file whole
+as numbered code highlighted by its extension or `#!` line; the keys are the
+same for both: `/` finds, `n` `N` move between matches, `e` opens the editor at
+the top line, `?` lists the rest. See
+[docs/tui.md](docs/tui.md#the-markdown-viewer-283) and
+[a code file](docs/tui.md#a-code-file-365).
 
 Plain clicks in a pane, wheel and drag are never touched, and neither is a
 single `Ctrl`+click: tmux 3.8 binds nothing to it. `@cockpit_keep_swap_pane`

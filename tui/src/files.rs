@@ -209,6 +209,14 @@ impl Files {
         Outcome::Choose(answer_line(verb, &path))
     }
 
+    /// alt-e: the editor for a file; a folder has nothing to edit.
+    fn edit(&mut self) -> Outcome {
+        match self.selected() {
+            Some((_, false)) => self.leaf("open"),
+            _ => Outcome::Continue,
+        }
+    }
+
     /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫
     /// on an empty filter go up; `.` on an empty filter shows or hides dotfiles;
     /// everything else is the picker's.
@@ -225,10 +233,7 @@ impl Files {
                 }
                 _ => self.leaf("view"),
             },
-            KeyCode::Char('e') if walk && k.modifiers.contains(KeyModifiers::ALT) => match self.selected() {
-                Some((_, false)) => self.leaf("open"),
-                _ => Outcome::Continue,
-            },
+            KeyCode::Char('e') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.edit(),
             KeyCode::Char('c') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.leaf("copy"),
             KeyCode::Left if walk && plain => {
                 self.up(area);
@@ -314,7 +319,8 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     );
     rows.insert(at + 1, (".".into(), "show or hide dotfiles (on an empty filter)".into()));
     rows.insert(at + 2, ("alt-i".into(), "show or hide what .gitignore hides, drawn dim".into()));
-    rows.insert(at + 3, ("alt-e".into(), "open the file in the editor: print its path, exit".into()));
+    let edit = "open the file in the editor: print its path, exit";
+    rows.insert(at + 3, ("alt-e".into(), edit.into()));
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == "alt-c") {
         r.1 = "copy: print this row's path, exit".into();
     }

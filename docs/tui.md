@@ -1769,7 +1769,7 @@ workspace, no crate split.
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
-| `mdview` | the `cockpit-tui view` markdown viewer (#283): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays the markdown out as rows, pure |
+| `mdview` | the `cockpit-tui view` viewer (#283, #365): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays markdown out as rows, `mdview::code` any other text file as numbered highlighted rows, both pure |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `view <path>`, `open <path>` or `copy <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |

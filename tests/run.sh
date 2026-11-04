@@ -13383,7 +13383,7 @@ case "$1" in
       case " $* " in
           *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
           *window_id*)         printf '@0\n' ;;
-          *is_touch*)          printf '0\n' ;;
+          *is_touch*)          printf '%s\n' "${TOUCH:-0}" ;;
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
@@ -13406,7 +13406,7 @@ chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/b
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
     : > "$MVL"
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR=ed \
+    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
@@ -13448,6 +13448,14 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
 is "--view runs the viewer at the line and opens the editor where e left it" \
    "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
    "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+# a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
+for e in vi vim nvim nano emacs micro; do
+    is "--view on touch, e: $e gets +12" "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MV/w/a.md" \
+       "$(TOUCH=1 MV_ED=$e VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+done
+is "--view on touch, e: an editor outside the list gets the file only" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md" \
+   "$(TOUCH=1 VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 is "--view without a line passes none" "VIEW [view] [--] [$MV/w/a.md]" "$(mvrun '' --view %1 "$MV/w/a.md" '')"
 for o in 'edit 3; touch x' 'edit' 'edit x' 'open 3' 'edit 3 4'; do
     case "$(VIEW_OUT="$o" mvrun '' --view %1 "$MV/w/a.md" '')" in
