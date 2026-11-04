@@ -7,8 +7,10 @@
     "",
     "SubagentStart, SubagentStop, TeammateIdle and SessionEnd also run agent-state sub-*:",
     "they append to a per-session log under $XDG_STATE_HOME/tmux-cockpit/subs/, which the",
-    "board's subagent tree will read (#361 child B). They set no pane state. Rerun",
-    "install.sh --hooks after an update to get them.",
+    "board's subagent tree reads (#361). They set no pane state. PostToolUse with the",
+    "matcher TaskStop (sub-taskstop) and the last Stop entry (sub-reconcile) add a TaskStop",
+    "mid-turn, which fires no SubagentStop, and the set still in flight at a turn's end (#403).",
+    "Rerun install.sh --hooks after an update to get them.",
     "",
     "TeammateIdle -> wake: an idle teammate's message wakes its lead with no hook.",
     "SessionStart -> off skips compact, so compaction keeps the pane's review marks.",
@@ -56,7 +58,8 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "TaskStop", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-taskstop" } ] }
     ],
     "PostToolUseFailure": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state error" } ] }
@@ -80,7 +83,8 @@
     ],
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-reconcile" } ] }
     ],
     "WorktreeCreate": [
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }

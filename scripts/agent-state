@@ -3,6 +3,7 @@
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
 #          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's
 #                                          subagent log (#361)
+#          agent-state <sub-taskstop|sub-reconcile>   the same log: a TaskStop, a Stop (#403)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
@@ -14,12 +15,19 @@ set -u
 # sub-start|sub-stop|sub-idle|sub-end: the documented subagent hooks (SubagentStart,
 # SubagentStop, TeammateIdle, SessionEnd) append to a per-session log the board reads
 # (#361). No pane, no tmux call, no state; always exit 0. Before the formats below: it needs none.
+# sub-taskstop (PostToolUse, matcher TaskStop) and sub-reconcile (Stop) add what those miss: a
+# TaskStop mid-turn, and the set still in flight at the parent's turn end (#403).
 case "${1:-}" in
-sub-start|sub-stop|sub-idle|sub-end)
+sub-start|sub-stop|sub-idle|sub-end|sub-taskstop|sub-reconcile)
     d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/subslog.sh
     . "${d%/*}/lib/subslog.sh" 2>/dev/null || exit 0
-    case "$1" in sub-end) subs_end ;; *) subs_record "${1#sub-}" ;; esac
+    case "$1" in
+    sub-end) subs_end ;;
+    sub-taskstop) subs_taskstop ;;
+    sub-reconcile) subs_reconcile ;;
+    *) subs_record "${1#sub-}" ;;
+    esac
     exit 0
     ;;
 esac

@@ -13980,5 +13980,69 @@ sv_key Escape; until_file "$SVD/rc" '?*'
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-state sub-taskstop and sub-reconcile: a TaskStop and a Stop's in-flight set in the subagent log (#403) =="
+# Payloads as Claude Code 2.1.318 sends them (the #403 rig's hooks.log).
+TSD=$(mktmpd); TSS=abb33da9-fbf7-4833-820e-2c21cad69dac; TSLOG="$TSD/state/tmux-cockpit/subs/$TSS.log"
+ts() {                        # <cmd> <json>  one payload through the hook, exit status last
+    printf '%s\n' "$2" | env XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" "$1" 2>&1
+    echo "rc=$?"
+}
+tsrows() { awk -F'\t' '{ $1 = ""; sub(/^ /, ""); printf "%s%s", (NR > 1 ? "|" : ""), $0 }' "$TSLOG" 2>/dev/null; }
+tsstop() {                    # <tool_input.task_id> <tool_response.task_id> <task_type> <command>
+    printf '{"session_id":"%s","hook_event_name":"PostToolUse","tool_name":"TaskStop","tool_input":{"task_id":"%s"},"tool_response":{"message":"Successfully stopped task: %s (%s)","task_id":"%s","task_type":"%s","command":"%s"},"tool_use_id":"toolu_01W2","duration_ms":2}' \
+        "$TSS" "$1" "$2" "$4" "$2" "$3" "$4"
+}
+is "sub-taskstop exits 0 and prints nothing" "rc=0" "$(ts sub-taskstop "$(tsstop sleeper3 a317be06712f142ac local_agent 's3 sleeper')")"
+is "a plain agent's stop is keyed by tool_response's task_id, its agent id" "kill a317be06712f142ac" "$(tsrows)"
+rm -rf "$TSD/state"
+ts sub-taskstop "$(tsstop tm1 t0sm6hcnt in_process_teammate 'i1 named')" >/dev/null
+ts sub-taskstop "$(tsstop t0sm6hcnt t0sm6hcnt in_process_teammate 'say \"hi\" }]')" >/dev/null
+is "a teammate's stop carries the name the model gave and the description, escapes kept" \
+   'kill-tm tm1 i1 named|kill-tm t0sm6hcnt say \"hi\" }]' "$(tsrows)"
+rm -rf "$TSD/state"
+ts sub-taskstop "{\"session_id\":\"$TSS\",\"tool_name\":\"Bash\",\"tool_input\":{\"task_id\":\"x\"},\"tool_response\":{\"task_id\":\"a1\",\"task_type\":\"local_agent\"}}" >/dev/null
+ts sub-taskstop "{\"session_id\":\"$TSS\",\"tool_name\":\"TaskStop\",\"tool_input\":{\"task_id\":\"a1\"},\"tool_response\":\"Error: no task\"}" >/dev/null
+ts sub-taskstop "{\"session_id\":\"$TSS\",\"tool_name\":\"TaskStop\",\"tool_input\":{\"task_id\":\"../x\"},\"tool_response\":{\"message\":\"m\",\"task_id\":\"../x\",\"task_type\":\"local_agent\"}}" >/dev/null
+ts sub-taskstop "garbage" >/dev/null; ts sub-taskstop "" >/dev/null
+is "another tool, a failed stop, a path for an id, garbage: no log" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+tsfin() {                     # <background_tasks array body> [last message]
+    printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"%s","background_tasks":[%s],"session_crons":[]}' "$TSS" "${2:-end}" "$1"
+}
+is "sub-reconcile exits 0 and prints nothing" "rc=0" "$(ts sub-reconcile "$(tsfin '{"id":"a593c30606c443914","type":"subagent","status":"running","description":"i1 plain","agent_type":"general-purpose"},{"id":"t0sm6hcnt","type":"teammate","status":"running","description":"i1 } named]"},{"id":"b1","type":"shell","status":"running","description":"sleep 9"}' 'x \"background_tasks\":[{\"id\":\"evil\",\"type\":\"subagent\"}]')")"
+ts sub-reconcile "$(tsfin '')" >/dev/null
+is "the in-flight set: subagent ids, then teammate descriptions; no shell, nothing from the message; an empty set too" \
+   "live a593c30606c443914 i1 } named]|live " "$(tsrows)"
+rm -rf "$TSD/state"
+ts sub-reconcile "{\"session_id\":\"$TSS\",\"hook_event_name\":\"Stop\",\"last_assistant_message\":\"end\"}" >/dev/null
+ts sub-reconcile "$(tsfin '{"id":"../x","type":"subagent"}')" >/dev/null
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}' | head -c 80)" >/dev/null
+TSMANY=$(for i in $(seq 1 300); do printf '{"id":"a%016d","type":"subagent"},' "$i"; done)
+ts sub-reconcile "$(tsfin "${TSMANY%,}")" >/dev/null
+is "no array, a bad id, a cut payload, a set past one atomic write: no log" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+TSBIN="$TSD/bin"; mkdir -p "$TSBIN"; printf '#!/bin/sh\ntouch "%s/tmux-ran"\n' "$TSD" > "$TSBIN/tmux"; chmod +x "$TSBIN/tmux"
+printf '%s\n' "$(tsstop a1 a1 local_agent x)" | env PATH="$TSBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" sub-taskstop >/dev/null 2>&1
+printf '%s\n' "$(tsfin '')" | env PATH="$TSBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" sub-reconcile >/dev/null 2>&1
+is "neither calls tmux" "" "$(ls "$TSD/tmux-ran" 2>/dev/null)"
+
+echo "== install.sh --hooks: the TaskStop matcher and the Stop reconcile merge in once, beside a user's own Stop hook (#403) =="
+if command -v jq >/dev/null 2>&1; then
+TIH=$(mktmpd); mkdir -p "$TIH/.claude"
+# A box from before #403: master's cockpit hooks, plus a Stop hook of the user's own.
+jq '{hooks: (.hooks | .PostToolUse |= map(select(.matcher != "TaskStop"))
+    | .Stop |= (map(select(.hooks[0].command | test("sub-reconcile") | not))
+                + [{matcher: "", hooks: [{type: "command", command: "my-own-stop-hook"}]}]))}' \
+    "$DIR/examples/claude-hooks.json" > "$TIH/.claude/settings.json"
+tirun() { env -u TMUX -u TMUX_PANE HOME="$TIH" XDG_BIN_HOME="$TIH/bin" XDG_CONFIG_HOME="$TIH/cfg" TMUX_TMPDIR="$TIH" "$DIR/install.sh" "$@" 2>&1; }
+tisub() { tirun --check | sed -n 's/^\[ *\([a-z]*\) *\] *subhooks *\(.*\)/\1 \2/p' | sed 's/  */ /g; s/ $//'; }
+is "--check before: 4 of 6, and it says to re-run --hooks" "warn 4 of 6 subagent hooks merged re-run install.sh --hooks" "$(tisub)"
+tirun --hooks >/dev/null; tirun --hooks >/dev/null
+tin() { jq -r --arg ev "$1" --arg m "$2" --arg c "$3" '[.hooks[$ev][]? | select((.matcher // "") == $m) | .hooks[].command | select(test("agent-state " + $c + "$"))] | length' "$TIH/.claude/settings.json"; }
+is "--hooks twice: sub-taskstop once under PostToolUse TaskStop, sub-reconcile once under Stop" "1 1" \
+   "$(tin PostToolUse TaskStop sub-taskstop) $(tin Stop '' sub-reconcile)"
+is "and the user's own Stop hook and cockpit's done and review-gate are all still there" "1 1 1" \
+   "$(jq '[.. | strings | select(. == "my-own-stop-hook")] | length' "$TIH/.claude/settings.json") $(tin Stop '' done) $(jq '[.hooks.Stop[].hooks[].command | select(test("review-gate$"))] | length' "$TIH/.claude/settings.json")"
+is "--check after: all 6" "ok all 6 subagent hooks merged" "$(tisub)"
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -3,6 +3,10 @@
 #
 #   ${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log
 #   one line per event: <epoch>\t<start|stop|idle>\t<agent_id>
+#   a TaskStop (#403):  <epoch>\tkill\t<agent_id>                  a plain agent
+#                       <epoch>\tkill-tm\t<name>\t<description>    a teammate, mapped by the reader
+#   a Stop (#403):      <epoch>\tlive\t<id>,<id>...\t<description>...  the in-flight set
+# A description is the payload's JSON string body, escapes and all: no tab, newline or quote.
 #
 # Append-only, so hooks writing side by side lose nothing: one write under PIPE_BUF (4096
 # bytes) is atomic, and no hook reads before it writes. The reader takes the newest line per
@@ -34,12 +38,85 @@ subs_payload() {
     payload=$($to head -n 1 2>/dev/null | head -c 262144) || payload=""
 }
 
+# subs_desc <key> [text]: a "key": "string" of the text (default: the payload), as the JSON
+# string's body, 0 to 512 bytes, no control byte. REPLY empty and status 1 on any miss.
+subs_desc() {
+    local LC_ALL=C re='"'"$1"'": ?"(([^"\\]|\\.)*)"' t=${2-$payload}
+    REPLY=""
+    [[ $t =~ $re ]] || return 1
+    [ "${#BASH_REMATCH[1]}" -le 512 ] && [[ ${BASH_REMATCH[1]} != *[[:cntrl:]]* ]] || return 1
+    REPLY=${BASH_REMATCH[1]}
+}
+
 # subs_record <start|stop|idle>: one line for the payload's agent, or nothing at all.
 subs_record() {
-    local ev=$1 sid aid now dir f
+    local sid aid
     subs_payload
     subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
     subs_id agent_id; aid=$REPLY; [ -n "$aid" ] || return 0
+    subs_write "$sid" "$1"$'\t'"$aid"
+}
+
+# subs_taskstop: PostToolUse on TaskStop. A plain agent's tool_response.task_id is its agent
+# id; any other task's is a task id no file holds, so the row carries what the reader maps a
+# teammate by: tool_input.task_id (the name the model gave, when plain) and tool_response's
+# command (the description). A failed TaskStop fires no hook.
+subs_taskstop() {
+    local LC_ALL=C sid in out ty name re
+    subs_payload
+    re='"tool_name": ?"TaskStop"'; [[ $payload =~ $re ]] || return 0
+    subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
+    # Each object's tail, from its key: the first id after it is the object's own. Keys inside
+    # a string cannot match, their quotes arrive escaped.
+    re='"tool_input": ?\{(.*)'; [[ $payload =~ $re ]] || return 0; in=${BASH_REMATCH[1]}
+    re='"tool_response": ?\{(.*)'; [[ $payload =~ $re ]] || return 0; out=${BASH_REMATCH[1]}
+    re='"task_type": ?"([a-z_]{1,32})"'; [[ $out =~ $re ]] || return 0; ty=${BASH_REMATCH[1]}
+    if [ "$ty" = local_agent ]; then
+        payload=$out subs_id task_id; [ -n "$REPLY" ] || return 0
+        subs_write "$sid" "kill"$'\t'"$REPLY"
+        return 0
+    fi
+    payload=$in subs_id task_id; name=$REPLY
+    subs_desc command "$out" || REPLY=""
+    [ -n "$name$REPLY" ] || return 0
+    subs_write "$sid" "kill-tm"$'\t'"$name"$'\t'"$REPLY"
+}
+
+# subs_reconcile: Stop. The parent's turn has ended; its background_tasks lists what is still in
+# flight: a subagent by its agent id, a teammate by a task id, so by its description. Only
+# Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot read
+# whole, or a row past one atomic write, writes nothing: a short set would end live agents.
+subs_reconcile() {
+    local LC_ALL=C sid arr re rt ob ty ids="" descs="" row
+    subs_payload
+    subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
+    # The array as agent-state's subs_count matches it: whole strings or bytes other than `]`.
+    re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]"])*)\]'
+    [[ $payload =~ $re ]] || return 0
+    arr=${BASH_REMATCH[1]}
+    # One flat object at a time: whole strings or bytes other than `}`.
+    re='^[^{]*\{(("([^"\\]|\\.)*"|[^}"])*)\}(.*)$' rt='"type": ?"([a-z_]{1,32})"'
+    while [[ $arr =~ $re ]]; do
+        ob=${BASH_REMATCH[1]} arr=${BASH_REMATCH[4]}
+        [[ $ob =~ $rt ]] || return 0
+        ty=${BASH_REMATCH[1]}
+        case "$ty" in
+        subagent)
+            payload=$ob subs_id id; [ -n "$REPLY" ] || return 0
+            ids=${ids:+$ids,}$REPLY ;;
+        teammate)
+            subs_desc description "$ob" || return 0
+            descs=$descs$'\t'$REPLY ;;
+        esac
+    done
+    row="live"$'\t'"$ids$descs"
+    [ "${#row}" -le 3900 ] || return 0
+    subs_write "$sid" "$row"
+}
+
+# subs_write <session_id> <row>: "<epoch>\t<row>" appended to the session's log.
+subs_write() {
+    local sid=$1 now dir f
     subs_dir || return 0; dir=$REPLY; f=$dir/$sid.log
     # 0700 dir, 0600 log, whatever the caller's umask; no link is ever followed.
     umask 077
@@ -47,7 +124,7 @@ subs_record() {
     [ -d "$dir" ] || mkdir -p -- "$dir" 2>/dev/null || return 0
     [ -L "$f" ] && return 0
     now=${EPOCHSECONDS:-}; [ -n "$now" ] || now=$(date +%s 2>/dev/null) || return 0
-    printf '%s\t%s\t%s\n' "$now" "$ev" "$aid" >> "$f" 2>/dev/null
+    printf '%s\t%s\n' "$now" "$2" >> "$f" 2>/dev/null
     return 0
 }
 
