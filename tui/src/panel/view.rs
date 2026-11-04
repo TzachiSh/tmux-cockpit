@@ -211,7 +211,7 @@ fn command(th: &Theme, cmd: &str, lang: &str, w: usize, indent: &str, st: Style)
         .collect()
 }
 
-fn role_style(th: &Theme, r: Role, st: Style) -> Style {
+pub(crate) fn role_style(th: &Theme, r: Role, st: Style) -> Style {
     match r {
         Role::Plain => st,
         Role::Keyword => st.fg(th.accent),

@@ -7,6 +7,7 @@ pub mod data;
 pub mod fleet;
 pub mod highlight;
 pub mod info;
+pub mod mdview;
 pub mod panel;
 pub mod pick;
 pub mod push;
