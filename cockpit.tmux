@@ -435,8 +435,9 @@ tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M
 if [ -n "$menuk" ]; then
     ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
-# Every key this load binds carries its note now: owned() stops guessing.
-[ -n "$notes" ] || tmux set-option -g @cockpit_notes 1
+# Every key this load binds carries its note now: owned() stops guessing, unless
+# a key it guessed is still waiting to be given back.
+[ -n "$notes" ] || [ -n "$left" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);
