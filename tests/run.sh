@@ -8308,6 +8308,93 @@ is "and the cleared board saves no filter line" "cockpit-board-state 1;" "$(bn_s
 "$TMUX_REAL" -L "$BN" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: the list's right pane shows the selection's screen (#284) =="
+# D1: at 96 columns and over, the selected agent's live screen fills the right
+# pane. It follows the selection, never shows another agent's, and under 96
+# columns the pane goes and the list takes the width back.
+if need_tmux "the board's right pane"; then :; else
+PV="cockpit-pv-$$"; SOCKS="$SOCKS $PV"; PVD=$(mktmpd)
+"$TMUX_REAL" -L "$PV" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PVD" 'exec sleep 3600' >/dev/null 2>&1
+PVP=()
+for s in alpha beta; do
+    PVP+=("$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
+        "printf 'screen-of-$s\n'; exec -a claude sleep 3600")")
+done
+for p in "${PVP[@]}"; do
+    "$TMUX_REAL" -L "$PV" set -p -t "$p" @panestate running >/dev/null 2>&1
+done
+PVW=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
+    "env XDG_STATE_HOME=$PVD COCKPIT_LOG=$PVD/tui.log $COCKPIT_TUI_BIN board")
+pv_cap() { "$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVW"; }
+# the list's first agent is alpha's: the same state, the lower pane id
+if until_cap "$PV" "$PVW" '*live · *screen-of-alpha*'; then ok "at 120 columns the right pane shows the selection's screen"
+else bad "at 120 columns the right pane shows the selection's screen" "screen-of-alpha" "$(pv_cap)"; fi
+case "$(pv_cap)" in
+    *screen-of-beta*) bad "and no other agent's" "no screen-of-beta" "$(pv_cap)" ;;
+    *) ok "and no other agent's" ;;
+esac
+# a short screen is drawn from the top, as the pane shows it: its first row is
+# the one under the rule (tmux's choose-tree preview does the same)
+is "a short screen starts on the row under the rule" "screen-of-alpha" \
+    "$(pv_cap | awk '/live · /{getline; print; exit}' | grep -o 'screen-of-alpha')"
+"$TMUX_REAL" -L "$PV" send-keys -t "$PVW" j
+if until_cap "$PV" "$PVW" '*live · *screen-of-beta*'; then ok "j moves the pane to the next agent's screen"
+else bad "j moves the pane to the next agent's screen" "screen-of-beta" "$(pv_cap)"; fi
+"$TMUX_REAL" -L "$PV" resize-window -t "$PVW" -x 90 >/dev/null 2>&1
+is "the board's window narrows to 90" 90 "$("$TMUX_REAL" -L "$PV" display -p -t "$PVW" '#{window_width}')"
+pv_narrow=
+for i in $(seq 1 "$POLLS"); do
+    case "$(pv_cap)" in *'live ·'*|*screen-of-*|'') sleep 0.1 ;; *'┌ sessions'*) pv_narrow=1; break ;; *) sleep 0.1 ;; esac
+done
+if [ -n "$pv_narrow" ]; then ok "under 96 columns the pane goes and the list stays"
+else bad "under 96 columns the pane goes and the list stays" "the list, no live screen" "$(pv_cap)"; fi
+"$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui board: a blank first capture replaces reading the screen (#284) =="
+# A pane no capture has reached and a blank capture both draw as empty, so the
+# redraw gate must carry whether the pick was read (read_gate). Its own fresh
+# server, the blank agent first so the board opens on it, no earlier board.
+if need_tmux "the right pane's blank first capture"; then :; else
+PB="cockpit-pb-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
+"$TMUX_REAL" -L "$PB" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PBD" 'exec sleep 3600' >/dev/null 2>&1
+# -n: a window tmux renames as its command execs would redraw the board itself
+for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
+    pbp=$("$TMUX_REAL" -L "$PB" new-window -d -n "${cmd%% *}" -P -F '#{pane_id}' -t t: -c "$PBD" "$cmd; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PB" set -p -t "$pbp" @panestate running >/dev/null 2>&1
+done
+PBW=$("$TMUX_REAL" -L "$PB" new-window -d -P -F '#{pane_id}' -t t: -c "$PBD" \
+    "env XDG_STATE_HOME=$PBD COCKPIT_LOG=$PBD/tui.log $COCKPIT_TUI_BIN board")
+if until_cap "$PB" "$PBW" '*live · blank*'; then ok "a blank first capture shows, not reading the screen"
+else bad "a blank first capture shows, not reading the screen" "live · blank" "$("$TMUX_REAL" -L "$PB" capture-pane -p -t "$PBW")"; fi
+"$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui board: an idle board on a busy agent captures once a tick (#284) =="
+# The worker is asked again only when the pick changes (repick): an agent whose
+# screen changes every 50 ms redraws the board constantly, and asking on each
+# redraw would capture as fast as the fetch can run. A logging tmux wrapper
+# counts capture-pane calls over 5 s of an idle board: about one a second.
+if need_tmux "the right pane's capture rate"; then :; else
+PR="cockpit-pr-$$"; SOCKS="$SOCKS $PR"; PRD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' "$PRD" "$TMUX_REAL" > "$PRD/tmux"
+chmod +x "$PRD/tmux"
+"$TMUX_REAL" -L "$PR" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PRD" 'exec sleep 3600' >/dev/null 2>&1
+prp=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
+    "exec -a claude sh -c 'while :; do date +%s%N; sleep 0.05; done'")
+"$TMUX_REAL" -L "$PR" set -p -t "$prp" @panestate running >/dev/null 2>&1
+PRW=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
+    "env COCKPIT_TMUX=$PRD/tmux XDG_STATE_HOME=$PRD COCKPIT_LOG=$PRD/tui.log $COCKPIT_TUI_BIN board")
+if until_cap "$PR" "$PRW" '*live · *line*'; then
+    : > "$PRD/calls"
+    sleep 5   # a rate: the count over a fixed window is the measurement
+    prn=$(grep -cx capture-pane "$PRD/calls")
+    if [ "$prn" -le 7 ]; then ok "an idle board on a busy agent captures about once a second ($prn in 5 s)"
+    else bad "an idle board on a busy agent captures about once a second" "at most 7 in 5 s" "$prn"; fi
+else bad "the busy agent's screen shows" "live · N lines" "$("$TMUX_REAL" -L "$PR" capture-pane -p -t "$PRW")"; fi
+"$TMUX_REAL" -L "$PR" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
@@ -10841,7 +10928,9 @@ echo "== cockpit-board: an ended agent shows dimmed as ended, offers o, and o wr
 if need_tmux "the board's ended rows"; then :; else
 EB="cockpit-eb-$$"; SOCKS="$SOCKS $EB"; EBD=$(mktmpd)
 mkdir -p "$EBD/state"
-"$TMUX_REAL" -L "$EB" -f /dev/null new-session -d -s t -x 120 -y 30 'exec sleep 3600' >/dev/null 2>&1
+# 180 columns: the list beside the right pane (#284) is 64 wide, room for each
+# row whole, and the footer has room for o resume
+"$TMUX_REAL" -L "$EB" -f /dev/null new-session -d -s t -x 180 -y 30 'exec sleep 3600' >/dev/null 2>&1
 "$TMUX_REAL" -L "$EB" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 EBL=$("$TMUX_REAL" -L "$EB" new-window -d -n live -c "$EBD" -P -F '#{pane_id}' -t t: 'exec -a claude sleep 3600')
 EBE=$("$TMUX_REAL" -L "$EB" new-window -d -n gone -c "$EBD" -P -F '#{pane_id}' -t t: 'exec sleep 3600')

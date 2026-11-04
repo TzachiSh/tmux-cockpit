@@ -2,7 +2,7 @@
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, git_facts, list_panes, preview};
+use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -226,6 +226,152 @@ fn the_preview_cap_snaps_to_a_char_boundary() {
     assert!(p.len() <= 64 * 1024, "preview not capped: {} bytes", p.len());
     assert!(p.chars().all(|c| c == '€'), "the cut split a glyph");
     assert_eq!(p.len() % 3, 0);
+}
+
+/// #284: ansi-to-tui drops the rest of a line after an OSC 8 link ending in
+/// `ESC \`, the form tmux emits, so every OSC goes, whatever ends it.
+#[test]
+fn the_preview_drops_osc_sequences_whatever_ends_them() {
+    let r = Rig::new("osc");
+    r.capture("pre \x1b]8;;https://ex.com\x1b\\LINK\x1b]8;;\x1b\\ after\nb \x1b]8;;u\x07L\x1b]8;;\x07 z\n\x1b]0;title\x07t\n");
+    assert_eq!(preview("%9", 5).as_deref(), Some("pre LINK after\nb L z\nt"));
+}
+
+/// #284: the 64 KB cap can land inside an escape, whose tail then reads as
+/// text; a cut starts at the next line instead.
+#[test]
+fn a_cap_inside_an_escape_starts_at_the_next_line() {
+    let r = Rig::new("cut");
+    // 116 bytes a line with its newline: the cut lands 3 bytes into an escape
+    let line = format!("\x1b[38;5;196m{}\x1b[0m", "x".repeat(100));
+    r.capture(&vec![line.as_str(); 1000].join("\n"));
+    let p = preview("%9", 1000).unwrap();
+    assert!(p.len() <= 64 * 1024, "{} bytes", p.len());
+    assert!(p.split('\n').all(|l| l == line), "a cut line: {:?}", &p[..24]);
+}
+
+// ---------------------------------------------- the right pane's view (#284)
+
+/// A visible screen of `h` rows: `body` from the top, blank rows below.
+fn scr(body: &[&str], h: usize) -> String {
+    let mut rows: Vec<String> = body.iter().map(|s| s.to_string()).collect();
+    rows.resize(h, String::new());
+    rows.join("\n")
+}
+
+#[test]
+fn a_short_screen_is_drawn_from_the_top_as_the_pane_shows_it() {
+    // a cleared terminal: the prompt on row 0, the cursor after it
+    assert_eq!(view(&scr(&["$ "], 40), Some(0), 20), "$ ");
+    // a short shell: three rows used, the cursor on the next
+    assert_eq!(view(&scr(&["$ ls", "a b", "$ "], 40), Some(2), 20), "$ ls\na b\n$ ");
+}
+
+#[test]
+fn a_taller_screen_with_the_cursor_at_the_bottom_shows_the_bottom() {
+    let rows: Vec<String> = (0..40).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let v = view(&scr(&refs, 40), Some(39), 5);
+    assert_eq!(v, "r35\nr36\nr37\nr38\nr39");
+}
+
+#[test]
+fn a_cursor_below_the_text_in_a_taller_screen_stays_in_view() {
+    // text to row 25, the cursor on row 30 past blank rows: the view ends there
+    let rows: Vec<String> = (0..=25).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let v = view(&scr(&refs, 40), Some(30), 10);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!(got.len(), 10);
+    assert_eq!((got[0], got[4], got[9]), ("r21", "r25", ""), "rows 21-30, the cursor's row last");
+}
+
+#[test]
+fn a_hidden_cursor_ends_the_view_at_the_last_row_with_text() {
+    let rows: Vec<String> = (0..=25).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    assert_eq!(view(&scr(&refs, 40), None, 3), "r23\nr24\nr25");
+    assert_eq!(view(&scr(&[], 40), None, 3), "", "nothing on screen, no cursor: nothing");
+}
+
+#[test]
+fn a_claude_code_screen_shows_its_input_box() {
+    // output on top, the box near the bottom with the cursor in it, a status line under it
+    let mut rows: Vec<String> = (0..30).map(|k| format!("output {k}")).collect();
+    rows.extend(["╭────╮".into(), "│ > ▏│".into(), "╰────╯".into(), "  ? for shortcuts".into()]);
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    // Claude Code hides the terminal's cursor and draws its own
+    let v = view(&scr(&refs, 40), None, 6);
+    assert_eq!(v, "output 28\noutput 29\n╭────╮\n│ > ▏│\n╰────╯\n  ? for shortcuts");
+}
+
+/// 40 rows, every one with text, `r0`..`r39`: a full-screen TUI.
+fn full() -> String {
+    (0..40).map(|k| format!("r{k}")).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn a_vim_like_screen_with_the_cursor_near_the_top_shows_the_top() {
+    // vim on line 2 of a full screen: tmux's py = 1 - 20/3, clamped to 0
+    let v = view(&full(), Some(1), 20);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!((got.len(), got[0], got[1]), (20, "r0", "r1"), "the cursor row shows");
+}
+
+#[test]
+fn a_visible_cursor_mid_screen_sits_a_third_down_the_view() {
+    // cursor on row 20, 21 rows shown: the view starts at 20 - 21/3 = 13
+    let v = view(&full(), Some(20), 21);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!((got[0], got[7], got.len()), ("r13", "r20", 21), "the cursor is row 7 of 21");
+}
+
+#[test]
+fn a_hidden_cursor_on_a_full_screen_shows_its_last_rows() {
+    // htop: no cursor, text to the last row
+    assert_eq!(view(&full(), None, 3), "r37\nr38\nr39");
+}
+
+#[test]
+fn a_row_of_colour_only_is_no_text() {
+    let s = scr(&["text", "\x1b[48;5;236m      \x1b[0m"], 10);
+    assert_eq!(view(&s, None, 5), "text", "an SGR-painted blank row is not content");
+}
+
+#[test]
+fn the_cursor_line_ends_the_capture() {
+    assert_eq!(split_cursor("a\nb\n\n1 2\n"), Some(("a\nb\n", Some(2))));
+    assert_eq!(split_cursor("a\n0 7\n"), Some(("a", None)), "a hidden cursor");
+    assert_eq!(split_cursor("a\nb\n"), None, "no cursor line: not a capture we asked for");
+    assert_eq!(split_cursor(""), None);
+}
+
+/// #284: `screen` reads the capture and its cursor line from one tmux call,
+/// drops OSC sequences, picks the view and caps it.
+#[test]
+fn screen_reads_the_view_off_one_capture() {
+    let r = Rig::new("scr");
+    r.capture("pre \x1b]8;;u\x1b\\LINK\x1b]8;;\x1b\\ after\nnext\n\n\n1 3\n");
+    assert_eq!(
+        screen("%9", 10).as_deref(),
+        Some("pre LINK after\nnext\n\n"),
+        "OSC out, the view to the cursor's row"
+    );
+    r.capture("a\nb\n");
+    assert_eq!(screen("%9", 10), None, "no cursor line: not the capture asked for");
+}
+
+#[test]
+fn a_screen_over_the_cap_keeps_its_newest_rows_where_they_were() {
+    let r = Rig::new("scrcap");
+    let line = format!("\x1b[38;5;196m{}\x1b[0m", "x".repeat(100));
+    r.capture(&format!("{}\n0 0\n", vec![line.as_str(); 1000].join("\n")));
+    let v = screen("%9", 1000).unwrap();
+    let rows: Vec<&str> = v.split('\n').collect();
+    assert!(v.len() <= 64 * 1024 + 1000, "{} bytes", v.len());
+    assert_eq!(rows.len(), 1000, "the rows the cap took are blank, not gone");
+    assert!(rows[0].is_empty() && rows[999] == line, "{:?} .. {:?}", rows[0], rows[999]);
+    assert!(rows.iter().all(|l| l.is_empty() || *l == line), "no row cut inside an escape");
 }
 
 /// Rules 22, 66 and 67: what the tail says when the hooks said nothing. `doing`
