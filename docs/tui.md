@@ -503,24 +503,32 @@ ended agent, and the age, which an idle agent does not have. Then five rows:
 The rest is the pane's screen: its visible screen (`capture-pane -p -e` with
 no `-S`, so the blank rows below the cursor keep their places) and its cursor
 (`#{cursor_flag} #{cursor_y}`), read by one tmux command, so one fork. ANSI is
-kept, nothing wraps, and it is capped at 64 KB. Which rows show is tmux's own
-rule for its `choose-tree` preview (`screen_write_preview` in
-`screen-write.c`): the view ends at the cursor's row or the last row with
-text, whichever is lower, or the last row with text when the cursor is hidden.
-A screen whose used part fits the pane is drawn whole from the top, as the
-pane itself looks (a cleared terminal, a short shell); a taller one shows the
-rows ending there and loses its top, which keeps Claude Code's input box and
-the newest output in view. Rows below that end are never content, and a row of
-colour only counts as blank.
+kept, nothing wraps, and it is capped at 64 KB. The used part of the screen
+runs to the cursor's row or the last row with text, whichever is lower; rows
+past it are never content, and a row of colour only counts as blank. A used
+part that fits the pane is drawn whole from the top, as the pane itself looks
+(a cleared terminal, a short shell). A taller one:
+
+- with the cursor shown (vim, less, a shell): tmux's own rule for its
+  `choose-tree` preview (`screen_write_preview` in `screen-write.c`). The
+  view's top is `cursor_y - rows / 3`, clamped to `[0, used - rows]`, so the
+  cursor sits a third of the way down. tmux's horizontal pan is not taken: a
+  long line is clipped instead.
+- with the cursor hidden (Claude Code, htop): the view ends at the last row
+  with text, which keeps Claude Code's input box and the newest output in view.
+
+When the 64 KB cap takes rows off a view's top, they come back blank, so the
+newest row stays where it was.
 
 A tab moves to the next stop of 8 columns, as in the terminal; any other
-control character takes no cell. OSC sequences (titles, hyperlinks) are dropped before the colours are
-read, as the parser loses the rest of a line after a link that ends in `ESC \`;
-and when the 64 KB cap cuts inside a line, the screen starts at the next one,
-so no escape is cut in half (one line longer than the cap keeps the cut). Both
-apply to the tiles' previews too. A line cut at the pane's edge ends in `›`
-(`>` in ascii), measured per grapheme as it is drawn; blanks a TUI pads its
-lines with are not a cut. A wide TUI still shows its left part only, marked.
+control character takes no cell. OSC sequences (titles, hyperlinks) are
+dropped before the colours are read, as the parser loses the rest of a line
+after a link that ends in `ESC \`; and when the 64 KB cap cuts inside a line,
+the screen starts at the next one, so no escape is cut in half (one line
+longer than the cap keeps the cut). Both apply to the tiles' previews too.
+A line cut at the pane's edge ends in `›` (`>` in ascii), measured per
+grapheme as it is drawn; blanks a TUI pads its lines with are not a cut. A
+wide TUI still shows its left part only, marked.
 A done, idle or ended agent's screen is dim, as its tile is. A capture that
 failed says `capture failed` in the error role, which is a gone pane; a blank
 screen is `live · blank`; and before the first capture of a newly selected
@@ -1236,7 +1244,8 @@ reason in a warn note.
   choice of what to capture. A pane that went, a header, or a board under 96
   columns captures nothing.
 - `board::{SPLIT_W, list_w, pane_rows, captures, pick_of, repick, shown,
-  forget}` are new: the last four are the key loop's pick, asked for once per
+  forget, read_gate}` are new (`read_gate`: the redraw gate knows whether the
+  pick's first capture has come, so a blank one still replaces `reading`): the last four are the key loop's pick, asked for once per
   new selection, the screens of other agents forgotten on a new pick.
 - `data::preview` drops OSC sequences and starts a capped capture at a line.
 - The pane's capture is `data::screen(id, rows)`: `capture-pane -p -e` with no
