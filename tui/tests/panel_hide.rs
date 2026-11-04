@@ -440,3 +440,17 @@ fn a_batch_with_no_question_before_it_is_refused() {
     let headless = good.replace("]],false]", "]],true]");
     assert_eq!(refused("headless", &headless), "a batch with no question before it");
 }
+
+/// A best guess spends the rounds while its call is out: a failed one keeps
+/// the batch it would give back, and that state is the app's own.
+#[test]
+fn a_hide_after_a_failed_guess_mid_batch_comes_back() {
+    let mut a = mid_batch();
+    key(&mut a, KeyCode::Char('g'));
+    a.reply(Err(cockpit_tui::panel::request::Fail::Failed("boom".into())));
+    assert!(matches!(a.view, View::Error { .. }));
+    let mut b = round(&mut a, "guess-failed");
+    key(&mut b, KeyCode::Esc);
+    let r = b.run.as_ref().unwrap();
+    assert_eq!((r.question.as_str(), r.rounds, r.batch.len()), ("Q2?", 2, 1), "esc gives the guess back");
+}

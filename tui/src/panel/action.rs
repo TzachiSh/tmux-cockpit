@@ -569,8 +569,9 @@ fn run_in(v: Value) -> Result<Run, String> {
     if r.rounds > r.max {
         return Err("more rounds than the run allows".into());
     }
-    // each queued question takes a round when shown
-    if r.rounds + r.batch.len() > r.max {
+    // each queued question takes a round when shown; a guess in flight spent
+    // the rest, and a cancel gives back the rounds it came from
+    if r.guessed_from.unwrap_or(r.rounds) + r.batch.len() > r.max {
         return Err("more questions queued than the run allows".into());
     }
     // the first question shown came from a call, so it heads no batch
