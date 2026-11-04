@@ -694,6 +694,17 @@ impl Cmp {
     }
 }
 
+/// The distinct system prompt hashes of a file's rows, in first-seen order.
+fn prompts_of(rows: &[Row]) -> Vec<&str> {
+    let mut hs: Vec<&str> = vec![];
+    for h in rows.iter().map(|r| r.system.as_str()).filter(|h| !h.is_empty()) {
+        if !hs.contains(&h) {
+            hs.push(h);
+        }
+    }
+    hs
+}
+
 /// Per case, in A's order and then B's own.
 fn compare(a: &[Row], b: &[Row]) -> Vec<Cmp> {
     let side = |rows: &[Row], id: &str| {
@@ -736,9 +747,7 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
     }
     println!();
     for (tag, (p, rows)) in ["A", "B"].iter().zip(sides) {
-        let mut hs: Vec<&str> = rows.iter().map(|r| r.system.as_str()).collect();
-        hs.retain(|h| !h.is_empty());
-        hs.dedup();
+        let hs = prompts_of(rows);
         let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
         println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
         println!("   pass^all  {}", pct_ci(pass_all(&per)));
@@ -1424,6 +1433,17 @@ mod tests {
         assert_eq!(cost_line(&[None]), None);
         let l = cost_line(&[Some(0.01), Some(0.03), None]).unwrap();
         assert_eq!(l, "$0.0400 total, $0.0200 mean over 2 calls, 1 without a cost");
+    }
+
+    #[test]
+    fn a_file_names_each_prompt_once_however_its_rows_interleave() {
+        let row = |h: &str| Row {
+            system: h.into(),
+            ..Row::default()
+        };
+        let rows = [row("a"), row("b"), row("a"), row(""), row("c"), row("b")];
+        assert_eq!(prompts_of(&rows), ["a", "b", "c"]);
+        assert!(prompts_of(&[row("")]).is_empty());
     }
 
     #[test]
