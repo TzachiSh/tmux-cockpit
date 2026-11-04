@@ -57,7 +57,8 @@ file and the answer to a private temp file for the paste.
   together`, with no call in between, and sends the answers together after
   the last. Each one shown takes one of the 3. `⌫` goes back to the one
   before, and its answer is asked again; `g` on any of them sends at once
-  and lets Claude guess the rest. Questions past the budget are dropped.
+  and lets Claude guess the rest. Questions past the budget are dropped, and
+  one cut off mid-reply is left out with a warn note.
 - On a result, `i` inserts it into the pane without Enter, and `s` sends it
   with Enter after a confirm. The paste is bracketed only when the program
   asked for that, so a multi-line insert into a program that may run each
