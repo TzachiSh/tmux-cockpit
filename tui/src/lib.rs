@@ -17,3 +17,5 @@ pub mod theme;
 pub mod branch;
 // sessions view (#245)
 pub mod sessions;
+// file browser (#363)
+pub mod files;

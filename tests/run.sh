@@ -3825,15 +3825,27 @@ MVD=$(mktmpd)      # keeper's own dir: the new session made for it must start th
     "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$MV" list-clients -F '#{client_name}'
 OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
+# OP's screen trails the inner client, and under load it can still show the last
+# case's prompt ("new session: agents") or menu. A wait for a word that stale
+# screen also holds returns at once, the next key lands before the menu is up,
+# and Enter picks the menu's first row, agents (#347). So the old menu and
+# prompt must be gone first, and the wait is for the menu's own title.
 mv_open() {                   # press prefix M and wait for the menu; a no-show is one clean failure
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        case "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" 2>/dev/null)" in
+            *'new session:'*|*'move '[0-9]*:*' to '*) sleep 0.1 ;;
+            *) break ;;
+        esac
+    done
     "$TMUX_REAL" -L "$MVO" send-keys -t "$1" C-b M
-    until_cap "$MVO" "$1" '*agents*' || bad "the menu opens again" "a menu listing agents" \
+    until_cap "$MVO" "$1" '*move [0-9]*:* to *agents*' || bad "the menu opens again" "a menu listing agents" \
         "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" | tail -3)"
 }
 mv_client() { "$TMUX_REAL" -L "$MV" list-clients -F '#{session_name}:#{window_name}' 2>/dev/null; }
 mv_until() {                  # <pattern> against the client's session:window
     local i
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254
         case "$(mv_client)" in $1) return 0 ;; esac
         sleep 0.1
@@ -3984,12 +3996,12 @@ case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep MouseUp1Contr
          "$("$TMUX_REAL" -L "$DB" list-keys -T root | grep MouseUp1Control2)" ;;
 esac
 case "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit 2>/dev/null | awk '$4=="o"')" in
-    *"tmux-open-path"*"--folder"*) ok "which opens the pane's folder in the editor" ;;
-    *) bad "which opens the pane's folder in the editor" "a run-shell running --folder" \
+    *"tmux-open-path"*"--folder"*) ok "which browses the pane's folder" ;;
+    *) bad "which browses the pane's folder" "a run-shell running --folder" \
          "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit | awk '$4=="o"')" ;;
 esac
 # The key itself, through a real client: an attached client in the outer
-# server's pane gets the cockpit table and an o; a shim editor logs its argv.
+# server's pane gets the cockpit table and an o; a shim editor logs its argv (and must not be run, #363).
 DBD=$(mktmpd); DBLOG="$DBD/argv"; : > "$DBLOG"
 printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$DBLOG" > "$DBD/ed"
 chmod +x "$DBD/ed"
@@ -4001,8 +4013,17 @@ until_out '?*' "$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}'
 DBC=$("$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}' | head -1)
 "$TMUX_REAL" -L "$DB" switch-client -c "$DBC" -T cockpit >/dev/null 2>&1
 "$TMUX_REAL" -L "$DBO" send-keys -t o o
-until_file "$DBLOG" '?*'
-is "pressing o in the cockpit table hands the pane's folder to the editor" "$DIR" "$(cat "$DBLOG")"
+# #363: o opens the file browser popup on the client, not the editor.
+until_out '*files>*' "$TMUX_REAL" -L "$DBO" capture-pane -p -t o
+case "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o)" in
+    *files\>*) ok "pressing o in the cockpit table opens the file browser popup" ;;
+    *) bad "pressing o in the cockpit table opens the file browser popup" "a files> prompt on the client" \
+         "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o)" ;;
+esac
+is "and the editor was not run" "" "$(cat "$DBLOG")"
+"$TMUX_REAL" -L "$DBO" send-keys -t o Escape
+until_out 'gone' bash -c "$TMUX_REAL -L $DBO capture-pane -p -t o | grep -q 'files>' || echo gone"
+is "esc closes the popup" "" "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o | grep -c 'files>' | sed 's/^0$//')"
 "$TMUX_REAL" -L "$DBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
 fi
@@ -4285,13 +4306,15 @@ case "$(os_run 'f.txt g.txt')" in
     *POPUP*) ok "two matches ask" ;;
     *) bad "two matches ask" "the picker popup" "$(os_run 'f.txt g.txt')" ;;
 esac
-# --folder (the cockpit table's o, the menu's Browse folder) opens the pane's folder.
+# --folder (the cockpit table's o, the menu's Browse folder) opens the folder browser
+# popup (#363; it opened the pane's folder in the editor before, #228).
 : > "$OST/log"
 env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" OPEN_EDITOR=nvim \
     bash "$DIR/scripts/tmux-open-path" --folder %1 >/dev/null 2>&1
 case "$(cat "$OST/log")" in
-    *NEWWIN*"nvim  $OS"*|*NEWWIN*"nvim $OS"*) ok "--folder opens the pane's folder in the editor" ;;
-    *) bad "--folder opens the pane's folder in the editor" "a new-window running nvim $OS" "$(cat "$OST/log")" ;;
+    *NEWWIN*) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" "$(cat "$OST/log")" ;;
+    *POPUP*"--browse %1"*) ok "--folder opens the browser popup, not the editor" ;;
+    *) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" "$(cat "$OST/log")" ;;
 esac
 fi
 
@@ -4931,15 +4954,26 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # "must not hang on silent stdin" test sidesteps exactly this by holding the
 # writer open on a FIFO from a BACKGROUNDED process instead; that reliably
 # lets the deadline fire on schedule, so this test does the same.
+#
+# The proof is that the script returns while the writer still holds the FIFO,
+# not a wall clock: a "<=3 s" bound read 12 s at load 30, the script's own
+# start-up and tmux calls being slow, with the 2 s deadline intact (#215). The
+# writer holds for 60 s, so only a script that waits for EOF can see it gone.
+# The bound is still checked, under 30 s: the deadline is 2 s and the rest is
+# slack for load, so a script that waits out most of the writer still fails.
+# An interrupted run must not leave the 60 s writer behind: the suite's EXIT
+# trap kills it until the block is done, then goes back to plain cleanup.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
-( exec 9>"$CXFIFO"; sleep 8 ) & holder=$!
+( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
+trap 'kill "$holder" 2>/dev/null; cleanup' EXIT
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
+if kill -0 "$holder" 2>/dev/null && [ "$took" -lt 30 ]; then ok "a stalling writer is abandoned in time"
+else bad "a stalling writer is abandoned in time" "back under 30s, while the writer still held on" "${took}s"; fi
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+trap cleanup EXIT
 rm -f "$CXFIFO"
-if [ "$took" -le 3 ]; then ok "a stalling writer is abandoned in time"
-else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
 
@@ -6328,8 +6362,11 @@ fi
 
 echo "== repo git config cannot run commands through a review =="
 GH=$(mktmpd); GHM="$GH/marker"
+# The marker is the whole signal, so a plant never reads stdin (#214): git hands
+# core.fsmonitor, textconv and the diff commands its caller's stdin, and a bare
+# cat there blocked forever whenever that was an open terminal or socket.
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
-    printf '#!/bin/sh\necho %s >> %s\ncat\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
 done
 ( cd "$GH" && mkdir r && cd r && git init -q -b main . \
   && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
@@ -6339,14 +6376,16 @@ done
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
   && git config filter.evil.clean "$GH/clean" && git config log.showSignature true \
   && git config gpg.program "$GH/gpg" && git config core.hooksPath hk && git config core.pager "$GH/pager" ) >/dev/null 2>&1
-git -C "$GH/r" diff HEAD >/dev/null 2>&1
+# Plain git on purpose: the control that proves the plants fire. Its </dev/null and
+# the ones below are the second guard, should a plant ever read stdin again.
+git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
-"$DIR/scripts/tmux-review" --lines "$GH/r" >/dev/null 2>&1
+"$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null >/dev/null 2>&1
 is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
-case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
-    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
+case "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
+    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>&1 | head -3)" ;; esac
 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
@@ -6448,6 +6487,9 @@ AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_comma
      | awk '$2 == "claude" { print $1 }')
 NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
      | awk '$2 == "bash" { print $1 }')
+# Both shells' prompts, before anything is typed or pasted into them: see pane B below.
+until_cap "$RDS" "$AP" '*[$#]*'
+until_cap "$RDS" "$NP" '*[$#]*'
 
 RDSTORE="$STATE/deliver-store-$$"
 printf '## src.go:1 (+)\n> foo\nfix this\n\n' > "$RDSTORE"
@@ -6462,7 +6504,7 @@ rundeliver() {
     local n0 i; n0=$(npcap | grep -c 'RC=[0-9-]')
     "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
         "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$1") $(shq_test "$2"); echo RC=\$?" Enter
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         [ "$(npcap | grep -c 'RC=[0-9-]')" -gt "$n0" ] && return 0
         sleep 0.1
     done
@@ -6610,6 +6652,12 @@ AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claud
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
 until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
+# pane_current_command reads claude the moment exec -a runs, before bash has read
+# its rc files. A paste that lands before readline is up is echoed by the tty,
+# unbracketed, and bash then runs its lines: pane B showed only the prompt and
+# the review's first line (#215). The prompt is drawn by readline, so wait for it.
+until_cap "$RDS" "$AP2" '*[$#]*'
+until_cap "$RDS" "$NP2" '*[$#]*'
 
 ASTORE="$STATE/deliver-race-a-$$"
 BSTORE="$STATE/deliver-race-b-$$"
@@ -13471,6 +13519,157 @@ else bad "@cockpit_md_view off: the click opens the editor, no viewer" "OPEN $MV
 sleep 0.5
 is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$MDI" show -gqv @pwned 2>/dev/null)"
 "$TMUX_REAL" -L "$MDO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MDI" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path --folder: the file browser, and what is done with the line it prints (#363) =="
+# The tap on the pane path and the menu's Browse folder row reach --folder. It
+# opens a cockpit-tui files popup; the popup re-enters as --browse, reads one
+# line and acts on it. Private server started with -c, a shim code, shim editors
+# and a stub cockpit-tui that prints a canned line. The tmux in PATH is a
+# wrapper that logs every call before it runs, so "nothing was opened" is read
+# from the calls, never from a sleep.
+if need_tmux "folder browser"; then :; else
+FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
+FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
+FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"
+FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
+printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
+for e in ed-cockpit ed-visual ed-editor nvim; do
+    printf '#!/bin/sh\nprintf "%%s" "$0" >> "%s/ed.log"; printf " [%%s]" "$@" >> "%s/ed.log"; echo >> "%s/ed.log"\n' "$FB" "$FB" "$FB" > "$FB/bin/$e"
+done
+cat > "$FB/bin/tmux" <<STUB
+#!/bin/sh
+printf '%s' "\$1" >> "$FB/calls"; for a in "\$@"; do printf ' [%s]' "\$a" >> "$FB/calls"; done; echo >> "$FB/calls"
+# no client is attached to a private server, so a popup cannot open: log it only
+[ "\$1" = display-popup ] && exit 0
+exec "$TMUX_REAL" -L "$FBS" "\$@"
+STUB
+# the stub picker: what the browser would print, and how it exits
+cat > "$FB/bin/cockpit-tui" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$FB/tui.args"
+cat "$FB/errtext" >&2
+cat "$FB/answer"
+exit \$(cat "$FB/rc")
+STUB
+chmod +x "$FB"/bin/*
+# from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
+( cd "$FB" && PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$FBD" 'exec sleep 3600' >/dev/null 2>&1 )
+FBP=$("$TMUX_REAL" -L "$FBS" list-panes -t t -F '#{pane_id}')
+FBSOCK=$("$TMUX_REAL" -L "$FBS" display-message -p '#{socket_path}')
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_is_touch \
+    "$(sed -n 's/^set -g @cockpit_is_touch "\(.*\)"$/\1/p' "$DIR/scripts/lib/statusbar.conf")"
+# fb <on|off> <printf-format of the answer> [rc] [env...]: one --browse run
+fb() {
+    local touch=$1 ans=$2 rc=${3:-0}; shift 3
+    "$TMUX_REAL" -L "$FBS" set -g @cockpit_touch "$touch"
+    "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
+    printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
+    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"
+    ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
+        "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
+}
+fbn() { grep -c "^$1 " "$FB/calls"; }          # calls of one tmux subcommand
+fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done; }
+fbnotes() { grep '^display-message' "$FB/calls" | grep -vc '\[-p\]'; }   # notes shown, not queries
+fbwin() { "$TMUX_REAL" -L "$FBS" list-windows -t t | grep -c .; }
+
+# --folder: the tap opens the browser popup and nothing else
+: > "$FB/calls"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --folder "$FBP" </dev/null >"$FB/out" 2>&1
+is "--folder opens one popup" "1" "$(fbn display-popup)"
+is "--folder opens no editor and no window" "0|0" "$(fbn run-shell)|$(fbn new-window)"
+case "$(grep '^display-popup' "$FB/calls")" in
+    *"[-T] [ files"*"--browse $FBP]"*) ok "the popup is titled and re-enters as --browse on the pane" ;;
+    *) bad "the popup is titled and re-enters as --browse on the pane" "-T files, --browse $FBP" "$(grep '^display-popup' "$FB/calls")" ;;
+esac
+: > "$FB/calls"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/nope/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --folder "$FBP" </dev/null >"$FB/out" 2>&1
+is "--folder without cockpit-tui says so and opens no popup" "1|0" \
+   "$(grep -c 'cockpit-tui is missing' "$FB/calls")|$(fbn display-popup)"
+
+# --browse hands the browser the pane's folder
+fb off "open $FBF\n" 0
+is "the browser is started on the pane's folder" "files $FBD" "$(cat "$FB/tui.args")"
+
+# a non-touch client: open <file> goes the usual way, to VS Code
+fb off "open $FBF\n" 0
+fbwait "$FB/code.log"
+is "non-touch: open goes to code, as the path was opened before" "1|0" "$(fbn run-shell)|$(fbn new-window)"
+case "$(cat "$FB/code.log")" in
+    *"[--goto][$FBF:1:1]"*) ok "non-touch: code got the exact path" ;;
+    *) bad "non-touch: code got the exact path" "--goto $FBF:1:1" "$(cat "$FB/code.log")" ;;
+esac
+
+# a touch client: a terminal editor window instead, never VS Code
+fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual" "EDITOR=$FB/bin/ed-editor"
+fbwait "$FB/ed.log"
+is "touch: one window, no code" "1|0|2" "$(fbn new-window)|$(fbn run-shell)|$(fbwin)"
+is "touch: \$VISUAL opens the exact path" "$FB/bin/ed-visual [$FBF]" "$(cat "$FB/ed.log")"
+is "touch: code never ran" "" "$(cat "$FB/code.log")"
+fb on "open $FBF\n" 0 "EDITOR=$FB/bin/ed-editor"
+fbwait "$FB/ed.log"
+is "touch: \$EDITOR when there is no \$VISUAL" "$FB/bin/ed-editor [$FBF]" "$(cat "$FB/ed.log")"
+fb on "open $FBF\n" 0 "VISUAL=" "EDITOR="
+fbwait "$FB/ed.log"
+is "touch: nvim when nothing is set" "$FB/bin/nvim [$FBF]" "$(cat "$FB/ed.log")"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
+# the editor window is named for the file and sits in its folder
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+is "touch: the window is named for the file and starts in its folder" "n.md $FBD/sub" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.md $FBD/sub")"
+
+# names that are tmux formats: -n and -c expand #(), so term_edit escapes both
+FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
+fb on "open $FBHF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch, format-looking names: the editor got the exact path" "$FB/bin/ed-visual [$FBHF]" "$(cat "$FB/ed.log")"
+is "touch, format-looking names: the window name and folder are literal" "#(touch\${IFS}PWN).txt $FBH" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "#(touch\${IFS}PWN).txt $FBH")"
+is "touch, format-looking names: nothing ran" "" "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
+
+# a touch client with no editor anywhere: one note, no window
+mkdir -p "$FB/nobin"
+for x in bash cat rm mktemp readlink dirname; do ln -sf "$(command -v $x)" "$FB/nobin/$x"; done
+ln -sf "$FB/bin/tmux" "$FB/nobin/tmux"
+fb on "open $FBF\n" 0 "PATH=$FB/nobin" "VISUAL=" "EDITOR="
+is "touch, no editor found: no window and one note naming the fix" "0|1" \
+   "$(fbn new-window)|$(grep -c 'no terminal editor' "$FB/calls")"
+
+# alt-c: the path is copied, nothing opens
+fb on "copy $FBF\n" 0
+is "copy: the path is in the paste buffer" "$FBF" "$("$TMUX_REAL" -L "$FBS" show-buffer)"
+is "copy: nothing opened" "0|0" "$(fbn run-shell)|$(fbn new-window)"
+
+# esc: nothing, and no complaint
+fb on "" 1
+is "esc: nothing runs and nothing is said" "0|0|0|0" \
+   "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
+
+# the printed line is untrusted: each of these must open and copy nothing
+for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
+           "relative path|open proj/sub/n.md" "newline in the name|open $FBD/two\\nlines.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
+           "missing past dotdot|open $FBD/../nope"; do
+    for t in on off; do
+        fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
+        is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
+           "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
+    done
+done
+
+# a tui from before this screen existed
+fb on "" 2
+printf 'cockpit-tui: unknown screen files\n' > "$FB/errtext"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
+is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
+"$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
