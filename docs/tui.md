@@ -252,8 +252,12 @@ when it did not, and carried the facts a case requires, plus the latency. It
 calls `claude` once per case, so it is run by hand and never from `make test`;
 `--check` only validates the cases, and `cargo test` runs that check too. To
 compare a prompt edit, put it in the override file above and run again: the
-summary prints a hash of the system prompt it sent. `--model`, `--runs`,
-`--jobs`, `--only <id or kind>` and `--out <file.jsonl>` are the knobs.
+summary prints a hash of the system prompt it sent, and a pass count per case
+over the runs (3 by default: one run is not enough to judge a change). The case
+format, with its `expect: ask|write|either`, `must`, `must_not` and `holdout`
+keys, is described at the top of the cases file; holdout cases are written
+after the prompt they run on, so a gain there is not overfitting. `--model`,
+`--runs`, `--jobs`, `--only <id or kind>` and `--out <file.jsonl>` are the knobs.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to

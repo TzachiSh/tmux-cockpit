@@ -4,10 +4,13 @@
 #   kind:    bug, feature, investigate, plan, refactor, review, message, command, ops, hint, format
 #   window:  name · cmd · path, as the panel captures them
 #   out:     the output type picked in the panel (default auto)
-#   expect:  ask   - the right first move is a question
-#            write - the input settles it: no question
-#   ask_any: for ask, the question or one option names one of these (; separated, any case)
-#   must:    for write, the reply carries every one of these
+#   expect:  ask    - the right first move is a question
+#            write  - the input settles it: no question
+#            either - an on-target question, or a reply with every must, both serve
+#   ask_any: for ask or either, the question or one option names one of these (; separated, any case)
+#   must:    for write or either, the reply carries every one of these
+#   must_not: the reply, a question included, carries none of these
+#   holdout: yes for a case written after the prompt it is run on (default no)
 #   note:    why the label is what it is
 # then "--- screen" (optional) and "--- request".
 #
@@ -57,9 +60,10 @@ clean up the logs
 === conflicting-options
 kind: feature
 window: claude · claude · /home/u/projects/prices
-expect: ask
+expect: either
 ask_any: lru; skip; memory; both; cache
-note: picks "2" and "3", which contradict: build an LRU cache and skip caching
+must: LRU; batch
+note: "2" and "3" read as contradicting (3 says skip caching) or as combinable; asking or a combined prompt both serve
 --- screen
 ● Prices are fetched on every request. Three ways forward:
   1. Cache in Redis with a 60 s TTL
@@ -97,9 +101,10 @@ invoice totals are off for some customers
 === release-slips
 kind: message
 window: bash · bash · /home/u
-expect: ask
+expect: either
 ask_any: date; when; until; how long; new
-note: a message whose key fact (the new date) only the owner knows
+must: Dana; slip
+note: the new date is the owner's to give, but they may not have one: asking or "date to follow" both serve
 --- request
 write to dana that the release slips
 
@@ -160,9 +165,10 @@ undo that
 === dark-mode
 kind: feature
 window: bash · bash · /home/u/projects/web
-expect: ask
+expect: either
 ask_any: toggle; system; setting; follow; switch; preference; automatic
-note: a product choice only the owner can make: follow the OS or a user toggle
+must: plan
+note: a product choice the owner makes; asking now or a plan-first prompt that lets them choose both serve
 --- request
 add dark mode
 
@@ -347,8 +353,7 @@ kill whatever is on port 3000
 
 # Capability cases: does the prompt steer the agent to a skill, tool or
 # subagent when one fits, and leave them out when they don't? `must` checks the
-# steer. The rig has no must-not key yet, so a case whose note says
-# "skip: a|b" is checked after a run for those words (proposed: a must_not key).
+# steer, `must_not` its absence.
 
 === three-services-fail
 kind: investigate
@@ -369,7 +374,8 @@ kind: investigate
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: session
-note: a one-file lookup: a direct search, no subagent, no plan step. skip: subagent|plan mode|ultrathink
+must_not: subagent; plan mode; ultrathink
+note: a one-file lookup: a direct search, no subagent, no plan step
 --- request
 where is the session state parsed? just tell me the file and function
 
@@ -378,7 +384,8 @@ kind: bug
 window: claude · claude · /home/u/projects/web
 expect: write
 must: Recieve; Receive
-note: a trivial edit: nothing to delegate. skip: subagent|plan|skill
+must_not: subagent; plan first; a plan; skill
+note: a trivial edit: nothing to delegate
 --- screen
 ● The button label in src/Checkout.tsx reads "Recieve order".
 --- request
@@ -416,6 +423,78 @@ kind: review
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: diff
-note: review of uncommitted work: read the diff, report, no edits. skip: subagent
+must_not: subagent
+note: review of uncommitted work: read the diff, report, no edits
 --- request
 review my uncommitted changes before i commit, just report problems
+
+# Holdout cases: written after the proposed prompt of #411, never tuned on.
+
+=== h-search-wrong
+kind: bug
+window: bash · bash · /home/u/projects/docs-site
+expect: ask
+ask_any: expected; should; wrong; missing; which; instead
+holdout: yes
+note: bug with no expected behaviour; the results look fine to anyone but the owner
+--- screen
+$ ./search "tmux"
+1. Getting started
+2. Keyboard shortcuts
+3. Changelog 0.4
+--- request
+the search results are wrong
+
+=== h-crate-audit
+kind: investigate
+window: claude · claude · /home/u/projects/engine
+expect: write
+must: unsafe; subagent
+holdout: yes
+note: four independent crates: one subagent each fits
+--- screen
+● The workspace has four crates: core, io, render and ffi.
+--- request
+check each crate for unsafe code and report what you find, dont change anything
+
+=== h-node-lts
+kind: research
+window: bash · bash · /home/u/projects/api
+expect: write
+must: node; source
+holdout: yes
+note: a current fact: web search with sources
+--- request
+which node version is the current LTS and should our Dockerfile move to it
+
+=== h-bump-version
+kind: refactor
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: 0.5.0
+must_not: subagent; skill
+holdout: yes
+note: a one-line edit: nothing to delegate
+--- request
+bump the version in Cargo.toml to 0.5.0
+
+=== h-named-command
+kind: review
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: /code-review
+holdout: yes
+note: the owner names a slash command: keep it as written
+--- request
+run /code-review on my branch and fix what it finds
+
+=== h-copy-staging
+kind: ops
+window: bash · bash · /home/u/projects/web
+expect: either
+ask_any: host; address; server; which; where
+must: staging
+holdout: yes
+note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve
+--- request
+copy the build to the staging server

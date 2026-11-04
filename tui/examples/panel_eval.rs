@@ -29,6 +29,18 @@ const QUESTIONS: usize = 3;
 enum Expect {
     Ask,
     Write,
+    /// A question on target, or a reply with every `must`: both serve the owner.
+    Either,
+}
+
+impl Expect {
+    fn as_str(self) -> &'static str {
+        match self {
+            Expect::Ask => "ask",
+            Expect::Write => "write",
+            Expect::Either => "either",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +56,10 @@ struct Case {
     ask_any: Vec<String>,
     /// For `write`: every one of these is in the reply.
     must: Vec<String>,
+    /// Never in the reply, a question included: a subagent for a typo, say.
+    must_not: Vec<String>,
+    /// Written after the prompt it is run on, so it shows overfitting.
+    holdout: bool,
     screen: String,
     request: String,
 }
@@ -93,6 +109,8 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             expect: Expect::Write,
             ask_any: vec![],
             must: vec![],
+            must_not: vec![],
+            holdout: false,
             screen: String::new(),
             request: String::new(),
         };
@@ -114,11 +132,20 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     expect = Some(match v {
                         "ask" => Expect::Ask,
                         "write" => Expect::Write,
-                        _ => return Err(err("expect is ask or write")),
+                        "either" => Expect::Either,
+                        _ => return Err(err("expect is ask, write or either")),
                     })
                 }
                 "ask_any" => c.ask_any = list(v),
                 "must" => c.must = list(v),
+                "must_not" => c.must_not = list(v),
+                "holdout" => {
+                    c.holdout = match v {
+                        "yes" => true,
+                        "no" => false,
+                        _ => return Err(err("holdout is yes or no")),
+                    }
+                }
                 "note" => {}
                 k => return Err(err(&format!("unknown key {k}"))),
             }
@@ -168,6 +195,8 @@ struct Grade {
     on_target: bool,
     /// For `write`: the `must` facts the reply lacks.
     missing: Vec<String>,
+    /// The `must_not` words the reply has.
+    forbidden: Vec<String>,
     pass: bool,
 }
 
@@ -187,10 +216,15 @@ fn grade(c: &Case, raw: &str) -> Grade {
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(raw, m)).cloned().collect();
     }
-    g.pass = match c.expect {
-        Expect::Ask => g.asked && g.on_target,
-        Expect::Write => !g.asked && g.missing.is_empty(),
-    };
+    g.forbidden = c.must_not.iter().filter(|m| has(raw, m)).cloned().collect();
+    let asked_well = g.asked && g.on_target;
+    let wrote_well = !g.asked && g.missing.is_empty();
+    g.pass = g.forbidden.is_empty()
+        && match c.expect {
+            Expect::Ask => asked_well,
+            Expect::Write => wrote_well,
+            Expect::Either => asked_well || wrote_well,
+        };
     g
 }
 
@@ -208,7 +242,8 @@ fn opts() -> Result<Opts, String> {
     let mut o = Opts {
         cases: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt"),
         model: "auto".into(),
-        runs: 1,
+        // One run is not enough to judge a change: a case can pass 3/3, then 2/3.
+        runs: 3,
         jobs: 4,
         only: None,
         out: None,
@@ -260,11 +295,14 @@ fn main() {
     if let Some(w) = &o.only {
         cases.retain(|c| c.id.contains(w.as_str()) || c.kind == *w);
     }
-    let asks = cases.iter().filter(|c| c.expect == Expect::Ask).count();
+    let count = |e: Expect| cases.iter().filter(|c| c.expect == e).count();
+    let held = cases.iter().filter(|c| c.holdout).count();
     println!(
-        "{} cases ({asks} ask, {} write) from {}",
+        "{} cases ({} ask, {} write, {} either; {held} holdout) from {}",
         cases.len(),
-        cases.len() - asks,
+        count(Expect::Ask),
+        count(Expect::Write),
+        count(Expect::Either),
         o.cases.display()
     );
     if o.check {
@@ -343,19 +381,21 @@ fn main() {
             };
             let what = match (&err, &g) {
                 (Some(e), _) => e.clone(),
+                (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
                 (_, Some(g)) if g.asked => format!("asked: {}", g.question),
                 (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
                 _ => "wrote".into(),
             };
-            let want = if c.expect == Expect::Ask { "ask" } else { "write" };
-            println!("{mark} {:<24} {:<13} want {want:<5} {:>6} ms  {what}", c.id, c.kind, ms);
+            let want = c.expect.as_str();
+            println!("{mark} {:<24} {:<13} want {want:<6} {:>6} ms  {what}", c.id, c.kind, ms);
             if let Some(f) = log.as_mut() {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
-                    "missing": g.as_ref().map(|g| g.missing.clone()), "reply": raw,
+                    "missing": g.as_ref().map(|g| g.missing.clone()),
+                    "forbidden": g.as_ref().map(|g| g.forbidden.clone()), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
             }
@@ -392,8 +432,30 @@ fn summary(cases: &[Case], done: &[(usize, u128, Grade)], failed: usize, hashes:
     let pass = done.iter().filter(|(_, _, g)| g.pass).count();
     let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
+    // Per case, over the runs: a flaky case shows as 2/3, not as noise in a total.
+    println!("{:<24} {:<6} pass", "case", "want");
+    for (i, c) in cases.iter().enumerate() {
+        let mine: Vec<_> = done.iter().filter(|(ci, _, _)| *ci == i).collect();
+        let p = mine.iter().filter(|(_, _, g)| g.pass).count();
+        let tag = if c.holdout { "  holdout" } else { "" };
+        println!("{:<24} {:<6} {p}/{}{tag}", c.id, c.expect.as_str(), mine.len());
+    }
+    println!();
     println!("system prompt   {}", hs.join(" "));
     println!("passed          {}", pct(pass, done.len()));
+    let held: Vec<_> = done.iter().filter(|(c, _, _)| cases[*c].holdout).collect();
+    if !held.is_empty() {
+        let hp = held.iter().filter(|(_, _, g)| g.pass).count();
+        println!("  holdout       {}", pct(hp, held.len()));
+    }
+    let either: Vec<_> = of(Expect::Either).collect();
+    if !either.is_empty() {
+        let ea = either.iter().filter(|(_, _, g)| g.asked).count();
+        println!("either: asked   {}", pct(ea, either.len()));
+    }
+    let nots: usize = done.iter().filter(|(_, _, g)| !g.forbidden.is_empty()).count();
+    let with_not = done.iter().filter(|(c, _, _)| !cases[*c].must_not.is_empty()).count();
+    println!("must_not hit    {}", pct(nots, with_not));
     println!("asked when due  {}", pct(asked, ask.len()));
     println!("  on target     {}", pct(target, ask.len()));
     println!("false asks      {}", pct(false_ask, write.len()));
@@ -454,6 +516,30 @@ mod tests {
         assert!(g.pass && g.on_target, "{g:?}");
         c.ask_any = vec!["which file".into()];
         assert!(!grade(&c, q).pass);
+    }
+
+    #[test]
+    fn either_takes_a_good_question_or_a_good_prompt_and_must_not_fails_both() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        c.expect = Expect::Either;
+        c.ask_any = vec!["which line".into()];
+        c.must_not = vec!["subagent".into()];
+        assert!(grade(&c, "<prompt>Fix net-proxy at line 88.</prompt>").pass);
+        assert!(grade(&c, "<question>Which line?</question>").pass);
+        assert!(!grade(&c, "<question>What now?</question>").pass);
+        assert!(!grade(&c, "<prompt>Fix net-proxy.</prompt>").pass);
+        let g = grade(&c, "<prompt>Use a subagent to fix net-proxy at line 88.</prompt>");
+        assert_eq!(g.forbidden, ["subagent"]);
+        assert!(!g.pass);
+    }
+
+    #[test]
+    fn reads_must_not_holdout_and_either() {
+        let t = ONE.replace("expect: write", "expect: either\nmust_not: a; b\nholdout: yes");
+        let c = &parse_cases(&t).unwrap()[0];
+        assert_eq!((c.expect, c.holdout), (Expect::Either, true));
+        assert_eq!(c.must_not, ["a", "b"]);
+        assert!(parse_cases(&ONE.replace("expect: write", "expect: write\nholdout: maybe")).is_err());
     }
 
     #[test]
