@@ -65,7 +65,14 @@ pub(crate) fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&st
 /// None when a name holds `=`: git splits `-c` at the first one, so
 /// `filter.a=b.clean=` would set `filter.a` and leave the planted driver live.
 pub fn no_filters(root: &str) -> Option<Vec<String>> {
-    let out = git(root, &[], None, &["config", "-z", "--get-regexp", r"^filter\."]);
+    filter_flags(&git(root, &[], None, &FILTER_CONFIG))
+}
+
+/// The config read [`filter_flags`] parses, for a caller that runs git itself.
+pub const FILTER_CONFIG: [&str; 4] = ["config", "-z", "--get-regexp", r"^filter\."];
+
+/// [`no_filters`] on the output of `git config` run with [`FILTER_CONFIG`].
+pub fn filter_flags(out: &str) -> Option<Vec<String>> {
     let mut names: Vec<&str> = out
         .split('\0')
         .filter_map(|r| r.split('\n').next()?.strip_prefix("filter.")?.rsplit_once('.').map(|(n, _)| n))
