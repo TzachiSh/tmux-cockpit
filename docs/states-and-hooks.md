@@ -40,6 +40,7 @@ timer.
 | `CwdChanged` | `session` — saves the payload's `new_cwd` as `@cockpit_dir`, so the board shows the repo the agent `cd`'d into (see [Working tree](#working-tree)) |
 | `PermissionRequest` | `needs-input` |
 | `PostToolUse` | `running` |
+| `PostToolUse` (matcher `TaskStop`) | `sub-taskstop` — records the stopped agent in the subagent log, since a TaskStop mid-turn fires no `SubagentStop` for a plain agent (see [Subagent event log](#subagent-event-log)); no pane state |
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
 | `SubagentStart` (2nd) | `sub-start` — appends the event to the session's subagent log (see [Subagent event log](#subagent-event-log)); no pane state |
@@ -49,6 +50,7 @@ timer.
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
+| `Stop` (3rd) | `sub-reconcile` — appends the payload's `background_tasks`, the set still in flight, to the subagent log; an agent the log had running that is not in it has ended; no pane state |
 | `StopFailure` | `error` — a turn killed by an API error fires this, **not** `Stop`; unwired, it left a bright "working" marker forever |
 | `Notification` | `notify` (parses the JSON on stdin) |
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
@@ -205,7 +207,7 @@ length), and a pane with no such dir costs one failed `opendir`.
 |-------|------|
 | `ty`, `desc` | `agentType`, `description` (control characters dropped) |
 | `kind` | `isFork: true` is a fork; a `teamName` is a teammate; else a subagent |
-| `state` | `stoppedByUser: true` is stopped, even when the newest assistant row is an API error (the user's action wins). Else, when the [hook log](#subagent-event-log) has the agent, its newest event: `start` is running, but `end-unknown` when its transcript has not been written for 15 minutes (an agent waiting on a permission prompt or a long tool call reads so too); `stop` is done (failed when the newest assistant row is an API error), but idle for a teammate; `idle` is idle. Else (no log, no `start` in its tail, or a `finished: true` written at or after the last `start`): for a finished agent, failed when the newest assistant row is an API error, done otherwise; for any other, `end-unknown` after the same 15 quiet minutes, else running. Finished is `finished: true` |
+| `state` | `stoppedByUser: true` is stopped, even when the newest assistant row is an API error (the user's action wins). Else a TaskStop the [hook log](#subagent-event-log) recorded after the agent's last `start` is stopped, and so is an agent the log has running (a `start` its newest event) that the newest Stop's in-flight set leaves out. Else, when the hook log has the agent, its newest event: `start` is running, but `end-unknown` when its transcript has not been written for 15 minutes (an agent waiting on a permission prompt or a long tool call reads so too); `stop` is done (failed when the newest assistant row is an API error), but idle for a teammate; `idle` is idle. Else (no log, no `start` in its tail, or a `finished: true` written at or after the last `start`): for a finished agent, failed when the newest assistant row is an API error, done otherwise; for any other, `end-unknown` after the same 15 quiet minutes, else running. Finished is `finished: true` |
 | `started` | the first transcript row's `timestamp` |
 | `active_at` | the newest of the newest transcript row's `timestamp` (else the transcript's mtime) and the agent's last hook event. The age of an idle or end-unknown agent. Not part of the hash |
 | `finished_at` | none while running, idle or end-unknown, and for a finished agent with no transcript. Else the `timestamp` of the newest transcript row that has one, else the transcript's mtime. Rows win: a copy or restore moves the mtime, not the rows. A stopped agent takes the later of that and the meta file's mtime (the write that set `stoppedByUser`), since a stop during a long tool call comes after the newest row; with no transcript it is the meta file's mtime alone. On a live session the two agree to the second. Not part of the hash |
@@ -232,13 +234,38 @@ tmux: each appends one line to
 with the event `start`, `stop` or `idle`. `sub-end` deletes the session's log and any log
 unwritten for 7 days.
 
+Two more rows say how an agent ended (#403), from `PostToolUse` with the matcher `TaskStop`
+(`sub-taskstop`) and from `Stop` (`sub-reconcile`):
+
+| row | written when |
+|-----|--------------|
+| `<epoch>\tkill\t<agent_id>` | the model's TaskStop of a plain agent (`task_type` `local_agent`): `tool_response.task_id` is the agent id |
+| `<epoch>\tkill-tm\t<name>\t<description>` | a TaskStop of anything else, a teammate: its `task_id` is a task id no file holds, so the row keeps `tool_input.task_id` (the name the model gave, when plain) and `tool_response.command` (the description) |
+| `<epoch>\tlive\t<id>,<id>...\t<description>...` | every `Stop`: the payload's `background_tasks`, subagents by agent id, teammates by description (their id is a task id too); shells are left out |
+
+A description is the JSON string's body as the payload has it, escapes kept, so it holds no
+tab, newline or raw quote; one over 512 bytes, or with a control byte, is dropped.
+
+- **Why both.** Claude Code 2.1.318 fires no `SubagentStop` when TaskStop ends a plain
+  background agent mid-turn (anthropics/claude-code#92716); for a teammate it does, but that
+  stop reads as a turn's end. `PostToolUse` on TaskStop sees every stop the model makes, live.
+  A stop from the UI (the tasks dialog, Esc) is no tool call: only the next `Stop`'s set shows
+  it, when the parent's turn ends (anthropics/claude-code#100201).
+- **Only `Stop`'s set.** `SubagentStop` carries `background_tasks` too, but lists the agent that
+  is stopping as running.
+- **All or nothing.** A `background_tasks` array that does not parse whole, an entry with a
+  bad id or description, or a row past 3900 bytes (one atomic write) writes no `live` row: a
+  short set would end agents that live.
+- **Undocumented shape.** The TaskStop payload's `tool_response` is not documented; a change to
+  it drops the `kill` rows, and `end-unknown` covers the gap again.
+
 - **Append-only.** One write under `PIPE_BUF` is atomic, so hooks firing side by side lose
   nothing, and a reader takes the newest line per `agent_id`. It is not a counter: `SubagentStart`
   also fires for a resumed subagent and for every message an in-process teammate handles, and
   `SubagentStop` for every turn a teammate ends (#317).
 - **What an event says.** The newest event is what the agent did last. A teammate's `stop` ends
-  a turn, not the agent, and no documented hook fires when TaskStop or a shutdown ends one, so
-  the log cannot tell an idle teammate from an ended one.
+  a turn, not the agent, so by itself it cannot tell an idle teammate from an ended one; a
+  `kill-tm` row can.
 - **Stop lines with no start.** `SubagentStop` with the matcher `""` also fires for Claude
   Code's own internal agents (prompt suggestions, `/btw` side questions), whose `agent_type`
   is empty and which have no `SubagentStart`. A `stop` for an id that never had a `start` is
@@ -250,8 +277,10 @@ unwritten for 7 days.
   malformed or missing id drops the event. The dir is 0700 and the log 0600 whatever the
   umask, a symlink in the way is never followed, the payload is read for 2 s and 256 KB at
   most, and the hook always exits 0.
-- **Install.** The four entries come with `install.sh --hooks`; an update needs it rerun, and
-  `install.sh --check` warns (`subhooks`) when they are missing. Each of the four is an
+- **Install.** The six entries come with `install.sh --hooks`; an update needs it rerun
+  (`sub-taskstop` and `sub-reconcile` came with #403), and `install.sh --check` warns
+  (`subhooks`, "re-run install.sh --hooks") when any is missing. `--hooks` adds the
+  `sub-reconcile` entry beside your own `Stop` hooks, never in place of them. Each of the six is an
   entry of its own, as every other event's handler is, so an upgrade over master's
   `--hooks` adds them beside the old entries and duplicates nothing.
 
@@ -261,8 +290,20 @@ Per agent the newest event decides, as the `state` row says, and `stoppedByUser`
 A `stop` or `idle` counts only after a `start` of the same agent (Claude Code's internal agents
 send a stop with no start), so an agent whose `start` fell out of the tail has no record and
 the meta file decides. `end-unknown` is a started agent that no one has written for 15 minutes:
-a teammate ended by TaskStop mid-turn, which no hook reports. It is never running, and not a
-failure. A teammate's stop is idle, not done: the log cannot tell it from an ended one. A `finished: true` newer than the last `start` beats it (an API error fires StopFailure, not SubagentStop, and TaskStop fires nothing); an older one is a resume, and the `start` wins. An agent with no record that never finished ages into `end-unknown` the same way, so a teammate ended before the hooks were installed does not read as running for good.
+an agent ended in a way no row recorded. It is never running, and not a failure. A teammate's
+stop is idle, not done: alone it cannot tell an idle teammate from an ended one. A `finished: true` newer than the last `start` beats it (an API error fires StopFailure, not SubagentStop); an older one is a resume, and the `start` wins.
+
+A `kill` row ends its agent as stopped until a later `start` (a resume) of it; the `stop` a
+teammate's TaskStop also fires does not undo it. A `kill-tm` row is mapped to a teammate by
+name when its name is some teammate's `name` in the meta files, else by description, and
+counts after that teammate's last `start`. Only the newest `live` row counts. It ends, as
+stopped, every agent whose newest event is a `start` (a resume included), whose
+last `start` came in an earlier second, that wrote no log line after it, and that is in it
+neither by id nor (a teammate) by description. It cannot tell killed from finished, so a
+`finished: true` meta newer than the `start` still decides. `end-unknown` is left for an agent
+none of these reaches: a UI stop before the parent's next `Stop`, or a box without the hooks.
+An idle teammate is left alone: no payload has yet shown whether `background_tasks` lists a
+teammate between turns, so its absence proves nothing. An agent with no record that never finished ages into `end-unknown` the same way, so a teammate ended before the hooks were installed does not read as running for good.
 
 ## A goal that will not be met
 
