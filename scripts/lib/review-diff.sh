@@ -193,9 +193,7 @@ lines_mode() {
     fi
     if [ -n "$reason" ]; then
         local big="diff too large to anchor line-by-line ($reason) — review it directly"
-        # Offset 1 (the preview's first line) so the 5-field split of a reader
-        # never meets a short row -- this notice has no file to scroll anyway.
-        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big" 1
+        printf '%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$big" "$big"
         return 0
     fi
 
@@ -204,7 +202,7 @@ lines_mode() {
     skipped=$(big_files "$dir" | awk -F'\t' '{ printf "%s%s (%d MB)", (n++ ? ", " : ""), $2, $1 / 1048576 }')
     if [ -n "$skipped" ]; then
         local note="$skipped skipped — over $(( BIGCAP / 1048576 )) MB, review it directly"
-        printf '%s\t%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$note" "$note" 1
+        printf '%s\t%s\t%s\t%s\n' "$CAP_SENTINEL" 0 "$note" "$note"
     fi
 
     [ -n "$diff" ] || return 0
@@ -219,19 +217,16 @@ lines_mode() {
         function inhunk() { return (oldrem > 0 || newrem > 0) }
         {
             if (inhunk()) {
-                # poff: the row line in --preview-diff, which prints one stat
-                # line, then this diff from the first @@ of the file.
-                poff++
                 c = substr($0, 1, 1)
                 if (c == "+") {
                     if (file != "") {
-                        printf "%s\t%d\t+\t%d\t%s\n", file, newl, poff + 1, substr($0, 2)
+                        printf "%s\t%d\t+\t%s\n", file, newl, substr($0, 2)
                         newl++
                     }
                     newrem--
                 } else if (c == "-") {
                     if (file != "") {
-                        printf "%s\t%d\t-\t%d\t%s\n", file, oldl, poff + 1, substr($0, 2)
+                        printf "%s\t%d\t-\t%s\n", file, oldl, substr($0, 2)
                         oldl++
                     }
                     oldrem--
@@ -249,7 +244,7 @@ lines_mode() {
             }
             if ($0 ~ /^\+\+\+ /) {
                 if ($0 ~ /^\+\+\+ b\//) { file = substr($0, 7); sub(/\t$/, "", file) } else file = oldfile
-                oldl = 0; newl = 0; poff = 0; next
+                oldl = 0; newl = 0; next
             }
             if ($0 ~ /^@@/) {
                 split($0, parts, " ")
@@ -258,7 +253,6 @@ lines_mode() {
                 oldrem = (oa[2] == "" ? 1 : oa[2] + 0)
                 sub(/^\+/, "", newtok); split(newtok, na, ","); newl = na[1] + 0
                 newrem = (na[2] == "" ? 1 : na[2] + 0)
-                poff++
                 next
             }
         }
@@ -281,8 +275,8 @@ lines_mode() {
         {
             p = $1
             if (!(p in part)) part[p] = (index(p, "test") > 0 ? 0 : 1)
-            # Past the fourth tab, not $5: a fragment may hold a tab.
-            frag = substr($0, length($1) + length($2) + length($3) + length($4) + 5)
+            # Past the third tab, not $4: a fragment may hold a tab.
+            frag = substr($0, length($1) + length($2) + length($3) + 4)
             gsub(/[\001-\037\177]/, "", frag)
             # 160 bytes, backed off to a character boundary when the cut split
             # a UTF-8 sequence (the byte after it is a continuation byte).
@@ -294,9 +288,9 @@ lines_mode() {
             ml = ($3 == "-" ? "-" $2 : $2)
             # Sort keys: test partition, 999999999 - churn (so ascending reads
             # descending), NR (first-seen order keeps each file whole).
-            printf "%d\t%09d\t%09d\t%s\t%s\t%s\t%s:%s (%s)  %s\t%s\n", \
+            printf "%d\t%09d\t%09d\t%s\t%s\t%s\t%s:%s (%s)  %s\n", \
                    part[p], 999999999 - churn[p], NR, \
-                   p, ml, frag, p, $2, $3, frag, $4
+                   p, ml, frag, p, $2, $3, frag
         }
     ' <(printf '%s\n' "$numstat") <(printf '%s\n' "$raw") \
         | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k2,2 -k3,3 \

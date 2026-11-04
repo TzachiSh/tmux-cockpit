@@ -25,9 +25,8 @@ fi
 
 # Not `$0`: through install.sh's symlink or a PATH lookup this must still
 # find its siblings and re-invoke itself.
-SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck disable=SC2034  # read by the libs
-OPENPATH="$(dirname "$SELF")/tmux-open-path"
+SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 # lib/ sits beside the REAL script; install.sh links it by absolute path.
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 LIBDIR=${d%/*}/lib
