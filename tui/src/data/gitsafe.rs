@@ -115,7 +115,7 @@ const OLD_PS: &str = "cockpit-tui-ps.";
 /// shared temp dir is the agent's to write too: a fixed name there was a
 /// symlink the copy wrote through. This one is mkdir'd 0700 under a name no
 /// one can guess, never reused, and Drop removes it on every way out, a
-/// panic's unwind included; what a SIGKILL leaves, [`sweep_stale`] takes.
+/// panic's unwind included; what a SIGKILL or an abort leaves, [`sweep_stale`] takes.
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -137,8 +137,10 @@ impl Drop for Scratch {
     }
 }
 
-/// `src` copied to a new file `dst`, with `src`'s mtime.
-fn copy_index(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// `src` copied to a new file `dst`, with `src`'s mtime. Public for a test
+/// that plants a symlink at `dst`.
+#[doc(hidden)]
+pub fn copy_index(src: &Path, dst: &Path) -> std::io::Result<()> {
     let mut from = File::open(src)?;
     let mtime = from.metadata()?.modified()?;
     let mut to = File::options().write(true).create_new(true).mode(0o600).open(dst)?;
@@ -146,61 +148,49 @@ fn copy_index(src: &Path, dst: &Path) -> std::io::Result<()> {
     to.set_modified(mtime)
 }
 
+/// Past this a scratch entry is a killed scan's: a scan takes well under a second.
+const STALE: std::time::Duration = std::time::Duration::from_secs(3600);
+
 /// Removes what a killed scan left in `tmp`: a scratch dir, or a bare index
-/// copy or excludes file from before them, whose pid is gone or is no
-/// cockpit-tui. Only those exact names, only the user's own, and a symlink
-/// is never followed or removed.
+/// copy or excludes file from before them, last changed over [`STALE`] ago.
+/// Age alone says stale: a pid is never read, since a live board may run
+/// under another name or in another pid namespace. Only those exact names,
+/// only the user's own, and a symlink is never followed or removed.
 pub fn sweep_stale(tmp: &Path) {
     let Ok(entries) = std::fs::read_dir(tmp) else { return };
-    let (me, uid) = (std::process::id(), unsafe { libc::geteuid() });
+    let uid = unsafe { libc::geteuid() };
+    let now = std::time::SystemTime::now();
     for e in entries.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(leaked_pid) else {
-            continue;
-        };
-        if pid == me || is_board(pid) {
+        if !e.file_name().to_str().is_some_and(scratch_name) {
             continue;
         }
         let p = e.path();
         let Ok(m) = std::fs::symlink_metadata(&p) else { continue };
-        if m.uid() != uid {
+        let old = m.modified().is_ok_and(|t| now.duration_since(t).is_ok_and(|age| age > STALE));
+        if m.uid() != uid || !old {
             continue;
         }
-        let _ = if m.is_dir() {
+        let gone = if m.is_dir() {
             std::fs::remove_dir_all(&p)
         } else if m.is_file() {
             std::fs::remove_file(&p)
         } else {
             continue;
         };
-    }
-}
-
-/// The pid in `cockpit-tui-idx.<pid>.<hex>` or `cockpit-tui-ps.<pid>.<n>`.
-fn leaked_pid(name: &str) -> Option<u32> {
-    let rest = name.strip_prefix(SCRATCH).or_else(|| name.strip_prefix(OLD_PS))?;
-    let (pid, tail) = rest.split_once('.')?;
-    let all = |s: &str, f: fn(&u8) -> bool| !s.is_empty() && s.bytes().all(|b| f(&b));
-    if !all(pid, u8::is_ascii_digit) || !all(tail, u8::is_ascii_hexdigit) {
-        return None;
-    }
-    pid.parse().ok()
-}
-
-/// Whether `pid` is a live cockpit-tui, read as AGENTS.md shows: a pid not in
-/// /proc is gone, and ps runs only where there is no /proc.
-fn is_board(pid: u32) -> bool {
-    let comm = match std::fs::read_to_string(format!("/proc/{pid}/comm")) {
-        Ok(c) => c,
-        Err(_) if Path::new("/proc/self").is_dir() => return false,
-        Err(_) => {
-            let ps = Command::new("ps")
-                .args(["-o", "comm=", "-p", &pid.to_string()])
-                .stderr(Stdio::null())
-                .output();
-            ps.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default()
+        if gone.is_ok() {
+            eprintln!("cockpit-tui: level=info msg=\"swept a stale scratch entry\" path={p:?}");
         }
+    }
+}
+
+/// `cockpit-tui-idx.<digits>.<hex>` or `cockpit-tui-ps.<digits>.<hex>`, exactly.
+fn scratch_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(SCRATCH).or_else(|| name.strip_prefix(OLD_PS)) else {
+        return false;
     };
-    comm.trim_end().rsplit('/').next() == Some("cockpit-tui") // macOS ps prints a path
+    let all = |s: &str, f: fn(&u8) -> bool| !s.is_empty() && s.bytes().all(|b| f(&b));
+    rest.split_once('.')
+        .is_some_and(|(pid, tail)| all(pid, u8::is_ascii_digit) && all(tail, u8::is_ascii_hexdigit))
 }
 
 /// Lines added, deleted, files new against the base, and the board's `±` string.

@@ -1,7 +1,7 @@
 //! The board's diff count (`tree_stat`, `cockpit-tui diffstat`) against a repo
 //! whose gitlinks carry their own config (#428), and the real index it must
 //! never rewrite. Each test makes its own temp repos.
-use cockpit_tui::data::gitsafe::{Stat, sweep_stale, tree_stat, tree_stat_with};
+use cockpit_tui::data::gitsafe::{Stat, copy_index, sweep_stale, tree_stat, tree_stat_with};
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::os::unix::ffi::OsStrExt;
@@ -207,7 +207,9 @@ fn real_write(p: &Path, b: &[u8]) -> io::Result<()> {
     std::fs::write(p, b)
 }
 
-fn no_space(_: &Path, _: &[u8]) -> io::Result<()> {
+/// A disk that fills mid-write: the file is there, empty.
+fn no_space(p: &Path, _: &[u8]) -> io::Result<()> {
+    std::fs::File::create(p)?;
     Err(ErrorKind::StorageFull.into())
 }
 
@@ -250,60 +252,44 @@ fn the_scratch_dir_is_gone_after_a_panic() {
     assert!(dir.is_absolute() && !dir.exists(), "{dir:?} left behind");
 }
 
-/// A child we spawned and still hold, so its pid is ours to read and to kill.
-struct Live(std::process::Child);
-
-impl Live {
-    /// `sleep` run under the name `as_name`, which is what /proc/<pid>/comm reads.
-    fn new(bin: &Path, as_name: &str) -> Live {
-        let exe = bin.join(as_name);
-        std::os::unix::fs::symlink("/bin/sleep", &exe).unwrap();
-        Live(Command::new(&exe).arg("300").spawn().unwrap())
-    }
+/// `p`'s mtime, `secs` from now (negative is the past); a dir too.
+fn age(p: &Path, secs: i64) {
+    let t = if secs < 0 {
+        SystemTime::now() - Duration::from_secs(secs.unsigned_abs())
+    } else {
+        SystemTime::now() + Duration::from_secs(secs as u64)
+    };
+    std::fs::File::open(p).unwrap().set_modified(t).unwrap();
 }
 
-impl Drop for Live {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
-}
-
-/// What a killed scan left: gone when its pid is, or is no cockpit-tui. The
-/// rest of the dir, a symlink matching the pattern included, stays as it was.
+/// Age alone says stale, past an hour: whatever pid a name holds, a fresh entry
+/// stays and an old one goes. The rest, a symlink matching the pattern
+/// included, stays as it was.
 #[test]
-fn the_sweep_takes_only_what_a_dead_scan_left() {
+fn the_sweep_takes_only_what_is_old() {
     let tmp = Repo::plain("sweep");
-    let bin = Repo::plain("sweep-bin");
-    let (board, other) = (Live::new(&bin.0, "cockpit-tui"), Live::new(&bin.0, "sleep"));
-    let mut done = Command::new("true").spawn().unwrap();
-    done.wait().unwrap();
-    let (dead, me) = (done.id(), std::process::id());
-    let (board, other) = (board.0.id(), other.0.id());
+    let bin = Repo::plain("sweep-victim");
     let victim = bin.0.join("victim");
     std::fs::create_dir(&victim).unwrap();
     std::fs::write(victim.join("f"), "keep").unwrap();
-    // (row, name, a dir or a file or a symlink to the victim, swept)
+    age(&victim, -7200);
+    let (h2, now, ahead) = (-7200, 0, 7200);
+    // (row, name, a dir or a file or a symlink to the old victim, mtime, swept)
     let rows = [
-        (
-            "dead pid, scratch dir",
-            format!("cockpit-tui-idx.{dead}.00c0ffee00c0ffee"),
-            'd',
-            true,
-        ),
-        ("dead pid, old index copy", format!("cockpit-tui-idx.{dead}.3"), 'f', true),
-        ("dead pid, old excludes file", format!("cockpit-tui-ps.{dead}.3"), 'f', true),
-        ("a live pid that is no board", format!("cockpit-tui-idx.{other}.1"), 'd', true),
-        ("a live board", format!("cockpit-tui-idx.{board}.1"), 'd', false),
-        ("this process", format!("cockpit-tui-idx.{me}.1"), 'd', false),
-        ("a symlink", format!("cockpit-tui-idx.{dead}.4"), 'l', false),
-        ("a tail that is not hex", format!("cockpit-tui-idx.{dead}.zz"), 'f', false),
-        ("no tail", format!("cockpit-tui-idx.{dead}."), 'f', false),
-        ("no pid", "cockpit-tui-idx..1".into(), 'f', false),
-        ("a pid past u32", "cockpit-tui-idx.99999999999.1".into(), 'f', false),
-        ("another prefix", format!("cockpit-tui-idxx.{dead}.1"), 'f', false),
+        ("a fresh scratch dir", "cockpit-tui-idx.1.00c0ffee00c0ffee", 'd', now, false),
+        ("a fresh old-style index copy", "cockpit-tui-idx.99999.0", 'f', now, false),
+        ("one dated ahead", "cockpit-tui-idx.7.ab", 'd', ahead, false),
+        ("an old scratch dir", "cockpit-tui-idx.1.00c0ffee00c0fff0", 'd', h2, true),
+        ("an old index copy", "cockpit-tui-idx.99999.3", 'f', h2, true),
+        ("an old excludes file", "cockpit-tui-ps.99999.3", 'f', h2, true),
+        ("an old one past u32", "cockpit-tui-idx.99999999999.1", 'f', h2, true),
+        ("a symlink to an old dir", "cockpit-tui-idx.99999.4", 'l', now, false),
+        ("a tail that is not hex", "cockpit-tui-idx.99999.zz", 'f', h2, false),
+        ("no tail", "cockpit-tui-idx.99999.", 'f', h2, false),
+        ("no pid", "cockpit-tui-idx..1", 'f', h2, false),
+        ("another prefix", "cockpit-tui-idxx.99999.1", 'f', h2, false),
     ];
-    for (_, name, kind, _) in &rows {
+    for (_, name, kind, secs, _) in rows {
         let p = tmp.0.join(name);
         match kind {
             'd' => {
@@ -313,15 +299,58 @@ fn the_sweep_takes_only_what_a_dead_scan_left() {
             'f' => std::fs::write(&p, "i").unwrap(),
             _ => std::os::unix::fs::symlink(&victim, &p).unwrap(),
         }
+        if kind != 'l' {
+            age(&p, secs);
+        }
     }
     sweep_stale(&tmp.0);
     let wrong: Vec<&str> = rows
         .iter()
-        .filter(|(_, name, _, swept)| tmp.0.join(name).symlink_metadata().is_ok() == *swept)
+        .filter(|(_, name, _, _, swept)| tmp.0.join(name).symlink_metadata().is_ok() == *swept)
         .map(|(row, ..)| *row)
         .collect();
     assert_eq!(wrong, Vec::<&str>::new(), "rows the sweep got wrong");
     assert_eq!(std::fs::read_to_string(victim.join("f")).unwrap(), "keep");
+}
+
+/// The sweep says what it took, one record on stderr with the path in a field.
+#[test]
+fn the_sweep_names_what_it_removed_on_stderr() {
+    let r = Repo::new("sweeplog");
+    r.commit("a.txt", "a\n", "first");
+    let tmp = Repo::plain("sweeplog-tmp");
+    let old = tmp.0.join("cockpit-tui-ps.12.0");
+    std::fs::write(&old, "i").unwrap();
+    age(&old, -7200);
+    let o = Command::new(env!("CARGO_BIN_EXE_cockpit-tui"))
+        .args(["diffstat", &r.dir()])
+        .env("TMPDIR", &tmp.0)
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    let paths: Vec<&str> = err.lines().filter_map(|l| l.split(" path=").nth(1)).collect();
+    assert_eq!(paths, [format!("{old:?}")]);
+}
+
+/// The index copy is a new file: a symlink raced in at its name in the
+/// scratch dir is refused, never written through.
+#[test]
+fn the_index_copy_never_writes_through_a_symlink() {
+    let r = Repo::new("copyidx");
+    r.commit("a.txt", "a\n", "first");
+    let tmp = Repo::plain("copyidx-tmp");
+    let victim = tmp.0.join("victim");
+    std::fs::write(&victim, "keep\n").unwrap();
+    let dst = tmp.0.join("index");
+    std::os::unix::fs::symlink(&victim, &dst).unwrap();
+    let copied = copy_index(&r.0.join(".git/index"), &dst);
+    let after = std::fs::read(&victim).unwrap();
+    assert!(
+        after == b"keep\n",
+        "written through a symlink: the victim holds {} bytes",
+        after.len()
+    );
+    assert_eq!(copied.map_err(|e| e.kind()), Err(ErrorKind::AlreadyExists));
 }
 
 #[test]
