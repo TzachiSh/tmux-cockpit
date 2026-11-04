@@ -207,6 +207,7 @@ length), and a pane with no such dir costs one failed `opendir`.
 | `kind` | `isFork: true` is a fork; a `teamName` is a teammate; else a subagent |
 | `state` | `stoppedByUser: true` is stopped, even when the newest assistant row is an API error (the user's action wins); else `finished: true` with an API error as the newest assistant row is failed; else `finished: true` is done; else running |
 | `started` | the first transcript row's `timestamp` |
+| `finished_at` | none while running, and for a finished agent with no transcript. Else the `timestamp` of the newest transcript row that has one, else the transcript's mtime. Rows win: a copy or restore moves the mtime, not the rows. A stopped agent takes the later of that and the meta file's mtime (the write that set `stoppedByUser`), since a stop during a long tool call comes after the newest row; with no transcript it is the meta file's mtime alone. On a live session the two agree to the second. Not part of the hash |
 | `tokens` | the newest usage row's input, output and cache tokens summed, the figure Claude Code reports as `totalTokens`, not a sum over turns |
 
 Claude Code 2.1.317 sets `finished` when a task leaves `running`, for success and

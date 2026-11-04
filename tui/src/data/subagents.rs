@@ -49,6 +49,12 @@ pub struct Sub {
     pub state: SubState,
     /// unix seconds of the transcript's first row; None before it has one
     pub started: Option<u64>,
+    /// unix seconds the agent stopped working: None while it runs, and for a finished one
+    /// with no transcript. The newest transcript row's `timestamp`, else the transcript's
+    /// mtime. A stopped one takes the later of that and the meta file's mtime (the write
+    /// that set `stoppedByUser`), and with no transcript the meta mtime alone. Not hashed,
+    /// like `started`.
+    pub finished_at: Option<u64>,
     /// the newest usage row's input, output and cache tokens summed: the figure Claude Code
     /// reports as `totalTokens`, the context of its last request, not a sum over turns
     pub tokens: u64,
@@ -87,6 +93,8 @@ struct Rows {
     /// the first row was read whole, so `started` is final
     head: bool,
     started: Option<u64>,
+    /// the `timestamp` of the newest tail row that has one
+    last: Option<u64>,
     tokens: u64,
     api_error: bool,
 }
@@ -158,6 +166,12 @@ fn read_meta(p: &Path, len: u64) -> Option<Meta> {
     })
 }
 
+/// A row's `timestamp` as unix seconds.
+fn row_secs(v: &Value) -> Option<u64> {
+    let t = v["timestamp"].as_str().and_then(super::rfc3339)?;
+    t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
 fn n(v: &Value) -> u64 {
     v.as_u64().unwrap_or(0)
 }
@@ -172,15 +186,14 @@ fn read_rows(p: &Path, len: u64, old: Option<&Rows>) -> Rows {
         let _ = BufReader::new((&mut f).take(HEAD_MAX)).read_until(b'\n', &mut first);
         // Final only once whole: a row still being written is read again next time.
         r.head = first.ends_with(b"\n");
-        r.started = serde_json::from_slice::<Value>(&first)
-            .ok()
-            .and_then(|v| v["timestamp"].as_str().and_then(super::rfc3339))
-            .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
+        r.started = serde_json::from_slice::<Value>(&first).ok().as_ref().and_then(row_secs);
     }
-    let (mut usage, mut assistant) = (None, None);
+    let (mut usage, mut assistant, mut last) = (None, None, None);
     for l in super::tail(&mut f, len, TAIL_MAX).iter().rev() {
         let Ok(v) = serde_json::from_str::<Value>(l) else { continue };
+        if last.is_none() {
+            last = row_secs(&v);
+        }
         if usage.is_none() && v["message"]["usage"].is_object() {
             let u = &v["message"]["usage"];
             usage = Some(
@@ -198,10 +211,13 @@ fn read_rows(p: &Path, len: u64, old: Option<&Rows>) -> Rows {
         if assistant.is_none() && v["type"] == "assistant" {
             assistant = Some(v["isApiErrorMessage"] == true);
         }
-        if usage.is_some() && assistant.is_some() {
+        if usage.is_some() && assistant.is_some() && last.is_some() {
             break;
         }
     }
+    // Not `last.or(r.last)`: a window with no timestamped row falls back to the mtime, and a
+    // warm cache must say what a fresh read says.
+    r.last = last;
     if let Some(t) = usage {
         r.tokens = t;
     }
@@ -278,6 +294,16 @@ pub fn read(dir: &Path) -> Vec<Sub> {
             } else {
                 SubState::Running
             };
+            // the newest row says when it stopped; the mtime only when no tail row has a time.
+            // A user stop is the write that set `stoppedByUser`, the meta file's mtime, which a
+            // stop during a long tool call puts after the newest row.
+            let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
+            let finished_at = (state != SubState::Running)
+                .then(|| {
+                    let rows = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
+                    if state == SubState::Stopped { rows.max(secs(ms.0)) } else { rows }
+                })
+                .flatten();
             subs.push(Sub {
                 id: id.clone(),
                 kind: m.kind,
@@ -285,6 +311,7 @@ pub fn read(dir: &Path) -> Vec<Sub> {
                 desc: m.desc,
                 state,
                 started: r.started,
+                finished_at,
                 tokens: r.tokens,
             });
             now.insert(id, e);
