@@ -79,10 +79,12 @@ for h in window-pane-changed session-window-changed client-session-changed \
     tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_where_cmd} branch --set #{pane_id}"'
 done
 # Moving, killing or closing changes the summaries without a state transition, so
-# these hooks recount every window and session (agent-state sweep), per event.
+# these hooks recount every window and session (agent-state sweep). Debounced (#258):
+# each event bumps @cockpit_sweep_seq in the server, no fork, and hands its sweep the
+# new value; a sweep that finds a newer one after its pause leaves the work to it.
 tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
 for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
-    tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_state_cmd} sweep"'
+    tmux set-hook -g "${h}[9]" 'set-option -gF @cockpit_sweep_seq "#{e|+:#{@cockpit_sweep_seq},1}" ; run-shell -b "exec #{@cockpit_state_cmd} sweep #{@cockpit_sweep_seq}"'
 done
 # The gauge follows the active pane, so a focus change can move the session's gauge
 # cells (@cockpit_ctx_all, the tab budget). No shell: agent-state's own format.
@@ -109,28 +111,29 @@ if [ "$(tmux show-option -gqv @cockpit_statusbar)" != off ]; then
 fi
 
 # --- keys ---------------------------------------------------------------------
-# A key the plugin lets go of gets its stock 3.8 binding back, or is unbound if
-# stock has none.
+# A key the plugin lets go of gets its stock binding back, or is unbound if stock
+# has none (#258). Stock is read from a throwaway server started with no config on
+# a private socket, so every key works (Space, ?, digits, punctuation, not only the
+# letters a table listed) and a reload cannot mistake an earlier load's binding for
+# stock. The server has no session, so it exits after the one call. A fixed short
+# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. A lookup
+# that fails (no dir, no server) leaves the key as it is; only tmux's "unknown key",
+# stock has none, unbinds it.
 give_back() {
-    local k=$1
-    case "$k" in
-        C) set -- customize-mode -Z ;;          D) set -- choose-client -Z ;;
-        E) set -- select-layout -E ;;           L) set -- switch-client -l ;;
-        M) set -- select-pane -M ;;             c) set -- new-window ;;
-        T) set -- command-prompt -I '#T' 'select-pane -T "%%"' ;;
-        d) set -- detach-client ;;              f) set -- command-prompt 'find-window -Z "%%"' ;;
-        g) set -- switch-client -T move ;;      i) set -- display-message ;;
-        l) set -- last-window ;;                m) set -- select-pane -m ;;
-        n) set -- next-window ;;                o) set -- select-pane -t :.+ ;;
-        p) set -- previous-window ;;            q) set -- display-panes ;;
-        r) set -- refresh-client ;;             s) set -- choose-tree -Zs ;;
-        t) set -- clock-mode ;;                 w) set -- choose-tree -Zw ;;
-        x) set -- confirm-before -p 'kill-pane #P? (y/n)' kill-pane ;;
-        z) set -- resize-pane -Z ;;
-        *) set -- ;;
-    esac
-    if [ "$#" -gt 0 ]; then tmux bind-key -T prefix "$k" "$@"
-    else tmux unbind-key -T prefix "$k"; fi
+    local k=$1 d out err="" r note cmd
+    # tmux reads a lone ; argument as a command separator.
+    [ "$k" = ';' ] && k='\;'
+    d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null) || return 0
+    if out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
+            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err"); then
+        IFS=$'\037' read -r r note cmd <<< "$out"
+        [ "$r" = 1 ] && r=-r || r=""
+        tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
+    else
+        read -r err < "$d/err"
+        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k" ;; esac
+    fi
+    rm -rf -- "$d"
 }
 
 # The menu's key, settled before any key is bound this load, so giving an old one

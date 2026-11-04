@@ -3,7 +3,7 @@
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
-#          agent-state sweep      every window's and session's summaries (tmux hooks)
+#          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
@@ -80,8 +80,17 @@ fleet_sums() { set_if -g @cockpit_fleet_nb nb; set_if -g @cockpit_fleet_ne ne; s
 # panes without a transition (move-window, kill-pane, a pane exiting, a session closing).
 # Per event, never per redraw; sent in batches under 12 KB (tmux refuses a command
 # over 16 KB), and a refused batch is an error, not silence.
+# With a seq (the hooks', #258) it is debounced: a burst of N events (a resurrect
+# restore, kill-session) ran N full sweeps, O(N²) in the windows. Each event's sweep
+# pauses, then walks only if no newer event bumped @cockpit_sweep_seq meanwhile; the
+# newest one always walks, after the last event. No lock: a sweep that dies leaves the
+# counts stale until the next event, never stuck. No seq (the load): at once.
 if [ "$state" = sweep ]; then
-    w="" batch="" rc=0
+    w="" batch="" rc=0 only=""
+    case "${2:-}" in
+        ''|*[!0-9]*) ;;
+        *) sleep 0.2; only="#{==:#{@cockpit_sweep_seq},$2}" ;;
+    esac
     flush() {
         [ -n "$batch" ] || return 0
         tmux if-shell -F 1 "${batch# ; }" || rc=1
@@ -92,11 +101,13 @@ if [ "$state" = sweep ]; then
         batch="$batch$body"
     }
     body=" ; $defs"; add
-    # No server means no windows: nothing to sweep, quietly.
-    for w in $(tmux list-windows -a -F '#{window_id}' 2>/dev/null); do T=$w; body=""; win_sums; add; done
+    # No server means no windows: nothing to sweep, quietly. A superseded sweep lists
+    # none either: the seq test rides in this call, so it costs no fork of its own.
+    fw='#{window_id}'; [ -z "$only" ] || fw="#{?$only,$fw,}"
+    for w in $(tmux list-windows -a -F "$fw" 2>/dev/null); do T=$w; body=""; win_sums; add; done
+    [ -n "$w" ] || exit 0
     # Quoted: tmux's parser leaves $<digit> alone today, and the id need not rely on it.
     for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; body=""; sess_sums; add; done
-    [ -n "$w" ] || exit 0
     T=$w; body=""; fleet_sums; add
     flush
     exit "$rc"
