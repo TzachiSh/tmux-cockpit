@@ -7,18 +7,21 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check]
+//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
-//! override) and run twice; the summary prints a hash of the system prompt.
+//! override) and run twice with `--out`, then `--compare` the two files: it
+//! reads them, makes no calls, and pairs the runs by case.
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, build};
 use cockpit_tui::panel::parse::{self, Reply};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Request};
 use cockpit_tui::panel::route::route;
+use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// A copy of the panel's private `ROUNDS_WRITE` (app.rs): the first call sees
@@ -51,6 +54,9 @@ struct Case {
     cmd: String,
     path: String,
     out: OutType,
+    /// For a reply that is not a question: the type it must be, a prompt for a
+    /// fact that needs a search, so a hint written from memory fails.
+    out_is: Option<OutType>,
     expect: Expect,
     /// For `ask`: the question or an option names one of these.
     ask_any: Vec<String>,
@@ -108,6 +114,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             cmd: String::new(),
             path: String::new(),
             out: OutType::Auto,
+            out_is: None,
             expect: Expect::Write,
             ask_any: vec![],
             must: vec![],
@@ -136,6 +143,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                     (c.name, c.cmd, c.path) = (name.into(), cmd.into(), path.into());
                 }
                 "out" => c.out = out_type(v).ok_or_else(|| err(&format!("unknown out {v}")))?,
+                "out_is" => {
+                    let t = out_type(v).filter(|t| *t != OutType::Auto);
+                    c.out_is = Some(t.ok_or_else(|| err(&format!("unknown out_is {v}")))?)
+                }
                 "expect" => {
                     expect = Some(match v {
                         "ask" => Expect::Ask,
@@ -162,12 +173,9 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         let parts: Vec<&str> = bodies.split("\n--- ").filter(|b| !b.is_empty()).collect();
         for (i, body) in parts.iter().enumerate() {
             let (name, text) = body.split_once('\n').unwrap_or((body, ""));
-            // The comments that head the next case trail the last body: they are not its text.
             let mut lines: Vec<&str> = text.lines().collect();
             if i + 1 == parts.len() {
-                while lines.last().is_some_and(|l| l.trim().is_empty() || l.starts_with('#')) {
-                    lines.pop();
-                }
+                strip_trailing_comments(&mut lines);
             }
             let text = lines.join("\n");
             let dup = |set: bool| {
@@ -202,6 +210,9 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         if c.expect == Expect::Ask && !c.must.is_empty() {
             return Err(err("must is for write cases"));
         }
+        if c.expect == Expect::Ask && c.out_is.is_some() {
+            return Err(err("out_is is for write or either cases"));
+        }
         if c.expect == Expect::Write && !c.ask_any.is_empty() {
             return Err(err("ask_any is for ask cases"));
         }
@@ -216,6 +227,22 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
+/// The comments that head the next case trail the last body: a `#` block that a
+/// blank line sets off. A `#` line right after text is the body's own (`#412`, a
+/// root prompt), and so is a body of `#` lines only.
+fn strip_trailing_comments(lines: &mut Vec<&str>) {
+    loop {
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        let at = lines.len() - lines.iter().rev().take_while(|l| l.starts_with('#')).count();
+        if at == lines.len() || at == 0 || !lines[at - 1].trim().is_empty() {
+            return;
+        }
+        lines.truncate(at);
+    }
+}
+
 /// `needle` as a whole word, any case: `plan` is not in "explanation" nor `36`
 /// in "360". `a|b` is any of them. An end that is not a letter or digit (`--json`,
 /// `/code-review`) needs no boundary there.
@@ -227,10 +254,16 @@ fn has(hay: &str, needle: &str) -> bool {
         .filter(|n| !n.is_empty())
         .any(|n| {
             let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-            hay.match_indices(n.as_str()).any(|(i, m)| {
-                let (first, last) = (m.chars().next(), m.chars().last());
-                (!word(first) || !word(hay[..i].chars().last())) && (!word(last) || !word(hay[i + m.len()..].chars().next()))
-            })
+            let (first, last) = (n.chars().next(), n.chars().last());
+            let starts = !word(first);
+            let ends = !word(last);
+            // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
+            (0..hay.len())
+                .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n.as_str()))
+                .any(|i| {
+                    let (before, after) = (hay[..i].chars().last(), hay[i + n.len()..].chars().next());
+                    (starts || !word(before)) && (ends || !word(after))
+                })
         })
 }
 
@@ -258,6 +291,34 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
     })
 }
 
+/// The output type a reply is, for `out_is`; `None` for a question.
+fn reply_type(r: &Reply) -> Option<&'static str> {
+    Some(match r {
+        Reply::Question { .. } => return None,
+        Reply::Prompt(_) => "prompt",
+        Reply::Text(_) => "text",
+        Reply::Format { .. } => "format",
+        Reply::Steps { command: false, .. } => "steps",
+        Reply::Steps { command: true, .. } => "command",
+        Reply::Hint(_) => "hint",
+        Reply::Untagged(_) => "untagged",
+        Reply::Answer { .. } => "answer",
+        Reply::Unsupported(k) => k,
+    })
+}
+
+fn out_name(t: OutType) -> &'static str {
+    match t {
+        OutType::Auto => "auto",
+        OutType::Prompt => "prompt",
+        OutType::Steps => "steps",
+        OutType::Command => "command",
+        OutType::Text => "text",
+        OutType::Format => "format",
+        OutType::Hint => "hint",
+    }
+}
+
 #[derive(Debug, Default, PartialEq)]
 struct Grade {
     asked: bool,
@@ -269,6 +330,8 @@ struct Grade {
     on_target: bool,
     /// For `write`: the `must` facts the reply lacks.
     missing: Vec<String>,
+    /// A reply of another type than the case's `out_is`: the type it was.
+    wrong_type: Option<&'static str>,
     /// The `must_not` words the reply has.
     forbidden: Vec<String>,
     /// A reply the panel refuses or that was cut off: it fails every case.
@@ -304,9 +367,10 @@ fn grade(c: &Case, raw: &str) -> Grade {
     if !g.asked {
         g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
+    g.wrong_type = c.out_is.and_then(|want| reply_type(&reply).filter(|t| *t != out_name(want)));
     g.forbidden = c.must_not.iter().filter(|m| has(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
-    let wrote_well = !g.asked && g.missing.is_empty();
+    let wrote_well = !g.asked && g.missing.is_empty() && g.wrong_type.is_none();
     g.pass = g.forbidden.is_empty()
         && match c.expect {
             Expect::Ask => asked_well,
@@ -316,6 +380,7 @@ fn grade(c: &Case, raw: &str) -> Grade {
     g
 }
 
+#[derive(Debug)]
 struct Opts {
     cases: PathBuf,
     model: String,
@@ -324,9 +389,11 @@ struct Opts {
     only: Option<String>,
     out: Option<PathBuf>,
     check: bool,
+    /// Two `--out` files: compared offline, no calls.
+    compare: Option<(PathBuf, PathBuf)>,
 }
 
-fn opts() -> Result<Opts, String> {
+fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     let mut o = Opts {
         cases: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt"),
         model: "auto".into(),
@@ -336,8 +403,9 @@ fn opts() -> Result<Opts, String> {
         only: None,
         out: None,
         check: false,
+        compare: None,
     };
-    let mut a = std::env::args().skip(1);
+    let mut a = args.into_iter();
     while let Some(k) = a.next() {
         let mut val = || a.next().ok_or(format!("{k} needs a value"));
         match k.as_str() {
@@ -348,6 +416,13 @@ fn opts() -> Result<Opts, String> {
             "--only" => o.only = Some(val()?),
             "--out" => o.out = Some(val()?.into()),
             "--check" => o.check = true,
+            "--compare" => {
+                let two = (a.next(), a.next());
+                let (Some(x), Some(y)) = two else {
+                    return Err("--compare needs two files".into());
+                };
+                o.compare = Some((x.into(), y.into()))
+            }
             _ => return Err(format!("unknown argument {k}")),
         }
     }
@@ -356,22 +431,72 @@ fn opts() -> Result<Opts, String> {
     Ok(o)
 }
 
+/// Set in a call's environment to the real claude: the rig, run as that call,
+/// execs it with `--output-format json` first, so the panel's own Request runs
+/// the call unchanged and the reply carries its cost.
+const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
+
+/// What the rig runs as the call's claude: the real one, json first, then the
+/// call's own argv, with the variable gone so claude's children never see it.
+fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+    let mut c = std::process::Command::new(real);
+    c.args(["--output-format", "json"]).args(args).env_remove(AS_CLAUDE);
+    c
+}
+
+/// The real claude to exec as, when the rig is run as a call's claude. Only for
+/// the argv Request sends, which starts with `-p`: a variable leaked into the
+/// owner's shell must not turn `--check`, `--compare` or a plain run into a call.
+fn as_claude(var: Option<OsString>, first: Option<&OsStr>) -> Option<OsString> {
+    var.filter(|_| first == Some(OsStr::new("-p")))
+}
+
+/// The rig as the call's claude: exec, so the pid, its process group and its
+/// death signal stay the ones Request set up.
+fn exec_claude(real: &OsStr) -> ! {
+    use std::os::unix::process::CommandExt;
+    let e = claude_command(real, std::env::args_os().skip(1)).exec();
+    eprintln!("panel_eval: {}: {e}", real.to_string_lossy());
+    std::process::exit(127);
+}
+
 struct Job {
     case: usize,
     run: usize,
     model: String,
+    /// The system prompt's hash.
+    system: u64,
     req: Request,
     started: Instant,
 }
 
 fn main() {
-    let o = match opts() {
+    if let Some(real) = as_claude(std::env::var_os(AS_CLAUDE), std::env::args_os().nth(1).as_deref()) {
+        exec_claude(&real);
+    }
+    let o = match opts(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("panel_eval: {e}");
             std::process::exit(2);
         }
     };
+    if let Some((a, b)) = &o.compare {
+        let read = |p: &PathBuf| {
+            let name = p.display().to_string();
+            std::fs::read_to_string(p)
+                .map_err(|e| format!("{name}: {e}"))
+                .and_then(|t| read_rows(&name, &t))
+        };
+        match read(a).and_then(|ra| Ok((ra, read(b)?))) {
+            Ok((ra, rb)) => print_compare(&[(a, &ra), (b, &rb)]),
+            Err(e) => {
+                eprintln!("panel_eval: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {}: {e}", o.cases.display());
         std::process::exit(2);
@@ -397,7 +522,17 @@ fn main() {
         return;
     }
 
-    let call = Call::from_env();
+    let mut call = Call::from_env();
+    let mut wrapped = false;
+    match std::env::current_exe() {
+        Ok(me) => {
+            wrapped = true;
+            // SAFETY: no other thread runs yet: no call has been spawned.
+            unsafe { std::env::set_var(AS_CLAUDE, &call.claude) };
+            call.claude = me.display().to_string();
+        }
+        Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
+    }
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
@@ -410,6 +545,7 @@ fn main() {
     let mut live: Vec<Job> = vec![];
     // (case, ms, grade); no grade for a call that failed (a timeout, an API error).
     let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
+    let mut costs: Vec<Option<f64>> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -442,6 +578,7 @@ fn main() {
                 case: ci,
                 run,
                 model,
+                system: h,
                 req,
                 started: Instant::now(),
             });
@@ -455,9 +592,16 @@ fn main() {
             let j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
-            let (raw, err) = match answer {
-                Ok(r) => (r, None),
-                Err(f) => (String::new(), Some(f.to_string())),
+            let (raw, usage, err) = match answer.map_err(|f| f.to_string()) {
+                Ok(out) => match unwrap_json(&out) {
+                    Ok((raw, u)) => (raw, u, None),
+                    Err(e) => (String::new(), Usage::default(), Some(e)),
+                },
+                // A non-zero exit puts the json's one line in the error; its message is why.
+                Err(f) => {
+                    let why = unwrap_json(&f).err().unwrap_or(f);
+                    (String::new(), Usage::default(), Some(why))
+                }
             };
             let g = err.is_none().then(|| grade(c, &raw));
             let mark = match (&err, &g) {
@@ -470,6 +614,10 @@ fn main() {
                 (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
                 (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
                 (_, Some(g)) if g.asked => format!("asked: {}", g.question),
+                (_, Some(g)) if g.wrong_type.is_some() => {
+                    let want = c.out_is.map_or("", out_name);
+                    format!("wrote a {}, want {want}", g.wrong_type.unwrap_or(""))
+                }
                 (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
                 _ => "wrote".into(),
             };
@@ -478,31 +626,274 @@ fn main() {
             if let Some(f) = log.as_mut() {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
+                    "system": format!("{:016x}", j.system),
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "questions": g.as_ref().map(|g| g.questions),
                     "question": g.as_ref().map(|g| g.question.clone()),
                     "missing": g.as_ref().map(|g| g.missing.clone()),
                     "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
+                    "wrong_type": g.as_ref().and_then(|g| g.wrong_type),
+                    "cost_usd": usage.cost_usd,
+                    "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
             }
             done.push((j.case, ms, g));
+            costs.push(usage.cost_usd);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    summary(&cases, &done, &hashes);
+    summary(&cases, &done, &hashes, o.runs);
+    if let Some(l) = cost_line(&costs, wrapped) {
+        println!("cost            {l}");
+    }
 }
 
-/// Where the write prompt came from: the panel's override file, or the binary.
-fn prompt_source() -> String {
-    let base = match std::env::var("XDG_CONFIG_HOME") {
+/// The panel's config directory, as `panel::xdg` finds it.
+fn config_home() -> PathBuf {
+    match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if v.starts_with('/') => PathBuf::from(v),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
+    }
+}
+
+/// One run's row of an `--out` file: what `--compare` reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Row {
+    id: String,
+    expect: String,
+    /// `None` for a failed call.
+    pass: Option<bool>,
+    /// The system prompt's hash; "" in a file written before it was recorded.
+    system: String,
+    cost_usd: Option<f64>,
+}
+
+/// The rows of an `--out` file; `name` heads each error.
+fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
+    let mut rows = vec![];
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let err = |m: &str| format!("{name}:{}: {m}", n + 1);
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| err(&e.to_string()))?;
+        let id = v["id"].as_str().ok_or_else(|| err("no id"))?;
+        let pass = match &v["pass"] {
+            serde_json::Value::Null => None,
+            p => Some(p.as_bool().ok_or_else(|| err("pass is true, false or null"))?),
+        };
+        let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        rows.push(Row {
+            id: id.into(),
+            expect: text("expect"),
+            pass,
+            system: text("system"),
+            cost_usd: v["cost_usd"].as_f64(),
+        });
+    }
+    if rows.is_empty() {
+        return Err(format!("{name}: no rows"));
+    }
+    Ok(rows)
+}
+
+/// One case side by side: (passed, graded, failed calls) in A and in B, `None`
+/// where that file has no row for it.
+#[derive(Debug, PartialEq)]
+struct Cmp {
+    id: String,
+    expect: String,
+    a: Option<(usize, usize, usize)>,
+    b: Option<(usize, usize, usize)>,
+}
+
+impl Cmp {
+    /// Up or down by pass rate over graded runs; `None` when it held, or a side has no graded run.
+    fn moved(&self) -> Option<std::cmp::Ordering> {
+        let ((ka, na, _), (kb, nb, _)) = (self.a?, self.b?);
+        if na == 0 || nb == 0 {
+            return None;
+        }
+        // kb/nb against ka/na, crosswise so 3/3 and 2/2 are equal.
+        Some((kb * na).cmp(&(ka * nb))).filter(|o| o.is_ne())
+    }
+}
+
+/// The distinct system prompt hashes of a file's rows, in first-seen order.
+fn prompts_of(rows: &[Row]) -> Vec<&str> {
+    let mut hs: Vec<&str> = vec![];
+    for h in rows.iter().map(|r| r.system.as_str()).filter(|h| !h.is_empty()) {
+        if !hs.contains(&h) {
+            hs.push(h);
+        }
+    }
+    hs
+}
+
+/// A side's (passed, graded, failed calls) for one case.
+type Side = (usize, usize, usize);
+
+/// pass^all of A and of B over the same cases: those both sides graded on every run.
+fn paired_pass_all(cmp: &[Cmp]) -> (Of, Of) {
+    let whole = |s: Option<(usize, usize, usize)>| s.filter(|(_, n, err)| *n > 0 && *err == 0);
+    let both: Vec<_> = cmp.iter().filter_map(|c| Some((whole(c.a)?, whole(c.b)?))).collect();
+    let side = |pick: fn(&(Side, Side)) -> Side| pass_all(&both.iter().map(pick).collect::<Vec<_>>());
+    (side(|p| p.0), side(|p| p.1))
+}
+
+/// Per case, in A's order and then B's own.
+fn compare(a: &[Row], b: &[Row]) -> Vec<Cmp> {
+    let side = |rows: &[Row], id: &str| {
+        let mine: Vec<&Row> = rows.iter().filter(|r| r.id == id).collect();
+        let err = mine.iter().filter(|r| r.pass.is_none()).count();
+        let ok = mine.iter().filter(|r| r.pass == Some(true)).count();
+        (!mine.is_empty()).then_some((ok, mine.len() - err, err))
     };
-    let p = base.join("tmux-cockpit/prompts/write.txt");
-    if p.exists() { p.display().to_string() } else { "shipped".into() }
+    let mut out: Vec<Cmp> = vec![];
+    for r in a.iter().chain(b) {
+        if !out.iter().any(|c| c.id == r.id) {
+            out.push(Cmp {
+                id: r.id.clone(),
+                expect: r.expect.clone(),
+                a: side(a, &r.id),
+                b: side(b, &r.id),
+            });
+        }
+    }
+    out
+}
+
+/// Two `--out` files side by side: per-case pass counts, the cases that moved,
+/// and pass^all for each. Paired by case id, so a case's own flakiness shows.
+fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
+    let cmp = compare(sides[0].1, sides[1].1);
+    let cell = |s: Option<(usize, usize, usize)>| match s {
+        None => "-".to_string(),
+        Some((ok, n, 0)) => format!("{ok}/{n}"),
+        Some((ok, n, err)) => format!("{ok}/{n} +{err}err"),
+    };
+    println!("{:<24} {:<6} {:<10} {:<10} moved", "case", "want", "A", "B");
+    for c in &cmp {
+        let m = match c.moved() {
+            Some(std::cmp::Ordering::Greater) => "up",
+            Some(_) => "down",
+            None => "",
+        };
+        println!("{:<24} {:<6} {:<10} {:<10} {m}", c.id, c.expect, cell(c.a), cell(c.b));
+    }
+    println!();
+    for (tag, (p, rows)) in ["A", "B"].iter().zip(sides) {
+        let hs = prompts_of(rows);
+        let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
+        println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
+        println!("   pass^all  {}  unpaired: this side's own cases", pct_ci(pass_all(&per)));
+        let costs: Vec<Option<f64>> = rows.iter().map(|r| r.cost_usd).collect();
+        if let Some(l) = cost_line(&costs, false) {
+            println!("   cost      {l}");
+        }
+    }
+    let (pa, pb) = paired_pass_all(&cmp);
+    println!(
+        "paired    pass^all over the {} cases both graded in full: A {}  B {}",
+        pa.1,
+        pct(pa),
+        pct(pb)
+    );
+    let names = |o: std::cmp::Ordering| {
+        cmp.iter()
+            .filter(|c| c.moved() == Some(o))
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>()
+    };
+    let (up, down) = (names(std::cmp::Ordering::Greater), names(std::cmp::Ordering::Less));
+    println!("moved     {} up: {}", up.len(), up.join(", "));
+    println!("          {} down: {}", down.len(), down.join(", "));
+    let only = |f: &dyn Fn(&Cmp) -> bool| {
+        let ids: Vec<&str> = cmp.iter().filter(|c| f(c)).map(|c| c.id.as_str()).collect();
+        ids.join(", ")
+    };
+    let (oa, ob) = (only(&|c| c.b.is_none()), only(&|c| c.a.is_none()));
+    if !oa.is_empty() || !ob.is_empty() {
+        println!("only in A: {oa}; only in B: {ob}");
+    }
+}
+
+/// What a call cost, from `claude -p --output-format json`; all `None` for a
+/// reply that is not that json (a stand-in claude, an older one).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Usage {
+    cost_usd: Option<f64>,
+    /// Input tokens, cache writes and reads included.
+    in_tokens: Option<u64>,
+    out_tokens: Option<u64>,
+}
+
+/// The reply text inside `claude -p --output-format json`, and its usage; an
+/// array (`--verbose`) gives its last result. Text that is not json is the reply
+/// as it stands (a stand-in claude). Json with no string result, an empty one or
+/// one marked `is_error` is a failed call: grading it would find tags in the json.
+fn unwrap_json(out: &str) -> Result<(String, Usage), String> {
+    use serde_json::Value;
+    let v = match serde_json::from_str::<Value>(out.trim()) {
+        Ok(Value::Array(a)) => a.into_iter().rev().find(|e| e["type"] == "result").unwrap_or_default(),
+        Ok(v @ Value::Object(_)) => v,
+        _ => return Ok((out.to_string(), Usage::default())),
+    };
+    let result = v["result"].as_str();
+    let subtype = v["subtype"].as_str();
+    if v["is_error"] == true {
+        return Err(result.or(subtype).unwrap_or("an error result").into());
+    }
+    let text = match result {
+        Some(t) if t.trim().is_empty() => return Err("no answer".into()),
+        Some(t) => t,
+        None if v["type"] == "result" => return Err(subtype.unwrap_or("not a claude json result").into()),
+        None => return Err("not a claude json result".into()),
+    };
+    let u = &v["usage"];
+    let ins = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"];
+    let usage = Usage {
+        cost_usd: v["total_cost_usd"].as_f64(),
+        in_tokens: u["input_tokens"].as_u64().map(|_| ins.iter().filter_map(|k| u[k].as_u64()).sum()),
+        out_tokens: u["output_tokens"].as_u64(),
+    };
+    Ok((text.to_string(), usage))
+}
+
+/// The cost line: total and mean over the calls that reported one.
+/// `wrapped`: the rig asked claude for json, so a run with no cost says so.
+fn cost_line(costs: &[Option<f64>], wrapped: bool) -> Option<String> {
+    let have: Vec<f64> = costs.iter().flatten().copied().collect();
+    if have.is_empty() {
+        let n = costs.len();
+        return (wrapped && n > 0).then(|| format!("none reported by {n} calls: claude's json carried no total_cost_usd"));
+    }
+    let total: f64 = have.iter().sum();
+    let mut line = format!(
+        "${total:.4} total, ${:.4} mean over {} calls",
+        total / have.len() as f64,
+        have.len()
+    );
+    let none = costs.len() - have.len();
+    if none > 0 {
+        line.push_str(&format!(", {none} without a cost"));
+    }
+    Some(line)
+}
+
+/// Where the write prompt came from: each override file the panel reads, or the
+/// binary. An override that cannot be read is named: the panel sends the shipped text.
+fn prompt_source(base: &Path) -> String {
+    let mut from = vec![];
+    for name in ["write.txt", "write.examples.txt"] {
+        let p = base.join("tmux-cockpit/prompts").join(name);
+        match std::fs::read_to_string(&p) {
+            Ok(_) => from.push(p.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => from.push(format!("{} unreadable ({e}), shipped sent", p.display())),
+        }
+    }
+    if from.is_empty() { "shipped".into() } else { from.join(", ") }
 }
 
 /// FNV-1a: stable across Rust releases, unlike DefaultHasher, so hashes from
@@ -524,7 +915,10 @@ struct Tally {
     must_not_hit: Of,
     asked_when_due: Of,
     on_target: Of,
-    false_asks: Of,
+    /// Asking as a classifier, over ask and write cases (either is neither):
+    /// asked on a write case, and did not ask on an ask case.
+    fpr: Of,
+    fnr: Of,
     /// Asks that carried more than one question.
     batched: Of,
     facts: Of,
@@ -559,7 +953,8 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
         must_not_hit: of(&|_, g| !g.forbidden.is_empty(), &|c, _| !c.must_not.is_empty()),
         asked_when_due: of(&asked, &is(Expect::Ask)),
         on_target: of(&|_, g| g.asked && g.on_target, &is(Expect::Ask)),
-        false_asks: of(&asked, &is(Expect::Write)),
+        fpr: of(&asked, &is(Expect::Write)),
+        fnr: of(&|_, g| !g.asked, &is(Expect::Ask)),
         batched: of(&|_, g| g.questions > 1, &asked),
         facts: Of(need - lack, need),
         refused: graded.iter().filter(|(_, g)| g.refused).count(),
@@ -575,6 +970,26 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
     }
 }
 
+/// The Wilson score interval at 95% for `k` passes of `n`; `None` for no
+/// trials or more passes than trials.
+fn wilson(k: usize, n: usize) -> Option<(f64, f64)> {
+    if n == 0 || k > n {
+        return None;
+    }
+    let (z, n, p) = (1.959_964, n as f64, k as f64 / n as f64);
+    let z2 = z * z;
+    let mid = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let half = z / (1.0 + z2 / n) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    Some(((mid - half).max(0.0), (mid + half).min(1.0)))
+}
+
+/// Cases whose every run passed, of the cases whose every run was graded: a
+/// failed call leaves the case out rather than counting against the prompt.
+fn pass_all(per_case: &[(usize, usize, usize)]) -> Of {
+    let whole: Vec<_> = per_case.iter().filter(|(_, n, err)| *n > 0 && *err == 0).collect();
+    Of(whole.iter().filter(|(ok, n, _)| ok == n).count(), whole.len())
+}
+
 fn pct(Of(n, d): Of) -> String {
     if d == 0 {
         "-".into()
@@ -583,7 +998,16 @@ fn pct(Of(n, d): Of) -> String {
     }
 }
 
-fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]) {
+/// `pct`, then its Wilson 95% interval: cases are the independent trials, the
+/// runs of one case are not.
+fn pct_ci(o: Of) -> String {
+    match wilson(o.0, o.1) {
+        Some((lo, hi)) => format!("{}  95% CI {:.0}%-{:.0}%", pct(o), 100.0 * lo, 100.0 * hi),
+        None => pct(o),
+    }
+}
+
+fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], runs: usize) {
     let t = tally(cases, done);
     println!();
     // Per case, over the runs: a flaky case shows as 2/3, not as noise in a total.
@@ -599,8 +1023,10 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     }
     let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
-    println!("system prompt   {} ({})", hs.join(" "), prompt_source());
+    println!("system prompt   {} ({})", hs.join(" "), prompt_source(&config_home()));
     println!("passed          {}", pct(t.passed));
+    // The share of cases that passed all their runs: a flaky case counts as a failure.
+    println!("{:<16}{}", format!("pass^{runs}"), pct_ci(pass_all(&t.per_case)));
     if t.holdout.1 > 0 {
         println!("  holdout       {}", pct(t.holdout));
     }
@@ -610,7 +1036,7 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("must_not hit    {}", pct(t.must_not_hit));
     println!("asked when due  {}", pct(t.asked_when_due));
     println!("  on target     {}", pct(t.on_target));
-    println!("false asks      {}", pct(t.false_asks));
+    println!("asking          FPR {}  FNR {}", pct(t.fpr), pct(t.fnr));
     println!("batched asks    {}", pct(t.batched));
     println!("facts present   {}", pct(t.facts));
     if t.refused > 0 {
@@ -716,7 +1142,7 @@ mod tests {
         let two = format!("{ONE}\n# next section\n\n{}", ONE.replace("=== crash", "=== crash2"));
         let cs = parse_cases(&two).unwrap();
         assert_eq!(cs[0].request, "fix this");
-        let screen_last = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n# a note\n";
+        let screen_last = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n\n# a note\n";
         assert_eq!(parse_cases(screen_last).unwrap()[0].screen, "$ ls");
         let twice = ONE.replace("kind: bug", "kind: bug\nkind: plan");
         assert!(parse_cases(&twice).unwrap_err().contains("kind given twice"));
@@ -799,10 +1225,361 @@ mod tests {
         let t = tally(&cases, &done);
         assert_eq!(t.passed, Of(2, 4));
         assert_eq!(t.asked_when_due, Of(1, 1));
-        assert_eq!(t.false_asks, Of(1, 3));
+        assert_eq!(t.fpr, Of(1, 3));
         assert_eq!(t.facts, Of(3, 4));
         assert_eq!(t.errors, 1);
         assert_eq!(t.per_case, [(1, 1, 1), (1, 3, 0)]);
+    }
+
+    #[test]
+    fn a_cut_off_reply_is_refused() {
+        let c = parse_cases(ONE).unwrap().remove(0);
+        let g = grade(&c, "<prompt>Fix net-proxy at line 88.");
+        assert!(g.refused && !g.pass, "{g:?}");
+    }
+
+    #[test]
+    fn a_screen_or_request_given_twice_is_an_error() {
+        let screen = ONE.replace("--- request", "--- screen\nx\n--- request");
+        assert!(parse_cases(&screen).unwrap_err().contains("screen given twice"));
+        let request = format!("{ONE}--- request\nagain\n");
+        assert!(parse_cases(&request).unwrap_err().contains("request given twice"));
+    }
+
+    #[test]
+    fn a_trailing_hash_line_is_kept_unless_a_blank_line_sets_it_off() {
+        let issue = ONE.replace("fix this\n", "fix this\n#412\n");
+        assert_eq!(parse_cases(&issue).unwrap()[0].request, "fix this\n#412");
+        let root = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n# id\n";
+        assert_eq!(parse_cases(root).unwrap()[0].screen, "$ ls\n# id");
+        let only = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\n#412\n";
+        assert_eq!(parse_cases(only).unwrap()[0].request, "#412");
+        let comment = ONE.replace("fix this\n", "fix this\n#412\n\n# next\n# more\n\n");
+        assert_eq!(parse_cases(&comment).unwrap()[0].request, "fix this\n#412");
+    }
+
+    #[test]
+    fn words_match_where_matches_overlap() {
+        assert!(has("xab ab ab", "ab ab"));
+        assert!(has("nana na na", "na na"));
+        assert!(!has("xab abx", "ab ab"));
+    }
+
+    /// A fresh `<scratch>/<name>.<pid>` holding `tmux-cockpit/prompts`.
+    fn config(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("panel-eval-{name}.{}", std::process::id()));
+        if d.exists() {
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        std::fs::create_dir_all(d.join("tmux-cockpit/prompts")).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_prompt_source_names_each_override_and_an_unreadable_one() {
+        let d = config("src");
+        let p = d.join("tmux-cockpit/prompts");
+        assert_eq!(prompt_source(&d), "shipped");
+        std::fs::write(p.join("write.examples.txt"), "x").unwrap();
+        let s = prompt_source(&d);
+        assert!(s.contains("write.examples.txt") && !s.contains("unreadable"), "{s}");
+        std::fs::create_dir(p.join("write.txt")).unwrap();
+        assert!(prompt_source(&d).contains("unreadable"), "{}", prompt_source(&d));
+        std::fs::remove_dir(p.join("write.txt")).unwrap();
+        std::fs::write(p.join("write.txt"), [0xff, 0xfe]).unwrap();
+        assert!(prompt_source(&d).contains("unreadable"), "{}", prompt_source(&d));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn out_is_fails_a_reply_of_another_type_but_not_a_question() {
+        let mut c = parse_cases(&ONE.replace("expect: write", "expect: either\nout_is: prompt"))
+            .unwrap()
+            .remove(0);
+        assert_eq!(c.out_is, Some(OutType::Prompt));
+        let hint = grade(&c, "<hint>net-proxy, line 88</hint>");
+        assert_eq!((hint.wrong_type, hint.pass), (Some("hint"), false));
+        let text = grade(&c, "<text>net-proxy, line 88</text>");
+        assert_eq!((text.wrong_type, text.pass), (Some("text"), false));
+        assert!(grade(&c, "<prompt>Fix net-proxy at line 88.</prompt>").pass);
+        c.ask_any = vec!["which line".into()];
+        assert!(grade(&c, "<question>Which line?</question>").pass);
+    }
+
+    #[test]
+    fn out_is_is_read_and_checked() {
+        assert_eq!(parse_cases(ONE).unwrap()[0].out_is, None);
+        let bad = ONE.replace("expect: write", "expect: write\nout_is: poem");
+        assert!(parse_cases(&bad).unwrap_err().contains("unknown out_is poem"));
+        let auto = ONE.replace("expect: write", "expect: write\nout_is: auto");
+        assert!(parse_cases(&auto).unwrap_err().contains("unknown out_is auto"));
+        let ask = ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nout_is: prompt");
+        assert!(parse_cases(&ask).unwrap_err().contains("out_is is for write"));
+    }
+
+    fn near(got: (f64, f64), want: (f64, f64)) -> bool {
+        (got.0 - want.0).abs() < 0.005 && (got.1 - want.1).abs() < 0.005
+    }
+
+    #[test]
+    fn wilson_matches_known_intervals() {
+        assert!(near(wilson(36, 40).unwrap(), (0.77, 0.96)), "{:?}", wilson(36, 40));
+        assert!(near(wilson(0, 10).unwrap(), (0.0, 0.2775)), "{:?}", wilson(0, 10));
+        assert!(near(wilson(10, 10).unwrap(), (0.7225, 1.0)), "{:?}", wilson(10, 10));
+        assert!(near(wilson(1, 2).unwrap(), (0.0945, 0.9055)), "{:?}", wilson(1, 2));
+    }
+
+    #[test]
+    fn wilson_refuses_no_trials_and_more_passes_than_trials() {
+        assert_eq!(wilson(0, 0), None);
+        assert_eq!(wilson(5, 4), None);
+    }
+
+    #[test]
+    fn pass_all_counts_cases_that_passed_every_run_and_skips_failed_calls() {
+        assert_eq!(pass_all(&[(3, 3, 0), (2, 3, 0), (2, 2, 1), (0, 0, 3)]), Of(1, 2));
+        assert_eq!(pass_all(&[]), Of(0, 0));
+    }
+
+    #[test]
+    fn asking_rates_count_asks_on_write_cases_and_silence_on_ask_cases() {
+        let mut ask = parse_cases(ONE).unwrap().remove(0);
+        ask.expect = Expect::Ask;
+        let mut either = ask.clone();
+        either.expect = Expect::Either;
+        let cases = vec![ask, parse_cases(ONE).unwrap().remove(0), either];
+        let g = |asked| Some(Grade { asked, ..Grade::default() });
+        let runs = [
+            (0, g(true)),
+            (0, g(false)),
+            (0, g(false)),
+            (1, g(true)),
+            (1, g(false)),
+            (2, g(true)),
+            (1, None),
+        ];
+        let done: Vec<_> = runs.into_iter().map(|(c, g)| (c, 1, g)).collect();
+        let t = tally(&cases, &done);
+        assert_eq!((t.fpr, t.fnr), (Of(1, 2), Of(2, 3)));
+    }
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn compare_takes_two_files() {
+        let o = opts(args("--compare a.jsonl b.jsonl")).unwrap();
+        assert_eq!(o.compare, Some(("a.jsonl".into(), "b.jsonl".into())));
+        assert!(opts(args("--compare a.jsonl")).unwrap_err().contains("--compare needs two files"));
+        assert!(opts(args("--compare")).unwrap_err().contains("--compare needs two files"));
+    }
+
+    const ROWS: &str = r#"{"id":"a","expect":"ask","run":0,"pass":true,"error":null,"system":"00ff"}
+{"id":"a","expect":"ask","run":1,"pass":false,"error":null,"cost_usd":0.5}
+
+{"id":"w","expect":"write","run":0,"pass":null,"error":"took too long"}
+"#;
+
+    #[test]
+    fn reads_rows_and_takes_a_failed_call_as_no_pass() {
+        let r = read_rows("A", ROWS).unwrap();
+        assert_eq!(r.len(), 3);
+        let want = Row {
+            id: "a".into(),
+            expect: "ask".into(),
+            pass: Some(true),
+            system: "00ff".into(),
+            cost_usd: None,
+        };
+        assert_eq!(r[0], want);
+        assert_eq!((r[1].cost_usd, r[2].pass), (Some(0.5), None));
+    }
+
+    #[test]
+    fn refuses_bad_rows_naming_the_file_and_line() {
+        assert!(read_rows("A", "").unwrap_err().contains("A: no rows"));
+        assert!(read_rows("A", "{\"id\":\"a\"}\nnot json\n").unwrap_err().starts_with("A:2:"));
+        assert!(
+            read_rows("A", "{\"expect\":\"ask\",\"pass\":true}\n")
+                .unwrap_err()
+                .contains("A:1: no id")
+        );
+        assert!(
+            read_rows("A", "{\"id\":\"a\",\"pass\":\"yes\"}\n")
+                .unwrap_err()
+                .contains("A:1: pass")
+        );
+    }
+
+    #[test]
+    fn compare_pairs_cases_and_names_the_ones_that_moved() {
+        let row = |id: &str, pass: Option<bool>| Row {
+            id: id.into(),
+            expect: "ask".into(),
+            pass,
+            ..Row::default()
+        };
+        let a = [
+            row("up", Some(false)),
+            row("up", Some(true)),
+            row("same", Some(true)),
+            row("gone", Some(true)),
+        ];
+        let b = [
+            row("same", Some(true)),
+            row("up", Some(true)),
+            row("up", Some(true)),
+            row("new", None),
+        ];
+        let c = compare(&a, &b);
+        let ids: Vec<&str> = c.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["up", "same", "gone", "new"]);
+        assert_eq!((c[0].a, c[0].b), (Some((1, 2, 0)), Some((2, 2, 0))));
+        assert_eq!(c[0].moved(), Some(std::cmp::Ordering::Greater));
+        assert_eq!(c[1].moved(), None);
+        assert_eq!((c[2].b, c[2].moved()), (None, None));
+        assert_eq!((c[3].b, c[3].moved()), (Some((0, 0, 1)), None));
+    }
+
+    #[test]
+    fn a_case_held_at_the_same_rate_did_not_move() {
+        let row = |pass: Option<bool>| Row {
+            id: "x".into(),
+            expect: "ask".into(),
+            pass,
+            ..Row::default()
+        };
+        let a = [row(Some(true)), row(Some(true)), row(Some(true))];
+        let b = [row(Some(true)), row(Some(true)), row(None)];
+        assert_eq!(compare(&a, &b)[0].moved(), None);
+        let down = [row(Some(true)), row(Some(false)), row(Some(true))];
+        assert_eq!(compare(&a, &down)[0].moved(), Some(std::cmp::Ordering::Less));
+    }
+
+    #[test]
+    fn unwraps_a_json_result_with_its_cost_and_tokens() {
+        let j = r#"{"type":"result","is_error":false,"result":"<prompt>p</prompt>","total_cost_usd":0.0123,
+            "usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":30,"output_tokens":7}}"#;
+        let (text, u) = unwrap_json(&j.replace('\n', "")).unwrap();
+        assert_eq!(text, "<prompt>p</prompt>");
+        assert_eq!(
+            u,
+            Usage {
+                cost_usd: Some(0.0123),
+                in_tokens: Some(132),
+                out_tokens: Some(7)
+            }
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_a_json_result_is_the_reply_as_it_stands() {
+        assert_eq!(
+            unwrap_json("<prompt>p</prompt>\n").unwrap(),
+            ("<prompt>p</prompt>\n".into(), Usage::default())
+        );
+        assert_eq!(unwrap_json("").unwrap(), (String::new(), Usage::default()));
+    }
+
+    #[test]
+    fn a_json_error_result_is_a_failed_call() {
+        let j = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"overloaded"}"#;
+        assert_eq!(unwrap_json(j).unwrap_err(), "overloaded");
+        let bare = r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
+        assert_eq!(unwrap_json(bare).unwrap_err(), "error_max_turns");
+    }
+
+    #[test]
+    fn a_verbose_json_array_yields_its_last_result() {
+        let j = r#"[{"type":"assistant","text":"<prompt>no</prompt>"},{"type":"result","result":"x"},
+            {"type":"result","is_error":false,"result":"<prompt>p</prompt>","total_cost_usd":0.5}]"#;
+        let (text, u) = unwrap_json(j).unwrap();
+        assert_eq!((text.as_str(), u.cost_usd), ("<prompt>p</prompt>", Some(0.5)));
+        let none = r#"[{"type":"assistant","text":"<prompt>no</prompt>"}]"#;
+        assert_eq!(unwrap_json(none).unwrap_err(), "not a claude json result");
+    }
+
+    #[test]
+    fn json_without_a_string_result_is_a_failed_call() {
+        let turns = r#"{"type":"result","subtype":"error_max_turns","is_error":false}"#;
+        assert_eq!(unwrap_json(turns).unwrap_err(), "error_max_turns");
+        let other = r#"{"a":"<prompt>p</prompt>"}"#;
+        assert_eq!(unwrap_json(other).unwrap_err(), "not a claude json result");
+        let number = r#"{"type":"result","result":7}"#;
+        assert_eq!(unwrap_json(number).unwrap_err(), "not a claude json result");
+    }
+
+    #[test]
+    fn an_empty_json_result_is_no_answer() {
+        let j = r#"{"type":"result","is_error":false,"result":" \n"}"#;
+        assert_eq!(unwrap_json(j).unwrap_err(), "no answer");
+    }
+
+    #[test]
+    fn a_wrapped_run_with_no_cost_says_so() {
+        assert_eq!(cost_line(&[None, None], false), None);
+        let l = cost_line(&[None, None], true).unwrap();
+        assert_eq!(l, "none reported by 2 calls: claude's json carried no total_cost_usd");
+        assert_eq!(cost_line(&[], true), None);
+    }
+
+    #[test]
+    fn the_cost_line_sums_the_calls_that_reported_one() {
+        assert_eq!(cost_line(&[], false), None);
+        assert_eq!(cost_line(&[None], false), None);
+        let l = cost_line(&[Some(0.01), Some(0.03), None], false).unwrap();
+        assert_eq!(l, "$0.0400 total, $0.0200 mean over 2 calls, 1 without a cost");
+    }
+
+    #[test]
+    fn a_file_names_each_prompt_once_however_its_rows_interleave() {
+        let row = |h: &str| Row {
+            system: h.into(),
+            ..Row::default()
+        };
+        let rows = [row("a"), row("b"), row("a"), row(""), row("c"), row("b")];
+        assert_eq!(prompts_of(&rows), ["a", "b", "c"]);
+        assert!(prompts_of(&[row("")]).is_empty());
+    }
+
+    #[test]
+    fn the_wrapped_call_puts_json_first_and_drops_the_variable() {
+        let call = ["-p", "--model", "sonnet"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call);
+        assert_eq!(c.get_program(), "/bin/claude");
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args, ["--output-format", "json", "-p", "--model", "sonnet"]);
+        let envs: Vec<_> = c.get_envs().collect();
+        assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None)]);
+    }
+
+    #[test]
+    fn the_variable_is_honoured_only_for_the_call_argv() {
+        let real = || Some(OsString::from("/bin/claude"));
+        assert_eq!(as_claude(real(), Some(OsStr::new("-p"))), real());
+        assert_eq!(as_claude(real(), Some(OsStr::new("--check"))), None);
+        assert_eq!(as_claude(real(), Some(OsStr::new("--compare"))), None);
+        assert_eq!(as_claude(real(), None), None);
+        assert_eq!(as_claude(None, Some(OsStr::new("-p"))), None);
+    }
+
+    #[test]
+    fn paired_pass_all_counts_only_cases_both_sides_graded_in_full() {
+        let c = |id: &str, a, b| Cmp {
+            id: id.into(),
+            expect: "ask".into(),
+            a,
+            b,
+        };
+        let cmp = [
+            c("x", Some((3, 3, 0)), Some((2, 3, 0))),
+            c("w", Some((3, 3, 0)), Some((3, 3, 0))),
+            c("only-a", Some((3, 3, 0)), None),
+            c("err-b", Some((0, 3, 0)), Some((2, 2, 1))),
+        ];
+        assert_eq!(paired_pass_all(&cmp), (Of(2, 2), Of(1, 2)));
+        assert_eq!(paired_pass_all(&[]), (Of(0, 0), Of(0, 0)));
     }
 
     #[test]
@@ -814,5 +1591,13 @@ mod tests {
         assert!(cases.iter().any(|c| c.expect == Expect::Write));
         let leaked: Vec<&str> = cases.iter().filter(|c| c.request.contains("\n#")).map(|c| c.id.as_str()).collect();
         assert!(leaked.is_empty(), "a comment in a request: {leaked:?}");
+        // Every case ends in its request, and the old strip dropped every trailing `#`
+        // line of it: no request ends in one, so the old and new strips read this file alike.
+        let tail: Vec<&str> = cases
+            .iter()
+            .filter(|c| c.request.lines().last().is_some_and(|l| l.starts_with('#')))
+            .map(|c| c.id.as_str())
+            .collect();
+        assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
     }
 }
