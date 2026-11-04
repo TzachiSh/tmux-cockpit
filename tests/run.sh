@@ -4948,14 +4948,20 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # not a wall clock: a "<=3 s" bound read 12 s at load 30, the script's own
 # start-up and tmux calls being slow, with the 2 s deadline intact (#215). The
 # writer holds for 60 s, so only a script that waits for EOF can see it gone.
+# The bound is still checked, under 30 s: the deadline is 2 s and the rest is
+# slack for load, so a script that waits out most of the writer still fails.
+# An interrupted run must not leave the 60 s writer behind: the suite's EXIT
+# trap kills it until the block is done, then goes back to plain cleanup.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
 ( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
+trap 'kill "$holder" 2>/dev/null; cleanup' EXIT
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
-if kill -0 "$holder" 2>/dev/null; then ok "a stalling writer is abandoned in time"
-else bad "a stalling writer is abandoned in time" "back before the writer let go (60s)" "${took}s"; fi
+if kill -0 "$holder" 2>/dev/null && [ "$took" -lt 30 ]; then ok "a stalling writer is abandoned in time"
+else bad "a stalling writer is abandoned in time" "back under 30s, while the writer still held on" "${took}s"; fi
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+trap cleanup EXIT
 rm -f "$CXFIFO"
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
