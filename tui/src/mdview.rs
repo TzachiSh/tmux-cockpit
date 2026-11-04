@@ -346,7 +346,7 @@ impl Screen {
         let room = body_rows(area);
         if let Some(t) = self.help {
             let rows = (area.height as usize).saturating_sub(2);
-            self.help = chrome::scroll(k.code, t, help_rows(self.opts.ascii).len().saturating_sub(rows), rows);
+            self.help = chrome::scroll(k.code, t, help_for(self.opts.ascii, self.mode).len().saturating_sub(rows), rows);
             return Out::Stay;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -373,7 +373,8 @@ impl Screen {
             KeyCode::Char('/') => self.field = Some((String::new(), self.top)),
             KeyCode::Char('n') => self.next(false, room),
             KeyCode::Char('N') => self.next(true, room),
-            KeyCode::Char('u') => {
+            // a code file has no links to show: `u` neither toggles nor lays out
+            KeyCode::Char('u') if self.mode == Mode::Markdown => {
                 self.opts.urls = !self.opts.urls;
                 self.width = 0;
                 self.layout(body_width(area));
@@ -411,6 +412,15 @@ pub fn body_rows(area: Rect) -> usize {
 /// The body's columns: the frame and a column of padding each side.
 pub fn body_width(area: Rect) -> usize {
     (area.width as usize).saturating_sub(4)
+}
+
+/// The help for `m`: markdown's, less `u`'s row for code, which has no links.
+pub fn help_for(ascii: bool, m: Mode) -> Vec<(String, String)> {
+    let mut rows = help_rows(ascii);
+    if let Mode::Code(_) = m {
+        rows.retain(|(k, _)| k != "u");
+    }
+    rows
 }
 
 pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
@@ -527,7 +537,7 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
         return;
     }
     if let Some(top) = s.help {
-        chrome::help(f, area, th, &help_rows(th.g.ascii), top);
+        chrome::help(f, area, th, &help_for(th.g.ascii, s.mode), top);
         return;
     }
     s.layout(body_width(area));

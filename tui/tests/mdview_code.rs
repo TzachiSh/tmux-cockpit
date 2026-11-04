@@ -275,3 +275,19 @@ fn a_file_named_dot_md_is_markdown() {
     assert_eq!(mode(".MARKDOWN", ""), Mode::Markdown);
     assert_eq!(mode("md", ""), Mode::Code(None), "no dot, no match");
 }
+
+/// Code has no links: `u` does nothing there and the help leaves it out.
+#[test]
+fn u_is_markdown_only() {
+    let mut s = code("x.rs", RUST);
+    let opts = s.opts;
+    key(&mut s, KeyCode::Char('u'));
+    assert_eq!(s.opts, opts, "no toggle");
+    assert!(!mdview::help_for(false, Mode::Code(None)).iter().any(|(k, _)| k == "u"));
+    assert!(mdview::help_for(false, Mode::Markdown).iter().any(|(k, _)| k == "u"));
+    assert_eq!(mdview::help_for(false, Mode::Markdown), mdview::help_rows(false));
+    let mut s = code("x.rs", RUST);
+    key(&mut s, KeyCode::Char('?'));
+    let out = draw(60, 30, &Theme::fixed(), &mut s);
+    assert!(!out.contains("link addresses"), "{out}");
+}
