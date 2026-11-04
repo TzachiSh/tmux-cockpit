@@ -65,7 +65,23 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
 
 /// [`build`], and how many secrets the screen, the repo block and the turns had hidden.
 pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> (String, usize) {
-    let (screen, mut hidden) = redact(&cap.screen);
+    let e = build_parts(flow, cap, turns, questions_left);
+    (e.text, e.screen_hidden + e.repo_hidden + e.turns_hidden)
+}
+
+/// The envelope and its hidden secrets, counted by where they were.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Envelope {
+    pub text: String,
+    pub screen_hidden: usize,
+    pub repo_hidden: usize,
+    pub turns_hidden: usize,
+}
+
+/// [`build_counted`] with the count split. Only a Write waits for the repo block.
+pub fn build_parts(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> Envelope {
+    let (screen, screen_hidden) = redact(&cap.screen);
+    let (mut repo_hidden, mut turns_hidden) = (0, 0);
     let screen = esc(&screen);
     let (name, cmd) = (esc(&cap.name), esc(&cap.cmd));
     // A `"` in a window name would end the attribute early.
@@ -76,10 +92,11 @@ pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left:
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
             parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&cap.path)));
-            if !cap.repo.is_empty() {
+            let repo = cap.repo.get();
+            if !repo.is_empty() {
                 // Commit messages and paths carry secrets as a screen does.
-                let (repo, n) = redact(&cap.repo);
-                hidden += n;
+                let (repo, n) = redact(repo);
+                repo_hidden = n;
                 parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
             }
             parts.push(format!("<request>{}</request>", esc(draft)));
@@ -108,7 +125,7 @@ pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left:
             .map(|t| {
                 let role = if t.role == Role::User { "user" } else { "assistant" };
                 let (text, n) = redact(&t.text);
-                hidden += n;
+                turns_hidden += n;
                 format!("<turn role=\"{role}\">{}</turn>", esc(&text))
             })
             .collect();
@@ -117,5 +134,10 @@ pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left:
     if !matches!(flow, Flow::Fix { .. }) {
         parts.push(format!("<questions_left>{questions_left}</questions_left>"));
     }
-    (parts.join("\n\n"), hidden)
+    Envelope {
+        text: parts.join("\n\n"),
+        screen_hidden,
+        repo_hidden,
+        turns_hidden,
+    }
 }

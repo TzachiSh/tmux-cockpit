@@ -1,7 +1,7 @@
 //! The pure halves of the panel: redaction, the envelope, routing, examples and
 //! the session sniff. Nothing here sets the environment; panel_env.rs does.
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, esc, unesc};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, build_parts, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
 use cockpit_tui::panel::redact::redact;
 use cockpit_tui::panel::route::{Route, model_argv, route};
@@ -209,6 +209,21 @@ fn a_secret_in_the_repo_block_is_hidden_and_counted() {
     let (got, hidden) = build_counted(&WRITE, &c, &[], 3);
     assert!(got.contains("abc1234 set token=[hidden] for ci"), "{got}");
     assert_eq!(hidden, 1);
+}
+
+#[test]
+fn repo_secrets_are_counted_apart_from_the_screen_and_the_turns() {
+    let c = Capture {
+        repo: "abc1234 set token=abcdefgh\nAKIAABCDEFGHIJKLMNOP".into(),
+        ..cap("w", "bash", "token=abcdefgh")
+    };
+    let turns = [Turn {
+        role: Role::User,
+        text: "nothing secret".into(),
+    }];
+    let e = build_parts(&WRITE, &c, &turns, 3);
+    assert_eq!((e.screen_hidden, e.repo_hidden, e.turns_hidden), (1, 2, 0));
+    assert_eq!(build_counted(&WRITE, &c, &turns, 3), (e.text, 3));
 }
 
 #[test]

@@ -1,8 +1,10 @@
 //! The write call's `<repo>` block (#413): plain git in the pane's folder, and
 //! which paths on the screen exist there. Each test makes its own temp repo.
 use cockpit_tui::panel::capture::{repo_state, screen_paths};
+use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, SystemTime};
 
 struct Repo(PathBuf);
 
@@ -38,6 +40,12 @@ impl Repo {
         let p = self.0.join(name);
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, body).unwrap();
+    }
+
+    /// An hour ahead: same bytes, a stat the index no longer matches.
+    fn stat_dirty(&self, name: &str) {
+        let f = std::fs::File::options().write(true).open(self.0.join(name)).unwrap();
+        f.set_modified(SystemTime::now() + Duration::from_secs(3600)).unwrap();
     }
 
     fn commit(&self, name: &str, body: &str, msg: &str) {
@@ -167,7 +175,7 @@ fn paths_on_the_screen_are_reported_as_there_or_missing() {
     let r = Repo::new("paths");
     r.commit("src/main.rs", "fn main() {}\n", "first");
     let abs = format!("{}/src/main.rs", r.dir());
-    let screen = format!("error at src/main.rs:3:5\n  see ./docs/gone.md and @{abs}");
+    let screen = format!("error at src/main.rs:3:5\n  see ./docs/gone.md, lib/none.rs and @{abs}");
     let s = section(&repo_state(&r.dir(), &screen), "paths on screen:");
     assert_eq!(
         s,
@@ -189,13 +197,16 @@ fn a_screen_without_paths_has_no_paths_section() {
 #[test]
 fn path_tokens_are_the_four_shapes_and_nothing_else() {
     // rows: (screen text, the tokens taken)
-    let rows: [(&str, &[&str]); 7] = [
+    let rows: [(&str, &[&str]); 10] = [
         ("open @/etc/hosts now", &["@/etc/hosts"]),
         ("cat ~/notes.txt", &["~/notes.txt"]),
         ("run ./build.sh", &["./build.sh"]),
         ("(see tui/src/app.rs:120)", &["tui/src/app.rs"]),
         ("visit https://example.com/a/b.html", &[]),
         ("a/b and 1/2 and and/or", &[]),
+        ("git log origin/master..HEAD", &[]),
+        ("cloned github.com/foo/bar.git and https:x/y.rs", &[]),
+        ("about 1/2.5 of it", &[]),
         ("`lib/x.py`, \"docs/y.md\".", &["lib/x.py", "docs/y.md"]),
     ];
     for (screen, want) in rows {
@@ -209,4 +220,60 @@ fn path_tokens_are_deduplicated_and_capped_at_10() {
     let got = screen_paths(&screen);
     assert_eq!(got.len(), 10);
     assert_eq!((got[0].as_str(), got[9].as_str()), ("d/f0.rs", "d/f9.rs"));
+}
+
+#[test]
+fn a_stat_dirty_file_never_makes_git_rewrite_the_index() {
+    let r = Repo::new("index");
+    r.commit("a.txt", "a\n", "first");
+    r.stat_dirty("a.txt");
+    let idx = |r: &Repo| std::fs::metadata(r.0.join(".git/index")).map(|m| (m.ino(), m.mtime())).unwrap();
+    let before = idx(&r);
+    assert_eq!(line(&repo_state(&r.dir(), ""), "status: "), Some("clean"));
+    assert_eq!(idx(&r), before, "the index was rewritten");
+}
+
+#[test]
+fn a_submodules_own_clean_filter_never_runs() {
+    let sub = Repo::new("sub-inner");
+    sub.commit("f.txt", "x\n", "sub first");
+    let r = Repo::new("sub-outer");
+    r.commit("a.txt", "a\n", "first");
+    r.git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.dir(), "sub"]);
+    r.git(&["commit", "-q", "-m", "add sub"]);
+    let marker = r.0.join("ran");
+    let cfg = r.0.join(".git/modules/sub/config").display().to_string();
+    r.git(&[
+        "config",
+        "-f",
+        &cfg,
+        "filter.mark.clean",
+        &format!("touch {}; cat", marker.display()),
+    ]);
+    r.write(".git/modules/sub/info/attributes", "* filter=mark\n");
+    r.stat_dirty("sub/f.txt");
+    let _ = repo_state(&r.dir(), "");
+    assert!(!marker.exists(), "the submodule's clean filter ran");
+}
+
+#[test]
+fn color_config_in_the_repo_is_ignored() {
+    let r = Repo::new("color");
+    r.commit("a.txt", "a\n", "first");
+    r.git(&["config", "color.ui", "always"]);
+    r.write("a.txt", "b\n");
+    r.write("new.txt", "n");
+    let got = repo_state(&r.dir(), "");
+    assert!(got.contains("a.txt |") && !got.contains('\x1b'), "{got:?}");
+}
+
+#[test]
+fn a_pane_in_a_subfolder_sees_repo_paths_and_the_root() {
+    let r = Repo::new("subdir");
+    r.commit("src/a.rs", "a\n", "first");
+    r.write("src/a.rs", "b\n");
+    let got = repo_state(&format!("{}/src", r.dir()), "");
+    let root = std::fs::canonicalize(&r.0).unwrap().display().to_string();
+    assert_eq!(line(&got, "root: "), Some(root.as_str()));
+    assert_eq!(section(&got, "status:"), ["M src/a.rs"]);
 }

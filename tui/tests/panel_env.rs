@@ -323,7 +323,7 @@ fn a_shell_pane_in_a_repo_carries_its_repo_block() {
     git_init(&e.dir.join("r"));
     fake_tmux(&e, "w\\tbash\\t$D/r\\n");
     let c = capture("%8").unwrap();
-    assert!(c.repo.starts_with("branch: main (no commits yet)"), "{:?}", c.repo);
+    assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{:?}", c.repo);
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn an_ssh_pane_or_no_path_carries_no_repo_block() {
     // rows: the window line tmux prints
     for display in ["w\\tssh\\t$D/r\\n", "w\\tmosh-client\\t$D/r\\n", "w\\tbash\\t\\n"] {
         fake_tmux(&e, display);
-        assert_eq!(capture("%9").unwrap().repo, "", "{display}");
+        assert_eq!(capture("%9").unwrap().repo.get(), "", "{display}");
     }
 }
 
@@ -341,14 +341,49 @@ fn an_ssh_pane_or_no_path_carries_no_repo_block() {
 fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
     let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
     let e = Env::new("repo-hung", &[("PATH", Some(path))]);
-    e.exec("git", "sleep 1000 & echo $! > $D/kid; wait");
+    // every call hangs: the rev-parse started beside the config read must die too
+    e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
     let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
     assert_eq!(got, "");
-    let kid = std::fs::read_to_string(e.dir.join("kid")).unwrap();
+    let kids = std::fs::read_to_string(e.dir.join("kids")).unwrap();
+    assert_eq!(kids.lines().count(), 2, "rev-parse and config ran");
     // gone, or a zombie its new parent has not reaped yet
-    let stat = format!("/proc/{}/stat", kid.trim());
-    assert!(
-        until(|| std::fs::read_to_string(&stat).map_or(true, |s| s.contains(") Z "))),
-        "{kid} lives"
+    let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
+    assert!(until(|| kids.lines().all(dead)), "{kids} lives");
+}
+
+/// A fake git on PATH: `body` runs for `sub`, the other subcommands answer as a
+/// repo on `main` with one commit.
+fn fake_git(e: &Env, sub: &str, body: &str) {
+    e.exec(
+        "git",
+        &format!(
+            "[ \"$2\" = $D ] || exit 1\n\
+             for a; do case $a in config|rev-parse|status|log|diff) s=$a; break ;; esac; done\n\
+             if [ \"$s\" = {sub} ]; then {body}; fi\n\
+             case $s in\nconfig) exit 1 ;;\nrev-parse) echo /r ;;\nstatus) echo '## main' ;;\n\
+             log) echo 'abc1234 first' ;;\nesac"
+        ),
     );
+}
+
+#[test]
+fn a_status_that_times_out_keeps_the_log() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
+    fake_git(&e, "status", "exec sleep 1000");
+    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
+}
+
+#[test]
+fn capture_returns_before_git_answers() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-lazy", &[("PATH", Some(path)), ("COCKPIT_TMUX", None)]);
+    // git waits for a file the test writes only once capture() is back
+    fake_git(&e, "config", "while [ ! -e $D/go ]; do sleep 0.01; done");
+    fake_tmux(&e, "w\\tbash\\t$D\\n");
+    let c = capture("%4").unwrap();
+    std::fs::write(e.dir.join("go"), "").unwrap();
+    assert!(c.repo.get().starts_with("branch: main"), "{:?}", c.repo);
 }

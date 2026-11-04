@@ -409,7 +409,7 @@ fn main() {
                 cmd: c.cmd.clone(),
                 path: c.path.clone(),
                 screen: c.screen.clone(),
-                repo: c.repo.clone(),
+                repo: c.repo.as_str().into(),
             };
             let flow = Flow::Write {
                 draft: c.request.clone(),
