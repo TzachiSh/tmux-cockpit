@@ -199,13 +199,11 @@ fn coded(th: &Theme, text: &str, w: usize, st: Style) -> Vec<Line<'static>> {
     if !text.contains("```") {
         return many(text, w, "", st);
     }
-    let text = text.replace('\t', "    ");
-    highlight::fenced(&text).iter().flat_map(|l| painted(th, l, w, "", st)).collect()
+    highlight::fenced(text).iter().flat_map(|l| painted(th, l, w, "", st)).collect()
 }
 
 /// A lexed step command, one source line per entry, each under `indent`.
 fn command(th: &Theme, cmd: &str, lang: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
-    let cmd = cmd.replace('\t', "    ");
     let lines: Vec<&str> = cmd.split('\n').collect();
     highlight::highlight(lang, &lines)
         .iter()
@@ -223,11 +221,14 @@ fn role_style(th: &Theme, r: Role, st: Style) -> Style {
     }
 }
 
-/// One source line's spans laid onto [`wrap`]'s rows of it. wrap only drops
-/// spaces (at a break, and indentation past half the width), so each row's
-/// chars are found in order in the source, its spaces skipped where they went.
+/// One source line's spans laid onto [`wrap`]'s rows of it. The spans are of
+/// the text as written, so the lexer sees a tab where the user typed one (a
+/// `<<-` end word); each span's tabs become 4 spaces here, as [`many`] does.
+/// wrap only drops spaces (at a break, and indentation past half the width),
+/// so each row's chars are found in order in the source, its spaces skipped.
 fn painted(th: &Theme, spans: &[(Role, &str)], w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
-    let src: String = spans.iter().map(|s| s.1).collect();
+    let spans: Vec<(Role, String)> = spans.iter().map(|(r, t)| (*r, t.replace('\t', "    "))).collect();
+    let src: String = spans.iter().map(|s| s.1.as_str()).collect();
     let roles: Vec<Role> = spans.iter().flat_map(|(r, t)| std::iter::repeat_n(*r, t.len())).collect();
     let mut p = 0;
     let rows = wrap(&src, w.saturating_sub(indent.chars().count()));

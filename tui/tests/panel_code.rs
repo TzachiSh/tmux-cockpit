@@ -247,3 +247,14 @@ fn an_answer_fenced_whole_is_coloured() {
     assert_eq!(fg(&b, "let n"), th.accent);
     assert_eq!(fg(&b, "```rust"), th.meta);
 }
+
+/// The lexer sees the text as written: a `<<-` body's tab-indented end word
+/// closes it, so the code after it is lexed again.
+#[test]
+fn a_tab_indented_heredoc_end_closes_in_the_panel() {
+    let th = Theme::fixed();
+    let a = answered("Like so:\n```bash\ncat <<-END\n\tbody\n\tEND\nif true; then ls; fi\n```");
+    let b = buffer(&a, 60, 16, &th);
+    assert_eq!(fg(&b, "if true"), th.accent, "\n{}", roles(&b, &th));
+    assert_eq!(fg(&b, "body"), th.done);
+}
