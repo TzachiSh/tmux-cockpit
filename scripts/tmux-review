@@ -41,8 +41,7 @@ shq() { printf '%q' "$1"; }
 # shellcheck source=lib/fmt.sh
 . "$LIBDIR/fmt.sh" || exit 1
 
-# The path of lines_mode's notice rows ("diff too large"): not an anchor, and
-# every reader refuses to comment on it.
+# The path of lines_mode's notice rows ("diff too large"): not a file, no anchor.
 # shellcheck disable=SC2034  # read by the libs
 CAP_SENTINEL='(diff too large)'
 

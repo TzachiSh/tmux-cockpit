@@ -159,6 +159,7 @@ lines_mode() {
 
     # core.quotePath=false (in tree_diff): a quoted non-ASCII header matches
     # neither /^--- a\// nor /^\+\+\+ b\//, and its rows went to the previous file.
+    # A path with a literal tab or quote is still git-quoted.
     # numstat first: counting is cheap, capturing is what the caps below avoid.
     local diff numstat
     numstat=$(tree_diff "$dir" --numstat)
@@ -277,6 +278,7 @@ lines_mode() {
             if (!(p in part)) part[p] = (index(p, "test") > 0 ? 0 : 1)
             # Past the third tab, not $4: a fragment may hold a tab.
             frag = substr($0, length($1) + length($2) + length($3) + 4)
+            # Untrusted text bound for a display column and a store header: no escapes.
             gsub(/[\001-\037\177]/, "", frag)
             # 160 bytes, backed off to a character boundary when the cut split
             # a UTF-8 sequence (the byte after it is a continuation byte).
@@ -300,7 +302,8 @@ lines_mode() {
 # --- approve -------------------------------------------------------------------
 # refs/cockpit/reviewed/<branch> = the tree the human just looked at, untracked
 # files included, so since-review is a plain `git diff <ref>`. The ref outlives
-# `git branch -D`; purge by hand:
+# `git branch -D`, and a branch "feat" after a checkpoint at "feat/x" collides
+# in refs/ and blocks a later approve. Purge by hand:
 #   git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
 approve() {                   # <dir>
     local dir=$1 idx gd br tree

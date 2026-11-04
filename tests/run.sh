@@ -13820,6 +13820,7 @@ is "the title, drawn by tmux, names the repo path literally" \
    "$("$TMUX_REAL" -L "$RT9" display-message -p "$(cat "$RT9S/title" 2>/dev/null)")"
 is "and nothing ran" "no" "$([ -e "$RT9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$RT9" kill-server >/dev/null 2>&1
+rm -f "$DIR/MARK" MARK
 fi
 
 echo "== tmux-review: the rc 20 --deliver run-shell passes a # in the repo path through literally (#329) =="
@@ -13851,6 +13852,7 @@ case "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P")" in
 esac
 is "and nothing ran" "no" "$([ -e "$RD9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
 "$TMUX_REAL" -L "$RD9" kill-server >/dev/null 2>&1
+rm -f "$DIR/MARK" MARK
 fi
 
 echo "== tmux-review: review_base, origin/HEAD outranks a local master when there is no main (#328) =="
