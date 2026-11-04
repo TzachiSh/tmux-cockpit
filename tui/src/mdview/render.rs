@@ -58,6 +58,10 @@ impl Ink {
 pub struct Row {
     pub cells: Vec<(String, Ink)>,
     pub line: usize,
+    /// the columns a gutter takes before the cells (a code row's line number,
+    /// drawn by `code::gutter`, never in `cells`, so never searched). 0 for
+    /// markdown.
+    pub lead: usize,
 }
 
 impl Row {
@@ -209,7 +213,7 @@ fn wrap(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
 }
 
 /// Rows `w` wide cut between graphemes, every space kept: a code line.
-fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
+pub(super) fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
     let w = w.max(2);
     let mut rows = vec![Cells::new()];
     let mut rw = 0;
@@ -229,7 +233,7 @@ fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
 
 /// A code line's spans with each tab out to the next stop and every other
 /// control character dropped.
-fn untab(spans: &[(Role, &str)]) -> Cells {
+pub(super) fn untab(spans: &[(Role, &str)]) -> Cells {
     let mut out = Cells::new();
     let mut col = 0;
     for (r, t) in spans {
@@ -376,7 +380,7 @@ impl Build {
                 }
                 cells.pop();
             }
-            self.out.push(Row { cells, line });
+            self.out.push(Row { cells, line, lead: 0 });
         }
     }
 
@@ -389,7 +393,7 @@ impl Build {
         for (i, r) in rows.into_iter().enumerate() {
             let mut cells = self.prefix(i == 0);
             cells.extend(r);
-            self.out.push(Row { cells, line });
+            self.out.push(Row { cells, line, lead: 0 });
         }
     }
 

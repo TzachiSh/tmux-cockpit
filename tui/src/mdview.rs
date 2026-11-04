@@ -1,8 +1,10 @@
 //! The markdown viewer (#283): `cockpit-tui view [--line N] [--] <file>`, what
-//! the path picker opens a lone `.md` in. It renders the file read-only on
+//! the path picker opens a lone `.md` in. Any other file is numbered code
+//! through `highlight` (#365, [`code`]). It renders the file read-only on
 //! /dev/tty and prints `edit <line>` when `e` hands it to the editor. Nothing in
 //! the file is run or followed; a file that is too big, binary or not UTF-8 is
 //! a note, never a hang.
+pub mod code;
 pub mod render;
 
 use crate::chrome;
@@ -55,6 +57,55 @@ pub fn load(path: &std::path::Path, cap: u64) -> Result<String, String> {
     }
     let s = String::from_utf8(b).map_err(|_| "not UTF-8 text".to_string())?;
     Ok(s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s))
+}
+
+/// What the viewer draws a file as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Markdown,
+    /// whole, numbered, through `highlight`; `None` is plain text
+    Code(Option<crate::highlight::Lang>),
+}
+
+/// The name's extension decides: markdown's four, else a language the lexer
+/// knows. With no extension it knows, the first line's `#!` names the
+/// interpreter (`env` and its flags skipped, a version cut off). Anything else
+/// is plain text, numbered: never markdown.
+pub fn mode(name: &str, text: &str) -> Mode {
+    // tmux-open-path's `*.md` glob: a name ending in it, a bare `.md` included,
+    // which has no extension to `Path`
+    let low = name.to_ascii_lowercase();
+    if [".md", ".markdown", ".mdown", ".mkd"].iter().any(|e| low.ends_with(e)) {
+        return Mode::Markdown;
+    }
+    let ext = std::path::Path::new(&low).extension().map(|e| e.to_string_lossy().into_owned());
+    Mode::Code(ext.as_deref().and_then(crate::highlight::lang).or_else(|| shebang(text)))
+}
+
+fn shebang(text: &str) -> Option<crate::highlight::Lang> {
+    let first = text.lines().next()?.strip_prefix("#!")?;
+    let mut words = first.split_whitespace();
+    let mut prog = words.next()?.rsplit('/').next()?;
+    if prog == "env" {
+        // env's flags, the argument `-u` and `-C` take, and `NAME=value` words
+        prog = loop {
+            let w = words.next()?;
+            match w {
+                "-u" | "-C" | "--unset" | "--chdir" => {
+                    words.next();
+                }
+                _ if w.starts_with('-') || w.contains('=') => {}
+                _ => break w,
+            }
+        };
+    }
+    let prog = prog.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let tag = match prog {
+        "node" | "nodejs" | "deno" | "bun" | "ts-node" | "tsx" => "js",
+        "dash" | "ash" | "mksh" => "sh",
+        p => p,
+    };
+    crate::highlight::lang(tag)
 }
 
 /// A search match: a row and a byte range of its text.
@@ -119,6 +170,8 @@ pub enum Out {
 pub struct Screen {
     /// the file's name as the title shows it, made safe to draw
     pub name: String,
+    /// markdown, or code (#365)
+    pub mode: Mode,
     pub doc: Result<String, String>,
     pub opts: Opts,
     rows: Vec<Row>,
@@ -143,6 +196,7 @@ impl Screen {
     pub fn new(name: &str, doc: Result<String, String>, opts: Opts) -> Self {
         Screen {
             name: clean(name),
+            mode: Mode::Markdown,
             doc,
             opts,
             rows: vec![],
@@ -157,6 +211,12 @@ impl Screen {
             note: None,
             want: None,
         }
+    }
+
+    /// Draws the file as `m`.
+    pub fn with_mode(mut self, m: Mode) -> Self {
+        self.mode = m;
+        self
     }
 
     /// Opens at the first row of the block holding source line `n`.
@@ -176,10 +236,15 @@ impl Screen {
             return;
         }
         let keep = self.want.take().or_else(|| self.rows.get(self.top).map(|r| r.line));
-        self.rows = match &self.doc {
-            Ok(s) => render::render(s, w, self.opts),
-            Err(_) => vec![],
+        // the old rows go before the new are built, or a resize holds both
+        self.rows = Vec::new();
+        self.texts = Vec::new();
+        self.rows = match (&self.doc, self.mode) {
+            (Ok(s), Mode::Markdown) => render::render(s, w, self.opts),
+            (Ok(s), Mode::Code(lang)) => code::render(s, lang, w),
+            (Err(_), _) => vec![],
         };
+        // a code row's line number is drawn at the frame, never in its text
         self.texts = self.rows.iter().map(Row::text).collect();
         self.width = w;
         if let Some(l) = keep {
@@ -281,7 +346,7 @@ impl Screen {
         let room = body_rows(area);
         if let Some(t) = self.help {
             let rows = (area.height as usize).saturating_sub(2);
-            self.help = chrome::scroll(k.code, t, help_rows(self.opts.ascii).len().saturating_sub(rows), rows);
+            self.help = chrome::scroll(k.code, t, help_for(self.opts.ascii, self.mode).len().saturating_sub(rows), rows);
             return Out::Stay;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -308,7 +373,8 @@ impl Screen {
             KeyCode::Char('/') => self.field = Some((String::new(), self.top)),
             KeyCode::Char('n') => self.next(false, room),
             KeyCode::Char('N') => self.next(true, room),
-            KeyCode::Char('u') => {
+            // a code file has no links to show: `u` neither toggles nor lays out
+            KeyCode::Char('u') if self.mode == Mode::Markdown => {
                 self.opts.urls = !self.opts.urls;
                 self.width = 0;
                 self.layout(body_width(area));
@@ -346,6 +412,15 @@ pub fn body_rows(area: Rect) -> usize {
 /// The body's columns: the frame and a column of padding each side.
 pub fn body_width(area: Rect) -> usize {
     (area.width as usize).saturating_sub(4)
+}
+
+/// The help for `m`: markdown's, less `u`'s row for code, which has no links.
+pub fn help_for(ascii: bool, m: Mode) -> Vec<(String, String)> {
+    let mut rows = help_rows(ascii);
+    if let Mode::Code(_) = m {
+        rows.retain(|(k, _)| k != "u");
+    }
+    rows
 }
 
 pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
@@ -462,7 +537,7 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
         return;
     }
     if let Some(top) = s.help {
-        chrome::help(f, area, th, &help_rows(th.g.ascii), top);
+        chrome::help(f, area, th, &help_for(th.g.ascii, s.mode), top);
         return;
     }
     s.layout(body_width(area));
@@ -508,7 +583,11 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
                     .enumerate()
                     .map(|(i, h)| (h.from, h.to, s.cur == Some(from + i)))
                     .collect();
-                line(th, &s.rows[r], &hs)
+                let mut l = line(th, &s.rows[r], &hs);
+                if let Some(g) = code::gutter(&s.rows, r) {
+                    l.spans.insert(0, Span::styled(g, ink_style(th, Ink::of(Kind::Meta))));
+                }
+                l
             })
             .collect(),
     };
@@ -559,7 +638,9 @@ pub fn main(args: &[String]) -> i32 {
         urls: true,
         colour: th.accent != Color::Reset,
     };
-    let mut s = Screen::new(&name, load(path, MAX_FILE), opts);
+    let doc = load(path, MAX_FILE);
+    let m = mode(&name, doc.as_deref().unwrap_or(""));
+    let mut s = Screen::new(&name, doc, opts).with_mode(m);
     if let Some(n) = line {
         s = s.at_line(n);
     }
