@@ -718,6 +718,16 @@ fn prompts_of(rows: &[Row]) -> Vec<&str> {
     hs
 }
 
+/// pass^all of A and of B over the same cases: those both sides graded on every run.
+fn paired_pass_all(cmp: &[Cmp]) -> (Of, Of) {
+    let whole = |s: Option<(usize, usize, usize)>| s.filter(|(_, n, err)| *n > 0 && *err == 0);
+    let both: Vec<_> = cmp.iter().filter_map(|c| Some((whole(c.a)?, whole(c.b)?))).collect();
+    let all = |pick: &dyn Fn(&((usize, usize, usize), (usize, usize, usize))) -> (usize, usize, usize)| {
+        Of(both.iter().map(pick).filter(|(ok, n, _)| ok == n).count(), both.len())
+    };
+    (all(&|p| p.0), all(&|p| p.1))
+}
+
 /// Per case, in A's order and then B's own.
 fn compare(a: &[Row], b: &[Row]) -> Vec<Cmp> {
     let side = |rows: &[Row], id: &str| {
@@ -763,12 +773,19 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
         let hs = prompts_of(rows);
         let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
         println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
-        println!("   pass^all  {}", pct_ci(pass_all(&per)));
+        println!("   pass^all  {}  unpaired: this side's own cases", pct_ci(pass_all(&per)));
         let costs: Vec<Option<f64>> = rows.iter().map(|r| r.cost_usd).collect();
         if let Some(l) = cost_line(&costs, false) {
             println!("   cost      {l}");
         }
     }
+    let (pa, pb) = paired_pass_all(&cmp);
+    println!(
+        "paired    pass^all over the {} cases both graded in full: A {}  B {}",
+        pa.1,
+        pct(pa),
+        pct(pb)
+    );
     let names = |o: std::cmp::Ordering| {
         cmp.iter()
             .filter(|c| c.moved() == Some(o))
@@ -1520,6 +1537,24 @@ mod tests {
         assert_eq!(as_claude(real(), Some(OsStr::new("--compare"))), None);
         assert_eq!(as_claude(real(), None), None);
         assert_eq!(as_claude(None, Some(OsStr::new("-p"))), None);
+    }
+
+    #[test]
+    fn paired_pass_all_counts_only_cases_both_sides_graded_in_full() {
+        let c = |id: &str, a, b| Cmp {
+            id: id.into(),
+            expect: "ask".into(),
+            a,
+            b,
+        };
+        let cmp = [
+            c("x", Some((3, 3, 0)), Some((2, 3, 0))),
+            c("w", Some((3, 3, 0)), Some((3, 3, 0))),
+            c("only-a", Some((3, 3, 0)), None),
+            c("err-b", Some((0, 3, 0)), Some((2, 2, 1))),
+        ];
+        assert_eq!(paired_pass_all(&cmp), (Of(2, 2), Of(1, 2)));
+        assert_eq!(paired_pass_all(&[]), (Of(0, 0), Of(0, 0)));
     }
 
     #[test]
