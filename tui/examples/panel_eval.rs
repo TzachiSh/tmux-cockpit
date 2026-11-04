@@ -412,6 +412,25 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     Ok(o)
 }
 
+/// Set in a call's environment to the real claude: the rig, run as that call,
+/// execs it with `--output-format json` first, so the panel's own Request runs
+/// the call unchanged and the reply carries its cost.
+const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
+
+/// The rig as the call's claude: exec, so the pid, its process group and its
+/// death signal stay the ones Request set up.
+fn exec_claude(real: &str) -> ! {
+    use std::os::unix::process::CommandExt;
+    let e = std::process::Command::new(real)
+        .arg("--output-format")
+        .arg("json")
+        .args(std::env::args_os().skip(1))
+        .env_remove(AS_CLAUDE)
+        .exec();
+    eprintln!("panel_eval: {real}: {e}");
+    std::process::exit(127);
+}
+
 struct Job {
     case: usize,
     run: usize,
@@ -423,6 +442,9 @@ struct Job {
 }
 
 fn main() {
+    if let Some(real) = std::env::var_os(AS_CLAUDE) {
+        exec_claude(&real.to_string_lossy());
+    }
     let o = match opts(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {
@@ -471,7 +493,15 @@ fn main() {
         return;
     }
 
-    let call = Call::from_env();
+    let mut call = Call::from_env();
+    match std::env::current_exe() {
+        Ok(me) => {
+            // SAFETY: no other thread runs yet: no call has been spawned.
+            unsafe { std::env::set_var(AS_CLAUDE, &call.claude) };
+            call.claude = me.display().to_string();
+        }
+        Err(e) => eprintln!("panel_eval: no cost recorded, cannot find the rig's own binary: {e}"),
+    }
     let mut log = o.out.as_ref().map(|p| {
         std::fs::File::create(p).unwrap_or_else(|e| {
             eprintln!("panel_eval: {}: {e}", p.display());
@@ -484,6 +514,7 @@ fn main() {
     let mut live: Vec<Job> = vec![];
     // (case, ms, grade); no grade for a call that failed (a timeout, an API error).
     let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
+    let mut costs: Vec<Option<f64>> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -530,9 +561,13 @@ fn main() {
             let j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
-            let (raw, err) = match answer {
-                Ok(r) => (r, None),
-                Err(f) => (String::new(), Some(f.to_string())),
+            let (raw, usage, err) = match answer.map_err(|f| f.to_string()) {
+                Ok(out) => match unwrap_json(&out) {
+                    Ok((raw, u)) => (raw, u, None),
+                    Err(e) => (String::new(), Usage::default(), Some(e)),
+                },
+                // A non-zero exit puts the json's one line in the error: its message is the reason.
+                Err(f) => (String::new(), Usage::default(), Some(unwrap_json(&f).err().unwrap_or(f))),
             };
             let g = err.is_none().then(|| grade(c, &raw));
             let mark = match (&err, &g) {
@@ -563,15 +598,20 @@ fn main() {
                     "missing": g.as_ref().map(|g| g.missing.clone()),
                     "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
                     "wrong_type": g.as_ref().and_then(|g| g.wrong_type),
+                    "cost_usd": usage.cost_usd, "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
             }
             done.push((j.case, ms, g));
+            costs.push(usage.cost_usd);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    if let Some(l) = cost_line(&costs) {
+        println!("cost            {l}");
+    }
 }
 
 /// The panel's config directory, as `panel::xdg` finds it.
@@ -591,6 +631,7 @@ struct Row {
     pass: Option<bool>,
     /// The system prompt's hash; "" in a file written before it was recorded.
     system: String,
+    cost_usd: Option<f64>,
 }
 
 /// The rows of an `--out` file; `name` heads each error.
@@ -610,6 +651,7 @@ fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
             expect: text("expect"),
             pass,
             system: text("system"),
+            cost_usd: v["cost_usd"].as_f64(),
         });
     }
     if rows.is_empty() {
@@ -687,6 +729,10 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
         let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
         println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
         println!("   pass^all  {}", pct_ci(pass_all(&per)));
+        let costs: Vec<Option<f64>> = rows.iter().map(|r| r.cost_usd).collect();
+        if let Some(l) = cost_line(&costs) {
+            println!("   cost      {l}");
+        }
     }
     let names = |o: std::cmp::Ordering| {
         cmp.iter()
@@ -702,6 +748,60 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
     if !oa.is_empty() || !ob.is_empty() {
         println!("only in A: {oa}; only in B: {ob}");
     }
+}
+
+/// What a call cost, from `claude -p --output-format json`; all `None` for a
+/// reply that is not that json (a stand-in claude, an older one).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Usage {
+    cost_usd: Option<f64>,
+    /// Input tokens, cache writes and reads included.
+    in_tokens: Option<u64>,
+    out_tokens: Option<u64>,
+}
+
+/// The reply text inside `claude -p --output-format json`, and its usage. Text
+/// that is not that json is the reply as it stands; a result marked `is_error`
+/// is a failed call, its message the error.
+fn unwrap_json(out: &str) -> Result<(String, Usage), String> {
+    let v = match serde_json::from_str::<serde_json::Value>(out.trim()) {
+        Ok(v) if v["type"] == "result" => v,
+        _ => return Ok((out.to_string(), Usage::default())),
+    };
+    let result = v["result"].as_str();
+    if v["is_error"] == true {
+        return Err(result.or(v["subtype"].as_str()).unwrap_or("an error result").into());
+    }
+    let Some(text) = result else {
+        return Ok((out.to_string(), Usage::default()));
+    };
+    let u = &v["usage"];
+    let ins = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"];
+    let usage = Usage {
+        cost_usd: v["total_cost_usd"].as_f64(),
+        in_tokens: u["input_tokens"].as_u64().map(|_| ins.iter().filter_map(|k| u[k].as_u64()).sum()),
+        out_tokens: u["output_tokens"].as_u64(),
+    };
+    Ok((text.to_string(), usage))
+}
+
+/// The cost line: total and mean over the calls that reported one.
+fn cost_line(costs: &[Option<f64>]) -> Option<String> {
+    let have: Vec<f64> = costs.iter().flatten().copied().collect();
+    if have.is_empty() {
+        return None;
+    }
+    let total: f64 = have.iter().sum();
+    let mut line = format!(
+        "${total:.4} total, ${:.4} mean over {} calls",
+        total / have.len() as f64,
+        have.len()
+    );
+    let none = costs.len() - have.len();
+    if none > 0 {
+        line.push_str(&format!(", {none} without a cost"));
+    }
+    Some(line)
 }
 
 /// Where the write prompt came from: each override file the panel reads, or the
@@ -1188,7 +1288,7 @@ mod tests {
     }
 
     const ROWS: &str = r#"{"id":"a","expect":"ask","run":0,"pass":true,"error":null,"system":"00ff"}
-{"id":"a","expect":"ask","run":1,"pass":false,"error":null}
+{"id":"a","expect":"ask","run":1,"pass":false,"error":null,"cost_usd":0.5}
 
 {"id":"w","expect":"write","run":0,"pass":null,"error":"took too long"}
 "#;
@@ -1202,9 +1302,10 @@ mod tests {
             expect: "ask".into(),
             pass: Some(true),
             system: "00ff".into(),
+            cost_usd: None,
         };
         assert_eq!(r[0], want);
-        assert_eq!(r[2].pass, None);
+        assert_eq!((r[1].cost_usd, r[2].pass), (Some(0.5), None));
     }
 
     #[test]
@@ -1266,6 +1367,48 @@ mod tests {
         assert_eq!(compare(&a, &b)[0].moved(), None);
         let down = [row(Some(true)), row(Some(false)), row(Some(true))];
         assert_eq!(compare(&a, &down)[0].moved(), Some(std::cmp::Ordering::Less));
+    }
+
+    #[test]
+    fn unwraps_a_json_result_with_its_cost_and_tokens() {
+        let j = r#"{"type":"result","is_error":false,"result":"<prompt>p</prompt>","total_cost_usd":0.0123,
+            "usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":30,"output_tokens":7}}"#;
+        let (text, u) = unwrap_json(&j.replace('\n', "")).unwrap();
+        assert_eq!(text, "<prompt>p</prompt>");
+        assert_eq!(
+            u,
+            Usage {
+                cost_usd: Some(0.0123),
+                in_tokens: Some(132),
+                out_tokens: Some(7)
+            }
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_a_json_result_is_the_reply_as_it_stands() {
+        assert_eq!(
+            unwrap_json("<prompt>p</prompt>\n").unwrap(),
+            ("<prompt>p</prompt>\n".into(), Usage::default())
+        );
+        assert_eq!(unwrap_json("{\"a\":1}").unwrap().0, "{\"a\":1}");
+        assert_eq!(unwrap_json("").unwrap(), (String::new(), Usage::default()));
+    }
+
+    #[test]
+    fn a_json_error_result_is_a_failed_call() {
+        let j = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"overloaded"}"#;
+        assert_eq!(unwrap_json(j).unwrap_err(), "overloaded");
+        let bare = r#"{"type":"result","subtype":"error_max_turns","is_error":true}"#;
+        assert_eq!(unwrap_json(bare).unwrap_err(), "error_max_turns");
+    }
+
+    #[test]
+    fn the_cost_line_sums_the_calls_that_reported_one() {
+        assert_eq!(cost_line(&[]), None);
+        assert_eq!(cost_line(&[None]), None);
+        let l = cost_line(&[Some(0.01), Some(0.03), None]).unwrap();
+        assert_eq!(l, "$0.0400 total, $0.0200 mean over 2 calls, 1 without a cost");
     }
 
     #[test]
