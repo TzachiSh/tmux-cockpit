@@ -253,11 +253,18 @@ calls `claude` once per case, so it is run by hand and never from `make test`;
 `--check` only validates the cases, and `cargo test` runs that check too. To
 compare a prompt edit, put it in the override file above and run again: the
 summary prints a hash of the system prompt it sent, and a pass count per case
-over the runs (3 by default: one run is not enough to judge a change). The case
-format, with its `expect: ask|write|either`, `must`, `must_not` and `holdout`
-keys, is described at the top of the cases file; holdout cases are written
-after the prompt they run on, so a gain there is not overfitting. `--model`,
-`--runs`, `--jobs`, `--only <id or kind>` and `--out <file.jsonl>` are the knobs.
+over the runs (3 by default: one run is not enough to judge a change). It also
+prints asking as FPR (asked on a write case) and FNR (no question on an ask
+case), with either cases in neither; `pass^k`, the share of cases that passed
+all k runs, with its Wilson 95% interval, since cases and not runs are the
+independent trials; and the cost of the calls, from `claude -p --output-format
+json`. `--compare A.jsonl B.jsonl` reads two `--out` files and makes no calls:
+per case each side's pass count, the cases whose pass rate moved, and each
+side's `pass^k` and cost. The case format, with its `expect: ask|write|either`,
+`must`, `must_not`, `out_is` and `holdout` keys, is described at the top of
+the cases file; holdout cases are written after the prompt they run on, so a
+gain there is not overfitting. `--model`, `--runs`, `--jobs`, `--only <id or
+kind>` and `--out <file.jsonl>` are the knobs.
 
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to

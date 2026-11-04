@@ -7,10 +7,12 @@
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
 //!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check]
+//!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
 //! it at `$XDG_CONFIG_HOME/tmux-cockpit/prompts/write.txt` (the panel's own
-//! override) and run twice; the summary prints a hash of the system prompt.
+//! override) and run twice with `--out`, then `--compare` the two files: it
+//! reads them, makes no calls, and pairs the runs by case.
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, build};
 use cockpit_tui::panel::parse::{self, Reply};
