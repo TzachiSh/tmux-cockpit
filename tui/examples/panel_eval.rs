@@ -6,7 +6,7 @@
 //! money: run it by hand, never from `make test`.
 //!
 //!     cargo run --example panel_eval -- [--model M] [--runs N] [--jobs J]
-//!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check]
+//!         [--only TEXT] [--cases FILE] [--out FILE.jsonl] [--check] [--answer]
 //!     cargo run --example panel_eval -- --compare A.jsonl B.jsonl
 //!
 //! `--check` only reads and validates the cases. To compare a prompt edit, put
@@ -14,7 +14,7 @@
 //! override) and run twice with `--out`, then `--compare` the two files: it
 //! reads them, makes no calls, and pairs the runs by case.
 use cockpit_tui::panel::capture::{Capture, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, build};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build};
 use cockpit_tui::panel::parse::{self, Reply};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Request};
@@ -391,6 +391,9 @@ struct Opts {
     check: bool,
     /// Two `--out` files: compared offline, no calls.
     compare: Option<(PathBuf, PathBuf)>,
+    /// Answer each question as a scripted owner would and count the calls a
+    /// write takes (#417). The grade is still the first reply's.
+    answer: bool,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -404,6 +407,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         out: None,
         check: false,
         compare: None,
+        answer: false,
     };
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
@@ -416,6 +420,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--only" => o.only = Some(val()?),
             "--out" => o.out = Some(val()?.into()),
             "--check" => o.check = true,
+            "--answer" => o.answer = true,
             "--compare" => {
                 let two = (a.next(), a.next());
                 let (Some(x), Some(y)) = two else {
@@ -460,9 +465,64 @@ fn exec_claude(real: &OsStr) -> ! {
     std::process::exit(127);
 }
 
+/// The panel's own texts for a guess and a write-now retry (app.rs): change both together.
+const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
+const WRITE_NOW: &str = "(no questions left: write it now, and state each assumption as an Assumed: line)";
+/// More calls than the panel can make for one write: 1 + 3 questions + 1 retry.
+const CALLS_MAX: usize = 5;
+
+/// A write being answered by `--answer`: the conversation so far and its calls.
+struct Chain {
+    turns: Vec<Turn>,
+    left: usize,
+    calls: usize,
+    started: Instant,
+}
+
+/// What the scripted owner answers to a reply: the recommended option, else
+/// the first, else a best guess. As the panel does, a batch is cut to the
+/// questions left, and a question at zero left gets the one write-now retry.
+/// `None` once the reply writes, or asks after that retry.
+fn answer_turns(raw: &str, out: OutType, turns: &[Turn], left: usize) -> Option<(Vec<Turn>, usize)> {
+    let p = parse::write(raw, out);
+    let Reply::Question { text, options } = p.reply else { return None };
+    let mut next = turns.to_vec();
+    if left == 0 {
+        if turns.last().is_some_and(|t| t.text == WRITE_NOW) {
+            return None;
+        }
+        next.push(Turn {
+            role: Role::User,
+            text: WRITE_NOW.into(),
+        });
+        return Some((next, 0));
+    }
+    let mut asked = std::iter::once((text, options)).chain(p.more).collect::<Vec<_>>();
+    asked.truncate(left);
+    let n = asked.len();
+    for (q, opts) in asked {
+        let labels: Vec<&str> = opts.iter().map(|o| o.label.as_str()).collect();
+        let shown = if labels.is_empty() {
+            q.clone()
+        } else {
+            format!("{q} Options: {}", labels.join(" | "))
+        };
+        next.push(Turn {
+            role: Role::Assistant,
+            text: shown,
+        });
+        let pick = opts.iter().find(|o| o.recommended).or(opts.first());
+        let a = pick.map_or(BEST_GUESS.to_string(), |o| o.label.clone());
+        next.push(Turn { role: Role::User, text: a });
+    }
+    Some((next, left - n))
+}
+
 struct Job {
     case: usize,
     run: usize,
+    /// Set for a follow-up call of `--answer`: its first reply was graded already.
+    chain: Option<Chain>,
     model: String,
     /// The system prompt's hash.
     system: u64,
@@ -546,37 +606,20 @@ fn main() {
     // (case, ms, grade); no grade for a call that failed (a timeout, an API error).
     let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
     let mut costs: Vec<Option<f64>> = vec![];
+    // --answer: (case, calls, ms) per write, to its end.
+    let mut chains: Vec<(usize, usize, u128)> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
         {
-            let c = &cases[ci];
-            let cap = Capture {
-                name: c.name.clone(),
-                cmd: c.cmd.clone(),
-                path: c.path.clone(),
-                screen: c.screen.clone(),
-                repo: c.repo.as_str().into(),
-            };
-            let flow = Flow::Write {
-                draft: c.request.clone(),
-                out: c.out,
-            };
-            let system = prompts::write(&Ctx {
-                out: c.out,
-                window: window_kind(&c.name, &c.cmd),
-            });
-            let h = fnv(&system);
+            let (req, model, h) = spawn(&cases[ci], &o.model, &call, &[], QUESTIONS);
             if !hashes.contains(&h) {
                 hashes.push(h);
             }
-            let model = route(&flow, &o.model).model;
-            let prompt = build(&flow, &cap, &[], QUESTIONS);
-            // Spawned here, on the main thread: the child's death signal follows it.
-            let req = Request::spawn(&call, &system, &prompt, &model);
             live.push(Job {
                 case: ci,
                 run,
+                chain: None,
                 model,
                 system: h,
                 req,
@@ -589,9 +632,30 @@ fn main() {
                 i += 1;
                 continue;
             };
-            let j = live.swap_remove(i);
+            let mut j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
+            if let Some(mut ch) = j.chain.take() {
+                ch.calls += 1;
+                let next = match answer.as_ref().map(|a| unwrap_json(a)) {
+                    Ok(Ok((raw, _))) => answer_turns(&raw, c.out, &ch.turns, ch.left),
+                    _ => None,
+                };
+                match next {
+                    Some((turns, left)) if ch.calls < CALLS_MAX => {
+                        j.req = spawn(c, &o.model, &call, &turns, left).0;
+                        (ch.turns, ch.left) = (turns, left);
+                        j.chain = Some(ch);
+                        live.push(j);
+                    }
+                    _ => {
+                        let total = ch.started.elapsed().as_millis();
+                        println!("calls {:<24} {} in {total} ms", c.id, ch.calls);
+                        chains.push((j.case, ch.calls, total));
+                    }
+                }
+                continue;
+            }
             let (raw, usage, err) = match answer.map_err(|f| f.to_string()) {
                 Ok(out) => match unwrap_json(&out) {
                     Ok((raw, u)) => (raw, u, None),
@@ -640,15 +704,75 @@ fn main() {
                 });
                 let _ = writeln!(f, "{row}");
             }
-            done.push((j.case, ms, g));
+            let case = j.case;
+            if o.answer && err.is_none() {
+                match answer_turns(&raw, c.out, &[], QUESTIONS) {
+                    Some((turns, left)) => {
+                        let started = j.started;
+                        j.req = spawn(c, &o.model, &call, &turns, left).0;
+                        j.chain = Some(Chain {
+                            turns,
+                            left,
+                            calls: 1,
+                            started,
+                        });
+                        live.push(j);
+                    }
+                    None => chains.push((j.case, 1, ms)),
+                }
+            }
+            done.push((case, ms, g));
             costs.push(usage.cost_usd);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
+    if o.answer {
+        println!("{}", calls_line(&cases, &chains));
+    }
     if let Some(l) = cost_line(&costs, wrapped) {
         println!("cost            {l}");
     }
+}
+
+/// One call for the case at `turns` with `left` questions: the request, the
+/// model, and the system prompt's hash. Spawned on the main thread, so the
+/// child's death signal follows it.
+fn spawn(c: &Case, model: &str, call: &Call, turns: &[Turn], left: usize) -> (Request, String, u64) {
+    let cap = Capture {
+        name: c.name.clone(),
+        cmd: c.cmd.clone(),
+        path: c.path.clone(),
+        screen: c.screen.clone(),
+        repo: c.repo.as_str().into(),
+    };
+    let flow = Flow::Write {
+        draft: c.request.clone(),
+        out: c.out,
+    };
+    let system = prompts::write(&Ctx {
+        out: c.out,
+        window: window_kind(&c.name, &c.cmd),
+    });
+    let model = route(&flow, model).model;
+    let prompt = build(&flow, &cap, turns, left);
+    (Request::spawn(call, &system, &prompt, &model), model, fnv(&system))
+}
+
+/// `--answer`'s summary: calls and time per write, over all and over the ask cases.
+fn calls_line(cases: &[Case], chains: &[(usize, usize, u128)]) -> String {
+    let mean = |pick: &dyn Fn(&Case) -> bool| {
+        let v: Vec<_> = chains.iter().filter(|(c, _, _)| pick(&cases[*c])).collect();
+        let n = v.len().max(1) as f64;
+        let calls = v.iter().map(|x| x.1).sum::<usize>() as f64 / n;
+        let ms = v.iter().map(|x| x.2).sum::<u128>() as f64 / n;
+        format!("{calls:.2} calls, {:.1} s ({} writes)", ms / 1000.0, v.len())
+    };
+    format!(
+        "per write       all {}; ask cases {}",
+        mean(&|_| true),
+        mean(&|c| c.expect == Expect::Ask)
+    )
 }
 
 /// The panel's config directory, as `panel::xdg` finds it.
@@ -1100,6 +1224,27 @@ mod tests {
         assert!(g.pass && g.on_target, "{g:?}");
         c.ask_any = vec!["which file".into()];
         assert!(!grade(&c, q).pass);
+    }
+
+    #[test]
+    fn the_scripted_owner_answers_a_batch_in_one_go_and_stops_on_a_write() {
+        let q = "<question>A?</question><option>x</option><option recommended=\"true\">y</option>\
+                 <question>B?</question>";
+        let (turns, left) = answer_turns(q, OutType::Auto, &[], 3).unwrap();
+        let t: Vec<&str> = turns.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(t, ["A? Options: x | y", "y", "B?", BEST_GUESS]);
+        assert_eq!(left, 1);
+        assert_eq!(answer_turns("<prompt>p</prompt>", OutType::Auto, &turns, left), None);
+        let (cut, left) = answer_turns(q, OutType::Auto, &[], 1).unwrap();
+        assert_eq!((cut.len(), left), (2, 0), "a batch is cut to the questions left");
+    }
+
+    #[test]
+    fn the_scripted_owner_retries_once_at_zero_left() {
+        let q = "<question>A?</question>";
+        let (turns, left) = answer_turns(q, OutType::Auto, &[], 0).unwrap();
+        assert_eq!((turns.last().unwrap().text.as_str(), left), (WRITE_NOW, 0));
+        assert_eq!(answer_turns(q, OutType::Auto, &turns, 0), None, "asked again: the panel errors");
     }
 
     #[test]
