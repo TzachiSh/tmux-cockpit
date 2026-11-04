@@ -388,3 +388,27 @@ fn a_budget_stop_is_shown_as_claude_said_it() {
     let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
     assert_eq!(answer(&mut req), Err(Fail::Failed("Error: Exceeded USD budget (0.01)".into())));
 }
+
+/// A skill's text can ask for a shell or git (#428: git in a folder can rewrite its
+/// index, and a submodule's filter driver runs). The argv itself holds the line: no
+/// read-only profile offers Bash or approves it, and every one denies it by rule.
+#[test]
+fn no_read_only_argv_offers_bash_and_every_one_denies_it() {
+    for research in [false, true] {
+        let rig = Rig::new(&format!("nobash{research}"), ECHO_ARGV);
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), research), "p");
+        assert_eq!(answer(&mut req), Ok("ok\n".into()));
+        let args = argv_after_prompt(&rig);
+        let value = |flag: &str| {
+            let at = args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("no {flag}: {args:?}"));
+            args[at + 1].split(',').map(String::from).collect::<Vec<_>>()
+        };
+        for flag in ["--tools", "--allowedTools"] {
+            assert!(
+                !value(flag).iter().any(|t| t.starts_with("Bash")),
+                "{flag} offers Bash, research {research}"
+            );
+        }
+        assert!(value("--disallowedTools").contains(&"Bash".to_string()), "research {research}");
+    }
+}
