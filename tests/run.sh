@@ -12631,5 +12631,40 @@ is "and the status message spells every # of the name as ##" "1" \
 "$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
 fi
 
+echo "== git.sh refusal is shown by tmux-branch (#330) =="
+# The fixture of the tmux-review block above, on its own private socket and shim.
+if need_tmux "git.sh refusal in tmux-branch"; then :; else
+BQ="cockpit-bq-$$"; SOCKS="$SOCKS $BQ"; GD=$(mktmpd)
+( git init -q "$GD/r" && cd "$GD/r" && printf 'hi\n' > x && printf 'x filter=a=b\n' > .gitattributes \
+  && git config 'filter.a=b.clean' "touch $GD/PWNED" ) >/dev/null 2>&1
+( git init -q -b main "$GD/ok" && cd "$GD/ok" && printf 'a\n' > y && git add y \
+  && git -c user.name=t -c user.email=t@t commit -qm i && git branch other && git worktree add -q "$GD/ok-wt" other ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$BQ" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$GD/r" >/dev/null 2>&1
+BQSOCK=$("$TMUX_REAL" -L "$BQ" display-message -p '#{socket_path}')
+mkdir "$GD/bin"
+printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$BQ" > "$GD/bin/tmux"
+# A picker stub: records that it ran and answers with the action line in $GD/answer.
+printf '#!/bin/sh\ntouch "%s/picker-ran"\ncat "%s/answer" 2>/dev/null\n' "$GD" "$GD" > "$GD/bin/cockpit-tui"
+chmod +x "$GD/bin/tmux" "$GD/bin/cockpit-tui"
+bq() { env PATH="$GD/bin:$PATH" COCKPIT_TUI_BIN="$GD/bin/cockpit-tui" TMUX="$BQSOCK,0,0" "$DIR/scripts/tmux-branch" "$@" </dev/null 2>&1; }
+BQL="cockpit: refusing this repo: a git filter driver name contains '=' (see #331)"
+command git -C "$GD/r" add -A >/dev/null 2>&1
+is "control: unguarded git add fires the plant" "yes" "$([ -e "$GD/PWNED" ] && echo yes)"
+command git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
+printf 'goto %s\n' "$GD/r" > "$GD/answer"
+is "refused repo: the refusal line, not 'not a git repository'" "$BQL" "$(bq "$GD/r" | head -1)"
+is "the picker never started" "" "$(ls "$GD/picker-ran" 2>/dev/null)"
+is "no window was opened" "1" "$("$TMUX_REAL" -L "$BQ" list-windows | grep -c .)"
+is "the plant never ran" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+# Negative: a normal repo reaches the picker and a goto to its worktree is honoured.
+printf 'goto %s\n' "$GD/ok-wt" > "$GD/answer"
+bq "$GD/ok" >"$GD/ok.out"
+is "normal repo: the picker ran, no refusal" "yes|" "$([ -e "$GD/picker-ran" ] && echo yes)|$(grep -c refusing "$GD/ok.out" | sed 's/^0$//')"
+is "and its worktree got a window" "$GD/ok-wt" \
+   "$("$TMUX_REAL" -L "$BQ" list-panes -a -F '#{pane_current_path}' | grep -Fx "$GD/ok-wt" | head -1)"
+"$TMUX_REAL" -L "$BQ" kill-server >/dev/null 2>&1
+fi
+rm -rf "${GD:-/nonexistent-gd}"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

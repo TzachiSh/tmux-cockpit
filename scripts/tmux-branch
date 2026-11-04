@@ -52,6 +52,11 @@ cd "$DIR" 2>/dev/null || fail "cockpit: no such directory: $DIR"
 # tmux only knows the local cwd, so an ssh pane would name this machine's repo.
 [ "$PANE_CMD" = ssh ] && fail "cockpit: this pane is inside ssh · $DIR is local, not that host"
 
+# git() refuses a repo whose config names a filter driver with '=', and the rev-parse
+# below would then read as "not a git repository" (#330). One line, before any git read
+# (the picker, wt_list's two rereads, the switches).
+if git_refused .; then fail "$GIT_REFUSAL"; fi
+
 git rev-parse --git-dir >/dev/null 2>&1 || fail "cockpit: not a git repository: $DIR"
 
 redraw() { [ -n "${TMUX:-}" ] && tmux refresh-client -S 2>/dev/null; return 0; }
