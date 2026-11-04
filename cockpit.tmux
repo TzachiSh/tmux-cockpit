@@ -157,12 +157,10 @@ fi
 PW=$(tmux show-option -gqv @cockpit_popup_width);  PW=${PW:-70%}
 PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
 
-# Browse folder, for the path tap and the menu row: a row replays it from this
-# table, since an inline display-popup inside a menu row loses its quoting.
-# -d is a format and the shell-command is not, so --browse takes its $PWD.
-tmux bind-key -T cockpit o display-popup -E -w "$PW" -h "$PH" \
-    -T ' files · #{b:pane_current_path} ' -d '#{pane_current_path}' \
-    "$Q_OPEN --browse"
+# Browse folder is the menu row's name. prefix o, the path tap and that row open
+# the pane's folder in the editor (#228). run-shell expands #{pane_id}; the
+# script's path goes through fesc as pick_on's does.
+tmux bind-key -T cockpit o run-shell -b "$(fesc "$Q_OPEN") --folder #{pane_id}"
 # What is each agent doing: one line per pane, its state or - for a non-agent.
 # display-popup expands no format in its command, so list-panes gets the #{...}.
 # The columns are tmux's own padding (p16), so a title with spaces stays whole.

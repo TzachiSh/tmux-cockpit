@@ -1123,6 +1123,11 @@ is the rows and stdout is the answer.
 | 0 | a row was chosen; its key is on stdout |
 | 1 | `esc` or ctrl-c, or no rows; stdout is empty |
 | 2 | a bad argument, an unreadable `--preview` file, no terminal, or a stdout that cannot be written |
+| 10 | `alt-c` on a row, only with `--copy`; its key is on stdout |
+
+`--copy` (open-at-line, #228) adds `alt-c` and its footer hint; without it `alt-c`
+does nothing. A `cockpit-tui` that predates the flag exits 2 with `pick: unknown
+argument --copy`, which `tui_stale` (`scripts/lib/tui.sh`) reads as a stale binary.
 
 `--preview <file>` is static text shown right of the list when the screen is 60
 columns or wider (the first 64 KiB, no scrolling). Nothing mutates: the caller

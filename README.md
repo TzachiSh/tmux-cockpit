@@ -58,7 +58,7 @@ screenshot and a red/green colourblind reader.
 - [revdiff](https://github.com/umputun/revdiff), for the `prefix + r` review
   (tested with v1.13.0). Without it `prefix + r` says "revdiff not found".
   Install details: [docs/install.md](docs/install.md#requirements).
-- Optional: `bat`. A Nerd Font is not needed.
+- A Nerd Font is not needed.
 
 ### With tpm
 
@@ -138,7 +138,6 @@ None is required.
 | `@cockpit_<name>_key` | see [configuration](docs/configuration.md) | rebind a key; `off` restores stock tmux |
 | `@cockpit_popup_width`, `@cockpit_popup_height` | `70%` | popup size |
 | `@cockpit_editor` | unset | editor for click-to-open and the review's `^E`; a terminal editor |
-| `@cockpit_open_single` | unset | `line` or `always`: open a lone path without the picker |
 | `@cockpit_review_window` | `off` | `on`: the review opens in a window, not a popup |
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |
 | `@cockpit_board_return` | `on` | `off`: `r` and `f` leave the board instead of coming back to it |

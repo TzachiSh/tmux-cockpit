@@ -70,6 +70,7 @@ impl Ui {
             prompt: "branch".into(),
             header: header.into(),
             preview: None,
+            copy: false,
         };
         let mut u = Self {
             pick: Pick::new(bs.iter().map(|b| row(b, g)).collect(), &o, None),

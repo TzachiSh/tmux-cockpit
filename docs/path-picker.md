@@ -3,13 +3,12 @@
 ## Ctrl+double-click a line to pick a path off it
 
 **Ctrl+double-click** any line of pane output. Every whitespace-separated token
-on that line that resolves to a real file becomes a candidate, and a picker
-popup opens with the list and a preview of the spot. Enter opens the highlighted one, Esc cancels.
+on that line that resolves to a real file becomes a candidate.
 
-The picker opens even when the line yields exactly **one** path. Seeing what the
-line resolved to, with the file and line in front of you, is the point of the
-gesture; opening on a single guess is how you end up in the wrong file. When the
-line yields nothing, the status line says so and no popup appears.
+**One candidate opens at once**, a folder included: there is nothing to choose,
+so no popup appears. **Several** open a `cockpit-tui pick` popup with the list:
+`↵` opens the highlighted row, `esc` cancels, and typing filters. When the line
+yields nothing, the status line says so and no popup appears.
 
 It reads `file:12:3`, `file:12`, `file(12,3)` (tsc), `a/file` (git diff),
 `~/file` and absolute paths, and strips the quotes, brackets and trailing commas
@@ -19,74 +18,25 @@ path is real but the token around it is not; `file(12,3)` stays a *location*,
 not a wrapper. Existence on disk is the filter, so a word that merely looks
 like a path is dropped.
 
-**Tab marks several** — a compiler error names a header and its source, a git
-diff names two files: mark both, `↵` opens them all. Tab means the same thing in
-`tm`'s kill picker.
-
-**`alt-c` copies the paths instead of opening them.** The marked rows, or the
-row under the cursor when nothing is marked, go to the tmux buffer and the
-clipboard as absolute paths, one per line, for pasting into an agent's prompt.
-It works in the folder browser too, where `⇥` marks rows for `alt-c` alone: `↵`
-and `^O` there act on the first marked row. The copy goes out as OSC 52, so it
-reaches the system clipboard only if your terminal accepts clipboard writes.
+**`alt-c` copies the highlighted row's path** instead of opening it: the
+absolute path goes to the tmux buffer and, as OSC 52, to the clipboard, for
+pasting into an agent's prompt. It reaches the system clipboard only if your
+terminal accepts clipboard writes. The footer names the key.
 
 To copy something no key already copies, hold **shift** and drag. A tmux popup
 has no copy mode, so in any of these popups the terminal's own selection is the
 one that works.
 
-**A folder browses, it does not open.** `↵` on a directory descends into it —
-`..` climbs back up, `↵` on a file opens it. `^O` — in the picker and in the
-browser — opens the selection **as-is**: on a folder that means the whole
-folder lands in the editor (VS Code opens it as a workspace). In a
-multi-selection `↵` skips directories, so marking three files and a folder
-opens the files.
+**The folder keys open the pane's folder.** The menu's `o` row (Browse folder)
+and a tap on the path in the status bar open the pane's current folder in the
+editor (VS Code opens it as a workspace). There is no folder browser to descend
+into; click a path in the output instead.
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as
 `src/app.ts:31` in the list, not a bare filename.
 
-The list takes only the rows it needs — with one or two candidates the preview
-gets ~80% of the popup instead of leaving the top half empty around two
-filenames.
-
-### Instant open, if you want it
-
-By default every click shows the picker. A lone candidate that carried an
-explicit `:line` is machine output — a stack trace, a compiler error, a grep
-hit — and can skip the popup:
-
-```tmux
-set -g @cockpit_open_single line     # instant-open a lone candidate with a line number
-set -g @cockpit_open_single always   # instant-open any lone file candidate
-```
-
-Folders always go to the picker; unset keeps today's ask-first behaviour.
-
-### The snippet
-
-The preview pane is the reason to look before you leap, so it shows the thing
-you are actually deciding about:
-
-| what you picked | what you see |
-|-----------------|--------------|
-| a file, with a line number | the code around that line, the line highlighted |
-| a file, no line number, **uncommitted changes** | its `git diff` — the changes are almost always why it's on that line |
-| a file, no line number, clean | the file from the top |
-| a directory | `git status --short` and a diff stat for it, or `ls -la` outside a repo |
-| a binary | its type and size, never its bytes |
-
-With [`bat`](https://github.com/sharkdp/bat) installed (`batcat` on Debian) the
-snippet is syntax-highlighted and carries the **git gutter** — `+` and `~`
-beside every line you have changed but not committed — so you see the code and
-what moved in it at the same time. Without `bat` it falls back to numbered
-lines with the target in reverse video. Nothing else is required.
-
-`^G` switches the preview to the diff for any entry — in the folder browser
-too — and `^F` back to the content. A clean file says "no uncommitted changes"
-rather than showing an empty pane.
-
-`tmux-open-path --preview <path> [line]` (or `--preview-diff <path>`) renders
-exactly what the popup shows, which is the quickest way to see why a preview
-looks wrong.
+A `cockpit-tui` older than the plugin does not know `alt-c`'s flag: the click says
+so, naming `make tui` and `scripts/tui-fetch`, instead of failing quietly.
 
 It reads the whole clicked **line**, not `#{mouse_word}`: tmux's
 `word-separators` include `/ . : -`, so the word under `src/foo-bar.ts:31` is

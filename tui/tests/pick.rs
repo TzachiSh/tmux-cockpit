@@ -46,6 +46,7 @@ fn opts(prompt: &str, header: &str) -> Opts {
         prompt: prompt.into(),
         header: header.into(),
         preview: None,
+        copy: false,
     }
 }
 
@@ -549,6 +550,7 @@ fn prompt_header_and_preview_hold_no_control_character_after_new() {
         prompt: HOSTILE.into(),
         header: format!("{HOSTILE}\nsecond"),
         preview: None,
+        copy: false,
     };
     let p = Pick::new(vec![], &o, Some(format!("a{HOSTILE}\n{HOSTILE}b\tc\n")));
     let bad = |s: &str| s.chars().any(|c| c.is_control() && c != '\n');
@@ -713,4 +715,85 @@ fn a_list_share_moves_the_preview_divider() {
     assert_eq!(at(&p), 40);
     p.list_pct = 55;
     assert_eq!(at(&p), 55);
+}
+
+fn alt(p: &mut Pick, c: char) -> Outcome {
+    p.key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT), BIG)
+}
+
+#[test]
+fn alt_c_copies_the_selected_row_when_copy_is_on() {
+    let mut p = Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    );
+    press(&mut p, KeyCode::Down, BIG);
+    assert_eq!(alt(&mut p, 'c'), Outcome::Copy(b"feat/237-pick".to_vec()));
+}
+
+#[test]
+fn alt_c_is_nothing_when_copy_is_off_and_never_a_letter() {
+    let mut p = picker("p", "", None);
+    assert_eq!(alt(&mut p, 'c'), Outcome::Continue);
+    assert_eq!(p.query, "");
+}
+
+#[test]
+fn alt_c_on_an_empty_list_chooses_nothing() {
+    let mut p = Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    );
+    type_str(&mut p, "zzzz");
+    assert_eq!(alt(&mut p, 'c'), Outcome::Continue);
+}
+
+#[test]
+fn a_copy_answers_ten_with_the_key_and_the_flag_parses() {
+    let mut out = Vec::new();
+    assert_eq!(pick::answer(&mut out, &Outcome::Copy(b"3".to_vec())), 10);
+    assert_eq!(out, b"3\n");
+    let a = |v: &[&str]| pick::parse_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    assert!(a(&["--copy"]).unwrap().copy);
+    assert!(!a(&[]).unwrap().copy);
+}
+
+#[test]
+fn the_footer_names_alt_c_only_when_copy_is_on() {
+    let on = Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    );
+    assert!(draw(80, 24, &on).contains("alt-c"));
+    assert!(!draw(80, 24, &picker("p", "", None)).contains("alt-c"));
+}
+
+#[test]
+fn the_help_lists_alt_c_only_when_copy_is_on() {
+    let g = cockpit_tui::theme::Glyphs::unicode();
+    let has = |c| pick::help_rows_for(&g, c).iter().any(|(k, _)| k == "alt-c");
+    assert!(has(true));
+    assert!(!has(false));
+    assert_eq!(pick::help_rows_for(&g, true).len(), pick::help_rows(&g).len() + 1);
+    let on = Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    );
+    assert_eq!(on.help_len, pick::help_rows(&g).len() + 1);
 }

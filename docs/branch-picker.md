@@ -1,9 +1,8 @@
-# Branch popup and folder browser
+# Branch popup
 
 `prefix + b` and a tap on the branch on the border open a `cockpit-tui branch`
 popup (#246). The keys, the preview and what `scripts/tmux-branch` checks before
-it acts are in [tui.md](tui.md#cockpit-tui-branch-246). The folder browser is
-still fzf, opened from the path (below).
+it acts are in [tui.md](tui.md#cockpit-tui-branch-246).
 
 If `cockpit-tui` is older than the plugin (it exits 2 with `unknown screen`),
 the popup says so and names `make tui` and `scripts/tui-fetch` (#276).
@@ -22,10 +21,10 @@ tree, say) you read its message, press a key, and the popup opens again instead
 of closing.
 
 The click target is the branch on the active pane's top border (a control
-range, `control|3`, acting on release). The **path** beside it (`control|2`)
-opens the **folder browser** at the pane's working dir — the same popup the path
-picker descends into, entered from the top. When the border has no room for
-them, the menu's Switch branch and Browse folder rows stand in.
+range, `control|3`, acting on release). When the border has no room for it, the
+menu's Switch branch row stands in. The **path** beside it (`control|2`), `prefix
++ o` and the menu's Browse folder row open the pane's folder in the editor (see
+[path-picker.md](path-picker.md)); the folder browser itself is gone.
 
 With `@cockpit_statusbar off`, mark your own segments with the same ranges; see
 [status-bar.md](status-bar.md#a-bar-of-your-own). A control range has a key of
