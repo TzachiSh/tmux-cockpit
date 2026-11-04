@@ -1587,27 +1587,30 @@ echo "== tmux-where: the pane_id form opens no command client =="
 # landed in show-messages: the 1000-entry log spanned minutes and no click was
 # diagnosable after the fact (issue #24). It now runs for ssh panes only.
 if [ -d "/proc/$$" ]; then
-    # The serial runner shares one server: past 1000 entries each show-messages
-    # evicts an old line and could shift the count below by itself.
-    tmux set -g message-limit 100000
+    # A tmux on tmux-where's PATH that logs its argv: the server's own message log also holds
+    # any other client's display-message (a hook, a poller of an earlier block), and counting
+    # those made "none of it reached tmux" flake under load.
+    TWB=$(mktmpd); TWLOG="$TWB/argv"; : > "$TWLOG"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s/tmux" "$@"\n' \
+        "$TWLOG" "$SHIM" > "$TWB/tmux"
+    chmod +x "$TWB/tmux"
+    twh() { PATH="$TWB:$PATH" "$DIR/scripts/tmux-where" "$@"; }
     # argv[0] is what tmux reports as pane_current_command, so a process
     # exec'd under the name ssh must still take the ssh walk (which then reads
     # its first bare argument, 30, as the destination).
     tmux new-window -d -n wherepane 'exec -a ssh sleep 30'
     WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
     WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
-    for _ in $(seq 20); do              # sh -c may not have exec'd yet
+    for _ in $(seq "$POLLS"); do        # sh -c may not have exec'd yet
         IFS= read -r -d '' a0 2>/dev/null < "/proc/$WPID/cmdline"; [ "$a0" = ssh ] && break; sleep 0.1
     done
-    before=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "an ssh pane is recognised from /proc" " 󰢹 30" "$("$DIR/scripts/tmux-where" path "$WPID" "$WP" | plain)"
-    is "and has no branch" "" "$("$DIR/scripts/tmux-where" branch "$WPID" "$WP" | plain)"
+    is "an ssh pane is recognised from /proc" " 󰢹 30" "$(twh path "$WPID" "$WP" | plain)"
+    is "and has no branch" "" "$(twh branch "$WPID" "$WP" | plain)"
     tmux kill-window -t wherepane
     # pid_max+1 cannot be alive; 999999 can, and would read a stranger's /proc.
     DEADPID=$(( $(cat /proc/sys/kernel/pid_max) + 1 ))
-    is "a dead pid fails closed to ssh" " 󰢹 ssh" "$("$DIR/scripts/tmux-where" path "$DEADPID" "$PANE" | plain)"
-    after=$(tmux show-messages | grep -c 'display-message -p -t')
-    is "none of it reached tmux" "$before" "$after"
+    is "a dead pid fails closed to ssh" " 󰢹 ssh" "$(twh path "$DEADPID" "$PANE" | plain)"
+    is "none of it reached tmux" "0" "$(wc -l < "$TWLOG" | tr -d ' ')"
 else
     skip_ "tmux-where /proc read (no /proc)"
 fi
@@ -10377,7 +10380,14 @@ av_start() {                  # a poller outside the hook path; its pid in AVPID
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
-av_gone() { ! kill -0 "$1" 2>/dev/null; }
+av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry to read, is not gone
+    # A killed process whose reaper is slow stays a zombie, and kill -0 succeeds on it. Counted
+    # as gone here on the hypothesis that one reaper stall made four runs miss at once (#386).
+    [ -n "${1:-}" ] || return 1
+    kill -0 "$1" 2>/dev/null || return 0
+    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    st=${st##*) }; [ "${st:0:1}" = Z ]
+}
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_start; AVA=$AVPID
 av_wait '[ "$(av_pub)" = "$AVA" ]'
@@ -10485,7 +10495,6 @@ av_startx() {                 # av_startx [NAME=value...]: a poller of our own; 
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
-av_gone() { ! kill -0 "$1" 2>/dev/null; }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
     local rc=0
@@ -10532,15 +10541,15 @@ av_tm set-option -g @cockpit_bg_poll 1
 # A signal can land after `sleep &` has forked and before `sleeper=$!` has saved the pid. A DEBUG
 # trap (set -T carries it into the sourced script) makes that moment exact: it sends the poller
 # its own TERM just before that assignment.
-# The sleep (a shim that records its pid) must not outlive the poller.
+# The sleep must not outlive the poller. The trap records the sleep's pid from $! itself: a sleep
+# that records its own pid can be killed before it first runs, and then there is nothing to read.
 AVSP="$AVREC/sleep.pid"; rm -f "$AVSP"
-AVSLB=$(mktmpd); ln -s "$AVF/sleep-pid" "$AVSLB/sleep"
 av_tm set-option -g @cockpit_bg_poll 3600
 av_tm set-option -gu @cockpit_poll_pid
-env -u TMUX_PANE TMUX="$AVT" PATH="$AVSLB:$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
-    AV_SLEEPPID="$AVSP" AV_REALSLEEP="$(command -v sleep)" \
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" \
     bash -c 'set -T; trap "$1" DEBUG; . "$0"' "$DIR/scripts/agent-poll" \
-    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && kill -TERM $$' </dev/null >/dev/null 2>&1 &
+    '[ "$BASH_COMMAND" = "sleeper=\$!" ] && { echo $! > "'"$AVSP"'"; kill -TERM $$; }' \
+    </dev/null >/dev/null 2>&1 &
 AVA=$!
 av_reap "$AVA" && AVLEFT=yes || AVLEFT=no
 is "a TERM between the fork and the saved pid still ends the poller" "yes" "$AVLEFT"
@@ -10578,8 +10587,9 @@ is "two simultaneous starts leave exactly one poller" "1" "$(av_alive_count)"
 if av_gone "$AVA"; then AVL=$AVB; else AVL=$AVA; fi
 is "...and it holds the slot" "$AVL" "$(av_pub)"
 # Its sleep child goes with it.
-av_wait 'pgrep -P "$AVL" >/dev/null'
-AVCH=$(pgrep -P "$AVL" | head -1)
+# The sleep itself, in one look: a first look that found a tick's short-lived child and a second
+# that found nothing left AVCH empty, and `av_gone` then died on its missing pid.
+av_wait 'AVCH=$(pgrep -xP "$AVL" sleep | head -1); [ -n "$AVCH" ]'
 kill -TERM "$AVL"; av_reap "$AVL"
 av_wait "av_gone $AVCH" && AVLEFT=yes || AVLEFT=no
 av_gone "$AVCH" || kill "$AVCH" 2>/dev/null
@@ -13186,10 +13196,13 @@ ct_set() {                    # <light|dark> (the client) <theme option>: the se
     "$TMUX_REAL" -L "$CTO" send-keys -t o F5
     until_cap "$CTO" o '*pick>*'
     local got=none i
-    case "$("$TMUX_REAL" -L "$CTO" capture-pane -ep -t o)" in
-        *'38;2;27;30;36'*) got=light ;;
-        *'38;2;230;228;223'*) got=dark ;;
-    esac
+    for i in $(seq 1 "$POLLS"); do   # 'pick>' can be up a frame before the rows' colours
+        case "$("$TMUX_REAL" -L "$CTO" capture-pane -ep -t o)" in
+            *'38;2;27;30;36'*) got=light; break ;;
+            *'38;2;230;228;223'*) got=dark; break ;;
+        esac
+        sleep 0.1
+    done
     "$TMUX_REAL" -L "$CTO" send-keys -t o Escape
     # A popup still up would hand its colours to the next case: fail this one.
     for i in $(seq 1 "$POLLS"); do

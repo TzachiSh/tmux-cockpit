@@ -1,5 +1,0 @@
-#!/bin/sh
-# A sleep that says who it is: writes its pid to $AV_SLEEPPID, then becomes the real sleep
-# ($AV_REALSLEEP). Lets a test find the child a poller started.
-echo $$ > "$AV_SLEEPPID"
-exec "$AV_REALSLEEP" "$@"
