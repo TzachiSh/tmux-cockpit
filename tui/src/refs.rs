@@ -9,24 +9,29 @@
 //!   symbol becomes `]` and a line break a space. The text is lossy for a non-UTF-8 path.
 //! - `parse` is the reverse for text that `render` wrote (or a person typed): relative or
 //!   absolute paths, and a line that is no reference, names a missing path or has bad
-//!   lines is skipped. A path that itself ends in `:12` or contains ` (` still parses,
-//!   since a split that names an existing file wins; if `a` and `a:12` both exist, `a:12`
-//!   reads as line 12 of `a`.
+//!   lines, or a non-UTF-8 path, is skipped. Paths are not confined to `base`: `../x` and
+//!   absolute paths are accepted, since a prompt may name a file outside the repo.
+//!   One split rule: a suffix (`:a-b`, then ` (sym)`) wins whenever the path left after it
+//!   exists, so with both `a` and `a:12` (or `a (x)`) on disk the text reads as line 12 of
+//!   `a` (symbol `x` of `a`). A symbol never holds `)`, which `render` never writes.
+//! - A `Ref` only comes from `new` or `parse`; its fields are read through accessors.
 use crate::pick::clean;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ref {
-    pub path: PathBuf,
-    pub lines: Option<(u32, u32)>,
-    pub symbol: Option<String>,
+    path: PathBuf,
+    lines: Option<(u32, u32)>,
+    symbol: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum RefError {
-    /// The path cannot be canonicalised: it does not exist, or is empty.
+    /// The path does not exist (or is empty).
     NotFound(PathBuf),
+    /// Any other failure to canonicalise it, e.g. a file used as a directory.
+    Io(PathBuf, std::io::ErrorKind),
     /// Not `1 <= a <= b`.
     Lines(u32, u32),
 }
@@ -35,6 +40,7 @@ impl fmt::Display for RefError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RefError::NotFound(p) => write!(f, "no such path: {}", p.display()),
+            RefError::Io(p, k) => write!(f, "cannot resolve {}: {k}", p.display()),
             RefError::Lines(a, b) => write!(f, "bad line range {a}-{b}: need 1 <= a <= b"),
         }
     }
@@ -43,7 +49,7 @@ impl fmt::Display for RefError {
 impl std::error::Error for RefError {}
 
 impl Ref {
-    // Wrapped by hand: the crate's 140-column rustfmt would join it past 100.
+    // Wrapped by hand to stay under 100 columns; the crate's 140-column rustfmt would join it.
     #[rustfmt::skip]
     pub fn new(
         path: impl AsRef<Path>,
@@ -56,12 +62,28 @@ impl Ref {
         {
             return Err(RefError::Lines(a, b));
         }
-        let path = path.canonicalize().map_err(|_| RefError::NotFound(path.to_path_buf()))?;
-        Ok(Ref { path, lines, symbol })
+        let canon = path.canonicalize().map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => RefError::NotFound(path.to_path_buf()),
+            k => RefError::Io(path.to_path_buf(), k),
+        })?;
+        Ok(Ref { path: canon, lines, symbol })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn lines(&self) -> Option<(u32, u32)> {
+        self.lines
+    }
+
+    pub fn symbol(&self) -> Option<&str> {
+        self.symbol.as_deref()
     }
 }
 
 fn symbol_text(s: &str) -> String {
+    let s = s.replace(['\u{2028}', '\u{2029}'], "\n");
     let one_line = s.lines().collect::<Vec<_>>().join(" ").replace(')', "]");
     clean(&one_line).trim().to_string()
 }
@@ -102,22 +124,28 @@ fn parse_lines(s: &str) -> Option<(u32, u32)> {
 }
 
 fn parse_line(line: &str, base: &Path) -> Option<Ref> {
-    // Every place the symbol could start, then every place the lines could start; the
-    // first split whose path exists wins.
-    let mut ends: Vec<(&str, Option<&str>)> = vec![(line, None)];
+    // Each suffix is tried before the text without it, so a suffix wins when the rest
+    // exists. A symbol holds no `)` (render never writes one), which also rules out a
+    // ` (` inside a directory name.
+    let mut syms: Vec<(&str, Option<&str>)> = Vec::new();
     if line.ends_with(')') {
         for (i, _) in line.match_indices(" (") {
-            ends.push((&line[..i], Some(&line[i + 2..line.len() - 1])));
+            let sym = &line[i + 2..line.len() - 1];
+            if !sym.contains(')') {
+                syms.push((&line[..i], Some(sym)));
+            }
         }
     }
-    for (head, sym) in ends {
-        let mut heads = vec![(head, None)];
+    syms.push((line, None));
+    for (head, sym) in syms {
+        let mut heads = Vec::new();
         if let Some(i) = head.rfind(':')
             && let Some(l) = parse_lines(&head[i + 1..])
         {
             heads.push((&head[..i], Some(l)));
         }
-        for (p, lines) in heads.into_iter().rev() {
+        heads.push((head, None));
+        for (p, lines) in heads {
             if p.is_empty() {
                 continue;
             }
