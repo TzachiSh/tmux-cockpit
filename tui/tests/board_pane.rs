@@ -508,6 +508,20 @@ fn seen(entries: &[(&str, Option<&str>)]) -> HashMap<String, Option<String>> {
 }
 
 #[test]
+fn the_redraw_gate_sees_the_picks_first_capture_even_a_blank_one() {
+    // a never-captured pane and a blank capture both draw Some(""): only the
+    // read state tells "reading the screen" from "live · blank"
+    let unread = board::read_gate(Some("%4"), &seen(&[]));
+    let blank = board::read_gate(Some("%4"), &seen(&[("%4", Some(""))]));
+    assert_ne!(unread, blank, "the first capture redraws");
+    assert_eq!(
+        board::read_gate(None, &seen(&[])),
+        board::read_gate(None, &seen(&[("%4", None)])),
+        "no pick, no part"
+    );
+}
+
+#[test]
 fn a_pick_no_capture_has_read_yet_is_unread_never_blank() {
     let ps = trio();
     let pvs = pvs_for(&ps, "%4", Some(""));

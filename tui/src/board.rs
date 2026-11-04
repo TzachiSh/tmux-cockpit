@@ -3572,6 +3572,17 @@ pub fn forget(seen: &mut HashMap<String, Option<String>>, pick: Option<&str>) {
     }
 }
 
+/// The redraw gate's part for the pick: whether a capture has come. A pane no
+/// capture has reached and a blank capture both draw `Some("")`, so without it a
+/// blank first capture would leave `reading the screen …` up.
+pub fn read_gate(pick: Option<&str>, seen: &HashMap<String, Option<String>>) -> &'static str {
+    match pick {
+        Some(id) if seen.contains_key(id) => "\u{2}read",
+        Some(_) => "\u{2}unread",
+        None => "",
+    }
+}
+
 pub fn run(o: &Opts) -> Option<Exit> {
     // crossterm caches a failed event-reader init forever: probe before init, or
     // a run with no controlling terminal paints a TUI that ignores every key.
@@ -3725,6 +3736,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 let mut extra = gate_extra(&panes, &pvs);
                 if list {
                     extra.push_str(&nav.tree_gate(&panes));
+                    extra.push_str(read_gate(pick.as_deref(), &seen));
                 }
                 let h = hash_rows(&panes, &extra);
                 if h != last_hash || !loaded {

@@ -8320,6 +8320,9 @@ for s in alpha beta; do
     PVP+=("$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")")
 done
+# a third agent whose screen is blank: it cleared it, the cursor home
+PVP+=("$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
+    "printf '\\033[2J\\033[H'; exec -a claude sleep 3600")")
 for p in "${PVP[@]}"; do
     "$TMUX_REAL" -L "$PV" set -p -t "$p" @panestate running >/dev/null 2>&1
 done
@@ -8348,6 +8351,12 @@ for i in $(seq 1 "$POLLS"); do
 done
 if [ -n "$pv_narrow" ]; then ok "under 96 columns the pane goes and the list stays"
 else bad "under 96 columns the pane goes and the list stays" "the list, no live screen" "$(pv_cap)"; fi
+# A board that opens on the blank agent: its first capture is blank, which draws
+# as the never-read default did, and must still replace `reading the screen`
+PVB=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
+    "env XDG_STATE_HOME=$PVD COCKPIT_LOG=$PVD/tui.log $COCKPIT_TUI_BIN board --select ${PVP[2]}")
+if until_cap "$PV" "$PVB" '*live · blank*'; then ok "a blank first capture shows, not reading"
+else bad "a blank first capture shows, not reading" "live · blank" "$("$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVB")"; fi
 "$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
 fi
 
