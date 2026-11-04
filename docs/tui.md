@@ -1795,3 +1795,6 @@ These notes replace older wording above where the two disagree.
   a pin names a tag that does not exist, and tui-fetch installs nothing.
 - `COCKPIT_TUI_BIN` must be an absolute path for tui-fetch; anything else
   installs to the plugin's own `bin/cockpit-tui`.
+- The same holds for every script, not only tui-fetch: `scripts/lib/tui.sh`
+  replaces a `COCKPIT_TUI_BIN` that is not absolute with the plugin's own
+  `bin/cockpit-tui` before anything runs it.

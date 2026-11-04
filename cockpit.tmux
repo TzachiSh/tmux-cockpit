@@ -8,8 +8,9 @@ set -u
 # A failed cd must stop here, not bind every key to /scripts/...
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
-# shellcheck source=scripts/lib/vnum.sh
-. "$DIR/scripts/lib/vnum.sh" || exit 1
+# COCKPIT_TUI_BIN, TUI_MIN and vnum, before anything reads them.
+# shellcheck source=scripts/lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
 # tpm hides plugin output, so an old tmux only hears this message. A version
 # with no leading digit (next-3.9, master) is a build newer than any release.
 tmux_version=$(tmux -V 2>/dev/null); tmux_version=${tmux_version#tmux }
@@ -254,8 +255,6 @@ if [ -n "$rk" ]; then
 fi
 
 # Required (#199). Offline: one --version, never a fetch, on every load.
-# shellcheck source=scripts/lib/tui.sh
-. "$DIR/scripts/lib/tui.sh" || exit 1
 tv=$(tui_check)
 case $? in
     1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;

@@ -7427,6 +7427,9 @@ tfout=$(cd "$TF/cwd" && env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN=ct COCKPIT_TU
         "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
 is "a relative COCKPIT_TUI_BIN falls back to the plugin's bin/" "absent cockpit-tui 0.9.0" \
    "$([ -e "$TF/cwd/ct" ] && echo present || echo absent) $(tf_ver)"
+# The check lives in tui.sh, so every reader gets it, not tui-fetch alone.
+is "and every script that sources tui.sh resolves it the same way" "$DIR/bin/cockpit-tui" \
+   "$(cd "$TF/cwd" && COCKPIT_TUI_BIN=ct bash -c '. "$1/scripts/lib/tui.sh" && printf %s "$COCKPIT_TUI_BIN"' _ "$DIR")"
 # Unpinned (no --version, no option), a newer binary is current: a make
 # tui-bin build ahead of the release must not be downgraded to it.
 mkdir -p "$TF/tmuxnone" "$TF/tmuxold"
