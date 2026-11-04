@@ -1,6 +1,6 @@
 //! The `claude -p` call against fake claude scripts. Each test builds its own
 //! `Call`, so nothing here touches the process environment.
-use cockpit_tui::panel::request::{Call, Fail, Request, prompt_file};
+use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -13,6 +13,11 @@ static FORK: Mutex<()> = Mutex::new(());
 fn spawn(call: &Call, system: &str, prompt: &str, model: &str) -> Request {
     let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
     Request::spawn(call, system, prompt, model)
+}
+
+fn spawn_with(call: &Call, p: &Profile, prompt: &str) -> Request {
+    let _g = FORK.lock().unwrap_or_else(|e| e.into_inner());
+    Request::spawn_with(call, p, "S", prompt, "default")
 }
 
 /// Polled, never slept for: gives up after 10 s.
@@ -258,4 +263,56 @@ fn a_bad_byte_does_not_lose_the_answer() {
     let mut req = spawn(&rig.call(30), "S", "p", "haiku");
     assert_eq!(answer(&mut req), Ok("caf\u{fffd} ok\n".into()));
     assert_eq!(req.pid(), None, "a reaped child has no pid to hand out");
+}
+
+// ---------------------------------------------------------------- profiles (#365)
+
+const ECHO_ARGV: &str = "printf '%s\\n' \"$@\" > $D/argv\npwd > $D/cwd\necho ok";
+
+/// The argv after `-p` and the system prompt file, one per line.
+fn argv_after_prompt(rig: &Rig) -> Vec<String> {
+    let argv = rig.read("argv");
+    let args: Vec<String> = argv.lines().map(String::from).collect();
+    let at = args.iter().position(|a| a == "--system-prompt-file").expect("a system prompt file");
+    args[at + 2..].to_vec()
+}
+
+/// The text profile is today's call, byte for byte: `spawn` and `spawn_with(TEXT)` agree.
+#[test]
+fn the_text_profile_is_todays_argv() {
+    let rig = Rig::new("text", ECHO_ARGV);
+    let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    assert_eq!(
+        argv_after_prompt(&rig),
+        [
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--strict-mcp-config",
+            "--disable-slash-commands"
+        ]
+    );
+    let cwd = std::fs::canonicalize(rig.call(30).dir).unwrap();
+    assert_eq!(rig.read("cwd").trim(), cwd.display().to_string());
+}
+
+/// A profile's own timeout wins over the call's: an ask may run longer than a write.
+#[test]
+fn a_profile_timeout_overrides_the_calls() {
+    let rig = Rig::new("ptimeout", "echo $$ > $D/pid\nexec sleep 30");
+    let p = Profile {
+        timeout: Some(Duration::from_millis(300)),
+        ..Profile::TEXT
+    };
+    let mut req = spawn_with(&rig.call(60), &p, "p");
+    assert_eq!(answer(&mut req), Err(Fail::Timeout));
+}
+
+/// claude's own budget stop is a failure the panel shows in its words.
+#[test]
+fn a_budget_stop_is_shown_as_claude_said_it() {
+    let rig = Rig::new("budget", "echo 'Error: Exceeded USD budget (0.01)'\nexit 1");
+    let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
+    assert_eq!(answer(&mut req), Err(Fail::Failed("Error: Exceeded USD budget (0.01)".into())));
 }

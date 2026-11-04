@@ -1,5 +1,6 @@
-//! One `claude -p` call, text only, on a thread of its own. A read like data's
-//! `claude agents` fork: it runs no tools and writes nothing to tmux.
+//! One `claude -p` call on a thread of its own, writing nothing to tmux. Its
+//! [`Profile`] says what it may use: [`Profile::TEXT`], the panel's calls, runs
+//! no tools.
 use std::fs::{DirBuilder, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Write};
@@ -54,6 +55,63 @@ impl Call {
     }
 }
 
+/// What a call may use, and its limits. Every field is a `claude` flag:
+/// `--tools` (the built-in set it has), `--allowedTools` (approved up front, as a
+/// `-p` call cannot be asked), `--disallowedTools` (denied by rule as well, in case
+/// a tool reaches the set some other way), `--permission-prompts none` (anything
+/// that would still ask is refused, never waited on), `--max-budget-usd`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    pub tools: &'static [&'static str],
+    pub allow: &'static [&'static str],
+    pub deny: &'static [&'static str],
+    /// skills and slash commands; off is `--disable-slash-commands`
+    pub skills: bool,
+    /// `--permission-prompts none`
+    pub no_prompts: bool,
+    /// the child's cwd, where the file tools start; `None` is the call's dir
+    pub cwd: Option<PathBuf>,
+    pub budget_usd: Option<f64>,
+    /// over the call's own, for a call that reads before it answers
+    pub timeout: Option<Duration>,
+}
+
+impl Profile {
+    pub const TEXT: Profile = Profile {
+        tools: &[],
+        allow: &[],
+        deny: &[],
+        skills: false,
+        no_prompts: false,
+        cwd: None,
+        budget_usd: None,
+        timeout: None,
+    };
+
+    /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
+    /// argv from before profiles, byte for byte.
+    fn argv(&self) -> Vec<String> {
+        let mut a = vec!["--tools".to_string(), self.tools.join(",")];
+        if !self.allow.is_empty() {
+            a.extend(["--allowedTools".into(), self.allow.join(",")]);
+        }
+        if !self.deny.is_empty() {
+            a.extend(["--disallowedTools".into(), self.deny.join(",")]);
+        }
+        if self.no_prompts {
+            a.extend(["--permission-prompts".into(), "none".into()]);
+        }
+        if let Some(b) = self.budget_usd {
+            a.extend(["--max-budget-usd".into(), b.to_string()]);
+        }
+        a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into()]);
+        if !self.skills {
+            a.push("--disable-slash-commands".into());
+        }
+        a
+    }
+}
+
 type Answer = Result<String, Fail>;
 
 pub struct Request {
@@ -69,12 +127,17 @@ impl Request {
     /// Call it from the main thread: PR_SET_PDEATHSIG fires when the spawning
     /// thread exits, so a short-lived thread would kill claude with it.
     pub fn spawn(call: &Call, system: &str, prompt: &str, model: &str) -> Request {
+        Request::spawn_with(call, &Profile::TEXT, system, prompt, model)
+    }
+
+    /// [`Request::spawn`] under profile `p`.
+    pub fn spawn_with(call: &Call, p: &Profile, system: &str, prompt: &str, model: &str) -> Request {
         let (tx, rx) = channel();
         let reaped = Arc::new(Mutex::new(false));
-        let pid = match start(call, system, model) {
+        let pid = match start(call, p, system, model) {
             Ok(child) => {
                 let pid = child.id();
-                run(child, prompt.to_string(), call.timeout, tx, reaped.clone());
+                run(child, prompt.to_string(), p.timeout.unwrap_or(call.timeout), tx, reaped.clone());
                 Some(pid)
             }
             Err(e) => {
@@ -136,21 +199,15 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
     drop(g);
 }
 
-fn start(call: &Call, system: &str, model: &str) -> Result<std::process::Child, String> {
+fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
     let file = prompt_file(&call.dir, system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
     let mut c = Command::new(&call.claude);
     c.arg("-p")
         .args(super::route::model_argv(model))
         .arg("--system-prompt-file")
         .arg(&file)
-        .args([
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--strict-mcp-config",
-            "--disable-slash-commands",
-        ])
-        .current_dir(&call.dir)
+        .args(p.argv())
+        .current_dir(p.cwd.as_deref().unwrap_or(&call.dir))
         // The hooks key off TMUX_PANE: without it this call is no pane's agent.
         .env("COCKPIT_PANEL_CALL", "1")
         .env_remove("CLAUDECODE")
