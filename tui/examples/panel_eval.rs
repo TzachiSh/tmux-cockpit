@@ -254,10 +254,15 @@ fn has(hay: &str, needle: &str) -> bool {
         .any(|n| {
             let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
             let (first, last) = (n.chars().next(), n.chars().last());
+            let starts = !word(first);
+            let ends = !word(last);
             // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
             (0..hay.len())
                 .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n.as_str()))
-                .any(|i| (!word(first) || !word(hay[..i].chars().last())) && (!word(last) || !word(hay[i + n.len()..].chars().next())))
+                .any(|i| {
+                    let (before, after) = (hay[..i].chars().last(), hay[i + n.len()..].chars().next());
+                    (starts || !word(before)) && (ends || !word(after))
+                })
         })
 }
 
@@ -568,8 +573,11 @@ fn main() {
                     Ok((raw, u)) => (raw, u, None),
                     Err(e) => (String::new(), Usage::default(), Some(e)),
                 },
-                // A non-zero exit puts the json's one line in the error: its message is the reason.
-                Err(f) => (String::new(), Usage::default(), Some(unwrap_json(&f).err().unwrap_or(f))),
+                // A non-zero exit puts the json's one line in the error; its message is why.
+                Err(f) => {
+                    let why = unwrap_json(&f).err().unwrap_or(f);
+                    (String::new(), Usage::default(), Some(why))
+                }
             };
             let g = err.is_none().then(|| grade(c, &raw));
             let mark = match (&err, &g) {
@@ -583,7 +591,8 @@ fn main() {
                 (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
                 (_, Some(g)) if g.asked => format!("asked: {}", g.question),
                 (_, Some(g)) if g.wrong_type.is_some() => {
-                    format!("wrote a {}, want {}", g.wrong_type.unwrap_or(""), c.out_is.map_or("", out_name))
+                    let want = c.out_is.map_or("", out_name);
+                    format!("wrote a {}, want {want}", g.wrong_type.unwrap_or(""))
                 }
                 (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
                 _ => "wrote".into(),
@@ -600,7 +609,8 @@ fn main() {
                     "missing": g.as_ref().map(|g| g.missing.clone()),
                     "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
                     "wrong_type": g.as_ref().and_then(|g| g.wrong_type),
-                    "cost_usd": usage.cost_usd, "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
+                    "cost_usd": usage.cost_usd,
+                    "in_tokens": usage.in_tokens, "out_tokens": usage.out_tokens,
                     "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
@@ -726,7 +736,8 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
     }
     println!();
     for (tag, (p, rows)) in ["A", "B"].iter().zip(sides) {
-        let mut hs: Vec<&str> = rows.iter().map(|r| r.system.as_str()).filter(|h| !h.is_empty()).collect();
+        let mut hs: Vec<&str> = rows.iter().map(|r| r.system.as_str()).collect();
+        hs.retain(|h| !h.is_empty());
         hs.dedup();
         let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
         println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
@@ -745,7 +756,10 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
     let (up, down) = (names(std::cmp::Ordering::Greater), names(std::cmp::Ordering::Less));
     println!("moved     {} up: {}", up.len(), up.join(", "));
     println!("          {} down: {}", down.len(), down.join(", "));
-    let only = |f: &dyn Fn(&Cmp) -> bool| cmp.iter().filter(|c| f(c)).map(|c| c.id.as_str()).collect::<Vec<_>>().join(", ");
+    let only = |f: &dyn Fn(&Cmp) -> bool| {
+        let ids: Vec<&str> = cmp.iter().filter(|c| f(c)).map(|c| c.id.as_str()).collect();
+        ids.join(", ")
+    };
     let (oa, ob) = (only(&|c| c.b.is_none()), only(&|c| c.a.is_none()));
     if !oa.is_empty() || !ob.is_empty() {
         println!("only in A: {oa}; only in B: {ob}");
@@ -922,7 +936,8 @@ fn pct(Of(n, d): Of) -> String {
     }
 }
 
-/// `pct`, then its Wilson 95% interval: cases are the independent trials, runs of one case are not.
+/// `pct`, then its Wilson 95% interval: cases are the independent trials, the
+/// runs of one case are not.
 fn pct_ci(o: Of) -> String {
     match wilson(o.0, o.1) {
         Some((lo, hi)) => format!("{}  95% CI {:.0}%-{:.0}%", pct(o), 100.0 * lo, 100.0 * hi),
@@ -1260,19 +1275,17 @@ mod tests {
         let mut either = ask.clone();
         either.expect = Expect::Either;
         let cases = vec![ask, parse_cases(ONE).unwrap().remove(0), either];
-        let q = || Grade {
-            asked: true,
-            ..Grade::default()
-        };
-        let done = vec![
-            (0, 1, Some(q())),
-            (0, 1, Some(Grade::default())),
-            (0, 1, Some(Grade::default())),
-            (1, 1, Some(q())),
-            (1, 1, Some(Grade::default())),
-            (2, 1, Some(q())),
-            (1, 1, None),
+        let g = |asked| Some(Grade { asked, ..Grade::default() });
+        let runs = [
+            (0, g(true)),
+            (0, g(false)),
+            (0, g(false)),
+            (1, g(true)),
+            (1, g(false)),
+            (2, g(true)),
+            (1, None),
         ];
+        let done: Vec<_> = runs.into_iter().map(|(c, g)| (c, 1, g)).collect();
         let t = tally(&cases, &done);
         assert_eq!((t.fpr, t.fnr), (Of(1, 2), Of(2, 3)));
     }
