@@ -49,8 +49,8 @@ pub fn capture(pane: &str) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    // An ssh window's path is the local shell's, not the remote one it shows.
-    let repo = if path.is_empty() || SSH_LIKE.contains(&cmd.as_str()) {
+    // An ssh or container window's path is the local client's, not the shell it shows.
+    let repo = if path.is_empty() || !LOCAL_CMDS.contains(&cmd.as_str()) {
         Repo::default()
     } else {
         Repo::start(&path, &screen, REPO_BUDGET)
@@ -525,6 +525,18 @@ fn errored(tail: &[&str]) -> bool {
 
 /// The commands that make a window an ssh session: a remote shell on the far side.
 pub const SSH_LIKE: [&str; 6] = ["ssh", "proot", "coder", "mosh", "mosh-client", "autossh"];
+
+/// The commands that run in the folder tmux reports for them, the only ones
+/// [`capture`] sends a repo block for (#429). Anything else may be the client
+/// of a shell elsewhere: ssh, `docker exec`, `kubectl exec`, `incus exec`, and
+/// whatever comes next. Such a pane loses the block rather than carry the wrong
+/// machine's. `node` is Claude Code, Codex or Gemini installed from npm.
+pub const LOCAL_CMDS: [&str; 29] = [
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh", // shells
+    "nu", "xonsh", "elvish", "pwsh", // shells, not POSIX
+    "nvim", "vim", "vi", "nano", "emacs", "hx", "kak", "micro", // editors
+    "claude", "codex", "gemini", "aider", "opencode", "goose", "crush", "node", // agents
+];
 
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {
