@@ -160,8 +160,8 @@ owned() {                     # <name> <key>
         "") [ -z "$notes" ] || return 1
             case "$1:${nc#*$'\037'}" in
                 menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
-                    tmux display-message \
-                        "$(fesc "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
+                    tmux display-message "$(fesc \
+                        "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
                     return 0 ;;
             esac ;;
     esac

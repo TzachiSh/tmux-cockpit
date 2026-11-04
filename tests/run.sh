@@ -3633,7 +3633,9 @@ elif ! git -C "$DIR" cat-file -e "$GU_REV:cockpit.tmux" 2>/dev/null; then
 else
 GU="cockpit-gu-$$"; GU2="cockpit-gu2-$$"; GUO="cockpit-guo-$$"; SOCKS="$SOCKS $GU $GU2 $GUO"
 GUD=$(mktmpd); GUD2=$(mktmpd)
-for d in "$GUD" "$GUD2"; do git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$d"; done
+for d in "$GUD" "$GUD2"; do
+    git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$d"
+done
 gu_load() { "$TMUX_REAL" -L "$1" run-shell "$2/cockpit.tmux" >/dev/null 2>&1; }
 gu_key() { "$TMUX_REAL" -L "$1" list-keys -T prefix "$2" 2>/dev/null; }
 # Upgraded in place, as a pull does: the same directory, the new files.
