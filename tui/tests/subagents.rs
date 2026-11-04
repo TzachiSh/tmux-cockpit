@@ -591,11 +591,14 @@ fn a_session_id_that_is_not_plain_names_no_log() {
     std::fs::create_dir_all(&dir).unwrap();
     let subs = root.join("state").join("tmux-cockpit").join("subs");
     std::fs::create_dir_all(&subs).unwrap();
-    std::fs::write(subs.join("bad id.log"), ev(0, "start", "a") + "\n").unwrap();
-    meta(&dir, "a", r#"{"agentType":"x","finished":true}"#);
+    // a kill the reader would act on, and a meta that leaves the state to it (#387)
+    let rows = [ev(0, "start", "a"), ev(9, "kill", "a")].join("\n") + "\n";
+    std::fs::write(subs.join("bad id.log"), &rows).unwrap();
+    std::fs::write(subs.join("bad id.live"), live(30, &[], &[]) + "\n").unwrap();
+    meta(&dir, "a", r#"{"agentType":"x"}"#);
     let before = reads();
     let got = read_in(&dir, T0 + 60, &subs);
-    assert_eq!((got[0].state, reads() - before), (SubState::Done, 1), "the meta only");
+    assert_eq!((got[0].state, reads() - before), (SubState::Running, 1), "the meta only");
 }
 
 #[test]
