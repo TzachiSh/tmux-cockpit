@@ -412,6 +412,7 @@ fn busy() -> Vec<Pane> {
         desc: "find auth callers in src/auth".into(),
         state: SubState::Running,
         started: Some(1_000),
+        finished_at: None,
         tokens: 12_400,
     }];
     (ps[1].loc, ps[1].pm) = ("api⑂feat · wt fix-312-row".into(), "clean".into());
