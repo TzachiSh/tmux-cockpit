@@ -718,14 +718,15 @@ fn prompts_of(rows: &[Row]) -> Vec<&str> {
     hs
 }
 
+/// A side's (passed, graded, failed calls) for one case.
+type Side = (usize, usize, usize);
+
 /// pass^all of A and of B over the same cases: those both sides graded on every run.
 fn paired_pass_all(cmp: &[Cmp]) -> (Of, Of) {
     let whole = |s: Option<(usize, usize, usize)>| s.filter(|(_, n, err)| *n > 0 && *err == 0);
     let both: Vec<_> = cmp.iter().filter_map(|c| Some((whole(c.a)?, whole(c.b)?))).collect();
-    let all = |pick: &dyn Fn(&((usize, usize, usize), (usize, usize, usize))) -> (usize, usize, usize)| {
-        Of(both.iter().map(pick).filter(|(ok, n, _)| ok == n).count(), both.len())
-    };
-    (all(&|p| p.0), all(&|p| p.1))
+    let side = |pick: fn(&(Side, Side)) -> Side| pass_all(&both.iter().map(pick).collect::<Vec<_>>());
+    (side(|p| p.0), side(|p| p.1))
 }
 
 /// Per case, in A's order and then B's own.
