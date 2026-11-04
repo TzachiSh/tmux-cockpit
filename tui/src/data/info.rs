@@ -291,3 +291,24 @@ fn doing_rows(pane: &str) -> Vec<Doing> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::tui_row;
+
+    const HAVE: &str = env!("CARGO_PKG_VERSION");
+
+    #[test]
+    fn tui_row_strips_cockpit_tui_v_and_matches() {
+        assert!(!tui_row(&format!("cockpit-tui-v{HAVE}")).contains("want"));
+        assert!(!tui_row(&format!("v{HAVE}")).contains("want"));
+        assert!(!tui_row("").contains("want"));
+    }
+
+    #[test]
+    fn tui_row_names_a_differing_pin_and_install_sh() {
+        assert!(tui_row("cockpit-tui-v9.9.9").ends_with("(want 9.9.9 -- run install.sh)"));
+        // The pre-#79 form is no longer read as cockpit-tui- (#223): shown as written.
+        assert!(tui_row(&format!("tui-v{HAVE}")).ends_with(&format!("(want tui-v{HAVE} -- run install.sh)")));
+    }
+}
