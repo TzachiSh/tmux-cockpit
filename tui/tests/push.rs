@@ -11,10 +11,13 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 /// Polled, never slept for: each assertion waits for the thing it is about to
-/// read and gives up after 5 s.
+/// read. The cap is a hang guard only a red run pays for (a true condition returns at once):
+/// 5 s lost a process start to a box at load 28 (#373), as the shell suite's $POLLS cap did.
+const CAP: Duration = Duration::from_secs(30);
+
 fn until(mut f: impl FnMut() -> bool) -> bool {
     let t0 = Instant::now();
-    while t0.elapsed() < Duration::from_secs(5) {
+    while t0.elapsed() < CAP {
         if f() {
             return true;
         }
