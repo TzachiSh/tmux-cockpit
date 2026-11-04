@@ -12872,8 +12872,8 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
 # the editor window is named for the file and sits in its folder
 fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
-is "touch: the window is named for the file" "n.md" \
-   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+is "touch: the window is named for the file and starts in its folder" "n.md $FBD/sub" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.md $FBD/sub")"
 
 # alt-c: the path is copied, nothing opens
 fb on "copy $FBF\n" 0

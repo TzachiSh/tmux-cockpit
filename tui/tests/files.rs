@@ -78,18 +78,18 @@ fn line(verb: &str, p: &Path) -> Outcome {
 #[test]
 fn list_puts_directories_first_then_names_without_regard_to_case() {
     let s = Scratch::new();
-    s.file("b.txt");
-    s.dir("zeta");
-    s.file("A.txt");
-    s.dir("Alpha");
+    s.file("B.txt");
+    s.dir("Zeta");
+    s.file("a.txt");
+    s.dir("alpha");
     let names: Vec<_> = files::list_dir(&s.0, false)
         .unwrap()
         .into_iter()
         .map(|e| e.is_dir)
-        .zip(["Alpha", "zeta", "A.txt", "b.txt"])
+        .zip(["alpha", "Zeta", "a.txt", "B.txt"])
         .collect();
     assert_eq!(names.iter().map(|(d, _)| *d).collect::<Vec<_>>(), [true, true, false, false]);
-    assert_eq!(shown(&browser(&s.0)), ["Alpha/", "zeta/", "A.txt", "b.txt"]);
+    assert_eq!(shown(&browser(&s.0)), ["alpha/", "Zeta/", "a.txt", "B.txt"]);
 }
 
 #[test]
@@ -404,17 +404,19 @@ fn run(args: &[&str]) -> std::process::Output {
 fn the_command_wants_exactly_one_existing_directory() {
     let s = Scratch::new();
     let file = s.file("f");
-    for args in [
-        vec!["files"],
-        vec!["files", "a", "b"],
-        vec!["files", s.0.join("nope").to_str().unwrap()],
-        vec!["files", file.to_str().unwrap()],
-    ] {
+    let nope = s.0.join("nope");
+    let rows = [
+        (vec!["files"], "needs exactly one folder"),
+        (vec!["files", s.0.to_str().unwrap(), "extra"], "needs exactly one folder"),
+        (vec!["files", nope.to_str().unwrap()], "cannot read"),
+        (vec!["files", file.to_str().unwrap()], "cannot read"),
+    ];
+    for (args, why) in rows {
         let o = run(&args);
         assert_eq!(o.status.code(), Some(2), "{args:?}");
         assert!(o.stdout.is_empty(), "{args:?}");
         let e = String::from_utf8_lossy(&o.stderr);
-        assert!(e.contains("cockpit-tui: files:"), "{args:?}: {e}");
+        assert!(e.contains("cockpit-tui: files: ") && e.contains(why), "{args:?}: {e}");
     }
 }
 
