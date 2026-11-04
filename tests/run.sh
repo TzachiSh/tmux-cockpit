@@ -3825,15 +3825,27 @@ MVD=$(mktmpd)      # keeper's own dir: the new session made for it must start th
     "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$MV" list-clients -F '#{client_name}'
 OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
+# OP's screen trails the inner client, and under load it can still show the last
+# case's prompt ("new session: agents") or menu. A wait for a word that stale
+# screen also holds returns at once, the next key lands before the menu is up,
+# and Enter picks the menu's first row, agents (#347). So the old menu and
+# prompt must be gone first, and the wait is for the menu's own title.
 mv_open() {                   # press prefix M and wait for the menu; a no-show is one clean failure
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        case "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" 2>/dev/null)" in
+            *'new session:'*|*'move '[0-9]*:*' to '*) sleep 0.1 ;;
+            *) break ;;
+        esac
+    done
     "$TMUX_REAL" -L "$MVO" send-keys -t "$1" C-b M
-    until_cap "$MVO" "$1" '*agents*' || bad "the menu opens again" "a menu listing agents" \
+    until_cap "$MVO" "$1" '*move [0-9]*:* to *agents*' || bad "the menu opens again" "a menu listing agents" \
         "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" | tail -3)"
 }
 mv_client() { "$TMUX_REAL" -L "$MV" list-clients -F '#{session_name}:#{window_name}' 2>/dev/null; }
 mv_until() {                  # <pattern> against the client's session:window
     local i
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254
         case "$(mv_client)" in $1) return 0 ;; esac
         sleep 0.1
