@@ -375,6 +375,21 @@ else
         && body="$body ; set-option -pu -t $pane @cockpit_review"
 fi
 
+# @panestate_since (#225): the epoch second the pane entered needs-input, for tm's "waiting
+# Nm" and its longest-waiting-first order. Written here only, inside `when`: needs-input's
+# guard refuses an unchanged state, so a pane that stays waiting keeps its first stamp. Any
+# other transition clears it. Wall clock, the one clock a reader in another process shares
+# (tmux's own activity times are epochs too); the reader counts a stamp from the future as 0.
+# A builtin first, so bash 4.2+ forks nothing; macOS's bash 3.2 pays one `date`.
+if [ "$state" = needs-input ]; then
+    now=${EPOCHSECONDS:-}
+    [ -n "$now" ] || printf -v now '%(%s)T' -1 2>/dev/null
+    case "$now" in ''|*[!0-9]*) now=$(date +%s 2>/dev/null) ;; esac
+    case "$now" in ''|*[!0-9]*) ;; *) body="$body ; set-option -p -t $pane @panestate_since $now" ;; esac
+elif [ "$state" != recount ]; then
+    body="$body ; if -F -t $pane '#{@panestate_since}' { set-option -pu -t $pane @panestate_since }"
+fi
+
 case "$state" in
     running|off) body="$body ; set-option -pu -t $pane @panestate_msg" ;;
     # The poller's done/error follow a needs-input whose ask would otherwise stay.

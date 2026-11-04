@@ -17,6 +17,24 @@ const US: &str = "\u{1f}";
 
 #[allow(clippy::too_many_arguments)]
 fn rec(id: &str, att: u32, ago: u64, widx: u32, active: u8, agent: u8, st: &str, msg: &str, wname: &str, name: &str) -> String {
+    rec_since(id, att, ago, widx, active, agent, st, msg, "", wname, name)
+}
+
+/// `rec` with the pane's `@panestate_since` (#225).
+#[allow(clippy::too_many_arguments)]
+fn rec_since(
+    id: &str,
+    att: u32,
+    ago: u64,
+    widx: u32,
+    active: u8,
+    agent: u8,
+    st: &str,
+    msg: &str,
+    since: &str,
+    wname: &str,
+    name: &str,
+) -> String {
     let last = NOW - ago;
     [
         id,
@@ -28,6 +46,7 @@ fn rec(id: &str, att: u32, ago: u64, widx: u32, active: u8, agent: u8, st: &str,
         &agent.to_string(),
         st,
         msg,
+        since,
         wname,
         name,
     ]
@@ -677,4 +696,115 @@ fn a_rename_expects_the_name_tmux_has_not_the_one_drawn() {
         panic!("no action")
     };
     assert_eq!((a.text.as_deref(), a.expect.as_deref()), (Some("abcdx"), Some("ab\u{202e}cd")));
+}
+
+// --- #225: waiting timers -----------------------------------------------------
+
+/// Three waiting sessions (one with no stamp, from before #225), one failed, one idle.
+fn waiting() -> Vec<Sess> {
+    let t = |ago: u64| (NOW - ago).to_string();
+    let l = [
+        rec_since("$1", 0, 5, 0, 1, 1, "needs-input", "?", &t(30), "claude", "short"),
+        rec_since("$2", 0, 900, 0, 1, 1, "needs-input", "?", "", "claude", "unstamped"),
+        rec_since("$3", 0, 50, 0, 1, 1, "needs-input", "?", &t(250), "claude", "long"),
+        // a second waiting pane of $3: the session waits as long as its oldest
+        rec_since("$3", 0, 50, 1, 0, 1, "needs-input", "?", &t(40), "claude", "long"),
+        rec_since("$4", 0, 1, 0, 1, 1, "error", "boom", "", "claude", "failed"),
+        rec_since("$5", 0, 2, 0, 1, 1, "done", "", "", "claude", "idle"),
+    ];
+    sessions::parse(&l.join("\n"))
+}
+
+#[test]
+fn a_session_waits_as_long_as_its_longest_waiting_pane() {
+    let v = waiting();
+    let wait = |id: &str| v.iter().find(|s| s.id == id).unwrap().wait(NOW);
+    assert_eq!((wait("$1"), wait("$2"), wait("$3"), wait("$4")), (Some(30), None, Some(250), None));
+}
+
+#[test]
+fn a_stamp_counts_only_on_a_waiting_agent_pane() {
+    let l = [
+        // a stale stamp on a pane that moved on, and one on a pane that is not an agent
+        rec_since("$1", 0, 1, 0, 1, 1, "running", "", "100", "a", "s"),
+        rec_since("$1", 0, 1, 1, 0, 0, "needs-input", "?", "200", "sh", "s"),
+        rec_since("$2", 0, 1, 0, 1, 1, "needs-input", "?", "junk", "a", "t"),
+    ];
+    let v = sessions::parse(&l.join("\n"));
+    assert_eq!((v[0].since(), v[1].since(), v[1].state()), (None, None, Some(State::NeedsInput)));
+}
+
+#[test]
+fn a_stamp_from_the_future_waits_zero() {
+    let ahead = (NOW + 60).to_string();
+    let v = sessions::parse(&rec_since("$1", 0, 1, 0, 1, 1, "needs-input", "?", &ahead, "a", "s"));
+    assert_eq!(v[0].wait(NOW), Some(0));
+}
+
+#[test]
+fn waiting_sorts_longest_first_then_the_unstamped_then_failed_then_the_rest() {
+    let mut v = waiting();
+    sessions::order(&mut v, None, NOW);
+    let n: Vec<&str> = v.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(n, ["long", "short", "unstamped", "failed", "idle"]);
+}
+
+#[test]
+fn a_waiting_row_says_waiting_and_for_how_long_when_wide() {
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    let out = draw_at(&mut v, 120, 14);
+    let row = |name: &str| out.lines().find(|l| l.contains(name)).unwrap_or_default().to_string();
+    assert!(row(" long ").contains("waiting 4m10s"), "{out}");
+    assert!(row(" short ").contains("waiting 30s"), "{out}");
+    // no stamp, no label: its age is the last-used one, as before
+    assert!(
+        !row(" unstamped ").contains("waiting") && row(" unstamped ").contains("15m"),
+        "{out}"
+    );
+    assert!(!row(" idle ").contains("waiting"), "{out}");
+}
+
+#[test]
+fn a_narrow_row_drops_the_label_before_the_name() {
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    let out = draw_at(&mut v, 60, 14);
+    assert!(!out.contains("waiting"), "{out}");
+    let row = out.lines().find(|l| l.contains("unstamped")).map(str::to_string);
+    assert!(row.is_some(), "the name is whole:\n{out}");
+    let long = out.lines().find(|l| l.contains(" long ")).unwrap_or_default();
+    assert!(long.contains("4m10s"), "the bare wait stays:\n{out}");
+}
+
+#[test]
+fn a_popup_too_narrow_for_the_label_keeps_the_long_counts() {
+    // a 100-column popup gives the list 54: the wide tier, but not the 8 more the label needs
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    let out = draw_at(&mut v, 100, 14);
+    let long = out.lines().find(|l| l.contains(" long ")).unwrap_or_default();
+    assert!(
+        long.contains("2 agents") && long.contains("4m10s") && !out.contains("waiting"),
+        "{out}"
+    );
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    assert!(draw_at(&mut v, 110, 14).contains("waiting 4m10s"));
+}
+
+#[test]
+fn your_own_waiting_session_widens_no_row() {
+    let two = |since: &str| {
+        let l = [
+            rec_since("$1", 0, 5, 0, 1, 1, "needs-input", "?", since, "claude", "mine"),
+            rec_since("$2", 0, 65, 0, 1, 1, "done", "", "", "claude", "other"),
+        ];
+        let mut v = View::new(
+            sessions::parse(&l.join("\n")),
+            &args(false, Some("$1")),
+            true,
+            NOW,
+            Glyphs::unicode(),
+        );
+        draw_at(&mut v, 120, 14)
+    };
+    // it prints no age, so it draws as if it carried no stamp
+    assert_eq!(two(&(NOW - 30).to_string()), two(""));
 }
