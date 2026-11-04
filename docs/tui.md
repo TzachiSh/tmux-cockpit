@@ -648,6 +648,11 @@ tree-sitter were turned down for the binary's size.
   tag) in a Result's text or an answer; a step's command, by its `lang`. Prose
   outside a fence is never lexed, so an `if` in a sentence stays text. A fence
   left open runs to the end of the text; a shorter fence inside is content.
+- **An answer that is one block.** A reply fenced whole is read from inside
+  its fence, but an Answer is only shown, never typed: when the fence names a
+  language the lexer knows, the answer keeps it and is coloured. A bare or
+  `xml` fence is a wrapper and still goes, as does any fence in Fix and Write,
+  whose text is typed into the pane.
 - **Languages.** Shell (`sh` `bash` `zsh` `console` and kin), JSON, Rust,
   Python, JS/TS. Any other tag, or none, is plain, except a bare fence whose
   lines all start with `$ `, which is read as shell.

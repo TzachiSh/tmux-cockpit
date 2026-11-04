@@ -211,3 +211,39 @@ fn a_step_command_is_lexed_by_its_lang() {
     assert_eq!(fg(&b, "grep -c"), th.value, "a command word stays value");
     assert_eq!(fg(&b, "\"a b\""), th.value, "an unknown lang is plain");
 }
+
+// ------------------------------------------- an answer that is one fence
+
+fn answer_text(out: &str) -> String {
+    match cockpit_tui::panel::parse::explain(out) {
+        cockpit_tui::panel::parse::Reply::Answer { text, .. } => text,
+        r => panic!("not an answer: {r:?}"),
+    }
+}
+
+/// The view is display-only, so a block in a language the lexer knows keeps
+/// its fence and tag; a wrapper fence (bare, xml) still goes.
+#[test]
+fn an_answer_fenced_whole_in_a_language_keeps_its_fence() {
+    assert_eq!(answer_text("```rust\nfn main() {}\n```"), "```rust\nfn main() {}\n```");
+    assert_eq!(answer_text("```Py\nx = 1\n```"), "```Py\nx = 1\n```");
+    assert_eq!(answer_text("```\nplain words\n```"), "plain words");
+    assert_eq!(answer_text("```xml\nhello\n```"), "hello");
+}
+
+#[test]
+fn a_fence_that_wraps_a_prompt_still_goes() {
+    let r = cockpit_tui::panel::parse::explain("```bash\nRun it.\n<prompt>do it</prompt>\n```");
+    let cockpit_tui::panel::parse::Reply::Answer { text, ready } = r else {
+        panic!("{r:?}")
+    };
+    assert_eq!((text.as_str(), ready.as_deref()), ("Run it.", Some("do it")));
+}
+
+#[test]
+fn an_answer_fenced_whole_is_coloured() {
+    let th = Theme::fixed();
+    let b = buffer(&answered("```rust\nlet n = 42;\n```"), 60, 16, &th);
+    assert_eq!(fg(&b, "let n"), th.accent);
+    assert_eq!(fg(&b, "```rust"), th.meta);
+}
