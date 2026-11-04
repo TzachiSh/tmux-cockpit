@@ -27,7 +27,7 @@ fn is_pane(p: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// Never publishes @cockpit_tui_pid: that pid is the board's, for its wakeups.
+/// Never lists a wake channel in @cockpit_board_wake: those are the board's.
 fn panel(args: &[String]) {
     let resume = match args.get(1..).unwrap_or_default() {
         [] => None,
@@ -119,9 +119,9 @@ fn panel(args: &[String]) {
 }
 
 fn main() {
-    // #295: SIGUSR1's default action is terminate, and a hook that signals a
-    // recycled @cockpit_tui_pid can land on any cockpit-tui. Only the board
-    // wants it; its handler (push.rs) replaces this when it starts.
+    // #295: SIGUSR1's default action is terminate. Nothing sends it since #224,
+    // but an agent-state from before then still signals a @cockpit_tui_pid an
+    // older board left standing, and that pid can be any cockpit-tui now.
     // SAFETY: signal() with SIG_IGN installs no code and touches no memory.
     unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
     let args: Vec<String> = std::env::args().skip(1).collect();

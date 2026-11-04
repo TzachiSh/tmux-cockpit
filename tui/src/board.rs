@@ -3244,7 +3244,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
     let mut term = match crate::backend::init(false, false) {
         Ok(t) => t,
         Err(e) => {
-            // Push::start() already published the pid and exit() skips Drop
+            // Push::start() already listed the channel and exit() skips Drop
             crate::push::cleanup();
             eprintln!("cockpit-tui: {e}");
             std::process::exit(1);
@@ -3290,7 +3290,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
     };
 
     loop {
-        // a push only pulls the next fetch forward, so a missed signal costs
+        // a push only pulls the next fetch forward, so a missed wake costs
         // one second and never a hang
         if push.pending() {
             ask(area(term.size().unwrap_or_default()), sel, top, list);
@@ -3435,7 +3435,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
             Err(e) if transient(&e) => None,
             Err(_) => break,
         };
-        // a resize is the same request as USR1: look again
+        // a resize is the same request as a push wake: look again
         if let Some(Event::Resize(..)) = &ev {
             let here = area(term.size().unwrap_or_default());
             nav.settle(&panes, list_room(here));

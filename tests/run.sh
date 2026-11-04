@@ -923,11 +923,10 @@ is "and the stored count still names its theme slot" \
 "$TMUX_REAL" -L "$RT" kill-server >/dev/null 2>&1
 fi
 
-echo "== agent-state: a transition wakes cockpit-tui, and never a pid that is not it =="
-# The push channel's sender (issue #61). @cockpit_tui_pid outlives the process
-# that published it and pids get recycled, and SIGUSR1's default action is
-# terminate -- so an unverified kill shoots a stranger's process, as one probe
-# already did on the live server.
+echo "== agent-state: a transition wakes every listed board, in the same round-trip =="
+# The push channel's sender (#61, #224). Each board lists `wait-for -S <its
+# channel> ; ` in @cockpit_board_wake and agent-state runs that list with
+# run-shell -C inside its one tmux call. No pid is read or signalled.
 # Known gap, no code: a second ask on an ALREADY-blocked pane exits at the
 # sticky needs-input guard (scripts/agent-state) before reaching the sender,
 # so that question reaches the board on its 1 s poll rather than on a push.
@@ -937,69 +936,126 @@ PS="cockpit-push-$$"; SOCKS="$SOCKS $PS"
     'exec -a claude bash' >/dev/null 2>&1
 "$TMUX_REAL" -L "$PS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
 PSP=$("$TMUX_REAL" -L "$PS" list-panes -t t -F '#{pane_id}')
-PSD=$(mktmpd)
 pstrans() {                   # one real transition on this block's server
     PATH="$SHIM:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
         "$1" "$PSP" >/dev/null 2>&1
 }
-# The recycled-pid stand-in wears cockpit-tui in argv0 and `sleep` in comm, so
-# it also pins WHICH name the guard reads: ps argv0 would signal this one.
-"$TMUX_REAL" -L "$PS" new-window -d -t t: 'exec -a cockpit-tui sleep 30' >/dev/null 2>&1
-PSSLEEP=$("$TMUX_REAL" -L "$PS" list-panes -t t:1 -F '#{pane_pid}')
-"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSSLEEP" >/dev/null 2>&1
-pstrans running
-pstrans needs-input
-if kill -0 "$PSSLEEP" 2>/dev/null; then ok "a stale pid that is not cockpit-tui is never signalled"
-else bad "a stale pid that is not cockpit-tui is never signalled" "the process still alive" "USR1 killed it"; fi
-# The wake half. A symlink named cockpit-tui gives the process that comm, so
-# this is the same check the real binary passes; `sleep & wait` because bash
-# runs no trap while a foreground child is running.
-ln -s "$(command -v bash)" "$PSD/cockpit-tui" 2>/dev/null
-PSMARK="$PSD/woke"
-"$PSD/cockpit-tui" -c 'trap "printf woke > \"$1\"; exit 0" USR1; sleep 30 & wait' _ "$PSMARK" &
-PSPID=$!
-"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSPID" >/dev/null 2>&1
+# Two stand-in boards: a bare waiter on each channel, as the board's own child is.
+"$TMUX_REAL" -L "$PS" set -g @cockpit_board_wake \
+    'wait-for -S cockpit-board-1 ; wait-for -S cockpit-board-2 ; ' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-1 & PSW1=$!
+"$TMUX_REAL" -L "$PS" wait-for cockpit-board-2 & PSW2=$!
+sleep 0.2
 # running, not done: needs-input is sticky and a done would fail the
 # transition's guard, so no transition would happen to push.
 pstrans running
-if until_file "$PSMARK" '*woke*'; then ok "a transition signals the running cockpit-tui"
-else bad "a transition signals the running cockpit-tui" "woke" "$(cat "$PSMARK" 2>/dev/null)"; fi
-# An exact count: the pid rides the one round-trip the transition already pays
-# for, so a `tmux show-option` of its own would show up as 2. The ps shim
-# beside it pins the other half -- the verify must stay a builtin.
-PSC=$(mktmpd); PSCLOG="$PSC/calls"; PSPSLOG="$PSC/pscalls"; PSERR="$PSC/err"
+psgone() { local i; for i in $(seq 1 "$POLLS"); do kill -0 "$1" 2>/dev/null || return 0; sleep 0.1; done; return 1; }
+if psgone "$PSW1" && psgone "$PSW2"; then ok "a transition wakes both listed boards"
+else bad "a transition wakes both listed boards" "both waiters returned" "one still waits"; kill "$PSW1" "$PSW2" 2>/dev/null; fi
+wait "$PSW1" "$PSW2" 2>/dev/null
+# An exact count: the wake rides the one round-trip the transition already
+# pays for, so a second tmux call of its own would show up as 2.
+PSC=$(mktmpd); PSCLOG="$PSC/calls"; PSERR="$PSC/err"
 cat > "$PSC/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$PSCLOG"
 exec "$TMUX_REAL" "\$@"
 SHIMEOF
-cat > "$PSC/ps" <<SHIMEOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$PSPSLOG"
-exec "$(command -v ps)" "\$@"
-SHIMEOF
-chmod +x "$PSC/tmux" "$PSC/ps"
-pscount() { : > "$PSCLOG"; : > "$PSPSLOG"; : > "$PSERR"
+chmod +x "$PSC/tmux"
+pscount() { : > "$PSCLOG"; : > "$PSERR"
     PATH="$PSC:$PATH" TMUX="$SOCKDIR/$PS,0,0" "$DIR/scripts/agent-state" \
         "$1" "$PSP" >/dev/null 2>"$PSERR"
     wc -l < "$PSCLOG" | tr -d ' '; }
-is "a transition with the view up still costs 1 tmux round-trip" "1" "$(pscount needs-input)"
-kill "$PSPID" 2>/dev/null; wait "$PSPID" 2>/dev/null
-# An empty option is the common case (no TUI running) and must cost nothing and
-# signal nobody -- `kill -USR1 ''` would be an error on every hook in the world.
-"$TMUX_REAL" -L "$PS" set -gu @cockpit_tui_pid >/dev/null 2>&1
-is "with no pid published the transition still succeeds" "0" "$(pstrans running; echo $?)"
+is "a transition with boards listed still costs 1 tmux round-trip" "1" "$(pscount needs-input)"
+# No board is the common case and must cost nothing more.
+"$TMUX_REAL" -L "$PS" set -gu @cockpit_board_wake >/dev/null 2>&1
+is "with no board listed the transition still succeeds" "0" "$(pstrans running; echo $?)"
 is "and still costs the same 1 round-trip" "1" "$(pscount needs-input)"
-# The state the guard exists for: a pid nobody unpublished, because SIGKILL, a
-# crash and a power cut all leave @cockpit_tui_pid standing. It is absent from
-# /proc, which is where a `read || ps` fallback forked ps on every transition
-# and leaked bash's redirect failure onto the hook's real stderr.
-sleep 0 & PSDEAD=$!; wait "$PSDEAD" 2>/dev/null
-"$TMUX_REAL" -L "$PS" set -g @cockpit_tui_pid "$PSDEAD" >/dev/null 2>&1
-is "a dead published pid still costs 1 round-trip" "1" "$(pscount running)"
-is "and forks no ps to ask about it" "" "$(cat "$PSPSLOG")"
+is "and says nothing on the hook's stderr" "" "$(cat "$PSERR")"
+"$TMUX_REAL" -L "$PS" set -g @cockpit_board_wake '' >/dev/null 2>&1
+is "an empty list costs the same 1 round-trip" "1" "$(pscount running)"
 is "and says nothing on the hook's stderr" "" "$(cat "$PSERR")"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-board: a state change wakes every running board through tmux wait-for =="
+# #224: the real board, waiting on its own channel. A wake is the "push wake"
+# line in tui.log; its timestamp against the hook's start is the latency.
+if need_tmux "the board's push wake"; then :; else
+BW="cockpit-bw-$$"; SOCKS="$SOCKS $BW"; BWD=$(mktmpd)
+"$TMUX_REAL" -L "$BW" -f /dev/null new-session -d -s t -x 100 -y 30 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BW" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+BWP=$("$TMUX_REAL" -L "$BW" list-panes -t t -F '#{pane_id}')
+bw_trans() {                  # one real transition on this block's server
+    PATH="$SHIM:$PATH" TMUX="$SOCKDIR/$BW,0,0" "$DIR/scripts/agent-state" "$1" "$BWP" >/dev/null 2>&1
+}
+bw_list() { "$TMUX_REAL" -L "$BW" show-option -gqv @cockpit_board_wake; }
+bw_open() {                   # <n>  -> BWW, BWPID: board <n> in its own window, its channel listed
+    local i
+    BWW=$("$TMUX_REAL" -L "$BW" new-window -d -P -F '#{pane_id}' -t t: \
+        "exec env XDG_STATE_HOME=$BWD/$1 COCKPIT_LOG=$BWD/tui$1.log $COCKPIT_TUI_BIN board")
+    BWPID=$("$TMUX_REAL" -L "$BW" display -p -t "$BWW" '#{pane_pid}')
+    for i in $(seq 1 "$POLLS"); do
+        case "$(bw_list)" in *"cockpit-board-$BWPID ; "*) return 0 ;; esac
+        sleep 0.1
+    done
+    return 1
+}
+bw_wakes() { local n; n=$(grep -c 'push wake' "$BWD/tui$1.log" 2>/dev/null); printf '%s' "${n:-0}"; }
+bw_woke() {                   # <n> <count>  the board's log reaches <count> push wakes
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        [ "$(bw_wakes "$1")" -ge "$2" ] && return 0
+        sleep 0.05
+    done
+    return 1
+}
+bw_open 1 || bad "the board lists its channel" "cockpit-board-$BWPID" "$(bw_list)"
+BWPID1=$BWPID
+# The waiter is armed once the board has run a moment; the latch covers it if not.
+sleep 0.5
+BWN1=$(bw_wakes 1)
+# %N, not %6N: uutils date drops the leading zeros of %6N (0.015 s prints as 153677).
+BWT0=$(( $(date +%s%N) / 1000 ))
+bw_trans running
+# The log's microsecond stamp, not the poll, times it: the poll's own forks would count.
+BWMS=-1
+bw_woke 1 $((BWN1 + 1)) \
+    && BWMS=$(( ($(grep 'push wake' "$BWD/tui1.log" | sed -n "$((BWN1 + 1))p" | cut -d' ' -f1) - BWT0) / 1000 ))
+if [ "$BWMS" -ge 0 ] && [ "$BWMS" -lt 500 ]; then ok "a transition wakes the running board within 500 ms"
+    printf '    wake latency, hook start to the board loop: %s ms\n' "$BWMS"
+else bad "a transition wakes the running board within 500 ms" "a push wake under 500 ms" "${BWMS} ms: $(cat "$BWD/tui1.log" 2>/dev/null)"; fi
+is "no pid option is published" "" "$("$TMUX_REAL" -L "$BW" show-option -gqv @cockpit_tui_pid)"
+
+bw_open 2 || bad "a second board lists its channel" "cockpit-board-$BWPID" "$(bw_list)"
+BWW2=$BWW
+sleep 0.5
+BWN1=$(bw_wakes 1); BWN2=$(bw_wakes 2)
+bw_trans needs-input
+if bw_woke 1 $((BWN1 + 1)) && bw_woke 2 $((BWN2 + 1)); then ok "one transition wakes two boards"
+else bad "one transition wakes two boards" "a wake in each log" "$(bw_wakes 1) and $(bw_wakes 2)"; fi
+
+# SIGKILL runs nothing of the board's: its entry stays, and the next board to
+# start drops it and still wakes. The pid is this private server's own pane.
+kill -9 "$BWPID1" 2>/dev/null
+BWI=0; while kill -0 "$BWPID1" 2>/dev/null && [ "$BWI" -lt "$POLLS" ]; do sleep 0.1; BWI=$((BWI+1)); done
+case "$(bw_list)" in *"cockpit-board-$BWPID1 ; "*) ok "a SIGKILLed board leaves its entry" ;;
+    *) bad "a SIGKILLed board leaves its entry" "cockpit-board-$BWPID1" "$(bw_list)" ;; esac
+bw_open 3 || bad "a third board lists its channel" "cockpit-board-$BWPID" "$(bw_list)"
+BWW3=$BWW
+case "$(bw_list)" in *"cockpit-board-$BWPID1 "*) bad "the next board drops the dead entry" "no cockpit-board-$BWPID1" "$(bw_list)" ;;
+    *) ok "the next board drops the dead entry" ;; esac
+sleep 0.5
+BWN2=$(bw_wakes 2); BWN3=$(bw_wakes 3)
+bw_trans running
+if bw_woke 3 $((BWN3 + 1)) && bw_woke 2 $((BWN2 + 1)); then ok "after a SIGKILLed board the boards still wake"
+else bad "after a SIGKILLed board the boards still wake" "a wake in logs 2 and 3" "$(bw_wakes 2) and $(bw_wakes 3)"; fi
+
+# q unlists: once both boards have gone the list is empty.
+"$TMUX_REAL" -L "$BW" send-keys -t "$BWW2" q; "$TMUX_REAL" -L "$BW" send-keys -t "$BWW3" q
+BWI=0; while [ -n "$(bw_list)" ] && [ "$BWI" -lt "$POLLS" ]; do sleep 0.1; BWI=$((BWI+1)); done
+is "q takes each board's entry off the list" "" "$(bw_list)"
+"$TMUX_REAL" -L "$BW" kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-state: 20 transitions in parallel leave the fleet counter exact =="
@@ -8155,7 +8211,7 @@ echo "== cockpit-tui: docs name only real options =="
 # every @cockpit_* / COCKPIT_* name in docs/tui.md is one some code answers to.
 # The freeze (#61 workflow §3) is agreed before the code lands, so its names are
 # allowed early -- each is listed with the lane that introduces it.
-TUI_FROZEN="@cockpit_tui_pid:L0 @cockpit_tui_version:L4 @cockpit_board_key:L6 \
+TUI_FROZEN="@cockpit_tui_version:L4 @cockpit_board_key:L6 \
 @cockpit_board_window:L6 @cockpit_tui_fetch:L6 COCKPIT_ACTION:L0 COCKPIT_TMUX:L0 COCKPIT_LOG:L0 \
 COCKPIT_READONLY:L0 COCKPIT_GLYPHS:L0"
 if [ ! -f "$DIR/docs/tui.md" ]; then
@@ -8952,7 +9008,7 @@ is "control characters never reach the pane" "ab[31mcdef" \
    "$("$TMUX_REAL" -L "$PN" capture-pane -p -t "$PNA" | grep -F cdef)"
 is "and the paste buffer is gone afterwards" "" \
    "$("$TMUX_REAL" -L "$PN" list-buffers -F '#{buffer_name}' 2>/dev/null | grep cockpit-panel)"
-is "the panel never publishes the board's pid" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_tui_pid)"
+is "the panel never lists a board wake channel" "" "$("$TMUX_REAL" -L "$PN" show-option -gqv @cockpit_board_wake)"
 
 # A popup torn down mid-call (SIGTERM, SIGHUP as its pty goes) or a binary killed
 # outright (SIGKILL) must not leave its claude running. Pids are checked first.

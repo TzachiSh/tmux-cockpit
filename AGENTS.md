@@ -42,7 +42,10 @@ hands that number to something else. `SIGUSR1`'s default action is *terminate*,
 so an unverified `kill` is a way to shoot a random process of the user's. It has
 already happened once, to a probe on the live server.
 
-Check the name first, in the shape `scripts/agent-state` uses:
+That pid option is gone: since #224 the board is woken through `tmux wait-for`
+and no hook signals a pid (`tui/src/push.rs`, docs/tui.md "Push wakeups"). The
+rule stays for any pid option added later. Check the name first, in the shape
+`scripts/agent-state` used:
 
 ```sh
 if [ -r "/proc/$pid/comm" ]; then
@@ -58,6 +61,5 @@ this guard is exactly the one that is absent from `/proc`, so `read || ps` forks
 `ps` on every call. And `2>/dev/null` goes *before* the input redirect, or bash
 reports the failure before that redirect applies.
 
-The same holds for any pid option added later. The publisher's half of the
-bargain is to unpublish on **every** exit path, signal handlers included
-(`tui/src/push.rs`).
+The publisher's half of the bargain is to unpublish on **every** exit path,
+signal handlers included.

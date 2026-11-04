@@ -188,7 +188,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_return` | `on` | `off` makes `r` and `f` one-way: the board closes and stays closed, as before the return trip. Read by `scripts/cockpit-board` after each action |
 | `@cockpit_tui_fetch` | `off` | `on` runs `scripts/tui-fetch` in the background on every config load (start, `prefix R`, tpm's `prefix U`). Off, nothing is ever fetched from the config load path, and `scripts/tui-fetch` by hand is the way in |
 | `@cockpit_tui_version` | unset | pins the release tag `scripts/tui-fetch` fetches: `cockpit-tui-v<ver>`, e.g. `cockpit-tui-v0.1.0`. The pre-#79 `tui-v` form is accepted for comparison only — the fetch URL uses the tag as written, so a stale `tui-v` pin compares as current against a release that does not exist. |
-| `@cockpit_tui_pid` | (state) | read-only: the pid of the running board. Written at start, unset on `q`, SIGHUP and SIGTERM |
+| `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to, so a reload that turns it off or moves it unbinds the old one |
@@ -198,10 +198,9 @@ on a 120-column terminal is an 84-column board, which is one tile column. The
 height is whatever `@cockpit_popup_height` gives, like every other cockpit
 popup.
 
-`@cockpit_tui_pid` is how the state hooks wake the board: `agent-state` sends
-`SIGUSR1` after a transition, and the board pulls its next tick forward. The
-sender checks `/proc/$pid/comm` first, because a published pid outlives a
-`SIGKILL` and `SIGUSR1`'s default action on a recycled pid is *terminate*.
+`@cockpit_board_wake` is how the state hooks wake the board: after a
+transition `agent-state` runs it with `run-shell -C`, in the tmux call it
+already makes, and each board pulls its next tick forward. See "Push wakeups".
 
 Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 `@panestate_msg`, `@cockpit_review`, `@cockpit_review_spool`, `@cockpit_title`,
@@ -227,8 +226,8 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 The binding runs the binary under `env -u CLAUDECODE`, which is required inside
 a popup.
 
-`COCKPIT_READONLY=1` exists because a probe run once left a dead
-`@cockpit_tui_pid` on the owner's live server. Use it for screenshots and
+`COCKPIT_READONLY=1` exists because a probe run once left a dead board pid
+(the wakeup before #224) on the owner's live server. Use it for screenshots and
 benchmarks.
 
 **The panel's prompts.** A file at
@@ -1495,7 +1494,7 @@ workspace, no crate split.
 | `chrome` | what the board and the panel share: the footer's hint fit, the full-popup `?` help and its scroll, the floor card |
 | `fleet` | the headless `--rows` / `--json` formatters and the list widths |
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
-| `push` | `@cockpit_tui_pid`, SIGUSR1 wakeups, the exit-path cleanup |
+| `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
@@ -1506,16 +1505,41 @@ Every mutating action stays a shell script: the binary prints
 
 ### Push wakeups
 
-A hook says "look now" with `kill -USR1 $(tmux show-option -gqv
-@cockpit_tui_pid)` instead of the board finding out on its next tick. The
-signals carry no payload and need none: the board reads the truth from tmux, it
-only needs to be told when.
+A hook says "look now" with `tmux run-shell -C '#{@cockpit_board_wake}'`
+instead of the board finding out on its next tick. The wake carries no payload
+and needs none: the board reads the truth from tmux, it only needs to be told
+when. No pid is signalled, so nothing has to be verified first (#224).
 
-The hook must confirm the pid is ours before signalling (`scripts/agent-state`
-reads `/proc/$pid/comm`, or `ps -o comm=` where there is no `/proc`): a
-published pid outlives SIGKILL, and SIGUSR1's default action on a recycled pid
-is *terminate*. The board unpublishes on every exit path, signal handlers
-included.
+Each board waits in a `tmux wait-for cockpit-board-<pid>` child and lists
+`wait-for -S cockpit-board-<pid> ; ` in the option. A channel of its own,
+because tmux latches a `wait-for -S` only when nobody waits: on a shared
+channel the waiter a SIGKILLed board left behind would take a wake that lands
+while a live board is between two waits, and that board would never see it.
+
+When the child returns the board refetches and starts another. Between the two
+nobody waits, and tmux keeps one bit per channel: the first `-S` in that window
+latches it, so the next wait returns at once, and a second `-S` in the same
+window frees it again. That refresh then waits for the 1 s tick.
+
+The waiter goes with the board on every exit path:
+
+- `q`, a panic and the tty hangup watch (`backend::exit_on_hangup`) remove the
+  entry and wake the waiter with three `-S`: wake, latch, free, and tmux then
+  holds nothing for the channel. A cleanup that lands between two waits, with
+  no wake pending, goes latch, free, latch instead, and the latched bit stays
+  for the server's life. Nothing reads it: the entry is gone and no board
+  waits on that name.
+- SIGHUP and SIGTERM kill it from the handler, which runs nothing else, and
+  leave the entry.
+- On Linux, PDEATHSIG kills it when the board is SIGKILLed.
+
+A left entry costs a hook one `wait-for -S` inside tmux, toggling one latched
+bit on a channel nobody waits on. The next board's start drops every entry
+whose pid is not a running cockpit-tui (read from `/proc/<pid>/comm`, or
+`ps -o comm=`), and sends that channel one last `-S`, which releases a waiter
+left where there is no PDEATHSIG. Only entries of the exact form
+`cockpit-board-<digits>` are read. The start also unsets `@cockpit_tui_pid`,
+which a board from before #224 may have left.
 
 ### The VS16 backend shim
 
@@ -1578,9 +1602,9 @@ and the borders for a tier that is byte-stable across fonts.
 **Screenshots and benchmarks.** `COCKPIT_READONLY=1` makes the binary skip every
 `set-option`, so watching the fleet does not mutate it.
 
-**A stale `@cockpit_tui_pid`.** The board unpublishes the pid on `q`, SIGHUP and
-SIGTERM. A pid left behind after a `SIGKILL` is harmless: the hook reads
-`/proc/$pid/comm` before it signals anything.
+**A stale `@cockpit_board_wake` entry.** A board ended by a signal or a crash
+leaves its entry. It is harmless: the hook only signals a channel, and the next
+board to start drops it.
 
 ## `cockpit-tui branch` (#246)
 
