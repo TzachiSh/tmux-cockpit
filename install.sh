@@ -202,16 +202,16 @@ set*\ @catppuccin_window_current_text\ *)
             0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
             *) row ok hooks "$n cockpit hooks merged" ;;
         esac
-        # The board's subagent tree will read what these four append (#361 child B);
-        # until then they only fill the log.
+        # The board's subagent tree reads what these six append (#361); sub-taskstop and
+        # sub-reconcile came later (#403), so a box set up before them has 4 of 6.
         subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
-                    | capture("agent-state (?<c>sub-(start|stop|idle|end))$")?.c]
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")?.c]
                    | unique | length' \
                  "$HOME/.claude/settings.json" 2>/dev/null)
         case "$n:${subs:-0}" in
             0:*) row skip subhooks 'no cockpit hooks yet' ;;
-            *:4) row ok subhooks 'all 4 subagent hooks merged' ;;
-            *) row warn subhooks "${subs:-0} of 4 subagent hooks merged" 'install.sh --hooks' ;;
+            *:6) row ok subhooks 'all 6 subagent hooks merged' ;;
+            *) row warn subhooks "${subs:-0} of 6 subagent hooks merged" 're-run install.sh --hooks' ;;
         esac
     fi
 
@@ -407,6 +407,7 @@ if [ "$hooks" -eq 1 ]; then
     # exists. norm makes an absent matcher equal "".
     # Cockpit entries that change shape across versions are replaced (anchored): review-gate,
     # an old `--pretool` (review-gate exits 0 on it), a SessionStart `agent-state off`.
+    # review-gate stays the last shipped Stop entry: --hooks strips and re-appends it, so a new Stop hook goes before it.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         def runs($re): (.command // "") | test($re);
