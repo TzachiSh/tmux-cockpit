@@ -7963,6 +7963,15 @@ case "$tfout" in
     *"--required builds from source next"*) ok "and the skip line says the source build follows" ;;
     *) bad "and the skip line says the source build follows" "... --required builds from source next" "$tfout" ;;
 esac
+# Rust 1.99 is new enough, so the closing line blames the build, not the toolchain (#243).
+case "$tfout" in
+    *"cockpit-tui is required"*"the source build failed"*) ok "a build that ran and failed is named as such" ;;
+    *) bad "a build that ran and failed is named as such" "cockpit-tui is required ... the source build failed" "$tfout" ;;
+esac
+case "$tfout" in
+    *"no Rust >= "*) bad "and it does not claim there is no Rust" "no 'no Rust >=' line" "$tfout" ;;
+    *) ok "and it does not claim there is no Rust" ;;
+esac
 mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a
