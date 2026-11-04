@@ -1591,7 +1591,8 @@ if [ -d "/proc/$$" ]; then
     # any other client's display-message (a hook, a poller of an earlier block), and counting
     # those made "none of it reached tmux" flake under load.
     TWB=$(mktmpd); TWLOG="$TWB/argv"; : > "$TWLOG"
-    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s/tmux" "$@"\n' "$TWLOG" "$SHIM" > "$TWB/tmux"
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\nexec "%s/tmux" "$@"\n' \
+        "$TWLOG" "$SHIM" > "$TWB/tmux"
     chmod +x "$TWB/tmux"
     twh() { PATH="$TWB:$PATH" "$DIR/scripts/tmux-where" "$@"; }
     # argv[0] is what tmux reports as pane_current_command, so a process
@@ -1600,7 +1601,7 @@ if [ -d "/proc/$$" ]; then
     tmux new-window -d -n wherepane 'exec -a ssh sleep 30'
     WP=$(tmux list-panes -a -F '#{pane_id} #{window_name}' | awk '$2=="wherepane"{print $1}')
     WPID=$(tmux display-message -p -t "$WP" '#{pane_pid}')
-    for _ in $(seq 20); do              # sh -c may not have exec'd yet
+    for _ in $(seq "$POLLS"); do        # sh -c may not have exec'd yet
         IFS= read -r -d '' a0 2>/dev/null < "/proc/$WPID/cmdline"; [ "$a0" = ssh ] && break; sleep 0.1
     done
     is "an ssh pane is recognised from /proc" " 󰢹 30" "$(twh path "$WPID" "$WP" | plain)"
@@ -10401,10 +10402,12 @@ av_start() {                  # a poller outside the hook path; its pid in AVPID
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
-av_gone() {                   # av_gone <pid>: dead. A zombie waiting on a slow reaper is dead; no pid is not gone
+av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry to read, is not gone
+    # A killed process whose reaper is slow stays a zombie, and kill -0 succeeds on it. Counted
+    # as gone here on the hypothesis that one reaper stall made four runs miss at once (#386).
     [ -n "${1:-}" ] || return 1
     kill -0 "$1" 2>/dev/null || return 0
-    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
     st=${st##*) }; [ "${st:0:1}" = Z ]
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
@@ -10513,12 +10516,6 @@ av_startx() {                 # av_startx [NAME=value...]: a poller of our own; 
     env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVF/done.json" "$@" \
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
-}
-av_gone() {                   # av_gone <pid>: dead. A zombie waiting on a slow reaper is dead; no pid is not gone
-    [ -n "${1:-}" ] || return 1
-    kill -0 "$1" 2>/dev/null || return 0
-    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
-    st=${st##*) }; [ "${st:0:1}" = Z ]
 }
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_reap() {                   # av_reap <pid>: 0 if it left by itself; else kills it and returns 1
