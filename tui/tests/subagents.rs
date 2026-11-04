@@ -218,6 +218,28 @@ fn a_stopped_subagent_finishes_at_the_later_of_its_stop_and_its_newest_row() {
 }
 
 #[test]
+fn a_stopped_subagent_with_no_transcript_finishes_at_its_meta_files_mtime() {
+    let d = fixture("fin-stop-bare");
+    meta(&d, "s", r#"{"agentType":"x","stoppedByUser":true}"#);
+    touch_meta(&d, "s", 300);
+    let s = one(&d);
+    assert_eq!((s.state, s.finished_at), (SubState::Stopped, Some(T0 + 300)));
+}
+
+#[test]
+fn the_stopped_path_opens_no_file_beyond_the_meta_and_the_transcript() {
+    let d = fixture("fin-stop-reads");
+    meta(&d, "s", r#"{"agentType":"x","stoppedByUser":true}"#);
+    rows(&d, "s", &[FIRST, &tick(20)]);
+    let cold = reads();
+    one(&d);
+    assert_eq!(reads() - cold, 2, "the meta file and the transcript");
+    let warm = reads();
+    one(&d);
+    assert_eq!(reads(), warm, "a warm read opens nothing");
+}
+
+#[test]
 fn finished_at_is_none_while_running_and_set_for_every_other_state() {
     let d = fixture("fin-states");
     meta(&d, "r", r#"{"agentType":"x"}"#);

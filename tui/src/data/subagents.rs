@@ -51,7 +51,9 @@ pub struct Sub {
     pub started: Option<u64>,
     /// unix seconds the agent stopped working: None while it runs, and for a finished one
     /// with no transcript. The newest transcript row's `timestamp`, else the transcript's
-    /// mtime. Not hashed, like `started`.
+    /// mtime. A stopped one takes the later of that and the meta file's mtime (the write
+    /// that set `stoppedByUser`), and with no transcript the meta mtime alone. Not hashed,
+    /// like `started`.
     pub finished_at: Option<u64>,
     /// the newest usage row's input, output and cache tokens summed: the figure Claude Code
     /// reports as `totalTokens`, the context of its last request, not a sum over turns
