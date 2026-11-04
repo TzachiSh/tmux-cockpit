@@ -3385,16 +3385,28 @@ sc_where() {                  # -> "A=<session> B=<session>"
 sc_run() { env TMUX="$SOCKDIR/$SC,0,0" COCKPIT_LOG="$SCD/log" "$@" </dev/null >/dev/null 2>&1; }
 sc_run "$DIR/scripts/tmux-jump" "$SCS" "$SCA"
 is "tmux-jump moves the client it is given" "A=z B=a " "$(sc_where)"
-for c in "$SCA" "$("$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}' | grep -vxF "$SCA")"; do
-    "$TMUX_REAL" -L "$SC" switch-client -c "$c" -t a >/dev/null 2>&1
-done
-printf '#!/bin/sh\necho "jump %s" > "$COCKPIT_ACTION"\n' "$SCT" > "$SCD/tui"
+SCB=$("$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}' | grep -vxF "$SCA")
+sc_home() { for c in "$SCA" "$SCB"; do "$TMUX_REAL" -L "$SC" switch-client -c "$c" -t a; done \
+    >/dev/null 2>&1; }
+sc_home
+# The stub board notes the pin it finds, then plays B pressing the key on the same
+# pane while this board runs, then jumps.
+cat > "$SCD/tui" <<SCTUI
+#!/bin/sh
+tmux show -pqv -t $SCS @cockpit_board_client > "$SCD/seen"
+tmux set -p -t $SCS @cockpit_board_client "$SCB"
+echo "jump $SCT" > "\$COCKPIT_ACTION"
+SCTUI
 chmod +x "$SCD/tui"
-# The board key leaves its client on the pane; the board reads it once.
+# The popup's key leaves its client on the pane; the board takes it at start.
 "$TMUX_REAL" -L "$SC" set -p -t "$SCS" @cockpit_board_client "$SCA" >/dev/null 2>&1
 sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS"
-is "the board's jump moves the client the key left on the pane, and clears it" "A=z B=a :" \
-   "$(sc_where):$("$TMUX_REAL" -L "$SC" show -pqv -t "$SCS" @cockpit_board_client)"
+is "the board takes the pin at start, so a later press cannot take its jump" "A=z B=a :" \
+   "$(sc_where):$(cat "$SCD/seen")"
+sc_home
+"$TMUX_REAL" -L "$SC" set -pu -t "$SCS" @cockpit_board_client >/dev/null 2>&1
+sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS" -c "$SCA"
+is "cockpit-board -c moves that client, whatever the pane holds" "A=z B=a " "$(sc_where)"
 # The bindings hand the pressing client over: run-shell expands it at the press.
 "$TMUX_REAL" -L "$SC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 sc_keys() { for k in u w r; do "$TMUX_REAL" -L "$SC" list-keys -T prefix "$k" 2>/dev/null \
@@ -3404,7 +3416,7 @@ is "prefix u, w and r pass #{client_name}" "1 1 1 " "$(sc_keys)"
 "$TMUX_REAL" -L "$SC" set -g @cockpit_review_window on >/dev/null 2>&1
 "$TMUX_REAL" -L "$SC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "and so do their window forms" "1 1 1 " "$(sc_keys)"
-unset -f sc_open sc_where sc_run sc_keys
+unset -f sc_open sc_where sc_run sc_keys sc_home
 "$TMUX_REAL" -L "$SC" kill-server >/dev/null 2>&1
 wait "$SCPA" "$SCPB" 2>/dev/null
 rm -rf "$SCD"
@@ -7245,11 +7257,10 @@ RB3S=$("$TMUX_REAL" -L "$RB3" list-panes -t t:0 -F '#{pane_id}')
 until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
 "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
 until_file "$RB3D/args" '*-p *'
-is "the board window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
-# And the key leaves its client on that pane, for the board's jump (#296).
-is "and the key leaves the pressing client on that pane" \
-   "$("$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}')" \
-   "$("$TMUX_REAL" -L "$RB3" show -pqv -t "$RB3S" @cockpit_board_client)"
+# And the client that pressed it, for the board's jump (#296).
+is "the board window is told the pane the key was pressed in, not its own, and the client" \
+   "-p $RB3S -c $("$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}')" \
+   "$(cat "$RB3D/args" 2>/dev/null)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi

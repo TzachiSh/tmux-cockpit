@@ -24,7 +24,9 @@ sep=$'\037'
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 
 # The client a jump moves: a bare switch-client moves the most recently active
-# one, which may be another (#296). -c, or what the key left on the pane.
+# one, which may be another (#296). -c (the window forms), or what the popup's
+# key left on the pane, read and cleared now, before the board runs, so a later
+# press from another client cannot take this run's jump.
 PANE='' CLIENT=''
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -34,11 +36,10 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-client() {                    # sets CLIENT; read and cleared in one call, on a jump only
-    [ -z "$CLIENT" ] && is_pane "$PANE" || return 0
+if [ -z "$CLIENT" ] && is_pane "$PANE"; then
     CLIENT=$(tmux show-option -pqv -t "$PANE" @cockpit_board_client \; \
         set-option -pu -t "$PANE" @cockpit_board_client 2>/dev/null)
-}
+fi
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
@@ -97,7 +98,7 @@ while :; do
     case "$verb" in
         # switch-client fails without a client; the selection below still applies.
         jump)
-            client; tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$target" 2>/dev/null || true
+            tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$target" 2>/dev/null || true
             tmux select-window -t "$target" 2>/dev/null
             tmux select-pane   -t "$target" 2>/dev/null
             exit 0
@@ -194,7 +195,6 @@ while :; do
                     "claude --resume $(sq "$want")" 2>/dev/null)
                 if is_pane "$new"; then
                     log "resumed session $want in $new beside $target"
-                    client
                     tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$new" 2>/dev/null || true
                     tmux select-window -t "$new" 2>/dev/null
                     tmux select-pane -t "$new" 2>/dev/null

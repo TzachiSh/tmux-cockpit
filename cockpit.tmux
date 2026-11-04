@@ -283,14 +283,16 @@ fi
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 # The board's jump moves the pressing client, not the most recently active one
-# (#296). No form can hand it over as an argument (display-popup expands no
-# format in its command), so the key leaves it on the pane it was pressed in.
+# (#296). The window forms pass it (-c: run-shell expands formats); the popup
+# cannot (display-popup expands none in its command), so its key leaves it on
+# the pane it was pressed in, for the board to take at start.
 pin=(set-option -pF @cockpit_board_client '#{client_name}' '\;')
 # Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        ckey board "$bk" "${pin[@]}" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey board "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     else
         # No #{session_name}: it named the client's session, not the agent's.
         ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
@@ -303,7 +305,8 @@ fi
 # runs, so run-shell expands #{pane_id} on the source pane instead (#45).
 if [ -n "$rk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-        ckey review "$rk" "${pin[@]}" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     else
         ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi

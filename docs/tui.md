@@ -192,7 +192,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
-| `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there, so the board's jump moves that client and not the most recently active one. Read and cleared by the jump |
+| `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
