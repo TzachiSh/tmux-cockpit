@@ -285,7 +285,7 @@ fn number(b: &[u8], i: usize) -> usize {
         let c = b[j];
         let digit_next = b.get(j + 1).is_some_and(u8::is_ascii_digit);
         let exp = !hex && j > i && matches!(b[j - 1], b'e' | b'E');
-        if c.is_ascii_alphanumeric() || c == b'_' || (c == b'.' || (exp && matches!(c, b'+' | b'-'))) && digit_next {
+        if c.is_ascii_alphanumeric() || c == b'_' || ((c == b'.' || (exp && matches!(c, b'+' | b'-'))) && digit_next) {
             j += 1;
         } else {
             break;
@@ -442,7 +442,12 @@ fn ticks(s: &str) -> Option<(usize, &str)> {
 
 /// A fence opener's tag: `Some("")` for a bare fence, `None` for no fence.
 pub fn fence(s: &str) -> Option<&str> {
-    ticks(s).map(|(_, rest)| rest.split_whitespace().next().unwrap_or(""))
+    ticks(s).map(|(_, rest)| tag(rest))
+}
+
+/// The tag in the rest of an opener's line.
+fn tag(rest: &str) -> &str {
+    rest.split_whitespace().next().unwrap_or("")
 }
 
 /// Markdown-ish text: the lines inside a fenced block are lexed by the fence's
@@ -465,7 +470,7 @@ pub fn fenced(text: &str) -> Vec<Vec<(Role, &str)>> {
             .iter()
             .position(|l| ticks(l).is_some_and(|(m, r)| m >= n && r.trim().is_empty()));
         let body = &body[..end.unwrap_or(body.len())];
-        let tag = rest.split_whitespace().next().unwrap_or("");
+        let tag = tag(rest);
         let prompts = || {
             let mut full = body.iter().filter(|l| !l.trim().is_empty()).peekable();
             full.peek().is_some() && full.all(|l| l.trim_start().starts_with("$ "))

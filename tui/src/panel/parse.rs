@@ -130,9 +130,8 @@ fn unfence(o: &str) -> &str {
 /// language the lexer knows keeps its fence and is coloured (#282). A bare or
 /// `xml` fence is a wrapper and still goes.
 fn code_fence(raw: &str) -> bool {
-    let tag = raw
-        .strip_prefix("```")
-        .map(|r| &r[..r.bytes().take_while(u8::is_ascii_alphabetic).count()]);
+    let first = raw.split('\n').next().unwrap_or("");
+    let tag = raw.starts_with("```").then(|| super::highlight::fence(first)).flatten();
     tag.and_then(super::highlight::lang).is_some()
 }
 
