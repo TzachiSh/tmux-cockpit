@@ -9,7 +9,7 @@ pub struct Branch {
     pub remote: bool,
     pub age: String,
     pub current: bool,
-    /// The directory name of the other worktree that has it checked out.
+    /// The full path of the other worktree that has it checked out.
     pub elsewhere: Option<String>,
 }
 
@@ -45,22 +45,55 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
     .collect()
 }
 
-/// Branch name to the other worktree's directory name, for every linked
+/// Every worktree as `(path, branch)`. `-z` keeps a path with a newline in one
+/// record, but needs git 2.36; older git rejects it and prints nothing, so the
+/// plain porcelain is read instead, and a record whose path was cut by a newline
+/// (a line that is no worktree attribute) is dropped rather than guessed at.
+fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
+    let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
+    if !z.is_empty() {
+        return records(z.split('\0'), true);
+    }
+    let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
+    records(plain.split('\n'), false)
+}
+
+fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {
+    const ATTRS: [&str; 6] = ["HEAD ", "branch ", "bare", "detached", "locked", "prunable"];
+    let mut out = Vec::new();
+    let mut cur: Option<(String, Option<String>, bool)> = None;
+    let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
+        if let Some((p, b, ok)) = cur.take()
+            && ok
+        {
+            out.push((p, b));
+        }
+    };
+    for f in fields {
+        if let Some(p) = f.strip_prefix("worktree ") {
+            flush(&mut cur);
+            cur = Some((p.to_string(), None, true));
+        } else if let Some((_, b, ok)) = cur.as_mut() {
+            if let Some(r) = f.strip_prefix("branch refs/heads/") {
+                *b = Some(r.to_string());
+            } else if !nul && !f.is_empty() && !ATTRS.iter().any(|a| f.starts_with(a)) {
+                *ok = false;
+            }
+        }
+    }
+    flush(&mut cur);
+    out
+}
+
+/// Branch name to the other worktree's full path, for every linked
 /// worktree that is not `dir`'s own: git refuses to switch to those.
 fn elsewhere(dir: &str) -> Vec<(String, String)> {
     let top = git(dir, &[], None, &["rev-parse", "--show-toplevel"]);
     let top = top.trim_end_matches('\n');
-    let (mut path, mut out) = (String::new(), Vec::new());
-    for l in git(dir, &[], None, &["worktree", "list", "--porcelain"]).lines() {
-        if let Some(p) = l.strip_prefix("worktree ") {
-            path = p.to_string();
-        } else if let Some(b) = l.strip_prefix("branch refs/heads/")
-            && path != top
-        {
-            out.push((b.to_string(), path.rsplit('/').next().unwrap_or_default().to_string()));
-        }
-    }
-    out
+    worktrees(dir)
+        .into_iter()
+        .filter_map(|(p, b)| if p == top { None } else { Some((b?, p)) })
+        .collect()
 }
 
 /// Local branches by most recent commit, then remote-only ones the same way.
