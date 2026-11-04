@@ -162,12 +162,9 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         let parts: Vec<&str> = bodies.split("\n--- ").filter(|b| !b.is_empty()).collect();
         for (i, body) in parts.iter().enumerate() {
             let (name, text) = body.split_once('\n').unwrap_or((body, ""));
-            // The comments that head the next case trail the last body: they are not its text.
             let mut lines: Vec<&str> = text.lines().collect();
             if i + 1 == parts.len() {
-                while lines.last().is_some_and(|l| l.trim().is_empty() || l.starts_with('#')) {
-                    lines.pop();
-                }
+                strip_trailing_comments(&mut lines);
             }
             let text = lines.join("\n");
             let dup = |set: bool| {
@@ -216,6 +213,22 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
+/// The comments that head the next case trail the last body: a `#` block that a
+/// blank line sets off. A `#` line right after text is the body's own (`#412`, a
+/// root prompt), and so is a body of `#` lines only.
+fn strip_trailing_comments(lines: &mut Vec<&str>) {
+    loop {
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        let at = lines.len() - lines.iter().rev().take_while(|l| l.starts_with('#')).count();
+        if at == lines.len() || at == 0 || !lines[at - 1].trim().is_empty() {
+            return;
+        }
+        lines.truncate(at);
+    }
+}
+
 /// `needle` as a whole word, any case: `plan` is not in "explanation" nor `36`
 /// in "360". `a|b` is any of them. An end that is not a letter or digit (`--json`,
 /// `/code-review`) needs no boundary there.
@@ -227,10 +240,11 @@ fn has(hay: &str, needle: &str) -> bool {
         .filter(|n| !n.is_empty())
         .any(|n| {
             let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
-            hay.match_indices(n.as_str()).any(|(i, m)| {
-                let (first, last) = (m.chars().next(), m.chars().last());
-                (!word(first) || !word(hay[..i].chars().last())) && (!word(last) || !word(hay[i + m.len()..].chars().next()))
-            })
+            let (first, last) = (n.chars().next(), n.chars().last());
+            // Every start, overlapping ones too: match_indices skips "ab ab" at 4 in "xab ab ab".
+            (0..hay.len())
+                .filter(|i| hay.is_char_boundary(*i) && hay[*i..].starts_with(n.as_str()))
+                .any(|i| (!word(first) || !word(hay[..i].chars().last())) && (!word(last) || !word(hay[i + n.len()..].chars().next())))
         })
 }
 
@@ -491,10 +505,19 @@ fn config_home() -> PathBuf {
     }
 }
 
-/// Where the write prompt came from: the panel's override file, or the binary.
+/// Where the write prompt came from: each override file the panel reads, or the
+/// binary. An override that cannot be read is named: the panel sends the shipped text.
 fn prompt_source(base: &Path) -> String {
-    let p = base.join("tmux-cockpit/prompts/write.txt");
-    if p.exists() { p.display().to_string() } else { "shipped".into() }
+    let mut from = vec![];
+    for name in ["write.txt", "write.examples.txt"] {
+        let p = base.join("tmux-cockpit/prompts").join(name);
+        match std::fs::read_to_string(&p) {
+            Ok(_) => from.push(p.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => from.push(format!("{} unreadable ({e}), shipped sent", p.display())),
+        }
+    }
+    if from.is_empty() { "shipped".into() } else { from.join(", ") }
 }
 
 /// FNV-1a: stable across Rust releases, unlike DefaultHasher, so hashes from
@@ -693,7 +716,7 @@ mod tests {
         let two = format!("{ONE}\n# next section\n\n{}", ONE.replace("=== crash", "=== crash2"));
         let cs = parse_cases(&two).unwrap();
         assert_eq!(cs[0].request, "fix this");
-        let screen_last = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n# a note\n";
+        let screen_last = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n\n# a note\n";
         assert_eq!(parse_cases(screen_last).unwrap()[0].screen, "$ ls");
         let twice = ONE.replace("kind: bug", "kind: bug\nkind: plan");
         assert!(parse_cases(&twice).unwrap_err().contains("kind given twice"));
@@ -783,6 +806,66 @@ mod tests {
     }
 
     #[test]
+    fn a_cut_off_reply_is_refused() {
+        let c = parse_cases(ONE).unwrap().remove(0);
+        let g = grade(&c, "<prompt>Fix net-proxy at line 88.");
+        assert!(g.refused && !g.pass, "{g:?}");
+    }
+
+    #[test]
+    fn a_screen_or_request_given_twice_is_an_error() {
+        let screen = ONE.replace("--- request", "--- screen\nx\n--- request");
+        assert!(parse_cases(&screen).unwrap_err().contains("screen given twice"));
+        let request = format!("{ONE}--- request\nagain\n");
+        assert!(parse_cases(&request).unwrap_err().contains("request given twice"));
+    }
+
+    #[test]
+    fn a_trailing_hash_line_is_kept_unless_a_blank_line_sets_it_off() {
+        let issue = ONE.replace("fix this\n", "fix this\n#412\n");
+        assert_eq!(parse_cases(&issue).unwrap()[0].request, "fix this\n#412");
+        let root = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n# id\n";
+        assert_eq!(parse_cases(root).unwrap()[0].screen, "$ ls\n# id");
+        let only = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\n#412\n";
+        assert_eq!(parse_cases(only).unwrap()[0].request, "#412");
+        let comment = ONE.replace("fix this\n", "fix this\n#412\n\n# next\n# more\n\n");
+        assert_eq!(parse_cases(&comment).unwrap()[0].request, "fix this\n#412");
+    }
+
+    #[test]
+    fn words_match_where_matches_overlap() {
+        assert!(has("xab ab ab", "ab ab"));
+        assert!(has("nana na na", "na na"));
+        assert!(!has("xab abx", "ab ab"));
+    }
+
+    /// A fresh `<scratch>/<name>.<pid>` holding `tmux-cockpit/prompts`.
+    fn config(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("panel-eval-{name}.{}", std::process::id()));
+        if d.exists() {
+            std::fs::remove_dir_all(&d).unwrap();
+        }
+        std::fs::create_dir_all(d.join("tmux-cockpit/prompts")).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_prompt_source_names_each_override_and_an_unreadable_one() {
+        let d = config("src");
+        let p = d.join("tmux-cockpit/prompts");
+        assert_eq!(prompt_source(&d), "shipped");
+        std::fs::write(p.join("write.examples.txt"), "x").unwrap();
+        let s = prompt_source(&d);
+        assert!(s.contains("write.examples.txt") && !s.contains("unreadable"), "{s}");
+        std::fs::create_dir(p.join("write.txt")).unwrap();
+        assert!(prompt_source(&d).contains("unreadable"), "{}", prompt_source(&d));
+        std::fs::remove_dir(p.join("write.txt")).unwrap();
+        std::fs::write(p.join("write.txt"), [0xff, 0xfe]).unwrap();
+        assert!(prompt_source(&d).contains("unreadable"), "{}", prompt_source(&d));
+        std::fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
     fn the_shipped_cases_are_valid() {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
         let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
@@ -791,5 +874,13 @@ mod tests {
         assert!(cases.iter().any(|c| c.expect == Expect::Write));
         let leaked: Vec<&str> = cases.iter().filter(|c| c.request.contains("\n#")).map(|c| c.id.as_str()).collect();
         assert!(leaked.is_empty(), "a comment in a request: {leaked:?}");
+        // Every case ends in its request, and the old strip dropped every trailing `#`
+        // line of it: no request ends in one, so the old and new strips read this file alike.
+        let tail: Vec<&str> = cases
+            .iter()
+            .filter(|c| c.request.lines().last().is_some_and(|l| l.starts_with('#')))
+            .map(|c| c.id.as_str())
+            .collect();
+        assert!(tail.is_empty(), "a request ends in a # line: {tail:?}");
     }
 }
