@@ -148,13 +148,21 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
 }
 # Still cockpit's <name> binding: its note, or, from a load before the notes, no
 # note and a command only cockpit binds. The second form can go after a release.
+# Only the menu and panel keys had a record then, each matched by its own
+# command, and only until a load has noted every key (@cockpit_notes): after
+# that a note-less key is the user's, whatever it runs.
+notes=$(tmux show-option -gqv @cockpit_notes)
 owned() {                     # <name> <key>
     local nc
     nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
     case "${nc%%$'\037'*}" in
         "cockpit: $1") return 0 ;;
-        "") case "${nc#*$'\037'}" in
-                *"$DIR/scripts/"*|*'display-menu -T "#[align=centre]'*) return 0 ;;
+        "") [ -z "$notes" ] || return 1
+            case "$1:${nc#*$'\037'}" in
+                menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
+                    tmux display-message \
+                        "$(fesc "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
+                    return 0 ;;
             esac ;;
     esac
     return 1
@@ -427,6 +435,8 @@ tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M
 if [ -n "$menuk" ]; then
     ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
+# Every key this load binds carries its note now: owned() stops guessing.
+[ -n "$notes" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);

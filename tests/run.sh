@@ -3566,6 +3566,12 @@ gb_set board off; gb_load
 is "a reload never gives back a key the user rebound" "display-message mine" \
    "$(gb_live w | grep -o 'display-message mine')"
 gb_set board unset; gb_load
+# Even one that runs cockpit's own scripts: a key without a note is the user's.
+"$TMUX_REAL" -L "$GB" bind-key w run-shell "$DIR/scripts/tm --popup x" >/dev/null 2>&1
+gb_set board off; gb_load
+is "a user's key running cockpit's own scripts is never given back" "1" \
+   "$(gb_live w | grep -c 'scripts/tm --popup x')"
+gb_set board unset; gb_load
 # The stock binding itself, not read back through the same probe the fix uses.
 gb_set board off; gb_load
 is "board off gives w back as tmux's own choose-tree -Zw, with its note" \
@@ -3625,25 +3631,50 @@ if need_tmux "key notes upgrade"; then :
 elif ! git -C "$DIR" cat-file -e "$GU_REV:cockpit.tmux" 2>/dev/null; then
     skip_ "key notes upgrade (no $GU_REV in this clone)"
 else
-GU="cockpit-gu-$$"; SOCKS="$SOCKS $GU"; GUD=$(mktmpd)
-git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$GUD"
+GU="cockpit-gu-$$"; GU2="cockpit-gu2-$$"; GUO="cockpit-guo-$$"; SOCKS="$SOCKS $GU $GU2 $GUO"
+GUD=$(mktmpd); GUD2=$(mktmpd)
+for d in "$GUD" "$GUD2"; do git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$d"; done
+gu_load() { "$TMUX_REAL" -L "$1" run-shell "$2/cockpit.tmux" >/dev/null 2>&1; }
+gu_key() { "$TMUX_REAL" -L "$1" list-keys -T prefix "$2" 2>/dev/null; }
+# Upgraded in place, as a pull does: the same directory, the new files.
+gu_up() { rm -rf "$1/scripts"; cp -r "$DIR/cockpit.tmux" "$DIR/scripts" "$1/"; }
+gu_said() { "$TMUX_REAL" -L "$GU" show-messages 2>/dev/null | grep -v ' command: ' \
+    | grep -c 'key before the key notes'; }
 "$TMUX_REAL" -L "$GU" -f /dev/null new-session -d -s t -c "$GUD" >/dev/null 2>&1
-gu_load() { "$TMUX_REAL" -L "$GU" run-shell "$1/cockpit.tmux" >/dev/null 2>&1; }
-gu_key() { "$TMUX_REAL" -L "$GU" list-keys -T prefix "$1" 2>/dev/null; }
-gu_load "$GUD"
+"$TMUX_REAL" -L "$GUO" -f /dev/null new-session -d -s o -x 100 -y 30 -c "$GUD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $GU attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$GU" list-clients -F '#{client_name}'
+gu_load "$GU" "$GUD"
 is "the old load bound a and f, with no note" "1:1:" \
-   "$(gu_key a | grep -c display-menu):$(gu_key f | grep -c cockpit-panel):$(
+   "$(gu_key "$GU" a | grep -c display-menu):$(gu_key "$GU" f | grep -c cockpit-panel):$(
       "$TMUX_REAL" -L "$GU" list-keys -T prefix -F '#{key_note}' a)"
 "$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key n >/dev/null 2>&1
 "$TMUX_REAL" -L "$GU" set -g @cockpit_panel_key F11 >/dev/null 2>&1
-# Upgraded in place, as a pull does: the same directory, the new files.
-rm -rf "$GUD/scripts"; cp -r "$DIR/cockpit.tmux" "$DIR/scripts" "$GUD/"
-gu_load "$GUD"
+gu_up "$GUD"; gu_load "$GU" "$GUD"
 is "the old menu key a is free again and the old panel key f is find-window" \
-   "|find-window" "$(gu_key a)|$(gu_key f | grep -o find-window)"
-unset -f gu_load gu_key
-"$TMUX_REAL" -L "$GU" kill-server >/dev/null 2>&1
-rm -rf "$GUD"
+   "|find-window" "$(gu_key "$GU" a)|$(gu_key "$GU" f | grep -o find-window)"
+is "and each says so once, and the load marks every key noted" "2:1" \
+   "$(gu_said):$("$TMUX_REAL" -L "$GU" show-option -gqv @cockpit_notes)"
+gu_load "$GU" "$GUD"
+is "a later load says nothing more" "2" "$(gu_said)"
+# Past the marker no command is a guess: a user's own centred menu on n stays.
+"$TMUX_REAL" -L "$GU" bind-key n display-menu -T '#[align=centre]mine' x x '' >/dev/null 2>&1
+"$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key off >/dev/null 2>&1
+gu_load "$GU" "$GUD"
+is "after the marker a user's centred menu on the old menu key stays" "1" \
+   "$(gu_key "$GU" n | grep -c 'align=centre]mine')"
+# The guess is the panel's own command: a user's key on f running another of
+# cockpit's scripts stays the user's, even on that first load.
+"$TMUX_REAL" -L "$GU2" -f /dev/null new-session -d -s t -c "$GUD2" >/dev/null 2>&1
+gu_load "$GU2" "$GUD2"
+"$TMUX_REAL" -L "$GU2" bind-key f run-shell "$GUD2/scripts/tm --popup x" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GU2" set -g @cockpit_panel_key F11 >/dev/null 2>&1
+gu_up "$GUD2"; gu_load "$GU2" "$GUD2"
+is "the upgrade leaves a user's f running cockpit's tm alone" "1" \
+   "$(gu_key "$GU2" f | grep -c 'scripts/tm --popup x')"
+unset -f gu_load gu_key gu_up gu_said
+for s in "$GUO" "$GU" "$GU2"; do "$TMUX_REAL" -L "$s" kill-server >/dev/null 2>&1; done
+rm -rf "$GUD" "$GUD2"
 fi
 
 echo "== the menu reaches move-window and the plugin's reload; the example keeps v (#43) =="
