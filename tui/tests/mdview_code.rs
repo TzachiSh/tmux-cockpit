@@ -247,3 +247,31 @@ fn a_known_extension_beats_a_shebang() {
         "an unknown one does not"
     );
 }
+
+/// `dash` is a shell, `env`'s `-u NAME` and `VAR=1` are not the program, and
+/// `ts-node` runs TypeScript.
+#[test]
+fn more_shebangs() {
+    let cases = [
+        ("#!/bin/dash\n", Some(Lang::Shell)),
+        ("#!/bin/ash\n", Some(Lang::Shell)),
+        ("#!/bin/mksh\n", Some(Lang::Shell)),
+        ("#!/usr/bin/env -u FOO python3\n", Some(Lang::Python)),
+        ("#!/usr/bin/env --unset=FOO python3\n", Some(Lang::Python)),
+        ("#!/usr/bin/env -C /tmp bash\n", Some(Lang::Shell)),
+        ("#!/usr/bin/env VAR=1 bash\n", Some(Lang::Shell)),
+        ("#!/usr/bin/env ts-node\n", Some(Lang::Js)),
+        ("#!/usr/bin/env VAR=1\n", None),
+    ];
+    for (src, want) in cases {
+        assert_eq!(mode("tool", src), Mode::Code(want), "{src:?}");
+    }
+}
+
+/// tmux-open-path's `*.md` matches a file named just `.md`: so does the viewer.
+#[test]
+fn a_file_named_dot_md_is_markdown() {
+    assert_eq!(mode(".md", ""), Mode::Markdown);
+    assert_eq!(mode(".MARKDOWN", ""), Mode::Markdown);
+    assert_eq!(mode("md", ""), Mode::Code(None), "no dot, no match");
+}

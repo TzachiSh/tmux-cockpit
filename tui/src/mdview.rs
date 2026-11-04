@@ -72,12 +72,13 @@ pub enum Mode {
 /// interpreter (`env` and its flags skipped, a version cut off). Anything else
 /// is plain text, numbered: never markdown.
 pub fn mode(name: &str, text: &str) -> Mode {
-    let ext = std::path::Path::new(name)
-        .extension()
-        .map(|e| e.to_string_lossy().to_ascii_lowercase());
-    if let Some("md" | "markdown" | "mdown" | "mkd") = ext.as_deref() {
+    // tmux-open-path's `*.md` glob: a name ending in it, a bare `.md` included,
+    // which has no extension to `Path`
+    let low = name.to_ascii_lowercase();
+    if [".md", ".markdown", ".mdown", ".mkd"].iter().any(|e| low.ends_with(e)) {
         return Mode::Markdown;
     }
+    let ext = std::path::Path::new(&low).extension().map(|e| e.to_string_lossy().into_owned());
     Mode::Code(ext.as_deref().and_then(crate::highlight::lang).or_else(|| shebang(text)))
 }
 
@@ -86,11 +87,22 @@ fn shebang(text: &str) -> Option<crate::highlight::Lang> {
     let mut words = first.split_whitespace();
     let mut prog = words.next()?.rsplit('/').next()?;
     if prog == "env" {
-        prog = words.find(|w| !w.starts_with('-'))?;
+        // env's flags, the argument `-u` and `-C` take, and `NAME=value` words
+        prog = loop {
+            let w = words.next()?;
+            match w {
+                "-u" | "-C" | "--unset" | "--chdir" => {
+                    words.next();
+                }
+                _ if w.starts_with('-') || w.contains('=') => {}
+                _ => break w,
+            }
+        };
     }
     let prog = prog.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
     let tag = match prog {
-        "node" | "nodejs" | "deno" | "bun" => "js",
+        "node" | "nodejs" | "deno" | "bun" | "ts-node" | "tsx" => "js",
+        "dash" | "ash" | "mksh" => "sh",
         p => p,
     };
     crate::highlight::lang(tag)
