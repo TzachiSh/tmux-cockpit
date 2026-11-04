@@ -65,21 +65,26 @@ chmod +x "$SHIM/tmux"
 unset TMUX TMUX_PANE
 # The hooks and the transcript reader take the projects tree from it: the tests use $HOME's.
 unset CLAUDE_CONFIG_DIR
+# The owner's live VS Code socket must not reach a block (#350).
+unset VSCODE_IPC_HOOK_CLI
 # The suite never runs the real VS Code (#350). Under WSL the Windows PATH brings
 # its code(1) in, and with the private HOME it installs a fresh ~/.vscode-server
 # (639 MB) and can open the owner's editor. So: no /mnt/<drive> entry on PATH, and
 # a stub code first that only records its argv.
+# Every empty entry (it means the cwd) is dropped too, wherever it sits; a glob in
+# an entry stays literal.
 path_without_mnt() {          # <PATH value> -> the same without /mnt/<drive>/... entries
-    local IFS=: out='' e
+    local - IFS=: out='' e
+    set -f
     for e in $1; do
-        case $e in /mnt/[a-z]|/mnt/[a-z]/*) continue ;; esac
+        case $e in '') continue ;; /mnt/[a-z]|/mnt/[a-z]/*) continue ;; esac
         out=${out:+$out:}$e
     done
     printf '%s' "$out"
 }
 cat > "$SHIM/code" <<CODEEOF
 #!/bin/sh
-printf '%s\\n' "\$*" >> "$STATE/code.argv"
+printf '%s\\n' "\$@" >> "$STATE/code.argv"
 exit 0
 CODEEOF
 chmod +x "$SHIM/code"
@@ -12743,6 +12748,10 @@ hxgo 2
 is "code(1): the run-shell command and the status message carry no live # format" "0" "$(hxlive)"
 is "and the status message spells every # of the name as ##" "1" \
    "$(grep -c -F "cockpit: opened ${HW//#/##}/a##(touch\${IFS}F)##{pid}##S.txt" "$HXL")"
+# The server's run-shell reaches code(1) through PATH: it must be the suite's stub.
+if until_out 1 grep -cxF -- "$HW/$HN:1:1" "$STATE/code.argv"; then
+    ok "and the server ran the suite's stub code, no other"
+else bad "and the server ran the suite's stub code, no other" 1 "$(cat "$STATE/code.argv" 2>/dev/null)"; fi
 "$TMUX_REAL" -L "$HX" kill-server >/dev/null 2>&1
 fi
 
@@ -12950,10 +12959,15 @@ echo "== the suite never reaches a real VS Code (#350) =="
 is "PATH has no /mnt/<drive> entry" "0" \
    "$(printf '%s\n' "$PATH" | tr : '\n' | grep -c '^/mnt/[a-z]\(/\|$\)')"
 is "a bare code is the stub" "$SHIM/code" "$(command -v code)"
+is "path_without_mnt keeps a glob entry literal" "x*:/usr/bin" \
+   "$(cd "$STATE" && : > xa && : > xb; path_without_mnt "x*:/usr/bin")"
+is "and drops every empty entry, wherever it sits" "/usr/bin:/bin" \
+   "$(path_without_mnt ":/usr/bin::/bin:")"
 is "path_without_mnt drops a drive and keeps the rest" "/usr/bin:/opt/x:/mnt/data" \
    "$(path_without_mnt "/mnt/c/Program Files/bin:/usr/bin:/mnt/d:/opt/x:/mnt/data")"
-code --goto /nowhere:1:1 >/dev/null 2>&1
-is "the stub records its argv" "--goto /nowhere:1:1" "$(tail -n 1 "$STATE/code.argv" 2>/dev/null)"
+code --goto /nowhere:1:1 'a b' >/dev/null 2>&1
+is "the stub records one argument per line" "--goto|/nowhere:1:1|a b" \
+   "$(tail -n 3 "$STATE/code.argv" 2>/dev/null | paste -sd'|')"
 is "and no VS Code server was installed into the suite's HOME" "absent" \
    "$([ -e "$HOME/.vscode-server" ] && echo present || echo absent)"
 
