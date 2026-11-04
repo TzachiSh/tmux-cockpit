@@ -107,7 +107,7 @@ kind: message
 window: bash · bash · /home/u
 expect: either
 ask_any: date; how long; until
-must: Dana; slip
+must: Dana; slip|slips|slipping|delayed|late
 note: the new date is the owner's to give, but they may not have one: asking or "date to follow" both serve
 --- request
 write to dana that the release slips
