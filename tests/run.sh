@@ -12913,5 +12913,15 @@ is "--loop on a clean repo: still 'no uncommitted changes', status 0" "cockpit: 
 fi
 rm -rf "${GD:-/nonexistent-gd}"
 
+echo "== tests/only.sh: a pattern with \\( and ^ selects the block, no match is an error (#241) =="
+OD=$(mktemp -d)
+printf '%s\n' 'pass=0; fail=0; skipped=0' 'echo "== foo (#216) ^x =="' 'echo ran-foo' \
+    'echo "== other =="' 'echo ran-other' > "$OD/fx.sh"   # printf: only.sh would split a heredoc at its echo "== " lines
+oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'foo \(#216\) \^x' 2>&1 </dev/null); oorc=$?
+is "only.sh: an escaped-paren, caret title is selected, the other block is not" "ran-foo|0" "$(printf '%s' "$oo" | grep '^ran-' | tr '\n' '|' | sed 's/|$//')|$oorc"
+oo=$(ONLY_RUN="$OD/fx.sh" "$DIR/tests/only.sh" 'nomatch \(x\)' 2>&1 </dev/null); oorc=$?
+is "only.sh: no match exits 2 naming the pattern" "tests/only.sh: no block matches nomatch \\(x\\)|2" "$oo|$oorc"
+rm -rf "$OD"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
