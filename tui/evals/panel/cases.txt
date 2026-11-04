@@ -39,7 +39,7 @@ add caching to the api
 kind: ops
 window: bash · bash · /home/u/projects/web
 expect: ask
-ask_any: login-v2; v2
+ask_any: login-v2; v2; login branch
 note: subject: two branches match "the login branch"
 --- screen
 $ git branch
@@ -81,7 +81,7 @@ go with 2 and 3
 kind: bug
 window: bash · bash · /home/u/projects/reports
 expect: ask
-ask_any: expected; format; timezone; time zone; one day; off by; instead; supposed to; correct
+ask_any: expected; should be; format; timezone; time zone; one day; off by; instead; supposed to; correct
 note: bug with no expected behaviour: only the owner knows what is wrong with these dates
 --- screen
 $ python report.py --month 10
@@ -171,7 +171,7 @@ kind: feature
 window: bash · bash · /home/u/projects/web
 expect: either
 ask_any: toggle; system; os; follow; switch; automatic
-must: plan
+must: plan|planning|plans
 note: a product choice the owner makes; asking now or a plan-first prompt that lets them choose both serve
 --- request
 add dark mode
@@ -328,6 +328,7 @@ kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: app.rs
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: plan only, the agent reads the file itself
 --- request
 plan how to split src/app.rs into smaller modules, just the plan
@@ -364,6 +365,7 @@ kind: investigate
 window: claude · claude · /home/u/projects/platform
 expect: write
 must: subagent|subagents; auth; queue; mailer
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: three independent failures: parallel subagents fit (best practices: parallel, isolated, independent work)
 --- screen
 ● All three services fail on startup after the upgrade:
@@ -417,7 +419,8 @@ use the brainstorming skill to work out how the board should show subagents
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: plan; before
+must: plan|planning|plans; before
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: a large change: plan and wait for an OK before editing (explore, plan, code)
 --- request
 move the whole config loader from yaml to toml, it touches a lot of files
@@ -475,7 +478,7 @@ which node version is the current LTS and should our Dockerfile move to it
 kind: refactor
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: 0.5.0
+must: 0.5.0|v0.5.0
 must_not: subagent|subagents; skill|skills
 holdout: yes
 note: a one-line edit: nothing to delegate
@@ -502,3 +505,15 @@ holdout: yes
 note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve
 --- request
 copy the build to the staging server
+
+# Added for the #421 review: a bug whose failure Claude Code can run itself.
+
+=== runnable-failure
+kind: bug
+window: claude · claude · /home/u/projects/engine
+expect: write
+must: cargo test
+must_not: autopilot; ralph; ultrawork; ultrathink
+note: no example on screen, but the failing command is named: Claude Code runs it, nothing to ask
+--- request
+cargo test fails on main since the merge, fix it

@@ -265,6 +265,8 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("json", "json for user"),
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
+        ("no-expected", "the export is broken"),
+        ("runnable", "tests fail since my last commit"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
     ];
@@ -274,7 +276,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
 
 #[test]
 fn the_core_examples_always_go_and_the_fill_order_tops_up() {
-    let core = ["crash", "investigate", "message", "which-file", "unclear", "steps"];
+    let core = ["crash", "investigate", "message", "which-file", "unclear", "no-expected", "steps"];
     let got = picked(Ctx {
         window: "shell",
         ..Ctx::default()
@@ -285,11 +287,11 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
             "crash",
             "investigate",
             "plan",
-            "math",
             "message",
-            "json",
             "which-file",
             "unclear",
+            "no-expected",
+            "runnable",
             "steps"
         ]
     );
@@ -298,14 +300,15 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
 
 #[test]
 fn the_examples_follow_the_picked_type_then_the_window() {
-    let want = [
+    // claude: the type's example, then the window's (plan); other: the type's, then the fill order.
+    let claude = [
         "crash",
         "investigate",
         "plan",
-        "math",
         "message",
         "which-file",
         "unclear",
+        "no-expected",
         "command",
         "steps",
     ];
@@ -314,14 +317,25 @@ fn the_examples_follow_the_picked_type_then_the_window() {
             out: OutType::Command,
             window: "claude"
         }),
-        want
+        claude
     );
+    let other = [
+        "crash",
+        "investigate",
+        "message",
+        "which-file",
+        "unclear",
+        "no-expected",
+        "runnable",
+        "command",
+        "steps",
+    ];
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
             window: "other"
         }),
-        want
+        other
     );
 }
 
