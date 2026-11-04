@@ -446,6 +446,73 @@ pub fn dir_of(transcript: &str, sess: &str, cwd: &str) -> Option<PathBuf> {
     Some(t.with_extension("").join("subagents"))
 }
 
+/// What the hook files say of one agent: its newest event and that event's epoch, after a
+/// teammate's TaskStop, a `finished` meta newer than the start and the `.live` set are weighed.
+/// None when they say nothing, and the meta decides. `meta_at` is the meta file's mtime,
+/// `wrote` the agent's newest transcript row.
+fn event_of(
+    id: &str,
+    m: &Meta,
+    meta_at: Option<u64>,
+    wrote: Option<u64>,
+    log: &Log,
+    names: &HashSet<String>,
+    descs: &HashMap<String, usize>,
+) -> Option<(Ev, u64)> {
+    let rec = log.ids.get(id).copied();
+    let mate = m.kind == SubKind::Teammate;
+    // A teammate's TaskStop names it, or failing that (the model gave the task id) its
+    // description when no other teammate has it; it counts after the teammate's newest
+    // start, and not at all with no start in the tail.
+    let killed = log.kills.iter().rfind(|k| {
+        mate && rec.and_then(|r| r.start).is_some_and(|(_, s)| k.line > s)
+            && if names.contains(&k.name) {
+                k.name == m.name
+            } else {
+                !k.desc.is_empty() && k.desc == m.desc && descs.get(&m.desc) == Some(&1)
+            }
+    });
+    if let Some(k) = killed {
+        return Some((Ev::Kill, k.t));
+    }
+    // The hook log says what the meta file cannot. Without a record the meta decides, and
+    // so does a `finished` written at or after the last `start`: a StopFailure sends no
+    // SubagentStop, while a resume writes its `start` after the old `finished`.
+    let r = rec.filter(|r| r.ev != Ev::Start || !(m.finished && meta_at.is_some_and(|w| w >= r.t)))?;
+    // The `.live` set ends an agent the log has running (a start or a resume is its newest
+    // event) that started in an earlier second, wrote nothing after it, and is not in it. It
+    // cannot tell killed from finished; a finished meta decided above. Not an idle teammate:
+    // no payload yet shows whether `background_tasks` lists one (#403).
+    let gone = log.live.as_ref().is_some_and(|l| {
+        r.start.is_some_and(|(t, _)| t < l.t)
+            && wrote.is_none_or(|w| w <= l.t)
+            && !l.ids.contains(id)
+            && !(mate && l.descs.contains(&m.desc))
+    });
+    Some(if r.ev == Ev::Start && gone { (Ev::Kill, r.t) } else { (r.ev, r.t) })
+}
+
+/// The state from the meta, the transcript, the hook files' event, and whether the agent has
+/// been quiet for `END_UNKNOWN_AFTER`. A user stop wins, then the event, then the meta.
+fn state_of(m: &Meta, r: &Rows, ev: Option<Ev>, quiet: bool) -> SubState {
+    match ev {
+        _ if m.stopped => SubState::Stopped,
+        Some(Ev::Kill) => SubState::Stopped,
+        Some(Ev::Start) if quiet => SubState::EndUnknown,
+        Some(Ev::Start) => SubState::Running,
+        Some(Ev::Idle) => SubState::Idle,
+        Some(Ev::Stop) if m.kind == SubKind::Teammate => SubState::Idle,
+        Some(Ev::Stop) if r.api_error => SubState::Failed,
+        Some(Ev::Stop) => SubState::Done,
+        None if m.finished && r.api_error => SubState::Failed,
+        None if m.finished => SubState::Done,
+        // never `finished`, and no sign of life for a quarter hour: a teammate ended by
+        // TaskStop or a shutdown, or one the log has no record of
+        None if quiet => SubState::EndUnknown,
+        None => SubState::Running,
+    }
+}
+
 /// The subagents in `dir` at unix second `now`, oldest first (unstarted last), then by id,
 /// with the hooks' log from the environment's state dir. A missing dir is an empty list and
 /// opens no file.
@@ -523,68 +590,16 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
             // the newest row says when it last wrote; the mtime only when no tail row has a time
             let wrote = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
-            let rec = log.ids.get(&id).copied();
-            let mate = m.kind == SubKind::Teammate;
-            // A teammate's TaskStop names it, or failing that (the model gave the task id) its
-            // description when no other teammate has it; it counts after the teammate's newest
-            // start, and not at all with no start in the tail.
-            let killed = log.kills.iter().rfind(|k| {
-                mate && rec.and_then(|r| r.start).is_some_and(|(_, s)| k.line > s)
-                    && if names.contains(&k.name) {
-                        k.name == m.name
-                    } else {
-                        !k.desc.is_empty() && k.desc == m.desc && descs.get(&m.desc) == Some(&1)
-                    }
-            });
-            let ev = killed.map(|k| (Ev::Kill, k.t)).or(rec.map(|r| (r.ev, r.t)));
-            let active_at = wrote.max(ev.map(|(_, t)| t));
-            let quiet = |since: Option<u64>| since.is_some_and(|a| now.saturating_sub(a) >= END_UNKNOWN_AFTER);
-            // The hook log says what the meta file cannot. Without a record the meta decides, and
-            // so does a `finished` written at or after the last `start`: a StopFailure sends no
-            // SubagentStop, while a resume writes its `start` after the old `finished`.
-            let meta_newer = |t: u64| m.finished && secs(ms.0).is_some_and(|w| w >= t);
-            let ev = ev.filter(|&(ev, t)| ev != Ev::Start || !meta_newer(t));
-            // The newest Stop's in-flight set ends an agent the log has running (a start or a
-            // resume is its newest event) that started before it, wrote nothing after it, and is
-            // not in it. It cannot tell killed from finished; a finished meta decided above. Not an
-            // idle teammate: no payload yet shows whether `background_tasks` lists one (#403).
-            let gone = |r: Rec, l: &Live| {
-                r.start.is_some_and(|(t, _)| t < l.t)
-                    && wrote.is_none_or(|w| w <= l.t)
-                    && !l.ids.contains(&id)
-                    && !(mate && l.descs.contains(&m.desc))
-            };
-            let ev = match (ev, rec, &log.live) {
-                (Some((Ev::Start, t)), Some(r), Some(l)) if killed.is_none() && gone(r, l) => Some((Ev::Kill, t)),
-                (ev, ..) => ev,
-            };
-            let state = if m.stopped {
-                SubState::Stopped
-            } else if let Some((ev, _)) = ev {
-                match ev {
-                    Ev::Kill => SubState::Stopped,
-                    Ev::Start if quiet(active_at) => SubState::EndUnknown,
-                    Ev::Start => SubState::Running,
-                    Ev::Idle => SubState::Idle,
-                    Ev::Stop if m.kind == SubKind::Teammate => SubState::Idle,
-                    Ev::Stop if r.api_error => SubState::Failed,
-                    Ev::Stop => SubState::Done,
-                }
-            } else if m.finished && r.api_error {
-                SubState::Failed
-            } else if m.finished {
-                SubState::Done
-            } else if quiet(active_at.or(secs(ms.0))) {
-                // never `finished`, and no sign of life for a quarter hour: a teammate ended by
-                // TaskStop or a shutdown, or one the log has no record of
-                SubState::EndUnknown
-            } else {
-                SubState::Running
-            };
+            let meta_at = secs(ms.0);
+            let ev = event_of(&id, &m, meta_at, wrote, &log, &names, &descs);
+            // the newest event heard, the one a finished meta overrode too
+            let active_at = wrote.max(ev.map(|(_, t)| t).or(log.ids.get(&id).map(|r| r.t)));
+            let quiet = active_at.or(meta_at).is_some_and(|a| now.saturating_sub(a) >= END_UNKNOWN_AFTER);
+            let state = state_of(&m, &r, ev.map(|(ev, _)| ev), quiet);
             // A user stop is the write that set `stoppedByUser`, the meta file's mtime, which a
             // stop during a long tool call puts after the newest row.
             let finished_at = matches!(state, SubState::Done | SubState::Failed | SubState::Stopped)
-                .then(|| if state == SubState::Stopped { wrote.max(secs(ms.0)) } else { wrote })
+                .then(|| if state == SubState::Stopped { wrote.max(meta_at) } else { wrote })
                 .flatten();
             out.push(Sub {
                 id: id.clone(),
