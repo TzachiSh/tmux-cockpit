@@ -3989,7 +3989,7 @@ case "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit 2>/dev/null | awk '$4=="o"')"
          "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit | awk '$4=="o"')" ;;
 esac
 # The key itself, through a real client: an attached client in the outer
-# server's pane gets the cockpit table and an o; a shim editor logs its argv.
+# server's pane gets the cockpit table and an o; a shim editor logs its argv (and must not be run, #363).
 DBD=$(mktmpd); DBLOG="$DBD/argv"; : > "$DBLOG"
 printf '#!/bin/sh\nfor a in "$@"; do printf "%%s\\n" "$a"; done >> "%s"\n' "$DBLOG" > "$DBD/ed"
 chmod +x "$DBD/ed"
@@ -4001,8 +4001,17 @@ until_out '?*' "$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}'
 DBC=$("$TMUX_REAL" -L "$DB" list-clients -F '#{client_name}' | head -1)
 "$TMUX_REAL" -L "$DB" switch-client -c "$DBC" -T cockpit >/dev/null 2>&1
 "$TMUX_REAL" -L "$DBO" send-keys -t o o
-until_file "$DBLOG" '?*'
-is "pressing o in the cockpit table hands the pane's folder to the editor" "$DIR" "$(cat "$DBLOG")"
+# #363: o opens the file browser popup on the client, not the editor.
+until_out '*files>*' "$TMUX_REAL" -L "$DBO" capture-pane -p -t o
+case "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o)" in
+    *files\>*) ok "pressing o in the cockpit table opens the file browser popup" ;;
+    *) bad "pressing o in the cockpit table opens the file browser popup" "a files> prompt on the client" \
+         "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o)" ;;
+esac
+is "and the editor was not run" "" "$(cat "$DBLOG")"
+"$TMUX_REAL" -L "$DBO" send-keys -t o Escape
+until_out 'gone' bash -c "$TMUX_REAL -L $DBO capture-pane -p -t o | grep -q 'files>' || echo gone"
+is "esc closes the popup" "" "$("$TMUX_REAL" -L "$DBO" capture-pane -p -t o | grep -c 'files>' | sed 's/^0$//')"
 "$TMUX_REAL" -L "$DBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$DB" kill-server >/dev/null 2>&1
 fi
