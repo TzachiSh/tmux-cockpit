@@ -3505,6 +3505,11 @@ if need_tmux "key give-back"; then :; else
 GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"
 GBD=$(mktmpd)
 "$TMUX_REAL" -L "$GB" -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
+# A client, so a load's display-message lands in the message log.
+GBO="cockpit-gbo-$$"; SOCKS="$SOCKS $GBO"
+"$TMUX_REAL" -L "$GBO" -f /dev/null new-session -d -s o -x 100 -y 30 -c "$GBD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $GB attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$GB" list-clients -F '#{client_name}'
 gb_load() { "$TMUX_REAL" -L "$GB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
 gb_set() {                    # <name> <key|unset>
     if [ "$2" = unset ]; then "$TMUX_REAL" -L "$GB" set -gu "@cockpit_$1_key"
@@ -3549,13 +3554,84 @@ gb_set board off; gb_load
 is "a reload never gives back a key the user rebound" "display-message mine" \
    "$(gb_live w | grep -o 'display-message mine')"
 gb_set board unset; gb_load
+# The stock binding itself, not read back through the same probe the fix uses.
+gb_set board off; gb_load
+is "board off gives w back as tmux's own choose-tree -Zw, with its note" \
+   "choose-tree -Zw|Choose a window from a list" \
+   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_live w | grep -o 'Choose a window from a list')"
+gb_set board unset; gb_load
+# A TMPDIR over 100 characters would make the stock server's socket path too long
+# to bind; the read sits on a short base of its own, so w still comes back.
+GBL="$GBD/$(printf 'l%.0s' $(seq 1 110))"; mkdir -p "$GBL"
+gb_note() { "$TMUX_REAL" -L "$GB" list-keys -T prefix -F '#{key_note}' "$1" 2>/dev/null; }
+gb_left() { "$TMUX_REAL" -L "$GB" show-option -gqv @cockpit_giveback; }
+gb_set board off
+"$TMUX_REAL" -L "$GB" run-shell "TMPDIR='$GBL' '$DIR/cockpit.tmux'" >/dev/null 2>&1
+is "a long TMPDIR still gives w back to stock, nothing pending" "choose-tree -Zw|" \
+   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+gb_set board unset; gb_load
+# A stock read that fails is not "binds nothing": here a stock server that will
+# not start, as a socket path past the limit did. The key stays, the record waits.
+mkdir -p "$GBD/bin"
+printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && { echo "error connecting (File name too long)" >&2; exit 1; }; done\nexec "%s" "$@"\n' \
+    "$TMUX_REAL" > "$GBD/bin/tmux"
+chmod +x "$GBD/bin/tmux"
+gb_nostock() { "$TMUX_REAL" -L "$GB" run-shell "PATH='$GBD/bin':\"\$PATH\" '$DIR/cockpit.tmux'" >/dev/null 2>&1; }
+gb_set board off; gb_nostock
+is "a failed stock read leaves w cockpit's and the give-back pending" "cockpit: board|board:w" \
+   "$(gb_note w)|$(gb_left)"
+is "and says which key and why" "1" "$("$TMUX_REAL" -L "$GB" show-messages 2>/dev/null \
+   | grep -v ' command: ' | grep -c "own binding for w (.*too long")"
+gb_load
+is "the next load gives w back to stock and clears the pending record" \
+   "choose-tree -Zw|" "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+# Moved, not off: the board's record moves on to F12, the pending one keeps w.
+gb_set board unset; gb_load; gb_set board F12; gb_nostock
+is "a move whose stock read fails binds F12 and keeps w pending" \
+   "cockpit: board|cockpit: board|board:w" "$(gb_note F12)|$(gb_note w)|$(gb_left)"
+gb_load
+is "and the next load gives w back" "choose-tree -Zw|" \
+   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+gb_set board unset; gb_load
+unset -f gb_nostock gb_note gb_left
 # Two keys trading places: each is taken this load, so neither is given back.
 gb_set sessions u; gb_set jump s; gb_load
 is "sessions and jump trading keys keep both bound" "tmux-jump:--popup" \
    "$(gb_live s | grep -o tmux-jump):$(gb_live u | grep -o -- --popup)"
 unset -f gb_load gb_set gb_on gb_live gb_stock gb_state
+"$TMUX_REAL" -L "$GBO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$GB" kill-server >/dev/null 2>&1
 rm -rf "$GBD"
+fi
+
+echo "== upgrading from a load before the key notes still gives the old keys back (#290) =="
+# The last load before the notes tracked the menu and panel keys and bound them
+# with no note. Its cockpit.tmux and scripts, from history; a shallow clone lacks it.
+# The ownership test matches the plugin's own path, so both loads share one.
+GU_REV=543624d
+if need_tmux "key notes upgrade"; then :
+elif ! git -C "$DIR" cat-file -e "$GU_REV:cockpit.tmux" 2>/dev/null; then
+    skip_ "key notes upgrade (no $GU_REV in this clone)"
+else
+GU="cockpit-gu-$$"; SOCKS="$SOCKS $GU"; GUD=$(mktmpd)
+git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$GUD"
+"$TMUX_REAL" -L "$GU" -f /dev/null new-session -d -s t -c "$GUD" >/dev/null 2>&1
+gu_load() { "$TMUX_REAL" -L "$GU" run-shell "$1/cockpit.tmux" >/dev/null 2>&1; }
+gu_key() { "$TMUX_REAL" -L "$GU" list-keys -T prefix "$1" 2>/dev/null; }
+gu_load "$GUD"
+is "the old load bound a and f, with no note" "1:1:" \
+   "$(gu_key a | grep -c display-menu):$(gu_key f | grep -c cockpit-panel):$(
+      "$TMUX_REAL" -L "$GU" list-keys -T prefix -F '#{key_note}' a)"
+"$TMUX_REAL" -L "$GU" set -g @cockpit_menu_key n >/dev/null 2>&1
+"$TMUX_REAL" -L "$GU" set -g @cockpit_panel_key F11 >/dev/null 2>&1
+# Upgraded in place, as a pull does: the same directory, the new files.
+rm -rf "$GUD/scripts"; cp -r "$DIR/cockpit.tmux" "$DIR/scripts" "$GUD/"
+gu_load "$GUD"
+is "the old menu key a is free again and the old panel key f is find-window" \
+   "|find-window" "$(gu_key a)|$(gu_key f | grep -o find-window)"
+unset -f gu_load gu_key
+"$TMUX_REAL" -L "$GU" kill-server >/dev/null 2>&1
+rm -rf "$GUD"
 fi
 
 echo "== the menu reaches move-window and the plugin's reload; the example keeps v (#43) =="

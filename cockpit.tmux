@@ -119,24 +119,45 @@ fi
 # a private socket, so every key works (Space, ?, digits, punctuation, not only the
 # letters a table listed) and a reload cannot mistake an earlier load's binding for
 # stock. The server has no session, so it exits after the one call. A fixed short
-# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. A lookup
-# that fails (no dir, no server) leaves the key as it is; only tmux's "unknown key",
-# stock has none, unbinds it.
-give_back() {
-    local k=$1 d out err="" r note cmd
+# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. Only
+# tmux's "unknown key" (stock has none) unbinds. A lookup that fails any other way
+# (no dir, no server, no answer) is not "binds nothing": the key stays as it is,
+# a message says why, and the 1 sends it to the next load's retry (#290).
+give_back() {                 # <key> -> 1 when tmux's own binding could not be read
+    local k=$1 d out="" err="" r note cmd
     # tmux reads a lone ; argument as a command separator.
     [ "$k" = ';' ] && k='\;'
-    d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null) || return 0
-    if out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
-            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err"); then
+    if ! d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null); then
+        err="no temp dir"
+    elif out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
+            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err") \
+            && [ -n "$out" ]; then
+        rm -rf -- "$d"
         IFS=$'\037' read -r r note cmd <<< "$out"
         [ "$r" = 1 ] && r=-r || r=""
         tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
+        return 0
     else
         read -r err < "$d/err"
-        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k" ;; esac
+        rm -rf -- "$d"
+        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k"; return 0 ;; esac
     fi
-    rm -rf -- "$d"
+    err="tmux-cockpit: could not read tmux's own binding for $k (${err:-no answer})"
+    tmux display-message "$(fesc "$err; left it bound, the next load tries again")"
+    return 1
+}
+# Still cockpit's <name> binding: its note, or, from a load before the notes, no
+# note and a command only cockpit binds. The second form can go after a release.
+owned() {                     # <name> <key>
+    local nc
+    nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
+    case "${nc%%$'\037'*}" in
+        "cockpit: $1") return 0 ;;
+        "") case "${nc#*$'\037'}" in
+                *"$DIR/scripts/"*|*'display-menu -T "#[align=centre]'*) return 0 ;;
+            esac ;;
+    esac
+    return 1
 }
 
 # Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
@@ -179,19 +200,31 @@ fsk=$(key @cockpit_fullscreen_key e)
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
     | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
     | while IFS= read -r k; do give_back "$k"; done
-# A reload that turns a key off or moves it gives the old key back, unless its
-# note is gone: the user bound it since. A key another cockpit key takes this
-# load is given back too, then bound again below.
-for nk in menu:"$menuk" sessions:"$sk" jump:"$jk" info:"$ik" panel:"$pk" board:"$bk" \
-          review:"$rk" reload:"$rlk" move:"$mk" fullscreen:"$fsk"; do
+# A reload that turns a key off or moves it gives the old key back, unless it is
+# no longer ours: the user bound it since. A key another cockpit key takes this
+# load is given back too, then bound again below. One that could not be given
+# back waits in @cockpit_giveback ("<name>:<key> ...") for the next load, since
+# the <name>'s own record moves on to its new key.
+now=" menu:$menuk sessions:$sk jump:$jk info:$ik panel:$pk board:$bk review:$rk"
+now="$now reload:$rlk move:$mk fullscreen:$fsk "
+todo=$(tmux show-option -gqv @cockpit_giveback)
+set -f
+for nk in $now; do
     n=${nk%%:*}
     prev=$(tmux show-option -gqv "@cockpit_${n}_bound")
     [ -n "$prev" ] && [ "$prev" != "${nk#*:}" ] || continue
+    todo="$todo $n:$prev"
     tmux set-option -gu "@cockpit_${n}_bound"
-    case "$(tmux list-keys -T prefix -F '#{key_note}' "$prev" 2>/dev/null)" in
-        "cockpit: $n") give_back "$prev" ;;
-    esac
 done
+left=""
+for nk in $todo; do
+    case "$now" in *" $nk "*) continue ;; esac     # its own key again: bound below
+    owned "${nk%%:*}" "${nk#*:}" || continue      # the user's now: nothing to give back
+    give_back "${nk#*:}" || left="$left $nk"
+done
+set +f
+if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "${left# }"
+else tmux set-option -gu @cockpit_giveback; fi
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
