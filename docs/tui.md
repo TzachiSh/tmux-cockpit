@@ -1331,6 +1331,19 @@ since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
 `Duration` because of `Hash`.
 
+**`asked` and `asked_since` (#337):** the newest human prompt of the session and its
+age. The reader finds it in the last 256 KB of the transcript. A turn that writes
+more pushes the prompt out of that window, so the reader keeps the prompt it last
+saw per transcript path, for as long as its thread lives, and gives it back when
+the window has none. It drops the memory when the file is shorter than at the last
+read or is another file (device and inode), and a prompt in the window replaces
+it. After a gap it reads back to the last read, up to 2 MB, so a prompt written and
+buried between two reads is not missed; a gap over 2 MB drops the memory, since a
+newer prompt may sit in it. A prompt that carries an image is an array row, and
+its text block counts as the prompt. The board's worker polls, so it keeps the
+anchor for the whole turn. A one-shot `--json` or `--rows` reads each transcript
+once: a prompt already past the window reads `""` and `null`, as before.
+
 **`--json`**: an array of objects with exactly these 14 keys, in this order:
 
 ```

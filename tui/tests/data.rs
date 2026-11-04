@@ -778,3 +778,242 @@ fn ended_needs_a_mark_no_agent_and_a_known_agent_list() {
         assert_eq!(ended(raw, live, glob), want, "{raw:?} live={live} glob={glob}");
     }
 }
+
+// --- the prompt time past the 256 KB tail (#337) -----------------------------
+
+fn prompt(text: &str) -> String {
+    format!("{{\"type\":\"user\",\"timestamp\":\"2026-08-27T00:00:00.000Z\",\"message\":{{\"content\":\"{text}\"}}}}\n")
+}
+
+/// Tool rows after a prompt: `kb` KB of them, each one a `tool_use`, so the
+/// tail never comes up empty and the 2 MB retry stays asleep, as mid-turn.
+fn turn_output(kb: usize) -> String {
+    let row = format!(
+        "{{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:01:00.000Z\",\"message\":{{\"stop_reason\":\"tool_use\",\
+         \"content\":[{{\"type\":\"tool_use\",\"id\":\"p\",\"name\":\"Bash\",\"input\":{{\"command\":\"{}\"}}}}]}}}}\n",
+        "x".repeat(900)
+    );
+    row.repeat(kb * 1024 / row.len() + 1)
+}
+
+fn append(p: &Path, body: &str) {
+    use std::io::Write;
+    OpenOptions::new().append(true).open(p).unwrap().write_all(body.as_bytes()).unwrap();
+}
+
+fn asked_of(r: &Rig, id: &str) -> (String, Option<u64>) {
+    r.rows(&[row(id, "claude", "running", &format!("s{}", &id[1..]), &format!("10{}", &id[1..]))]);
+    let ps = list_panes().unwrap();
+    let p = get(&ps, id);
+    (p.asked.clone(), p.asked_since)
+}
+
+/// The mechanism: the newest human prompt is looked up in the last 256 KB only,
+/// so output written after it pushes it out, and `asked_since` goes to None.
+#[test]
+fn the_prompt_time_outlives_256k_of_later_output() {
+    let r = Rig::new("askedkeep");
+    let p = r.transcript("s1", &(prompt("fix the build") + &turn_output(1)));
+    let (asked, since) = asked_of(&r, "%1");
+    assert_eq!(asked, "fix the build");
+    assert!(since.is_some(), "the prompt is in the window at first");
+
+    append(&p, &turn_output(300));
+    let (asked, since) = asked_of(&r, "%1");
+    assert_eq!(asked, "fix the build", "the prompt text goes with its time");
+    assert!(since.is_some(), "asked_since lost the prompt once it left the tail");
+}
+
+/// A second case of the class: the output arrives in many ticks, none of which
+/// holds the prompt, and the answer is still the one prompt.
+#[test]
+fn the_prompt_time_survives_many_reads_inside_a_long_turn() {
+    let r = Rig::new("askedticks");
+    let p = r.transcript("s1", &(prompt("long one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    for _ in 0..4 {
+        append(&p, &turn_output(100));
+        let (asked, since) = asked_of(&r, "%1");
+        assert_eq!((asked.as_str(), since.is_some()), ("long one", true));
+    }
+}
+
+/// One-shot callers (`--json`, `--rows`) read each transcript once in a fresh
+/// process, so nothing is remembered: a prompt already past the tail is None.
+#[test]
+fn a_first_read_past_the_tail_has_no_prompt_time() {
+    let r = Rig::new("askedcold");
+    r.transcript("s1", &(prompt("buried") + &turn_output(300)));
+    assert_eq!(asked_of(&r, "%1"), (String::new(), None));
+}
+
+/// The gap between two reads can hold a whole new prompt and more than 256 KB
+/// behind it. The window grows to the gap, so the newer prompt wins.
+#[test]
+fn a_new_prompt_buried_between_two_reads_is_found() {
+    let r = Rig::new("askedgap");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(&p, &(prompt("two") + &turn_output(300)));
+    assert_eq!(asked_of(&r, "%1").0, "two");
+}
+
+/// A prompt in the tail replaces what was remembered.
+#[test]
+fn a_newer_prompt_replaces_the_remembered_one() {
+    let r = Rig::new("askednew");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(&p, &(prompt("two") + &turn_output(1)));
+    assert_eq!(asked_of(&r, "%1").0, "two");
+}
+
+/// A file that shrinks was rewritten: what was remembered of it is stale.
+#[test]
+fn a_shrunk_transcript_forgets_the_prompt() {
+    let r = Rig::new("askedshrink");
+    let p = r.transcript("s1", &(prompt("old") + &turn_output(40)));
+    asked_of(&r, "%1");
+    std::fs::write(&p, turn_output(5)).unwrap();
+    assert_eq!(asked_of(&r, "%1"), (String::new(), None));
+}
+
+/// A replaced file (another inode) is another transcript even when it is longer.
+#[test]
+fn a_replaced_transcript_forgets_the_prompt() {
+    let r = Rig::new("askedswap");
+    let p = r.transcript("s1", &(prompt("old") + &turn_output(40)));
+    asked_of(&r, "%1");
+    let next = p.with_extension("new");
+    std::fs::write(&next, turn_output(300)).unwrap();
+    std::fs::rename(&next, &p).unwrap();
+    assert_eq!(asked_of(&r, "%1"), (String::new(), None));
+}
+
+/// The memory is per transcript: a pane that never had a prompt gets none.
+#[test]
+fn the_remembered_prompt_belongs_to_its_own_transcript() {
+    let r = Rig::new("askedown");
+    let p = r.transcript("s1", &(prompt("mine") + &turn_output(1)));
+    r.transcript("s2", &turn_output(1));
+    asked_of(&r, "%1");
+    append(&p, &turn_output(300));
+    assert!(asked_of(&r, "%1").1.is_some());
+    assert_eq!(asked_of(&r, "%2"), (String::new(), None));
+    // %2's read must not have taken %1's slot: one shared slot would lose it here
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1").0, "mine");
+}
+
+/// A gap past what the window can scan may hold a newer prompt, so the older one
+/// is no longer the answer: it reads as master did, with none.
+#[test]
+fn a_gap_past_the_scan_limit_forgets_the_prompt() {
+    let r = Rig::new("askedhuge");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(&p, &(prompt("two") + &turn_output(2200)));
+    assert_eq!(asked_of(&r, "%1"), (String::new(), None));
+}
+
+/// A prompt that carries an image is an array of blocks, not a string, and is
+/// still the human's turn: it replaces the kept one.
+#[test]
+fn an_image_prompt_replaces_the_remembered_one() {
+    let r = Rig::new("askedimage");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(
+        &p,
+        "{\"type\":\"user\",\"timestamp\":\"2026-08-27T00:02:00.000Z\",\"message\":{\"content\":[\
+         {\"type\":\"image\",\"source\":{\"type\":\"base64\",\"data\":\"AA\"}},{\"type\":\"text\",\"text\":\"see this\"}]}}\n",
+    );
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1").0, "see this");
+}
+
+/// Array rows that are not the human: a tool_result (also one with a text block
+/// beside it), a meta row (a skill's text),
+/// a harness tag and an interrupt. None of them moves `asked`.
+#[test]
+fn array_rows_that_are_not_a_prompt_leave_asked_alone() {
+    let r = Rig::new("askedarray");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    for row in [
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"text","text":"beside a result"}]}}"#,
+        r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>x"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+    ] {
+        append(&p, &(row.to_string() + "\n"));
+        assert_eq!(asked_of(&r, "%1").0, "one", "{row}");
+    }
+}
+
+/// The window never shrinks below 256 KB for a small gap: `said` is an older row
+/// that a window the size of the gap would not reach.
+#[test]
+fn a_small_gap_still_reads_the_256k_floor() {
+    let r = Rig::new("askedfloor");
+    let said = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:30.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
+                \"content\":[{\"type\":\"text\",\"text\":\"working on it\"}]}}\n";
+    let p = r.transcript("s1", &(prompt("go") + said + &turn_output(20)));
+    asked_of(&r, "%1");
+    append(&p, &turn_output(4));
+    r.rows(&[row("%1", "claude", "running", "s1", "101")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").said, "working on it");
+}
+
+/// "YYYY-MM-DDTHH:MM:SS.000Z" for `secs` from now (negative: the past).
+fn stamp(secs: i64) -> String {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        + secs;
+    let (days, rem) = (t.div_euclid(86400), t.rem_euclid(86400));
+    // civil-from-days (Hinnant), the inverse of the reader's own
+    let z = days + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.000Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+fn prompt_stamped(text: &str, secs: i64) -> String {
+    format!(
+        "{{\"type\":\"user\",\"timestamp\":\"{}\",\"message\":{{\"content\":\"{text}\"}}}}\n",
+        stamp(secs)
+    )
+}
+
+/// A slow read must not push the prompt later: the time is the row's, so a
+/// prompt written 100 s ago is at least 100 s old however late it is read,
+/// including from the remembered copy.
+#[test]
+fn the_prompt_age_is_counted_from_the_row_and_not_from_the_read() {
+    let r = Rig::new("askedrow");
+    let p = r.transcript("s1", &(prompt_stamped("go", -100) + &turn_output(1)));
+    let first = asked_of(&r, "%1").1.expect("a prompt in the window has an age");
+    assert!(first >= 100, "the age is {first}, under the 100 s the row says");
+    append(&p, &turn_output(300));
+    let kept = asked_of(&r, "%1").1.expect("the kept prompt has an age");
+    assert!(kept >= 100, "the kept age is {kept}, under the 100 s the row says");
+}
+
+/// A wall clock stepped back leaves the prompt in the future. The reader says
+/// nothing then, and never a kept 0 that hides a failure; the same on the kept path.
+#[test]
+fn a_prompt_dated_after_now_has_no_age_in_the_window_or_kept() {
+    let r = Rig::new("askedfuture");
+    let p = r.transcript("s1", &(prompt_stamped("go", 300) + &turn_output(1)));
+    assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
+}

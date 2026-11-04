@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::MetadataExt;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -292,6 +293,27 @@ thread_local! {
 const TAIL_FIRST: u64 = 256 * 1024;
 const TAIL_MAX: u64 = 2 * 1024 * 1024;
 
+/// The newest human prompt a transcript has shown (#337). A turn that writes more
+/// than `TAIL_FIRST` pushes its own prompt out of the window, and `asked_since` is
+/// the anchor "since the last prompt" is measured from, so it is kept here.
+#[derive(Clone)]
+struct Prompt {
+    /// (device, inode): another file at the same path is another transcript
+    file: (u64, u64),
+    /// the length at the last read; a file below it was rewritten
+    len: u64,
+    user: String,
+    user_at: Option<SystemTime>,
+}
+
+thread_local! {
+    /// One per transcript path, held for the life of the thread. The board's
+    /// worker thread polls for as long as it runs; a one-shot `--json` or `--rows`
+    /// reads each file once and starts with nothing.
+    static PROMPTS: std::cell::RefCell<HashMap<String, Prompt>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
 fn read_facts(path: &str) -> Facts {
     let Ok(mut f) = File::open(path) else { return Facts::default() };
     let Ok(md) = f.metadata() else { return Facts::default() };
@@ -305,12 +327,45 @@ fn read_facts(path: &str) -> Facts {
     if let Some(fa) = hit {
         return fa;
     }
-    let mut fa = parse(tail(&mut f, len, TAIL_FIRST));
+    let file = (md.dev(), md.ino());
+    // A gap past what the window can scan may hold a newer prompt: nothing is kept then.
+    let kept = PROMPTS.with(|c| {
+        let c = c.borrow();
+        c.get(path)
+            .filter(|p| p.file == file && p.len <= len && len - p.len <= TAIL_MAX)
+            .cloned()
+    });
+    // The window reaches back to the last read, so a prompt written and buried
+    // between two reads is seen, not the older one that was kept.
+    let first = kept.as_ref().map_or(TAIL_FIRST, |p| (len - p.len).clamp(TAIL_FIRST, TAIL_MAX));
+    let mut fa = parse(tail(&mut f, len, first));
     // Known gap: over 256 KB written after an open ask still finds a row, so
     // the window never grows to reach the ask.
-    if fa.tool.is_empty() && fa.text.is_empty() && len > TAIL_FIRST {
+    if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
         fa = parse(tail(&mut f, len, TAIL_MAX));
     }
+    if fa.user.is_empty()
+        && fa.user_at.is_none()
+        && let Some(p) = kept
+    {
+        (fa.user, fa.user_at) = (p.user, p.user_at);
+    }
+    PROMPTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if fa.user.is_empty() && fa.user_at.is_none() {
+            c.remove(path);
+        } else {
+            c.insert(
+                path.to_string(),
+                Prompt {
+                    file,
+                    len,
+                    user: fa.user.clone(),
+                    user_at: fa.user_at,
+                },
+            );
+        }
+    });
     TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
     fa
 }
@@ -351,15 +406,32 @@ fn parse(lines: Vec<String>) -> Facts {
                         turn_over = false;
                     }
                     None => {
-                        let mut interrupted = false;
+                        let (mut interrupted, mut result, mut typed) = (false, false, None);
                         for b in c.as_array().into_iter().flatten() {
                             if let Some(id) = b["tool_use_id"].as_str() {
                                 asks.retain(|a| a != id);
+                                result = true;
                             }
                             // safe beside the tool_results: they carry no `text`
-                            interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
+                            if let Some(t) = b["text"].as_str() {
+                                interrupted |= t.starts_with(INTERRUPT);
+                                if typed.is_none() && !t.starts_with(INTERRUPT) && !t.starts_with('<') {
+                                    typed = Some(t);
+                                }
+                            }
                         }
                         turn_over = interrupted;
+                        // A prompt with an image is an array too: its text block is the
+                        // human's, unless the row is a tool_result or one the harness wrote.
+                        if let Some(t) = typed
+                            && !result
+                            && !interrupted
+                            && v["isMeta"].as_bool() != Some(true)
+                            && !first_line(t).is_empty()
+                        {
+                            fa.user = first_line(t);
+                            fa.user_at = ts;
+                        }
                     }
                 }
             }
