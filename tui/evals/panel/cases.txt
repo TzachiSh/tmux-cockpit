@@ -4,6 +4,8 @@
 #   kind:    bug, feature, investigate, plan, refactor, review, research, message, command, ops, hint, format
 #   window:  name · cmd · path, as the panel captures them
 #   out:     the output type picked in the panel (default auto)
+#   out_is:  for write or either, a reply that is not a question must be this type
+#            (prompt, steps, command, text, format or hint); auto is not one
 #   expect:  ask    - the right first move is a question
 #            write  - the input settles it: no question
 #            either - an on-target question, or a reply with every must, both serve
@@ -492,9 +494,9 @@ move the whole config loader from yaml to toml, it touches a lot of files
 kind: review
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: diff|uncommitted|staged
+must: diff|staged
 must_not: subagent|subagents
-note: review of uncommitted work: read the diff, report, no edits
+note: review of uncommitted work: read the diff, report, no edits; "uncommitted" is the request's word, so it is no must
 --- request
 review my uncommitted changes before i commit, just report problems
 
@@ -532,8 +534,9 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: write
 must: node; source|sources|cite|nodejs.org
+out_is: prompt
 holdout: yes
-note: a current fact: web search with sources
+note: a current fact: web search with sources; a hint from memory can name nodejs.org and still be stale, so only a prompt passes
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
