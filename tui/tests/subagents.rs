@@ -531,10 +531,10 @@ fn malformed_log_lines_are_skipped() {
     meta(&s.dir, "a", PLAIN);
     let junk = [
         "garbage".to_string(),
-        format!("x{}\tstop\ta", T0),
-        format!("{}\tfoo\ta", T0),
-        format!("{}\tstop\ta b", T0),
-        format!("{}\tstop", T0),
+        format!("x{T0}\tstop\ta"),
+        format!("{T0}\tfoo\ta"),
+        format!("{T0}\tstop\ta b"),
+        format!("{T0}\tstop"),
         String::new(),
     ];
     let mut lines = vec![ev(0, "start", "a")];
