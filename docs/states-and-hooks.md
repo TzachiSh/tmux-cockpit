@@ -240,7 +240,7 @@ Two more rows say how an agent ended (#403), from `PostToolUse` with the matcher
 | row | written when |
 |-----|--------------|
 | `<epoch>\tkill\t<agent_id>` | the model's TaskStop of a plain agent (`task_type` `local_agent`): `tool_response.task_id` is the agent id |
-| `<epoch>\tkill-tm\t<name>\t<description>` | a TaskStop of anything else, a teammate: its `task_id` is a task id no file holds, so the row keeps `tool_input.task_id` (the name the model gave, when plain) and `tool_response.command` (the description) |
+| `<epoch>\tkill-tm\t<name>\t<description>` | a TaskStop of a teammate (`in_process_teammate`; a shell's or any other task's TaskStop writes nothing): its `task_id` is a task id no file holds, so the row keeps `tool_input.task_id` (the name the model gave, when plain) and `tool_response.command` (the description) |
 | `<epoch>\tlive\t<id>,<id>...\t<description>...` | every `Stop`: the payload's `background_tasks`, subagents by agent id, teammates by description (their id is a task id too); shells are left out |
 
 A description is the JSON string's body as the payload has it, escapes kept, so it holds no
@@ -253,9 +253,10 @@ tab, newline or raw quote; one over 512 bytes, or with a control byte, is droppe
   it, when the parent's turn ends (anthropics/claude-code#100201).
 - **Only `Stop`'s set.** `SubagentStop` carries `background_tasks` too, but lists the agent that
   is stopping as running.
-- **All or nothing.** A `background_tasks` array that does not parse whole, an entry with a
-  bad id or description, or a row past 3900 bytes (one atomic write) writes no `live` row: a
-  short set would end agents that live.
+- **All or nothing.** A `background_tasks` array that does not parse whole (a nested array or
+  object in an entry included), one past 64 KB, an entry with a bad id or description, or a
+  row past 3900 bytes (one atomic write) writes no `live` row: a short set would end agents
+  that live.
 - **Undocumented shape.** The TaskStop payload's `tool_response` is not documented; a change to
   it drops the `kill` rows, and `end-unknown` covers the gap again.
 
@@ -295,10 +296,11 @@ stop is idle, not done: alone it cannot tell an idle teammate from an ended one.
 
 A `kill` row ends its agent as stopped until a later `start` (a resume) of it; the `stop` a
 teammate's TaskStop also fires does not undo it. A `kill-tm` row is mapped to a teammate by
-name when its name is some teammate's `name` in the meta files, else by description, and
-counts after that teammate's last `start`. Only the newest `live` row counts. It ends, as
+name when its name is some teammate's `name` in the meta files, else by description when
+exactly one teammate has it (two alike stay unknown), and counts only after that teammate's
+last `start` in the tail. Only the newest `live` row counts. It ends, as
 stopped, every agent whose newest event is a `start` (a resume included), whose
-last `start` came in an earlier second, that wrote no log line after it, and that is in it
+last `start` came in an earlier second, that wrote no log line and no transcript row after it, and that is in it
 neither by id nor (a teammate) by description. It cannot tell killed from finished, so a
 `finished: true` meta newer than the `start` still decides. `end-unknown` is left for an agent
 none of these reaches: a UI stop before the parent's next `Stop`, or a box without the hooks.
