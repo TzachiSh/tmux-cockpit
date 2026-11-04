@@ -13554,6 +13554,7 @@ for row in "path in the agent id|$(slp $SLS SubagentStart '../../evil')" \
            "no agent id|{\"session_id\":\"$SLS\"}" \
            "no session id|{\"agent_id\":\"a1\"}" \
            "not JSON|garbage" "an empty payload|"; do
+    rm -rf "$SLD/state"   # one state dir per row: an earlier row's file must not fail a later one
     out=$(sl sub-start "${row#*|}"); n=$(find "$SLD/state" -type f 2>/dev/null | grep -c .)
     is "malformed: ${row%%|*}: exit 0, silent, no log" "rc=0 0" "$out $n"
 done
@@ -13565,6 +13566,21 @@ is "an agent_id inside a message that comes before the real one is not taken" "s
 rm -rf "$SLD/state"; mkdir -p "$SLDIR"; : > "$SLD/victim"; ln -s "$SLD/victim" "$SLDIR/$SLS.log"
 is "a symlinked log: exit 0" "rc=0" "$(sl sub-start "$(slp $SLS SubagentStart a1)")"
 is "and the link target is untouched" "0" "$(wc -c < "$SLD/victim" | tr -d ' ')"
+# A symlink where the dir goes is never followed, by the record or by the sweep.
+rm -rf "$SLD/state" "$SLD/target"; mkdir -p "$SLD/state/tmux-cockpit" "$SLD/target"
+printf 'keep\n' > "$SLD/target/$SLS.log"; ln -s "$SLD/target" "$SLD/state/tmux-cockpit/subs"
+sl sub-start "$(slp $SLS SubagentStart a1)" >/dev/null
+is "a symlinked dir: sub-start writes nothing through it" "keep" "$(cat "$SLD/target/$SLS.log")"
+sl sub-end "{\"session_id\":\"$SLS\"}" >/dev/null
+is "and sub-end deletes nothing through it" "keep" "$(cat "$SLD/target/$SLS.log" 2>/dev/null)"
+rm -rf "$SLD/state" "$SLD/target"
+# The read is cut at 256 KB: ids after that are never seen, ids before it are.
+SLPAD=$(head -c 300000 /dev/zero | tr '\0' x)
+sl sub-start "{\"session_id\":\"$SLS\",\"agent_id\":\"near1\",\"m\":\"$SLPAD\"}" >/dev/null
+sl sub-start "{\"session_id\":\"$SLT\",\"m\":\"$SLPAD\",\"agent_id\":\"far1\"}" >/dev/null
+is "an id before the 256 KB cut is read; one past it is not" "near1|" \
+   "$(awk -F'\t' '{ print $3 }' "$SLDIR/$SLS.log" 2>/dev/null)|$(cat "$SLDIR/$SLT.log" 2>/dev/null)"
+rm -rf "$SLD/state"
 # A writer that never ends the payload must not hold the hook.
 rm -rf "$SLD/state"; SLFIFO="$SLD/fifo"; mkfifo "$SLFIFO"
 env XDG_STATE_HOME="$SLD/state" "$DIR/scripts/agent-state" sub-start < "$SLFIFO" >/dev/null 2>&1 &
@@ -13575,11 +13591,13 @@ exec 8>&-; wait "$SLPID" 2>/dev/null; is "and it still exits 0" "0" "$?"
 # SessionEnd: this session's log goes, another's stays, and logs past 7 days are swept.
 rm -rf "$SLD/state"
 sl sub-start "$(slp $SLS SubagentStart a1)" >/dev/null; sl sub-start "$(slp $SLT SubagentStart b1)" >/dev/null
-: > "$SLDIR/old.log"; : > "$SLDIR/recent.log"; : > "$SLDIR/old.keep"
+: > "$SLDIR/old.log"; : > "$SLDIR/recent.log"; : > "$SLDIR/old.keep"; : > "$SLDIR/past7.log"; : > "$SLDIR/edge.log"
 touch -d '8 days ago' "$SLDIR/old.log" "$SLDIR/old.keep" 2>/dev/null || touch -t "$(date -v-8d +%Y%m%d%H%M)" "$SLDIR/old.log" "$SLDIR/old.keep"
 touch -d '6 days ago' "$SLDIR/recent.log" 2>/dev/null || touch -t "$(date -v-6d +%Y%m%d%H%M)" "$SLDIR/recent.log"
+touch -d '169 hours ago' "$SLDIR/past7.log" 2>/dev/null || touch -t "$(date -v-169H +%Y%m%d%H%M)" "$SLDIR/past7.log"
+touch -d '167 hours ago' "$SLDIR/edge.log" 2>/dev/null || touch -t "$(date -v-167H +%Y%m%d%H%M)" "$SLDIR/edge.log"
 is "sub-end exits 0" "rc=0" "$(sl sub-end "{\"session_id\":\"$SLS\",\"hook_event_name\":\"SessionEnd\",\"reason\":\"exit\"}")"
-is "it drops its own session's log and the logs past 7 days, and nothing else" "b1 old.keep recent.log" \
+is "it drops its own session's log and the logs past 7 days (169 h, not 167 h), and nothing else" "b1 edge.log old.keep recent.log" \
    "$(ls "$SLDIR" | sed "s/^$SLT.log$/b1/" | tr '\n' ' ' | sed 's/ $//')"
 SLBEFORE=$(ls "$SLDIR" | tr '\n' ' ')
 sl sub-end '{}' >/dev/null; sl sub-end '{"session_id":"../x"}' >/dev/null
@@ -13599,6 +13617,16 @@ slcmds() { jq -r '.hooks | to_entries[] | .key as $k | .value[].hooks[].command
 is "the example wires each new command once, on its event, and keeps the old ones" \
    "SessionEnd:off SessionEnd:sub-end SubagentStart:running SubagentStart:sub-start SubagentStop:sub-stop TeammateIdle:sub-idle TeammateIdle:wake" \
    "$(slcmds "$SLEX" | tr ' ' '\n' | grep -E '^(SessionEnd|SubagentStart|SubagentStop|TeammateIdle):' | tr '\n' ' ' | sed 's/ $//')"
+is "every entry of the example holds one handler, so an upgrade keeps no old twin" "0" \
+   "$(jq '[.hooks[][] | select((.hooks | length) != 1)] | length' "$SLEX")"
+# Upgrade: a box set up by the --hooks before this change keeps its entries, and gains the new
+# ones beside them, once, however often --hooks runs.
+SLU=$(mktmpd); mkdir -p "$SLU/.claude"; jq '{hooks: .hooks}' "$DIR/tests/fixtures/hooks-pre-361.json" > "$SLU/.claude/settings.json"
+slucount() { jq -r --arg c "$1" '[.. | strings | select(test("TMUX_COCKPIT_DIR.*/scripts/agent-state " + $c + "$"))] | length' "$SLU/.claude/settings.json"; }
+sluall() { for c in running wake off sub-start sub-stop sub-idle sub-end; do slucount $c; done | tr '\n' ' ' | sed 's/ $//'; }
+is "master's hooks as the starting point: running, wake and off as shipped, no sub-* yet" "4 1 2 0 0 0 0" "$(sluall)"
+for i in 1 2; do env HOME="$SLU" XDG_BIN_HOME="$SLU/bin" "$DIR/install.sh" --hooks >/dev/null 2>&1; done
+is "upgrading, twice: the old counts hold and each sub-* is added once" "4 1 2 1 1 1 1" "$(sluall)"
 SLH=$(mktmpd); mkdir -p "$SLH/.claude"
 cat > "$SLH/.claude/settings.json" <<'JSON'
 { "hooks": {

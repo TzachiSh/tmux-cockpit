@@ -1,0 +1,89 @@
+{
+  "_comment": [
+    "Merge the 'hooks' key below into ~/.claude/settings.json (install.sh --hooks).",
+    "These are the only writers of pane state; without them every pane stays idle.",
+    "",
+    "Not wired: SubagentStop (would clear a failed subagent's error), TaskCompleted",
+    "(fires mid-turn), PreCompact (no state to report).",
+    "",
+    "TeammateIdle -> wake: an idle teammate's message wakes its lead with no hook.",
+    "SessionStart -> off skips compact, so compaction keeps the pane's review marks.",
+    "SessionStart and UserPromptSubmit -> session save the payload's session_id and",
+    "transcript_path in pane options, so the transcript reader is right from turn 1.",
+    "They and CwdChanged also save the payload's cwd as @cockpit_dir, the tree the",
+    "board reads, when the agent moved or a new session began (#312).",
+    "PreToolUse runs before the permission prompt, so PostToolUse clears needs-input.",
+    "",
+    "Stop also runs review-gate: it flags an unreviewed diff (◆), hands over a queued",
+    "review, and caps a /goal rewake chain at @cockpit_rewake_cap. It never waits",
+    "on anything, so 5 s is its timeout.",
+    "",
+    "WorktreeCreate/WorktreeRemove put claude's worktrees under",
+    "~/.cache/cockpit-wt/<name>, so the cockpit reads the tree the agent works in.",
+    "Not with --worktree --tmux, which skips the hook."
+  ],
+  "_statusline_comment": [
+    "Optional, and not part of the 'hooks' merge: a statusLine that records context",
+    "fill in @panestate_ctx, for the tab suffix in examples/tmux.conf. It replaces",
+    "any statusLine you have. To use it, add a top-level 'statusLine' key:",
+    "",
+    "  \"statusLine\": {",
+    "    \"type\": \"command\",",
+    "    \"command\": \"\\\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\\\"/scripts/agent-context\"",
+    "  }",
+    "",
+    "Requires jq. Silently prints '<model> · ctx NN%' and does nothing to the",
+    "pane on any input it cannot parse -- see scripts/agent-context."
+  ],
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
+      { "matcher": "startup|resume|clear|fork", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "jq -Rs '{hookSpecificOutput:{hookEventName:\"SessionStart\",additionalContext:.}}' \"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/skills/unslop/SKILL.md 2>/dev/null" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] }
+    ],
+    "PermissionRequest": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state needs-input" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state error" } ] }
+    ],
+    "SubagentStart": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+    ],
+    "TeammateIdle": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state wake" } ] }
+    ],
+    "Notification": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state notify" } ] }
+    ],
+    "StopFailure": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state error" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
+    ],
+    "WorktreeCreate": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }
+    ],
+    "WorktreeRemove": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-remove" } ] }
+    ],
+    "CwdChanged": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] }
+    ],
+    "SessionEnd": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }
+    ]
+  }
+}

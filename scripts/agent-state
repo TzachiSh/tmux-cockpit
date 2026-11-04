@@ -1,7 +1,8 @@
 #!/bin/bash
 # Record a tmux pane's agent state in per-pane tmux options.
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
-#          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's subagent log (#361)
+#          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's
+#                                          subagent log (#361)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)

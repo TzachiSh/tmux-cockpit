@@ -27,12 +27,11 @@ subs_id() {                   # <key> -> REPLY
 }
 
 # The payload: the first line, bounded by 2 s where `timeout` exists (#320, #322: a writer
-# that sends neither a newline nor EOF must not hold the hook) and by 256 KB. Fails open to
-# an empty payload.
+# that sends neither a newline nor EOF must not hold the hook) and by 256 KB: the second
+# head stops the read, the first gets SIGPIPE. Fails open to an empty payload.
 subs_payload() {
     local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 2"
-    payload=$($to head -n 1 2>/dev/null) || payload=""
-    payload=${payload:0:262144}
+    payload=$($to head -n 1 2>/dev/null | head -c 262144) || payload=""
 }
 
 # subs_record <start|stop|idle>: one line for the payload's agent, or nothing at all.
@@ -60,7 +59,10 @@ subs_end() {
     subs_dir || return 0; dir=$REPLY
     [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
     subs_id session_id; sid=$REPLY
-    [ -n "$sid" ] && [ -f "$dir/$sid.log" ] && [ ! -L "$dir/$sid.log" ] && rm -f -- "$dir/$sid.log" 2>/dev/null
-    find "$dir" -maxdepth 1 -type f -name '*.log' -mtime +7 -exec rm -f -- {} + 2>/dev/null
+    if [ -n "$sid" ] && [ -f "$dir/$sid.log" ] && [ ! -L "$dir/$sid.log" ]; then
+        rm -f -- "$dir/$sid.log" 2>/dev/null
+    fi
+    # -mmin, not -mtime: -mtime +7 spares a log until it is 8 whole days old.
+    find "$dir" -maxdepth 1 -type f -name '*.log' -mmin +10080 -exec rm -f -- {} + 2>/dev/null
     return 0
 }
