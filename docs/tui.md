@@ -396,11 +396,13 @@ Running is the subagents whose `subagents/` files say they run. With no files
 to read, it is the hook's `@cockpit_subs`, the background subagents in flight
 at the agent's last Stop. An ended agent (#301) runs no subagent, whatever its
 files say: its badge counts none running, shows only a failure, in the meta
-role and dim, and its tree draws those subagents with `◌` and no age.
+role and dim, and its tree draws its running and idle subagents with `◌` and
+no age.
 
-The files give no finish time, so the board keeps its own: it stamps each
-subagent when a read first sees it failed or done. A failure first seen before
-the agent's newest prompt is an earlier turn's: it leaves the badge and the
+A subagent's end is its `finished_at` (#338), the newest row of its transcript.
+Without one, the board keeps its own: it stamps each subagent when a read first
+sees it failed or done. A failure that ended before the agent's newest prompt
+is an earlier turn's: it leaves the badge and the
 tree at the same moment, so the two always agree. A background subagent that
 started last turn and failed this one stays, while the board stays open: each
 popup is a new process and starts with no memory (#338). The newest prompt is a human one;
@@ -435,9 +437,25 @@ description, its tokens (the context of its last request: `842`, `12.4k`,
 `3.1M`) and its age since it started. As the row narrows the tokens go first,
 then the description shortens to 8 cells, then the type to 6; the age stays.
 A done subagent folds into one `✓ N done` line, first in the tree, 2 minutes
-after a read first saw it done. A stopped subagent (`stoppedByUser`) draws and folds as
-done until the tree gives it its own glyph. A tree takes at most 5
-lines, the last reading `+N more` when it has more.
+after it ended. Each state has its mark (#361):
+
+| state | mark (ascii) | role | age from | folds |
+|-------|--------------|------|----------|-------|
+| running | `●` (`*`) | running | start | never |
+| failed | `✕` (`x`) | error | start | leaves at the next prompt |
+| done | `✓` (`+`) | done | start | into `✓ N done`, 2 min after its end |
+| stopped by the user | `∎` (`#`), dim | meta | start | as done |
+| idle, a teammate between turns | `◦` (`o`) | meta | last sign of life | never: it is alive |
+| end unknown | `◌` (`~`) | meta | last sign of life | at once, into `◌ N quiet` |
+
+Only running and failed count in the badge. End unknown is 15 minutes with no
+transcript write and no recorded end: a TaskStop mid-turn, or a live agent
+waiting on a permission prompt or a long call. It is never red, and as it is
+past the 2 minutes by its definition it folds at once, into a line of its own
+whose age is the newest sign of life among them. One long session held 16 done,
+51 end unknown and 3 idle subagents: `✓ 16 done`, `◌ 51 quiet` and the three
+teammates. `∎` and `◦` are East Asian Width N, one cell everywhere; `■` is A.
+A tree takes at most 5 lines, the last reading `+N more` when it has more.
 
 Tree lines take only the rows the list leaves empty, and never more than half
 of them, so they never push a row off screen and never make the list scroll:

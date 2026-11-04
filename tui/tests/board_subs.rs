@@ -44,9 +44,8 @@ fn sub(ty: &str, desc: &str, state: SubState, ago: u64, tokens: u64) -> Sub {
         desc: desc.into(),
         state,
         started: Some(NOW - ago),
-        finished_at: None,
-        active_at: None,
         tokens,
+        ..Default::default()
     }
 }
 
@@ -113,6 +112,7 @@ fn shown(ps: &[Pane], n: &Nav) -> Vec<String> {
             Row::Agent(i) => ps[i].id.clone(),
             Row::Sub(i, j) => format!("{}/{}", ps[i].id, ps[i].subs[j].desc),
             Row::Done(i, k) => format!("{}:done {k}", ps[i].id),
+            Row::Quiet(i, k) => format!("{}:quiet {k}", ps[i].id),
             Row::More(i, k) => format!("{}:+{k}", ps[i].id),
         })
         .collect()
@@ -480,7 +480,7 @@ fn the_selected_agent_gets_lines_first_then_blocked_then_board_order() {
         .rows(&ps)
         .iter()
         .filter_map(|r| match r {
-            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) => Some(ps[*i].id.clone()),
+            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
             _ => None,
         })
         .collect();
@@ -501,7 +501,7 @@ fn the_crowd_selected_first() {
         .rows(&ps)
         .iter()
         .filter_map(|r| match r {
-            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) => Some(ps[*i].id.clone()),
+            Row::Sub(i, _) | Row::More(i, _) | Row::Done(i, _) | Row::Quiet(i, _) => Some(ps[*i].id.clone()),
             _ => None,
         })
         .collect();
@@ -965,4 +965,155 @@ fn an_idle_or_end_unknown_sub_counts_as_neither_running_nor_failed() {
         seen.observe(std::slice::from_ref(&p));
         assert_eq!(board::sub_counts(&p, &seen), (0, 0), "{st:?}");
     }
+}
+
+// ---------------------------------------------------------------- #361: the states' own looks
+
+/// `tests`, alone in its session, with `subs` and its tree open, prompted 300 s ago.
+fn one(subs: Vec<Sub>) -> Vec<Pane> {
+    let mut p = agent("%4", "api:1", "tests", "running", "x");
+    p.asked_since = Some(300);
+    p.subs = subs;
+    vec![p]
+}
+
+fn with(mut s: Sub, finished: Option<u64>, active: Option<u64>) -> Sub {
+    (s.finished_at, s.active_at) = (finished.map(|a| NOW - a), active.map(|a| NOW - a));
+    s
+}
+
+/// The tree line holding `text`, as cells.
+fn cells_of(ps: &[Pane], th: &Theme, text: &str) -> Vec<ratatui::buffer::Cell> {
+    let n = nav(ps, "%4", &["%4"], 12);
+    let mut t = Terminal::new(TestBackend::new(100, 10)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &list_view(ps, th, &n))).unwrap();
+    let buf = t.backend().buffer().clone();
+    let y = (0..buf.area.height)
+        .find(|&y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(text))
+        .unwrap_or_else(|| panic!("no line holds {text}"));
+    (0..buf.area.width).map(|x| buf[(x, y)].clone()).collect()
+}
+
+fn text(cells: &[ratatui::buffer::Cell]) -> String {
+    cells.iter().map(|c| c.symbol()).collect()
+}
+
+/// Stopped (#336) has its own mark, `∎` (`#` in ascii), in meta and dim.
+#[test]
+fn a_stopped_sub_has_its_own_dim_mark() {
+    let ps = one(vec![with(sub("Plan", "halted", SubState::Stopped, 30, 1), Some(10), None)]);
+    let th = Theme::fixed();
+    let c = cells_of(&ps, &th, "halted");
+    let mark = c.iter().find(|c| c.symbol() == "∎").unwrap_or_else(|| panic!("{}", text(&c)));
+    assert_eq!(mark.fg, th.meta);
+    assert!(mark.modifier.contains(ratatui::style::Modifier::DIM));
+    assert!(
+        text(&cells_of(&ps, &ascii(), "halted")).contains("|- # Plan") || text(&cells_of(&ps, &ascii(), "halted")).contains("`- # Plan")
+    );
+}
+
+/// Idle (#361) is a teammate between turns: alive, its own mark, aged from its last sign
+/// of life, and never folded however long it waits.
+#[test]
+fn an_idle_teammate_stays_a_line_with_its_own_mark() {
+    let mut ps = one(vec![with(sub("mate", "between turns", SubState::Idle, 900, 1), None, Some(40))]);
+    let th = Theme::fixed();
+    let line = text(&cells_of(&ps, &th, "between turns"));
+    assert!(line.contains("└ ◦ mate") && line.contains("40s") && !line.contains("15m"), "{line}");
+    assert!(text(&cells_of(&ps, &ascii(), "between turns")).contains("`- o mate"));
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    ps[0].asked_since = Some(300 + 10 * board::SUB_FOLD);
+    read(&mut n, &ps, NOW + 10 * board::SUB_FOLD);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/between turns"]);
+}
+
+/// EndUnknown (#361) is 15 minutes without a transcript write, past SUB_FOLD by
+/// definition: it folds at once, into its own line, never into done, in no red.
+#[test]
+fn end_unknown_subs_fold_into_their_own_quiet_line() {
+    let ps = one(vec![
+        with(sub("Explore", "q1", SubState::EndUnknown, 4000, 1), None, Some(3000)),
+        with(sub("Explore", "q2", SubState::EndUnknown, 2000, 1), None, Some(960)),
+        with(sub("Plan", "ok", SubState::Done, 100, 1), Some(5), None),
+    ]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:quiet 2", "%4/ok"]);
+    let th = Theme::fixed();
+    let c = cells_of(&ps, &th, "2 quiet");
+    let line = text(&c);
+    assert!(
+        line.contains("├ ◌ 2 quiet") && line.contains("16m") && !line.contains("50m"),
+        "the newest sign of life: {line}"
+    );
+    assert!(c.iter().all(|c| c.fg != th.error && c.fg != th.needs), "{line}");
+}
+
+/// The owner's session 51267349: 16 done, 51 end unknown, 3 idle teammates. Two fold
+/// lines and the three teammates: five lines, nothing swamped.
+#[test]
+fn the_owners_session_fits_its_five_lines() {
+    let mut subs = vec![];
+    for k in 0..16 {
+        subs.push(with(
+            sub("Explore", &format!("d{k}"), SubState::Done, 5000 + k, 1),
+            Some(4000),
+            None,
+        ));
+    }
+    for k in 0..51 {
+        subs.push(with(
+            sub("Explore", &format!("u{k}"), SubState::EndUnknown, 4000 + k, 1),
+            None,
+            Some(2000),
+        ));
+    }
+    for k in 0..3 {
+        subs.push(with(sub("mate", &format!("i{k}"), SubState::Idle, 3000 + k, 1), None, Some(30)));
+    }
+    let ps = one(subs);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 16", "%4:quiet 51", "%4/i0", "%4/i1", "%4/i2"]);
+    // in 2 rows the quiet fold is cut, its 51 counted in the `+N more`
+    let n = nav(&ps, "%4", &["%4"], 4);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4:done 16", "%4:+54"]);
+}
+
+/// With a finish time, a done sub folds 2 minutes after it, whatever the first sight says.
+#[test]
+fn a_done_sub_folds_on_its_finish_time() {
+    // started after the prompt: first sight would stamp it now and keep it a line
+    let ps = one(vec![with(
+        sub("Plan", "late", SubState::Done, 200, 1),
+        Some(board::SUB_FOLD + 1),
+        None,
+    )]);
+    assert_eq!(tree_of(&ps, &nav(&ps, "%4", &["%4"], 12), "%4"), ["%4:done 1"]);
+    // started before the prompt: first sight would stamp it old and fold it
+    let ps = one(vec![with(sub("Plan", "fresh", SubState::Done, 900, 1), Some(10), None)]);
+    assert_eq!(tree_of(&ps, &nav(&ps, "%4", &["%4"], 12), "%4"), ["%4/fresh"]);
+}
+
+/// With a finish time, a failure is an earlier turn's when it finished before the prompt.
+#[test]
+fn a_failure_clears_on_its_finish_time() {
+    // started last turn, failed this one: first sight alone would drop it
+    let ps = one(vec![with(sub("Plan", "bg", SubState::Failed, 900, 1), Some(100), None)]);
+    let n = nav(&ps, "%4", &["%4"], 12);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/bg"]);
+    assert_eq!(board::sub_counts(&ps[0], &n.seen), (0, 1));
+    // finished before the prompt, though first seen in a known pane after it
+    let mut ps = one(vec![]);
+    let mut n = nav(&ps, "%4", &["%4"], 12);
+    ps[0].subs = vec![with(sub("Plan", "old", SubState::Failed, 900, 1), Some(400), None)];
+    read(&mut n, &ps, NOW);
+    assert_eq!(board::sub_counts(&ps[0], &n.seen), (0, 0));
+}
+
+/// An ended agent's (#301) idle teammate is ended too: nothing waits for a next turn.
+#[test]
+fn an_ended_agents_idle_teammate_is_drawn_ended() {
+    let mut ps = one(vec![with(sub("mate", "orphan", SubState::Idle, 900, 1), None, Some(40))]);
+    ps[0].ended = true;
+    let line = text(&cells_of(&ps, &Theme::fixed(), "orphan"));
+    assert!(line.contains("└ ◌ mate") && !line.contains("40s"), "{line}");
 }
