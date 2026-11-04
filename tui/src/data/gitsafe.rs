@@ -109,6 +109,23 @@ pub type Stat = (u64, u64, u64, String);
 /// keeps its mtime, or git's racy check trusts a same-second edit as clean.
 /// `base` None is HEAD; None back means git failed (a bad base, not a repo).
 pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
+    tree_stat_with(root, gitdir, base, &write_new)
+}
+
+/// A file at `p` holding `bytes`, never one that was already there.
+fn write_new(p: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    File::options().write(true).create_new(true).open(p)?.write_all(bytes)
+}
+
+/// [`tree_stat`] with the excludes file written by `write_excludes`: a test
+/// makes that one write fail, or panic, and nothing else.
+#[doc(hidden)]
+pub fn tree_stat_with(
+    root: &str,
+    gitdir: &str,
+    base: Option<&str>,
+    write_excludes: &dyn Fn(&Path, &[u8]) -> std::io::Result<()>,
+) -> Option<Stat> {
     if base.is_some_and(|b| b.starts_with('-')) {
         return None; // git would read it as an option: `--output=<file>` writes
     }
@@ -146,12 +163,7 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
     if !excludes.is_empty() {
         // create_new: a name planted in the shared temp dir is never followed
         let _ = std::fs::remove_file(&ps);
-        let wrote = File::options()
-            .write(true)
-            .create_new(true)
-            .open(&ps)
-            .and_then(|mut f| f.write_all(&excludes));
-        if wrote.is_err() {
+        if write_excludes(&ps, &excludes).is_err() {
             let _ = std::fs::remove_file(&ps);
             let _ = std::fs::remove_file(&idx);
             return None; // never an add without its excludes
