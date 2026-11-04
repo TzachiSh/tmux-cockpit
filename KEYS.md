@@ -63,7 +63,7 @@ Taps on the bar act on release.
 |---------|------|
 | tap `≡` (top left of the border) | the menu |
 | tap the session name, or `▲ elsewhere` beside it | sessions screen, waiting sessions first |
-| tap the path on the border | browse the pane's working directory |
+| tap the path on the border | browse the pane's working directory (`↵` views a file, `alt-e` edits it) |
 | tap the branch on the border | the branch popup |
 | tap `[z]` / `[u]` (split windows) | zoom / unzoom the pane |
 | tap a window tab | that window |
@@ -72,9 +72,14 @@ Taps on the bar act on release.
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
-A markdown file the picker opens shows in the viewer (`@cockpit_md_view off`
-sends it to the editor): `/` finds, `n` `N` move between matches, `e` opens the
-editor at the top line, `?` lists the rest. See [docs/tui.md](docs/tui.md#the-markdown-viewer-283).
+A markdown file the picker opens shows in the viewer, and so does any file the
+file browser's `↵` picks (`@cockpit_md_view off` sends both to the editor).
+`cockpit-tui view` shows a markdown file rendered, and any other text file whole
+as numbered code highlighted by its extension or `#!` line; the keys are the
+same for both: `/` finds, `n` `N` move between matches, `e` opens the editor at
+the top line, `?` lists the rest. See
+[docs/tui.md](docs/tui.md#the-markdown-viewer-283) and
+[a code file](docs/tui.md#a-code-file-365).
 
 Plain clicks in a pane, wheel and drag are never touched, and neither is a
 single `Ctrl`+click: tmux 3.8 binds nothing to it. `@cockpit_keep_swap_pane`

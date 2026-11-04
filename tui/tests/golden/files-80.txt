@@ -21,4 +21,4 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" ↵ open   ← up   . dotfiles off   alt-i ignored off   F1 keys   esc close       "
+" ↵ view   ← up   alt-e edit   . dotfiles off   F1 keys   esc close              "

@@ -250,6 +250,35 @@ fn the_footer_names_the_key_and_its_state() {
     assert!(flat(false, false).contains("alt-i ignored off"));
     assert!(flat(false, true).contains("alt-i ignored on"));
     assert!(flat(true, false).contains(". dotfiles on"));
+    let wide = flat(false, false);
+    assert!(wide.contains("view"), "{wide}");
+    assert!(wide.contains("alt-e edit"), "{wide}");
+    assert!(!wide.contains(" open"), "Enter no longer says open: {wide}");
+}
+
+#[test]
+fn alt_e_stays_in_the_footer_at_popup_widths() {
+    let g = Theme::fixed().g;
+    for w in [60, 70, 84] {
+        let h = files::hints(&g, w, false, false);
+        assert!(h.iter().any(|(k, v)| k == "alt-e" && v == "edit"), "width {w}: {h:?}");
+    }
+}
+
+#[test]
+fn the_narrow_footer_keeps_enter_as_view() {
+    let g = Theme::fixed().g;
+    let h = files::hints(&g, 8, false, false);
+    assert_eq!(h[0], (g.key_enter.to_string(), "view".to_string()));
+}
+
+#[test]
+fn help_names_enter_as_view_and_alt_e_as_open_in_the_editor() {
+    let g = Theme::fixed().g;
+    let rows = files::help(&g);
+    let row = |k: &str| rows.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+    assert!(row(g.key_enter).unwrap().starts_with("view"), "{rows:?}");
+    assert!(row("alt-e").unwrap().contains("editor"), "{rows:?}");
 }
 
 // --- drawn names are text for a person ---------------------------------------
@@ -263,7 +292,7 @@ fn drawn_names_drop_control_and_bidi_characters_but_the_key_keeps_them() {
     assert_eq!(shown(&f), ["a[31mbcd e.txt"]);
     assert_eq!(f.pick.rows[0].key, name.as_bytes(), "the key is the exact name");
     let mut f = f;
-    assert_eq!(tap(&mut f, KeyCode::Enter), line("open", &p));
+    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &p));
 }
 
 #[test]
@@ -271,7 +300,7 @@ fn a_name_that_is_not_utf8_prints_its_exact_bytes() {
     let s = Scratch::new();
     let p = s.file(OsStr::from_bytes(b"caf\xe9.txt"));
     let mut f = browser(&s.0);
-    assert_eq!(tap(&mut f, KeyCode::Enter), line("open", &p));
+    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &p));
 }
 
 #[test]
@@ -294,13 +323,42 @@ fn a_name_with_a_newline_cannot_ride_one_line_so_it_prints_nothing() {
 // --- keys --------------------------------------------------------------------
 
 #[test]
-fn enter_on_a_file_prints_open_and_its_absolute_path() {
+fn enter_on_a_file_prints_view_and_its_absolute_path() {
     let s = Scratch::new();
     s.dir("d");
     let p = s.file("notes.md");
     let mut f = browser(&s.0);
     tap(&mut f, KeyCode::Down);
-    assert_eq!(tap(&mut f, KeyCode::Enter), line("open", &p));
+    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &p));
+}
+
+#[test]
+fn alt_e_on_a_file_prints_open_and_its_absolute_path() {
+    let s = Scratch::new();
+    s.dir("d");
+    let p = s.file("main.rs");
+    let mut f = browser(&s.0);
+    tap(&mut f, KeyCode::Down);
+    assert_eq!(press(&mut f, KeyCode::Char('e'), KeyModifiers::ALT), line("open", &p));
+}
+
+#[test]
+fn alt_e_on_a_folder_and_a_plain_e_print_nothing() {
+    let s = Scratch::new();
+    s.dir("sub");
+    let mut f = browser(&s.0);
+    assert_eq!(press(&mut f, KeyCode::Char('e'), KeyModifiers::ALT), Outcome::Continue);
+    assert_eq!(tap(&mut f, KeyCode::Char('e')), Outcome::Continue);
+    assert_eq!(f.pick.query, "e", "a plain e is the filter");
+}
+
+#[test]
+fn alt_e_on_a_newline_name_says_so_and_prints_nothing() {
+    let s = Scratch::new();
+    s.file("two\nlines.txt");
+    let mut f = browser(&s.0);
+    assert_eq!(press(&mut f, KeyCode::Char('e'), KeyModifiers::ALT), Outcome::Continue);
+    assert!(f.pick.header.starts_with('✕'), "{}", f.pick.header);
 }
 
 #[test]
@@ -316,7 +374,7 @@ fn enter_on_a_directory_goes_into_it_and_clears_the_filter() {
     assert_eq!(f.dir, d);
     assert_eq!(shown(&f), ["in.txt"]);
     assert!(f.pick.query.is_empty());
-    assert_eq!(tap(&mut f, KeyCode::Enter), line("open", &inner));
+    assert_eq!(tap(&mut f, KeyCode::Enter), line("view", &inner));
 }
 
 #[test]

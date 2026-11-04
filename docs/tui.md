@@ -1769,9 +1769,9 @@ workspace, no crate split.
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
-| `mdview` | the `cockpit-tui view` markdown viewer (#283): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays the markdown out as rows, pure |
+| `mdview` | the `cockpit-tui view` viewer (#283, #365): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays markdown out as rows, `mdview::code` any other text file as numbered highlighted rows, both pure |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
-| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or open, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `open <path>` or `copy <path>` |
+| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or view, `alt-e` edit, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `view <path>`, `open <path>` or `copy <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
 | `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
@@ -2015,7 +2015,8 @@ acts on the one line it prints; the binary never mutates.
 | key | does |
 |---|---|
 | type | filters the folder (case-insensitive substring) |
-| `↵` | on a folder, goes into it and clears the filter; on a file, prints `open <path>` |
+| `↵` | on a folder, goes into it and clears the filter; on a file, prints `view <path>` (the viewer) |
+| `alt-e` | on a file, prints `open <path>` (the editor); on a folder, nothing |
 | `←`, `⌫` on an empty filter | goes up, landing on the folder it left; stops at `/` |
 | `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
 | `alt-i` | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |

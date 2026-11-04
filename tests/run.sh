@@ -13030,6 +13030,7 @@ case "$1" in
       case " $* " in
           *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
           *window_id*)         printf '@0\n' ;;
+          *is_touch*)          printf '0\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
   new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
@@ -13382,6 +13383,7 @@ case "$1" in
       case " $* " in
           *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
           *window_id*)         printf '@0\n' ;;
+          *is_touch*)          printf '%s\n' "${TOUCH:-0}" ;;
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
@@ -13404,7 +13406,7 @@ chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/b
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
     : > "$MVL"
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR=ed \
+    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
@@ -13446,6 +13448,14 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
 is "--view runs the viewer at the line and opens the editor where e left it" \
    "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
    "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+# a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
+for e in vi vim nvim nano emacs micro; do
+    is "--view on touch, e: $e gets +12" "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MV/w/a.md" \
+       "$(TOUCH=1 MV_ED=$e VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+done
+is "--view on touch, e: an editor outside the list gets the file only" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md" \
+   "$(TOUCH=1 VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 is "--view without a line passes none" "VIEW [view] [--] [$MV/w/a.md]" "$(mvrun '' --view %1 "$MV/w/a.md" '')"
 for o in 'edit 3; touch x' 'edit' 'edit x' 'open 3' 'edit 3 4'; do
     case "$(VIEW_OUT="$o" mvrun '' --view %1 "$MV/w/a.md" '')" in
@@ -13525,7 +13535,7 @@ echo "== tmux-open-path --folder: the file browser, and what is done with the li
 if need_tmux "folder browser"; then :; else
 FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
-FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
+FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
 FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
 printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
 for e in ed-cockpit ed-visual ed-editor nvim; do
@@ -13543,6 +13553,8 @@ cat > "$FB/bin/cockpit-tui" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" > "$FB/tui.args"
 cat "$FB/errtext" >&2
+# the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
+[ "\$1" = view ] && { cat "$FB/vout"; exit 0; }
 cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
@@ -13559,7 +13571,7 @@ fb() {
     "$TMUX_REAL" -L "$FBS" set -g @cockpit_touch "$touch"
     "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
     printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
-    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"
+    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"; printf %b "${FBV:-}" > "$FB/vout"
     ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
         "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
 }
@@ -13619,13 +13631,45 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
-# a markdown file goes to the viewer, drawn in the browser's popup, touch or not (#283)
+# view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
-    fb "$fbt" "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
-    is "$fbt: a markdown file picked in the browser opens in the viewer" "view -- $FBD/sub/n.md" "$(cat "$FB/tui.args" 2>/dev/null)"
-    is "$fbt: and no editor window opens for it" "" \
-       "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+    for fbv in n.md n.txt; do
+        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
+        is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" "$(cat "$FB/tui.args" 2>/dev/null)"
+        is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
+           "$(fbn run-shell)|$(fbn new-window)"
+    done
 done
+# the viewer's e prints `edit N` (FBV): a touch client gets a terminal editor at that line, a PC code
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim"
+fbwait "$FB/ed.log"
+is "touch: the viewer's e opens a terminal editor at the line, not code" "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
+   "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+case "$(cat "$FB/code.log")" in
+    *"[--goto][$FBD/sub/n.txt:7:1]"*) ok "non-touch: the viewer's e still goes to code at the line" ;;
+    *) bad "non-touch: the viewer's e still goes to code at the line" "--goto n.txt:7:1" "$(cat "$FB/code.log")" ;;
+esac
+# open on a markdown file on a touch client is a terminal editor, never the viewer
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: open on a markdown file goes to term_edit, not the viewer" "$FB/bin/ed-visual [$FBD/sub/n.md]|files $FBD" \
+   "$(cat "$FB/ed.log")|$(cat "$FB/tui.args")"
+# open on markdown is the editor now: the viewer has its own verb
+fb off "open $FBD/sub/n.md\n" 0
+fbwait "$FB/code.log"
+is "open on a markdown file goes to code, not the viewer" "files $FBD|1" \
+   "$(cat "$FB/tui.args")|$(fbn run-shell)"
+# a viewer that cannot take the file (@cockpit_md_view off) falls back to the editor's routing
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_md_view off
+fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+is "view with the viewer off falls back to code" "1|1" "$(fbn run-shell)|$(grep -c 'n.txt' "$FB/code.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_md_view
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
@@ -13657,7 +13701,11 @@ is "esc: nothing runs and nothing is said" "0|0|0|0" \
 # the printed line is untrusted: each of these must open and copy nothing
 for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
            "relative path|open proj/sub/n.md" "newline in the name|open $FBD/two\\nlines.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
-           "missing past dotdot|open $FBD/../nope"; do
+           "missing past dotdot|open $FBD/../nope" \
+           "view of a fifo|view $FBD/fifo" "view of a link to /dev/null|view $FBD/devnull" \
+           "view of a folder|view $FBD/sub" "view of a missing path|view $FBD/nope" \
+           "view of a relative path|view proj/sub/n.md" "view, two lines|view $FBF\\nview $FBF" \
+           "view, upper case|VIEW $FBF" "view, no path|view"; do
     for t in on off; do
         fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
         is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
