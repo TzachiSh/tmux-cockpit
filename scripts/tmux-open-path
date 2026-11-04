@@ -15,7 +15,14 @@
 # One candidate opens at once, a directory included. Several open the picker
 # (cockpit-tui pick, the same popup the branch segment gives you): ↵ opens the
 # row, alt-c copies its absolute path.
-#   tmux-open-path --folder <pane-id>      open that pane's folder in the editor
+#   tmux-open-path --folder <pane-id>      browse that pane's folder (cockpit-tui files)
+#
+# --folder opens a popup running cockpit-tui files on the pane's folder. ↵ on a
+# file prints "open <path>", alt-c "copy <path>". The line is untrusted: one
+# line, a known verb, an absolute path that exists. On a touch client
+# (@cockpit_is_touch) a file opens in a terminal editor window (@cockpit_editor,
+# else $VISUAL, $EDITOR, nvim, vim), since VS Code would open on the PC's screen;
+# elsewhere it opens as a clicked path does.
 #
 # Editor: VS Code by default, jumping to the line. For a terminal editor instead:
 #   set -g @cockpit_editor nvim   # opens in a new tmux window at +LINE
@@ -61,8 +68,9 @@ if [ "${1:-}" = --vscode ]; then
     exit $?
 fi
 
-PICK=0 DRY=0 FOLDER=0
-[ "${1:-}" = --folder ]  && { FOLDER=1; shift; } # the pane's folder, in the editor
+PICK=0 DRY=0 FOLDER=0 BROWSE=0
+[ "${1:-}" = --folder ]  && { FOLDER=1; shift; } # the pane's folder, in the browser
+[ "${1:-}" = --browse ]  && { BROWSE=1; shift; } # re-entry from the browser's popup
 [ "${1:-}" = --pick ]    && { PICK=1; shift; }   # re-entry from the popup below
 [ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
 
@@ -143,12 +151,85 @@ $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
     note "cockpit: no editor · set @cockpit_editor, \$VISUAL or install code"
 }
 
+# --- folder browser (#363) -------------------------------------------------------
+# A touch client has no use for VS Code: it opens on the PC's desktop. #{E:..}
+# expands the option as a format, as the status bar does; unset or 0 is false.
+touch_client() {
+    local t
+    t=$(tmux display-message -p -t "$pane" '#{E:@cockpit_is_touch}' 2>/dev/null)
+    case $t in ""|0) return 1 ;; esac
+}
+
+# A terminal editor in a window of its own, in the file's folder. Unlike open_one
+# this never reaches for VS Code: the caller decided the client cannot see it.
+term_edit() {
+    local file=$1 editor fd
+    editor=$(tmux show-options -gqv @cockpit_editor)
+    [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
+    if [ -z "$editor" ]; then
+        if command -v nvim >/dev/null 2>&1; then editor=nvim
+        elif command -v vim >/dev/null 2>&1; then editor=vim; fi
+    fi
+    [ -n "$editor" ] || { note "cockpit: no terminal editor · set @cockpit_editor, \$VISUAL or \$EDITOR"; return 1; }
+    fd=${file%/*}; fd=${fd:-/}
+    tmux new-window -t "$win" -a -c "$(fesc "$fd")" -n "$(fesc "${file##*/}")" \
+         "$editor $(shq "$file")"
+}
+
+# Acts on the one line cockpit-tui files printed. It is text from a program that
+# lists names anyone can create, so nothing is trusted until it is checked.
+browse_act() {
+    local line=$1 verb path
+    case $line in *$'\n'*) note "cockpit: the browser printed something that is not one line"; return 1 ;; esac
+    verb=${line%% *}; path=${line#* }
+    if [ "$verb" = "$line" ] || { [ "$verb" != open ] && [ "$verb" != copy ]; } \
+       || [ "${path:0:1}" != / ] || [ ! -e "$path" ]; then
+        note "cockpit: the browser named something that is not a file here"; return 1
+    fi
+    if [ "$verb" = copy ]; then
+        printf '%s\n' "$path" | tmux load-buffer -w - || { note "cockpit: could not copy"; return 1; }
+        note "cockpit: copied ${path/#$H/\~}"; return 0
+    fi
+    if [ ! -d "$path" ] && touch_client; then term_edit "$path"; else open_one "$path" "" ""; fi
+}
+
+# --folder asks for a popup, which re-enters as --browse: run-shell has no
+# terminal to draw on, and the popup is where the printed line can be read.
+browse_folder() {
+    local pw ph err key rc
+    # shellcheck source=lib/tui.sh
+    . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] \
+        || { note "cockpit: cockpit-tui is missing · run scripts/tui-fetch"; return 1; }
+    if [ "$BROWSE" -eq 0 ]; then
+        pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
+        ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
+        tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
+            -T " files · #{b:pane_current_path} " "$(shq "$0") --browse $(shq "$pane")"
+        return 0
+    fi
+    # stderr to a file: a cockpit-tui older than this script is told apart from a crash
+    err=$(mktemp 2>/dev/null) || err=/dev/null
+    key=$("$COCKPIT_TUI_BIN" files "$dir" 2>"$err"); rc=$?
+    [ ! -s "$err" ] || cat "$err" >&2
+    if tui_stale "$rc" "$err"; then
+        [ "$err" = /dev/null ] || rm -f -- "$err"
+        note "cockpit: $TUI_STALE_MSG"; return 1
+    fi
+    [ "$err" = /dev/null ] || rm -f -- "$err"
+    case "$rc" in
+        0) browse_act "$key" ;;
+        1) return 0 ;;
+        *) printf 'cockpit: files exited %s · see the lines above\n' "$rc" >&2
+           read -rsn1 -p '[any key]'; return 1 ;;
+    esac
+}
+
 if [ "$DRY" -eq 1 ]; then
     dir=${1:-$PWD}; line=${2:-}; pane=""; win=""
 else
     pane=${1:-}
     [ -n "$pane" ] || {
-        printf 'usage: tmux-open-path [--pick | --folder] <pane-id>\n' >&2
+        printf 'usage: tmux-open-path [--pick | --folder | --browse] <pane-id>\n' >&2
         printf '       tmux-open-path --dry-run <dir> <line>\n' >&2
         exit 2
     }
@@ -158,10 +239,10 @@ else
     dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
     # The cockpit table's o (the menu's Browse folder row and the status-bar path
-    # tap replay it) opens the pane's folder where a clicked directory would (#228).
-    if [ "$FOLDER" -eq 1 ]; then
+    # tap replay it) browses the pane's folder (#363).
+    if [ "$FOLDER" -eq 1 ] || [ "$BROWSE" -eq 1 ]; then
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
-        open_one "$dir" "" ""; exit 0
+        browse_folder; exit $?
     fi
 fi
 

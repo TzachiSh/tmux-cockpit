@@ -27,10 +27,27 @@ To copy something no key already copies, hold **shift** and drag. A tmux popup
 has no copy mode, so in any of these popups the terminal's own selection is the
 one that works.
 
-**The folder keys open the pane's folder.** The menu's `o` row (Browse folder)
-and a tap on the path in the status bar open the pane's current folder in the
-editor (VS Code opens it as a workspace). There is no folder browser to descend
-into; click a path in the output instead.
+**The folder keys browse the pane's folder.** The menu's `o` row (Browse folder),
+the cockpit table's `o` and a tap on the path on the pane border open `cockpit-tui files` in a
+popup on the pane's current folder (#363). Type to filter; `↵` on a folder goes
+into it, `←` (or `⌫` on an empty filter) goes up, and `.` on an empty filter shows
+or hides dotfiles, `alt-i` shows or hides what `.gitignore`,
+`.ignore` and git's global excludes hide (shown entries are drawn dim; `.git` is
+never listed). The footer names both keys and their state. Folders sort first. `↵` on a file opens it, `alt-c` copies its
+absolute path (a folder's too), `esc` leaves. The header shows the folder, cut on
+the left when it is long, and browsing above the repo root is allowed.
+
+A file opens the way a clicked path does (VS Code, or `@cockpit_editor`), except
+on a touch client (`@cockpit_is_touch`, see [status-bar.md](status-bar.md)): VS
+Code would open on the PC's screen and show a phone nothing, so the file opens in
+a terminal editor window next to the pane. The editor is `@cockpit_editor`, else
+`$VISUAL`, else `$EDITOR`, else `nvim`, else `vim`; the window is named for the
+file and starts in its folder. With none of them found the status line says so.
+
+The browser prints one line and `tmux-open-path --folder` checks it before acting:
+one line, the verb `open` or `copy`, an absolute path that exists. A file name
+with a newline in it cannot be sent, so the browser says so and prints nothing.
+Names are drawn without control and bidi characters; the printed path is exact.
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as
 `src/app.ts:31` in the list, not a bare filename.

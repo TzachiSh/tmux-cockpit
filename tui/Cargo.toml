@@ -14,6 +14,9 @@ ansi-to-tui = "8.0.1"
 # Pinned exactly, never a caret: crossterm #1104 (open, 2026-08) wedges the
 # parser on an unrecognised `CSI ? … $y` report and swallows all later input.
 crossterm = "=0.29.0"
+# The file browser lists a folder the way ripgrep does: .gitignore, .ignore and git's
+# global excludes. Exact pin, a release older than two weeks.
+ignore = "=0.4.33"
 libc = "0.2"
 ratatui = "0.30.2"
 # Width budgets subtract ellipsis.width() and never count chars: U+2328 plus
