@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# tmux-cockpit redraw-cost gate -- drop-in for tests/run.sh.
+# tmux-cockpit redraw-cost gate. Not part of tests/run.sh: it builds a
+# 120-pane server and takes about 40 s. Run it by hand after touching
+# scripts/lib/statusbar.conf or any format the bar or borders expand:
 #
-#   bash gate.sh [path/to/cockpit-formats.conf]
+#   bash tests/freeze-rig/gate.sh [path/to/formats.conf]
+#
+# With no argument it measures the plugin's own bar; with one, that file's
+# formats (a user's old config, say). The suite's cheap stand-in is the
+# "the plugin's bar walks no panes on redraw" row in the install.sh --check block.
 #
 # Asserts ONE rule:
 #
@@ -26,6 +32,8 @@
 # Exit 0 = PASS, 1 = FAIL, 2 = could not measure. Zero pane visits is a PASS
 # (formats with no #{P:} left), not a failed measurement. See the arm below.
 set -u
+# Never the server this runs inside: every command below names its own socket.
+unset TMUX TMUX_PANE
 
 CONF=${1:-}
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -43,7 +51,7 @@ S=${S:-3} W=${W:-10} P=${P:-4}
 # it does not make the number less reliable. Measured identical visit counts
 # (696/706/712) at REPS=3 SETTLE=0.5 across nine runs, 69.6s -> 30.0s; the one
 # anomaly seen anywhere in that sweep was at the OLD defaults (5/1.0), not a
-# reduced one. docs/superpowers/research/2026-08-25-suite-speed/suite-speed-report.md §4.
+# reduced one.
 REPS=${REPS:-3}
 SETTLE=${SETTLE:-0.5}     # seconds to let a forced redraw finish before counting
 BUDGET_RATIO=${BUDGET_RATIO:-1.0}       # server walks allowed per status redraw
@@ -54,9 +62,9 @@ cleanup() {
         [ "$p" = "$$" ] || kill -9 "$p" 2>/dev/null
     done
     [ -n "${CLIENT_PID:-}" ] && kill -9 "$CLIENT_PID" 2>/dev/null
-    # kill-server does not always unlink the socket, and a test suite must not
-    # litter /tmp/tmux-$UID with a file per run.
-    rm -f "/tmp/tmux-$(id -u)/$SOCK" 2>/dev/null
+    # kill-server does not always unlink the socket, and a run must not
+    # litter the socket dir with a file per run.
+    [ -n "${SOCK_PATH:-}" ] && rm -f "$SOCK_PATH" 2>/dev/null
     rm -rf "$LOGDIR"
     return 0
 }
@@ -66,8 +74,9 @@ srv() { tmux -L "$SOCK" "$@"; }
 # status-interval 0: the forced redraw must be the ONLY redraw in the window.
 ( cd "$LOGDIR" && tmux -L "$SOCK" -vv -f /dev/null \
     new-session -d -s s1 -x 200 -y 62 \; set -g status-interval 0 ) || exit 2
+SOCK_PATH=$(srv display-message -p '#{socket_path}' 2>/dev/null)
 
-# The formats under test. Default to the plugin's own bar (V7, statusbar.conf).
+# The formats under test. Default to the plugin's own bar (statusbar.conf).
 if [ -n "$CONF" ]; then
     srv source-file "$CONF" 2>/dev/null || { echo "gate: cannot source $CONF"; exit 2; }
 else
@@ -76,7 +85,7 @@ else
     srv set -g @thm_needs '#ff5f6d'; srv set -g @thm_error '#ff9e3d'
     srv set -g @thm_running '#e6c84f'; srv set -g @thm_done '#5fd38d'
     srv set -g @thm_dim '#9097a3'
-    apply_variant V7
+    apply_bar
 fi
 
 # Build the shape. Every pane is a fake agent so the agent glob matches.
@@ -154,7 +163,7 @@ sleep 1
 # than $min was. Judging a 121-pane number against a 120-pane budget is a
 # gate that can never go green: count the server the moves actually run on and
 # give them their own budget at the same ratio. $min, $total and the historic
-# 696 stay exactly comparable with every earlier row in RESULTS.txt.
+# 696 stay exactly comparable with the numbers measured before.
 mtotal=$(srv list-panes -a -F x | wc -l)
 mbudget=$(awk -v p="$mtotal" -v r="$BUDGET_RATIO" 'BEGIN{printf "%d", p*r}')
 
