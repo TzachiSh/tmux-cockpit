@@ -18,7 +18,7 @@ use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Request};
 use cockpit_tui::panel::route::route;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// A copy of the panel's private `ROUNDS_WRITE` (app.rs): the first call sees
@@ -483,12 +483,16 @@ fn main() {
     summary(&cases, &done, &hashes);
 }
 
-/// Where the write prompt came from: the panel's override file, or the binary.
-fn prompt_source() -> String {
-    let base = match std::env::var("XDG_CONFIG_HOME") {
+/// The panel's config directory, as `panel::xdg` finds it.
+fn config_home() -> PathBuf {
+    match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if v.starts_with('/') => PathBuf::from(v),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
-    };
+    }
+}
+
+/// Where the write prompt came from: the panel's override file, or the binary.
+fn prompt_source(base: &Path) -> String {
     let p = base.join("tmux-cockpit/prompts/write.txt");
     if p.exists() { p.display().to_string() } else { "shipped".into() }
 }
@@ -584,7 +588,7 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     }
     let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
-    println!("system prompt   {} ({})", hs.join(" "), prompt_source());
+    println!("system prompt   {} ({})", hs.join(" "), prompt_source(&config_home()));
     println!("passed          {}", pct(t.passed));
     if t.holdout.1 > 0 {
         println!("  holdout       {}", pct(t.holdout));
