@@ -292,12 +292,16 @@ fn q_unlists_its_own_channel_and_only_its_own() {
         .env_remove("TMUX")
         .spawn()
         .unwrap();
-    std::thread::sleep(Duration::from_millis(300));
+    // A vacuous pass is a probe that has not run yet: wait until it is in /proc
+    // as `wait-for <chan>`, then until the server has answered a round trip.
+    let entered = until(|| waiters(&me) == 1 || probe.try_wait().unwrap().is_some());
+    rig.tmux(&["display-message", "-p", "sync"]);
     let latched = probe.try_wait().unwrap().is_some();
     let _ = probe.kill();
     let _ = probe.wait();
     // SAFETY: as above, still under the write lock.
     unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    assert!(entered, "the probe never ran, so the wait was not tested");
     assert!(!latched, "q left {me} latched on the server");
 }
 
