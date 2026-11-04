@@ -3906,3 +3906,20 @@ fn a_double_tap_on_a_batch_question_answers_only_the_first() {
     a.tap(Tap::Pick(0), first + 16 + TAP_GUARD_MS);
     assert_eq!(a.view, View::Busy, "a tap after the guard answers Q2");
 }
+
+/// A guess that asks again is retried once; cancelling that retry gives back
+/// the guess and the rest of the batch with it.
+#[test]
+fn a_cancelled_retry_after_a_guess_brings_the_batch_back() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2, 3]);
+    ch(&mut a, '1');
+    ch(&mut a, 'g');
+    a.reply(Ok(q(9)));
+    assert_eq!(a.view, View::Busy, "told once to write now");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(shows(&a), ("Q2?", 2));
+    ch(&mut a, '1');
+    assert_eq!((shows(&a), a.pending), (("Q3?", 3), false), "Q3 is still queued");
+}

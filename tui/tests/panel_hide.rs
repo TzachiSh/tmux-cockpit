@@ -452,5 +452,9 @@ fn a_hide_after_a_failed_guess_mid_batch_comes_back() {
     let mut b = round(&mut a, "guess-failed");
     key(&mut b, KeyCode::Esc);
     let r = b.run.as_ref().unwrap();
-    assert_eq!((r.question.as_str(), r.rounds, r.batch.len()), ("Q2?", 2, 1), "esc gives the guess back");
+    assert_eq!(
+        (r.question.as_str(), r.rounds, r.batch.len()),
+        ("Q2?", 2, 1),
+        "esc gives the guess back"
+    );
 }

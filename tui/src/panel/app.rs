@@ -175,11 +175,11 @@ pub struct Resume {
 }
 
 /// What a call carried when its reply came: the turn in flight, and the rounds
-/// to give back if it is dropped.
-#[derive(Clone, Copy)]
+/// and the rest of a batch to give back if it is dropped.
 struct Carried {
     pending: bool,
     from: Option<usize>,
+    batch: Vec<(String, Vec<Opt>)>,
 }
 
 /// One request's conversation: the question rounds and, for Explain, the log.
@@ -987,11 +987,11 @@ impl App {
         let carried = Carried {
             pending: std::mem::take(&mut r.pending_turn),
             from: r.guessed_from.take(),
+            // a batch left over was asked before this call's answers: they settle it
+            batch: std::mem::take(&mut r.batch),
         };
         let (rounds, max) = (r.rounds, r.max);
         let mut cut = None;
-        // a batch left over was asked before this call's answers: they settle it
-        r.batch.clear();
         let mut more = vec![];
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
@@ -1063,9 +1063,9 @@ impl App {
     /// A write that asks with no questions left is told once to write with its
     /// assumptions stated. Asked again, or a fix, the error; esc then drops what
     /// the call carried.
-    fn write_now(&mut self, text: String, Carried { pending, from }: Carried) {
+    fn write_now(&mut self, text: String, Carried { pending, from, batch }: Carried) {
         let Some(r) = self.run.as_mut() else { return };
-        (r.pending_turn, r.guessed_from) = (pending, from);
+        (r.pending_turn, r.guessed_from, r.batch) = (pending, from, batch);
         let write = matches!(r.flow, Flow::Write { .. });
         let last = r.turns.last_mut().filter(|t| t.role == Role::User && pending);
         if !write || last.as_ref().is_some_and(|t| t.text.ends_with(WRITE_NOW)) {
