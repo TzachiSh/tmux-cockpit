@@ -13816,5 +13816,50 @@ is "--uninstall --hooks removes every cockpit command and nothing foreign" "0 1 
 is "and the file is the one it started as" "$(jq -S . "$SLH/orig.json")" "$(jq -S . "$SLH/.claude/settings.json")"
 fi
 
+echo "== agent-state: @panestate_since stamps entering needs-input, in the one tmux call (#225) =="
+# tm's "waiting Nm" reads the stamp. It is set when the pane ENTERS needs-input, kept while
+# the pane stays there (the sticky done/error and a repeat needs-input refuse the
+# transition), cleared on any way out, and it rides the transition's one round-trip.
+if need_tmux "agent-state @panestate_since"; then :; else
+WS="cockpit-since-$$"; SOCKS="$SOCKS $WS"
+"$TMUX_REAL" -L "$WS" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$WS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+WSP=$("$TMUX_REAL" -L "$WS" list-panes -t t -F '#{pane_id}')
+WSD=$(mktmpd); WSLOG="$WSD/calls"
+cat > "$WSD/tmux" <<SHIMEOF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$WSLOG"
+exec "$TMUX_REAL" "\$@"
+SHIMEOF
+chmod +x "$WSD/tmux"
+wscall() { : > "$WSLOG"
+    PATH="$WSD:$PATH" TMUX="$SOCKDIR/$WS,0,0" "$DIR/scripts/agent-state" "$@" </dev/null >/dev/null 2>&1
+    wc -l < "$WSLOG" | tr -d ' '; }
+wssince() { "$TMUX_REAL" -L "$WS" show-option -pqv -t "$WSP" @panestate_since; }
+wscall running "$WSP" >/dev/null
+is "a running pane carries no stamp" "" "$(wssince)"
+wsb=$(date +%s); wsn=$(wscall needs-input "$WSP"); wsa=$(date +%s); ws1=$(wssince)
+is "entering needs-input still costs one tmux invocation" "1" "$wsn"
+case "$ws1" in ''|*[!0-9]*) ws1=0 ;; esac
+is "entering needs-input stamps the epoch second it entered" "yes" \
+   "$([ "$ws1" -ge "$wsb" ] && [ "$ws1" -le "$wsa" ] && echo yes || echo "no ($ws1 not in $wsb..$wsa)")"
+# Backdated by hand, so "kept" cannot pass by landing in the same second.
+"$TMUX_REAL" -L "$WS" set -p -t "$WSP" @panestate_since 1000 >/dev/null 2>&1
+wscall needs-input "$WSP" >/dev/null
+is "a repeat needs-input keeps the first stamp" "1000" "$(wssince)"
+wscall done "$WSP" >/dev/null; wscall error "$WSP" >/dev/null
+is "the sticky done and error leave the waiting pane's stamp" "1000" "$(wssince)"
+is "the poller's same-state write keeps it too" "1000" "$(wscall poll needs-input "$WSP" >/dev/null; wssince)"
+is "leaving for running costs one tmux invocation" "1" "$(wscall running "$WSP")"
+is "and clears the stamp" "" "$(wssince)"
+wscall needs-input "$WSP" >/dev/null
+is "the poller's error out of needs-input clears it" "" "$(wscall poll error "$WSP" >/dev/null; wssince)"
+wscall needs-input "$WSP" >/dev/null
+# off without idle: the session ended (SessionEnd/SessionStart).
+is "an ended session clears it" "" "$(wscall off "$WSP" >/dev/null; wssince)"
+"$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
