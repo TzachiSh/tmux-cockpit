@@ -7997,6 +7997,13 @@ case "$tfout" in
     *"already current"*) ok "and the binary it reads" ;;
     *) bad "and the binary it reads" "already current" "$tfout" ;;
 esac
+# A bare name is not a path: it falls back to the plugin's own bin/ (#243),
+# never a file named ct in whatever directory the fetch ran from.
+mkdir -p "$TF/cwd"
+tfout=$(cd "$TF/cwd" && env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN=ct COCKPIT_TUI_RELEASES="$TFR" \
+        "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
+is "a relative COCKPIT_TUI_BIN falls back to the plugin's bin/" "absent cockpit-tui 0.9.0" \
+   "$([ -e "$TF/cwd/ct" ] && echo present || echo absent) $(tf_ver)"
 # Unpinned (no --version, no option), a newer binary is current: a make
 # tui-bin build ahead of the release must not be downgraded to it.
 mkdir -p "$TF/tmuxnone" "$TF/tmuxold"

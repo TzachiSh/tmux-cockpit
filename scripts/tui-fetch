@@ -11,6 +11,9 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1    # COCKPIT_TUI_BIN, TUI_MIN, TUI_TAG, vnum
+# Absolute or the plugin's own: a bare name has no directory to install into,
+# and ${COCKPIT_TUI_BIN%/*} would take the name itself for one (#243).
+case $COCKPIT_TUI_BIN in /*) ;; *) COCKPIT_TUI_BIN=$DIR/bin/cockpit-tui ;; esac
 BIN=${COCKPIT_TUI_BIN%/*}
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
 

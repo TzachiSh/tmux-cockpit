@@ -1761,3 +1761,5 @@ These notes replace older wording above where the two disagree.
 - `@cockpit_tui_version` is read as written. No release was ever tagged in the
   pre-#79 `tui-v` form, so tui-fetch no longer reads `tui-v0.1.0` as 0.1.0: such
   a pin names a tag that does not exist, and tui-fetch installs nothing.
+- `COCKPIT_TUI_BIN` must be an absolute path for tui-fetch; anything else
+  installs to the plugin's own `bin/cockpit-tui`.
