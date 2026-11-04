@@ -180,7 +180,7 @@ term_edit() {
 # lists names anyone can create, so nothing is trusted until it is checked.
 browse_act() {
     local line=$1 verb path
-    case $line in ""|*$'\n'*) note "cockpit: the browser printed something that is not one line"; return 1 ;; esac
+    case $line in *$'\n'*) note "cockpit: the browser printed something that is not one line"; return 1 ;; esac
     verb=${line%% *}; path=${line#* }
     if [ "$verb" = "$line" ] || { [ "$verb" != open ] && [ "$verb" != copy ]; } \
        || [ "${path:0:1}" != / ] || [ ! -e "$path" ]; then
