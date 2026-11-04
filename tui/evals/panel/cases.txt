@@ -494,9 +494,9 @@ move the whole config loader from yaml to toml, it touches a lot of files
 kind: review
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: diff|uncommitted|staged
+must: diff|staged
 must_not: subagent|subagents
-note: review of uncommitted work: read the diff, report, no edits
+note: review of uncommitted work: read the diff, report, no edits; "uncommitted" is the request's word, so it is no must
 --- request
 review my uncommitted changes before i commit, just report problems
 
