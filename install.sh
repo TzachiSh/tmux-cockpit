@@ -173,7 +173,8 @@ set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
 set*\ @catppuccin_window_current_text\ *)
                         case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
                     # Retired options: nothing reads them any more (#223).
-                    set*\ @cockpit_keep_swap_pane\ *) gone=@cockpit_keep_swap_pane ;;
+                    set*\ @cockpit_keep_swap_pane|set*\ @cockpit_keep_swap_pane[[:space:]]*)
+                        gone=@cockpit_keep_swap_pane ;;
                 esac
             done < "$c"
         done

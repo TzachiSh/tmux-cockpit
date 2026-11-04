@@ -2639,6 +2639,15 @@ printf '%s\n' 'set -g @cockpit_keep_swap_pane on' >> "$DH/.tmux.conf"
 dcout=$(dc "$DCP")
 is "a config still setting @cockpit_keep_swap_pane is a warn options row (#223)" "1" "$(dcrow "$dcout" "warn options")"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
+# A bare unset carries no value after the name, and still names the option.
+printf '%s\n' 'set -gu @cockpit_keep_swap_pane' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "so does a bare set -gu @cockpit_keep_swap_pane" "1" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+printf '%s\n' 'set -g @cockpit_keep_swap_pane_x on' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "but an option that only starts with the name does not" "0" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
 # #{P:} walk the redraw path never sees.
