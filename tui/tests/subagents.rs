@@ -1,7 +1,7 @@
 //! The subagents reader (#313): `<session>/subagents/agent-<id>.meta.json` and the token
 //! figure off `agent-<id>.jsonl`. Its own test binary: the reader keeps a thread-local
 //! cache and a read counter, and each test runs on a thread of its own.
-use cockpit_tui::data::subagents::{Sub, SubKind, SubState, read, reads};
+use cockpit_tui::data::subagents::{END_UNKNOWN_AFTER, Sub, SubKind, SubState, read_in, reads, state_dir};
 use std::fs::{FileTimes, OpenOptions};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -61,6 +61,11 @@ fn h(s: &Sub) -> u64 {
     x.finish()
 }
 
+/// Reads with no hook log: the state root names nothing, so a test never meets the owner's.
+fn read(dir: &Path) -> Vec<Sub> {
+    read_in(dir, T0 + 60, Path::new("/nonexistent-cockpit-state"))
+}
+
 fn one(dir: &Path) -> Sub {
     let v = read(dir);
     assert_eq!(v.len(), 1, "{v:?}");
@@ -93,6 +98,7 @@ fn a_running_subagent_has_its_type_description_start_and_tokens() {
         state: SubState::Running,
         started: Some(T0),
         finished_at: None,
+        active_at: Some(T0 + 9),
         tokens: 100,
     };
     assert_eq!(s, want);
@@ -306,6 +312,315 @@ fn the_hash_ignores_finished_at() {
             ..s.clone()
         })
     );
+}
+
+// ---------------------------------------------------------------- the hook log (#361)
+
+/// A session on disk: `<root>/<sid>/subagents` for the agents and `<root>/state` for the log
+/// dir the hooks write (`tmux-cockpit/subs/<sid>.log`).
+struct Sess {
+    _root: Fix,
+    dir: PathBuf,
+    subs: PathBuf,
+    log: PathBuf,
+}
+
+const SID: &str = "sess1";
+
+fn session(name: &str) -> Sess {
+    let root = fixture(name);
+    let dir = root.join(SID).join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    let subs = root.join("state").join("tmux-cockpit").join("subs");
+    std::fs::create_dir_all(&subs).unwrap();
+    let log = subs.join(format!("{SID}.log"));
+    Sess {
+        _root: root,
+        dir,
+        subs,
+        log,
+    }
+}
+
+impl Sess {
+    fn log(&self, lines: &[String]) {
+        std::fs::write(&self.log, lines.join("\n") + "\n").unwrap();
+    }
+    fn read(&self, now: u64) -> Vec<Sub> {
+        read_in(&self.dir, now, &self.subs)
+    }
+    fn one(&self, now: u64) -> Sub {
+        let v = self.read(now);
+        assert_eq!(v.len(), 1, "{v:?}");
+        v.into_iter().next().unwrap()
+    }
+}
+
+/// One hook line: the epoch is `T0 + secs`.
+fn ev(secs: u64, event: &str, id: &str) -> String {
+    format!("{}\t{event}\t{id}", T0 + secs)
+}
+
+const PLAIN: &str = r#"{"agentType":"x"}"#;
+const TEAMMATE: &str = r#"{"agentType":"x","taskKind":"in_process_teammate","teamName":"crew"}"#;
+
+#[test]
+fn the_last_hook_event_decides_the_state_by_kind() {
+    let table: [(&str, &str, &[&str], SubState); 6] = [
+        ("start", PLAIN, &["start"], SubState::Running),
+        ("start then stop, a subagent", PLAIN, &["start", "stop"], SubState::Done),
+        ("start then stop, a teammate", TEAMMATE, &["start", "stop"], SubState::Idle),
+        ("a teammate idles", TEAMMATE, &["start", "stop", "idle"], SubState::Idle),
+        (
+            "a teammate's next message",
+            TEAMMATE,
+            &["start", "stop", "idle", "start"],
+            SubState::Running,
+        ),
+        ("a resumed subagent", PLAIN, &["start", "stop", "start"], SubState::Running),
+    ];
+    for (name, m, events, want) in table {
+        let s = session("log-last");
+        meta(&s.dir, "a", m);
+        rows(&s.dir, "a", &[FIRST, &tick(5)]);
+        let lines: Vec<String> = events.iter().enumerate().map(|(i, e)| ev(i as u64, e, "a")).collect();
+        s.log(&lines);
+        assert_eq!(s.one(T0 + 60).state, want, "{name}");
+    }
+}
+
+#[test]
+fn a_user_stop_in_the_meta_wins_over_the_log() {
+    let s = session("log-stopped");
+    meta(&s.dir, "a", r#"{"agentType":"x","stoppedByUser":true}"#);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), ev(5, "stop", "a")]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
+}
+
+#[test]
+fn a_stop_after_an_api_error_row_is_failed_for_a_subagent_and_idle_for_a_teammate() {
+    let err = r#"{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-11-03T10:00:20Z"}"#;
+    for (m, want) in [(PLAIN, SubState::Failed), (TEAMMATE, SubState::Idle)] {
+        let s = session("log-err");
+        meta(&s.dir, "a", m);
+        rows(&s.dir, "a", &[FIRST, err]);
+        s.log(&[ev(0, "start", "a"), ev(20, "stop", "a")]);
+        assert_eq!(s.one(T0 + 60).state, want);
+    }
+}
+
+#[test]
+fn a_start_with_no_transcript_write_for_15_minutes_is_end_unknown_never_running() {
+    let gap = END_UNKNOWN_AFTER;
+    for (now, want) in [
+        (T0 + 10 + gap - 1, SubState::Running),
+        (T0 + 10 + gap, SubState::EndUnknown),
+        (T0 + 10 + 50 * gap, SubState::EndUnknown),
+    ] {
+        let s = session("log-unknown");
+        meta(&s.dir, "a", TEAMMATE);
+        rows(&s.dir, "a", &[FIRST, &tick(10)]);
+        s.log(&[ev(0, "start", "a")]);
+        let sub = s.one(now);
+        assert_eq!((sub.state, sub.active_at), (want, Some(T0 + 10)), "now {}", now - T0);
+        assert_eq!(sub.finished_at, None, "neither is finished");
+    }
+}
+
+#[test]
+fn active_at_is_the_newest_of_the_newest_row_and_the_last_event() {
+    let s = session("log-active");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(10)]);
+    s.log(&[ev(0, "start", "a"), ev(40, "idle", "a")]);
+    assert_eq!(s.one(T0 + 60).active_at, Some(T0 + 40));
+    s.log(&[ev(0, "start", "a")]);
+    assert_eq!(s.one(T0 + 60).active_at, Some(T0 + 10));
+}
+
+#[test]
+fn a_stop_with_no_start_is_ignored_and_the_meta_decides() {
+    // Claude Code's internal agents send a stop with no start; a log cut by the tail can too.
+    let s = session("log-orphan");
+    meta(&s.dir, "a", TEAMMATE);
+    meta(&s.dir, "b", r#"{"agentType":"x","finished":true}"#);
+    s.log(&[ev(0, "stop", "a"), ev(1, "idle", "a"), ev(2, "stop", "b")]);
+    let mut got: Vec<_> = s.read(T0 + 60).into_iter().map(|x| (x.id, x.state)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got, [("a".to_string(), SubState::Running), ("b".to_string(), SubState::Done)]);
+}
+
+/// The fallback is the original #361 bug: a teammate ended by TaskStop or a shutdown never gets
+/// `finished`, and with no record in the log (hooks not installed, a session from before them, a
+/// start past the tail) it read Running for good.
+#[test]
+fn an_agent_with_no_record_and_no_write_for_15_minutes_is_end_unknown_not_running() {
+    let gap = END_UNKNOWN_AFTER;
+    let table: [(&str, &str, bool, u64, SubState); 7] = [
+        ("a teammate, quiet for 15 min", TEAMMATE, true, 10 + gap, SubState::EndUnknown),
+        ("a subagent, quiet for 15 min", PLAIN, true, 10 + gap, SubState::EndUnknown),
+        ("a teammate, one second short", TEAMMATE, true, 10 + gap - 1, SubState::Running),
+        (
+            "a finished subagent stays done",
+            r#"{"agentType":"x","finished":true}"#,
+            true,
+            10 + 50 * gap,
+            SubState::Done,
+        ),
+        (
+            "a stopped one stays stopped",
+            r#"{"agentType":"x","stoppedByUser":true}"#,
+            true,
+            10 + 50 * gap,
+            SubState::Stopped,
+        ),
+        ("no transcript, a meta quiet for 15 min", TEAMMATE, false, gap, SubState::EndUnknown),
+        ("no transcript, a fresh meta", TEAMMATE, false, gap - 1, SubState::Running),
+    ];
+    for (name, m, with_rows, at, want) in table {
+        let s = session("log-fallback-aged");
+        std::fs::remove_file(&s.log).ok();
+        meta(&s.dir, "a", m);
+        touch_meta(&s.dir, "a", 0);
+        if with_rows {
+            rows(&s.dir, "a", &[FIRST, &tick(10)]);
+        }
+        assert_eq!(s.one(T0 + at).state, want, "{name}");
+    }
+}
+
+/// `finished` is written when the agent finishes; a log `start` after it is a resume, one before
+/// it is an agent whose SubagentStop never came (an API error fires StopFailure, TaskStop fires
+/// nothing): the meta file is the newer word.
+#[test]
+fn a_meta_written_at_or_after_the_last_start_beats_it_and_an_earlier_one_does_not() {
+    let err = r#"{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-11-03T10:01:00Z"}"#;
+    let table: [(&str, u64, &str, SubState); 5] = [
+        ("meta after the start", 150, "ok", SubState::Done),
+        ("meta at the start", 100, "ok", SubState::Done),
+        ("meta after the start, an API error row", 150, "err", SubState::Failed),
+        ("meta before the start: a resume", 50, "ok", SubState::Running),
+        ("meta before the start: a resume, an API error row", 50, "err", SubState::Running),
+    ];
+    for (name, meta_at, last, want) in table {
+        let s = session("log-resume");
+        meta(&s.dir, "a", r#"{"agentType":"x","finished":true}"#);
+        touch_meta(&s.dir, "a", meta_at);
+        let quiet = tick(5);
+        rows(&s.dir, "a", &[FIRST, if last == "err" { err } else { &quiet }]);
+        s.log(&[ev(100, "start", "a")]);
+        assert_eq!(s.one(T0 + 130).state, want, "{name}");
+    }
+}
+
+#[test]
+fn no_log_leaves_the_meta_to_decide() {
+    let s = session("log-none");
+    std::fs::remove_file(&s.log).ok();
+    meta(&s.dir, "a", r#"{"agentType":"x","finished":true}"#);
+    meta(&s.dir, "b", PLAIN);
+    let mut got: Vec<_> = s.read(T0 + 60).into_iter().map(|x| (x.id, x.state)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(got, [("a".to_string(), SubState::Done), ("b".to_string(), SubState::Running)]);
+}
+
+#[test]
+fn malformed_log_lines_are_skipped() {
+    let s = session("log-junk");
+    meta(&s.dir, "a", PLAIN);
+    let junk = [
+        "garbage".to_string(),
+        format!("x{}\tstop\ta", T0),
+        format!("{}\tfoo\ta", T0),
+        format!("{}\tstop\ta b", T0),
+        format!("{}\tstop", T0),
+        String::new(),
+    ];
+    let mut lines = vec![ev(0, "start", "a")];
+    lines.extend(junk);
+    s.log(&lines);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running, "none of them is a stop");
+}
+
+#[test]
+fn the_log_is_read_from_its_last_64_kb_and_a_start_before_it_is_not_seen() {
+    let s = session("log-tail");
+    meta(&s.dir, "old", PLAIN);
+    rows(&s.dir, "old", &[FIRST, &tick(1)]);
+    meta(&s.dir, "new", PLAIN);
+    let mut lines = vec![ev(0, "start", "old"), ev(1, "stop", "old")];
+    // more than 64 KB of another agent's events, then a start and a stop for "new"
+    lines.extend((0..4000).map(|i| ev(2 + i % 50, if i % 2 == 0 { "start" } else { "stop" }, "zzzz")));
+    lines.extend([ev(100, "start", "new"), ev(101, "stop", "new")]);
+    s.log(&lines);
+    let mut got: Vec<_> = s.read(T0 + 2000).into_iter().map(|x| (x.id, x.state)).collect();
+    got.sort_by(|a, b| a.0.cmp(&b.0));
+    // "old" has no record in the window, so its meta decides: no flags and quiet for 33 minutes
+    assert_eq!(
+        got,
+        [("new".to_string(), SubState::Done), ("old".to_string(), SubState::EndUnknown)]
+    );
+}
+
+#[test]
+fn the_log_is_cached_on_its_stamp_and_read_again_only_when_it_changes() {
+    let s = session("log-cache");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a")]);
+    let cold = reads();
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+    assert_eq!(reads() - cold, 3, "the meta file, the transcript and the log");
+    let warm = reads();
+    s.one(T0 + 61);
+    assert_eq!(reads(), warm, "nothing changed: no file is opened");
+    s.log(&[ev(0, "start", "a"), ev(9, "stop", "a")]);
+    assert_eq!(s.one(T0 + 62).state, SubState::Done);
+    assert_eq!(reads() - warm, 1, "only the log grew");
+}
+
+#[test]
+fn a_session_id_that_is_not_plain_names_no_log() {
+    let root = fixture("log-badsid");
+    let dir = root.join("bad id").join("subagents");
+    std::fs::create_dir_all(&dir).unwrap();
+    let subs = root.join("state").join("tmux-cockpit").join("subs");
+    std::fs::create_dir_all(&subs).unwrap();
+    std::fs::write(subs.join("bad id.log"), ev(0, "start", "a") + "\n").unwrap();
+    meta(&dir, "a", r#"{"agentType":"x","finished":true}"#);
+    let before = reads();
+    let got = read_in(&dir, T0 + 60, &subs);
+    assert_eq!((got[0].state, reads() - before), (SubState::Done, 1), "the meta only");
+}
+
+#[test]
+fn the_state_root_is_xdg_state_home_else_home_local_state() {
+    let sub = |r: &str| Some(PathBuf::from(r).join("tmux-cockpit").join("subs"));
+    assert_eq!(state_dir(Some("/x"), Some("/h")), sub("/x"));
+    assert_eq!(state_dir(Some(""), Some("/h")), sub("/h/.local/state"));
+    assert_eq!(state_dir(None, Some("/h")), sub("/h/.local/state"));
+    assert_eq!(state_dir(None, None), None);
+    assert_eq!(state_dir(Some(""), Some("")), None);
+}
+
+#[test]
+fn the_hash_ignores_active_at_and_counts_the_new_states() {
+    let s = Sub {
+        ty: "x".into(),
+        state: SubState::Idle,
+        ..Default::default()
+    };
+    assert_eq!(
+        h(&s),
+        h(&Sub {
+            active_at: Some(9),
+            ..s.clone()
+        })
+    );
+    for other in [SubState::EndUnknown, SubState::Done, SubState::Running, SubState::Stopped] {
+        assert_ne!(h(&s), h(&Sub { state: other, ..s.clone() }), "{other:?}");
+    }
 }
 
 #[test]

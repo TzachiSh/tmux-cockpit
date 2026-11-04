@@ -205,9 +205,10 @@ length), and a pane with no such dir costs one failed `opendir`.
 |-------|------|
 | `ty`, `desc` | `agentType`, `description` (control characters dropped) |
 | `kind` | `isFork: true` is a fork; a `teamName` is a teammate; else a subagent |
-| `state` | `stoppedByUser: true` is stopped, even when the newest assistant row is an API error (the user's action wins); else `finished: true` with an API error as the newest assistant row is failed; else `finished: true` is done; else running |
+| `state` | `stoppedByUser: true` is stopped, even when the newest assistant row is an API error (the user's action wins). Else, when the [hook log](#subagent-event-log) has the agent, its newest event: `start` is running, but `end-unknown` when its transcript has not been written for 15 minutes (an agent waiting on a permission prompt or a long tool call reads so too); `stop` is done (failed when the newest assistant row is an API error), but idle for a teammate; `idle` is idle. Else (no log, no `start` in its tail, or a `finished: true` written at or after the last `start`): for a finished agent, failed when the newest assistant row is an API error, done otherwise; for any other, `end-unknown` after the same 15 quiet minutes, else running. Finished is `finished: true` |
 | `started` | the first transcript row's `timestamp` |
-| `finished_at` | none while running, and for a finished agent with no transcript. Else the `timestamp` of the newest transcript row that has one, else the transcript's mtime. Rows win: a copy or restore moves the mtime, not the rows. A stopped agent takes the later of that and the meta file's mtime (the write that set `stoppedByUser`), since a stop during a long tool call comes after the newest row; with no transcript it is the meta file's mtime alone. On a live session the two agree to the second. Not part of the hash |
+| `active_at` | the newest of the newest transcript row's `timestamp` (else the transcript's mtime) and the agent's last hook event. The age of an idle or end-unknown agent. Not part of the hash |
+| `finished_at` | none while running, idle or end-unknown, and for a finished agent with no transcript. Else the `timestamp` of the newest transcript row that has one, else the transcript's mtime. Rows win: a copy or restore moves the mtime, not the rows. A stopped agent takes the later of that and the meta file's mtime (the write that set `stoppedByUser`), since a stop during a long tool call comes after the newest row; with no transcript it is the meta file's mtime alone. On a live session the two agree to the second. Not part of the hash |
 | `tokens` | the newest usage row's input, output and cache tokens summed, the figure Claude Code reports as `totalTokens`, not a sum over turns |
 
 Claude Code 2.1.317 sets `finished` when a task leaves `running`, for success and
@@ -252,8 +253,16 @@ unwritten for 7 days.
 - **Install.** The four entries come with `install.sh --hooks`; an update needs it rerun, and
   `install.sh --check` warns (`subhooks`) when they are missing. Each of the four is an
   entry of its own, as every other event's handler is, so an upgrade over master's
-  `--hooks` adds them beside the old entries and duplicates nothing. The board does not read
-  the log yet; it still reads `meta.json` and the transcript as above.
+  `--hooks` adds them beside the old entries and duplicates nothing.
+
+The reader (`data::subagents`) reads the log once per session, from its last 64 KB, cached on
+(mtime, len) like every other file: `<sid>` is the name of the `subagents/` dir's parent.
+Per agent the newest event decides, as the `state` row says, and `stoppedByUser` still wins.
+A `stop` or `idle` counts only after a `start` of the same agent (Claude Code's internal agents
+send a stop with no start), so an agent whose `start` fell out of the tail has no record and
+the meta file decides. `end-unknown` is a started agent that no one has written for 15 minutes:
+a teammate ended by TaskStop mid-turn, which no hook reports. It is never running, and not a
+failure. A teammate's stop is idle, not done: the log cannot tell it from an ended one. A `finished: true` newer than the last `start` beats it (an API error fires StopFailure, not SubagentStop, and TaskStop fires nothing); an older one is a resume, and the `start` wins. An agent with no record that never finished ages into `end-unknown` the same way, so a teammate ended before the hooks were installed does not read as running for good.
 
 ## A goal that will not be met
 

@@ -911,7 +911,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
-            p.subs = subagents::read(&d);
+            p.subs = subagents::read(&d, sessions::now());
         }
         ps.push(p);
     }
