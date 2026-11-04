@@ -91,10 +91,10 @@ subs_taskstop() {
 # subs_reconcile: Stop. The parent's turn has ended; its background_tasks lists what is still in
 # flight: a subagent by its agent id, a teammate by a task id, so by its description. Only
 # Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot read
-# whole, or a set past the bound writes nothing: a short
+# whole, an entry of a type it does not know, or a set past the bound writes nothing: a short
 # set would end live agents, and no set ends none.
 subs_reconcile() {
-    local LC_ALL=C sid arr re rt ob ty ids="" descs=""
+    local LC_ALL=C sid arr re rt ob ty ids="" descs="" n=0
     subs_payload
     subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
     # The array as agent-state's subs_count matches it, whole strings or bytes other than `]`,
@@ -102,7 +102,8 @@ subs_reconcile() {
     re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]["])*)\]'
     [[ $payload =~ $re ]] || return 0
     arr=${BASH_REMATCH[1]}
-    # Bounded: each step below copies the rest of the array, so the loop is quadratic in it.
+    # Bounded: each step below copies the rest of the array, so the loop is quadratic in its
+    # bytes, and each entry costs a few matches, so it is bounded in entries too (#423).
     [ "${#arr}" -le 65536 ] || return 0
     # One flat object at a time, commas and spaces between: whole strings or bytes other than
     # braces and brackets, so a nested object or array is no match, and what is left at the
@@ -110,8 +111,11 @@ subs_reconcile() {
     re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([a-z_]{1,32})"'
     while [[ $arr =~ $re ]]; do
         ob=${BASH_REMATCH[1]} arr=${arr:${#BASH_REMATCH[0]}}
+        [ $((n += 1)) -le 256 ] || return 0
         [[ $ob =~ $rt ]] || return 0
         ty=${BASH_REMATCH[1]}
+        # Closed (#423): a type renamed by a Claude Code update would otherwise drop its agents
+        # from the set, and the set would end them all.
         case "$ty" in
         subagent)
             payload=$ob subs_id id; [ -n "$REPLY" ] || return 0
@@ -119,6 +123,8 @@ subs_reconcile() {
         teammate)
             subs_desc description "$ob" || return 0
             descs=$descs$'\t'$REPLY ;;
+        shell) ;;
+        *) return 0 ;;
         esac
         [ $((${#ids} + ${#descs})) -le 3890 ] || return 0
     done

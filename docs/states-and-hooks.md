@@ -257,8 +257,11 @@ tab, newline or raw quote; one over 512 bytes, or with a control byte, is droppe
 - **Only `Stop`'s set.** `SubagentStop` carries `background_tasks` too, but lists the agent that
   is stopping as running.
 - **All or nothing.** A `background_tasks` array that does not parse whole (a nested array or
-  object in an entry included), one past 64 KB, an entry with a bad id or description, or a
-  set past 3890 bytes writes no set: a short set would end agents that live.
+  object in an entry included), one past 64 KB or 256 entries, an entry with a bad id or
+  description, or a set past 3890 bytes writes no set: a short set would end agents that
+  live. So does an entry whose `type` is none of `subagent`, `teammate` and `shell` (#423): a
+  type a Claude Code update renames would otherwise drop its agents from the set and end
+  them all. With no new set the last one stands, and `end-unknown` covers the gap.
 - **A file, not rows (#423).** Only the newest set is ever read, and as log rows a busy lead's
   sets, up to 3.9 KB each, pushed the older events out of the reader's tail: an idle
   teammate's `stop` fell out, and it read `end-unknown`. The hook writes the set to a temp file
