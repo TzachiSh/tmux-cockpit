@@ -15,17 +15,16 @@
 # --lines and --compose touch no tmux.
 set -uo pipefail
 
-# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
-# silent and wrong rather than loud: `declare -A` errors, then the same
-# assignment quietly creates an INDEXED array with an arithmetic subscript.
+# bash 4+: on 3.2 `declare -A` fails and the assignment quietly makes an
+# indexed array, so fail loudly instead.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
 
-# Resolved once, not `$0`: a symlink from install.sh (or a PATH lookup) must
-# still find its siblings and re-invoke itself for --loop, --deliver and --compose.
+# Not `$0`: through install.sh's symlink or a PATH lookup this must still
+# find its siblings and re-invoke itself.
 SELF="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 # shellcheck disable=SC2034  # read by the libs
 OPENPATH="$(dirname "$SELF")/tmux-open-path"
@@ -35,8 +34,7 @@ LIBDIR=${d%/*}/lib
 # shellcheck source=lib/git.sh
 . "$LIBDIR/git.sh" || exit 1
 
-# tmux runs run-shell and popup strings through sh, so every path inside one
-# has to be shell-quoted -- the same reasoning as tmux-open-path's shq.
+# tmux runs run-shell and popup strings through sh: every path in one is quoted.
 shq() { printf '%q' "$1"; }
 
 # shellcheck source=lib/pane.sh
@@ -44,35 +42,26 @@ shq() { printf '%q' "$1"; }
 # shellcheck source=lib/fmt.sh
 . "$LIBDIR/fmt.sh" || exit 1
 
-# lines_mode's own "diff too large" row (below) is not a real anchor -- no
-# file, no line -- so it shares this one string with every reader, which refuses
-# to comment on it. A row-shaped notice, not a special case in every reader.
+# The path of lines_mode's notice rows ("diff too large"): not an anchor, and
+# every reader refuses to comment on it.
 # shellcheck disable=SC2034  # read by the libs
 CAP_SENTINEL='(diff too large)'
 
-# How a pane names itself in the delivery prompt; the fallback convention is that
-# an unset pane_title reads as #{host_short}, not empty, so the window name stands in.
+# How a pane names itself in the prompt. An unset pane_title reads as
+# #{host_short}, not empty, so the window name stands in.
 # shellcheck disable=SC2034  # read by the libs
 AGENT_TITLE_FMT='#{?#{==:#{pane_title},#{host_short}},#{window_name},#{s/^✳ //:#{pane_title}}}'
 
-# `git -C <dir> diff` always emits paths relative to the repo ROOT, no matter
-# how deep <dir> sits inside the tree -- but <dir> is the pane's own cwd, so
-# from an agent working in a subdirectory those root-relative paths do not
-# resolve against <dir> itself. Resolve once, at each entry point, and thread
-# the root through everywhere a diff-row path gets turned back into a file:
-# lines_mode (for consistency, even though git already normalizes this), the
-# review-loop's preview `cd`. Falls back to
-# the caller's own dir when it is not a git worktree at all, so the existing
-# "no diff" behavior for a non-repo pane is unchanged.
+# git diff paths are relative to the repo root, not to a pane's subdirectory
+# cwd: every entry point resolves the root once. Not a repo: the dir itself.
 git_root() {
     local dir=$1 root
     root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)
     printf '%s\n' "${root:-$dir}"
 }
 
-# The tree a pane WORKS in: @cockpit_dir when the agent set one (a worktree
-# made by hand keeps the process, so the cwd, in the main checkout, #49),
-# else the cwd. A dangling option (tree removed since) falls back to the cwd.
+# The tree a pane works in: @cockpit_dir when set (a worktree made by hand
+# leaves the cwd in the main checkout, #49), else the cwd; a dangling one too.
 pane_dir() {                  # <pane> -> a directory; empty when the pane is gone
     local out wt cwd
     is_pane "$1" || return 0
@@ -103,23 +92,16 @@ USAGE
 }
 
 # --- the session dir ---------------------------------------------------------
-# One review is one directory the popup does not own. `store=$(mktemp)` kept
-# the only copy of a review in a file whose name nothing recorded, and a
-# dropped SSH client -- which tears down a client-owned display-popup --
-# took it along. Keyed on pane + repo root so reopening the same pane finds
-# its own comments; 0700 because it holds the whole uncommitted diff. Removed
-# when the review is discarded or delivered; kept, and named, when delivery
-# is refused. `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
+# One review is one directory the popup does not own, so a dropped SSH client
+# cannot take it along. Keyed on pane + repo root; 0700, as it holds the diff.
+# `rm -rf ~/.local/state/tmux-cockpit/review` is the purge.
 session_dir() {               # <pane-id> <root>
     printf '%s/tmux-cockpit/review/%s-%s' "${XDG_STATE_HOME:-$HOME/.local/state}" \
         "${1#%}" "$(printf '%s' "$2" | cksum | cut -d' ' -f1)"
 }
 
-# -p pane_id, parsed here so the dispatch below sees only the subcommand
-# (main_entry reads it to pick the pane a board row names). Default, not reset: an
-# unconditional `REVIEW_PANE_ID=""` here would clobber the value review_pane()
-# exports around its own `--loop` re-invocation (the prompt's label) before
-# -p ever gets a chance to override it.
+# -p pane_id. Defaulted, not reset: review_pane exports it around its --loop
+# re-invocation for the prompt's label.
 : "${REVIEW_PANE_ID:=}"
 while [ $# -gt 0 ]; do
     case "$1" in

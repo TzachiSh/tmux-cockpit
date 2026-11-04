@@ -3,34 +3,18 @@
 #   tmux-open-path <pane-id>                 picker for that pane's @cockpit_click_line
 #   tmux-open-path --dry-run <dir> <line>   what a click on <line> would open
 #
-# --dry-run touches no tmux and opens nothing: it prints one "path:line:col" per
-# candidate. Use it when a click did nothing and you want to see what the line
-# actually resolved to.
-#
-# Bound to M-MouseDown1Pane, which stashes the clicked line in the pane option
-# @cockpit_click_line first. It reads the whole LINE, not the word under the cursor:
-# tmux's word-separators include / . : and -, so #{mouse_word} on
-# "src/foo-bar.ts:31" hands back "foo", which is not a file.
-#
-# One candidate opens at once, a directory included. Several open the picker
-# (cockpit-tui pick, the same popup the branch segment gives you): ↵ opens the
-# row, alt-c copies its absolute path.
 #   tmux-open-path --folder <pane-id>      browse that pane's folder (cockpit-tui files)
 #
-# --folder opens a popup running cockpit-tui files on the pane's folder. ↵ on a
-# file prints "open <path>", alt-c "copy <path>". The line is untrusted: one
-# line, a known verb, an absolute path that exists. On a touch client
-# (@cockpit_is_touch) a file opens in a terminal editor window (@cockpit_editor,
-# else $VISUAL, $EDITOR, nvim, vim), since VS Code would open on the PC's screen;
-# elsewhere it opens as a clicked path does.
-#
-# Editor: VS Code by default, jumping to the line. For a terminal editor instead:
-#   set -g @cockpit_editor nvim   # opens in a new tmux window at +LINE
+# --dry-run touches no tmux and opens nothing: one "path:line:col" per candidate.
+# The binding stashes the whole clicked line in @cockpit_click_line: tmux's
+# word-separators include / . : -, so #{mouse_word} on "src/foo-bar.ts:31" is "foo".
+# One candidate opens at once; several open cockpit-tui pick (↵ opens, alt-c copies).
+# Editor: VS Code by default, at the line; `set -g @cockpit_editor nvim` for a
+# terminal editor in a new window.
 set -uo pipefail
 
-# bash 4+ (4.4 for `mapfile -d` in tmux-where). Without this the 3.2 failure is
-# silent and wrong rather than loud: `declare -A` errors, then the same
-# assignment quietly creates an INDEXED array with an arithmetic subscript.
+# bash 4+: on 3.2 `declare -A` fails and the assignment quietly makes an
+# indexed array, so fail loudly instead.
 if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
     printf '%s needs bash 4 or newer (found %s). On macOS: brew install bash\n' \
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
@@ -40,27 +24,22 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" || exit 1   # fesc (#289)
 
-# Under `set -u` a bare $HOME aborts the whole script where HOME is unset -- a
-# run-shell from a stripped environment, or a systemd-launched tmux. tmux-where
-# already guards this; a "~/..." token on a clicked line used to kill this one.
+# HOME can be unset (a systemd-launched tmux), and `set -u` would abort on it.
 H=${HOME:-/nonexistent}
 
 # --- vscode -------------------------------------------------------------------
-# Sourced on demand, not at startup: most clicks never reach VS Code. lib/ sits
-# beside the REAL script; install.sh links it by absolute path.
+# Sourced on demand: most clicks never reach VS Code. lib/ sits beside the real
+# script.
 vscode_lib() {
     local d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
     # shellcheck source=lib/vscode.sh
     . "${d%/*}/lib/vscode.sh" 2>/dev/null && return 0
-    # A half-installed copy (scripts/ without lib/) must still open files the
-    # ordinary ways rather than die on an undefined function.
+    # scripts/ without lib/ must still open files the ordinary ways.
     vscode_shim() { return 1; }
     vscode_open() { return 1; }
 }
 
-# Fire-and-forget: open_one hands this to `run-shell -b` because a popup kills
-# its own process group, so nobody is left to read a failure. No fallback here
-# for the same reason -- editor_cmd in tmux-review is where one can be seen.
+# open_one's `run-shell -b` re-entry: a popup kills its own process group.
 if [ "${1:-}" = --vscode ]; then
     shift
     vscode_lib
@@ -79,10 +58,8 @@ PICK=0 DRY=0 FOLDER=0 BROWSE=0 VIEW=0
 note() { [ "$DRY" -eq 1 ] || tmux display-message "$(fesc "$*")"; }
 
 # --- open ---------------------------------------------------------------------
-# tmux runs these command strings through sh, so every path in one has to be
-# shell-quoted. Wrapping it in single quotes by hand breaks on the first path
-# containing a quote -- the quote closes early and the rest of the name is read
-# as syntax, which opens the wrong file or runs a word of it as a command.
+# tmux runs these command strings through sh: every path in one is %q-quoted,
+# since a hand-written '...' breaks on a name holding a quote.
 shq() { printf '%q' "$1"; }
 
 open_one() {
@@ -91,41 +68,28 @@ open_one() {
     vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
     if [ -z "$editor" ]; then
-        # The old, unprefixed name. Kept working for one release; it is generic
-        # enough that another plugin could reasonably want it.
+        # The old, unprefixed name, kept working for one release.
         editor=$(tmux show-options -gqv @open-editor)
         [ -n "$editor" ] && tmux display-message \
             "cockpit: @open-editor renamed @cockpit_editor · update your tmux.conf"
     fi
-    # VS Code stays the default, but only where it is actually installed --
-    # either as code(1) on PATH, or as the remote shim under ~/.vscode-server
-    # that Remote-SSH and Coder install instead. Otherwise fall back to the
-    # editor the user already told the shell about.
+    # VS Code only where it is installed (code on PATH, or the Remote-SSH shim),
+    # else the shell's editor.
     if [ -z "$editor" ] && ! command -v code >/dev/null 2>&1 && ! vscode_shim >/dev/null; then
         editor=${VISUAL:-${EDITOR:-}}
     fi
     if [ -n "$editor" ]; then
-        # A terminal editor gets a tmux window of its own, next to the output you
-        # clicked from. -t is not optional: without it the window is created in
-        # whichever session tmux considers current, which is the session with the
-        # most recent client -- not necessarily the one you clicked in. It takes a
-        # WINDOW, not a pane, so -a puts the new one right after the clicked one.
-        # -c and -n expand formats, the command body does not (#289): escape
-        # the first two only, or a # in the name reaches the editor doubled.
+        # -t: without it the window lands in the most recent client's session.
+        # -c and -n expand formats, the command does not (#289): escape only those.
         tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "${file##*/}")" \
              "$editor ${ln:++$ln} $(shq "$file")"
         return
     fi
     if command -v code >/dev/null 2>&1; then
-        # Launched by the tmux SERVER, not by this script. This runs inside the
-        # picker popup, and a popup kills its whole process group the moment it
-        # closes -- which is immediately, since the script exits right after.
-        # A plain `code ... &` therefore died before it could hand the file to
-        # the running VS Code window, and nothing opened. Measured: a child
-        # backgrounded in a popup never survives; one owned by the server does.
+        # Launched by the server: the picker popup kills its process group as it
+        # closes, and a backgrounded `code &` died before reaching VS Code.
         if [ -d "$file" ]; then
-            # A folder is a workspace, not a file spec: --goto on a directory
-            # parses it as file:line and does not open the folder.
+            # --goto on a directory parses it as file:line.
             tmux run-shell -b "$(fesc "code $(shq "$file") >/dev/null 2>&1")"
         else
             tmux run-shell -b \
@@ -134,10 +98,8 @@ open_one() {
         note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
-    # Remote-SSH and Coder: VS Code is right there, but its CLI is not on the
-    # PATH tmux was started with. Same run-shell -b as above, re-entering this
-    # script so the socket probe (which runs the shim, ~150 ms per dead socket)
-    # happens off the popup's dying process group.
+    # Remote-SSH and Coder: the CLI is not on tmux's PATH. Re-entered via
+    # run-shell -b so the socket probe (~150 ms per dead socket) outlives the popup.
     if vscode_shim >/dev/null; then
         if [ -d "$file" ]; then
             tmux run-shell -b "$(fesc "$(shq "$0") --vscode $(shq "$file") >/dev/null 2>&1")"
@@ -148,18 +110,14 @@ $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
         note "cockpit: opened ${file/#$H/\~}${ln:+:$ln}"
         return
     fi
-    # Saying "opened" for a command that was never found is worse than doing
-    # nothing: it sends you looking for the bug anywhere but here.
     note "cockpit: no editor · set @cockpit_editor, \$VISUAL or install code"
 }
 
 # --- markdown (#283) ---------------------------------------------------------
-# A markdown file opens read-only in cockpit-tui view; its e closes it and comes
-# back to open_one, at the top line it showed. The click arrives via run-shell,
-# which has no terminal, so the viewer gets a popup the pane's size that
-# re-enters with --view. The picker's popup is a terminal already, and tmux has
-# one popup per client, so from there it draws in place. 1: not for the viewer
-# (another file, @cockpit_md_view off, no binary, a viewer that failed).
+# A markdown file opens read-only in cockpit-tui view; e goes on to open_one at
+# the line it showed. run-shell has no terminal, so a popup re-enters with
+# --view; from the picker's popup (one per client) it draws in place.
+# 1: not for the viewer (another file, @cockpit_md_view off, no binary, failed).
 md_view() {
     local file=$1 ln=$2 out rc err size title b
     case ${file,,} in *.md|*.markdown|*.mdown|*.mkd) ;; *) return 1 ;; esac
@@ -168,8 +126,8 @@ md_view() {
     # shellcheck source=lib/tui.sh
     . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] || return 1
     if [ "$PICK" -eq 0 ] && [ "$VIEW" -eq 0 ] && [ "$BROWSE" -eq 0 ]; then
-        # a popup needs a client on the pane's session; decided here, as the
-        # popup's own status is its command's (129 when the client detaches)
+        # a popup needs a client; decided here, as the popup's status is its
+        # command's (129 when the client detaches)
         [ -n "$(tmux list-clients -t "$pane" -F x 2>/dev/null)" ] || return 1
         size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
         # the border draws the name: no control character and no bidi mark,
@@ -203,15 +161,14 @@ md_view() {
 
 # --- folder browser (#363) -------------------------------------------------------
 # A touch client has no use for VS Code: it opens on the PC's desktop. #{E:..}
-# expands the option as a format, as the status bar does; unset or 0 is false.
+# expands the option as a format; unset or 0 is false.
 touch_client() {
     local t
     t=$(tmux display-message -p -t "$pane" '#{E:@cockpit_is_touch}' 2>/dev/null)
     case $t in ""|0) return 1 ;; esac
 }
 
-# A terminal editor in a window of its own, in the file's folder. Unlike open_one
-# this never reaches for VS Code: the caller decided the client cannot see it.
+# A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
     local file=$1 editor fd
     editor=$(tmux show-options -gqv @cockpit_editor)
@@ -226,8 +183,8 @@ term_edit() {
          "$editor $(shq "$file")"
 }
 
-# Acts on the one line cockpit-tui files printed. It is text from a program that
-# lists names anyone can create, so nothing is trusted until it is checked.
+# The one line cockpit-tui files printed. It lists names anyone can create, so
+# nothing is trusted until checked: one line, a known verb, an existing abs path.
 browse_act() {
     local line=$1 verb path
     case $line in *$'\n'*) note "cockpit: the browser printed something that is not one line"; return 1 ;; esac
@@ -245,8 +202,7 @@ browse_act() {
     if [ ! -d "$path" ] && touch_client; then term_edit "$path"; else open_one "$path" "" ""; fi
 }
 
-# --folder asks for a popup, which re-enters as --browse: run-shell has no
-# terminal to draw on, and the popup is where the printed line can be read.
+# --folder asks for a popup, which re-enters as --browse: run-shell has no terminal.
 browse_folder() {
     local pw ph err key rc
     # shellcheck source=lib/tui.sh
@@ -285,13 +241,10 @@ else
         printf '       tmux-open-path --dry-run <dir> <line>\n' >&2
         exit 2
     }
-    # The binding rewrites @cockpit_click_line on every click, so there is nothing stale
-    # to clear -- and leaving it set is what lets the popup re-derive this list.
+    # Left set: the popup re-derives the list from it, and each click rewrites it.
     line=$(tmux show-options -p -t "$pane" -qv @cockpit_click_line)
     dir=$(tmux display-message -p -t "$pane" '#{pane_current_path}')
     win=$(tmux display-message -p -t "$pane" '#{window_id}')
-    # The cockpit table's o (the menu's Browse folder row and the status-bar path
-    # tap replay it) browses the pane's folder (#363).
     if [ "$FOLDER" -eq 1 ] || [ "$BROWSE" -eq 1 ]; then
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
         browse_folder; exit $?
@@ -303,9 +256,8 @@ fi
     note "cockpit: no line under the click · click a line that names a path"; exit 0; }
 
 # --- candidates ---------------------------------------------------------------
-# Every token on the line that resolves to something on disk, in the order they
-# appear. Existence is the filter: it is the only test that cannot be fooled by a
-# word that merely looks like a path.
+# Every token that exists on disk, in line order: existence is the one test a
+# word that merely looks like a path cannot fool.
 declare -a FILES=() LINES=() COLS=()
 declare -A seen=()
 
@@ -328,14 +280,8 @@ consider() {  # consider <path> <line> <col> — record it if it exists
     return 0
 }
 
-# Terminals wrap paths in punctuation: "src/a.ts", (src/a.ts), 'src/a.ts',
-# and prose ends them with , ; or a full stop. Strip both ends, not the
-# middle -- a path may legitimately contain almost anything else.
-# Leading strip is an explicit set, NOT [:punct:]: that class contains / ~ .
-# and _, so it ate the first character of every absolute and ~ path.
-#
-# The answer lands in $TOK rather than on stdout: a command substitution is a
-# fork, and this runs once per token on the line, twice for a wrapped one.
+# Strip wrapping punctuation off both ends. The leading set is explicit, not
+# [:punct:], which holds / ~ . _. The answer is in $TOK: $(...) would fork per token.
 strip_ends() {
     TOK=$1
     while [ -n "$TOK" ]; do
@@ -345,12 +291,9 @@ strip_ends() {
         esac
     done
     while [ -n "$TOK" ]; do
-        # Stop before eating the ")" of "file(12,3)" -- tsc and MSVC print that
-        # shape, and losing the bracket turns the location into unparseable text.
+        # Keep the ")" of tsc/MSVC's "file(12,3)".
         [[ $TOK =~ \([0-9]+,[0-9]+\)$ ]] && break
-        # Same for the ")" of "Write(src/a.ts)": that bracket is what marks the
-        # token as a wrapper worth unwrapping below. Strip it and the token
-        # becomes "Write(src/a.ts", which is nothing at all.
+        # And of "Write(src/a.ts)": it marks the wrapper the loop unwraps.
         [[ $TOK =~ ^[A-Za-z_][A-Za-z0-9_-]*\(.+\)$ ]] && break
         case "$TOK" in
             *[\)\]\}\'\"\`,\;:.]) TOK=${TOK%?} ;;
@@ -381,37 +324,20 @@ try_token() {
     return 1
 }
 
-# Splitting $line uses the shell's own word rules, and those include PATHNAME
-# EXPANSION. A line that merely mentioned a wildcard -- "rm *", a compiler note
-# containing [ab]* -- was expanded against this process's cwd, inventing tokens
-# that the existence check below then accepted as real candidates. Under
-# run-shell that cwd is the tmux server's, which is very often the same tree the
-# pane is in, so the invented files existed and got opened. -f keeps the tokens
-# literal; nothing here wants a glob.
+# set -f: word splitting also globs, and "rm *" on a line expanded against the
+# server's cwd into files that existed and got opened.
 set -f
 ntok=0
 for raw in $line; do
     ntok=$((ntok + 1))
-    # 0.31ms/token, linear: a real clicked line has a handful of tokens, but a
-    # 112KB line (4000 path-shaped tokens) measured 1.59s in this loop alone.
-    # Capped: degrade, don't stall the click.
+    # 0.31 ms a token: a 112 KB line took 1.59 s, so cap rather than stall.
     [ "$ntok" -gt 500 ] && break
     strip_ends "$raw"; tok=$TOK
     [ -n "$tok" ] || continue
     try_token "$tok" && continue
-    # Claude Code prints its tool calls as Write(path), Read(path:12),
-    # Edit(path) -- the path is real, the Name( ) around it is not, and the
-    # whole token resolves to nothing. Unwrap and try the inside, itself
-    # stripped so a nested "(Write(a.ts))" still lands.
-    #
-    # The tsc shape file(12,3) is NOT this and must not be unwrapped: its
-    # inner is a line/column pair, try_token already resolved it above, and
-    # a bare "12,3" would then be looked up as a filename.
-    #
-    # The two tests are separate statements on purpose: written as one
-    # "[[ a ]] && [[ ${BASH_REMATCH[1]} ]]" chain, bash clears BASH_REMATCH
-    # before the second operand expands, and `set -u` kills the script with
-    # "BASH_REMATCH[1]: unbound variable" on the first Write(...) line.
+    # Claude Code's Write(path), Read(path:12): unwrap and try the inside, but
+    # not tsc's file(12,3). Two statements: in one `[[ ]] && [[ ]]` chain bash
+    # clears BASH_REMATCH before the second expands, and set -u dies.
     if [[ $tok =~ ^[A-Za-z_][A-Za-z0-9_-]*\((.+)\)$ ]]; then
         inner=${BASH_REMATCH[1]}
         if ! [[ $inner =~ ^[0-9]+,[0-9]+$ ]]; then
@@ -430,27 +356,20 @@ if [ "$DRY" -eq 1 ]; then
 fi
 
 if [ ${#FILES[@]} -eq 0 ]; then
-    # A popup you have to dismiss is the wrong answer to "there was nothing
-    # there" -- the status line says it and gets out of the way.
     note "cockpit: no file on that line · nothing there resolved on disk"
     exit 0
 fi
 
-# One candidate is not a question: it opens at once, a directory included.
 if [ ${#FILES[@]} -eq 1 ]; then
     open_one "${FILES[0]}" "${LINES[0]}" "${COLS[0]}"; exit 0
 fi
 
-# Several: ask. The click arrives via run-shell, which has no terminal, so the
-# picker needs a popup -- which re-enters this script with --pick and rebuilds
-# the same list. A missing binary is said before the popup opens, not after it
-# has flashed.
+# Several: a popup re-enters with --pick and rebuilds the list. A missing binary
+# is said before the popup opens.
 # shellcheck source=lib/tui.sh
 . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] \
     || { note "cockpit: cockpit-tui is missing · run scripts/tui-fetch"; exit 0; }
 if [ "$PICK" -eq 0 ]; then
-    # Geometry comes from the same options the branch popup uses, read at click
-    # time so changing them needs no reload.
     pw=$(tmux show-option -gqv @cockpit_popup_width);  pw=${pw:-70%}
     ph=$(tmux show-option -gqv @cockpit_popup_height); ph=${ph:-70%}
     tmux display-popup -t "$pane" -E -w "$pw" -h "$ph" \
@@ -459,11 +378,8 @@ if [ "$PICK" -eq 0 ]; then
     exit 0
 fi
 
-# cockpit-tui pick draws the list on /dev/tty and prints the chosen key. The key
-# is the candidate's index and nothing else: the path never travels through the
-# picker, so a name with a tab or a newline in it cannot be mistaken for a row.
-# The display is relative to the pane's own directory when the candidate is under
-# it, which is how the token read in the output, with the line number kept.
+# pick prints the candidate's index, never the path, so a name with a tab or a
+# newline cannot pass for a row.
 rows=''
 for i in "${!FILES[@]}"; do
     case "${FILES[$i]}" in
@@ -475,8 +391,7 @@ for i in "${!FILES[@]}"; do
     disp=${disp//$'\t'/ }; disp=${disp//$'\n'/ }
     rows+="$i"$'\t'"$disp"$'\n'
 done
-# Stderr goes to a file so a cockpit-tui older than this script (it does not know
-# --copy) can be told apart from a crash, as tm and tmux-branch do.
+# Stderr to a file: a cockpit-tui without --copy is told apart from a crash.
 err=$(mktemp 2>/dev/null) || err=/dev/null
 trap '[ "$err" = /dev/null ] || rm -f -- "$err"' EXIT
 trap 'exit 130' INT TERM HUP
