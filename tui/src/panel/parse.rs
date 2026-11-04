@@ -308,6 +308,10 @@ fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
             };
         }
     };
+    write_result(o, raw, want, t, kind)
+}
+
+fn write_result(o: &str, raw: &str, want: OutType, t: Tag, kind: &str) -> Reply {
     let (b, _) = body(o, &t, kind, true).unwrap_or_default();
     let lang = || t.attr.as_deref().unwrap_or("").to_lowercase();
     match kind {
