@@ -17,27 +17,56 @@ big_files() {                 # <dir>
     | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
 }
 
+# One `:(top,exclude,literal)<path>` NUL record per gitlink in the
+# `ls-files -s -z --full-name` output on stdin, the path byte for byte. A read
+# takes one record, never the list: a shell variable cannot hold a NUL.
+gitlink_excludes() {
+    local r
+    while IFS= read -r -d '' r; do
+        case $r in 160000\ *) printf ':(top,exclude,literal)%s\0' "${r#*$'\t'}" ;; esac
+    done
+}
+
 # --- the base every review diffs against --------------------------------------
 # One `git diff <base>` covers staged, unstaged and untracked, against a COPY of
 # the index that `add -N -A` extended with intent-to-add entries. The copy keeps
-# the agent's own index untouched. `cp -p`: git's racy-timestamp guard compares
-# entry mtimes with the index file's, and a fresh mtime hid same-second edits.
+# the agent's own index untouched, and keeps its mtime: git's racy-timestamp
+# guard compares entry mtimes with the index file's, and a fresh mtime hid
+# same-second edits.
 # The -N entries also make an approved tree (untracked files included) diff by
 # content instead of reporting those files as deleted.
 # --no-optional-locks everywhere: even a read can take index.lock in a repo an
 # agent is working in.
+# The copy and the gitlink excludes live in a private dir (mktemp -d: 0700, a
+# fresh name). The shared temp dir is the agent's to write too, and cp writes
+# through a symlink planted there (#435); noclobber refuses one raced in.
+# A gitlink's repo has its own config, filters included (#434), and add and
+# diff each run status inside it. add has no --ignore-submodules, so only a
+# pathspec keeps it out; the diff ignores the dirt, never a moved pointer.
 tree_diff() {
     local dir=$1; shift
-    local idx gd head br rp
+    local tmp idx gd head br rp
     # rev-parse carries on past what it cannot resolve: an unborn HEAD gives two
     # lines (git dir, "HEAD"), a born one three.
     mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
     gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
     [ -n "$gd" ] || return 1
-    idx=$(mktemp) || return 1
-    trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
-    cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
-    GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A 2>/dev/null
+    tmp=$(mktemp -d) || return 1
+    trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
+    idx=$tmp/index
+    { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null || rm -f -- "$idx"
+    local -a from=()
+    git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' > "$tmp/staged" 2>/dev/null \
+        || { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; return 1; }
+    # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
+    # to run. An error (2) runs the loop all the same.
+    grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
+    if [ $? -ne 1 ]; then
+        gitlink_excludes < "$tmp/staged" > "$tmp/pathspec" \
+            || { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; return 1; }
+        [ ! -s "$tmp/pathspec" ] || from=(--pathspec-from-file="$tmp/pathspec" --pathspec-file-nul)
+    fi
+    GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A ${from[@]+"${from[@]}"} 2>/dev/null
     # Only a pathspec stops git hashing the big files. Exclusions alone still
     # leave the diff whole-worktree wide.
     local -a ex=() bigp=()
@@ -53,17 +82,17 @@ tree_diff() {
         local base
         base=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}" "$br" "$head"); base=${base%%$'\t'*}
         GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false \
-            diff --no-color --no-ext-diff "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
+            diff --no-color --no-ext-diff --ignore-submodules=dirty "$base" "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null
     else
         local out
-        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
-        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
+        [ -n "$out" ] || out=$(GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks -c core.quotePath=false diff --no-color --no-ext-diff --ignore-submodules=dirty --cached "$@" "${ex[@]+"${ex[@]}"}" 2>/dev/null)
         printf '%s\n' "$out"
     fi
     # The binary-file numstat row git would have printed: without it a tree whose
     # only change is a big file reads clean to --delta.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
-    rm -f -- "$idx"; trap - EXIT HUP INT TERM
+    rm -rf -- "$tmp"; trap - EXIT HUP INT TERM
 }
 
 # --- which base ---------------------------------------------------------------

@@ -6447,6 +6447,35 @@ is "the run was killed mid-diff (exit 143)" "143" "$tdrc"
 is "and its temp index is gone" "" "$(ls -A "$TDK/tmp")"
 rm -rf "$TDK"
 
+echo "== tmux-review: tree_diff never writes its temp index through a symlink =="
+# The shared temp dir is the agent's to write too, and it can see tree_diff's
+# names. The mktemp shim plays an agent that won the race: the name it hands
+# back already holds a symlink to a victim, at the index copy's own name.
+TDS=$(mktmpd); mkdir -p "$TDS/repo" "$TDS/tmp" "$TDS/bin"; chmod 755 "$TDS/tmp"
+( cd "$TDS/repo" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'b\n' >> f ) >/dev/null 2>&1
+printf 'keep\n' > "$TDS/victim"
+cat > "$TDS/bin/mktemp" <<STUB
+#!/bin/sh
+d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"
+case "\$1" in -d) echo "\$d" ;; *) ln -s "$TDS/victim" "\$d.f"; echo "\$d.f" ;; esac
+STUB
+chmod +x "$TDS/bin/mktemp"
+tds_diff() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$TDS/repo"; }
+PATH="$TDS/bin:$PATH" tds_diff >/dev/null 2>&1
+is "a symlink raced in at the index copy's name: the victim is untouched" "keep" "$(cat "$TDS/victim")"
+# The git shim reads the mode of the dir the index copy sits in, at the add.
+rm -f "$TDS/bin/mktemp"
+cat > "$TDS/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$TDS/mode" ;; esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$TDS/bin/git"
+PATH="$TDS/bin:$PATH" TMPDIR="$TDS/tmp" tds_diff >/dev/null 2>&1
+is "the index copy sits in a dir only the user can open" "drwx------" "$(cat "$TDS/mode" 2>/dev/null)"
+rm -rf "$TDS"; unset -f tds_diff
+
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
 if need_tmux "tmux-review --deliver"; then :; else
@@ -10711,7 +10740,63 @@ is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter
 "$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
 is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
-unset -f ds_shell
+
+# #434: a gitlink's repo has its own config, a clean filter included, and
+# tree_diff's add and diff each run status inside it unless kept out. A filter
+# planted in a submodule and in an embedded repo at a non-UTF-8 path, proven
+# live, must run under neither tree_diff nor diffstat, which still agree. The
+# planted submodule's pointer stays put: a moved one skips the dirt check.
+ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule bump moved
+    ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      cd "$1" || exit; e=$(printf 'bad\377name')
+      git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
+      git init -q -b main r && cd r && printf 'a\n' > a.txt && mkdir d && printf 'd\n' > d/x
+      git add -A && git commit -q -m first
+      git -c protocol.file.allow=always submodule add -q "$1/in" sub
+      git -c protocol.file.allow=always submodule add -q "$1/in" bump
+      git init -q -b main "$e" && printf 'e\n' > "$e/e.txt" && git -C "$e" add -A && git -C "$e" commit -q -m e
+      git add "$e" && git commit -q -m subs
+      printf 'y\n' > bump/g.txt && git -C bump add g.txt && git -C bump commit -q -m bump && printf 'b\n' > a.txt
+      printf 'n\n' > n.txt
+      git config -f .git/modules/sub/config filter.mark.clean "touch $1/PWNED.sub; cat"
+      git config -f "$e/.git/config" filter.mark.clean "touch $1/PWNED.emb; cat"
+      printf '* filter=mark\n' | tee .git/modules/sub/info/attributes > "$e/.git/info/attributes"
+      touch -t 203001010000 sub/f.txt "$e/e.txt"; git status --porcelain >/dev/null
+      ls "$1" | grep -c '^PWNED\.'; rm -f "$1"/PWNED.*; touch -t 203101010000 sub/f.txt "$e/e.txt"
+    ) 2>/dev/null | tail -n 1
+}
+GD=$(mktmpd)
+is "a gitlink's planted clean filter fires under plain git status: both of them" "2" "$(ds_subs "$GD")"
+mkdir "$GD/tmp"
+dss=$(TMPDIR="$GD/tmp" ds_shell "$GD/r")
+is "tree_diff runs no gitlink's own clean filter" "" "$(ls "$GD" | grep '^PWNED')"
+is "and counts the submodule's moved pointer, as diffstat does" "3	2	1	+3 -2  ?1 new" "$dss"
+# Each run after a fresh mtime, so a run that refreshed a gitlink's index
+# cannot leave the next one nothing to hash.
+ds_redirty() { rm -f "$GD"/PWNED.*; touch -t "$1" "$GD/r/sub/f.txt" "$GD/r/$(printf 'bad\377name')/e.txt"; }
+ds_redirty 203201010000
+is "diffstat runs none either, and counts the same" "$dss|" \
+   "$(TMPDIR="$GD/tmp" "$DSB" diffstat "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+ds_redirty 203301010000
+dsl=$(TMPDIR="$GD/tmp" "$DIR/scripts/tmux-review" --lines "$GD/r/d" 2>/dev/null)
+is "nor does tmux-review --lines from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
+is "whose rows still hold the new file at the top" "1" "$(printf '%s\n' "$dsl" | grep -c '^n\.txt	1	n	')"
+is "and neither leaves anything in TMPDIR" "" "$(ls -A "$GD/tmp")"
+rm -rf "$GD"
+# An unborn HEAD takes tree_diff's other path, the worktree then the index.
+GD=$(mktmpd)
+is "unborn HEAD, a staged embedded repo: its plant fires under plain git status" "1" \
+   "$( ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+         cd "$GD" && git init -q -b main r && cd r && git init -q -b main e && printf 'e\n' > e/e.txt
+         git -C e add -A && git -C e commit -q -m e && git add e
+         git config -f e/.git/config filter.mark.clean "touch $GD/PWNED; cat"
+         printf '* filter=mark\n' > e/.git/info/attributes
+         touch -t 203001010000 e/e.txt; git status --porcelain >/dev/null
+         ls "$GD" | grep -c '^PWNED$'; rm -f "$GD/PWNED"; touch -t 203101010000 e/e.txt ) 2>/dev/null | tail -n 1)"
+ds_shell "$GD/r" >/dev/null
+is "and tree_diff's unborn path runs it in neither diff" "" "$(ls "$GD" | grep '^PWNED')"
+rm -rf "$GD"
+unset -f ds_subs ds_redirty ds_shell
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
