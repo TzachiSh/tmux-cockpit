@@ -1,6 +1,8 @@
 //! The one list of flags that keeps a repo's own config from running as the
 //! user, and the diff count built on it (#199).
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,6 +38,12 @@ pub const SAFE: [&str; 23] = [
 
 /// stdout, and whether git exited 0: a failed diff must not read as clean.
 fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (bool, String) {
+    let (ok, out) = run_raw(dir, extra, index, args);
+    (ok, String::from_utf8_lossy(&out).into_owned())
+}
+
+/// [`run`] with stdout as git wrote it: a path need not be UTF-8.
+fn run_raw<S: AsRef<OsStr>>(dir: &str, extra: &[String], index: Option<&Path>, args: &[S]) -> (bool, Vec<u8>) {
     let mut c = Command::new("git");
     c.arg("-C")
         .arg(dir)
@@ -51,9 +59,7 @@ fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (boo
     if let Some(i) = index {
         c.env("GIT_INDEX_FILE", i);
     }
-    c.output()
-        .map(|o| (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned()))
-        .unwrap_or_default()
+    c.output().map(|o| (o.status.success(), o.stdout)).unwrap_or_default()
 }
 
 pub(crate) fn git(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> String {
@@ -114,6 +120,16 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
         .filter(|f| !f.is_empty())
         .filter(|f| std::fs::metadata(Path::new(root).join(f)).is_ok_and(|m| m.is_file() && m.len() > BIGCAP))
         .collect();
+    // A gitlink's repo has its own config, filters included (#428), and `add -A`
+    // checks every gitlink for dirt by running status inside it. add has no
+    // --ignore-submodules and overrides diff.ignoreSubmodules, so only a
+    // pathspec keeps it out, read from a file: a path need not be UTF-8, and
+    // thousands of them would pass ARG_MAX.
+    let (ok, staged) = run_raw(root, &[], None, &["ls-files", "-s", "-z"]);
+    if !ok {
+        return None;
+    }
+    let excludes = gitlink_excludes(&staged);
     let n = IDX_SEQ.fetch_add(1, Ordering::Relaxed);
     let idx = std::env::temp_dir().join(format!("cockpit-tui-idx.{}.{n}", std::process::id()));
     let src = Path::new(gitdir).join("index");
@@ -125,17 +141,27 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
     if !copied {
         let _ = std::fs::remove_file(&idx);
     }
-    // A gitlink's repo has its own config, filters included (#428), and `add -A`
-    // checks every gitlink for dirt by running status inside it. add has no
-    // --ignore-submodules and overrides diff.ignoreSubmodules, so only a
-    // pathspec keeps it out.
-    let mut intent = vec!["add", "-N", "-A"];
-    let links = gitlinks(&git(root, &[], None, &["ls-files", "-s", "-z"]));
-    if !links.is_empty() {
-        intent.push("--");
-        intent.extend(links.iter().map(String::as_str));
+    let mut intent: Vec<OsString> = ["add", "-N", "-A"].map(OsString::from).into();
+    let ps = std::env::temp_dir().join(format!("cockpit-tui-ps.{}.{n}", std::process::id()));
+    if !excludes.is_empty() {
+        // create_new: a name planted in the shared temp dir is never followed
+        let _ = std::fs::remove_file(&ps);
+        let wrote = File::options()
+            .write(true)
+            .create_new(true)
+            .open(&ps)
+            .and_then(|mut f| f.write_all(&excludes));
+        if wrote.is_err() {
+            let _ = std::fs::remove_file(&ps);
+            let _ = std::fs::remove_file(&idx);
+            return None; // never an add without its excludes
+        }
+        let mut from = OsString::from("--pathspec-from-file=");
+        from.push(&ps);
+        intent.extend([from, "--pathspec-file-nul".into()]);
     }
-    git(root, &filters, Some(&idx), &intent);
+    run_raw(root, &filters, Some(&idx), &intent);
+    let _ = std::fs::remove_file(&ps);
     let ex: Vec<String> = big.iter().map(|b| format!(":(exclude,literal){b}")).collect();
     let diff = |rev: Option<&str>| {
         let mut args = vec![
@@ -145,7 +171,9 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
-            "--ignore-submodules=all",
+            // a gitlink's commit still counts (`1 1 sub`, as prefix r has it);
+            // its dirt, which takes a status inside it, does not
+            "--ignore-submodules=dirty",
             "--numstat",
             "--summary",
         ];
@@ -189,13 +217,20 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
     Some((add, del, new, pm))
 }
 
-/// Exclusion pathspecs for the gitlinks in `git ls-files -s -z` output.
-fn gitlinks(staged: &str) -> Vec<String> {
-    staged
-        .split('\0')
-        .filter_map(|r| r.strip_prefix("160000 ")?.split_once('\t'))
-        .map(|(_, p)| format!(":(exclude,literal){p}"))
-        .collect()
+/// A NUL-separated exclusion pathspec for each gitlink in `git ls-files -s -z`
+/// output, its path byte for byte.
+fn gitlink_excludes(staged: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for r in staged.split(|b| *b == 0) {
+        let Some(rest) = r.strip_prefix(b"160000 ") else { continue };
+        let Some(tab) = rest.iter().position(|b| *b == b'\t') else {
+            continue;
+        };
+        out.extend_from_slice(b":(exclude,literal)");
+        out.extend_from_slice(&rest[tab + 1..]);
+        out.push(0);
+    }
+    out
 }
 
 /// `cockpit-tui git-flags [--filters <dir>]`: one word per line, so a shell
