@@ -266,30 +266,27 @@ fi
 
 # Reload sources every file in #{config_files}, resolved once at bind time.
 # From argv a bare ; argument ends bind-key itself, so pick_on below passes '\;'.
-rlconf=$(mktemp) || exit 1
-trap 'rm -f "$rlconf"' EXIT HUP INT TERM
-{
-    old_ifs=$IFS
-    IFS=,
-    set -f
-    # shellcheck disable=SC2046 # splitting #{config_files} on comma is the point
-    set -- $(tmux display-message -p '#{config_files}' 2>/dev/null)
-    set +f
-    IFS=$old_ifs
-    [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
-    rlk=$(key @cockpit_reload_key R)
-    [ -z "$rlk" ] || printf 'bind-key %s {\n' "$(sq "$rlk")"
-    if [ -n "$rlk" ]; then
+# The block bindings below go to tmux on stdin (source-file -), not via a file.
+rlk=$(key @cockpit_reload_key R)
+if [ -n "$rlk" ]; then
+    {
+        old_ifs=$IFS
+        IFS=,
+        set -f
+        # shellcheck disable=SC2046 # splitting #{config_files} on comma is the point
+        set -- $(tmux display-message -p '#{config_files}' 2>/dev/null)
+        set +f
+        IFS=$old_ifs
+        [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
+        printf 'bind-key %s {\n' "$(sq "$rlk")"
         for f in "$@"; do
             # -q: a listed but missing /etc/tmux.conf would abort the whole chain.
             printf '    source-file -q %s\n' "$(sq "$f")"
         done
         printf '    display-message "config reloaded"\n'
         printf '}\n'
-    fi
-} > "$rlconf"
-tmux source-file "$rlconf"
-rm -f "$rlconf"
+    } | tmux source-file -
+fi
 
 # switch-client first: moving the last window out of the client's session would
 # destroy it and detach the client. The source is pinned by id (#{S:} shadows it).
@@ -299,8 +296,6 @@ rm -f "$rlconf"
 # matches nothing, and a ## replacement inserts nothing.
 mk=$(key @cockpit_move_key M)
 if [ -n "$mk" ]; then
-    mvconf=$(mktemp) || exit 1
-    trap 'rm -f "$mvconf"' EXIT HUP INT TERM
     {
         printf 'bind-key %s {\n' "$(sq "$mk")"
         cat <<'EOF'
@@ -309,16 +304,12 @@ if [ -n "$mk" ]; then
     run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{s|(#)|\\1\\1|:#{qa:session_name}} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
-    } > "$mvconf"
-    tmux source-file "$mvconf"
-    rm -f "$mvconf"
+    } | tmux source-file -
 fi
 
 # The flag is the state, and unsetting inherits the config's value, so nothing is stashed.
 fsk=$(key @cockpit_fullscreen_key e)
 if [ -n "$fsk" ]; then
-    fsconf=$(mktemp) || exit 1
-    trap 'rm -f "$fsconf"' EXIT HUP INT TERM
     {
         printf 'bind-key %s {\n' "$(sq "$fsk")"
         cat <<'EOF'
@@ -333,9 +324,7 @@ if [ -n "$fsk" ]; then
     }
 }
 EOF
-    } > "$fsconf"
-    tmux source-file "$fsconf"
-    rm -f "$fsconf"
+    } | tmux source-file -
 fi
 
 # --- the menu and the taps ---------------------------------------------------------
