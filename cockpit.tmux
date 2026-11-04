@@ -56,7 +56,10 @@ tmux set-environment -g TMUX_COCKPIT_DIR "$DIR"
 tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null
 
 # $HOME as a regex, held in an option so no character in it can break the format.
-tmux set-option -gq @cockpit_home_re "$(printf '%s' "${HOME:-/nonexistent}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+# Trailing slashes off: statusbar.conf matches it whole or followed by a / (#296).
+home=${HOME:-/nonexistent}
+while [ "$home" != / ] && [ "${home%/}" != "$home" ]; do home=${home%/}; done
+tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
 
 # --- status line and borders -----------------------------------------------------
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
@@ -116,29 +119,74 @@ fi
 # a private socket, so every key works (Space, ?, digits, punctuation, not only the
 # letters a table listed) and a reload cannot mistake an earlier load's binding for
 # stock. The server has no session, so it exits after the one call. A fixed short
-# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. A lookup
-# that fails (no dir, no server) leaves the key as it is; only tmux's "unknown key",
-# stock has none, unbinds it.
-give_back() {
-    local k=$1 d out err="" r note cmd
+# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. Only
+# tmux's "unknown key" (stock has none) unbinds. A lookup that fails any other way
+# (no dir, no server, no answer) is not "binds nothing": the key stays as it is,
+# a message says why, and the 1 sends it to the next load's retry (#290).
+give_back() {                 # <key> -> 1 when tmux's own binding could not be read
+    local k=$1 d out="" err="" r note cmd
     # tmux reads a lone ; argument as a command separator.
     [ "$k" = ';' ] && k='\;'
-    d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null) || return 0
-    if out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
-            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err"); then
+    # /tmp first for its short path; TMPDIR where /tmp is read-only (Termux).
+    if ! d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null ||
+             mktemp -d "${TMPDIR:-/tmp}/cockpit-gb.XXXXXX" 2>/dev/null); then
+        err="no temp dir"
+    elif out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
+            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err") \
+            && [ -n "$out" ]; then
+        rm -rf -- "$d"
         IFS=$'\037' read -r r note cmd <<< "$out"
         [ "$r" = 1 ] && r=-r || r=""
         tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
+        return 0
     else
         read -r err < "$d/err"
-        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k" ;; esac
+        rm -rf -- "$d"
+        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k"; return 0 ;; esac
     fi
-    rm -rf -- "$d"
+    err="tmux-cockpit: could not read tmux's own binding for $k (${err:-no answer})"
+    tmux display-message "$(fesc "$err; left it bound, the next load tries again")"
+    return 1
+}
+# Still cockpit's <name> binding: its note, or, from a load before the notes, no
+# note and a command only cockpit binds. The second form can go after a release.
+# Only the menu and panel keys had a record then, each matched by its own
+# command, and only until a load has noted every key (@cockpit_notes): after
+# that a note-less key is the user's, whatever it runs.
+notes=$(tmux show-option -gqv @cockpit_notes)
+owned() {                     # <name> <key>
+    local nc
+    nc=$(tmux list-keys -T prefix -F "#{key_note}"$'\037'"#{key_command}" "$2" 2>/dev/null)
+    case "${nc%%$'\037'*}" in
+        "cockpit: $1") return 0 ;;
+        "") [ -z "$notes" ] || return 1
+            case "$1:${nc#*$'\037'}" in
+                menu:*'display-menu -T "#[align=centre]'*|panel:*"$DIR/scripts/cockpit-panel"*)
+                    tmux display-message "$(fesc \
+                        "tmux-cockpit: $2 was the $1 key before the key notes; giving it back")"
+                    return 0 ;;
+            esac ;;
+    esac
+    return 1
 }
 
-# The menu's key, settled before any key is bound this load, so giving an old one
-# back can never undo a binding made below. @cockpit_ai_key was the agents menu's
-# key; it still works, with a notice.
+# Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
+# Each effective key stays in a variable (empty = off) for the agents menu.
+key() {                       # <option> <default> -> the key, empty when off
+    local k; k=$(tmux show-option -gqv "$1")
+    case "$k" in off) ;; "") printf '%s' "$2" ;; *) printf '%s' "$k" ;; esac
+}
+# Every cockpit key is bound with a "cockpit: <name>" note and recorded in
+# @cockpit_<name>_bound, so the next load knows which keys were its own.
+ckey() {                      # <name> <key> <command...>
+    local n=$1 k=$2; shift 2
+    tmux bind-key -N "cockpit: $n" "$k" "$@"
+    tmux set-option -g "@cockpit_${n}_bound" "$k"
+}
+
+# Every key is settled before any is bound or given back, so giving an old one
+# back can never undo a binding this load makes. @cockpit_ai_key was the agents
+# menu's key; it still works, with a notice.
 menuk=$(tmux show-option -gqv @cockpit_menu_key)
 aik=$(tmux show-option -gqv @cockpit_ai_key)
 if [ -z "$menuk" ] && [ -n "$aik" ]; then
@@ -146,11 +194,48 @@ if [ -z "$menuk" ] && [ -n "$aik" ]; then
     tmux display-message "tmux-cockpit: @cockpit_ai_key is now @cockpit_menu_key"
 fi
 case "$menuk" in off) menuk="" ;; "") menuk=a ;; esac
-mprev=$(tmux show-option -gqv @cockpit_menu_bound)
-if [ -n "$mprev" ] && [ "$mprev" != "$menuk" ]; then
-    give_back "$mprev"
-    tmux set-option -gu @cockpit_menu_bound
-fi
+sk=$(key @cockpit_sessions_key s)
+jk=$(key @cockpit_jump_key u)
+ik=$(key @cockpit_info_key i)
+# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
+pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
+pk=$(key @cockpit_panel_key "$pdef")
+bk=$(key @cockpit_board_key w)
+rk=$(key @cockpit_review_key r)
+rlk=$(key @cockpit_reload_key R)
+mk=$(key @cockpit_move_key M)
+fsk=$(key @cockpit_fullscreen_key e)
+
+# The retired side fix's bindings outlive it on a server that only reloads.
+tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
+    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
+    | while IFS= read -r k; do give_back "$k"; done
+# A reload that turns a key off or moves it gives the old key back, unless it is
+# no longer ours: the user bound it since. A key another cockpit key takes this
+# load is given back too, then bound again below. One that could not be given
+# back waits in @cockpit_giveback ("<name>:<key> ...") for the next load, since
+# the <name>'s own record moves on to its new key.
+now=" menu:$menuk sessions:$sk jump:$jk info:$ik panel:$pk board:$bk review:$rk"
+now="$now reload:$rlk move:$mk fullscreen:$fsk "
+todo=$(tmux show-option -gqv @cockpit_giveback)
+set -f
+for nk in $now; do
+    n=${nk%%:*}
+    prev=$(tmux show-option -gqv "@cockpit_${n}_bound")
+    [ -n "$prev" ] && [ "$prev" != "${nk#*:}" ] || continue
+    todo="$todo $n:$prev"
+    tmux set-option -gu "@cockpit_${n}_bound"
+done
+left=""
+for nk in $todo; do
+    case "$now" in *" $nk "*) continue ;; esac     # its own key again: bound below
+    owned "${nk%%:*}" "${nk#*:}" || continue      # the user's now: nothing to give back
+    give_back "${nk#*:}" || left="$left $nk"
+done
+set +f
+if [ -n "$left" ]; then tmux set-option -g @cockpit_giveback "${left# }"
+else tmux set-option -gu @cockpit_giveback; fi
+
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
 # The pane a popup came from, via the session id $TMUX ends in: display-popup
@@ -178,46 +263,22 @@ tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
 tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
-# Lowercase keys: a Shift-letter chord dies under Caps Lock or a non-Latin layout.
-# Each effective key stays in a variable (empty = off) for the agents menu.
-key() {                       # <option> <default> -> the key, empty when off
-    local k; k=$(tmux show-option -gqv "$1")
-    case "$k" in off) ;; "") printf '%s' "$2" ;; *) printf '%s' "$k" ;; esac
-}
-
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
 # tm --popup opens the popup itself: its height follows the session count,
 # which a display-popup size cannot express.
 Q_TM=$(sq "$DIR/scripts/tm")
-sk=$(key @cockpit_sessions_key s)
-[ -z "$sk" ] || tmux bind-key "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
+[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
-jk=$(key @cockpit_jump_key u)
-[ -z "$jk" ] || tmux bind-key "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}'"
+[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'"
 
-ik=$(key @cockpit_info_key i)
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
-[ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+[ -z "$ik" ] || ckey info "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
     "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE"
 
-# The retired side fix's bindings outlive it on a server that only reloads.
-tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
-    | awk -F'\037' 'index($2, "scripts/tmux-fixer") { print $1 }' \
-    | while IFS= read -r k; do give_back "$k"; done
-
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
-# @cockpit_fixer_key off kept stock f; the panel taking f must not undo that.
-pdef=f; [ "$(tmux show-option -gqv @cockpit_fixer_key)" = off ] && pdef=""
-pk=$(key @cockpit_panel_key "$pdef")
-# A reload that turns the key off or moves it must take the old binding back.
-pprev=$(tmux show-option -gqv @cockpit_panel_bound)
-if [ -n "$pprev" ] && [ "$pprev" != "$pk" ]; then
-    give_back "$pprev"
-    tmux set-option -gu @cockpit_panel_bound
-fi
 # Read at load like the key: a strict word, since the binary refuses any other.
 pmode=$(tmux show-option -gqv @cockpit_panel_mode)
 case "$pmode" in
@@ -225,22 +286,26 @@ case "$pmode" in
     *) tmux display-message "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"; pmode=auto ;;
 esac
 if [ -n "$pk" ]; then
-    tmux bind-key "$pk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
+    ckey panel "$pk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
         -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
-    tmux set-option -g @cockpit_panel_bound "$pk"
 fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
-bk=$(key @cockpit_board_key w)
+# The board's jump moves the pressing client, not the most recently active one
+# (#296). The window forms pass it (-c: run-shell expands formats); the popup
+# cannot (display-popup expands none in its command), so its key leaves it on
+# the pane it was pressed in, for the board to take at start.
+pin=(set-option -pF @cockpit_board_client '#{client_name}' '\;')
 # Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        tmux bind-key "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey board "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     else
         # No #{session_name}: it named the client's session, not the agent's.
-        tmux bind-key "$bk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 
@@ -248,12 +313,12 @@ fi
 # `r` on a row opens the review. The same command prefix w runs; the window form
 # cannot use SRC_PANE, since new-window activates itself before its command
 # runs, so run-shell expands #{pane_id} on the source pane instead (#45).
-rk=$(key @cockpit_review_key r)
 if [ -n "$rk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-        tmux bind-key "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} \
+$(sq "$(fesc "$Q_BOARD") -p '#{pane_id}' -c '#{client_name}'")"
     else
-        tmux bind-key "$rk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 
@@ -272,7 +337,6 @@ fi
 # Reload sources every file in #{config_files}, resolved once at bind time.
 # From argv a bare ; argument ends bind-key itself, so pick_on below passes '\;'.
 # The block bindings below go to tmux on stdin (source-file -), not via a file.
-rlk=$(key @cockpit_reload_key R)
 if [ -n "$rlk" ]; then
     {
         old_ifs=$IFS
@@ -283,7 +347,7 @@ if [ -n "$rlk" ]; then
         set +f
         IFS=$old_ifs
         [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
-        printf 'bind-key %s {\n' "$(sq "$rlk")"
+        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: reload')" "$(sq "$rlk")"
         for f in "$@"; do
             # -q: a listed but missing /etc/tmux.conf would abort the whole chain.
             printf '    source-file -q %s\n' "$(sq "$f")"
@@ -291,6 +355,7 @@ if [ -n "$rlk" ]; then
         printf '    display-message "config reloaded"\n'
         printf '}\n'
     } | tmux source-file -
+    tmux set-option -g @cockpit_reload_bound "$rlk"
 fi
 
 # switch-client first: moving the last window out of the client's session would
@@ -299,10 +364,9 @@ fi
 # goes through %%% once into an option, so #( never runs. Four # for two expansions.
 # A session name's # is doubled by backreference: on 3.8 an s/// pattern of a bare #
 # matches nothing, and a ## replacement inserts nothing.
-mk=$(key @cockpit_move_key M)
 if [ -n "$mk" ]; then
     {
-        printf 'bind-key %s {\n' "$(sq "$mk")"
+        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: move')" "$(sq "$mk")"
         cat <<'EOF'
     set -gF @cockpit_move_src "#{window_id}"
     set -gF @cockpit_move_cwd "#{pane_current_path}"
@@ -310,13 +374,13 @@ if [ -n "$mk" ]; then
 }
 EOF
     } | tmux source-file -
+    tmux set-option -g @cockpit_move_bound "$mk"
 fi
 
 # The flag is the state, and unsetting inherits the config's value, so nothing is stashed.
-fsk=$(key @cockpit_fullscreen_key e)
 if [ -n "$fsk" ]; then
     {
-        printf 'bind-key %s {\n' "$(sq "$fsk")"
+        printf 'bind-key -N %s %s {\n' "$(sq 'cockpit: fullscreen')" "$(sq "$fsk")"
         cat <<'EOF'
     if -F "#{@cockpit_fs}" {
         set -u @cockpit_fs
@@ -330,6 +394,7 @@ if [ -n "$fsk" ]; then
 }
 EOF
     } | tmux source-file -
+    tmux set-option -g @cockpit_fullscreen_bound "$fsk"
 fi
 
 # --- the menu and the taps ---------------------------------------------------------
@@ -370,9 +435,11 @@ row 'Reload config'               R "$rlk"
 rows+=('Kill session' Q "confirm-before -p 'kill session ##S? (y/n)' kill-session")
 tmux bind-key -T cockpit m display-menu -T '#[align=centre]#{session_name}' -x M -y M "${rows[@]}"
 if [ -n "$menuk" ]; then
-    tmux bind-key "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
-    tmux set-option -g @cockpit_menu_bound "$menuk"
+    ckey menu "$menuk" display-menu -T '#[align=centre]#{session_name}' -x C -y C "${rows[@]}"
 fi
+# Every key this load binds carries its note now: owned() stops guessing, unless
+# a key it guessed is still waiting to be given back.
+[ -n "$notes" ] || [ -n "$left" ] || tmux set-option -g @cockpit_notes 1
 
 # Taps act on release: a menu opened on the press is closed by its own release.
 # The border's corner, path and branch are control ranges 0-3 (4-6 stay yours);

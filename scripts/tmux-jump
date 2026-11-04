@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Jump to the next pane whose agent is waiting on you, across every session.
+#   tmux-jump [<pane> [<client>]]   the pane and the client the key was pressed in
 set -u
 
-# The bind passes the pane: run-shell sets no $TMUX_PANE (#45).
+# The bind passes the pane: run-shell sets no $TMUX_PANE (#45). And the client: a
+# bare switch-client moves the most recently active one, which may be another (#296).
 cur="${1:-${TMUX_PANE:-}}"
+client="${2:-}"
 blocked=()
 pending=()
 review_pending=()
@@ -30,7 +33,7 @@ blocked+=(${pending[@]+"${pending[@]}"})
 blocked+=(${review_pending[@]+"${review_pending[@]}"})
 
 if [ ${#blocked[@]} -eq 0 ]; then
-    tmux display-message "cockpit: no agent needs you" 2>/dev/null
+    tmux display-message ${client:+-c "$client"} "cockpit: no agent needs you" 2>/dev/null
     exit 0
 fi
 
@@ -43,7 +46,7 @@ for i in "${!blocked[@]}"; do
 done
 
 # switch-client fails without a client; the selection below still applies.
-tmux switch-client -t "$next" 2>/dev/null || true
+tmux switch-client ${client:+-c "$client"} -t "$next" 2>/dev/null || true
 tmux select-window -t "$next" 2>/dev/null
 tmux select-pane   -t "$next" 2>/dev/null
 exit 0

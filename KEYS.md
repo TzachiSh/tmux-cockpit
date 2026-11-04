@@ -101,6 +101,9 @@ stay Shift; the mouse drag does the same job.
 
 Set the option before the plugin's `run-shell` line. `off` disables the key
 (and restores stock tmux where the plugin replaced one).
+A reload (`prefix R`) that turns a key off or moves it gives the old key back
+to what tmux binds there with no config; a key you bound yourself since stays
+yours. Each cockpit key carries a `cockpit: <name>` note in `prefix ?`.
 
 ```sh
 set -g @cockpit_menu_key      a    # n if you never use next-window

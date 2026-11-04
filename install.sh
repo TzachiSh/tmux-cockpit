@@ -99,7 +99,7 @@ if [ "$check" -eq 1 ]; then
     # answer there while a fetched one wins here.
     fp=$(tmux show-environment -g PATH 2>/dev/null); fp=${fp#PATH=}
 
-    # Required: prefix r spawns it. Same server-PATH rule. A go install
+    # Required: `r` on a board row spawns it. Same server-PATH rule. A go install
     # build prints "unknown": present, version unverifiable, so a warn.
     rv=$(PATH=${fp:-$PATH} command -v revdiff 2>/dev/null)
     v=''; [ -z "$rv" ] || v=$("$rv" --version 2>/dev/null)
@@ -476,14 +476,17 @@ esac
 if [ -z "${HOME:-}" ]; then
     printf '\nHOME is not set; add this to your tmux config by hand:\n  run-shell %s/cockpit.tmux\n' "$DIR" >&2
 else
-    conf=""
+    # tmux loads both, so the run-shell line in either wires it, as --check reads it.
+    conf=""; wired=0
     for c in "${XDG_CONFIG_HOME:-$HOME/.config}/tmux/tmux.conf" "$HOME/.tmux.conf"; do
-        [ -r "$c" ] && { conf="$c"; break; }
+        [ -r "$c" ] || continue
+        [ -n "$conf" ] || conf="$c"
+        grep -q 'cockpit\.tmux' "$c" && { wired=1; break; }
     done
     if [ -z "$conf" ]; then
         printf '\nNo tmux config found. Create %s with:\n  run-shell %s/cockpit.tmux\n' \
                "$HOME/.tmux.conf" "$DIR" >&2
-    elif ! grep -q 'cockpit\.tmux' "$conf"; then
+    elif [ "$wired" -eq 0 ]; then
         printf '\nAdd this to %s, AFTER every option using an #{agent_*} token:\n  run-shell %s/cockpit.tmux\n' \
                "$conf" "$DIR" >&2
     fi
