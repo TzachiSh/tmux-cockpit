@@ -6457,13 +6457,13 @@ TDS=$(mktmpd); mkdir -p "$TDS/repo" "$TDS/tmp" "$TDS/bin"; chmod 755 "$TDS/tmp"
 printf 'keep\n' > "$TDS/victim"
 cat > "$TDS/bin/mktemp" <<STUB
 #!/bin/sh
-d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"
+d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"; ln -s "$TDS/victim" "\$d/staged"
 case "\$1" in -d) echo "\$d" ;; *) ln -s "$TDS/victim" "\$d.f"; echo "\$d.f" ;; esac
 STUB
 chmod +x "$TDS/bin/mktemp"
 tds_diff() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$TDS/repo"; }
 PATH="$TDS/bin:$PATH" tds_diff >/dev/null 2>&1
-is "a symlink raced in at the index copy's name: the victim is untouched" "keep" "$(cat "$TDS/victim")"
+is "symlinks raced in at the index copy's and the file list's names: the victim is untouched" "keep" "$(cat "$TDS/victim")"
 # The git shim reads the mode of the dir the index copy sits in, at the add.
 rm -f "$TDS/bin/mktemp"
 cat > "$TDS/bin/git" <<STUB
@@ -10751,6 +10751,7 @@ ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule
       cd "$1" || exit; e=$(printf 'bad\377name')
       git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
       git init -q -b main r && cd r && printf 'a\n' > a.txt && mkdir d && printf 'd\n' > d/x
+      printf 'z\n' > z.txt   # sorts last: the excludes loop ends on a file, not a gitlink
       git add -A && git commit -q -m first
       git -c protocol.file.allow=always submodule add -q "$1/in" sub
       git -c protocol.file.allow=always submodule add -q "$1/in" bump
@@ -10781,7 +10782,32 @@ ds_redirty 203301010000
 dsl=$(TMPDIR="$GD/tmp" "$DIR/scripts/tmux-review" --lines "$GD/r/d" 2>/dev/null)
 is "nor does tmux-review --lines from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
 is "whose rows still hold the new file at the top" "1" "$(printf '%s\n' "$dsl" | grep -c '^n\.txt	1	n	')"
+is "a relative TMPDIR: tree_diff counts what an absolute one does" "$dss" "$(cd "$GD" && TMPDIR=tmp ds_shell "$GD/r")"
 is "and neither leaves anything in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# Excludes that never reach their file: while ls-files writes $tmp/staged, the
+# shim points $tmp/pathspec beside it at DS_SINK. /dev/full fails each write,
+# /dev/null keeps none, and noclobber refuses a file. Each way tree_diff fails,
+# runs no add, and the file keeps what it held.
+mkdir "$GD/bin"
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" ls-files "*) o=\$(readlink "/proc/\$\$/fd/1"); ln -s "\$DS_SINK" "\${o%/*}/pathspec" ;; esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$GD/bin/git"; printf 'keep\n' > "$GD/victim"
+for sink in /dev/full:203401010000 /dev/null:203501010000 "$GD/victim:203601010000"; do
+    ds_redirty "${sink##*:}"
+    is "excludes written to ${sink%:*}: tree_diff fails, and runs no add" "1|" \
+       "$(DS_SINK=${sink%:*} PATH="$GD/bin:$PATH" bash -c '. "$1/git.sh"; . "$1/review-diff.sh"
+           tree_diff "$2" --numstat >/dev/null; echo "$?"' _ "$DIR/scripts/lib" "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+done
+is "and the file stays as it was" "keep" "$(cat "$GD/victim")"
+# A write cut short in a regular file (a file size limit here, a full disk in
+# life) leaves part of a record behind: still a failure.
+is "a short write under the excludes is a failure too" "1" \
+   "$(cd "$GD" && printf '160000 0123 0\t%s\0' "$(printf 'a%.0s' $(seq 1500))" > staged \
+      && bash -c 'ulimit -f 1; trap "" XFSZ; . "$1/review-diff.sh"; gitlink_excludes staged out; echo "$?"' \
+         _ "$DIR/scripts/lib" 2>/dev/null </dev/null)"
 rm -rf "$GD"
 # An unborn HEAD takes tree_diff's other path, the worktree then the index.
 GD=$(mktmpd)
