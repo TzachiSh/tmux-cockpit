@@ -1100,7 +1100,11 @@ fn malformed_stop_and_reconcile_rows_are_skipped() {
 fn two_teammates_with_one_description_are_not_mapped_by_it() {
     let s = session("kill-tm-twins");
     meta(&s.dir, "a", NAMED);
-    meta(&s.dir, "b", r#"{"agentType":"x","description":"i1 named","name":"tm2","teamName":"crew"}"#);
+    meta(
+        &s.dir,
+        "b",
+        r#"{"agentType":"x","description":"i1 named","name":"tm2","teamName":"crew"}"#,
+    );
     for id in ["a", "b"] {
         rows(&s.dir, id, &[FIRST, &tick(5)]);
     }
