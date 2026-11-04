@@ -127,7 +127,9 @@ give_back() {                 # <key> -> 1 when tmux's own binding could not be 
     local k=$1 d out="" err="" r note cmd
     # tmux reads a lone ; argument as a command separator.
     [ "$k" = ';' ] && k='\;'
-    if ! d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null); then
+    # /tmp first for its short path; TMPDIR where /tmp is read-only (Termux).
+    if ! d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null ||
+             mktemp -d "${TMPDIR:-/tmp}/cockpit-gb.XXXXXX" 2>/dev/null); then
         err="no temp dir"
     elif out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
             list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err") \

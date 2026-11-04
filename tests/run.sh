@@ -3611,6 +3611,39 @@ gb_load
 is "and the next load gives w back" "choose-tree -Zw|" \
    "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
 gb_set board unset; gb_load
+# A stock server that starts and answers nothing is a failed read too, never an
+# empty binding.
+mkdir -p "$GBD/silent"
+printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && exit 0; done\nexec "%s" "$@"\n' \
+    "$TMUX_REAL" > "$GBD/silent/tmux"
+chmod +x "$GBD/silent/tmux"
+gb_set board off
+"$TMUX_REAL" -L "$GB" run-shell "PATH='$GBD/silent':\"\$PATH\" '$DIR/cockpit.tmux'" >/dev/null 2>&1
+is "a silent stock server leaves w cockpit's, pending, and says no answer" \
+   "cockpit: board|board:w|1" "$(gb_note w)|$(gb_left)|$("$TMUX_REAL" -L "$GB" show-messages \
+   2>/dev/null | grep -v ' command: ' | grep -c 'own binding for w (no answer)')"
+gb_load
+is "and the next load gives w back" "choose-tree -Zw|" \
+   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+gb_set board unset; gb_load
+# /tmp read-only and TMPDIR writable (Termux): the read falls back to TMPDIR.
+mkdir -p "$GBD/ro" "$GBD/tt"
+# The shim refuses the /tmp template only: the suite's own TMPDIR is under /tmp too.
+{ printf '#!/bin/sh\nfor a; do case "$a" in /tmp/cockpit-gb.*) exit 1 ;; esac; done\n'
+  printf 'exec "%s" "$@"\n' "$(command -v mktemp)"; } > "$GBD/ro/mktemp"
+chmod +x "$GBD/ro/mktemp"
+gb_set board off
+"$TMUX_REAL" -L "$GB" run-shell \
+    "PATH='$GBD/ro':\"\$PATH\" TMPDIR='$GBD/tt' '$DIR/cockpit.tmux'" >/dev/null 2>&1
+is "with /tmp unwritable the stock read uses TMPDIR: w back, nothing pending" "choose-tree -Zw|" \
+   "$(gb_live w | grep -o 'choose-tree -Zw')|$(gb_left)"
+gb_set board unset; gb_load
+# ; is a command separator to tmux: the tmux-fixer sweep must still give it back.
+"$TMUX_REAL" -L "$GB" bind-key -T prefix '\;' display-popup -E "/old/scripts/tmux-fixer -p %1" \
+    >/dev/null 2>&1
+gb_load
+is "a dead tmux-fixer binding on ; is given back as stock last-pane" "last-pane" \
+   "$(gb_live ';' | grep -o last-pane)"
 unset -f gb_nostock gb_note gb_left
 # Two keys trading places: each is taken this load, so neither is given back.
 gb_set sessions u; gb_set jump s; gb_load
