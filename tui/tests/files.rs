@@ -82,7 +82,7 @@ fn list_puts_directories_first_then_names_without_regard_to_case() {
     s.dir("Zeta");
     s.file("a.txt");
     s.dir("alpha");
-    let names: Vec<_> = files::list_dir(&s.0, false)
+    let names: Vec<_> = files::list_dir(&s.0, false, false)
         .unwrap()
         .into_iter()
         .map(|e| e.is_dir)
@@ -96,13 +96,15 @@ fn list_puts_directories_first_then_names_without_regard_to_case() {
 fn list_hides_dotfiles_unless_asked() {
     let s = Scratch::new();
     s.file(".env");
-    s.dir(".git");
+    s.dir(".cache");
     s.file("main.rs");
-    let plain = files::list_dir(&s.0, false).unwrap();
+    let plain = files::list_dir(&s.0, false, false).unwrap();
     assert_eq!(plain.len(), 1, "only main.rs");
-    let all = files::list_dir(&s.0, true).unwrap();
+    let all = files::list_dir(&s.0, true, false).unwrap();
     assert_eq!(all.len(), 3);
     assert!(all[0].is_dir, "the hidden directory still sorts first");
+    s.dir(".git");
+    assert_eq!(files::list_dir(&s.0, true, true).unwrap().len(), 3, ".git is never listed");
 }
 
 #[test]
@@ -130,6 +132,99 @@ fn an_empty_directory_lists_nothing_and_enter_does_nothing() {
     let mut f = browser(&s.0);
     assert!(shown(&f).is_empty());
     assert_eq!(tap(&mut f, KeyCode::Enter), Outcome::Continue);
+}
+
+// --- what the ignore files hide ----------------------------------------------
+
+/// A repository whose .gitignore lists `target/` and `*.log`.
+fn repo() -> Scratch {
+    let s = Scratch::new();
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&s.0)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    std::fs::write(s.0.join(".gitignore"), "target/\n*.log\n").unwrap();
+    s.dir("target");
+    s.dir("src");
+    s.file("run.log");
+    s.file("main.rs");
+    s
+}
+
+#[test]
+fn ignored_entries_are_hidden_by_default_and_so_is_git() {
+    let s = repo();
+    assert_eq!(shown(&browser(&s.0)), ["src/", "main.rs"]);
+    let mut f = browser(&s.0);
+    tap(&mut f, KeyCode::Char('.'));
+    assert_eq!(shown(&f), ["src/", ".gitignore", "main.rs"], "dotfiles show, .git never");
+}
+
+#[test]
+fn i_shows_ignored_entries_and_marks_them_and_a_second_i_hides_them() {
+    let s = repo();
+    let mut f = browser(&s.0);
+    tap(&mut f, KeyCode::Char('i'));
+    assert_eq!(shown(&f), ["src/", "target/", "main.rs", "run.log"]);
+    let mut ig: Vec<_> = f.ignored.iter().map(|k| String::from_utf8_lossy(k).into_owned()).collect();
+    ig.sort();
+    assert_eq!(ig, ["run.log", "target"]);
+    tap(&mut f, KeyCode::Char('i'));
+    assert_eq!(shown(&f), ["src/", "main.rs"]);
+    assert!(f.ignored.is_empty());
+}
+
+#[test]
+fn a_dot_ignore_file_hides_too_and_i_is_a_letter_inside_a_filter() {
+    let s = repo();
+    std::fs::write(s.0.join(".ignore"), "main.rs\n").unwrap();
+    let mut f = browser(&s.0);
+    assert_eq!(shown(&f), ["src/"]);
+    type_str(&mut f, "s");
+    type_str(&mut f, "i");
+    assert_eq!((f.show_ignored, f.pick.query.as_str()), (false, "si"));
+}
+
+#[test]
+fn ignored_rows_are_drawn_dim_and_the_others_are_not() {
+    let s = repo();
+    let th = Theme::fixed();
+    let mut f = browser(&s.0);
+    tap(&mut f, KeyCode::Char('i'));
+    f.fit(60, &th.g);
+    let mut t = Terminal::new(TestBackend::new(60, 16)).unwrap();
+    t.draw(|fr| files::draw(fr, fr.area(), &f, &th)).unwrap();
+    let buf = t.backend().buffer();
+    let fg = |name: &str| {
+        let y = (0..16)
+            .find(|&y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>().contains(name))
+            .unwrap();
+        let x = (0..60)
+            .find(|&x| buf[(x, y)].symbol() == &name[..1] && buf[(x + 1, y)].symbol() == &name[1..2])
+            .unwrap();
+        buf[(x, y)].fg
+    };
+    assert_eq!(fg("target"), th.faint);
+    assert_ne!(fg("main.rs"), th.faint);
+    assert_ne!(fg("src"), th.faint);
+}
+
+#[test]
+fn the_footer_names_the_key_and_its_state() {
+    let g = Theme::fixed().g;
+    let flat = |h: bool, i: bool| {
+        files::hints(&g, 120, h, i)
+            .iter()
+            .map(|(k, v)| format!("{k} {v}"))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    assert!(flat(false, false).contains("i ignored off"));
+    assert!(flat(false, true).contains("i ignored on"));
+    assert!(flat(true, false).contains(". dotfiles on"));
 }
 
 // --- drawn names are text for a person ---------------------------------------
