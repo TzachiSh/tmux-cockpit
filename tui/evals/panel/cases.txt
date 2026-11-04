@@ -1,0 +1,346 @@
+# The write prompt's evaluation cases (#410), read by tui/examples/panel_eval.rs.
+#
+# === <id>, then:
+#   kind:    bug, feature, investigate, plan, refactor, review, message, command, ops, hint, format
+#   window:  name · cmd · path, as the panel captures them
+#   out:     the output type picked in the panel (default auto)
+#   expect:  ask   - the right first move is a question
+#            write - the input settles it: no question
+#   ask_any: for ask, the question or one option names one of these (; separated, any case)
+#   must:    for write, the reply carries every one of these
+#   note:    why the label is what it is
+# then "--- screen" (optional) and "--- request".
+#
+# Label rule: ask only when the possible readings lead to different work, or a
+# fact only the owner knows is missing and a wrong guess changes the work. A
+# fact the agent can find (by reading files, running a command) is never a
+# reason to ask. Cases here are not the prompt's own examples on purpose.
+
+=== two-services
+kind: feature
+window: bash · bash · /home/u/projects/shop
+expect: ask
+ask_any: gateway; billing
+note: subject: two candidate APIs on screen
+--- screen
+$ ls
+api-gateway  billing-api  docs  web
+--- request
+add caching to the api
+
+=== two-branches
+kind: ops
+window: bash · bash · /home/u/projects/web
+expect: ask
+ask_any: login-v2; v2
+note: subject: two branches match "the login branch"
+--- screen
+$ git branch
+  feature/login
+  feature/login-v2
+* main
+--- request
+merge the login branch into main
+
+=== clean-logs
+kind: ops
+window: bash · bash · /home/u/projects/api
+expect: ask
+ask_any: delete; files; code; statements; verbose; level; noise
+note: two readings: delete log files, or log less from the code; one deletes data
+--- screen
+$ ls logs
+api.log  api.log.1  api.log.2  worker.log
+--- request
+clean up the logs
+
+=== conflicting-options
+kind: feature
+window: claude · claude · /home/u/projects/prices
+expect: ask
+ask_any: lru; skip; memory; both; cache
+note: picks "2" and "3", which contradict: build an LRU cache and skip caching
+--- screen
+● Prices are fetched on every request. Three ways forward:
+  1. Cache in Redis with a 60 s TTL
+  2. An in-memory LRU cache per worker
+  3. Skip caching and batch the requests instead
+  Which do you prefer?
+--- request
+go with 2 and 3
+
+=== dates-wrong
+kind: bug
+window: bash · bash · /home/u/projects/reports
+expect: ask
+ask_any: expected; should; correct; format; timezone; wrong; instead; supposed
+note: bug with no expected behaviour: only the owner knows what is wrong with these dates
+--- screen
+$ python report.py --month 10
+Customer      Date         Amount
+Acme          2026-10-03   120.00
+Globex        2026-10-07   80.50
+--- request
+dates in the report are wrong
+
+=== invoice-off
+kind: bug
+window: bash · bash · /home/u/projects/billing
+expect: ask
+ask_any: example; which; expected; customer; should; how much; amount
+note: no symptom detail and nothing on screen: which customers, expected vs actual
+--- screen
+(empty)
+--- request
+invoice totals are off for some customers
+
+=== release-slips
+kind: message
+window: bash · bash · /home/u
+expect: ask
+ask_any: date; when; until; how long; new
+note: a message whose key fact (the new date) only the owner knows
+--- request
+write to dana that the release slips
+
+=== old-containers
+kind: command
+window: bash · bash · /home/u
+expect: ask
+ask_any: exited; stopped; all; running; which; days; old
+note: destructive and "old" has several readings on screen
+--- screen
+$ docker ps -a --format '{{.Names}}\t{{.Status}}'
+web        Up 3 hours
+db         Up 3 days
+worker     Exited (0) 2 hours ago
+cron-old   Exited (137) 5 weeks ago
+redis      Up 3 weeks
+migrate    Exited (0) 3 weeks ago
+--- request
+remove the old containers
+
+=== ssh-new-box
+kind: ops
+window: bash · bash · /home/u
+expect: ask
+ask_any: address; ip; hostname; host; user
+note: the address of the new box is not anywhere in the input
+--- request
+add an ssh config entry for the new build box
+
+=== deploy-which
+kind: ops
+window: bash · bash · /home/u/projects/web
+expect: ask
+ask_any: staging; prod
+note: two deploy targets, and production is hard to undo
+--- screen
+$ make help
+build            build the image
+deploy-staging   deploy to staging
+deploy-prod      deploy to production
+--- request
+deploy it
+
+=== undo-which
+kind: ops
+window: claude · claude · /home/u/projects/tool
+expect: ask
+ask_any: commit; all; last; which; three; 3
+note: "that" can be the last commit or all three
+--- screen
+● Committed a1b2c3d "parse: accept tabs"
+● Committed d4e5f6a "parse: trim keys"
+● Committed 789abcd "docs: config format"
+  All three commits are on branch fix/config.
+--- request
+undo that
+
+=== dark-mode
+kind: feature
+window: bash · bash · /home/u/projects/web
+expect: ask
+ask_any: toggle; system; setting; follow; switch; preference; automatic
+note: a product choice only the owner can make: follow the OS or a user toggle
+--- request
+add dark mode
+
+=== review-which-pr
+kind: review
+window: bash · bash · /home/u/projects/web
+expect: ask
+ask_any: 88; 91
+note: two open PRs of the user's, "my pr" is either
+--- screen
+$ gh pr list --author @me
+#91  feat: export to csv      feat/csv
+#88  fix: session timeout     fix/timeout
+--- request
+review my pr
+
+=== keyerror-crash
+kind: bug
+window: bash · bash · /home/u/projects/shop
+expect: write
+must: cart.py; KeyError; sku
+note: a traceback names the file, line and error
+--- screen
+$ python -m shop.checkout
+Traceback (most recent call last):
+  File "/home/u/projects/shop/shop/cart.py", line 42, in total
+    price = item["sku"]
+KeyError: 'sku'
+--- request
+fix
+
+=== slow-build
+kind: investigate
+window: bash · bash · /home/u/projects/engine
+expect: write
+must: 312
+note: investigate-only request with the measured time on screen
+--- screen
+$ cargo build --release
+   Compiling engine v0.3.0 (/home/u/projects/engine)
+    Finished `release` profile [optimized] target(s) in 312.4s
+--- request
+why is the build so slow, dont change anything
+
+=== pick-option-one
+kind: feature
+window: claude · claude · /home/u/projects/prices
+expect: write
+must: fetch_prices; backoff
+note: "do 1" resolves from the screen
+--- screen
+● The price feed times out about once an hour. Two options:
+  1. Add a retry with exponential backoff in fetch_prices()
+  2. Cache the last good price and serve it on a timeout
+--- request
+do 1
+
+=== big-files
+kind: command
+window: bash · bash · /home/u/projects
+out: command
+expect: write
+must: find; 100M
+note: one clear command
+--- request
+find files bigger than 100MB here
+
+=== install-ripgrep
+kind: command
+window: bash · bash · /home/u
+expect: write
+must: ripgrep
+note: an install on a Linux shell; the package manager is a sensible default
+--- request
+install ripgrep
+
+=== standup-moves
+kind: message
+window: bash · bash · /home/u
+expect: write
+must: 10:30
+note: every fact is in the request
+--- request
+tell the team standup moves to 10:30 tomorrow
+
+=== json-flag
+kind: feature
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: --json; show
+note: "the same" resolves from the screen, and the request names the check
+--- screen
+● Added a --json flag to `tool list`: it prints one JSON object per item.
+  Tests: tests/test_list.py passes.
+--- request
+add the same --json flag to the show command and add a test
+
+=== date-format-expected
+kind: bug
+window: bash · bash · /home/u/projects/reports
+expect: write
+must: report.py; 03/10/2026
+note: like dates-wrong, but the owner says what is expected
+--- screen
+$ python report.py --month 10
+Customer      Date         Amount
+Acme          2026-10-03   120.00
+--- request
+the date column shows 2026-10-03 but it should be 03/10/2026, fix report.py
+
+=== rename-fn
+kind: refactor
+window: bash · bash · /home/u/projects/tool
+expect: write
+must: parse_cfg; parse_config
+note: a mechanical rename the agent can find every use of
+--- request
+rename parse_cfg to parse_config everywhere, no behaviour change
+
+=== review-this-pr
+kind: review
+window: bash · bash · /home/u/projects/web
+expect: write
+must: 412
+note: one PR on screen; the request sets focus and limits
+--- screen
+$ gh pr view 412
+feat: retry failed uploads #412
+Open • u wants to merge 3 commits into main from feat/retry-uploads
+--- request
+review this pr for bugs only, dont post comments
+
+=== percent
+kind: hint
+window: bash · bash · /home/u
+out: hint
+expect: write
+must: 36
+--- request
+what is 15% of 240
+
+=== yaml-service
+kind: format
+window: bash · bash · /home/u
+out: format
+expect: write
+must: 8080; replicas
+--- request
+yaml for service web, port 8080, 3 replicas
+
+=== split-module
+kind: plan
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: app.rs
+note: plan only, the agent reads the file itself
+--- request
+plan how to split src/app.rs into smaller modules, just the plan
+
+=== nginx-port
+kind: investigate
+window: ssh · ssh · /home/u
+expect: write
+must: Address already in use
+note: the error on screen settles what to look at
+--- screen
+$ sudo systemctl status nginx
+× nginx.service - A high performance web server
+     Active: failed (Result: exit-code)
+nginx[2211]: nginx: [emerg] bind() to 0.0.0.0:80 failed (98: Address already in use)
+--- request
+why is nginx failing
+
+=== kill-port
+kind: command
+window: bash · bash · /home/u/projects/web
+expect: write
+must: 3000
+note: a clear target, even though it kills something
+--- request
+kill whatever is on port 3000

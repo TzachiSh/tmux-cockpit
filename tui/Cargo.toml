@@ -46,3 +46,9 @@ panic = "abort"
 # LTO instead of the fat LTO above.
 [profile.dist]
 inherits = "release"
+
+# The write prompt's evaluation (#410): its unit tests run under cargo test, its
+# main (which calls claude) only by hand.
+[[example]]
+name = "panel_eval"
+test = true
