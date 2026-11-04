@@ -344,3 +344,78 @@ must: 3000
 note: a clear target, even though it kills something
 --- request
 kill whatever is on port 3000
+
+# Capability cases: does the prompt steer the agent to a skill, tool or
+# subagent when one fits, and leave them out when they don't? `must` checks the
+# steer. The rig has no must-not key yet, so a case whose note says
+# "skip: a|b" is checked after a run for those words (proposed: a must_not key).
+
+=== three-services-fail
+kind: investigate
+window: claude · claude · /home/u/projects/platform
+expect: write
+must: subagent; auth; queue; mailer
+note: three independent failures: parallel subagents fit (best practices: parallel, isolated, independent work)
+--- screen
+● All three services fail on startup after the upgrade:
+  auth:   panic: missing env JWT_SECRET
+  queue:  Error: connect ECONNREFUSED 127.0.0.1:6379
+  mailer: TypeError: Cannot read properties of undefined (reading 'host')
+--- request
+find out why each of these fails, investigate only
+
+=== where-is-parsed
+kind: investigate
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: session
+note: a one-file lookup: a direct search, no subagent, no plan step. skip: subagent|plan mode|ultrathink
+--- request
+where is the session state parsed? just tell me the file and function
+
+=== typo-fix
+kind: bug
+window: claude · claude · /home/u/projects/web
+expect: write
+must: Recieve; Receive
+note: a trivial edit: nothing to delegate. skip: subagent|plan|skill
+--- screen
+● The button label in src/Checkout.tsx reads "Recieve order".
+--- request
+fix the typo
+
+=== latest-version
+kind: research
+window: bash · bash · /home/u/projects/engine
+expect: write
+must: ratatui; source
+note: a current fact the model cannot know: web search with sources (prompt guide: say when uncertain)
+--- request
+is there a newer ratatui release than 0.30.2 and does it fix the crossterm input wedge? check before we bump
+
+=== named-skill
+kind: plan
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: brainstorming
+note: the owner names a skill: keep its name so the agent invokes it
+--- request
+use the brainstorming skill to work out how the board should show subagents
+
+=== big-refactor-plan
+kind: plan
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: plan; before
+note: a large change: plan and wait for an OK before editing (explore, plan, code)
+--- request
+move the whole config loader from yaml to toml, it touches a lot of files
+
+=== review-own-diff
+kind: review
+window: claude · claude · /home/u/projects/tool
+expect: write
+must: diff
+note: review of uncommitted work: read the diff, report, no edits. skip: subagent
+--- request
+review my uncommitted changes before i commit, just report problems
