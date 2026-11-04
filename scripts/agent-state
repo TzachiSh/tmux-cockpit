@@ -358,7 +358,9 @@ esac
 T=$pane
 body="$body ; $defs"
 win_sums; sess_sums; fleet_sums
-body="$body ; display-message -p -t $pane '#{@cockpit_tui_pid}'"
+# Wake every running board: each lists `wait-for -S <its channel> ; ` in @cockpit_board_wake
+# (tui/src/push.rs), and run-shell -C runs that list inside this call. No board, an empty list.
+body="$body ; run-shell -C '#{@cockpit_board_wake}'"
 # Fail-open: a hook must never block the agent that fired it.
 # A hook of this pane's own session (TMUX_PANE is its pane) that is not an agent view's relayed
 # notification means the pane is a plain session again: the mark from an earlier agent-view
@@ -369,21 +371,6 @@ if [ -z "$poll" ] && [ -z "$view" ] && [ "$pane" = "${TMUX_PANE:-}" ]; then
     unmark=(if-shell -F -t "$pane" '#{@cockpit_agentview}' \
         "set-option -pu -t $pane @cockpit_agentview" ';')
 fi
-tui_pid=$(tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
+tmux ${unmark[@]+"${unmark[@]}"} ${subs_cmd[@]+"${subs_cmd[@]}" ';'} \
     if-shell -F -t "$pane" "$when" "${body# ; }" \
-    2>/dev/null || true)
-
-# A published pid outlives its process and SIGUSR1 terminates by default, so verify
-# the name before signalling (see AGENTS.md).
-if [ -n "$tui_pid" ]; then
-    tui_comm=""
-    # -r first: the stale pid is the one absent from /proc, so `read || ps` would fork ps every time.
-    if [ -r "/proc/$tui_pid/comm" ]; then
-        read -r tui_comm 2>/dev/null < "/proc/$tui_pid/comm"
-    elif [ ! -d /proc/self ]; then
-        tui_comm=$(ps -o comm= -p "$tui_pid" 2>/dev/null)   # macOS: ps prints a path
-    fi
-    if [ "${tui_comm##*/}" = cockpit-tui ]; then
-        kill -USR1 "$tui_pid" 2>/dev/null || true
-    fi
-fi
+    >/dev/null 2>&1 || true
