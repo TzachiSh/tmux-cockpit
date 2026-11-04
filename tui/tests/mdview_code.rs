@@ -226,3 +226,24 @@ fn code_goldens() {
     let mut s = Screen::new("notes.txt", Ok(sample()), Opts::default()).with_mode(mode("notes.txt", ""));
     golden("view-code-plain-60", &draw(60, 16, &ascii, &mut s));
 }
+
+// ---------------------------------------------------------------- review-418
+
+/// The lexer's state runs from one line to the next: a block comment's second
+/// line is still comment.
+#[test]
+fn a_block_comment_spans_its_lines() {
+    let rows = code::render("/* a\nb */ fn x", Some(Lang::Rust), 40);
+    assert_eq!(rows[1].cells[0], ("b */".to_string(), Ink::of(Kind::Code(Role::Comment))));
+    assert!(rows[1].cells.contains(&("fn".to_string(), Ink::of(Kind::Code(Role::Keyword)))));
+}
+
+#[test]
+fn a_known_extension_beats_a_shebang() {
+    assert_eq!(mode("x.rs", "#!/bin/sh\n"), Mode::Code(Some(Lang::Rust)));
+    assert_eq!(
+        mode("x.go", "#!/bin/sh\n"),
+        Mode::Code(Some(Lang::Shell)),
+        "an unknown one does not"
+    );
+}
