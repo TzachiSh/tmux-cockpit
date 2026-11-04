@@ -9,6 +9,7 @@ pub mod info;
 pub mod panel;
 pub mod pick;
 pub mod push;
+pub mod refs;
 pub mod theme;
 
 // branch popup (#246)
