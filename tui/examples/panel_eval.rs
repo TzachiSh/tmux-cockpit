@@ -540,7 +540,7 @@ fn main() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    summary(&cases, &done, &hashes);
+    summary(&cases, &done, &hashes, o.runs);
 }
 
 /// The panel's config directory, as `panel::xdg` finds it.
@@ -586,6 +586,10 @@ struct Tally {
     asked_when_due: Of,
     on_target: Of,
     false_asks: Of,
+    /// Asking as a classifier, over ask and write cases (either is neither):
+    /// asked on a write case, and did not ask on an ask case.
+    fpr: Of,
+    fnr: Of,
     facts: Of,
     refused: usize,
     errors: usize,
@@ -619,6 +623,8 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
         asked_when_due: of(&asked, &is(Expect::Ask)),
         on_target: of(&|_, g| g.asked && g.on_target, &is(Expect::Ask)),
         false_asks: of(&asked, &is(Expect::Write)),
+        fpr: of(&asked, &is(Expect::Write)),
+        fnr: of(&|_, g| !g.asked, &is(Expect::Ask)),
         facts: Of(need - lack, need),
         refused: graded.iter().filter(|(_, g)| g.refused).count(),
         errors: done.iter().filter(|(_, _, g)| g.is_none()).count(),
@@ -633,6 +639,26 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
     }
 }
 
+/// The Wilson score interval at 95% for `k` passes of `n`; `None` for no
+/// trials or more passes than trials.
+fn wilson(k: usize, n: usize) -> Option<(f64, f64)> {
+    if n == 0 || k > n {
+        return None;
+    }
+    let (z, n, p) = (1.959_964, n as f64, k as f64 / n as f64);
+    let z2 = z * z;
+    let mid = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let half = z / (1.0 + z2 / n) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    Some(((mid - half).max(0.0), (mid + half).min(1.0)))
+}
+
+/// Cases whose every run passed, of the cases whose every run was graded: a
+/// failed call leaves the case out rather than counting against the prompt.
+fn pass_all(per_case: &[(usize, usize, usize)]) -> Of {
+    let whole: Vec<_> = per_case.iter().filter(|(_, n, err)| *n > 0 && *err == 0).collect();
+    Of(whole.iter().filter(|(ok, n, _)| ok == n).count(), whole.len())
+}
+
 fn pct(Of(n, d): Of) -> String {
     if d == 0 {
         "-".into()
@@ -641,7 +667,15 @@ fn pct(Of(n, d): Of) -> String {
     }
 }
 
-fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]) {
+/// `pct`, then its Wilson 95% interval: cases are the independent trials, runs of one case are not.
+fn pct_ci(o: Of) -> String {
+    match wilson(o.0, o.1) {
+        Some((lo, hi)) => format!("{}  95% CI {:.0}%-{:.0}%", pct(o), 100.0 * lo, 100.0 * hi),
+        None => pct(o),
+    }
+}
+
+fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64], runs: usize) {
     let t = tally(cases, done);
     println!();
     // Per case, over the runs: a flaky case shows as 2/3, not as noise in a total.
@@ -659,6 +693,8 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!();
     println!("system prompt   {} ({})", hs.join(" "), prompt_source(&config_home()));
     println!("passed          {}", pct(t.passed));
+    // The share of cases that passed all their runs: a flaky case counts as a failure.
+    println!("{:<16}{}", format!("pass^{runs}"), pct_ci(pass_all(&t.per_case)));
     if t.holdout.1 > 0 {
         println!("  holdout       {}", pct(t.holdout));
     }
@@ -669,6 +705,7 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("asked when due  {}", pct(t.asked_when_due));
     println!("  on target     {}", pct(t.on_target));
     println!("false asks      {}", pct(t.false_asks));
+    println!("asking          FPR {}  FNR {}", pct(t.fpr), pct(t.fnr));
     println!("facts present   {}", pct(t.facts));
     if t.refused > 0 {
         println!("refused/cut off {}", t.refused);
@@ -935,6 +972,54 @@ mod tests {
         assert!(parse_cases(&auto).unwrap_err().contains("unknown out_is auto"));
         let ask = ONE.replace("expect: write\nmust: net-proxy; line 88", "expect: ask\nout_is: prompt");
         assert!(parse_cases(&ask).unwrap_err().contains("out_is is for write"));
+    }
+
+    fn near(got: (f64, f64), want: (f64, f64)) -> bool {
+        (got.0 - want.0).abs() < 0.005 && (got.1 - want.1).abs() < 0.005
+    }
+
+    #[test]
+    fn wilson_matches_known_intervals() {
+        assert!(near(wilson(36, 40).unwrap(), (0.77, 0.96)), "{:?}", wilson(36, 40));
+        assert!(near(wilson(0, 10).unwrap(), (0.0, 0.2775)), "{:?}", wilson(0, 10));
+        assert!(near(wilson(10, 10).unwrap(), (0.7225, 1.0)), "{:?}", wilson(10, 10));
+        assert!(near(wilson(1, 2).unwrap(), (0.0945, 0.9055)), "{:?}", wilson(1, 2));
+    }
+
+    #[test]
+    fn wilson_refuses_no_trials_and_more_passes_than_trials() {
+        assert_eq!(wilson(0, 0), None);
+        assert_eq!(wilson(5, 4), None);
+    }
+
+    #[test]
+    fn pass_all_counts_cases_that_passed_every_run_and_skips_failed_calls() {
+        assert_eq!(pass_all(&[(3, 3, 0), (2, 3, 0), (2, 2, 1), (0, 0, 3)]), Of(1, 2));
+        assert_eq!(pass_all(&[]), Of(0, 0));
+    }
+
+    #[test]
+    fn asking_rates_count_asks_on_write_cases_and_silence_on_ask_cases() {
+        let mut ask = parse_cases(ONE).unwrap().remove(0);
+        ask.expect = Expect::Ask;
+        let mut either = ask.clone();
+        either.expect = Expect::Either;
+        let cases = vec![ask, parse_cases(ONE).unwrap().remove(0), either];
+        let q = || Grade {
+            asked: true,
+            ..Grade::default()
+        };
+        let done = vec![
+            (0, 1, Some(q())),
+            (0, 1, Some(Grade::default())),
+            (0, 1, Some(Grade::default())),
+            (1, 1, Some(q())),
+            (1, 1, Some(Grade::default())),
+            (2, 1, Some(q())),
+            (1, 1, None),
+        ];
+        let t = tally(&cases, &done);
+        assert_eq!((t.fpr, t.fnr), (Of(1, 2), Of(2, 3)));
     }
 
     #[test]
