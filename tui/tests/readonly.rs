@@ -1,6 +1,6 @@
-//! COCKPIT_READONLY must silence every write to a tmux server, the pid publish
-//! included: a probe run without it already left a dead `@cockpit_tui_pid` on
-//! the owner's live server.
+//! COCKPIT_READONLY must silence every write to a tmux server, the board's wake
+//! channel included: a probe run without it once left a dead `@cockpit_tui_pid`
+//! on the owner's live server.
 use cockpit_tui::data::tmux_set;
 use cockpit_tui::push::Push;
 use std::sync::Mutex;
@@ -52,14 +52,14 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn readonly_writes_nothing_not_even_the_pid() {
+fn readonly_writes_nothing_not_even_the_wake_channel() {
     let _lock = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let dir = scratch("ro");
     let (bin, log) = shim(&dir);
     let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "1")]);
 
-    tmux_set(&["set-option", "-g", "@cockpit_tui_pid", "1234"]);
-    drop(Push::start()); // start publishes, Drop unpublishes; neither may run
+    tmux_set(&["set-option", "-g", "@cockpit_board_wake", "1234"]);
+    drop(Push::start()); // start lists its channel, Drop unlists it; neither may run
 
     assert!(!log.exists(), "COCKPIT_READONLY still wrote: {:?}", std::fs::read_to_string(&log));
     let _ = std::fs::remove_dir_all(&dir);
@@ -74,8 +74,11 @@ fn without_readonly_the_write_reaches_tmux() {
     let (bin, log) = shim(&dir);
     let _env = Env::set(&[("COCKPIT_TMUX", &bin), ("COCKPIT_READONLY", "")]);
 
-    tmux_set(&["set-option", "-g", "@cockpit_tui_pid", "1234"]);
+    tmux_set(&["set-option", "-g", "@cockpit_board_wake", "1234"]);
 
-    assert_eq!(std::fs::read_to_string(&log).unwrap().trim(), "set-option -g @cockpit_tui_pid 1234");
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().trim(),
+        "set-option -g @cockpit_board_wake 1234"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
