@@ -8320,9 +8320,6 @@ for s in alpha beta; do
     PVP+=("$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
         "printf 'screen-of-$s\n'; exec -a claude sleep 3600")")
 done
-# a third agent whose screen is blank: it cleared it, the cursor home
-PVP+=("$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
-    "printf '\\033[2J\\033[H'; exec -a claude sleep 3600")")
 for p in "${PVP[@]}"; do
     "$TMUX_REAL" -L "$PV" set -p -t "$p" @panestate running >/dev/null 2>&1
 done
@@ -8351,13 +8348,51 @@ for i in $(seq 1 "$POLLS"); do
 done
 if [ -n "$pv_narrow" ]; then ok "under 96 columns the pane goes and the list stays"
 else bad "under 96 columns the pane goes and the list stays" "the list, no live screen" "$(pv_cap)"; fi
-# A board that opens on the blank agent: its first capture is blank, which draws
-# as the never-read default did, and must still replace `reading the screen`
-PVB=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
-    "env XDG_STATE_HOME=$PVD COCKPIT_LOG=$PVD/tui.log $COCKPIT_TUI_BIN board --select ${PVP[2]}")
-if until_cap "$PV" "$PVB" '*live · blank*'; then ok "a blank first capture shows, not reading"
-else bad "a blank first capture shows, not reading" "live · blank" "$("$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVB")"; fi
 "$TMUX_REAL" -L "$PV" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui board: a blank first capture replaces reading the screen (#284) =="
+# A pane no capture has reached and a blank capture both draw as empty, so the
+# redraw gate must carry whether the pick was read (read_gate). Its own fresh
+# server, the blank agent first so the board opens on it, no earlier board.
+if need_tmux "the right pane's blank first capture"; then :; else
+PB="cockpit-pb-$$"; SOCKS="$SOCKS $PB"; PBD=$(mktmpd)
+"$TMUX_REAL" -L "$PB" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PBD" 'exec sleep 3600' >/dev/null 2>&1
+# -n: a window tmux renames as its command execs would redraw the board itself
+for cmd in "printf '\\033[2J\\033[H'" 'echo other'; do
+    pbp=$("$TMUX_REAL" -L "$PB" new-window -d -n "${cmd%% *}" -P -F '#{pane_id}' -t t: -c "$PBD" "$cmd; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PB" set -p -t "$pbp" @panestate running >/dev/null 2>&1
+done
+PBW=$("$TMUX_REAL" -L "$PB" new-window -d -P -F '#{pane_id}' -t t: -c "$PBD" \
+    "env XDG_STATE_HOME=$PBD COCKPIT_LOG=$PBD/tui.log $COCKPIT_TUI_BIN board")
+if until_cap "$PB" "$PBW" '*live · blank*'; then ok "a blank first capture shows, not reading the screen"
+else bad "a blank first capture shows, not reading the screen" "live · blank" "$("$TMUX_REAL" -L "$PB" capture-pane -p -t "$PBW")"; fi
+"$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui board: an idle board on a busy agent captures once a tick (#284) =="
+# The worker is asked again only when the pick changes (repick): an agent whose
+# screen changes every 50 ms redraws the board constantly, and asking on each
+# redraw would capture as fast as the fetch can run. A logging tmux wrapper
+# counts capture-pane calls over 5 s of an idle board: about one a second.
+if need_tmux "the right pane's capture rate"; then :; else
+PR="cockpit-pr-$$"; SOCKS="$SOCKS $PR"; PRD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' "$PRD" "$TMUX_REAL" > "$PRD/tmux"
+chmod +x "$PRD/tmux"
+"$TMUX_REAL" -L "$PR" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PRD" 'exec sleep 3600' >/dev/null 2>&1
+prp=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
+    "exec -a claude sh -c 'while :; do date +%s%N; sleep 0.05; done'")
+"$TMUX_REAL" -L "$PR" set -p -t "$prp" @panestate running >/dev/null 2>&1
+PRW=$("$TMUX_REAL" -L "$PR" new-window -d -P -F '#{pane_id}' -t t: -c "$PRD" \
+    "env COCKPIT_TMUX=$PRD/tmux XDG_STATE_HOME=$PRD COCKPIT_LOG=$PRD/tui.log $COCKPIT_TUI_BIN board")
+if until_cap "$PR" "$PRW" '*live · *line*'; then
+    : > "$PRD/calls"
+    sleep 5   # a rate: the count over a fixed window is the measurement
+    prn=$(grep -cx capture-pane "$PRD/calls")
+    if [ "$prn" -le 7 ]; then ok "an idle board on a busy agent captures about once a second ($prn in 5 s)"
+    else bad "an idle board on a busy agent captures about once a second" "at most 7 in 5 s" "$prn"; fi
+else bad "the busy agent's screen shows" "live · N lines" "$("$TMUX_REAL" -L "$PR" capture-pane -p -t "$PRW")"; fi
+"$TMUX_REAL" -L "$PR" kill-server >/dev/null 2>&1
 fi
 
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
