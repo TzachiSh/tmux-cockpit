@@ -17,6 +17,7 @@ use ratatui::widgets::{Block, Clear, Padding, Paragraph};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// The narrowest tile whose two header lines still carry the meaning.
@@ -2751,8 +2752,9 @@ fn rule(s: &Shot, w: usize, th: &Theme) -> Line<'static> {
 }
 
 /// The screen in `h` rows of `w` cells: ANSI kept, never wrapped, its last line
-/// on the last row (a short screen leaves the top empty, not the bottom), and a
-/// line cut at the edge ends in [`CLIP_MARK`]. `pv` is as `View::pvs` holds it.
+/// on the last row (a short screen leaves the top empty, not the bottom; a tall
+/// one loses its top), and a line cut at the edge ends in [`CLIP_MARK`]. `pv` is
+/// as `View::pvs` holds it.
 fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Vec<Line<'static>>, Shot) {
     let say = |t: &str, c| vec![Line::from(Span::styled(th.g.trunc(t, w), Style::new().fg(c)))];
     let text = match pv {
@@ -2761,8 +2763,8 @@ fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Ve
         Some(None) => return (say("capture failed", th.error), Shot::Failed),
         Some(Some(t)) => t,
     };
-    let lines = text.as_bytes().into_text().unwrap_or_default().lines;
-    if lines.iter().all(|l| l.width() == trailing_blanks(l)) {
+    let lines: Vec<Line<'static>> = text.as_bytes().into_text().unwrap_or_default().lines.iter().map(lay).collect();
+    if lines.iter().all(|l| cols(l) == trailing_blanks(l)) {
         return (vec![], Shot::Blank);
     }
     let n = lines.len().min(h);
@@ -2772,40 +2774,65 @@ fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Ve
     (out, Shot::Lines(n))
 }
 
-/// `l` in `w` cells, or cut to `w - 1` and marked. Trailing blanks do not count:
-/// a TUI pads its lines to its own width, which is not a cut.
+/// A line as the terminal lays it out: a tab pads to the next stop of 8, and a
+/// grapheme holding any other control takes no cell, as ratatui drops it.
+fn lay(l: &Line<'static>) -> Line<'static> {
+    let mut col = 0;
+    let spans: Vec<Span<'static>> = l
+        .spans
+        .iter()
+        .map(|sp| {
+            let mut t = String::new();
+            for g in sp.content.graphemes(true) {
+                if g == "\t" {
+                    let n = 8 - col % 8;
+                    t.extend(std::iter::repeat_n(' ', n));
+                    col += n;
+                } else if !g.contains(char::is_control) {
+                    t.push_str(g);
+                    col += g.width();
+                }
+            }
+            Span::styled(t, sp.style)
+        })
+        .collect();
+    Line::from(spans).style(l.style)
+}
+
+/// The cells a laid line takes, per grapheme as ratatui draws it: a char's own
+/// width is 0 for a VS16 that widens its emoji.
+fn cols(l: &Line) -> usize {
+    l.spans.iter().flat_map(|s| s.content.graphemes(true)).map(|g| g.width()).sum()
+}
+
+/// A laid line `l` in `w` cells, or cut to `w - 1` and marked. Trailing blanks
+/// do not count: a TUI pads its lines to its own width, which is not a cut.
 fn clip(l: &Line<'static>, w: usize, mark: &Span<'static>) -> Line<'static> {
-    let used: usize = l.width() - trailing_blanks(l);
-    if used <= w {
+    if cols(l).saturating_sub(trailing_blanks(l)) <= w {
         return l.clone();
     }
-    let mut room = w.saturating_sub(mark.width());
-    let mut spans = vec![];
-    for sp in &l.spans {
+    let room = w.saturating_sub(mark.width());
+    let (mut used, mut spans) = (0, vec![]);
+    'cut: for sp in &l.spans {
         let mut kept = String::new();
-        for c in sp.content.chars() {
-            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
-            if cw > room {
-                room = 0;
-                break;
+        for g in sp.content.graphemes(true) {
+            if used + g.width() > room {
+                spans.push(Span::styled(kept, sp.style));
+                break 'cut;
             }
-            room -= cw;
-            kept.push(c);
+            used += g.width();
+            kept.push_str(g);
         }
         spans.push(Span::styled(kept, sp.style));
-        if room == 0 {
-            break;
-        }
     }
     // a wide glyph that would straddle the cut leaves a cell: pad it, so the
     // mark sits on the last column
-    let pad = w.saturating_sub(mark.width()) - spans.iter().map(|s| s.width()).sum::<usize>();
-    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::raw(" ".repeat(room.saturating_sub(used))));
     spans.push(mark.clone());
     Line::from(spans).style(l.style)
 }
 
-/// The blank cells at the end of `l`.
+/// The blank cells at the end of a laid line.
 fn trailing_blanks(l: &Line) -> usize {
     let mut n = 0;
     for sp in l.spans.iter().rev() {

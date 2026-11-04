@@ -360,7 +360,15 @@ fn a_line_wider_than_the_pane_ends_in_the_clip_mark() {
 fn no_pane_row_exceeds_the_area() {
     use unicode_width::UnicodeWidthStr;
     let ps = trio();
-    let cap = format!("{}\n\x1b[31mred\x1b[0m {}", "中".repeat(90), "w".repeat(300));
+    // a tab, a C0 control and an emoji's VS16 measure 0 by the char and 1+ by the str
+    let cap = [
+        "中".repeat(90),
+        format!("\x1b[31mred\x1b[0m {}", "w".repeat(300)),
+        "a\tb".repeat(40),
+        "\u{26a0}\u{fe0f} ".repeat(30),
+        "a\u{1}b".repeat(40),
+    ]
+    .join("\n");
     for th in [th(), ascii()] {
         for w in [96u16, 97, 100, 133, 164, 180, 240] {
             for sel in ["%3", "%4", "%5"] {
@@ -429,6 +437,38 @@ fn split_the_list_draws_what_a_board_of_its_width_draws() {
         "the worktree cell: {rows}"
     );
     assert!(rows.contains("◌  0 ui") && rows.contains("ended"), "the ended row: {rows}");
+}
+
+#[test]
+fn a_tab_moves_to_the_next_stop_of_eight_and_a_control_goes() {
+    let (ps, th) = (trio(), th());
+    let n = nav(&ps, Sel::Pane("%4".into()));
+    // the pane's text starts at x 43 at 100 columns
+    let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some("ab\tc\n\tz\nx\u{1}y")), &th, &n));
+    assert_eq!(text(&b, 25, 43, 52), "ab      c", "a tab after two cells pads to 8");
+    assert_eq!(text(&b, 26, 43, 52), "        z", "a leading tab is 8");
+    assert_eq!(text(&b, 27, 43, 46), "xy ", "a C0 control takes no cell");
+}
+
+#[test]
+fn a_long_tabbed_line_is_clipped_not_overflowed() {
+    let (ps, th) = (trio(), th());
+    let n = nav(&ps, Sel::Pane("%4".into()));
+    let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some(&"a\tb".repeat(40))), &th, &n));
+    assert_eq!(b[(97, 27)].symbol(), "›", "the tabbed line is cut and marked");
+}
+
+#[test]
+fn an_emoji_widened_by_vs16_is_measured_as_drawn() {
+    // 30 of them are 30 cells by the char but 60 as drawn: wider than the 55
+    let (ps, th) = (trio(), th());
+    let n = nav(&ps, Sel::Pane("%4".into()));
+    let b = buf(
+        100,
+        30,
+        &list(&ps, &pvs_for(&ps, "%4", Some(&"\u{26a0}\u{fe0f}".repeat(30))), &th, &n),
+    );
+    assert_eq!(b[(97, 27)].symbol(), "›", "a cut line of wide emoji is marked");
 }
 
 // ------------------------------------------------ the goldens (the 100/180 mockups)
