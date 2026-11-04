@@ -6339,14 +6339,16 @@ done
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
   && git config filter.evil.clean "$GH/clean" && git config log.showSignature true \
   && git config gpg.program "$GH/gpg" && git config core.hooksPath hk && git config core.pager "$GH/pager" ) >/dev/null 2>&1
-git -C "$GH/r" diff HEAD >/dev/null 2>&1
+# Every call below reads /dev/null (#214): git hands a hook such as core.fsmonitor
+# the caller's stdin, so the helpers' `cat` would block forever on an open terminal.
+git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
-"$DIR/scripts/tmux-review" --lines "$GH/r" >/dev/null 2>&1
+"$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null >/dev/null 2>&1
 is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
-case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
-    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
+case "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
+    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>&1 | head -3)" ;; esac
 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
