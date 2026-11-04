@@ -514,6 +514,16 @@ fn a_pick_no_capture_has_read_yet_is_unread_never_blank() {
     assert_eq!(board::shown(None, &seen(&[]), &pvs).len(), pvs.len(), "the tiles keep theirs");
 }
 
+#[test]
+fn a_new_pick_forgets_every_other_screen() {
+    let mut s = seen(&[("%3", Some("old")), ("%4", Some("mine")), ("%5", None)]);
+    board::forget(&mut s, Some("%4"));
+    assert_eq!(s, seen(&[("%4", Some("mine"))]), "an old screen is never shown as live");
+    let mut s = seen(&[("%3", Some("old"))]);
+    board::forget(&mut s, None);
+    assert_eq!(s.len(), 1, "no pick (the tiles): every screen stays");
+}
+
 // ------------------------------------------------ the goldens (the 100/180 mockups)
 
 /// The mockups' fleet, the selection's screen as Claude Code draws a permission prompt.

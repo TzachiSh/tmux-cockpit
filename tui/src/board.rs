@@ -3560,6 +3560,15 @@ pub fn shown<'a>(pick: Option<&str>, seen: &HashMap<String, Option<String>>, pvs
     if pick.is_some_and(|id| !seen.contains_key(id)) { &[] } else { pvs }
 }
 
+/// On a new pick, every other agent's screen goes, so going back to one shows
+/// `reading` until its capture comes, never an old screen as live. No pick
+/// (the tiles) keeps them all.
+pub fn forget(seen: &mut HashMap<String, Option<String>>, pick: Option<&str>) {
+    if let Some(id) = pick {
+        seen.retain(|k, _| k == id);
+    }
+}
+
 pub fn run(o: &Opts) -> Option<Exit> {
     // crossterm caches a failed event-reader init forever: probe before init, or
     // a run with no controlling terminal paints a TUI that ignores every key.
@@ -3741,6 +3750,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         if dirty {
             let here = area(term.size().unwrap_or_default());
             if repick(&mut pick, pick_of(list, here, &nav, &panes)) {
+                forget(&mut seen, pick.as_deref());
                 ask(here, sel, top, list, &pick);
             }
         }
