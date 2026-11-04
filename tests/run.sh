@@ -19,6 +19,9 @@ mkdir -p "$STATE/agent-state"
 export HOME="$STATE/home"
 mkdir -p "$HOME/.tmux/plugins"
 ln -s "$DIR" "$HOME/.tmux/plugins/tmux-cockpit"
+# A login shell in a pane prints Ubuntu's motd once per HOME per day (profile.d/update-motd.sh), a
+# banner that lands after a menu is up and overwrites its rows on the outer pane (#392).
+: > "$HOME/.hushlogin"
 
 pass=0; fail=0; skipped=0
 ok()   { pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$1"; }
