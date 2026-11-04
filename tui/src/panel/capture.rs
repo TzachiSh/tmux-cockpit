@@ -49,8 +49,9 @@ pub fn capture(pane: &str) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    // An ssh window's path is the local shell's, not the remote one it shows.
-    let repo = if path.is_empty() || SSH_LIKE.contains(&cmd.as_str()) {
+    // An ssh or container window's path is the local client's, not the shell it shows.
+    let local = LOCAL_CMDS.contains(&cmd.as_str()) || crate::data::agentish(&cmd);
+    let repo = if path.is_empty() || !local {
         Repo::default()
     } else {
         Repo::start(&path, &screen, REPO_BUDGET)
@@ -525,6 +526,23 @@ fn errored(tail: &[&str]) -> bool {
 
 /// The commands that make a window an ssh session: a remote shell on the far side.
 pub const SSH_LIKE: [&str; 6] = ["ssh", "proot", "coder", "mosh", "mosh-client", "autossh"];
+
+/// The commands that run in the folder tmux reports for them: with the board's
+/// agent names (a Claude renamed to its version, say), the only ones
+/// [`capture`] sends a repo block for (#429). Anything else may be the client
+/// of a shell elsewhere: ssh, `docker exec`, `kubectl exec`, `incus exec`, and
+/// whatever comes next. Such a pane loses the block rather than carry the wrong
+/// machine's. `node` is Claude Code, Codex or Gemini installed from npm.
+/// The limit: tmux names the foreground process, so a shell script that runs
+/// ssh or `docker exec` as a child reads as its interpreter, `bash`, and local.
+// rows by kind: shells, editors, agents. rustfmt would give each its own line.
+#[rustfmt::skip]
+pub const LOCAL_CMDS: [&str; 30] = [
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh",
+    "nu", "xonsh", "elvish", "pwsh",
+    "nvim", "vim", "vi", "nano", "emacs", "hx", "kak", "micro",
+    "claude", "codex", "gemini", "aider", "opencode", "goose", "crush", "cursor-agent", "node",
+];
 
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {
