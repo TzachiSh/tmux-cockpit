@@ -10,8 +10,15 @@ work, and logging shims flood their session.
 Run every experiment on a throwaway private server and kill it after:
 
 ```sh
-tmux -L probe$$ -f /dev/null new-session -d ...   # ... then: tmux -L probe$$ kill-server
+d=$(mktemp -d)
+tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...   # ... then: tmux -L probe$$ kill-server
 ```
+
+Start the server and every `new-window` or `split-window` with `-c` set to a
+temp directory. Without it, the panes inherit your shell's cwd, which is often
+the checkout. A probe of a broken command then writes there: an unquoted
+mutation once ran `touch` on a wrapper's argv and left `panel` and `%0` in the
+main checkout.
 
 The test suite already follows this: `tests/run.sh` shims `tmux` onto a private
 `-L` socket, "never the user's". Add new tests there, on a private socket
