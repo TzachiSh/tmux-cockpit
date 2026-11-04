@@ -12674,5 +12674,44 @@ is "and its worktree got a window" "$GD/ok-wt" \
 fi
 rm -rf "${GD:-/nonexistent-gd}"
 
+echo "== cockpit-tui in a popup follows its client's light or dark theme (#240) =="
+# The inner client's terminal is a pane of the outer server, and that pane's
+# background decides what it reports (DSR 996, mode 2031): #f0f0f0 is light,
+# #101010 dark. The picker's value role (its 1/2 count) is #1b1e24 in the light
+# set and #e6e4df in the dark; the popup's cells reach the outer pane as truecolor.
+if need_tmux "popup client theme"; then :; else
+CT="cockpit-ct-$$"; CTO="cockpit-cto-$$"; SOCKS="$SOCKS $CT $CTO"; CTD=$(mktmpd)
+printf 'alpha\talpha\nbeta\tbeta\n' > "$CTD/rows"
+"$TMUX_REAL" -L "$CT" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CT" bind -n F5 display-popup -E -w 60 -h 16 "$(printf '%q pick < %q' "$COCKPIT_TUI_BIN" "$CTD/rows")"
+"$TMUX_REAL" -L "$CTO" -f /dev/null new-session -d -s o -x 100 -y 32 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CTO" set -g window-style 'bg=#f0f0f0'
+"$TMUX_REAL" -L "$CTO" respawn-pane -k -t o "TERM=xterm-256color exec $TMUX_REAL -L $CT attach -t t" >/dev/null 2>&1
+ct_set() {                    # <light|dark> (the client) <theme option>: the set the popup drew
+    local bg='#101010'; [ "$1" = light ] && bg='#f0f0f0'
+    "$TMUX_REAL" -L "$CTO" set -g window-style "bg=$bg"
+    until_out "$1" "$TMUX_REAL" -L "$CT" list-clients -F '#{client_theme}'
+    "$TMUX_REAL" -L "$CT" set -s theme "$2"
+    "$TMUX_REAL" -L "$CTO" send-keys -t o F5
+    until_cap "$CTO" o '*pick>*'
+    case "$("$TMUX_REAL" -L "$CTO" capture-pane -ep -t o)" in
+        *'38;2;27;30;36'*) printf light ;;
+        *'38;2;230;228;223'*) printf dark ;;
+        *) printf none ;;
+    esac
+    "$TMUX_REAL" -L "$CTO" send-keys -t o Escape
+    local i; for i in $(seq 1 "$POLLS"); do   # the popup is gone before the next press
+        case "$("$TMUX_REAL" -L "$CTO" capture-pane -p -t o)" in *'pick>'*) sleep 0.1 ;; *) break ;; esac
+    done
+}
+until_out '?*' "$TMUX_REAL" -L "$CT" list-clients -F '#{client_name}'
+is "a client reported light gets the light set" "light" "$(ct_set light detect)"
+is "a client reported dark gets the dark set" "dark" "$(ct_set dark detect)"
+is "theme dark overrides a light client" "dark" "$(ct_set light dark)"
+is "theme light overrides a dark client" "light" "$(ct_set dark light)"
+is "theme terminal keeps the dark set" "dark" "$(ct_set light terminal)"
+"$TMUX_REAL" -L "$CTO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$CT" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
