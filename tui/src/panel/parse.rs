@@ -126,6 +126,15 @@ fn unfence(o: &str) -> &str {
     inner.map_or(o, str::trim)
 }
 
+/// An answer is only shown, never typed, so a reply that is one block in a
+/// language the lexer knows keeps its fence and is coloured (#282). A bare or
+/// `xml` fence is a wrapper and still goes.
+fn code_fence(raw: &str) -> bool {
+    let first = raw.split('\n').next().unwrap_or("");
+    let tag = raw.starts_with("```").then(|| super::highlight::fence(first)).flatten();
+    tag.and_then(super::highlight::lang).is_some()
+}
+
 /// "Other" and its kin: the panel adds that option itself.
 fn is_other(label: &str) -> bool {
     let low = label.to_lowercase();
@@ -228,7 +237,7 @@ pub fn explain(out: &str) -> Reply {
     }
     let Some(t) = find_open(o, 0, "prompt", "", false, false) else {
         return Reply::Answer {
-            text: unesc(o),
+            text: unesc(if code_fence(out.trim()) { out.trim() } else { o }),
             ready: None,
         };
     };

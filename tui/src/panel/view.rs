@@ -2,6 +2,7 @@
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
 use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
 use super::envelope::Flow;
+use super::highlight::{self, Role};
 use super::request::Call;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -189,6 +190,76 @@ fn many(text: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
     wrap(&text.replace('\t', "    "), w.saturating_sub(indent.chars().count()))
         .into_iter()
         .map(|l| styled(format!("{indent}{l}"), st))
+        .collect()
+}
+
+/// [`many`] for text that may hold fenced code (#282): the rows are the same,
+/// only a fenced block's tokens take a colour, so no width moves.
+fn coded(th: &Theme, text: &str, w: usize, st: Style) -> Vec<Line<'static>> {
+    if !text.contains("```") {
+        return many(text, w, "", st);
+    }
+    highlight::fenced(text).iter().flat_map(|l| painted(th, l, w, "", st)).collect()
+}
+
+/// A lexed step command, one source line per entry, each under `indent`.
+fn command(th: &Theme, cmd: &str, lang: &str, w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
+    let lines: Vec<&str> = cmd.split('\n').collect();
+    highlight::highlight(lang, &lines)
+        .iter()
+        .flat_map(|l| painted(th, l, w, indent, st))
+        .collect()
+}
+
+fn role_style(th: &Theme, r: Role, st: Style) -> Style {
+    match r {
+        Role::Plain => st,
+        Role::Keyword => st.fg(th.accent),
+        Role::Str => st.fg(th.done),
+        Role::Comment | Role::Fence => st.fg(th.meta),
+        Role::Number => st.fg(th.running),
+    }
+}
+
+/// One source line's spans laid onto [`wrap`]'s rows of it. The spans are of
+/// the text as written, so the lexer sees a tab where the user typed one (a
+/// `<<-` end word); each span's tabs become 4 spaces here, as [`many`] does.
+/// wrap only drops spaces (at a break, and indentation past half the width),
+/// so each row's chars are found in order in the source, its spaces skipped.
+fn painted(th: &Theme, spans: &[(Role, &str)], w: usize, indent: &str, st: Style) -> Vec<Line<'static>> {
+    let spans: Vec<(Role, String)> = spans.iter().map(|(r, t)| (*r, t.replace('\t', "    "))).collect();
+    let src: String = spans.iter().map(|s| s.1.as_str()).collect();
+    let roles: Vec<Role> = spans.iter().flat_map(|(r, t)| std::iter::repeat_n(*r, t.len())).collect();
+    let mut p = 0;
+    let rows = wrap(&src, w.saturating_sub(indent.chars().count()));
+    rows.into_iter()
+        .map(|row| {
+            let mut out: Vec<Span<'static>> = vec![];
+            if !indent.is_empty() {
+                out.push(Span::styled(indent.to_string(), st));
+            }
+            let mut run = (st, String::new());
+            for c in row.chars() {
+                while !src[p..].starts_with(c) && src[p..].starts_with(' ') {
+                    p += 1;
+                }
+                let style = if src[p..].starts_with(c) {
+                    p += c.len_utf8();
+                    role_style(th, roles[p - c.len_utf8()], st)
+                } else {
+                    st
+                };
+                if style != run.0 && !run.1.is_empty() {
+                    out.push(Span::styled(std::mem::take(&mut run.1), run.0));
+                }
+                run.0 = style;
+                run.1.push(c);
+            }
+            if !run.1.is_empty() || out.is_empty() {
+                out.push(Span::styled(run.1, run.0));
+            }
+            Line::from(out)
+        })
         .collect()
 }
 
@@ -603,7 +674,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.head.extend(many(&tiered(g, &x), w, "", Style::new().fg(th.error)));
             }
             b.head.push(plain(""));
-            b.lines = many(text, w, "", value);
+            b.lines = coded(th, text, w, value);
             b.scroll = *scroll;
             b.count = true;
             b.footer = pills(&[
@@ -645,9 +716,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 }
                 b.lines.extend(rows);
                 if !s.cmd.is_empty() {
-                    for c in s.cmd.split('\n') {
-                        b.lines.extend(many(c, w, "     $ ", value));
-                    }
+                    b.lines.extend(command(th, &s.cmd, &s.lang, w, "     $ ", value));
                 }
                 if let Some(x) = app.line_warning(&s.cmd) {
                     b.lines.extend(many(&tiered(g, &x), w, "     ", Style::new().fg(th.error)));
@@ -693,7 +762,7 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 if *you {
                     b.lines.extend(many(&format!("you: {t}"), w, "", label));
                 } else {
-                    b.lines.extend(many(t, w, "", value));
+                    b.lines.extend(coded(th, t, w, value));
                 }
                 b.lines.push(plain(""));
             }
@@ -1276,4 +1345,70 @@ pub fn run(app: &mut App) {
     }
     // the SIGHUP/SIGTERM path breaks out of the loop above and lands here too
     crate::backend::restore(true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|l| l.to_string()).collect()
+    }
+
+    /// Highlighting adds style and nothing else: any text, any width, the rows
+    /// are `many`'s rows exactly.
+    #[test]
+    fn coded_rows_are_the_plain_rows() {
+        let th = Theme::fixed();
+        let atoms = [
+            "```",
+            "```sh\n",
+            "```rust\n",
+            "\n```\n",
+            "\n",
+            " ",
+            "  ",
+            "\t",
+            "\"",
+            "'",
+            "#",
+            "/*",
+            "fn ",
+            "if ",
+            "日本語",
+            "👍🏽",
+            "word",
+            "x\u{fe0f}",
+            "<<EOF\n",
+            "1.5",
+        ];
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..3000 {
+            let n = (next() % 30) as usize;
+            let text: String = (0..n).map(|_| atoms[(next() % atoms.len() as u64) as usize]).collect();
+            let w = (next() % 60) as usize;
+            let st = Style::new().fg(th.value);
+            assert_eq!(rows(&coded(&th, &text, w, st)), rows(&many(&text, w, "", st)), "{text:?} at {w}");
+        }
+    }
+
+    /// wrap keeps at most half the width of indentation: the dropped spaces
+    /// must not shift the colours onto the wrong chars.
+    #[test]
+    fn clamped_indentation_keeps_the_colours_on_their_chars() {
+        let th = Theme::fixed();
+        let st = Style::new().fg(th.value);
+        let got = coded(&th, "x\n```py\n            s = 'ab'\n```", 12, st);
+        let row = &got[2];
+        assert_eq!(row.to_string(), "      s =", "{got:?}");
+        let next = &got[3];
+        assert_eq!(next.to_string(), "'ab'");
+        assert!(next.spans.iter().all(|s| s.style.fg == Some(th.done)), "{next:?}");
+    }
 }
