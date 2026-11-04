@@ -3,8 +3,12 @@
     "Merge the 'hooks' key below into ~/.claude/settings.json (install.sh --hooks).",
     "These are the only writers of pane state; without them every pane stays idle.",
     "",
-    "Not wired: SubagentStop (would clear a failed subagent's error), TaskCompleted",
-    "(fires mid-turn), PreCompact (no state to report).",
+    "Not wired: TaskCompleted (fires mid-turn), PreCompact (no state to report).",
+    "",
+    "SubagentStart, SubagentStop, TeammateIdle and SessionEnd also run agent-state sub-*:",
+    "they append to a per-session log under $XDG_STATE_HOME/tmux-cockpit/subs/, which the",
+    "board's subagent tree will read (#361 child B). They set no pane state. Rerun",
+    "install.sh --hooks after an update to get them.",
     "",
     "TeammateIdle -> wake: an idle teammate's message wakes its lead with no hook.",
     "SessionStart -> off skips compact, so compaction keeps the pane's review marks.",
@@ -58,10 +62,15 @@
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state error" } ] }
     ],
     "SubagentStart": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state running" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-start" } ] }
+    ],
+    "SubagentStop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-stop" } ] }
     ],
     "TeammateIdle": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state wake" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state wake" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-idle" } ] }
     ],
     "Notification": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state notify" } ] }
@@ -83,7 +92,8 @@
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state session" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state off" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-end" } ] }
     ]
   }
 }

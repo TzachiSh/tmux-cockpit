@@ -42,7 +42,10 @@ timer.
 | `PostToolUse` | `running` |
 | `PostToolUseFailure` | `error` |
 | `SubagentStart` | `running` |
+| `SubagentStart` (2nd) | `sub-start` — appends the event to the session's subagent log (see [Subagent event log](#subagent-event-log)); no pane state |
+| `SubagentStop` | `sub-stop` — the same log; no pane state, so a failed subagent's `error` is not cleared (see [Deliberately unwired](#deliberately-unwired)) |
 | `TeammateIdle` | `wake` — a teammate idling wakes its lead with no hook of its own; `done` → `running`, sticky states and a pending `◆` kept |
+| `TeammateIdle` (2nd) | `sub-idle` — the subagent log |
 | `PreToolUse` | `running` — marks the pane busy as a tool begins |
 | `Stop` | `done`, unless the payload's `background_tasks` lists a subagent: then no state changes (see [Background subagents](#background-subagents)). Either way `@cockpit_subs` takes the count (see [Subagent count](#subagent-count)) |
 | `Stop` (2nd) | `review-gate` — flags `◆` when the finished diff is unreviewed; hands a queued review to the agent at this turn boundary (`additionalContext` on stdout, once); caps a `/goal` rewake chain at `@cockpit_rewake_cap` and honours `review-gate --concede` (see [A goal that will not be met](#a-goal-that-will-not-be-met)) |
@@ -51,6 +54,7 @@ timer.
 | `WorktreeCreate` | `worktree-create` — `claude --worktree <name>` and `EnterWorktree` put the tree under `~/.cache/cockpit-wt/<name>` on branch `<name>` (branched from the launch checkout's HEAD; an existing branch is checked out), so the session's cwd is the tree it works in and every cockpit read describes that tree. One namespace for every repo on the machine; subagents with `isolation: worktree` land there too, with their slug branches. Not with `--worktree --tmux` together, which skips the hook |
 | `WorktreeRemove` | `worktree-remove` — when claude means to remove a tree the hook above made (remove on `ExitWorktree`, verified on 2.1.246; a subagent finishing clean, per the docs), a clean tree on a merged branch goes, tree and branch; a dirty tree or unmerged commits stay, which is claude's own rule for the trees it makes itself. `claude -p` never cleans up worktrees, so a subagent run under `-p` leaves its tree and slug branch behind; `git worktree remove` plus `git branch -d` |
 | `SessionEnd` | `off` |
+| `SessionEnd` (2nd) | `sub-end` — drops the session's subagent log, and sweeps logs unwritten for 7 days |
 
 A `Stop` hook does not fire on a user interrupt (Esc), so a review queued for an
 interrupted agent waits for the end of that agent's next turn — nothing hands it
@@ -121,7 +125,7 @@ it, would otherwise keep counting toward `◆N` forever.
 
 ## Deliberately unwired
 
-`SubagentStop`, `TaskCompleted`, `PreCompact`.
+`TaskCompleted`, `PreCompact`, and `SubagentStop` as a *state* hook.
 
 `SubagentStop -> running` looked harmless but cleared a failed subagent's `error`,
 so a run that failed finished **green**. The next `PostToolUse` restores `running`
@@ -207,6 +211,39 @@ length), and a pane with no such dir costs one failed `opendir`.
 
 Claude Code 2.1.317 sets `finished` when a task leaves `running`, for success and
 failure alike, so a failed run that left no API error row reads as done.
+
+## Subagent event log
+
+`SubagentStart`, `SubagentStop`, `TeammateIdle` and `SessionEnd` also run
+`agent-state sub-start|sub-stop|sub-idle|sub-end` (#361). They set no pane state and call no
+tmux: each appends one line to
+`${XDG_STATE_HOME:-~/.local/state}/tmux-cockpit/subs/<session_id>.log`, `<epoch>\t<event>\t<agent_id>`
+with the event `start`, `stop` or `idle`. `sub-end` deletes the session's log and any log
+unwritten for 7 days.
+
+- **Append-only.** One write under `PIPE_BUF` is atomic, so hooks firing side by side lose
+  nothing, and a reader takes the newest line per `agent_id`. It is not a counter: `SubagentStart`
+  also fires for a resumed subagent and for every message an in-process teammate handles, and
+  `SubagentStop` for every turn a teammate ends (#317).
+- **What an event says.** The newest event is what the agent did last. A teammate's `stop` ends
+  a turn, not the agent, and no documented hook fires when TaskStop or a shutdown ends one, so
+  the log cannot tell an idle teammate from an ended one.
+- **Stop lines with no start.** `SubagentStop` with the matcher `""` also fires for Claude
+  Code's own internal agents (prompt suggestions, `/btw` side questions), whose `agent_type`
+  is empty and which have no `SubagentStart`. A `stop` for an id that never had a `start` is
+  one of those: the reader ignores it.
+- **A missing log is missing data.** `SessionEnd` also fires on `/clear` and on an interactive
+  `/resume`, which deletes the log of the session left behind, so the reader treats a missing
+  log as "no hook data", never as "no subagents".
+- **Safe to run anywhere.** Only a plain id (`[A-Za-z0-9_-]`, 1 to 64 bytes) is written; a
+  malformed or missing id drops the event. The dir is 0700 and the log 0600 whatever the
+  umask, a symlink in the way is never followed, the payload is read for 2 s and 256 KB at
+  most, and the hook always exits 0.
+- **Install.** The four entries come with `install.sh --hooks`; an update needs it rerun, and
+  `install.sh --check` warns (`subhooks`) when they are missing. Each of the four is an
+  entry of its own, as every other event's handler is, so an upgrade over master's
+  `--hooks` adds them beside the old entries and duplicates nothing. The board does not read
+  the log yet; it still reads `meta.json` and the transcript as above.
 
 ## A goal that will not be met
 

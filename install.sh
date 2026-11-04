@@ -202,6 +202,17 @@ set*\ @catppuccin_window_current_text\ *)
             0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
             *) row ok hooks "$n cockpit hooks merged" ;;
         esac
+        # The board's subagent tree will read what these four append (#361 child B);
+        # until then they only fill the log.
+        subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end))$")?.c]
+                   | unique | length' \
+                 "$HOME/.claude/settings.json" 2>/dev/null)
+        case "$n:${subs:-0}" in
+            0:*) row skip subhooks 'no cockpit hooks yet' ;;
+            *:4) row ok subhooks 'all 4 subagent hooks merged' ;;
+            *) row warn subhooks "${subs:-0} of 4 subagent hooks merged" 'install.sh --hooks' ;;
+        esac
     fi
 
     if [ -z "${TMUX:-}" ]; then row skip truecolor 'run inside tmux to check'
