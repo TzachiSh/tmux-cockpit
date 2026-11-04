@@ -1,5 +1,6 @@
 //! The colour roles and the glyph tier, read once at startup. tmux downgrades
-//! colour per attached client, so there is no 16 tier and no terminal query.
+//! colour per attached client, so there is no 16 tier and no terminal query:
+//! in a popup tmux answers neither OSC 11 nor DSR 996 (#240).
 use crate::data::{State, tmux};
 use ratatui::style::Color;
 use ratatui::symbols::border;
@@ -44,6 +45,20 @@ const ROLES: [(&str, &str, &str); 12] = [
     ("@thm_sel", "#3a4252", "#c8d1df"),     // sel
 ];
 
+/// `theme light` and `theme dark` force a set. Under `detect` (or no line) the
+/// client's own report decides: tmux 3.8's undocumented `#{client_theme}`, set
+/// by a terminal's mode 2031 or DSR 996 report and empty until one comes. Empty
+/// is dark, as tmux treats an unknown theme; tmux's other guess, the client's
+/// OSC 11 background, has no format. `terminal` keeps the dark set it always had.
+fn light_set(opts: &str) -> bool {
+    let line = |key: &str| opts.lines().find_map(|l| l.strip_prefix(key));
+    match line("theme ") {
+        Some("light") => true,
+        Some("dark" | "terminal") => false,
+        _ => line("client_theme=") == Some("light"),
+    }
+}
+
 fn hex(s: &str) -> Option<Color> {
     let h = s.trim().trim_matches('"').trim_start_matches('#');
     if h.len() != 6 {
@@ -54,8 +69,7 @@ fn hex(s: &str) -> Option<Color> {
 }
 
 impl Theme {
-    /// One tmux call, once per process. tmux 3.8 has no format for a client's
-    /// detected theme, so the light set is used only when `theme` says `light`.
+    /// One tmux call, once per process. The light set follows `light_set`.
     pub fn load() -> Self {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return Self {
@@ -63,8 +77,16 @@ impl Theme {
                 ..Self::no_color()
             };
         }
-        let opts = tmux(&["show-options", "-g", ";", "show-options", "-s", "theme"]).unwrap_or_default();
-        let light = opts.lines().any(|l| l == "theme light");
+        // A bare display-message in a popup resolves the most recently active
+        // client (the one whose key or click opened the popup). 3.8 prints it
+        // empty with no client; were it ever to fail, the roles are read again
+        // without it, so only the light set is lost (dark), never the roles.
+        let roles = ["show-options", "-g", ";", "show-options", "-s", "theme"];
+        let client = [";", "display-message", "-p", "client_theme=#{client_theme}"];
+        let opts = tmux(&[&roles[..], &client[..]].concat())
+            .or_else(|| tmux(&roles))
+            .unwrap_or_default();
+        let light = light_set(&opts);
         let mut c = [Color::Reset; 12];
         for (i, (opt, dark, lite)) in ROLES.iter().enumerate() {
             let (name, fallback) = if light {

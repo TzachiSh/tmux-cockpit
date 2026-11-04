@@ -12674,6 +12674,50 @@ is "and its worktree got a window" "$GD/ok-wt" \
 fi
 rm -rf "${GD:-/nonexistent-gd}"
 
+echo "== cockpit-tui in a popup follows its client's light or dark theme (#240) =="
+# The inner client's terminal is a pane of the outer server, and that pane's
+# background decides what it reports (DSR 996, mode 2031): #f0f0f0 is light,
+# #101010 dark. The picker's value role (its 1/2 count) is #1b1e24 in the light
+# set and #e6e4df in the dark; the popup's cells reach the outer pane as truecolor.
+if need_tmux "popup client theme"; then :; else
+CT="cockpit-ct-$$"; CTO="cockpit-cto-$$"; SOCKS="$SOCKS $CT $CTO"; CTD=$(mktmpd)
+printf 'alpha\talpha\nbeta\tbeta\n' > "$CTD/rows"
+"$TMUX_REAL" -L "$CT" -f /dev/null new-session -d -s t -x 100 -y 30 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CT" bind -n F5 display-popup -E -w 60 -h 16 "$(printf '%q pick < %q' "$COCKPIT_TUI_BIN" "$CTD/rows")"
+"$TMUX_REAL" -L "$CTO" -f /dev/null new-session -d -s o -x 100 -y 32 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$CTO" set -g window-style 'bg=#f0f0f0'
+"$TMUX_REAL" -L "$CTO" respawn-pane -k -t o "TERM=xterm-256color exec $TMUX_REAL -L $CT attach -t t" >/dev/null 2>&1
+ct_set() {                    # <light|dark> (the client) <theme option>: the set the popup drew
+    local bg='#101010'; [ "$1" = light ] && bg='#f0f0f0'
+    "$TMUX_REAL" -L "$CTO" set -g window-style "bg=$bg"
+    until_out "$1" "$TMUX_REAL" -L "$CT" list-clients -F '#{client_theme}'
+    "$TMUX_REAL" -L "$CT" set -s theme "$2"
+    "$TMUX_REAL" -L "$CTO" send-keys -t o F5
+    until_cap "$CTO" o '*pick>*'
+    local got=none i
+    case "$("$TMUX_REAL" -L "$CTO" capture-pane -ep -t o)" in
+        *'38;2;27;30;36'*) got=light ;;
+        *'38;2;230;228;223'*) got=dark ;;
+    esac
+    "$TMUX_REAL" -L "$CTO" send-keys -t o Escape
+    # A popup still up would hand its colours to the next case: fail this one.
+    for i in $(seq 1 "$POLLS"); do
+        case "$("$TMUX_REAL" -L "$CTO" capture-pane -p -t o)" in
+            *'pick>'*) sleep 0.1 ;;
+            *) printf %s "$got"; return ;;
+        esac
+    done
+    printf 'stuck: the popup did not close'
+}
+until_out '?*' "$TMUX_REAL" -L "$CT" list-clients -F '#{client_name}'
+is "a client reported light gets the light set" "light" "$(ct_set light detect)"
+is "a client reported dark gets the dark set" "dark" "$(ct_set dark detect)"
+is "theme dark overrides a light client" "dark" "$(ct_set light dark)"
+is "theme light overrides a dark client" "light" "$(ct_set dark light)"
+is "theme terminal keeps the dark set" "dark" "$(ct_set light terminal)"
+"$TMUX_REAL" -L "$CTO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$CT" kill-server >/dev/null 2>&1
+fi
+
 echo "== a burst of window events runs a few sweeps, and the counts are right after it (#258) =="
 # Each hook event ran its own full sweep, O(N²) over a resurrect restore or a
 # kill-session. Debounced: the counts must still be right after the burst's last event.
@@ -12768,6 +12812,29 @@ gbload @cockpit_menu_key a
 case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lookup leaves the old key bound, not unbound" ;;
     *) bad "a failed stock lookup leaves the old key bound, not unbound" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
 gbt kill-server >/dev/null 2>&1
+fi
+
+echo "== cockpit-tui with no client attached keeps the @thm_* roles (#240) =="
+# Theme::load reads #{client_theme} in the same tmux call as the roles, so a
+# display-message that failed without a client would lose every role, not just
+# the light set. A detached server: the value role must still be @thm_fg.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "no-client theme roles (no bin/cockpit-tui; run make tui)"
+elif need_tmux "no-client theme roles"; then :; else
+NC="cockpit-nc-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
+"$TMUX_REAL" -L "$NC" -f /dev/null new-session -d -s base -c "$NCD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$NC" set -g @thm_fg '#123456'
+"$TMUX_REAL" -L "$NC" set -g @thm_fg_light '#654321'
+is "the server has no client" "" "$("$TMUX_REAL" -L "$NC" list-clients)"
+pick_pane "$NC" "$NCD" 80 20 "$(printf 'alpha\talpha\nbeta\tbeta\n')"$'\n'
+until_cap "$NC" t '*pick>*'
+case "$("$TMUX_REAL" -L "$NC" capture-pane -ep -t t)" in
+    *'38;2;18;52;86'*) got=roles ;;
+    *'38;2;101;67;33'*) got=light ;;
+    *) got=lost ;;
+esac
+is "no client: the @thm_fg role is drawn, in the dark set" "roles" "$got"
+"$TMUX_REAL" -L "$NC" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
