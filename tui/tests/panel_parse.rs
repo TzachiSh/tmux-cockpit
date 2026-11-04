@@ -174,6 +174,7 @@ fn an_unclosed_result_tag_is_kept_and_flagged_cut_off() {
             reply: Reply::Prompt("Fix the thing and".into()),
             cut_off: Some("prompt"),
             more: vec![],
+            more_cut: false,
         }
     );
     assert_eq!(write("<prompt>done</prompt>", OutType::Auto).cut_off, None);
@@ -392,4 +393,32 @@ fn fix_and_explain_never_batch() {
     let out = format!("{}{}", bq(1), bq(2));
     assert_eq!(fix(&out), first());
     assert_eq!(explain(&out), first());
+}
+
+#[test]
+fn an_unclosed_first_question_does_not_swallow_the_next() {
+    let out = format!("<question>Q0?\n<option>a0</option>\n{}", bq(1));
+    assert_eq!(batch(&out), (first(), vec![]), "no raw tag in the text, no a0 among the options");
+}
+
+#[test]
+fn an_unclosed_later_question_does_not_swallow_the_next() {
+    let out = format!("{}<question>Q2?\n<option>a2</option>\n{}", bq(1), bq(3));
+    let p = write(&out, OutType::Auto);
+    assert_eq!((p.reply, p.more, p.more_cut), (first(), vec![], true));
+}
+
+#[test]
+fn an_empty_later_question_is_skipped() {
+    let out = format!("{}<question> </question><option>x</option>{}", bq(1), bq(3));
+    assert_eq!(batch(&out), (first(), vec![later(3)]));
+}
+
+#[test]
+fn a_cut_off_later_question_is_flagged_and_a_whole_batch_is_not() {
+    let cut = format!("{}<question>Q2?</question>\n<option>b", bq(1));
+    assert!(write(&cut, OutType::Auto).more_cut);
+    assert!(!write(&format!("{}{}", bq(1), bq(2)), OutType::Auto).more_cut);
+    let capped: String = (1..=4).map(bq).collect();
+    assert!(!write(&capped, OutType::Auto).more_cut, "past the cap is dropped, not cut off");
 }

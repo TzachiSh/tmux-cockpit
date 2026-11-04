@@ -3923,3 +3923,13 @@ fn a_cancelled_retry_after_a_guess_brings_the_batch_back() {
     ch(&mut a, '1');
     assert_eq!((shows(&a), a.pending), (("Q3?", 3), false), "Q3 is still queued");
 }
+
+#[test]
+fn a_later_question_cut_off_is_left_out_with_a_warning() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    a.reply(Ok(format!("{}<question>Q2?</question><option>b", q(1))));
+    assert_eq!((shows(&a), level(&a)), (("Q1?", 1), Some(Level::Warn)));
+    assert_eq!(note(&a), Some("a later question looked cut off and was left out"));
+    assert_eq!(a.run.as_ref().unwrap().batch_at(), None);
+}

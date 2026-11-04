@@ -54,6 +54,8 @@ pub struct Parsed {
     /// When `reply` is a question: the ones asked with it, in order, at most
     /// [`BATCH`] - 1. Each is closed, and so is every option it has.
     pub more: Vec<(String, Vec<Opt>)>,
+    /// A later question was dropped as cut off.
+    pub more_cut: bool,
 }
 
 /// The most questions one write reply may carry (#417); later ones are dropped.
@@ -179,44 +181,74 @@ fn options(o: &str) -> Vec<Opt> {
     out
 }
 
+/// A `<question>`'s body and the index past its close, when it closes before
+/// the next `<question>` opens: an unclosed one never swallows the next.
+fn q_body<'a>(o: &'a str, t: &Tag) -> Option<(&'a str, usize)> {
+    let (b, end) = body(o, t, "question", false)?;
+    match find_open(o, t.end, "question", "", false, false) {
+        Some(n) if n.start < end => None,
+        _ => Some((b, end)),
+    }
+}
+
+/// The first closed `<question>`: its tag, body, the index past its close,
+/// and where its options may start. That is the reply's start, as ever,
+/// unless an unclosed question came before it: then its own tag.
+fn first_question(o: &str) -> Option<(Tag, &str, usize, usize)> {
+    let mut at = 0;
+    let mut skipped = false;
+    loop {
+        let t = find_open(o, at, "question", "", false, false)?;
+        match q_body(o, &t) {
+            Some((b, end)) => {
+                let from = if skipped { t.start } else { 0 };
+                return Some((t, b, end, from));
+            }
+            None => (at, skipped) = (t.end, true),
+        }
+    }
+}
+
 /// A closed `<question>`, and where its tag starts. Its options are read up to
 /// the next `<question>`, which owns the ones after it.
 fn question_at(o: &str) -> Option<(usize, Reply)> {
-    let t = find_open(o, 0, "question", "", false, false)?;
-    let (b, end) = body(o, &t, "question", false)?;
+    let (t, b, end, from) = first_question(o)?;
     let to = find_open(o, end, "question", "", false, false).map_or(o.len(), |n| n.start);
     let q = Reply::Question {
         text: norm(b),
-        options: options(&o[..to]),
+        options: options(&o[from..to]),
     };
     Some((t.start, q))
 }
 
 /// The questions after the first, up to `to` (the first result tag): each one
 /// whole, so one cut off mid-reply, in its text or an option, is dropped with
-/// all that follow.
-fn more_questions(o: &str, to: usize) -> Vec<(String, Vec<Opt>)> {
+/// all that follow, and the flag says so. An empty one is skipped.
+fn more_questions(o: &str, to: usize) -> (Vec<(String, Vec<Opt>)>, bool) {
     let o = &o[..to];
     let mut out = Vec::new();
-    let Some(first) = find_open(o, 0, "question", "", false, false) else {
-        return out;
+    let Some((_, _, mut at, _)) = first_question(o) else {
+        return (out, false);
     };
-    let mut at = first.end;
     while out.len() < BATCH - 1 {
         let Some(t) = find_open(o, at, "question", "", false, false) else {
             break;
         };
-        let Some((b, end)) = body(o, &t, "question", false) else { break };
+        let Some((b, end)) = q_body(o, &t) else {
+            return (out, true);
+        };
         let next = find_open(o, end, "question", "", false, false).map_or(o.len(), |n| n.start);
         let seg = &o[end..next];
-        let opens = seg.matches("<option").count();
-        if opens != seg.matches("</option>").count() {
-            break;
+        if seg.matches("<option").count() != seg.matches("</option>").count() {
+            return (out, true);
         }
-        out.push((norm(b), options(seg)));
         at = end;
+        let text = norm(b);
+        if !text.is_empty() {
+            out.push((text, options(seg)));
+        }
     }
-    out
+    (out, false)
 }
 
 fn question(o: &str) -> Option<Reply> {
@@ -312,14 +344,15 @@ pub fn write(out: &str, want: OutType) -> Parsed {
     let raw = out.trim();
     let o = unfence(raw);
     let (reply, to) = write_reply(o, raw, want);
-    let more = match reply {
-        Reply::Question { .. } => to.map_or(vec![], |to| more_questions(o, to)),
-        _ => vec![],
+    let (more, more_cut) = match (&reply, to) {
+        (Reply::Question { .. }, Some(to)) => more_questions(o, to),
+        _ => (vec![], false),
     };
     Parsed {
         reply,
         cut_off: cut_off(out),
         more,
+        more_cut,
     }
 }
 

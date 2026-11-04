@@ -992,11 +992,11 @@ impl App {
         };
         let (rounds, max) = (r.rounds, r.max);
         let mut cut = None;
-        let mut more = vec![];
+        let (mut more, mut more_cut) = (vec![], false);
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
                 let p = parse::write(&out, *want);
-                (cut, more) = (p.cut_off, p.more);
+                (cut, more, more_cut) = (p.cut_off, p.more, p.more_cut);
                 p.reply
             }
             Flow::Fix { .. } => parse::fix(&out),
@@ -1005,6 +1005,9 @@ impl App {
         let explain = matches!(r.flow, Flow::Explain);
         if let Some(t) = cut {
             self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
+        }
+        if more_cut && rounds < max {
+            self.say(Level::Warn, "a later question looked cut off and was left out");
         }
         match reply {
             Reply::Question { text, options } if rounds < max => self.ask_batch(text, options, more),
