@@ -8,14 +8,17 @@ set -u
 # A failed cd must stop here, not bind every key to /scripts/...
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
-# tpm hides plugin output, so an old tmux only hears this message.
-tmux_version=$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')
-vmaj=${tmux_version%%.*} vmin=${tmux_version#*.}
-case "$vmin" in ''|*[!0-9]*) vmin=0 ;; esac
-if [ -n "$vmaj" ] && { [ "$vmaj" -lt 3 ] || { [ "$vmaj" -eq 3 ] && [ "$vmin" -lt 8 ]; }; }; then
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
-    exit 0
-fi
+# shellcheck source=scripts/lib/vnum.sh
+. "$DIR/scripts/lib/vnum.sh" || exit 1
+# tpm hides plugin output, so an old tmux only hears this message. A version
+# with no leading digit (next-3.9, master) is a build newer than any release.
+tmux_version=$(tmux -V 2>/dev/null); tmux_version=${tmux_version#tmux }
+case "$tmux_version" in [0-9]*)
+    if [ "$(vnum "$tmux_version")" -lt "$(vnum 3.8)" ]; then
+        tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
+        exit 0
+    fi ;;
+esac
 
 # Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
 # %q's backslashes before sh sees them.
