@@ -1,7 +1,7 @@
 //! The action, text, cmd and state files the panel hands its wrapper, and the
 //! `--resume` state read back: the Steps after an action (version 1), and a
 //! hidden panel (version 2, #278).
-use super::app::{Action, App, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, View, assumed};
+use super::app::{Action, App, Asked, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, View, assumed};
 use super::envelope::{Flow, OutType, Role, Turn};
 use super::parse::{Opt, Step};
 use serde_json::{Map, Value, json};
@@ -309,7 +309,7 @@ fn run_out(r: &Run) -> Value {
     let qstack: Vec<Value> = r
         .qstack
         .iter()
-        .map(|(q, o, t, local)| json!([q, opts_out(o), turns_out(t), local]))
+        .map(|q| json!([q.question, opts_out(&q.options), turns_out(&q.turns), q.local]))
         .collect();
     let batch: Vec<Value> = r.batch.iter().map(|(q, o)| json!([q, opts_out(o)])).collect();
     let log: Vec<Value> = r.log.iter().map(|(you, t)| json!([you, t])).collect();
@@ -530,7 +530,12 @@ fn run_in(v: Value) -> Result<Run, String> {
     for q in o.list("qstack")? {
         let [q, opts, ts, local] = tuple(q)?;
         let local = local.as_bool().ok_or("a bad batch mark")?;
-        qstack.push((text(q)?, opts_in(opts)?, turns_in(ts)?, local));
+        qstack.push(Asked {
+            question: text(q)?,
+            options: opts_in(opts)?,
+            turns: turns_in(ts)?,
+            local,
+        });
     }
     let mut batch = vec![];
     for q in o.list("batch")? {
@@ -569,7 +574,11 @@ fn run_in(v: Value) -> Result<Run, String> {
         return Err("more questions queued than the run allows".into());
     }
     // the first question shown came from a call, so it heads no batch
-    if r.qstack.first().is_none_or(|q| q.3) && !(r.qstack.is_empty() && r.batch.is_empty()) {
+    let headless = match r.qstack.first() {
+        Some(q) => q.local,
+        None => !r.batch.is_empty(),
+    };
+    if headless {
         return Err("a batch with no question before it".into());
     }
     Ok(r)

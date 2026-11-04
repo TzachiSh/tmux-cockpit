@@ -188,9 +188,8 @@ pub struct Run {
     pub turns: Vec<Turn>,
     pub rounds: usize,
     pub max: usize,
-    /// Each question shown: its text, options, the turns up to it, and whether
-    /// it came from a batch with no call before it (#417).
-    pub qstack: Vec<(String, Vec<Opt>, Vec<Turn>, bool)>,
+    /// Each question shown, oldest first.
+    pub qstack: Vec<Asked>,
     /// The rest of the reply's batch, to show one by one before the next call.
     pub batch: Vec<(String, Vec<Opt>)>,
     pub question: String,
@@ -207,10 +206,21 @@ pub struct Run {
     pub guessed_from: Option<usize>,
 }
 
+/// A question shown in a run, kept so back can show it again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Asked {
+    pub question: String,
+    pub options: Vec<Opt>,
+    /// The conversation up to and with this question, before its answer.
+    pub turns: Vec<Turn>,
+    /// Shown from a batch with no call before it (#417).
+    pub local: bool,
+}
+
 impl Run {
     /// The question on screen as `(n, of)` in its batch, when the reply asked more than one.
     pub fn batch_at(&self) -> Option<(usize, usize)> {
-        let n = 1 + self.qstack.iter().rev().take_while(|q| q.3).count();
+        let n = 1 + self.qstack.iter().rev().take_while(|q| q.local).count();
         let of = n + self.batch.len();
         (of > 1).then_some((n, of))
     }
@@ -1127,7 +1137,12 @@ impl App {
             role: Role::Assistant,
             text: turn,
         });
-        r.qstack.push((text.clone(), options.clone(), r.turns.clone(), local));
+        r.qstack.push(Asked {
+            question: text.clone(),
+            options: options.clone(),
+            turns: r.turns.clone(),
+            local,
+        });
         r.question = text;
         r.options = options;
         self.view = View::Question { sel: 0, scroll: None };
@@ -1247,13 +1262,20 @@ impl App {
         // a question of the batch goes back in the queue; one a call brought,
         // with the batch it came in, was for an answer about to change
         match r.qstack.pop() {
-            Some((q, opts, _, true)) => r.batch.insert(0, (q, opts)),
+            Some(Asked {
+                question,
+                options,
+                local: true,
+                ..
+            }) => r.batch.insert(0, (question, options)),
             _ => r.batch.clear(),
         }
         match r.qstack.last().cloned() {
-            Some((q, opts, turns, _)) => {
-                r.question = q;
-                r.options = opts;
+            Some(Asked {
+                question, options, turns, ..
+            }) => {
+                r.question = question;
+                r.options = options;
                 r.turns = turns;
                 r.rounds = r.qstack.len();
                 self.view = View::Question { sel: 0, scroll: None };
