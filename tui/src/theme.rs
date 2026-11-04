@@ -78,20 +78,14 @@ impl Theme {
             };
         }
         // A bare display-message in a popup resolves the most recently active
-        // client (the one whose key or click opened the popup).
-        let opts = tmux(&[
-            "show-options",
-            "-g",
-            ";",
-            "show-options",
-            "-s",
-            "theme",
-            ";",
-            "display-message",
-            "-p",
-            "client_theme=#{client_theme}",
-        ])
-        .unwrap_or_default();
+        // client (the one whose key or click opened the popup). 3.8 prints it
+        // empty with no client; were it ever to fail, the roles are read again
+        // without it, so only the light set is lost (dark), never the roles.
+        let roles = ["show-options", "-g", ";", "show-options", "-s", "theme"];
+        let client = [";", "display-message", "-p", "client_theme=#{client_theme}"];
+        let opts = tmux(&[&roles[..], &client[..]].concat())
+            .or_else(|| tmux(&roles))
+            .unwrap_or_default();
         let light = light_set(&opts);
         let mut c = [Color::Reset; 12];
         for (i, (opt, dark, lite)) in ROLES.iter().enumerate() {

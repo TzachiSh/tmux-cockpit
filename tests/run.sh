@@ -12814,5 +12814,28 @@ case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lo
 gbt kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui with no client attached keeps the @thm_* roles (#240) =="
+# Theme::load reads #{client_theme} in the same tmux call as the roles, so a
+# display-message that failed without a client would lose every role, not just
+# the light set. A detached server: the value role must still be @thm_fg.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "no-client theme roles (no bin/cockpit-tui; run make tui)"
+elif need_tmux "no-client theme roles"; then :; else
+NC="cockpit-nc-$$"; SOCKS="$SOCKS $NC"; NCD=$(mktmpd)
+"$TMUX_REAL" -L "$NC" -f /dev/null new-session -d -s base -c "$NCD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$NC" set -g @thm_fg '#123456'
+"$TMUX_REAL" -L "$NC" set -g @thm_fg_light '#654321'
+is "the server has no client" "" "$("$TMUX_REAL" -L "$NC" list-clients)"
+pick_pane "$NC" "$NCD" 80 20 "$(printf 'alpha\talpha\nbeta\tbeta\n')"$'\n'
+until_cap "$NC" t '*pick>*'
+case "$("$TMUX_REAL" -L "$NC" capture-pane -ep -t t)" in
+    *'38;2;18;52;86'*) got=roles ;;
+    *'38;2;101;67;33'*) got=light ;;
+    *) got=lost ;;
+esac
+is "no client: the @thm_fg role is drawn, in the dark set" "roles" "$got"
+"$TMUX_REAL" -L "$NC" kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

@@ -109,3 +109,30 @@ fn no_color_ignores_a_light_client() {
     }
     assert_eq!(th.needs, Color::Reset);
 }
+
+#[test]
+fn a_failed_client_theme_read_keeps_the_roles() {
+    let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = std::env::temp_dir().join(format!("cockpit-theme-fail-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("options");
+    std::fs::write(&out, format!("{OPTS}theme detect\n")).unwrap();
+    // tmux prints what ran before the failing command, then exits 1.
+    let bin = dir.join("tmux");
+    let script = format!(
+        "#!/bin/sh\ncat '{}'\ncase \"$*\" in *display-message*) exit 1 ;; esac\n",
+        out.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // SAFETY: ENV is held, so no other test thread reads these.
+    unsafe {
+        std::env::remove_var("NO_COLOR");
+        std::env::set_var("COCKPIT_TMUX", &bin);
+    }
+    let th = Theme::load();
+    unsafe { std::env::remove_var("COCKPIT_TMUX") };
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(th.needs, DARK);
+}
