@@ -1,5 +1,5 @@
-//! The fleet's two headless forms and the widths a row is drawn at. `prefix r`
-//! stays fzf; the widths stay because `--rows` consumers size columns from them.
+//! The fleet's two headless forms and the widths a row is drawn at. The widths
+//! stay because `--rows` consumers size columns from them.
 use crate::data::{Pane, State, fmt_dur};
 use crate::theme::Theme;
 

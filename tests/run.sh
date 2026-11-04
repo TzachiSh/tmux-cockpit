@@ -7823,29 +7823,27 @@ case "$tfout" in
     *) bad "a second run with a current binary says already current" "already current" "$tfout" ;;
 esac
 is "and exits 0 without reaching the release host" "0" "$tfrc"
-# The release dir is gone, so this can only match by reducing tag and binary to
-# the same string: cargo-dist parses the tag with axotag, which wants the
-# PACKAGE name, and `tui-v0.1.0` died in the plan step (#79). The pre-#79 form
-# still has to resolve for anyone whose @cockpit_tui_version still holds it.
+# `tui-v0.1.0` died in cargo-dist's plan step (#79) and was never released, so
+# it is no longer read as 0.1.0 (#223): it is a tag like any other, and absent.
 tfout=$(tf "$TFR" --version tui-v0.1.0)
 case "$tfout" in
-    *"already current"*) ok "the pre-#79 tui-v tag form reduces to the same version" ;;
-    *) bad "the pre-#79 tui-v tag form reduces to the same version" "already current" "$tfout" ;;
+    *"no release tui-v0.1.0"*) ok "the pre-#79 tui-v tag form is just a missing tag" ;;
+    *) bad "the pre-#79 tui-v tag form is just a missing tag" "skip: no release tui-v0.1.0 ..." "$tfout" ;;
 esac
 tfout=$(tf "$TFR" --version); tfrc=$?
 is "--version with no tag is a usage error, not a silent install of the pin" "2" "$tfrc"
 
 # A refusal must shout on EVERY press. Marking it tried would turn the one
 # signal that says "these bytes are not ours" into a single line nobody re-reads.
-tf_release tui-v0.2.0 0.2.0 flip
-tfout=$(tf "$TFR" --version tui-v0.2.0); tfrc=$?
+tf_release cockpit-tui-v0.2.0 0.2.0 flip
+tfout=$(tf "$TFR" --version cockpit-tui-v0.2.0); tfrc=$?
 is "a flipped checksum exits non-zero" "1" "$tfrc"
 case "$tfout" in
     *REFUSED*"does not match its published checksum"*) ok "and says so instead of installing" ;;
     *) bad "and says so instead of installing" "REFUSED ... does not match its published checksum" "$tfout" ;;
 esac
 is "and the working binary is untouched" "cockpit-tui 0.1.0" "$(tf_ver)"
-tfout=$(tf "$TFR" --version tui-v0.2.0); tfrc=$?
+tfout=$(tf "$TFR" --version cockpit-tui-v0.2.0); tfrc=$?
 is "the refusal repeats on the next press" "1" "$tfrc"
 case "$tfout" in
     *REFUSED*) ok "and is never silenced by a tried marker" ;;
@@ -7855,25 +7853,25 @@ is "a refusal leaves no marker behind" "" "$(tf_mark)"
 
 # A checksum says the bytes arrived intact, not that they are the version the
 # tag claims -- fzf's installer runs the same behavioural check.
-tf_release tui-v0.3.0 9.9.9
-tfout=$(tf "$TFR" --version tui-v0.3.0); tfrc=$?
+tf_release cockpit-tui-v0.3.0 9.9.9
+tfout=$(tf "$TFR" --version cockpit-tui-v0.3.0); tfrc=$?
 is "a tarball whose binary reports another version installs nothing" "1" "$tfrc"
 is "and the working binary is still the old one" "cockpit-tui 0.1.0" "$(tf_ver)"
 
 # An uncut tag is the ordinary state before the first release, and it is
 # transient: the marker must not lock the next press out of trying again.
 : > "$TF/curlcount"
-tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0); tfrc=$?
+tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version cockpit-tui-v0.4.0); tfrc=$?
 is "a release host it cannot reach exits 0" "0" "$tfrc"
 case "$tfout" in
-    *"no release tui-v0.4.0 (private repository, or offline)"*) ok "and names the tag rather than blaming the network" ;;
-    *) bad "and names the tag rather than blaming the network" "skip: no release tui-v0.4.0 (private repository, or offline)" "$tfout" ;;
+    *"no release cockpit-tui-v0.4.0 (private repository, or offline)"*) ok "and names the tag rather than blaming the network" ;;
+    *) bad "and names the tag rather than blaming the network" "skip: no release cockpit-tui-v0.4.0 (private repository, or offline)" "$tfout" ;;
 esac
 is "and leaves no marker" "" "$(tf_mark)"
-tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
+tfout=$(PATH="$TF/curlshim:$PATH"; tf "$TFGONE" --version cockpit-tui-v0.4.0)
 is "so the next press fetches again instead of saying already tried" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
 # A box that could not ask must not fall through to a full cargo build.
-tfout=$(PATH="$TF/shim:$TF/curlshim:$PATH"; tf "$TFGONE" --version tui-v0.4.0)
+tfout=$(PATH="$TF/shim:$TF/curlshim:$PATH"; tf "$TFGONE" --version cockpit-tui-v0.4.0)
 case "$tfout" in
     *"needs Rust"*|*CARGO_RAN*) bad "without --required, an unreachable host never starts a source build" "no rustc gate, no cargo" "$tfout" ;;
     *) ok "without --required, an unreachable host never starts a source build" ;;
@@ -7881,11 +7879,11 @@ esac
 
 # Deleting the binary after a good install must reinstall it, not report a
 # marker left over from the install that worked.
-tf_release tui-v0.5.0 0.5.0
-tfout=$(tf "$TFR" --version tui-v0.5.0)
+tf_release cockpit-tui-v0.5.0 0.5.0
+tfout=$(tf "$TFR" --version cockpit-tui-v0.5.0)
 is "a new version installs over the old one" "cockpit-tui 0.5.0" "$(tf_ver)"
 rm -f "$TFB"
-tfout=$(tf "$TFR" --version tui-v0.5.0)
+tfout=$(tf "$TFR" --version cockpit-tui-v0.5.0)
 is "and deleting the binary refetches it" "cockpit-tui 0.5.0" "$(tf_ver)"
 
 # The source fallback. The floor is READ from tui/Cargo.toml, never pinned
@@ -7893,13 +7891,13 @@ is "and deleting the binary refetches it" "cockpit-tui 0.5.0" "$(tf_ver)"
 # the common case and it must not turn into a page of compiler errors.
 mkdir -p "$TF/plugin/tui"
 printf 'rust-version = "1.88"\n' > "$TF/plugin/tui/Cargo.toml"
-tf_release tui-v0.6.0 - noasset
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.6.0); tfrc=$?
+tf_release cockpit-tui-v0.6.0 - noasset
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version cockpit-tui-v0.6.0); tfrc=$?
 case "$tfout" in
     *"no binary for this platform"*) ok "a manifest without this platform is a settled answer" ;;
     *) bad "a manifest without this platform is a settled answer" "no binary for this platform" "$tfout" ;;
 esac
-is "and it is remembered, so the next press does not re-ask" "tui-v0.6.0" "$(tf_mark)"
+is "and it is remembered, so the next press does not re-ask" "cockpit-tui-v0.6.0" "$(tf_mark)"
 is "a rustc below the floor still exits 0" "0" "$tfrc"
 case "$tfout" in
     *"needs Rust >= 1.88"*"found 1.85.0"*) ok "and names the floor and the rustc it found" ;;
@@ -7910,34 +7908,34 @@ case "$tfout" in
     *) ok "and never reaches the compiler" ;;
 esac
 is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.6.0)
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version cockpit-tui-v0.6.0)
 case "$tfout" in
     *"has no release build for"*) ok "the marker skips the download on the next press" ;;
-    *) bad "the marker skips the download on the next press" "tui-v0.6.0 has no release build for" "$tfout" ;;
+    *) bad "the marker skips the download on the next press" "cockpit-tui-v0.6.0 has no release build for" "$tfout" ;;
 esac
 case "$tfout" in
     *"needs Rust >= 1.88"*) ok "and still offers the source build, which the marker must never block" ;;
     *) bad "and still offers the source build, which the marker must never block" "needs Rust >= 1.88" "$tfout" ;;
 esac
 printf 'rust-version = "1.99"\n' > "$TF/plugin/tui/Cargo.toml"
-tf_release tui-v0.7.0 - noasset
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.7.0)
+tf_release cockpit-tui-v0.7.0 - noasset
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version cockpit-tui-v0.7.0)
 case "$tfout" in
     *"needs Rust >= 1.99"*) ok "the floor comes from Cargo.toml, not a second pin in the script" ;;
     *) bad "the floor comes from Cargo.toml, not a second pin in the script" "needs Rust >= 1.99" "$tfout" ;;
 esac
 # --required is the install path (#199): a binary that runs is success, and
 # none at all is exit 1 naming both ways out, whether settled or offline.
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version cockpit-tui-v0.7.0); tfrc=$?
 is "--required with a working binary left exits 0" "0" "$tfrc"
 mv "$TFB" "$TF/keep"
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version tui-v0.7.0); tfrc=$?
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --required --version cockpit-tui-v0.7.0); tfrc=$?
 is "--required with no binary and no way to build one exits 1" "1" "$tfrc"
 case "$tfout" in
     *"cockpit-tui is required"*"no Rust >= 1.99"*"gh auth login"*rustup*) ok "and names the floor, gh auth login and rustup" ;;
     *) bad "and names the floor, gh auth login and rustup" "cockpit-tui is required ... Rust >= 1.99 ... gh auth login ... rustup" "$tfout" ;;
 esac
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0); tfrc=$?
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFGONE" --required --version cockpit-tui-v0.4.0); tfrc=$?
 is "--required offline with no binary exits 1 too" "1" "$tfrc"
 # A gh 404 or no login is transient, yet a required binary must still try
 # cargo: a box with Rust and no gh login is the common source install.
@@ -7945,12 +7943,12 @@ mkdir -p "$TF/shim99"
 printf '#!/bin/sh\necho "rustc 1.99.0 (0000000 2026-01-01)"\n' > "$TF/shim99/rustc"
 printf '#!/bin/sh\necho "$*" >> "%s"\nexit 1\n' "$TF/cargo99" > "$TF/shim99/cargo"
 chmod +x "$TF/shim99/rustc" "$TF/shim99/cargo"
-tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required --version tui-v0.4.0)
+tfout=$(PATH="$TF/shim99:$PATH"; tf "$TFGONE" --required --version cockpit-tui-v0.4.0)
 case "$(cat "$TF/cargo99" 2>/dev/null)" in
     *"build --release --locked"*) ok "--required with an unreachable release and Rust >= the floor runs cargo" ;;
     *) bad "--required with an unreachable release and Rust >= the floor runs cargo" "cargo build --release --locked" "$tfout" ;;
 esac
-is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = tui-v0.4.0 ] && echo yes || echo no)"
+is "and marks nothing tried, the miss being transient" "no" "$([ "$(tf_mark)" = cockpit-tui-v0.4.0 ] && echo yes || echo no)"
 # A binary that runs but is below TUI_MIN is no binary (#269): with the release
 # unreachable, --required must still build, not exit 0 on the stale one.
 mkdir -p "${TFB%/*}"; printf '#!/bin/sh\necho "cockpit-tui 0.2.0"\n' > "$TFB"; chmod +x "$TFB"
@@ -7965,12 +7963,21 @@ case "$tfout" in
     *"--required builds from source next"*) ok "and the skip line says the source build follows" ;;
     *) bad "and the skip line says the source build follows" "... --required builds from source next" "$tfout" ;;
 esac
+# Rust 1.99 is new enough, so the closing line blames the build, not the toolchain (#243).
+case "$tfout" in
+    *"cockpit-tui is required"*"the source build failed"*) ok "a build that ran and failed is named as such" ;;
+    *) bad "a build that ran and failed is named as such" "cockpit-tui is required ... the source build failed" "$tfout" ;;
+esac
+case "$tfout" in
+    *"no Rust >= "*) bad "and it does not claim there is no Rust" "no 'no Rust >=' line" "$tfout" ;;
+    *) ok "and it does not claim there is no Rust" ;;
+esac
 mv "$TF/keep" "$TFB"
 
 # A verified binary that will not execute here is this box's problem, not a
 # broken release: source is the way out, so it must not exit 1 like a refusal.
-tf_release tui-v0.8.0 0.8.0 broken
-tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version tui-v0.8.0); tfrc=$?
+tf_release cockpit-tui-v0.8.0 0.8.0 broken
+tfout=$(PATH="$TF/shim:$PATH"; tf "$TFR" --version cockpit-tui-v0.8.0); tfrc=$?
 is "a verified binary that cannot run here exits 0" "0" "$tfrc"
 case "$tfout" in
     *"does not run here"*"needs Rust >= 1.99"*) ok "and falls through to the source build" ;;
@@ -7978,18 +7985,25 @@ case "$tfout" in
 esac
 is "and leaves the working binary in place" "cockpit-tui 0.5.0" "$(tf_ver)"
 
-tf_release tui-v0.9.0 0.9.0 flat
-tfout=$(tf "$TFR" --version tui-v0.9.0)
+tf_release cockpit-tui-v0.9.0 0.9.0 flat
+tfout=$(tf "$TFR" --version cockpit-tui-v0.9.0)
 is "an archive with no wrapping directory installs too" "cockpit-tui 0.9.0" "$(tf_ver)"
 # COCKPIT_TUI_BIN is where it reads and writes, as for the doctor and wrappers.
 tfout=$(env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TF/else/ct" COCKPIT_TUI_RELEASES="$TFR" \
-        "$TF/plugin/scripts/tui-fetch" --version tui-v0.9.0 2>&1)
+        "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
 is "COCKPIT_TUI_BIN names the file it installs" "cockpit-tui 0.9.0" "$("$TF/else/ct" --version 2>/dev/null)"
-tfout=$(env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TF/else/ct" "$TF/plugin/scripts/tui-fetch" --version tui-v0.9.0 2>&1)
+tfout=$(env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TF/else/ct" "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
 case "$tfout" in
     *"already current"*) ok "and the binary it reads" ;;
     *) bad "and the binary it reads" "already current" "$tfout" ;;
 esac
+# A bare name is not a path: it falls back to the plugin's own bin/ (#243),
+# never a file named ct in whatever directory the fetch ran from.
+mkdir -p "$TF/cwd"
+tfout=$(cd "$TF/cwd" && env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN=ct COCKPIT_TUI_RELEASES="$TFR" \
+        "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
+is "a relative COCKPIT_TUI_BIN falls back to the plugin's bin/" "absent cockpit-tui 0.9.0" \
+   "$([ -e "$TF/cwd/ct" ] && echo present || echo absent) $(tf_ver)"
 # Unpinned (no --version, no option), a newer binary is current: a make
 # tui-bin build ahead of the release must not be downgraded to it.
 mkdir -p "$TF/tmuxnone" "$TF/tmuxold"
@@ -8052,9 +8066,9 @@ exec cp "$TF/rel/${1##*releases/download/}" "$out"
 CURLFAKE
 chmod +x "$TF/ghshim/gh" "$TF/ghbad/gh" "$TF/curlfake/curl"
 
-tf_release tui-v1.0.0 1.0.0
+tf_release cockpit-tui-v1.0.0 1.0.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.0.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v1.0.0 2>&1); tfrc=$?
 is "an authenticated gh is preferred over the plain URL" "0" "$tfrc"
 is "and installs the release it serves" "cockpit-tui 1.0.0" "$(tf_ver)"
 case "$tfout" in
@@ -8066,18 +8080,18 @@ case "$(cat "$TF/ghlog")" in
     *"-R TzachiSh/tmux-cockpit"*) ok "and -R defaults to the plugin's own repo" ;;
     *) bad "and -R defaults to the plugin's own repo" "-R TzachiSh/tmux-cockpit" "$(cat "$TF/ghlog")" ;;
 esac
-tf_release tui-v1.1.0 1.1.0
+tf_release cockpit-tui-v1.1.0 1.1.0
 : > "$TF/ghlog"
 tfout=$(PATH="$TF/ghshim:$TF/curlfake:$PATH" COCKPIT_TUI_REPO=alice/example \
-    env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.1.0 2>&1)
+    env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v1.1.0 2>&1)
 case "$(cat "$TF/ghlog")" in
     *"-R alice/example"*) ok "COCKPIT_TUI_REPO overrides the repo gh asks" ;;
     *) bad "COCKPIT_TUI_REPO overrides the repo gh asks" "-R alice/example" "$(cat "$TF/ghlog")" ;;
 esac
 
-tf_release tui-v1.2.0 1.2.0
+tf_release cockpit-tui-v1.2.0 1.2.0
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v1.2.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghbad:$TF/curlfake:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v1.2.0 2>&1); tfrc=$?
 is "a gh that is not logged in falls back to curl" "0" "$tfrc"
 is "and still installs" "cockpit-tui 1.2.0" "$(tf_ver)"
 is "and paid exactly the two curl forks" "2" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
@@ -8093,11 +8107,11 @@ esac
 # A tag gh has no release for: fall to the plain URL, then skip -- never a
 # source build, and no marker, so the next press may ask again.
 : > "$TF/curlcount"; : > "$TF/ghlog"
-tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version tui-v9.9.0 2>&1); tfrc=$?
+tfout=$(PATH="$TF/ghshim:$TF/curlfake:$TF/shim:$PATH" env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN="$TFB" "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v9.9.0 2>&1); tfrc=$?
 is "a tag gh has no release for still exits 0" "0" "$tfrc"
 case "$tfout" in
-    *"no release tui-v9.9.0 via gh (or offline)"*) ok "and the skip names the gh path" ;;
-    *) bad "and the skip names the gh path" "skip: no release tui-v9.9.0 via gh (or offline)" "$tfout" ;;
+    *"no release cockpit-tui-v9.9.0 via gh (or offline)"*) ok "and the skip names the gh path" ;;
+    *) bad "and the skip names the gh path" "skip: no release cockpit-tui-v9.9.0 via gh (or offline)" "$tfout" ;;
 esac
 is "and fell through to one curl try" "1" "$(wc -l < "$TF/curlcount" | tr -d ' ')"
 case "$tfout" in
@@ -11167,8 +11181,8 @@ is "the review row names the queued spool" "review    pending  · queued: $PISTA
 is "the session row" "session   sid-9" "$(printf '%s\n' "$PIOUT" | grep '^session ')"
 is "the title row" "title     Fix-the-parser" "$(printf '%s\n' "$PIOUT" | grep '^title ')"
 case "$(printf '%s\n' "$PIOUT" | grep '^tui ')" in
-    *"(want 9.9.9 -- prefix U updates it)") ok "the tui row names a version that differs" ;;
-    *) bad "the tui row names a version that differs" "(want 9.9.9 -- prefix U updates it)" "$(printf '%s\n' "$PIOUT" | grep '^tui ')" ;;
+    *"(want 9.9.9 -- run install.sh)") ok "the tui row names a version that differs" ;;
+    *) bad "the tui row names a version that differs" "(want 9.9.9 -- run install.sh)" "$(printf '%s\n' "$PIOUT" | grep '^tui ')" ;;
 esac
 is "the review dir counts pinned and delivered" "1 pinned · 2 delivered · a at the prompt removes it" \
    "$(printf '%s\n' "$PIOUT" | grep -A1 '^review dir' | tail -n 1 | sed 's/^ *//')"

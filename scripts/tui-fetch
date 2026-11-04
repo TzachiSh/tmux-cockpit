@@ -11,6 +11,9 @@ set -u
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/tui.sh
 . "$DIR/scripts/lib/tui.sh" || exit 1    # COCKPIT_TUI_BIN, TUI_MIN, TUI_TAG, vnum
+# Absolute or the plugin's own: a bare name has no directory to install into,
+# and ${COCKPIT_TUI_BIN%/*} would take the name itself for one (#243).
+case $COCKPIT_TUI_BIN in /*) ;; *) COCKPIT_TUI_BIN=$DIR/bin/cockpit-tui ;; esac
 BIN=${COCKPIT_TUI_BIN%/*}
 RELEASES=${COCKPIT_TUI_RELEASES:-https://github.com/TzachiSh/tmux-cockpit/releases/download}
 
@@ -39,8 +42,8 @@ FROM=arg
 [ -n "$TAG" ] || { TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); FROM=option; }
 [ -n "$TAG" ] || { TAG=$TUI_TAG; FROM=default; }
 
-# Tags are `<package>-v<ver>` for axotag; an old `tui-` pin still compares equal.
-norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
+# Tags are `<package>-v<ver>` for axotag; `cockpit-tui 0.3.1` is the binary's own.
+norm() { local v=${1##* }; v=${v#cockpit-tui-}; printf '%s\n' "${v#v}"; }
 
 # A pin below the floor would reinstall a binary the scripts refuse.
 if [ "$FROM" = option ] && [ "$(vnum "$(norm "$TAG")")" -lt "$(vnum "$TUI_MIN")" ]; then
@@ -51,11 +54,16 @@ fi
 FLOOR=$(sed -n 's/^ *rust-version *= *"\([^"]*\)".*/\1/p' "$DIR/tui/Cargo.toml" 2>/dev/null | head -1)
 
 works() { tui_check >/dev/null; }     # runs AND meets TUI_MIN: a too-old binary is no binary
+BUILD_FAILED=0                        # set by build(): cargo ran and failed
 
 # Every non-error exit: under --required, only a binary that runs and meets TUI_MIN is success.
 finish() {
     if [ "$REQUIRED" -eq 1 ] && ! works; then
-        say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
+        if [ "$BUILD_FAILED" -eq 1 ]; then
+            say "cockpit-tui is required: no release reachable with your gh login, and the source build failed (above) — run \`gh auth login\`, or fix the build and run install.sh again" >&2
+        else
+            say "cockpit-tui is required: no release reachable with your gh login and no Rust${FLOOR:+ >= $FLOOR} to build it — run \`gh auth login\`, or install rustup" >&2
+        fi
         exit 1
     fi
     exit 0
@@ -130,15 +138,15 @@ build() {                     # 0 built · 2 skipped
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
     if [ -n "$FLOOR" ] && [ "$(vnum "$rv")" -lt "$(vnum "$FLOOR")" ]; then
-        say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and press prefix U again"
+        say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and run install.sh again"
         return 2
     fi
     # Captured: only the tail of rustc's output fits the popup.
     log=$(mktemp) || return 2
     trap 'rm -f "$log"' RETURN
     cargo build --release --locked --manifest-path "$DIR/tui/Cargo.toml" > "$log" 2>&1 || {
-        say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
-    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$COCKPIT_TUI_BIN" || return 2
+        BUILD_FAILED=1; say "cargo build failed, last 5 lines:" >&2; tail -5 "$log" >&2; return 2; }
+    install -m 755 "$DIR/tui/target/release/cockpit-tui" "$COCKPIT_TUI_BIN" || { BUILD_FAILED=1; return 2; }
     say "cockpit-tui built from source -> $COCKPIT_TUI_BIN"
 }
 

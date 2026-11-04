@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# One fzf theme for every cockpit picker. Sourced, never run. Bash 4+.
+# One fzf theme for the fzf pickers left (tmux-open-path's path picker and
+# folder browser; the rest are cockpit-tui). Sourced, never run. Bash 4.2+ for declare -g.
 #
 # No `bg`, `list-bg` or `input-bg` anywhere below: the popup's background
-# belongs to the user's popup-style, the same rule cockpit.tmux states for the
-# border. `16` stays the base so an unset key degrades to the terminal's own.
-# fzf 0.73+ is required (tm's every(N) is the newest feature used); cockpit.tmux warns.
+# belongs to the user's popup-style. `16` stays the base so an unset key
+# degrades to the terminal's own. fzf 0.73+ is required; cockpit.tmux warns.
 
 # -g, not a bare declare: a caller that sources this lib from inside one of its
 # own functions (tmux-open-path's op_theme does) would otherwise get a LOCAL
