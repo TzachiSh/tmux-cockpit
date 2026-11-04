@@ -1690,7 +1690,7 @@ acts on the one line it prints; the binary never mutates.
 | `↵` | on a folder, goes into it and clears the filter; on a file, prints `open <path>` |
 | `←`, `⌫` on an empty filter | goes up, landing on the folder it left; stops at `/` |
 | `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
-| `i` on an empty filter | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |
+| `alt-i` | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |
 | `alt-c` | prints `copy <path>` for the row, a folder included |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 

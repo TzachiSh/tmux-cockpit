@@ -164,28 +164,27 @@ fn ignored_entries_are_hidden_by_default_and_so_is_git() {
 }
 
 #[test]
-fn i_shows_ignored_entries_and_marks_them_and_a_second_i_hides_them() {
+fn alt_i_shows_ignored_entries_and_marks_them_and_a_second_one_hides_them() {
     let s = repo();
     let mut f = browser(&s.0);
-    tap(&mut f, KeyCode::Char('i'));
+    press(&mut f, KeyCode::Char('i'), KeyModifiers::ALT);
     assert_eq!(shown(&f), ["src/", "target/", "main.rs", "run.log"]);
     let mut ig: Vec<_> = f.ignored.iter().map(|k| String::from_utf8_lossy(k).into_owned()).collect();
     ig.sort();
     assert_eq!(ig, ["run.log", "target"]);
-    tap(&mut f, KeyCode::Char('i'));
+    press(&mut f, KeyCode::Char('i'), KeyModifiers::ALT);
     assert_eq!(shown(&f), ["src/", "main.rs"]);
     assert!(f.ignored.is_empty());
 }
 
 #[test]
-fn a_dot_ignore_file_hides_too_and_i_is_a_letter_inside_a_filter() {
+fn a_dot_ignore_file_hides_too_and_a_bare_i_is_always_a_letter() {
     let s = repo();
     std::fs::write(s.0.join(".ignore"), "main.rs\n").unwrap();
     let mut f = browser(&s.0);
     assert_eq!(shown(&f), ["src/"]);
-    type_str(&mut f, "s");
     type_str(&mut f, "i");
-    assert_eq!((f.show_ignored, f.pick.query.as_str()), (false, "si"));
+    assert_eq!((f.show_ignored, f.pick.query.as_str()), (false, "i"), "even on an empty filter");
 }
 
 #[test]
@@ -193,7 +192,7 @@ fn ignored_rows_are_drawn_dim_and_the_others_are_not() {
     let s = repo();
     let th = Theme::fixed();
     let mut f = browser(&s.0);
-    tap(&mut f, KeyCode::Char('i'));
+    press(&mut f, KeyCode::Char('i'), KeyModifiers::ALT);
     f.fit(60, &th.g);
     let mut t = Terminal::new(TestBackend::new(60, 16)).unwrap();
     t.draw(|fr| files::draw(fr, fr.area(), &f, &th)).unwrap();
@@ -222,8 +221,8 @@ fn the_footer_names_the_key_and_its_state() {
             .collect::<Vec<_>>()
             .join("|")
     };
-    assert!(flat(false, false).contains("i ignored off"));
-    assert!(flat(false, true).contains("i ignored on"));
+    assert!(flat(false, false).contains("alt-i ignored off"));
+    assert!(flat(false, true).contains("alt-i ignored on"));
     assert!(flat(true, false).contains(". dotfiles on"));
 }
 

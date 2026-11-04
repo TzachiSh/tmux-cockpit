@@ -34,7 +34,7 @@ pub struct Files {
     pub pick: Pick,
     pub dir: PathBuf,
     pub hidden: bool,
-    /// `i`: list what the ignore files hide, drawn dim.
+    /// `alt-i`: list what the ignore files hide, drawn dim.
     pub show_ignored: bool,
     /// The names in the folder shown that are ignored, for the dim.
     pub ignored: HashSet<Vec<u8>>,
@@ -238,7 +238,7 @@ impl Files {
                 self.reload(area);
                 Outcome::Continue
             }
-            KeyCode::Char('i') if walk && plain && self.pick.query.is_empty() => {
+            KeyCode::Char('i') if walk && k.modifiers.contains(KeyModifiers::ALT) => {
                 self.show_ignored = !self.show_ignored;
                 self.reload(area);
                 Outcome::Continue
@@ -279,7 +279,7 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
             h(g.key_enter, "open"),
             h(left, "up"),
             h(".", if hidden { "dotfiles on" } else { "dotfiles off" }),
-            h("i", if ignored { "ignored on" } else { "ignored off" }),
+            h("alt-i", if ignored { "ignored on" } else { "ignored off" }),
             h("alt-c", "copy"),
             h("F1", "keys"),
             h("esc", "close"),
@@ -307,13 +307,7 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
         (format!("{left}  {}", g.key_bksp), "up a folder (⌫ only on an empty filter)".into()),
     );
     rows.insert(at + 1, (".".into(), "show or hide dotfiles (on an empty filter)".into()));
-    rows.insert(
-        at + 2,
-        (
-            "i".into(),
-            "show or hide what .gitignore hides, drawn dim (on an empty filter)".into(),
-        ),
-    );
+    rows.insert(at + 2, ("alt-i".into(), "show or hide what .gitignore hides, drawn dim".into()));
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == "alt-c") {
         r.1 = "copy: print this row's path, exit".into();
     }
