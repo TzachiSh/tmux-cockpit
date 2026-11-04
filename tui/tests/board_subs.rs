@@ -45,6 +45,7 @@ fn sub(ty: &str, desc: &str, state: SubState, ago: u64, tokens: u64) -> Sub {
         state,
         started: Some(NOW - ago),
         finished_at: None,
+        active_at: None,
         tokens,
     }
 }
@@ -951,4 +952,17 @@ fn a_stopped_sub_is_not_kept_like_failed_until_the_next_prompt() {
         "{:?}",
         tree_of(&ps, &n, "%4")
     );
+}
+
+/// The hooks' two new states (#361): a teammate between turns, and an agent whose end nobody
+/// recorded. Neither is running, and neither is a failure.
+#[test]
+fn an_idle_or_end_unknown_sub_counts_as_neither_running_nor_failed() {
+    for st in [SubState::Idle, SubState::EndUnknown] {
+        let mut p = agent("%9", "api:9", "t", "running", "x");
+        p.subs = vec![sub("Plan", "quiet", st, 30, 1)];
+        let mut seen = board::Seen::at(NOW);
+        seen.observe(std::slice::from_ref(&p));
+        assert_eq!(board::sub_counts(&p, &seen), (0, 0), "{st:?}");
+    }
 }

@@ -1381,8 +1381,14 @@ fn place(p: &Pane, s: &Sub, seen: &Seen) -> Place {
         SubState::Running => Place::Line,
         SubState::Failed if seen.prompt(p).is_some_and(|q| seen.since(p, s) < q) => Place::Gone,
         SubState::Failed => Place::Line,
-        SubState::Done | SubState::Stopped if seen.now.saturating_sub(seen.since(p, s)) > SUB_FOLD => Place::Old,
-        SubState::Done | SubState::Stopped => Place::Line,
+        // #361: drawn as Done until 1b's follow-up
+        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown
+            if seen.now.saturating_sub(seen.since(p, s)) > SUB_FOLD =>
+        {
+            Place::Old
+        }
+        // #361: drawn as Done until 1b's follow-up
+        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => Place::Line,
     }
 }
 
@@ -1402,7 +1408,8 @@ pub fn sub_counts(p: &Pane, seen: &Seen) -> (usize, usize) {
             SubState::Running if p.ended => {}
             SubState::Running => c.0 += 1,
             SubState::Failed => c.1 += 1,
-            SubState::Done | SubState::Stopped => {}
+            // #361: drawn as Done until 1b's follow-up
+            SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => {}
         }
     }
     c
@@ -1416,7 +1423,8 @@ fn sub_glyph(th: &Theme, p: &Pane, st: SubState) -> (&'static str, ratatui::styl
         SubState::Running if p.ended => (th.g.ended, th.meta),
         SubState::Running => (th.g.running, th.running),
         SubState::Failed => (th.g.error, th.error),
-        SubState::Done | SubState::Stopped => (th.g.done, th.done),
+        // #361: drawn as Done until 1b's follow-up
+        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => (th.g.done, th.done),
     }
 }
 

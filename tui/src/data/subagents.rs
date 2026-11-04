@@ -3,6 +3,8 @@
 //! Claude Code 2.1.317 writes the meta file (`persistAgentMetadata`) when the agent starts
 //! and sets `finished: true` when its task leaves `running`, whatever the outcome.
 //! Every file is cached on (mtime, len), so a quiet session costs a stat per file.
+//! The hooks' own record (#361), `<state>/tmux-cockpit/subs/<session_id>.log`, decides what the
+//! files above cannot say: a teammate that is idle, or whose end nobody recorded.
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -23,7 +25,20 @@ pub enum SubState {
     /// `stoppedByUser: true`. The user's action wins: a stopped agent whose newest row is
     /// also an API error is Stopped, not Failed
     Stopped,
+    /// a teammate between turns: its last hook event is a stop or an idle. It is not running,
+    /// and nothing says whether it has ended
+    Idle,
+    /// its last hook event is a start, and its transcript has not been written for
+    /// `END_UNKNOWN_AFTER` seconds: it was ended without a hook (TaskStop mid-turn). Never
+    /// Running, and not a failure
+    EndUnknown,
 }
+
+/// Seconds without a transcript write after which an agent that never finished is `EndUnknown`.
+/// A live agent writes at every tool call, but nothing bounds a quiet stretch: a permission
+/// prompt waiting on the human, a long Bash or MCP call. Such an agent reads EndUnknown while
+/// it lives. That is why the state is "end unknown", not "ended".
+pub const END_UNKNOWN_AFTER: u64 = 15 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SubKind {
@@ -55,6 +70,10 @@ pub struct Sub {
     /// that set `stoppedByUser`), and with no transcript the meta mtime alone. Not hashed,
     /// like `started`.
     pub finished_at: Option<u64>,
+    /// unix seconds of the agent's last sign of life: the newest of its newest transcript row
+    /// (else the transcript's mtime) and its last hook event. The age of an `EndUnknown` or
+    /// `Idle` agent. Not hashed.
+    pub active_at: Option<u64>,
     /// the newest usage row's input, output and cache tokens summed: the figure Claude Code
     /// reports as `totalTokens`, the context of its last request, not a sum over turns
     pub tokens: u64,
@@ -76,6 +95,8 @@ const HEAD_MAX: u64 = 1024 * 1024;
 const TAIL_MAX: u64 = 256 * 1024;
 /// Cached dirs past this are dropped whole: a board left open for days meets many sessions.
 const DIRS_MAX: usize = 64;
+/// The hook log is read from its last 64 KB: a few hundred events, the newest of each agent.
+const LOG_MAX: u64 = 64 * 1024;
 
 type Stamp = (SystemTime, u64);
 
@@ -105,7 +126,19 @@ struct Cached {
     rows: Option<(Stamp, Rows)>,
 }
 
+/// One hook event.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Ev {
+    Start,
+    Stop,
+    Idle,
+}
+
+/// Each agent's newest event and its epoch, from the log's tail.
+type Log = HashMap<String, (Ev, u64)>;
+
 thread_local! {
+    static LOGS: RefCell<HashMap<PathBuf, (Stamp, Log)>> = RefCell::default();
     static CACHE: RefCell<HashMap<PathBuf, HashMap<String, Cached>>> = RefCell::default();
     static READS: Cell<u64> = const { Cell::new(0) };
 }
@@ -113,6 +146,66 @@ thread_local! {
 /// Files opened for reading on this thread so far: the cache's audit.
 pub fn reads() -> u64 {
     READS.with(Cell::get)
+}
+
+/// The hooks' log dir: `$XDG_STATE_HOME/tmux-cockpit/subs`, else `~/.local/state/...`, as
+/// `scripts/lib/subslog.sh` has it. None with neither set.
+pub fn state_dir(xdg: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    let base = match (xdg, home) {
+        (Some(x), _) if !x.is_empty() => PathBuf::from(x),
+        (_, Some(h)) if !h.is_empty() => PathBuf::from(h).join(".local").join("state"),
+        _ => return None,
+    };
+    Some(base.join("tmux-cockpit").join("subs"))
+}
+
+/// The log's lines folded to each agent's newest event. A `stop` or `idle` counts only after
+/// a `start` of the same agent: Claude Code's internal agents send a stop with no start.
+/// Lines that are not `<epoch>\t<start|stop|idle>\t<id>` are skipped. An id is not checked: only
+/// a plain agent id is ever looked up, and the tail bounds the map.
+fn fold_log(lines: &[String]) -> Log {
+    let mut log = Log::new();
+    for l in lines {
+        let mut f = l.split('\t');
+        let (Some(t), Some(e), Some(id), None) = (f.next(), f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let Ok(t) = t.parse::<u64>() else { continue };
+        let ev = match e {
+            "start" => Ev::Start,
+            "stop" => Ev::Stop,
+            "idle" => Ev::Idle,
+            _ => continue,
+        };
+        if ev == Ev::Start || log.contains_key(id) {
+            log.insert(id.to_string(), (ev, t));
+        }
+    }
+    log
+}
+
+/// `<subs>/<sid>.log`, cached on (mtime, len); a session id that is not plain names no file.
+fn log_of(subs: &Path, sid: Option<&str>) -> Log {
+    let Some(sid) = sid.filter(|s| plain(s)) else { return Log::new() };
+    let p = subs.join(format!("{sid}.log"));
+    let Some(st) = stamp(&p) else {
+        LOGS.with(|c| c.borrow_mut().remove(&p));
+        return Log::new();
+    };
+    LOGS.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((_, log)) = c.get(&p).filter(|(s, _)| *s == st) {
+            return log.clone();
+        }
+        if !c.contains_key(&p) && c.len() >= DIRS_MAX {
+            c.clear();
+        }
+        let log = open(&p)
+            .map(|mut f| fold_log(&super::tail(&mut f, st.1, LOG_MAX)))
+            .unwrap_or_default();
+        c.insert(p, (st, log.clone()));
+        log
+    })
 }
 
 fn stamp(p: &Path) -> Option<Stamp> {
@@ -242,9 +335,20 @@ pub fn dir_of(transcript: &str, sess: &str, cwd: &str) -> Option<PathBuf> {
     Some(t.with_extension("").join("subagents"))
 }
 
-/// The subagents in `dir`, oldest first (unstarted last), then by id. A missing dir is an
-/// empty list and opens no file.
-pub fn read(dir: &Path) -> Vec<Sub> {
+/// The subagents in `dir` at unix second `now`, oldest first (unstarted last), then by id,
+/// with the hooks' log from the environment's state dir. A missing dir is an empty list and
+/// opens no file.
+pub fn read(dir: &Path, now: u64) -> Vec<Sub> {
+    let subs = state_dir(
+        std::env::var("XDG_STATE_HOME").ok().as_deref(),
+        std::env::var("HOME").ok().as_deref(),
+    );
+    read_in(dir, now, &subs.unwrap_or_else(|| PathBuf::from("/nonexistent-cockpit-state")))
+}
+
+/// `read` with the hooks' log dir (`.../tmux-cockpit/subs`) given. The session id is `dir`'s
+/// parent's name (`<sid>/subagents`).
+pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         CACHE.with(|c| c.borrow_mut().remove(dir));
         return vec![];
@@ -261,8 +365,9 @@ pub fn read(dir: &Path) -> Vec<Sub> {
         }
         let old = c.remove(dir).unwrap_or_default();
         let mut old = old;
-        let mut now: HashMap<String, Cached> = HashMap::new();
-        let mut subs = vec![];
+        let log = log_of(subs, dir.parent().and_then(Path::file_name).and_then(|n| n.to_str()));
+        let mut kept: HashMap<String, Cached> = HashMap::new();
+        let mut out = vec![];
         for id in ids {
             let mut e = old.remove(&id).unwrap_or_default();
             let mp = dir.join(format!("agent-{id}.meta.json"));
@@ -271,7 +376,7 @@ pub fn read(dir: &Path) -> Vec<Sub> {
                 e.meta = read_meta(&mp, ms.1).map(|m| (ms, m));
             }
             let Some((_, m)) = e.meta.clone() else {
-                now.insert(id, e);
+                kept.insert(id, e);
                 continue;
             };
             let rp = dir.join(format!("agent-{id}.jsonl"));
@@ -285,26 +390,44 @@ pub fn read(dir: &Path) -> Vec<Sub> {
                 None => e.rows = None,
             }
             let r = e.rows.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+            let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
+            // the newest row says when it last wrote; the mtime only when no tail row has a time
+            let wrote = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
+            let ev = log.get(&id).copied();
+            let active_at = wrote.max(ev.map(|(_, t)| t));
+            let quiet = |since: Option<u64>| since.is_some_and(|a| now.saturating_sub(a) >= END_UNKNOWN_AFTER);
+            // The hook log says what the meta file cannot. Without a record the meta decides, and
+            // so does a `finished` written at or after the last `start`: a StopFailure or a TaskStop
+            // sends no SubagentStop, while a resume writes its `start` after the old `finished`.
+            let meta_newer = |t: u64| m.finished && secs(ms.0).is_some_and(|w| w >= t);
             let state = if m.stopped {
                 SubState::Stopped
+            } else if let Some((ev, _)) = ev.filter(|&(ev, t)| ev != Ev::Start || !meta_newer(t)) {
+                match ev {
+                    Ev::Start if quiet(active_at) => SubState::EndUnknown,
+                    Ev::Start => SubState::Running,
+                    Ev::Idle => SubState::Idle,
+                    Ev::Stop if m.kind == SubKind::Teammate => SubState::Idle,
+                    Ev::Stop if r.api_error => SubState::Failed,
+                    Ev::Stop => SubState::Done,
+                }
             } else if m.finished && r.api_error {
                 SubState::Failed
             } else if m.finished {
                 SubState::Done
+            } else if quiet(active_at.or(secs(ms.0))) {
+                // never `finished`, and no sign of life for a quarter hour: a teammate ended by
+                // TaskStop or a shutdown, or one the log has no record of
+                SubState::EndUnknown
             } else {
                 SubState::Running
             };
-            // the newest row says when it stopped; the mtime only when no tail row has a time.
             // A user stop is the write that set `stoppedByUser`, the meta file's mtime, which a
             // stop during a long tool call puts after the newest row.
-            let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
-            let finished_at = (state != SubState::Running)
-                .then(|| {
-                    let rows = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
-                    if state == SubState::Stopped { rows.max(secs(ms.0)) } else { rows }
-                })
+            let finished_at = matches!(state, SubState::Done | SubState::Failed | SubState::Stopped)
+                .then(|| if state == SubState::Stopped { wrote.max(secs(ms.0)) } else { wrote })
                 .flatten();
-            subs.push(Sub {
+            out.push(Sub {
                 id: id.clone(),
                 kind: m.kind,
                 ty: m.ty,
@@ -312,12 +435,13 @@ pub fn read(dir: &Path) -> Vec<Sub> {
                 state,
                 started: r.started,
                 finished_at,
+                active_at,
                 tokens: r.tokens,
             });
-            now.insert(id, e);
+            kept.insert(id, e);
         }
-        c.insert(dir.to_path_buf(), now);
-        subs.sort_by_key(|s| (s.started.is_none(), s.started, s.id.clone()));
-        subs
+        c.insert(dir.to_path_buf(), kept);
+        out.sort_by_key(|s| (s.started.is_none(), s.started, s.id.clone()));
+        out
     })
 }
