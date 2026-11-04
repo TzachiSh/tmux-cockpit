@@ -66,7 +66,7 @@ kind: feature
 window: claude · claude · /home/u/projects/prices
 expect: either
 ask_any: lru; skip; batch|batching; combine; both
-must: LRU; batch
+must: LRU; batch|batching|batched
 note: "2" and "3" read as contradicting (3 says skip caching) or as combinable; asking or a combined prompt both serve
 --- screen
 ● Prices are fetched on every request. Three ways forward:
