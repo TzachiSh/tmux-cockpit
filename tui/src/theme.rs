@@ -77,8 +77,8 @@ impl Theme {
                 ..Self::no_color()
             };
         }
-        // A bare display-message in a popup resolves the client that opened it:
-        // the latest active, and the key or click that opened it just now.
+        // A bare display-message in a popup resolves the most recently active
+        // client (the one whose key or click opened the popup).
         let opts = tmux(&[
             "show-options",
             "-g",

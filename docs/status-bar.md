@@ -96,11 +96,13 @@ own light or dark set:
 - On a 16-colour client the slots fall back to ANSI: error is magenta, so it
   never shares yellow with running.
 - The board, the panel and the pickers run in popups, which cannot ask the
-  terminal. They take the set from the client that opened them: light when its
-  terminal reports a light theme (mode 2031 or DSR 996, `#{client_theme}`),
-  dark otherwise (#240). A terminal that only answers a background query (OSC
-  11) recolours the bar but not the popups, as tmux exposes no format for that
-  background.
+  terminal. They take the set from the most recently active client (the one
+  whose key or click opened the popup): light when its terminal reports a
+  light theme (mode 2031 or DSR 996, `#{client_theme}`), dark otherwise (#240).
+  A popup that a hook or a script opens while you type on another client
+  follows that other client. A terminal that only answers a background query
+  (OSC 11) recolours the bar but not the popups, as tmux exposes no format for
+  that background.
 - A light terminal that tmux cannot detect needs `set -g theme light`, and
   `theme light` or `theme dark` forces that set on the popups too. Under
   `theme terminal` they keep the dark set.

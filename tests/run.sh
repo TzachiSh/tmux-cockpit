@@ -12694,15 +12694,20 @@ ct_set() {                    # <light|dark> (the client) <theme option>: the se
     "$TMUX_REAL" -L "$CT" set -s theme "$2"
     "$TMUX_REAL" -L "$CTO" send-keys -t o F5
     until_cap "$CTO" o '*pick>*'
+    local got=none i
     case "$("$TMUX_REAL" -L "$CTO" capture-pane -ep -t o)" in
-        *'38;2;27;30;36'*) printf light ;;
-        *'38;2;230;228;223'*) printf dark ;;
-        *) printf none ;;
+        *'38;2;27;30;36'*) got=light ;;
+        *'38;2;230;228;223'*) got=dark ;;
     esac
     "$TMUX_REAL" -L "$CTO" send-keys -t o Escape
-    local i; for i in $(seq 1 "$POLLS"); do   # the popup is gone before the next press
-        case "$("$TMUX_REAL" -L "$CTO" capture-pane -p -t o)" in *'pick>'*) sleep 0.1 ;; *) break ;; esac
+    # A popup still up would hand its colours to the next case: fail this one.
+    for i in $(seq 1 "$POLLS"); do
+        case "$("$TMUX_REAL" -L "$CTO" capture-pane -p -t o)" in
+            *'pick>'*) sleep 0.1 ;;
+            *) printf %s "$got"; return ;;
+        esac
     done
+    printf 'stuck: the popup did not close'
 }
 until_out '?*' "$TMUX_REAL" -L "$CT" list-clients -F '#{client_name}'
 is "a client reported light gets the light set" "light" "$(ct_set light detect)"
