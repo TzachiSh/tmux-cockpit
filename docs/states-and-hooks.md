@@ -305,7 +305,10 @@ the meta file decides. `end-unknown` is a started agent that no one has written 
 an agent ended in a way no row recorded. It is never running, and not a failure. A teammate's
 stop is idle, not done: alone it cannot tell an idle teammate from an ended one. A
 `finished: true` newer than the last `start` beats it (an API error fires StopFailure, not
-SubagentStop); an older one is a resume, and the `start` wins.
+SubagentStop); an older one is a resume, and the `start` wins. Seen on 2.1.318 (#387): a
+resume (SendMessage to a finished subagent) rewrites the meta without `finished` in the second
+of its `start`, and sets `finished: true` again when it ends, so no meta says finished while a
+resume runs.
 
 A `kill` row ends its agent as stopped until a later `start` (a resume) of it; the `stop` a
 teammate's TaskStop also fires does not undo it. A `kill-tm` row is mapped to a teammate by
