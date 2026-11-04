@@ -228,6 +228,28 @@ fn the_preview_cap_snaps_to_a_char_boundary() {
     assert_eq!(p.len() % 3, 0);
 }
 
+/// #284: ansi-to-tui drops the rest of a line after an OSC 8 link ending in
+/// `ESC \`, the form tmux emits, so every OSC goes, whatever ends it.
+#[test]
+fn the_preview_drops_osc_sequences_whatever_ends_them() {
+    let r = Rig::new("osc");
+    r.capture("pre \x1b]8;;https://ex.com\x1b\\LINK\x1b]8;;\x1b\\ after\nb \x1b]8;;u\x07L\x1b]8;;\x07 z\n\x1b]0;title\x07t\n");
+    assert_eq!(preview("%9", 5).as_deref(), Some("pre LINK after\nb L z\nt"));
+}
+
+/// #284: the 64 KB cap can land inside an escape, whose tail then reads as
+/// text; a cut starts at the next line instead.
+#[test]
+fn a_cap_inside_an_escape_starts_at_the_next_line() {
+    let r = Rig::new("cut");
+    // 116 bytes a line with its newline: the cut lands 3 bytes into an escape
+    let line = format!("\x1b[38;5;196m{}\x1b[0m", "x".repeat(100));
+    r.capture(&vec![line.as_str(); 1000].join("\n"));
+    let p = preview("%9", 1000).unwrap();
+    assert!(p.len() <= 64 * 1024, "{} bytes", p.len());
+    assert!(p.split('\n').all(|l| l == line), "a cut line: {:?}", &p[..24]);
+}
+
 /// Rules 22, 66 and 67: what the tail says when the hooks said nothing. `doing`
 /// prefers the command over the description; an AskUserQuestion is open until a
 /// `tool_result` closes it; an interrupt ends the turn without closing one.

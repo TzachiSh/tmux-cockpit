@@ -932,9 +932,42 @@ pub fn preview(id: &str, n: usize) -> Option<String> {
     }
     // -J so a wrap point cannot split an ANSI sequence and hand the parser halves.
     let out = tmux(&["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")])?;
+    // #284: ansi-to-tui drops the rest of a line after an OSC 8 link that ends
+    // in `ESC \`, the form tmux emits; no OSC draws anything in a preview
+    let out = strip_osc(&out);
     let lines: Vec<&str> = out.trim_end().lines().collect();
     let text = lines[lines.len().saturating_sub(n)..].join("\n");
-    Some(text[snap(&text, text.len().saturating_sub(PREVIEW_MAX))..].to_string())
+    let cut = snap(&text, text.len().saturating_sub(PREVIEW_MAX));
+    // a cut can land inside an escape, whose tail would read as text: start at
+    // the next line. A single line longer than the cap keeps the cut.
+    let start = match text[..cut].ends_with('\n') || cut == 0 {
+        true => cut,
+        false => text[cut..].find('\n').map_or(cut, |k| cut + k + 1),
+    };
+    Some(text[start..].to_string())
+}
+
+/// `s` with every OSC sequence (`ESC ]` up to a BEL or `ESC \`) taken out. One
+/// with no end ends at its line's end, so it never eats the next line.
+fn strip_osc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(k) = rest.find("\x1b]") {
+        out.push_str(&rest[..k]);
+        let body = &rest[k + 2..];
+        let end = body
+            .char_indices()
+            .find_map(|(i, c)| match c {
+                '\x07' => Some(i + 1),
+                '\x1b' if body[i + 1..].starts_with('\\') => Some(i + 2),
+                '\n' => Some(i),
+                _ => None,
+            })
+            .unwrap_or(body.len());
+        rest = &body[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Pane text is rarely ASCII, and slicing a byte offset inside a glyph panics.
