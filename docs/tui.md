@@ -502,9 +502,16 @@ ended agent, and the age, which an idle agent does not have. Then five rows:
 
 The rest is the pane's screen: `capture-pane -e`, ANSI kept, never wrapped,
 capped at 64 KB, as many rows as the pane shows. Its last line sits on the last
-row, so a short screen leaves the top empty, not the bottom. A line cut at the
-pane's edge ends in `›` (`>` in ascii); blanks a TUI pads its lines with are not
-a cut. A wide TUI still shows its left part only, marked. A done, idle or
+row, so a short screen leaves the top empty, not the bottom, and a screen taller
+than the pane shows its bottom rows and loses its top. A tab moves to the next
+stop of 8 columns, as in the terminal; any other control character takes no
+cell. OSC sequences (titles, hyperlinks) are dropped before the colours are
+read, as the parser loses the rest of a line after a link that ends in `ESC \`;
+and when the 64 KB cap cuts inside a line, the screen starts at the next one,
+so no escape is cut in half (one line longer than the cap keeps the cut). Both
+apply to the tiles' previews too. A line cut at the pane's edge ends in `›`
+(`>` in ascii), measured per grapheme as it is drawn; blanks a TUI pads its
+lines with are not a cut. A wide TUI still shows its left part only, marked. A done, idle or
 ended agent's screen is dim, as its tile is. A capture that failed says `capture failed` in the error role,
 which is a gone pane; a blank screen is `live · blank`; and before the first
 capture of a newly selected agent, `reading the screen …`.
@@ -1218,7 +1225,10 @@ reason in a warn note.
   and is public, with `board::captures(&[Pane], ok, &Want)`, the worker's
   choice of what to capture. A pane that went, a header, or a board under 96
   columns captures nothing.
-- `board::{SPLIT_W, list_w, pane_rows, captures}` are new. `View` is unchanged:
+- `board::{SPLIT_W, list_w, pane_rows, captures, pick_of, repick, shown,
+  forget}` are new: the last four are the key loop's pick, asked for once per
+  new selection, the screens of other agents forgotten on a new pick.
+- `data::preview` drops OSC sequences and starts a capped capture at a line. `View` is unchanged:
   a `pvs` with no entry for the selection is "not read yet", as in the tiles.
 - Goldens: new `board-preview-{100,180}`, from the 100/180 mockups. Moved, the
   right pane now beside the list: `board-list-{100,180}`,
