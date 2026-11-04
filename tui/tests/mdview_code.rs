@@ -44,8 +44,11 @@ fn key(s: &mut Screen, c: KeyCode) -> Out {
     s.key(KeyEvent::new(c, KeyModifiers::NONE), AREA)
 }
 
+/// Each row as drawn: its gutter, then its cells.
 fn texts(rows: &[Row]) -> Vec<String> {
-    rows.iter().map(Row::text).collect()
+    (0..rows.len())
+        .map(|i| code::gutter(rows, i).unwrap_or_default() + &rows[i].text())
+        .collect()
 }
 
 // ---------------------------------------------------------------- the language
@@ -102,7 +105,8 @@ fn each_source_line_is_one_numbered_row() {
     assert_eq!(texts(&rows)[0], "1 // a comment");
     assert_eq!(texts(&rows)[2], "3     let s = \"# not a heading\";", "a tab to the next stop");
     assert_eq!(texts(&rows)[3], "4     println!(\"*{s}*\");", "no markdown is read");
-    assert!(rows.iter().all(|r| r.lead == 2), "the gutter's bytes");
+    assert!(rows.iter().all(|r| r.lead == 2), "the gutter's columns");
+    assert_eq!(rows[0].text(), "// a comment", "the gutter is no cell");
 }
 
 #[test]
@@ -120,7 +124,7 @@ fn a_long_line_wraps_under_a_blank_gutter() {
     let rows = code::render(&src, None, 12);
     assert_eq!(texts(&rows), ["1 short", "2 xxxxxxxxxx", "  xxxxxxxxxx", "  xxxxxxxxxx"]);
     assert_eq!(rows.iter().map(|r| r.line).collect::<Vec<_>>(), [1, 2, 2, 2]);
-    assert!(rows.iter().all(|r| r.width() <= 12));
+    assert!(rows.iter().all(|r| r.lead + r.width() <= 12));
 }
 
 #[test]
@@ -134,13 +138,12 @@ fn crlf_and_an_empty_file() {
 fn the_lexer_labels_the_cells() {
     let rows = code::render(RUST, Some(Lang::Rust), 60);
     let kinds: Vec<(String, Kind)> = rows[1].cells.iter().map(|(t, i)| (t.clone(), i.kind)).collect();
-    assert_eq!(kinds[0], ("2 ".into(), Kind::Meta), "the gutter");
-    assert!(kinds.contains(&("fn".into(), Kind::Code(Role::Keyword))), "{kinds:?}");
+    assert_eq!(kinds[0], ("fn".into(), Kind::Code(Role::Keyword)), "{kinds:?}");
     let plain = code::render(RUST, None, 60);
     assert!(
         plain
             .iter()
-            .flat_map(|r| &r.cells[1..])
+            .flat_map(|r| &r.cells)
             .all(|(_, i)| *i == Ink::of(Kind::Code(Role::Plain))),
         "an unknown language is plain"
     );
@@ -159,7 +162,7 @@ fn find_skips_the_gutter() {
     key(&mut s, KeyCode::Char('m'));
     key(&mut s, KeyCode::Enter);
     let at: Vec<(usize, usize)> = s.hits.iter().map(|h| (h.row, h.from)).collect();
-    assert_eq!(at, [(2, 4), (2, 5)], "g-a-m-m-a after `3 `");
+    assert_eq!(at, [(2, 2), (2, 3)], "g-a-m-m-a");
 }
 
 /// `e` opens the editor at the top row's source line, a wrapped line's own.

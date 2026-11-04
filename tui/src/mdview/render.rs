@@ -58,22 +58,15 @@ impl Ink {
 pub struct Row {
     pub cells: Vec<(String, Ink)>,
     pub line: usize,
-    /// the bytes of `cells` a gutter takes (a code row's line number): drawn,
-    /// never searched. 0 for markdown.
+    /// the columns a gutter takes before the cells (a code row's line number,
+    /// drawn by `code::gutter`, never in `cells`, so never searched). 0 for
+    /// markdown.
     pub lead: usize,
 }
 
 impl Row {
     pub fn text(&self) -> String {
         self.cells.iter().map(|(t, _)| t.as_str()).collect()
-    }
-
-    /// The text find reads: the gutter's bytes as NULs, which no query holds,
-    /// so a match never lands on a line number and keeps its byte offsets.
-    pub fn body(&self) -> String {
-        let t = self.text();
-        let lead = self.lead.min(t.len());
-        format!("{}{}", "\0".repeat(lead), &t[lead..])
     }
 
     pub fn width(&self) -> usize {

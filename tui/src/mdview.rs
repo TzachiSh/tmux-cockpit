@@ -232,8 +232,8 @@ impl Screen {
             (Ok(s), Mode::Code(lang)) => code::render(s, lang, w),
             (Err(_), _) => vec![],
         };
-        // a code row's line number is drawn, never found
-        self.texts = self.rows.iter().map(Row::body).collect();
+        // a code row's line number is drawn at the frame, never in its text
+        self.texts = self.rows.iter().map(Row::text).collect();
         self.width = w;
         if let Some(l) = keep {
             // the block holding line l is the last to start at or before it
@@ -561,7 +561,11 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
                     .enumerate()
                     .map(|(i, h)| (h.from, h.to, s.cur == Some(from + i)))
                     .collect();
-                line(th, &s.rows[r], &hs)
+                let mut l = line(th, &s.rows[r], &hs);
+                if let Some(g) = code::gutter(&s.rows, r) {
+                    l.spans.insert(0, Span::styled(g, ink_style(th, Ink::of(Kind::Meta))));
+                }
+                l
             })
             .collect(),
     };
