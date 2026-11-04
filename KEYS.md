@@ -72,8 +72,8 @@ Taps on the bar act on release.
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
-A markdown file the picker opens shows in the viewer (`@cockpit_md_view off`
-sends it to the editor): `/` finds, `n` `N` move between matches, `e` opens the
+A markdown file the picker opens shows in the viewer, and so does any file the
+file browser's `↵` picks (`@cockpit_md_view off` sends both to the editor): `/` finds, `n` `N` move between matches, `e` opens the
 editor at the top line, `?` lists the rest. See [docs/tui.md](docs/tui.md#the-markdown-viewer-283).
 
 Plain clicks in a pane, wheel and drag are never touched, and neither is a
