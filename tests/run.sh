@@ -12756,6 +12756,17 @@ is "turning the panel off gives Up back, repeat flag and all" "$(gbline Up)" "$(
 gbload @cockpit_menu_key F5
 gbload @cockpit_menu_key a
 is "a key stock does not bind is unbound again" "" "$(gbt list-keys -T prefix F5 2>/dev/null)"
+# A lookup that cannot run (here a stock server that will not start, as a socket
+# path past the limit did) leaves the key alone: unbinding it would lose stock.
+mkdir "$GBD/bin"
+printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && { echo "error connecting (File name too long)" >&2; exit 1; }; done\nexec "%s" "$@"\n' \
+    "$TMUX_REAL" > "$GBD/bin/tmux"
+chmod +x "$GBD/bin/tmux"
+gbload @cockpit_menu_key Space
+gbt set-environment -g PATH "$GBD/bin:$PATH" >/dev/null 2>&1
+gbload @cockpit_menu_key a
+case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lookup leaves the old key bound, not unbound" ;;
+    *) bad "a failed stock lookup leaves the old key bound, not unbound" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
 gbt kill-server >/dev/null 2>&1
 fi
 

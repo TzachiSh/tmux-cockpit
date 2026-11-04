@@ -115,19 +115,25 @@ fi
 # has none (#258). Stock is read from a throwaway server started with no config on
 # a private socket, so every key works (Space, ?, digits, punctuation, not only the
 # letters a table listed) and a reload cannot mistake an earlier load's binding for
-# stock. The server has no session, so it exits after the one call.
+# stock. The server has no session, so it exits after the one call. A fixed short
+# base, not $TMPDIR: a socket path past about 104 bytes cannot be bound. A lookup
+# that fails (no dir, no server) leaves the key as it is; only tmux's "unknown key",
+# stock has none, unbinds it.
 give_back() {
-    local k=$1 d r="" note="" cmd=""
+    local k=$1 d out err="" r note cmd
     # tmux reads a lone ; argument as a command separator.
     [ "$k" = ';' ] && k='\;'
-    if d=$(mktemp -d 2>/dev/null); then
-        IFS=$'\037' read -r r note cmd < <(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
-            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>/dev/null)
-        rm -rf -- "$d"
+    d=$(mktemp -d /tmp/cockpit-gb.XXXXXX 2>/dev/null) || return 0
+    if out=$(env -u TMUX tmux -S "$d/s" -f /dev/null start-server \; \
+            list-keys -T prefix -F "#{key_repeat}"$'\037'"#{key_note}"$'\037'"#{key_command}" -- "$k" 2>"$d/err"); then
+        IFS=$'\037' read -r r note cmd <<< "$out"
+        [ "$r" = 1 ] && r=-r || r=""
+        tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
+    else
+        read -r err < "$d/err"
+        case "$err" in "unknown key: "*) tmux unbind-key -T prefix "$k" ;; esac
     fi
-    [ "$r" = 1 ] && r=-r || r=""
-    if [ -n "$cmd" ]; then tmux bind-key ${r:+"$r"} -N "$note" -T prefix "$k" "$cmd"
-    else tmux unbind-key -T prefix "$k"; fi
+    rm -rf -- "$d"
 }
 
 # The menu's key, settled before any key is bound this load, so giving an old one
