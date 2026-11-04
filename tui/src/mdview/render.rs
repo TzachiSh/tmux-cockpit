@@ -58,11 +58,22 @@ impl Ink {
 pub struct Row {
     pub cells: Vec<(String, Ink)>,
     pub line: usize,
+    /// the bytes of `cells` a gutter takes (a code row's line number): drawn,
+    /// never searched. 0 for markdown.
+    pub lead: usize,
 }
 
 impl Row {
     pub fn text(&self) -> String {
         self.cells.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    /// The text find reads: the gutter's bytes as NULs, which no query holds,
+    /// so a match never lands on a line number and keeps its byte offsets.
+    pub fn body(&self) -> String {
+        let t = self.text();
+        let lead = self.lead.min(t.len());
+        format!("{}{}", "\0".repeat(lead), &t[lead..])
     }
 
     pub fn width(&self) -> usize {
@@ -209,7 +220,7 @@ fn wrap(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
 }
 
 /// Rows `w` wide cut between graphemes, every space kept: a code line.
-fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
+pub(super) fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
     let w = w.max(2);
     let mut rows = vec![Cells::new()];
     let mut rw = 0;
@@ -229,7 +240,7 @@ fn hard(spans: &[(String, Ink)], w: usize) -> Vec<Cells> {
 
 /// A code line's spans with each tab out to the next stop and every other
 /// control character dropped.
-fn untab(spans: &[(Role, &str)]) -> Cells {
+pub(super) fn untab(spans: &[(Role, &str)]) -> Cells {
     let mut out = Cells::new();
     let mut col = 0;
     for (r, t) in spans {
@@ -376,7 +387,7 @@ impl Build {
                 }
                 cells.pop();
             }
-            self.out.push(Row { cells, line });
+            self.out.push(Row { cells, line, lead: 0 });
         }
     }
 
@@ -389,7 +400,7 @@ impl Build {
         for (i, r) in rows.into_iter().enumerate() {
             let mut cells = self.prefix(i == 0);
             cells.extend(r);
-            self.out.push(Row { cells, line });
+            self.out.push(Row { cells, line, lead: 0 });
         }
     }
 
