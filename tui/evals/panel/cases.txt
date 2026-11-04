@@ -1,7 +1,7 @@
 # The write prompt's evaluation cases (#410), read by tui/examples/panel_eval.rs.
 #
 # === <id>, then:
-#   kind:    bug, feature, investigate, plan, refactor, review, message, command, ops, hint, format
+#   kind:    bug, feature, investigate, plan, refactor, review, research, message, command, ops, hint, format
 #   window:  name · cmd · path, as the panel captures them
 #   out:     the output type picked in the panel (default auto)
 #   expect:  ask    - the right first move is a question
@@ -11,6 +11,10 @@
 #   must:    for write or either, the reply carries every one of these
 #   must_not: the reply, a question included, carries none of these
 #   holdout: yes for a case written after the prompt it is run on (default no)
+# Words match whole and in any case ("plan" is not in "explanation"); "a|b" is
+# any of them. A must_not cannot tell "no subagent" from "a subagent".
+# A key or a section given twice is an error. A screen cannot hold a line that
+# starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
 # then "--- screen" (optional) and "--- request".
 #
@@ -49,7 +53,7 @@ merge the login branch into main
 kind: ops
 window: bash · bash · /home/u/projects/api
 expect: ask
-ask_any: delete; files; code; statements; verbose; level; noise
+ask_any: delete; remove; compress; rotate; empty; code; statements; verbose; level
 note: two readings: delete log files, or log less from the code; one deletes data
 --- screen
 $ ls logs
@@ -61,7 +65,7 @@ clean up the logs
 kind: feature
 window: claude · claude · /home/u/projects/prices
 expect: either
-ask_any: lru; skip; memory; both; cache
+ask_any: lru; skip; batch|batching; combine; both
 must: LRU; batch
 note: "2" and "3" read as contradicting (3 says skip caching) or as combinable; asking or a combined prompt both serve
 --- screen
@@ -77,7 +81,7 @@ go with 2 and 3
 kind: bug
 window: bash · bash · /home/u/projects/reports
 expect: ask
-ask_any: expected; should; correct; format; timezone; wrong; instead; supposed
+ask_any: expected; format; timezone; time zone; one day; off by; instead; supposed to; correct
 note: bug with no expected behaviour: only the owner knows what is wrong with these dates
 --- screen
 $ python report.py --month 10
@@ -91,7 +95,7 @@ dates in the report are wrong
 kind: bug
 window: bash · bash · /home/u/projects/billing
 expect: ask
-ask_any: example; which; expected; customer; should; how much; amount
+ask_any: example; expected; customer|customers; how much; amount; by how
 note: no symptom detail and nothing on screen: which customers, expected vs actual
 --- screen
 (empty)
@@ -102,7 +106,7 @@ invoice totals are off for some customers
 kind: message
 window: bash · bash · /home/u
 expect: either
-ask_any: date; when; until; how long; new
+ask_any: date; how long; until
 must: Dana; slip
 note: the new date is the owner's to give, but they may not have one: asking or "date to follow" both serve
 --- request
@@ -112,7 +116,7 @@ write to dana that the release slips
 kind: command
 window: bash · bash · /home/u
 expect: ask
-ask_any: exited; stopped; all; running; which; days; old
+ask_any: exited; stopped; cron-old; migrate; worker; weeks
 note: destructive and "old" has several readings on screen
 --- screen
 $ docker ps -a --format '{{.Names}}\t{{.Status}}'
@@ -129,7 +133,7 @@ remove the old containers
 kind: ops
 window: bash · bash · /home/u
 expect: ask
-ask_any: address; ip; hostname; host; user
+ask_any: address; ip; hostname; host name
 note: the address of the new box is not anywhere in the input
 --- request
 add an ssh config entry for the new build box
@@ -138,7 +142,7 @@ add an ssh config entry for the new build box
 kind: ops
 window: bash · bash · /home/u/projects/web
 expect: ask
-ask_any: staging; prod
+ask_any: staging; prod; production
 note: two deploy targets, and production is hard to undo
 --- screen
 $ make help
@@ -152,7 +156,7 @@ deploy it
 kind: ops
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: commit; all; last; which; three; 3
+ask_any: last commit; last one; all three; all 3; a1b2c3d; d4e5f6a; 789abcd; revert; drop; reset
 note: "that" can be the last commit or all three
 --- screen
 ● Committed a1b2c3d "parse: accept tabs"
@@ -166,7 +170,7 @@ undo that
 kind: feature
 window: bash · bash · /home/u/projects/web
 expect: either
-ask_any: toggle; system; setting; follow; switch; preference; automatic
+ask_any: toggle; system; os; follow; switch; automatic
 must: plan
 note: a product choice the owner makes; asking now or a plan-first prompt that lets them choose both serve
 --- request
@@ -332,7 +336,7 @@ plan how to split src/app.rs into smaller modules, just the plan
 kind: investigate
 window: ssh · ssh · /home/u
 expect: write
-must: Address already in use
+must: Address already in use|already taken|port 80
 note: the error on screen settles what to look at
 --- screen
 $ sudo systemctl status nginx
@@ -359,7 +363,7 @@ kill whatever is on port 3000
 kind: investigate
 window: claude · claude · /home/u/projects/platform
 expect: write
-must: subagent; auth; queue; mailer
+must: subagent|subagents; auth; queue; mailer
 note: three independent failures: parallel subagents fit (best practices: parallel, isolated, independent work)
 --- screen
 ● All three services fail on startup after the upgrade:
@@ -374,7 +378,7 @@ kind: investigate
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: session
-must_not: subagent; plan mode; ultrathink
+must_not: subagent|subagents; plan mode; ultrathink
 note: a one-file lookup: a direct search, no subagent, no plan step
 --- request
 where is the session state parsed? just tell me the file and function
@@ -384,7 +388,7 @@ kind: bug
 window: claude · claude · /home/u/projects/web
 expect: write
 must: Recieve; Receive
-must_not: subagent; plan first; a plan; skill
+must_not: subagent|subagents; plan; skill|skills
 note: a trivial edit: nothing to delegate
 --- screen
 ● The button label in src/Checkout.tsx reads "Recieve order".
@@ -395,7 +399,7 @@ fix the typo
 kind: research
 window: bash · bash · /home/u/projects/engine
 expect: write
-must: ratatui; source
+must: ratatui; source|sources|cite|changelog|release notes
 note: a current fact the model cannot know: web search with sources (prompt guide: say when uncertain)
 --- request
 is there a newer ratatui release than 0.30.2 and does it fix the crossterm input wedge? check before we bump
@@ -422,8 +426,8 @@ move the whole config loader from yaml to toml, it touches a lot of files
 kind: review
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: diff
-must_not: subagent
+must: diff|uncommitted|staged
+must_not: subagent|subagents
 note: review of uncommitted work: read the diff, report, no edits
 --- request
 review my uncommitted changes before i commit, just report problems
@@ -434,7 +438,7 @@ review my uncommitted changes before i commit, just report problems
 kind: bug
 window: bash · bash · /home/u/projects/docs-site
 expect: ask
-ask_any: expected; should; wrong; missing; which; instead
+ask_any: expected; missing; instead; supposed to; should appear; should show; relevant; order
 holdout: yes
 note: bug with no expected behaviour; the results look fine to anyone but the owner
 --- screen
@@ -449,7 +453,7 @@ the search results are wrong
 kind: investigate
 window: claude · claude · /home/u/projects/engine
 expect: write
-must: unsafe; subagent
+must: unsafe; subagent|subagents
 holdout: yes
 note: four independent crates: one subagent each fits
 --- screen
@@ -461,7 +465,7 @@ check each crate for unsafe code and report what you find, dont change anything
 kind: research
 window: bash · bash · /home/u/projects/api
 expect: write
-must: node; source
+must: node; source|sources|cite|nodejs.org
 holdout: yes
 note: a current fact: web search with sources
 --- request
@@ -472,7 +476,7 @@ kind: refactor
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: 0.5.0
-must_not: subagent; skill
+must_not: subagent|subagents; skill|skills
 holdout: yes
 note: a one-line edit: nothing to delegate
 --- request
@@ -492,7 +496,7 @@ run /code-review on my branch and fix what it finds
 kind: ops
 window: bash · bash · /home/u/projects/web
 expect: either
-ask_any: host; address; server; which; where
+ask_any: host; hostname; address; ip; path
 must: staging
 holdout: yes
 note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve

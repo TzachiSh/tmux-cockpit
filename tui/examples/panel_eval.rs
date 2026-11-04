@@ -17,12 +17,12 @@ use cockpit_tui::panel::parse::{self, Reply};
 use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Request};
 use cockpit_tui::panel::route::route;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// The panel's write budget (`ROUNDS_WRITE`): the first call sees all of it.
+/// A copy of the panel's private `ROUNDS_WRITE` (app.rs): the first call sees
+/// all of it. Change both together.
 const QUESTIONS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,9 +115,14 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             request: String::new(),
         };
         let mut expect = None;
+        let mut seen: Vec<String> = vec![];
         for line in head.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
             let (k, v) = line.split_once(':').ok_or_else(|| err(&format!("not key: value: {line}")))?;
             let v = v.trim();
+            if seen.iter().any(|s| s == k.trim()) {
+                return Err(err(&format!("{} given twice", k.trim())));
+            }
+            seen.push(k.trim().into());
             match k.trim() {
                 "kind" => c.kind = v.into(),
                 "window" => {
@@ -151,12 +156,33 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             }
         }
         c.expect = expect.ok_or_else(|| err("no expect"))?;
-        for body in bodies.split("\n--- ").filter(|b| !b.is_empty()) {
+        let parts: Vec<&str> = bodies.split("\n--- ").filter(|b| !b.is_empty()).collect();
+        for (i, body) in parts.iter().enumerate() {
             let (name, text) = body.split_once('\n').unwrap_or((body, ""));
-            let text = text.trim_end_matches('\n').to_string();
+            // The comments that head the next case trail the last body: they are not its text.
+            let mut lines: Vec<&str> = text.lines().collect();
+            if i + 1 == parts.len() {
+                while lines.last().is_some_and(|l| l.trim().is_empty() || l.starts_with('#')) {
+                    lines.pop();
+                }
+            }
+            let text = lines.join("\n");
+            let dup = |set: bool| {
+                if set {
+                    Err(err(&format!("{} given twice", name.trim())))
+                } else {
+                    Ok(())
+                }
+            };
             match name.trim() {
-                "screen" => c.screen = text,
-                "request" => c.request = text.trim().into(),
+                "screen" => {
+                    dup(!c.screen.is_empty())?;
+                    c.screen = text
+                }
+                "request" => {
+                    dup(!c.request.is_empty())?;
+                    c.request = text.trim().into()
+                }
                 x => return Err(err(&format!("unknown section {x}"))),
             }
         }
@@ -183,8 +209,46 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
     Ok(cases)
 }
 
+/// `needle` as a whole word, any case: `plan` is not in "explanation" nor `36`
+/// in "360". `a|b` is any of them. An end that is not a letter or digit (`--json`,
+/// `/code-review`) needs no boundary there.
 fn has(hay: &str, needle: &str) -> bool {
-    hay.to_lowercase().contains(&needle.to_lowercase())
+    let hay = hay.to_lowercase();
+    needle
+        .split('|')
+        .map(|n| n.trim().to_lowercase())
+        .filter(|n| !n.is_empty())
+        .any(|n| {
+            let word = |c: Option<char>| c.is_some_and(char::is_alphanumeric);
+            hay.match_indices(n.as_str()).any(|(i, m)| {
+                let (first, last) = (m.chars().next(), m.chars().last());
+                (!word(first) || !word(hay[..i].chars().last())) && (!word(last) || !word(hay[i + m.len()..].chars().next()))
+            })
+        })
+}
+
+/// What the panel shows for a reply, the text a `must` is looked for in; `None`
+/// for a reply the panel refuses (a file edit) or that was cut off.
+fn shown(raw: &str, out: OutType) -> Option<String> {
+    let p = parse::write(raw, out);
+    if p.cut_off.is_some() {
+        return None;
+    }
+    Some(match p.reply {
+        Reply::Question { text, options } => {
+            let o: Vec<String> = options.into_iter().map(|o| o.label).collect();
+            format!("{text}\n{}", o.join("\n"))
+        }
+        Reply::Prompt(t) | Reply::Text(t) | Reply::Hint(t) | Reply::Untagged(t) => t,
+        Reply::Format { body, .. } => body,
+        Reply::Steps { steps, .. } => steps
+            .iter()
+            .map(|s| format!("{}\n{}", s.note, s.cmd))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Reply::Answer { text, ready } => format!("{text}\n{}", ready.unwrap_or_default()),
+        Reply::Unsupported(_) => return None,
+    })
 }
 
 #[derive(Debug, Default, PartialEq)]
@@ -197,12 +261,18 @@ struct Grade {
     missing: Vec<String>,
     /// The `must_not` words the reply has.
     forbidden: Vec<String>,
+    /// A reply the panel refuses or that was cut off: it fails every case.
+    refused: bool,
     pass: bool,
 }
 
 fn grade(c: &Case, raw: &str) -> Grade {
     let reply = parse::write(raw, c.out).reply;
     let mut g = Grade::default();
+    let Some(text) = shown(raw, c.out) else {
+        g.refused = true;
+        return g;
+    };
     if let Reply::Question { text, options } = &reply {
         g.asked = true;
         let opts: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
@@ -214,9 +284,9 @@ fn grade(c: &Case, raw: &str) -> Grade {
         g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| has(&g.question, w));
     }
     if !g.asked {
-        g.missing = c.must.iter().filter(|m| !has(raw, m)).cloned().collect();
+        g.missing = c.must.iter().filter(|m| !has(&text, m)).cloned().collect();
     }
-    g.forbidden = c.must_not.iter().filter(|m| has(raw, m)).cloned().collect();
+    g.forbidden = c.must_not.iter().filter(|m| has(&text, m)).cloned().collect();
     let asked_well = g.asked && g.on_target;
     let wrote_well = !g.asked && g.missing.is_empty();
     g.pass = g.forbidden.is_empty()
@@ -320,9 +390,8 @@ fn main() {
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
     todo.reverse();
     let mut live: Vec<Job> = vec![];
-    // (case, ms, grade) for answered calls; failures are counted apart.
-    let mut done: Vec<(usize, u128, Grade)> = vec![];
-    let mut failed = 0usize;
+    // (case, ms, grade); no grade for a call that failed (a timeout, an API error).
+    let mut done: Vec<(usize, u128, Option<Grade>)> = vec![];
     while !todo.is_empty() || !live.is_empty() {
         while live.len() < o.jobs
             && let Some((ci, run)) = todo.pop()
@@ -342,9 +411,7 @@ fn main() {
                 out: c.out,
                 window: window_kind(&c.name, &c.cmd),
             });
-            let mut h = DefaultHasher::new();
-            system.hash(&mut h);
-            let h = h.finish();
+            let h = fnv(&system);
             if !hashes.contains(&h) {
                 hashes.push(h);
             }
@@ -381,6 +448,7 @@ fn main() {
             };
             let what = match (&err, &g) {
                 (Some(e), _) => e.clone(),
+                (_, Some(g)) if g.refused => "refused by the panel (a file edit) or cut off".into(),
                 (_, Some(g)) if !g.forbidden.is_empty() => format!("has: {}", g.forbidden.join("; ")),
                 (_, Some(g)) if g.asked => format!("asked: {}", g.question),
                 (_, Some(g)) if !g.missing.is_empty() => format!("wrote, missing: {}", g.missing.join("; ")),
@@ -395,21 +463,96 @@ fn main() {
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
                     "missing": g.as_ref().map(|g| g.missing.clone()),
-                    "forbidden": g.as_ref().map(|g| g.forbidden.clone()), "holdout": c.holdout, "reply": raw,
+                    "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
+                    "refused": g.as_ref().map(|g| g.refused), "holdout": c.holdout, "reply": raw,
                 });
                 let _ = writeln!(f, "{row}");
             }
-            match g {
-                Some(g) => done.push((j.case, ms, g)),
-                None => failed += 1,
-            }
+            done.push((j.case, ms, g));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    summary(&cases, &done, failed, &hashes);
+    summary(&cases, &done, &hashes);
 }
 
-fn pct(n: usize, d: usize) -> String {
+/// Where the write prompt came from: the panel's override file, or the binary.
+fn prompt_source() -> String {
+    let base = match std::env::var("XDG_CONFIG_HOME") {
+        Ok(v) if v.starts_with('/') => PathBuf::from(v),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
+    };
+    let p = base.join("tmux-cockpit/prompts/write.txt");
+    if p.exists() { p.display().to_string() } else { "shipped".into() }
+}
+
+/// FNV-1a: stable across Rust releases, unlike DefaultHasher, so hashes from
+/// two toolchains compare.
+fn fnv(s: &str) -> u64 {
+    s.bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// `n` of `d`, and what a summary line counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Of(usize, usize);
+
+#[derive(Debug, Default, PartialEq)]
+struct Tally {
+    passed: Of,
+    holdout: Of,
+    either_asked: Of,
+    must_not_hit: Of,
+    asked_when_due: Of,
+    on_target: Of,
+    false_asks: Of,
+    facts: Of,
+    refused: usize,
+    errors: usize,
+    /// Per case: passed, graded, failed calls.
+    per_case: Vec<(usize, usize, usize)>,
+}
+
+/// Graded runs only, but for `errors` and the per-case failed calls: a call
+/// that never answered says nothing about the prompt.
+fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
+    let graded: Vec<(&Case, &Grade)> = done.iter().filter_map(|(c, _, g)| g.as_ref().map(|g| (&cases[*c], g))).collect();
+    let of = |f: &dyn Fn(&Case, &Grade) -> bool, keep: &dyn Fn(&Case, &Grade) -> bool| {
+        let pick: Vec<_> = graded.iter().filter(|(c, g)| keep(c, g)).collect();
+        Of(pick.iter().filter(|(c, g)| f(c, g)).count(), pick.len())
+    };
+    let all = |_: &Case, _: &Grade| true;
+    let pass = |_: &Case, g: &Grade| g.pass;
+    let asked = |_: &Case, g: &Grade| g.asked;
+    let is = |e: Expect| move |c: &Case, _: &Grade| c.expect == e;
+    let wrote: Vec<_> = graded
+        .iter()
+        .filter(|(c, g)| c.expect == Expect::Write && !g.asked && !g.refused)
+        .collect();
+    let need: usize = wrote.iter().map(|(c, _)| c.must.len()).sum();
+    let lack: usize = wrote.iter().map(|(_, g)| g.missing.len()).sum();
+    Tally {
+        passed: of(&pass, &all),
+        holdout: of(&pass, &|c, _| c.holdout),
+        either_asked: of(&asked, &is(Expect::Either)),
+        must_not_hit: of(&|_, g| !g.forbidden.is_empty(), &|c, _| !c.must_not.is_empty()),
+        asked_when_due: of(&asked, &is(Expect::Ask)),
+        on_target: of(&|_, g| g.asked && g.on_target, &is(Expect::Ask)),
+        false_asks: of(&asked, &is(Expect::Write)),
+        facts: Of(need - lack, need),
+        refused: graded.iter().filter(|(_, g)| g.refused).count(),
+        errors: done.iter().filter(|(_, _, g)| g.is_none()).count(),
+        per_case: (0..cases.len())
+            .map(|i| {
+                let mine: Vec<_> = done.iter().filter(|(c, _, _)| *c == i).collect();
+                let ok = mine.iter().filter(|(_, _, g)| g.as_ref().is_some_and(|g| g.pass)).count();
+                let err = mine.iter().filter(|(_, _, g)| g.is_none()).count();
+                (ok, mine.len() - err, err)
+            })
+            .collect(),
+    }
+}
+
+fn pct(Of(n, d): Of) -> String {
     if d == 0 {
         "-".into()
     } else {
@@ -417,55 +560,46 @@ fn pct(n: usize, d: usize) -> String {
     }
 }
 
-fn summary(cases: &[Case], done: &[(usize, u128, Grade)], failed: usize, hashes: &[u64]) {
-    let of = |e: Expect| done.iter().filter(move |(c, _, _)| cases[*c].expect == e);
-    let ask: Vec<_> = of(Expect::Ask).collect();
-    let write: Vec<_> = of(Expect::Write).collect();
-    let asked = ask.iter().filter(|(_, _, g)| g.asked).count();
-    let target = ask.iter().filter(|(_, _, g)| g.asked && g.on_target).count();
-    let false_ask = write.iter().filter(|(_, _, g)| g.asked).count();
-    let wrote: Vec<_> = write.iter().filter(|(_, _, g)| !g.asked).collect();
-    let facts: usize = wrote.iter().map(|(c, _, _)| cases[*c].must.len()).sum();
-    let lacking: usize = wrote.iter().map(|(_, _, g)| g.missing.len()).sum();
-    let mut ms: Vec<u128> = done.iter().map(|(_, m, _)| *m).collect();
-    ms.sort();
-    let pass = done.iter().filter(|(_, _, g)| g.pass).count();
-    let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
+fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]) {
+    let t = tally(cases, done);
     println!();
     // Per case, over the runs: a flaky case shows as 2/3, not as noise in a total.
     println!("{:<24} {:<6} pass", "case", "want");
-    for (i, c) in cases.iter().enumerate() {
-        let mine: Vec<_> = done.iter().filter(|(ci, _, _)| *ci == i).collect();
-        let p = mine.iter().filter(|(_, _, g)| g.pass).count();
+    for (c, (ok, n, err)) in cases.iter().zip(&t.per_case) {
         let tag = if c.holdout { "  holdout" } else { "" };
-        println!("{:<24} {:<6} {p}/{}{tag}", c.id, c.expect.as_str(), mine.len());
+        let err = if *err > 0 {
+            format!("  {err} failed call(s)")
+        } else {
+            String::new()
+        };
+        println!("{:<24} {:<6} {ok}/{n}{tag}{err}", c.id, c.expect.as_str());
     }
+    let hs: Vec<String> = hashes.iter().map(|h| format!("{h:016x}")).collect();
     println!();
-    println!("system prompt   {}", hs.join(" "));
-    println!("passed          {}", pct(pass, done.len()));
-    let held: Vec<_> = done.iter().filter(|(c, _, _)| cases[*c].holdout).collect();
-    if !held.is_empty() {
-        let hp = held.iter().filter(|(_, _, g)| g.pass).count();
-        println!("  holdout       {}", pct(hp, held.len()));
+    println!("system prompt   {} ({})", hs.join(" "), prompt_source());
+    println!("passed          {}", pct(t.passed));
+    if t.holdout.1 > 0 {
+        println!("  holdout       {}", pct(t.holdout));
     }
-    let either: Vec<_> = of(Expect::Either).collect();
-    if !either.is_empty() {
-        let ea = either.iter().filter(|(_, _, g)| g.asked).count();
-        println!("either: asked   {}", pct(ea, either.len()));
+    if t.either_asked.1 > 0 {
+        println!("either: asked   {}", pct(t.either_asked));
     }
-    let nots: usize = done.iter().filter(|(_, _, g)| !g.forbidden.is_empty()).count();
-    let with_not = done.iter().filter(|(c, _, _)| !cases[*c].must_not.is_empty()).count();
-    println!("must_not hit    {}", pct(nots, with_not));
-    println!("asked when due  {}", pct(asked, ask.len()));
-    println!("  on target     {}", pct(target, ask.len()));
-    println!("false asks      {}", pct(false_ask, write.len()));
-    println!("facts present   {}", pct(facts - lacking, facts));
+    println!("must_not hit    {}", pct(t.must_not_hit));
+    println!("asked when due  {}", pct(t.asked_when_due));
+    println!("  on target     {}", pct(t.on_target));
+    println!("false asks      {}", pct(t.false_asks));
+    println!("facts present   {}", pct(t.facts));
+    if t.refused > 0 {
+        println!("refused/cut off {}", t.refused);
+    }
+    let mut ms: Vec<u128> = done.iter().filter(|(_, _, g)| g.is_some()).map(|(_, m, _)| *m).collect();
+    ms.sort();
     if !ms.is_empty() {
         let mean = ms.iter().sum::<u128>() / ms.len() as u128;
         println!("latency ms      mean {mean}  p50 {}  max {}", ms[ms.len() / 2], ms[ms.len() - 1]);
     }
-    if failed > 0 {
-        println!("failed calls    {failed}");
+    if t.errors > 0 {
+        println!("failed calls    {}", t.errors);
     }
 }
 
@@ -543,11 +677,98 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_after_the_last_body_is_not_part_of_it() {
+        let two = format!("{ONE}\n# next section\n\n{}", ONE.replace("=== crash", "=== crash2"));
+        let cs = parse_cases(&two).unwrap();
+        assert_eq!(cs[0].request, "fix this");
+        let screen_last = "=== s\nkind: bug\nwindow: a · b · c\nexpect: write\n--- request\nr\n--- screen\n$ ls\n# a note\n";
+        assert_eq!(parse_cases(screen_last).unwrap()[0].screen, "$ ls");
+        let twice = ONE.replace("kind: bug", "kind: bug\nkind: plan");
+        assert!(parse_cases(&twice).unwrap_err().contains("kind given twice"));
+    }
+
+    #[test]
+    fn words_match_whole_and_any_of() {
+        assert!(!has("Before editing, write an explanation", "plan"));
+        assert!(has("Make a plan first.", "plan"));
+        assert!(!has("the answer is 360", "36"));
+        assert!(has("it is 36.", "36"));
+        assert!(!has("a different file", "diff"));
+        assert!(!has("install it", "all"));
+        assert!(has("cite sources", "source|sources"));
+        assert!(has("add --json to show", "--json"));
+        assert!(has("run /code-review now", "/code-review"));
+    }
+
+    #[test]
+    fn the_grade_reads_what_the_panel_shows() {
+        let c = parse_cases(ONE).unwrap().remove(0);
+        let edit = grade(&c, "<edit path=\"p\">net-proxy line 88</edit>");
+        assert!(edit.refused && !edit.pass, "{edit:?}");
+        let outside = grade(&c, "net-proxy, line 88.\n<prompt>Fix it.</prompt>");
+        assert!(!outside.pass, "{outside:?}");
+        let mut q = c.clone();
+        q.expect = Expect::Ask;
+        q.must.clear();
+        q.must_not = vec!["subagent".into()];
+        let g = grade(&q, "<question>Use a subagent?</question>");
+        assert!(g.asked && !g.pass && g.forbidden == ["subagent"], "{g:?}");
+    }
+
+    #[test]
+    fn the_tally_counts_per_kind_and_keeps_errors_apart() {
+        let mk = |id: &str, e: Expect| {
+            let mut c = parse_cases(ONE).unwrap().remove(0);
+            c.id = id.into();
+            c.expect = e;
+            c
+        };
+        let cases = vec![mk("a", Expect::Ask), mk("w", Expect::Write)];
+        let asked = Grade {
+            asked: true,
+            on_target: true,
+            pass: true,
+            ..Grade::default()
+        };
+        let wrote = Grade {
+            pass: true,
+            ..Grade::default()
+        };
+        let missed = Grade {
+            missing: vec!["line 88".into()],
+            ..Grade::default()
+        };
+        let done = vec![
+            (0, 1, Some(asked)),
+            (0, 1, None),
+            (1, 1, Some(wrote)),
+            (1, 1, Some(missed)),
+            (
+                1,
+                1,
+                Some(Grade {
+                    asked: true,
+                    ..Grade::default()
+                }),
+            ),
+        ];
+        let t = tally(&cases, &done);
+        assert_eq!(t.passed, Of(2, 4));
+        assert_eq!(t.asked_when_due, Of(1, 1));
+        assert_eq!(t.false_asks, Of(1, 3));
+        assert_eq!(t.facts, Of(3, 4));
+        assert_eq!(t.errors, 1);
+        assert_eq!(t.per_case, [(1, 1, 1), (1, 3, 0)]);
+    }
+
+    #[test]
     fn the_shipped_cases_are_valid() {
         let p = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt");
         let cases = parse_cases(&std::fs::read_to_string(p).unwrap()).unwrap();
         assert!(cases.len() >= 25, "{}", cases.len());
         assert!(cases.iter().any(|c| c.expect == Expect::Ask));
         assert!(cases.iter().any(|c| c.expect == Expect::Write));
+        let leaked: Vec<&str> = cases.iter().filter(|c| c.request.contains("\n#")).map(|c| c.id.as_str()).collect();
+        assert!(leaked.is_empty(), "a comment in a request: {leaked:?}");
     }
 }
