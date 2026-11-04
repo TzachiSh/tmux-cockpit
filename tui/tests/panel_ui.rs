@@ -216,6 +216,20 @@ fn golden_question() {
     goldens("question", &a, 0);
 }
 
+/// The second of a batch of three (#417): its place in the batch and in the budget.
+#[test]
+fn golden_question_batch() {
+    let mut a = app("work", "bash", "$ ls");
+    writing(&mut a, "change the timeout there to 30");
+    a.reply(Ok("<question>Which file?</question><option>~/a</option>\
+                <question>Which value?</question><option recommended=\"true\">30 s</option><option>30 ms</option>\
+                <question>Restart it after?</question>"
+        .into()));
+    key(&mut a, KeyCode::Char('1'));
+    golden("panel-question-batch-40", &frame(&a, 40, 12, 0));
+    golden("panel-question-batch-80", &frame(&a, 80, 20, 0));
+}
+
 #[test]
 fn golden_result_with_the_multi_line_warning() {
     let mut a = app("py", "python3", ">>> ");
@@ -3714,4 +3728,181 @@ fn golden_input_correct() {
     key(&mut a, KeyCode::Tab);
     typ(&mut a, "two files");
     goldens("input-correct", &a, 0);
+}
+
+// ---------------------------------------------------------------- batched questions (#417)
+
+/// One reply carrying the questions `ns`, as the call it answers had gone out.
+fn asked(a: &mut App, ns: &[usize]) {
+    a.reply(Ok(ns.iter().map(|&n| q(n)).collect()));
+    a.pending = false;
+}
+
+fn shows(a: &App) -> (&str, usize) {
+    let r = a.run.as_ref().unwrap();
+    (r.question.as_str(), r.rounds)
+}
+
+/// The conversation the pending call carries, one `role: text` per turn.
+fn carried(a: &App) -> Vec<String> {
+    let r = a.run.as_ref().unwrap();
+    r.turns.iter().map(|t| format!("{:?}: {}", t.role, t.text)).collect()
+}
+
+#[test]
+fn a_batch_shows_the_next_question_with_no_call() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2]);
+    assert_eq!(shows(&a), ("Q1?", 1));
+    ch(&mut a, '1');
+    assert_eq!((a.view.clone(), a.pending), (View::Question { sel: 0, scroll: None }, false));
+    assert_eq!(shows(&a), ("Q2?", 2), "the second question counts against the budget too");
+}
+
+#[test]
+fn the_last_answer_of_a_batch_sends_every_answer_as_turns() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2]);
+    ch(&mut a, '1');
+    ch(&mut a, '2');
+    assert_eq!((a.view.clone(), a.pending), (View::Busy, true));
+    let want = [
+        "Assistant: Q1? Options: a1 | b1",
+        "User: a1",
+        "Assistant: Q2? Options: a2 | b2",
+        "User: b2",
+    ];
+    assert_eq!(carried(&a), want);
+    let (_, prompt, _) = a.request_parts().unwrap();
+    assert!(prompt.ends_with("<questions_left>1</questions_left>"), "{prompt}");
+}
+
+#[test]
+fn a_batch_past_the_budget_shows_only_what_is_left() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1]);
+    ch(&mut a, '1');
+    asked(&mut a, &[2, 3, 4]);
+    assert_eq!(a.run.as_ref().unwrap().batch_at(), Some((1, 2)), "two rounds left: Q4 is dropped");
+    ch(&mut a, '1');
+    assert_eq!(shows(&a), ("Q3?", 3));
+    ch(&mut a, '1');
+    assert_eq!(a.view, View::Busy, "Q4 is over the budget: dropped, so Q3 was the last");
+    let (_, prompt, _) = a.request_parts().unwrap();
+    assert!(prompt.ends_with("<questions_left>0</questions_left>"), "{prompt}");
+}
+
+#[test]
+fn back_in_a_batch_returns_to_the_last_question_and_its_answer_is_asked_again() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2, 3]);
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(shows(&a), ("Q1?", 1));
+    assert_eq!(carried(&a), ["Assistant: Q1? Options: a1 | b1"], "the answer to Q1 is open again");
+    ch(&mut a, '2');
+    assert_eq!((shows(&a), a.pending), (("Q2?", 2), false), "and Q2 follows it again with no call");
+    ch(&mut a, '1');
+    assert_eq!(shows(&a), ("Q3?", 3), "Q3 is still queued after it");
+}
+
+#[test]
+fn back_across_a_call_drops_the_batch_that_call_brought() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1]);
+    ch(&mut a, '1');
+    asked(&mut a, &[2, 3]);
+    key(&mut a, KeyCode::Backspace);
+    assert_eq!(shows(&a), ("Q1?", 1));
+    ch(&mut a, '1');
+    assert_eq!(a.view, View::Busy, "Q2 and Q3 answered another answer to Q1: a new call asks again");
+}
+
+#[test]
+fn a_best_guess_mid_batch_sends_now_and_a_cancel_brings_the_batch_back() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2, 3]);
+    ch(&mut a, '1');
+    ch(&mut a, 'g');
+    assert_eq!(a.view, View::Busy, "the guess goes out at once: Q3 is not shown");
+    let r = a.run.as_ref().unwrap();
+    assert_eq!(r.rounds, r.max);
+    assert!(r.turns.last().unwrap().text.contains("best guess"));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(shows(&a), ("Q2?", 2), "a cancelled guess gives the rounds back");
+    ch(&mut a, '1');
+    assert_eq!((shows(&a), a.view.clone()), (("Q3?", 3), View::Question { sel: 0, scroll: None }));
+}
+
+#[test]
+fn a_reply_after_a_guess_drops_what_was_left_of_the_batch() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2, 3]);
+    ch(&mut a, 'g');
+    a.reply(Ok("<prompt>p</prompt>".into()));
+    assert!(
+        a.run.as_ref().unwrap().batch.is_empty(),
+        "Q2 and Q3 were for the reply that came before"
+    );
+}
+
+#[test]
+fn esc_mid_batch_leaves_to_the_draft() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2]);
+    ch(&mut a, '1');
+    key(&mut a, KeyCode::Esc);
+    assert_eq!((a.view.clone(), a.run.is_none(), a.draft.as_str()), (View::Compose, true, "do it"));
+}
+
+#[test]
+fn a_typed_answer_mid_batch_shows_the_next_question() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2]);
+    ch(&mut a, 'o');
+    typ(&mut a, "mine\n");
+    assert_eq!((shows(&a), a.pending), (("Q2?", 2), false));
+    assert_eq!(carried(&a)[1], "User: mine");
+}
+
+#[test]
+fn the_question_view_counts_its_place_in_the_batch() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2, 3]);
+    assert_eq!(a.run.as_ref().unwrap().batch_at(), Some((1, 3)));
+    ch(&mut a, '1');
+    assert_eq!(a.run.as_ref().unwrap().batch_at(), Some((2, 3)));
+    assert!(frame(&a, 80, 20, 0).contains("question 2 of 3 asked together"));
+    let mut b = app("w", "zsh", "$ ");
+    writing(&mut b, "do it");
+    asked(&mut b, &[1]);
+    assert_eq!(b.run.as_ref().unwrap().batch_at(), None, "one question is no batch");
+}
+
+/// A new question of the batch is a new view for the tap guard: the second
+/// tap of a double tap on Q1's option would otherwise answer Q2.
+#[test]
+fn a_double_tap_on_a_batch_question_answers_only_the_first() {
+    use cockpit_tui::panel::app::TAP_GUARD_MS;
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    asked(&mut a, &[1, 2]);
+    a.frame(1_000);
+    let first = 1_000 + TAP_GUARD_MS;
+    a.tap(Tap::Pick(0), first);
+    a.frame(first + 16);
+    a.tap(Tap::Pick(0), first + 120);
+    assert_eq!((shows(&a), a.pending), (("Q2?", 2), false), "the second tap was meant for Q1");
+    a.tap(Tap::Pick(0), first + 16 + TAP_GUARD_MS);
+    assert_eq!(a.view, View::Busy, "a tap after the guard answers Q2");
 }

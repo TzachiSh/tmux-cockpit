@@ -1009,7 +1009,8 @@ Backspace.
 - **Kept:** the view (Home, Compose, Question, a one-line box, Result, Steps,
   Explain's questions, Answer, Error) with its selection and scroll, the draft
   and its cursor, the output type, the model, and the run: the flow, the
-  turns, the question rounds and their stack, the options, Explain's log, the
+  turns, the question rounds and their stack, the questions of a batch still
+  to show, the options, Explain's log, the
   prompt for the agent, the model the call went to and why. A Confirm is kept
   as the view it was opened from, so a resumed panel never opens on a yes. An
   armed Answer comes back unarmed. The `?` overlay is not kept.
@@ -1066,8 +1067,9 @@ it, created new with `O_NOFOLLOW`, mode 0600) with a 1 MiB cap, and is as
 strict: one body line, the pane must be the one opened on, at most 24 h old
 and not more than a minute in the future, every key present and none unknown,
 every cursor on a character boundary of its text, the model and the type
-known, steps 1 to 64 with the selection among them, and a Question or Answer
-only with the run it is drawn from. Any failure opens a fresh panel with the
+known, steps 1 to 64 with the selection among them, a Question or Answer
+only with the run it is drawn from, a batch no longer than the questions
+left, and one that follows a question a call brought. Any failure opens a fresh panel with the
 reason in a warn note.
 
 ### Contract changes for tablet mode (for #61)

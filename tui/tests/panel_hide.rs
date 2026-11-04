@@ -394,3 +394,49 @@ fn a_correction_box_on_a_fix_run_is_refused() {
     let fix = good.replace(run, "\"flow\":\"fix\",\"draft\":\"fix it\",\"out\":null");
     assert!(refused("fixflow", &fix).contains("not a write"), "{fix}");
 }
+
+// ---------------------------------------------------------------- batched questions (#417)
+
+fn bq(n: usize) -> String {
+    format!("<question>Q{n}?</question><option>a{n}</option><option>b{n}</option>")
+}
+
+/// Q1 of a batch of three answered: Q2 on screen, Q3 queued.
+fn mid_batch() -> App {
+    let mut a = replied("do it", &format!("{}{}{}", bq(1), bq(2), bq(3)));
+    a.pending = false;
+    key(&mut a, KeyCode::Char('1'));
+    assert_eq!(a.run.as_ref().unwrap().question, "Q2?");
+    a
+}
+
+#[test]
+fn a_half_answered_batch_comes_back_and_goes_on_with_no_call() {
+    let mut a = mid_batch();
+    let mut b = round(&mut a, "batch");
+    key(&mut b, KeyCode::Char('2'));
+    let r = b.run.as_ref().unwrap();
+    assert_eq!((r.question.as_str(), r.rounds, b.pending), ("Q3?", 3, false));
+    key(&mut b, KeyCode::Backspace);
+    key(&mut b, KeyCode::Backspace);
+    assert_eq!(b.run.as_ref().unwrap().question, "Q1?", "back still walks the batch");
+}
+
+#[test]
+fn a_batch_over_the_budget_is_refused() {
+    let mut a = mid_batch();
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    let over = good.replace("\"max\":3", "\"max\":2");
+    assert_eq!(refused("over", &over), "more questions queued than the run allows");
+}
+
+#[test]
+fn a_batch_with_no_question_before_it_is_refused() {
+    let mut a = mid_batch();
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    assert_eq!(good.matches("]],false]").count(), 1, "one question came from a call: {good}");
+    let headless = good.replace("]],false]", "]],true]");
+    assert_eq!(refused("headless", &headless), "a batch with no question before it");
+}

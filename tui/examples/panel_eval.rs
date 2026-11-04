@@ -261,7 +261,10 @@ fn shown(raw: &str, out: OutType) -> Option<String> {
 #[derive(Debug, Default, PartialEq)]
 struct Grade {
     asked: bool,
+    /// Every question the reply carries, one ` / ` apart: a batch is on target by any.
     question: String,
+    /// How many questions the reply carries (#417); 0 for one that writes.
+    questions: usize,
     /// For `ask`: the question named one of `ask_any` (true when there is none).
     on_target: bool,
     /// For `write`: the `must` facts the reply lacks.
@@ -274,7 +277,8 @@ struct Grade {
 }
 
 fn grade(c: &Case, raw: &str) -> Grade {
-    let reply = parse::write(raw, c.out).reply;
+    let p = parse::write(raw, c.out);
+    let reply = p.reply;
     let mut g = Grade::default();
     let Some(text) = shown(raw, c.out) else {
         g.refused = true;
@@ -282,12 +286,19 @@ fn grade(c: &Case, raw: &str) -> Grade {
     };
     if let Reply::Question { text, options } = &reply {
         g.asked = true;
-        let opts: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
-        g.question = if opts.is_empty() {
-            text.clone()
-        } else {
-            format!("{text} [{}]", opts.join(" | "))
+        let one = |text: &str, options: &[parse::Opt]| {
+            let opts: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
+            if opts.is_empty() {
+                text.to_string()
+            } else {
+                format!("{text} [{}]", opts.join(" | "))
+            }
         };
+        let all: Vec<String> = std::iter::once(one(text, options))
+            .chain(p.more.iter().map(|(t, o)| one(t, o)))
+            .collect();
+        g.questions = all.len();
+        g.question = all.join(" / ");
         g.on_target = c.ask_any.is_empty() || c.ask_any.iter().any(|w| has(&g.question, w));
     }
     if !g.asked {
@@ -469,6 +480,7 @@ fn main() {
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
+                    "questions": g.as_ref().map(|g| g.questions),
                     "question": g.as_ref().map(|g| g.question.clone()),
                     "missing": g.as_ref().map(|g| g.missing.clone()),
                     "forbidden": g.as_ref().map(|g| g.forbidden.clone()),
@@ -513,6 +525,8 @@ struct Tally {
     asked_when_due: Of,
     on_target: Of,
     false_asks: Of,
+    /// Asks that carried more than one question.
+    batched: Of,
     facts: Of,
     refused: usize,
     errors: usize,
@@ -546,6 +560,7 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
         asked_when_due: of(&asked, &is(Expect::Ask)),
         on_target: of(&|_, g| g.asked && g.on_target, &is(Expect::Ask)),
         false_asks: of(&asked, &is(Expect::Write)),
+        batched: of(&|_, g| g.questions > 1, &asked),
         facts: Of(need - lack, need),
         refused: graded.iter().filter(|(_, g)| g.refused).count(),
         errors: done.iter().filter(|(_, _, g)| g.is_none()).count(),
@@ -596,6 +611,7 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("asked when due  {}", pct(t.asked_when_due));
     println!("  on target     {}", pct(t.on_target));
     println!("false asks      {}", pct(t.false_asks));
+    println!("batched asks    {}", pct(t.batched));
     println!("facts present   {}", pct(t.facts));
     if t.refused > 0 {
         println!("refused/cut off {}", t.refused);
@@ -658,6 +674,17 @@ mod tests {
         assert!(g.pass && g.on_target, "{g:?}");
         c.ask_any = vec!["which file".into()];
         assert!(!grade(&c, q).pass);
+    }
+
+    #[test]
+    fn a_batch_counts_its_questions_and_is_on_target_by_any() {
+        let mut c = parse_cases(ONE).unwrap().remove(0);
+        (c.expect, c.ask_any) = (Expect::Ask, vec!["which line".into()]);
+        c.must.clear();
+        let g = grade(&c, "<question>What now?</question><question>Which line?</question>");
+        assert_eq!((g.questions, g.pass), (2, true), "{g:?}");
+        assert_eq!(grade(&c, "<question>Which line?</question>").questions, 1);
+        assert_eq!(grade(&c, "<prompt>p</prompt>").questions, 0);
     }
 
     #[test]

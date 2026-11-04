@@ -188,7 +188,11 @@ pub struct Run {
     pub turns: Vec<Turn>,
     pub rounds: usize,
     pub max: usize,
-    pub qstack: Vec<(String, Vec<Opt>, Vec<Turn>)>,
+    /// Each question shown: its text, options, the turns up to it, and whether
+    /// it came from a batch with no call before it (#417).
+    pub qstack: Vec<(String, Vec<Opt>, Vec<Turn>, bool)>,
+    /// The rest of the reply's batch, to show one by one before the next call.
+    pub batch: Vec<(String, Vec<Opt>)>,
     pub question: String,
     pub options: Vec<Opt>,
     /// Explain's transcript: `(true, text)` is the user, `false` Claude.
@@ -201,6 +205,15 @@ pub struct Run {
     pub pending_turn: bool,
     /// The rounds before a best guess or a correction, so a cancelled one can be undone.
     pub guessed_from: Option<usize>,
+}
+
+impl Run {
+    /// The question on screen as `(n, of)` in its batch, when the reply asked more than one.
+    pub fn batch_at(&self) -> Option<(usize, usize)> {
+        let n = 1 + self.qstack.iter().rev().take_while(|q| q.3).count();
+        let of = n + self.batch.len();
+        (of > 1).then_some((n, of))
+    }
 }
 
 pub struct App {
@@ -254,8 +267,9 @@ pub struct App {
     pub copy: Option<String>,
     /// Under Termux, whose OSC limit is lower: see [`COPY_TERMUX`].
     pub termux: bool,
-    /// What the last frame showed and when, in the loop's milliseconds, for the tap guard.
-    seen: Option<(std::mem::Discriminant<View>, bool, bool)>,
+    /// What the last frame showed and when, in the loop's milliseconds, for the
+    /// tap guard; the count of questions shown tells one question from the next.
+    seen: Option<(std::mem::Discriminant<View>, bool, bool, usize)>,
     seen_at: u64,
     /// The guard for the first view: longer after a resume.
     first_guard: u64,
@@ -450,7 +464,8 @@ impl App {
     /// frame's starts the tap guard. The selection moving is not a new view.
     pub fn frame(&mut self, now: u64) {
         let armed = matches!(self.view, View::Answer { armed: true, .. });
-        let seen = Some((std::mem::discriminant(&self.view), armed, self.help.is_some()));
+        let asked = self.run.as_ref().map_or(0, |r| r.qstack.len());
+        let seen = Some((std::mem::discriminant(&self.view), armed, self.help.is_some(), asked));
         if seen != self.seen {
             self.guard = if self.seen.is_none() { self.first_guard } else { TAP_GUARD_MS };
             (self.seen, self.seen_at) = (seen, now);
@@ -836,6 +851,7 @@ impl App {
             rounds: 0,
             max,
             qstack: vec![],
+            batch: vec![],
             question: String::new(),
             options: vec![],
             log,
@@ -964,10 +980,13 @@ impl App {
         };
         let (rounds, max) = (r.rounds, r.max);
         let mut cut = None;
+        // a batch left over was asked before this call's answers: they settle it
+        r.batch.clear();
+        let mut more = vec![];
         let reply = match &r.flow {
             Flow::Write { out: want, .. } => {
                 let p = parse::write(&out, *want);
-                cut = p.cut_off;
+                (cut, more) = (p.cut_off, p.more);
                 p.reply
             }
             Flow::Fix { .. } => parse::fix(&out),
@@ -978,7 +997,7 @@ impl App {
             self.say(Level::Warn, format!("the reply looks cut off (no </{t}>): check it, or r retries"));
         }
         match reply {
-            Reply::Question { text, options } if rounds < max => self.ask(text, options),
+            Reply::Question { text, options } if rounds < max => self.ask_batch(text, options, more),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
             // a question is not text to paste: no Result, so no insert or send
             Reply::Question { text, .. } => self.write_now(text, carried),
@@ -1085,7 +1104,17 @@ impl App {
         };
     }
 
-    fn ask(&mut self, text: String, options: Vec<Opt>) {
+    /// The first question of a reply, with the rest queued up to the budget.
+    fn ask_batch(&mut self, text: String, options: Vec<Opt>, mut more: Vec<(String, Vec<Opt>)>) {
+        if let Some(r) = self.run.as_mut() {
+            more.truncate(r.max.saturating_sub(r.rounds + 1));
+            r.batch = more;
+        }
+        self.ask(text, options, false);
+    }
+
+    /// `local`: the next of a batch, shown with no call in between.
+    fn ask(&mut self, text: String, options: Vec<Opt>, local: bool) {
         let Some(r) = self.run.as_mut() else { return };
         r.rounds += 1;
         let listed: Vec<&str> = options.iter().map(|o| o.label.as_str()).collect();
@@ -1098,7 +1127,7 @@ impl App {
             role: Role::Assistant,
             text: turn,
         });
-        r.qstack.push((text.clone(), options.clone(), r.turns.clone()));
+        r.qstack.push((text.clone(), options.clone(), r.turns.clone(), local));
         r.question = text;
         r.options = options;
         self.view = View::Question { sel: 0, scroll: None };
@@ -1113,6 +1142,11 @@ impl App {
             role: Role::User,
             text: answer,
         });
+        // a best guess spends the budget: it answers the rest of the batch too
+        if r.rounds < r.max && !r.batch.is_empty() {
+            let (q, o) = r.batch.remove(0);
+            return self.ask(q, o, true);
+        }
         r.pending_turn = true;
         self.busy(View::Question { sel: 0, scroll: None });
     }
@@ -1210,9 +1244,14 @@ impl App {
     /// The previous round with its answers, or out of the flow.
     fn back(&mut self) {
         let Some(r) = self.run.as_mut() else { return self.leave() };
-        r.qstack.pop();
+        // a question of the batch goes back in the queue; one a call brought,
+        // with the batch it came in, was for an answer about to change
+        match r.qstack.pop() {
+            Some((q, opts, _, true)) => r.batch.insert(0, (q, opts)),
+            _ => r.batch.clear(),
+        }
         match r.qstack.last().cloned() {
-            Some((q, opts, turns)) => {
+            Some((q, opts, turns, _)) => {
                 r.question = q;
                 r.options = opts;
                 r.turns = turns;

@@ -1,6 +1,6 @@
 //! Reply parsing: one literal reply per behaviour, pure functions only.
 use cockpit_tui::panel::envelope::OutType;
-use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, fix, write};
+use cockpit_tui::panel::parse::{BATCH, Opt, Parsed, Reply, Step, cut_off, explain, fix, write};
 
 fn opt(label: &str, recommended: bool) -> Opt {
     Opt {
@@ -172,7 +172,8 @@ fn an_unclosed_result_tag_is_kept_and_flagged_cut_off() {
         write("<prompt>Fix the thing and", OutType::Auto),
         Parsed {
             reply: Reply::Prompt("Fix the thing and".into()),
-            cut_off: Some("prompt")
+            cut_off: Some("prompt"),
+            more: vec![],
         }
     );
     assert_eq!(write("<prompt>done</prompt>", OutType::Auto).cut_off, None);
@@ -306,4 +307,89 @@ fn explain_splits_the_prompt_for_the_agent_out() {
             ready: None
         }
     );
+}
+
+// ---------------------------------------------------------------- batched questions (#417)
+
+/// `<question>Qn?</question>` with options `an` and `bn`.
+fn bq(n: usize) -> String {
+    format!("<question>Q{n}?</question>\n<option>a{n}</option>\n<option>b{n}</option>\n")
+}
+
+/// The first question, then the text of each later one with its options' labels.
+fn batch(out: &str) -> (Reply, Vec<(String, Vec<String>)>) {
+    let p = write(out, OutType::Auto);
+    let more = p
+        .more
+        .into_iter()
+        .map(|(q, o)| (q, o.into_iter().map(|o| o.label).collect()))
+        .collect();
+    (p.reply, more)
+}
+
+fn later(n: usize) -> (String, Vec<String>) {
+    (format!("Q{n}?"), vec![format!("a{n}"), format!("b{n}")])
+}
+
+fn first() -> Reply {
+    Reply::Question {
+        text: "Q1?".into(),
+        options: vec![opt("a1", false), opt("b1", false)],
+    }
+}
+
+#[test]
+fn one_question_carries_nothing_more() {
+    assert_eq!(batch(&bq(1)), (first(), vec![]));
+    assert_eq!(write("", OutType::Auto).more, vec![], "an empty reply asks nothing");
+}
+
+#[test]
+fn two_questions_each_keep_their_own_options() {
+    assert_eq!(batch(&format!("{}{}", bq(1), bq(2))), (first(), vec![later(2)]));
+}
+
+#[test]
+fn three_questions_come_in_order() {
+    let out = format!("{}{}{}", bq(1), bq(2), bq(3));
+    assert_eq!(batch(&out), (first(), vec![later(2), later(3)]));
+}
+
+#[test]
+fn questions_past_the_batch_cap_are_dropped() {
+    let out: String = (1..=5).map(bq).collect();
+    let (r, more) = batch(&out);
+    assert_eq!((r, more.len() + 1), (first(), BATCH));
+    assert_eq!(BATCH, 3);
+}
+
+#[test]
+fn a_cut_off_second_question_is_dropped_and_lends_the_first_no_options() {
+    let out = format!("{}<question>Q2?\n<option>a2</option>", bq(1));
+    assert_eq!(batch(&out), (first(), vec![]));
+}
+
+#[test]
+fn a_second_question_cut_off_in_its_options_is_dropped() {
+    let out = format!("{}<question>Q2?</question>\n<option>a2</option>\n<option>b", bq(1));
+    assert_eq!(batch(&out), (first(), vec![]));
+}
+
+#[test]
+fn a_later_question_with_no_options_is_kept() {
+    let out = format!("{}<question>Which host?</question>", bq(1));
+    assert_eq!(batch(&out), (first(), vec![("Which host?".into(), vec![])]));
+}
+
+#[test]
+fn a_question_after_a_result_tag_is_not_batched() {
+    let out = format!("{}<prompt>p</prompt>{}", bq(1), bq(2));
+    assert_eq!(batch(&out), (first(), vec![]));
+}
+
+#[test]
+fn fix_and_explain_never_batch() {
+    let out = format!("{}{}", bq(1), bq(2));
+    assert_eq!(fix(&out), first());
+    assert_eq!(explain(&out), first());
 }

@@ -306,7 +306,12 @@ fn run_out(r: &Run) -> Value {
         Flow::Fix { draft } => ("fix", Some(draft), None),
         Flow::Explain => ("explain", None, None),
     };
-    let qstack: Vec<Value> = r.qstack.iter().map(|(q, o, t)| json!([q, opts_out(o), turns_out(t)])).collect();
+    let qstack: Vec<Value> = r
+        .qstack
+        .iter()
+        .map(|(q, o, t, local)| json!([q, opts_out(o), turns_out(t), local]))
+        .collect();
+    let batch: Vec<Value> = r.batch.iter().map(|(q, o)| json!([q, opts_out(o)])).collect();
     let log: Vec<Value> = r.log.iter().map(|(you, t)| json!([you, t])).collect();
     json!({
         "flow": flow,
@@ -316,6 +321,7 @@ fn run_out(r: &Run) -> Value {
         "rounds": r.rounds,
         "max": r.max,
         "qstack": qstack,
+        "batch": batch,
         "question": r.question,
         "options": opts_out(&r.options),
         "log": log,
@@ -522,8 +528,14 @@ fn run_in(v: Value) -> Result<Run, String> {
     let (rounds, max) = (o.num("rounds")?, o.num("max")?);
     let mut qstack = vec![];
     for q in o.list("qstack")? {
-        let [q, opts, ts] = tuple(q)?;
-        qstack.push((text(q)?, opts_in(opts)?, turns_in(ts)?));
+        let [q, opts, ts, local] = tuple(q)?;
+        let local = local.as_bool().ok_or("a bad batch mark")?;
+        qstack.push((text(q)?, opts_in(opts)?, turns_in(ts)?, local));
+    }
+    let mut batch = vec![];
+    for q in o.list("batch")? {
+        let [q, opts] = tuple(q)?;
+        batch.push((text(q)?, opts_in(opts)?));
     }
     let question = o.text("question")?;
     let options = opts_in(o.take("options")?)?;
@@ -538,6 +550,7 @@ fn run_in(v: Value) -> Result<Run, String> {
         rounds,
         max,
         qstack,
+        batch,
         question,
         options,
         log,
@@ -550,6 +563,14 @@ fn run_in(v: Value) -> Result<Run, String> {
     o.done()?;
     if r.rounds > r.max {
         return Err("more rounds than the run allows".into());
+    }
+    // each queued question takes a round when shown
+    if r.rounds + r.batch.len() > r.max {
+        return Err("more questions queued than the run allows".into());
+    }
+    // the first question shown came from a call, so it heads no batch
+    if r.qstack.first().is_none_or(|q| q.3) && !(r.qstack.is_empty() && r.batch.is_empty()) {
+        return Err("a batch with no question before it".into());
     }
     Ok(r)
 }

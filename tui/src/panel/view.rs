@@ -646,8 +646,11 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 b.lines.extend(many("no options: o types your answer", w, "", meta));
             }
             b.lines.push(plain(""));
-            b.lines
-                .extend(many(&format!("question {} of at most {}", r.rounds, r.max), w, "", meta));
+            let count = match r.batch_at() {
+                Some((n, of)) => format!("question {n} of {of} asked together; {} of at most {} in all", r.rounds, r.max),
+                None => format!("question {} of at most {}", r.rounds, r.max),
+            };
+            b.lines.extend(many(&count, w, "", meta));
             if let Some(s) = scroll {
                 (b.scroll, b.sel) = (*s, None);
             }

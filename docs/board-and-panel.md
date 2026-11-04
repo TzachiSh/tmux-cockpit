@@ -52,6 +52,12 @@ file and the answer to a private temp file for the paste.
   that still asks with no questions left is told once to write it anyway,
   with what it assumed as `Assumed:` lines; the error shows only if it asks
   again.
+- A write may ask up to 3 questions that do not depend on each other in one
+  reply. The panel shows them one after another, `question 2 of 3 asked
+  together`, with no call in between, and sends the answers together after
+  the last. Each one shown takes one of the 3. `⌫` goes back to the one
+  before, and its answer is asked again; `g` on any of them sends at once
+  and lets Claude guess the rest. Questions past the budget are dropped.
 - On a result, `i` inserts it into the pane without Enter, and `s` sends it
   with Enter after a confirm. The paste is bracketed only when the program
   asked for that, so a multi-line insert into a program that may run each

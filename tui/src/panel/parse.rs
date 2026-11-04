@@ -51,7 +51,13 @@ pub struct Parsed {
     pub reply: Reply,
     /// The tag the reply opened first and never closed.
     pub cut_off: Option<&'static str>,
+    /// When `reply` is a question: the ones asked with it, in order, at most
+    /// [`BATCH`] - 1. Each is closed, and so is every option it has.
+    pub more: Vec<(String, Vec<Opt>)>,
 }
+
+/// The most questions one write reply may carry (#417); later ones are dropped.
+pub const BATCH: usize = 3;
 
 /// An opening tag: `<name>`, or `<name key="v">` when `key` is given.
 struct Tag {
@@ -173,15 +179,44 @@ fn options(o: &str) -> Vec<Opt> {
     out
 }
 
-/// A closed `<question>`, and where its tag starts.
+/// A closed `<question>`, and where its tag starts. Its options are read up to
+/// the next `<question>`, which owns the ones after it.
 fn question_at(o: &str) -> Option<(usize, Reply)> {
     let t = find_open(o, 0, "question", "", false, false)?;
-    let (b, _) = body(o, &t, "question", false)?;
+    let (b, end) = body(o, &t, "question", false)?;
+    let to = find_open(o, end, "question", "", false, false).map_or(o.len(), |n| n.start);
     let q = Reply::Question {
         text: norm(b),
-        options: options(o),
+        options: options(&o[..to]),
     };
     Some((t.start, q))
+}
+
+/// The questions after the first, up to `to` (the first result tag): each one
+/// whole, so one cut off mid-reply, in its text or an option, is dropped with
+/// all that follow.
+fn more_questions(o: &str, to: usize) -> Vec<(String, Vec<Opt>)> {
+    let o = &o[..to];
+    let mut out = Vec::new();
+    let Some(first) = find_open(o, 0, "question", "", false, false) else {
+        return out;
+    };
+    let mut at = first.end;
+    while out.len() < BATCH - 1 {
+        let Some(t) = find_open(o, at, "question", "", false, false) else {
+            break;
+        };
+        let Some((b, end)) = body(o, &t, "question", false) else { break };
+        let next = find_open(o, end, "question", "", false, false).map_or(o.len(), |n| n.start);
+        let seg = &o[end..next];
+        let opens = seg.matches("<option").count();
+        if opens != seg.matches("</option>").count() {
+            break;
+        }
+        out.push((norm(b), options(seg)));
+        at = end;
+    }
+    out
 }
 
 fn question(o: &str) -> Option<Reply> {
@@ -276,14 +311,21 @@ const SHELL_LANGS: [&str; 7] = ["bash", "sh", "shell", "zsh", "fish", "console",
 pub fn write(out: &str, want: OutType) -> Parsed {
     let raw = out.trim();
     let o = unfence(raw);
-    let reply = write_reply(o, raw, want);
+    let (reply, to) = write_reply(o, raw, want);
+    let more = match reply {
+        Reply::Question { .. } => to.map_or(vec![], |to| more_questions(o, to)),
+        _ => vec![],
+    };
     Parsed {
         reply,
         cut_off: cut_off(out),
+        more,
     }
 }
 
-fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
+/// The reply, and for a `<question>` one, where the questions end: at the
+/// first result tag, or the end. `None` for a legacy question, which is one.
+fn write_reply(o: &str, raw: &str, want: OutType) -> (Reply, Option<usize>) {
     let found = [
         find_open(o, 0, "prompt", "", false, false).map(|t| (t, "prompt")),
         find_open(o, 0, "text", "", false, false).map(|t| (t, "text")),
@@ -297,18 +339,19 @@ fn write_reply(o: &str, raw: &str, want: OutType) -> Reply {
     let first = found.into_iter().flatten().min_by_key(|(t, _)| t.start);
     // A question counts only once closed, and only when no other tag comes first.
     let (t, kind) = match (first, question_at(o)) {
-        (Some((t, _)), Some((at, q))) if at < t.start => return q,
-        (None, Some((_, q))) => return q,
+        (Some((t, _)), Some((at, q))) if at < t.start => return (q, Some(t.start)),
+        (None, Some((_, q))) => return (q, Some(o.len())),
         (Some(f), _) => f,
         (None, None) => {
-            return match legacy_question(o) {
+            let r = match legacy_question(o) {
                 Some(q) => q,
                 None if want == OutType::Hint && !o.is_empty() => Reply::Hint(unesc(o)),
                 None => Reply::Untagged(unesc(o)),
             };
+            return (r, None);
         }
     };
-    write_result(o, raw, want, t, kind)
+    (write_result(o, raw, want, t, kind), None)
 }
 
 fn write_result(o: &str, raw: &str, want: OutType, t: Tag, kind: &str) -> Reply {
