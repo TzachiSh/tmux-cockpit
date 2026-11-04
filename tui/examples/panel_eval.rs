@@ -361,6 +361,7 @@ fn grade(c: &Case, raw: &str) -> Grade {
     g
 }
 
+#[derive(Debug)]
 struct Opts {
     cases: PathBuf,
     model: String,
@@ -369,6 +370,8 @@ struct Opts {
     only: Option<String>,
     out: Option<PathBuf>,
     check: bool,
+    /// Two `--out` files: compared offline, no calls.
+    compare: Option<(PathBuf, PathBuf)>,
 }
 
 fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
@@ -381,6 +384,7 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
         only: None,
         out: None,
         check: false,
+        compare: None,
     };
     let mut a = args.into_iter();
     while let Some(k) = a.next() {
@@ -393,6 +397,13 @@ fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
             "--only" => o.only = Some(val()?),
             "--out" => o.out = Some(val()?.into()),
             "--check" => o.check = true,
+            "--compare" => {
+                let two = (a.next(), a.next());
+                let (Some(x), Some(y)) = two else {
+                    return Err("--compare needs two files".into());
+                };
+                o.compare = Some((x.into(), y.into()))
+            }
             _ => return Err(format!("unknown argument {k}")),
         }
     }
@@ -405,6 +416,8 @@ struct Job {
     case: usize,
     run: usize,
     model: String,
+    /// The system prompt's hash.
+    system: u64,
     req: Request,
     started: Instant,
 }
@@ -417,6 +430,22 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if let Some((a, b)) = &o.compare {
+        let read = |p: &PathBuf| {
+            let name = p.display().to_string();
+            std::fs::read_to_string(p)
+                .map_err(|e| format!("{name}: {e}"))
+                .and_then(|t| read_rows(&name, &t))
+        };
+        match read(a).and_then(|ra| Ok((ra, read(b)?))) {
+            Ok((ra, rb)) => print_compare(&[(a, &ra), (b, &rb)]),
+            Err(e) => {
+                eprintln!("panel_eval: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
     let text = std::fs::read_to_string(&o.cases).unwrap_or_else(|e| {
         eprintln!("panel_eval: {}: {e}", o.cases.display());
         std::process::exit(2);
@@ -487,6 +516,7 @@ fn main() {
                 case: ci,
                 run,
                 model,
+                system: h,
                 req,
                 started: Instant::now(),
             });
@@ -526,6 +556,7 @@ fn main() {
             if let Some(f) = log.as_mut() {
                 let row = serde_json::json!({
                     "id": c.id, "kind": c.kind, "expect": want, "run": j.run, "model": j.model,
+                    "system": format!("{:016x}", j.system),
                     "ms": ms as u64, "error": err,
                     "asked": g.as_ref().map(|g| g.asked), "pass": g.as_ref().map(|g| g.pass),
                     "question": g.as_ref().map(|g| g.question.clone()),
@@ -548,6 +579,128 @@ fn config_home() -> PathBuf {
     match std::env::var("XDG_CONFIG_HOME") {
         Ok(v) if v.starts_with('/') => PathBuf::from(v),
         _ => PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"),
+    }
+}
+
+/// One run's row of an `--out` file: what `--compare` reads.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Row {
+    id: String,
+    expect: String,
+    /// `None` for a failed call.
+    pass: Option<bool>,
+    /// The system prompt's hash; "" in a file written before it was recorded.
+    system: String,
+}
+
+/// The rows of an `--out` file; `name` heads each error.
+fn read_rows(name: &str, text: &str) -> Result<Vec<Row>, String> {
+    let mut rows = vec![];
+    for (n, line) in text.lines().enumerate().filter(|(_, l)| !l.trim().is_empty()) {
+        let err = |m: &str| format!("{name}:{}: {m}", n + 1);
+        let v: serde_json::Value = serde_json::from_str(line).map_err(|e| err(&e.to_string()))?;
+        let id = v["id"].as_str().ok_or_else(|| err("no id"))?;
+        let pass = match &v["pass"] {
+            serde_json::Value::Null => None,
+            p => Some(p.as_bool().ok_or_else(|| err("pass is true, false or null"))?),
+        };
+        let text = |k: &str| v[k].as_str().unwrap_or_default().to_string();
+        rows.push(Row {
+            id: id.into(),
+            expect: text("expect"),
+            pass,
+            system: text("system"),
+        });
+    }
+    if rows.is_empty() {
+        return Err(format!("{name}: no rows"));
+    }
+    Ok(rows)
+}
+
+/// One case side by side: (passed, graded, failed calls) in A and in B, `None`
+/// where that file has no row for it.
+#[derive(Debug, PartialEq)]
+struct Cmp {
+    id: String,
+    expect: String,
+    a: Option<(usize, usize, usize)>,
+    b: Option<(usize, usize, usize)>,
+}
+
+impl Cmp {
+    /// Up or down by pass rate over graded runs; `None` when it held, or a side has no graded run.
+    fn moved(&self) -> Option<std::cmp::Ordering> {
+        let ((ka, na, _), (kb, nb, _)) = (self.a?, self.b?);
+        if na == 0 || nb == 0 {
+            return None;
+        }
+        // kb/nb against ka/na, crosswise so 3/3 and 2/2 are equal.
+        Some((kb * na).cmp(&(ka * nb))).filter(|o| o.is_ne())
+    }
+}
+
+/// Per case, in A's order and then B's own.
+fn compare(a: &[Row], b: &[Row]) -> Vec<Cmp> {
+    let side = |rows: &[Row], id: &str| {
+        let mine: Vec<&Row> = rows.iter().filter(|r| r.id == id).collect();
+        let err = mine.iter().filter(|r| r.pass.is_none()).count();
+        let ok = mine.iter().filter(|r| r.pass == Some(true)).count();
+        (!mine.is_empty()).then_some((ok, mine.len() - err, err))
+    };
+    let mut out: Vec<Cmp> = vec![];
+    for r in a.iter().chain(b) {
+        if !out.iter().any(|c| c.id == r.id) {
+            out.push(Cmp {
+                id: r.id.clone(),
+                expect: r.expect.clone(),
+                a: side(a, &r.id),
+                b: side(b, &r.id),
+            });
+        }
+    }
+    out
+}
+
+/// Two `--out` files side by side: per-case pass counts, the cases that moved,
+/// and pass^all for each. Paired by case id, so a case's own flakiness shows.
+fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
+    let cmp = compare(sides[0].1, sides[1].1);
+    let cell = |s: Option<(usize, usize, usize)>| match s {
+        None => "-".to_string(),
+        Some((ok, n, 0)) => format!("{ok}/{n}"),
+        Some((ok, n, err)) => format!("{ok}/{n} +{err}err"),
+    };
+    println!("{:<24} {:<6} {:<10} {:<10} moved", "case", "want", "A", "B");
+    for c in &cmp {
+        let m = match c.moved() {
+            Some(std::cmp::Ordering::Greater) => "up",
+            Some(_) => "down",
+            None => "",
+        };
+        println!("{:<24} {:<6} {:<10} {:<10} {m}", c.id, c.expect, cell(c.a), cell(c.b));
+    }
+    println!();
+    for (tag, (p, rows)) in ["A", "B"].iter().zip(sides) {
+        let mut hs: Vec<&str> = rows.iter().map(|r| r.system.as_str()).filter(|h| !h.is_empty()).collect();
+        hs.dedup();
+        let per: Vec<_> = cmp.iter().filter_map(|c| if *tag == "A" { c.a } else { c.b }).collect();
+        println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
+        println!("   pass^all  {}", pct_ci(pass_all(&per)));
+    }
+    let names = |o: std::cmp::Ordering| {
+        cmp.iter()
+            .filter(|c| c.moved() == Some(o))
+            .map(|c| c.id.as_str())
+            .collect::<Vec<_>>()
+    };
+    let (up, down) = (names(std::cmp::Ordering::Greater), names(std::cmp::Ordering::Less));
+    println!("moved     {} up: {}", up.len(), up.join(", "));
+    println!("          {} down: {}", down.len(), down.join(", "));
+    let only = |f: &dyn Fn(&Cmp) -> bool| cmp.iter().filter(|c| f(c)).map(|c| c.id.as_str()).collect::<Vec<_>>().join(", ");
+    let (oa, ob) = (only(&|c| c.b.is_none()), only(&|c| c.a.is_none()));
+    if !oa.is_empty() || !ob.is_empty() {
+        println!("only in A: {oa}; only in B: {ob}");
     }
 }
 
@@ -1020,6 +1173,99 @@ mod tests {
         ];
         let t = tally(&cases, &done);
         assert_eq!((t.fpr, t.fnr), (Of(1, 2), Of(2, 3)));
+    }
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn compare_takes_two_files() {
+        let o = opts(args("--compare a.jsonl b.jsonl")).unwrap();
+        assert_eq!(o.compare, Some(("a.jsonl".into(), "b.jsonl".into())));
+        assert!(opts(args("--compare a.jsonl")).unwrap_err().contains("--compare needs two files"));
+        assert!(opts(args("--compare")).unwrap_err().contains("--compare needs two files"));
+    }
+
+    const ROWS: &str = r#"{"id":"a","expect":"ask","run":0,"pass":true,"error":null,"system":"00ff"}
+{"id":"a","expect":"ask","run":1,"pass":false,"error":null}
+
+{"id":"w","expect":"write","run":0,"pass":null,"error":"took too long"}
+"#;
+
+    #[test]
+    fn reads_rows_and_takes_a_failed_call_as_no_pass() {
+        let r = read_rows("A", ROWS).unwrap();
+        assert_eq!(r.len(), 3);
+        let want = Row {
+            id: "a".into(),
+            expect: "ask".into(),
+            pass: Some(true),
+            system: "00ff".into(),
+        };
+        assert_eq!(r[0], want);
+        assert_eq!(r[2].pass, None);
+    }
+
+    #[test]
+    fn refuses_bad_rows_naming_the_file_and_line() {
+        assert!(read_rows("A", "").unwrap_err().contains("A: no rows"));
+        assert!(read_rows("A", "{\"id\":\"a\"}\nnot json\n").unwrap_err().starts_with("A:2:"));
+        assert!(
+            read_rows("A", "{\"expect\":\"ask\",\"pass\":true}\n")
+                .unwrap_err()
+                .contains("A:1: no id")
+        );
+        assert!(
+            read_rows("A", "{\"id\":\"a\",\"pass\":\"yes\"}\n")
+                .unwrap_err()
+                .contains("A:1: pass")
+        );
+    }
+
+    #[test]
+    fn compare_pairs_cases_and_names_the_ones_that_moved() {
+        let row = |id: &str, pass: Option<bool>| Row {
+            id: id.into(),
+            expect: "ask".into(),
+            pass,
+            ..Row::default()
+        };
+        let a = [
+            row("up", Some(false)),
+            row("up", Some(true)),
+            row("same", Some(true)),
+            row("gone", Some(true)),
+        ];
+        let b = [
+            row("same", Some(true)),
+            row("up", Some(true)),
+            row("up", Some(true)),
+            row("new", None),
+        ];
+        let c = compare(&a, &b);
+        let ids: Vec<&str> = c.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["up", "same", "gone", "new"]);
+        assert_eq!((c[0].a, c[0].b), (Some((1, 2, 0)), Some((2, 2, 0))));
+        assert_eq!(c[0].moved(), Some(std::cmp::Ordering::Greater));
+        assert_eq!(c[1].moved(), None);
+        assert_eq!((c[2].b, c[2].moved()), (None, None));
+        assert_eq!((c[3].b, c[3].moved()), (Some((0, 0, 1)), None));
+    }
+
+    #[test]
+    fn a_case_held_at_the_same_rate_did_not_move() {
+        let row = |pass: Option<bool>| Row {
+            id: "x".into(),
+            expect: "ask".into(),
+            pass,
+            ..Row::default()
+        };
+        let a = [row(Some(true)), row(Some(true)), row(Some(true))];
+        let b = [row(Some(true)), row(Some(true)), row(None)];
+        assert_eq!(compare(&a, &b)[0].moved(), None);
+        let down = [row(Some(true)), row(Some(false)), row(Some(true))];
+        assert_eq!(compare(&a, &down)[0].moved(), Some(std::cmp::Ordering::Less));
     }
 
     #[test]
