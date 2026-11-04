@@ -483,6 +483,13 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             .filter(|m| m.kind == SubKind::Teammate && !m.name.is_empty())
             .map(|m| m.name.clone())
             .collect();
+        // A description maps a TaskStop only when it is one teammate's: two alike stay unknown.
+        let mut descs: HashMap<String, usize> = HashMap::new();
+        for m in metas.iter().filter_map(|(_, e)| e.meta.as_ref().map(|(_, m)| m)) {
+            if m.kind == SubKind::Teammate {
+                *descs.entry(m.desc.clone()).or_default() += 1;
+            }
+        }
         for (id, mut e) in metas {
             let Some((ms, m)) = e.meta.clone() else {
                 kept.insert(id, e);
@@ -505,13 +512,14 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             let rec = log.ids.get(&id).copied();
             let mate = m.kind == SubKind::Teammate;
             // A teammate's TaskStop names it, or failing that (the model gave the task id) its
-            // description; it counts after the teammate's newest start, or with none in the tail.
+            // description when no other teammate has it; it counts after the teammate's newest
+            // start, and not at all with no start in the tail.
             let killed = log.kills.iter().rfind(|k| {
-                mate && rec.and_then(|r| r.start).is_none_or(|(_, s)| k.line > s)
+                mate && rec.and_then(|r| r.start).is_some_and(|(_, s)| k.line > s)
                     && if names.contains(&k.name) {
                         k.name == m.name
                     } else {
-                        !k.desc.is_empty() && k.desc == m.desc
+                        !k.desc.is_empty() && k.desc == m.desc && descs.get(&m.desc) == Some(&1)
                     }
             });
             let ev = killed.map(|k| (Ev::Kill, k.t)).or(rec.map(|r| (r.ev, r.t)));
@@ -527,7 +535,11 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             // not in it. It cannot tell killed from finished; a finished meta decided above. Not an
             // idle teammate: no payload yet shows whether `background_tasks` lists one (#403).
             let gone = |r: Rec, l: &Live| {
-                r.line < l.line && r.start.is_some_and(|(t, _)| t < l.t) && !l.ids.contains(&id) && !(mate && l.descs.contains(&m.desc))
+                r.line < l.line
+                    && r.start.is_some_and(|(t, _)| t < l.t)
+                    && wrote.is_none_or(|w| w <= l.t)
+                    && !l.ids.contains(&id)
+                    && !(mate && l.descs.contains(&m.desc))
             };
             let ev = match (ev, rec, &log.live) {
                 (Some((Ev::Start, t)), Some(r), Some(l)) if killed.is_none() && gone(r, l) => Some((Ev::Kill, t)),

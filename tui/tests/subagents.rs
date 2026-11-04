@@ -1095,3 +1095,53 @@ fn malformed_stop_and_reconcile_rows_are_skipped() {
     s.log(&lines);
     assert_eq!(s.one(T0 + 60).state, SubState::Running, "none of them ends it");
 }
+
+#[test]
+fn two_teammates_with_one_description_are_not_mapped_by_it() {
+    let s = session("kill-tm-twins");
+    meta(&s.dir, "a", NAMED);
+    meta(&s.dir, "b", r#"{"agentType":"x","description":"i1 named","name":"tm2","teamName":"crew"}"#);
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    // the model gave the task id, which is no teammate's name
+    s.log(&[ev(0, "start", "a"), ev(0, "start", "b"), kill_tm(9, "t0sm6hcnt", "i1 named")]);
+    let v = s.read(T0 + END_UNKNOWN_AFTER + 60);
+    assert!(v.iter().all(|x| x.state == SubState::EndUnknown), "{v:?}");
+}
+
+#[test]
+fn a_teammate_stop_with_no_start_in_the_tail_matches_nothing() {
+    let s = session("kill-tm-nostart");
+    meta(&s.dir, "a", NAMED);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[kill_tm(9, "tm1", "i1 named")]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running, "the meta decides");
+}
+
+#[test]
+fn a_kill_then_a_stop_stays_stopped() {
+    let s = session("kill-sticky");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), ev(9, "kill", "a"), ev(10, "stop", "a"), ev(11, "idle", "a")]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
+}
+
+#[test]
+fn a_start_in_the_reconciles_own_second_is_not_ended_by_it() {
+    let s = session("live-same-second");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(30, "start", "a"), live(30, &[], &[])]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+#[test]
+fn an_agent_that_wrote_after_the_reconcile_is_not_ended_by_it() {
+    let s = session("live-wrote-after");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(40)]);
+    s.log(&[ev(0, "start", "a"), live(30, &[], &[])]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
