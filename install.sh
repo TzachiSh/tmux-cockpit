@@ -407,6 +407,7 @@ if [ "$hooks" -eq 1 ]; then
     # exists. norm makes an absent matcher equal "".
     # Cockpit entries that change shape across versions are replaced (anchored): review-gate,
     # an old `--pretool` (review-gate exits 0 on it), a SessionStart `agent-state off`.
+    # review-gate stays the last shipped Stop entry: --hooks strips and re-appends it, so a new Stop hook goes before it.
     merged=$(jq -s '
         def norm: if type == "object" then . + {matcher: (.matcher // "")} else . end;
         def runs($re): (.command // "") | test($re);
