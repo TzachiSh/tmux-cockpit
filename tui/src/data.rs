@@ -1000,10 +1000,12 @@ pub fn split_cursor(out: &str) -> Option<(&str, Option<usize>)> {
 /// the cursor's row or the last row with text, whichever is lower; rows past it
 /// are never content. A used part that fits is all of it from row 0, as the pane
 /// looks. A taller one:
-/// - with the cursor shown (vim, less, a shell): tmux's own rule for its
-///   choose-tree preview (screen-write.c, `screen_write_preview`), the view's top
-///   at `cursor_y - rows / 3` clamped to `[0, used - rows]`, so the cursor sits a
-///   third down. tmux's horizontal pan is not taken: a long line is clipped.
+/// - with the cursor shown (vim, less, a shell): tmux's third-down rule, clamped
+///   to the used rows. tmux's choose-tree preview (screen-write.c,
+///   `screen_write_preview`) puts the view's top at `cursor_y - rows / 3`, so the
+///   cursor sits a third down, and clamps it to the screen's height; here it is
+///   clamped to `[0, used - rows]`. tmux's horizontal pan is not taken: a long
+///   line is clipped.
 /// - with the cursor hidden (Claude Code, htop): the view ends at the last row
 ///   with text.
 pub fn view(screen: &str, cursor: Option<usize>, rows: usize) -> String {

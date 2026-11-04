@@ -509,11 +509,12 @@ past it are never content, and a row of colour only counts as blank. A used
 part that fits the pane is drawn whole from the top, as the pane itself looks
 (a cleared terminal, a short shell). A taller one:
 
-- with the cursor shown (vim, less, a shell): tmux's own rule for its
-  `choose-tree` preview (`screen_write_preview` in `screen-write.c`). The
-  view's top is `cursor_y - rows / 3`, clamped to `[0, used - rows]`, so the
-  cursor sits a third of the way down. tmux's horizontal pan is not taken: a
-  long line is clipped instead.
+- with the cursor shown (vim, less, a shell): tmux's third-down rule, clamped
+  to the used rows. tmux's `choose-tree` preview (`screen_write_preview` in
+  `screen-write.c`) puts the view's top at `cursor_y - rows / 3`, so the cursor
+  sits a third of the way down, and clamps it to the screen's height; here it
+  is clamped to `[0, used - rows]`. tmux's horizontal pan is not taken: a long
+  line is clipped instead.
 - with the cursor hidden (Claude Code, htop): the view ends at the last row
   with text, which keeps Claude Code's input box and the newest output in view.
 
