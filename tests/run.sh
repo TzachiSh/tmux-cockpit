@@ -13853,5 +13853,25 @@ is "and nothing ran" "no" "$([ -e "$RD9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e M
 "$TMUX_REAL" -L "$RD9" kill-server >/dev/null 2>&1
 fi
 
+echo "== tmux-review: review_base, origin/HEAD outranks a local master when there is no main (#328) =="
+# The master arm moved above origin/HEAD answered "vs master" and stayed green.
+RLM=$(mktmpd)
+(
+  cd "$RLM" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q --bare -b develop remote.git
+  git clone -q remote.git work
+  cd work || exit
+  printf 'a\n' > f; git add -A; git commit -q -m init; git push -q origin develop
+  git remote set-head origin develop
+  git checkout -q -b master; printf 'a\nM\n' > f; git commit -q -am master-moved
+  git checkout -q -b topic; printf 'a\nM\nT\n' > f; git commit -q -am topic
+) >/dev/null 2>&1
+RLMB=$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$RLM/work")
+is "a local master, no main: the label is vs origin/develop" "vs origin/develop" "$(printf '%s' "$RLMB" | cut -f2)"
+is "and the base is the merge-base with origin/develop, not master" \
+   "$(git -C "$RLM/work" rev-parse origin/develop)" "$(printf '%s' "$RLMB" | cut -f1)"
+rm -rf "$RLM"
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
