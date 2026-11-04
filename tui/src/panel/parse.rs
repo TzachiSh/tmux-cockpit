@@ -2,6 +2,7 @@
 //! scanner: the reply regexes it replaces need no lookaround.
 use super::envelope::{OutType, unesc};
 use super::{boundary_at, skip_ws};
+use crate::highlight::{lang, wrapper};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opt {
@@ -117,22 +118,26 @@ fn norm(s: &str) -> String {
     unesc(&s.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// A reply wrapped whole in a ``` fence is read from inside it.
+/// The fence a reply is wrapped in whole ([`wrapper`]): its tag and body.
+fn wrapped(o: &str) -> Option<(&str, &str)> {
+    let lines: Vec<&str> = o.split('\n').collect();
+    let f = wrapper(&lines)?;
+    let last = lines.len() - 1;
+    // past the opener's newline, up to the closer's
+    let (from, to) = (lines[0].len() + 1, o.len() - lines[last].len() - 1);
+    Some((f.tag, o.get(from..to).unwrap_or("")))
+}
+
+/// A reply wrapped whole in a fence is read from inside it.
 fn unfence(o: &str) -> &str {
-    let inner = o.strip_prefix("```").and_then(|r| {
-        let lang = r.bytes().take_while(u8::is_ascii_alphabetic).count();
-        r[lang..].strip_prefix('\n')?.strip_suffix("\n```")
-    });
-    inner.map_or(o, str::trim)
+    wrapped(o).map_or(o, |(_, body)| body.trim())
 }
 
 /// An answer is only shown, never typed, so a reply that is one block in a
 /// language the lexer knows keeps its fence and is coloured (#282). A bare or
 /// `xml` fence is a wrapper and still goes.
 fn code_fence(raw: &str) -> bool {
-    let first = raw.split('\n').next().unwrap_or("");
-    let tag = raw.starts_with("```").then(|| super::highlight::fence(first)).flatten();
-    tag.and_then(super::highlight::lang).is_some()
+    wrapped(raw).is_some_and(|(tag, _)| lang(tag).is_some())
 }
 
 /// "Other" and its kin: the panel adds that option itself.

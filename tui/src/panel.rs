@@ -1,10 +1,9 @@
 //! The type-panel port: capture, redaction, the prompt envelope, the `claude -p`
-//! request, reply parsing, code highlighting, and the `cockpit-tui panel %N` screens.
+//! request, reply parsing, and the `cockpit-tui panel %N` screens.
 pub mod action;
 pub mod app;
 pub mod capture;
 pub mod envelope;
-pub mod highlight;
 pub mod parse;
 pub mod prompts;
 pub mod redact;

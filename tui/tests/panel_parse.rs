@@ -205,6 +205,70 @@ fn a_reply_fenced_whole_is_read_from_inside() {
     assert_eq!(reply("```xml\n<prompt>p</prompt>\n```"), Reply::Prompt("p".into()));
 }
 
+/// #283: the wrapper is highlight's fence, so a tag with a digit, a comma or a
+/// space before it, and a longer fence, all wrap a reply as the view reads them.
+#[test]
+fn a_wrapper_fence_is_the_one_fence_rule() {
+    let rows = [
+        ("digit in the tag", "```python3\nprint(1)\n```"),
+        ("attribute after a comma", "```text,ignore\nprint(1)\n```"),
+        ("space before the tag", "``` text\nprint(1)\n```"),
+        ("four backticks", "````\nprint(1)\n````"),
+    ];
+    for (name, out) in rows {
+        assert_eq!(fix(out), Reply::Text("print(1)".into()), "row {name}");
+    }
+}
+
+/// An outer fence around markdown that holds its own tagged block of the same
+/// length still wraps the whole reply: the inner opener is paired with the
+/// first bare closer, and the last line closes the outer one.
+#[test]
+fn a_wrapper_holding_a_paired_inner_fence_is_still_one() {
+    let rows = [
+        ("nested_same", "```\n# Title\n```sh\nls\n```\n```", "# Title\n```sh\nls\n```"),
+        (
+            "nested_md",
+            "```markdown\nSee:\n```bash\nmake\n```\ndone\n```",
+            "See:\n```bash\nmake\n```\ndone",
+        ),
+        ("nested_long", "````\n```sh\nls\n```\n````", "```sh\nls\n```"),
+    ];
+    for (name, out, want) in rows {
+        assert_eq!(fix(out), Reply::Text(want.into()), "row {name}");
+    }
+}
+
+/// A fence with nothing inside wraps nothing.
+#[test]
+fn an_empty_fence_is_not_a_wrapper() {
+    assert_eq!(fix("```\n```"), Reply::Text("```\n```".into()));
+}
+
+/// Explain strips a bare wrapper too: it only keeps a fence that names a language.
+#[test]
+fn explain_strips_a_bare_wrapper() {
+    let Reply::Answer { text, .. } = explain("```\nplain words\n```") else {
+        panic!()
+    };
+    assert_eq!(text, "plain words");
+}
+
+/// A fence left open wraps nothing: the reply is read as it came.
+#[test]
+fn an_unclosed_fence_is_not_a_wrapper() {
+    assert_eq!(fix("```py\nx = 1"), Reply::Text("```py\nx = 1".into()));
+}
+
+/// Two fenced blocks with prose between are not one block around the prose.
+#[test]
+fn a_reply_of_two_blocks_is_not_unwrapped() {
+    let out = "```\na\n```\nmid\n```\nb\n```";
+    assert_eq!(fix(out), Reply::Text(out.into()));
+    let Reply::Answer { text, .. } = explain(out) else { panic!() };
+    assert_eq!(text, out);
+}
+
 #[test]
 fn replies_are_unescaped() {
     assert_eq!(reply("<prompt>close <\\/div></prompt>"), Reply::Prompt("close </div>".into()));

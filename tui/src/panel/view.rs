@@ -2,8 +2,8 @@
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
 use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
 use super::envelope::Flow;
-use super::highlight::{self, Role};
 use super::request::Call;
+use crate::highlight::{self, Role};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;
@@ -211,7 +211,7 @@ fn command(th: &Theme, cmd: &str, lang: &str, w: usize, indent: &str, st: Style)
         .collect()
 }
 
-fn role_style(th: &Theme, r: Role, st: Style) -> Style {
+pub(crate) fn role_style(th: &Theme, r: Role, st: Style) -> Style {
     match r {
         Role::Plain => st,
         Role::Keyword => st.fg(th.accent),

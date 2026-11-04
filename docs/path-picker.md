@@ -49,6 +49,15 @@ one line, the verb `open` or `copy`, an absolute path that exists. A file name
 with a newline in it cannot be sent, so the browser says so and prints nothing.
 Names are drawn without control and bidi characters; the printed path is exact.
 
+**A markdown file opens in the viewer.** When the one path to open is a
+`.md`, `.markdown`, `.mdown` or `.mkd` file (any case), it opens rendered and
+read-only in `cockpit-tui view`, in a popup the size of the pane, or in the
+picker's own popup when it was chosen there (tmux has one popup per client).
+`e` closes the viewer and opens the file in the editor, at the source line of
+the top row it showed; a clicked `README.md:40` opens the viewer at line 40.
+`set -g @cockpit_md_view off` sends markdown to the editor directly, as before.
+The viewer's keys are in [docs/tui.md](tui.md#the-markdown-viewer-283).
+
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as
 `src/app.ts:31` in the list, not a bare filename.
 

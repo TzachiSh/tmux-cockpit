@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | view [--line N] [--] <file> | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -141,6 +141,8 @@ fn main() {
         Some("branch") => std::process::exit(cockpit_tui::branch::main(&args[1..])),
         // sessions view (#245): writes its own action files, like panel
         Some("sessions") => std::process::exit(cockpit_tui::sessions::main(&args[1..])),
+        // the markdown viewer (#283): prints `edit <line>` on stdout, as pick prints its key
+        Some("view") => std::process::exit(cockpit_tui::mdview::main(&args[1..])),
         Some("panel") => {
             panel(&args[1..]);
             None

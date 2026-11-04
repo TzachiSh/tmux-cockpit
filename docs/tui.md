@@ -191,6 +191,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
+| `@cockpit_md_view` | `on` | `off` sends a clicked markdown file to the editor instead of `cockpit-tui view`. Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
 | `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
@@ -745,7 +746,7 @@ cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 ### Code in the panel (#282)
 
 Code in the Result, Steps and Answer views is coloured by a small built-in
-lexer (`panel::highlight`), not a grammar crate: syntect, two-face and
+lexer (`highlight`, a top-level module since #283), not a grammar crate: syntect, two-face and
 tree-sitter were turned down for the binary's size.
 
 - **Where.** A fenced block (three or more backticks, an optional language
@@ -754,7 +755,10 @@ tree-sitter were turned down for the binary's size.
   outside a fence is never lexed, so an `if` in a sentence stays text. A fence
   left open runs to the end of the text; a shorter fence inside is content.
 - **An answer that is one block.** A reply fenced whole is read from inside
-  its fence, but an Answer is only shown, never typed: when the fence names a
+  its fence: the first line opens it, the last line is a bare closer of at
+  least as many backticks, and a tagged block inside is paired with its own
+  closer, so a wrapped markdown answer may hold code blocks. An Answer is
+  only shown, never typed: when the fence names a
   language the lexer knows, the answer keeps it and is coloured. A bare or
   `xml` fence is a wrapper and still goes, as does any fence in Fix and Write,
   whose text is typed into the pane.
@@ -1265,6 +1269,53 @@ reason in a warn note.
   `board_subs.rs` the badge (now `the_badge_on_the_row_at_40_60_and_95`), the
   narrowing tree line and the token check in `subagent_goldens`.
 
+### Contract changes for the shared highlighter (for #61)
+
+- #283: `panel::highlight` moves to a top-level `highlight` module, unchanged,
+  so the markdown viewer can colour code without reaching into the panel. The
+  module table gains its row; `panel` loses the mention.
+- `highlight::{split, Part, Fence}` are new: lines in, prose ranges and fenced
+  blocks out (tag, opener line, body range, closer line or `None` for a fence
+  left open). `highlight::fenced` is built on it, and so are the reply
+  parser's `unfence` and `code_fence` go through `highlight::wrapper`, on the
+  same opener and closer lines: a reply is wrapped when its first line opens
+  a fence and its last line closes it, every tagged opener between them
+  paired with a bare closer first.
+- That moves three edges of the wrapper rule, which used to want a tag of
+  letters only, exactly three backticks and a reply that merely starts and
+  ends with them: a tag such as `python3`, `text,ignore` or ` text` and a
+  four-backtick fence now wrap a reply, as do an indented, a CRLF and a
+  longer closing fence; and two blocks with prose between them are no longer
+  read as one block around the prose. A wrapper holding a paired inner block
+  of the same length is unwrapped as before, and a fence with nothing inside
+  still wraps nothing.
+- `highlight::block(tag, body)` is new: a block body lexed by its tag, with
+  the bare-fence `$ ` rule. `highlight::tag(info)` is public: the tag in an
+  opener's info string.
+
+### Contract changes for the markdown viewer (for #61)
+
+- #283: a new screen, `cockpit-tui view [--line N] [--] <file>`, and a new
+  module, `mdview` (with `mdview::render`). It exits 0, printing `edit <line>`
+  on stdout after `e` and nothing after a close, and 2 for a bad argument or
+  no terminal. A binary from before it says `unknown screen view`, which
+  `tui_stale` already reads as stale.
+- A new dependency, `pulldown-cmark =0.13.4` with default features off, which
+  brings `unicase` 2.10.0; `bitflags` and `memchr` were in the tree. The
+  release binary grows from 1,727,536 to 2,100,968 bytes, about 320 KB of it
+  the parser.
+- New option `@cockpit_md_view` (`on`). `scripts/tmux-open-path` gains
+  `md_view` and its call at the top of `open_one`, and a `--view <pane>
+  <file> <line>` re-entry for the viewer's popup. The popup's `-T` title is
+  the name with control and bidi characters dropped, then `fesc`. With no
+  client on the pane's session the editor opens instead, decided before the
+  popup: once open, its status is its command's, and a detach is 129.
+- `panel::view::role_style` is `pub(crate)`: the viewer colours code with the
+  panel's roles.
+- Goldens: new `view-{40,80,120}`, `view-ascii-80`, `view-nocolor-80`,
+  `view-find-80`, `view-note-60`, `view-help-60`, `view-empty-60` and
+  `view-floor`. No other golden moved.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -1682,10 +1733,12 @@ workspace, no crate split.
 | `theme` | the `@thm_*` colour roles and the glyph tiers |
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
+| `mdview` | the `cockpit-tui view` markdown viewer (#283): loading with its cap, the find, the keys and its screen on `pick`'s /dev/tty; `mdview::render` lays the markdown out as rows, pure |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or open, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `open <path>` or `copy <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
-| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files; `panel::highlight` the code lexer (#282) |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
+| `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.
@@ -1792,6 +1845,60 @@ and the borders for a tier that is byte-stable across fonts.
 **A stale `@cockpit_board_wake` entry.** A board ended by a signal or a crash
 leaves its entry. It is harmless: the hook only signals a channel, and the next
 board to start drops it.
+
+## The markdown viewer (#283)
+
+`cockpit-tui view <file>` shows a markdown file rendered and read-only. The
+path picker opens it for a lone `.md`, `.markdown`, `.mdown` or `.mkd` file
+(see [the path picker](path-picker.md)); `@cockpit_md_view off` turns that off.
+It draws on /dev/tty, as `pick` does, so its one line of output, `edit <line>`,
+goes to stdout.
+
+| key | does |
+|---|---|
+| `↑↓` `j` `k` | scroll a row |
+| `PgUp` `PgDn` `space` | a page |
+| `g` `G` `Home` `End` | the top, the end |
+| the wheel | three rows |
+| `/` | find: every key but `^C` is text until `↵` keeps the matches or `esc` drops them and goes back |
+| `n` `N` | the next and the previous match, round the end |
+| `e` | close, and open the file in the editor at the top row's source line |
+| `u` | show or hide link addresses |
+| `?` | the keys |
+| `q` `esc` `^C` | close; `esc` first clears the matches, and `^C` closes from the find field too |
+
+- **What it draws.** Headings with their `#`s, paragraphs, emphasis, strong,
+  strikethrough, inline code, lists nested to any depth (`•` `◦` `▪`, numbers
+  from the list's start, `[ ]` and `[✓]` task boxes), block quotes with a bar
+  per level, tables with their alignment, code blocks, rules, images as
+  `[image: alt]` and HTML as written. CommonMark with GitHub's tables, task
+  lists and strikethrough, read by `pulldown-cmark`.
+- **Code.** A code block is coloured by the panel's lexer, by the tag in its
+  info string (`highlight::tag`, so `rust,ignore` is Rust) with the same roles
+  as the panel's code; a bare block of `$ ` lines is shell. Tabs go out to
+  4-column stops, and a long line wraps hard, its spaces kept.
+- **Links are text.** A link is its text, underlined, then its address dimmed
+  in brackets, unless it is an autolink or an `#anchor`. `u` hides the
+  addresses. Nothing is followed, and no HTML is read.
+- **Widths.** A row is never wider than the body, measured per grapheme as
+  the buffer draws it, so CJK and emoji wrap where they end. Nesting gives up
+  its indent past half the width before the text gives up its room. A table
+  too wide shares the width out and wraps its cells; one with no room for 3
+  columns per cell is drawn as `header: value` lines.
+- **Find.** Case-insensitive unless the text has a capital, as `less` and vim's
+  smartcase read it. Matches are reversed and the current one bold too, so
+  both read without colour. A match never spans two rows.
+- **Lines.** Each row carries the source line of its block (a code row, its
+  own line), which `e` and `--line` use. A resize keeps the top row's line on
+  top.
+- **What it refuses.** A file over 1 MB (a `- a` list of that size peaks at
+  about 105 MB resident, measured), one with a NUL byte, invalid UTF-8, or anything but
+  a regular file (opened non-blocking, so a FIFO never hangs it) is a note in
+  the frame. `e` still opens it in the editor. Control and bidi characters are
+  dropped from everything drawn, the title included, as `pick` drops them.
+- **NO_COLOR and ascii.** Without colour, inline code keeps its backticks and
+  the other kinds lean on bold, italics, underline and the marks. The ascii
+  tier draws `-` `*` `+` bullets, `[x]`, `|` bars and `-+-` table rules.
 
 ## `cockpit-tui branch` (#246)
 

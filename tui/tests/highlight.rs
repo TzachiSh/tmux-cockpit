@@ -1,6 +1,6 @@
 //! The panel's code lexer (#282): per-language tables, fence detection, and the
 //! never-panic, text-preserving property over random input.
-use cockpit_tui::panel::highlight::{Lang, Role, State, fence, fenced, highlight, lang, line};
+use cockpit_tui::highlight::{Fence, Lang, Part, Role, State, block, fence, fenced, highlight, lang, line, split, tag, wrapper};
 
 /// Every span of `src` (lines split on `\n`) lexed as `tag`, line breaks dropped.
 fn spans<'a>(tag: &str, src: &'a str) -> Vec<(Role, &'a str)> {
@@ -388,4 +388,80 @@ fn fence_tags_with_attributes() {
         assert_eq!(fence(s), want, "{s:?}");
     }
     assert_eq!(fenced("```rust,ignore\nfn\n```")[1], vec![(Keyword, "fn")]);
+}
+
+fn parts(text: &str) -> Vec<Part<'_>> {
+    split(&text.split('\n').collect::<Vec<_>>())
+}
+
+fn code(tag: &str, open: usize, body: std::ops::Range<usize>, close: Option<usize>) -> Part<'_> {
+    Part::Code(Fence { tag, open, body, close })
+}
+
+#[test]
+fn split_gives_prose_and_code_in_order() {
+    let got = parts("a\n```rust\nfn\n```\nb");
+    assert_eq!(got, vec![Part::Prose(0..1), code("rust", 1, 2..3, Some(3)), Part::Prose(4..5)]);
+}
+
+#[test]
+fn split_of_no_lines_is_no_parts_and_of_prose_is_one() {
+    assert_eq!(split(&[]), vec![]);
+    assert_eq!(parts("a\nb"), vec![Part::Prose(0..2)]);
+}
+
+#[test]
+fn split_leaves_an_unclosed_fence_open_to_the_end() {
+    let got = parts("```\nx\ny");
+    assert_eq!(got, vec![code("", 0, 1..3, None)]);
+}
+
+#[test]
+fn split_closes_only_on_as_many_ticks_or_more_and_nothing_else() {
+    // a shorter fence and a closer with text after it are body lines
+    let got = parts("````md\n```\n```` x\n`````");
+    assert_eq!(got, vec![code("md", 0, 1..3, Some(3))]);
+}
+
+#[test]
+fn split_takes_inline_code_as_prose() {
+    assert_eq!(parts("```a` b```"), vec![Part::Prose(0..1)]);
+}
+
+#[test]
+fn tag_reads_the_info_string_word() {
+    for (info, want) in [("rust,ignore", "rust"), ("{.python}", "python"), (" sh x", "sh"), ("", "")] {
+        assert_eq!(tag(info), want, "{info:?}");
+    }
+}
+
+#[test]
+fn block_lexes_by_tag_and_reads_a_bare_prompt_block_as_shell() {
+    assert_eq!(block("rust", &["fn"]), vec![vec![(Keyword, "fn")]]);
+    assert!(block("", &["$ if x"])[0].contains(&(Keyword, "if")));
+    assert_eq!(block("", &["if x"]), vec![vec![(Plain, "if x")]]);
+}
+
+fn wraps(text: &str) -> bool {
+    wrapper(&text.split('\n').collect::<Vec<_>>()).is_some()
+}
+
+#[test]
+fn wrapper_rows() {
+    let rows = [
+        ("one block", "```sh\nls\n```", true),
+        ("a paired inner block", "```\n```sh\nls\n```\n```", true),
+        ("a longer closer", "```\nls\n````", true),
+        ("a shorter inner bare fence is content", "````\n```\nls\n````", true),
+        ("two blocks", "```\na\n```\n```\nb\n```", false),
+        ("an inner opener left open", "```\n```sh\nls\n```", false),
+        ("a shorter closer", "````\nls\n```", false),
+        ("text after the closer", "```\nls\n```\nok", false),
+        ("nothing inside", "```\n```", false),
+        ("a closer with a tag", "```\nls\n```sh", false),
+        ("one line", "```", false),
+    ];
+    for (name, text, want) in rows {
+        assert_eq!(wraps(text), want, "row {name}");
+    }
 }

@@ -1,0 +1,5 @@
+"╭ view ────────────╮"
+"│ make the window  │"
+"│ larger           │"
+"│ q closes         │"
+"╰──────────────────╯"
