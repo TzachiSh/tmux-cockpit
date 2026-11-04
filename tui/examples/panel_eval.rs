@@ -371,7 +371,7 @@ struct Opts {
     check: bool,
 }
 
-fn opts() -> Result<Opts, String> {
+fn opts(args: impl IntoIterator<Item = String>) -> Result<Opts, String> {
     let mut o = Opts {
         cases: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evals/panel/cases.txt"),
         model: "auto".into(),
@@ -382,7 +382,7 @@ fn opts() -> Result<Opts, String> {
         out: None,
         check: false,
     };
-    let mut a = std::env::args().skip(1);
+    let mut a = args.into_iter();
     while let Some(k) = a.next() {
         let mut val = || a.next().ok_or(format!("{k} needs a value"));
         match k.as_str() {
@@ -410,7 +410,7 @@ struct Job {
 }
 
 fn main() {
-    let o = match opts() {
+    let o = match opts(std::env::args().skip(1)) {
         Ok(o) => o,
         Err(e) => {
             eprintln!("panel_eval: {e}");
