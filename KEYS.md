@@ -72,9 +72,10 @@ Taps on the bar act on release.
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
-Plain clicks in a pane, wheel and drag are never touched. `Ctrl`+click focuses
-the pane instead of tmux's swap-pane; `set -g @cockpit_keep_swap_pane on`
-keeps the swap and loses the picker.
+Plain clicks in a pane, wheel and drag are never touched, and neither is a
+single `Ctrl`+click: tmux 3.8 binds nothing to it. `@cockpit_keep_swap_pane`
+is gone with the swap-pane it kept (#223); `install.sh --check` warns while a
+config still sets it.
 
 ## The example config, `examples/full.tmux.conf`
 

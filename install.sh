@@ -155,7 +155,7 @@ if [ "$check" -eq 1 ]; then
         row skip formats 'no cockpit config to read'
         row skip tokens 'no cockpit config to read'
     else
-        walk=0 tok=0
+        walk=0 tok=0 gone=''
         # A symlink of one onto the other must not count twice.
         [ "$cxdg" -ef "$chome" ] && chome=''
         for c in "$cxdg" "$chome"; do
@@ -172,6 +172,8 @@ if [ "$check" -eq 1 ]; then
 set*\ window-status-current-format\ *|set*\ @catppuccin_window_text\ *|\
 set*\ @catppuccin_window_current_text\ *)
                         case "$l" in *'#{P:'*) walk=$((walk + 1)) ;; esac ;;
+                    # Retired options: nothing reads them any more (#223).
+                    set*\ @cockpit_keep_swap_pane\ *) gone=@cockpit_keep_swap_pane ;;
                 esac
             done < "$c"
         done
@@ -181,6 +183,7 @@ set*\ @catppuccin_window_current_text\ *)
             row warn formats "$walk $nf panes" \
                 "delete them: the plugin draws the bar (see $DIR/examples/tmux.conf)"
         fi
+        [ -z "$gone" ] || row warn options "$gone is retired" 'delete the line: tmux 3.8 binds no swap-pane on Ctrl+click'
         if [ "$tok" -eq 0 ]; then row ok tokens 'no #{agent_*} token'
         else
             row warn tokens "$tok lines use #{agent_*}" \

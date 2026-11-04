@@ -2633,6 +2633,12 @@ dcout=$(dc "$DCP")
 is "a live #{agent_*} line is a warn tokens row, a commented one (indented too) is not" "1 1" \
    "$(dcrow "$dcout" "warn tokens") $(printf '%s\n' "$dcout" | grep -c 'tokens *1 lines')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
+# A retired option still set is a warn row; a config without one prints no row.
+is "a config without a retired option has no options row" "0" "$(dcrow "$dcout" "warn options")"
+printf '%s\n' 'set -g @cockpit_keep_swap_pane on' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a config still setting @cockpit_keep_swap_pane is a warn options row (#223)" "1" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
 # #{P:} walk the redraw path never sees.
@@ -2774,11 +2780,10 @@ if [ "$rc" = 0 ] && [ "$n" -lt 8 ]; then ok "a slow drip does not hold the hook 
 else bad "a slow drip does not hold the hook open" "rc 0, fewer than 8 lines drained" "rc $rc, $n lines"; fi
 
 echo "== the path picker fires in a window with a split =="
-# tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
-# Ctrl+double-click. Swapping moves the second click to another pane, so tmux
-# never accumulates the double-click and the binding never runs. With one pane
-# there is nothing to swap, which is why this looked fine by hand -- and why the
-# test has to use TWO panes or it proves nothing.
+# Before 3.8, tmux's own C-MouseDown1Pane was swap-pane, fired on the FIRST press
+# of a Ctrl+double-click, and moved the second click to another pane, so the
+# double-click never formed. 3.8 binds nothing there and the plugin no longer
+# overrides it (#223); TWO panes keep this proving that a press does not swap.
 #
 # Real mouse events, not a simulated binding: an outer tmux server provides the
 # pty for a client attached to the inner one, and send-keys -H writes the raw

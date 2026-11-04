@@ -407,12 +407,7 @@ pick_on() {
     tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
         '\;' run-shell -b "$(fesc "$Q_OPEN") #{pane_id}"
 }
-# Stock swap-pane fires on the first press and moves the second click to another
-# pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.
-if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
-    tmux bind-key -n C-MouseDown1Pane select-pane -t=
-    pick_on C-DoubleClick1Pane
-fi
+pick_on C-DoubleClick1Pane
 # Ctrl+right-click: no terminal link handler claims it, unlike Ctrl+left on an OSC 8 link.
 pick_on C-MouseDown3Pane
 # Alt+click, for terminals that forward it (Ghostty strips Alt).
