@@ -125,7 +125,17 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
     if !copied {
         let _ = std::fs::remove_file(&idx);
     }
-    git(root, &filters, Some(&idx), &["add", "-N", "-A"]);
+    // A gitlink's repo has its own config, filters included (#428), and `add -A`
+    // checks every gitlink for dirt by running status inside it. add has no
+    // --ignore-submodules and overrides diff.ignoreSubmodules, so only a
+    // pathspec keeps it out.
+    let mut intent = vec!["add", "-N", "-A"];
+    let links = gitlinks(&git(root, &[], None, &["ls-files", "-s", "-z"]));
+    if !links.is_empty() {
+        intent.push("--");
+        intent.extend(links.iter().map(String::as_str));
+    }
+    git(root, &filters, Some(&idx), &intent);
     let ex: Vec<String> = big.iter().map(|b| format!(":(exclude,literal){b}")).collect();
     let diff = |rev: Option<&str>| {
         let mut args = vec![
@@ -135,6 +145,7 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
+            "--ignore-submodules=all",
             "--numstat",
             "--summary",
         ];
@@ -176,6 +187,15 @@ pub fn tree_stat(root: &str, gitdir: &str, base: Option<&str>) -> Option<Stat> {
         pm.push_str(&format!("  ?{new} new"));
     }
     Some((add, del, new, pm))
+}
+
+/// Exclusion pathspecs for the gitlinks in `git ls-files -s -z` output.
+fn gitlinks(staged: &str) -> Vec<String> {
+    staged
+        .split('\0')
+        .filter_map(|r| r.strip_prefix("160000 ")?.split_once('\t'))
+        .map(|(_, p)| format!(":(exclude,literal){p}"))
+        .collect()
 }
 
 /// `cockpit-tui git-flags [--filters <dir>]`: one word per line, so a shell
