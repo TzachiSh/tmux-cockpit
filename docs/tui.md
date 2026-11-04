@@ -1300,7 +1300,7 @@ reason in a warn note.
   `tui_stale` already reads as stale.
 - A new dependency, `pulldown-cmark =0.13.4` with default features off, which
   brings `unicase` 2.10.0; `bitflags` and `memchr` were in the tree. The
-  release binary grows from 1,721,200 to 2,093,680 bytes, about 320 KB of it
+  release binary grows from 1,721,200 to 2,094,520 bytes, about 320 KB of it
   the parser.
 - New option `@cockpit_md_view` (`on`). `scripts/tmux-open-path` gains
   `md_view` and its call at the top of `open_one`, and a `--view <pane>
