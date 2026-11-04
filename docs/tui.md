@@ -638,6 +638,39 @@ cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 - Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
   or pasted character is turned away and a note says how many.
 
+### Code in the panel (#282)
+
+Code in the Result, Steps and Answer views is coloured by a small built-in
+lexer (`panel::highlight`), not a grammar crate: syntect, two-face and
+tree-sitter were turned down for the binary's size.
+
+- **Where.** A fenced block (three or more backticks, an optional language
+  tag read up to a `,` or a space, so `rust,ignore` and `{.python}` both work)
+  in a Result's text or an answer; a step's command, by its `lang`. Prose
+  outside a fence is never lexed, so an `if` in a sentence stays text. A fence
+  left open runs to the end of the text; a shorter fence inside is content.
+- **An answer that is one block.** A reply fenced whole is read from inside
+  its fence, but an Answer is only shown, never typed: when the fence names a
+  language the lexer knows, the answer keeps it and is coloured. A bare or
+  `xml` fence is a wrapper and still goes, as does any fence in Fix and Write,
+  whose text is typed into the pane.
+- **Languages.** Shell (`sh` `bash` `zsh` `console` and kin), JSON, Rust,
+  Python, JS/TS. Any other tag, or none, is plain, except a bare fence whose
+  lines all start with `$ `, which is read as shell.
+- **Colours.** Existing roles only, no new `@thm_*` option: keyword `accent`,
+  string `done`, number `running`, comment and the fence line `meta`.
+  Everything else keeps the view's `value`.
+- **NO_COLOR and ascii.** Every role is `Reset`, so the block draws exactly as
+  plain text, with no modifier standing in. The lexer prints no glyphs, so the
+  ascii tier draws the same characters.
+- **Text and widths never move.** The lexer labels slices of each line, and the
+  view lays the colours onto the rows the plain wrap already made, so a row,
+  a width and a scroll count are what they were without colour.
+- **Line-based and bounded.** One forward pass per line, linear in its length;
+  what spans lines (a block comment, Rust's nested, a multi-line string, a
+  heredoc body) is carried to the next. No input panics it: it is fuzzed with
+  random bytes and random syntax mixes.
+
 ### The panel on a small screen
 
 The panel is built down to 28x7, the floor measured over every view: under 28
@@ -1503,7 +1536,7 @@ workspace, no crate split.
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
-| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files; `panel::highlight` the code lexer (#282) |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.
