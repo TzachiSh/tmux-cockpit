@@ -335,3 +335,50 @@ fn a_long_reply_is_not_lost_to_the_cap() {
     assert!(!a.hide && !a.quit, "too much to keep: the panel stays open");
     assert!(note(&a).unwrap().contains("too much to keep hidden"));
 }
+
+const ASSUMED: &str = "<prompt>Fix it.\nAssumed: a (b)\nAssumed: c (d)</prompt>";
+
+#[test]
+fn a_correction_box_comes_back_on_its_assumption_and_sends() {
+    let mut a = replied("fix it", ASSUMED);
+    key(&mut a, KeyCode::Char('a'));
+    key(&mut a, KeyCode::Tab);
+    typ(&mut a, "not c");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Correct(1),
+            ..
+        }
+    ));
+    let mut b = round(&mut a, "correct");
+    key(&mut b, KeyCode::Enter);
+    assert_eq!(b.view, View::Busy);
+    let t = &b.run.as_ref().unwrap().turns.last().unwrap().text;
+    assert!(t.starts_with("Correction to \"Assumed: c (d)\": not c"), "{t}");
+}
+
+#[test]
+fn a_correction_box_past_its_assumptions_is_refused() {
+    let mut a = replied("fix it", ASSUMED);
+    key(&mut a, KeyCode::Char('a'));
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    assert!(good.contains("\"which\":0"), "{good}");
+    let bad = good.replace("\"which\":0", "\"which\":2");
+    assert!(refused("which", &bad).contains("no assumption"), "{bad}");
+}
+
+#[test]
+fn a_hidden_correction_at_zero_questions_comes_back() {
+    let mut a = replied("fix it", "<question>Q?</question><option>a</option>");
+    key(&mut a, KeyCode::Char('g'));
+    a.reply(Ok(ASSUMED.into()));
+    key(&mut a, KeyCode::Char('a'));
+    typ(&mut a, "x");
+    key(&mut a, KeyCode::Enter);
+    a.reply(Ok(ASSUMED.into()));
+    let r = a.run.as_ref().unwrap();
+    assert_eq!(r.rounds, r.max, "at the budget, not past it");
+    round(&mut a, "zero");
+}

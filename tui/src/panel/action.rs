@@ -1,7 +1,7 @@
 //! The action, text, cmd and state files the panel hands its wrapper, and the
 //! `--resume` state read back: the Steps after an action (version 1), and a
 //! hidden panel (version 2, #278).
-use super::app::{Action, App, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, View};
+use super::app::{Action, App, InputKind, MAX_DRAFT, MODELS, OUT_CYCLE, Resume, Run, View, assumed};
 use super::envelope::{Flow, OutType, Role, Turn};
 use super::parse::{Opt, Step};
 use serde_json::{Map, Value, json};
@@ -263,11 +263,21 @@ fn view_out(v: &View) -> Option<Value> {
         View::Home { sel } => json!({"v": "home", "sel": sel}),
         View::Compose => json!({"v": "compose"}),
         View::Question { sel, .. } => json!({"v": "question", "sel": sel}),
+        View::Input {
+            kind: InputKind::Correct(i),
+            text,
+            cur,
+            back,
+        } => {
+            let back = view_out(back)?;
+            json!({"v": "input", "kind": "correct", "which": i, "text": text, "cur": cur, "back": back})
+        }
         View::Input { kind, text, cur, back } => {
             let kind = match kind {
                 InputKind::Other => "other",
                 InputKind::Explain => "explain",
                 InputKind::FollowUp => "followup",
+                InputKind::Correct(_) => unreachable!("written above"),
             };
             json!({"v": "input", "kind": kind, "text": text, "cur": cur, "back": view_out(back)?})
         }
@@ -453,11 +463,18 @@ fn view_in(v: Value, nested: bool) -> Result<View, String> {
                 "other" => InputKind::Other,
                 "explain" => InputKind::Explain,
                 "followup" => InputKind::FollowUp,
+                "correct" => InputKind::Correct(o.num("which")?),
                 _ => return Err("an unknown box".into()),
             };
             let (text, cur) = (o.text("text")?, o.num("cur")?);
             boxed(&text, cur)?;
             let back = Box::new(view_in(o.take("back")?, true)?);
+            // a correction is to one of the result's assumptions
+            if let InputKind::Correct(i) = kind
+                && !matches!(&*back, View::Result { text, .. } if i < assumed(text).len())
+            {
+                return Err("a correction with no assumption to correct".into());
+            }
             View::Input { kind, text, cur, back }
         }
         "result" => View::Result {
