@@ -162,6 +162,29 @@ fn busy_counts_repo_block_secrets_apart_from_the_conversation() {
     let f = frame(&b, 100, 20, 0);
     assert!(f.contains("sent: screen 1 lines, 0 hidden"), "{f}");
     assert!(!f.contains("repo block"), "no repo note when it hid nothing: {f}");
+    // explain never sends the block, so it never counts it
+    let mut e = app("claude", "claude", CLAUDE_SCREEN);
+    e.cap.repo = "log:\n  abc1234 sk-abcdefghijklmnopqrst1".into();
+    ch(&mut e, '3');
+    ch(&mut e, '2');
+    let f = frame(&e, 100, 20, 0);
+    assert!(f.contains("sent: screen") && !f.contains("repo block"), "{f}");
+}
+
+#[test]
+fn busy_orders_screen_conversation_then_repo() {
+    let mut a = app("work", "bash", "$ ls\nsk-abcdefghijklmnopqrst1");
+    a.cap.repo = "log:\n  abc1234 ghp_abcdefghijABCDEFGHIJ12".into();
+    writing(&mut a, "x");
+    a.reply(Ok(
+        "<question>Which?</question><option>sk-zyxwvutsrqponmlkjih9</option><option>b</option>".into(),
+    ));
+    ch(&mut a, '1');
+    let f = frame(&a, 120, 20, 0);
+    assert!(
+        f.contains("sent: screen 2 lines, 1 hidden, 2 more in the conversation, 1 in the repo block"),
+        "{f}"
+    );
 }
 
 #[test]
