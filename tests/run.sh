@@ -4943,15 +4943,20 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # "must not hang on silent stdin" test sidesteps exactly this by holding the
 # writer open on a FIFO from a BACKGROUNDED process instead; that reliably
 # lets the deadline fire on schedule, so this test does the same.
+#
+# The proof is that the script returns while the writer still holds the FIFO,
+# not a wall clock: a "<=3 s" bound read 12 s at load 30, the script's own
+# start-up and tmux calls being slow, with the 2 s deadline intact (#215). The
+# writer holds for 60 s, so only a script that waits for EOF can see it gone.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
-( exec 9>"$CXFIFO"; sleep 8 ) & holder=$!
+( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
+if kill -0 "$holder" 2>/dev/null; then ok "a stalling writer is abandoned in time"
+else bad "a stalling writer is abandoned in time" "back before the writer let go (60s)" "${took}s"; fi
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 rm -f "$CXFIFO"
-if [ "$took" -le 3 ]; then ok "a stalling writer is abandoned in time"
-else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
 
