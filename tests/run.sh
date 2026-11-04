@@ -14019,6 +14019,22 @@ ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}' | head -c 80)" >/dev/n
 TSMANY=$(for i in $(seq 1 300); do printf '{"id":"a%016d","type":"subagent"},' "$i"; done)
 ts sub-reconcile "$(tsfin "${TSMANY%,}")" >/dev/null
 is "no array, a bad id, a cut payload, a set past one atomic write: no log" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+rm -rf "$TSD/state"
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent","tags":[]},{"id":"a2","type":"subagent"}')" >/dev/null
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent","m":{"k":1}},{"id":"a2","type":"subagent"}')" >/dev/null
+is "a nested array or object in an entry writes no row, never a short set" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+TSHUGE=$(for i in $(seq 1 2000); do printf '{"id":"b%d","type":"shell","status":"running","description":"sleep %d"},' "$i" "$i"; done)
+TSSHELLS=$(for i in $(seq 1 600); do printf '{"id":"b%d","type":"shell","status":"running","description":"sleep %d"},' "$i" "$i"; done)
+TSMANY=$(for i in $(seq 1 600); do printf '{"id":"a%016d","type":"subagent","status":"running"},' "$i"; done)
+tst0=$(date +%s)
+for a in "$TSHUGE" "$TSSHELLS" "$TSMANY"; do ts sub-reconcile "$(tsfin "${a%,}")" >/dev/null; done
+tst1=$(date +%s)
+is "2000 tasks, 600 shells, 600 subagents past one write: under 3 s together" "fast" "$([ $((tst1 - tst0)) -lt 3 ] && echo fast || echo "$((tst1 - tst0)) s")"
+is "and of them only the shells write a row, an empty set" "live " "$(tsrows)"
+rm -rf "$TSD/state"
+ts sub-taskstop "$(tsstop b1 b1 local_bash 'i1 named')" >/dev/null
+ts sub-taskstop "$(tsstop m1 m1 monitor 'i1 named')" >/dev/null
+is "a shell's or a monitor's TaskStop writes no row (only a teammate's is kill-tm)" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
 TSBIN="$TSD/bin"; mkdir -p "$TSBIN"; printf '#!/bin/sh\ntouch "%s/tmux-ran"\n' "$TSD" > "$TSBIN/tmux"; chmod +x "$TSBIN/tmux"
 printf '%s\n' "$(tsstop a1 a1 local_agent x)" | env PATH="$TSBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" sub-taskstop >/dev/null 2>&1
 printf '%s\n' "$(tsfin '')" | env PATH="$TSBIN:$PATH" TMUX_PANE=%1 XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" sub-reconcile >/dev/null 2>&1

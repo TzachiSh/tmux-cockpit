@@ -76,6 +76,8 @@ subs_taskstop() {
         subs_write "$sid" "kill"$'\t'"$REPLY"
         return 0
     fi
+    # Only a teammate: a shell's (local_bash) or any other task's description could name one.
+    [ "$ty" = in_process_teammate ] || return 0
     payload=$in subs_id task_id; name=$REPLY
     subs_desc command "$out" || REPLY=""
     [ -n "$name$REPLY" ] || return 0
@@ -87,17 +89,22 @@ subs_taskstop() {
 # Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot read
 # whole, or a row past one atomic write, writes nothing: a short set would end live agents.
 subs_reconcile() {
-    local LC_ALL=C sid arr re rt ob ty ids="" descs="" row
+    local LC_ALL=C sid arr re rt ob ty ids="" descs=""
     subs_payload
     subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
-    # The array as agent-state's subs_count matches it: whole strings or bytes other than `]`.
-    re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]"])*)\]'
+    # The array as agent-state's subs_count matches it, whole strings or bytes other than `]`,
+    # and no `[` either: a nested array would end the match early and drop the entries after it.
+    re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]["])*)\]'
     [[ $payload =~ $re ]] || return 0
     arr=${BASH_REMATCH[1]}
-    # One flat object at a time: whole strings or bytes other than `}`.
-    re='^[^{]*\{(("([^"\\]|\\.)*"|[^}"])*)\}(.*)$' rt='"type": ?"([a-z_]{1,32})"'
+    # Bounded: each step below copies the rest of the array, so the loop is quadratic in it.
+    [ "${#arr}" -le 65536 ] || return 0
+    # One flat object at a time, commas and spaces between: whole strings or bytes other than
+    # braces and brackets, so a nested object or array is no match, and what is left at the
+    # end is not all separators, which writes nothing.
+    re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([a-z_]{1,32})"'
     while [[ $arr =~ $re ]]; do
-        ob=${BASH_REMATCH[1]} arr=${BASH_REMATCH[4]}
+        ob=${BASH_REMATCH[1]} arr=${arr:${#BASH_REMATCH[0]}}
         [[ $ob =~ $rt ]] || return 0
         ty=${BASH_REMATCH[1]}
         case "$ty" in
@@ -108,10 +115,10 @@ subs_reconcile() {
             subs_desc description "$ob" || return 0
             descs=$descs$'\t'$REPLY ;;
         esac
+        [ $((${#ids} + ${#descs})) -le 3890 ] || return 0
     done
-    row="live"$'\t'"$ids$descs"
-    [ "${#row}" -le 3900 ] || return 0
-    subs_write "$sid" "$row"
+    [[ $arr =~ ^[[:space:],]*$ ]] || return 0
+    subs_write "$sid" "live"$'\t'"$ids$descs"
 }
 
 # subs_write <session_id> <row>: "<epoch>\t<row>" appended to the session's log.
