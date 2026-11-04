@@ -599,10 +599,17 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 Style::new().fg(th.running),
             ));
             b.lines.push(plain(""));
-            // the envelope's count also covers the conversation turns: they are not screen
-            let talk = match app.hidden.saturating_sub(app.screen_hidden) {
+            // the envelope's count also covers the repo block and the turns: they are not screen.
+            // Only a write sends the block, and by Busy its envelope has already joined it.
+            let writing = app.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Write { .. }));
+            let repo = if writing { super::redact::redact(app.cap.repo.get()).1 } else { 0 };
+            let talk = match app.hidden.saturating_sub(app.screen_hidden + repo) {
                 0 => String::new(),
                 n => format!(", {n} more in the conversation"),
+            };
+            let talk = match repo {
+                0 => talk,
+                n => format!("{talk}, {n} in the repo block"),
             };
             let sent = format!(
                 "sent: screen {} lines, {} hidden{talk} {d} {flow}",

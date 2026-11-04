@@ -149,6 +149,22 @@ fn golden_busy_still_working() {
 }
 
 #[test]
+fn busy_counts_repo_block_secrets_apart_from_the_conversation() {
+    let mut a = app("work", "bash", "$ ls");
+    a.cap.repo = "branch: main\nlog:\n  abc1234 add key sk-abcdefghijklmnopqrst1".into();
+    writing(&mut a, "x");
+    let f = frame(&a, 100, 20, 0);
+    assert!(f.contains("sent: screen 1 lines, 0 hidden, 1 in the repo block"), "{f}");
+    assert!(!f.contains("in the conversation"), "a repo secret is not a conversation one: {f}");
+    let mut b = app("work", "bash", "$ ls");
+    b.cap.repo = "branch: main".into();
+    writing(&mut b, "x");
+    let f = frame(&b, 100, 20, 0);
+    assert!(f.contains("sent: screen 1 lines, 0 hidden"), "{f}");
+    assert!(!f.contains("repo block"), "no repo note when it hid nothing: {f}");
+}
+
+#[test]
 fn busy_echoes_what_was_sent_and_its_limit() {
     let mut a = app("work", "bash", "$ ls\nsk-abcdefghijklmnopqrst1 ghp_abcdefghijABCDEFGHIJ12");
     assert_eq!(a.screen_hidden, 2);
