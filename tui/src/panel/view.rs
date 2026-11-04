@@ -2,8 +2,8 @@
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
 use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
 use super::envelope::Flow;
-use super::highlight::{self, Role};
 use super::request::Call;
+use crate::highlight::{self, Role};
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::Frame;

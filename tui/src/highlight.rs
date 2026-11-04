@@ -1,11 +1,14 @@
-//! A small line-based lexer for code in the panel (#282): fenced blocks in the
-//! Result and Answer text, and a step's command. It only labels slices of the
-//! input, so the concatenated spans are the input byte for byte and a width
-//! never moves. Built in, not syntect: the binary is the budget.
+//! A small line-based lexer for code (#282): fenced blocks in the panel's
+//! Result and Answer text, a step's command, and the markdown viewer's code
+//! blocks (#283). It only labels slices of the input, so the concatenated spans
+//! are the input byte for byte and a width never moves. Built in, not syntect:
+//! the binary is the budget. [`split`] is the one fence rule the panel's view
+//! and its reply parsing share.
 //!
 //! Each line is one forward pass that advances at least a byte per step, so a
 //! line costs time linear in its length, with no backtracking. What spans lines
 //! (a block comment, a string, a heredoc) is carried in [`State`].
+use std::ops::Range;
 
 /// What a slice of code is. The panel maps each to an `@thm_*` colour.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -446,49 +449,97 @@ pub fn fence(s: &str) -> Option<&str> {
     ticks(s).map(|(_, rest)| tag(rest))
 }
 
-/// The tag in the rest of an opener's line: its first word, cut at a `,`
+/// The tag in an opener's info string: its first word, cut at a `,`
 /// (`rust,ignore`), with a pandoc `{.python}` brace and dot taken off.
-fn tag(rest: &str) -> &str {
+pub fn tag(rest: &str) -> &str {
     let t = rest.trim_start();
     let t = t.strip_prefix('{').map_or(t, |b| b.strip_prefix('.').unwrap_or(b));
     let end = t.find(|c: char| c.is_whitespace() || c == ',' || c == '}').unwrap_or(t.len());
     &t[..end]
 }
 
-/// Markdown-ish text: the lines inside a fenced block are lexed by the fence's
-/// tag, the fence lines are [`Role::Fence`], and every other line is plain. A
-/// fence left open runs to the end. A bare fence whose lines all start `$ ` is
-/// a shell session.
-pub fn fenced(text: &str) -> Vec<Vec<(Role, &str)>> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    let mut out = Vec::with_capacity(lines.len());
-    let mut i = 0;
+/// A fenced block among [`split`]'s lines, as indexes into them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fence<'a> {
+    /// the opener's tag, `""` for a bare fence
+    pub tag: &'a str,
+    /// the opener's line
+    pub open: usize,
+    pub body: Range<usize>,
+    /// the closer's line; `None` for a fence left open, which runs to the end
+    pub close: Option<usize>,
+}
+
+/// What [`split`] cuts lines into, in order: every line is in exactly one part.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Part<'a> {
+    /// lines outside any fence
+    Prose(Range<usize>),
+    Code(Fence<'a>),
+}
+
+/// The one fence rule: an opener is three or more backticks after any
+/// indentation, with no backtick in the rest of its line (that is inline code);
+/// its closer is a line of at least as many backticks and nothing else. A
+/// shorter fence inside is content, and a fence left open runs to the end.
+pub fn split<'a>(lines: &[&'a str]) -> Vec<Part<'a>> {
+    let mut out = Vec::new();
+    let (mut i, mut prose) = (0, 0);
     while i < lines.len() {
         let Some((n, rest)) = ticks(lines[i]) else {
-            out.push(plain(lines[i]));
             i += 1;
             continue;
         };
-        out.push(vec![(Role::Fence, lines[i])]);
-        let body = &lines[i + 1..];
-        let end = body
-            .iter()
-            .position(|l| ticks(l).is_some_and(|(m, r)| m >= n && r.trim().is_empty()));
-        let body = &body[..end.unwrap_or(body.len())];
-        let tag = tag(rest);
-        let prompts = || {
-            let mut full = body.iter().filter(|l| !l.trim().is_empty()).peekable();
-            full.peek().is_some() && full.all(|l| l.trim_start().starts_with("$ "))
-        };
-        match lang(tag) {
-            Some(l) => out.extend(lex(l, body)),
-            None if tag.is_empty() && prompts() => out.extend(lex(Lang::Shell, body)),
-            None => out.extend(body.iter().map(|s| plain(s))),
+        if prose < i {
+            out.push(Part::Prose(prose..i));
         }
-        i += 1 + body.len();
-        if let Some(close) = end.map(|_| lines[i]) {
-            out.push(vec![(Role::Fence, close)]);
-            i += 1;
+        let close = lines[i + 1..]
+            .iter()
+            .position(|l| ticks(l).is_some_and(|(m, r)| m >= n && r.trim().is_empty()))
+            .map(|k| i + 1 + k);
+        out.push(Part::Code(Fence {
+            tag: tag(rest),
+            open: i,
+            body: i + 1..close.unwrap_or(lines.len()),
+            close,
+        }));
+        i = close.map_or(lines.len(), |c| c + 1);
+        prose = i;
+    }
+    if prose < lines.len() {
+        out.push(Part::Prose(prose..lines.len()));
+    }
+    out
+}
+
+/// A fenced block's body lexed by its tag. A bare fence whose lines all start
+/// `$ ` is a shell session; any other unknown tag is plain.
+pub fn block<'a>(tag: &str, body: &[&'a str]) -> Vec<Vec<(Role, &'a str)>> {
+    let prompts = || {
+        let mut full = body.iter().filter(|l| !l.trim().is_empty()).peekable();
+        full.peek().is_some() && full.all(|l| l.trim_start().starts_with("$ "))
+    };
+    match lang(tag) {
+        Some(l) => lex(l, body),
+        None if tag.is_empty() && prompts() => lex(Lang::Shell, body),
+        None => body.iter().map(|s| plain(s)).collect(),
+    }
+}
+
+/// Markdown-ish text: the lines inside a fenced block are lexed by the fence's
+/// tag ([`block`]), the fence lines are [`Role::Fence`], and every other line
+/// is plain. The fences are [`split`]'s.
+pub fn fenced(text: &str) -> Vec<Vec<(Role, &str)>> {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out = Vec::with_capacity(lines.len());
+    for part in split(&lines) {
+        match part {
+            Part::Prose(r) => out.extend(lines[r].iter().map(|s| plain(s))),
+            Part::Code(f) => {
+                out.push(vec![(Role::Fence, lines[f.open])]);
+                out.extend(block(f.tag, &lines[f.body]));
+                out.extend(f.close.map(|c| vec![(Role::Fence, lines[c])]));
+            }
         }
     }
     out

@@ -131,8 +131,8 @@ fn unfence(o: &str) -> &str {
 /// `xml` fence is a wrapper and still goes.
 fn code_fence(raw: &str) -> bool {
     let first = raw.split('\n').next().unwrap_or("");
-    let tag = raw.starts_with("```").then(|| super::highlight::fence(first)).flatten();
-    tag.and_then(super::highlight::lang).is_some()
+    let tag = raw.starts_with("```").then(|| crate::highlight::fence(first)).flatten();
+    tag.and_then(crate::highlight::lang).is_some()
 }
 
 /// "Other" and its kin: the panel adds that option itself.

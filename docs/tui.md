@@ -743,7 +743,7 @@ cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 ### Code in the panel (#282)
 
 Code in the Result, Steps and Answer views is coloured by a small built-in
-lexer (`panel::highlight`), not a grammar crate: syntect, two-face and
+lexer (`highlight`, a top-level module since #283), not a grammar crate: syntect, two-face and
 tree-sitter were turned down for the binary's size.
 
 - **Where.** A fenced block (three or more backticks, an optional language
@@ -1263,6 +1263,18 @@ reason in a warn note.
   `board_subs.rs` the badge (now `the_badge_on_the_row_at_40_60_and_95`), the
   narrowing tree line and the token check in `subagent_goldens`.
 
+### Contract changes for the shared highlighter (for #61)
+
+- #283: `panel::highlight` moves to a top-level `highlight` module, unchanged,
+  so the markdown viewer can colour code without reaching into the panel. The
+  module table gains its row; `panel` loses the mention.
+- `highlight::{split, Part, Fence}` are new: lines in, prose ranges and fenced
+  blocks out (tag, opener line, body range, closer line or `None` for a fence
+  left open). `highlight::fenced` is built on it.
+- `highlight::block(tag, body)` is new: a block body lexed by its tag, with
+  the bare-fence `$ ` rule. `highlight::tag(info)` is public: the tag in an
+  opener's info string.
+
 ### The triage overlay
 
 Phase 2, not shipped. It answers a blocked agent in place rather than attaching
@@ -1682,7 +1694,8 @@ workspace, no crate split.
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
-| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files; `panel::highlight` the code lexer (#282) |
+| `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files |
+| `highlight` | the code lexer (#282) and `split`, the one fence rule the panel's view and its reply parsing share (#283) |
 
 Every mutating action stays a shell script: the binary prints
 `<verb> <pane-id>` and a wrapper runs it.
