@@ -5,7 +5,12 @@
 TUI_MIN=0.4.0
 # shellcheck disable=SC2034  # read by tui-fetch: the release it installs is the floor
 TUI_TAG=cockpit-tui-v$TUI_MIN
-COCKPIT_TUI_BIN=${COCKPIT_TUI_BIN:-$(cd -P "${BASH_SOURCE[0]%/*}/../.." && pwd)/bin/cockpit-tui}
+# Absolute or the plugin's own: a bare name is relative to whatever cwd the
+# caller has, and tui-fetch would take it for its own directory (#243).
+case ${COCKPIT_TUI_BIN:-} in
+    /*) ;;
+    *) COCKPIT_TUI_BIN=$(cd -P "${BASH_SOURCE[0]%/*}/../.." && pwd)/bin/cockpit-tui ;;
+esac
 # shellcheck source=vnum.sh
 . "${BASH_SOURCE[0]%/*}/vnum.sh" || return 1
 

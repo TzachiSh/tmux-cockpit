@@ -8,14 +8,18 @@ set -u
 # A failed cd must stop here, not bind every key to /scripts/...
 DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 
-# tpm hides plugin output, so an old tmux only hears this message.
-tmux_version=$(tmux -V 2>/dev/null | sed 's/^tmux //; s/[^0-9.].*$//')
-vmaj=${tmux_version%%.*} vmin=${tmux_version#*.}
-case "$vmin" in ''|*[!0-9]*) vmin=0 ;; esac
-if [ -n "$vmaj" ] && { [ "$vmaj" -lt 3 ] || { [ "$vmaj" -eq 3 ] && [ "$vmin" -lt 8 ]; }; }; then
-    tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
-    exit 0
-fi
+# COCKPIT_TUI_BIN, TUI_MIN and vnum, before anything reads them.
+# shellcheck source=scripts/lib/tui.sh
+. "$DIR/scripts/lib/tui.sh" || exit 1
+# tpm hides plugin output, so an old tmux only hears this message. A version
+# with no leading digit (next-3.9, master) is a build newer than any release.
+tmux_version=$(tmux -V 2>/dev/null); tmux_version=${tmux_version#tmux }
+case "$tmux_version" in [0-9]*)
+    if [ "$(vnum "$tmux_version")" -lt "$(vnum 3.8)" ]; then
+        tmux display-message "tmux-cockpit needs tmux 3.8 or newer (found $tmux_version); bootstrap.sh builds it"
+        exit 0
+    fi ;;
+esac
 
 # Single quotes, not printf %q: inside a tmux double-quoted string tmux eats
 # %q's backslashes before sh sees them.
@@ -194,7 +198,7 @@ ik=$(key @cockpit_info_key i)
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
 [ -z "$ik" ] || tmux bind-key "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
-    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "${COCKPIT_TUI_BIN:-$DIR/bin/cockpit-tui}") info $SRC_PANE"
+    "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE"
 
 # The retired side fix's bindings outlive it on a server that only reloads.
 tmux list-keys -T prefix -F "#{key_string}"$'\037'"#{key_command}" 2>/dev/null \
@@ -251,8 +255,6 @@ if [ -n "$rk" ]; then
 fi
 
 # Required (#199). Offline: one --version, never a fetch, on every load.
-# shellcheck source=scripts/lib/tui.sh
-. "$DIR/scripts/lib/tui.sh" || exit 1
 tv=$(tui_check)
 case $? in
     1) tmux display-message "tmux-cockpit: cockpit-tui is missing; run $DIR/install.sh" ;;
@@ -266,30 +268,27 @@ fi
 
 # Reload sources every file in #{config_files}, resolved once at bind time.
 # From argv a bare ; argument ends bind-key itself, so pick_on below passes '\;'.
-rlconf=$(mktemp) || exit 1
-trap 'rm -f "$rlconf"' EXIT HUP INT TERM
-{
-    old_ifs=$IFS
-    IFS=,
-    set -f
-    # shellcheck disable=SC2046 # splitting #{config_files} on comma is the point
-    set -- $(tmux display-message -p '#{config_files}' 2>/dev/null)
-    set +f
-    IFS=$old_ifs
-    [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
-    rlk=$(key @cockpit_reload_key R)
-    [ -z "$rlk" ] || printf 'bind-key %s {\n' "$(sq "$rlk")"
-    if [ -n "$rlk" ]; then
+# The block bindings below go to tmux on stdin (source-file -), not via a file.
+rlk=$(key @cockpit_reload_key R)
+if [ -n "$rlk" ]; then
+    {
+        old_ifs=$IFS
+        IFS=,
+        set -f
+        # shellcheck disable=SC2046 # splitting #{config_files} on comma is the point
+        set -- $(tmux display-message -p '#{config_files}' 2>/dev/null)
+        set +f
+        IFS=$old_ifs
+        [ "$#" -gt 0 ] || set -- "${HOME:-}/.tmux.conf"
+        printf 'bind-key %s {\n' "$(sq "$rlk")"
         for f in "$@"; do
             # -q: a listed but missing /etc/tmux.conf would abort the whole chain.
             printf '    source-file -q %s\n' "$(sq "$f")"
         done
         printf '    display-message "config reloaded"\n'
         printf '}\n'
-    fi
-} > "$rlconf"
-tmux source-file "$rlconf"
-rm -f "$rlconf"
+    } | tmux source-file -
+fi
 
 # switch-client first: moving the last window out of the client's session would
 # destroy it and detach the client. The source is pinned by id (#{S:} shadows it).
@@ -299,8 +298,6 @@ rm -f "$rlconf"
 # matches nothing, and a ## replacement inserts nothing.
 mk=$(key @cockpit_move_key M)
 if [ -n "$mk" ]; then
-    mvconf=$(mktemp) || exit 1
-    trap 'rm -f "$mvconf"' EXIT HUP INT TERM
     {
         printf 'bind-key %s {\n' "$(sq "$mk")"
         cat <<'EOF'
@@ -309,16 +306,12 @@ if [ -n "$mk" ]; then
     run-shell -C "display-menu -T '#[align=centre] move ##{window_index}:##{window_name} to ' -x W -y W #{S/n:#{s|(#)|\\1\\1|:#{qa:session_name}} '' 'switch-client -t #{session_id} ; move-window -s #{@cockpit_move_src} -t #{session_id}: ; select-window -t #{@cockpit_move_src}' ,} '' 'new session...' n \"command-prompt -p 'new session:' 'set -g @cockpit_move_dst \\\"%%%\\\" ; if-shell -F \\\"####{@cockpit_move_dst}\\\" { new-session -s \\\"####{@cockpit_move_dst}\\\" -c \\\"####{@cockpit_move_cwd}\\\" ; move-window -k -s #{@cockpit_move_src} -t :^ }'\""
 }
 EOF
-    } > "$mvconf"
-    tmux source-file "$mvconf"
-    rm -f "$mvconf"
+    } | tmux source-file -
 fi
 
 # The flag is the state, and unsetting inherits the config's value, so nothing is stashed.
 fsk=$(key @cockpit_fullscreen_key e)
 if [ -n "$fsk" ]; then
-    fsconf=$(mktemp) || exit 1
-    trap 'rm -f "$fsconf"' EXIT HUP INT TERM
     {
         printf 'bind-key %s {\n' "$(sq "$fsk")"
         cat <<'EOF'
@@ -333,9 +326,7 @@ if [ -n "$fsk" ]; then
     }
 }
 EOF
-    } > "$fsconf"
-    tmux source-file "$fsconf"
-    rm -f "$fsconf"
+    } | tmux source-file -
 fi
 
 # --- the menu and the taps ---------------------------------------------------------
@@ -407,24 +398,8 @@ pick_on() {
     tmux bind-key -n "$1" select-pane -t= '\;' set -pF -t= @cockpit_click_line '#{mouse_line}' \
         '\;' run-shell -b "$(fesc "$Q_OPEN") #{pane_id}"
 }
-# Stock swap-pane fires on the first press and moves the second click to another
-# pane, so the double-click never forms. @cockpit_keep_swap_pane keeps swap-pane.
-if [ -z "$(tmux show-option -gqv @cockpit_keep_swap_pane)" ]; then
-    tmux bind-key -n C-MouseDown1Pane select-pane -t=
-    pick_on C-DoubleClick1Pane
-fi
+pick_on C-DoubleClick1Pane
 # Ctrl+right-click: no terminal link handler claims it, unlike Ctrl+left on an OSC 8 link.
 pick_on C-MouseDown3Pane
 # Alt+click, for terminals that forward it (Ghostty strips Alt).
 pick_on M-MouseDown1Pane
-
-# Last, so no later message overwrites it; once per server, not on every reload.
-# shellcheck source=scripts/lib/vnum.sh
-if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ] &&
-        . "$DIR/scripts/lib/vnum.sh" 2>/dev/null; then
-    fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
-    tmux set-option -gq @cockpit_fzf_notice "${fzf_v:-?}"
-    if [ "$(vnum "$fzf_v")" -lt "$(vnum 0.73.0)" ]; then
-        tmux display-message "fzf $fzf_v found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it"
-    fi
-fi

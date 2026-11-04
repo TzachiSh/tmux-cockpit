@@ -2633,6 +2633,21 @@ dcout=$(dc "$DCP")
 is "a live #{agent_*} line is a warn tokens row, a commented one (indented too) is not" "1 1" \
    "$(dcrow "$dcout" "warn tokens") $(printf '%s\n' "$dcout" | grep -c 'tokens *1 lines')"
 cp "$DC/conf.bak" "$DH/.tmux.conf"
+# A retired option still set is a warn row; a config without one prints no row.
+is "a config without a retired option has no options row" "0" "$(dcrow "$dcout" "warn options")"
+printf '%s\n' 'set -g @cockpit_keep_swap_pane on' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "a config still setting @cockpit_keep_swap_pane is a warn options row (#223)" "1" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+# A bare unset carries no value after the name, and still names the option.
+printf '%s\n' 'set -gu @cockpit_keep_swap_pane' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "so does a bare set -gu @cockpit_keep_swap_pane" "1" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
+printf '%s\n' 'set -g @cockpit_keep_swap_pane_x on' >> "$DH/.tmux.conf"
+dcout=$(dc "$DCP")
+is "but an option that only starts with the name does not" "0" "$(dcrow "$dcout" "warn options")"
+cp "$DC/conf.bak" "$DH/.tmux.conf"
 # The option name has to be a whole word. Without that the glob fires on any
 # option whose name merely ends in one of these, and the row cries over a
 # #{P:} walk the redraw path never sees.
@@ -2774,11 +2789,10 @@ if [ "$rc" = 0 ] && [ "$n" -lt 8 ]; then ok "a slow drip does not hold the hook 
 else bad "a slow drip does not hold the hook open" "rc 0, fewer than 8 lines drained" "rc $rc, $n lines"; fi
 
 echo "== the path picker fires in a window with a split =="
-# tmux's own C-MouseDown1Pane is swap-pane, and it fires on the FIRST press of a
-# Ctrl+double-click. Swapping moves the second click to another pane, so tmux
-# never accumulates the double-click and the binding never runs. With one pane
-# there is nothing to swap, which is why this looked fine by hand -- and why the
-# test has to use TWO panes or it proves nothing.
+# Before 3.8, tmux's own C-MouseDown1Pane was swap-pane, fired on the FIRST press
+# of a Ctrl+double-click, and moved the second click to another pane, so the
+# double-click never formed. 3.8 binds nothing there and the plugin no longer
+# overrides it (#223); TWO panes keep this proving that a press does not swap.
 #
 # Real mouse events, not a simulated binding: an outer tmux server provides the
 # pty for a client attached to the inner one, and send-keys -H writes the raw
@@ -7422,6 +7436,9 @@ tfout=$(cd "$TF/cwd" && env -u COCKPIT_TUI_OFFLINE COCKPIT_TUI_BIN=ct COCKPIT_TU
         "$TF/plugin/scripts/tui-fetch" --version cockpit-tui-v0.9.0 2>&1)
 is "a relative COCKPIT_TUI_BIN falls back to the plugin's bin/" "absent cockpit-tui 0.9.0" \
    "$([ -e "$TF/cwd/ct" ] && echo present || echo absent) $(tf_ver)"
+# The check lives in tui.sh, so every reader gets it, not tui-fetch alone.
+is "and every script that sources tui.sh resolves it the same way" "$DIR/bin/cockpit-tui" \
+   "$(cd "$TF/cwd" && COCKPIT_TUI_BIN=ct bash -c '. "$1/scripts/lib/tui.sh" && printf %s "$COCKPIT_TUI_BIN"' _ "$DIR")"
 # Unpinned (no --version, no option), a newer binary is current: a make
 # tui-bin build ahead of the release must not be downgraded to it.
 mkdir -p "$TF/tmuxnone" "$TF/tmuxold"
@@ -9408,16 +9425,15 @@ is "full.tmux.conf hardcodes no ~/.local/bin path" "0" \
    "$(grep -c '~/.local/bin' "$DIR/examples/full.tmux.conf")"
 
 
-# --- old-fzf notice, and tm without a terminal --------------------------------
-echo "== tm without a terminal lists and asks; cockpit.tmux's old-fzf notice fires once =="
+# --- tm without a terminal, and no fzf notice --------------------------------
+echo "== tm without a terminal lists and asks; cockpit.tmux says nothing about fzf =="
 FZTD=$(mktmpd)
-# A fake fzf that only answers --version: all the notice in cockpit.tmux reads.
+# A fake fzf that only answers --version: what the retired notice read.
 fzfake() {                    # fzfake <dir> <version string>
     mkdir -p "$1"
     printf '#!/bin/sh\necho "%s"\n' "$2" > "$1/fzf"; chmod +x "$1/fzf"
 }
-fznew="$FZTD/new"; fzold="$FZTD/old"
-fzfake "$fznew" "0.74.3 (15f64c49)"
+fzold="$FZTD/old"
 fzfake "$fzold" "0.44.1 (debian)"
 FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
 for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename mktemp rm; do
@@ -9451,22 +9467,14 @@ FZWANT='Sessions:'
 is "tm without a terminal prompts on stderr" "err" \
    "$(fznofzf tma "$DIR/scripts/tm")"
 
+# Nothing uses fzf since #267, so an old one on PATH is not worth a word (#346).
 FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -cF "fzf 0.44.1 found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it")
-"$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')
-is "the old-fzf notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
+is "an old fzf on PATH draws no notice and sets no option" "0 " \
+   "$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c fzf) $("$TMUX_REAL" -L "$FZNS" show-option -gqv @cockpit_fzf_notice)"
 "$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
-FZNS2="cockpit-fzfquiet-$$"; SOCKS="$SOCKS $FZNS2"
-env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/null \
-    new-session -d 'sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZNS2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "and a 0.73+ fzf is never told anything" "0" \
-   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')"
-"$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
 rm -rf "$FZTD"
 # --- #105 review rows ---------------------------------------------------------
 # Width-aware review and fleet rows, the tab-safe pane record, and the delivery

@@ -52,13 +52,12 @@ ask() {  # ask <question> <default y|n>
 have() { command -v "$1" >/dev/null 2>&1; }
 sha_c() { if have sha256sum; then sha256sum -c -; else shasum -a 256 -c -; fi; }
 
+# shellcheck source=scripts/lib/vnum.sh
+. "$DIR/scripts/lib/vnum.sh" || exit 1
 ver_ge() {  # ver_ge <have> <maj> <min>
-    local v=${1#tmux } maj min
-    v=${v#v}                                          # v1.13.0-abc1234-date: x.y.z leads
-    v=${v%%[!0-9.]*}; maj=${v%%.*}; min=${v#*.}; min=${min%%.*}
-    case "$maj" in ''|*[!0-9]*) return 0 ;; esac      # unparseable: assume modern
-    case "$min" in ''|*[!0-9]*) min=0 ;; esac
-    [ "$maj" -gt "$2" ] || { [ "$maj" -eq "$2" ] && [ "$min" -ge "$3" ]; }
+    local v=${1#tmux }; v=${v#v}                      # v1.13.0-abc1234-date: x.y.z leads
+    case "$v" in [0-9]*) ;; *) return 0 ;; esac       # unparseable: assume modern
+    [ "$(vnum "$v")" -ge "$(vnum "$2.$3")" ]
 }
 
 # ---------------------------------------------------------------- packages ---
