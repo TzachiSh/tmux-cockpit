@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text] %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -134,6 +134,8 @@ fn main() {
             }
         },
         Some("info") => std::process::exit(cockpit_tui::info::main(&args[1..])),
+        // file browser (#363)
+        Some("files") => std::process::exit(cockpit_tui::files::main(&args[1..])),
         Some("pick") => std::process::exit(cockpit_tui::pick::main(&args[1..])),
         // branch popup (#246)
         Some("branch") => std::process::exit(cockpit_tui::branch::main(&args[1..])),
