@@ -401,14 +401,3 @@ pick_on C-DoubleClick1Pane
 pick_on C-MouseDown3Pane
 # Alt+click, for terminals that forward it (Ghostty strips Alt).
 pick_on M-MouseDown1Pane
-
-# Last, so no later message overwrites it; once per server, not on every reload.
-# shellcheck source=scripts/lib/vnum.sh
-if command -v fzf >/dev/null 2>&1 && [ -z "$(tmux show-option -gqv @cockpit_fzf_notice)" ] &&
-        . "$DIR/scripts/lib/vnum.sh" 2>/dev/null; then
-    fzf_v=$(fzf --version 2>/dev/null); fzf_v=${fzf_v%% *}
-    tmux set-option -gq @cockpit_fzf_notice "${fzf_v:-?}"
-    if [ "$(vnum "$fzf_v")" -lt "$(vnum 0.73.0)" ]; then
-        tmux display-message "fzf $fzf_v found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it"
-    fi
-fi

@@ -9413,16 +9413,15 @@ is "full.tmux.conf hardcodes no ~/.local/bin path" "0" \
    "$(grep -c '~/.local/bin' "$DIR/examples/full.tmux.conf")"
 
 
-# --- old-fzf notice, and tm without a terminal --------------------------------
-echo "== tm without a terminal lists and asks; cockpit.tmux's old-fzf notice fires once =="
+# --- tm without a terminal, and no fzf notice --------------------------------
+echo "== tm without a terminal lists and asks; cockpit.tmux says nothing about fzf =="
 FZTD=$(mktmpd)
-# A fake fzf that only answers --version: all the notice in cockpit.tmux reads.
+# A fake fzf that only answers --version: what the retired notice read.
 fzfake() {                    # fzfake <dir> <version string>
     mkdir -p "$1"
     printf '#!/bin/sh\necho "%s"\n' "$2" > "$1/fzf"; chmod +x "$1/fzf"
 }
-fznew="$FZTD/new"; fzold="$FZTD/old"
-fzfake "$fznew" "0.74.3 (15f64c49)"
+fzold="$FZTD/old"
 fzfake "$fzold" "0.44.1 (debian)"
 FZNB="$FZTD/nofzf"; mkdir -p "$FZNB"
 for c in bash sh git tput readlink sed grep ls head cat awk sort id dirname basename mktemp rm; do
@@ -9456,22 +9455,14 @@ FZWANT='Sessions:'
 is "tm without a terminal prompts on stderr" "err" \
    "$(fznofzf tma "$DIR/scripts/tm")"
 
+# Nothing uses fzf since #267, so an old one on PATH is not worth a word (#346).
 FZNS="cockpit-fzfnotice-$$"; SOCKS="$SOCKS $FZNS"
 env -u TMUX -u TMUX_PANE PATH="$fzold:$PATH" "$TMUX_REAL" -L "$FZNS" -f /dev/null \
     new-session -d 'sleep 300' >/dev/null 2>&1
 "$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm1=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -cF "fzf 0.44.1 found; tmux-cockpit's pickers need 0.73+, bootstrap.sh fetches it")
-"$TMUX_REAL" -L "$FZNS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-fzm2=$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')
-is "the old-fzf notice fires once per server, not again on a reload" "1 1" "$fzm1 $fzm2"
+is "an old fzf on PATH draws no notice and sets no option" "0 " \
+   "$("$TMUX_REAL" -L "$FZNS" show-messages 2>/dev/null | grep -c fzf) $("$TMUX_REAL" -L "$FZNS" show-option -gqv @cockpit_fzf_notice)"
 "$TMUX_REAL" -L "$FZNS" kill-server >/dev/null 2>&1
-FZNS2="cockpit-fzfquiet-$$"; SOCKS="$SOCKS $FZNS2"
-env -u TMUX -u TMUX_PANE PATH="$fznew:$PATH" "$TMUX_REAL" -L "$FZNS2" -f /dev/null \
-    new-session -d 'sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$FZNS2" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
-is "and a 0.73+ fzf is never told anything" "0" \
-   "$("$TMUX_REAL" -L "$FZNS2" show-messages 2>/dev/null | grep -c 'pickers need 0.73+')"
-"$TMUX_REAL" -L "$FZNS2" kill-server >/dev/null 2>&1
 rm -rf "$FZTD"
 # --- #105 review rows ---------------------------------------------------------
 # Width-aware review and fleet rows, the tab-safe pane record, and the delivery

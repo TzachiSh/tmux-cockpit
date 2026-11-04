@@ -47,9 +47,6 @@ screenshot and a red/green colourblind reader.
 ### Requirements
 
 - tmux 3.8 or newer. Below it the plugin says so and binds nothing.
-- fzf 0.73 or newer, for the path picker and the folder browser.
-  `bootstrap.sh` fetches a newer one into `~/.local/bin` when the distro's is
-  older.
 - jq, for `install.sh --hooks` and the review gate.
 - Claude Code, or any agent that can run a command on lifecycle events.
 - The `cockpit-tui` binary, which draws the board and the panel. `install.sh`
