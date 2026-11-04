@@ -187,8 +187,7 @@ fn tui_row(want: &str) -> String {
     let bin = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
     let want = clean(want);
     let want = want.trim();
-    let want = want.strip_prefix("cockpit-").unwrap_or(want);
-    let want = want.strip_prefix("tui-").unwrap_or(want);
+    let want = want.strip_prefix("cockpit-tui-").unwrap_or(want);
     let want = want.strip_prefix('v').unwrap_or(want);
     if !want.is_empty() && want != have {
         format!("{have}  {bin}  (want {want} -- prefix U updates it)")
