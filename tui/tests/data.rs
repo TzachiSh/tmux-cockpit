@@ -2,7 +2,7 @@
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, git_facts, list_panes, preview, split_cursor, view};
+use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -344,6 +344,34 @@ fn the_cursor_line_ends_the_capture() {
     assert_eq!(split_cursor("a\n0 7\n"), Some(("a", None)), "a hidden cursor");
     assert_eq!(split_cursor("a\nb\n"), None, "no cursor line: not a capture we asked for");
     assert_eq!(split_cursor(""), None);
+}
+
+/// #284: `screen` reads the capture and its cursor line from one tmux call,
+/// drops OSC sequences, picks the view and caps it.
+#[test]
+fn screen_reads_the_view_off_one_capture() {
+    let r = Rig::new("scr");
+    r.capture("pre \x1b]8;;u\x1b\\LINK\x1b]8;;\x1b\\ after\nnext\n\n\n1 3\n");
+    assert_eq!(
+        screen("%9", 10).as_deref(),
+        Some("pre LINK after\nnext\n\n"),
+        "OSC out, the view to the cursor's row"
+    );
+    r.capture("a\nb\n");
+    assert_eq!(screen("%9", 10), None, "no cursor line: not the capture asked for");
+}
+
+#[test]
+fn a_screen_over_the_cap_keeps_its_newest_rows_where_they_were() {
+    let r = Rig::new("scrcap");
+    let line = format!("\x1b[38;5;196m{}\x1b[0m", "x".repeat(100));
+    r.capture(&format!("{}\n0 0\n", vec![line.as_str(); 1000].join("\n")));
+    let v = screen("%9", 1000).unwrap();
+    let rows: Vec<&str> = v.split('\n').collect();
+    assert!(v.len() <= 64 * 1024 + 1000, "{} bytes", v.len());
+    assert_eq!(rows.len(), 1000, "the rows the cap took are blank, not gone");
+    assert!(rows[0].is_empty() && rows[999] == line, "{:?} .. {:?}", rows[0], rows[999]);
+    assert!(rows.iter().all(|l| l.is_empty() || *l == line), "no row cut inside an escape");
 }
 
 /// Rules 22, 66 and 67: what the tail says when the hooks said nothing. `doing`

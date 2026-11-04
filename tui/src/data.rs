@@ -975,7 +975,11 @@ pub fn screen(id: &str, n: usize) -> Option<String> {
     ])?;
     let out = strip_osc(&out);
     let (body, cursor) = split_cursor(&out)?;
-    Some(cap(&view(body, cursor, n)))
+    let v = view(body, cursor, n);
+    // the rows the cap took come back blank, so the newest stays where it was
+    let kept = cap(&v);
+    let lost = v.matches('\n').count() - kept.matches('\n').count();
+    Some("\n".repeat(lost) + &kept)
 }
 
 /// A capture's rows and its cursor row, `None` when the cursor is hidden, off
