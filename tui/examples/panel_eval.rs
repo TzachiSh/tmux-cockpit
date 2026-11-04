@@ -902,7 +902,6 @@ struct Tally {
     must_not_hit: Of,
     asked_when_due: Of,
     on_target: Of,
-    false_asks: Of,
     /// Asking as a classifier, over ask and write cases (either is neither):
     /// asked on a write case, and did not ask on an ask case.
     fpr: Of,
@@ -939,7 +938,6 @@ fn tally(cases: &[Case], done: &[(usize, u128, Option<Grade>)]) -> Tally {
         must_not_hit: of(&|_, g| !g.forbidden.is_empty(), &|c, _| !c.must_not.is_empty()),
         asked_when_due: of(&asked, &is(Expect::Ask)),
         on_target: of(&|_, g| g.asked && g.on_target, &is(Expect::Ask)),
-        false_asks: of(&asked, &is(Expect::Write)),
         fpr: of(&asked, &is(Expect::Write)),
         fnr: of(&|_, g| !g.asked, &is(Expect::Ask)),
         facts: Of(need - lack, need),
@@ -1022,7 +1020,6 @@ fn summary(cases: &[Case], done: &[(usize, u128, Option<Grade>)], hashes: &[u64]
     println!("must_not hit    {}", pct(t.must_not_hit));
     println!("asked when due  {}", pct(t.asked_when_due));
     println!("  on target     {}", pct(t.on_target));
-    println!("false asks      {}", pct(t.false_asks));
     println!("asking          FPR {}  FNR {}", pct(t.fpr), pct(t.fnr));
     println!("facts present   {}", pct(t.facts));
     if t.refused > 0 {
@@ -1200,7 +1197,7 @@ mod tests {
         let t = tally(&cases, &done);
         assert_eq!(t.passed, Of(2, 4));
         assert_eq!(t.asked_when_due, Of(1, 1));
-        assert_eq!(t.false_asks, Of(1, 3));
+        assert_eq!(t.fpr, Of(1, 3));
         assert_eq!(t.facts, Of(3, 4));
         assert_eq!(t.errors, 1);
         assert_eq!(t.per_case, [(1, 1, 1), (1, 3, 0)]);
