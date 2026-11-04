@@ -300,8 +300,36 @@ fn a_claude_code_screen_shows_its_input_box() {
     let mut rows: Vec<String> = (0..30).map(|k| format!("output {k}")).collect();
     rows.extend(["╭────╮".into(), "│ > ▏│".into(), "╰────╯".into(), "  ? for shortcuts".into()]);
     let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
-    let v = view(&scr(&refs, 40), Some(31), 6);
+    // Claude Code hides the terminal's cursor and draws its own
+    let v = view(&scr(&refs, 40), None, 6);
     assert_eq!(v, "output 28\noutput 29\n╭────╮\n│ > ▏│\n╰────╯\n  ? for shortcuts");
+}
+
+/// 40 rows, every one with text, `r0`..`r39`: a full-screen TUI.
+fn full() -> String {
+    (0..40).map(|k| format!("r{k}")).collect::<Vec<_>>().join("\n")
+}
+
+#[test]
+fn a_vim_like_screen_with_the_cursor_near_the_top_shows_the_top() {
+    // vim on line 2 of a full screen: tmux's py = 1 - 20/3, clamped to 0
+    let v = view(&full(), Some(1), 20);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!((got.len(), got[0], got[1]), (20, "r0", "r1"), "the cursor row shows");
+}
+
+#[test]
+fn a_visible_cursor_mid_screen_sits_a_third_down_the_view() {
+    // cursor on row 20, 21 rows shown: the view starts at 20 - 21/3 = 13
+    let v = view(&full(), Some(20), 21);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!((got[0], got[7], got.len()), ("r13", "r20", 21), "the cursor is row 7 of 21");
+}
+
+#[test]
+fn a_hidden_cursor_on_a_full_screen_shows_its_last_rows() {
+    // htop: no cursor, text to the last row
+    assert_eq!(view(&full(), None, 3), "r37\nr38\nr39");
 }
 
 #[test]

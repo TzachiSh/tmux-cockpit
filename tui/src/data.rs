@@ -992,22 +992,32 @@ pub fn split_cursor(out: &str) -> Option<(&str, Option<usize>)> {
     }
 }
 
-/// The `rows` rows of a visible `screen` the pane shows, as tmux's choose-tree
-/// preview picks them (screen-write.c, `screen_write_preview`): the view ends
-/// at the cursor's row or the last row with text, whichever is lower (the last
-/// row with text when the cursor is hidden). A screen whose used part fits is
-/// all of it from row 0, as the pane looks; a taller one loses its top. Rows
-/// past the end are never content.
+/// The `rows` rows of a visible `screen` the pane shows. Its used part runs to
+/// the cursor's row or the last row with text, whichever is lower; rows past it
+/// are never content. A used part that fits is all of it from row 0, as the pane
+/// looks. A taller one:
+/// - with the cursor shown (vim, less, a shell): tmux's own rule for its
+///   choose-tree preview (screen-write.c, `screen_write_preview`), the view's top
+///   at `cursor_y - rows / 3` clamped to `[0, used - rows]`, so the cursor sits a
+///   third down. tmux's horizontal pan is not taken: a long line is clipped.
+/// - with the cursor hidden (Claude Code, htop): the view ends at the last row
+///   with text.
 pub fn view(screen: &str, cursor: Option<usize>, rows: usize) -> String {
     let mut lines: Vec<&str> = screen.split('\n').collect();
     let text = lines.iter().rposition(|l| !blank_row(l));
     let Some(end) = text.max(cursor) else {
         return String::new();
     };
-    if lines.len() <= end {
-        lines.resize(end + 1, "");
+    let used = end + 1;
+    if lines.len() < used {
+        lines.resize(used, "");
     }
-    lines[(end + 1).saturating_sub(rows)..=end].join("\n")
+    let top = match cursor {
+        _ if used <= rows => 0,
+        Some(c) => c.saturating_sub(rows / 3).min(used - rows),
+        None => used - rows,
+    };
+    lines[top..top + rows.min(used)].join("\n")
 }
 
 /// A row whose only cells are blanks, colours or not.
