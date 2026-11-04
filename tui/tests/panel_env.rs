@@ -394,8 +394,9 @@ fn capture_returns_before_git_answers() {
 fn a_container_or_unknown_command_pane_carries_no_repo_block() {
     let e = Env::new("capture-container", &[("COCKPIT_TMUX", None)]);
     git_init(&e.dir.join("r"));
-    // rows: pane_current_command, a folder that is only the local client's
-    for cmd in ["docker", "podman", "kubectl", "lxc", "incus", "nerdctl", "distrobox", ""] {
+    // rows: pane_current_command, a folder that is only the local client's;
+    // toolbox stands for any command not on the list, and "" for none at all
+    for cmd in ["docker", "podman", "kubectl", "lxc", "incus", "nerdctl", "toolbox", ""] {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
         assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd:?}");
     }
@@ -405,8 +406,8 @@ fn a_container_or_unknown_command_pane_carries_no_repo_block() {
 fn a_local_shell_editor_or_agent_pane_keeps_its_repo_block() {
     let e = Env::new("capture-local", &[("COCKPIT_TMUX", None)]);
     git_init(&e.dir.join("r"));
-    // rows: pane_current_command
-    for cmd in ["zsh", "fish", "nvim", "vim", "claude", "codex"] {
+    // rows: pane_current_command; 2.1.246 is a live Claude renamed to its version
+    for cmd in ["zsh", "fish", "nvim", "vim", "claude", "codex", "2.1.246", "cursor-agent"] {
         fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
         let c = capture("%9").unwrap();
         assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{cmd}: {:?}", c.repo);

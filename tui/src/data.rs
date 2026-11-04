@@ -659,7 +659,7 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
 
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
 /// agent names too.
-fn agentish(comm: &str) -> bool {
+pub(crate) fn agentish(comm: &str) -> bool {
     let b = comm.rsplit('/').next().unwrap_or(comm).trim_start_matches('-').to_ascii_lowercase();
     is_agent_cmd(&b) || version_shaped(&b)
 }
