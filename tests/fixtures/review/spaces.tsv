@@ -1,4 +1,4 @@
-has space.txt	-2	bravo	has space.txt:2 (-)  bravo	4
-has space.txt	-3	charlie	has space.txt:3 (-)  charlie	5
-has space.txt	2	BRAVO-CHANGED	has space.txt:2 (+)  BRAVO-CHANGED	6
-new file.txt	1	brand new	new file.txt:1 (+)  brand new	3
+has space.txt	-2	bravo	has space.txt:2 (-)  bravo
+has space.txt	-3	charlie	has space.txt:3 (-)  charlie
+has space.txt	2	BRAVO-CHANGED	has space.txt:2 (+)  BRAVO-CHANGED
+new file.txt	1	brand new	new file.txt:1 (+)  brand new

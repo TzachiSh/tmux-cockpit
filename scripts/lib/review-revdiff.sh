@@ -1,17 +1,12 @@
 #!/usr/bin/env bash
-# tmux-review's review loop: revdiff does the reading and the commenting, this
-# file launches it, ingests what it wrote, and asks what to do next.
-# Sourced by tmux-review, never run. Bash 4+.
-#
-# The exit codes are the loop's contract with review_pane and --request:
-# 20 deliver, 21 approved, 125 refused by git.sh (#330), anything else leave.
-# 127 is new: revdiff is not installed. 126: revdiff failed (its stderr is left
-# in <session dir>/revdiff.err for the caller to print).
+# tmux-review's review loop: revdiff reads and comments; this launches it,
+# ingests what it wrote, and asks what next. Sourced by tmux-review. Bash 4+.
+# Exit codes, the contract with review_pane and --request: 20 deliver,
+# 21 approved, 125 refused by git.sh (#330), 126 revdiff failed (stderr in
+# <session dir>/revdiff.err), 127 no revdiff, anything else leave.
 
-# The line as the tree (+, context) or the base (-) has it; <line> is the
-# store's number, <sign> its side. A deleted line lives in the base rev, not
-# in the tree. Control characters out and 1000 bytes at most, as the store has
-# always held a quote.
+# The line as the tree (+, context) or the base rev (-) has it, control
+# characters out, 1000 bytes at most.
 read_line() {                 # <dir> <path> <line> <sign> [base-rev]
     local line
     case "$3" in ''|*[!0-9]*) return 0 ;; esac   # anything else is a sed script
@@ -32,9 +27,7 @@ pane_label() {                # <pane-id>
     printf '%s\n' "${t:+$t }($1)"
 }
 
-# The scratch beside a store: revdiff's input and output, a snapshot an older
-# version wrote, and revdiff's own auto-saved history. By name, never `rm -rf`
-# on the dir: it may also hold a queued delivery.
+# The scratch beside a store, by name: the dir may also hold a queued delivery.
 drop_rows() {
     [ -n "${1:-}" ] || return 0
     rm -rf -- "$1.rows" "$1.rdin" "$1.rdout" "${1%/*}/history"
@@ -46,10 +39,9 @@ drop_store() {
     rm -f -- "$1" "$1.base"
 }
 
-# revdiff's output into the store. Its records carry no fragment, so each gets
-# the quote the store already had for the same anchor (a line the agent moved
-# since keeps the text it was pinned on), else the line as the tree has it now.
-# A file that does not parse changes nothing: the store stays as it was.
+# revdiff's output into the store. Its records carry no fragment: each keeps the
+# quote the store had for that anchor, else the line as it is now. A file that
+# does not parse changes nothing.
 ingest_revdiff() {            # <dir> <store> <revdiff-output> <base-rev>
     local dir=$1 store=$2 out=$3 rev=$4 i k frag
     declare -A STORE=() OLDF=(); STORE_N=0
@@ -105,8 +97,8 @@ review_loop() {
     local dir=$1 store=$2
     [ -n "$dir" ] && [ -n "$store" ] || { usage; exit 2; }
     command -v revdiff >/dev/null 2>&1 || {
-        # display-message too: inside display-popup -E stderr of a command that
-        # exits at once is rendered to nobody.
+        # display-message too: under display-popup -E, stderr of a command that
+        # exits at once reaches nobody.
         tmux display-message "cockpit: revdiff not found: install it, see #233" 2>/dev/null
         printf 'revdiff not found: install it, see #233\n' >&2
         exit 127
@@ -122,8 +114,7 @@ review_loop() {
         exit 125
     fi
 
-    # The base this review diffs against: the choice made at the prompt,
-    # remembered beside the store so a resumed review keeps it.
+    # The base chosen with b, kept beside the store so a resumed review keeps it.
     local base_line label mode nxt rev
     COCKPIT_REVIEW_BASE=$(cat -- "$store.base" 2>/dev/null); export COCKPIT_REVIEW_BASE
     set_base_line() {
@@ -131,8 +122,7 @@ review_loop() {
             base_line=$(review_base "$dir" "${COCKPIT_REVIEW_BASE:-auto}")
             label=$(cut -f2 <<<"$base_line"); mode=$(cut -f3 <<<"$base_line")
             rev=${base_line%%$'\t'*}
-            # next_base wraps: with one base holding it hands back the mode we
-            # are on, a "b" that goes nowhere.
+            # With one base holding, next_base wraps back to this mode.
             nxt=$(next_base "$dir" "$mode"); [ "$nxt" = "$mode" ] && nxt=""
         else
             label=uncommitted; mode=uncommitted; rev=HEAD; nxt=""

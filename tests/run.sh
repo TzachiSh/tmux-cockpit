@@ -5144,24 +5144,6 @@ is "each untracked file still contributes its one + row" \
    "800" "$("$DIR/scripts/tmux-review" --lines "$RVMANY" | grep -c .)"
 rm -rf "$RVMANY"
 
-echo "== tmux-review --lines: every row knows where it sits in its file's preview =="
-# The preview opened every file at its top, so reviewing a change 900 lines down
-# meant scrolling by hand for every row. Each row now carries a 5th field: its
-# own 1-based line inside a per-file preview (one stat line, then the diff from
-# that file's first @@). FAIL-first: rows have four fields, so $5 is empty.
-RVOFF=$(mktmpd)
-(
-  cd "$RVOFF" || exit
-  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
-  git init -q -b main .
-  seq 1 40 > f.txt; git add -A; git commit -q -m init
-  sed -i '3s/.*/THREE/; 30s/.*/THIRTY/' f.txt
-) >/dev/null 2>&1
-rvoff=$("$DIR/scripts/tmux-review" --lines "$RVOFF" | awk -F'\t' '$3=="THIRTY" {print $5}')
-want=$(( 1 + $(git -C "$RVOFF" diff HEAD -- f.txt | awk '/^@@/{h=1} h' | grep -n '^+THIRTY' | cut -d: -f1) ))
-is "the second hunk's row offset matches the preview's line" "$want" "$rvoff"
-rm -rf "$RVOFF"
-
 echo "== tmux-review --lines: a giant diff caps to one notice instead of wedging the popup =="
 # The review popup is modal and runs lines_mode at startup and on every reload.
 # A regenerated lockfile / vendored bundle is a single-file diff of tens of
@@ -5202,10 +5184,9 @@ case "$rvcapout" in
 esac
 is "the capped output is exactly one row (the popup stays trivially small)" \
    "1" "$(printf '%s\n' "$rvcapout" | grep -c .)"
-# The notice is a row like any other and reaches the same 5-field split in
-# rows_mode, so it carries an offset too rather than arriving one field short.
-is "the cap notice carries the offset field too, so no row is short" \
-   "5" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
+# The notice is a row like any other: the same four fields.
+is "the cap notice has a row's four fields, so no row is short" \
+   "4" "$(printf '%s' "$rvcapout" | awk -F'\t' '{print NF}')"
 # A diff at or under the cap is untouched -- still fully parsed, row per line.
 RVUNDER=$(mktmpd)
 (
@@ -5304,8 +5285,8 @@ case "$rvwideout" in
 esac
 is "the byte cap's notice is one row, same shape as the row cap's" \
    "1" "$(printf '%s\n' "$rvwideout" | grep -c .)"
-is "the byte cap's notice carries the offset field too, so no row is short" \
-   "5" "$(printf '%s' "$rvwideout" | awk -F'\t' '{print NF}')"
+is "the byte cap's notice has a row's four fields too" \
+   "4" "$(printf '%s' "$rvwideout" | awk -F'\t' '{print NF}')"
 # A wide file that stays UNDER 4 MB is still parsed row by row -- the byte cap
 # must not swallow an ordinary diff that merely has long lines.
 RVNARROW=$(mktmpd)
@@ -5575,15 +5556,12 @@ RVGOLD=$(mktmpd)
   printf 'a\nZED\nc\nADDED\n' > app.go
   printf 'p\nQQ\n' > tests/unit_test.go
 ) >/dev/null 2>&1
-# The trailing column is the row's line in a per-file preview
-# (one stat line, then the diff from that file's first @@). Hand-derived: app.go renders -b at line 4, +ZED
-# at 5, +ADDED at 7; unit_test.go renders -q at 4 and +QQ at 5.
 rvgoldwant=$(printf '%s\n' \
-  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q	4' \
-  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ	5' \
-  'app.go	-2	b	app.go:2 (-)  b	4' \
-  'app.go	2	ZED	app.go:2 (+)  ZED	5' \
-  'app.go	4	ADDED	app.go:4 (+)  ADDED	7')
+  'tests/unit_test.go	-2	q	tests/unit_test.go:2 (-)  q' \
+  'tests/unit_test.go	2	QQ	tests/unit_test.go:2 (+)  QQ' \
+  'app.go	-2	b	app.go:2 (-)  b' \
+  'app.go	2	ZED	app.go:2 (+)  ZED' \
+  'app.go	4	ADDED	app.go:4 (+)  ADDED')
 is "the rebuilt --lines output is byte-identical to the pre-fix parser" \
    "$rvgoldwant" "$("$DIR/scripts/tmux-review" --lines "$RVGOLD")"
 rm -rf "$RVGOLD"
@@ -13815,6 +13793,87 @@ is "--uninstall --hooks removes every cockpit command and nothing foreign" "0 1 
    "$(jq '[.. | strings | select(test("TMUX_COCKPIT_DIR"))] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "my-own-stop")] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "/opt/x/scripts/agent-state sub-idle")] | length' "$SLH/.claude/settings.json")"
 is "and the file is the one it started as" "$(jq -S . "$SLH/orig.json")" "$(jq -S . "$SLH/.claude/settings.json")"
 fi
+echo "== tmux-review --request: the popup title shows a # in the repo path, never expands it (#329) =="
+# -T is a tmux format: without fesc a dir named x#(touch MARK) renders as "x".
+if need_tmux "tmux-review --request -T"; then :; else
+RT9="cockpit-rt9-$$"; SOCKS="$SOCKS $RT9"; RT9D=$(mktmpd); RT9S=$(mktmpd)
+RT9R="$RT9D/x#(touch MARK)#S"
+mkdir -p "$RT9R"
+( cd "$RT9R" && git init -q -b main . && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > f ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RT9" -f /dev/null new-session -d -s t -x 100 -y 30 -c "${RT9R//#/##}" 'exec -a claude bash' >/dev/null 2>&1
+RT9P=$("$TMUX_REAL" -L "$RT9" list-panes -t t: -F '#{pane_id}')
+RT9SHIM=$(mktmpd)
+cat > "$RT9SHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) p=; for a; do [ "\$p" = -T ] && printf '%s' "\$a" > "$RT9S/title"; p=\$a; done; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RT9" "\$@"
+SHIMEOF
+chmod +x "$RT9SHIM/tmux"
+PATH="$RT9SHIM:$PATH" XDG_STATE_HOME=$RT9S "$DIR/scripts/tmux-review" --request "$RT9P" >/dev/null 2>&1
+RT9ROOT=$(git -C "$RT9R" rev-parse --show-toplevel)
+is "the title, drawn by tmux, names the repo path literally" \
+   " review · requested · ${RT9ROOT/#"$HOME/"/\~/} " \
+   "$("$TMUX_REAL" -L "$RT9" display-message -p "$(cat "$RT9S/title" 2>/dev/null)")"
+is "and nothing ran" "no" "$([ -e "$RT9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$RT9" kill-server >/dev/null 2>&1
+rm -f "$DIR/MARK" MARK
+fi
+
+echo "== tmux-review: the rc 20 --deliver run-shell passes a # in the repo path through literally (#329) =="
+# run-shell expands formats: without fesc a dir named x#S... reached --deliver
+# as x<session>..., and without its shq'd dir the "Paths are relative" line went.
+if need_tmux "tmux-review rc 20 run-shell"; then :; else
+RD9="cockpit-rd9-$$"; SOCKS="$SOCKS $RD9"; RD9D=$(mktmpd); RD9S=$(mktmpd)
+RD9R="$RD9D/x#S#(touch MARK)"
+mkdir -p "$RD9R"
+( cd "$RD9R" && git init -q -b main . && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > f ) >/dev/null 2>&1
+RD9B=$(mktmpd); RD9W=$(mktmpd); fake_revdiff "$RD9B"
+printf '## f:2 (+)\nRD9-MARKER\n' > "$RD9W/out.1"; echo 10 > "$RD9W/rc.1"
+"$TMUX_REAL" -L "$RD9" -f /dev/null new-session -d -s t -x 400 -y 50 -c "${RD9R//#/##}" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RD9" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RD9P=$("$TMUX_REAL" -L "$RD9" list-panes -t t: -F '#{pane_id}')
+until_out claude "$TMUX_REAL" -L "$RD9" display-message -p -t "$RD9P" '#{pane_current_command}'
+RD9SHIM=$(mktmpd)
+printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$RD9" > "$RD9SHIM/tmux"; chmod +x "$RD9SHIM/tmux"
+printf d | PATH="$RD9SHIM:$RD9B:$PATH" FAKE_RD_DIR="$RD9W" XDG_STATE_HOME=$RD9S \
+    "$DIR/scripts/tmux-review" -p "$RD9P" >/dev/null 2>&1
+RD9ROOT=$(git -C "$RD9R" rev-parse --show-toplevel)
+if until_cap "$RD9" "$RD9P" '*RD9-MARKER*'; then ok "the review is delivered through run-shell"
+else bad "the review is delivered through run-shell" "RD9-MARKER in the pane" "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P")"; fi
+case "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P")" in
+    *"Paths are relative to $RD9ROOT."*) ok "and --deliver got the repo path literally" ;;
+    *) bad "and --deliver got the repo path literally" "Paths are relative to $RD9ROOT." \
+         "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P" | grep -a 'relative')" ;;
+esac
+is "and nothing ran" "no" "$([ -e "$RD9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$RD9" kill-server >/dev/null 2>&1
+rm -f "$DIR/MARK" MARK
+fi
+
+echo "== tmux-review: review_base, origin/HEAD outranks a local master when there is no main (#328) =="
+# The master arm moved above origin/HEAD answered "vs master" and stayed green.
+RLM=$(mktmpd)
+(
+  cd "$RLM" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q --bare -b develop remote.git
+  git clone -q remote.git work
+  cd work || exit
+  printf 'a\n' > f; git add -A; git commit -q -m init; git push -q origin develop
+  git remote set-head origin develop
+  git checkout -q -b master; printf 'a\nM\n' > f; git commit -q -am master-moved
+  git checkout -q -b topic; printf 'a\nM\nT\n' > f; git commit -q -am topic
+) >/dev/null 2>&1
+RLMB=$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$RLM/work")
+is "a local master, no main: the label is vs origin/develop" "vs origin/develop" "$(printf '%s' "$RLMB" | cut -f2)"
+is "and the base is the merge-base with origin/develop, not master" \
+   "$(git -C "$RLM/work" rev-parse origin/develop)" "$(printf '%s' "$RLMB" | cut -f1)"
+rm -rf "$RLM"
 
 echo "== agent-state: @panestate_since stamps entering needs-input, in the one tmux call (#225) =="
 # tm's "waiting Nm" reads the stamp. It is set when the pane ENTERS needs-input, kept while

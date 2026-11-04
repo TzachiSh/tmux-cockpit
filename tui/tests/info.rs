@@ -405,3 +405,31 @@ fn review_base_origin_head_outranks_a_local_main() {
         (base.as_str(), "vs origin/develop", "branch")
     );
 }
+
+/// The same with a local master and no main (#328): a master arm placed above
+/// origin/HEAD would answer `vs master`.
+#[test]
+fn review_base_origin_head_outranks_a_local_master() {
+    let d = repo("ohead-master");
+    let remote = PathBuf::from(format!("{}-remote", d.display()));
+    let _ = std::fs::remove_dir_all(&remote);
+    std::fs::create_dir_all(&remote).unwrap();
+    let _g = (Scratch(d.clone()), Scratch(remote.clone()));
+    sh(&remote, &["init", "-q", "--bare", "-b", "develop"]);
+    sh(&d, &["branch", "-m", "develop"]);
+    sh(&d, &["remote", "add", "origin", remote.to_str().unwrap()]);
+    sh(&d, &["push", "-q", "origin", "develop"]);
+    sh(&d, &["remote", "set-head", "origin", "develop"]);
+    let base = rev(&d, "HEAD");
+    sh(&d, &["checkout", "-q", "-b", "master"]);
+    std::fs::write(d.join("f"), "a\nb\n").unwrap();
+    sh(&d, &["commit", "-q", "-am", "master-moved"]);
+    sh(&d, &["checkout", "-q", "-b", "topic"]);
+    std::fs::write(d.join("f"), "a\nb\nc\n").unwrap();
+    sh(&d, &["commit", "-q", "-am", "topic"]);
+    let b = review_base(d.to_str().unwrap(), "auto", "", "");
+    assert_eq!(
+        (b.rev.as_str(), b.label.as_str(), b.mode.as_str()),
+        (base.as_str(), "vs origin/develop", "branch")
+    );
+}

@@ -37,9 +37,8 @@ _parse_store() {
                     *) bad=1 ;;
                 esac ;;
             '> '*)
-                # Only the line right after a line header is the fragment (a file-level
-                # comment has none, so its first "> " line is body); later
-                # "> " lines are body (a comment may start with a quote).
+                # Only the line right after a line header is the fragment; any
+                # other "> " line is body (a comment may start with a quote).
                 if [ $ingest = 0 ] && [ $i -ge 0 ] && [ $frag = 0 ] && [ $body = 0 ] \
                    && [ "${STORE[$i.side]}" != file-level ]; then
                     STORE[$i.frag]=${line#'> '}; frag=1
