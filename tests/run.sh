@@ -13531,7 +13531,7 @@ echo "== tmux-open-path --folder: the file browser, and what is done with the li
 if need_tmux "folder browser"; then :; else
 FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
-FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"
+FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
 FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
 printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
 for e in ed-cockpit ed-visual ed-editor nvim; do
@@ -13621,9 +13621,17 @@ fbwait "$FB/ed.log"
 is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
 "$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
 # the editor window is named for the file and sits in its folder
-fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
-is "touch: the window is named for the file and starts in its folder" "n.md $FBD/sub" \
-   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.md $FBD/sub")"
+# (a .txt: a markdown file goes to the viewer instead, #283)
+fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
+# a markdown file goes to the viewer, drawn in the browser's popup, touch or not (#283)
+for fbt in on off; do
+    fb "$fbt" "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+    is "$fbt: a markdown file picked in the browser opens in the viewer" "view -- $FBD/sub/n.md" "$(cat "$FB/tui.args" 2>/dev/null)"
+    is "$fbt: and no editor window opens for it" "" \
+       "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+done
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
