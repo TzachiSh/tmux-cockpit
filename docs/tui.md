@@ -1301,7 +1301,9 @@ saw per transcript path, for as long as its thread lives, and gives it back when
 the window has none. It drops the memory when the file is shorter than at the last
 read or is another file (device and inode), and a prompt in the window replaces
 it. After a gap it reads back to the last read, up to 2 MB, so a prompt written and
-buried between two reads is not missed. The board's worker polls, so it keeps the
+buried between two reads is not missed; a gap over 2 MB drops the memory, since a
+newer prompt may sit in it. A prompt that carries an image is an array row, and
+its text block counts as the prompt. The board's worker polls, so it keeps the
 anchor for the whole turn. A one-shot `--json` or `--rows` reads each transcript
 once: a prompt already past the window reads `""` and `null`, as before.
 

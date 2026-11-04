@@ -328,7 +328,13 @@ fn read_facts(path: &str) -> Facts {
         return fa;
     }
     let file = (md.dev(), md.ino());
-    let kept = PROMPTS.with(|c| c.borrow().get(path).filter(|p| p.file == file && p.len <= len).cloned());
+    // A gap past what the window can scan may hold a newer prompt: nothing is kept then.
+    let kept = PROMPTS.with(|c| {
+        let c = c.borrow();
+        c.get(path)
+            .filter(|p| p.file == file && p.len <= len && len - p.len <= TAIL_MAX)
+            .cloned()
+    });
     // The window reaches back to the last read, so a prompt written and buried
     // between two reads is seen, not the older one that was kept.
     let first = kept.as_ref().map_or(TAIL_FIRST, |p| (len - p.len).clamp(TAIL_FIRST, TAIL_MAX));
@@ -400,15 +406,32 @@ fn parse(lines: Vec<String>) -> Facts {
                         turn_over = false;
                     }
                     None => {
-                        let mut interrupted = false;
+                        let (mut interrupted, mut result, mut typed) = (false, false, None);
                         for b in c.as_array().into_iter().flatten() {
                             if let Some(id) = b["tool_use_id"].as_str() {
                                 asks.retain(|a| a != id);
+                                result = true;
                             }
                             // safe beside the tool_results: they carry no `text`
-                            interrupted |= b["text"].as_str().is_some_and(|t| t.starts_with(INTERRUPT));
+                            if let Some(t) = b["text"].as_str() {
+                                interrupted |= t.starts_with(INTERRUPT);
+                                if typed.is_none() && !t.starts_with(INTERRUPT) && !t.starts_with('<') {
+                                    typed = Some(t);
+                                }
+                            }
                         }
                         turn_over = interrupted;
+                        // A prompt with an image is an array too: its text block is the
+                        // human's, unless the row is a tool_result or one the harness wrote.
+                        if let Some(t) = typed
+                            && !result
+                            && !interrupted
+                            && v["isMeta"].as_bool() != Some(true)
+                            && !first_line(t).is_empty()
+                        {
+                            fa.user = first_line(t);
+                            fa.user_at = ts;
+                        }
                     }
                 }
             }

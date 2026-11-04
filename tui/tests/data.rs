@@ -900,6 +900,69 @@ fn the_remembered_prompt_belongs_to_its_own_transcript() {
     append(&p, &turn_output(300));
     assert!(asked_of(&r, "%1").1.is_some());
     assert_eq!(asked_of(&r, "%2"), (String::new(), None));
+    // %2's read must not have taken %1's slot: one shared slot would lose it here
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1").0, "mine");
+}
+
+/// A gap past what the window can scan may hold a newer prompt, so the older one
+/// is no longer the answer: it reads as master did, with none.
+#[test]
+fn a_gap_past_the_scan_limit_forgets_the_prompt() {
+    let r = Rig::new("askedhuge");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(&p, &(prompt("two") + &turn_output(2200)));
+    assert_eq!(asked_of(&r, "%1"), (String::new(), None));
+}
+
+/// A prompt that carries an image is an array of blocks, not a string, and is
+/// still the human's turn: it replaces the kept one.
+#[test]
+fn an_image_prompt_replaces_the_remembered_one() {
+    let r = Rig::new("askedimage");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    asked_of(&r, "%1");
+    append(
+        &p,
+        "{\"type\":\"user\",\"timestamp\":\"2026-08-27T00:02:00.000Z\",\"message\":{\"content\":[\
+         {\"type\":\"image\",\"source\":{\"type\":\"base64\",\"data\":\"AA\"}},{\"type\":\"text\",\"text\":\"see this\"}]}}\n",
+    );
+    append(&p, &turn_output(300));
+    assert_eq!(asked_of(&r, "%1").0, "see this");
+}
+
+/// Array rows that are not the human: a tool_result (also one with a text block
+/// beside it), a meta row (a skill's text),
+/// a harness tag and an interrupt. None of them moves `asked`.
+#[test]
+fn array_rows_that_are_not_a_prompt_leave_asked_alone() {
+    let r = Rig::new("askedarray");
+    let p = r.transcript("s1", &(prompt("one") + &turn_output(1)));
+    for row in [
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"},{"type":"text","text":"beside a result"}]}}"#,
+        r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"Base directory for this skill"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"<task-notification>x"}]}}"#,
+        r#"{"type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+    ] {
+        append(&p, &(row.to_string() + "\n"));
+        assert_eq!(asked_of(&r, "%1").0, "one", "{row}");
+    }
+}
+
+/// The window never shrinks below 256 KB for a small gap: `said` is an older row
+/// that a window the size of the gap would not reach.
+#[test]
+fn a_small_gap_still_reads_the_256k_floor() {
+    let r = Rig::new("askedfloor");
+    let said = "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T00:00:30.000Z\",\"message\":{\"stop_reason\":\"tool_use\",\
+                \"content\":[{\"type\":\"text\",\"text\":\"working on it\"}]}}\n";
+    let p = r.transcript("s1", &(prompt("go") + said + &turn_output(20)));
+    asked_of(&r, "%1");
+    append(&p, &turn_output(4));
+    r.rows(&[row("%1", "claude", "running", "s1", "101")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").said, "working on it");
 }
 
 /// "YYYY-MM-DDTHH:MM:SS.000Z" for `secs` from now (negative: the past).
