@@ -97,7 +97,7 @@ fn a_running_subagent_has_its_type_description_start_and_tokens() {
 }
 
 #[test]
-fn finished_is_done_and_an_api_error_row_or_a_user_stop_is_failed() {
+fn finished_is_done_an_api_error_row_is_failed_and_a_user_stop_is_stopped() {
     let d = fixture("states");
     meta(&d, "d", r#"{"agentType":"x","finished":true}"#);
     meta(&d, "e", r#"{"agentType":"x","finished":true}"#);
@@ -111,16 +111,44 @@ fn finished_is_done_and_an_api_error_row_or_a_user_stop_is_failed() {
     );
     meta(&d, "u", r#"{"agentType":"x","stoppedByUser":true}"#);
     meta(&d, "y", r#"{"agentType":"x","finished":"yes"}"#);
+    meta(&d, "v", r#"{"agentType":"x","stoppedByUser":"true"}"#);
     let mut got: Vec<(String, SubState)> = read(&d).into_iter().map(|s| (s.id, s.state)).collect();
     got.sort_by(|a, b| a.0.cmp(&b.0));
     let want = [
         ("d", SubState::Done),
         ("e", SubState::Failed),
-        ("u", SubState::Failed),
+        ("u", SubState::Stopped),
+        ("v", SubState::Running),
         ("y", SubState::Running),
     ];
     let want: Vec<(String, SubState)> = want.iter().map(|(i, s)| (i.to_string(), *s)).collect();
-    assert_eq!(got, want, "finished must be the boolean true");
+    assert_eq!(got, want, "finished and stoppedByUser must be the boolean true");
+}
+
+#[test]
+fn a_user_stop_wins_over_an_api_error_row() {
+    let d = fixture("stop-wins");
+    meta(&d, "s", r#"{"agentType":"x","stoppedByUser":true,"finished":true}"#);
+    rows(
+        &d,
+        "s",
+        &[
+            FIRST,
+            r#"{"type":"assistant","isApiErrorMessage":true,"message":{"role":"assistant"}}"#,
+        ],
+    );
+    assert_eq!(one(&d).state, SubState::Stopped);
+}
+
+#[test]
+fn stopped_hashes_apart_from_failed_and_done() {
+    let s = Sub {
+        state: SubState::Stopped,
+        ..Default::default()
+    };
+    for other in [SubState::Failed, SubState::Done, SubState::Running] {
+        assert_ne!(h(&s), h(&Sub { state: other, ..s.clone() }), "{other:?}");
+    }
 }
 
 #[test]

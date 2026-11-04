@@ -435,7 +435,8 @@ description, its tokens (the context of its last request: `842`, `12.4k`,
 `3.1M`) and its age since it started. As the row narrows the tokens go first,
 then the description shortens to 8 cells, then the type to 6; the age stays.
 A done subagent folds into one `✓ N done` line, first in the tree, 2 minutes
-after a read first saw it done. A tree takes at most 5
+after a read first saw it done. A stopped subagent (`stoppedByUser`) draws and folds as
+done until the tree gives it its own glyph. A tree takes at most 5
 lines, the last reading `+N more` when it has more.
 
 Tree lines take only the rows the list leaves empty, and never more than half

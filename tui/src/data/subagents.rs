@@ -18,8 +18,11 @@ pub enum SubState {
     Running,
     /// `finished: true`, and the newest assistant row is no API error
     Done,
-    /// `stoppedByUser: true`, or finished on an API error row
+    /// finished, and the newest assistant row is an API error, unless the user stopped it
     Failed,
+    /// `stoppedByUser: true`. The user's action wins: a stopped agent whose newest row is
+    /// also an API error is Stopped, not Failed
+    Stopped,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -266,7 +269,9 @@ pub fn read(dir: &Path) -> Vec<Sub> {
                 None => e.rows = None,
             }
             let r = e.rows.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
-            let state = if m.stopped || (m.finished && r.api_error) {
+            let state = if m.stopped {
+                SubState::Stopped
+            } else if m.finished && r.api_error {
                 SubState::Failed
             } else if m.finished {
                 SubState::Done

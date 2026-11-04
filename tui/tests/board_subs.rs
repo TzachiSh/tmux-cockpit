@@ -896,3 +896,58 @@ fn the_find_field_shows_a_folded_groups_trees() {
     n.find_act(FindKey::Cancel, &ps, 20);
     assert!(tree_of(&ps, &n, "%4").is_empty(), "the fold holds again");
 }
+
+#[test]
+fn a_user_stop_counts_as_neither_running_nor_failed() {
+    let mut p = agent("%9", "api:9", "t", "running", "x");
+    p.subs = vec![sub("Plan", "stopped", SubState::Stopped, 30, 1)];
+    let mut seen = board::Seen::at(NOW);
+    seen.observe(std::slice::from_ref(&p));
+    assert_eq!(board::sub_counts(&p, &seen), (0, 0));
+}
+
+/// The Cause of #336: a stopped subagent was drawn as failed. Not Done's exact glyph: the
+/// tree's follow-up gives Stopped one of its own.
+#[test]
+fn a_stopped_sub_is_not_drawn_with_the_error_glyph_or_role() {
+    let mut p = agent("%4", "api:1", "tests", "running", "x");
+    p.asked_since = Some(300);
+    p.subs = vec![sub("Plan", "stopped", SubState::Stopped, 30, 1)];
+    let ps = vec![p];
+    let (n, th) = (nav(&ps, "%4", &["%4"], 12), Theme::fixed());
+    let mut t = Terminal::new(TestBackend::new(95, 8)).unwrap();
+    t.draw(|f| board::render(f, f.area(), &list_view(&ps, &th, &n))).unwrap();
+    let buf = t.backend().buffer().clone();
+    let row = (0..buf.area.height)
+        .find(|&y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Plan")
+        })
+        .expect("the stopped sub is drawn");
+    let cells: Vec<_> = (0..buf.area.width).map(|x| &buf[(x, row)]).collect();
+    assert!(cells.iter().all(|c| c.symbol() != th.g.error), "drawn with {}", th.g.error);
+    assert!(cells.iter().all(|c| c.fg != th.error), "drawn in the error role");
+}
+
+/// A failure stays a line until the agent's next prompt, however old. A stopped sub is not
+/// kept so; when it leaves the tree is the tree's business (it folds on its finish time).
+#[test]
+fn a_stopped_sub_is_not_kept_like_failed_until_the_next_prompt() {
+    let mut ps = mock();
+    let i = at(&ps, "%4");
+    ps[i].asked_since = Some(60);
+    ps[i].subs = vec![sub("Explore", "bg", SubState::Running, 600, 1)];
+    let mut n = nav(&ps, "%4", &["%4"], 20);
+    ps[i].subs[0].state = SubState::Stopped;
+    ps[i].asked_since = Some(65);
+    read(&mut n, &ps, NOW + 5);
+    assert_eq!(tree_of(&ps, &n, "%4"), ["%4/bg"], "a line while it is fresh");
+    read(&mut n, &ps, NOW + 10 * board::SUB_FOLD);
+    assert!(
+        !tree_of(&ps, &n, "%4").contains(&"%4/bg".to_string()),
+        "{:?}",
+        tree_of(&ps, &n, "%4")
+    );
+}
