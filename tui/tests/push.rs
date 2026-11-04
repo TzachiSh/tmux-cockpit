@@ -7,6 +7,7 @@
 use cockpit_tui::push::{OPTION, channel, entry, register_args};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::{Duration, Instant};
 
 /// Polled, never slept for: each assertion waits for the thing it is about to
@@ -48,6 +49,22 @@ fn waiters(chan: &str) -> usize {
         .unwrap_or(0)
 }
 
+/// The process environment: `q_unlists...` sets COCKPIT_TMUX in-process, and a
+/// set_var racing a spawn that reads environ is undefined. That test holds it
+/// for writing; every test that spawns holds it for reading.
+static ENV: RwLock<()> = RwLock::new(());
+
+enum EnvLock {
+    #[allow(dead_code)]
+    Read(RwLockReadGuard<'static, ()>),
+    #[allow(dead_code)]
+    Write(RwLockWriteGuard<'static, ()>),
+}
+
+fn env_read() -> EnvLock {
+    EnvLock::Read(ENV.read().unwrap_or_else(|e| e.into_inner()))
+}
+
 /// Everything this test must take down even when an assertion panics. A leaked
 /// child holds the harness's captured stderr open and `cargo test` then waits
 /// on that pipe forever -- the failing run hangs instead of reporting.
@@ -55,6 +72,8 @@ struct Rig {
     kids: Vec<Child>,
     sock: String,
     dir: PathBuf,
+    // last, so it is released after Drop has taken the rest down
+    _env: EnvLock,
 }
 
 impl Rig {
@@ -127,6 +146,10 @@ impl Drop for Rig {
 
 /// A private server and no holder yet; `None` without tmux.
 fn rig(tag: &str) -> Option<Rig> {
+    rig_env(tag, env_read())
+}
+
+fn rig_env(tag: &str, env: EnvLock) -> Option<Rig> {
     if Command::new("tmux").arg("-V").output().is_err() {
         eprintln!("no tmux on PATH -- skipping");
         return None;
@@ -147,6 +170,7 @@ fn rig(tag: &str) -> Option<Rig> {
         kids: Vec::new(),
         sock,
         dir,
+        _env: env,
     })
 }
 
@@ -158,6 +182,8 @@ fn woke(log: &PathBuf, n: usize) -> bool {
 #[cfg(target_os = "linux")]
 fn a_wake_reaches_the_loop_and_sigterm_takes_the_waiter_along() {
     let Some(mut rig) = rig("push") else { return };
+    // what a board from before #224 left standing; the start unsets it
+    rig.tmux(&["set-option", "-g", "@cockpit_tui_pid", "999999"]);
     let (a, log) = rig.hold();
     let ch = rig.chan(a);
     assert!(
@@ -166,6 +192,11 @@ fn a_wake_reaches_the_loop_and_sigterm_takes_the_waiter_along() {
         rig.listed()
     );
     assert!(until(|| waiters(&ch) == 1), "no waiter on {ch}");
+    assert_eq!(
+        rig.tmux(&["show-option", "-gqv", "@cockpit_tui_pid"]),
+        "",
+        "the old pid option survived"
+    );
 
     rig.wake();
     assert!(woke(&log, 1), "the wake never reached the loop");
@@ -212,13 +243,17 @@ fn one_wake_reaches_two_boards() {
     let (a, la) = rig.hold();
     let ca = rig.chan(a);
     assert!(until(|| waiters(&ca) == 1), "no waiter on {ca}");
+    // Planted: `+pid` parses as the first board's pid, and as an ERE `-+pid`
+    // it would match the first board's real entry. The start must skip it.
+    let planted = entry(&format!("cockpit-board-+{}", rig.kids[a].id()));
+    rig.tmux(&["set-option", "-ga", OPTION, &planted]);
     let (b, lb) = rig.hold();
     let cb = rig.chan(b);
     assert!(until(|| waiters(&cb) == 1), "no waiter on {cb}");
     assert_eq!(
         rig.listed(),
-        format!("{}{}", entry(&ca), entry(&cb)),
-        "the second start dropped a live board"
+        format!("{}{planted}{}", entry(&ca), entry(&cb)),
+        "the second start dropped a live board, or touched the planted entry"
     );
     rig.wake();
     assert!(woke(&la, 1), "the first board never woke");
@@ -230,8 +265,10 @@ fn one_wake_reaches_two_boards() {
 #[test]
 #[cfg(target_os = "linux")]
 fn q_unlists_its_own_channel_and_only_its_own() {
-    let Some(rig) = rig("push3") else { return };
-    // SAFETY: the only test in this binary that reads COCKPIT_* in-process.
+    let w = EnvLock::Write(ENV.write().unwrap_or_else(|e| e.into_inner()));
+    let Some(rig) = rig_env("push3", w) else { return };
+    // SAFETY: the write lock keeps every other test of this binary from
+    // spawning, so nothing reads the environment while it changes.
     unsafe {
         std::env::set_var("COCKPIT_TMUX", format!("tmux -L {}", rig.sock));
         std::env::remove_var("COCKPIT_READONLY");
@@ -256,6 +293,8 @@ fn q_unlists_its_own_channel_and_only_its_own() {
     let latched = probe.try_wait().unwrap().is_some();
     let _ = probe.kill();
     let _ = probe.wait();
+    // SAFETY: as above, still under the write lock.
+    unsafe { std::env::remove_var("COCKPIT_TMUX") };
     assert!(!latched, "q left {me} latched on the server");
 }
 
@@ -271,11 +310,15 @@ fn a_start_drops_dead_entries_and_keeps_its_own_and_live_ones() {
             "set-option",
             "-gF",
             OPTION,
-            "#{s/wait-for -S cockpit-board-1 . //:@cockpit_board_wake}",
+            "#{s/wait-for -S cockpit-board-1 [^ ] //:@cockpit_board_wake}",
             ";",
             "wait-for",
             "-S",
             "cockpit-board-1",
+            ";",
+            "set-option",
+            "-gu",
+            "@cockpit_tui_pid",
             ";",
             "set-option",
             "-ga",
@@ -283,9 +326,24 @@ fn a_start_drops_dead_entries_and_keeps_its_own_and_live_ones() {
             &entry(&me),
         ]
     );
-    // an empty option, and words that are not entries, cost nothing
-    assert_eq!(register_args("", &me), ["set-option", "-ga", OPTION, &entry(&me)]);
-    assert_eq!(register_args("junk ; wait-for -S other", &me).len(), 4);
+    // an empty option, words that are not entries, and channels that are not
+    // `cockpit-board-<digits>` exactly cost nothing past the unset and the append
+    let base = [
+        "set-option",
+        "-gu",
+        "@cockpit_tui_pid",
+        ";",
+        "set-option",
+        "-ga",
+        OPTION,
+        &entry(&me),
+    ];
+    assert_eq!(register_args("", &me), base);
+    assert_eq!(register_args("junk ; wait-for -S other", &me), base);
+    for odd in ["+1", "", "1x", " 1", "-1", "1.0"] {
+        let listed = entry(&format!("cockpit-board-{odd}"));
+        assert_eq!(register_args(&listed, &me), base, "acted on cockpit-board-{odd:?}");
+    }
 }
 
 /// #295: a cockpit-tui ignores SIGUSR1, so an agent-state from before #224 that
@@ -293,6 +351,7 @@ fn a_start_drops_dead_entries_and_keeps_its_own_and_live_ones() {
 /// its tmux read (a stub that waits for `go`), signalled there, then let go.
 #[test]
 fn a_cockpit_tui_survives_sigusr1() {
+    let _env = env_read();
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
     let dir = std::env::temp_dir().join(format!("cockpit-tui-usr1-{}", std::process::id()));

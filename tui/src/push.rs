@@ -38,10 +38,23 @@ pub fn entry(chan: &str) -> String {
     format!("wait-for -S {chan} ; ")
 }
 
-/// A `set-option -gF` value that drops `chan`'s entry and keeps the rest. A
-/// format modifier ends at `;`, so `.` stands in for it in the pattern.
+/// A `set-option -gF` value that drops `chan`'s entry and keeps the rest.
+/// `chan` is always `cockpit-board-` and ASCII digits (`board_pid` checks the
+/// listed ones), so the ERE holds no metacharacter but the separator: a format
+/// modifier ends at `;`, and `[^ ]` stands in for it.
 pub fn unlist(chan: &str) -> String {
-    format!("#{{s/wait-for -S {chan} . //:{OPTION}}}")
+    format!("#{{s/wait-for -S {chan} [^ ] //:{OPTION}}}")
+}
+
+/// The pid of a listed channel, only for the exact form `cockpit-board-<digits>`.
+/// `u32::parse` also takes a leading `+`, and a planted `cockpit-board-+123`
+/// would make the ERE `-+123`, which matches the real `cockpit-board-123`.
+fn board_pid(chan: &str) -> Option<u32> {
+    let p = chan.strip_prefix("cockpit-board-")?;
+    if p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    p.parse().ok()
 }
 
 extern "C" fn on_exit_signal(_: libc::c_int) {
@@ -93,13 +106,15 @@ fn is_board(pid: u32) -> bool {
 /// The tmux argv that lists `chan`, after dropping the entries in `listed` of
 /// boards that are gone. Each dropped channel gets one `-S`, which releases a
 /// waiter that a SIGKILLed board left behind where no PDEATHSIG took it along.
+/// It also unsets `@cockpit_tui_pid`, the wakeup before #224, so a pid an older
+/// board left standing does not stay for an older agent-state to signal.
 pub fn register_args(listed: &str, chan: &str) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     for e in listed.split(" ; ") {
         let Some(old) = e.trim().strip_prefix("wait-for -S ") else {
             continue;
         };
-        let Some(pid) = old.strip_prefix("cockpit-board-").and_then(|p| p.parse::<u32>().ok()) else {
+        let Some(pid) = board_pid(old) else {
             continue;
         };
         if old == chan || is_board(pid) {
@@ -108,6 +123,7 @@ pub fn register_args(listed: &str, chan: &str) -> Vec<String> {
         a.extend(["set-option".into(), "-gF".into(), OPTION.into(), unlist(old), ";".into()]);
         a.extend(["wait-for".into(), "-S".into(), old.into(), ";".into()]);
     }
+    a.extend(["set-option".into(), "-gu".into(), "@cockpit_tui_pid".into(), ";".into()]);
     a.extend(["set-option".into(), "-ga".into(), OPTION.into(), entry(chan)]);
     a
 }
@@ -231,6 +247,11 @@ impl Push {
 /// which can come after the next command. Three `-S` in one command then go
 /// wake, latch, free, and the channel does not outlive the board. The kill
 /// after is for a waiter the wake did not reach, a server gone among them.
+///
+/// One case leaves the channel latched: a cleanup between two waits, with no
+/// wake pending. Then no waiter takes the first `-S`, so the three go latch,
+/// free, latch, and tmux keeps that one bit (a small struct) for the server's
+/// life. Nothing reads it: the entry is gone and no board waits on that name.
 pub fn cleanup() {
     if DONE.swap(true, Ordering::SeqCst) {
         return;
