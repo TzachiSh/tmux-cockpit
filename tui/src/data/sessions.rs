@@ -23,7 +23,8 @@ fn format() -> String {
         agent,
         "#{@panestate}",
         msg,
-        "#{@panestate_since}",
+        // a separator in a hand-set value must not shift the name fields after it
+        "#{s/\u{1f}//:#{@panestate_since}}",
         "#{window_name}",
         "#{session_name}",
     ]

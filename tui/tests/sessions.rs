@@ -774,3 +774,37 @@ fn a_narrow_row_drops_the_label_before_the_name() {
     let long = out.lines().find(|l| l.contains(" long ")).unwrap_or_default();
     assert!(long.contains("4m10s"), "the bare wait stays:\n{out}");
 }
+
+#[test]
+fn a_popup_too_narrow_for_the_label_keeps_the_long_counts() {
+    // a 100-column popup gives the list 54: the wide tier, but not the 8 more the label needs
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    let out = draw_at(&mut v, 100, 14);
+    let long = out.lines().find(|l| l.contains(" long ")).unwrap_or_default();
+    assert!(
+        long.contains("2 agents") && long.contains("4m10s") && !out.contains("waiting"),
+        "{out}"
+    );
+    let mut v = View::new(waiting(), &args(false, None), true, NOW, Glyphs::unicode());
+    assert!(draw_at(&mut v, 110, 14).contains("waiting 4m10s"));
+}
+
+#[test]
+fn your_own_waiting_session_widens_no_row() {
+    let two = |since: &str| {
+        let l = [
+            rec_since("$1", 0, 5, 0, 1, 1, "needs-input", "?", since, "claude", "mine"),
+            rec_since("$2", 0, 65, 0, 1, 1, "done", "", "", "claude", "other"),
+        ];
+        let mut v = View::new(
+            sessions::parse(&l.join("\n")),
+            &args(false, Some("$1")),
+            true,
+            NOW,
+            Glyphs::unicode(),
+        );
+        draw_at(&mut v, 120, 14)
+    };
+    // it prints no age, so it draws as if it carried no stamp
+    assert_eq!(two(&(NOW - 30).to_string()), two(""));
+}

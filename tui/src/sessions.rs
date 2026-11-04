@@ -501,14 +501,21 @@ impl View {
             fmt_dur(wait.unwrap_or_else(|| s.age(self.now)))
         };
         let (na, nw) = (s.agents(), s.wins.len());
-        // The "waiting " label widens every row's age slot, to keep the columns, and only
-        // in the widest tier: a narrower popup drops the label before the name shrinks.
-        let label = self.sess.iter().any(|x| x.since().is_some());
+        // wide first; the name needs 16 cells to afford the long counts, 10 the short.
+        // The "waiting " label takes 8 more on top of the wide tier, and widens every row's
+        // age slot to keep the columns: a popup too narrow for it keeps the wide tier
+        // without the label, so the label goes before the counts and the name shrink.
+        // Your own session prints no age, so its wait asks for no label.
+        let wide = LEAD + 16 + 25;
+        let label = w >= wide + WAITING.len() && self.sess.iter().any(|x| x.since().is_some() && !self.mine(x));
         let slot = if label { WAITING.len() + 5 } else { 5 };
-        // wide first; the name needs 16 cells to afford the long counts, 10 the short
-        let right = if w >= LEAD + 16 + 20 + slot {
+        let right = if w >= wide {
             let ag = if na == 0 { th.g.dash.to_string() } else { plural(na, "agent") };
-            let age = if wait.is_some() && !here { format!("{WAITING}{age}") } else { age };
+            let age = if label && wait.is_some() && !here {
+                format!("{WAITING}{age}")
+            } else {
+                age
+            };
             format!("{ag:<9} {:<6} {att} {age:>slot$}", plural(nw, "win"))
         } else if w >= LEAD + 10 + 16 {
             let ag = if na == 0 { "-".to_string() } else { format!("{na}a") };

@@ -13890,6 +13890,17 @@ case "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t)" in
     *) bad "at 60 columns the label goes and the names stay" "beta 5m, delta 3Ns" "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)" ;;
 esac
 sv_key Escape; until_file "$SVD/rc" '?*'
+# A separator inside a hand-set stamp would shift the name fields after it: the
+# format strips it, so the stamp still reads and the name stays whole.
+"$TMUX_REAL" -L "$SVS" set -p -t beta: @panestate_since "$(printf '%s\037' $((svnow - 300)))"
+SVCOLS=140 sv_ui "$SVD"
+if sv_cap '*▲ beta *waiting 5m*'; then
+    ok "a separator in the stamp neither shifts the name nor loses the wait"
+else
+    bad "a separator in the stamp neither shifts the name nor loses the wait" "▲ beta ... waiting 5m" \
+        "$("$TMUX_REAL" -L "$SVO" capture-pane -p -t t | head -8)"
+fi
+sv_key Escape; until_file "$SVD/rc" '?*'
 "$TMUX_REAL" -L "$SVO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 fi
