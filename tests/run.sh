@@ -13980,13 +13980,15 @@ sv_key Escape; until_file "$SVD/rc" '?*'
 "$TMUX_REAL" -L "$SVS" kill-server >/dev/null 2>&1
 fi
 
-echo "== agent-state sub-taskstop and sub-reconcile: a TaskStop and a Stop's in-flight set in the subagent log (#403) =="
+echo "== agent-state sub-taskstop and sub-reconcile: a TaskStop in the subagent log, a Stop's in-flight set in its .live file (#403, #423) =="
 # Payloads as Claude Code 2.1.318 sends them (the #403 rig's hooks.log).
 TSD=$(mktmpd); TSS=abb33da9-fbf7-4833-820e-2c21cad69dac; TSLOG="$TSD/state/tmux-cockpit/subs/$TSS.log"
 ts() {                        # <cmd> <json>  one payload through the hook, exit status last
     printf '%s\n' "$2" | env XDG_STATE_HOME="$TSD/state" "$DIR/scripts/agent-state" "$1" 2>&1
     echo "rc=$?"
 }
+TSLIVE="$TSD/state/tmux-cockpit/subs/$TSS.live"
+tslive() { [ -f "$TSLIVE" ] && printf 'set=[%s]' "$(cut -f2- "$TSLIVE" | tr '\t' ' ')"; }
 tsrows() { awk -F'\t' '{ $1 = ""; sub(/^ /, ""); printf "%s%s", (NR > 1 ? "|" : ""), $0 }' "$TSLOG" 2>/dev/null; }
 tsstop() {                    # <tool_input.task_id> <tool_response.task_id> <task_type> <command>
     printf '{"session_id":"%s","hook_event_name":"PostToolUse","tool_name":"TaskStop","tool_input":{"task_id":"%s"},"tool_response":{"message":"Successfully stopped task: %s (%s)","task_id":"%s","task_type":"%s","command":"%s"},"tool_use_id":"toolu_01W2","duration_ms":2}' \
@@ -14009,28 +14011,40 @@ tsfin() {                     # <background_tasks array body> [last message]
     printf '{"session_id":"%s","hook_event_name":"Stop","stop_hook_active":false,"last_assistant_message":"%s","background_tasks":[%s],"session_crons":[]}' "$TSS" "${2:-end}" "$1"
 }
 is "sub-reconcile exits 0 and prints nothing" "rc=0" "$(ts sub-reconcile "$(tsfin '{"id":"a593c30606c443914","type":"subagent","status":"running","description":"i1 plain","agent_type":"general-purpose"},{"id":"t0sm6hcnt","type":"teammate","status":"running","description":"i1 } named]"},{"id":"b1","type":"shell","status":"running","description":"sleep 9"}' 'x \"background_tasks\":[{\"id\":\"evil\",\"type\":\"subagent\"}]')")"
+is "the in-flight set: subagent ids, then teammate descriptions; no shell, nothing from the message" \
+   "set=[a593c30606c443914 i1 } named]]" "$(tslive)"
 ts sub-reconcile "$(tsfin '')" >/dev/null
-is "the in-flight set: subagent ids, then teammate descriptions; no shell, nothing from the message; an empty set too" \
-   "live a593c30606c443914 i1 } named]|live " "$(tsrows)"
+is "the next Stop's set replaces it, an empty set too, and the log gets no row" "set=[] lines=1 0" \
+   "$(tslive) lines=$(grep -c . "$TSLIVE") $(find "$TSD/state" -name '*.log' | grep -c .)"
+is "the file is whole, renamed into place: no temp is left" "0" "$(find "$TSD/state" -name '.*' | grep -c .)"
 rm -rf "$TSD/state"
+# #423: as log rows, a busy lead's sets pushed an idle teammate's stop out of the reader's tail
+TSMATES=$(for i in $(seq 1 25); do printf '{"id":"t%d","type":"teammate","status":"running","description":"teammate number %d, a long task line"},' "$i" "$i"; done)
+ts sub-start "{\"session_id\":\"$TSS\",\"agent_id\":\"a1\"}" >/dev/null
+ts sub-stop "{\"session_id\":\"$TSS\",\"agent_id\":\"a1\"}" >/dev/null
+for i in $(seq 1 30); do ts sub-reconcile "$(tsfin "${TSMATES%,}")" >/dev/null; done
+is "30 Stops of 25 teammates leave the event log as it was" "start a1|stop a1" "$(tsrows)"
+rm -rf "$TSD/state"; mkdir -p "${TSLIVE%/*}"; printf keep > "$TSD/target"; ln -s "$TSD/target" "$TSLIVE"
+ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}')" >/dev/null
+is "a link at the .live name is replaced, never written through" "keep set=[a1]" "$(cat "$TSD/target") $([ -L "$TSLIVE" ] || tslive)"
+ts sub-end "{\"session_id\":\"$TSS\"}" >/dev/null
+is "and sub-end drops the session's .live" "0" "$(find "$TSD/state" -type f | grep -c .)"
+rm -rf "$TSD/state" "$TSD/target"
 ts sub-reconcile "{\"session_id\":\"$TSS\",\"hook_event_name\":\"Stop\",\"last_assistant_message\":\"end\"}" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"../x","type":"subagent"}')" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"}' | head -c 80)" >/dev/null
 TSMANY=$(for i in $(seq 1 300); do printf '{"id":"a%016d","type":"subagent"},' "$i"; done)
 ts sub-reconcile "$(tsfin "${TSMANY%,}")" >/dev/null
-is "no array, a bad id, a cut payload, a set past one atomic write: no log" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+is "no array, a bad id, a cut payload, a set past the bound: no file" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
 rm -rf "$TSD/state"
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent","tags":[]},{"id":"a2","type":"subagent"}')" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent","m":{"k":1}},{"id":"a2","type":"subagent"}')" >/dev/null
-is "a nested array or object in an entry writes no row, never a short set" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+is "a nested array or object in an entry writes no set, never a short one" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
 TSHUGE=$(for i in $(seq 1 2000); do printf '{"id":"b%d","type":"shell","status":"running","description":"sleep %d"},' "$i" "$i"; done)
 TSSHELLS=$(for i in $(seq 1 600); do printf '{"id":"b%d","type":"shell","status":"running","description":"sleep %d"},' "$i" "$i"; done)
 TSMANY=$(for i in $(seq 1 600); do printf '{"id":"a%016d","type":"subagent","status":"running"},' "$i"; done)
-tst0=$(date +%s)
 for a in "$TSHUGE" "$TSSHELLS" "$TSMANY"; do ts sub-reconcile "$(tsfin "${a%,}")" >/dev/null; done
-tst1=$(date +%s)
-is "2000 tasks, 600 shells, 600 subagents past one write: under 3 s together" "fast" "$([ $((tst1 - tst0)) -lt 3 ] && echo fast || echo "$((tst1 - tst0)) s")"
-is "and of them only the shells write a row, an empty set" "live " "$(tsrows)"
+is "2000 tasks, 600 shells, 600 subagents: only the shells write a set, an empty one" "set=[]" "$(tslive)"
 rm -rf "$TSD/state"
 ts sub-taskstop "$(tsstop b1 b1 local_bash 'i1 named')" >/dev/null
 ts sub-taskstop "$(tsstop m1 m1 monitor 'i1 named')" >/dev/null

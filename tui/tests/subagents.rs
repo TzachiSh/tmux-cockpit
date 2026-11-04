@@ -346,6 +346,10 @@ impl Sess {
     fn log(&self, lines: &[String]) {
         std::fs::write(&self.log, lines.join("\n") + "\n").unwrap();
     }
+    /// The `.live` file, as the Stop hook writes it: one line.
+    fn live(&self, line: &str) {
+        std::fs::write(self.subs.join(format!("{SID}.live")), format!("{line}\n")).unwrap();
+    }
     fn read(&self, now: u64) -> Vec<Sub> {
         read_in(&self.dir, now, &self.subs)
     }
@@ -882,9 +886,9 @@ fn kill_tm(secs: u64, name: &str, desc: &str) -> String {
     format!("{}\tkill-tm\t{name}\t{desc}", T0 + secs)
 }
 
-/// A `live` row: the subagents' ids, then one field per teammate description.
+/// A `.live` line: the epoch, the subagents' ids, then one field per teammate description.
 fn live(secs: u64, ids: &[&str], descs: &[&str]) -> String {
-    let mut l = format!("{}\tlive\t{}", T0 + secs, ids.join(","));
+    let mut l = format!("{}\t{}", T0 + secs, ids.join(","));
     for d in descs {
         l = format!("{l}\t{d}");
     }
@@ -999,8 +1003,8 @@ fn a_reconcile_ends_a_running_agent_it_does_not_list() {
         ev(0, "start", "c"),
         ev(0, "start", "d"),
         ev(8, "stop", "d"),
-        live(30, &["a"], &["i1 named"]),
     ]);
+    s.live(&live(30, &["a"], &["i1 named"]));
     let v = s.read(T0 + 60);
     let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
     assert_eq!(
@@ -1024,7 +1028,8 @@ fn a_reconcile_leaves_an_agent_started_or_heard_from_after_it() {
         rows(&s.dir, id, &[FIRST, &tick(5)]);
     }
     // a started in the Stop's own second; b, a teammate, idled after it
-    s.log(&[ev(0, "start", "b"), live(30, &[], &[]), ev(30, "start", "a"), ev(31, "idle", "b")]);
+    s.log(&[ev(0, "start", "b"), ev(30, "start", "a"), ev(31, "idle", "b")]);
+    s.live(&live(30, &[], &[]));
     let v = s.read(T0 + 60);
     let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
     assert_eq!(st, [("a", SubState::Running), ("b", SubState::Idle)]);
@@ -1040,13 +1045,8 @@ fn a_reconcile_with_no_running_agents_ends_them_all_and_leaves_the_finished_alon
         rows(&s.dir, id, &[FIRST, &tick(5)]);
     }
     touch_meta(&s.dir, "c", 20);
-    s.log(&[
-        ev(0, "start", "a"),
-        ev(0, "start", "b"),
-        ev(9, "stop", "b"),
-        ev(0, "start", "c"),
-        live(30, &[], &[]),
-    ]);
+    s.log(&[ev(0, "start", "a"), ev(0, "start", "b"), ev(9, "stop", "b"), ev(0, "start", "c")]);
+    s.live(&live(30, &[], &[]));
     let v = s.read(T0 + 60);
     let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
     assert_eq!(
@@ -1061,8 +1061,11 @@ fn only_the_newest_reconcile_counts() {
     let s = session("live-newest");
     meta(&s.dir, "a", PLAIN);
     rows(&s.dir, "a", &[FIRST, &tick(5)]);
-    s.log(&[ev(0, "start", "a"), live(20, &[], &[]), live(30, &["a"], &[])]);
-    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+    s.log(&[ev(0, "start", "a")]);
+    s.live(&live(20, &[], &[]));
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
+    s.live(&live(30, &["a"], &[]));
+    assert_eq!(s.one(T0 + 60).state, SubState::Running, "the file replaced, read again");
 }
 
 #[test]
@@ -1070,7 +1073,8 @@ fn end_unknown_stays_only_when_no_stop_or_reconcile_applies() {
     let s = session("live-unknown");
     meta(&s.dir, "a", PLAIN);
     rows(&s.dir, "a", &[FIRST, &tick(5)]);
-    s.log(&[ev(0, "start", "a"), live(30, &["a"], &[])]);
+    s.log(&[ev(0, "start", "a")]);
+    s.live(&live(30, &["a"], &[]));
     assert_eq!(s.one(T0 + END_UNKNOWN_AFTER + 60).state, SubState::EndUnknown);
 }
 
@@ -1086,14 +1090,42 @@ fn malformed_stop_and_reconcile_rows_are_skipped() {
         format!("{T0}\tkill-tm\t\t"),
         format!("{T0}\tkill-tm\ttm9\tbad \\x escape"),
         format!("x{T0}\tkill-tm\ttm1\ti1 named"),
-        format!("{}\tlive\tb,../x", T0 + 30),
-        format!("{}\tlive\tb\tbad \"quote", T0 + 30),
-        format!("{}\tlive", T0 + 30),
     ];
     let mut lines = vec![ev(0, "start", "a")];
     lines.extend(junk);
     s.log(&lines);
     assert_eq!(s.one(T0 + 60).state, SubState::Running, "none of them ends it");
+}
+
+#[test]
+fn a_malformed_live_file_ends_nothing() {
+    let s = session("live-junk");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a")]);
+    for junk in [
+        format!("{}\tb,../x", T0 + 30),
+        format!("{}\tb\tbad \"quote", T0 + 30),
+        format!("{}", T0 + 30),
+        format!("x{}\t", T0 + 30),
+        format!("{}\t\n{}\t", T0 + 30, T0 + 31),
+        String::new(),
+    ] {
+        s.live(&junk);
+        assert_eq!(s.one(T0 + 60).state, SubState::Running, "{junk:?}");
+    }
+}
+
+#[test]
+fn a_set_only_the_log_holds_ends_nothing() {
+    // #405's hook appended the set to the log; the reader takes it only from `.live` (#423)
+    let s = session("live-in-log");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), format!("{}\tlive\t", T0 + 30)]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+    s.live(&live(30, &[], &[]));
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
 }
 
 #[test]
@@ -1137,7 +1169,8 @@ fn a_start_in_the_reconciles_own_second_is_not_ended_by_it() {
     let s = session("live-same-second");
     meta(&s.dir, "a", PLAIN);
     rows(&s.dir, "a", &[FIRST, &tick(5)]);
-    s.log(&[ev(30, "start", "a"), live(30, &[], &[])]);
+    s.log(&[ev(30, "start", "a")]);
+    s.live(&live(30, &[], &[]));
     assert_eq!(s.one(T0 + 60).state, SubState::Running);
 }
 
@@ -1146,6 +1179,7 @@ fn an_agent_that_wrote_after_the_reconcile_is_not_ended_by_it() {
     let s = session("live-wrote-after");
     meta(&s.dir, "a", PLAIN);
     rows(&s.dir, "a", &[FIRST, &tick(40)]);
-    s.log(&[ev(0, "start", "a"), live(30, &[], &[])]);
+    s.log(&[ev(0, "start", "a")]);
+    s.live(&live(30, &[], &[]));
     assert_eq!(s.one(T0 + 60).state, SubState::Running);
 }

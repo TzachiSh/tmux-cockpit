@@ -5,7 +5,8 @@
 //! Every file is cached on (mtime, len), so a quiet session costs a stat per file.
 //! The hooks' own record (#361), `<state>/tmux-cockpit/subs/<session_id>.log`, decides what the
 //! files above cannot say: a teammate that is idle, an agent TaskStop ended (#403), or one
-//! missing from the in-flight set at the parent's turn end.
+//! missing from the in-flight set at the parent's turn end, which the hooks keep apart in
+//! `<session_id>.live` (#423).
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -100,6 +101,8 @@ const TAIL_MAX: u64 = 256 * 1024;
 const DIRS_MAX: usize = 64;
 /// The hook log is read from its last 64 KB: a few hundred events, the newest of each agent.
 const LOG_MAX: u64 = 64 * 1024;
+/// The hook writes a set of at most 3890 bytes; a `.live` file past this is not one.
+const LIVE_MAX: u64 = 8 * 1024;
 
 type Stamp = (SystemTime, u64);
 
@@ -159,17 +162,16 @@ struct TmKill {
     desc: String,
 }
 
-/// The newest Stop's in-flight set: its log line and epoch, the subagents' ids, the teammates'
-/// descriptions (a teammate's id there is a task id no file holds).
+/// The newest Stop's in-flight set: its epoch, the subagents' ids, the teammates' descriptions
+/// (a teammate's id there is a task id no file holds).
 #[derive(Clone)]
 struct Live {
-    line: usize,
     t: u64,
     ids: HashSet<String>,
     descs: HashSet<String>,
 }
 
-/// The log's tail, folded.
+/// The log's tail, folded, and the `.live` file beside it.
 #[derive(Clone, Default)]
 struct Log {
     ids: HashMap<String, Rec>,
@@ -178,6 +180,8 @@ struct Log {
 }
 
 thread_local! {
+    /// Both files of a session, each on its own stamp: a `.log` holds its fold, a `.live` a
+    /// `Log` with only `live` set.
     static LOGS: RefCell<HashMap<PathBuf, (Stamp, Log)>> = RefCell::default();
     static CACHE: RefCell<HashMap<PathBuf, HashMap<String, Cached>>> = RefCell::default();
     static READS: Cell<u64> = const { Cell::new(0) };
@@ -212,9 +216,8 @@ fn unjson(body: &str) -> Option<String> {
 /// - `kill <agent_id>`: a TaskStop of a plain agent. Only a later `start` (a resume) undoes it;
 ///   the `stop` a teammate's TaskStop also fires does not.
 /// - `kill-tm <name> <description>`: a TaskStop of a teammate, mapped by the reader.
-/// - `live <id,id,...> <description>...`: the newest wins, the in-flight set at a Stop.
 ///
-/// Any other line, and a row with a field that does not decode, is skipped. An id is not
+/// Any other line, a `live` row as #405's hook wrote it among them, and a row with a field that does not decode, is skipped. An id is not
 /// checked: only a plain agent id is ever looked up, and the tail bounds the map.
 fn fold_log(lines: &[String]) -> Log {
     let mut log = Log::default();
@@ -263,43 +266,54 @@ fn fold_log(lines: &[String]) -> Log {
                     });
                 }
             }
-            ("live", [ids, descs @ ..]) => {
-                let ids: HashSet<String> = ids.split(',').filter(|i| !i.is_empty()).map(str::to_string).collect();
-                let Some(descs) = descs.iter().map(|d| unjson(d)).collect::<Option<HashSet<String>>>() else {
-                    continue;
-                };
-                if ids.iter().all(|i| plain(i)) {
-                    log.live = Some(Live { line, t, ids, descs });
-                }
-            }
             _ => {}
         }
     }
     log
 }
 
-/// `<subs>/<sid>.log`, cached on (mtime, len); a session id that is not plain names no file.
+/// A `.live` file: one line, `<epoch>\t<id,id,...>\t<description>...`, the in-flight set at the
+/// newest Stop. Anything else, a bad id or a description that does not decode, is no set.
+fn fold_live(lines: &[String]) -> Log {
+    let live = (|| {
+        let [l] = lines else { return None };
+        let f: Vec<&str> = l.split('\t').collect();
+        let [t, ids, descs @ ..] = f.as_slice() else { return None };
+        let t = t.parse::<u64>().ok()?;
+        let ids: HashSet<String> = ids.split(',').filter(|i| !i.is_empty()).map(str::to_string).collect();
+        let descs = descs.iter().map(|d| unjson(d)).collect::<Option<HashSet<String>>>()?;
+        ids.iter().all(|i| plain(i)).then_some(Live { t, ids, descs })
+    })();
+    Log { live, ..Log::default() }
+}
+
+/// `<subs>/<sid>.log` and `<subs>/<sid>.live`, each cached on (mtime, len); a session id that
+/// is not plain names no file. A missing or malformed `.live` is no set.
 fn log_of(subs: &Path, sid: Option<&str>) -> Log {
     let Some(sid) = sid.filter(|s| plain(s)) else {
         return Log::default();
     };
-    let p = subs.join(format!("{sid}.log"));
-    let Some(st) = stamp(&p) else {
-        LOGS.with(|c| c.borrow_mut().remove(&p));
+    let mut log = cached(&subs.join(format!("{sid}.log")), LOG_MAX, fold_log);
+    log.live = cached(&subs.join(format!("{sid}.live")), LIVE_MAX, fold_live).live;
+    log
+}
+
+/// `p` folded by `fold` from its last `max` bytes, cached on its stamp.
+fn cached(p: &Path, max: u64, fold: fn(&[String]) -> Log) -> Log {
+    let Some(st) = stamp(p) else {
+        LOGS.with(|c| c.borrow_mut().remove(p));
         return Log::default();
     };
     LOGS.with(|c| {
         let mut c = c.borrow_mut();
-        if let Some((_, log)) = c.get(&p).filter(|(s, _)| *s == st) {
+        if let Some((_, log)) = c.get(p).filter(|(s, _)| *s == st) {
             return log.clone();
         }
-        if !c.contains_key(&p) && c.len() >= DIRS_MAX {
+        if !c.contains_key(p) && c.len() >= 2 * DIRS_MAX {
             c.clear();
         }
-        let log = open(&p)
-            .map(|mut f| fold_log(&super::tail(&mut f, st.1, LOG_MAX)))
-            .unwrap_or_default();
-        c.insert(p, (st, log.clone()));
+        let log = open(p).map(|mut f| fold(&super::tail(&mut f, st.1, max))).unwrap_or_default();
+        c.insert(p.to_path_buf(), (st, log.clone()));
         log
     })
 }
@@ -535,8 +549,7 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             // not in it. It cannot tell killed from finished; a finished meta decided above. Not an
             // idle teammate: no payload yet shows whether `background_tasks` lists one (#403).
             let gone = |r: Rec, l: &Live| {
-                r.line < l.line
-                    && r.start.is_some_and(|(t, _)| t < l.t)
+                r.start.is_some_and(|(t, _)| t < l.t)
                     && wrote.is_none_or(|w| w <= l.t)
                     && !l.ids.contains(&id)
                     && !(mate && l.descs.contains(&m.desc))
