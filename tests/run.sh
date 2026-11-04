@@ -12718,5 +12718,101 @@ is "theme terminal keeps the dark set" "dark" "$(ct_set light terminal)"
 "$TMUX_REAL" -L "$CTO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$CT" kill-server >/dev/null 2>&1
 fi
 
+echo "== a burst of window events runs a few sweeps, and the counts are right after it (#258) =="
+# Each hook event ran its own full sweep, O(N²) over a resurrect restore or a
+# kill-session. Debounced: the counts must still be right after the burst's last event.
+if need_tmux "sweep debounce"; then :; else
+DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
+dbt() { "$TMUX_REAL" -L "$DB" "$@"; }
+dbt -f /dev/null new-session -d -s a -c "$DBD" 'exec -a claude sleep 300' >/dev/null 2>&1
+dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for _ in $(seq 1 59); do dbt new-window -d -t a: 'exec -a claude sleep 300' >/dev/null 2>&1; done
+dbt new-session -d -s b -c "$DBD" >/dev/null 2>&1
+until_out 60 sh -c "'$TMUX_REAL' -L '$DB' list-panes -t a -F '#{pane_current_command}' | grep -c claude" >/dev/null
+dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for dbi in $(seq 0 59); do dbt set -p -t "a:$dbi" @panestate needs-input >/dev/null 2>&1; done
+dbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+until_out 60 dbt show-option -gqv @cockpit_fleet_nb >/dev/null
+# Every full sweep's first batch carries the format stamp; the shim counts those.
+mkdir "$DBD/bin"
+printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{!=:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
+    "'" "$DBD" "$TMUX_REAL" > "$DBD/bin/tmux"
+chmod +x "$DBD/bin/tmux"
+dbt set-environment -g PATH "$DBD/bin:$PATH" >/dev/null 2>&1
+dbsess() { dbt display-message -p -t "$1" '#{@cockpit_sess_nb}'; }
+for dbi in $(seq 0 49); do dbt link-window -d -s "a:$dbi" -t b: >/dev/null 2>&1; done
+until_out 50 dbsess b: >/dev/null; sleep 0.5
+is "50 linked windows: b counts all 50 waiting, the fleet each link" "50|110" "$(dbsess b:)|$(dbt show-option -gqv @cockpit_fleet_nb)"
+dbn=$(grep -c . "$DBD/swept" 2>/dev/null)
+is "and far fewer sweeps ran than the 50 events" "yes" "$([ "${dbn:-0}" -ge 1 ] && [ "${dbn:-0}" -lt 10 ] && echo yes || echo "no: ${dbn:-0}")"
+: > "$DBD/swept"
+for dbi in $(seq 0 49); do dbt kill-window -t "a:$dbi" >/dev/null 2>&1; done
+until_out 10 dbsess a: >/dev/null; sleep 0.5
+is "50 killed windows: a, b and the fleet count what is left" "10|0|10" "$(dbsess a:)|$(dbsess b:)|$(dbt show-option -gqv @cockpit_fleet_nb)"
+dbn=$(grep -c . "$DBD/swept" 2>/dev/null)
+is "and far fewer sweeps ran than the kills' events" "yes" "$([ "${dbn:-0}" -ge 1 ] && [ "${dbn:-0}" -lt 10 ] && echo yes || echo "no: ${dbn:-0}")"
+# One interactive event still updates, after the pause.
+dbt kill-window -t a:55 >/dev/null 2>&1
+until_out 9 dbsess a: >/dev/null
+is "a single kill still updates the count" "9" "$(dbsess a:)"
+# The load's sweep, with no seq, is not debounced: it writes at once.
+dbt set -p -t a:56 @panestate error >/dev/null 2>&1
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
+is "a sweep with no seq writes at once" "1" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+# A stale seq (a newer event came) walks nothing and writes nothing.
+dbt set -p -t a:57 @panestate error >/dev/null 2>&1
+dbt set -g @cockpit_sweep_seq 999 >/dev/null 2>&1
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep 998 >/dev/null 2>&1
+is "a superseded sweep writes nothing" "1" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep 999 >/dev/null 2>&1
+is "the newest one does" "2" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+dbt kill-server >/dev/null 2>&1
+fi
+
+echo "== a key the plugin lets go of gets its stock binding back, letter or not (#258) =="
+# give_back knew stock bindings for prefix letters only, so moving the menu off
+# Space, ?, a digit or " left that key unbound.
+if need_tmux "non-letter give-back"; then :; else
+GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"; GBD=$(mktmpd)
+gbt() { "$TMUX_REAL" -L "$GB" "$@"; }
+# The reference: a configless server's own prefix table, with notes.
+gbstock() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -N -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
+gbline() { "$TMUX_REAL" -S "$GBD/ref" -f /dev/null start-server \; list-keys -T prefix -- "$1" 2>/dev/null; rm -f "$GBD/ref"; }
+gbt -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
+gbload() { gbt set -g "$1" "$2" >/dev/null 2>&1; gbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
+for gbk in Space '?' 1 '"' '$' ','; do
+    gbload @cockpit_menu_key "$gbk"
+    case "$(gbt list-keys -T prefix -- "$gbk")" in *display-menu*) ok "the menu takes [$gbk]" ;;
+        *) bad "the menu takes [$gbk]" "display-menu" "$(gbt list-keys -T prefix -- "$gbk")" ;; esac
+    # A second load on the same key: the stock given back later is still tmux's, not this binding.
+    gbload @cockpit_menu_key "$gbk"
+    gbload @cockpit_menu_key a
+    is "moving the menu off [$gbk] gives its stock binding back" "$(gbline "$gbk")" "$(gbt list-keys -T prefix -- "$gbk")"
+    is "with its note" "$(gbstock "$gbk")" "$(gbt list-keys -N -T prefix -- "$gbk")"
+done
+# A repeatable stock key keeps its -r; the panel key gives back the same way.
+gbload @cockpit_panel_key Up
+case "$(gbt list-keys -T prefix Up)" in *cockpit-panel*) ok "the panel takes Up" ;;
+    *) bad "the panel takes Up" "cockpit-panel" "$(gbt list-keys -T prefix Up)" ;; esac
+gbload @cockpit_panel_key off
+is "turning the panel off gives Up back, repeat flag and all" "$(gbline Up)" "$(gbt list-keys -T prefix Up)"
+# A key stock leaves unbound is unbound again.
+gbload @cockpit_menu_key F5
+gbload @cockpit_menu_key a
+is "a key stock does not bind is unbound again" "" "$(gbt list-keys -T prefix F5 2>/dev/null)"
+# A lookup that cannot run (here a stock server that will not start, as a socket
+# path past the limit did) leaves the key alone: unbinding it would lose stock.
+mkdir "$GBD/bin"
+printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && { echo "error connecting (File name too long)" >&2; exit 1; }; done\nexec "%s" "$@"\n' \
+    "$TMUX_REAL" > "$GBD/bin/tmux"
+chmod +x "$GBD/bin/tmux"
+gbload @cockpit_menu_key Space
+gbt set-environment -g PATH "$GBD/bin:$PATH" >/dev/null 2>&1
+gbload @cockpit_menu_key a
+case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lookup leaves the old key bound, not unbound" ;;
+    *) bad "a failed stock lookup leaves the old key bound, not unbound" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
+gbt kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
