@@ -338,6 +338,14 @@ fn a_shift_in_shell_arithmetic_opens_no_heredoc() {
     assert_eq!(s[1], vec![(Keyword, "fi")], "{s:?}");
 }
 
+/// A quoted word is never a shift: `cat <<'2'` is a heredoc that ends at `2`.
+#[test]
+fn a_quoted_digit_end_word_is_still_a_heredoc() {
+    let s = highlight("bash", &["cat <<'2'", "x", "2", "fi"]);
+    assert_eq!(s[1], vec![(Str, "x")], "{s:?}");
+    assert_eq!(s[3], vec![(Keyword, "fi")], "{s:?}");
+}
+
 #[test]
 fn a_crlf_heredoc_end_still_closes() {
     let s = highlight("bash", &["cat <<EOF\r", "body\r", "EOF\r", "fi"]);

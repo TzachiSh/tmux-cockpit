@@ -413,8 +413,9 @@ fn heredoc_op(s: &str, mut j: usize) -> (usize, Option<(String, bool)>) {
     if q.is_some() && b.get(j).copied() == q {
         j += 1;
     }
-    // a word starting with a digit is a shift, as in `$((1<<2))`
-    let shift = word.bytes().next().is_none_or(|c| c.is_ascii_digit());
+    // an unquoted word starting with a digit is a shift, as in `$((1<<2))`;
+    // a quoted one (`<<'2'`) is still an end word, as bash reads it
+    let shift = word.bytes().next().is_none_or(|c| q.is_none() && c.is_ascii_digit());
     (j, (!shift).then_some((word, tabs)))
 }
 
