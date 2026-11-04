@@ -5,14 +5,17 @@
 # defined anywhere in run.sh, the matching blocks, and the summary tail.
 # Blocks that read variables another block set (AP/NP from the deliver
 # block, RVS from the loop block) need that block matched too -- widen the
-# pattern.  Usage: tests/only.sh 'tmux-review --attach|--deliver'
+# pattern.  A "\(" in PATTERN is a literal paren.  No match: status 2; invalid ERE: status 4.
+# ONLY_RUN=FILE reads blocks from FILE instead of tests/run.sh (the tests).
+# Usage: tests/only.sh 'tmux-review --attach|--deliver'
 set -u
 [ $# -eq 1 ] || { echo "usage: tests/only.sh PATTERN" >&2; exit 2; }
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN="$DIR/tests/run.sh"
+RUN="${ONLY_RUN:-$DIR/tests/run.sh}"
 OUT=$(mktemp "$DIR/tests/.only.XXXXXX") || exit 1   # under tests/: the prelude derives DIR from BASH_SOURCE
 trap 'rm -f -- "$OUT"' EXIT
-awk -v pat="$1" '
+# The pattern goes through the environment: awk -v would unescape \( to (.
+PAT="$1" awk '
     /^echo "== / && !seen_block { seen_block = 1 }
     !seen_block { print; next }                       # the prelude, verbatim
     # ponytail: brace depth counts every { and } in the line, strings included;
@@ -26,11 +29,16 @@ awk -v pat="$1" '
         next
     }
     /^echo "== / { title = $0; sub(/^echo "== /, "", title); sub(/ =="$/, "", title)
-                   want = (title ~ pat); nblk += want }
+                   want = (title ~ ENVIRON["PAT"]); nblk += want }
     want { print }
-    END { if (!nblk) { print "echo \"tests/only.sh: no block matches\" >&2; exit 2" }
+    END { if (!nblk) exit 3
           print "printf '"'"'  %d passed, %d failed, %d skipped\\n'"'"' \"$pass\" \"$fail\" \"$skipped\""
           print "[ \"$fail\" -eq 0 ] || exit 1" }
 ' "$RUN" > "$OUT"
+case $? in   # awk: 3 is our no-match; any other failure is awk dying on the ERE
+    0) ;;
+    3) echo "tests/only.sh: no block matches $1" >&2; exit 2 ;;
+    *) echo "tests/only.sh: bad pattern $1" >&2; exit 4 ;;
+esac
 bash -n "$OUT" || exit 2
 cd "$DIR" && bash "$OUT"
