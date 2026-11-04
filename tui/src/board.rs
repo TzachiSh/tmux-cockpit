@@ -1275,6 +1275,8 @@ pub enum Row {
     Sub(usize, usize),
     /// the `✓ N done` line: agent `.0`'s `.1` done subagents past [`SUB_FOLD`]
     Done(usize, usize),
+    /// the `◌ N quiet` line (#361): agent `.0`'s `.1` subagents whose end is unknown
+    Quiet(usize, usize),
     /// the `+N more` line: `.1` of agent `.0`'s subagents on no line
     More(usize, usize),
 }
@@ -1282,12 +1284,13 @@ pub enum Row {
 impl Row {
     /// A subagent tree's line, which no key selects (#313).
     pub fn tree(&self) -> bool {
-        matches!(self, Row::Sub(..) | Row::Done(..) | Row::More(..))
+        matches!(self, Row::Sub(..) | Row::Done(..) | Row::Quiet(..) | Row::More(..))
     }
 }
 
-/// A done subagent this long after a read first saw it done folds into its
-/// tree's `✓ N done` line: the data has no finish time.
+/// A done or stopped subagent this long after it finished folds into its tree's
+/// `✓ N done` line: after its `finished_at` (#338), else after a read first saw it
+/// finished.
 pub const SUB_FOLD: u64 = 120;
 /// The most lines one agent's tree takes, its `+N more` included.
 const TREE_MAX: usize = 5;
@@ -1296,8 +1299,10 @@ const TREE_MAX: usize = 5;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Place {
     Line,
-    /// seen done for longer than [`SUB_FOLD`]: counted on the `✓ N done` line
+    /// done or stopped for longer than [`SUB_FOLD`]: counted on the `✓ N done` line
     Old,
+    /// its end unknown (#361): counted on the `◌ N quiet` line
+    Quiet,
     /// first seen failed before the agent's newest prompt: an earlier turn's, on no
     /// line and off the badge
     Gone,
@@ -1372,23 +1377,29 @@ impl Seen {
     }
 }
 
+/// When `s` stopped working: its `finished_at` (#338), else when a read first saw
+/// it in its state.
+fn end_of(p: &Pane, s: &Sub, seen: &Seen) -> u64 {
+    s.finished_at.unwrap_or_else(|| seen.since(p, s))
+}
+
 /// The agent's next turn is its next prompt: `asked_since` is the age of the newest
 /// human prompt, which a subagent's `<task-notification>` report-back never moves.
-/// A failure first seen before that prompt is an earlier turn's. Exhaustive, so a
+/// A failure that ended before that prompt is an earlier turn's. Exhaustive, so a
 /// new state fails to compile until it is placed.
 fn place(p: &Pane, s: &Sub, seen: &Seen) -> Place {
     match s.state {
         SubState::Running => Place::Line,
-        SubState::Failed if seen.prompt(p).is_some_and(|q| seen.since(p, s) < q) => Place::Gone,
+        SubState::Failed if seen.prompt(p).is_some_and(|q| end_of(p, s, seen) < q) => Place::Gone,
         SubState::Failed => Place::Line,
-        // #361: drawn as Done until 1b's follow-up
-        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown
-            if seen.now.saturating_sub(seen.since(p, s)) > SUB_FOLD =>
-        {
-            Place::Old
-        }
-        // #361: drawn as Done until 1b's follow-up
-        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => Place::Line,
+        // a user's stop (#336) is not kept like a failure: it folds as a done one does
+        SubState::Done | SubState::Stopped if seen.now.saturating_sub(end_of(p, s, seen)) > SUB_FOLD => Place::Old,
+        SubState::Done | SubState::Stopped => Place::Line,
+        // a teammate between turns is alive: it never folds
+        SubState::Idle => Place::Line,
+        // 15 minutes without a transcript write, past SUB_FOLD by definition, and the
+        // most of a long session's (51 of 70 in one): one line holds them all
+        SubState::EndUnknown => Place::Quiet,
     }
 }
 
@@ -1408,34 +1419,48 @@ pub fn sub_counts(p: &Pane, seen: &Seen) -> (usize, usize) {
             SubState::Running if p.ended => {}
             SubState::Running => c.0 += 1,
             SubState::Failed => c.1 += 1,
-            // #361: drawn as Done until 1b's follow-up
+            // done, stopped by the user (#336), a teammate between turns or an end
+            // nobody recorded (#361): none is running, none a failure
             SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => {}
         }
     }
     c
 }
 
+/// A stopped subagent's mark (#336), and an idle teammate's (#361): both East
+/// Asian Width N, so one cell in every terminal (`■` is A). Local, as `PANE_MARK` is.
+const SUB_STOP: (&str, &str) = ("∎", "#");
+const SUB_IDLE: (&str, &str) = ("◦", "o");
+
 /// A tree line's state glyph and role. Exhaustive, as every match on
 /// `SubState` here is: a new state fails to compile until it is placed. An
-/// ended agent's (#301) running subagents are ended too.
+/// ended agent's (#301) running and idle subagents are ended too. An end
+/// nobody recorded (#361) takes the ended mark, neutral: it may still live.
 fn sub_glyph(th: &Theme, p: &Pane, st: SubState) -> (&'static str, ratatui::style::Color) {
+    let pick = |(u, a): (&'static str, &'static str)| if th.g.ascii { a } else { u };
     match st {
-        SubState::Running if p.ended => (th.g.ended, th.meta),
+        SubState::Running | SubState::Idle if p.ended => (th.g.ended, th.meta),
         SubState::Running => (th.g.running, th.running),
         SubState::Failed => (th.g.error, th.error),
-        // #361: drawn as Done until 1b's follow-up
-        SubState::Done | SubState::Stopped | SubState::Idle | SubState::EndUnknown => (th.g.done, th.done),
+        SubState::Done => (th.g.done, th.done),
+        SubState::Stopped => (pick(SUB_STOP), th.meta),
+        SubState::Idle => (pick(SUB_IDLE), th.meta),
+        SubState::EndUnknown => (th.g.ended, th.meta),
     }
 }
 
-/// Agent `i`'s tree with room for every line: the `✓ N done` fold first, as its
-/// subagents are the oldest, then one line per subagent, oldest first.
+/// Agent `i`'s tree with room for every line: the `✓ N done` and `◌ N quiet`
+/// folds first, as their subagents are the oldest, then one line per subagent,
+/// oldest first.
 fn tree_lines(ps: &[Pane], i: usize, seen: &Seen) -> Vec<Row> {
     let p = &ps[i];
-    let old = p.subs.iter().filter(|s| place(p, s, seen) == Place::Old).count();
+    let count = |k: Place| p.subs.iter().filter(|s| place(p, s, seen) == k).count();
     let mut out = vec![];
-    if old > 0 {
-        out.push(Row::Done(i, old));
+    for (k, row) in [(Place::Old, Row::Done as fn(usize, usize) -> Row), (Place::Quiet, Row::Quiet)] {
+        let n = count(k);
+        if n > 0 {
+            out.push(row(i, n));
+        }
     }
     out.extend(
         (0..p.subs.len())
@@ -1451,7 +1476,10 @@ fn cut(mut lines: Vec<Row>, i: usize, k: usize) -> Vec<Row> {
         return lines;
     }
     let keep = k.saturating_sub(1);
-    let more = lines[keep..].iter().map(|r| if let Row::Done(_, n) = r { *n } else { 1 }).sum();
+    let more = lines[keep..]
+        .iter()
+        .map(|r| if let Row::Done(_, n) | Row::Quiet(_, n) = r { *n } else { 1 })
+        .sum();
     lines.truncate(keep);
     lines.push(Row::More(i, more));
     lines
@@ -1691,6 +1719,9 @@ impl Nav {
                 out.push_str(&age_of(&ps[*i], s, self.seen.now));
                 out.push_str(&fmt_tokens(s.tokens));
             }
+            if let Row::Quiet(i, _) = r {
+                out.push_str(&quiet_age(&ps[*i], self.seen.now));
+            }
         }
         out
     }
@@ -1724,7 +1755,7 @@ impl Nav {
         trees.insert(id.to_string());
         self.rows_for(ps, self.room, &trees)
             .iter()
-            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) if ps[*i].id == id))
+            .any(|r| matches!(r, Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) if ps[*i].id == id))
     }
 
     /// The rows in `room`, net of the field. Tree lines take only the rows the list
@@ -1868,7 +1899,7 @@ impl Nav {
         let Some(row) = rows.get(r) else { return };
         self.sel = match row {
             Row::Head(s) => Sel::Head(s.clone()),
-            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => Sel::Pane(ps[*i].id.clone()),
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => Sel::Pane(ps[*i].id.clone()),
         };
         let h = rows[..=r].iter().rposition(|r| matches!(r, Row::Head(_))).unwrap_or(0);
         if let Row::Head(s) = &rows[h] {
@@ -1910,7 +1941,9 @@ impl Nav {
     fn group_of(&self, rows: &[Row], ps: &[Pane], r: usize) -> Option<(String, bool)> {
         match rows.get(r)? {
             Row::Head(s) => Some((s.clone(), true)),
-            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => Some((session(&ps[*i]).to_string(), false)),
+            Row::Agent(i) | Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => {
+                Some((session(&ps[*i]).to_string(), false))
+            }
         }
     }
 
@@ -2269,12 +2302,27 @@ fn sub_type(s: &Sub) -> &str {
 }
 
 /// A subagent's age off its start, as the rail prints it; empty before its first row.
-/// An ended agent's (#301) running subagent has none: nothing runs to age.
+/// An ended agent's (#301) running or idle subagent has none: nothing runs to age.
 fn age_of(p: &Pane, s: &Sub, now: u64) -> String {
-    if p.ended && s.state == SubState::Running {
+    if p.ended && matches!(s.state, SubState::Running | SubState::Idle) {
         return String::new();
     }
-    s.started.map(|t| fmt_dur(now.saturating_sub(t))).unwrap_or_default()
+    // an idle teammate and an end nobody recorded (#361) age from their last sign of life
+    let from = if matches!(s.state, SubState::Idle | SubState::EndUnknown) {
+        s.active_at.or(s.started)
+    } else {
+        s.started
+    };
+    from.map(|t| fmt_dur(now.saturating_sub(t))).unwrap_or_default()
+}
+
+/// The `◌ N quiet` line's age: its newest sign of life.
+fn quiet_age(p: &Pane, now: u64) -> String {
+    let q = p.subs.iter().filter(|s| s.state == SubState::EndUnknown);
+    q.filter_map(|s| s.active_at.or(s.started))
+        .max()
+        .map(|t| fmt_dur(now.saturating_sub(t)))
+        .unwrap_or_default()
 }
 
 /// A token count in at most six cells: `842`, `12.4k`, `9k`, `3.1M`.
@@ -2340,6 +2388,18 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
                 String::new(),
             )
         }
+        Row::Quiet(i, n) => {
+            // EndUnknown's mark, from the one table
+            let (gl, c) = sub_glyph(th, &ps[i], SubState::EndUnknown);
+            spans.push(Span::styled(gl, Style::new().fg(c)));
+            (
+                vec![Span::styled(
+                    pad(g.trunc(&format!(" {n} quiet"), avail + 1), avail + 1),
+                    Style::new().fg(th.value),
+                )],
+                quiet_age(&ps[i], now),
+            )
+        }
         Row::More(_, n) => (
             vec![Span::styled(
                 pad(g.trunc(&format!("+{n} more"), avail + 2), avail + 2),
@@ -2350,7 +2410,12 @@ fn tree_row(ps: &[Pane], row: &Row, last: bool, tcol: usize, w: usize, now: u64,
         Row::Sub(i, j) => {
             let s = &ps[i].subs[j];
             let (gl, c) = sub_glyph(th, &ps[i], s.state);
-            let dim = if ps[i].ended { Modifier::DIM } else { Modifier::empty() };
+            // a user's stop (#336) dims, as an ended agent's tree does
+            let dim = if ps[i].ended || s.state == SubState::Stopped {
+                Modifier::DIM
+            } else {
+                Modifier::empty()
+            };
             spans.push(Span::styled(gl, Style::new().fg(c).add_modifier(dim)));
             let (tw, dw, tok) = tree_cols(avail, tcol);
             let mut t = vec![Span::styled(
@@ -2518,7 +2583,7 @@ fn list_board(f: &mut Frame, area: Rect, v: &View, nav: &Nav) {
                         let p = &v.panes[*i];
                         agent_row(p, num, sel, p.id == v.active, ww, w, &nav.seen, th)
                     }
-                    Row::Sub(i, _) | Row::Done(i, _) | Row::More(i, _) => {
+                    Row::Sub(i, _) | Row::Done(i, _) | Row::Quiet(i, _) | Row::More(i, _) => {
                         let last = !rows.get(top + k + 1).is_some_and(Row::tree);
                         // the type column: the widest type among the tree's lines
                         let tcol = rows
