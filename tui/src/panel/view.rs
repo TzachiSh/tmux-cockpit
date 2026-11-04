@@ -1,6 +1,6 @@
 //! The panel's screens and its event loop. Every body is wrapped by hand: a
 //! ratatui `Wrap` panics on double-width graphemes (#2679).
-use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, boundary, needs_y};
+use super::app::{App, DRAFT_COUNT, InputKind, Level, MAX_DRAFT, MODELS, QUICK, Tap, View, assumed, boundary, needs_y};
 use super::envelope::Flow;
 use super::request::Call;
 use crate::highlight::{self, Role};
@@ -662,18 +662,29 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 ("esc", &back),
             ]);
         }
-        View::Input { kind, text, cur, .. } => {
+        View::Input { kind, text, cur, back } => {
             let title = match kind {
                 InputKind::Other => format!("your answer: {}", run.map_or("", |r| r.question.as_str())),
                 InputKind::Explain => "what do you want to know about this screen?".into(),
                 InputKind::FollowUp => "your follow-up question".into(),
+                InputKind::Correct(i) => format!("your correction to: {}", assumption(back, *i).0),
             };
             b.head.extend(many(&title, w, "", label));
+            let n = match kind {
+                InputKind::Correct(i) => assumption(back, *i).1,
+                _ => 0,
+            };
+            if let (InputKind::Correct(i), 2..) = (kind, n) {
+                b.head.extend(many(&format!("assumption {} of {n}", i + 1), w, "", meta));
+            }
             b.head.push(plain(""));
             let at;
             (b.lines, at) = typed(g, text, *cur, w, value, cursor_style(th));
             (b.scroll, b.sel) = (usize::MAX, Some((at, at + 1)));
             b.footer = pills(&[(g.key_enter, "send"), ("F1", "keys"), ("esc", "back")]);
+            if n > 1 {
+                b.footer.insert(1, (g.key_tab.into(), "next one".into()));
+            }
         }
         View::Result { label: l, text, scroll } => {
             b.head.push(styled(th.g.trunc(l, w), heading));
@@ -693,6 +704,9 @@ fn body(app: &App, th: &Theme, w: usize, tick: u64, tall: bool) -> Body {
                 help,
                 ("esc", &back),
             ]);
+            if app.correctable(text) {
+                b.footer.insert(4, ("a".into(), "correct".into()));
+            }
         }
         View::Steps {
             label: l,
@@ -900,6 +914,13 @@ fn small(f: &mut Frame, area: Rect, th: &Theme) {
     crate::chrome::floor(f, area, th, "panel", "make the window larger or rotate", "esc goes back");
 }
 
+/// The `Assumed:` line a correction box is for, and how many the result has.
+fn assumption(back: &View, i: usize) -> (&str, usize) {
+    let View::Result { text, .. } = back else { return ("", 0) };
+    let all = assumed(text);
+    (all.get(i).copied().unwrap_or(""), all.len())
+}
+
 /// What esc on `v` goes back to, in the words the `?` overlay uses.
 fn named(v: Option<&View>) -> &'static str {
     match v {
@@ -970,8 +991,16 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("esc", &left),
             quit,
         ],
-        View::Input { back, .. } => vec![
+        View::Input { kind, back, .. } => vec![
             s(ret, "send"),
+            s(
+                if matches!(kind, InputKind::Correct(_)) && assumption(back, 0).1 > 1 {
+                    g.key_tab
+                } else {
+                    ""
+                },
+                "the next assumption",
+            ),
             s(&format!("{bksp} ^W ^U"), "delete a char, a word, all before"),
             s(&lr, &format!("move; ^{} ^{} by a word", g.key_left, g.key_right)),
             s("Home End", "line start, end; ^A ^E too"),
@@ -980,11 +1009,12 @@ pub fn keys(app: &App, g: &Glyphs) -> Vec<(String, String)> {
             s("esc", &format!("back to {}", named(Some(back)))),
             s("^C", "close the panel"),
         ],
-        View::Result { .. } => vec![
+        View::Result { text, .. } => vec![
             s("i", "insert into the pane, no Enter"),
             s("s", "send with Enter, asks first"),
             s("r", "ask again"),
             s("c", "edit it as a new draft"),
+            s(if app.correctable(text) { "a" } else { "" }, "correct an Assumed: line"),
             s("x", "copy it (OSC 52)"),
             s(&ud, "scroll"),
             scroll,

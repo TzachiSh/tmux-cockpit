@@ -48,12 +48,18 @@ file and the answer to a private temp file for the paste.
   own question. When the next step is a message to a Claude Code agent,
   the answer ends with that message, ready to insert or send.
 - Claude may ask up to 3 multiple-choice questions first (6 for Explain):
-  `1`-`4` picks, `o` types your own answer, `g` tells it to guess.
+  `1`-`4` picks, `o` types your own answer, `g` tells it to guess. A write
+  that still asks with no questions left is told once to write it anyway,
+  with what it assumed as `Assumed:` lines; the error shows only if it asks
+  again.
 - On a result, `i` inserts it into the pane without Enter, and `s` sends it
   with Enter after a confirm. The paste is bracketed only when the program
   asked for that, so a multi-line insert into a program that may run each
   line (python3, sh, psql) asks first too. A multi-line send takes `y`,
   not Enter. `n`, `q` or `esc` cancels it.
+- When a written result ends with `Assumed:` lines, `a` corrects one: `⇥`
+  picks which, and Enter writes it again with your correction. That takes
+  one of the 3 questions, but a correction is still sent when none are left.
 - On steps, `1`-`9` or `↑↓` pick one, `i` inserts it and `s` sends it. The
   panel comes back on the steps with that one marked `✓ inserted` or `✓ sent`
   (`+` with `COCKPIT_GLYPHS=ascii`), so you can go on to the next.

@@ -411,8 +411,10 @@ fn write_asks_at_most_three_rounds() {
         assert!(prompt.contains(&format!("<turn role=\"user\">a{n}</turn>")));
     }
     a.reply(Ok(q(4)));
+    assert_eq!(a.view, View::Busy, "told once to write now");
+    a.reply(Ok(q(5)));
     assert!(
-        matches!(&a.view, View::Error { line, hint: Some(_) } if line == "no questions left, and Claude still asks: Q4?"),
+        matches!(&a.view, View::Error { line, hint: Some(_) } if line == "no questions left, and Claude still asks: Q5?"),
         "{:?}",
         a.view
     );
@@ -470,9 +472,10 @@ fn best_guess_ends_the_rounds_and_back_pops_one() {
     assert_eq!(a.run.as_ref().unwrap().rounds, 1, "a cancelled best guess gives the rounds back");
     ch(&mut a, 'g');
     a.reply(Ok(q(3)));
+    a.reply(Ok(q(4)));
     assert!(
         matches!(a.view, View::Error { .. }),
-        "a question after the best guess is an error, never a pasteable result"
+        "a question after the best guess and its retry is an error, never a pasteable result"
     );
 }
 
@@ -3417,4 +3420,298 @@ fn up_and_down_move_by_wrapped_row_as_drawn() {
     assert_eq!(up_down(&mut a, false), draft, "back down: column 17 ends \"over the lazy dog\"");
     let mut a = upd(draft, 80);
     assert_eq!(up_down(&mut a, true), draft, "unwrapped, it is one row");
+}
+
+// ---------------------------------------------------------------- assumptions (#415)
+
+const ASSUMED: &str = "<prompt>Fix the flaky test in @tests/run.sh.\n\
+    Assumed: the test is the timeout one (the screen shows it)\n  \
+    Assumed: no other file changes (the request names one)</prompt>";
+
+/// A write whose prompt ends with two Assumed: lines, on the Result view.
+fn assumed_result() -> App {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix the flaky test");
+    a.reply(Ok(ASSUMED.into()));
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    // launch() clears it in the loop: here, so a test sees whether a call goes out
+    a.pending = false;
+    a
+}
+
+fn last_turn(a: &App) -> String {
+    a.run.as_ref().unwrap().turns.last().unwrap().text.clone()
+}
+
+#[test]
+fn assumed_finds_the_lines_indented_or_not_and_no_mention_mid_line() {
+    let t = "Do x.\nNot Assumed: here\nAssumed: a (b)\n   Assumed: c (d)";
+    assert_eq!(cockpit_tui::panel::app::assumed(t), ["Assumed: a (b)", "Assumed: c (d)"]);
+    assert!(cockpit_tui::panel::app::assumed("").is_empty());
+}
+
+#[test]
+fn assumed_takes_only_the_closing_run_not_a_line_mid_prompt() {
+    let t = "Check the log:\n```\nAssumed: cached (old)\n```\nThen fix it.\nAssumed: a (b)\n\n";
+    assert_eq!(cockpit_tui::panel::app::assumed(t), ["Assumed: a (b)"]);
+    let mid = "Check the log:\n```\nAssumed: cached (old)\n```\nThen fix it.";
+    assert!(cockpit_tui::panel::app::assumed(mid).is_empty(), "no closing run, none");
+}
+
+#[test]
+fn a_mid_prompt_assumed_line_offers_no_correction() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix it");
+    a.reply(Ok("<prompt>Look at:\n```\nAssumed: cached (old)\n```\nFix it.</prompt>".into()));
+    let before = a.view.clone();
+    ch(&mut a, 'a');
+    assert_eq!(a.view, before);
+}
+
+#[test]
+fn a_correction_goes_in_as_a_turn_and_takes_a_question() {
+    let mut a = assumed_result();
+    ch(&mut a, 'a');
+    assert!(
+        matches!(
+            a.view,
+            View::Input {
+                kind: InputKind::Correct(0),
+                ..
+            }
+        ),
+        "{:?}",
+        a.view
+    );
+    typ(&mut a, "it is the parser test\n");
+    assert_eq!(a.view, View::Busy);
+    let (_, prompt, _) = a.request_parts().unwrap();
+    let line = "Assumed: the test is the timeout one (the screen shows it)";
+    let want = format!("Correction to \"{line}\": it is the parser test");
+    assert!(prompt.contains(&format!("<turn role=\"user\">{want}\n")), "{prompt}");
+    assert!(prompt.contains("It was:\nFix the flaky test in @tests/run.sh."), "{prompt}");
+    assert!(prompt.ends_with("<questions_left>2</questions_left>"), "{prompt}");
+}
+
+#[test]
+fn tab_picks_the_next_assumption_round_to_the_first() {
+    let mut a = assumed_result();
+    ch(&mut a, 'a');
+    key(&mut a, KeyCode::Tab);
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Correct(1),
+            ..
+        }
+    ));
+    typ(&mut a, "two files\n");
+    assert!(last_turn(&a).starts_with("Correction to \"Assumed: no other file changes"));
+    let mut a = assumed_result();
+    for _ in 0..2 {
+        key(&mut a, KeyCode::Tab);
+    }
+    ch(&mut a, 'a');
+    key(&mut a, KeyCode::Tab);
+    key(&mut a, KeyCode::Tab);
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Correct(0),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn esc_backs_out_of_a_correction_with_nothing_sent() {
+    let mut a = assumed_result();
+    let before = a.view.clone();
+    ch(&mut a, 'a');
+    typ(&mut a, "half typed");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, before);
+    assert!(!a.pending && a.run.as_ref().unwrap().turns.is_empty(), "no turn, no call");
+}
+
+#[test]
+fn an_empty_correction_keeps_the_box() {
+    let mut a = assumed_result();
+    ch(&mut a, 'a');
+    typ(&mut a, "  \n");
+    assert!(matches!(
+        a.view,
+        View::Input {
+            kind: InputKind::Correct(0),
+            ..
+        }
+    ));
+    assert!(!a.pending);
+}
+
+#[test]
+fn a_prompt_with_no_assumed_line_offers_no_correction() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix it");
+    a.reply(Ok("<prompt>Fix the test. It assumed: nothing</prompt>".into()));
+    let f = frame(&a, 120, 24, 0);
+    assert!(!f.contains("correct"), "{f}");
+    let before = a.view.clone();
+    ch(&mut a, 'a');
+    assert_eq!(a.view, before, "a does nothing here");
+    let keys = cockpit_tui::panel::view::keys(&a, &Theme::fixed().g);
+    assert!(!keys.iter().any(|(k, _)| k == "a"), "{keys:?}");
+}
+
+#[test]
+fn a_fixed_text_with_an_assumed_line_offers_no_correction() {
+    let mut a = app("w", "zsh", "$ ");
+    ch(&mut a, '1');
+    typ(&mut a, "Assumed: teh");
+    ctrl(&mut a, 'f');
+    a.reply(Ok("Assumed: the".into()));
+    let View::Result { text, .. } = &a.view else {
+        panic!("{:?}", a.view)
+    };
+    assert_eq!(cockpit_tui::panel::app::assumed(text), ["Assumed: the"], "the line is there");
+    ch(&mut a, 'a');
+    assert!(matches!(a.view, View::Result { .. }), "a fix is not a write: {:?}", a.view);
+}
+
+#[test]
+fn the_footer_and_the_help_name_the_correct_key() {
+    let a = assumed_result();
+    assert!(frame(&a, 120, 24, 0).contains("a correct"));
+    let keys = cockpit_tui::panel::view::keys(&a, &Theme::fixed().g);
+    assert!(keys.iter().any(|(k, v)| k == "a" && v == "correct an Assumed: line"), "{keys:?}");
+}
+
+#[test]
+fn a_tablet_result_has_a_correct_button() {
+    let mut a = assumed_result();
+    a.tablet = true;
+    let (f, _, hits) = drawn(&a, 80, 24, &Theme::fixed(), 0);
+    assert!(f.contains("[ correct ]"), "{f}");
+    let tap = Tap::Key(KeyEvent::from(KeyCode::Char('a')));
+    assert!(hits.iter().any(|h| h.tap == tap), "the button taps a");
+}
+
+#[test]
+fn a_correction_at_zero_questions_is_still_sent_and_stays_at_zero() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix the flaky test");
+    a.reply(Ok(q(1)));
+    ch(&mut a, 'g');
+    a.reply(Ok(ASSUMED.into()));
+    assert_eq!(a.run.as_ref().unwrap().rounds, 3);
+    ch(&mut a, 'a');
+    typ(&mut a, "the parser test\n");
+    let (_, prompt, _) = a.request_parts().unwrap();
+    assert!(prompt.ends_with("<questions_left>0</questions_left>"), "{prompt}");
+    assert_eq!(a.run.as_ref().unwrap().rounds, 3, "never past the budget");
+}
+
+#[test]
+fn a_cancelled_correction_gives_back_the_turn_and_the_question() {
+    let mut a = assumed_result();
+    let back = a.view.clone();
+    ch(&mut a, 'a');
+    typ(&mut a, "the parser test\n");
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, back);
+    let r = a.run.as_ref().unwrap();
+    assert_eq!((r.rounds, r.turns.len()), (0, 0));
+}
+
+#[test]
+fn a_write_asking_at_zero_questions_is_told_once_to_write_now() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    for n in 1..=3 {
+        a.reply(Ok(q(n)));
+        ch(&mut a, '1');
+    }
+    a.pending = false;
+    a.reply(Ok(q(4)));
+    assert_eq!(a.view, View::Busy, "no error yet: {:?}", a.view);
+    assert!(a.pending, "the retry goes out");
+    let (_, prompt, _) = a.request_parts().unwrap();
+    let now = "(no questions left: write it now, and state each assumption as an Assumed: line)";
+    let want = format!("<turn role=\"user\">a3\n\n{now}");
+    assert!(prompt.contains(&want), "{prompt}");
+    a.reply(Ok("<prompt>Do it.\nAssumed: a (b)</prompt>".into()));
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+}
+
+#[test]
+fn a_write_asking_again_after_the_retry_shows_the_error() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    for n in 1..=3 {
+        a.reply(Ok(q(n)));
+        ch(&mut a, '1');
+    }
+    a.reply(Ok(q(4)));
+    a.reply(Ok(q(5)));
+    let line = "no questions left, and Claude still asks: Q5?";
+    assert!(matches!(&a.view, View::Error { line: l, .. } if l == line), "{:?}", a.view);
+    let View::Error { hint: Some(h), .. } = &a.view else { panic!() };
+    assert!(
+        !h.contains("draft"),
+        "esc goes to the view the call left, not always the draft: {h}"
+    );
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Question { sel: 0, scroll: None });
+    assert_eq!(
+        a.run.as_ref().unwrap().turns.last().unwrap().text,
+        "Q3? Options: a3 | b3",
+        "the answer is dropped"
+    );
+}
+
+#[test]
+fn a_retry_from_a_result_at_zero_questions_adds_its_own_turn() {
+    let mut a = app("claude", "claude", CLAUDE_SCREEN);
+    writing(&mut a, "fix the flaky test");
+    a.reply(Ok(q(1)));
+    ch(&mut a, '1');
+    a.reply(Ok(ASSUMED.into()));
+    a.run.as_mut().unwrap().rounds = 3;
+    ch(&mut a, 'r');
+    a.reply(Ok(q(2)));
+    assert_eq!(a.view, View::Busy);
+    let texts = |a: &App| a.run.as_ref().unwrap().turns.iter().map(|t| t.text.clone()).collect::<Vec<_>>();
+    assert_eq!(texts(&a)[1], "a1", "the accepted answer is left alone");
+    assert!(texts(&a)[2].starts_with("(no questions left"), "{:?}", texts(&a));
+    key(&mut a, KeyCode::Esc);
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    assert_eq!(texts(&a), ["Q1? Options: a1 | b1", "a1"]);
+}
+
+#[test]
+fn a_cancelled_retry_gives_back_the_answer() {
+    let mut a = app("w", "zsh", "$ ");
+    writing(&mut a, "do it");
+    a.reply(Ok(q(1)));
+    ch(&mut a, 'g');
+    a.reply(Ok(q(2)));
+    key(&mut a, KeyCode::Esc);
+    assert_eq!(a.view, View::Question { sel: 0, scroll: None });
+    let r = a.run.as_ref().unwrap();
+    assert_eq!((r.rounds, r.turns.len()), (1, 1), "the guess and the retry are undone");
+}
+
+#[test]
+fn golden_result_assumed() {
+    goldens("result-assumed", &assumed_result(), 0);
+    tablet_goldens("result-assumed", &tablet(assumed_result()));
+}
+
+#[test]
+fn golden_input_correct() {
+    let mut a = assumed_result();
+    ch(&mut a, 'a');
+    key(&mut a, KeyCode::Tab);
+    typ(&mut a, "two files");
+    goldens("input-correct", &a, 0);
 }
