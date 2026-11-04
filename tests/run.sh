@@ -12996,6 +12996,7 @@ case "$1" in
       esac ;;
   new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
   display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
+  list-clients) [ -z "${NO_CLIENT:-}" ] && printf 'c\n' ;;
 esac
 exit 0
 STUB
@@ -13014,7 +13015,7 @@ mvrun() {                     # mvrun <click line> <args...> -- the log after on
     : > "$MVL"
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR=ed \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
-        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" \
+        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
@@ -13035,10 +13036,16 @@ for f in n.md.txt t.txt d.md; do
     is "$f is not markdown: the editor, at once" "NEWWIN ed  $MV/w/$f" "$(mvrun "$f" %1)"
 done
 is "@cockpit_md_view off: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" "$(MD_VIEW=off mvrun a.md %1)"
-case "$(POPUP_RC=1 mvrun a.md %1)" in
-    "POPUP"*$'\n'"NEWWIN ed  $MV/w/a.md") ok "a popup tmux refuses (no client) opens the editor instead" ;;
-    *) bad "a popup tmux refuses (no client) opens the editor instead" "the popup, then the editor" "$(POPUP_RC=1 mvrun a.md %1)" ;;
-esac
+is "no client on the pane's session: the editor, and no popup" "NEWWIN ed  $MV/w/a.md" "$(NO_CLIENT=1 mvrun a.md %1)"
+# tmux hands back the popup command's status: 129 is the client detaching
+# mid-view, 3 any exit 3. Neither is a refusal, so no editor opens behind them.
+for rc in 129 3; do
+    case "$(POPUP_RC=$rc mvrun a.md %1)" in
+        POPUP*NEWWIN*) bad "a popup closing with status $rc opens nothing more" "the popup only" "the editor too" ;;
+        POPUP*) ok "a popup closing with status $rc opens nothing more" ;;
+        *) bad "a popup closing with status $rc opens nothing more" "the popup only" "$(POPUP_RC=$rc mvrun a.md %1)" ;;
+    esac
+done
 is "no cockpit-tui: a .md goes straight to the editor" "NEWWIN ed  $MV/w/a.md" "$(MV_BIN="$MV/none" mvrun a.md %1)"
 is "the popup's title and directory spell each # as ##" "[-d] [$MV/w] [-T] [ h##(x)##{y}.md ]" \
    "$(mvrun 'h#(x)#{y}.md' %1 | grep -o '\[-d\] \[[^]]*\] \[-T\] \[[^]]*\]')"
@@ -13075,23 +13082,23 @@ echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a h
 # The real binary in a real popup: an outer server's pane is the inner server's
 # client, keys go in through it, and an editor shim's log is what the asserts read.
 if need_tmux "markdown viewer popup"; then :; else
-MVI="cockpit-mvi-$$"; MVO="cockpit-mvo-$$"; SOCKS="$SOCKS $MVI $MVO"
+MDI="cockpit-mdi-$$"; MDO="cockpit-mdo-$$"; SOCKS="$SOCKS $MDI $MDO"   # not the move menu's mvo
 MVD=$(mktmpd); mkdir -p "$MVD/w"; MVE="$MVD/ed.log"; : > "$MVE"
 printf '#!/bin/sh\necho "OPEN $*" >> %s\n' "$MVE" > "$MVD/ed"; chmod +x "$MVD/ed"
 MVN='r#(tmux${IFS}set${IFS}-g${IFS}@pwned${IFS}yes).md'   # no spaces: the line splits on them
 { printf '# Heading\n\n'; for i in $(seq 0 40); do printf 'p%s\n\n' "$i"; done; } > "$MVD/w/$MVN"
-"$TMUX_REAL" -L "$MVI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" 'exec sleep 300' >/dev/null 2>&1
-"$TMUX_REAL" -L "$MVI" set -g @cockpit_editor "$MVD/ed" >/dev/null 2>&1
-"$TMUX_REAL" -L "$MVI" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
-MVP=$("$TMUX_REAL" -L "$MVI" list-panes -t t -F '#{pane_id}' | head -1)
-"$TMUX_REAL" -L "$MVI" set-option -p -t "$MVP" @cockpit_click_line "see $MVN" >/dev/null 2>&1
-"$TMUX_REAL" -L "$MVO" -f /dev/null new-session -d -s o -x 100 -y 32 -c "$MVD" \
-    "TERM=xterm-256color exec $TMUX_REAL -L $MVI attach -t t" >/dev/null 2>&1
-until_out '?*' "$TMUX_REAL" -L "$MVI" list-clients -F '#{client_name}'
-mvclick() { "$TMUX_REAL" -L "$MVI" run-shell -b "$(printf %q "$DIR/scripts/tmux-open-path") $MVP" >/dev/null 2>&1; }
-mvcap() { "$TMUX_REAL" -L "$MVO" capture-pane -p -t o; }
+"$TMUX_REAL" -L "$MDI" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$MVD/w" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set -g @cockpit_editor "$MVD/ed" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set -g remain-on-exit on >/dev/null 2>&1   # the shim editor exits at once
+MVP=$("$TMUX_REAL" -L "$MDI" list-panes -t t -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$MDI" set-option -p -t "$MVP" @cockpit_click_line "see $MVN" >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDO" -f /dev/null new-session -d -s o -x 100 -y 32 -c "$MVD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $MDI attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$MDI" list-clients -F '#{client_name}'
+mvclick() { "$TMUX_REAL" -L "$MDI" run-shell -b "$(printf %q "$DIR/scripts/tmux-open-path") $MVP" >/dev/null 2>&1; }
+mvcap() { "$TMUX_REAL" -L "$MDO" capture-pane -p -t o; }
 mvclick
-if until_cap "$MVO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
+if until_cap "$MDO" o '*# Heading*p1*'; then ok "a click on a .md shows it rendered in a popup"
 else bad "a click on a .md shows it rendered in a popup" "# Heading, then p1" "$(mvcap | head -8)"; fi
 # The client's top row is the popup's border, so the -T title is what is
 # read here; the viewer's own frame title is a row lower and is not the gate.
@@ -13100,12 +13107,12 @@ case "$(mvcap | head -1)" in
     *) bad "the popup border's -T title (the client's top row) is the file's name, literally" "$MVN" "$(mvcap | head -1)" ;;
 esac
 # rows: # Heading (line 1), gap, p0 (line 3), gap, p1 (line 5): four down, p1 is on top
-"$TMUX_REAL" -L "$MVO" send-keys -t o j j j j e
+"$TMUX_REAL" -L "$MDO" send-keys -t o j j j j e
 if until_file "$MVE" '*OPEN*'; then
     is "e hands the file to the editor at the top line shown" "OPEN +5 $MVD/w/$MVN" "$(cat "$MVE")"
 else bad "e hands the file to the editor at the top line shown" "OPEN +5 $MVD/w/$MVN" "nothing opened"; fi
 : > "$MVE"
-"$TMUX_REAL" -L "$MVI" set -g @cockpit_md_view off >/dev/null 2>&1
+"$TMUX_REAL" -L "$MDI" set -g @cockpit_md_view off >/dev/null 2>&1
 mvclick
 if until_file "$MVE" '*OPEN*'; then
     is "@cockpit_md_view off: the click opens the editor, no viewer" "OPEN $MVD/w/$MVN" "$(cat "$MVE")"
@@ -13113,8 +13120,8 @@ else bad "@cockpit_md_view off: the click opens the editor, no viewer" "OPEN $MV
 # The sleep stays: the assertion is that nothing ran, and an absence has no
 # observable to poll; a #() job, had one started, runs in the background.
 sleep 0.5
-is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$MVI" show -gqv @pwned 2>/dev/null)"
-"$TMUX_REAL" -L "$MVO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MVI" kill-server >/dev/null 2>&1
+is "and nothing in the name ran" "" "$("$TMUX_REAL" -L "$MDI" show -gqv @pwned 2>/dev/null)"
+"$TMUX_REAL" -L "$MDO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$MDI" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"

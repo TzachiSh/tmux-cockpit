@@ -160,6 +160,9 @@ md_view() {
     # shellcheck source=lib/tui.sh
     . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] || return 1
     if [ "$PICK" -eq 0 ] && [ "$VIEW" -eq 0 ]; then
+        # a popup needs a client on the pane's session; decided here, as the
+        # popup's own status is its command's (129 when the client detaches)
+        [ -n "$(tmux list-clients -t "$pane" -F x 2>/dev/null)" ] || return 1
         size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
         # the border draws the name: no control character and no bidi mark,
         # which would reorder it (U+200E-F, U+202A-E, U+2066-9, as UTF-8)
@@ -171,8 +174,7 @@ md_view() {
         # -d and -T expand formats, the command does not (#289)
         tmux display-popup -t "$pane" -E -x P -y P -w "${size% *}" -h "${size#* }" \
             -d "$(fesc "$dir")" -T "$(fesc " $title ")" \
-            "$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")" \
-            || return 1     # no client to draw on: the editor, as before
+            "$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")"
         return 0
     fi
     err=$(mktemp 2>/dev/null) || err=/dev/null

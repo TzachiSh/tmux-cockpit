@@ -1305,8 +1305,9 @@ reason in a warn note.
 - New option `@cockpit_md_view` (`on`). `scripts/tmux-open-path` gains
   `md_view` and its call at the top of `open_one`, and a `--view <pane>
   <file> <line>` re-entry for the viewer's popup. The popup's `-T` title is
-  the name with control and bidi characters dropped, then `fesc`; a popup
-  tmux refuses (no client) opens the editor instead.
+  the name with control and bidi characters dropped, then `fesc`. With no
+  client on the pane's session the editor opens instead, decided before the
+  popup: once open, its status is its command's, and a detach is 129.
 - `panel::view::role_style` is `pub(crate)`: the viewer colours code with the
   panel's roles.
 - Goldens: new `view-{40,80,120}`, `view-ascii-80`, `view-nocolor-80`,
