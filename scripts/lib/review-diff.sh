@@ -57,13 +57,13 @@ tree_diff() {
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null || rm -f -- "$idx"
     local -a from=()
     git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' > "$tmp/staged" 2>/dev/null \
-        || { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; return 1; }
+        || { tree_diff_done; return 1; }
     # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
     # to run. An error (2) runs the loop all the same.
     grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
     if [ $? -ne 1 ]; then
         gitlink_excludes < "$tmp/staged" > "$tmp/pathspec" \
-            || { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; return 1; }
+            || { tree_diff_done; return 1; }
         [ ! -s "$tmp/pathspec" ] || from=(--pathspec-from-file="$tmp/pathspec" --pathspec-file-nul)
     fi
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A ${from[@]+"${from[@]}"} 2>/dev/null
@@ -92,8 +92,12 @@ tree_diff() {
     # The binary-file numstat row git would have printed: without it a tree whose
     # only change is a big file reads clean to --delta.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
-    rm -rf -- "$tmp"; trap - EXIT HUP INT TERM
+    tree_diff_done
 }
+
+# tree_diff's way out, on every path: its temp dir gone, its traps cleared.
+# Reads the caller's $tmp.
+tree_diff_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 
 # --- which base ---------------------------------------------------------------
 # The first case that holds:
