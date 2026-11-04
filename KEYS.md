@@ -72,6 +72,10 @@ Taps on the bar act on release.
 | `Ctrl`+right-click a line | the same picker |
 | `Alt`+click a line | the same picker, where the terminal forwards Alt |
 
+A markdown file the picker opens shows in the viewer (`@cockpit_md_view off`
+sends it to the editor): `/` finds, `n` `N` move between matches, `e` opens the
+editor at the top line, `?` lists the rest. See [docs/tui.md](docs/tui.md#the-markdown-viewer-283).
+
 Plain clicks in a pane, wheel and drag are never touched, and neither is a
 single `Ctrl`+click: tmux 3.8 binds nothing to it. `@cockpit_keep_swap_pane`
 is gone with the swap-pane it kept (#223); `install.sh --check` warns while a

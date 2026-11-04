@@ -61,9 +61,10 @@ if [ "${1:-}" = --vscode ]; then
     exit $?
 fi
 
-PICK=0 DRY=0 FOLDER=0
+PICK=0 DRY=0 FOLDER=0 VIEW=0
 [ "${1:-}" = --folder ]  && { FOLDER=1; shift; } # the pane's folder, in the editor
 [ "${1:-}" = --pick ]    && { PICK=1; shift; }   # re-entry from the popup below
+[ "${1:-}" = --view ]    && { VIEW=1; shift; }   # re-entry from md_view's popup (#283)
 [ "${1:-}" = --dry-run ] && { DRY=1;  shift; }
 
 # display-message expands formats: a clicked name like x#(cmd).txt must show, not run (#289)
@@ -78,6 +79,7 @@ shq() { printf '%q' "$1"; }
 
 open_one() {
     local file=$1 ln=$2 col=$3 editor
+    md_view "$file" "$ln" && return
     vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
     if [ -z "$editor" ]; then
@@ -143,6 +145,44 @@ $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
     note "cockpit: no editor · set @cockpit_editor, \$VISUAL or install code"
 }
 
+# --- markdown (#283) ---------------------------------------------------------
+# A markdown file opens read-only in cockpit-tui view; its e closes it and comes
+# back to open_one, at the top line it showed. The click arrives via run-shell,
+# which has no terminal, so the viewer gets a popup the pane's size that
+# re-enters with --view. The picker's popup is a terminal already, and tmux has
+# one popup per client, so from there it draws in place. 1: not for the viewer
+# (another file, @cockpit_md_view off, no binary, a viewer that failed).
+md_view() {
+    local file=$1 ln=$2 out rc err size
+    case ${file,,} in *.md|*.markdown|*.mdown|*.mkd) ;; *) return 1 ;; esac
+    [ -f "$file" ] && [ -z "${MD_EDIT:-}" ] || return 1
+    [ "$(tmux show-option -gqv @cockpit_md_view)" != off ] || return 1
+    # shellcheck source=lib/tui.sh
+    . "${d%/*}/lib/tui.sh" 2>/dev/null && [ -x "$COCKPIT_TUI_BIN" ] || return 1
+    if [ "$PICK" -eq 0 ] && [ "$VIEW" -eq 0 ]; then
+        size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
+        # -d and -T expand formats, the command does not (#289)
+        tmux display-popup -t "$pane" -E -x P -y P -w "${size% *}" -h "${size#* }" \
+            -d "$(fesc "$dir")" -T "$(fesc " ${file##*/} ")" \
+            "$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")"
+        return 0
+    fi
+    err=$(mktemp 2>/dev/null) || err=/dev/null
+    out=$("$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" 2>"$err"); rc=$?
+    [ ! -s "$err" ] || cat "$err" >&2
+    if tui_stale "$rc" "$err"; then rc=stale; fi
+    [ "$err" = /dev/null ] || rm -f -- "$err"
+    case $rc in
+        0) ;;
+        stale) note "cockpit: $TUI_STALE_MSG"; return 1 ;;
+        *) note "cockpit: the viewer exited $rc · opening the editor"; return 1 ;;
+    esac
+    # what the viewer printed is untrusted until it is `edit <digits>`
+    [[ $out =~ ^edit\ ([0-9]+)$ ]] || return 0
+    MD_EDIT=1 open_one "$file" "${BASH_REMATCH[1]}" ""
+    return 0
+}
+
 if [ "$DRY" -eq 1 ]; then
     dir=${1:-$PWD}; line=${2:-}; pane=""; win=""
 else
@@ -163,6 +203,7 @@ else
         [ -n "$dir" ] || { note "cockpit: the pane has no folder"; exit 1; }
         open_one "$dir" "" ""; exit 0
     fi
+    [ "$VIEW" -eq 0 ] || { open_one "${2:-}" "${3:-}" ""; exit 0; }
 fi
 
 [ -n "$line" ] || {
