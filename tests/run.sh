@@ -1527,6 +1527,33 @@ is "and reports no branch for it"      "" \
 is "a normal pane still shows its path" " /tmp/x" \
    "$("$DIR/scripts/tmux-where" path 999999 /tmp/x bash 2>&1 | plain)"
 is "HOME unset does not crash" " /tmp/x" "$(env -u HOME "$DIR/scripts/tmux-where" path 1 /tmp/x bash 2>&1 | plain)"
+# ~ stands for $HOME only at a path boundary (#296): /x/alice is not under /x/al.
+tw_home() { HOME=$1 "$DIR/scripts/tmux-where" path "$2" "$3" "$4" 2>&1 | plain; }
+for row in "/x/al|1|/x/alice|bash| /x/alice" "/x/al|1|/x/al/b|bash| ~/b" \
+           "/x/al/|1|/x/al/b|bash| ~/b" "/x/al/|1|/x/al|bash| ~" \
+           "/x/al|999999|/x/alice|| /x/alice" "/x/al|999999|/x/al/b|| ~/b"; do
+    IFS='|' read -r h p d c want <<<"$row"
+    is "tmux-where HOME=$h pid $p shows $d as [$want]" "$want" "$(tw_home "$h" "$p" "$d" "$c")"
+done
+unset -f tw_home
+
+echo "== the bar's path shows ~ only for \$HOME at a path boundary (#296) =="
+if need_tmux "home boundary in the bar"; then :; else
+HB="cockpit-hb-$$"; SOCKS="$SOCKS $HB"
+HBD=$(mktmpd); mkdir -p "$HBD/al/b" "$HBD/alice"
+"$TMUX_REAL" -L "$HB" -f /dev/null new-session -d -s t -n alice -c "$HBD/alice" >/dev/null 2>&1
+"$TMUX_REAL" -L "$HB" new-window -d -n b -c "$HBD/al/b" >/dev/null 2>&1
+"$TMUX_REAL" -L "$HB" new-window -d -n home -c "$HBD/al" >/dev/null 2>&1
+hb_path() { "$TMUX_REAL" -L "$HB" display -p -t "t:$1" '#{E:@cockpit_where_path}' 2>/dev/null; }
+for h in "$HBD/al" "$HBD/al/"; do
+    "$TMUX_REAL" -L "$HB" run-shell "HOME='$h' '$DIR/cockpit.tmux'" >/dev/null 2>&1
+    is "HOME=$h: a sibling sharing the prefix, a subdir, HOME itself" \
+       "$HBD/alice|~/b|~" "$(hb_path alice)|$(hb_path b)|$(hb_path home)"
+done
+unset -f hb_path
+"$TMUX_REAL" -L "$HB" kill-server >/dev/null 2>&1
+rm -rf "$HBD"
+fi
 
 echo "== tmux-where branch --set: the pushed branch, compare-then-set =="
 # The bar reads @cockpit_branch, a pane option the hooks push, so a redraw runs no
@@ -2549,6 +2576,21 @@ HOME="$IB" XDG_BIN_HOME="$IBIN" "$DIR/install.sh" >/dev/null 2>&1
 is "leaves another tool's link alone" "/bin/echo" "$(readlink "$IBIN/tm")"
 rm -rf "$IB"
 
+echo "== install.sh's closing note reads every config tmux loads (#296) =="
+IW=$(mktmpd); mkdir -p "$IW/h/.config/tmux" "$IW/bin"
+# The configs the note names: it asks for the run-shell line only when none has it.
+iw_note() {
+    env -u XDG_CONFIG_HOME HOME="$IW/h" XDG_BIN_HOME="$IW/bin" "$DIR/install.sh" 2>&1 >/dev/null \
+        | sed -n 's/^Add this to \(.*\), AFTER.*/\1/p'
+}
+printf 'set -g mouse on\n' > "$IW/h/.config/tmux/tmux.conf"
+printf 'run-shell %s/cockpit.tmux\n' "$DIR" > "$IW/h/.tmux.conf"
+is "wired in ~/.tmux.conf beside an unwired XDG config: no note" "" "$(iw_note)"
+rm "$IW/h/.tmux.conf"
+is "wired in neither: the note names the first config" "$IW/h/.config/tmux/tmux.conf" "$(iw_note)"
+unset -f iw_note
+rm -rf "$IW"
+
 echo "== install.sh --check: one row per thing that can be wrong, exit on the worst =="
 # The box is faked whole -- HOME, $BIN, PATH shims, an empty TMUX_TMPDIR so no
 # tmux server is reachable -- so every row is the code's answer, never this
@@ -3315,6 +3357,57 @@ ps_stock=$(pk s)
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 is "@cockpit_sessions_key off keeps stock prefix s" "$ps_stock" "$(pk s)"
 "$TMUX_REAL" -L "$PS" kill-server >/dev/null 2>&1
+fi
+
+echo "== a key's switch-client moves the client that pressed it, not the last active (#296) =="
+if need_tmux "switch-client -c"; then :; else
+SC="cockpit-sc-$$"; SOCKS="$SOCKS $SC"; SCD=$(mktmpd)
+"$TMUX_REAL" -L "$SC" -f /dev/null new-session -d -s a -c "$SCD" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SC" new-session -d -s z -c "$SCD" 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SC" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+SCT=$("$TMUX_REAL" -L "$SC" list-panes -t z -F '#{pane_id}')
+SCS=$("$TMUX_REAL" -L "$SC" list-panes -t a -F '#{pane_id}')
+"$TMUX_REAL" -L "$SC" set -p -t "$SCT" @panestate needs-input >/dev/null 2>&1
+# Two control clients on a, over fifos held open read-write. B attaches last, so
+# B is the one a bare switch-client picks; the scripts are handed A.
+sc_open() {
+    mkfifo "$SCD/$1" && "$TMUX_REAL" -L "$SC" -C attach -t a <> "$SCD/$1" >/dev/null 2>&1 &
+}
+sc_open A; SCPA=$!
+until_out '?*' "$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}'
+SCA=$("$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}')
+sc_open B; SCPB=$!
+until_out "*"$'\n'"*" "$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}'
+sc_where() {                  # -> "A=<session> B=<session>"
+    "$TMUX_REAL" -L "$SC" list-clients -F '#{client_name} #{client_session}' 2>/dev/null \
+        | awk -v a="$SCA" '{ print ($1 == a ? "A" : "B") "=" $2 }' | sort | tr '\n' ' '
+}
+sc_run() { env TMUX="$SOCKDIR/$SC,0,0" COCKPIT_LOG="$SCD/log" "$@" </dev/null >/dev/null 2>&1; }
+sc_run "$DIR/scripts/tmux-jump" "$SCS" "$SCA"
+is "tmux-jump moves the client it is given" "A=z B=a " "$(sc_where)"
+for c in "$SCA" "$("$TMUX_REAL" -L "$SC" list-clients -F '#{client_name}' | grep -vxF "$SCA")"; do
+    "$TMUX_REAL" -L "$SC" switch-client -c "$c" -t a >/dev/null 2>&1
+done
+printf '#!/bin/sh\necho "jump %s" > "$COCKPIT_ACTION"\n' "$SCT" > "$SCD/tui"
+chmod +x "$SCD/tui"
+# The board key leaves its client on the pane; the board reads it once.
+"$TMUX_REAL" -L "$SC" set -p -t "$SCS" @cockpit_board_client "$SCA" >/dev/null 2>&1
+sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS"
+is "the board's jump moves the client the key left on the pane, and clears it" "A=z B=a :" \
+   "$(sc_where):$("$TMUX_REAL" -L "$SC" show -pqv -t "$SCS" @cockpit_board_client)"
+# The bindings hand the pressing client over: run-shell expands it at the press.
+"$TMUX_REAL" -L "$SC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+sc_keys() { for k in u w r; do "$TMUX_REAL" -L "$SC" list-keys -T prefix "$k" 2>/dev/null \
+    | grep -c "#{client_name}"; done | tr '\n' ' '; }
+is "prefix u, w and r pass #{client_name}" "1 1 1 " "$(sc_keys)"
+"$TMUX_REAL" -L "$SC" set -g @cockpit_board_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$SC" set -g @cockpit_review_window on >/dev/null 2>&1
+"$TMUX_REAL" -L "$SC" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+is "and so do their window forms" "1 1 1 " "$(sc_keys)"
+unset -f sc_open sc_where sc_run sc_keys
+"$TMUX_REAL" -L "$SC" kill-server >/dev/null 2>&1
+wait "$SCPA" "$SCPB" 2>/dev/null
+rm -rf "$SCD"
 fi
 
 echo "== prefix a is the menu (#43, #222) =="
@@ -7077,6 +7170,10 @@ until_out '?*' "$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}'
 "$TMUX_REAL" -L "$RB3O" send-keys -t o C-b r
 until_file "$RB3D/args" '*-p *'
 is "the board window is told the pane the key was pressed in, not its own" "-p $RB3S" "$(cat "$RB3D/args" 2>/dev/null)"
+# And the key leaves its client on that pane, for the board's jump (#296).
+is "and the key leaves the pressing client on that pane" \
+   "$("$TMUX_REAL" -L "$RB3" list-clients -F '#{client_name}')" \
+   "$("$TMUX_REAL" -L "$RB3" show -pqv -t "$RB3S" @cockpit_board_client)"
 "$TMUX_REAL" -L "$RB3O" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$RB3" kill-server >/dev/null 2>&1
 fi
@@ -7944,12 +8041,14 @@ esac
 # Every script the wrapper can reach is a stub that records its argv, and tmux
 # only records: the assertion is what ran, in full, not just that the right
 # thing did.
-# The reads the loop makes, @cockpit_board_return (from $BD/ret) and
-# @cockpit_glyphs (#293, unset), are not recorded: what is asserted is what ran.
+# The reads the loop makes, @cockpit_board_return (from $BD/ret), @cockpit_glyphs
+# (#293, unset) and a jump's @cockpit_board_client (#296, unset), are not
+# recorded: what is asserted is what ran.
 cat > "$BD/rec/tmux" <<BDREC
 #!/bin/sh
 case "\$*" in "show-option -gqv @cockpit_board_return") cat "$BD/ret" 2>/dev/null; exit 0 ;; esac
 case "\$*" in "show-option -gqv @cockpit_glyphs") exit 0 ;; esac
+case "\$*" in "show-option -pqv -t "*" @cockpit_board_client ; set-option -pu -t "*) exit 0 ;; esac
 printf '%s\\n' "\$*" >> "$BD/wargv"
 exit 0
 BDREC
@@ -10304,6 +10403,11 @@ av_path() {                   # av_path <dir> <jq|no> <claude|no>: a PATH of jus
 AVE1=$(mktmpd); av_path "$AVE1" no claude
 AVE2=$(mktmpd); av_path "$AVE2" jq no
 AVE3=$(mktmpd); av_path "$AVE3" jq claude
+# A client, so a message has somewhere to show and lands in the log.
+AVO="cockpit-avo-$$"; SOCKS="$SOCKS $AVO"; AVOD=$(mktmpd)
+"$TMUX_REAL" -L "$AVO" -f /dev/null new-session -d -s o -x 80 -y 24 -c "$AVOD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $AV attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$AV" list-clients -F '#{client_name}'
 av_err() {                    # av_err <PATH dir> <fixture> [env...] -> @cockpit_poll_err
     local pdir=$1 j=$2; shift 2
     env -u TMUX_PANE TMUX="$AVT" PATH="$pdir" AV_JSON="$AVF/$j" "$@" \
@@ -10311,13 +10415,23 @@ av_err() {                    # av_err <PATH dir> <fixture> [env...] -> @cockpit
     av_tm show-option -gqv @cockpit_poll_err
 }
 is "no jq: the reason is recorded" "no jq on PATH" "$(av_err "$AVE1" blocked.json)"
+# The record has a reader: a new reason is said once in the message log (#296).
+av_said() { av_tm show-messages 2>/dev/null | grep -v ' command: ' | grep -c "cannot poll: $1"; }
+is "and is said in a message" "1" "$(av_said 'no jq on PATH')"
+av_err "$AVE1" blocked.json >/dev/null
+is "and a poll failing the same way says nothing more" "1" "$(av_said 'no jq on PATH')"
 is "no claude: the reason is recorded" "no claude on PATH" "$(av_err "$AVE2" blocked.json)"
 is "claude failing: the reason is recorded" "claude agents failed" \
    "$(av_err "$AVE3" blocked.json AV_RC=1)"
 is "unreadable json: the reason is recorded" "claude agents gave unreadable json" \
    "$(av_err "$AVE3" garbage.json)"
 is "a good tick clears it" "" "$(av_err "$AVE3" blocked.json)"
+is "and says nothing" "0" \
+   "$(av_tm show-messages 2>/dev/null | grep -v ' command: ' | grep -c 'cannot poll: $')"
+unset -f av_said
+"$TMUX_REAL" -L "$AVO" kill-server >/dev/null 2>&1
 av_tm kill-server >/dev/null 2>&1
+rm -rf "$AVOD"
 fi
 
 

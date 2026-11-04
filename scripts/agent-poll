@@ -44,11 +44,14 @@ release() {
     return 0
 }
 
-# Why the last read failed, in @cockpit_poll_err (cleared by a good one): without it a poller
-# that cannot run claude or jq is silent, and the stuck pane looks like #174 again.
+# Why the last read failed, in @cockpit_poll_err (cleared by a good one), and said once in a
+# message: without it a poller that cannot run claude or jq is silent, and the stuck pane looks
+# like #174 again. The option outlives this poller, so the next one does not say it again.
 poll_err() {                  # <reason> | "" ; one tmux call per change
     [ "$1" = "$lasterr" ] && return 0
-    if [ -n "$1" ]; then tmux set-option -g @cockpit_poll_err "$1" 2>/dev/null
+    if [ -n "$1" ]; then
+        tmux set-option -g @cockpit_poll_err "$1" \; \
+            display-message "tmux-cockpit: the agent view cannot poll: $1" 2>/dev/null
     else tmux set-option -gu @cockpit_poll_err 2>/dev/null; fi
     lasterr=$1
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # cockpit-board — the shell half of the board, and the loop that brings it back.
-#   cockpit-board -p <pane>     the pane the key was pressed in
+#   cockpit-board -p <pane> [-c <client>]   the pane and client the key was pressed in
 # The action comes back through a file, never $(…): ratatui paints on stdout.
 set -u
 
@@ -23,12 +23,22 @@ log() {
 sep=$'\037'
 sq() { printf "'%s'" "${1//\'/\'\\\'\'}"; }   # close, escaped quote, reopen
 
-PANE=
-case "${1:-}" in
-    -p) PANE=${2:-} ;;
-    "") ;;
-    *)  printf 'usage: cockpit-board -p <pane>\n' >&2; exit 2 ;;
-esac
+# The client a jump moves: a bare switch-client moves the most recently active
+# one, which may be another (#296). -c, or what the key left on the pane.
+PANE='' CLIENT=''
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -p) PANE=${2:-}; shift ;;
+        -c) CLIENT=${2:-}; shift ;;
+        *)  printf 'usage: cockpit-board -p <pane> [-c <client>]\n' >&2; exit 2 ;;
+    esac
+    shift
+done
+client() {                    # sets CLIENT; read and cleared in one call, on a jump only
+    [ -z "$CLIENT" ] && is_pane "$PANE" || return 0
+    CLIENT=$(tmux show-option -pqv -t "$PANE" @cockpit_board_client \; \
+        set-option -pu -t "$PANE" @cockpit_board_client 2>/dev/null)
+}
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 
@@ -87,7 +97,7 @@ while :; do
     case "$verb" in
         # switch-client fails without a client; the selection below still applies.
         jump)
-            tmux switch-client -t "$target" 2>/dev/null || true
+            client; tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$target" 2>/dev/null || true
             tmux select-window -t "$target" 2>/dev/null
             tmux select-pane   -t "$target" 2>/dev/null
             exit 0
@@ -184,7 +194,8 @@ while :; do
                     "claude --resume $(sq "$want")" 2>/dev/null)
                 if is_pane "$new"; then
                     log "resumed session $want in $new beside $target"
-                    tmux switch-client -t "$new" 2>/dev/null || true
+                    client
+                    tmux switch-client ${CLIENT:+-c "$CLIENT"} -t "$new" 2>/dev/null || true
                     tmux select-window -t "$new" 2>/dev/null
                     tmux select-pane -t "$new" 2>/dev/null
                     exit 0

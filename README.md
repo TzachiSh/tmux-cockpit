@@ -135,7 +135,7 @@ None is required.
 | `@cockpit_<name>_key` | see [configuration](docs/configuration.md) | rebind a key; `off` restores stock tmux |
 | `@cockpit_popup_width`, `@cockpit_popup_height` | `70%` | popup size |
 | `@cockpit_editor` | unset | editor for click-to-open and the review's `^E`; a terminal editor |
-| `@cockpit_review_window` | `off` | `on`: the review opens in a window, not a popup |
+| `@cockpit_review_window` | `off` | `on`: `prefix + r` opens the board in a window, not a popup |
 | `@cockpit_board_window` | `off` | `on`: the board opens in a window, not a popup |
 | `@cockpit_board_return` | `on` | `off`: `r` and `f` leave the board instead of coming back to it |
 | `@cockpit_panel_mode` | `auto` | `pc` or `tablet` forces the panel's mode |

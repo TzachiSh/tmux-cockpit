@@ -56,7 +56,10 @@ tmux set-environment -g TMUX_COCKPIT_DIR "$DIR"
 tmux set-environment -gu TMUX_PANESTATE_DIR 2>/dev/null
 
 # $HOME as a regex, held in an option so no character in it can break the format.
-tmux set-option -gq @cockpit_home_re "$(printf '%s' "${HOME:-/nonexistent}" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
+# Trailing slashes off: statusbar.conf matches it whole or followed by a / (#296).
+home=${HOME:-/nonexistent}
+while [ "$home" != / ] && [ "${home%/}" != "$home" ]; do home=${home%/}; done
+tmux set-option -gq @cockpit_home_re "$(printf '%s' "$home" | sed 's/[][\\.*^$+?(){}|]/\\&/g')"
 
 # --- status line and borders -----------------------------------------------------
 # The script's path, shell-quoted, for the formats and hooks to expand: a format's
@@ -224,7 +227,7 @@ Q_TM=$(sq "$DIR/scripts/tm")
 [ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
-[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}'"
+[ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'"
 
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
@@ -246,14 +249,18 @@ fi
 
 # The board is wider than $PW: a 70% popup on 120 columns fits one tile column.
 Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
+# The board's jump moves the pressing client, not the most recently active one
+# (#296). No form can hand it over as an argument (display-popup expands no
+# format in its command), so the key leaves it on the pane it was pressed in.
+pin=(set-option -pF @cockpit_board_client '#{client_name}' '\;')
 # Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
     if [ "$(tmux show-option -gqv @cockpit_board_window)" = on ]; then
-        ckey board "$bk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey board "$bk" "${pin[@]}" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
     else
         # No #{session_name}: it named the client's session, not the agent's.
-        ckey board "$bk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey board "$bk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 
@@ -263,9 +270,9 @@ fi
 # runs, so run-shell expands #{pane_id} on the source pane instead (#45).
 if [ -n "$rk" ]; then
     if [ "$(tmux show-option -gqv @cockpit_review_window)" = on ]; then
-        ckey review "$rk" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
+        ckey review "$rk" "${pin[@]}" run-shell "tmux new-window -n board -e COCKPIT_PANEL_MODE=${pmode:-auto} $(sq "$(fesc "$Q_BOARD") -p '#{pane_id}'")"
     else
-        ckey review "$rk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
+        ckey review "$rk" "${pin[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 90% -h "$PH" -T ' board ' "$Q_BOARD -p $SRC_PANE"
     fi
 fi
 

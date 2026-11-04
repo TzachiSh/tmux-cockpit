@@ -11,7 +11,18 @@ mode="${1:-path}"
 pid="${2:-}"
 arg3="${3:-}"
 arg4="${4:-}"
-home=${HOME:-/nonexistent} tilde="~"   # bash 3.2: no ${HOME} nested in ${path/#}, and a \~ keeps its \
+home=${HOME:-/nonexistent} tilde="~"   # a \~ in a bash 3.2 expansion keeps its \
+# Trailing slashes off, so HOME=/x/al/ still matches /x/al itself.
+while [ "$home" != / ] && [ "${home%/}" != "$home" ]; do home=${home%/}; done
+# ~ for $HOME only at a path boundary: /x/alice is not under /x/al (#296). Into
+# $shown, not printed: a $( ) would fork on every redraw.
+tildify() {
+    case "$1" in
+        "$home")   shown=$tilde ;;
+        "$home"/*) shown=$tilde${1#"$home"} ;;
+        *)         shown=$1 ;;
+    esac
+}
 
 path=""
 cmd=""                # #{pane_current_command}, tmux's view of the foreground proc
@@ -88,7 +99,7 @@ fi
 
 if [ -n "$cmd" ] && [ "$cmd" != ssh ]; then
     case "$mode" in
-        path)   printf ' %s' "${path/#"$home"/$tilde}" ;;
+        path)   tildify "$path"; printf ' %s' "$shown" ;;
         branch) git_label ;;
     esac
     exit 0
@@ -185,7 +196,7 @@ fi
 
 case "$mode" in
     path)
-        printf ' %s' "${path/#"$home"/$tilde}"
+        tildify "$path"; printf ' %s' "$shown"
         ;;
     branch) git_label ;;
 esac
