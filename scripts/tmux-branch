@@ -96,24 +96,42 @@ create() {
 owner_of() {                  # <dir>  sets OWNER to the worktree path holding it, or ""
     local w
     OWNER=
-    for w in "${WORKTREES[@]}"; do
+    for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do
         if [ "$1" = "$w" ] || [[ $1 == "$w"/* ]]; then
             [ ${#w} -gt ${#OWNER} ] && OWNER=$w
         fi
     done
 }
 
+# WORKTREES: every worktree path. -z keeps a path with a newline in one record but needs
+# git 2.36; older git rejects it and prints nothing, so the plain porcelain is read, and
+# a record with a line that is no worktree attribute (a path cut by a newline) is dropped.
+wt_list() {
+    local rec line cur='' ok=1
+    WORKTREES=()
+    while IFS= read -r -d '' rec; do
+        [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
+    done < <(git worktree list --porcelain -z 2>/dev/null)
+    [ ${#WORKTREES[@]} -gt 0 ] && return 0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ $line == "worktree "* ]]; then
+            [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+            cur=${line#worktree }; ok=1
+        elif [ -n "$line" ] && [[ ! $line =~ ^(HEAD\ |branch\ |bare$|detached$|locked|prunable) ]]; then
+            ok=0
+        fi
+    done < <(git worktree list --porcelain 2>/dev/null)
+    [ -n "$cur" ] && [ "$ok" = 1 ] && WORKTREES+=("$cur")
+    return 0
+}
+
 # Jump to the worktree that holds a branch (#303): the agent pane in it if there is
 # one, any pane in it, else a new window there. Never a cd of an existing pane.
 # The path comes off cockpit-tui's line, so it is checked against git's own list.
 goto() {
-    local path=$1 rec w id agent cdir cwd dir ag='' sh='' found='' sep=$'\037' t=()
-    WORKTREES=()
-    # -z: a path with a newline in it stays one record (git 2.36+; older git lists none)
-    while IFS= read -r -d '' rec; do
-        [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
-    done < <(git worktree list --porcelain -z 2>/dev/null)
-    for w in "${WORKTREES[@]}"; do [ "$w" = "$path" ] && found=1; done
+    local path=$1 w id agent cdir cwd dir ag='' sh='' found='' sep=$'\037' t=()
+    wt_list
+    for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do [ "$w" = "$path" ] && found=1; done
     if [ -z "$found" ]; then
         printf 'cockpit: not a worktree of this repository: %s\n' "$path" >&2; pause; return 1
     fi

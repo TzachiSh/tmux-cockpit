@@ -12465,6 +12465,32 @@ git -C "$BGR" worktree add -q -b brk303 "$BGX" >/dev/null 2>&1
 bg_goto "$BGS4" "$BGO4" "$BGR" "$BGX"
 is "a worktree named a#[b]c opens in that directory, not in a##[b]c" "$BGX" \
    "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
+
+# git before 2.36 rejects `worktree list -z`: a shim that does the same. The plain porcelain
+# is read; a worktree whose path has a newline is cut in two by it and is left out.
+BGOLD=$(mktmpd); BGGIT=$(command -v git)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' "$BGGIT" > "$BGOLD/git"
+chmod +x "$BGOLD/git"
+BGP4=$(bg_pane "$BGS4" "$BGW" 'exec sleep 300')
+"$TMUX_REAL" -L "$BGS4" select-window -t "$BGO4"
+BG_SHIM=$BGOLD bg_goto "$BGS4" "$BGO4" "$BGR" "$BGW"
+is "without worktree list -z the worktree is still found, and its pane selected" "$BGP4" "$(bg_active "$BGS4")"
+git -C "$BGR" worktree add -q -b nl303 "$BGD/nl"$'\n'"x" >/dev/null 2>&1
+BG_SHIM=$BGOLD bg_goto "$BGS4" "$BGO4" "$BGR" "$BGD/nl"
+case "$BG_ERR" in
+    *"not a worktree"*) ok "and a newline path, cut in two by the plain porcelain, is not taken for a worktree" ;;
+    *) bad "and a newline path, cut in two by the plain porcelain, is not taken for a worktree" "not a worktree" "$BG_ERR" ;;
+esac
+
+# The two plain new-window paths: the origin pane is gone, and none was given.
+BGW3="$BGD/third"; git -C "$BGR" worktree add -q -b third303 "$BGW3" >/dev/null 2>&1
+n=$(bg_windows "$BGS4")
+bg_goto "$BGS4" "%99" "$BGR" "$BGW3"
+is "an origin pane that is gone still gets a window in the worktree" "$((n+1))" "$(bg_windows "$BGS4")"
+is "and it starts there" "$BGW3" "$("$TMUX_REAL" -L "$BGS4" display-message -p -t t: '#{pane_current_path}')"
+git -C "$BGR" worktree add -q -b fourth303 "$BGD/fourth" >/dev/null 2>&1
+bg_goto "$BGS4" "" "$BGR" "$BGD/fourth"
+is "with no origin pane at all it opens a window too" "$((n+2))" "$(bg_windows "$BGS4")"
 "$TMUX_REAL" -L "$BGS4" kill-server >/dev/null 2>&1
 
 # The deepest worktree holds a pane, whichever order git lists them in. Git lists them by
