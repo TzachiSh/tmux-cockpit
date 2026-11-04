@@ -3405,6 +3405,66 @@ esac
 "$TMUX_REAL" -L "$PA" kill-server >/dev/null 2>&1
 fi
 
+echo "== a reload that turns a cockpit key off or moves it gives the old key back (#290) =="
+# Every key, not only the menu's and the panel's. "Stock" is what a -f /dev/null
+# server of the same tmux binds there, note included; nothing when it binds nothing.
+if need_tmux "key give-back"; then :; else
+GB="cockpit-gb-$$"; SOCKS="$SOCKS $GB"
+GBD=$(mktmpd)
+"$TMUX_REAL" -L "$GB" -f /dev/null new-session -d -s t -c "$GBD" >/dev/null 2>&1
+gb_load() { "$TMUX_REAL" -L "$GB" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1; }
+gb_set() {                    # <name> <key|unset>
+    if [ "$2" = unset ]; then "$TMUX_REAL" -L "$GB" set -gu "@cockpit_$1_key"
+    else "$TMUX_REAL" -L "$GB" set -g "@cockpit_$1_key" "$2"; fi >/dev/null 2>&1
+}
+# One call on a fresh socket: a client meeting the last stock server on its way
+# out reads nothing (5 in 500 when two calls share one).
+gb_on() {                     # <tmux argv...> <key>  the binding, then its note
+    local k=${*: -1}; set -- "${@:1:$#-1}"
+    "$@" list-keys -T prefix "$k" \; list-keys -T prefix -F '#{key_note}' "$k" 2>/dev/null
+}
+gb_live()  { gb_on "$TMUX_REAL" -L "$GB" "$1"; }
+gb_stock() {
+    local d; d=$(mktemp -d "$GBD/stock.XXXXXX") || return
+    gb_on "$TMUX_REAL" -S "$d/s" -f /dev/null "$1"; rm -rf "$d"
+}
+gb_state() { [ "$(gb_live "$1")" = "$(gb_stock "$1")" ] && echo stock || echo cockpit; }
+GB_ROWS="menu:a sessions:s jump:u info:i panel:f board:w review:r reload:R move:M fullscreen:e"
+gb_load
+for row in $GB_ROWS; do
+    n=${row%%:*} k=${row#*:}
+    before=$(gb_state "$k"); gb_set "$n" off; gb_load
+    is "@cockpit_${n}_key off on a reload gives $k back to stock" "cockpit>stock" \
+       "$before>$(gb_state "$k")"
+    gb_set "$n" unset; gb_load
+done
+gb_set board off; gb_load
+is "an off key leaves no bound record" "" \
+   "$("$TMUX_REAL" -L "$GB" show-option -gqv @cockpit_board_bound)"
+gb_set board unset; gb_load
+for row in $GB_ROWS; do
+    n=${row%%:*} k=${row#*:}
+    gb_set "$n" F12; gb_load
+    is "@cockpit_${n}_key moved to F12 gives $k back and binds F12" "stock>cockpit" \
+       "$(gb_state "$k")>$(gb_state F12)"
+    gb_set "$n" unset; gb_load
+    is "and @cockpit_${n}_key moved back frees F12" "stock" "$(gb_state F12)"
+done
+# A key the user bound after cockpit let go of it is theirs, not cockpit's to give back.
+"$TMUX_REAL" -L "$GB" bind-key w display-message mine >/dev/null 2>&1
+gb_set board off; gb_load
+is "a reload never gives back a key the user rebound" "display-message mine" \
+   "$(gb_live w | grep -o 'display-message mine')"
+gb_set board unset; gb_load
+# Two keys trading places: each is taken this load, so neither is given back.
+gb_set sessions u; gb_set jump s; gb_load
+is "sessions and jump trading keys keep both bound" "tmux-jump:--popup" \
+   "$(gb_live s | grep -o tmux-jump):$(gb_live u | grep -o -- --popup)"
+unset -f gb_load gb_set gb_on gb_live gb_stock gb_state
+"$TMUX_REAL" -L "$GB" kill-server >/dev/null 2>&1
+rm -rf "$GBD"
+fi
+
 echo "== the menu reaches move-window and the plugin's reload; the example keeps v (#43) =="
 # prefix a M opens the move menu and prefix a R runs the plugin's R, both by
 # replaying the key. The example's own m menu is gone: stock m (mark-pane) is back.

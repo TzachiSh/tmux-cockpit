@@ -191,7 +191,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_board_wake` | (state) | read-only: one `wait-for -S cockpit-board-<pid> ; ` per running board, the command that wakes it. Appended at start, removed on `q`; an entry a signal or a crash leaves is dropped by the next board's start |
 | `@cockpit_panel_key` | `f` | binds the panel (`cockpit-tui panel %N` through `scripts/cockpit-panel`) to a prefix key. `off`, or an unset key with the old `@cockpit_fixer_key off`, leaves stock `find-window` on `f` |
 | `@cockpit_panel_mode` | `auto` | `pc`, `tablet` or `auto`: how the panel is shown. `auto` is tablet under Termux (`TERMUX_VERSION` set, or `PREFIX` under `com.termux`), pc elsewhere. Read at load and handed to the popup as `COCKPIT_PANEL_MODE`; any other word shows a message and binds `auto` |
-| `@cockpit_panel_bound` | (state) | the key the last load bound the panel to, so a reload that turns it off or moves it unbinds the old one |
+| `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
 on a 120-column terminal is an 84-column board, which is one tile column. The
