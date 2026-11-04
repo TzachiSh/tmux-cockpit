@@ -3825,15 +3825,27 @@ MVD=$(mktmpd)      # keeper's own dir: the new session made for it must start th
     "$TMUX_REAL -L $MV attach -t work" >/dev/null 2>&1
 until_out '?*' "$TMUX_REAL" -L "$MV" list-clients -F '#{client_name}'
 OP=$("$TMUX_REAL" -L "$MVO" list-panes -t o -F '#{pane_id}' | head -1)
+# OP's screen trails the inner client, and under load it can still show the last
+# case's prompt ("new session: agents") or menu. A wait for a word that stale
+# screen also holds returns at once, the next key lands before the menu is up,
+# and Enter picks the menu's first row, agents (#347). So the old menu and
+# prompt must be gone first, and the wait is for the menu's own title.
 mv_open() {                   # press prefix M and wait for the menu; a no-show is one clean failure
+    local i
+    for i in $(seq 1 "$POLLS"); do
+        case "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" 2>/dev/null)" in
+            *'new session:'*|*'move '[0-9]*:*' to '*) sleep 0.1 ;;
+            *) break ;;
+        esac
+    done
     "$TMUX_REAL" -L "$MVO" send-keys -t "$1" C-b M
-    until_cap "$MVO" "$1" '*agents*' || bad "the menu opens again" "a menu listing agents" \
+    until_cap "$MVO" "$1" '*move [0-9]*:* to *agents*' || bad "the menu opens again" "a menu listing agents" \
         "$("$TMUX_REAL" -L "$MVO" capture-pane -p -t "$1" | tail -3)"
 }
 mv_client() { "$TMUX_REAL" -L "$MV" list-clients -F '#{session_name}:#{window_name}' 2>/dev/null; }
 mv_until() {                  # <pattern> against the client's session:window
     local i
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         # shellcheck disable=SC2254
         case "$(mv_client)" in $1) return 0 ;; esac
         sleep 0.1
@@ -4931,15 +4943,26 @@ is "and stores nothing" "" "$("$TMUX_REAL" -L "$CX" show-option -pqv -t "$CXP" @
 # "must not hang on silent stdin" test sidesteps exactly this by holding the
 # writer open on a FIFO from a BACKGROUNDED process instead; that reliably
 # lets the deadline fire on schedule, so this test does the same.
+#
+# The proof is that the script returns while the writer still holds the FIFO,
+# not a wall clock: a "<=3 s" bound read 12 s at load 30, the script's own
+# start-up and tmux calls being slow, with the 2 s deadline intact (#215). The
+# writer holds for 60 s, so only a script that waits for EOF can see it gone.
+# The bound is still checked, under 30 s: the deadline is 2 s and the rest is
+# slack for load, so a script that waits out most of the writer still fails.
+# An interrupted run must not leave the 60 s writer behind: the suite's EXIT
+# trap kills it until the block is done, then goes back to plain cleanup.
 CXFIFO="$STATE/agent-context-stall.fifo"; mkfifo "$CXFIFO"
-( exec 9>"$CXFIFO"; sleep 8 ) & holder=$!
+( exec 9>"$CXFIFO"; exec sleep 60 ) & holder=$!
+trap 'kill "$holder" 2>/dev/null; cleanup' EXIT
 start=$SECONDS
 TMUX="$CXTMUX" TMUX_PANE="$CXP" "$DIR/scripts/agent-context" >/dev/null 2>&1 < "$CXFIFO"
 took=$(( SECONDS - start ))
+if kill -0 "$holder" 2>/dev/null && [ "$took" -lt 30 ]; then ok "a stalling writer is abandoned in time"
+else bad "a stalling writer is abandoned in time" "back under 30s, while the writer still held on" "${took}s"; fi
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+trap cleanup EXIT
 rm -f "$CXFIFO"
-if [ "$took" -le 3 ]; then ok "a stalling writer is abandoned in time"
-else bad "a stalling writer is abandoned in time" "<=3s" "${took}s"; fi
 "$TMUX_REAL" -L "$CX" kill-server >/dev/null 2>&1
 fi
 
@@ -6328,8 +6351,11 @@ fi
 
 echo "== repo git config cannot run commands through a review =="
 GH=$(mktmpd); GHM="$GH/marker"
+# The marker is the whole signal, so a plant never reads stdin (#214): git hands
+# core.fsmonitor, textconv and the diff commands its caller's stdin, and a bare
+# cat there blocked forever whenever that was an open terminal or socket.
 for h in fsmon textconv dcmd extdiff clean proc gpg pager; do
-    printf '#!/bin/sh\necho %s >> %s\ncat\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
+    printf '#!/bin/sh\necho %s >> %s\ncat </dev/null\n' "$h" "$GHM" > "$GH/$h"; chmod +x "$GH/$h"
 done
 ( cd "$GH" && mkdir r && cd r && git init -q -b main . \
   && printf 'a\n' > f.txt && printf '* diff=evil filter=evil\n' > .gitattributes \
@@ -6339,14 +6365,16 @@ done
   && git config diff.evil.command "$GH/dcmd" && git config diff.external "$GH/extdiff" \
   && git config filter.evil.clean "$GH/clean" && git config log.showSignature true \
   && git config gpg.program "$GH/gpg" && git config core.hooksPath hk && git config core.pager "$GH/pager" ) >/dev/null 2>&1
-git -C "$GH/r" diff HEAD >/dev/null 2>&1
+# Plain git on purpose: the control that proves the plants fire. Its </dev/null and
+# the ones below are the second guard, should a plant ever read stdin again.
+git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
-"$DIR/scripts/tmux-review" --lines "$GH/r" >/dev/null 2>&1
+"$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null >/dev/null 2>&1
 is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
-case "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
-    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" 2>&1 | head -3)" ;; esac
+case "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
+    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>&1 | head -3)" ;; esac
 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
@@ -6448,6 +6476,9 @@ AP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_comma
      | awk '$2 == "claude" { print $1 }')
 NP=$("$TMUX_REAL" -L "$RDS" list-panes -t t: -F '#{pane_id} #{pane_current_command}' \
      | awk '$2 == "bash" { print $1 }')
+# Both shells' prompts, before anything is typed or pasted into them: see pane B below.
+until_cap "$RDS" "$AP" '*[$#]*'
+until_cap "$RDS" "$NP" '*[$#]*'
 
 RDSTORE="$STATE/deliver-store-$$"
 printf '## src.go:1 (+)\n> foo\nfix this\n\n' > "$RDSTORE"
@@ -6462,7 +6493,7 @@ rundeliver() {
     local n0 i; n0=$(npcap | grep -c 'RC=[0-9-]')
     "$TMUX_REAL" -L "$RDS" send-keys -t "$NP" \
         "$(shq_test "$DIR/scripts/tmux-review") --deliver $(shq_test "$1") $(shq_test "$2"); echo RC=\$?" Enter
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$POLLS"); do
         [ "$(npcap | grep -c 'RC=[0-9-]')" -gt "$n0" ] && return 0
         sleep 0.1
     done
@@ -6610,6 +6641,12 @@ AP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec -a claud
 NP2=$("$TMUX_REAL" -L "$RDS" split-window -t t -P -F '#{pane_id}' 'exec bash')
 until_out claude "$TMUX_REAL" -L "$RDS" display-message -p -t "$AP2" '#{pane_current_command}'
 until_out bash "$TMUX_REAL" -L "$RDS" display-message -p -t "$NP2" '#{pane_current_command}'
+# pane_current_command reads claude the moment exec -a runs, before bash has read
+# its rc files. A paste that lands before readline is up is echoed by the tty,
+# unbracketed, and bash then runs its lines: pane B showed only the prompt and
+# the review's first line (#215). The prompt is drawn by readline, so wait for it.
+until_cap "$RDS" "$AP2" '*[$#]*'
+until_cap "$RDS" "$NP2" '*[$#]*'
 
 ASTORE="$STATE/deliver-race-a-$$"
 BSTORE="$STATE/deliver-race-b-$$"
