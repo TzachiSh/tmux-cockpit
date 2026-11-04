@@ -167,7 +167,7 @@ lines_mode() {
     # add+del is the exact row count), and 4 MB of diff. The bytes are measured,
     # not estimated -- both estimators tried broke, in opposite directions --
     # by capturing through `head -c cap+1`, so a 400 MB diff costs a 4 MB read.
-    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0 bytes=0
+    local cap=5000 bytecap=$(( 4 * 1024 * 1024 )) total=0
     local nadd ndel nfile reason=
     while IFS=$'\t' read -r nadd ndel nfile; do
         [ -n "$nfile" ] || continue
@@ -180,19 +180,15 @@ lines_mode() {
     if [ "$total" -gt "$cap" ]; then
         reason="$total changed lines"
     else
-        if [ "$bytes" -gt "$bytecap" ]; then
+        # The trailing X keeps the length exact: $(...) strips trailing
+        # newlines, and a truncated capture would read as one that fit.
+        diff=$(tree_diff "$dir" | head -c $(( bytecap + 1 )); printf X)
+        diff=${diff%X}
+        if [ "$(bytelen "$diff")" -gt "$bytecap" ]; then
             reason='> 4 MB'
+            diff=
         else
-            # The trailing X keeps the length exact: $(...) strips trailing
-            # newlines, and a truncated capture would read as one that fit.
-            diff=$(tree_diff "$dir" | head -c $(( bytecap - bytes + 1 )); printf X)
-            diff=${diff%X}
-            if [ "$(bytelen "$diff")" -gt $(( bytecap - bytes )) ]; then
-                reason='> 4 MB'
-                diff=
-            else
-                diff=${diff%$'\n'}
-            fi
+            diff=${diff%$'\n'}
         fi
     fi
     if [ -n "$reason" ]; then
