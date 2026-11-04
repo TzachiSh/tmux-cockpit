@@ -13,4 +13,4 @@
 "                                                            "
 "                                                            "
 "                                                            "
-" ↵ open   ← up   . dotfiles on   F1 keys   esc close        "
+" ↵ view   ← up   . dotfiles on   F1 keys   esc close        "

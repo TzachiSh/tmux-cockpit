@@ -63,7 +63,7 @@ Taps on the bar act on release.
 |---------|------|
 | tap `≡` (top left of the border) | the menu |
 | tap the session name, or `▲ elsewhere` beside it | sessions screen, waiting sessions first |
-| tap the path on the border | browse the pane's working directory |
+| tap the path on the border | browse the pane's working directory (`↵` views a file, `alt-e` edits it) |
 | tap the branch on the border | the branch popup |
 | tap `[z]` / `[u]` (split windows) | zoom / unzoom the pane |
 | tap a window tab | that window |

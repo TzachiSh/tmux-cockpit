@@ -23,7 +23,7 @@ of closing.
 The click target is the branch on the active pane's top border (a control
 range, `control|3`, acting on release). When the border has no room for it, the
 menu's Switch branch row stands in. The **path** beside it (`control|2`), the cockpit table's
-`o` and the menu's Browse folder row open the pane's folder in the file browser (see
+`o` and the menu's Browse folder row open the pane's folder in the file browser (`↵` views a file, `alt-e` edits it; see
 [path-picker.md](path-picker.md)).
 
 With `@cockpit_statusbar off`, mark your own segments with the same ranges; see

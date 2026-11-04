@@ -13619,13 +13619,26 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
-# a markdown file goes to the viewer, drawn in the browser's popup, touch or not (#283)
+# view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
-    fb "$fbt" "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
-    is "$fbt: a markdown file picked in the browser opens in the viewer" "view -- $FBD/sub/n.md" "$(cat "$FB/tui.args" 2>/dev/null)"
-    is "$fbt: and no editor window opens for it" "" \
-       "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+    for fbv in n.md n.txt; do
+        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
+        is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" "$(cat "$FB/tui.args" 2>/dev/null)"
+        is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
+           "$(fbn run-shell)|$(fbn new-window)"
+    done
 done
+# open on markdown is the editor now: the viewer has its own verb
+fb off "open $FBD/sub/n.md\n" 0
+fbwait "$FB/code.log"
+is "open on a markdown file goes to code, not the viewer" "files $FBD|1" \
+   "$(cat "$FB/tui.args")|$(fbn run-shell)"
+# a viewer that cannot take the file (@cockpit_md_view off) falls back to the editor's routing
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_md_view off
+fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+is "view with the viewer off falls back to code" "1|1" "$(fbn run-shell)|$(grep -c 'n.txt' "$FB/code.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_md_view
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
@@ -13657,7 +13670,10 @@ is "esc: nothing runs and nothing is said" "0|0|0|0" \
 # the printed line is untrusted: each of these must open and copy nothing
 for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
            "relative path|open proj/sub/n.md" "newline in the name|open $FBD/two\\nlines.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
-           "missing past dotdot|open $FBD/../nope"; do
+           "missing past dotdot|open $FBD/../nope" \
+           "view of a folder|view $FBD/sub" "view of a missing path|view $FBD/nope" \
+           "view of a relative path|view proj/sub/n.md" "view, two lines|view $FBF\\nview $FBF" \
+           "view, upper case|VIEW $FBF" "view, no path|view"; do
     for t in on off; do
         fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
         is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \

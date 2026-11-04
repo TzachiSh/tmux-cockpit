@@ -118,9 +118,13 @@ $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
 # the line it showed. run-shell has no terminal, so a popup re-enters with
 # --view; from the picker's popup (one per client) it draws in place.
 # 1: not for the viewer (another file, @cockpit_md_view off, no binary, failed).
+# A third argument "any" lifts the markdown-extension gate: the browser's view
+# verb sends every regular file here (#406).
 md_view() {
-    local file=$1 ln=$2 out rc err size title b
-    case ${file,,} in *.md|*.markdown|*.mdown|*.mkd) ;; *) return 1 ;; esac
+    local file=$1 ln=$2 any=${3:-} out rc err size title b
+    if [ "$any" != any ]; then
+        case ${file,,} in *.md|*.markdown|*.mdown|*.mkd) ;; *) return 1 ;; esac
+    fi
     [ -f "$file" ] && [ -z "${MD_EDIT:-}" ] || return 1
     [ "$(tmux show-option -gqv @cockpit_md_view)" != off ] || return 1
     # shellcheck source=lib/tui.sh
@@ -189,17 +193,21 @@ browse_act() {
     local line=$1 verb path
     case $line in *$'\n'*) note "cockpit: the browser printed something that is not one line"; return 1 ;; esac
     verb=${line%% *}; path=${line#* }
-    if [ "$verb" = "$line" ] || { [ "$verb" != open ] && [ "$verb" != copy ]; } \
-       || [ "${path:0:1}" != / ] || [ ! -e "$path" ]; then
+    if [ "$verb" = "$line" ] || { [ "$verb" != open ] && [ "$verb" != view ] && [ "$verb" != copy ]; } \
+       || [ "${path:0:1}" != / ] || [ ! -e "$path" ] \
+       || { [ "$verb" = view ] && [ ! -f "$path" ]; }; then
         note "cockpit: the browser named something that is not a file here"; return 1
     fi
     if [ "$verb" = copy ]; then
         printf '%s\n' "$path" | tmux load-buffer -w - || { note "cockpit: could not copy"; return 1; }
         note "cockpit: copied ${path/#$H/\~}"; return 0
     fi
-    # a markdown file goes to the viewer, a touch client included (#283)
-    if [ ! -d "$path" ] && md_view "$path" ""; then return 0; fi
-    if [ ! -d "$path" ] && touch_client; then term_edit "$path"; else open_one "$path" "" ""; fi
+    # view: any regular file goes to the viewer, a touch client included (#406);
+    # when the viewer cannot take it the file opens as `open` would
+    if [ "$verb" = view ]; then md_view "$path" "" any && return 0; fi
+    # open is the editor, markdown included (MD_EDIT skips open_one's viewer):
+    # the viewer has its own verb now
+    if [ ! -d "$path" ] && touch_client; then term_edit "$path"; else MD_EDIT=1 open_one "$path" "" ""; fi
 }
 
 # --folder asks for a popup, which re-enters as --browse: run-shell has no terminal.

@@ -1,6 +1,6 @@
 //! `cockpit-tui files <dir>`: the file browser (#363). It lists one folder in the
-//! shared picker, walks the tree and prints one line: `open <path>` or
-//! `copy <path>`. It never mutates; `scripts/tmux-open-path --folder` checks the
+//! shared picker, walks the tree and prints one line: `view <path>`,
+//! `open <path>` (the editor) or `copy <path>`. It never mutates; `scripts/tmux-open-path --folder` checks the
 //! line again and acts.
 //!
 //! The row's key is the file's own name, as bytes, so the printed path is exact
@@ -209,7 +209,7 @@ impl Files {
         Outcome::Choose(answer_line(verb, &path))
     }
 
-    /// ↵ opens a file and enters a folder; ← and ⌫ on an empty filter go up; `.` on
+    /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫ on an empty filter go up; `.` on
     /// an empty filter shows or hides dotfiles; everything else is the picker's.
     /// A note is cleared by the next key.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
@@ -222,7 +222,11 @@ impl Files {
                     self.go(p, None, area);
                     Outcome::Continue
                 }
-                _ => self.leaf("open"),
+                _ => self.leaf("view"),
+            },
+            KeyCode::Char('e') if walk && k.modifiers.contains(KeyModifiers::ALT) => match self.selected() {
+                Some((_, false)) => self.leaf("open"),
+                _ => Outcome::Continue,
             },
             KeyCode::Char('c') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.leaf("copy"),
             KeyCode::Left if walk && plain => {
@@ -276,10 +280,11 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
     let left = g.key_left;
     let fitted = chrome::fit(
         vec![
-            h(g.key_enter, "open"),
+            h(g.key_enter, "view"),
             h(left, "up"),
             h(".", if hidden { "dotfiles on" } else { "dotfiles off" }),
             h("alt-i", if ignored { "ignored on" } else { "ignored off" }),
+            h("alt-e", "edit"),
             h("alt-c", "copy"),
             h("F1", "keys"),
             h("esc", "close"),
@@ -290,7 +295,7 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
     if fitted.iter().any(|(k, _)| k == g.key_enter) {
         fitted
     } else {
-        vec![h(g.key_enter, "open"), h("esc", "close")]
+        vec![h(g.key_enter, "view"), h("esc", "close")]
     }
 }
 
@@ -299,7 +304,7 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     let mut rows = pick::help_rows_for(g, true);
     let left = g.key_left;
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == g.key_enter) {
-        r.1 = "open the file (print its path), or go into the folder".into();
+        r.1 = "view the file (print its path), or go into the folder".into();
     }
     let at = rows.iter().position(|(k, _)| k == g.key_enter).map_or(rows.len(), |i| i + 1);
     rows.insert(
@@ -308,6 +313,7 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     );
     rows.insert(at + 1, (".".into(), "show or hide dotfiles (on an empty filter)".into()));
     rows.insert(at + 2, ("alt-i".into(), "show or hide what .gitignore hides, drawn dim".into()));
+    rows.insert(at + 3, ("alt-e".into(), "open the file in the editor: print its path, exit".into()));
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == "alt-c") {
         r.1 = "copy: print this row's path, exit".into();
     }
