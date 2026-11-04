@@ -1679,7 +1679,7 @@ note on `alt-↵`.
 
 ## `cockpit-tui files` (#363)
 
-The file browser behind `prefix o`, the menu's Browse folder row and a tap on the
+The file browser behind the cockpit table's `o`, the menu's Browse folder row and a tap on the
 pane-border path, built on the shared picker (`pick.rs`) and `files.rs`.
 `scripts/tmux-open-path --folder` opens it in a popup on the pane's folder and
 acts on the one line it prints; the binary never mutates.
@@ -1690,6 +1690,7 @@ acts on the one line it prints; the binary never mutates.
 | `↵` | on a folder, goes into it and clears the filter; on a file, prints `open <path>` |
 | `←`, `⌫` on an empty filter | goes up, landing on the folder it left; stops at `/` |
 | `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
+| `i` on an empty filter | shows or hides what `.gitignore`, `.ignore` and git's global excludes hide (the `ignore` crate, one level); shown entries are dim; `.git` is never listed |
 | `alt-c` | prints `copy <path>` for the row, a folder included |
 | `esc` `^C` | cancels, prints nothing, exit 1 |
 

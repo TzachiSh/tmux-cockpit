@@ -21,4 +21,4 @@
 "                                                                                "
 "                                                                                "
 "                                                                                "
-" ↵ open   ← up   . hidden   alt-c copy   F1 keys   esc close                    "
+" ↵ open   ← up   . dotfiles off   i ignored off   F1 keys   esc close           "

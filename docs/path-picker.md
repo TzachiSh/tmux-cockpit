@@ -28,10 +28,12 @@ has no copy mode, so in any of these popups the terminal's own selection is the
 one that works.
 
 **The folder keys browse the pane's folder.** The menu's `o` row (Browse folder),
-`prefix o` and a tap on the path on the pane border open `cockpit-tui files` in a
+the cockpit table's `o` and a tap on the path on the pane border open `cockpit-tui files` in a
 popup on the pane's current folder (#363). Type to filter; `↵` on a folder goes
 into it, `←` (or `⌫` on an empty filter) goes up, and `.` on an empty filter shows
-or hides dotfiles. Folders sort first. `↵` on a file opens it, `alt-c` copies its
+or hides dotfiles, `i` on an empty filter shows or hides what `.gitignore`,
+`.ignore` and git's global excludes hide (shown entries are drawn dim; `.git` is
+never listed). The footer names both keys and their state. Folders sort first. `↵` on a file opens it, `alt-c` copies its
 absolute path (a folder's too), `esc` leaves. The header shows the folder, cut on
 the left when it is long, and browsing above the repo root is allowed.
 
