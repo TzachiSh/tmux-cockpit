@@ -167,13 +167,17 @@ fn a_long_code_line_wraps_hard_and_keeps_its_spaces() {
     assert_eq!(texts("```\nab  cd  ef\n```", 10), ["    ab  cd", "      ef"]);
 }
 
-/// A terminal escape in the file would reach the terminal: it is dropped,
-/// in prose, in code and in a link's address.
+/// A terminal escape in the file would reach the terminal, and a bidi
+/// override would make a row read as other text: both are dropped, in prose,
+/// in code and in a link's address.
 #[test]
-fn control_characters_are_dropped_everywhere() {
-    let src = "a\x1b[2Jb\n\n```\nc\x1b]0;x\x07d\n```\n\n[l](u\x1bv)";
-    for r in rows(src, 40) {
-        assert!(!r.text().chars().any(char::is_control), "{:?}", r.text());
+fn control_and_bidi_characters_are_dropped_everywhere() {
+    let src = "a\x1b[2Jb \u{202e}rtl\n\n```\nc\x1b]0;x\x07d\u{202e}\n```\n\n[l](<u\x1bv\u{202e}w>)";
+    let rs = rows(src, 60);
+    assert!(rs.iter().any(|r| r.text().contains("(uvw)")), "the link's address is drawn: {rs:?}");
+    for r in rs {
+        let t = r.text();
+        assert!(!t.chars().any(|c| c.is_control() || c == '\u{202e}'), "{t:?}");
     }
 }
 

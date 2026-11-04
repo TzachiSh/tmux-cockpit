@@ -273,6 +273,15 @@ fn it_opens_at_the_block_holding_a_line() {
     assert_eq!(s.rows()[s.top].text(), "p4");
 }
 
+/// A line inside a block opens at the block, not at the next one.
+#[test]
+fn a_line_inside_a_paragraph_opens_at_that_paragraph() {
+    let src = "# t\n\nalpha one\nbeta two\ngamma three\n\nnext\n\n".to_string() + &paras(30);
+    let mut s = Screen::new("x.md", Ok(src), Opts::default()).at_line(4);
+    s.layout(40);
+    assert_eq!(s.rows()[s.top].text(), "alpha one beta two gamma three");
+}
+
 #[test]
 fn a_resize_keeps_the_top_rows_source_line() {
     let src: String = (0..30).map(|i| format!("{} {i}\n\n", "word ".repeat(20))).collect();
@@ -402,6 +411,23 @@ fn matches_draw_reversed_and_the_current_one_bold_too() {
 }
 
 #[test]
+fn two_matches_on_one_row_are_both_reversed() {
+    use ratatui::style::Modifier;
+    let th = Theme::fixed();
+    let mut s = screen("foo foo");
+    key(&mut s, KeyCode::Char('/'));
+    typed(&mut s, "foo");
+    let b = buffer(60, 13, &th, &mut s);
+    let row: Vec<Modifier> = (2..9).map(|x| b[(x, 1)].modifier).collect();
+    let rev: Vec<bool> = row.iter().map(|m| m.contains(Modifier::REVERSED)).collect();
+    assert_eq!(rev, [true, true, true, false, true, true, true], "{row:?}");
+    assert!(
+        row[0].contains(Modifier::BOLD) && !row[4].contains(Modifier::BOLD),
+        "only the current one is bold"
+    );
+}
+
+#[test]
 fn without_colour_no_cell_has_one() {
     use ratatui::style::Color;
     let mut s = Screen::new(
@@ -414,4 +440,19 @@ fn without_colour_no_cell_has_one() {
     );
     let b = buffer(80, 64, &Theme::no_color(), &mut s);
     assert!(b.content.iter().all(|c| c.fg == Color::Reset && c.bg == Color::Reset));
+}
+
+/// The name gives way to the row counter, however wide the counter is.
+#[test]
+fn a_long_name_leaves_room_for_a_wide_counter() {
+    let mut s = Screen::new(&"n".repeat(80), Ok(paras(50_001)), Opts::default());
+    let th = Theme::fixed();
+    draw(60, 20, &th, &mut s);
+    s.key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE), Rect::new(0, 0, 60, 20));
+    let top = draw(60, 20, &th, &mut s).lines().next().unwrap().to_string();
+    assert!(top.contains(" 99985-100001 of 100001 ╮"), "{top}");
+    assert!(
+        top.contains("…") && top.contains("n ─ 99985"),
+        "the name is cut, a rule before the counter: {top}"
+    );
 }

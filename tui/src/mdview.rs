@@ -29,7 +29,12 @@ const WHEEL: usize = 3;
 /// The file's text, or the note shown in its place.
 pub fn load(path: &std::path::Path, cap: u64) -> Result<String, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    // O_NONBLOCK: opening a FIFO for reading would otherwise wait for a writer
+    // a device or a FIFO is never opened at all; the fstat below catches a swap
+    let pre = std::fs::metadata(path).map_err(|e| format!("cannot open it: {e}"))?;
+    if !pre.is_file() {
+        return Err("not a regular file".into());
+    }
+    // O_NONBLOCK: a FIFO swapped in after the check would otherwise wait for a writer
     let f = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -178,7 +183,9 @@ impl Screen {
         self.texts = self.rows.iter().map(Row::text).collect();
         self.width = w;
         if let Some(l) = keep {
-            self.top = self.rows.iter().position(|r| r.line >= l).unwrap_or(self.rows.len());
+            // the block holding line l is the last to start at or before it
+            let at = self.rows.iter().rposition(|r| r.line <= l).map_or(0, |i| self.rows[i].line);
+            self.top = self.rows.iter().position(|r| r.line == at).unwrap_or(0);
         }
         self.refind();
     }
@@ -464,17 +471,16 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
     s.top = s.top.min(s.bottom(room));
     let total = s.rows.len();
     let last = (s.top + room).min(total);
-    let title_w = (area.width as usize).saturating_sub(4 + if total > room { 18 } else { 0 });
+    let count = (total > room).then(|| format!(" {}-{last} of {total} ", s.top + 1));
+    // the corners, the name's two spaces, and the counter with a rule before it
+    let reserve = 4 + count.as_ref().map_or(0, |n| render::cols(n) + 1);
+    let name = th.g.trunc_middle(&s.name, (area.width as usize).saturating_sub(reserve));
     let mut block = Block::new()
         .borders(Borders::ALL)
         .border_set(th.g.round)
         .border_style(Style::new().fg(th.label))
-        .title(Line::from(Span::styled(
-            format!(" {} ", th.g.trunc_middle(&s.name, title_w.saturating_sub(2))),
-            Style::new().fg(th.accent),
-        )));
-    if total > room {
-        let n = format!(" {}-{last} of {total} ", s.top + 1);
+        .title(Line::from(Span::styled(format!(" {name} "), Style::new().fg(th.accent))));
+    if let Some(n) = count {
         block = block.title(Line::from(Span::styled(n, Style::new().fg(th.meta))).right_aligned());
     }
     let inner = block.inner(body);
