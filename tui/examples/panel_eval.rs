@@ -433,6 +433,13 @@ fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std
     c
 }
 
+/// The real claude to exec as, when the rig is run as a call's claude. Only for
+/// the argv Request sends, which starts with `-p`: a variable leaked into the
+/// owner's shell must not turn `--check`, `--compare` or a plain run into a call.
+fn as_claude(var: Option<OsString>, first: Option<&OsStr>) -> Option<OsString> {
+    var.filter(|_| first == Some(OsStr::new("-p")))
+}
+
 /// The rig as the call's claude: exec, so the pid, its process group and its
 /// death signal stay the ones Request set up.
 fn exec_claude(real: &OsStr) -> ! {
@@ -453,7 +460,7 @@ struct Job {
 }
 
 fn main() {
-    if let Some(real) = std::env::var_os(AS_CLAUDE) {
+    if let Some(real) = as_claude(std::env::var_os(AS_CLAUDE), std::env::args_os().nth(1).as_deref()) {
         exec_claude(&real);
     }
     let o = match opts(std::env::args().skip(1)) {
@@ -1503,6 +1510,16 @@ mod tests {
         assert_eq!(args, ["--output-format", "json", "-p", "--model", "sonnet"]);
         let envs: Vec<_> = c.get_envs().collect();
         assert_eq!(envs, [(OsStr::new(AS_CLAUDE), None)]);
+    }
+
+    #[test]
+    fn the_variable_is_honoured_only_for_the_call_argv() {
+        let real = || Some(OsString::from("/bin/claude"));
+        assert_eq!(as_claude(real(), Some(OsStr::new("-p"))), real());
+        assert_eq!(as_claude(real(), Some(OsStr::new("--check"))), None);
+        assert_eq!(as_claude(real(), Some(OsStr::new("--compare"))), None);
+        assert_eq!(as_claude(real(), None), None);
+        assert_eq!(as_claude(None, Some(OsStr::new("-p"))), None);
     }
 
     #[test]
