@@ -751,8 +751,8 @@ tree-sitter were turned down for the binary's size.
   in a Result's text or an answer; a step's command, by its `lang`. Prose
   outside a fence is never lexed, so an `if` in a sentence stays text. A fence
   left open runs to the end of the text; a shorter fence inside is content.
-- **An answer that is one block.** A reply fenced whole is read from inside
-  its fence, but an Answer is only shown, never typed: when the fence names a
+- **An answer that is one block.** A reply fenced whole (one closed block,
+  first line to last, by the same fence rule) is read from inside its fence, but an Answer is only shown, never typed: when the fence names a
   language the lexer knows, the answer keeps it and is coloured. A bare or
   `xml` fence is a wrapper and still goes, as does any fence in Fix and Write,
   whose text is typed into the pane.
@@ -1270,7 +1270,14 @@ reason in a warn note.
   module table gains its row; `panel` loses the mention.
 - `highlight::{split, Part, Fence}` are new: lines in, prose ranges and fenced
   blocks out (tag, opener line, body range, closer line or `None` for a fence
-  left open). `highlight::fenced` is built on it.
+  left open). `highlight::fenced` is built on it, and so are the reply
+  parser's `unfence` and `code_fence`: a reply is wrapped when `split` reads
+  it as one closed block, first line to last.
+- That moves three edges of the wrapper rule, which used to want a tag of
+  letters only, exactly three backticks and a reply that merely starts and
+  ends with them: a tag such as `python3`, `text,ignore` or ` text` and a
+  four-backtick fence now wrap a reply, and two blocks with prose between them
+  are no longer read as one block around the prose.
 - `highlight::block(tag, body)` is new: a block body lexed by its tag, with
   the bare-fence `$ ` rule. `highlight::tag(info)` is public: the tag in an
   opener's info string.
