@@ -13793,6 +13793,65 @@ is "--uninstall --hooks removes every cockpit command and nothing foreign" "0 1 
    "$(jq '[.. | strings | select(test("TMUX_COCKPIT_DIR"))] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "my-own-stop")] | length' "$SLH/.claude/settings.json") $(jq '[.. | strings | select(. == "/opt/x/scripts/agent-state sub-idle")] | length' "$SLH/.claude/settings.json")"
 is "and the file is the one it started as" "$(jq -S . "$SLH/orig.json")" "$(jq -S . "$SLH/.claude/settings.json")"
 fi
+echo "== tmux-review --request: the popup title shows a # in the repo path, never expands it (#329) =="
+# -T is a tmux format: without fesc a dir named x#(touch MARK) renders as "x".
+if need_tmux "tmux-review --request -T"; then :; else
+RT9="cockpit-rt9-$$"; SOCKS="$SOCKS $RT9"; RT9D=$(mktmpd); RT9S=$(mktmpd)
+RT9R="$RT9D/x#(touch MARK)#S"
+mkdir -p "$RT9R"
+( cd "$RT9R" && git init -q -b main . && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > f ) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RT9" -f /dev/null new-session -d -s t -x 100 -y 30 -c "${RT9R//#/##}" 'exec -a claude bash' >/dev/null 2>&1
+RT9P=$("$TMUX_REAL" -L "$RT9" list-panes -t t: -F '#{pane_id}')
+RT9SHIM=$(mktmpd)
+cat > "$RT9SHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) p=; for a; do [ "\$p" = -T ] && printf '%s' "\$a" > "$RT9S/title"; p=\$a; done; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RT9" "\$@"
+SHIMEOF
+chmod +x "$RT9SHIM/tmux"
+PATH="$RT9SHIM:$PATH" XDG_STATE_HOME=$RT9S "$DIR/scripts/tmux-review" --request "$RT9P" >/dev/null 2>&1
+RT9ROOT=$(git -C "$RT9R" rev-parse --show-toplevel)
+is "the title, drawn by tmux, names the repo path literally" \
+   " review · requested · ${RT9ROOT/#"$HOME/"/\~/} " \
+   "$("$TMUX_REAL" -L "$RT9" display-message -p "$(cat "$RT9S/title" 2>/dev/null)")"
+is "and nothing ran" "no" "$([ -e "$RT9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$RT9" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-review: the rc 20 --deliver run-shell passes a # in the repo path through literally (#329) =="
+# run-shell expands formats: without fesc a dir named x#S... reached --deliver
+# as x<session>..., and without its shq'd dir the "Paths are relative" line went.
+if need_tmux "tmux-review rc 20 run-shell"; then :; else
+RD9="cockpit-rd9-$$"; SOCKS="$SOCKS $RD9"; RD9D=$(mktmpd); RD9S=$(mktmpd)
+RD9R="$RD9D/x#S#(touch MARK)"
+mkdir -p "$RD9R"
+( cd "$RD9R" && git init -q -b main . && printf 'a\n' > f && git add f \
+  && git -c user.name=t -c user.email=t@t commit -qm i && printf 'a\nb\n' > f ) >/dev/null 2>&1
+RD9B=$(mktmpd); RD9W=$(mktmpd); fake_revdiff "$RD9B"
+printf '## f:2 (+)\nRD9-MARKER\n' > "$RD9W/out.1"; echo 10 > "$RD9W/rc.1"
+"$TMUX_REAL" -L "$RD9" -f /dev/null new-session -d -s t -x 400 -y 50 -c "${RD9R//#/##}" 'exec -a claude bash' >/dev/null 2>&1
+"$TMUX_REAL" -L "$RD9" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+RD9P=$("$TMUX_REAL" -L "$RD9" list-panes -t t: -F '#{pane_id}')
+until_out claude "$TMUX_REAL" -L "$RD9" display-message -p -t "$RD9P" '#{pane_current_command}'
+RD9SHIM=$(mktmpd)
+printf '#!/bin/sh\nexec "%s" -L "%s" "$@"\n' "$TMUX_REAL" "$RD9" > "$RD9SHIM/tmux"; chmod +x "$RD9SHIM/tmux"
+printf d | PATH="$RD9SHIM:$RD9B:$PATH" FAKE_RD_DIR="$RD9W" XDG_STATE_HOME=$RD9S \
+    "$DIR/scripts/tmux-review" -p "$RD9P" >/dev/null 2>&1
+RD9ROOT=$(git -C "$RD9R" rev-parse --show-toplevel)
+if until_cap "$RD9" "$RD9P" '*RD9-MARKER*'; then ok "the review is delivered through run-shell"
+else bad "the review is delivered through run-shell" "RD9-MARKER in the pane" "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P")"; fi
+case "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P")" in
+    *"Paths are relative to $RD9ROOT."*) ok "and --deliver got the repo path literally" ;;
+    *) bad "and --deliver got the repo path literally" "Paths are relative to $RD9ROOT." \
+         "$("$TMUX_REAL" -L "$RD9" capture-pane -p -J -t "$RD9P" | grep -a 'relative')" ;;
+esac
+is "and nothing ran" "no" "$([ -e "$RD9D/MARK" ] || [ -e "$DIR/MARK" ] || [ -e MARK ] && echo yes || echo no)"
+"$TMUX_REAL" -L "$RD9" kill-server >/dev/null 2>&1
+fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
