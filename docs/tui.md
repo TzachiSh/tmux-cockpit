@@ -645,7 +645,8 @@ lexer (`panel::highlight`), not a grammar crate: syntect, two-face and
 tree-sitter were turned down for the binary's size.
 
 - **Where.** A fenced block (three or more backticks, an optional language
-  tag) in a Result's text or an answer; a step's command, by its `lang`. Prose
+  tag read up to a `,` or a space, so `rust,ignore` and `{.python}` both work)
+  in a Result's text or an answer; a step's command, by its `lang`. Prose
   outside a fence is never lexed, so an `if` in a sentence stays text. A fence
   left open runs to the end of the text; a shorter fence inside is content.
 - **An answer that is one block.** A reply fenced whole is read from inside

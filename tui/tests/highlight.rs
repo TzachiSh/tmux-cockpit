@@ -366,3 +366,18 @@ fn nothing_left_open_in_one_fence_reaches_the_next() {
         assert_eq!(s[4], vec![(Keyword, s[4][0].1)], "{name}: {s:?}");
     }
 }
+
+#[test]
+fn fence_tags_with_attributes() {
+    let rows = [
+        ("```rust,ignore", Some("rust")),
+        ("``` {.python}", Some("python")),
+        ("```{.py .numberLines}", Some("py")),
+        ("```{bash}", Some("bash")),
+        ("``` ,x", Some("")),
+    ];
+    for (s, want) in rows {
+        assert_eq!(fence(s), want, "{s:?}");
+    }
+    assert_eq!(fenced("```rust,ignore\nfn\n```")[1], vec![(Keyword, "fn")]);
+}

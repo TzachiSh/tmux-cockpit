@@ -445,9 +445,13 @@ pub fn fence(s: &str) -> Option<&str> {
     ticks(s).map(|(_, rest)| tag(rest))
 }
 
-/// The tag in the rest of an opener's line.
+/// The tag in the rest of an opener's line: its first word, cut at a `,`
+/// (`rust,ignore`), with a pandoc `{.python}` brace and dot taken off.
 fn tag(rest: &str) -> &str {
-    rest.split_whitespace().next().unwrap_or("")
+    let t = rest.trim_start();
+    let t = t.strip_prefix('{').map_or(t, |b| b.strip_prefix('.').unwrap_or(b));
+    let end = t.find(|c: char| c.is_whitespace() || c == ',' || c == '}').unwrap_or(t.len());
+    &t[..end]
 }
 
 /// Markdown-ish text: the lines inside a fenced block are lexed by the fence's
