@@ -4,10 +4,11 @@
 //! and sets `finished: true` when its task leaves `running`, whatever the outcome.
 //! Every file is cached on (mtime, len), so a quiet session costs a stat per file.
 //! The hooks' own record (#361), `<state>/tmux-cockpit/subs/<session_id>.log`, decides what the
-//! files above cannot say: a teammate that is idle, or whose end nobody recorded.
+//! files above cannot say: a teammate that is idle, an agent TaskStop ended (#403), or one
+//! missing from the in-flight set at the parent's turn end.
 use serde_json::Value;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, BufReader, Read};
@@ -23,14 +24,16 @@ pub enum SubState {
     /// finished, and the newest assistant row is an API error, unless the user stopped it
     Failed,
     /// `stoppedByUser: true`. The user's action wins: a stopped agent whose newest row is
-    /// also an API error is Stopped, not Failed
+    /// also an API error is Stopped, not Failed. Also a TaskStop the hooks recorded, and an
+    /// agent the log had running that a later Stop's in-flight set no longer lists (#403)
     Stopped,
     /// a teammate between turns: its last hook event is a stop or an idle. It is not running,
     /// and nothing says whether it has ended
     Idle,
     /// its last hook event is a start, and its transcript has not been written for
-    /// `END_UNKNOWN_AFTER` seconds: it was ended without a hook (TaskStop mid-turn). Never
-    /// Running, and not a failure
+    /// `END_UNKNOWN_AFTER` seconds, and no TaskStop or Stop reconcile says it ended: it was
+    /// ended without a hook (a stop from the UI before the next Stop). Never Running, and not
+    /// a failure
     EndUnknown,
 }
 
@@ -103,6 +106,8 @@ type Stamp = (SystemTime, u64);
 #[derive(Clone, Default)]
 struct Meta {
     kind: SubKind,
+    /// `name`: a teammate's, what a TaskStop of it names
+    name: String,
     ty: String,
     desc: String,
     finished: bool,
@@ -132,10 +137,45 @@ enum Ev {
     Start,
     Stop,
     Idle,
+    /// ended: a TaskStop of it, or absent from a later Stop's in-flight set
+    Kill,
 }
 
-/// Each agent's newest event and its epoch, from the log's tail.
-type Log = HashMap<String, (Ev, u64)>;
+/// One agent's newest event: its epoch and log line, and the epoch and line of its newest start.
+#[derive(Clone, Copy)]
+struct Rec {
+    ev: Ev,
+    t: u64,
+    line: usize,
+    start: Option<(u64, usize)>,
+}
+
+/// A teammate's TaskStop: its log line and epoch, the name the model gave, its description.
+#[derive(Clone)]
+struct TmKill {
+    line: usize,
+    t: u64,
+    name: String,
+    desc: String,
+}
+
+/// The newest Stop's in-flight set: its log line and epoch, the subagents' ids, the teammates'
+/// descriptions (a teammate's id there is a task id no file holds).
+#[derive(Clone)]
+struct Live {
+    line: usize,
+    t: u64,
+    ids: HashSet<String>,
+    descs: HashSet<String>,
+}
+
+/// The log's tail, folded.
+#[derive(Clone, Default)]
+struct Log {
+    ids: HashMap<String, Rec>,
+    kills: Vec<TmKill>,
+    live: Option<Live>,
+}
 
 thread_local! {
     static LOGS: RefCell<HashMap<PathBuf, (Stamp, Log)>> = RefCell::default();
@@ -159,26 +199,80 @@ pub fn state_dir(xdg: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
     Some(base.join("tmux-cockpit").join("subs"))
 }
 
-/// The log's lines folded to each agent's newest event. A `stop` or `idle` counts only after
-/// a `start` of the same agent: Claude Code's internal agents send a stop with no start.
-/// Lines that are not `<epoch>\t<start|stop|idle>\t<id>` are skipped. An id is not checked: only
-/// a plain agent id is ever looked up, and the tail bounds the map.
+/// A description as `scripts/lib/subslog.sh` writes it, the JSON string's body with its
+/// escapes, decoded and with control characters dropped as `text` drops them.
+fn unjson(body: &str) -> Option<String> {
+    let s: String = serde_json::from_str(&format!("\"{body}\"")).ok()?;
+    Some(s.chars().filter(|c| !c.is_control()).collect())
+}
+
+/// The log's lines folded. Rows, tab-separated after `<epoch>\t<event>`:
+/// - `start|stop|idle <agent_id>`: each agent's newest event. A `stop` or `idle` counts only
+///   after a `start` of the same agent: Claude Code's internal agents send a stop with no start.
+/// - `kill <agent_id>`: a TaskStop of a plain agent. Only a later `start` (a resume) undoes it;
+///   the `stop` a teammate's TaskStop also fires does not.
+/// - `kill-tm <name> <description>`: a TaskStop of a teammate, mapped by the reader.
+/// - `live <id,id,...> <description>...`: the newest wins, the in-flight set at a Stop.
+///
+/// Any other line, and a row with a field that does not decode, is skipped. An id is not
+/// checked: only a plain agent id is ever looked up, and the tail bounds the map.
 fn fold_log(lines: &[String]) -> Log {
-    let mut log = Log::new();
-    for l in lines {
-        let mut f = l.split('\t');
-        let (Some(t), Some(e), Some(id), None) = (f.next(), f.next(), f.next(), f.next()) else {
-            continue;
-        };
+    let mut log = Log::default();
+    for (line, l) in lines.iter().enumerate() {
+        let f: Vec<&str> = l.split('\t').collect();
+        let [t, e, rest @ ..] = f.as_slice() else { continue };
         let Ok(t) = t.parse::<u64>() else { continue };
-        let ev = match e {
-            "start" => Ev::Start,
-            "stop" => Ev::Stop,
-            "idle" => Ev::Idle,
-            _ => continue,
-        };
-        if ev == Ev::Start || log.contains_key(id) {
-            log.insert(id.to_string(), (ev, t));
+        match (*e, rest) {
+            ("start", [id]) => {
+                let start = Some((t, line));
+                log.ids.insert(
+                    id.to_string(),
+                    Rec {
+                        ev: Ev::Start,
+                        t,
+                        line,
+                        start,
+                    },
+                );
+            }
+            ("stop" | "idle", [id]) => {
+                if let Some(r) = log.ids.get_mut(*id).filter(|r| r.ev != Ev::Kill) {
+                    (r.ev, r.t, r.line) = (if *e == "stop" { Ev::Stop } else { Ev::Idle }, t, line);
+                }
+            }
+            ("kill", [id]) => {
+                let start = log.ids.get(*id).and_then(|r| r.start);
+                log.ids.insert(
+                    id.to_string(),
+                    Rec {
+                        ev: Ev::Kill,
+                        t,
+                        line,
+                        start,
+                    },
+                );
+            }
+            ("kill-tm", [name, desc]) => {
+                let Some(desc) = unjson(desc) else { continue };
+                if !name.is_empty() || !desc.is_empty() {
+                    log.kills.push(TmKill {
+                        line,
+                        t,
+                        name: name.to_string(),
+                        desc,
+                    });
+                }
+            }
+            ("live", [ids, descs @ ..]) => {
+                let ids: HashSet<String> = ids.split(',').filter(|i| !i.is_empty()).map(str::to_string).collect();
+                let Some(descs) = descs.iter().map(|d| unjson(d)).collect::<Option<HashSet<String>>>() else {
+                    continue;
+                };
+                if ids.iter().all(|i| plain(i)) {
+                    log.live = Some(Live { line, t, ids, descs });
+                }
+            }
+            _ => {}
         }
     }
     log
@@ -186,11 +280,13 @@ fn fold_log(lines: &[String]) -> Log {
 
 /// `<subs>/<sid>.log`, cached on (mtime, len); a session id that is not plain names no file.
 fn log_of(subs: &Path, sid: Option<&str>) -> Log {
-    let Some(sid) = sid.filter(|s| plain(s)) else { return Log::new() };
+    let Some(sid) = sid.filter(|s| plain(s)) else {
+        return Log::default();
+    };
     let p = subs.join(format!("{sid}.log"));
     let Some(st) = stamp(&p) else {
         LOGS.with(|c| c.borrow_mut().remove(&p));
-        return Log::new();
+        return Log::default();
     };
     LOGS.with(|c| {
         let mut c = c.borrow_mut();
@@ -252,6 +348,7 @@ fn read_meta(p: &Path, len: u64) -> Option<Meta> {
     };
     Some(Meta {
         kind,
+        name: text(&v["name"]),
         ty: text(&v["agentType"]),
         desc: text(&v["description"]),
         finished: v["finished"] == true,
@@ -368,6 +465,9 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
         let log = log_of(subs, dir.parent().and_then(Path::file_name).and_then(|n| n.to_str()));
         let mut kept: HashMap<String, Cached> = HashMap::new();
         let mut out = vec![];
+        // The metas first: a teammate's TaskStop maps by description only when its name is no
+        // teammate's here, and that takes every name.
+        let mut metas = vec![];
         for id in ids {
             let mut e = old.remove(&id).unwrap_or_default();
             let mp = dir.join(format!("agent-{id}.meta.json"));
@@ -375,7 +475,16 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             if e.meta.as_ref().is_none_or(|(s, _)| *s != ms) {
                 e.meta = read_meta(&mp, ms.1).map(|m| (ms, m));
             }
-            let Some((_, m)) = e.meta.clone() else {
+            metas.push((id, e));
+        }
+        let names: HashSet<String> = metas
+            .iter()
+            .filter_map(|(_, e)| e.meta.as_ref().map(|(_, m)| m))
+            .filter(|m| m.kind == SubKind::Teammate && !m.name.is_empty())
+            .map(|m| m.name.clone())
+            .collect();
+        for (id, mut e) in metas {
+            let Some((ms, m)) = e.meta.clone() else {
                 kept.insert(id, e);
                 continue;
             };
@@ -393,17 +502,42 @@ pub fn read_in(dir: &Path, now: u64, subs: &Path) -> Vec<Sub> {
             let secs = |t: SystemTime| t.duration_since(SystemTime::UNIX_EPOCH).ok().map(|d| d.as_secs());
             // the newest row says when it last wrote; the mtime only when no tail row has a time
             let wrote = r.last.or_else(|| secs(e.rows.as_ref()?.0.0));
-            let ev = log.get(&id).copied();
+            let rec = log.ids.get(&id).copied();
+            let mate = m.kind == SubKind::Teammate;
+            // A teammate's TaskStop names it, or failing that (the model gave the task id) its
+            // description; it counts after the teammate's newest start, or with none in the tail.
+            let killed = log.kills.iter().rfind(|k| {
+                mate && rec.and_then(|r| r.start).is_none_or(|(_, s)| k.line > s)
+                    && if names.contains(&k.name) {
+                        k.name == m.name
+                    } else {
+                        !k.desc.is_empty() && k.desc == m.desc
+                    }
+            });
+            let ev = killed.map(|k| (Ev::Kill, k.t)).or(rec.map(|r| (r.ev, r.t)));
             let active_at = wrote.max(ev.map(|(_, t)| t));
             let quiet = |since: Option<u64>| since.is_some_and(|a| now.saturating_sub(a) >= END_UNKNOWN_AFTER);
             // The hook log says what the meta file cannot. Without a record the meta decides, and
-            // so does a `finished` written at or after the last `start`: a StopFailure or a TaskStop
-            // sends no SubagentStop, while a resume writes its `start` after the old `finished`.
+            // so does a `finished` written at or after the last `start`: a StopFailure sends no
+            // SubagentStop, while a resume writes its `start` after the old `finished`.
             let meta_newer = |t: u64| m.finished && secs(ms.0).is_some_and(|w| w >= t);
+            let ev = ev.filter(|&(ev, t)| ev != Ev::Start || !meta_newer(t));
+            // The newest Stop's in-flight set ends an agent the log has running (a start or a
+            // resume is its newest event) that started before it, wrote nothing after it, and is
+            // not in it. It cannot tell killed from finished; a finished meta decided above. Not an
+            // idle teammate: no payload yet shows whether `background_tasks` lists one (#403).
+            let gone = |r: Rec, l: &Live| {
+                r.line < l.line && r.start.is_some_and(|(t, _)| t < l.t) && !l.ids.contains(&id) && !(mate && l.descs.contains(&m.desc))
+            };
+            let ev = match (ev, rec, &log.live) {
+                (Some((Ev::Start, t)), Some(r), Some(l)) if killed.is_none() && gone(r, l) => Some((Ev::Kill, t)),
+                (ev, ..) => ev,
+            };
             let state = if m.stopped {
                 SubState::Stopped
-            } else if let Some((ev, _)) = ev.filter(|&(ev, t)| ev != Ev::Start || !meta_newer(t)) {
+            } else if let Some((ev, _)) = ev {
                 match ev {
+                    Ev::Kill => SubState::Stopped,
                     Ev::Start if quiet(active_at) => SubState::EndUnknown,
                     Ev::Start => SubState::Running,
                     Ev::Idle => SubState::Idle,

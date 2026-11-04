@@ -871,3 +871,227 @@ fn an_empty_team_name_is_no_teammate() {
     meta(&d, "a", r#"{"agentType":"x","teamName":""}"#);
     assert_eq!(one(&d).kind, SubKind::Subagent);
 }
+
+// #403: the TaskStop rows and the Stop reconcile.
+
+const NAMED: &str = r#"{"agentType":"tm1","description":"i1 named","name":"tm1","teamName":"crew"}"#;
+
+/// A `kill-tm` row: the name the model gave TaskStop, and the description as the hook writes
+/// it (the JSON string's body).
+fn kill_tm(secs: u64, name: &str, desc: &str) -> String {
+    format!("{}\tkill-tm\t{name}\t{desc}", T0 + secs)
+}
+
+/// A `live` row: the subagents' ids, then one field per teammate description.
+fn live(secs: u64, ids: &[&str], descs: &[&str]) -> String {
+    let mut l = format!("{}\tlive\t{}", T0 + secs, ids.join(","));
+    for d in descs {
+        l = format!("{l}\t{d}");
+    }
+    l
+}
+
+#[test]
+fn a_plain_agent_stopped_mid_turn_is_stopped_with_no_subagent_stop() {
+    let s = session("kill-plain");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), ev(9, "kill", "a")]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Stopped);
+    // and never ages into end-unknown
+    assert_eq!(s.one(T0 + END_UNKNOWN_AFTER + 60).state, SubState::Stopped);
+}
+
+#[test]
+fn a_kill_of_another_agent_leaves_this_one_running() {
+    let s = session("kill-other");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), ev(9, "kill", "b")]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+#[test]
+fn a_teammate_stopped_by_name_or_by_description_is_stopped() {
+    for (name, row) in [
+        ("by name", kill_tm(9, "tm1", "something else")),
+        ("by description, the task id given", kill_tm(9, "t0sm6hcnt", "i1 named")),
+        ("by description, no name", kill_tm(9, "", "i1 named")),
+    ] {
+        let s = session("kill-tm");
+        meta(&s.dir, "a", NAMED);
+        rows(&s.dir, "a", &[FIRST, &tick(5)]);
+        // the SubagentStop a teammate's TaskStop also fires does not undo it
+        s.log(&[ev(0, "start", "a"), row, ev(10, "stop", "a")]);
+        assert_eq!(s.one(T0 + 60).state, SubState::Stopped, "{name}");
+    }
+}
+
+#[test]
+fn a_teammate_stop_by_name_does_not_reach_another_teammate_with_its_description() {
+    let s = session("kill-tm-name-wins");
+    meta(&s.dir, "a", NAMED);
+    meta(
+        &s.dir,
+        "b",
+        r#"{"agentType":"x","description":"i1 named","name":"tm2","teamName":"crew"}"#,
+    );
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    s.log(&[ev(0, "start", "a"), ev(0, "start", "b"), kill_tm(9, "tm2", "i1 named")]);
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(st, [("a", SubState::Running), ("b", SubState::Stopped)]);
+}
+
+#[test]
+fn a_teammate_stop_matches_no_plain_agent_and_decodes_its_escapes() {
+    let s = session("kill-tm-escapes");
+    meta(&s.dir, "a", r#"{"agentType":"x","description":"say \"hi\" é"}"#);
+    meta(&s.dir, "b", r#"{"agentType":"x","description":"say \"hi\" é","teamName":"crew"}"#);
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    s.log(&[ev(0, "start", "a"), ev(0, "start", "b"), kill_tm(9, "", r#"say \"hi\" é"#)]);
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(st, [("a", SubState::Running), ("b", SubState::Stopped)]);
+}
+
+#[test]
+fn a_stop_then_a_resume_runs_again() {
+    let s = session("kill-resume");
+    meta(&s.dir, "a", PLAIN);
+    meta(&s.dir, "b", NAMED);
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    s.log(&[
+        ev(0, "start", "a"),
+        ev(0, "start", "b"),
+        ev(9, "kill", "a"),
+        kill_tm(9, "tm1", "i1 named"),
+        ev(20, "start", "a"),
+        ev(20, "start", "b"),
+    ]);
+    let v = s.read(T0 + 60);
+    assert!(v.iter().all(|x| x.state == SubState::Running), "{v:?}");
+}
+
+#[test]
+fn a_reconcile_ends_a_running_agent_it_does_not_list() {
+    let s = session("live-drop");
+    meta(&s.dir, "a", PLAIN);
+    meta(&s.dir, "b", PLAIN);
+    meta(&s.dir, "c", NAMED);
+    meta(
+        &s.dir,
+        "d",
+        r#"{"agentType":"x","description":"gone mate","name":"tm9","teamName":"crew"}"#,
+    );
+    for id in ["a", "b", "c", "d"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    s.log(&[
+        ev(0, "start", "a"),
+        ev(0, "start", "b"),
+        ev(0, "start", "c"),
+        ev(0, "start", "d"),
+        ev(8, "stop", "d"),
+        live(30, &["a"], &["i1 named"]),
+    ]);
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(
+        st,
+        [
+            ("a", SubState::Running),
+            ("b", SubState::Stopped),
+            ("c", SubState::Running),
+            ("d", SubState::Idle),
+        ],
+        "a listed by id, c by description; b is not listed; the idle teammate d is left alone"
+    );
+}
+
+#[test]
+fn a_reconcile_leaves_an_agent_started_or_heard_from_after_it() {
+    let s = session("live-later");
+    meta(&s.dir, "a", PLAIN);
+    meta(&s.dir, "b", NAMED);
+    for id in ["a", "b"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    // a started in the Stop's own second; b, a teammate, idled after it
+    s.log(&[ev(0, "start", "b"), live(30, &[], &[]), ev(30, "start", "a"), ev(31, "idle", "b")]);
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(st, [("a", SubState::Running), ("b", SubState::Idle)]);
+}
+
+#[test]
+fn a_reconcile_with_no_running_agents_ends_them_all_and_leaves_the_finished_alone() {
+    let s = session("live-empty");
+    meta(&s.dir, "a", PLAIN);
+    meta(&s.dir, "b", PLAIN);
+    meta(&s.dir, "c", r#"{"agentType":"x","finished":true}"#);
+    for id in ["a", "b", "c"] {
+        rows(&s.dir, id, &[FIRST, &tick(5)]);
+    }
+    touch_meta(&s.dir, "c", 20);
+    s.log(&[
+        ev(0, "start", "a"),
+        ev(0, "start", "b"),
+        ev(9, "stop", "b"),
+        ev(0, "start", "c"),
+        live(30, &[], &[]),
+    ]);
+    let v = s.read(T0 + 60);
+    let st: Vec<(&str, SubState)> = v.iter().map(|x| (x.id.as_str(), x.state)).collect();
+    assert_eq!(
+        st,
+        [("a", SubState::Stopped), ("b", SubState::Done), ("c", SubState::Done)],
+        "a running agent ends; a done one stays done; a finished meta still decides"
+    );
+}
+
+#[test]
+fn only_the_newest_reconcile_counts() {
+    let s = session("live-newest");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), live(20, &[], &[]), live(30, &["a"], &[])]);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running);
+}
+
+#[test]
+fn end_unknown_stays_only_when_no_stop_or_reconcile_applies() {
+    let s = session("live-unknown");
+    meta(&s.dir, "a", PLAIN);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    s.log(&[ev(0, "start", "a"), live(30, &["a"], &[])]);
+    assert_eq!(s.one(T0 + END_UNKNOWN_AFTER + 60).state, SubState::EndUnknown);
+}
+
+#[test]
+fn malformed_stop_and_reconcile_rows_are_skipped() {
+    let s = session("kill-junk");
+    meta(&s.dir, "a", NAMED);
+    rows(&s.dir, "a", &[FIRST, &tick(5)]);
+    let junk = [
+        format!("{T0}\tkill"),
+        format!("{T0}\tkill\ta\textra"),
+        format!("{T0}\tkill-tm\ttm1"),
+        format!("{T0}\tkill-tm\t\t"),
+        format!("{T0}\tkill-tm\ttm9\tbad \\x escape"),
+        format!("x{T0}\tkill-tm\ttm1\ti1 named"),
+        format!("{}\tlive\tb,../x", T0 + 30),
+        format!("{}\tlive\tb\tbad \"quote", T0 + 30),
+        format!("{}\tlive", T0 + 30),
+    ];
+    let mut lines = vec![ev(0, "start", "a")];
+    lines.extend(junk);
+    s.log(&lines);
+    assert_eq!(s.one(T0 + 60).state, SubState::Running, "none of them ends it");
+}
