@@ -220,6 +220,40 @@ fn a_wrapper_fence_is_the_one_fence_rule() {
     }
 }
 
+/// An outer fence around markdown that holds its own tagged block of the same
+/// length still wraps the whole reply: the inner opener is paired with the
+/// first bare closer, and the last line closes the outer one.
+#[test]
+fn a_wrapper_holding_a_paired_inner_fence_is_still_one() {
+    let rows = [
+        ("nested_same", "```\n# Title\n```sh\nls\n```\n```", "# Title\n```sh\nls\n```"),
+        (
+            "nested_md",
+            "```markdown\nSee:\n```bash\nmake\n```\ndone\n```",
+            "See:\n```bash\nmake\n```\ndone",
+        ),
+        ("nested_long", "````\n```sh\nls\n```\n````", "```sh\nls\n```"),
+    ];
+    for (name, out, want) in rows {
+        assert_eq!(fix(out), Reply::Text(want.into()), "row {name}");
+    }
+}
+
+/// A fence with nothing inside wraps nothing.
+#[test]
+fn an_empty_fence_is_not_a_wrapper() {
+    assert_eq!(fix("```\n```"), Reply::Text("```\n```".into()));
+}
+
+/// Explain strips a bare wrapper too: it only keeps a fence that names a language.
+#[test]
+fn explain_strips_a_bare_wrapper() {
+    let Reply::Answer { text, .. } = explain("```\nplain words\n```") else {
+        panic!()
+    };
+    assert_eq!(text, "plain words");
+}
+
 /// A fence left open wraps nothing: the reply is read as it came.
 #[test]
 fn an_unclosed_fence_is_not_a_wrapper() {

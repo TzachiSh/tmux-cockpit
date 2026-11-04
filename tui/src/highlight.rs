@@ -512,6 +512,36 @@ pub fn split<'a>(lines: &[&'a str]) -> Vec<Part<'a>> {
     out
 }
 
+/// A text wrapped whole in one fence: the first line opens it, the last is a
+/// bare closer of at least as many backticks, and at least a line sits
+/// between. Inside, a tagged opener pairs with the next bare fence, so a
+/// wrapped markdown answer may hold blocks of its own; an unpaired bare fence
+/// as long as the outer one closes it early, and then the text is not one block.
+pub fn wrapper<'a>(lines: &[&'a str]) -> Option<Fence<'a>> {
+    let (n, rest) = ticks(lines.first()?)?;
+    let last = lines.len() - 1;
+    let (m, end) = ticks(lines[last]).filter(|_| last >= 2)?;
+    if m < n || !end.trim().is_empty() {
+        return None;
+    }
+    let mut open = 0usize;
+    for l in &lines[1..last] {
+        match ticks(l) {
+            Some((_, r)) if !r.trim().is_empty() => open += 1,
+            Some(_) if open > 0 => open -= 1,
+            Some((k, _)) if k >= n => return None,
+            _ => {}
+        }
+    }
+    // a tagged opener left open would take the last line as its own closer
+    (open == 0).then_some(Fence {
+        tag: tag(rest),
+        open: 0,
+        body: 1..last,
+        close: Some(last),
+    })
+}
+
 /// A fenced block's body lexed by its tag. A bare fence whose lines all start
 /// `$ ` is a shell session; any other unknown tag is plain.
 pub fn block<'a>(tag: &str, body: &[&'a str]) -> Vec<Vec<(Role, &'a str)>> {

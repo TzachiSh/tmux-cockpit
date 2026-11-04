@@ -1,6 +1,6 @@
 //! The panel's code lexer (#282): per-language tables, fence detection, and the
 //! never-panic, text-preserving property over random input.
-use cockpit_tui::highlight::{Fence, Lang, Part, Role, State, block, fence, fenced, highlight, lang, line, split, tag};
+use cockpit_tui::highlight::{Fence, Lang, Part, Role, State, block, fence, fenced, highlight, lang, line, split, tag, wrapper};
 
 /// Every span of `src` (lines split on `\n`) lexed as `tag`, line breaks dropped.
 fn spans<'a>(tag: &str, src: &'a str) -> Vec<(Role, &'a str)> {
@@ -440,4 +440,28 @@ fn block_lexes_by_tag_and_reads_a_bare_prompt_block_as_shell() {
     assert_eq!(block("rust", &["fn"]), vec![vec![(Keyword, "fn")]]);
     assert!(block("", &["$ if x"])[0].contains(&(Keyword, "if")));
     assert_eq!(block("", &["if x"]), vec![vec![(Plain, "if x")]]);
+}
+
+fn wraps(text: &str) -> bool {
+    wrapper(&text.split('\n').collect::<Vec<_>>()).is_some()
+}
+
+#[test]
+fn wrapper_rows() {
+    let rows = [
+        ("one block", "```sh\nls\n```", true),
+        ("a paired inner block", "```\n```sh\nls\n```\n```", true),
+        ("a longer closer", "```\nls\n````", true),
+        ("a shorter inner bare fence is content", "````\n```\nls\n````", true),
+        ("two blocks", "```\na\n```\n```\nb\n```", false),
+        ("an inner opener left open", "```\n```sh\nls\n```", false),
+        ("a shorter closer", "````\nls\n```", false),
+        ("text after the closer", "```\nls\n```\nok", false),
+        ("nothing inside", "```\n```", false),
+        ("a closer with a tag", "```\nls\n```sh", false),
+        ("one line", "```", false),
+    ];
+    for (name, text, want) in rows {
+        assert_eq!(wraps(text), want, "row {name}");
+    }
 }

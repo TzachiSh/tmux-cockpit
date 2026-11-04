@@ -2,7 +2,7 @@
 //! scanner: the reply regexes it replaces need no lookaround.
 use super::envelope::{OutType, unesc};
 use super::{boundary_at, skip_ws};
-use crate::highlight::{Part, lang, split};
+use crate::highlight::{lang, wrapper};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Opt {
@@ -118,14 +118,10 @@ fn norm(s: &str) -> String {
     unesc(&s.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-/// The block a reply is wrapped in whole, by highlight's one fence rule: its
-/// tag and body. Two blocks, or a block with prose beside it, are not one.
+/// The fence a reply is wrapped in whole ([`wrapper`]): its tag and body.
 fn wrapped(o: &str) -> Option<(&str, &str)> {
     let lines: Vec<&str> = o.split('\n').collect();
-    let parts = split(&lines);
-    // one part, so the block starts on the first line and ends on the last
-    let [Part::Code(f)] = parts.as_slice() else { return None };
-    f.close?;
+    let f = wrapper(&lines)?;
     let last = lines.len() - 1;
     // past the opener's newline, up to the closer's
     let (from, to) = (lines[0].len() + 1, o.len() - lines[last].len() - 1);
