@@ -1514,20 +1514,32 @@ Each board waits in a `tmux wait-for cockpit-board-<pid>` child and lists
 `wait-for -S cockpit-board-<pid> ; ` in the option. A channel of its own,
 because tmux latches a `wait-for -S` only when nobody waits: on a shared
 channel the waiter a SIGKILLed board left behind would take a wake that lands
-while a live board is between two waits, and that board would never see it. When the child returns the board refetches and starts
-another. A wake that lands between the two is latched by tmux and the next
-wait returns at once; tmux latches one bit per channel, so a third wake in the
-same few milliseconds clears it again and that refresh waits for the 1 s tick.
+while a live board is between two waits, and that board would never see it.
 
-The waiter goes with the board on every exit path: `q`, a panic and a hangup
-remove the entry and wake the waiter with three `-S` (wake, latch, free: tmux
-then holds nothing for the channel); SIGHUP and SIGTERM kill it from the
-handler, which runs nothing else, and leave the entry; on Linux PDEATHSIG kills it when the board is SIGKILLed. A
-left entry costs a hook one `wait-for -S` inside tmux, toggling one latched
-bit on a channel nobody waits on, and the next board's start drops every entry
+When the child returns the board refetches and starts another. Between the two
+nobody waits, and tmux keeps one bit per channel: the first `-S` in that window
+latches it, so the next wait returns at once, and a second `-S` in the same
+window frees it again. That refresh then waits for the 1 s tick.
+
+The waiter goes with the board on every exit path:
+
+- `q`, a panic and the tty hangup watch (`backend::exit_on_hangup`) remove the
+  entry and wake the waiter with three `-S`: wake, latch, free, and tmux then
+  holds nothing for the channel. A cleanup that lands between two waits, with
+  no wake pending, goes latch, free, latch instead, and the latched bit stays
+  for the server's life. Nothing reads it: the entry is gone and no board
+  waits on that name.
+- SIGHUP and SIGTERM kill it from the handler, which runs nothing else, and
+  leave the entry.
+- On Linux, PDEATHSIG kills it when the board is SIGKILLed.
+
+A left entry costs a hook one `wait-for -S` inside tmux, toggling one latched
+bit on a channel nobody waits on. The next board's start drops every entry
 whose pid is not a running cockpit-tui (read from `/proc/<pid>/comm`, or
-`ps -o comm=`). It sends that channel one last `-S`, which releases a waiter
-left where there is no PDEATHSIG.
+`ps -o comm=`), and sends that channel one last `-S`, which releases a waiter
+left where there is no PDEATHSIG. Only entries of the exact form
+`cockpit-board-<digits>` are read. The start also unsets `@cockpit_tui_pid`,
+which a board from before #224 may have left.
 
 ### The VS16 backend shim
 
