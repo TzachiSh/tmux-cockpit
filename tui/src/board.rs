@@ -3461,10 +3461,10 @@ pub struct Want {
 pub fn captures(ps: &[Pane], ok: bool, want: &Want) -> Vec<(String, usize)> {
     if !want.tiles {
         let rows = pane_rows(want.area);
-        return match &want.pick {
-            Some(id) if ok && list_w(want.area.width).is_some() && rows > 0 && ps.iter().any(|p| p.id == *id) => vec![(id.clone(), rows)],
-            _ => vec![],
-        };
+        return split_pick(ps, ok, want)
+            .filter(|_| rows > 0)
+            .map(|id| vec![(id.clone(), rows)])
+            .unwrap_or_default();
     }
     let (_, top, g) = fit(want.area, ps.len(), want.sel, want.top);
     let tile_h = (want.area.height.saturating_sub(2) as usize) / g.rows_shown;
@@ -3526,6 +3526,38 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
             Err(RecvTimeoutError::Disconnected) => return,
         }
     }
+}
+
+/// The list's pick, when the read worked, still has it, and the right pane shows:
+/// the one pane the list captures.
+fn split_pick<'a>(ps: &[Pane], ok: bool, want: &'a Want) -> Option<&'a String> {
+    want.pick
+        .as_ref()
+        .filter(|id| ok && list_w(want.area.width).is_some() && ps.iter().any(|p| p.id == **id))
+}
+
+/// The agent whose screen the board wants: the list's selection when the right
+/// pane shows on `area`; `None` on a header, in the tiles and under 96 columns.
+pub fn pick_of(list: bool, area: Rect, nav: &Nav, ps: &[Pane]) -> Option<String> {
+    (list && list_w(area.width).is_some())
+        .then(|| nav.pane(ps).map(|p| p.id.clone()))
+        .flatten()
+}
+
+/// Whether `cur` is a new pick, which the worker must hear of now; it becomes
+/// `pick`. The same selection redrawn asks nothing, so a tick captures once.
+pub fn repick(pick: &mut Option<String>, cur: Option<String>) -> bool {
+    if cur == *pick {
+        return false;
+    }
+    *pick = cur;
+    true
+}
+
+/// The previews a frame draws: none while the pick has no capture yet, which
+/// the pane reads as "not read yet" rather than a blank screen.
+pub fn shown<'a>(pick: Option<&str>, seen: &HashMap<String, Option<String>>, pvs: &'a [Option<String>]) -> &'a [Option<String>] {
+    if pick.is_some_and(|id| !seen.contains_key(id)) { &[] } else { pvs }
 }
 
 pub fn run(o: &Opts) -> Option<Exit> {
@@ -3708,11 +3740,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
         // #284: a new selection needs its screen now, not at the next second
         if dirty {
             let here = area(term.size().unwrap_or_default());
-            let cur = (list && list_w(here.width).is_some())
-                .then(|| nav.pane(&panes).map(|p| p.id.clone()))
-                .flatten();
-            if cur != pick {
-                pick = cur;
+            if repick(&mut pick, pick_of(list, here, &nav, &panes)) {
                 ask(here, sel, top, list, &pick);
             }
         }
@@ -3731,12 +3759,9 @@ pub fn run(o: &Opts) -> Option<Exit> {
         }
         // a first read that hangs must not leave the loading card up forever
         if dirty && (loaded || stale.is_some()) {
-            // a selection whose screen no capture has brought yet is a short
-            // pvs, "not read yet", never a blank screen
-            let unread = pick.as_ref().is_some_and(|id| !seen.contains_key(id));
             let v = View {
                 panes: &panes,
-                pvs: if unread { &[] } else { &pvs },
+                pvs: shown(pick.as_deref(), &seen, &pvs),
                 th: &th,
                 sel,
                 top,

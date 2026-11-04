@@ -11,7 +11,7 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Modifier;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 fn golden(name: &str, got: &str) {
     let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden");
@@ -469,6 +469,49 @@ fn an_emoji_widened_by_vs16_is_measured_as_drawn() {
         &list(&ps, &pvs_for(&ps, "%4", Some(&"\u{26a0}\u{fe0f}".repeat(30))), &th, &n),
     );
     assert_eq!(b[(97, 27)].symbol(), "›", "a cut line of wide emoji is marked");
+}
+
+// ------------------------------------------------ the key loop's picks
+
+#[test]
+fn the_pick_is_the_lists_selection_only_when_split() {
+    let ps = trio();
+    let a = Rect::new(0, 0, 100, 30);
+    let on = nav(&ps, Sel::Pane("%4".into()));
+    assert_eq!(board::pick_of(true, a, &on, &ps).as_deref(), Some("%4"));
+    assert_eq!(board::pick_of(true, Rect::new(0, 0, 95, 30), &on, &ps), None, "no pane at 95");
+    assert_eq!(board::pick_of(false, a, &on, &ps), None, "the tiles pick nothing");
+    assert_eq!(board::pick_of(true, a, &nav(&ps, Sel::Head("api".into())), &ps), None, "a header");
+}
+
+#[test]
+fn a_selection_asks_the_worker_once_however_often_it_redraws() {
+    let mut pick = None;
+    let asks: Vec<bool> = [Some("%4"), Some("%4"), Some("%4"), Some("%5"), Some("%5"), None, None]
+        .into_iter()
+        .map(|cur| board::repick(&mut pick, cur.map(String::from)))
+        .collect();
+    assert_eq!(asks, [true, false, false, true, false, true, false]);
+    assert_eq!(pick, None);
+}
+
+fn seen(entries: &[(&str, Option<&str>)]) -> HashMap<String, Option<String>> {
+    entries.iter().map(|(k, v)| (k.to_string(), v.map(String::from))).collect()
+}
+
+#[test]
+fn a_pick_no_capture_has_read_yet_is_unread_never_blank() {
+    let ps = trio();
+    let pvs = pvs_for(&ps, "%4", Some(""));
+    let (th, n) = (th(), nav(&ps, Sel::Pane("%4".into())));
+    let shot = |pvs: &[Option<String>]| pane_rows_text(&buf(100, 30, &list(&ps, pvs, &th, &n)), 41).join("\n");
+    let unread = board::shown(Some("%4"), &seen(&[("%3", Some("x"))]), &pvs);
+    assert!(unread.is_empty(), "no entry for the pick: not read yet");
+    assert!(shot(unread).contains("reading the screen"));
+    let read = board::shown(Some("%4"), &seen(&[("%4", Some(""))]), &pvs);
+    assert_eq!(read.len(), pvs.len());
+    assert!(shot(read).contains("live · blank"));
+    assert_eq!(board::shown(None, &seen(&[]), &pvs).len(), pvs.len(), "the tiles keep theirs");
 }
 
 // ------------------------------------------------ the goldens (the 100/180 mockups)
