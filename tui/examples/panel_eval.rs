@@ -501,8 +501,10 @@ fn main() {
     }
 
     let mut call = Call::from_env();
+    let mut wrapped = false;
     match std::env::current_exe() {
         Ok(me) => {
+            wrapped = true;
             // SAFETY: no other thread runs yet: no call has been spawned.
             unsafe { std::env::set_var(AS_CLAUDE, &call.claude) };
             call.claude = me.display().to_string();
@@ -621,7 +623,7 @@ fn main() {
         std::thread::sleep(Duration::from_millis(50));
     }
     summary(&cases, &done, &hashes, o.runs);
-    if let Some(l) = cost_line(&costs) {
+    if let Some(l) = cost_line(&costs, wrapped) {
         println!("cost            {l}");
     }
 }
@@ -752,7 +754,7 @@ fn print_compare(sides: &[(&PathBuf, &[Row]); 2]) {
         println!("{tag}  {} ({} rows; system prompt {})", p.display(), rows.len(), hs.join(" "));
         println!("   pass^all  {}", pct_ci(pass_all(&per)));
         let costs: Vec<Option<f64>> = rows.iter().map(|r| r.cost_usd).collect();
-        if let Some(l) = cost_line(&costs) {
+        if let Some(l) = cost_line(&costs, false) {
             println!("   cost      {l}");
         }
     }
@@ -785,20 +787,27 @@ struct Usage {
     out_tokens: Option<u64>,
 }
 
-/// The reply text inside `claude -p --output-format json`, and its usage. Text
-/// that is not that json is the reply as it stands; a result marked `is_error`
-/// is a failed call, its message the error.
+/// The reply text inside `claude -p --output-format json`, and its usage; an
+/// array (`--verbose`) gives its last result. Text that is not json is the reply
+/// as it stands (a stand-in claude). Json with no string result, an empty one or
+/// one marked `is_error` is a failed call: grading it would find tags in the json.
 fn unwrap_json(out: &str) -> Result<(String, Usage), String> {
-    let v = match serde_json::from_str::<serde_json::Value>(out.trim()) {
-        Ok(v) if v["type"] == "result" => v,
+    use serde_json::Value;
+    let v = match serde_json::from_str::<Value>(out.trim()) {
+        Ok(Value::Array(a)) => a.into_iter().rev().find(|e| e["type"] == "result").unwrap_or_default(),
+        Ok(v @ Value::Object(_)) => v,
         _ => return Ok((out.to_string(), Usage::default())),
     };
     let result = v["result"].as_str();
+    let subtype = v["subtype"].as_str();
     if v["is_error"] == true {
-        return Err(result.or(v["subtype"].as_str()).unwrap_or("an error result").into());
+        return Err(result.or(subtype).unwrap_or("an error result").into());
     }
-    let Some(text) = result else {
-        return Ok((out.to_string(), Usage::default()));
+    let text = match result {
+        Some(t) if t.trim().is_empty() => return Err("no answer".into()),
+        Some(t) => t,
+        None if v["type"] == "result" => return Err(subtype.unwrap_or("not a claude json result").into()),
+        None => return Err("not a claude json result".into()),
     };
     let u = &v["usage"];
     let ins = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"];
@@ -811,10 +820,12 @@ fn unwrap_json(out: &str) -> Result<(String, Usage), String> {
 }
 
 /// The cost line: total and mean over the calls that reported one.
-fn cost_line(costs: &[Option<f64>]) -> Option<String> {
+/// `wrapped`: the rig asked claude for json, so a run with no cost says so.
+fn cost_line(costs: &[Option<f64>], wrapped: bool) -> Option<String> {
     let have: Vec<f64> = costs.iter().flatten().copied().collect();
     if have.is_empty() {
-        return None;
+        let n = costs.len();
+        return (wrapped && n > 0).then(|| format!("none reported by {n} calls: claude's json carried no total_cost_usd"));
     }
     let total: f64 = have.iter().sum();
     let mut line = format!(
@@ -1415,7 +1426,6 @@ mod tests {
             unwrap_json("<prompt>p</prompt>\n").unwrap(),
             ("<prompt>p</prompt>\n".into(), Usage::default())
         );
-        assert_eq!(unwrap_json("{\"a\":1}").unwrap().0, "{\"a\":1}");
         assert_eq!(unwrap_json("").unwrap(), (String::new(), Usage::default()));
     }
 
@@ -1428,10 +1438,44 @@ mod tests {
     }
 
     #[test]
+    fn a_verbose_json_array_yields_its_last_result() {
+        let j = r#"[{"type":"assistant","text":"<prompt>no</prompt>"},{"type":"result","result":"x"},
+            {"type":"result","is_error":false,"result":"<prompt>p</prompt>","total_cost_usd":0.5}]"#;
+        let (text, u) = unwrap_json(j).unwrap();
+        assert_eq!((text.as_str(), u.cost_usd), ("<prompt>p</prompt>", Some(0.5)));
+        let none = r#"[{"type":"assistant","text":"<prompt>no</prompt>"}]"#;
+        assert_eq!(unwrap_json(none).unwrap_err(), "not a claude json result");
+    }
+
+    #[test]
+    fn json_without_a_string_result_is_a_failed_call() {
+        let turns = r#"{"type":"result","subtype":"error_max_turns","is_error":false}"#;
+        assert_eq!(unwrap_json(turns).unwrap_err(), "error_max_turns");
+        let other = r#"{"a":"<prompt>p</prompt>"}"#;
+        assert_eq!(unwrap_json(other).unwrap_err(), "not a claude json result");
+        let number = r#"{"type":"result","result":7}"#;
+        assert_eq!(unwrap_json(number).unwrap_err(), "not a claude json result");
+    }
+
+    #[test]
+    fn an_empty_json_result_is_no_answer() {
+        let j = r#"{"type":"result","is_error":false,"result":" \n"}"#;
+        assert_eq!(unwrap_json(j).unwrap_err(), "no answer");
+    }
+
+    #[test]
+    fn a_wrapped_run_with_no_cost_says_so() {
+        assert_eq!(cost_line(&[None, None], false), None);
+        let l = cost_line(&[None, None], true).unwrap();
+        assert_eq!(l, "none reported by 2 calls: claude's json carried no total_cost_usd");
+        assert_eq!(cost_line(&[], true), None);
+    }
+
+    #[test]
     fn the_cost_line_sums_the_calls_that_reported_one() {
-        assert_eq!(cost_line(&[]), None);
-        assert_eq!(cost_line(&[None]), None);
-        let l = cost_line(&[Some(0.01), Some(0.03), None]).unwrap();
+        assert_eq!(cost_line(&[], false), None);
+        assert_eq!(cost_line(&[None], false), None);
+        let l = cost_line(&[Some(0.01), Some(0.03), None], false).unwrap();
         assert_eq!(l, "$0.0400 total, $0.0200 mean over 2 calls, 1 without a cost");
     }
 
