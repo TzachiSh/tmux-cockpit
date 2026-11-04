@@ -2,7 +2,7 @@
 "│ type: auto   model: auto                                                     │"
 "│ fix the flaky api test ▏then rerun it                                        │"
 "│                                                                              │"
-"│ → haiku · short request - the fast model is enough                           │"
+"│ → sonnet · asks and writes better                                            │"
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"

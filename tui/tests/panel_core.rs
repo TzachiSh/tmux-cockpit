@@ -4,7 +4,7 @@ use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
 use cockpit_tui::panel::redact::redact;
-use cockpit_tui::panel::route::{Route, model_argv, request_steps, route};
+use cockpit_tui::panel::route::{Route, model_argv, route};
 
 fn hid(s: &str) -> String {
     redact(s).0
@@ -195,22 +195,21 @@ fn r(model: &str, why: &str, suggest: Option<(&str, &str)>) -> Route {
 }
 
 #[test]
-fn the_rules_pick_the_fast_model_unless_the_work_is_long_or_runs_commands() {
+fn write_takes_sonnet_and_the_quick_flows_take_haiku() {
     let w = |d: &str, out| Flow::Write { draft: d.into(), out };
-    assert_eq!(
-        route(&w("hi", OutType::Auto), "auto"),
-        r("haiku", "short request - the fast model is enough", None)
-    );
+    assert_eq!(route(&w("hi", OutType::Auto), "auto"), r("sonnet", "asks and writes better", None));
     assert_eq!(
         route(&w("hi", OutType::Steps), "auto"),
         r("sonnet", "several commands you will run - needs precision", None)
     );
+    for out in [OutType::Prompt, OutType::Command, OutType::Text, OutType::Format, OutType::Hint] {
+        assert_eq!(route(&w("hi", out), "auto").model, "sonnet", "{out:?}");
+    }
     assert_eq!(
-        route(&w("do x then y; and also z", OutType::Auto), "auto"),
-        r("sonnet", "long, multi-step request", None)
+        route(&w("hi", OutType::Auto), "haiku").suggest,
+        Some(("sonnet".into(), "asks and writes better".into())),
+        "haiku picked for a write gets sonnet suggested"
     );
-    assert_eq!(route(&w(&"a".repeat(401), OutType::Auto), "auto").model, "sonnet");
-    assert_eq!(route(&w(&"a".repeat(400), OutType::Auto), "auto").model, "haiku");
     assert_eq!(
         route(&Flow::Fix { draft: "x".repeat(900) }, "auto"),
         r("haiku", "quick spelling fix", None)
@@ -235,15 +234,6 @@ fn a_chosen_model_wins_and_a_weaker_one_gets_a_suggestion() {
     );
     assert_eq!(model_argv("default"), Vec::<String>::new());
     assert_eq!(model_argv("sonnet"), ["--model", "sonnet"]);
-}
-
-#[test]
-fn step_markers_are_counted_whole_words_only() {
-    assert_eq!(request_steps("authenticate the user"), 1);
-    assert_eq!(request_steps("THEN it"), 2);
-    assert_eq!(request_steps("plan:\n- a\n  2) b"), 3);
-    assert_eq!(request_steps("afterwards; also"), 4);
-    assert_eq!(request_steps("תקן ואז תבדוק"), 2);
 }
 
 fn picked(ctx: Ctx) -> Vec<&'static str> {

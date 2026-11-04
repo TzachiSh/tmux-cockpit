@@ -156,7 +156,7 @@ fn busy_echoes_what_was_sent_and_its_limit() {
     assert_eq!(a.hidden, 2, "the envelope's own count");
     let f = frame(&a, 80, 20, 299);
     assert!(f.contains("sent: screen 2 lines, 2 hidden · write (auto)"), "{f}");
-    assert!(f.contains("model haiku: short request"), "{f}");
+    assert!(f.contains("model sonnet: asks and writes better"), "{f}");
     assert!(!f.contains("times out"), "no call has gone out, so no limit is known");
     assert!(!f.contains("still working"), "29.9 s is not yet slow");
     a.timeout = Duration::from_secs(45);
@@ -344,7 +344,7 @@ fn write_sends_the_draft_the_type_and_the_question_budget() {
         "{prompt}"
     );
     assert!(prompt.ends_with("<questions_left>3</questions_left>"), "{prompt}");
-    assert_eq!(model, "haiku");
+    assert_eq!(model, "sonnet");
 }
 
 fn writing_from_compose(a: &mut App, draft: &str) {
