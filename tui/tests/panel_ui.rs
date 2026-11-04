@@ -156,7 +156,7 @@ fn busy_echoes_what_was_sent_and_its_limit() {
     assert_eq!(a.hidden, 2, "the envelope's own count");
     let f = frame(&a, 80, 20, 299);
     assert!(f.contains("sent: screen 2 lines, 2 hidden · write (auto)"), "{f}");
-    assert!(f.contains("model sonnet: rough words into a prompt"), "{f}");
+    assert!(f.contains("model sonnet: asks and writes better"), "{f}");
     assert!(!f.contains("times out"), "no call has gone out, so no limit is known");
     assert!(!f.contains("still working"), "29.9 s is not yet slow");
     a.timeout = Duration::from_secs(45);

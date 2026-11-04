@@ -16,5 +16,5 @@
 "│ word word word word word word word word word word word word word word word   │"
 "│ word word word word word word word word word word ▏                          │"
 "│                                                                              │"
-"│ → sonnet · rough words into a prompt - sonnet asks and steers better         │"
+"│ → sonnet · asks and writes better                                            │"
 "╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  F1 keys  esc home ────╯"

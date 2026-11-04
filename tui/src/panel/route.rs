@@ -59,7 +59,7 @@ pub fn route(flow: &Flow, choice: &str) -> Route {
 fn rule(flow: &Flow) -> (&'static str, &'static str) {
     match flow {
         Flow::Write { out: OutType::Steps, .. } => ("sonnet", "several commands you will run - needs precision"),
-        Flow::Write { .. } => ("sonnet", "rough words into a prompt - sonnet asks and steers better"),
+        Flow::Write { .. } => ("sonnet", "asks and writes better"),
         Flow::Fix { .. } => ("haiku", "quick spelling fix"),
         Flow::Explain => ("haiku", "quick screen explanation"),
     }

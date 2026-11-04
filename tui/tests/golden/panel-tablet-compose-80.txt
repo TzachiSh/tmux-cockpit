@@ -2,7 +2,7 @@
 "│ type: command   model: auto                                                  │"
 "│ fix the flaky api test then rerun it▏                                        │"
 "│                                                                              │"
-"│ → sonnet · rough words into a prompt - sonnet asks and steers better         │"
+"│ → sonnet · asks and writes better                                            │"
 "│                                                                              │"
 "│                                                                              │"
 "│                                                                              │"

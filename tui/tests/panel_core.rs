@@ -197,15 +197,19 @@ fn r(model: &str, why: &str, suggest: Option<(&str, &str)>) -> Route {
 #[test]
 fn write_takes_sonnet_and_the_quick_flows_take_haiku() {
     let w = |d: &str, out| Flow::Write { draft: d.into(), out };
-    assert_eq!(
-        route(&w("hi", OutType::Auto), "auto"),
-        r("sonnet", "rough words into a prompt - sonnet asks and steers better", None)
-    );
+    assert_eq!(route(&w("hi", OutType::Auto), "auto"), r("sonnet", "asks and writes better", None));
     assert_eq!(
         route(&w("hi", OutType::Steps), "auto"),
         r("sonnet", "several commands you will run - needs precision", None)
     );
-    assert_eq!(route(&w(&"a".repeat(401), OutType::Command), "auto").model, "sonnet");
+    for out in [OutType::Prompt, OutType::Command, OutType::Text, OutType::Format, OutType::Hint] {
+        assert_eq!(route(&w("hi", out), "auto").model, "sonnet", "{out:?}");
+    }
+    assert_eq!(
+        route(&w("hi", OutType::Auto), "haiku").suggest,
+        Some(("sonnet".into(), "asks and writes better".into())),
+        "haiku picked for a write gets sonnet suggested"
+    );
     assert_eq!(
         route(&Flow::Fix { draft: "x".repeat(900) }, "auto"),
         r("haiku", "quick spelling fix", None)
