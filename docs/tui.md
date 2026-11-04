@@ -51,7 +51,9 @@ That needs **Rust >= 1.88** (ratatui 0.30's floor; Debian 13 ships 1.85 and
 Ubuntu 24.04 ships 1.75). On an older toolchain the fetch path refuses by name
 rather than dumping a compiler error, and keeps any binary you already have.
 
-`make check` builds the binary first; the suite needs cargo.
+`make check` builds the binary first; the suite needs cargo. `make tui-test`
+runs cargo's tests, clippy and fmt on the `rust-version` toolchain through
+rustup (CI's, so the lints match); `make tui-test TUI_TOOLCHAIN=` skips that.
 
 The binary lives in the plugin's own `bin/` and is gitignored. `install.sh`
 runs `scripts/tui-fetch --required` and exits 1 when no working binary is

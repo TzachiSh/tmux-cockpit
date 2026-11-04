@@ -9,7 +9,7 @@
 #   make check        lint + test, the merge gate
 #   make tui-bin      build the required cockpit-tui into bin/ (the tests run it first)
 #   make tui          the same, then print its version
-#   make tui-test     its tests, clippy -D warnings and fmt --check
+#   make tui-test     its tests, clippy -D warnings and fmt --check, on CI's rust-version
 #   make install      symlink the commands into ~/.local/bin
 #   make uninstall    remove only the symlinks pointing back here
 #   make bootstrap    full setup from nothing: packages, plugins, config, hooks
@@ -65,10 +65,18 @@ tui-bin:
 tui: tui-bin
 	@bin/cockpit-tui --version
 
+# The checks run on the toolchain CI installs (tui/Cargo.toml's rust-version,
+# #394): a newer local clippy lints less and lets code through that CI then
+# rejects. Only through rustup, and only here: tui-bin and the installers keep
+# the default toolchain, so offline and cargo-dist builds are untouched.
+# `make tui-test TUI_TOOLCHAIN=` opts out; TUI_TOOLCHAIN=1.92 picks another.
+TUI_TOOLCHAIN ?= $(if $(shell command -v rustup 2>/dev/null),$(shell sed -n 's/^rust-version *= *"\(.*\)".*/\1/p' tui/Cargo.toml))
+TUI_ENV = $(if $(TUI_TOOLCHAIN),RUSTUP_TOOLCHAIN=$(TUI_TOOLCHAIN))
+
 tui-test:
-	@cargo test --locked --manifest-path tui/Cargo.toml
-	@cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
-	@cargo fmt --manifest-path tui/Cargo.toml --check
+	@$(TUI_ENV) cargo test --locked --manifest-path tui/Cargo.toml
+	@$(TUI_ENV) cargo clippy --locked --manifest-path tui/Cargo.toml --all-targets -- -D warnings
+	@$(TUI_ENV) cargo fmt --manifest-path tui/Cargo.toml --check
 
 # lint and test-par are independent, so `make -j2 check-par` runs them
 # concurrently and the 17s of lint disappears into the tests' wall clock.
