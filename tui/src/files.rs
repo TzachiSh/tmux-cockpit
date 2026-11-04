@@ -1,7 +1,7 @@
 //! `cockpit-tui files <dir>`: the file browser (#363). It lists one folder in the
 //! shared picker, walks the tree and prints one line: `view <path>`,
-//! `open <path>` (the editor) or `copy <path>`. It never mutates; `scripts/tmux-open-path --folder` checks the
-//! line again and acts.
+//! `open <path>` (the editor) or `copy <path>`. It never mutates;
+//! `scripts/tmux-open-path --folder` checks the line again and acts.
 //!
 //! The row's key is the file's own name, as bytes, so the printed path is exact
 //! whatever the name holds; the row's text is for the eye and drops control and
@@ -209,8 +209,9 @@ impl Files {
         Outcome::Choose(answer_line(verb, &path))
     }
 
-    /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫ on an empty filter go up; `.` on
-    /// an empty filter shows or hides dotfiles; everything else is the picker's.
+    /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫
+    /// on an empty filter go up; `.` on an empty filter shows or hides dotfiles;
+    /// everything else is the picker's.
     /// A note is cleared by the next key.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
         self.note = None;
@@ -282,9 +283,9 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
         vec![
             h(g.key_enter, "view"),
             h(left, "up"),
+            h("alt-e", "edit"),
             h(".", if hidden { "dotfiles on" } else { "dotfiles off" }),
             h("alt-i", if ignored { "ignored on" } else { "ignored off" }),
-            h("alt-e", "edit"),
             h("alt-c", "copy"),
             h("F1", "keys"),
             h("esc", "close"),
@@ -348,7 +349,7 @@ pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Files, th: &Theme) {
 
 const USAGE: &str = "cockpit-tui files <dir>";
 
-/// Exit 0 with `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
+/// Exit 0 with `view <path>`, `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
 /// argument, a folder that cannot be read or no terminal.
 pub fn main(args: &[String]) -> i32 {
     let [dir] = args else {

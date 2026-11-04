@@ -57,7 +57,10 @@ read-only in `cockpit-tui view`, in a popup the size of the pane, or in the
 picker's own popup when it was chosen there (tmux has one popup per client).
 `e` closes the viewer and opens the file in the editor, at the source line of
 the top row it showed; a clicked `README.md:40` opens the viewer at line 40.
-`set -g @cockpit_md_view off` sends markdown to the editor directly, as before.
+`set -g @cockpit_md_view off` sends markdown to the editor directly, as before, and
+the file browser's `↵` stops viewing too: every file goes to the editor. On a touch client the
+viewer's `e` opens the terminal editor (see above), at the line when the editor takes `+N`
+(vi, vim, nvim, nano, emacs, micro), instead of VS Code on the PC.
 The viewer's keys are in [docs/tui.md](tui.md#the-markdown-viewer-283).
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as

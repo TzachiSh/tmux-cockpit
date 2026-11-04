@@ -257,6 +257,15 @@ fn the_footer_names_the_key_and_its_state() {
 }
 
 #[test]
+fn alt_e_stays_in_the_footer_at_popup_widths() {
+    let g = Theme::fixed().g;
+    for w in [60, 70, 84] {
+        let h = files::hints(&g, w, false, false);
+        assert!(h.iter().any(|(k, v)| k == "alt-e" && v == "edit"), "width {w}: {h:?}");
+    }
+}
+
+#[test]
 fn the_narrow_footer_keeps_enter_as_view() {
     let g = Theme::fixed().g;
     let h = files::hints(&g, 8, false, false);
