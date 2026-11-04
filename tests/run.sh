@@ -12674,5 +12674,56 @@ is "and its worktree got a window" "$GD/ok-wt" \
 fi
 rm -rf "${GD:-/nonexistent-gd}"
 
+echo "== a burst of window events runs a few sweeps, and the counts are right after it (#258) =="
+# Each hook event ran its own full sweep, O(N²) over a resurrect restore or a
+# kill-session. Debounced: the counts must still be right after the burst's last event.
+if need_tmux "sweep debounce"; then :; else
+DB="cockpit-db-$$"; SOCKS="$SOCKS $DB"; DBD=$(mktmpd)
+dbt() { "$TMUX_REAL" -L "$DB" "$@"; }
+dbt -f /dev/null new-session -d -s a -c "$DBD" 'exec -a claude sleep 300' >/dev/null 2>&1
+dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for _ in $(seq 1 59); do dbt new-window -d -t a: 'exec -a claude sleep 300' >/dev/null 2>&1; done
+dbt new-session -d -s b -c "$DBD" >/dev/null 2>&1
+until_out 60 sh -c "'$TMUX_REAL' -L '$DB' list-panes -t a -F '#{pane_current_command}' | grep -c claude" >/dev/null
+dbt set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+for dbi in $(seq 0 59); do dbt set -p -t "a:$dbi" @panestate needs-input >/dev/null 2>&1; done
+dbt run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+until_out 60 dbt show-option -gqv @cockpit_fleet_nb >/dev/null
+# Every full sweep's first batch carries the format stamp; the shim counts those.
+mkdir "$DBD/bin"
+printf '#!/bin/sh\n[ "$1 $2 $3" = "if-shell -F 1" ] && case "$4" in "if -F %s#{!=:#{@cockpit_fmt_v}"*) echo x >> "%s/swept" ;; esac\nexec "%s" "$@"\n' \
+    "'" "$DBD" "$TMUX_REAL" > "$DBD/bin/tmux"
+chmod +x "$DBD/bin/tmux"
+dbt set-environment -g PATH "$DBD/bin:$PATH" >/dev/null 2>&1
+dbsess() { dbt display-message -p -t "$1" '#{@cockpit_sess_nb}'; }
+for dbi in $(seq 0 49); do dbt link-window -d -s "a:$dbi" -t b: >/dev/null 2>&1; done
+until_out 50 dbsess b: >/dev/null; sleep 0.5
+is "50 linked windows: b counts all 50 waiting, the fleet each link" "50|110" "$(dbsess b:)|$(dbt show-option -gqv @cockpit_fleet_nb)"
+dbn=$(grep -c . "$DBD/swept" 2>/dev/null)
+is "and far fewer sweeps ran than the 50 events" "yes" "$([ "${dbn:-0}" -ge 1 ] && [ "${dbn:-0}" -lt 10 ] && echo yes || echo "no: ${dbn:-0}")"
+: > "$DBD/swept"
+for dbi in $(seq 0 49); do dbt kill-window -t "a:$dbi" >/dev/null 2>&1; done
+until_out 10 dbsess a: >/dev/null; sleep 0.5
+is "50 killed windows: a, b and the fleet count what is left" "10|0|10" "$(dbsess a:)|$(dbsess b:)|$(dbt show-option -gqv @cockpit_fleet_nb)"
+dbn=$(grep -c . "$DBD/swept" 2>/dev/null)
+is "and far fewer sweeps ran than the kills' events" "yes" "$([ "${dbn:-0}" -ge 1 ] && [ "${dbn:-0}" -lt 10 ] && echo yes || echo "no: ${dbn:-0}")"
+# One interactive event still updates, after the pause.
+dbt kill-window -t a:55 >/dev/null 2>&1
+until_out 9 dbsess a: >/dev/null
+is "a single kill still updates the count" "9" "$(dbsess a:)"
+# The load's sweep, with no seq, is not debounced: it writes at once.
+dbt set -p -t a:56 @panestate error >/dev/null 2>&1
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep >/dev/null 2>&1
+is "a sweep with no seq writes at once" "1" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+# A stale seq (a newer event came) walks nothing and writes nothing.
+dbt set -p -t a:57 @panestate error >/dev/null 2>&1
+dbt set -g @cockpit_sweep_seq 999 >/dev/null 2>&1
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep 998 >/dev/null 2>&1
+is "a superseded sweep writes nothing" "1" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+TMUX="$SOCKDIR/$DB,0,0" "$DIR/scripts/agent-state" sweep 999 >/dev/null 2>&1
+is "the newest one does" "2" "$(dbt show-option -gqv @cockpit_fleet_ne)"
+dbt kill-server >/dev/null 2>&1
+fi
+
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1

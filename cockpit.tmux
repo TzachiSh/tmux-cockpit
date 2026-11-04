@@ -79,10 +79,12 @@ for h in window-pane-changed session-window-changed client-session-changed \
     tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_where_cmd} branch --set #{pane_id}"'
 done
 # Moving, killing or closing changes the summaries without a state transition, so
-# these hooks recount every window and session (agent-state sweep), per event.
+# these hooks recount every window and session (agent-state sweep). Debounced (#258):
+# each event bumps @cockpit_sweep_seq in the server, no fork, and hands its sweep the
+# new value; a sweep that finds a newer one after its pause leaves the work to it.
 tmux set-option -g @cockpit_state_cmd "$(sq "$DIR/scripts/agent-state")"
 for h in window-linked window-unlinked pane-exited after-kill-pane session-closed; do
-    tmux set-hook -g "${h}[9]" 'run-shell -b "exec #{@cockpit_state_cmd} sweep"'
+    tmux set-hook -g "${h}[9]" 'set-option -gF @cockpit_sweep_seq "#{e|+:#{@cockpit_sweep_seq},1}" ; run-shell -b "exec #{@cockpit_state_cmd} sweep #{@cockpit_sweep_seq}"'
 done
 # The gauge follows the active pane, so a focus change can move the session's gauge
 # cells (@cockpit_ctx_all, the tab budget). No shell: agent-state's own format.
