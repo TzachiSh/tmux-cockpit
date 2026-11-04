@@ -39,10 +39,6 @@ Help me plan moving the Coder workspace to the new server without downtime; it r
 <option>It stops with an error</option>
 <option>The file comes out empty</option>
 <option>Some values are wrong</option></reply></example>
-<example id="runnable" fill="0"><screen>(empty)</screen><window>claude in {{home}}/projects/app</window><request>tests fail since my last commit, fix</request><reply><prompt>
-Some tests fail since my last commit. Run the test suite to see which, compare with the last commit (`git show HEAD`) to find the change that broke them, fix the code and run the suite again. Done when the suite passes; show the command and its last lines.
-Assumed: the fix belongs in the code, not in the tests (the request does not say the tests are wrong)
-</prompt></reply></example>
 <example id="command" when="out:command"><screen>(empty)</screen><request>list the 10 biggest files here</request><output_type>command</output_type><reply><command lang="bash">du -ah . | sort -rh | head -n 10</command></reply></example>
 <example id="steps" core="1"><screen>(empty)</screen><request>set up an ssh key for host lab, it is in my ssh config</request><reply><steps>
 <step><note>Create a key (press Enter at each question)</note><cmd lang="bash">ssh-keygen -t ed25519</cmd></step>

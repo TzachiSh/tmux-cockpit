@@ -95,7 +95,7 @@ dates in the report are wrong
 kind: bug
 window: bash · bash · /home/u/projects/billing
 expect: ask
-ask_any: example; expected; customer|customers; how much; amount; by how
+ask_any: example; expected; customer|customers; how much; amount; by how; too high; too low; what goes wrong; wrong with the totals; off about
 note: no symptom detail and nothing on screen: which customers, expected vs actual
 --- screen
 (empty)

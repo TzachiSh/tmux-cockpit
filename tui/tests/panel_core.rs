@@ -266,7 +266,6 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
         ("no-expected", "the export is broken"),
-        ("runnable", "tests fail since my last commit"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
     ];
@@ -287,11 +286,11 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
             "crash",
             "investigate",
             "plan",
+            "math",
             "message",
             "which-file",
             "unclear",
             "no-expected",
-            "runnable",
             "steps"
         ]
     );
@@ -300,8 +299,7 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
 
 #[test]
 fn the_examples_follow_the_picked_type_then_the_window() {
-    // claude: the type's example, then the window's (plan); other: the type's, then the fill order.
-    let claude = [
+    let want = [
         "crash",
         "investigate",
         "plan",
@@ -317,25 +315,14 @@ fn the_examples_follow_the_picked_type_then_the_window() {
             out: OutType::Command,
             window: "claude"
         }),
-        claude
+        want
     );
-    let other = [
-        "crash",
-        "investigate",
-        "message",
-        "which-file",
-        "unclear",
-        "no-expected",
-        "runnable",
-        "command",
-        "steps",
-    ];
     assert_eq!(
         picked(Ctx {
             out: OutType::Command,
             window: "other"
         }),
-        other
+        want
     );
 }
 
