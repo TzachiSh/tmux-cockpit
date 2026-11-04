@@ -936,15 +936,96 @@ pub fn preview(id: &str, n: usize) -> Option<String> {
     // in `ESC \`, the form tmux emits; no OSC draws anything in a preview
     let out = strip_osc(&out);
     let lines: Vec<&str> = out.trim_end().lines().collect();
-    let text = lines[lines.len().saturating_sub(n)..].join("\n");
-    let cut = snap(&text, text.len().saturating_sub(PREVIEW_MAX));
-    // a cut can land inside an escape, whose tail would read as text: start at
-    // the next line. A single line longer than the cap keeps the cut.
+    Some(cap(&lines[lines.len().saturating_sub(n)..].join("\n")))
+}
+
+/// The newest [`PREVIEW_MAX`] bytes of `text`. A cut can land inside an escape,
+/// whose tail would read as text: it starts at the next line. A single line
+/// longer than the cap keeps the cut.
+fn cap(text: &str) -> String {
+    let cut = snap(text, text.len().saturating_sub(PREVIEW_MAX));
     let start = match text[..cut].ends_with('\n') || cut == 0 {
         true => cut,
         false => text[cut..].find('\n').map_or(cut, |k| cut + k + 1),
     };
-    Some(text[start..].to_string())
+    text[start..].to_string()
+}
+
+/// #284: the right pane's screen, `n` rows of the selected agent's visible
+/// screen, as [`view`] picks them. One fork: the capture, then the cursor, in
+/// one tmux command, so the two describe the same moment. `None` when it fails.
+pub fn screen(id: &str, n: usize) -> Option<String> {
+    if n == 0 {
+        return Some(String::new());
+    }
+    // no -S: the visible screen, so the blank rows below the cursor keep their
+    // places; no -J, which would merge rows and move the cursor's off its row
+    let out = tmux(&[
+        "capture-pane",
+        "-p",
+        "-e",
+        "-t",
+        id,
+        ";",
+        "display-message",
+        "-p",
+        "-t",
+        id,
+        "#{cursor_flag} #{cursor_y}",
+    ])?;
+    let out = strip_osc(&out);
+    let (body, cursor) = split_cursor(&out)?;
+    Some(cap(&view(body, cursor, n)))
+}
+
+/// A capture's rows and its cursor row, `None` when the cursor is hidden, off
+/// the `#{cursor_flag} #{cursor_y}` line that ends it. `None` without that line.
+pub fn split_cursor(out: &str) -> Option<(&str, Option<usize>)> {
+    let out = out.strip_suffix('\n').unwrap_or(out);
+    let (body, tail) = out.rsplit_once('\n').unwrap_or(("", out));
+    let (flag, y) = tail.split_once(' ')?;
+    let y: usize = y.parse().ok()?;
+    match flag {
+        "1" => Some((body, Some(y))),
+        "0" => Some((body, None)),
+        _ => None,
+    }
+}
+
+/// The `rows` rows of a visible `screen` the pane shows, as tmux's choose-tree
+/// preview picks them (screen-write.c, `screen_write_preview`): the view ends
+/// at the cursor's row or the last row with text, whichever is lower (the last
+/// row with text when the cursor is hidden). A screen whose used part fits is
+/// all of it from row 0, as the pane looks; a taller one loses its top. Rows
+/// past the end are never content.
+pub fn view(screen: &str, cursor: Option<usize>, rows: usize) -> String {
+    let mut lines: Vec<&str> = screen.split('\n').collect();
+    let text = lines.iter().rposition(|l| !blank_row(l));
+    let Some(end) = text.max(cursor) else {
+        return String::new();
+    };
+    if lines.len() <= end {
+        lines.resize(end + 1, "");
+    }
+    lines[(end + 1).saturating_sub(rows)..=end].join("\n")
+}
+
+/// A row whose only cells are blanks, colours or not.
+fn blank_row(l: &str) -> bool {
+    let mut rest = l;
+    while let Some(k) = rest.find('\x1b') {
+        if !rest[..k].trim().is_empty() {
+            return false;
+        }
+        // a CSI runs to its final byte, 0x40..=0x7e; any other escape is two bytes
+        let esc = &rest[k + 1..];
+        let len = match esc.strip_prefix('[') {
+            Some(csi) => csi.find(|c: char| ('\x40'..='\x7e').contains(&c)).map_or(csi.len(), |e| e + 1) + 1,
+            None => esc.chars().next().map_or(0, char::len_utf8),
+        };
+        rest = &esc[len.min(esc.len())..];
+    }
+    rest.trim().is_empty()
 }
 
 /// `s` with every OSC sequence (`ESC ]` up to a BEL or `ESC \`) taken out. One

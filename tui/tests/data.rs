@@ -2,7 +2,7 @@
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
-use cockpit_tui::data::{Pane, git_facts, list_panes, preview};
+use cockpit_tui::data::{Pane, git_facts, list_panes, preview, split_cursor, view};
 use std::fs::{FileTimes, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -248,6 +248,74 @@ fn a_cap_inside_an_escape_starts_at_the_next_line() {
     let p = preview("%9", 1000).unwrap();
     assert!(p.len() <= 64 * 1024, "{} bytes", p.len());
     assert!(p.split('\n').all(|l| l == line), "a cut line: {:?}", &p[..24]);
+}
+
+// ---------------------------------------------- the right pane's view (#284)
+
+/// A visible screen of `h` rows: `body` from the top, blank rows below.
+fn scr(body: &[&str], h: usize) -> String {
+    let mut rows: Vec<String> = body.iter().map(|s| s.to_string()).collect();
+    rows.resize(h, String::new());
+    rows.join("\n")
+}
+
+#[test]
+fn a_short_screen_is_drawn_from_the_top_as_the_pane_shows_it() {
+    // a cleared terminal: the prompt on row 0, the cursor after it
+    assert_eq!(view(&scr(&["$ "], 40), Some(0), 20), "$ ");
+    // a short shell: three rows used, the cursor on the next
+    assert_eq!(view(&scr(&["$ ls", "a b", "$ "], 40), Some(2), 20), "$ ls\na b\n$ ");
+}
+
+#[test]
+fn a_taller_screen_with_the_cursor_at_the_bottom_shows_the_bottom() {
+    let rows: Vec<String> = (0..40).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let v = view(&scr(&refs, 40), Some(39), 5);
+    assert_eq!(v, "r35\nr36\nr37\nr38\nr39");
+}
+
+#[test]
+fn a_cursor_below_the_text_in_a_taller_screen_stays_in_view() {
+    // text to row 25, the cursor on row 30 past blank rows: the view ends there
+    let rows: Vec<String> = (0..=25).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let v = view(&scr(&refs, 40), Some(30), 10);
+    let got: Vec<&str> = v.split('\n').collect();
+    assert_eq!(got.len(), 10);
+    assert_eq!((got[0], got[4], got[9]), ("r21", "r25", ""), "rows 21-30, the cursor's row last");
+}
+
+#[test]
+fn a_hidden_cursor_ends_the_view_at_the_last_row_with_text() {
+    let rows: Vec<String> = (0..=25).map(|k| format!("r{k}")).collect();
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    assert_eq!(view(&scr(&refs, 40), None, 3), "r23\nr24\nr25");
+    assert_eq!(view(&scr(&[], 40), None, 3), "", "nothing on screen, no cursor: nothing");
+}
+
+#[test]
+fn a_claude_code_screen_shows_its_input_box() {
+    // output on top, the box near the bottom with the cursor in it, a status line under it
+    let mut rows: Vec<String> = (0..30).map(|k| format!("output {k}")).collect();
+    rows.extend(["╭────╮".into(), "│ > ▏│".into(), "╰────╯".into(), "  ? for shortcuts".into()]);
+    let refs: Vec<&str> = rows.iter().map(String::as_str).collect();
+    let v = view(&scr(&refs, 40), Some(31), 6);
+    assert_eq!(v, "output 28\noutput 29\n╭────╮\n│ > ▏│\n╰────╯\n  ? for shortcuts");
+}
+
+#[test]
+fn a_row_of_colour_only_is_no_text() {
+    let s = scr(&["text", "\x1b[48;5;236m      \x1b[0m"], 10);
+    assert_eq!(view(&s, None, 5), "text", "an SGR-painted blank row is not content");
+}
+
+#[test]
+fn the_cursor_line_ends_the_capture() {
+    assert_eq!(split_cursor("a\nb\n\n1 2\n"), Some(("a\nb\n", Some(2))));
+    assert_eq!(split_cursor("a\n0 7\n"), Some(("a", None)), "a hidden cursor");
+    assert_eq!(split_cursor("a\nb\n"), None, "no cursor line: not a capture we asked for");
+    assert_eq!(split_cursor(""), None);
 }
 
 /// Rules 22, 66 and 67: what the tail says when the hooks said nothing. `doing`

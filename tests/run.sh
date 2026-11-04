@@ -8327,14 +8327,18 @@ PVW=$("$TMUX_REAL" -L "$PV" new-window -d -P -F '#{pane_id}' -t t: -c "$PVD" \
     "env XDG_STATE_HOME=$PVD COCKPIT_LOG=$PVD/tui.log $COCKPIT_TUI_BIN board")
 pv_cap() { "$TMUX_REAL" -L "$PV" capture-pane -p -t "$PVW"; }
 # the list's first agent is alpha's: the same state, the lower pane id
-if until_cap "$PV" "$PVW" '*live · last*screen-of-alpha*'; then ok "at 120 columns the right pane shows the selection's screen"
+if until_cap "$PV" "$PVW" '*live · *screen-of-alpha*'; then ok "at 120 columns the right pane shows the selection's screen"
 else bad "at 120 columns the right pane shows the selection's screen" "screen-of-alpha" "$(pv_cap)"; fi
 case "$(pv_cap)" in
     *screen-of-beta*) bad "and no other agent's" "no screen-of-beta" "$(pv_cap)" ;;
     *) ok "and no other agent's" ;;
 esac
+# a short screen is drawn from the top, as the pane shows it: its first row is
+# the one under the rule (tmux's choose-tree preview does the same)
+is "a short screen starts on the row under the rule" "screen-of-alpha" \
+    "$(pv_cap | awk '/live · /{getline; print; exit}' | grep -o 'screen-of-alpha')"
 "$TMUX_REAL" -L "$PV" send-keys -t "$PVW" j
-if until_cap "$PV" "$PVW" '*live · last*screen-of-beta*'; then ok "j moves the pane to the next agent's screen"
+if until_cap "$PV" "$PVW" '*live · *screen-of-beta*'; then ok "j moves the pane to the next agent's screen"
 else bad "j moves the pane to the next agent's screen" "screen-of-beta" "$(pv_cap)"; fi
 "$TMUX_REAL" -L "$PV" resize-window -t "$PVW" -x 90 >/dev/null 2>&1
 is "the board's window narrows to 90" 90 "$("$TMUX_REAL" -L "$PV" display -p -t "$PVW" '#{window_width}')"

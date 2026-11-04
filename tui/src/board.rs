@@ -2732,14 +2732,14 @@ enum Shot {
     Lines(usize),
 }
 
-/// `── live · last 17 lines ───`, in the faint role but for its words.
+/// `── live · 17 lines ───`, in the faint role but for its words.
 fn rule(s: &Shot, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
     let words = match s {
         Shot::Unread | Shot::Failed => "live".to_string(),
         Shot::Blank => format!("live {} blank", g.dot),
-        Shot::Lines(1) => format!("live {} last line", g.dot),
-        Shot::Lines(n) => format!("live {} last {n} lines", g.dot),
+        Shot::Lines(1) => format!("live {} 1 line", g.dot),
+        Shot::Lines(n) => format!("live {} {n} lines", g.dot),
     };
     let bar = g.plain.horizontal_top;
     let words = g.trunc(&words, w.saturating_sub(4));
@@ -2751,10 +2751,11 @@ fn rule(s: &Shot, w: usize, th: &Theme) -> Line<'static> {
     ])
 }
 
-/// The screen in `h` rows of `w` cells: ANSI kept, never wrapped, its last line
-/// on the last row (a short screen leaves the top empty, not the bottom; a tall
-/// one loses its top), and a line cut at the edge ends in [`CLIP_MARK`]. `pv` is
-/// as `View::pvs` holds it.
+/// The screen in `h` rows of `w` cells: ANSI kept, never wrapped, drawn from the
+/// top, and a line cut at the edge ends in [`CLIP_MARK`]. The worker has chosen
+/// the view already (`data::view`), whose last row is its anchor, so a view
+/// taller than `h` (the terminal shrank since) keeps its last rows. `pv` is as
+/// `View::pvs` holds it.
 fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Vec<Line<'static>>, Shot) {
     let say = |t: &str, c| vec![Line::from(Span::styled(th.g.trunc(t, w), Style::new().fg(c)))];
     let text = match pv {
@@ -2769,8 +2770,7 @@ fn screen_lines(pv: Option<Option<&str>>, h: usize, w: usize, th: &Theme) -> (Ve
     }
     let n = lines.len().min(h);
     let mark = Span::styled(if th.g.ascii { CLIP_MARK.1 } else { CLIP_MARK.0 }, Style::new().fg(th.meta));
-    let mut out = vec![Line::default(); h - n];
-    out.extend(lines[lines.len() - n..].iter().map(|l| clip(l, w, &mark)));
+    let out = lines[lines.len() - n..].iter().map(|l| clip(l, w, &mark)).collect();
     (out, Shot::Lines(n))
 }
 
@@ -3502,10 +3502,13 @@ fn worker(rx: Receiver<Want>, tx: Sender<Snapshot>, mut want: Want) {
         if let Some(got) = got {
             (panes, sessions) = got;
         }
+        // the tiles take each pane's newest rows; the list's pane its visible
+        // screen, cursor-aware (#284)
+        let take = if want.tiles { preview } else { crate::data::screen };
         let pvs = captures(&panes, ok, &want)
             .into_iter()
             .map(|(id, rows)| {
-                let pv = preview(&id, rows);
+                let pv = take(&id, rows);
                 (id, pv)
             })
             .collect();

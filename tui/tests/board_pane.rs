@@ -242,20 +242,28 @@ fn below_96_the_capture_changes_nothing_on_screen() {
 }
 
 #[test]
-fn the_pane_shows_the_live_screen_bottom_aligned() {
+fn the_pane_draws_its_screen_from_the_top() {
+    // the worker hands over the view already chosen (data::view): the pane
+    // draws it from its first row, as the agent's pane shows it
+    let (ps, th) = (trio(), th());
+    let n = nav(&ps, Sel::Pane("%4".into()));
+    let pvs = pvs_for(&ps, "%4", Some("first\nsecond"));
+    let b = buf(100, 30, &list(&ps, &pvs, &th, &n));
+    assert_eq!(text(&b, 8, 43, 48), "first", "the body's first row is 8");
+    assert_eq!(text(&b, 9, 43, 49), "second");
+    assert_eq!(text(&b, 27, 43, 98).trim(), "", "and the bottom is empty");
+    assert!(text(&b, 7, 43, 98).contains("live · 2 lines"), "the rule counts the rows shown");
+}
+
+#[test]
+fn a_view_taller_than_the_pane_keeps_its_last_rows() {
+    // a terminal that shrank since the capture: the view's end is its anchor
     let (ps, th) = (trio(), th());
     let n = nav(&ps, Sel::Pane("%4".into()));
     let cap: Vec<String> = (1..=40).map(|k| format!("line {k}")).collect();
-    let pvs = pvs_for(&ps, "%4", Some(&cap.join("\n")));
-    let b = buf(100, 30, &list(&ps, &pvs, &th, &n));
-    // the body's last row is 27: footer at 29, the frame's bottom at 28
+    let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some(&cap.join("\n"))), &th, &n));
+    assert_eq!(text(&b, 8, 43, 50), "line 21", "20 rows, the view's last 20");
     assert_eq!(text(&b, 27, 43, 50), "line 40");
-    assert_eq!(text(&b, 8, 43, 50), "line 21", "20 rows, the capture's last 20");
-    let pvs = pvs_for(&ps, "%4", Some("first\nsecond"));
-    let b = buf(100, 30, &list(&ps, &pvs, &th, &n));
-    assert_eq!(text(&b, 27, 43, 49), "second", "a short screen sits at the bottom");
-    assert_eq!(text(&b, 26, 43, 48), "first");
-    assert_eq!(text(&b, 8, 43, 98).trim(), "", "and the top is empty");
 }
 
 #[test]
@@ -300,8 +308,8 @@ fn an_ended_agent_says_so_and_its_screen_is_dim() {
     let rows = pane_rows_text(&b, 41);
     assert!(rows[1].contains(" ended "), "{rows:#?}");
     assert!(rows[5].contains("doing  ended"), "{rows:#?}");
-    assert_eq!(text(&b, 27, 43, 53), "last words");
-    assert!(b[(43, 27)].modifier.contains(Modifier::DIM), "an ended agent's screen is dim");
+    assert_eq!(text(&b, 8, 43, 53), "last words");
+    assert!(b[(43, 8)].modifier.contains(Modifier::DIM), "an ended agent's screen is dim");
 }
 
 #[test]
@@ -343,17 +351,17 @@ fn a_line_wider_than_the_pane_ends_in_the_clip_mark() {
     let wide = "中".repeat(60);
     let cap = [long.as_str(), &fits, &padded, &wide].join("\n");
     let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some(&cap)), &th, &n));
-    assert_eq!((b[(96, 24)].symbol(), b[(97, 24)].symbol()), ("x", "›"), "a cut line is marked");
-    assert_eq!(b[(97, 25)].symbol(), "y", "a line that fits exactly is not");
-    assert_eq!(b[(97, 26)].symbol(), " ", "nor one cut only in its trailing blanks");
+    assert_eq!((b[(96, 8)].symbol(), b[(97, 8)].symbol()), ("x", "›"), "a cut line is marked");
+    assert_eq!(b[(97, 9)].symbol(), "y", "a line that fits exactly is not");
+    assert_eq!(b[(97, 10)].symbol(), " ", "nor one cut only in its trailing blanks");
     assert_eq!(
-        b[(97, 27)].symbol(),
+        b[(97, 11)].symbol(),
         "›",
         "a wide glyph that would straddle the edge gives way to the mark"
     );
     let th = ascii();
     let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some(&long)), &th, &n));
-    assert_eq!(b[(97, 27)].symbol(), ">", "the ascii tier's mark");
+    assert_eq!(b[(97, 8)].symbol(), ">", "the ascii tier's mark");
 }
 
 #[test]
@@ -445,9 +453,9 @@ fn a_tab_moves_to_the_next_stop_of_eight_and_a_control_goes() {
     let n = nav(&ps, Sel::Pane("%4".into()));
     // the pane's text starts at x 43 at 100 columns
     let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some("ab\tc\n\tz\nx\u{1}y")), &th, &n));
-    assert_eq!(text(&b, 25, 43, 52), "ab      c", "a tab after two cells pads to 8");
-    assert_eq!(text(&b, 26, 43, 52), "        z", "a leading tab is 8");
-    assert_eq!(text(&b, 27, 43, 46), "xy ", "a C0 control takes no cell");
+    assert_eq!(text(&b, 8, 43, 52), "ab      c", "a tab after two cells pads to 8");
+    assert_eq!(text(&b, 9, 43, 52), "        z", "a leading tab is 8");
+    assert_eq!(text(&b, 10, 43, 46), "xy ", "a C0 control takes no cell");
 }
 
 #[test]
@@ -455,7 +463,7 @@ fn a_long_tabbed_line_is_clipped_not_overflowed() {
     let (ps, th) = (trio(), th());
     let n = nav(&ps, Sel::Pane("%4".into()));
     let b = buf(100, 30, &list(&ps, &pvs_for(&ps, "%4", Some(&"a\tb".repeat(40))), &th, &n));
-    assert_eq!(b[(97, 27)].symbol(), "›", "the tabbed line is cut and marked");
+    assert_eq!(b[(97, 8)].symbol(), "›", "the tabbed line is cut and marked");
 }
 
 #[test]
@@ -468,7 +476,7 @@ fn an_emoji_widened_by_vs16_is_measured_as_drawn() {
         30,
         &list(&ps, &pvs_for(&ps, "%4", Some(&"\u{26a0}\u{fe0f}".repeat(30))), &th, &n),
     );
-    assert_eq!(b[(97, 27)].symbol(), "›", "a cut line of wide emoji is marked");
+    assert_eq!(b[(97, 8)].symbol(), "›", "a cut line of wide emoji is marked");
 }
 
 // ------------------------------------------------ the key loop's picks

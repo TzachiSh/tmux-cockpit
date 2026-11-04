@@ -462,17 +462,10 @@ which leaves the pane 116. The selected agent fills the right, at 100 columns:
 │  2 ●  1 tests  Bash: ca…rkspace 1m03s◂│┃ said   I added the token-bucket limiter and wired it i… ┃
 │  3 ●  3 migra… Edit src…rate.rs   22s │┃ needs  Do you want to run npm test?                     ┃
 │  ▾ infra ──────────────────────── ✕1  │┃                                                         ┃
-│  4 ✕  0 terra… terraform plan:… 6m02s │┃ ── live · last 13 lines ─────────────────────────────── ┃
-│  ▾ web ─────────────────────── ▲1 ◌1  │┃                                                         ┃
+│  4 ✕  0 terra… terraform plan:… 6m02s │┃ ── live · 13 lines ──────────────────────────────────── ┃
+│  ▾ web ─────────────────────── ▲1 ◌1  │┃ ⏺ I added the token-bucket limiter and wired it into t› ┃
 │  5 ▲  2 docs   plan ready: app…   38s │┃                                                         ┃
-│  6 ◌  0 ui     ended                  │┃                                                         ┃
-│                                       │┃                                                         ┃
-│                                       │┃                                                         ┃
-│                                       │┃                                                         ┃
-│                                       │┃                                                         ┃
-│                                       │┃ ⏺ I added the token-bucket limiter and wired it into t› ┃
-│                                       │┃                                                         ┃
-│                                       │┃ ⏺ Bash(npm test -- --runInBand)                         ┃
+│  6 ◌  0 ui     ended                  │┃ ⏺ Bash(npm test -- --runInBand)                         ┃
 │                                       │┃                                                         ┃
 │                                       │┃  Bash command                                           ┃
 │                                       │┃                                                         ┃
@@ -483,6 +476,13 @@ which leaves the pane 116. The selected agent fills the right, at 100 columns:
 │                                       │┃  ❯ 1. Yes                                               ┃
 │                                       │┃    2. Yes, and don't ask again for npm test commands i› ┃
 │                                       │┃    3. No, and tell Claude what to do differently (esc)  ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
+│                                       │┃                                                         ┃
 └───────────────────────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
  ↵ jump   a answer   r review   f panel   i info   space fold   / find   x kill   ? keys   q close  
 ```
@@ -498,23 +498,33 @@ ended agent, and the age, which an idle agent does not have. Then five rows:
   tool. On a `▲` the third row is `needs` and the question, in the needs role;
   on a `✕`, `error` and the error; on an ended agent, `doing ended`. Nothing to
   show reads `—`.
-- a blank row, then the rule `── live · last N lines ──`.
+- a blank row, then the rule `── live · N lines ──`.
 
-The rest is the pane's screen: `capture-pane -e`, ANSI kept, never wrapped,
-capped at 64 KB, as many rows as the pane shows. Its last line sits on the last
-row, so a short screen leaves the top empty, not the bottom, and a screen taller
-than the pane shows its bottom rows and loses its top. A tab moves to the next
-stop of 8 columns, as in the terminal; any other control character takes no
-cell. OSC sequences (titles, hyperlinks) are dropped before the colours are
+The rest is the pane's screen: its visible screen (`capture-pane -p -e` with
+no `-S`, so the blank rows below the cursor keep their places) and its cursor
+(`#{cursor_flag} #{cursor_y}`), read by one tmux command, so one fork. ANSI is
+kept, nothing wraps, and it is capped at 64 KB. Which rows show is tmux's own
+rule for its `choose-tree` preview (`screen_write_preview` in
+`screen-write.c`): the view ends at the cursor's row or the last row with
+text, whichever is lower, or the last row with text when the cursor is hidden.
+A screen whose used part fits the pane is drawn whole from the top, as the
+pane itself looks (a cleared terminal, a short shell); a taller one shows the
+rows ending there and loses its top, which keeps Claude Code's input box and
+the newest output in view. Rows below that end are never content, and a row of
+colour only counts as blank.
+
+A tab moves to the next stop of 8 columns, as in the terminal; any other
+control character takes no cell. OSC sequences (titles, hyperlinks) are dropped before the colours are
 read, as the parser loses the rest of a line after a link that ends in `ESC \`;
 and when the 64 KB cap cuts inside a line, the screen starts at the next one,
 so no escape is cut in half (one line longer than the cap keeps the cut). Both
 apply to the tiles' previews too. A line cut at the pane's edge ends in `›`
 (`>` in ascii), measured per grapheme as it is drawn; blanks a TUI pads its
-lines with are not a cut. A wide TUI still shows its left part only, marked. A done, idle or
-ended agent's screen is dim, as its tile is. A capture that failed says `capture failed` in the error role,
-which is a gone pane; a blank screen is `live · blank`; and before the first
-capture of a newly selected agent, `reading the screen …`.
+lines with are not a cut. A wide TUI still shows its left part only, marked.
+A done, idle or ended agent's screen is dim, as its tile is. A capture that
+failed says `capture failed` in the error role, which is a gone pane; a blank
+screen is `live · blank`; and before the first capture of a newly selected
+agent, `reading the screen …`.
 
 On a header, or under a find with no match, the pane is a plain frame titled
 `no agent selected` that reads `the agent you pick shows here.`
@@ -1228,7 +1238,10 @@ reason in a warn note.
 - `board::{SPLIT_W, list_w, pane_rows, captures, pick_of, repick, shown,
   forget}` are new: the last four are the key loop's pick, asked for once per
   new selection, the screens of other agents forgotten on a new pick.
-- `data::preview` drops OSC sequences and starts a capped capture at a line. `View` is unchanged:
+- `data::preview` drops OSC sequences and starts a capped capture at a line.
+- The pane's capture is `data::screen(id, rows)`: `capture-pane -p -e` with no
+  `-S` and no `-J`, then `display-message` for the cursor, in one tmux call.
+  `data::{view, split_cursor}` are its pure halves. The tiles keep `preview`. `View` is unchanged:
   a `pvs` with no entry for the selection is "not read yet", as in the tiles.
 - Goldens: new `board-preview-{100,180}`, from the 100/180 mockups. Moved, the
   right pane now beside the list: `board-list-{100,180}`,
