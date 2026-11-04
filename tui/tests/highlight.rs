@@ -329,3 +329,40 @@ fn a_very_long_line_is_lexed_whole() {
     let s = spans("rust", &long);
     assert_eq!(s.iter().map(|(_, t)| t.len()).sum::<usize>(), long.len());
 }
+
+// ------------------------------------------------------- review fixes
+
+#[test]
+fn a_shift_in_shell_arithmetic_opens_no_heredoc() {
+    let s = highlight("bash", &["echo $((1<<2))", "fi"]);
+    assert_eq!(s[1], vec![(Keyword, "fi")], "{s:?}");
+}
+
+#[test]
+fn a_crlf_heredoc_end_still_closes() {
+    let s = highlight("bash", &["cat <<EOF\r", "body\r", "EOF\r", "fi"]);
+    assert_eq!(s[2], vec![(Str, "EOF\r")]);
+    assert_eq!(s[3], vec![(Keyword, "fi")], "{s:?}");
+}
+
+/// A string still open at the line's end is what the next line continues; a
+/// heredoc on the same line waits behind it, and never swallows it.
+#[test]
+fn an_open_string_outranks_a_heredoc_on_its_line() {
+    let s = highlight("bash", &["cat <<EOF \"abc", "def\" fi"]);
+    assert_eq!(s[1][0], (Str, "def\""), "{s:?}");
+    assert_eq!(s[1].last(), Some(&(Keyword, "fi")), "{s:?}");
+}
+
+#[test]
+fn nothing_left_open_in_one_fence_reaches_the_next() {
+    let rows = [
+        ("comment", "```rust\n/* open\n```\n```rust\nfn\n```"),
+        ("string", "```rust\n\"open\n```\n```rust\nfn\n```"),
+        ("heredoc", "```bash\ncat <<EOF\n```\n```bash\nfi\n```"),
+    ];
+    for (name, text) in rows {
+        let s = fenced(text);
+        assert_eq!(s[4], vec![(Keyword, s[4][0].1)], "{name}: {s:?}");
+    }
+}

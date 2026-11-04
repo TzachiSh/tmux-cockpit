@@ -193,8 +193,9 @@ pub fn line<'a>(lang: Lang, st: &mut State, s: &'a str) -> Vec<(Role, &'a str)> 
     match std::mem::take(&mut st.open) {
         Open::Nothing => {}
         Open::Heredoc { word, tabs } => {
+            // a CRLF text's `EOF\r` is its end word too
             let t = if tabs { s.trim_start_matches('\t') } else { s };
-            if t != word {
+            if t.trim_end_matches('\r') != word {
                 st.open = Open::Heredoc { word, tabs };
             }
             out.push(Role::Str, 0, b.len());
@@ -412,7 +413,9 @@ fn heredoc_op(s: &str, mut j: usize) -> (usize, Option<(String, bool)>) {
     if q.is_some() && b.get(j).copied() == q {
         j += 1;
     }
-    (j, (!word.is_empty()).then_some((word, tabs)))
+    // a word starting with a digit is a shift, as in `$((1<<2))`
+    let shift = word.bytes().next().is_none_or(|c| c.is_ascii_digit());
+    (j, (!shift).then_some((word, tabs)))
 }
 
 /// Lines of one language. An unknown `tag` gives each line one plain span.
