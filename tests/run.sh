@@ -11181,8 +11181,8 @@ is "the review row names the queued spool" "review    pending  · queued: $PISTA
 is "the session row" "session   sid-9" "$(printf '%s\n' "$PIOUT" | grep '^session ')"
 is "the title row" "title     Fix-the-parser" "$(printf '%s\n' "$PIOUT" | grep '^title ')"
 case "$(printf '%s\n' "$PIOUT" | grep '^tui ')" in
-    *"(want 9.9.9 -- prefix U updates it)") ok "the tui row names a version that differs" ;;
-    *) bad "the tui row names a version that differs" "(want 9.9.9 -- prefix U updates it)" "$(printf '%s\n' "$PIOUT" | grep '^tui ')" ;;
+    *"(want 9.9.9 -- run install.sh)") ok "the tui row names a version that differs" ;;
+    *) bad "the tui row names a version that differs" "(want 9.9.9 -- run install.sh)" "$(printf '%s\n' "$PIOUT" | grep '^tui ')" ;;
 esac
 is "the review dir counts pinned and delivered" "1 pinned · 2 delivered · a at the prompt removes it" \
    "$(printf '%s\n' "$PIOUT" | grep -A1 '^review dir' | tail -n 1 | sed 's/^ *//')"

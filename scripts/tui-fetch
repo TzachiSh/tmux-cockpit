@@ -138,7 +138,7 @@ build() {                     # 0 built · 2 skipped
     command -v cargo >/dev/null 2>&1 || { say "no cargo either -- install rustup (https://rustup.rs) or wait for a release build"; return 2; }
     rv=$(rustc --version 2>/dev/null | awk '{print $2}')
     if [ -n "$FLOOR" ] && [ "$(vnum "$rv")" -lt "$(vnum "$FLOOR")" ]; then
-        say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and press prefix U again"
+        say "cockpit-tui needs Rust >= $FLOOR to build from source (found ${rv:-none}); install rustup and run install.sh again"
         return 2
     fi
     # Captured: only the tail of rustc's output fits the popup.

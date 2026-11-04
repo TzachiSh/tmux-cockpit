@@ -181,7 +181,8 @@ pub fn review_base(dir: &str, mode: &str, br: &str, head: &str) -> Base {
 }
 
 /// `1.2.3`, the installed binary's version and path, and the version
-/// `@cockpit_tui_version` asks for when it differs (prefix U updates it).
+/// `@cockpit_tui_version` asks for when it differs (install.sh updates it:
+/// prefix U fetches only with `@cockpit_tui_fetch on`).
 fn tui_row(want: &str) -> String {
     let have = env!("CARGO_PKG_VERSION");
     let bin = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default();
@@ -190,7 +191,7 @@ fn tui_row(want: &str) -> String {
     let want = want.strip_prefix("cockpit-tui-").unwrap_or(want);
     let want = want.strip_prefix('v').unwrap_or(want);
     if !want.is_empty() && want != have {
-        format!("{have}  {bin}  (want {want} -- prefix U updates it)")
+        format!("{have}  {bin}  (want {want} -- run install.sh)")
     } else {
         format!("{have}  {bin}")
     }
