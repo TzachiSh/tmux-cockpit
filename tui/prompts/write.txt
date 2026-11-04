@@ -75,8 +75,7 @@ To ask, the whole reply is:
 <question>short question in the user's language</question>
 <option recommended="true">2-6 word choice</option>
 <option>2-6 word choice</option>
-When two or three points are open and none of their answers changes what you would ask about the others, ask them in the same reply: one <question> with its own options after another, never more questions than <questions_left>.
-A point whose question or options depend on another answer waits for the next round.
+(if two or three questions are open and independent, you may ask them together: each <question> with its own options, at most <questions_left>)
 Give 2 to 4 options that do not overlap, most likely first: the candidates from the request, screen or file (for a file, its path), or the possible readings of the request; a combination such as "Both files" is fine when it is a real choice.
 If there are no such choices, ask with no options: the panel lets the user type the answer.
 Mark one recommended only if it is clearly the most likely.
