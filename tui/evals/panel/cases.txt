@@ -156,7 +156,7 @@ deploy it
 kind: ops
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: last commit; last one; all three; all 3; a1b2c3d; d4e5f6a; 789abcd; revert; drop; reset
+ask_any: last commit; last one; all three; all 3; three commits; a1b2c3d; d4e5f6a; 789abcd; revert; drop; reset; keep changes; discard
 note: "that" can be the last commit or all three
 --- screen
 ● Committed a1b2c3d "parse: accept tabs"
