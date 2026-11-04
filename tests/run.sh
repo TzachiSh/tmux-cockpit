@@ -4380,7 +4380,7 @@ is "the user's other settings are untouched" "opus" \
 before=$(cat "$HK/.claude/settings.json")
 HOME="$HK" "$DIR/install.sh" --hooks >/dev/null 2>&1
 is "a second run changes nothing (idempotent)" "$before" "$(cat "$HK/.claude/settings.json")"
-is "the shipped Stop hooks are two groups beside the foreign one, agent-state done once, review-gate capped at 5 s" "3 1 5" \
+is "the shipped Stop hooks are three groups (done, sub-reconcile, review-gate) beside the foreign one, agent-state done once, review-gate capped at 5 s" "4 1 5" \
    "$(jq -r '[(.hooks.Stop | length),
              ([.hooks.Stop[].hooks[].command | select(test("agent-state done"))] | length),
              ([.hooks.Stop[].hooks[] | select(.command | test("review-gate")) | .timeout] | add)] | join(" ")' \
@@ -4393,7 +4393,7 @@ HKN=$(mktmpd); mkdir -p "$HKN/.claude"
 jq '.hooks.Stop[0] |= del(.matcher)' "$DIR/examples/claude-hooks.json" \
     | jq '{hooks: {Stop: .hooks.Stop}}' > "$HKN/.claude/settings.json"
 HOME="$HKN" "$DIR/install.sh" --hooks >/dev/null 2>&1
-is "a matcher-less twin does not duplicate" "2" \
+is "a matcher-less twin does not duplicate" "3" \
    "$(jq '.hooks.Stop | length' "$HKN/.claude/settings.json")"
 rm -rf "$HKN"
 # review-gate's own Stop entry is REPLACED on upgrade, not duplicated: seed a
@@ -14051,7 +14051,10 @@ jq '{hooks: (.hooks | .PostToolUse |= map(select(.matcher != "TaskStop"))
 tirun() { env -u TMUX -u TMUX_PANE HOME="$TIH" XDG_BIN_HOME="$TIH/bin" XDG_CONFIG_HOME="$TIH/cfg" TMUX_TMPDIR="$TIH" "$DIR/install.sh" "$@" 2>&1; }
 tisub() { tirun --check | sed -n 's/^\[ *\([a-z]*\) *\] *subhooks *\(.*\)/\1 \2/p' | sed 's/  */ /g; s/ $//'; }
 is "--check before: 4 of 6, and it says to re-run --hooks" "warn 4 of 6 subagent hooks merged re-run install.sh --hooks" "$(tisub)"
-tirun --hooks >/dev/null; tirun --hooks >/dev/null
+tirun --hooks >/dev/null; TIONE=$(cat "$TIH/.claude/settings.json"); tirun --hooks >/dev/null
+is "upgrading a pre-#403 box: a second --hooks changes nothing" "$TIONE" "$(cat "$TIH/.claude/settings.json")"
+is "and Stop keeps done and the user's hook in place, then sub-reconcile and review-gate" "done my-own-stop-hook sub-reconcile review-gate" \
+   "$(jq -r '[.hooks.Stop[].hooks[].command | sub(".*/scripts/(agent-state )?"; "")] | join(" ")' "$TIH/.claude/settings.json")"
 tin() { jq -r --arg ev "$1" --arg m "$2" --arg c "$3" '[.hooks[$ev][]? | select((.matcher // "") == $m) | .hooks[].command | select(test("agent-state " + $c + "$"))] | length' "$TIH/.claude/settings.json"; }
 is "--hooks twice: sub-taskstop once under PostToolUse TaskStop, sub-reconcile once under Stop" "1 1" \
    "$(tin PostToolUse TaskStop sub-taskstop) $(tin Stop '' sub-reconcile)"

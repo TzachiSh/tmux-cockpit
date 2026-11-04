@@ -8,7 +8,7 @@
     "SubagentStart, SubagentStop, TeammateIdle and SessionEnd also run agent-state sub-*:",
     "they append to a per-session log under $XDG_STATE_HOME/tmux-cockpit/subs/, which the",
     "board's subagent tree reads (#361). They set no pane state. PostToolUse with the",
-    "matcher TaskStop (sub-taskstop) and the last Stop entry (sub-reconcile) add a TaskStop",
+    "matcher TaskStop (sub-taskstop) and the 2nd Stop entry (sub-reconcile) add a TaskStop",
     "mid-turn, which fires no SubagentStop, and the set still in flight at a turn's end (#403).",
     "Rerun install.sh --hooks after an update to get them.",
     "",
@@ -83,8 +83,8 @@
     ],
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state done" } ] },
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] },
-      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-reconcile" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/agent-state sub-reconcile" } ] },
+      { "matcher": "", "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/review-gate", "timeout": 5 } ] }
     ],
     "WorktreeCreate": [
       { "hooks": [ { "type": "command", "command": "\"${TMUX_COCKPIT_DIR:-$HOME/.tmux/plugins/tmux-cockpit}\"/scripts/worktree-create" } ] }
