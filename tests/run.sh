@@ -3677,12 +3677,19 @@ is "the upgrade leaves a user's f running cockpit's tm alone" "1" \
 # An upgrade load whose stock read fails keeps the guess for the retry.
 GU3="cockpit-gu3-$$"; SOCKS="$SOCKS $GU3"; GUD3=$(mktmpd)
 git -C "$DIR" archive "$GU_REV" cockpit.tmux scripts | tar -x -C "$GUD3"
-GUL="$GUD3/$(printf 'l%.0s' $(seq 1 110))"; mkdir -p "$GUL"
+# A stock server that will not start, as a socket path past the limit did.
+mkdir -p "$GUD3/bin"
+printf '#!/bin/sh\nfor a; do [ "$a" = start-server ] && { echo "error connecting" >&2; exit 1; }; done\nexec "%s" "$@"\n' \
+    "$TMUX_REAL" > "$GUD3/bin/tmux"
+chmod +x "$GUD3/bin/tmux"
 "$TMUX_REAL" -L "$GU3" -f /dev/null new-session -d -s t -c "$GUD3" >/dev/null 2>&1
 gu_load "$GU3" "$GUD3"
 "$TMUX_REAL" -L "$GU3" set -g @cockpit_panel_key F11 >/dev/null 2>&1
 gu_up "$GUD3"
-"$TMUX_REAL" -L "$GU3" run-shell "TMPDIR='$GUL' '$GUD3/cockpit.tmux'" >/dev/null 2>&1
+"$TMUX_REAL" -L "$GU3" run-shell "PATH='$GUD3/bin':\"\$PATH\" '$GUD3/cockpit.tmux'" >/dev/null 2>&1
+is "the failed upgrade load leaves panel:f pending and the marker unset" "panel:f|" \
+   "$("$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_giveback)|$(
+      "$TMUX_REAL" -L "$GU3" show-option -gqv @cockpit_notes)"
 gu_load "$GU3" "$GUD3"
 is "a failed upgrade give-back is retried: f is find-window and nothing is pending" \
    "find-window|" "$(gu_key "$GU3" f | grep -o find-window)|$(
