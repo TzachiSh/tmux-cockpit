@@ -44,9 +44,8 @@ fn sub(ty: &str, desc: &str, state: SubState, ago: u64, tokens: u64) -> Sub {
         desc: desc.into(),
         state,
         started: Some(NOW - ago),
-        finished_at: None,
-        active_at: None,
         tokens,
+        ..Default::default()
     }
 }
 
