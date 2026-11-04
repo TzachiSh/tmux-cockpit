@@ -212,6 +212,32 @@ fn ignored_rows_are_drawn_dim_and_the_others_are_not() {
 }
 
 #[test]
+fn a_root_gitignore_applies_in_the_folders_below_it() {
+    let s = repo();
+    let src = s.0.join("src");
+    std::fs::write(src.join("main.rs"), b"x").unwrap();
+    std::fs::write(src.join("run.log"), b"x").unwrap();
+    let names: Vec<_> = files::list_dir(&src, false, false).unwrap().into_iter().map(|e| e.name).collect();
+    assert_eq!(names, [b"main.rs".to_vec()]);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_grandchild_does_not_switch_the_ignore_rules_off() {
+    use std::os::unix::fs::PermissionsExt;
+    let s = repo();
+    let locked = s.dir("a/locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let got: Vec<_> = files::list_dir(&s.0, false, false).unwrap().into_iter().map(|e| e.name).collect();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(
+        got,
+        [b"a".to_vec(), b"src".to_vec(), b"main.rs".to_vec()],
+        "run.log and target stay hidden"
+    );
+}
+
+#[test]
 fn the_footer_names_the_key_and_its_state() {
     let g = Theme::fixed().g;
     let flat = |h: bool, i: bool| {
@@ -231,7 +257,7 @@ fn the_footer_names_the_key_and_its_state() {
 #[test]
 fn drawn_names_drop_control_and_bidi_characters_but_the_key_keeps_them() {
     let s = Scratch::new();
-    let name = "a\x1b[31mb\u{202E}c\u{2066}d\te.txt";
+    let name = "a\x1b[31mb\u{202E}c\u{2066}d\u{061C}\te.txt";
     let p = s.file(name);
     let f = browser(&s.0);
     assert_eq!(shown(&f), ["a[31mbcd e.txt"]);

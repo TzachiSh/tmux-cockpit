@@ -1683,7 +1683,7 @@ workspace, no crate split.
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
-| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or open, `←` up, `.` hidden, `alt-c` copy; prints `open <path>` or `copy <path>` |
+| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or open, `←` up, `.` hidden, `alt-i` ignored, `alt-c` copy; prints `open <path>` or `copy <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files; `panel::highlight` the code lexer (#282) |
 

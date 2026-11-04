@@ -249,7 +249,7 @@ fi
 PW=$(tmux show-option -gqv @cockpit_popup_width);  PW=${PW:-70%}
 PH=$(tmux show-option -gqv @cockpit_popup_height); PH=${PH:-70%}
 
-# Browse folder is the menu row's name. prefix o, the path tap and that row open
+# Browse folder is the menu row's name. The cockpit table's o, the path tap and that row open
 # the pane's folder in the cockpit-tui file browser (#363). run-shell expands
 # #{pane_id}; the script's path goes through fesc as pick_on's does.
 tmux bind-key -T cockpit o run-shell -b "$(fesc "$Q_OPEN") --folder #{pane_id}"

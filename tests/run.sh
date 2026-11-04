@@ -13363,7 +13363,8 @@ cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
 chmod +x "$FB"/bin/*
-PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$FBD" 'exec sleep 3600' >/dev/null 2>&1
+# from $FB: a #() that ran would drop its file in the server's cwd, never the checkout
+( cd "$FB" && PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$FBD" 'exec sleep 3600' >/dev/null 2>&1 )
 FBP=$("$TMUX_REAL" -L "$FBS" list-panes -t t -F '#{pane_id}')
 FBSOCK=$("$TMUX_REAL" -L "$FBS" display-message -p '#{socket_path}')
 "$TMUX_REAL" -L "$FBS" set -g @cockpit_is_touch \
@@ -13433,6 +13434,23 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.md $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.md $FBD/sub")"
+
+# names that are tmux formats: -n and -c expand #(), so term_edit escapes both
+FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
+fb on "open $FBHF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch, format-looking names: the editor got the exact path" "$FB/bin/ed-visual [$FBHF]" "$(cat "$FB/ed.log")"
+is "touch, format-looking names: the window name and folder are literal" "#(touch\${IFS}PWN).txt $FBH" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "#(touch\${IFS}PWN).txt $FBH")"
+is "touch, format-looking names: nothing ran" "" "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
+
+# a touch client with no editor anywhere: one note, no window
+mkdir -p "$FB/nobin"
+for x in bash cat rm mktemp readlink dirname; do ln -sf "$(command -v $x)" "$FB/nobin/$x"; done
+ln -sf "$FB/bin/tmux" "$FB/nobin/tmux"
+fb on "open $FBF\n" 0 "PATH=$FB/nobin" "VISUAL=" "EDITOR="
+is "touch, no editor found: no window and one note naming the fix" "0|1" \
+   "$(fbn new-window)|$(grep -c 'no terminal editor' "$FB/calls")"
 
 # alt-c: the path is copied, nothing opens
 fb on "copy $FBF\n" 0

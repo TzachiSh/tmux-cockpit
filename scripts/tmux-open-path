@@ -229,7 +229,7 @@ if [ "$DRY" -eq 1 ]; then
 else
     pane=${1:-}
     [ -n "$pane" ] || {
-        printf 'usage: tmux-open-path [--pick | --folder] <pane-id>\n' >&2
+        printf 'usage: tmux-open-path [--pick | --folder | --browse] <pane-id>\n' >&2
         printf '       tmux-open-path --dry-run <dir> <line>\n' >&2
         exit 2
     }
