@@ -39,8 +39,8 @@ FROM=arg
 [ -n "$TAG" ] || { TAG=$(tmux show-option -gqv @cockpit_tui_version 2>/dev/null); FROM=option; }
 [ -n "$TAG" ] || { TAG=$TUI_TAG; FROM=default; }
 
-# Tags are `<package>-v<ver>` for axotag; an old `tui-` pin still compares equal.
-norm() { local v=${1##* }; v=${v#cockpit-}; v=${v#tui-}; printf '%s\n' "${v#v}"; }
+# Tags are `<package>-v<ver>` for axotag; `cockpit-tui 0.3.1` is the binary's own.
+norm() { local v=${1##* }; v=${v#cockpit-tui-}; printf '%s\n' "${v#v}"; }
 
 # A pin below the floor would reinstall a binary the scripts refuse.
 if [ "$FROM" = option ] && [ "$(vnum "$(norm "$TAG")")" -lt "$(vnum "$TUI_MIN")" ]; then

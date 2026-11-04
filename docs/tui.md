@@ -1753,3 +1753,11 @@ called 'x', not 'y'; nothing changed`), or is the one `tm` runs in. A kill or a
 rename that goes through puts the picker back, in the same popup. `@cockpit_glyphs
 ascii` reaches the picker as `COCKPIT_GLYPHS=ascii`; `nerd` draws the default
 there, its one glyph of its own being the board's subagent badge.
+
+## tui-fetch: pins, tags and `COCKPIT_TUI_BIN` (#223, #243)
+
+These notes replace older wording above where the two disagree.
+
+- `@cockpit_tui_version` is read as written. No release was ever tagged in the
+  pre-#79 `tui-v` form, so tui-fetch no longer reads `tui-v0.1.0` as 0.1.0: such
+  a pin names a tag that does not exist, and tui-fetch installs nothing.
