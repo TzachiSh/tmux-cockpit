@@ -244,6 +244,21 @@ means the shipped prompt. A file that exists but cannot be read (permissions,
 invalid UTF-8) also falls back to the shipped prompt, and the reason goes to
 `tui.log`.
 
+**The write prompt's evaluation.** `cargo run --example panel_eval` (in `tui/`)
+runs the labelled cases in `tui/evals/panel/cases.txt` through the panel's own
+prompt, envelope, model route, `claude -p` call and reply parser. It prints, per
+case and in total, whether the panel asked when a case needs a question, asked
+when it did not, and carried the facts a case requires, plus the latency. It
+calls `claude` once per case, so it is run by hand and never from `make test`;
+`--check` only validates the cases, and `cargo test` runs that check too. To
+compare a prompt edit, put it in the override file above and run again: the
+summary prints a hash of the system prompt it sent, and a pass count per case
+over the runs (3 by default: one run is not enough to judge a change). The case
+format, with its `expect: ask|write|either`, `must`, `must_not` and `holdout`
+keys, is described at the top of the cases file; holdout cases are written
+after the prompt they run on, so a gain there is not overfitting. `--model`,
+`--runs`, `--jobs`, `--only <id or kind>` and `--out <file.jsonl>` are the knobs.
+
 **The panel's cache.** `claude -p` reads its system prompt from a file, so each
 distinct prompt is written once to
 `${XDG_CACHE_HOME:-$HOME/.cache}/tmux-cockpit/panel/prompts/<hash>.txt`, mode
