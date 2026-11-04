@@ -1535,6 +1535,7 @@ workspace, no crate split.
 | `push` | `@cockpit_board_wake`, the `tmux wait-for` waiter, the exit-path cleanup |
 | `info` | the pane info screen (`cockpit-tui info %N`, the board's `i` overlay) and `data::info`, its facts: git root, review base, the transcript rows |
 | `pick` | the `cockpit-tui pick` list: row parsing, the case-insensitive filter, selection, click and wheel, and its screen; draws on /dev/tty |
+| `files` | the `cockpit-tui files <dir>` browser (#363) on `pick`'s list and screen: one folder, folders first, `↵` in or open, `←` up, `.` hidden, `alt-c` copy; prints `open <path>` or `copy <path>` |
 | `sessions` | the `cockpit-tui sessions` view (#245) on `pick`'s screen; `data::sessions` the one `list-panes -a` read, the order and the freeze |
 | `panel` | the type-panel port: capture, redaction, prompt envelope, the `claude -p` request, reply parsing; `panel::action` the action, text, cmd and state files; `panel::highlight` the code lexer (#282) |
 
@@ -1675,6 +1676,32 @@ verbatim with `[any key]`, then the picker opens again.
 
 A branch name cannot contain a space, so the filter text `my branch` is refused with a
 note on `alt-↵`.
+
+## `cockpit-tui files` (#363)
+
+The file browser behind `prefix o`, the menu's Browse folder row and a tap on the
+pane-border path, built on the shared picker (`pick.rs`) and `files.rs`.
+`scripts/tmux-open-path --folder` opens it in a popup on the pane's folder and
+acts on the one line it prints; the binary never mutates.
+
+| key | does |
+|---|---|
+| type | filters the folder (case-insensitive substring) |
+| `↵` | on a folder, goes into it and clears the filter; on a file, prints `open <path>` |
+| `←`, `⌫` on an empty filter | goes up, landing on the folder it left; stops at `/` |
+| `.` on an empty filter | shows or hides dotfiles; elsewhere it is a letter of the filter |
+| `alt-c` | prints `copy <path>` for the row, a folder included |
+| `esc` `^C` | cancels, prints nothing, exit 1 |
+
+Folders come first, then names without regard to case; a symlink to a folder is a
+folder, a broken one a file. A folder over 20000 entries lists the first 20000 and
+says so in the header. The path printed is the folder as `realpath` sees it joined to
+the row's own bytes, so a name that is not UTF-8 still prints exactly. A name with a
+newline cannot ride one line: `↵` and `alt-c` give a `✕` note and print nothing.
+Exit 2 is a bad argument, a folder that cannot be read or no terminal.
+
+On a touch client the script opens a file in a terminal editor window instead of
+VS Code; see [path-picker.md](path-picker.md).
 
 ## The info screen (#252)
 

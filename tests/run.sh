@@ -3632,8 +3632,8 @@ case "$("$TMUX_REAL" -L "$DB" list-keys -T root 2>/dev/null | grep MouseUp1Contr
          "$("$TMUX_REAL" -L "$DB" list-keys -T root | grep MouseUp1Control2)" ;;
 esac
 case "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit 2>/dev/null | awk '$4=="o"')" in
-    *"tmux-open-path"*"--folder"*) ok "which opens the pane's folder in the editor" ;;
-    *) bad "which opens the pane's folder in the editor" "a run-shell running --folder" \
+    *"tmux-open-path"*"--folder"*) ok "which browses the pane's folder" ;;
+    *) bad "which browses the pane's folder" "a run-shell running --folder" \
          "$("$TMUX_REAL" -L "$DB" list-keys -T cockpit | awk '$4=="o"')" ;;
 esac
 # The key itself, through a real client: an attached client in the outer
@@ -3933,13 +3933,15 @@ case "$(os_run 'f.txt g.txt')" in
     *POPUP*) ok "two matches ask" ;;
     *) bad "two matches ask" "the picker popup" "$(os_run 'f.txt g.txt')" ;;
 esac
-# --folder (the cockpit table's o, the menu's Browse folder) opens the pane's folder.
+# --folder (the cockpit table's o, the menu's Browse folder) opens the folder browser
+# popup (#363; it opened the pane's folder in the editor before, #228).
 : > "$OST/log"
 env -i PATH="$OST" HOME="$HOME" TMUX_LOG="$OST/log" CLICK_DIR="$OS" OPEN_EDITOR=nvim \
     bash "$DIR/scripts/tmux-open-path" --folder %1 >/dev/null 2>&1
 case "$(cat "$OST/log")" in
-    *NEWWIN*"nvim  $OS"*|*NEWWIN*"nvim $OS"*) ok "--folder opens the pane's folder in the editor" ;;
-    *) bad "--folder opens the pane's folder in the editor" "a new-window running nvim $OS" "$(cat "$OST/log")" ;;
+    *NEWWIN*) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" "$(cat "$OST/log")" ;;
+    *POPUP*"--browse %1"*) ok "--folder opens the browser popup, not the editor" ;;
+    *) bad "--folder opens the browser popup, not the editor" "a POPUP running --browse" "$(cat "$OST/log")" ;;
 esac
 fi
 
@@ -12768,6 +12770,138 @@ gbload @cockpit_menu_key a
 case "$(gbt list-keys -T prefix Space)" in *display-menu*) ok "a failed stock lookup leaves the old key bound, not unbound" ;;
     *) bad "a failed stock lookup leaves the old key bound, not unbound" "display-menu still on Space" "$(gbt list-keys -T prefix Space 2>&1)" ;; esac
 gbt kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path --folder: the file browser, and what is done with the line it prints (#363) =="
+# The tap on the pane path and the menu's Browse folder row reach --folder. It
+# opens a cockpit-tui files popup; the popup re-enters as --browse, reads one
+# line and acts on it. Private server started with -c, a shim code, shim editors
+# and a stub cockpit-tui that prints a canned line. The tmux in PATH is a
+# wrapper that logs every call before it runs, so "nothing was opened" is read
+# from the calls, never from a sleep.
+if need_tmux "folder browser"; then :; else
+FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
+FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
+FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"
+printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
+for e in ed-cockpit ed-visual ed-editor nvim; do
+    printf '#!/bin/sh\nprintf "%%s" "$0" >> "%s/ed.log"; printf " [%%s]" "$@" >> "%s/ed.log"; echo >> "%s/ed.log"\n' "$FB" "$FB" "$FB" > "$FB/bin/$e"
+done
+cat > "$FB/bin/tmux" <<STUB
+#!/bin/sh
+printf '%s' "\$1" >> "$FB/calls"; for a in "\$@"; do printf ' [%s]' "\$a" >> "$FB/calls"; done; echo >> "$FB/calls"
+# no client is attached to a private server, so a popup cannot open: log it only
+[ "\$1" = display-popup ] && exit 0
+exec "$TMUX_REAL" -L "$FBS" "\$@"
+STUB
+# the stub picker: what the browser would print, and how it exits
+cat > "$FB/bin/cockpit-tui" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" > "$FB/tui.args"
+cat "$FB/errtext" >&2
+cat "$FB/answer"
+exit \$(cat "$FB/rc")
+STUB
+chmod +x "$FB"/bin/*
+PATH="$FB/bin:$PATH" "$TMUX_REAL" -L "$FBS" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$FBD" 'exec sleep 3600' >/dev/null 2>&1
+FBP=$("$TMUX_REAL" -L "$FBS" list-panes -t t -F '#{pane_id}')
+FBSOCK=$("$TMUX_REAL" -L "$FBS" display-message -p '#{socket_path}')
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_is_touch \
+    "$(sed -n 's/^set -g @cockpit_is_touch "\(.*\)"$/\1/p' "$DIR/scripts/lib/statusbar.conf")"
+# fb <on|off> <printf-format of the answer> [rc] [env...]: one --browse run
+fb() {
+    local touch=$1 ans=$2 rc=${3:-0}; shift 3
+    "$TMUX_REAL" -L "$FBS" set -g @cockpit_touch "$touch"
+    "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
+    printf "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
+    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"
+    env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
+        "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
+}
+fbn() { grep -c "^$1 " "$FB/calls"; }          # calls of one tmux subcommand
+fbwait() { local n=0; until [ -s "$1" ] || [ "$n" -ge 50 ]; do sleep 0.1; n=$((n + 1)); done; }
+fbnotes() { grep '^display-message' "$FB/calls" | grep -vc '\[-p\]'; }   # notes shown, not queries
+fbwin() { "$TMUX_REAL" -L "$FBS" list-windows -t t | grep -c .; }
+
+# --folder: the tap opens the browser popup and nothing else
+: > "$FB/calls"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --folder "$FBP" </dev/null >"$FB/out" 2>&1
+is "--folder opens one popup" "1" "$(fbn display-popup)"
+is "--folder opens no editor and no window" "0|0" "$(fbn run-shell)|$(fbn new-window)"
+case "$(grep '^display-popup' "$FB/calls")" in
+    *"[-T] [ files"*"--browse $FBP]"*) ok "the popup is titled and re-enters as --browse on the pane" ;;
+    *) bad "the popup is titled and re-enters as --browse on the pane" "-T files, --browse $FBP" "$(grep '^display-popup' "$FB/calls")" ;;
+esac
+: > "$FB/calls"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/nope/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --folder "$FBP" </dev/null >"$FB/out" 2>&1
+is "--folder without cockpit-tui says so and opens no popup" "1|0" \
+   "$(grep -c 'cockpit-tui is missing' "$FB/calls")|$(fbn display-popup)"
+
+# --browse hands the browser the pane's folder
+fb off "open $FBF\n" 0
+is "the browser is started on the pane's folder" "files $FBD" "$(cat "$FB/tui.args")"
+
+# a non-touch client: open <file> goes the usual way, to VS Code
+fb off "open $FBF\n" 0
+fbwait "$FB/code.log"
+is "non-touch: open goes to code, as the path was opened before" "1|0" "$(fbn run-shell)|$(fbn new-window)"
+case "$(cat "$FB/code.log")" in
+    *"[--goto][$FBF:1:1]"*) ok "non-touch: code got the exact path" ;;
+    *) bad "non-touch: code got the exact path" "--goto $FBF:1:1" "$(cat "$FB/code.log")" ;;
+esac
+
+# a touch client: a terminal editor window instead, never VS Code
+fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual" "EDITOR=$FB/bin/ed-editor"
+fbwait "$FB/ed.log"
+is "touch: one window, no code" "1|0|2" "$(fbn new-window)|$(fbn run-shell)|$(fbwin)"
+is "touch: \$VISUAL opens the exact path" "$FB/bin/ed-visual [$FBF]" "$(cat "$FB/ed.log")"
+is "touch: code never ran" "" "$(cat "$FB/code.log")"
+fb on "open $FBF\n" 0 "EDITOR=$FB/bin/ed-editor"
+fbwait "$FB/ed.log"
+is "touch: \$EDITOR when there is no \$VISUAL" "$FB/bin/ed-editor [$FBF]" "$(cat "$FB/ed.log")"
+fb on "open $FBF\n" 0 "VISUAL=" "EDITOR="
+fbwait "$FB/ed.log"
+is "touch: nvim when nothing is set" "$FB/bin/nvim [$FBF]" "$(cat "$FB/ed.log")"
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+fb on "open $FBF\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$FB/ed.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
+# the editor window is named for the file and sits in its folder
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+is "touch: the window is named for the file" "n.md" \
+   "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+
+# alt-c: the path is copied, nothing opens
+fb on "copy $FBF\n" 0
+is "copy: the path is in the paste buffer" "$FBF" "$("$TMUX_REAL" -L "$FBS" show-buffer)"
+is "copy: nothing opened" "0|0" "$(fbn run-shell)|$(fbn new-window)"
+
+# esc: nothing, and no complaint
+fb on "" 1
+is "esc: nothing runs and nothing is said" "0|0|0|0" \
+   "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
+
+# the printed line is untrusted: each of these must open and copy nothing
+for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
+           "relative path|open a.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
+           "missing past dotdot|open $FBD/../nope"; do
+    for t in on off; do
+        fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
+        is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
+           "$(fbn run-shell)|$(fbn new-window)|$(fbn load-buffer)|$(fbnotes)"
+    done
+done
+
+# a tui from before this screen existed
+fb on "" 2
+printf 'cockpit-tui: unknown screen files\n' > "$FB/errtext"
+env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" \
+    "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
+is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
+"$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
 fi
 
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
