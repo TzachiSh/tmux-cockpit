@@ -11,7 +11,9 @@ Run every experiment on a throwaway private server and kill it after:
 
 ```sh
 d=$(mktemp -d)
-tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...   # ... then: tmux -L probe$$ kill-server
+tmux -L probe$$ -f /dev/null new-session -d -c "$d" ...
+# ... then:
+tmux -L probe$$ kill-server; rm -r "$d"
 ```
 
 Start the server and every `new-window` or `split-window` with `-c` set to a
