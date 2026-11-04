@@ -20,6 +20,7 @@ fn app(cmd: &str) -> App {
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
         screen: "$ ".into(),
+        ..Default::default()
     };
     App::new("%3", cap)
 }

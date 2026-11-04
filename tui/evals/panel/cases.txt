@@ -16,7 +16,10 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional) and "--- request".
+# then "--- screen" (optional), "--- repo" (optional) and "--- request".
+# A repo body is the <repo> block the panel sends for a window in a git repo
+# (capture.rs repo_state): branch, status, recent commits, diff --stat and the
+# screen's paths, each section's lines indented by two.
 #
 # Label rule: ask only when the possible readings lead to different work, or a
 # fact only the owner knows is missing and a wrong guess changes the work. A
@@ -517,3 +520,75 @@ must_not: autopilot; ralph; ultrawork; ultrathink
 note: no example on screen, but the failing command is named: Claude Code runs it, nothing to ask
 --- request
 cargo test fails on main since the merge, fix it
+
+# Added for #413: the <repo> block settles what a guess or a question would.
+
+=== last-commit-test
+kind: bug
+window: bash · bash · /home/u/projects/calc
+expect: write
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1
+note: the repo block names the last commit; the screen names the test and its file
+--- screen
+$ cargo test -q
+running 42 tests
+test parser::tests::parses_negative ... FAILED
+thread 'parser::tests::parses_negative' panicked at src/parser.rs:88:9
+test result: FAILED. 41 passed; 1 failed
+--- repo
+branch: feat/negatives
+status: clean
+recent commits:
+  9f3c2a1 parser: accept a leading minus
+  41be07d lexer: split signs from numbers
+  c03d9e2 readme: build steps
+paths on screen:
+  exists: src/parser.rs
+--- request
+fix the failing test from my last commit
+
+=== review-my-changes
+kind: review
+window: claude · claude · /home/u/projects/shop
+expect: write
+must: feat/cart-discounts; cart.py
+note: "my changes" are the branch and its changed files, both in the repo block
+--- screen
+● Done. The discount rules are in place and the tests pass.
+--- repo
+branch: feat/cart-discounts...origin/feat/cart-discounts [ahead 2]
+status:
+  M shop/cart.py
+  M tests/test_cart.py
+recent commits:
+  e1a77c0 cart: percentage and fixed discounts
+  5b20f19 cart: discount model
+  0aa31de checkout: round totals once
+diff --stat:
+  shop/cart.py       | 38 ++++++++++++++++++++++++++++++--------
+  tests/test_cart.py | 21 +++++++++++++++++++++
+  2 files changed, 51 insertions(+), 8 deletions(-)
+--- request
+review my changes
+
+=== test-the-changed-function
+kind: feature
+window: bash · bash · /home/u/projects/site
+expect: write
+must: slugify
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff
+--- screen
+$ npm test
+Tests: 18 passed, 18 total
+--- repo
+branch: main...origin/main
+status:
+  M src/text/slugify.ts
+recent commits:
+  77ad0e4 text: trim titles before the slug
+  2c9b1f3 nav: breadcrumbs
+diff --stat:
+  src/text/slugify.ts | 9 ++++++---
+  1 file changed, 6 insertions(+), 3 deletions(-)
+--- request
+add a test for the function I just changed

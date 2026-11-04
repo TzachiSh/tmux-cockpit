@@ -63,7 +63,7 @@ pub fn build(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) 
     build_counted(flow, cap, turns, questions_left).0
 }
 
-/// [`build`], and how many secrets the screen and the turns had hidden.
+/// [`build`], and how many secrets the screen, the repo block and the turns had hidden.
 pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left: usize) -> (String, usize) {
     let (screen, mut hidden) = redact(&cap.screen);
     let screen = esc(&screen);
@@ -76,6 +76,12 @@ pub fn build_counted(flow: &Flow, cap: &Capture, turns: &[Turn], questions_left:
             let shown = if screen.is_empty() { "(empty)" } else { &screen };
             parts.push(format!("<screen window=\"{window}\">\n{shown}\n</screen>"));
             parts.push(format!("<window>{name} · {cmd} · {}</window>", esc(&cap.path)));
+            if !cap.repo.is_empty() {
+                // Commit messages and paths carry secrets as a screen does.
+                let (repo, n) = redact(&cap.repo);
+                hidden += n;
+                parts.push(format!("<repo>\n{}\n</repo>", esc(&repo)));
+            }
             parts.push(format!("<request>{}</request>", esc(draft)));
             if *out != OutType::Auto {
                 parts.push(format!("<output_type>{}</output_type>", out.as_str()));

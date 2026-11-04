@@ -61,6 +61,8 @@ struct Case {
     /// Written after the prompt it is run on, so it shows overfitting.
     holdout: bool,
     screen: String,
+    /// The `<repo>` block the panel would send; "" for a window outside a repo.
+    repo: String,
     request: String,
 }
 
@@ -81,8 +83,8 @@ fn list(v: &str) -> Vec<String> {
     v.split(';').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
-/// `=== id`, then `key: value` lines, then `--- screen` and `--- request`
-/// bodies. `#` lines outside a body are comments.
+/// `=== id`, then `key: value` lines, then `--- screen`, `--- repo` and
+/// `--- request` bodies. `#` lines outside a body are comments.
 fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
     let mut cases = Vec::new();
     for (n, block) in text.split("\n=== ").enumerate() {
@@ -112,6 +114,7 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
             must_not: vec![],
             holdout: false,
             screen: String::new(),
+            repo: String::new(),
             request: String::new(),
         };
         let mut expect = None;
@@ -178,6 +181,10 @@ fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
                 "screen" => {
                     dup(!c.screen.is_empty())?;
                     c.screen = text
+                }
+                "repo" => {
+                    dup(!c.repo.is_empty())?;
+                    c.repo = text
                 }
                 "request" => {
                     dup(!c.request.is_empty())?;
@@ -402,6 +409,7 @@ fn main() {
                 cmd: c.cmd.clone(),
                 path: c.path.clone(),
                 screen: c.screen.clone(),
+                repo: c.repo.clone(),
             };
             let flow = Flow::Write {
                 draft: c.request.clone(),
@@ -685,6 +693,15 @@ mod tests {
         assert_eq!(parse_cases(screen_last).unwrap()[0].screen, "$ ls");
         let twice = ONE.replace("kind: bug", "kind: bug\nkind: plan");
         assert!(parse_cases(&twice).unwrap_err().contains("kind given twice"));
+    }
+
+    #[test]
+    fn reads_a_repo_section_and_refuses_it_twice() {
+        let t = ONE.replace("--- request", "--- repo\nbranch: main\n  M a.rs\n--- request");
+        assert_eq!(parse_cases(&t).unwrap()[0].repo, "branch: main\n  M a.rs");
+        assert_eq!(parse_cases(ONE).unwrap()[0].repo, "");
+        let twice = t.replace("--- request", "--- repo\nx\n--- request");
+        assert!(parse_cases(&twice).unwrap_err().contains("repo given twice"));
     }
 
     #[test]

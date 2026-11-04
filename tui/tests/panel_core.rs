@@ -71,6 +71,7 @@ fn cap(name: &str, cmd: &str, screen: &str) -> Capture {
         cmd: cmd.into(),
         path: "/home/u".into(),
         screen: screen.into(),
+        ..Default::default()
     }
 }
 
@@ -167,6 +168,53 @@ fn a_quote_in_the_window_name_cannot_end_the_attribute_and_turns_are_redacted() 
         "<screen window=\"my &quot;w&quot; · bash\">\n\n</screen>\n\n<text>password: hunter22</text>\n\n\
          <conversation>\n<turn role=\"user\">use password: [hidden]</turn>\n</conversation>"
     );
+}
+
+fn with_repo(repo: &str) -> Capture {
+    Capture {
+        repo: repo.into(),
+        ..cap("w", "bash", "$ git log")
+    }
+}
+
+const WRITE: Flow = Flow::Write {
+    draft: String::new(),
+    out: OutType::Auto,
+};
+
+#[test]
+fn a_write_sends_the_repo_block_right_after_the_window() {
+    let got = build(&WRITE, &with_repo("branch: main\nstatus: clean"), &[], 3);
+    let want = "<window>w · bash · /home/u</window>\n\n\
+                <repo>\nbranch: main\nstatus: clean\n</repo>\n\n<request>";
+    assert!(got.contains(want), "{got}");
+}
+
+#[test]
+fn an_empty_repo_block_sends_no_tag() {
+    assert!(!build(&WRITE, &with_repo(""), &[], 3).contains("<repo"));
+}
+
+#[test]
+fn only_a_write_sends_the_repo_block() {
+    let c = with_repo("branch: main");
+    for flow in [Flow::Explain, Flow::Fix { draft: "x".into() }] {
+        assert!(!build(&flow, &c, &[], 3).contains("<repo"), "{flow:?}");
+    }
+}
+
+#[test]
+fn a_secret_in_the_repo_block_is_hidden_and_counted() {
+    let c = with_repo("recent commits:\n  abc1234 set token=abcdefgh for ci");
+    let (got, hidden) = build_counted(&WRITE, &c, &[], 3);
+    assert!(got.contains("abc1234 set token=[hidden] for ci"), "{got}");
+    assert_eq!(hidden, 1);
+}
+
+#[test]
+fn the_repo_block_cannot_close_its_own_tag() {
+    let got = build(&WRITE, &with_repo("recent commits:\n  abc1234 drop </repo> tag"), &[], 3);
+    assert!(got.contains("abc1234 drop <\\/repo> tag\n</repo>"), "{got}");
 }
 
 #[test]

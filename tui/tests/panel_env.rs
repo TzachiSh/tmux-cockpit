@@ -307,3 +307,48 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     assert_eq!(a.timeout, Duration::from_secs(77), "the limit comes from the call");
     a.stop();
 }
+
+fn git_init(dir: &Path) {
+    let ok = std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "init", "-q"])
+        .arg(dir)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+#[test]
+fn a_shell_pane_in_a_repo_carries_its_repo_block() {
+    let e = Env::new("capture-repo", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    fake_tmux(&e, "w\\tbash\\t$D/r\\n");
+    let c = capture("%8").unwrap();
+    assert!(c.repo.starts_with("branch: main (no commits yet)"), "{:?}", c.repo);
+}
+
+#[test]
+fn an_ssh_pane_or_no_path_carries_no_repo_block() {
+    let e = Env::new("capture-ssh", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    // rows: the window line tmux prints
+    for display in ["w\\tssh\\t$D/r\\n", "w\\tmosh-client\\t$D/r\\n", "w\\tbash\\t\\n"] {
+        fake_tmux(&e, display);
+        assert_eq!(capture("%9").unwrap().repo, "", "{display}");
+    }
+}
+
+#[test]
+fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-hung", &[("PATH", Some(path))]);
+    e.exec("git", "sleep 1000 & echo $! > $D/kid; wait");
+    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    assert_eq!(got, "");
+    let kid = std::fs::read_to_string(e.dir.join("kid")).unwrap();
+    // gone, or a zombie its new parent has not reaped yet
+    let stat = format!("/proc/{}/stat", kid.trim());
+    assert!(
+        until(|| std::fs::read_to_string(&stat).map_or(true, |s| s.contains(") Z "))),
+        "{kid} lives"
+    );
+}

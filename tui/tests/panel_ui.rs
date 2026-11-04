@@ -65,6 +65,7 @@ fn app(name: &str, cmd: &str, screen: &str) -> App {
         cmd: cmd.into(),
         path: "/home/u/proj".into(),
         screen: screen.into(),
+        ..Default::default()
     };
     App::new("%3", cap)
 }
