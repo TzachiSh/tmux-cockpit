@@ -4,10 +4,10 @@ use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, T
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
-use cockpit_tui::panel::request::{Call, Fail, Profile};
+use cockpit_tui::panel::request::{Call, Fail, Profile, read_dir_ok};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 fn app(cmd: &str, path: &str) -> App {
@@ -50,6 +50,21 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// A fork made while another test holds a fake open for writing carries that fd
+/// to its exec, which then fails ETXTBSY: writes and spawns take turns, as in panel_request.
+static FORK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn forking() -> std::sync::MutexGuard<'static, ()> {
+    FORK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// `body` as an executable at `path`, written under the fork lock.
+fn fake_at(path: &Path, body: &str) {
+    let _g = forking();
+    std::fs::write(path, body).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 fn scratch(tag: &str) -> Scratch {
@@ -109,13 +124,12 @@ fn an_exploring_write_runs_read_only_on_the_pane_folder() {
     a.explore = true;
     let p = a.profile_for(&write_flow());
     assert_eq!(p, Profile::read_only("/home/u/proj".into(), false, 0.15, Duration::from_secs(90)));
+    // what read_only passes is request.rs's to pin; this PR owns the folder and the caps
     let argv = p.argv();
     let at = |flag: &str| argv.iter().position(|x| x == flag).map(|i| argv[i + 1].as_str());
-    assert_eq!(at("--tools"), Some("Read,Grep,Glob"));
     assert_eq!(at("--add-dir"), Some("/home/u/proj"));
     assert_eq!(at("--max-budget-usd"), Some("0.15"));
-    assert_eq!(at("--permission-prompts"), Some("none"));
-    assert!(argv.iter().any(|x| x.contains("disableAllHooks")), "{argv:?}");
+    assert_eq!(p.timeout, Some(Duration::from_secs(90)));
 }
 
 #[test]
@@ -204,12 +218,12 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
     let repo = d.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     let fake = d.join("claude");
+    // cwd first, and argv renamed in whole: the test never reads a file half written
     let body = format!(
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > {0}/argv\npwd > {0}/cwd\nexec sleep 1000\n",
+        "#!/bin/sh\npwd > {0}/cwd\nprintf '%s\\n' \"$@\" > {0}/argv.tmp\nmv {0}/argv.tmp {0}/argv\nexec sleep 1000\n",
         d.display()
     );
-    std::fs::write(&fake, body).unwrap();
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake_at(&fake, &body);
     let call = Call {
         claude: fake.display().to_string(),
         timeout: Duration::from_secs(60),
@@ -220,13 +234,14 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
     ctrl(&mut a, 'r');
     a.draft = "fix it".into();
     ctrl(&mut a, 's');
-    a.launch(&call);
+    {
+        let _g = forking();
+        a.launch(&call);
+    }
     assert_eq!(a.timeout, EXPLORE_TIMEOUT, "the error line names the explore's limit");
     let argv = (0..1000)
         .find_map(|_| {
-            let t = std::fs::read_to_string(d.join("argv"))
-                .ok()
-                .filter(|t| t.contains("--strict-mcp-config"));
+            let t = std::fs::read_to_string(d.join("argv")).ok();
             if t.is_none() {
                 std::thread::sleep(Duration::from_millis(10));
             }
@@ -241,9 +256,12 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
         want.display().to_string(),
         "the call's cwd is its own dir, never the repo"
     );
-    let add = args.iter().position(|x| *x == "--add-dir").expect("--add-dir");
-    assert_eq!(args[add + 1], repo.display().to_string());
-    assert!(args.contains(&"Read,Grep,Glob"), "{argv}");
+    let at = args
+        .iter()
+        .position(|x| *x == "--system-prompt-file")
+        .expect("a system prompt file");
+    let want = Profile::read_only(repo.clone(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT).argv();
+    assert_eq!(args[at + 2..], want.iter().map(String::as_str).collect::<Vec<_>>()[..], "{argv}");
     a.stop();
 }
 
@@ -261,8 +279,13 @@ fn sent(explore: bool) -> App {
 }
 
 fn error_hint(a: &App) -> String {
+    error(a).1
+}
+
+/// The Error view's line and hint.
+fn error(a: &App) -> (String, String) {
     match &a.view {
-        View::Error { hint, .. } => hint.clone().unwrap_or_default(),
+        View::Error { line, hint } => (line.clone(), hint.clone().unwrap_or_default()),
         v => panic!("not an error: {v:?}"),
     }
 }
@@ -273,8 +296,9 @@ fn an_exploring_write_that_times_out_names_the_explore_cap() {
     let mut a = sent(true);
     a.timeout = EXPLORE_TIMEOUT;
     a.reply(Err(Fail::Timeout));
-    let h = error_hint(&a);
-    assert!(h.contains("90 s") && h.contains("^R"), "{h}");
+    let (line, h) = error(&a);
+    assert!(line.contains("90 s"), "the line names the cap: {line}");
+    assert!(h.contains("draft") && h.contains("^R"), "{h}");
     assert!(!h.contains("COCKPIT_PANEL_TIMEOUT"), "{h}");
 }
 
@@ -293,9 +317,10 @@ fn a_spent_explore_budget_hints_the_way_back_to_the_toggle() {
     a.reply(Ok("<question>Which?</question><option>a</option><option>b</option>".into()));
     a.key(KeyEvent::from(KeyCode::Char('1')));
     assert_eq!(a.view, View::Busy);
-    a.reply(Err(Fail::Failed("Error: Exceeded USD budget (0.15)".into())));
-    let h = error_hint(&a);
-    assert!(h.contains("USD 0.15") && h.contains("draft") && h.contains("^R"), "{h}");
+    a.reply(Err(Fail::Budget { limit_usd: 0.15 }));
+    let (line, h) = error(&a);
+    assert!(line.contains("USD 0.15"), "the line names the cap: {line}");
+    assert!(h.contains("draft") && h.contains("^R"), "{h}");
     a.key(KeyEvent::from(KeyCode::Esc));
     assert!(matches!(a.view, View::Question { .. }), "{:?}", a.view);
     a.key(KeyEvent::from(KeyCode::Esc));
@@ -304,10 +329,11 @@ fn a_spent_explore_budget_hints_the_way_back_to_the_toggle() {
     assert!(!a.explore, "where ^R turns it off");
 }
 
+/// A unit check on fail_hint: a text call has no budget, so this stop is fed in by hand.
 #[test]
-fn a_spent_budget_on_a_text_call_gets_no_explore_hint() {
+fn a_budget_stop_on_a_text_call_gets_no_explore_hint() {
     let mut a = sent(false);
-    a.reply(Err(Fail::Failed("Error: Exceeded USD budget (0.15)".into())));
+    a.reply(Err(Fail::Budget { limit_usd: 0.15 }));
     assert!(!error_hint(&a).contains("^R"));
 }
 
@@ -329,4 +355,187 @@ fn one_write_makes_at_most_five_exploring_calls_on_its_own() {
     }
     assert_eq!(calls, 5);
     assert!(matches!(a.view, View::Error { .. }), "{:?}", a.view);
+}
+
+// ---------------------------------------------------------------- the folder check (#465)
+
+#[test]
+fn the_root_folder_is_refused_with_request_rs_words() {
+    let mut a = app("bash", "/");
+    compose(&mut a);
+    ctrl(&mut a, 'r');
+    assert!(!a.explore);
+    let (lvl, text) = note(&a).expect("a note");
+    assert_eq!(lvl, Level::Warn);
+    let why = read_dir_ok(Path::new("/")).unwrap_err();
+    assert_eq!(text, format!("explore refused: {why}"));
+}
+
+#[test]
+fn home_and_the_folders_above_it_are_refused() {
+    let home = std::env::var("HOME").expect("HOME");
+    let above = Path::new(&home).parent().expect("home has a parent").display().to_string();
+    for dir in [home.as_str(), above.as_str()] {
+        let mut a = app("bash", dir);
+        compose(&mut a);
+        ctrl(&mut a, 'r');
+        assert!(!a.explore, "{dir}");
+        assert_eq!(a.profile_for(&write_flow()), Profile::TEXT, "{dir}");
+    }
+}
+
+#[test]
+fn a_folder_with_a_glob_character_is_refused() {
+    let mut a = app("bash", "/srv/a*b");
+    compose(&mut a);
+    ctrl(&mut a, 'r');
+    assert!(!a.explore);
+    assert!(note(&a).unwrap().1.contains("glob"), "{:?}", note(&a));
+}
+
+#[test]
+fn a_plain_project_folder_is_allowed() {
+    let d = scratch("plain");
+    let mut a = app("bash", &d.0.display().to_string());
+    compose(&mut a);
+    ctrl(&mut a, 'r');
+    assert!(a.explore, "{:?}", note(&a));
+}
+
+// ---------------------------------------------------------------- files read (#416)
+
+/// A pane folder and a fake claude that prints `out` on stdout and exits `code`.
+fn faked(tag: &str, out: &str, code: i32) -> (Scratch, Call, String) {
+    let g = scratch(tag);
+    let d = &g.0;
+    let repo = d.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(d.join("out"), out.replace("$R", &repo.display().to_string())).unwrap();
+    let fake = d.join("claude");
+    let body = format!("#!/bin/sh\ncat >/dev/null\ncat {}/out\nexit {code}\n", d.display());
+    fake_at(&fake, &body);
+    let call = Call {
+        claude: fake.display().to_string(),
+        timeout: Duration::from_secs(30),
+        dir: d.join("cache"),
+    };
+    (g, call, repo.display().to_string())
+}
+
+/// A write on `repo`, explore on or off, launched and polled to its answer.
+fn answered(call: &Call, repo: &str, explore: bool) -> App {
+    let mut a = app("bash", repo);
+    compose(&mut a);
+    if explore {
+        ctrl(&mut a, 'r');
+    }
+    a.draft = "fix it".into();
+    ctrl(&mut a, 's');
+    {
+        let _g = forking();
+        a.launch(call);
+    }
+    let done = (0..1000).any(|_| {
+        let got = a.poll();
+        if !got {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        got
+    });
+    assert!(done, "no answer in 10 s");
+    a
+}
+
+fn read(id: &str, path: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"{id}","name":"Read","input":{{"file_path":"{path}"}}}}]}}}}"#
+    )
+}
+
+fn result(id: &str, error: bool) -> String {
+    format!(r#"{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"{id}","is_error":{error}}}]}}}}"#)
+}
+
+const OK: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"<prompt>Fix @src/a.rs</prompt>"}"#;
+const SPENT: &str = r#"{"type":"result","subtype":"error_max_budget_usd","is_error":true,"errors":["Reached maximum budget ($0.15)"]}"#;
+
+#[test]
+fn an_exploring_result_notes_the_files_it_read() {
+    let out = format!(
+        "[{},{},{},{},{OK}]",
+        read("a", "$R/src/a.rs"),
+        result("a", false),
+        read("b", "$R/lib/b.rs"),
+        result("b", false)
+    );
+    let (_g, call, repo) = faked("reads", &out, 0);
+    let a = answered(&call, &repo, true);
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    let (lvl, text) = note(&a).expect("a note");
+    assert_eq!((lvl, text), (Level::Info, "read 2 files: src/a.rs, lib/b.rs"));
+}
+
+#[test]
+fn a_refused_read_is_not_counted() {
+    let out = format!(
+        "[{},{},{},{},{OK}]",
+        read("a", "/etc/passwd"),
+        result("a", true),
+        read("b", "$R/src/a.rs"),
+        result("b", false)
+    );
+    let (_g, call, repo) = faked("refused", &out, 0);
+    let a = answered(&call, &repo, true);
+    assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/a.rs"));
+}
+
+#[test]
+fn an_exploring_call_that_read_nothing_says_so() {
+    let (_g, call, repo) = faked("none", &format!("[{OK}]"), 0);
+    let a = answered(&call, &repo, true);
+    assert_eq!(note(&a).map(|n| n.1), Some("read no files"));
+}
+
+#[test]
+fn a_text_call_gets_no_reads_note() {
+    let (_g, call, repo) = faked("text", "<prompt>Fix it</prompt>", 0);
+    let a = answered(&call, &repo, false);
+    assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
+    assert_eq!(note(&a), None);
+}
+
+/// A budget stop, in claude's json, after a read: the Error says what was read and how to stop.
+#[test]
+fn a_budget_stop_notes_its_reads_and_hints_the_toggle() {
+    let out = format!("[{},{},{SPENT}]", read("a", "$R/src/a.rs"), result("a", false));
+    let (_g, call, repo) = faked("spent", &out, 1);
+    let a = answered(&call, &repo, true);
+    let (line, h) = error(&a);
+    assert!(line.contains("USD 0.15"), "{line}");
+    assert!(h.contains("^R"), "{h}");
+    assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/a.rs"));
+}
+
+/// A reply cut off before its closing tag keeps its warning, with the reads after it.
+#[test]
+fn the_reads_join_a_warning_and_never_replace_it() {
+    let cut = r#"{"type":"result","subtype":"success","is_error":false,"result":"<prompt>Fix @src/a.rs"}"#;
+    let out = format!("[{},{},{cut}]", read("a", "$R/src/a.rs"), result("a", false));
+    let (_g, call, repo) = faked("cut", &out, 0);
+    let a = answered(&call, &repo, true);
+    let (lvl, text) = note(&a).expect("a note");
+    assert_eq!(lvl, Level::Warn);
+    assert!(text.contains("cut off") && text.ends_with("; read 1 file: src/a.rs"), "{text}");
+}
+
+#[test]
+fn many_reads_list_three_names_and_count_the_rest() {
+    let mut ev = vec![];
+    for (i, f) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+        ev.push(read(&i.to_string(), &format!("$R/{f}.rs")));
+        ev.push(result(&i.to_string(), false));
+    }
+    let (_g, call, repo) = faked("many", &format!("[{},{OK}]", ev.join(",")), 0);
+    let a = answered(&call, &repo, true);
+    assert_eq!(note(&a).map(|n| n.1), Some("read 5 files: a.rs, b.rs, c.rs and 2 more"));
 }

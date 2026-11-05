@@ -6,7 +6,7 @@ use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
-use super::request::{Call, Fail, Profile, Request};
+use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -362,7 +362,7 @@ impl App {
         (self.view, self.busy_back, self.run) = (h.view, h.busy_back, h.run);
         (self.draft, self.cur, self.out, self.model) = (h.draft, h.cur, h.out, h.model);
         // the pane may run ssh by now: its folder is then the client's, never read
-        self.explore = h.explore && self.explore_dir().is_some();
+        self.explore = h.explore && self.explore_dir().is_ok();
         let last = self.tiles().len() - 1;
         if let View::Home { sel } = &mut self.view {
             *sel = (*sel).min(last);
@@ -822,35 +822,41 @@ impl App {
             self.explore = false;
             return self.say(Level::Info, "explore off: the write reads the screen only");
         }
-        if self.explore_dir().is_some() {
-            self.explore = true;
-            return self.say(Level::Info, "explore on: the write may read files under this folder first");
+        match self.explore_dir() {
+            Ok(_) => {
+                self.explore = true;
+                self.say(Level::Info, "explore on: the write may read files under this folder first")
+            }
+            Err(why) => self.say(Level::Warn, format!("explore refused: {why}")),
         }
-        let why = if self.local {
-            "tmux gives no folder for this pane".to_string()
-        } else {
-            format!("{} may run on another machine, so its folder is not the one shown", self.cap.cmd)
-        };
-        self.say(Level::Warn, format!("explore refused: {why}"));
     }
 
-    /// The folder an exploring write may read: the pane's, in a local window.
-    fn explore_dir(&self) -> Option<PathBuf> {
-        (self.local && !self.cap.path.is_empty()).then(|| PathBuf::from(&self.cap.path))
+    /// The folder an exploring write may read: the pane's, in a local window, and
+    /// one request.rs would start a call on; else why not, for the user.
+    fn explore_dir(&self) -> Result<PathBuf, String> {
+        if !self.local {
+            return Err(format!(
+                "{} may run on another machine, so its folder is not the one shown",
+                self.cap.cmd
+            ));
+        }
+        if self.cap.path.is_empty() {
+            return Err("tmux gives no folder for this pane".into());
+        }
+        let dir = PathBuf::from(&self.cap.path);
+        read_dir_ok(&dir).map(|()| dir)
     }
 
     /// A write with the toggle on, in a window local when the panel opened. Fix and Explain never read.
     pub fn explores(&self, flow: &Flow) -> bool {
-        self.explore && matches!(flow, Flow::Write { .. }) && self.explore_dir().is_some()
+        self.explore && matches!(flow, Flow::Write { .. }) && self.explore_dir().is_ok()
     }
 
     /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
     /// write a read-only one on the pane's folder under the explore caps, per call.
-    // TODO(#416): when 1b's Profile has its output-format field, ask json --verbose here and
-    // have reply() unwrap it and note parse::files_read's count on the result.
     pub fn profile_for(&self, flow: &Flow) -> Profile {
         match self.explore_dir() {
-            Some(dir) if self.explores(flow) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+            Ok(dir) if self.explores(flow) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
             _ => Profile::TEXT,
         }
     }
@@ -859,17 +865,11 @@ impl App {
     /// leads back to the draft from any view a call starts on, and ^R is there.
     fn fail_hint(&self, f: &Fail) -> Option<String> {
         let exploring = self.run.as_ref().is_some_and(|r| self.explores(&r.flow));
-        let cap = match f {
-            Fail::Timeout => format!("{} s", EXPLORE_TIMEOUT.as_secs()),
-            Fail::Failed(t) if t.to_ascii_lowercase().contains("exceeded usd budget") => format!("USD {EXPLORE_BUDGET_USD}"),
-            _ => return hint(f).map(String::from),
-        };
-        if !exploring {
-            return hint(f).map(String::from);
+        if exploring && matches!(f, Fail::Timeout | Fail::Budget { .. }) {
+            // the line above names the cap; this says what to do about it
+            return Some("explore caps each call: r retries, or esc back to the draft, where ^R turns it off".into());
         }
-        Some(format!(
-            "explore stops each call at {cap}: r retries, or esc back to the draft, where ^R turns it off"
-        ))
+        hint(f).map(String::from)
     }
 
     fn need_draft(&mut self) -> bool {
@@ -983,8 +983,29 @@ impl App {
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
             return false;
         };
+        // read before reply(), which drops the Request; Some only for a json call
+        let read = self.req.as_ref().and_then(Request::raw).and_then(parse::files_read);
         self.reply(a);
+        self.note_reads(read);
         true
+    }
+
+    /// The files an exploring call read, relative to the pane's folder, on the
+    /// view its answer opened: after a warning there, never in its place.
+    fn note_reads(&mut self, read: Option<Vec<String>>) {
+        let Some(read) = read else { return };
+        let root = format!("{}/", self.cap.path.trim_end_matches('/'));
+        let names: Vec<&str> = read.iter().map(|p| p.strip_prefix(&root).unwrap_or(p)).collect();
+        let text = match names.len() {
+            0 => "read no files".to_string(),
+            1 => format!("read 1 file: {}", names[0]),
+            n if n <= 3 => format!("read {n} files: {}", names.join(", ")),
+            n => format!("read {n} files: {} and {} more", names[..3].join(", "), n - 3),
+        };
+        match self.note.take() {
+            Some(Note { level, text: was }) => self.say(level, format!("{was}; {text}")),
+            None => self.say(Level::Info, text),
+        }
     }
 
     fn cancel(&mut self) {
