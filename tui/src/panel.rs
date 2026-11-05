@@ -2,6 +2,7 @@
 //! request, reply parsing, and the `cockpit-tui panel %N` screens.
 pub mod action;
 pub mod app;
+pub mod ask;
 pub mod capture;
 pub mod envelope;
 pub mod parse;
@@ -12,6 +13,54 @@ pub mod route;
 pub mod view;
 
 use std::path::PathBuf;
+
+/// How `cockpit-tui panel %N` starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Start {
+    Plain,
+    /// `--resume <state> --last <how>`
+    Resume(String, String),
+    /// `--ask <file> <a> <b>` (#365): a question about lines `a` to `b` of the file
+    Ask(String, u32, u32),
+}
+
+const START_USAGE: &str = concat!(
+    "panel takes a pane id, then only --resume <state> --last <how>",
+    " or --ask <file> <a> <b>"
+);
+
+/// A pane id: `%` and digits.
+pub fn is_pane(p: &str) -> bool {
+    p.strip_prefix('%')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// A line number as the viewer prints it: digits, no leading zero, from 1.
+fn line_no(s: &str) -> Option<u32> {
+    let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    (digits && !s.starts_with('0') && s.len() <= 9).then(|| s.parse().ok()).flatten()
+}
+
+/// The pane, then at most one way to start: `--resume <state> --last <how>`, or
+/// `--ask <file> <a> <b>` with `1 <= a <= b`.
+pub fn start_args(args: &[String]) -> Result<(String, Start), String> {
+    let pane = args.first().filter(|p| is_pane(p)).ok_or("panel needs a pane id like %3")?;
+    let rest: Vec<&str> = args[1..].iter().map(String::as_str).collect();
+    let start = match rest[..] {
+        [] => Start::Plain,
+        ["--resume", f, "--last", last] => Start::Resume(f.into(), last.into()),
+        ["--ask", f, a, b] if !f.is_empty() => match (line_no(a), line_no(b)) {
+            (Some(a), Some(b)) if a <= b => Start::Ask(f.into(), a, b),
+            _ => {
+                return Err(format!(
+                    "--ask takes two line numbers, the first not past the second, not [{a} {b}]"
+                ));
+            }
+        },
+        _ => return Err(START_USAGE.into()),
+    };
+    Ok((pane.clone(), start))
+}
 
 /// XDG says a relative value is to be ignored, so only an absolute one wins.
 pub(crate) fn xdg(var: &str, fallback: &str) -> PathBuf {

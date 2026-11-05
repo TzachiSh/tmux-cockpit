@@ -58,6 +58,8 @@ impl Rig {
             ("HOME", s.to_string()),
             ("CLAUDE_CONFIG_DIR", format!("{s}/.claude")),
             ("COCKPIT_READONLY", "1".into()),
+            // #505: no proc under it, so the walk asks the fake ps, not a live pid of the same number
+            ("COCKPIT_PROC_DIR", format!("{s}/proc")),
             ("XDG_STATE_HOME", format!("{s}/state")),
         ];
         Rig { t: Tmp(d), env }

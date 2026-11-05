@@ -5699,11 +5699,11 @@ wd() {                        # wd <args...>: tmux-review on the block's server,
     (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
         </dev/null 2>/dev/null)
 }
-# With the binary under test: one that has `workdir` answers this agent pane with exit 0 and
-# names the transcript's tree; one that has not (exit 2, whatever it says on stderr) leaves the
-# launch dir. Each run asserts one of them.
+# With the binary under test: one that has not `workdir` exits 2 (whatever it says on stderr)
+# and leaves the launch dir; any other binary must name the transcript's tree, so a workdir
+# that refuses this agent pane (exit 1) fails here (#508). Each run asserts one of them.
 wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>&1 || wdrc=$?
-if [ "$wdrc" != 0 ]; then
+if [ "$wdrc" = 2 ]; then
     is "a binary without workdir: a transcript-only pane keeps its launch dir" "$WD/launch" \
        "$(wd --dir "$WDP")"
 else
@@ -5759,6 +5759,11 @@ is "a shell pane is not asked: the board does not count it" "0 $WD/launch" \
 # The board's live test, without its ps walk: a live Claude renames itself to its version, and
 # the hooks' @panestate marks a pane whatever it runs. A name with one dot is not a version.
 is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+# The board lowercases the command before the glob (#508): Claude and CLAUDE are claude.
+for argv0 in Claude CLAUDE; do
+    is "a pane running as $argv0 is an agent, so it is asked" "1 $WD/other" \
+       "$(wd_ct ok "$(wd_pane "$argv0")")"
+done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
@@ -7396,9 +7401,9 @@ done
 TJOUT=$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json 2>/dev/null)
 is "--json names both agent panes and not the shell pane" "$TJA $TJB" \
    "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "id": "\(%[0-9]*\)".*/\1/p' | tr '\n' ' ' | sed 's/ $//')"
-is "--json carries the 14 frozen keys, in order" \
-   "id where state title doing said asked msg since loc diff review session path" \
-   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -14 | tr '\n' ' ' | sed 's/ $//')"
+is "--json carries the 16 frozen keys, in order" \
+   "id where state title doing said asked msg since loc diff review session path dir job" \
+   "$(printf '%s\n' "$TJOUT" | sed -n 's/^    "\([a-z]*\)":.*/\1/p' | head -16 | tr '\n' ' ' | sed 's/ $//')"
 is "--json exits 0 and says nothing about $TJSH" "0 no" \
    "$(COCKPIT_TMUX="tmux -L $TJ" "$COCKPIT_TUI_BIN" --json >/dev/null 2>&1; printf '%s ' "$?"; \
       case "$TJOUT" in *"\"$TJSH\""*) printf yes ;; *) printf no ;; esac)"
@@ -8427,6 +8432,7 @@ cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
 printf '%s\n' "\$*" >> "$PND/bargv"
+printf '%s\n' "\${COCKPIT_PANEL_HIDE_TAKEN:-}" > "$PND/taken"
 [ -e "$PND/crash" ] && exit 3
 # A state file only on the first run: the resumed one leaves without a way back.
 [ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
@@ -8440,6 +8446,42 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
+# --ask (#365): the first run opens on the viewer's question; a run after an
+# action goes back with --resume alone; anything but two line numbers a <= b is refused
+pask() {                      # <args after -p %5> -> the binary's argv, one run a line, and the exit code
+    : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"; printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
+    echo "rc=$?"; cat "$PND/bargv"
+}
+is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7" "$(pask --ask /r/x.rs 3 7)"
+touch "$PND/state"
+is "and a run after an action resumes without it" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+rm -f "$PND/state"
+for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
+    # shellcheck disable=SC2086
+    is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
+done
+is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
+# `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
+mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
+: > "$PND/bargv"; printf '4242\n' > "$PND/now"; printf 'paste %%5\n' > "$PND/line"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "--ask leaves a panel hidden on the pane where it is" "panel %5 --ask /r/x.rs 3 7|H" \
+   "$(head -1 "$PND/bargv")|$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state" 2>/dev/null)"
+is "and the binary is told the pane's hidden slot is taken" "1" "$(cat "$PND/taken")"
+# review-464: a stub that does hide (no action line, a state) must not overwrite it
+printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"; : > "$PND/line"; touch "$PND/state"; : > "$PND/pargv"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "a hide on an ask leaves the panel hidden before it" "H" "$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state")"
+is "and says this one is closed" "1" "$(grep -c 'already hidden on %5; this one is closed' "$PND/pargv")"
+rm -f "$PND/state"; rm -rf "$PND/xdg"
+: > "$PND/bargv"; pask >/dev/null
+is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
+unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
@@ -10937,6 +10979,13 @@ case "$(pi_rs | grep '^base ')" in 'base      since last review  ('*) ok "the Ru
 printf 'uncommitted\n' > "$PISESS/comments.md.base"
 is "and it is the chosen mode" "base      uncommitted  (HEAD)" "$(pi_rs | grep '^base ')"
 is "a pane that is not there is named, exit 1" "cockpit-tui: no such pane %999 1" "$(pi_rs %999) $(pi_rs %999 >/dev/null 2>&1; echo $?)"
+# #460: a bound job's name is a pane title: a newline in it is a space, as on the board
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job bg_1 >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -p -t "$PIAP" @cockpit_job_name "$(printf 'night\nsweep')" >/dev/null 2>&1
+is "the job row names the bound job, a newline a space" "job       night sweep  (@cockpit_job bg_1)" \
+   "$(pi_rs | grep '^job ')"
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job >/dev/null 2>&1
+"$TMUX_REAL" -L "$PI" set -pu -t "$PIAP" @cockpit_job_name >/dev/null 2>&1
 is "a word that is not a pane id is refused, exit 2" "2" "$(pi_rs notapane >/dev/null 2>&1; echo $?)"
 "$TMUX_REAL" -L "$PI" kill-server >/dev/null 2>&1
 fi
@@ -12428,7 +12477,7 @@ until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_c
 bwrc=0
 TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
     "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
-if [ "$bwrc" != 0 ]; then
+if [ "$bwrc" = 2 ]; then   # no workdir; an exit 1 here is a workdir bug, and asserts below
     read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
     is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
        "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
@@ -13455,6 +13504,13 @@ cat > "$MV/bin/cockpit-tui" <<'STUB'
 if [ "$1" = view ]; then
     { printf 'VIEW'; for a in "$@"; do printf ' [%s]' "$a"; done; echo; } >> "$TMUX_LOG"
     [ -z "${VIEW_ERR:-}" ] || { printf '%s\n' "$VIEW_ERR" >&2; exit "${VIEW_RC:-2}"; }
+    # VIEW_ONCE=N: the viewer prints VIEW_OUT N times, then closes empty (#365's loop back)
+    if [ -n "${VIEW_ONCE:-}" ]; then
+        i=1; while [ -e "$TMUX_LOG.once$i" ]; do i=$((i + 1)); done   # builtins: PATH is bare
+        [ "$i" -gt "$VIEW_ONCE" ] && exit 0
+        : > "$TMUX_LOG.once$i"
+    fi
+    [ -z "${VIEW_ENV:-}" ] || printf 'VIEWENV [%s]\n' "${COCKPIT_VIEW_ASK-unset}" >> "$TMUX_LOG"
     printf '%s\n' "${VIEW_OUT-}"; exit "${VIEW_RC:-0}"
 fi
 while read -r _; do :; done; printf '%s\n' "${PICK_KEY-0}"
@@ -13462,11 +13518,12 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
-    : > "$MVL"
+    : > "$MVL"; rm -f "$MVL".once*
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
-        bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
+        VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
+        bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
 is "a lone .md opens a popup the pane's size over it, which re-enters with --view" \
@@ -13541,6 +13598,36 @@ is "a window tmux refuses to open is a note, from the editor path" \
 is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+# #365: the viewer's `ask <a> <b>` opens cockpit-panel --ask, called by its path
+# beside the script, then the viewer again at line a. A copy of the script with
+# a cockpit-panel stub beside it, so the real panel never runs.
+mkdir -p "$MV/s"; cp "$DIR/scripts/tmux-open-path" "$MV/s/"; ln -sfn "$DIR/scripts/lib" "$MV/s/lib"
+cat > "$MV/s/cockpit-panel" <<'STUB'
+#!/bin/sh
+{ printf 'PANEL'; for a in "$@"; do printf ' [%s]' "$a"; done; printf ' env[%s]\n' "${COCKPIT_VIEW_ASK-unset}"; } >> "$TMUX_LOG"
+STUB
+chmod +x "$MV/s/cockpit-panel"
+askrun() { MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT="$1" mvrun '' "${@:2}"; }
+is "--view: the viewer's ask 3 7 opens the panel on the pane, the file and the lines, then the viewer at 3" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [3] [7] env[unset]"$'\n'"VIEW [view] [--line] [3] [--] [$MV/w/a.md]" \
+   "$(askrun 'ask 3 7' --view %1 "$MV/w/a.md" 7)"
+is "--pick: the same, from the picker's own popup" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
+   "$(MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT='ask 1 1' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+# a loop, not a call per ask: under a cap of 12 nested calls, 20 asks in a row
+# reopen the viewer 21 times; a recursion would die at the cap
+is "twenty asks in a row reopen the viewer each time, in a loop" "20 21" \
+   "$(MV_SCRIPT="$MV/s/tmux-open-path" FUNCNEST=12 VIEW_ONCE=20 VIEW_OUT='ask 2 4' mvrun '' --view %1 "$MV/w/a.md" '' \
+      | awk '/^PANEL/ {p++} /^VIEW / {v++} END {print p+0, v+0}')"
+is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]" \
+   "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWENV)"
+for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
+         "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
+    case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
+        *PANEL*) bad "the viewer's [$o] is not an ask: no panel" "no PANEL" "a panel" ;;
+        *) ok "the viewer's [$o] is not an ask: no panel" ;;
+    esac
+done
 
 echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
 # One table, one row per character: removing any one from the helper fails its row.

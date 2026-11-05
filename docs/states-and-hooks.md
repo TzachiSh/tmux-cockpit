@@ -384,8 +384,8 @@ read job state from outside, and writes each pane through `agent-state poll`. A 
    agents`), and `allow-set-title` is on for P: with it off, the title goes stale for good.
 
 A bound pane shows J's state, and carries `@cockpit_job` (the id) and `@cockpit_job_name`
-(the name). Nothing draws the name yet: it shows only in `tmux show-options -p`, and
-drawing it beside the state is a follow-up (#460). Both are cleared, with
+(the name). The board draws the name, `→ <name>`, in place of the pane's title, and
+the info screen and `--json` carry it (#460). Both options are cleared, with
 `@cockpit_job_state` (what the poller last wrote), as soon as the rule stops holding:
 the title changed, the pane left `claude`, or a second job took the name. The state is
 taken back only if `@panestate` still holds what the poller wrote, and never on a pane a

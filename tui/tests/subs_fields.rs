@@ -81,6 +81,8 @@ fn field_14_is_the_count_and_the_subagents_dir_follows_the_transcript_then_the_s
         std::env::set_var("HOME", &d);
         std::env::remove_var("CLAUDE_CONFIG_DIR");
         std::env::set_var("COCKPIT_READONLY", "1");
+        // #505: no proc under it, so the walk asks the fake ps, not the live pid of the same number
+        std::env::set_var("COCKPIT_PROC_DIR", format!("{d}/proc"));
     }
 
     let mut ps = list_panes().unwrap();

@@ -7,4 +7,4 @@
 "│                                                          │"
 "│                                                          │"
 "╰──────────────────────────────────────────────────────────╯"
-" / find   v select   h keys   e edit   ↑↓ scroll   q close  "
+" / find   h keys   e edit   ↑↓ scroll   q close             "

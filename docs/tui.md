@@ -219,6 +219,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
+| `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
 | `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). `nerd` draws the default, but for the subagent badge's nf-oct-workflow (U+F52E) in place of `✦`. The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |
@@ -238,7 +239,7 @@ benchmarks.
 
 **The panel's prompts.** A file at
 `${XDG_CONFIG_HOME:-$HOME/.config}/tmux-cockpit/prompts/<name>.txt`, with
-`<name>` one of `write`, `write.examples`, `explain` or `fix`, replaces the
+`<name>` one of `write`, `write.examples`, `explain`, `fix` or `ask-code` (#365), replaces the
 shipped prompt of that name; the `{{platform}}`, `{{home}}`, `{{about_user}}`
 and `{{examples}}` placeholders are filled in it the same way. A missing file
 means the shipped prompt. A file that exists but cannot be read (permissions,
@@ -795,6 +796,38 @@ cluster as the buffer draws it, so `❤️` and `1️⃣` take 2 columns, not 1.
 - An empty Compose shows a dim `type what you want…`; it is drawn, never typed.
 - Over 6000 characters the head counts `N/8000`, the cap; at the cap a typed
   or pasted character is turned away and a note says how many.
+
+### Asking about code (#365)
+
+`cockpit-tui panel %N --ask <file> <a> <b>`, which `cockpit-panel --ask` passes
+on the first run only, opens the panel on a question box titled with the
+reference (`ask about src/auth.rs:40-72`). Nothing is sent until the question
+is.
+
+- **What is read.** The panel reads the lines itself, as the viewer would show
+  them: a file the viewer refuses (binary, over 1 MB, not UTF-8) is an error,
+  and an end past the file's last line is held to it. At most 400 lines and
+  32 KB go inline, each behind its number; the call is told what was left out
+  or cut short, and reads the rest with its own Read. Each line is redacted as
+  the screen is before it is numbered or cut (a key's PEM body line by line),
+  and the screen itself is never sent. A file name with a control or bidi
+  character is refused.
+- **The call.** `request::Profile::read_only(repo, research = true)`: Read,
+  Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
+  paths denied, and no read outside the repo (see the rule on actions above).
+  The repo is the nearest folder above the file with a `.git`, found by
+  looking, never by running git, else the file's folder; never home, a folder
+  above it, or `/`, so a file whose folder is one of them is "not in a project
+  folder". The repo then passes `request::read_dir_ok`. USD 0.50 and 300 s cap
+  one ask; `esc` on the busy line cancels it and goes back to the question. The model is the panel's routing's, sonnet unless one is chosen.
+- **The answer** is the Explain answer view, its note naming the files the
+  call read, from the repo (as an exploring write's does): `f` asks a follow-up in the same
+  thread (the code and every turn are sent again; nothing is kept between
+  panels), and a `<prompt>` the answer ends with can be inserted into or sent
+  to the pane's agent. `^Z` hides it like any other panel, unless a panel is
+  hidden on the pane already: the pane keeps one, so the ask's `^Z` says so,
+  and `cockpit-panel` never moves a state over the one kept.
+- **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)
 
@@ -1645,7 +1678,7 @@ is agreed; changing any of it takes a comment on
 ```
 id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
-since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, job
 ```
 
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
@@ -1671,11 +1704,23 @@ reader keeps the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
-**`--json`**: an array of objects with exactly these 15 keys, in this order:
+**`job` (#460):** `@cockpit_job_name`, the background job agent-poll bound this
+viewer pane to by its title (docs/states-and-hooks.md), with control and bidi
+characters dropped since it comes from a pane title; `""` when unbound. The board
+draws `→ <job>` (`-> <job>` in ASCII) in place of the title on the row, the tile
+and the pane header, so a bind to the wrong job is plain to see, and find (`/`)
+reads it. In place of the title, not beside it: the name column has no room for
+both, and what it hides is the window name or an old `@cockpit_title`, not the
+title the bind matched. That title stays in the info screen, in `--json`'s `title`
+and in `--rows`. A bound row's name column grows by the mark's width, so even at
+its 6-column floor the job keeps a few characters. The kill confirm names the job
+too.
+
+**`--json`**: an array of objects with exactly these 16 keys, in this order:
 
 ```
 id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
-session, path, dir
+session, path, dir, job
 ```
 
 `where` is `sess:idx`, and nothing else: the window name is `data::Pane`'s
@@ -2119,8 +2164,13 @@ padding column, and the footer says which lines an ask would take
 the last markdown block it touches with blank lines off the end. Only a launcher
 that routes that line sets `COCKPIT_VIEW_ASK=1`, and only then is `? ask`
 offered: without it `?` leaves a note and the viewer stays, so a launcher that
-reads only `edit` never loses the screen to it. `tmux-open-path` routes it to
-the panel's ask in a later change.
+reads only `edit` never loses the screen to it. `tmux-open-path` sets it on the
+viewer's command alone, checks the line (`ask`, then two numbers from 1 with no
+leading zero, the first not past the second, and nothing else), and runs
+`cockpit-panel -p <pane> --ask <file> <a> <b>` by its own path in the same
+popup, with the file and the pane its own, never the viewer's. When the panel
+closes, the viewer opens again at line `a`. See
+[Asking about code](#asking-about-code-365).
 `esc` clears the selection before the matches, and the help moved from `?` to
 `h` and `F1`. A tap and a release, then a press, a drag and a release, select
 from the first line to the drag's end. Under the floor card or the help a tap
@@ -2199,7 +2249,8 @@ It shows, in this order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), a second
 `dir` row `<dir>  (transcript cwd)` when the work dir (#452) is the transcript's
 cwd, `root`,
-`state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
+`state` with `@panestate_msg`, `job` with `@cockpit_job` for a viewer pane
+bound to a background job (#460), the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
 `base`, `session`, `title`, `tui` and the review dir with its pinned and
 delivered counts. The git root and the review base are Rust, on the `gitsafe`
