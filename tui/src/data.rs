@@ -974,13 +974,24 @@ pub fn preview(id: &str, n: usize) -> Option<String> {
     if n == 0 {
         return Some(String::new());
     }
-    // -J so a wrap point cannot split an ANSI sequence and hand the parser halves.
-    let out = tmux(&["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")])?;
+    let a = preview_args(id, n);
+    let out = tmux(&a.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Some(shape_preview(&out, n))
+}
+
+/// The tmux argv of one preview's capture, the newest `n` rows of `id`. -J so
+/// a wrap point cannot split an ANSI sequence and hand the parser halves.
+pub fn preview_args(id: &str, n: usize) -> [String; 7] {
+    ["capture-pane", "-ep", "-J", "-t", id, "-S", &format!("-{n}")].map(String::from)
+}
+
+/// A preview off the stdout of [`preview_args`]: its newest `n` lines, capped.
+pub fn shape_preview(out: &str, n: usize) -> String {
     // #284: ansi-to-tui drops the rest of a line after an OSC 8 link that ends
     // in `ESC \`, the form tmux emits; no OSC draws anything in a preview
-    let out = strip_osc(&out);
+    let out = strip_osc(out);
     let lines: Vec<&str> = out.trim_end().lines().collect();
-    Some(cap(&lines[lines.len().saturating_sub(n)..].join("\n")))
+    cap(&lines[lines.len().saturating_sub(n)..].join("\n"))
 }
 
 /// The newest [`PREVIEW_MAX`] bytes of `text`. A cut can land inside an escape,
