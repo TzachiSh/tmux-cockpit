@@ -59,7 +59,9 @@ fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
         return records(z.split('\0'), true);
     }
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
-    records(plain.split('\n'), false)
+    let mut v = records(plain.split('\n'), false);
+    v.retain(|(p, _)| !Path::new(p).exists() || Path::new(p).join(".git").exists());
+    v
 }
 
 fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {
@@ -71,10 +73,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
     let mut out = Vec::new();
     let mut cur: Option<(String, Option<String>, bool)> = None;
     let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
-        if let Some((p, b, ok)) = cur.take()
-            && ok
-            && (nul || !Path::new(&p).exists() || Path::new(&p).join(".git").exists())
-        {
+        if let Some((p, b, true)) = cur.take() {
             out.push((p, b));
         }
     };
