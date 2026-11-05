@@ -50,18 +50,59 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// record, but needs git 2.36; older git rejects it and prints nothing, so the
 /// plain porcelain is read instead, and a record whose path was cut by a newline
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
-/// is one with no `.git` in it (#348): a newline name can forge a whole
-/// `worktree <dir>` line. A main checkout's `.git` is a dir, a linked one's a file.
-/// A path that is gone is kept: it names no directory to open.
+/// is one that is not this repo's (#348, #532): a newline name can forge a whole
+/// `worktree <dir>` line, and `<dir>` may be any checkout. See [`ours`].
 fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
         return records(z.split('\0'), true);
     }
+    let common = git(dir, &[], None, &["rev-parse", "--git-common-dir"]);
+    let common = common.trim_end_matches('\n');
+    if common.is_empty() {
+        return Vec::new();
+    }
+    let common = Path::new(dir).join(common);
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
     let mut v = records(plain.split('\n'), false);
-    v.retain(|(p, _)| !Path::new(p).exists() || Path::new(p).join(".git").exists());
+    v.retain(|(p, _)| ours(Path::new(p), &common));
     v
+}
+
+/// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
+/// `wt_ours` decides it. The main checkout's `.git` is the common dir; a linked
+/// tree's `.git` file names a dir in its `worktrees/` whose `gitdir` file names
+/// that `.git` back. A path that is gone is kept: it names no directory to open.
+fn ours(p: &Path, common: &Path) -> bool {
+    let dot = p.join(".git");
+    if !p.exists() {
+        return true;
+    }
+    if dot.is_dir() {
+        return same(&dot, common);
+    }
+    let Some(g) = first_line(&dot).and_then(|l| Some(p.join(l.strip_prefix("gitdir: ")?))) else {
+        return false;
+    };
+    let home = g.parent().is_some_and(|w| same(w, &common.join("worktrees")));
+    home && first_line(&g.join("gitdir")).is_some_and(|b| same(&g.join(b), &dot))
+}
+
+/// Both paths exist and are the same file, however each is spelled.
+fn same(a: &Path, b: &Path) -> bool {
+    matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The first line of a regular file, read no further than 4 KiB.
+fn first_line(f: &Path) -> Option<String> {
+    use std::io::Read;
+    if !f.is_file() {
+        return None;
+    }
+    let mut s = String::new();
+    std::fs::File::open(f).ok()?.take(4096).read_to_string(&mut s).ok()?;
+    let l = s.lines().next()?;
+    (!l.is_empty()).then(|| l.to_string())
 }
 
 fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {

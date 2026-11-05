@@ -12605,6 +12605,19 @@ cg_opens() {                  # cg_opens <label> <path>  goto opens a window in 
 }
 cg_forge() { git -C "$CGR" worktree add -q -b "$1" "$CGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
 
+br_repo "$CGD/other" "$CGD/om"
+git -C "$CGD/other" worktree add -q "$CGD/olink" held >/dev/null 2>&1
+cg_forge fo532 "$CGD/other"
+cg_refused "a forged line naming another repo's main checkout is refused" "$CGD/other"
+cg_forge fl532 "$CGD/olink"
+cg_refused "a forged line naming another repo's linked tree is refused" "$CGD/olink"
+
+git -C "$CGR" worktree add -q -b our532 "$CGD/our tree" >/dev/null 2>&1
+mkdir -p "$CGD/plant"; cp "$CGD/our tree/.git" "$CGD/plant/.git"
+cg_forge fp532 "$CGD/plant"
+cg_refused "a .git file copied from this repo's tree does not link back: refused" "$CGD/plant"
+cg_opens "this repo's linked tree, a space in its path, still opens" "$CGD/our tree"
+
 git -C "$CGR" worktree add -q -b lk532 "$CGD/lk" >/dev/null 2>&1
 git -C "$CGR" worktree lock "$CGD/lk" >/dev/null 2>&1
 cg_opens "a tree whose line is a bare 'locked' still opens" "$CGD/lk"

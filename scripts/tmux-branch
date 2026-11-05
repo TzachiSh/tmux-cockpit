@@ -125,27 +125,46 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # WORKTREES: every worktree path. -z keeps a path with a newline in one record but needs
 # git 2.36; older git rejects it and prints nothing, so the plain porcelain is read, and
 # a record with a line that is no worktree attribute (a path cut by a newline) is dropped.
-# So is one with no .git in it (#348): a newline name can forge a whole `worktree <dir>`
-# line. A main checkout has a .git dir, a linked worktree a .git file; -e takes both.
-# A path that is gone is kept, so goto still says "is gone" as it does on new git.
-wt_real() { [ ! -e "$1" ] || [ -e "$1/.git" ]; }
+# So is one that is not this repo's (#348, #532): a newline name can forge a whole
+# `worktree <dir>` line, and <dir> may be any checkout. The main checkout's .git is the
+# common dir; a linked tree's .git file names a dir in its worktrees/ whose gitdir file
+# names that .git back. -ef compares inodes, so a symlinked or relative path matches
+# and nothing forks. A path that is gone is kept, so goto still says "is gone".
+wt_ours() {                   # <path> <common-dir>  true for a tree of the repo at <common-dir>
+    local g='' b=''
+    [ -e "$1" ] || return 0
+    [ -d "$1/.git" ] && { [ "$1/.git" -ef "$2" ]; return; }
+    [ -f "$1/.git" ] || return 1
+    read -r g 2>/dev/null < "$1/.git"
+    [[ $g == "gitdir: "?* ]] || return 1
+    g=${g#gitdir: }; [[ $g == /* ]] || g=$1/$g
+    [ "${g%/*}" -ef "$2/worktrees" ] && [ -f "$g/gitdir" ] || return 1
+    read -r b 2>/dev/null < "$g/gitdir"
+    [ -n "$b" ] || return 1
+    [[ $b == /* ]] || b=$g/$b
+    [ "$b" -ef "$1/.git" ]
+}
 wt_list() {
     # git's attribute lines: a label is a whole line, locked and prunable may add a reason
-    local rec line cur='' ok=1 attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
+    local attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
+    local rec line common cur='' ok=1
     WORKTREES=()
     while IFS= read -r -d '' rec; do
         [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
     done < <(git worktree list --porcelain -z 2>/dev/null)
     [ ${#WORKTREES[@]} -gt 0 ] && return 0
+    common=$(git rev-parse --git-common-dir 2>/dev/null)
+    [ -n "$common" ] || return 0
+    [[ $common == /* ]] || common=$PWD/$common
     while IFS= read -r line || [ -n "$line" ]; do
         if [[ $line == "worktree "* ]]; then
-            [ -n "$cur" ] && [ "$ok" = 1 ] && wt_real "$cur" && WORKTREES+=("$cur")
+            [ -n "$cur" ] && [ "$ok" = 1 ] && wt_ours "$cur" "$common" && WORKTREES+=("$cur")
             cur=${line#worktree }; ok=1
         elif [ -n "$line" ] && [[ ! $line =~ $attr ]]; then
             ok=0
         fi
     done < <(git worktree list --porcelain 2>/dev/null)
-    [ -n "$cur" ] && [ "$ok" = 1 ] && wt_real "$cur" && WORKTREES+=("$cur")
+    [ -n "$cur" ] && [ "$ok" = 1 ] && wt_ours "$cur" "$common" && WORKTREES+=("$cur")
     return 0
 }
 
