@@ -64,8 +64,12 @@ impl Call {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub tools: &'static [&'static str],
-    pub allow: &'static [&'static str],
+    pub allow: Vec<String>,
     pub deny: &'static [&'static str],
+    /// `--permission-mode`. Unset, the user's `defaultMode` decides what no rule
+    /// covers, and `auto` approves a read outside every allow rule (probed).
+    pub permission_mode: Option<&'static str>,
+    pub output: Output,
     /// skills and slash commands; off is `--disable-slash-commands`
     pub skills: bool,
     /// `--permission-prompts none`
@@ -82,6 +86,15 @@ pub struct Profile {
     /// (review-432); through `--add-dir` only its skills load (probed). The cwd
     /// is always the call's own dir.
     pub read_dirs: Vec<PathBuf>,
+}
+
+/// `--output-format`: a text call's stdout is its answer; a json one's is its
+/// events (`--verbose`), the answer their result, the rest kept for
+/// [`Request::transcript`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    Text,
+    Json,
 }
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
@@ -121,8 +134,10 @@ const DENY: &[&str] = &[
 impl Profile {
     pub const TEXT: Profile = Profile {
         tools: &[],
-        allow: &[],
+        allow: Vec::new(),
         deny: &[],
+        permission_mode: None,
+        output: Output::Text,
         skills: false,
         no_prompts: false,
         budget_usd: None,
@@ -131,20 +146,30 @@ impl Profile {
         read_dirs: Vec::new(),
     };
 
-    /// Read the folder `repo`, added beside the cwd; with `research`, search and
-    /// fetch the web and load skills too. The budget and the timeout are the
-    /// owner's caps (#365 D7), so the type asks for both.
+    /// Read the folder `repo` and nothing outside it, added beside the cwd; with
+    /// `research`, search and fetch the web and load skills too. The budget and
+    /// the timeout are the owner's caps (#365 D7), so the type asks for both.
+    /// The one read approved is `Read(//<repo>/**)`, and the mode is `default`, so
+    /// any other read asks and, with no prompts, is refused (docs/tui.md). Research
+    /// approves the skills folder too, so a skill reads its own files.
     pub fn read_only(repo: PathBuf, research: bool, budget_usd: f64, timeout: Duration) -> Profile {
         let tools = if research { RESEARCH } else { READ };
+        // absolute: never read against the cache dir, never a `-` that passes for a flag
+        let repo = std::path::absolute(&repo).unwrap_or(repo);
+        let mut allow = vec![format!("Read(/{}/**)", repo.display().to_string().trim_end_matches('/'))];
+        if research {
+            allow.extend(["Read(~/.claude/skills/**)", "WebSearch", "WebFetch", "Skill"].map(String::from));
+        }
         Profile {
             tools,
-            allow: tools,
+            allow,
             deny: DENY,
+            permission_mode: Some("default"),
+            output: Output::Json,
             skills: research,
             no_prompts: true,
             hooks: false,
-            // absolute: never read against the cache dir, never a `-` that passes for a flag
-            read_dirs: vec![std::path::absolute(&repo).unwrap_or(repo)],
+            read_dirs: vec![repo],
             budget_usd: Some(budget_usd),
             timeout: Some(timeout),
         }
@@ -158,7 +183,7 @@ impl Profile {
         let dirs: Vec<String> = self.read_dirs.iter().map(|d| format!("{:?}", d.display().to_string())).collect();
         (!dirs.is_empty()).then(|| {
             format!(
-                "The repository is at {}. Read, Grep and Glob take absolute paths under it; your working directory is not the repository.",
+                "The repository is at {}. Read, Grep and Glob take absolute paths under it, and anything outside it is refused; your working directory is not the repository.",
                 dirs.join(" and ")
             )
         })
@@ -177,6 +202,9 @@ impl Profile {
         if self.no_prompts {
             a.extend(["--permission-prompts".into(), "none".into()]);
         }
+        if let Some(m) = self.permission_mode {
+            a.extend(["--permission-mode".into(), m.into()]);
+        }
         if !self.hooks {
             a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
         }
@@ -185,6 +213,9 @@ impl Profile {
         }
         if let Some(b) = self.budget_usd {
             a.extend(["--max-budget-usd".into(), b.to_string()]);
+        }
+        if self.output == Output::Json {
+            a.extend(["--output-format".into(), "json".into(), "--verbose".into()]);
         }
         a.extend(["--no-session-persistence".into(), "--strict-mcp-config".into()]);
         if !self.skills {
@@ -196,8 +227,12 @@ impl Profile {
 
 type Answer = Result<String, Fail>;
 
+/// An answer, and a json call's events.
+type Done = (Answer, Option<String>);
+
 pub struct Request {
-    rx: Receiver<Answer>,
+    rx: Receiver<Done>,
+    transcript: Option<String>,
     pid: Option<u32>,
     /// True once the child is reaped: from then on its pid may be someone else's.
     reaped: Arc<Mutex<bool>>,
@@ -219,16 +254,28 @@ impl Request {
         let pid = match start(call, p, system, model) {
             Ok(child) => {
                 let pid = child.id();
-                run(child, prompt.to_string(), p.timeout.unwrap_or(call.timeout), tx, reaped.clone());
+                let reading = Reading {
+                    output: p.output,
+                    budget_usd: p.budget_usd,
+                };
+                run(
+                    child,
+                    prompt.to_string(),
+                    p.timeout.unwrap_or(call.timeout),
+                    reading,
+                    tx,
+                    reaped.clone(),
+                );
                 Some(pid)
             }
             Err(e) => {
-                let _ = tx.send(Err(Fail::Failed(e)));
+                let _ = tx.send((Err(Fail::Failed(e)), None));
                 None
             }
         };
         Request {
             rx,
+            transcript: None,
             pid,
             reaped,
             done: false,
@@ -240,9 +287,16 @@ impl Request {
         if self.done {
             return None;
         }
-        let a = self.rx.try_recv().ok()?;
+        let (a, t) = self.rx.try_recv().ok()?;
         self.done = true;
+        self.transcript = t;
         Some(a)
+    }
+
+    /// A json call's events, once [`Request::poll`] gave its answer: the input to
+    /// `parse::files_read`. `None` for a text call.
+    pub fn transcript(&self) -> Option<&str> {
+        self.transcript.as_deref()
     }
 
     /// `None` once reaped, when the number may already be someone else's.
@@ -291,6 +345,17 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
     }) {
         return Err(format!(
             "{:?} is empty, not UTF-8, or holds a control or bidi character; refused",
+            d.display().to_string()
+        ));
+    }
+    // the folder is a glob in its read rule: a `*` in its name, or `/` itself,
+    // would approve reads outside it (probed)
+    if let Some(d) = p.read_dirs.iter().find(|d| {
+        let s = d.to_string_lossy();
+        s.trim_end_matches('/').is_empty() || s.contains(['*', '?', '[', ']', '{', '}', '\\'])
+    }) {
+        return Err(format!(
+            "{:?} is / or holds a glob character, so its read rule would reach past it; refused",
             d.display().to_string()
         ));
     }
@@ -357,7 +422,13 @@ pub fn prompt_file(dir: &Path, system: &str) -> std::io::Result<PathBuf> {
     Ok(path)
 }
 
-fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Sender<Answer>, reaped: Arc<Mutex<bool>>) {
+/// What [`answer`] needs of the profile.
+struct Reading {
+    output: Output,
+    budget_usd: Option<f64>,
+}
+
+fn run(mut child: std::process::Child, prompt: String, timeout: Duration, reading: Reading, tx: Sender<Done>, reaped: Arc<Mutex<bool>>) {
     let pid = child.id();
     let (done_tx, done_rx) = channel::<()>();
     {
@@ -367,7 +438,7 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Se
                 let g = lock(&reaped);
                 if !*g {
                     // Sent before the kill, so the worker's own report of the death comes second.
-                    let _ = tx.send(Err(Fail::Timeout));
+                    let _ = tx.send((Err(Fail::Timeout), None));
                     // SAFETY: as in kill_group, under the same lock.
                     unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
                 }
@@ -400,7 +471,12 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, tx: Se
         let mut g = lock(&reaped);
         let status = child.wait();
         *g = true;
-        let _ = tx.send(answer(status.map(|s| s.success()).unwrap_or(false), out, &err));
+        let ok = status.map(|s| s.success()).unwrap_or(false);
+        let done = match reading.output {
+            Output::Json => (answer_json(ok, &out, &err, reading.budget_usd), Some(out)),
+            Output::Text => (answer(ok, out, &err), None),
+        };
+        let _ = tx.send(done);
         drop(g);
         let _ = done_tx.send(());
     });
@@ -430,4 +506,33 @@ fn answer(ok: bool, out: String, err: &str) -> Answer {
     }
     let why = first_line(err).or_else(|| first_line(&out)).unwrap_or_else(|| "no answer".into());
     Err(Fail::Failed(why))
+}
+
+/// A json call's answer: its result's text, or its error in claude's words. A
+/// budget stop reads as the text one does, `Error: Exceeded USD budget (<cap>)`,
+/// as the json carries no such line (probed). Output that is not claude's json (a
+/// stand-in claude) is read as text.
+fn answer_json(ok: bool, out: &str, err: &str, budget_usd: Option<f64>) -> Answer {
+    use serde_json::Value;
+    let r = match serde_json::from_str::<Value>(out.trim()) {
+        Ok(Value::Array(a)) => a.into_iter().rev().find(|e| e["type"] == "result"),
+        Ok(v @ Value::Object(_)) if v["type"] == "result" => Some(v),
+        _ => None,
+    };
+    let Some(r) = r else {
+        return answer(ok, out.to_string(), err);
+    };
+    if r["subtype"] == "error_max_budget_usd" {
+        let cap = budget_usd.map(|b| format!(" ({b})")).unwrap_or_default();
+        return Err(Fail::Failed(format!("Error: Exceeded USD budget{cap}")));
+    }
+    let text = r["result"].as_str().filter(|t| !t.trim().is_empty());
+    match text {
+        Some(t) if r["is_error"] != true => Ok(t.to_string()),
+        _ if r["is_error"] != true => Err(Fail::Failed("no answer".into())),
+        _ => {
+            let first = r["errors"][0].as_str().or(text).or(r["subtype"].as_str());
+            Err(Fail::Failed(first.and_then(first_line).unwrap_or_else(|| "no answer".into())))
+        }
+    }
 }

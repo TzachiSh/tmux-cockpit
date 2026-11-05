@@ -1753,7 +1753,13 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   `env` can send the request and the key elsewhere, `apiKeyHelper` runs). The
   folder goes in by `--add-dir`, which loads its skills and nothing else, and
   the cwd stays the panel's cache dir. A read-only fork also runs no hook of the
-  user's or a plugin's (`disableAllHooks`).
+  user's or a plugin's (`disableAllHooks`). Its reads stop at that folder: the
+  one read approved is `Read(//<folder>/**)` (it covers Grep and Glob, and
+  refuses a symlink that leads out), the permission mode is pinned to `default`
+  so a user's `defaultMode` cannot approve the rest, and a folder named `/` or
+  holding a glob character is refused, as its rule would reach past it. The
+  secret denies stay as a second wall. A user's own allow rule (a bare `Read`
+  in their settings) still widens it.
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
