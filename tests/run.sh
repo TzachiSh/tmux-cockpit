@@ -5119,7 +5119,7 @@ SHIMEOF
 chmod +x "$RQESHIM/tmux"
 rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was given
     rm -f "$RQES/cmd"
-    ( [ $# -eq 0 ] || export "$1"
+    ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
       PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" >/dev/null 2>&1 )
     sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
 }
