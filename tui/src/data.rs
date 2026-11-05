@@ -982,6 +982,24 @@ fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
     [opt, said_cwd, p.path.clone()]
 }
 
+/// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
+/// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
+/// that is not there, is not an agent's, or has no dir. Unlike the fetch it never
+/// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
+/// transcript to read, so its dir is @cockpit_dir, else its launch dir.
+pub fn workdir(pane: &str) -> Option<String> {
+    let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
+    // A missing pane exits 0 with every field empty: the resolved id is the test,
+    // before the agent test can fork `ps` for a pid that is not there.
+    if f[0] != pane {
+        return None;
+    }
+    let (mut p, _) = row_pane(&f, &mut None)?;
+    let cands = work_candidates(&mut p, &f);
+    fleet::work_dirs(&[cands]).pop().filter(|d| !d.is_empty())
+}
+
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
 /// whole preview each time it changes. Keep the newest 64 KB.
 const PREVIEW_MAX: usize = 64 * 1024;
