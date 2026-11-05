@@ -401,7 +401,7 @@ yaml for service web, port 8080, 3 replicas
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; easier to read; cleaner; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
 must_not: autopilot; ralph; ultrawork; ultrathink
 note: #503 (card 5), was write: what the split is for (same behaviour, better quality, something else) is the owner's goal; the agent reads the file itself
 --- request
@@ -503,7 +503,7 @@ move the whole config loader from yaml to toml, it touches a lot of files
 kind: review
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+ask_any: bug|bugs; quality; flow; comment|comments; tests first|test coverage; focus; weigh; security; correctness; style
 note: #503 (card 7), was write: what the review should weigh most is the owner's call; what "uncommitted" covers is the agent's to check
 --- request
 review my uncommitted changes before i commit, just report problems
@@ -639,7 +639,7 @@ fix the failing test from my last commit
 kind: review
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+ask_any: bug|bugs; quality; flow; comment|comments; tests first|test coverage; focus; weigh; security; correctness; style
 note: #503 (card 6), was write: "my changes" are the branch and its changed files in the repo block, but what the review should weigh most is the owner's call
 --- screen
 ● Done. The discount rules are in place and the tests pass.
@@ -714,7 +714,7 @@ what is 15% of 2340
 kind: review
 window: claude · claude · /home/u/projects/auth
 expect: ask
-ask_any: bug|bugs; quality; flow; comment|comments; test|tests; focus; weigh; most; security; correctness; style
+ask_any: bug|bugs; quality; flow; comment|comments; tests first|test coverage; focus; weigh; security; correctness; style
 note: the branch and files are in the repo block; what the review should weigh most is the owner's call
 --- repo
 branch: feat/sso...origin/feat/sso [ahead 4]
@@ -738,7 +738,7 @@ review the sso work on this branch
 kind: plan
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
 note: a refactor plan with no goal: what it is for decides the plan
 --- request
 make a plan to refactor the payments module
@@ -806,7 +806,7 @@ toml with a [server] table, host 0.0.0.0 and port 8080
 kind: refactor
 window: claude · claude · /home/u/projects/shop
 expect: ask
-ask_any: goal; aim; purpose; why; readability|readable; quality; style; behaviour|behavior; performance|faster; testable|testing; maintain|maintainable; new feature
+ask_any: goal; aim; purpose; why; readability|readable; quality; behaviour|behavior; performance|faster; maintain|maintainable; new feature
 holdout: yes
 note: no goal for the change: what it is for decides the plan
 --- request
