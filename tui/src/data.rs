@@ -1456,15 +1456,15 @@ mod tests {
         let mut ps = vec![pane("%1", State::Running)];
         let (mut c, t0) = (GitCache::default(), Instant::now());
         let real = |m: &[String]| fleet::scan(m).facts;
-        fill_git_at(&mut c, &mut ps, &[dir.clone()], t0, &real);
+        fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), t0, &real);
         assert_eq!(ps[0].pm, "clean");
         // past the first (jittered) expiry, so the 10 s period is what is tested
         let at = |s| t0 + Duration::from_secs(s);
-        (1..=10).for_each(|s| fill_git_at(&mut c, &mut ps, &[dir.clone()], at(s), &real));
+        (1..=10).for_each(|s| fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), at(s), &real));
         std::fs::write(d.join("f"), "a\nb\n").unwrap(); // unstaged: index and HEAD stay put
         let seen = (11..=20)
             .find(|s| {
-                fill_git_at(&mut c, &mut ps, &[dir.clone()], at(*s), &real);
+                fill_git_at(&mut c, &mut ps, std::slice::from_ref(&dir), at(*s), &real);
                 ps[0].pm == "+1 -0"
             })
             .expect("the unstaged edit never reached the row")
