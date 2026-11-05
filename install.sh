@@ -76,10 +76,11 @@ if [ "$check" -eq 1 ]; then
     printf 'tmux-cockpit doctor\n\n'
 
     v=$(tmux -V 2>/dev/null); v=${v#tmux }
-    if [ -z "$v" ]; then row fail tmux 'not found' 'bootstrap.sh builds tmux 3.8'
     # No leading digit (next-3.9, master) is a build newer than any release, as in cockpit.tmux.
-    elif case "$v" in [0-9]*) [ "$(vnum "$v")" -lt "$(vnum 3.8)" ] ;; *) false ;; esac
-    then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
+    tmux_old=0
+    case "$v" in [0-9]*) [ "$(vnum "$v")" -lt "$(vnum 3.8)" ] && tmux_old=1 ;; esac
+    if [ -z "$v" ]; then row fail tmux 'not found' 'bootstrap.sh builds tmux 3.8'
+    elif [ "$tmux_old" = 1 ]; then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
     else row ok tmux "$v"
     fi
 
