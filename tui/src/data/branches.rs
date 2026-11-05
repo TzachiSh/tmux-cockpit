@@ -65,15 +65,18 @@ fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
 }
 
 fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {
-    // As git's porcelain prints them: `bare` and `detached` are a whole line,
-    // `locked` and `prunable` may carry a reason after a space.
-    const LABELS: [&str; 2] = ["bare", "detached"];
-    const PREFIXES: [&str; 4] = ["HEAD ", "branch ", "locked", "prunable"];
+    // As git's porcelain prints them: each label is a whole line, and `locked`
+    // and `prunable` may also carry a reason after a space.
+    const LABELS: [&str; 4] = ["bare", "detached", "locked", "prunable"];
+    const PREFIXES: [&str; 4] = ["HEAD ", "branch ", "locked ", "prunable "];
     let attr = |f: &str| LABELS.contains(&f) || PREFIXES.iter().any(|a| f.starts_with(a));
     let mut out = Vec::new();
     let mut cur: Option<(String, Option<String>, bool)> = None;
     let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
-        if let Some((p, b, true)) = cur.take() {
+        // An empty path names nothing; tmux-branch drops it too.
+        if let Some((p, b, true)) = cur.take()
+            && !p.is_empty()
+        {
             out.push((p, b));
         }
     };
@@ -153,4 +156,43 @@ pub fn graph(dir: &str, b: &Branch) -> String {
 /// differs from the input is refused too.
 pub fn valid_name(dir: &str, name: &str) -> bool {
     !name.is_empty() && git(dir, &[], None, &["check-ref-format", "--branch", name]).trim_end_matches('\n') == name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::records;
+
+    fn plain(s: &str) -> Vec<(String, Option<String>)> {
+        records(s.split('\n'), false)
+    }
+
+    #[test]
+    fn a_whole_bare_or_detached_line_is_a_label_that_keeps_the_record() {
+        for l in ["bare", "detached"] {
+            let got = plain(&format!("worktree /none/d\nHEAD 0\n{l}\n"));
+            assert_eq!(got, [("/none/d".to_string(), None)], "{l}");
+        }
+    }
+
+    #[test]
+    fn locked_and_prunable_are_labels_alone_or_before_a_space_and_a_reason() {
+        for l in ["locked", "locked on usb", "prunable", "prunable gitdir gone"] {
+            let got = plain(&format!("worktree /none/d\nHEAD 0\n{l}\n"));
+            assert_eq!(got, [("/none/d".to_string(), None)], "{l}");
+        }
+    }
+
+    #[test]
+    fn a_line_that_only_starts_with_locked_or_prunable_cuts_the_record() {
+        for l in ["lockedx", "prunablex", "locked\tx"] {
+            let got = plain(&format!("worktree /none/d\n{l}\nHEAD 0\nbranch refs/heads/c\n"));
+            assert_eq!(got, [], "{l}");
+        }
+    }
+
+    #[test]
+    fn an_empty_worktree_path_is_dropped() {
+        let got = plain("worktree /none/x\nworktree \nHEAD 0\nbranch refs/heads/e\n");
+        assert_eq!(got, [("/none/x".to_string(), None)]);
+    }
 }

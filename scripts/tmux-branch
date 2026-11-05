@@ -130,7 +130,8 @@ owner_of() {                  # <dir>  sets OWNER to the worktree path holding i
 # A path that is gone is kept, so goto still says "is gone" as it does on new git.
 wt_real() { [ ! -e "$1" ] || [ -e "$1/.git" ]; }
 wt_list() {
-    local rec line cur='' ok=1
+    # git's attribute lines: a label is a whole line, locked and prunable may add a reason
+    local rec line cur='' ok=1 attr='^(HEAD |branch |bare$|detached$|(locked|prunable)( |$))'
     WORKTREES=()
     while IFS= read -r -d '' rec; do
         [[ $rec == "worktree "* ]] && WORKTREES+=("${rec#worktree }")
@@ -140,7 +141,7 @@ wt_list() {
         if [[ $line == "worktree "* ]]; then
             [ -n "$cur" ] && [ "$ok" = 1 ] && wt_real "$cur" && WORKTREES+=("$cur")
             cur=${line#worktree }; ok=1
-        elif [ -n "$line" ] && [[ ! $line =~ ^(HEAD\ |branch\ |bare$|detached$|locked|prunable) ]]; then
+        elif [ -n "$line" ] && [[ ! $line =~ $attr ]]; then
             ok=0
         fi
     done < <(git worktree list --porcelain 2>/dev/null)
