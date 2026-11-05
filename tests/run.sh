@@ -10905,6 +10905,17 @@ ap_unref "$GD/r"; mv "$GD/r/bump" "$GD/bump.away"
 is "a submodule dir gone: dropped from the checkpoint, as the old approve did" \
    "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
 ap_unref "$GD/r"; mv "$GD/bump.away" "$GD/r/bump"
+# A skip-worktree gitlink, as a sparse checkout leaves one: add -A never
+# touches it, dir there with its pointer moved or dir gone, and neither may
+# approve.
+git -C "$GD/r" update-index --skip-worktree bump
+for at in there gone; do
+    [ "$at" = there ] || mv "$GD/r/bump" "$GD/bump.away"
+    is "a skip-worktree submodule, dir $at: the old approve's tree" \
+       "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
+    ap_unref "$GD/r"
+done
+mv "$GD/bump.away" "$GD/r/bump"; git -C "$GD/r" update-index --no-skip-worktree bump
 is "and nothing left in TMPDIR" "" "$(ls -A "$GD/tmp")"
 # A list that never reaches its file: while ls-files writes $tmp/staged, the
 # shim points AP_NAME beside it at AP_SINK. Each way approve fails, adds
@@ -10935,7 +10946,8 @@ is "and a failed approve leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
 cat > "$GD/bin/git" <<STUB
 #!/usr/bin/env bash
 case " \$* " in
-    *" ls-files -s "*) env -u GIT_INDEX_FILE $(command -v git) -C "$GD/r" \$AP_RACE >/dev/null 2>&1 ;;
+    *" ls-files -s "*)
+        env -u GIT_INDEX_FILE $(command -v git) -C "$GD/r" \$AP_RACE >/dev/null 2>&1 ;;
 esac
 exec $(command -v git) "\$@"
 STUB

@@ -364,7 +364,8 @@ lines_mode() {
 # tree_diff) and stays out of every gitlink, whose repo would run its own
 # filters (#441). update-index then records each gitlink as add -A did: its
 # HEAD, read from its refs with no status run, or the entry dropped when the
-# dir is gone. An empty DIR is refused: git -C "" is the cwd.
+# dir is gone. A skip-worktree gitlink stays as it is, as add -A leaves it.
+# An empty DIR is refused: git -C "" is the cwd.
 approve() {                   # <dir>
     local dir=$1 tmp idx gd top br tree rp
     local -a from=() links=()
@@ -376,7 +377,7 @@ approve() {                   # <dir>
     if [ "${#from[@]}" -gt 0 ]; then
         (set -C; gitlink_excludes "$tmp/staged" "$tmp/gitlinks" '') 2>/dev/null \
             || { scratch_done; return 1; }
-        links=(-C "$top" update-index -z --remove --stdin)
+        links=(-C "$top" update-index -z --remove --ignore-skip-worktree-entries --stdin)
     fi
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
     tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A ${from[@]+"${from[@]}"} 2>/dev/null \
