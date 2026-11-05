@@ -109,7 +109,7 @@ fn usage() -> i32 {
 
 /// `cockpit-tui workdir %N` (#500): the board's `dir` for that pane, alone on one
 /// line, for scripts. Exit 1 and nothing on stdout when the pane is not there,
-/// is not an agent's or has no dir; exit 2 for a missing or malformed id.
+/// is not an agent's or its dir is not on disk; exit 2 for a missing or malformed id.
 pub fn workdir_main(args: &[String]) -> i32 {
     let ok = |p: &String| {
         p.strip_prefix('%')
