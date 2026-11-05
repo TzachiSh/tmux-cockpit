@@ -797,3 +797,33 @@ fn the_help_lists_alt_c_only_when_copy_is_on() {
     );
     assert_eq!(on.help_len, pick::help_rows(&g).len() + 1);
 }
+
+fn copy_picker() -> Pick {
+    Pick::new(
+        rows(&BRANCHES),
+        &Opts {
+            copy: true,
+            ..opts("p", "")
+        },
+        None,
+    )
+}
+
+#[test]
+fn the_f1_screen_draws_the_alt_c_row_only_when_copy_is_on() {
+    let mut on = copy_picker();
+    press(&mut on, KeyCode::F(1), BIG);
+    assert!(draw(80, 24, &on).contains("copy: print this row's key, exit 10"));
+    let mut off = picker("p", "", None);
+    press(&mut off, KeyCode::F(1), BIG);
+    assert!(!draw(80, 24, &off).contains("alt-c"));
+}
+
+#[test]
+fn the_alt_c_help_row_follows_the_enter_row_in_both_glyph_sets() {
+    for g in [cockpit_tui::theme::Glyphs::unicode(), cockpit_tui::theme::Glyphs::ascii()] {
+        let rows = pick::help_rows_for(&g, true);
+        let at = rows.iter().position(|(k, _)| k == "alt-c").expect("an alt-c row");
+        assert_eq!(rows[at - 1].0, g.key_enter, "alt-c sits under the choose key");
+    }
+}
