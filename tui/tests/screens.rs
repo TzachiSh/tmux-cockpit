@@ -130,4 +130,10 @@ fn hash_ignores_the_ages_but_not_the_facts() {
     };
     assert_ne!(h(&b, "pv"), h(&c, "pv"), "a state flip did not redraw");
     assert_ne!(h(&b, "pv"), h(&b, "other preview"), "a changed preview did not redraw");
+    // #460: a bind or an unbind changes nothing else on the pane
+    let d = Pane {
+        job: "sweep".into(),
+        ..b.clone()
+    };
+    assert_ne!(h(&b, "pv"), h(&d, "pv"), "a bind to a job did not redraw");
 }

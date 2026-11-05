@@ -61,6 +61,9 @@ pub struct Facts {
     pub sid: String,
     pub title: String,
     pub tui: String,
+    /// #460: (`@cockpit_job_name`, `@cockpit_job`), the background job agent-poll
+    /// bound this viewer pane to; `None` when unbound
+    pub job: Option<(String, String)>,
     /// the review dir, its pinned count and its delivered count; `None` when absent
     pub rev_dir: Option<(String, usize, usize)>,
 }
@@ -243,6 +246,10 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         q("#{@cockpit_title}"),
         "#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}".to_string(),
         q("#{@cockpit_tui_version}"),
+        // #460: 13 and 14, optional, so a shorter row still reads
+        q("#{@cockpit_job}"),
+        // a newline is a space, as in the board's FIELDS
+        format!("#{{s/\n/ /:{}}}", q("#{@cockpit_job_name}")),
     ]
     .join(&SEP.to_string());
     let out = super::tmux(&["display-message", "-p", "-t", pane, &fmt]).unwrap_or_default();
@@ -263,6 +270,15 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
         title: clean(f[10]),
         agent: f[11] == "1",
         tui: tui_row(f[12]),
+        // the name is a pane title, so control and bidi characters go
+        job: match (
+            f.get(13).map(|i| clean(i)),
+            f.get(14).map(|n| crate::pick::clean(n).trim().to_string()),
+        ) {
+            // agent-poll sets both in one call: a name with no id is no bind
+            (Some(id), Some(name)) if !name.is_empty() && !id.is_empty() => Some((name, id)),
+            _ => None,
+        },
         ..Default::default()
     };
     if !f[4].is_empty() {
