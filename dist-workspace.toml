@@ -34,18 +34,14 @@ unix-archive = ".tar.gz"
 # A prefix git tags must include for dist to care about them
 tag-namespace = "cockpit-tui"
 
-# dist 0.32.0 picks macos-14 for this target; GitHub retires that image on
-# 2026-11-02 and its brownouts cancel the job (runner-images#13518).
-#
-# Everything Linux runs on ci-cockpit, the self-hosted runner TzachiSh/ci-box#367
-# set up, by its label. plan, the global build, host and announce run on the
-# runner itself, whose image carries cargo for them. The musl build runs in a
-# rust container, where dist calls apt-get without sudo. The mac builds stay on
-# GitHub's runners: no self-hosted one runs macOS.
+# plan, the global build, host and announce run on ci-cockpit, the self-hosted
+# runner TzachiSh/ci-box#367 set up, by its label: as the runner's uid, on an
+# image that carries cargo for them. The builds keep GitHub's runners. The musl
+# one would run as root in a job container on ci-cockpit and leave root-owned
+# files in its checkout (TzachiSh/ci-box#371), and no self-hosted runner runs
+# macOS.
 [dist.github-custom-runners]
 global = "cockpit"
+# dist 0.32.0 picks macos-14 for this target; GitHub retires that image on
+# 2026-11-02 and its brownouts cancel the job (runner-images#13518).
 aarch64-apple-darwin = "macos-15"
-
-[dist.github-custom-runners.x86_64-unknown-linux-musl]
-runner = "cockpit"
-container = { image = "rust:1-bookworm", host = "x86_64-unknown-linux-gnu", package-manager = "apt" }

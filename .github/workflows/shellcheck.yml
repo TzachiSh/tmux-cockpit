@@ -6,8 +6,8 @@ on:
 
 jobs:
   lint:
-    # ci-cockpit, TzachiSh/ci-box#367. The job container brings make, curl and
-    # xz, which the runner image lacks. It runs as the runner's uid: a root job
+    # ci-cockpit, TzachiSh/ci-box#367. The job container brings make, which the
+    # runner image lacks. It runs as the runner's uid: a root job
     # leaves root-owned files in the shared checkout that the next job, on the
     # runner itself, cannot clean.
     runs-on: [self-hosted, cockpit]

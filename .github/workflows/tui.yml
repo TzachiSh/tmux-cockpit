@@ -7,17 +7,15 @@ on:
 
 jobs:
   tui-test:
-    # ci-cockpit, TzachiSh/ci-box#367. The job container brings rustup and a
-    # linker. It runs as the runner's uid, so the checkout stays cleanable by
-    # the next job, and rustup works in the job's own home, which goes with
-    # the container: rustup default below changes nothing on the runner.
+    # ci-cockpit, TzachiSh/ci-box#367. The job container brings make and a
+    # linker, which the runner image lacks. It runs as the runner's uid, so the
+    # checkout stays cleanable by the next job. The toolchain lands in the
+    # image's own rustup home, so rustup default below changes nothing on the
+    # runner.
     runs-on: [self-hosted, cockpit]
     container:
       image: rust:1-bookworm
       options: --user 1000:1000
-      env:
-        RUSTUP_HOME: /github/home/.rustup
-        CARGO_HOME: /github/home/.cargo
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
