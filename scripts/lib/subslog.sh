@@ -5,10 +5,14 @@
 #   one line per event: <epoch>\t<start|stop|idle>\t<agent_id>
 #   a TaskStop (#403):  <epoch>\tkill\t<agent_id>                  a plain agent
 #                       <epoch>\tkill-tm\t<name>\t<description>    a teammate, mapped by the reader
-#   a Stop (#403):      <epoch>\tlive\t<id>,<id>...\t<description>...  the in-flight set
 # A description is the payload's JSON string body, escapes and all: no tab, newline or quote.
 #
-# Append-only, so hooks writing side by side lose nothing: one write under PIPE_BUF (4096
+#   <session_id>.live, beside it (#423): one line, <epoch>\t<id>,<id>...\t<description>...,
+#   the newest Stop's in-flight set. Its own file, replaced whole by a rename: only the newest
+#   set is ever read, and as rows in the log a busy lead's sets pushed the older events out of
+#   the reader's tail.
+#
+# The log is append-only, so hooks writing side by side lose nothing: one write under PIPE_BUF (4096
 # bytes) is atomic, and no hook reads before it writes. The reader takes the newest line per
 # agent_id. Not a counter: SubagentStart also fires for a resumed subagent and for every
 # message an in-process teammate handles (#317), so only each agent's newest event counts.
@@ -87,9 +91,10 @@ subs_taskstop() {
 # subs_reconcile: Stop. The parent's turn has ended; its background_tasks lists what is still in
 # flight: a subagent by its agent id, a teammate by a task id, so by its description. Only
 # Stop's: SubagentStop's lists the agent that is stopping as running. A list it cannot read
-# whole, or a row past one atomic write, writes nothing: a short set would end live agents.
+# whole, an entry of a type it does not know, or a set past the bound writes nothing: a short
+# set would end live agents, and no set ends none.
 subs_reconcile() {
-    local LC_ALL=C sid arr re rt ob ty ids="" descs=""
+    local LC_ALL=C sid arr re rt ob ty ids="" descs="" n=0
     subs_payload
     subs_id session_id; sid=$REPLY; [ -n "$sid" ] || return 0
     # The array as agent-state's subs_count matches it, whole strings or bytes other than `]`,
@@ -97,16 +102,22 @@ subs_reconcile() {
     re='"background_tasks": ?\[(("([^"\\]|\\.)*"|[^]["])*)\]'
     [[ $payload =~ $re ]] || return 0
     arr=${BASH_REMATCH[1]}
-    # Bounded: each step below copies the rest of the array, so the loop is quadratic in it.
+    # Bounded: each step below copies the rest of the array, so the loop is quadratic in its
+    # bytes, and each entry costs a few matches, so it is bounded in entries too (#423).
     [ "${#arr}" -le 65536 ] || return 0
     # One flat object at a time, commas and spaces between: whole strings or bytes other than
     # braces and brackets, so a nested object or array is no match, and what is left at the
     # end is not all separators, which writes nothing.
-    re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([a-z_]{1,32})"'
+    re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([A-Za-z_ ]{1,32})"'
     while [[ $arr =~ $re ]]; do
         ob=${BASH_REMATCH[1]} arr=${arr:${#BASH_REMATCH[0]}}
+        [ $((n += 1)) -le 256 ] || return 0
         [[ $ob =~ $rt ]] || return 0
         ty=${BASH_REMATCH[1]}
+        # Closed (#423): a type renamed by a Claude Code update would otherwise drop its agents
+        # from the set, and the set would end them all. The skipped labels are the non-agent
+        # ones code.claude.com/docs/en/hooks (Stop input) lists; a raw discriminant, the
+        # fallback for a type it does not know, is not one of them.
         case "$ty" in
         subagent)
             payload=$ob subs_id id; [ -n "$REPLY" ] || return 0
@@ -114,11 +125,31 @@ subs_reconcile() {
         teammate)
             subs_desc description "$ob" || return 0
             descs=$descs$'\t'$REPLY ;;
+        shell | monitor | workflow | 'cloud session' | 'MCP task') ;;
+        *) return 0 ;;
         esac
         [ $((${#ids} + ${#descs})) -le 3890 ] || return 0
     done
     [[ $arr =~ ^[[:space:],]*$ ]] || return 0
-    subs_write "$sid" "live"$'\t'"$ids$descs"
+    subs_live "$sid" "$ids$descs"
+}
+
+# subs_live <session_id> <set>: "<epoch>\t<set>" as the session's .live file, written beside it
+# and renamed into place, so a reader sees the old set or the new one, never half of one.
+subs_live() {
+    local sid=$1 now dir tmp
+    subs_dir || return 0; dir=$REPLY
+    umask 077
+    [ -L "$dir" ] && return 0
+    [ -d "$dir" ] || mkdir -p -- "$dir" 2>/dev/null || return 0
+    now=${EPOCHSECONDS:-}; [ -n "$now" ] || now=$(date +%s 2>/dev/null) || return 0
+    # noclobber: the temp name is created, never an existing file or a link opened. mv renames
+    # over the .live name itself, a link there included, and follows nothing.
+    tmp=$dir/.$sid.live.$$
+    if (set -C; printf '%s\t%s\n' "$now" "$2" > "$tmp") 2>/dev/null; then
+        mv -f -- "$tmp" "$dir/$sid.live" 2>/dev/null || rm -f -- "$tmp" 2>/dev/null
+    fi
+    return 0
 }
 
 # subs_write <session_id> <row>: "<epoch>\t<row>" appended to the session's log.
@@ -135,18 +166,20 @@ subs_write() {
     return 0
 }
 
-# subs_end: SessionEnd. Drops the payload's session log, and sweeps the logs nobody has
-# written in 7 days (a session that never ended: a killed pane).
+# subs_end: SessionEnd. Drops the payload's session log and .live file, and sweeps the files
+# nobody has written in 7 days (a session that never ended: a killed pane; a temp a killed
+# hook left).
 subs_end() {
     local sid dir
     subs_payload
     subs_dir || return 0; dir=$REPLY
     [ -d "$dir" ] && [ ! -L "$dir" ] || return 0
     subs_id session_id; sid=$REPLY
-    if [ -n "$sid" ] && [ -f "$dir/$sid.log" ] && [ ! -L "$dir/$sid.log" ]; then
-        rm -f -- "$dir/$sid.log" 2>/dev/null
+    if [ -n "$sid" ]; then
+        rm -f -- "$dir/$sid.log" "$dir/$sid.live" 2>/dev/null
     fi
     # -mmin, not -mtime: -mtime +7 spares a log until it is 8 whole days old.
-    find "$dir" -maxdepth 1 -type f -name '*.log' -mmin +10080 -exec rm -f -- {} + 2>/dev/null
+    find "$dir" -maxdepth 1 -type f \( -name '*.log' -o -name '*.live' -o -name '.*.live.*' \) \
+        -mmin +10080 -exec rm -f -- {} + 2>/dev/null
     return 0
 }

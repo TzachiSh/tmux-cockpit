@@ -3,7 +3,8 @@
 #   usage: agent-state <running|needs-input|error|done|off|notify|wake|recount> [pane-id]
 #          agent-state <sub-start|sub-stop|sub-idle|sub-end>   append to the session's
 #                                          subagent log (#361)
-#          agent-state <sub-taskstop|sub-reconcile>   the same log: a TaskStop, a Stop (#403)
+#          agent-state <sub-taskstop|sub-reconcile>   a TaskStop to the same log, a Stop's
+#                                          in-flight set to its .live file (#403, #423)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
 #          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
