@@ -886,8 +886,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   can name any folder as its tree (`core.worktree`, relative or absolute), and
   an inherited `GIT_DIR` or `GIT_WORK_TREE` can point git at another repo, so
   the root is checked: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and
-  `GIT_INDEX_FILE` are taken out of that git call's environment (a ceiling
-  stays: it only stops the search lower). Then the root is kept only if it
+  `GIT_INDEX_FILE` are taken out of the environment of every git call the
+  panel and the board make (`gitsafe::REDIRECT`, #475), and `tmux-review`
+  unsets them too (a ceiling stays: it only stops the search lower). Then the root is kept only if it
   holds the pane's folder and its own `.git`, a folder or a `gitdir:` file, is
   the repo's git dir. Otherwise it is the pane's folder. A linked worktree, a
   submodule and a separate git dir pass. It is worked out once per panel, and
