@@ -86,9 +86,27 @@ pub struct Profile {
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
 const RESEARCH: &[&str] = &["Read", "Grep", "Glob", "WebSearch", "WebFetch", "Skill"];
-/// Never in a read-only call. Agent is here too: the CLI cannot keep it to the
-/// read-only Explore type (a rule can deny an agent type, not allow only one).
-const WRITERS: &[&str] = &["Bash", "Edit", "Write", "NotebookEdit", "Agent"];
+/// A read-only call's `--disallowedTools`. First the writers, never offered:
+/// Agent too, as the CLI cannot keep it to the read-only Explore type (a rule
+/// can deny an agent type, not allow only one). Then the secret paths, the
+/// owner's call on review-432's finding 6: a Read rule covers Grep and Glob as
+/// well and follows symlinks (probed). `~` is the home dir; `//` anchors at `/`,
+/// as a bare `**/.env` is relative to the cwd (the cache dir) and would leave a
+/// repo's `.env` readable. Every `.env` is denied, the repo's and `.env.example`
+/// included: a code question has no need of them.
+const DENY: &[&str] = &[
+    "Bash",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Agent",
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.gnupg/**)",
+    "Read(~/.claude/.credentials.json)",
+    "Read(//**/.env)",
+    "Read(//**/.env.*)",
+];
 
 impl Profile {
     pub const TEXT: Profile = Profile {
@@ -111,7 +129,7 @@ impl Profile {
         Profile {
             tools,
             allow: tools,
-            deny: WRITERS,
+            deny: DENY,
             skills: research,
             no_prompts: true,
             hooks: false,

@@ -267,6 +267,12 @@ fn a_bad_byte_does_not_lose_the_answer() {
 
 // ---------------------------------------------------------------- profiles (#365)
 
+/// read_only's `--disallowedTools`: the writers, then the owner's secret paths
+/// (#365 finding 6). `//` anchors a pattern at `/`: a bare `**/.env` is relative
+/// to the cwd, the cache dir, and would leave a repo's `.env` readable.
+const DENY: &str = "Bash,Edit,Write,NotebookEdit,Agent,Read(~/.ssh/**),Read(~/.aws/**),Read(~/.gnupg/**),\
+Read(~/.claude/.credentials.json),Read(//**/.env),Read(//**/.env.*)";
+
 /// The ask's cap in these tests: long enough never to fire.
 const CAP: Duration = Duration::from_secs(300);
 
@@ -318,7 +324,7 @@ fn the_read_only_profile_reads_and_never_writes() {
             "--allowedTools",
             "Read,Grep,Glob",
             "--disallowedTools",
-            "Bash,Edit,Write,NotebookEdit,Agent",
+            DENY,
             "--permission-prompts",
             "none",
             "--settings",
@@ -356,7 +362,7 @@ fn the_research_profile_adds_the_web_and_skills() {
             "--allowedTools",
             tools,
             "--disallowedTools",
-            "Bash,Edit,Write,NotebookEdit,Agent",
+            DENY,
             "--permission-prompts",
             "none",
             "--settings",
@@ -452,10 +458,38 @@ fn read_only_turns_the_hooks_off_and_text_keeps_them() {
 /// read-only call starts in the panel's cache dir with the repo added.
 #[test]
 fn a_read_only_call_starts_outside_the_repo() {
-    let repo = PathBuf::from("/some/repo");
+    let rig = Rig::new("outside", ECHO_ARGV);
+    let repo = rig.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
     let p = Profile::read_only(repo.clone(), true, 0.5, CAP);
-    assert_eq!(p.read_dirs, [repo]);
+    assert_eq!(p.read_dirs, std::slice::from_ref(&repo));
     assert!(Profile::TEXT.read_dirs.is_empty());
+    let mut req = spawn_with(&rig.call(30), &p, "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let cwd = rig.read("cwd").trim().to_string();
+    assert_ne!(cwd, std::fs::canonicalize(&repo).unwrap().display().to_string(), "never the repo");
+    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir).unwrap().display().to_string());
+}
+
+/// Finding 6, the owner's call: every read-only profile denies the secret paths,
+/// each as its own rule (a Read rule covers Grep and Glob too, probed).
+#[test]
+fn every_read_only_profile_denies_the_secret_paths() {
+    let rules = [
+        "Read(~/.ssh/**)",
+        "Read(~/.aws/**)",
+        "Read(~/.gnupg/**)",
+        "Read(~/.claude/.credentials.json)",
+        "Read(//**/.env)",
+        "Read(//**/.env.*)",
+    ];
+    for research in [false, true] {
+        let p = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
+        for r in rules {
+            assert!(p.deny.contains(&r), "{r}, research {research}");
+        }
+    }
+    assert!(Profile::TEXT.deny.is_empty(), "the panel's own calls are as they were");
 }
 
 /// review-432: a caller cannot forget the caps, as `read_only` takes them.
