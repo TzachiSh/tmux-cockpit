@@ -68,8 +68,8 @@ declare -A WORKDIRS=()
 pane_workdirs() {
     local id dir
     WORKDIRS=()
-    # shellcheck disable=SC2034  # read by tmux-branch's goto
     while IFS=$'\t' read -r id dir; do
+        # shellcheck disable=SC2034  # read by tmux-branch's goto
         is_pane "$id" && WORKDIRS[$id]=$dir
     done < <(workdir_ask --json | jq -r '.[]? | [.id, .dir] | @tsv' 2>/dev/null)
 }
