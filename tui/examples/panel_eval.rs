@@ -21,7 +21,7 @@ use cockpit_tui::panel::app::{App, View};
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
-use cockpit_tui::panel::request::{Call, Profile, Request};
+use cockpit_tui::panel::request::{Call, Fail, Profile, Request};
 use cockpit_tui::panel::route::route;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::{OsStr, OsString};
@@ -443,9 +443,23 @@ const AS_CLAUDE: &str = "PANEL_EVAL_AS_CLAUDE";
 /// What the rig runs as the call's claude: the real one, json first, then the
 /// call's own argv, with the variable gone so claude's children never see it.
 fn claude_command(real: &OsStr, args: impl IntoIterator<Item = OsString>) -> std::process::Command {
+    let args: Vec<OsString> = args.into_iter().collect();
     let mut c = std::process::Command::new(real);
-    c.args(["--output-format", "json", "--verbose"]).args(args).env_remove(AS_CLAUDE);
+    // a json profile (read_only) asks for it itself: never twice
+    if !args.iter().any(|a| a == "--output-format") {
+        c.args(["--output-format", "json", "--verbose"]);
+    }
+    c.args(args).env_remove(AS_CLAUDE);
     c
+}
+
+/// What a finished call printed, for [`unwrap_json`] and `files_read`: a json
+/// call's events (its answer is only their result's text), else its answer.
+fn call_output(answer: Result<String, Fail>, raw: Option<&str>) -> Result<String, String> {
+    match (answer, raw) {
+        (_, Some(events)) => Ok(events.to_string()),
+        (a, None) => a.map_err(|f| f.to_string()),
+    }
 }
 
 /// The real claude to exec as, when the rig is run as a call's claude. Only for
@@ -598,9 +612,10 @@ fn main() {
             let j = live.swap_remove(i);
             let c = &cases[j.case];
             let ms = j.started.elapsed().as_millis();
+            let out = call_output(answer, j.req.raw());
             // a text call has no tools: its rows say null, not "read none"
-            let read = answer.as_ref().ok().and_then(|out| files_read(out)).filter(|_| j.explore);
-            let (raw, usage, err) = match answer.map_err(|f| f.to_string()) {
+            let read = out.as_ref().ok().and_then(|o| files_read(o)).filter(|_| j.explore);
+            let (raw, usage, err) = match out {
                 Ok(out) => match unwrap_json(&out) {
                     Ok((raw, u)) => (raw, u, None),
                     Err(e) => (String::new(), Usage::default(), Some(e)),
@@ -1753,6 +1768,27 @@ mod tests {
         assert_eq!(latency_line(&rows).unwrap(), "2.0 s mean, 2.0 s median over 3 calls");
         assert_eq!(reads_line(&rows).unwrap(), "3.0 files mean, 4 at most, over 2 calls");
         assert_eq!((latency_line(&[row(None, None)]), reads_line(&[])), (None, None));
+    }
+
+    #[test]
+    fn a_json_call_is_never_given_the_output_flags_twice() {
+        let call = ["-p", "--output-format", "json", "--verbose"].map(OsString::from);
+        let c = claude_command(OsStr::new("/bin/claude"), call);
+        let args: Vec<&OsStr> = c.get_args().collect();
+        assert_eq!(args, ["-p", "--output-format", "json", "--verbose"]);
+    }
+
+    /// A json call's row is read from its events: the cost and the reads are there,
+    /// a failed call's too; a text call's from its answer.
+    #[test]
+    fn a_json_call_is_graded_from_its_events() {
+        let events = r#"[{"type":"result","result":"<prompt>p</prompt>","total_cost_usd":0.02}]"#;
+        let out = call_output(Ok("<prompt>p</prompt>".into()), Some(events)).unwrap();
+        assert_eq!(unwrap_json(&out).unwrap().1.cost_usd, Some(0.02));
+        let spent = call_output(Err(Fail::Budget { limit_usd: 0.15 }), Some(events));
+        assert_eq!(spent.as_deref(), Ok(events), "a stop keeps its events");
+        assert_eq!(call_output(Ok("text".into()), None).as_deref(), Ok("text"));
+        assert_eq!(call_output(Err(Fail::Timeout), None), Err("took too long".into()));
     }
 
     #[test]
