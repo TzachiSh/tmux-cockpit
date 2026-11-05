@@ -1,0 +1,62 @@
+name: tmux
+description: >-
+  Put the supported tmux on PATH: built once from the official release tarball
+  (checksum verified), cached on version and runner image, then reused.
+
+inputs:
+  version:
+    description: tmux release to build. The README's floor.
+    default: '3.8'
+  sha256:
+    description: SHA-256 of tmux-<version>.tar.gz. Must change with version.
+    default: e79c699c7e949dccd0a4a125e17b8d1261e311b16979dbc8eb34542f3966d82e
+
+runs:
+  using: composite
+  steps:
+    # The key carries the runner image: the binary links the image's libevent and
+    # ncurses, so a build from one image is not reused on another. The checksum
+    # is in the key so that a changed pin can never hit the old build.
+    - id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ci-tmux/${{ inputs.version }}
+        key: tmux-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.sha256 }}
+
+    - name: Build tmux ${{ inputs.version }} from the release tarball
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+        SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends libevent-dev libncurses-dev bison pkg-config
+        src=$(mktemp -d)
+        curl -fsSL --retry 3 -o "$src/tmux.tar.gz" \
+          "https://github.com/tmux/tmux/releases/download/$VERSION/tmux-$VERSION.tar.gz"
+        echo "$SHA256  $src/tmux.tar.gz" | sha256sum -c -
+        tar -xzf "$src/tmux.tar.gz" -C "$src"
+        cd "$src/tmux-$VERSION"
+        ./configure --prefix="$HOME/.cache/ci-tmux/$VERSION" >/dev/null
+        make -j"$(nproc)" >/dev/null
+        make install >/dev/null
+
+    # A cache hit installs nothing, so the runtime libraries must already be on
+    # the image. If one is missing, say so here rather than as a test failure.
+    - name: Put tmux ${{ inputs.version }} on PATH
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        bin="$HOME/.cache/ci-tmux/$VERSION/bin"
+        if ldd "$bin/tmux" | grep 'not found'; then
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libevent-dev libncurses-dev
+        fi
+        echo "$bin" >> "$GITHUB_PATH"
+        got=$("$bin/tmux" -V)
+        [ "$got" = "tmux $VERSION" ] || { echo "want tmux $VERSION, got: $got" >&2; exit 1; }
+        echo "$got"
