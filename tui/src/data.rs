@@ -792,12 +792,28 @@ pub fn git_facts(path: &str) -> (String, String, String) {
 
 const GIT_TTL: Duration = Duration::from_secs(10);
 
+/// #492: a pane changing state refetches its dir, but not twice inside this
+/// gap. The flip waits for the gap to pass, so a burst of flips costs one fetch.
+const GIT_FLIP_GAP: Duration = Duration::from_secs(3);
+
+struct GitEntry {
+    at: Instant,
+    /// when the entry expires: [`GIT_TTL`] after a refetch, a spread of
+    /// 1 s to [`GIT_TTL`] for a dir seen the first time (see [`first_life`])
+    due: Instant,
+    /// a pane here changed state since `at`
+    flip: bool,
+    facts: fleet::Facts,
+}
+
 #[derive(Default)]
 struct GitCache {
     /// by path
-    facts: HashMap<String, (Instant, (String, String, String))>,
+    facts: HashMap<String, GitEntry>,
     /// each pane's state at the last fetch, by pane id
     seen: HashMap<String, State>,
+    /// dirs met for the first time so far, the jitter's salt
+    firsts: u64,
 }
 
 thread_local! {
@@ -806,33 +822,83 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
+/// #492: how long a dir met for the first time lives, 1 s to [`GIT_TTL`],
+/// fixed by its path and arrival order. Fifty dirs met in one tick would
+/// otherwise expire in one tick, every 10 s, and fork 300 git processes at once;
+/// spread over the window they keep the same 10 s period and never outlive it.
+fn first_life(path: &str, n: u64) -> Duration {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    (path, n).hash(&mut h);
+    let span = GIT_TTL.as_millis() as u64 - 1000;
+    Duration::from_millis(1000 + h.finish() % (span + 1))
+}
+
 /// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
 fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
     // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
     let dirs = fleet::work_dirs(dirs);
-    GIT.with(|c| {
-        let GitCache { facts, seen } = &mut *c.borrow_mut();
-        let stale: HashSet<&String> = ps
-            .iter()
-            .zip(&dirs)
-            .filter(|(p, _)| seen.get(&p.id) != Some(&p.state))
-            .map(|(_, d)| d)
-            .collect();
-        *seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
-        facts.retain(|_, (t, _)| t.elapsed() < GIT_TTL);
-        for d in stale {
-            facts.remove(d);
+    GIT.with(|c| fill_git_at(&mut c.borrow_mut(), ps, &dirs, Instant::now(), &|m| fleet::scan(m).facts));
+}
+
+/// [`fill_git`] at time `now`, asking `scan` for the dirs that need facts. An
+/// entry is refetched when it is past its `due`, or when a pane in it changed
+/// state and the entry is at least [`GIT_FLIP_GAP`] old. Nothing else is
+/// refetched, so no entry is ever older than [`GIT_TTL`] plus one tick: the
+/// unstaged edits and untracked files of the diff stat show up within the
+/// same bound as before the stagger.
+fn fill_git_at(
+    c: &mut GitCache,
+    ps: &mut [Pane],
+    dirs: &[String],
+    now: Instant,
+    scan: &dyn Fn(&[String]) -> HashMap<String, fleet::Facts>,
+) {
+    for (p, d) in ps.iter().zip(dirs) {
+        if c.seen.get(&p.id) != Some(&p.state)
+            && let Some(e) = c.facts.get_mut(d)
+        {
+            e.flip = true;
         }
-        // one scan per distinct root, in parallel, however many dirs share it
-        let missing: Vec<String> = dirs.iter().filter(|d| !facts.contains_key(*d)).cloned().collect();
-        for (d, f) in fleet::scan(&missing).facts {
-            facts.insert(d, (Instant::now(), f));
-        }
-        for (p, d) in ps.iter_mut().zip(&dirs) {
-            let (_, (loc, pm, root)) = &facts[d];
-            (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
-        }
-    });
+    }
+    c.seen = ps.iter().map(|p| (p.id.clone(), p.state)).collect();
+    let mut missing: Vec<String> = dirs
+        .iter()
+        .filter(|d| {
+            c.facts
+                .get(*d)
+                .is_none_or(|e| now >= e.due || (e.flip && now.duration_since(e.at) >= GIT_FLIP_GAP))
+        })
+        .cloned()
+        .collect();
+    missing.sort();
+    missing.dedup();
+    // one scan per distinct root, in parallel, however many dirs share it
+    let mut found = scan(&missing);
+    for d in missing {
+        let life = if c.facts.contains_key(&d) {
+            GIT_TTL
+        } else {
+            c.firsts += 1;
+            first_life(&d, c.firsts)
+        };
+        let facts = found.remove(&d).unwrap_or_default();
+        c.facts.insert(
+            d,
+            GitEntry {
+                at: now,
+                due: now + life,
+                flip: false,
+                facts,
+            },
+        );
+    }
+    let used: HashSet<&String> = dirs.iter().collect();
+    c.facts.retain(|d, _| used.contains(d));
+    for (p, d) in ps.iter_mut().zip(dirs) {
+        let (loc, pm, root) = &c.facts[d].facts;
+        (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
+    }
 }
 
 /// The review spool's two counts, straight off the directory.
@@ -1328,6 +1394,109 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": c[0], "input": c[1]}]}});
             assert_eq!(parse(vec![row.to_string()]).tool, c[2].as_str().unwrap(), "{l}");
         }
+    }
+
+    fn pane(id: &str, state: State) -> Pane {
+        Pane {
+            id: id.into(),
+            state,
+            ..Default::default()
+        }
+    }
+
+    /// A scan that answers each path with itself as its root and counts the paths asked.
+    fn counted(n: &std::cell::Cell<usize>) -> impl Fn(&[String]) -> HashMap<String, fleet::Facts> + '_ {
+        move |m| {
+            n.set(n.get() + m.len());
+            m.iter().map(|d| (d.clone(), ("loc".into(), "clean".into(), d.clone()))).collect()
+        }
+    }
+
+    /// 50 dirs met in one tick must not all expire in one tick: over 30 s of
+    /// 1 s ticks no tick fetches more than a quarter of them, and no dir waits
+    /// longer than the 10 s TTL (plus the tick) between two fetches.
+    #[test]
+    fn git_first_fetches_spread_and_stay_inside_the_ttl() {
+        let dirs: Vec<String> = (0..50).map(|i| format!("/r/{i}")).collect();
+        let mut ps: Vec<Pane> = (0..50).map(|i| pane(&format!("%{i}"), State::Running)).collect();
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let (n, mut last) = (std::cell::Cell::new(0), HashMap::new());
+        let (mut worst_tick, mut worst_gap) = (0, 0);
+        for s in 0..=30u64 {
+            let (before, now) = (n.get(), t0 + Duration::from_secs(s));
+            fill_git_at(&mut c, &mut ps, &dirs, now, &counted(&n));
+            if s > 0 {
+                worst_tick = worst_tick.max(n.get() - before); // tick 0 is the cold fetch of all 50
+            }
+            for d in dirs.iter().filter(|d| c.facts[*d].at == now) {
+                worst_gap = worst_gap.max(s - last.insert(d, s).unwrap_or(s));
+            }
+        }
+        assert!(worst_tick <= 12, "a tick refetched {worst_tick} dirs");
+        assert!(worst_gap <= 10, "a dir waited {worst_gap} s");
+    }
+
+    fn git_ok(dir: &std::path::Path, args: &[&str]) {
+        let st = std::process::Command::new("git").arg("-C").arg(dir).args(args).status().unwrap();
+        assert!(st.success(), "git {args:?}");
+    }
+
+    /// The diff stat counts unstaged edits, which no index or HEAD stamp shows:
+    /// an edit made after a fetch is on the row within the TTL, tick by tick.
+    #[test]
+    fn git_unstaged_edit_shows_within_the_ttl() {
+        let d = std::env::temp_dir().join(format!("cockpit-fillgit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        git_ok(&d, &["init", "-q", "-b", "main"]);
+        std::fs::write(d.join("f"), "a\n").unwrap();
+        git_ok(&d, &["add", "f"]);
+        git_ok(&d, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "x"]);
+        let dir = d.display().to_string();
+        let mut ps = vec![pane("%1", State::Running)];
+        let (mut c, t0) = (GitCache::default(), Instant::now());
+        let real = |m: &[String]| fleet::scan(m).facts;
+        fill_git_at(&mut c, &mut ps, &[dir.clone()], t0, &real);
+        assert_eq!(ps[0].pm, "clean");
+        // past the first (jittered) expiry, so the 10 s period is what is tested
+        let at = |s| t0 + Duration::from_secs(s);
+        (1..=10).for_each(|s| fill_git_at(&mut c, &mut ps, &[dir.clone()], at(s), &real));
+        std::fs::write(d.join("f"), "a\nb\n").unwrap(); // unstaged: index and HEAD stay put
+        let seen = (11..=20)
+            .find(|s| {
+                fill_git_at(&mut c, &mut ps, &[dir.clone()], at(*s), &real);
+                ps[0].pm == "+1 -0"
+            })
+            .expect("the unstaged edit never reached the row")
+            - 10;
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(seen <= 10, "shown after {seen} s");
+    }
+
+    /// Five flips inside the gap cost one fetch, at the gap; a flip on an old
+    /// entry still refetches at once.
+    #[test]
+    fn git_state_flips_debounce_to_one_fetch_per_dir() {
+        let dirs = vec!["/r/a".to_string(), "/r/a".to_string()];
+        let mut ps = vec![pane("%1", State::Running), pane("%2", State::Running)];
+        let (mut c, t0, n) = (GitCache::default(), Instant::now(), std::cell::Cell::new(0));
+        let ms = |m| t0 + Duration::from_millis(m);
+        fill_git_at(&mut c, &mut ps, &dirs, ms(0), &counted(&n));
+        assert_eq!(n.get(), 1, "two panes, one dir, one fetch");
+        c.facts.get_mut("/r/a").unwrap().due = ms(60_000); // only flips can refetch now
+        for (i, m) in [200, 400, 600, 800, 1000].into_iter().enumerate() {
+            let st = if i % 2 == 0 { State::Done } else { State::Running };
+            (ps[0].state, ps[1].state) = (st, st);
+            fill_git_at(&mut c, &mut ps, &dirs, ms(m), &counted(&n));
+        }
+        assert_eq!(n.get(), 1, "flips inside the gap fetched");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3000), &counted(&n));
+        assert_eq!(n.get(), 2, "the debounced flip is fetched once, at the gap");
+        fill_git_at(&mut c, &mut ps, &dirs, ms(3500), &counted(&n));
+        assert_eq!(n.get(), 2, "and not again");
+        ps[0].state = State::Error; // an entry older than the gap refetches at once
+        fill_git_at(&mut c, &mut ps, &dirs, ms(7000), &counted(&n));
+        assert_eq!(n.get(), 3);
     }
 
     /// A fake `/proc`: `kids` maps pid to one `children` string per task.
