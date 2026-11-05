@@ -492,6 +492,21 @@ fn every_read_only_profile_denies_the_secret_paths() {
     assert!(Profile::TEXT.deny.is_empty(), "the panel's own calls are as they were");
 }
 
+/// review-432: a read dir is absolute, so it can neither be read against the
+/// cache dir nor start with `-` and pass for a flag.
+#[test]
+fn a_read_dir_is_always_absolute() {
+    for d in ["rel/repo", "-repo", "./x"] {
+        let p = Profile::read_only(PathBuf::from(d), false, 0.5, CAP);
+        let got = &p.read_dirs[0];
+        assert!(
+            got.is_absolute() && !got.display().to_string().starts_with('-'),
+            "{d}: {}",
+            got.display()
+        );
+    }
+}
+
 /// review-432: a caller cannot forget the caps, as `read_only` takes them.
 #[test]
 fn read_only_carries_its_budget_and_timeout() {

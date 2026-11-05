@@ -133,7 +133,8 @@ impl Profile {
             skills: research,
             no_prompts: true,
             hooks: false,
-            read_dirs: vec![repo],
+            // absolute: never read against the cache dir, never a `-` that passes for a flag
+            read_dirs: vec![std::path::absolute(&repo).unwrap_or(repo)],
             budget_usd: Some(budget_usd),
             timeout: Some(timeout),
         }
