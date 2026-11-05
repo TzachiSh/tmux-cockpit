@@ -889,7 +889,10 @@ impl App {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
-            let p = self.request_profile();
+            let p = self
+                .run
+                .as_ref()
+                .map_or(super::request::Profile::TEXT, |r| self.profile_for(&r.flow));
             self.timeout = p.timeout.unwrap_or(call.timeout);
             self.req = Some(Request::spawn_with(call, &p, &system, &prompt, &model));
             self.started = Some(Instant::now());
@@ -911,12 +914,14 @@ impl App {
         };
     }
 
-    /// What the pending call may use: an ask reads its repo and the web, under
-    /// the owner's caps (D7); every other call is the panel's text call.
-    pub fn request_profile(&self) -> super::request::Profile {
-        match self.run.as_ref().map(|r| &r.flow) {
-            Some(Flow::Ask(a)) => super::request::Profile::read_only(a.repo.clone(), true, super::ask::BUDGET_USD, super::ask::TIMEOUT),
-            _ => super::request::Profile::TEXT,
+    /// What the call for `flow` may use: an ask reads its repo and the web, under
+    /// the owner's caps (D7); every other call is the panel's text call. One arm
+    /// per flow that reads (#416 adds its own).
+    pub fn profile_for(&self, flow: &Flow) -> super::request::Profile {
+        use super::{ask, request::Profile};
+        match flow {
+            Flow::Ask(a) => Profile::read_only(a.repo.clone(), true, ask::BUDGET_USD, ask::TIMEOUT),
+            _ => Profile::TEXT,
         }
     }
 

@@ -242,7 +242,7 @@ fn the_call_is_read_only_with_the_owners_caps() {
     let (d, mut a) = opened("profile");
     typ(&mut a, "q");
     key(&mut a, KeyCode::Enter);
-    let p = a.request_profile();
+    let p = a.profile_for(&a.run.as_ref().unwrap().flow);
     assert_eq!(p.read_dirs, std::slice::from_ref(&d.0));
     assert_eq!((p.budget_usd, p.timeout), (Some(0.5), Some(ask::TIMEOUT)));
     assert!(p.tools.contains(&"WebSearch") && p.deny.contains(&"Bash"));
@@ -298,7 +298,11 @@ fn a_hidden_ask_comes_back_whole() {
     b.unhide(read_hidden(&d.0.join("act.state"), "%3", now + 5).unwrap());
     assert_eq!(b.view, a.view);
     assert_eq!(hide_body(&b, now), hide_body(&a, now));
-    assert_eq!(b.request_profile(), a.request_profile(), "the repo the call may read comes back");
+    assert_eq!(
+        b.profile_for(&b.run.as_ref().unwrap().flow),
+        a.profile_for(&a.run.as_ref().unwrap().flow),
+        "the repo the call may read comes back"
+    );
     assert_eq!(
         b.run.as_ref().map(|r| r.flow.clone()),
         a.run.as_ref().map(|r| r.flow.clone()),
