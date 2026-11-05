@@ -1,5 +1,6 @@
 //! The tiles' previews in one tmux call (#492): the split at the marks, and
 //! the batch against a private server, on an explicit argv (no env read).
+mod fake;
 #[path = "tiles/rig.rs"]
 mod rig;
 

@@ -1,6 +1,7 @@
 //! The batched tiles and `data::preview`, one call per pane, fed the same
 //! fixed captures, read byte-identical tiles (#492). Its own binary:
 //! `preview` reads COCKPIT_TMUX, which this sets.
+mod fake;
 #[path = "tiles/stub.rs"]
 mod stub;
 
