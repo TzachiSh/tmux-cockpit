@@ -26,7 +26,10 @@ concurrency:
 
 jobs:
   tui-test:
-    runs-on: ubuntu-24.04 # pin: bump on purpose, ubuntu-latest moved to 26 (#401)
+    # Pinned: bump on purpose (#401). 26.04, not 24.04: the tmux-driven tests run
+    # against the image's tmux, and 24.04's 3.4 prints the 0x1f field separator as
+    # `\037` (subs_tmux fails on it). 26.04 ships 3.6. The floor is 3.8.
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       # Exactly the floor, never "stable": pinning here is what catches an
@@ -38,13 +41,6 @@ jobs:
           rustup toolchain install "$floor" --profile minimal --component clippy,rustfmt
           rustup default "$floor"
           rustc --version
-      # The tmux-driven tests (subs_tmux, push) skip when tmux is absent. The
-      # image's tmux 3.4 is below the 3.8 floor and prints the 0x1f field
-      # separator as `\037`, so subs_tmux fails on it. The job container this
-      # replaced had no tmux; take the runner's off to keep that. The shell suite
-      # and a floor check in those tests are the real answer (tracked apart).
-      - name: Take the below-floor tmux off the runner
-        run: sudo apt-get remove -y tmux
       - run: make tui-test
       # The release build is a separate failure mode from the test build: LTO,
       # panic=abort and the dist profile only compile here.

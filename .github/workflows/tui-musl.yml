@@ -6,8 +6,9 @@ name: tui-musl
 # Filtered to the paths that reach the musl build: all of tui/ (a source change
 # can break only this target, e.g. a glibc-only libc call), a root .cargo config,
 # the toolchain files, dist's config, the Makefile and the workflows. The shell
-# suite gates stay unfiltered. scratch/* pushes get it too, so a fail-first
-# branch without a PR still runs it; master does not, the release builds it.
+# suite gates stay unfiltered. master and scratch/* pushes get it too: a
+# combination of PRs that breaks musl shows on master, not at tag time, and a
+# fail-first branch without a PR still runs it.
 on:
   pull_request:
     paths:
@@ -19,7 +20,7 @@ on:
       - Makefile
       - .github/workflows/**
   push:
-    branches: ['scratch/**']
+    branches: [master, 'scratch/**']
     paths:
       - 'tui/**'
       - '.cargo/**'
@@ -32,12 +33,13 @@ on:
 permissions:
   contents: read
 
-# Same group rule as tui.yml: per commit on scratch/*, never cancelled; per PR
-# merge ref otherwise, so a newer push cancels only the superseded run.
+# Same group rule as tui.yml: per commit on master and scratch/*, never
+# cancelled; per PR merge ref otherwise, so a newer push cancels only the
+# superseded run.
 concurrency:
   group: >-
-    ${{ github.workflow }}-${{ startsWith(github.ref, 'refs/heads/scratch/')
-    && github.sha || github.ref }}
+    ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master'
+    || startsWith(github.ref, 'refs/heads/scratch/')) && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
