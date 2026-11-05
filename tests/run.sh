@@ -226,6 +226,10 @@ cpu_under() {                 # <label> <budget-seconds> <cmd...>  stdout -> $CP
     [ "$rc" -eq 124 ] && { bad "$label" "under ${budget}s of CPU" "hung: killed at 10s"; return; }
     cpu_is "$label" "$budget" "$(awk '{printf "%.3f", $1+$2}' "$CPUT")"
 }
+# The worktree's tree_diff, sourced as tmux-review sources it: git.sh's guards first.
+tdiff() {                     # <dir> [git diff args...]
+    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; shift; tree_diff "$@"' _ "$DIR/scripts/lib" "$@"
+}
 cleanup() {
     kill_socks
     "$TMUX_REAL" -L "$SUITE_SOCK" kill-server >/dev/null 2>&1
@@ -5020,6 +5024,21 @@ is "the stored value is still correct" "4" \
 "$TMUX_REAL" -L "$CX2" kill-server >/dev/null 2>&1
 fi
 
+echo "== tree_diff: staged, unstaged and untracked changes are one diff (#390) =="
+# --delta and the review loop ask one question: is `tree_diff --numstat` empty?
+# A change that lives only in the index, or only in an untracked file, must be
+# in it, or that tree reads clean. Paths with a space or non-ASCII bytes too.
+# The fixtures are mkfix.sh's, which the diffstat parity block also builds.
+for td_row in 'mixed|1	0	staged.txt' 'mixed|1	0	unstaged.txt' \
+              'untracked|2	0	new.txt' 'untracked|1	0	café-new.txt' \
+              'spaces|1	2	has space.txt' 'spaces|1	0	new file.txt' \
+              'nonascii|1	1	alpha.txt' 'nonascii|2	1	café.txt'; do
+    TDF=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" "${td_row%%|*}" "$TDF" >/dev/null 2>&1
+    is "${td_row%%|*}: numstat has ${td_row##*	}" "1" \
+       "$(tdiff "$TDF" --numstat | grep -cxF -- "${td_row#*|}")"
+    rm -rf "$TDF"
+done
+
 echo "== tmux-review --lines: the diff rows a review anchors to =="
 RV1=$(mktmpd)
 (
@@ -5959,11 +5978,9 @@ case "$rv7out" in
 esac
 rm -rf "$RV7"
 
-echo "== tmux-review --lines: a subdir pane's cwd still resolves to the repo root =="
-# git -C <dir> diff always emits paths relative to the repo ROOT, not <dir> --
-# so a pane whose cwd is a subdirectory used to hand --lines rows that
-# --preview-diff (cd <dir> && ...) could never find: "gone: root.txt"
-# instead of the real diff.
+echo "== tree_diff: from a subdir it still diffs the whole repo, paths from the root =="
+# git -C <dir> diff names paths from the repo root, and big_files and the index
+# copy's ls-files read ':(top)', so a subdir dir misses nothing above it.
 RV8=$(mktmpd)
 (
   cd "$RV8" || exit
@@ -5976,18 +5993,11 @@ RV8=$(mktmpd)
   printf 'root\nroot\nmore\n' > root.txt
   printf 'one\ntwo\n' > sub/foo.sh
 ) >/dev/null 2>&1
-rv8lines=$("$DIR/scripts/tmux-review" --lines "$RV8/sub")
-case "$rv8lines" in
-    *'root.txt'$'\t'*) ok "--lines from a subdir pane still anchors the root file" ;;
-    *) bad "--lines from a subdir pane still anchors the root file" \
-         "a root.txt row" "$rv8lines" ;;
-esac
-case "$rv8lines" in
-    *'sub/foo.sh'$'\t''2'$'\t'*) ok "--lines from a subdir pane anchors a row inside that subdir too" ;;
-    *) bad "--lines from a subdir pane anchors a row inside that subdir too" \
-         "sub/foo.sh<TAB>2<TAB>..." "$rv8lines" ;;
-esac
-
+rv8num=$(tdiff "$RV8/sub" --numstat)
+is "from a subdir, the root file is in the diff" "1" \
+   "$(printf '%s\n' "$rv8num" | grep -cxF "2	0	root.txt")"
+is "and the subdir's own file, by its path from the root" "1" \
+   "$(printf '%s\n' "$rv8num" | grep -cxF "1	0	sub/foo.sh")"
 rm -rf "$RV8"
 
 echo "== tmux-review --lines: output is byte-identical to the committed goldens =="
@@ -5998,24 +6008,22 @@ for gf in basic mixed untracked blank nonascii funcname hunks spaces; do
     rm -rf "$GD"
 done
 
-echo "== tmux-review --lines: the diff never writes the agent's index =="
-# Every diff now runs against a COPY of the index (git add -N -A on the copy
-# folds untracked files into the same diff). The copy is the whole point:
-# an `add -N` against the real index would rewrite the agent's own index
-# under it mid-commit. Pinned by the index file's mtime and size.
+echo "== tree_diff never writes the agent's index =="
+# Every diff runs against a COPY of the index (git add -N -A on the copy folds
+# untracked files into the same diff). An `add -N` against the real index would
+# rewrite the agent's own index under it mid-commit. Pinned by mtime and size.
 RI=$(mktmpd); "$DIR/tests/fixtures/review/mkfix.sh" untracked "$RI" >/dev/null 2>&1
 ri_stamp() { stat -c '%Y %s' "$RI/.git/index" 2>/dev/null || stat -f '%m %z' "$RI/.git/index"; }
 touch -d '2020-01-01 00:00:00' "$RI/.git/index" 2>/dev/null || touch -t 202001010000 "$RI/.git/index"
 ri_before=$(ri_stamp)
-is "untracked rows still come out of one diff" "2" \
-   "$("$DIR/scripts/tmux-review" --lines "$RI" | grep -c $'^new.txt\t')"
+is "an untracked file is in the one diff" "1" "$(tdiff "$RI" --numstat | grep -cxF "2	0	new.txt")"
 is "and the real index is byte- and mtime-identical afterwards" "$ri_before" "$(ri_stamp)"
 is "no intent-to-add entry leaked into the real index" "" \
    "$(git -C "$RI" ls-files -s -- new.txt)"
 unset -f ri_stamp
 rm -rf "$RI"
 
-echo "== tmux-review --lines: a file over 32 MB is skipped before git reads it, and the list says so =="
+echo "== tree_diff: a file over 32 MB is kept away from git, and numstat still names it =="
 RB=$(mktmpd)
 (
   cd "$RB" || exit
@@ -6023,27 +6031,24 @@ RB=$(mktmpd)
   git init -q -b main .; printf 'a\n' > f.c; git add -A; git commit -q -m init
   printf 'a\nb\n' > f.c
   head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
-  printf 'x\n' > small.txt                                  # untracked, small: still reviewed
+  printf 'x\n' > small.txt                                  # untracked, small: still counted
 ) >/dev/null 2>&1
 # CPU, not the wall clock: the claim is that the 64 MiB file is skipped rather
-# than diffed, and diffing it is CPU. 3x this site's 0.157s under twelve
-# spinners (0.109-0.132s idle); a wall bound grades the box's I/O too (#75).
-cpu_under "a 64 MiB file is skipped, not diffed: the list is under 0.5s of CPU" 0.5 \
-    "$DIR/scripts/tmux-review" --lines "$RB"
-rbrows=$(cat "$CPUOUT")
-is "the small change is still a row"      "1" "$(printf '%s\n' "$rbrows" | grep -c $'^f.c\t')"
-is "the small untracked file is still a row" "1" "$(printf '%s\n' "$rbrows" | grep -c $'^small.txt\t')"
-is "the big file has no rows"             "0" "$(printf '%s\n' "$rbrows" | grep -c $'^core\t')"
-case "$rbrows" in
-    *"(diff too large)"*"core (64 MB) skipped"*"over 32 MB"*) ok "one notice row names the skipped file and its size" ;;
-    *) bad "one notice row names the skipped file and its size" "(diff too large) ... core (64 MB) skipped ... over 32 MB" "$rbrows" ;;
-esac
-is "the full diff omits it too" "0" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2"' _ "$DIR/scripts/lib" "$RB" | grep -c '^diff --git a/core')"
-is "and numstat names it as a binary row, unread" "-	-	core" "$(bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$RB" | grep -P '\tcore$')"
+# than hashed, and hashing it is CPU. A wall bound grades the box's I/O too (#75).
+cpu_under "a 64 MiB file is skipped, not hashed: numstat is under 0.5s of CPU" 0.5 \
+    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' \
+    _ "$DIR/scripts/lib" "$RB"
+rbnum=$(cat "$CPUOUT")
+is "the small change is counted" "1" "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	f.c")"
+is "the small untracked file is counted" "1" \
+   "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	small.txt")"
+is "and numstat names the big one as a binary row, unread" "1" \
+   "$(printf '%s\n' "$rbnum" | grep -cxF -- "-	-	core")"
+is "the full diff omits it" "0" "$(tdiff "$RB" | grep -c '^diff --git a/core')"
 printf 'big\n' > "$RB/f.c"; head -c $(( 64 * 1024 * 1024 )) /dev/zero >> "$RB/f.c"   # a TRACKED file grown past the cap
-rbrows2=$("$DIR/scripts/tmux-review" --lines "$RB")
-is "a tracked file grown past the cap is skipped the same way" "0" "$(printf '%s\n' "$rbrows2" | grep -c $'^f.c\t')"
-case "$rbrows2" in *"f.c (64 MB) skipped"*) ok "and named" ;; *) bad "and named" "f.c (64 MB) skipped" "$rbrows2" ;; esac
+is "a tracked file grown past the cap is skipped the same way" "0" \
+   "$(tdiff "$RB" | grep -c '^diff --git a/f.c')"
+is "and named as a binary row" "1" "$(tdiff "$RB" --numstat | grep -cxF -- "-	-	f.c")"
 rm -rf "$RB"
 
 # A stand-in for revdiff, which is interactive and so cannot be driven here. Each
@@ -6087,8 +6092,8 @@ rd_last() { awk '{print $NF}' "$RDW/argv.$1"; }
 echo "== tmux-review: the review base is since-last-review, else the branch, else uncommitted =="
 # revdiff's auto-detect, one function: a checkpoint ref wins, then the
 # merge-base with the upstream/default branch when it is not HEAD itself,
-# then HEAD (today's view). ^B cycles the modes that hold. Exercised through
-# --delta and --lines so the tests see what a reviewer sees.
+# then HEAD (today's view). ^B cycles the modes that hold. Read through
+# tree_diff's numstat, what --delta and the review loop read.
 RB=$(mktmpd)
 (
   cd "$RB" || exit
@@ -6102,13 +6107,12 @@ RB=$(mktmpd)
   git checkout -q -b topic
   printf 'a\nCOMMITTED-ON-FEAT\n' > f; git commit -q -am topic
 ) >/dev/null 2>&1
-is "a clean feature branch reviews its commits against main" "1" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT')"
+is "a clean feature branch reviews its commits against main" "1	0	f" \
+   "$(tdiff "$RB" --numstat)"
 printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\n' > "$RB/f"
-is "branch + uncommitted are one set" "2" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
-is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
-   "$(COCKPIT_REVIEW_BASE=uncommitted "$DIR/scripts/tmux-review" --lines "$RB" | grep -c 'COMMITTED-ON-FEAT\|UNCOMMITTED')"
+is "branch + uncommitted are one set" "2	0	f" "$(tdiff "$RB" --numstat)"
+is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1	0	f" \
+   "$(COCKPIT_REVIEW_BASE=uncommitted tdiff "$RB" --numstat)"
 # A checkpoint: the tree as it stands now, under the ref ^A will write.
 (
   cd "$RB" || exit
@@ -6116,12 +6120,12 @@ is "COCKPIT_REVIEW_BASE=uncommitted narrows it to HEAD" "1" \
   git update-ref refs/cockpit/reviewed/topic "$(GIT_INDEX_FILE=$I git write-tree)"; rm -f "$I"
 ) >/dev/null 2>&1
 is "with a checkpoint at the current tree there is nothing to review" "" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB")"
+   "$(tdiff "$RB" --numstat)"
 printf 'a\nCOMMITTED-ON-FEAT\nUNCOMMITTED\nSINCE\n' > "$RB/f"
-is "and after one more edit only that edit is a row" "SINCE" \
-   "$("$DIR/scripts/tmux-review" --lines "$RB" | cut -f3)"
-is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3" \
-   "$(COCKPIT_REVIEW_BASE=branch "$DIR/scripts/tmux-review" --lines "$RB" | grep -c .)"
+is "and after one more edit only that edit is in the diff" "+SINCE" \
+   "$(tdiff "$RB" | grep -x '+[^+].*')"
+is "COCKPIT_REVIEW_BASE=branch still shows the whole branch" "3	0	f" \
+   "$(COCKPIT_REVIEW_BASE=branch tdiff "$RB" --numstat)"
 
 rm -rf "$RB"
 
@@ -6179,11 +6183,12 @@ is "a clears the pane's review state" "" "$("$TMUX_REAL" -L "$RA" show-option -p
 RAREF=$(git -C "$RADIR" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)
 is "a wrote the checkpoint ref to a tree" "tree" "$(git -C "$RADIR" cat-file -t "$RAREF" 2>/dev/null)"
 is "the tree holds the untracked file too" "1" "$(git -C "$RADIR" ls-tree -r "$RAREF" --name-only 2>/dev/null | grep -c '^new.txt$')"
-is "nothing is left to review" "" "$("$DIR/scripts/tmux-review" --lines "$RADIR")"
+is "nothing is left to review" "" "$(tdiff "$RADIR" --numstat)"
 # --delta asks tmux about the pane, so it runs on THIS server (run-shell), not the suite's.
 is "--delta says so (exit 1)" "D=1" "$("$TMUX_REAL" -L "$RA" run-shell "XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' --delta $RAAP; echo D=\$?" 2>/dev/null | tail -1)"
 printf 'brand new\nEDITED\n' > "$RADIR/new.txt"
-is "an edit to the approved untracked file is the only row" "EDITED" "$("$DIR/scripts/tmux-review" --lines "$RADIR" | cut -f3)"
+is "an edit to the approved untracked file is the only change" "1	0	new.txt" \
+   "$(tdiff "$RADIR" --numstat)"
 # --done as a public subcommand: keep_hint()'s own re-delivery command chains
 # into it, so a by-hand delivery has to finish the same way as review_pane()'s
 # own cleanup does.
@@ -6369,10 +6374,10 @@ git -C "$GH/r" diff HEAD </dev/null >/dev/null 2>&1
 case "$(cat "$GHM" 2>/dev/null)" in *fsmon*) ok "the planted config fires under plain git" ;;
     *) bad "the planted config fires under plain git" "fsmon in the marker" "$(cat "$GHM" 2>/dev/null)" ;; esac
 rm -f "$GHM"
-"$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null >/dev/null 2>&1
-is "and nothing it names runs under tmux-review" "" "$(cat "$GHM" 2>/dev/null)"
-case "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>/dev/null)" in *f.txt*) ok "while the review still lists the change" ;;
-    *) bad "while the review still lists the change" "a row for f.txt" "$("$DIR/scripts/tmux-review" --lines "$GH/r" </dev/null 2>&1 | head -3)" ;; esac
+tdiff "$GH/r" </dev/null >/dev/null 2>&1
+is "and nothing it names runs under tree_diff" "" "$(cat "$GHM" 2>/dev/null)"
+is "while tree_diff still counts the change" "1" \
+   "$(tdiff "$GH/r" --numstat </dev/null 2>/dev/null | grep -cxF "1	0	f.txt")"
 
 echo "== a partial clone's lazy fetch cannot run the repo's planted remote config (#217) =="
 # c's HEAD blob is missing, so a diff fetches it through the remote the repo names. The
@@ -11043,8 +11048,8 @@ git -C "$GD/r" read-tree --empty; rm -f "$GD/PWNED"
 is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter driver name contains '='
 1" "$( ( . "$DIR/scripts/lib/git.sh"; git -C "$GD/r" add x ) 2>&1; printf '%s' "$?")"
 "$DSB" diffstat "$GD/r" >/dev/null 2>&1
-"$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
-is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
+tdiff "$GD/r" >/dev/null 2>&1
+is "and nothing ran: git.sh, diffstat and tree_diff" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
 
 # #434: a gitlink's repo has its own config, a clean filter included, and
@@ -11085,9 +11090,10 @@ ds_redirty 203201010000
 is "diffstat runs none either, and counts the same" "$dss|" \
    "$(TMPDIR="$GD/tmp" "$DSB" diffstat "$GD/r")|$(ls "$GD" | grep '^PWNED')"
 ds_redirty 203301010000
-dsl=$(TMPDIR="$GD/tmp" "$DIR/scripts/tmux-review" --lines "$GD/r/d" 2>/dev/null)
-is "nor does tmux-review --lines from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
-is "whose rows still hold the new file at the top" "1" "$(printf '%s\n' "$dsl" | grep -c '^n\.txt	1	n	')"
+dsl=$(TMPDIR="$GD/tmp" tdiff "$GD/r/d" --numstat 2>/dev/null)
+is "nor does tree_diff from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
+is "whose numstat still counts the new file at the top" "1" \
+   "$(printf '%s\n' "$dsl" | grep -cxF "1	0	n.txt")"
 is "a relative TMPDIR: tree_diff counts what an absolute one does" "$dss" "$(cd "$GD" && TMPDIR=tmp ds_shell "$GD/r")"
 is "and neither leaves anything in TMPDIR" "" "$(ls -A "$GD/tmp")"
 # Excludes that never reach their file: while ls-files writes $tmp/staged, the
@@ -13520,8 +13526,8 @@ ROH=$(mktmpd)
   git remote set-head origin develop
   git checkout -q -b topic; printf 'a\nON-TOPIC\n' > f; git commit -q -am topic
 ) >/dev/null 2>&1
-is "origin/HEAD is the base: a branch commit is a review row" "1" \
-   "$("$DIR/scripts/tmux-review" --lines "$ROH/work" | grep -c 'ON-TOPIC')"
+is "origin/HEAD is the base: a branch commit is in the diff" "1" \
+   "$(tdiff "$ROH/work" | grep -cx '+ON-TOPIC')"
 is "and the base names origin/develop" "vs origin/develop" \
    "$(. "$DIR/scripts/lib/review-diff.sh"; review_base "$ROH/work" | cut -f2)"
 # origin/HEAD outranks a local main: main one commit past origin/develop, topic cut from main.
