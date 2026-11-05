@@ -2,7 +2,7 @@
 //! checkout, which has a `.git` of its own. A record is kept only as this repo's:
 //! a `.git` dir that is its common dir, or a `.git` file whose gitdir sits in that
 //! dir's `worktrees/` and links back to the same file. Links are followed, as git
-//! follows them: a `.git` hard-linked to one of ours counts.
+//! follows them, and then the branch must be the one that tree's HEAD names.
 mod oldgit;
 use cockpit_tui::data::branches;
 
@@ -39,6 +39,6 @@ fn without_z_only_this_repos_trees_are_kept() {
     assert_eq!(oldgit::held(&bs, "fo"), None, "another repo's main checkout");
     assert_eq!(oldgit::held(&bs, "fl"), None, "another repo's linked tree");
     assert_eq!(oldgit::held(&bs, "fp"), None, "a copied .git file that does not link back");
-    assert_eq!(oldgit::held(&bs, "fh"), Some(hard.display().to_string()), "a hard-linked .git");
+    assert_eq!(oldgit::held(&bs, "fh"), None, "a .git hard-linked to a tree on another branch");
     assert_eq!(oldgit::held(&bs, "al"), Some(al.display().to_string()), "a symlinked entry");
 }

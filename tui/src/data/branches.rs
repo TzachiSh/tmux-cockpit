@@ -67,14 +67,21 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
     let common = Path::new(top).join(common);
     let plain = git(dir, &[], None, &["worktree", "list", "--porcelain"]);
     let mut v = records(plain.split('\n'), false);
-    v.retain(|(p, _)| ours(Path::new(p), &common));
+    v.retain(|(p, b)| ours(Path::new(p), b.as_deref(), &common));
     v
 }
 
 /// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
-/// `wt_ours` decides it. A path that is gone is kept: it names no directory to open.
-fn ours(p: &Path, common: &Path) -> bool {
-    !p.exists() || entry(p, common).is_some()
+/// `wt_ours` decides it, and holding `branch` if it names one. A forged record can
+/// pair a real tree's path with a cut tree's branch line; that tree's own HEAD names
+/// its real branch. A path that is gone is kept: it names no directory to open.
+fn ours(p: &Path, branch: Option<&str>, common: &Path) -> bool {
+    if !p.exists() {
+        return true;
+    }
+    let Some(e) = entry(p, common) else { return false };
+    let head = || first_line(&e.join("HEAD"));
+    branch.is_none_or(|b| head().is_some_and(|h| h.strip_prefix("ref: refs/heads/") == Some(b)))
 }
 
 /// The git dir of the tree at `p` when the tree is this repo's. The main checkout's
@@ -207,7 +214,7 @@ pub fn valid_name(dir: &str, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::records;
+    use super::{records, same};
 
     fn plain(s: &str) -> Vec<(String, Option<String>)> {
         records(s.split('\n'), false)
@@ -235,6 +242,19 @@ mod tests {
             let got = plain(&format!("worktree /none/d\n{l}\nHEAD 0\nbranch refs/heads/c\n"));
             assert_eq!(got, [], "{l}");
         }
+    }
+
+    #[test]
+    fn same_is_one_inode_so_a_hard_link_is_the_same_file_as_the_shells_ef() {
+        let d = std::env::temp_dir().join(format!("cockpit-same-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a"), "x").unwrap();
+        std::fs::hard_link(d.join("a"), d.join("b")).unwrap();
+        std::fs::write(d.join("c"), "x").unwrap();
+        let (ab, ac) = (same(&d.join("a"), &d.join("b")), same(&d.join("a"), &d.join("c")));
+        let _ = std::fs::remove_dir_all(&d);
+        assert!(ab, "a hard link");
+        assert!(!ac, "a copy");
     }
 
     #[test]
