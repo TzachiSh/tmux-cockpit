@@ -94,6 +94,12 @@ fn label(dir: &Path) -> String {
     pick::clean(&String::from_utf8_lossy(dir.as_os_str().as_bytes()))
 }
 
+/// A character a rendered reference cannot carry: a control character (also DEL and
+/// C1) is dropped on render, and a bidi override reorders what the eye reads.
+fn unsafe_char(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
 fn answer_line(verb: &str, path: &Path) -> Vec<u8> {
     [verb.as_bytes(), b" ", path.as_os_str().as_bytes()].concat()
 }
@@ -204,6 +210,10 @@ impl Files {
         };
         if path.as_os_str().as_bytes().contains(&b'\n') {
             self.say("a newline in the name: it cannot be sent on one line");
+            return Outcome::Continue;
+        }
+        if path.to_string_lossy().chars().any(unsafe_char) {
+            self.say("a control or bidi character in the name: it cannot be sent safely");
             return Outcome::Continue;
         }
         Outcome::Choose(answer_line(verb, &path))
