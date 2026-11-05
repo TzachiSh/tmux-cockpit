@@ -142,8 +142,10 @@ impl Profile {
 
     /// What the system prompt adds for a call with read dirs: its cwd is not the
     /// repo, so the model is told where the repo is and how the tools reach it.
+    /// Each path is quoted; one with a control or bidi character never gets here
+    /// (`start` refuses it), as it would put text in the prompt with its trust.
     pub fn where_note(&self) -> Option<String> {
-        let dirs: Vec<String> = self.read_dirs.iter().map(|d| d.display().to_string()).collect();
+        let dirs: Vec<String> = self.read_dirs.iter().map(|d| format!("{:?}", d.display().to_string())).collect();
         (!dirs.is_empty()).then(|| {
             format!(
                 "The repository is at {}. Read, Grep and Glob take absolute paths under it; your working directory is not the repository.",
@@ -270,6 +272,14 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
 }
 
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
+    // a folder's name goes into the system prompt: a line break or a bidi mark in
+    // it is refused, never cleaned, as the call would read some other folder
+    if let Some(d) = p.read_dirs.iter().find(|d| {
+        let s = d.to_string_lossy();
+        crate::pick::clean(&s) != s
+    }) {
+        return Err(format!("{:?} holds a control or bidi character; refused", d.display().to_string()));
+    }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
         None => system.to_string(),
