@@ -265,6 +265,39 @@ fn alt_e_stays_in_the_footer_at_popup_widths() {
     }
 }
 
+// --- alt-a: the prompt basket (#365 child 5) ----------------------------------
+
+#[test]
+fn alt_a_on_a_file_prints_add_and_its_path() {
+    let s = Scratch::new();
+    let p = s.file("a.rs");
+    let mut f = browser(&s.0);
+    assert_eq!(press(&mut f, KeyCode::Char('a'), KeyModifiers::ALT), line("add", &p));
+}
+
+/// A folder is refused, with a note: the basket holds files and their lines.
+#[test]
+fn alt_a_on_a_folder_is_refused_with_a_note() {
+    let s = Scratch::new();
+    s.dir("src");
+    let mut f = browser(&s.0);
+    assert_eq!(press(&mut f, KeyCode::Char('a'), KeyModifiers::ALT), Outcome::Continue);
+    assert!(
+        f.pick.header.starts_with('✕') && f.pick.header.contains("folder"),
+        "{}",
+        f.pick.header
+    );
+}
+
+#[test]
+fn the_footer_and_the_help_offer_alt_a() {
+    let g = Theme::fixed().g;
+    let h = files::hints(&g, 120, false, false);
+    assert!(h.iter().any(|(k, v)| k == "alt-a" && v == "add"), "{h:?}");
+    let rows = files::help(&g);
+    assert!(rows.iter().any(|(k, v)| k == "alt-a" && v.contains("basket")), "{rows:?}");
+}
+
 #[test]
 fn the_narrow_footer_keeps_enter_as_view() {
     let g = Theme::fixed().g;
@@ -313,6 +346,7 @@ fn a_name_with_a_newline_cannot_ride_one_line_so_it_prints_nothing() {
         Outcome::Continue,
         "copy is a line too"
     );
+    assert_eq!(press(&mut f, KeyCode::Char('a'), KeyModifiers::ALT), Outcome::Continue, "and add");
     // the next key clears the note
     tap(&mut f, KeyCode::Down);
     assert!(!f.pick.header.starts_with('✕'));
@@ -340,6 +374,7 @@ fn a_name_with_a_control_or_bidi_character_is_refused_for_view_open_and_copy() {
             ("view", (KeyCode::Enter, KeyModifiers::NONE)),
             ("open", (KeyCode::Char('e'), KeyModifiers::ALT)),
             ("copy", (KeyCode::Char('c'), KeyModifiers::ALT)),
+            ("add", (KeyCode::Char('a'), KeyModifiers::ALT)),
         ] {
             assert_eq!(press(&mut f, k.0, k.1), Outcome::Continue, "{label} {name:?}");
             assert!(f.pick.header.starts_with('✕'), "{label} {name:?}: {}", f.pick.header);
@@ -585,7 +620,7 @@ fn demo() -> (Scratch, Files) {
 
 #[test]
 fn goldens() {
-    for (w, h) in [(40, 14), (60, 16), (80, 24)] {
+    for (w, h) in [(40, 14), (60, 16), (80, 24), (84, 24)] {
         let (_s, mut f) = demo();
         golden(&format!("files-{w}"), &draw(w, h, &mut f));
     }

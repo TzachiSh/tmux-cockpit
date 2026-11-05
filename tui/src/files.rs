@@ -221,6 +221,19 @@ impl Files {
         }
     }
 
+    /// alt-a (#365 child 5): a file to the pane's prompt basket; a folder is
+    /// refused, as the basket holds files and their lines.
+    fn add(&mut self) -> Outcome {
+        match self.selected() {
+            Some((_, false)) => self.leaf("add"),
+            Some((_, true)) => {
+                self.say("a folder cannot go in the basket: pick a file");
+                Outcome::Continue
+            }
+            None => Outcome::Continue,
+        }
+    }
+
     /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫
     /// on an empty filter go up; `.` on an empty filter shows or hides dotfiles;
     /// everything else is the picker's.
@@ -239,6 +252,7 @@ impl Files {
             },
             KeyCode::Char('e') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.edit(),
             KeyCode::Char('c') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.leaf("copy"),
+            KeyCode::Char('a') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.add(),
             KeyCode::Left if walk && plain => {
                 self.up(area);
                 Outcome::Continue
@@ -296,6 +310,7 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
             h(".", if hidden { "dotfiles on" } else { "dotfiles off" }),
             h("alt-i", if ignored { "ignored on" } else { "ignored off" }),
             h("alt-c", "copy"),
+            h("alt-a", "add"),
             h("F1", "keys"),
             h("esc", "close"),
         ],
@@ -328,6 +343,8 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == "alt-c") {
         r.1 = "copy: print this row's path, exit".into();
     }
+    let add = "add the file to the pane's prompt basket: print its path, exit";
+    rows.insert(at + 4, ("alt-a".into(), add.into()));
     rows
 }
 
