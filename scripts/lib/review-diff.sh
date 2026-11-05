@@ -86,17 +86,17 @@ tree_diff() {
     # The binary-file numstat row git would have printed: without it a tree whose
     # only change is a big file reads clean to --delta.
     [ "${#bigp[@]}" -eq 0 ] || case " $* " in *' --numstat '*) printf -- '-\t-\t%s\n' "${bigp[@]}" ;; esac
-    tree_diff_done
+    scratch_done
 }
 
 # tree_diff's and approve's way out, on every path: the temp dir gone, the
 # traps cleared. Reads the caller's $tmp.
-tree_diff_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
+scratch_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 
 # The private dir and what goes in it, for a caller that adds to a copy of
 # the index. Sets the caller's tmp (the dir), idx (the copy, $tmp/index, absent
 # when there is no index yet), and from (the add's pathspec options, empty when
-# no gitlink is staged), with the traps tree_diff_done clears. $tmp/staged
+# no gitlink is staged), with the traps scratch_done clears. $tmp/staged
 # holds the staged entries. Status 1 when the list or the excludes do not land:
 # the dir is gone, and the caller must run no add.
 scratch_index() {             # <dir> <gitdir>
@@ -108,13 +108,13 @@ scratch_index() {             # <dir> <gitdir>
     { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \
         || rm -f -- "$idx"
     (set -C; git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' \
-        > "$tmp/staged") 2>/dev/null || { tree_diff_done; return 1; }
+        > "$tmp/staged") 2>/dev/null || { scratch_done; return 1; }
     # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
     # to run. An error (2) runs the loop all the same.
     grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
     if [ $? -ne 1 ]; then
         (set -C; gitlink_excludes "$tmp/staged" "$tmp/pathspec") 2>/dev/null \
-            || { tree_diff_done; return 1; }
+            || { scratch_done; return 1; }
         [ ! -s "$tmp/pathspec" ] || from=(--pathspec-from-file="$tmp/pathspec" --pathspec-file-nul)
     fi
 }
@@ -360,10 +360,9 @@ lines_mode() {
 #   git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
 # The add runs on a private copy of the index (scratch_index, shared with
 # tree_diff) and stays out of every gitlink, whose repo would run its own
-# filters (#441). update-index
-# then records each gitlink as add -A did: its HEAD, read from its refs with
-# no status run, or the entry dropped when the dir is gone. An empty DIR is
-# refused: git -C "" is the cwd.
+# filters (#441). update-index then records each gitlink as add -A did: its
+# HEAD, read from its refs with no status run, or the entry dropped when the
+# dir is gone. An empty DIR is refused: git -C "" is the cwd.
 approve() {                   # <dir>
     local dir=$1 tmp idx gd top br tree rp
     local -a from=() links=()
@@ -374,7 +373,7 @@ approve() {                   # <dir>
     scratch_index "$dir" "$gd" || return 1
     if [ "${#from[@]}" -gt 0 ]; then
         (set -C; gitlink_excludes "$tmp/staged" "$tmp/gitlinks" '') 2>/dev/null \
-            || { tree_diff_done; return 1; }
+            || { scratch_done; return 1; }
         links=(-C "$top" update-index -z --remove --stdin)
     fi
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -382,6 +381,6 @@ approve() {                   # <dir>
            && { [ "${#links[@]}" -eq 0 ] \
                 || GIT_INDEX_FILE=$idx git "${links[@]}" < "$tmp/gitlinks" 2>/dev/null; } \
            && GIT_INDEX_FILE=$idx git -C "$dir" write-tree 2>/dev/null)
-    tree_diff_done
+    scratch_done
     [ -n "$tree" ] && git -C "$dir" update-ref "refs/cockpit/reviewed/${br:-HEAD}" "$tree" 2>/dev/null
 }
