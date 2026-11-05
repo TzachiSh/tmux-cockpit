@@ -526,11 +526,6 @@ fn main() {
     if o.check {
         return;
     }
-    let staged = stage(&cases).unwrap_or_else(|e| {
-        eprintln!("panel_eval: {e}");
-        std::process::exit(2);
-    });
-
     let mut call = Call::from_env();
     let mut wrapped = false;
     match std::env::current_exe() {
@@ -548,6 +543,11 @@ fn main() {
             std::process::exit(2);
         })
     });
+    // after the last exit: a Staged is removed when it drops, a panic included
+    let staged = Staged(stage(&cases).unwrap_or_else(|e| {
+        eprintln!("panel_eval: {e}");
+        std::process::exit(2);
+    }));
     let mut hashes: Vec<u64> = vec![];
     let mut todo: Vec<(usize, usize)> = (0..o.runs).flat_map(|r| (0..cases.len()).map(move |c| (c, r))).collect();
     todo.reverse();
@@ -561,7 +561,7 @@ fn main() {
             && let Some((ci, run)) = todo.pop()
         {
             let c = &cases[ci];
-            let path = match (&c.explore, &staged) {
+            let path = match (&c.explore, &staged.0) {
                 (Some(f), Some(d)) => d.join(f).display().to_string(),
                 _ => c.path.clone(),
             };
@@ -670,8 +670,16 @@ fn main() {
             reads.iter().max().unwrap_or(&0)
         );
     }
-    if let Some(d) = staged {
-        let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The fixture copy, removed on drop.
+struct Staged(Option<PathBuf>);
+
+impl Drop for Staged {
+    fn drop(&mut self) {
+        if let Some(d) = &self.0 {
+            let _ = std::fs::remove_dir_all(d);
+        }
     }
 }
 
