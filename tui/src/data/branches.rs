@@ -1,7 +1,7 @@
 //! What the branch popup reads from git (#246). Every call goes through
 //! `gitsafe`'s flags, so a repo's own config runs nothing as the user.
 use super::gitsafe::git;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
@@ -72,23 +72,24 @@ fn worktrees(dir: &str, top: &str) -> Vec<(String, Option<String>)> {
 }
 
 /// True for a worktree of the repo whose common dir is `common`, as tmux-branch's
-/// `wt_ours` decides it. The main checkout's `.git` is the common dir; a linked
-/// tree's `.git` file names a dir in its `worktrees/` whose `gitdir` file names
-/// that `.git` back. Links are followed, as git follows them. A path that is gone
-/// is kept: it names no directory to open.
+/// `wt_ours` decides it. A path that is gone is kept: it names no directory to open.
 fn ours(p: &Path, common: &Path) -> bool {
+    !p.exists() || entry(p, common).is_some()
+}
+
+/// The git dir of the tree at `p` when the tree is this repo's. The main checkout's
+/// `.git` is the common dir; a linked tree's `.git` file names a dir in its
+/// `worktrees/` whose `gitdir` file names that `.git` back. Links are followed, as
+/// git follows them.
+fn entry(p: &Path, common: &Path) -> Option<PathBuf> {
     let dot = p.join(".git");
-    if !p.exists() {
-        return true;
-    }
     if dot.is_dir() {
-        return same(&dot, common);
+        return same(&dot, common).then_some(dot);
     }
-    let Some(g) = first_line(&dot).and_then(|l| Some(p.join(l.strip_prefix("gitdir: ")?))) else {
-        return false;
-    };
+    let g = p.join(first_line(&dot)?.strip_prefix("gitdir: ")?);
     let home = same(&g.join(".."), &common.join("worktrees"));
-    home && first_line(&g.join("gitdir")).is_some_and(|b| same(&g.join(b), &dot))
+    let back = home && first_line(&g.join("gitdir")).is_some_and(|b| same(&g.join(b), &dot));
+    back.then_some(g)
 }
 
 /// Both paths exist and are the same file (device and inode), as the shell's `-ef`.
