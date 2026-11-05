@@ -17,11 +17,19 @@ runs:
     # The key carries the runner image: the binary links the image's libevent and
     # ncurses, so a build from one image is not reused on another. The checksum
     # is in the key so that a changed pin can never hit the old build.
+    # Read from the file, not from env.ImageOS: that is not in the expressions'
+    # env context, so a key built from it carried an empty image and a build
+    # from one image was restored on another (symbol version errors from
+    # libtinfo, #478).
+    - id: image
+      shell: bash
+      run: . /etc/os-release && echo "id=$ID-$VERSION_ID" >> "$GITHUB_OUTPUT"
+
     - id: cache
       uses: actions/cache/restore@v4
       with:
         path: ~/.cache/ci-tmux/${{ inputs.version }}
-        key: tmux-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.sha256 }}
+        key: tmux-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.image.outputs.id }}-${{ inputs.sha256 }}
 
     - name: Build tmux ${{ inputs.version }} from the release tarball
       if: steps.cache.outputs.cache-hit != 'true'
