@@ -43,7 +43,12 @@ pub fn screens() -> Vec<(&'static str, Vec<u8>)> {
     vec![
         (
             "%1",
-            b"\x1b[31mred\x1b[0m plain\n\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\n##\n\n\n\n".to_vec(),
+            [
+                &b"\x1b[31mred\x1b[0m plain\n"[..],
+                b"\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\\n",
+                b"##\n\n\n\n",
+            ]
+            .concat(),
         ),
         ("%2", (numbered + "\n\n").into_bytes()),
         ("%3", b"\n\n\n\n\n".to_vec()),
