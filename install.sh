@@ -77,7 +77,9 @@ if [ "$check" -eq 1 ]; then
 
     v=$(tmux -V 2>/dev/null); v=${v#tmux }
     if [ -z "$v" ]; then row fail tmux 'not found' 'bootstrap.sh builds tmux 3.8'
-    elif [ "$(vnum "$v")" -lt "$(vnum 3.8)" ]; then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
+    # No leading digit (next-3.9, master) is a build newer than any release, as in cockpit.tmux.
+    elif case "$v" in [0-9]*) [ "$(vnum "$v")" -lt "$(vnum 3.8)" ] ;; *) false ;; esac
+    then row fail tmux "$v" 'bootstrap.sh builds tmux 3.8'
     else row ok tmux "$v"
     fi
 
@@ -202,10 +204,11 @@ set*\ @catppuccin_window_current_text\ *)
             0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
             *) row ok hooks "$n cockpit hooks merged" ;;
         esac
+        # "? | .c", not "?.c": jq 1.7 rejects the latter as a syntax error, and the count read 0.
         # The board's subagent tree reads what these six append (#361); sub-taskstop and
         # sub-reconcile came later (#403), so a box set up before them has 4 of 6.
         subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
-                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")?.c]
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")? | .c]
                    | unique | length' \
                  "$HOME/.claude/settings.json" 2>/dev/null)
         case "$n:${subs:-0}" in
