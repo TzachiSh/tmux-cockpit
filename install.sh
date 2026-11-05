@@ -195,24 +195,37 @@ set*\ @catppuccin_window_current_text\ *)
     if [ ! -d "${HOME:-}/.claude" ]; then row skip hooks 'no Claude Code'
     elif ! command -v jq >/dev/null 2>&1; then row skip hooks 'jq missing'
     else
+        # jq exits 3 when it cannot compile a filter. Counted as 0, that read as "not
+        # merged" (#481); it is cockpit's bug, so it gets a fail row of its own.
+        jqv=$(jq --version 2>/dev/null)
         n=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
                  | select(test("tmux-cockpit|agent-state"))] | length' \
-               "$HOME/.claude/settings.json" 2>/dev/null)
-        case "${n:-0}" in
-            0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
+               "$HOME/.claude/settings.json" 2>/dev/null); nrc=$?
+        case "$nrc:${n:-0}" in
+            3:*) row fail hooks "$jqv rejected the filter" 'report it: tmux-cockpit issue' ;;
+            *:0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
             *) row ok hooks "$n cockpit hooks merged" ;;
         esac
+        # `capture(...)? | .c`: jq 1.7.x (Ubuntu 24.04 ships 1.7.1) rejects any postfix
+        # written straight after the `?` of a call; 1.8 accepts it (#481).
         # The board's subagent tree reads what these six append (#361); sub-taskstop and
         # sub-reconcile came later (#403), so a box set up before them has 4 of 6.
         subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
-                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")?.c]
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")? |
+                    .c]
                    | unique | length' \
-                 "$HOME/.claude/settings.json" 2>/dev/null)
-        case "$n:${subs:-0}" in
-            0:*) row skip subhooks 'no cockpit hooks yet' ;;
-            *:6) row ok subhooks 'all 6 subagent hooks merged' ;;
-            *) row warn subhooks "${subs:-0} of 6 subagent hooks merged" 're-run install.sh --hooks' ;;
-        esac
+                 "$HOME/.claude/settings.json" 2>/dev/null); src=$?
+        if [ "$src" = 3 ]; then
+            row fail subhooks "$jqv rejected the filter" 'report it: tmux-cockpit issue'
+        elif [ "$nrc" = 3 ]; then row skip subhooks 'hooks count unreadable'
+        else
+            case "$n:${subs:-0}" in
+                0:*) row skip subhooks 'no cockpit hooks yet' ;;
+                *:6) row ok subhooks 'all 6 subagent hooks merged' ;;
+                *) row warn subhooks "${subs:-0} of 6 subagent hooks merged" \
+                       're-run install.sh --hooks' ;;
+            esac
+        fi
     fi
 
     if [ -z "${TMUX:-}" ]; then row skip truecolor 'run inside tmux to check'
