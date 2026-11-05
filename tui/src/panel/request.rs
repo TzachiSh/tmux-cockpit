@@ -14,9 +14,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Fail {
     Timeout,
+    /// claude stopped at `--max-budget-usd`, in text or json: match this, not words.
+    Budget {
+        limit_usd: f64,
+    },
     /// The first line claude printed, stderr first, or why it could not start.
     Failed(String),
 }
@@ -25,6 +29,7 @@ impl std::fmt::Display for Fail {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Fail::Timeout => f.write_str("took too long"),
+            Fail::Budget { limit_usd } => write!(f, "stopped at its budget of USD {limit_usd}"),
             Fail::Failed(s) => f.write_str(s),
         }
     }
@@ -337,25 +342,59 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
     drop(g);
 }
 
-fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
-    // a folder's name goes into the system prompt: a line break or a bidi mark in
-    // it is refused, never cleaned, as the call would read some other folder; so is
-    // an empty name (`--add-dir ""`) and one that is not UTF-8
-    if let Some(d) = p.read_dirs.iter().find(|d| match d.to_str() {
-        Some(s) => s.is_empty() || crate::pick::clean(s) != s,
-        None => true,
-    }) {
-        return Err(format!(
-            "{:?} is empty, not UTF-8, or holds a control or bidi character; refused",
-            d.display().to_string()
-        ));
+/// The whole check on a read dir, the one [`Request::spawn_with`] runs: a caller
+/// may run it first to refuse up front. The error is a line for the user.
+///
+/// A name goes into the system prompt, so a control or bidi character is refused,
+/// never cleaned, as the call would read some other folder; so is an empty name
+/// and one not UTF-8. `--add-dir` of `/`, home or a folder above home opens all of
+/// home, a link to one included. A glob character is refused though no rule holds
+/// the path today, in case one does again.
+pub fn read_dir_ok(dir: &Path) -> Result<(), String> {
+    let shown = format!("{:?}", dir.display().to_string());
+    let Some(s) = dir.to_str() else {
+        return Err(format!("{shown} is not UTF-8; refused"));
+    };
+    if s.is_empty() {
+        return Err("the folder name is empty; refused".into());
     }
-    // `--add-dir /` makes every file a read dir's (probed)
-    if let Some(d) = p.read_dirs.iter().find(|d| d.to_string_lossy().trim_end_matches('/').is_empty()) {
-        return Err(format!(
-            "{:?} is the root, so nothing would be outside it; refused",
-            d.display().to_string()
-        ));
+    if crate::pick::clean(s) != s {
+        return Err(format!("{shown} holds a control or bidi character; refused"));
+    }
+    if s.contains(['*', '?', '[', ']', '{', '}', '\\']) {
+        return Err(format!("{shown} holds a glob character; refused"));
+    }
+    let both = |p: &Path| [Some(lexical(p)), std::fs::canonicalize(p).ok()].into_iter().flatten();
+    if both(dir).any(|d| d == Path::new("/")) {
+        return Err("the root folder holds every file; refused".into());
+    }
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map(PathBuf::from);
+    if let Some(h) = home
+        && both(dir).any(|d| both(&h).any(|h| h.starts_with(&d)))
+    {
+        return Err(format!("{shown} is your home folder or holds it; refused"));
+    }
+    Ok(())
+}
+
+/// `p` absolute, `.` and `..` folded without touching the disk.
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::from("/");
+    for c in std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()).components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::Normal(n) => out.push(n),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
+    for d in &p.read_dirs {
+        read_dir_ok(d)?;
     }
     let system = match p.where_note() {
         Some(n) => format!("{system}\n\n{n}"),
@@ -472,7 +511,7 @@ fn run(mut child: std::process::Child, prompt: String, timeout: Duration, readin
         let ok = status.map(|s| s.success()).unwrap_or(false);
         let done = match reading.output {
             Output::Json => (answer_json(ok, &out, &err, reading.budget_usd), Some(out)),
-            Output::Text => (answer(ok, out, &err), None),
+            Output::Text => (answer(ok, out, &err).map_err(|f| budget(f, reading.budget_usd)), None),
         };
         let _ = tx.send(done);
         drop(g);
@@ -507,9 +546,8 @@ fn answer(ok: bool, out: String, err: &str) -> Answer {
 }
 
 /// A json call's answer: its result's text, or its error in claude's words. A
-/// budget stop reads as the text one does, `Error: Exceeded USD budget (<cap>)`,
-/// as the json carries no such line (probed). Output that is not claude's json (a
-/// stand-in claude) is read as text.
+/// budget stop, `"Reached maximum budget ($0.5)"` (probed), is [`Fail::Budget`].
+/// Output that is not claude's json (a stand-in claude) is read as text.
 fn answer_json(ok: bool, out: &str, err: &str, budget_usd: Option<f64>) -> Answer {
     use serde_json::Value;
     let r = match serde_json::from_str::<Value>(out.trim()) {
@@ -521,8 +559,10 @@ fn answer_json(ok: bool, out: &str, err: &str, budget_usd: Option<f64>) -> Answe
         return answer(ok, out.to_string(), err);
     };
     if r["subtype"] == "error_max_budget_usd" {
-        let cap = budget_usd.map(|b| format!(" ({b})")).unwrap_or_default();
-        return Err(Fail::Failed(format!("Error: Exceeded USD budget{cap}")));
+        let said = r["errors"][0].as_str().and_then(limit_in);
+        if let Some(limit_usd) = said.or(budget_usd) {
+            return Err(Fail::Budget { limit_usd });
+        }
     }
     let text = r["result"].as_str().filter(|t| !t.trim().is_empty());
     match text {
@@ -533,4 +573,21 @@ fn answer_json(ok: bool, out: &str, err: &str, budget_usd: Option<f64>) -> Answe
             Err(Fail::Failed(first.and_then(first_line).unwrap_or_else(|| "no answer".into())))
         }
     }
+}
+
+/// A text call's budget stop, `Error: Exceeded USD budget (0.5)` (probed), as
+/// [`Fail::Budget`]; any other failure as it is.
+fn budget(f: Fail, budget_usd: Option<f64>) -> Fail {
+    match &f {
+        Fail::Failed(t) if t.to_ascii_lowercase().contains("exceeded usd budget") => {
+            limit_in(t).or(budget_usd).map_or(f, |limit_usd| Fail::Budget { limit_usd })
+        }
+        _ => f,
+    }
+}
+
+/// The number in the last `(...)` of claude's budget line, `$` or not.
+fn limit_in(line: &str) -> Option<f64> {
+    let (_, tail) = line.rsplit_once('(')?;
+    tail.split_once(')')?.0.trim().trim_start_matches('$').parse().ok()
 }

@@ -1757,9 +1757,12 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   permission mode is pinned to `dontAsk`, under which the `--add-dir` folder is
   readable and every other read is refused, a symlink that leads out included,
   so a user's `defaultMode` cannot approve the rest. No Read, Grep or Glob allow
-  rule is passed (a bare Grep or Glob one approved outside reads), and `/` is
-  refused as a read dir. The secret denies stay as a second wall. A user's own
-  allow rule or `additionalDirectories` in their settings still widens it.
+  rule is passed (a bare Grep or Glob one approved outside reads). One check,
+  `request::read_dir_ok`, refuses a read dir that is `/`, home or above it, or
+  whose name is empty, not UTF-8, or holds a control, bidi or glob character;
+  a caller runs it to refuse up front. The secret denies stay as a second wall.
+  The limit: rules merge, so a user `settings.json` with a broad `Read` allow
+  or an `additionalDirectories` entry reopens outside reads.
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.

@@ -1,6 +1,6 @@
 //! The `claude -p` call against fake claude scripts. Each test builds its own
 //! `Call`, so nothing here touches the process environment.
-use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file};
+use cockpit_tui::panel::request::{Call, Fail, Profile, Request, prompt_file, read_dir_ok};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -414,12 +414,12 @@ fn a_profile_timeout_overrides_the_calls() {
     assert_eq!(answer(&mut req), Err(Fail::Timeout));
 }
 
-/// claude's own budget stop is a failure the panel shows in its words.
+/// claude's text budget stop is the typed one, its cap read from claude's line.
 #[test]
-fn a_budget_stop_is_shown_as_claude_said_it() {
+fn a_text_budget_stop_is_typed() {
     let rig = Rig::new("budget", "echo 'Error: Exceeded USD budget (0.01)'\nexit 1");
     let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
-    assert_eq!(answer(&mut req), Err(Fail::Failed("Error: Exceeded USD budget (0.01)".into())));
+    assert_eq!(answer(&mut req), Err(Fail::Budget { limit_usd: 0.01 }));
 }
 
 /// A skill's text can ask for a shell or git (#428: git in a folder can rewrite its
@@ -654,27 +654,24 @@ fn a_read_only_call_pins_the_permission_mode() {
     assert!(!Profile::TEXT.argv().contains(&"--permission-mode".to_string()));
 }
 
-/// `--add-dir /` makes every file readable (probed), so the root is refused
-/// before claude runs, however it is spelled.
+/// A refused read dir starts no claude: the root, home, and a glob character.
 #[test]
-fn the_root_is_refused_as_a_read_dir() {
-    let rig = Rig::new("rootdir", ECHO_ARGV);
-    for d in ["/", "//"] {
-        let mut req = spawn_with(&rig.call(30), &Profile::read_only(PathBuf::from(d), false, 0.5, CAP), "p");
-        match answer(&mut req) {
-            Err(Fail::Failed(why)) => assert!(why.contains("root"), "{d:?}: {why}"),
-            other => panic!("{d:?} ran: {other:?}"),
-        }
+fn a_refused_read_dir_starts_no_claude() {
+    let rig = Rig::new("refuseddir", ECHO_ARGV);
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    for d in [PathBuf::from("/"), home, rig.dir.join("a*"), rig.dir.join("a{b,c}")] {
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
+        assert_eq!(answer(&mut req), Err(Fail::Failed(read_dir_ok(&d).unwrap_err())), "{d:?}");
         assert!(rig.read("argv").is_empty(), "no claude ran for {d:?}");
     }
 }
 
-/// The folder goes in by `--add-dir`, never into rule syntax, so a glob
-/// character, a comma or a space in its name widens nothing (probed) and runs.
+/// The folder goes in by `--add-dir`, never into rule syntax, so a comma, a
+/// space, a quote or a parenthesis in its name runs as named.
 #[test]
 fn a_read_dir_with_rule_characters_runs_as_named() {
     let rig = Rig::new("oddname", ECHO_ARGV);
-    for name in ["*", "my repo, (copy)"] {
+    for name in ["my repo, (copy)", "it's (v2)"] {
         let d = rig.dir.join(name);
         let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
         assert_eq!(answer(&mut req), Ok("ok\n".into()), "{name}");
@@ -708,15 +705,15 @@ fn a_json_call_keeps_its_raw_output_and_a_text_call_has_none() {
     assert_eq!(req.raw(), None);
 }
 
-/// A json budget stop prints no text, only a result marked as one (probed): the
-/// panel shows it in the words of the text stop, so a hint that matches one matches both.
+/// A json budget stop prints no text, only a result marked as one (probed): it is
+/// the same typed stop as the text one, so a caller matches the variant, never words.
 #[test]
-fn a_json_budget_stop_reads_as_the_text_one() {
+fn a_json_budget_stop_is_the_same_typed_stop() {
     let stop = r#"echo '[{"type":"result","subtype":"error_max_budget_usd","is_error":true,"result":null,"errors":["Reached maximum budget ($0.5)"]}]'
 exit 1"#;
     let rig = Rig::new("jbudget", stop);
     let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), false, 0.5, CAP), "p");
-    assert_eq!(answer(&mut req), Err(Fail::Failed("Error: Exceeded USD budget (0.5)".into())));
+    assert_eq!(answer(&mut req), Err(Fail::Budget { limit_usd: 0.5 }));
     assert!(
         req.raw().is_some_and(|t| t.contains("error_max_budget_usd")),
         "a failed call keeps its raw output"
@@ -747,4 +744,59 @@ fn the_where_note_says_reads_stop_at_the_repo() {
     let p = Profile::read_only(PathBuf::from("/r"), false, 0.5, CAP);
     let n = p.where_note().unwrap();
     assert!(n.contains("anything outside it is refused"), "{n}");
+}
+
+// ------------------------------------------------------------- read_dir_ok
+
+/// The whole read-dir check, one row per refusal. `--add-dir` of `/`, home or a
+/// folder above home opens all of home; a glob character is refused though no
+/// rule holds the path today, in case one does again (owner's call).
+#[test]
+fn read_dir_ok_refuses_each_class() {
+    use std::os::unix::ffi::OsStrExt;
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    let rows: [(&str, PathBuf, &str); 14] = [
+        ("root", PathBuf::from("/"), "root"),
+        ("root, doubled", PathBuf::from("//"), "root"),
+        ("home", home.clone(), "home"),
+        ("home, trailing slash", PathBuf::from(format!("{}/", home.display())), "home"),
+        ("home through ..", home.join("x/.."), "home"),
+        ("above home", home.parent().unwrap_or(Path::new("/")).to_path_buf(), "home"),
+        ("a star", PathBuf::from("/r/a*"), "glob"),
+        ("braces", PathBuf::from("/r/a{b,c}"), "glob"),
+        ("question mark", PathBuf::from("/r/a?b"), "glob"),
+        ("brackets", PathBuf::from("/r/[ab]"), "glob"),
+        ("backslash", PathBuf::from("/r/a\\b"), "glob"),
+        ("empty", PathBuf::new(), "empty"),
+        ("not UTF-8", PathBuf::from(std::ffi::OsStr::from_bytes(b"/r/a\xff")), "UTF-8"),
+        ("bidi", PathBuf::from("/r/a\u{202e}b"), "control"),
+    ];
+    for (row, d, says) in rows {
+        let why = read_dir_ok(&d).expect_err(row);
+        assert!(why.contains(says), "{row}: {why}");
+    }
+}
+
+/// A link to home is home: the check reads where a folder leads, too.
+#[test]
+fn read_dir_ok_refuses_a_link_to_home() {
+    let rig = Rig::new("homelink", ECHO_ARGV);
+    let link = rig.dir.join("h");
+    std::os::unix::fs::symlink(std::env::var_os("HOME").expect("HOME"), &link).unwrap();
+    assert!(read_dir_ok(&link).expect_err("a link to home").contains("home"));
+}
+
+/// A project folder passes: under home, under the temp dir, an odd but plain name.
+#[test]
+fn read_dir_ok_passes_a_project_folder() {
+    let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
+    for d in [home.join("src/app"), std::env::temp_dir().join("my repo, (copy)")] {
+        assert_eq!(read_dir_ok(&d), Ok(()), "{d:?}");
+    }
+}
+
+/// The budget stop reads as a line the panel can show after "claude failed: ".
+#[test]
+fn a_budget_stop_displays_its_cap() {
+    assert_eq!(Fail::Budget { limit_usd: 0.15 }.to_string(), "stopped at its budget of USD 0.15");
 }
