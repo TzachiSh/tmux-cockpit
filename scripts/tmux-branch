@@ -16,14 +16,6 @@ unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/pane.sh
 . "${d%/*}/lib/pane.sh" || exit 1
-# shellcheck source=lib/git.sh
-. "${d%/*}/lib/git.sh" || exit 1
-# shellcheck source=lib/tui.sh
-. "${d%/*}/lib/tui.sh" || exit 1
-# shellcheck source=lib/workdir.sh
-. "${d%/*}/lib/workdir.sh" || exit 1
-# shellcheck source=lib/fmt.sh
-. "${d%/*}/lib/fmt.sh" || exit 1
 
 PANE_CMD=""
 PANE_ID=""
@@ -38,9 +30,19 @@ while [ $# -gt 0 ]; do
 done
 
 # The client that pressed prefix b, left on the pane by the key (#360). Taken and
-# cleared at start, so a second press while this popup is open cannot take the goto.
+# cleared at start, before the other libs load (#480), so a second press while
+# this popup is open cannot take the goto.
 CLIENT=""
 [ -n "${TMUX:-}" ] && CLIENT=$(take_pane_opt "$PANE_ID" @cockpit_branch_client)
+
+# shellcheck source=lib/git.sh
+. "${d%/*}/lib/git.sh" || exit 1
+# shellcheck source=lib/tui.sh
+. "${d%/*}/lib/tui.sh" || exit 1
+# shellcheck source=lib/workdir.sh
+. "${d%/*}/lib/workdir.sh" || exit 1
+# shellcheck source=lib/fmt.sh
+. "${d%/*}/lib/fmt.sh" || exit 1
 
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks

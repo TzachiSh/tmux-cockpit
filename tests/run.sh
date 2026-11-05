@@ -12594,6 +12594,28 @@ for opt in '' pt_pin '@'; do
     is "an option that is not @<name> fails, naming the argument: '$opt'" ":2:0:option" \
        "$(pt_take "$PTP" "$opt"):$(grep -o option "$PTD/err" | head -1)"
 done
+# A copy of the scripts whose every lib but pane.sh, the helper's own, first
+# notes the pin as it stands on the pane. A pin taken before the libs load
+# leaves each note empty; one taken after shows in the first note.
+mkdir -p "$PTD/p"; cp -r "$DIR/scripts" "$PTD/p/"
+for f in "$PTD"/p/scripts/lib/*.sh; do
+    [ "${f##*/}" = pane.sh ] && continue
+    { printf 'printf "%%s=%%s\\n" "${BASH_SOURCE[0]##*/}" '\
+'"$("%s" -L %s show-option -pqv -t %s "$PT_OPT" 2>/dev/null)" >> "%s/loads"\n' \
+          "$TMUX_REAL" "$PTS" "$PTP" "$PTD"; cat "$f"; } > "$f.new" && mv "$f.new" "$f"
+done
+printf '#!/bin/sh\nexit 0\n' > "$PTD/tui"; chmod +x "$PTD/tui"
+pt_run() {                    # <option> <script> <args...>  -> the libs' notes with a pin set
+    local opt=$1; shift; : > "$PTD/loads"; pt_set "$opt" client-a
+    env TMUX="$SOCKDIR/$PTS,0,0" COCKPIT_LOG="$PTD/log" COCKPIT_TUI_BIN="$PTD/tui" PT_OPT="$opt" \
+        timeout 30 "$@" </dev/null >/dev/null 2>&1
+    printf 'loaded=%s pinned:%s' "$([ -s "$PTD/loads" ] && echo yes)" \
+        "$(grep -v '=$' "$PTD/loads" | tr '\n' ' ')"
+}
+is "tmux-branch takes its pin before any lib but pane.sh loads" "loaded=yes pinned:" \
+   "$(pt_run @cockpit_branch_client "$PTD/p/scripts/tmux-branch" -p "$PTP" "$PTD/none")"
+is "cockpit-board takes its pin before any lib but pane.sh loads" "loaded=yes pinned:" \
+   "$(pt_run @cockpit_board_client "$PTD/p/scripts/cockpit-board" -p "$PTP")"
 # Two control clients on a; B attaches last, so a bare switch-client moves B.
 pt_open() {
     mkfifo "$PTD/$1" && "$TMUX_REAL" -L "$PTS" -C attach -t a <> "$PTD/$1" >/dev/null 2>&1 &
@@ -12612,7 +12634,7 @@ is "with no pin and no -c the board's jump is a bare switch-client: B moves" "A=
       | awk -v a="$PTA" '{ print ($1 == a ? "A" : "B") "=" $2 }' | sort | tr '\n' ' ')"
 "$TMUX_REAL" -L "$PTS" kill-server >/dev/null 2>&1
 wait "$PTPA" "$PTPB" 2>/dev/null
-unset -f pt_get pt_set pt_take pt_open
+unset -f pt_get pt_set pt_take pt_run pt_open
 rm -rf "$PTD"
 fi
 
