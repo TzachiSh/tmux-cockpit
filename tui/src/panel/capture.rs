@@ -49,9 +49,7 @@ pub fn capture(pane: &str) -> Option<Capture> {
         lines.pop();
     }
     let screen = lines.join("\n");
-    // An ssh or container window's path is the local client's, not the shell it shows.
-    let local = LOCAL_CMDS.contains(&cmd.as_str()) || crate::data::agentish(&cmd);
-    let repo = if path.is_empty() || !local {
+    let repo = if path.is_empty() || !is_local(&cmd) {
         Repo::default()
     } else {
         Repo::start(&path, &screen, REPO_BUDGET)
@@ -543,6 +541,13 @@ pub const LOCAL_CMDS: [&str; 30] = [
     "nvim", "vim", "vi", "nano", "emacs", "hx", "kak", "micro",
     "claude", "codex", "gemini", "aider", "opencode", "goose", "crush", "cursor-agent", "node",
 ];
+
+/// A window whose folder is the one tmux reports: [`LOCAL_CMDS`] or an agent
+/// name. An ssh or container window's path is the local client's, not the
+/// shell it shows, so it gets no repo block and no read of its folder.
+pub fn is_local(cmd: &str) -> bool {
+    LOCAL_CMDS.contains(&cmd) || crate::data::agentish(cmd)
+}
 
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {
