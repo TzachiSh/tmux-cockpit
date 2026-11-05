@@ -51,6 +51,28 @@ pub fn shim(root: &Path) {
     unsafe { std::env::set_var("PATH", path) };
 }
 
+/// [`shim`], and `rev-parse --git-common-dir` answers as git 2.7 to 2.12 did: a
+/// relative common dir comes back as the subdirectory prefix plus the path from the
+/// top, so from `repo/sub` it says `sub/.git`. Callers end their args with it.
+#[allow(dead_code)] // one test file uses it; the others share this module
+pub fn shim_212(root: &Path) {
+    shim(root);
+    let dir = root.join("shim");
+    let real = std::fs::read_to_string(dir.join("git")).unwrap();
+    let last = real.lines().last().unwrap();
+    let real = last.trim_start_matches("exec ").trim_end_matches(" \"$@\"");
+    let script = format!(
+        "#!/usr/bin/env bash\ncase \" $* \" in *\" worktree list \"*\" -z \"*) exit 129 ;; esac\n\
+         case \" $* \" in *\" rev-parse --git-common-dir \") ;; *) exec {real} \"$@\" ;; esac\n\
+         pre=(\"${{@:1:$#-2}}\")\n\
+         top=$({real} \"${{pre[@]}}\" rev-parse --show-toplevel) || exit\n\
+         px=$({real} \"${{pre[@]}}\" rev-parse --show-prefix)\n\
+         c=$({real} \"${{pre[@]}}\" -C \"$top\" rev-parse --git-common-dir) || exit\n\
+         case $c in /*) echo \"$c\" ;; *) echo \"$px$c\" ;; esac\n"
+    );
+    std::fs::write(dir.join("git"), script).unwrap();
+}
+
 pub fn held(bs: &[cockpit_tui::data::branches::Branch], name: &str) -> Option<String> {
     bs.iter().find(|b| b.name == name).unwrap().elsewhere.clone()
 }
