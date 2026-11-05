@@ -3582,15 +3582,21 @@ pub enum Batch<'a> {
     Lost,
 }
 
-/// Cuts `out`, the stdout of [`batch_args`] over `n` captures, at the lines
-/// that are exactly `mark`. `ok` is tmux's exit status: tmux stops a command
-/// list at the first command that fails, and prints what ran before it.
-pub fn split_batch<'a>(out: &'a [u8], mark: &str, n: usize, ok: bool) -> Batch<'a> {
-    let line = [mark.as_bytes(), b"\n"].concat();
+/// Cuts `out`, the stdout of [`batch_args`] over `n` captures under `tok`,
+/// at its marks: the line `tok-k#` ends capture k. Any other line that starts
+/// `tok-` is a mark out of its place, one a pane printed, and nothing after it
+/// can be trusted: it is `Lost`, on the `Cut` path too (#548). `ok` is tmux's
+/// exit status: tmux stops a command list at the first command that fails,
+/// and prints what ran before it.
+pub fn split_batch<'a>(out: &'a [u8], tok: &str, n: usize, ok: bool) -> Batch<'a> {
+    let head = format!("{tok}-");
     let (mut chunks, mut from, mut at) = (Vec::new(), 0, 0);
     while at < out.len() {
         let end = out[at..].iter().position(|&b| b == b'\n').map_or(out.len(), |k| at + k + 1);
-        if out[at..end] == line[..] {
+        if out[at..end].starts_with(head.as_bytes()) {
+            if out[at..end] != *format!("{head}{}#\n", chunks.len()).as_bytes() {
+                return Batch::Lost;
+            }
             chunks.push(&out[from..at]);
             from = end;
         }
@@ -3605,14 +3611,20 @@ pub fn split_batch<'a>(out: &'a [u8], mark: &str, n: usize, ok: bool) -> Batch<'
 }
 
 /// One tmux command list for every capture: each pane's
-/// [`crate::data::preview_args`], then a `display-message` of `tok##`. tmux
-/// prints that as `tok#`, so the mark never matches the argv a `ps` shows.
+/// [`crate::data::preview_args`], then a `display-message` of `tok-k##`, k the
+/// capture's place. tmux prints that as `tok-k#`, so the mark never matches
+/// the argv a `ps` shows, and a mark seen out of its place shows.
 pub fn batch_args(caps: &[(String, usize)], tok: &str) -> Vec<String> {
-    let mark = format!("{tok}##");
     let mut a = Vec::new();
-    for (id, n) in caps {
+    for (k, (id, n)) in caps.iter().enumerate() {
         a.extend(crate::data::preview_args(id, *n));
-        a.extend([";", "display-message", "-p", &mark, ";"].map(String::from));
+        a.extend([
+            ";".into(),
+            "display-message".into(),
+            "-p".into(),
+            format!("{tok}-{k}##"),
+            ";".into(),
+        ]);
     }
     a.pop();
     a
@@ -3658,7 +3670,7 @@ pub fn previews(argv: &[String], caps: &[(String, usize)]) -> Vec<(String, Optio
             got.extend(rest.drain(..).map(|(id, _)| (id, None)));
             break;
         };
-        let chunks = match split_batch(&out, &format!("{tok}#"), rest.len(), ok) {
+        let chunks = match split_batch(&out, &tok, rest.len(), ok) {
             Batch::Done(c) | Batch::Cut(c) => c,
             Batch::Lost => {
                 got.extend(rest.drain(..).map(|(id, n)| {
