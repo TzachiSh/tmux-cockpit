@@ -1,0 +1,16 @@
+[
+{"pid":11,"id":"aa","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-aa","name":"alpha","status":"idle","state":"working"},
+{"pid":12,"id":"bb","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-bb","name":"fix the parser","status":"idle","state":"blocked"},
+{"pid":13,"id":"cc","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-cc","name":"gamma","status":"idle","state":"done"},
+{"pid":14,"id":"dd","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-dd","name":"twin","status":"idle","state":"working"},
+{"pid":15,"id":"ee","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-ee","name":"twin","status":"idle","state":"done"},
+{"pid":16,"id":"ff","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-ff","name":"two spaces","status":"idle","state":"failed"},
+{"pid":17,"id":"gg","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-gg","name":"wide    gap  ","status":"idle","state":"working"},
+{"pid":18,"id":"jj","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-jj","name":"idle job","status":"idle","state":"stopped"},
+{"pid":19,"id":"kk","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-kk","name":"odd","status":"idle","state":"paused"},
+{"pid":20,"id":"mm","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-mm","name":"semi;","status":"idle","state":"working"},
+{"pid":30,"cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-hh","name":"noid","status":"idle","state":"working"},
+{"pid":31,"id":"ii","cwd":"/x","kind":"interactive","startedAt":1,"sessionId":"s-ii","name":"front","status":"idle","state":"blocked"},
+{"pid":40,"id":"nn","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-nn","name":"claude agents","status":"idle","state":"working"},
+{"pid":41,"id":"oo","cwd":"/x","kind":"background","startedAt":1,"sessionId":"s-oo","name":"2 awaiting input · claude agents","status":"idle","state":"working"}
+]

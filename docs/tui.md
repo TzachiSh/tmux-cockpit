@@ -196,6 +196,7 @@ Set these before the plugin's `run-shell` line, like every other cockpit option.
 | `@cockpit_md_view` | `on` | `cockpit-tui view` shows markdown rendered, and code and other text files numbered, and highlighted when the language is known (#365). With `off`, a clicked file and the file browser's `↵` go to the editor instead, for every file (the browser's with #408). Read by `scripts/tmux-open-path` at the click |
 | `@cockpit_panel_bound` | (state) | the key the last load bound the panel to. Every cockpit key keeps one (`@cockpit_<name>_bound`, `<name>` as in its `@cockpit_<name>_key`), so a reload that turns a key off or moves it gives the old one back to stock |
 | `@cockpit_board_client` | (state) | a pane option: the client that pressed the board or review key there in its popup form, so the board's jump moves that client and not the most recently active one. Read and cleared when the board starts; the window forms pass `-c` instead |
+| `@cockpit_branch_client` | (state) | a pane option: the client that pressed `prefix b` there, so the branch popup's jump to another worktree moves that client and not the most recently active one. Read and cleared when `tmux-branch` starts |
 | `@cockpit_giveback` | (state) | `<name>:<key>` words: old keys a reload could not give back to stock (tmux's own binding could not be read), retried on the next load |
 
 The popup is `-w 90%`, wider than the 70% the pickers use, because a 70% popup
@@ -407,6 +408,14 @@ way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
 
 The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
 the list for `v` to come back.
+
+**Background jobs (#448).** A pane that shows a background job (the agent view,
+`claude attach`) takes its state from the job, not from hooks: `scripts/agent-poll`
+binds it when the pane's title names exactly one job, and records the job on the pane
+as `@cockpit_job` (id) and `@cockpit_job_name` (name), both cleared when the bind
+ends. The board does not draw them yet (#460). A row's state is the bound job's, and the
+rule, its residual false bind and how the poller starts are in
+[states-and-hooks.md](states-and-hooks.md#agent-view-and-background-jobs).
 
 **Subagents (#313).** An agent with subagents running or failed carries a
 badge, the first of its row's extra cells, in two widths by the room the row

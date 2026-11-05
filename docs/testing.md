@@ -27,3 +27,7 @@ fleet scan under 5 s, a 5000-row `--lines` build under 3 s, 50 MB of
 lockfile fixtures, …) run in
 their own serial shard, alone, before the rest: they measure the box's spare
 CPU as much as the code, and shard them apart and they flake under contention.
+
+## CI
+
+Three workflows run the tests on every pull request and on master and `scratch/**` pushes. `shell-suite` runs `make tui-bin` and then `J=4 make test-par` on ubuntu-26.04. `tui` runs `make tui-test` on the same image. Both get tmux 3.8, the README's floor, from `.github/actions/tmux`: it builds the official release tarball after checking its SHA-256, and caches the install on the version, the runner image and the checksum, so only the first run on a new image compiles it. Both set `COCKPIT_REQUIRE_TMUX=1`, which says a missing tmux is a failure and not a skip (the tests read it once #471's test-side change lands). The hosted image has no `xterm-ghostty` terminfo, so the two phone-pty rows skip there; the suite's final line counts them.

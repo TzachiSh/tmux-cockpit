@@ -1,6 +1,8 @@
 #!/bin/sh
 # Stands in for `claude agents --json --all`. Prints $AV_JSON (a file); logs argv to $AV_CLAUDELOG;
-# exits $AV_RC (default 0). Any other subcommand is a test bug and fails loudly.
+# exits $AV_RC (default 0), after $AV_DELAY seconds if set (the live CLI takes 0.2 s).
+# Any other subcommand is a test bug and fails loudly.
+[ -n "${AV_DELAY:-}" ] && sleep "$AV_DELAY"
 printf '%s\n' "$*" >> "${AV_CLAUDELOG:-/dev/null}"
 [ "$*" = "agents --json --all" ] || { echo "fake claude: unexpected argv: $*" >&2; exit 64; }
 [ -n "${AV_JSON:-}" ] && cat "$AV_JSON"

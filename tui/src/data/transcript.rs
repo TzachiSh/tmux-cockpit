@@ -147,13 +147,15 @@ fn last_lines(path: &Path) -> Option<String> {
 }
 
 /// jq's `clean`: the first line holding a non-blank char, TAB to a space, C0, DEL
-/// and C1 dropped, leading blanks trimmed, 160 chars.
+/// and C1 dropped, leading blanks trimmed, 160 chars. Bidi controls are dropped
+/// too (#453), which jq's never did: tool details, `said` and `asked` are model-
+/// or human-written and reach the info screen.
 fn clean(s: &str) -> String {
     let line = s.split('\n').find(|l| l.chars().any(|c| !c.is_whitespace())).unwrap_or("");
     let kept: String = line
         .chars()
         .map(|c| if c == '\t' { ' ' } else { c })
-        .filter(|&c| c >= ' ' && !('\u{7f}'..='\u{9f}').contains(&c))
+        .filter(|&c| c >= ' ' && !('\u{7f}'..='\u{9f}').contains(&c) && !crate::pick::is_bidi(c))
         .collect();
     kept.trim_start().chars().take(160).collect()
 }
@@ -309,15 +311,20 @@ const DETAIL: [&str; 12] = [
 ];
 
 /// The raw detail of a tool_use as (prefix, text): the first DETAIL field holding
-/// a non-blank string; else SendMessage's `to` as "to <to>"; else, for an
-/// `mcp__*` tool, the first string-valued input field by key order. Nested
-/// objects and arrays never count. None gives the bare tool name.
+/// a non-blank string; else SendMessage's `to` as "to <to>"; else an
+/// AskUserQuestion's first `header` (#453); else, for an `mcp__*` tool, the first
+/// string-valued input field by key order. Other nested objects and arrays never
+/// count. None gives the bare tool name.
 pub(crate) fn pick<'a>(name: &str, input: &'a Value) -> Option<(&'static str, &'a str)> {
     let ok = |s: &&str| s.chars().any(|c| !c.is_whitespace());
     DETAIL
         .iter()
         .find_map(|k| input[k].as_str().filter(ok).map(|s| ("", s)))
         .or_else(|| input["to"].as_str().filter(ok).map(|s| ("to ", s)))
+        .or_else(|| {
+            let h = input["questions"][0]["header"].as_str();
+            h.filter(|_| name == "AskUserQuestion").filter(ok).map(|s| ("", s))
+        })
         .or_else(|| {
             if !name.starts_with("mcp__") {
                 return None;
@@ -326,6 +333,23 @@ pub(crate) fn pick<'a>(name: &str, input: &'a Value) -> Option<(&'static str, &'
             kv.sort_by_key(|(k, _)| *k);
             kv.into_iter().map(|(_, s)| s).find(ok).map(|s| ("", s))
         })
+}
+
+/// An AskUserQuestion's row text (#453): how many questions follow the first,
+/// then the first non-blank line of the first, made safe to draw. The count
+/// leads because the board cuts a long line's end. `None` when the input names
+/// no question.
+pub(crate) fn question(input: &Value) -> Option<String> {
+    let qs = input["questions"].as_array()?;
+    let line = qs.first()?["question"]
+        .as_str()?
+        .lines()
+        .map(|l| crate::pick::clean(l).trim().to_string())
+        .find(|l| !l.is_empty())?;
+    Some(match qs.len() - 1 {
+        0 => line,
+        n => format!("(+{n}) {line}"),
+    })
 }
 
 fn tlabel(it: &Value) -> String {
@@ -401,6 +425,7 @@ fn jq_eq(a: &Value, b: &Value) -> bool {
 
 /// `doing\t<label>\t<secs>`, `said\t<text>`, `asked\t<prompt>\t<secs>`, each left
 /// out when unknown. Only the last tool_use counts, open parallel ones before it do not.
+/// Then `ask\t<question>` for the newest AskUserQuestion still open (#453).
 pub fn doing(path: &Path) -> Option<String> {
     let t = turns(path)?;
     let now = now();
@@ -438,6 +463,22 @@ pub fn doing(path: &Path) -> Option<String> {
     }
     if let Some((p, r)) = asked {
         out += &format!("asked\t{p}\t{}\n", secs(r, now));
+    }
+    // Only the newest tool_use's ask is what the agent waits on, and a prompt
+    // typed after it means the human moved on from it.
+    let typed_after = |r: &Value| {
+        let at = t.iter().position(|x| std::ptr::eq(x, r));
+        t.iter()
+            .enumerate()
+            .any(|(k, x)| Some(k) > at && human(x).is_some_and(|c| !prompt(c).is_empty()))
+    };
+    if let Some((i, r)) = tu
+        && i["name"] == "AskUserQuestion"
+        && !closed.iter().any(|c| jq_eq(c, i.get("id").unwrap_or(&Value::Null)))
+        && !typed_after(r)
+        && let Some(q) = question(&i["input"])
+    {
+        out += &format!("ask\t{q}\n");
     }
     (!out.is_empty()).then_some(out)
 }
@@ -536,6 +577,37 @@ mod tests {
             String::new(),
         ] {
             assert_eq!(under(&root, &bad), None, "{bad:?}");
+        }
+    }
+
+    /// #453: an AskUserQuestion is labelled by its first header; another tool's
+    /// `questions` is not a field the label reads.
+    #[test]
+    fn an_ask_is_labelled_by_its_first_header_and_only_an_ask() {
+        let qs = serde_json::json!({"questions": [{"question": "Merge?", "header": "Merge"}]});
+        let label = |n: &str| tlabel(&serde_json::json!({"name": n, "input": qs}));
+        assert_eq!(
+            (label("AskUserQuestion"), label("Other")),
+            ("AskUserQuestion: Merge".into(), "Other".into())
+        );
+    }
+
+    /// #453: rows are [input, question]; `None` where the input names no question.
+    #[test]
+    fn question_reads_the_first_question_and_counts_the_rest() {
+        let rows = [
+            (serde_json::json!({"questions": [{"question": "a?"}]}), Some("a?")),
+            (serde_json::json!({"questions": [{"question": "a?"}, {}]}), Some("(+1) a?")),
+            (
+                serde_json::json!({"questions": [{"question": " \n\u{2066}b\u{7}?\nc"}]}),
+                Some("b?"),
+            ),
+            (serde_json::json!({"questions": []}), None),
+            (serde_json::json!({"questions": [{"question": ["a?"]}]}), None),
+            (serde_json::json!({"question": "a?"}), None),
+        ];
+        for (input, want) in rows {
+            assert_eq!(question(&input).as_deref(), want, "{input}");
         }
     }
 

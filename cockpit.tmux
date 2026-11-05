@@ -261,7 +261,10 @@ tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
 # tmux keeps its drag flag when a popup eats the release and turns the next press
 # into MouseDragEnd1<where>, losing a tab click (#21). Stock leaves this unbound.
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
-tmux bind-key b display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
+# A goto moves the pressing client, not the most recently active one (#360). The
+# popup cannot pass #{client_name}, so the key leaves it on the pane, as the board's.
+tmux bind-key b set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
+    display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
 # tm --popup opens the popup itself: its height follows the session count,

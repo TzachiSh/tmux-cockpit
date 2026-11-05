@@ -229,3 +229,44 @@ fn a_blank_cockpit_tmux_is_none_not_a_panic() {
         }
     }
 }
+
+/// #453: an AskUserQuestion, `id`, asking `question` under `header`.
+fn ask(id: &str, question: &str, header: &str) -> String {
+    let v = serde_json::json!({"type": "assistant", "version": "2.1.316", "message": {"content": [{"type": "tool_use",
+        "id": id, "name": "AskUserQuestion", "input": {"questions": [{"question": question, "header": header}]}}]}});
+    format!("{v}\n")
+}
+
+fn answer(id: &str) -> String {
+    let v = serde_json::json!({"type": "user", "version": "2.1.316",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}});
+    format!("{v}\n")
+}
+
+/// #453: the info screen's rows end with the open question when it is the newest
+/// tool_use, cleaned; an answered one writes no row.
+#[test]
+fn an_open_question_is_an_ask_row_and_an_answered_one_is_not() {
+    let open = Tmp::new("askopen", &ask("q1", "Merge\u{202e} now?", "Merge"));
+    let done = Tmp::new("askdone", &(ask("q1", "Merge?", "Merge") + &answer("q1")));
+    assert!(doing(&open.0).unwrap().ends_with("ask\tMerge now?\n"));
+    assert_eq!(doing(&done.0), None, "nothing open, said or asked");
+}
+
+/// #453 review: the info screen's ask row is the newest tool_use's only. After
+/// an interrupted ask, a typed prompt and a Bash, there is none; the header is
+/// model-written, so `doing` drops its bidi controls, as `said` and `asked` do.
+#[test]
+fn the_ask_row_is_the_newest_tool_uses_and_labels_drop_bidi() {
+    let int = serde_json::json!({"type": "user", "version": "2.1.316",
+        "message": {"content": [{"type": "text", "text": "[Request interrupted by user for tool use]"}]}});
+    let typed = serde_json::json!({"type": "user", "version": "2.1.316", "message": {"content": "do\u{202e} it"}});
+    let bash = r#"{"type":"assistant","version":"2.1.316","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"rm -rf build"}}]}}"#;
+    let stale = Tmp::new("askstale", &format!("{}{int}\n{typed}\n{bash}\n", ask("q1", "Old?", "Old")));
+    let out = norm(&doing(&stale.0).unwrap());
+    assert_eq!(out, "doing\tBash: rm -rf build\t\nasked\tdo it\t\n", "no clock: the ages are blank");
+    let moved = Tmp::new("askmoved", &format!("{}{int}\n{typed}\n", ask("q1", "Old?", "Old")));
+    assert!(!doing(&moved.0).unwrap().contains("ask\t"), "a prompt typed after the ask");
+    let open = Tmp::new("askbidi", &ask("q1", "Merge?", "Mer\u{202e}ge"));
+    assert!(doing(&open.0).unwrap().starts_with("doing\tAskUserQuestion: Merge\t"));
+}
