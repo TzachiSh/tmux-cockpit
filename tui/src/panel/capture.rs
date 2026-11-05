@@ -1,6 +1,6 @@
 //! The target pane as the panel sees it, and what a Claude Code session on it
 //! is doing, read off its own UI text.
-use crate::data::gitsafe::{FILTER_CONFIG, SAFE, filter_flags};
+use crate::data::gitsafe::{FILTER_CONFIG, REDIRECT, SAFE, filter_flags};
 use crate::data::tmux;
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -154,15 +154,11 @@ struct Git {
 const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-c", "color.diff=false"];
 
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
-/// transport; its own process group so a timeout kills what it forked.
+/// transport; its own process group so a timeout kills what it forked. The
+/// repo is the one `dir` is in, whatever [`REDIRECT`] the panel inherited.
 fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
-    spawn_git_unset(dir, extra, args, &[])
-}
-
-/// [`spawn_git`] with the variables `unset` taken out of git's environment.
-fn spawn_git_unset(dir: &str, extra: &[String], args: &[&str], unset: &[&str]) -> Option<Git> {
     let mut c = Command::new("git");
-    for v in unset {
+    for v in REDIRECT {
         c.env_remove(v);
     }
     c.arg("-C")
@@ -255,15 +251,11 @@ fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
     Ran::TimedOut
 }
 
-/// What an inherited environment points git at instead of the repo `dir` is in.
-/// GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
-const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
-
 /// The work tree of the repo `dir` is in, under [`spawn_git`]'s flags, or `None`
 /// outside a repo, past `budget`, or when it is not `dir`'s own (see [`own_tree`]).
 pub fn toplevel(dir: &str, budget: Duration) -> Option<String> {
     let args = ["rev-parse", "--show-toplevel", "--absolute-git-dir"];
-    let g = spawn_git_unset(dir, &[], &args, &REDIRECT);
+    let g = spawn_git(dir, &[], &args);
     let out = finish(g, Instant::now() + budget, "rev-parse --show-toplevel").ok()?;
     let mut lines = out.lines();
     let (top, gitdir) = (lines.next()?, lines.next()?);

@@ -5065,6 +5065,74 @@ for td_row in 'mixed|1	0	staged.txt' 'mixed|1	0	unstaged.txt' \
     rm -rf "$TDF"
 done
 
+echo "== tree_diff: an inherited GIT_DIR or its kin never reviews another repo (#475) =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and every popup
+# inherits it. FAIL-first: on the old code each variable below turned the diff
+# into the other repo's, into none, or added a tracked big file as skipped.
+RVENV=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir "$RVENV/$r" && cd "$RVENV/$r" || exit
+    git init -q -b main .
+    printf '%s\n' "$r one" > "$r.txt"; git add -A; git commit -q -m init
+    printf '%s\n' "$r one" "$r CHANGED" > "$r.txt"
+  done
+  # tracked past BIGCAP: only another index makes it untracked, so big
+  cd "$RVENV/pane" && dd if=/dev/null of=core bs=1048576 seek=33 && git add core && git commit -q -m core
+) >/dev/null 2>&1
+is "the pane repo's own numstat, nothing inherited" "1	0	pane.txt" "$(tdiff "$RVENV/pane" --numstat)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rvenvv=${v#*=}; rvenvv=${rvenvv//@/$RVENV/other}
+    is "${v%%=*} naming another repo leaves the pane's numstat" "1	0	pane.txt" \
+       "$(export "${v%%=*}=$rvenvv"; tdiff "$RVENV/pane" --numstat)"
+done
+rm -rf "$RVENV"
+
+echo "== tmux-review --request: an inherited GIT_DIR or its kin never opens another repo's review (#475) =="
+# --request sources no diff engine: its git_root runs before any lib could
+# unset the four. The pane sits in a subfolder, so a GIT_DIR alone (the cwd as
+# the tree) moves the root too. A tmux shim records the popup's command.
+# FAIL-first: on the old code GIT_DIR and GIT_WORK_TREE opened --loop on
+# another root. GIT_COMMON_DIR and GIT_INDEX_FILE do not move a --show-toplevel.
+if need_tmux "tmux-review --request under GIT_DIR"; then :; else
+RQE="cockpit-rqe-$$"; SOCKS="$SOCKS $RQE"; RQED=$(mktmpd); RQES=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir -p "$RQED/$r/sub" && cd "$RQED/$r" || exit
+    git init -q -b main .; printf 'a\n' > sub/f; git add -A; git commit -q -m init
+  done
+) >/dev/null 2>&1
+"$TMUX_REAL" -L "$RQE" -f /dev/null new-session -d -s t -x 100 -y 30 -c "$RQED/pane/sub" 'exec -a claude bash' \
+    >/dev/null 2>&1
+RQEP=$("$TMUX_REAL" -L "$RQE" list-panes -t t: -F '#{pane_id}')
+RQESHIM=$(mktmpd)
+cat > "$RQESHIM/tmux" <<SHIMEOF
+#!/bin/sh
+case "\$1" in
+    display-popup) for a; do :; done; printf '%s' "\$a" > "$RQES/cmd"; exit 0 ;;
+    display-message) for a; do :; done; case "\$a" in *session_attached*) echo 1; exit 0 ;; esac ;;
+esac
+exec "$TMUX_REAL" -L "$RQE" "\$@"
+SHIMEOF
+chmod +x "$RQESHIM/tmux"
+rqe_cmd() {                   # [VAR=value] -> the --loop root the popup was given
+    rm -f "$RQES/cmd"
+    ( [ $# -eq 0 ] || export "${1%%=*}=${1#*=}"
+      PATH="$RQESHIM:$PATH" XDG_STATE_HOME=$RQES "$DIR/scripts/tmux-review" --request "$RQEP" >/dev/null 2>&1 )
+    sed -n 's/.* --loop \([^ ]*\) .*/\1/p' "$RQES/cmd" 2>/dev/null
+}
+rqewant=$(printf '%q' "$(git -C "$RQED/pane" rev-parse --show-toplevel)")
+is "the popup reviews the pane repo's root, nothing inherited" "$rqewant" "$(rqe_cmd)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rqev=${v#*=}; rqev=${rqev//@/$RQED/other}
+    is "${v%%=*} naming another repo: the popup still reviews the pane repo" "$rqewant" "$(rqe_cmd "${v%%=*}=$rqev")"
+done
+unset -f rqe_cmd
+"$TMUX_REAL" -L "$RQE" kill-server >/dev/null 2>&1
+fi
+
 echo "== tmux-review --lines is gone: an unknown option, status 2 (#390) =="
 TDL=$(mktmpd)
 "$DIR/scripts/tmux-review" --lines "$TDL" >"$TDL.out" 2>"$TDL.err"; tdlrc=$?
@@ -12204,6 +12272,33 @@ printf '#!/bin/sh\necho "picker for $*" >&2\nexit 1\n' > "$BRN/cockpit-tui"; chm
 out=$(cd "${BRR%/*}" && env -u TMUX COCKPIT_TUI_BIN="$BRN/cockpit-tui" "$DIR/scripts/tmux-branch" "${BRR##*/}" </dev/null 2>&1)
 is "a relative directory reaches the binary as its absolute path" "picker for branch -C $BRR" "$out"
 rm -rf "$BRN" "$BRR"
+
+echo "== tmux-branch: an inherited GIT_DIR or its kin never switches another repo =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and the popup
+# inherits it. The picker lists the pane repo's branches (gitsafe strips the
+# four), so the switch must land there too. FAIL-first: on the old code each
+# variable below switched, or checked out into, the other repo.
+BRE=$(mktmpd)
+# answers once, then leaves like esc: a refused switch cannot loop. conf's `a`
+# differs from main's, so a switch writes the tree it checks out.
+printf '#!/bin/sh\n[ -e "%s/used" ] && exit 1\n: > "%s/used"; echo "switch conf"\n' "$BRE" "$BRE" > "$BRE/cockpit-tui"
+chmod +x "$BRE/cockpit-tui"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rm -rf "$BRE/pane" "$BRE/other" "$BRE/used"; br_repo "$BRE/pane" "$BRE/remote-${v%%=*}"
+    (
+      export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      git init -q -b main "$BRE/other" && cd "$BRE/other" || exit 1
+      echo other > a; git add a; git commit -q -m init; git branch conf
+    ) >/dev/null 2>&1
+    brev=${v#*=}; brev=${brev//@/$BRE/other}
+    ( export "${v%%=*}=$brev"
+      env -u TMUX COCKPIT_TUI_BIN="$BRE/cockpit-tui" timeout 30 "$DIR/scripts/tmux-branch" "$BRE/pane" \
+          </dev/null >/dev/null 2>&1 )
+    is "${v%%=*} naming another repo: the pane repo switches, the other stays (branch, dirty files)" \
+       "conf 0 main 0" "$(br_cur "$BRE/pane") $(git -C "$BRE/pane" status --porcelain | grep -c .) \
+$(br_cur "$BRE/other") $(git -C "$BRE/other" status --porcelain | grep -c .)"
+done
+rm -rf "$BRE"
 
 # --- #303 branch popup: a branch another worktree holds jumps there -----------
 # cockpit-tui is a stub that answers `goto <path>`, once: the binary's half is in
