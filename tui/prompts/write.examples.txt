@@ -29,16 +29,13 @@ Help me plan moving the Coder workspace to the new server without downtime; it r
 <example id="json" when="out:format" fill="3"><screen>(empty)</screen><request>json for user alice admin true and roles dev ops</request><reply><format lang="json">{"user": "alice", "admin": true, "roles": ["dev", "ops"]}</format></reply></example>
 <example id="which-file" core="1"><screen>● I updated ~/bin/net-proxy and ~/bin/clip-helper.</screen><request>change the timeout there to 30</request><questions_left>3</questions_left><reply><question>Which file should I change?</question>
 <option>~/bin/net-proxy</option>
-<option>~/bin/clip-helper</option>
-<option>Both files</option></reply></example>
+<option>~/bin/clip-helper</option></reply></example>
 <example id="unclear" core="1"><screen>(empty)</screen><request>make claude faster</request><questions_left>3</questions_left><reply><question>Faster at what?</question>
 <option>Starting up</option>
-<option>Answering</option>
-<option>The ✦ panel</option></reply></example>
+<option>Answering</option></reply></example>
 <example id="no-expected" core="1"><screen>(empty)</screen><window>bash in {{home}}/projects/app</window><request>the export is broken</request><questions_left>3</questions_left><reply><question>What goes wrong with the export?</question>
 <option>It stops with an error</option>
-<option>The file comes out empty</option>
-<option>Some values are wrong</option></reply></example>
+<option>The file comes out empty</option></reply></example>
 <example id="command" when="out:command"><screen>(empty)</screen><request>list the 10 biggest files here</request><output_type>command</output_type><reply><command lang="bash">du -ah . | sort -rh | head -n 10</command></reply></example>
 <example id="steps" core="1"><screen>(empty)</screen><request>set up an ssh key for host lab, it is in my ssh config</request><reply><steps>
 <step><note>Create a key (press Enter at each question)</note><cmd lang="bash">ssh-keygen -t ed25519</cmd></step>
