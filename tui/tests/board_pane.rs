@@ -279,6 +279,18 @@ fn the_pane_names_what_was_asked_said_and_is_being_done() {
     assert!(rows[4].contains("said   —"), "nothing said reads as a dash: {rows:#?}");
 }
 
+/// #452: the header names the dir the branch came from, not the launch path:
+/// a worktree pane launched in the main checkout shows the worktree.
+#[test]
+fn the_header_path_is_the_work_dir_the_branch_came_from() {
+    let (mut ps, th) = (trio(), th());
+    (ps[0].path, ps[0].dir) = ("/src/main".into(), "/src/wt-feat".into());
+    let n = nav(&ps, Sel::Pane("%3".into()));
+    let rows = pane_rows_text(&buf(180, 40, &list(&ps, &[], &th, &n)), 64);
+    assert!(rows[2].contains("/src/wt-feat · ⑂feat/rate-limit · %3"), "{rows:#?}");
+    assert!(!rows[2].contains("/src/main"), "{rows:#?}");
+}
+
 #[test]
 fn a_blocked_agent_shows_its_question_and_where_it_is() {
     let (ps, th) = (trio(), th());

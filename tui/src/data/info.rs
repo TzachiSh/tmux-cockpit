@@ -29,6 +29,9 @@ pub struct Facts {
     /// `@cockpit_dir` when set
     pub dir: Option<String>,
     pub dir_missing: bool,
+    /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
+    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule.
+    pub work: String,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -258,9 +261,12 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     // No cwd at all: git_root("") would describe the caller's repo, not this pane's.
     let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
-    if x.agent {
-        x.doing = doing_rows(&x.id);
-    }
+    // `file` can ask `claude agents`: only an agent pane has a transcript to find
+    let tr = if x.agent { super::transcript::file(&x.id) } else { None };
+    let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
+    let mut work = super::fleet::work_dirs(&[[f[4].to_string(), said, f[3].to_string()]]);
+    x.work = clean(&work.pop().unwrap_or_default());
+    x.doing = tr.as_deref().map(doing_rows).unwrap_or_default();
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
         let chosen = std::fs::read_to_string(sess.join("comments.md.base")).unwrap_or_default();
@@ -274,8 +280,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
 }
 
 /// The transcript's doing / said / asked, left out quietly when unreadable.
-fn doing_rows(pane: &str) -> Vec<Doing> {
-    let Some(text) = super::transcript::file(pane).and_then(|p| super::transcript::doing(&p)) else {
+fn doing_rows(path: &std::path::Path) -> Vec<Doing> {
+    let Some(text) = super::transcript::doing(path) else {
         return vec![];
     };
     text.lines()
