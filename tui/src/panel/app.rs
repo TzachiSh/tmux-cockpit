@@ -1,15 +1,16 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
-use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
+use super::capture::{Capture, REPO_BUDGET, SSH_LIKE, Session, is_local, session_state, toplevel, window_kind};
 use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
-use super::request::{Call, Fail, Request};
+use super::request::{Call, Fail, Profile, Request, read_dir_ok};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
@@ -36,6 +37,10 @@ pub const TAP_GUARD_MS: u64 = 300;
 /// A resumed panel's first view: the close, the paste and the reopen fit inside
 /// a slow double tap, and the reopened Steps put a button under the same finger.
 pub const RESUME_GUARD_MS: u64 = 800;
+/// An explore-first write's caps (#416): the prompt and a few reads on sonnet fit, and
+/// more reading than that is the agent's task, so the call ends rather than keeps the user.
+pub const EXPLORE_BUDGET_USD: f64 = 0.15;
+pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -213,6 +218,14 @@ pub struct App {
     pub cur: usize,
     pub out: OutType,
     pub model: usize,
+    /// ^R on Compose: a write may read the pane's folder first (#416). Kept
+    /// for the panel's life and across a hide, never on a file of its own.
+    pub explore: bool,
+    /// The pane, as captured when the panel opened, runs where its folder is:
+    /// [`is_local`]. A resume's older command does not change it.
+    local: bool,
+    /// [`App::explore_dir`]'s answer, worked out once: Busy asks it every frame.
+    explore_root: std::cell::OnceCell<Result<PathBuf, String>>,
     pub run: Option<Run>,
     /// Set by a transition, cleared by [`App::launch`], which owns the fork.
     pub pending: bool,
@@ -268,6 +281,7 @@ pub struct App {
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
         let screen_hidden = redact(&cap.screen).1;
+        let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
             session: session_state(&cap.screen, &cap.name, &cap.cmd),
@@ -277,6 +291,9 @@ impl App {
             cur: 0,
             out: OutType::Auto,
             model: 0,
+            explore: false,
+            local,
+            explore_root: std::cell::OnceCell::new(),
             run: None,
             pending: false,
             req: None,
@@ -351,20 +368,24 @@ impl App {
         self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
         (self.view, self.busy_back, self.run) = (h.view, h.busy_back, h.run);
         (self.draft, self.cur, self.out, self.model) = (h.draft, h.cur, h.out, h.model);
+        // the pane may run ssh by now: its folder is then the client's, never read
+        self.explore = h.explore && self.explore_dir().is_ok();
         let last = self.tiles().len() - 1;
         if let View::Home { sel } = &mut self.view {
             *sel = (*sel).min(last);
         }
         self.first_guard = RESUME_GUARD_MS;
-        if now == self.cap.cmd {
-            self.say(Level::Info, "back where you left it");
-        } else {
-            let was = self.cap.cmd.clone();
-            self.say(
-                Level::Warn,
-                format!("back where you left it; the pane now runs {now}, not {was}, so a paste is refused"),
-            );
+        let mut back = "back where you left it".to_string();
+        let moved = now != self.cap.cmd;
+        if moved {
+            let was = &self.cap.cmd;
+            back.push_str(&format!("; the pane now runs {now}, not {was}, so a paste is refused"));
         }
+        let dropped = h.explore && !self.explore;
+        if dropped {
+            back.push_str("; explore is off, as this pane's folder cannot be read");
+        }
+        self.say(if moved || dropped { Level::Warn } else { Level::Info }, back);
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -788,6 +809,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
+            KeyCode::Char('r') if ctrl => self.toggle_explore(),
             // by row as drawn, so the box's width as `render` wraps it; before a frame, unwrapped
             KeyCode::Up | KeyCode::Down => {
                 let w = self.size.map_or(usize::MAX, |(w, _)| usize::from(w).saturating_sub(4));
@@ -802,6 +824,71 @@ impl App {
                 self.cap_note(n)
             }
         }
+    }
+
+    /// ^R: explore first on or off. Refused for a window whose folder is not
+    /// the one it shows (#433's rule), or that has none.
+    fn toggle_explore(&mut self) {
+        if self.explore {
+            self.explore = false;
+            return self.say(Level::Info, "explore off: the write reads the screen only");
+        }
+        match self.explore_dir() {
+            Ok(dir) => {
+                self.explore = true;
+                self.say(Level::Info, format!("explore on: the write may read files under {}", dir.display()))
+            }
+            Err(why) => self.say(Level::Warn, format!("explore refused: {why}")),
+        }
+    }
+
+    /// The folder an exploring write may read: the pane's repo, or its folder
+    /// outside one, in a local window and one request.rs would start a call on;
+    /// else why not, for the user.
+    fn explore_dir(&self) -> Result<PathBuf, String> {
+        if !self.local {
+            return Err(format!(
+                "{} may run on another machine, so its folder is not the one shown",
+                self.cap.cmd
+            ));
+        }
+        if self.cap.path.is_empty() {
+            return Err("tmux gives no folder for this pane".into());
+        }
+        let root = self.explore_root.get_or_init(|| {
+            let dir = toplevel(&self.cap.path, REPO_BUDGET).unwrap_or_else(|| self.cap.path.clone());
+            let dir = PathBuf::from(dir);
+            read_dir_ok(&dir).map(|()| dir)
+        });
+        root.clone()
+    }
+
+    /// A write with the toggle on, in a window local when the panel opened. Fix and Explain never read.
+    pub fn explores(&self, flow: &Flow) -> bool {
+        self.explore && matches!(flow, Flow::Write { .. }) && self.explore_dir().is_ok()
+    }
+
+    /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
+    /// write a read-only one on the pane's folder under the explore caps, per call;
+    /// the viewer's ask reads its repo and the web under the owner's caps (#365 D7).
+    pub fn profile_for(&self, flow: &Flow) -> Profile {
+        use super::ask::{BUDGET_USD, TIMEOUT};
+        match (flow, self.explores(flow).then(|| self.explore_dir())) {
+            (Flow::Ask(a), _) => Profile::read_only(a.repo.clone(), true, BUDGET_USD, TIMEOUT),
+            (_, Some(Ok(dir))) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+            _ => Profile::TEXT,
+        }
+    }
+
+    /// [`hint`], but for an exploring call's own caps, which no setting raises: esc
+    /// leads back to the draft from any view a call starts on, and ^R is there.
+    fn fail_hint(&self, f: &Fail) -> Option<String> {
+        let exploring = self.run.as_ref().is_some_and(|r| self.explores(&r.flow));
+        if exploring && matches!(f, Fail::Timeout | Fail::Budget { .. }) {
+            // the line above names the cap; this says what to do about it
+            return Some("explore caps each call: r retries, or esc back to the draft, where ^R turns it off".into());
+        }
+        hint(f).map(String::from)
     }
 
     fn need_draft(&mut self) -> bool {
@@ -877,10 +964,17 @@ impl App {
     fn request_noted(&self) -> Option<((String, String, String), Option<String>)> {
         let r = self.run.as_ref()?;
         let (system, note) = match &r.flow {
-            Flow::Write { out, .. } => prompts::write_noted(&Ctx {
-                out: *out,
-                window: window_kind(&self.cap.name, &self.cap.cmd),
-            }),
+            Flow::Write { out, .. } => {
+                let ctx = Ctx {
+                    out: *out,
+                    window: window_kind(&self.cap.name, &self.cap.cmd),
+                };
+                if self.explores(&r.flow) {
+                    prompts::write_explore_noted(&ctx)
+                } else {
+                    prompts::write_noted(&ctx)
+                }
+            }
             Flow::Fix { .. } => prompts::fix_noted(),
             Flow::Explain => prompts::explain_noted(),
             Flow::Ask(_) => prompts::ask_code_noted(),
@@ -897,10 +991,7 @@ impl App {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
-            let p = self
-                .run
-                .as_ref()
-                .map_or(super::request::Profile::TEXT, |r| self.profile_for(&r.flow));
+            let p = self.run.as_ref().map_or(Profile::TEXT, |r| self.profile_for(&r.flow));
             self.timeout = p.timeout.unwrap_or(call.timeout);
             self.req = Some(Request::spawn_with(call, &p, &system, &prompt, &model));
             self.started = Some(Instant::now());
@@ -922,24 +1013,43 @@ impl App {
         };
     }
 
-    /// What the call for `flow` may use: an ask reads its repo and the web, under
-    /// the owner's caps (D7); every other call is the panel's text call. One arm
-    /// per flow that reads (#416 adds its own).
-    pub fn profile_for(&self, flow: &Flow) -> super::request::Profile {
-        use super::{ask, request::Profile};
-        match flow {
-            Flow::Ask(a) => Profile::read_only(a.repo.clone(), true, ask::BUDGET_USD, ask::TIMEOUT),
-            _ => Profile::TEXT,
-        }
-    }
-
     /// Takes a finished call's answer, if one has arrived.
     pub fn poll(&mut self) -> bool {
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
             return false;
         };
+        // read before reply(), which drops the Request; Some only for a json call.
+        // A failed call that read nothing has nothing to add to its error
+        let read = self.req.as_ref().and_then(Request::raw).and_then(parse::files_read);
+        let read = read.filter(|r| a.is_ok() || !r.is_empty());
         self.reply(a);
+        self.note_reads(read);
         true
+    }
+
+    /// The files an exploring call read, relative to the pane's folder, on the
+    /// view its answer opened: after a warning there, never in its place.
+    fn note_reads(&mut self, read: Option<Vec<String>>) {
+        let Some(read) = read else { return };
+        let root = self
+            .explore_dir()
+            .map_or_else(|_| self.cap.path.clone(), |d| d.display().to_string());
+        let root = format!("{}/", root.trim_end_matches('/'));
+        // the model names the files: a bidi or control character in one is not drawn
+        let names: Vec<String> = read
+            .iter()
+            .map(|p| crate::pick::clean(p.strip_prefix(&root).unwrap_or(p)))
+            .collect();
+        let text = match names.len() {
+            0 => "read no files".to_string(),
+            1 => format!("read 1 file: {}", names[0]),
+            n if n <= 3 => format!("read {n} files: {}", names.join(", ")),
+            n => format!("read {n} files: {} and {} more", names[..3].join(", "), n - 3),
+        };
+        match self.note.take() {
+            Some(Note { level, text: was }) => self.say(level, format!("{was}; {text}")),
+            None => self.say(Level::Info, text),
+        }
     }
 
     fn cancel(&mut self) {
@@ -990,7 +1100,7 @@ impl App {
                 };
                 self.view = View::Error {
                     line,
-                    hint: hint(&f).map(String::from),
+                    hint: self.fail_hint(&f),
                 };
                 return;
             }

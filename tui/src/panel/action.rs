@@ -222,6 +222,8 @@ pub struct Hidden {
     pub cur: usize,
     pub out: OutType,
     pub model: usize,
+    /// Explore first (#416); [`App::unhide`] drops it for a pane that is no longer local.
+    pub explore: bool,
     pub run: Option<Run>,
 }
 
@@ -242,6 +244,7 @@ pub fn hide_body(a: &App, now: u64) -> Option<String> {
         "cur": a.cur,
         "out": a.out.as_str(),
         "model": a.model,
+        "explore": a.explore,
         "view": view_out(&a.view)?,
         "busy_back": busy_back,
         "run": a.run.as_ref().map(run_out),
@@ -403,6 +406,13 @@ impl Obj {
     }
     fn flag(&mut self, k: &str) -> Result<bool, String> {
         self.take(k)?.as_bool().ok_or(format!("{k}: not true or false"))
+    }
+    /// A key a file from before it was added does not have: absent is false.
+    fn opt_flag(&mut self, k: &str) -> Result<bool, String> {
+        match self.0.remove(k) {
+            None => Ok(false),
+            Some(v) => v.as_bool().ok_or(format!("{k}: not true or false")),
+        }
     }
     fn list(&mut self, k: &str) -> Result<Vec<Value>, String> {
         list(self.take(k)?).map_err(|e| format!("{k}: {e}"))
@@ -630,6 +640,8 @@ pub fn read_hidden(path: &Path, pane: &str, now: u64) -> Result<Hidden, String> 
     if model >= MODELS.len() {
         return Err("an unknown model".into());
     }
+    // a panel hidden before #416 kept no toggle: it comes back off
+    let explore = o.opt_flag("explore")?;
     let view = view_in(o.take("view")?, false)?;
     let busy_back = match o.take("busy_back")? {
         Value::Null => None,
@@ -665,6 +677,7 @@ pub fn read_hidden(path: &Path, pane: &str, now: u64) -> Result<Hidden, String> 
         cur,
         out,
         model,
+        explore,
         run,
     })
 }

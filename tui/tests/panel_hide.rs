@@ -394,3 +394,65 @@ fn a_correction_box_on_a_fix_run_is_refused() {
     let fix = good.replace(run, "\"flow\":\"fix\",\"draft\":\"fix it\",\"out\":null");
     assert!(refused("fixflow", &fix).contains("not a write"), "{fix}");
 }
+
+// ---------------------------------------------------------------- explore first (#416)
+
+/// Compose with ^R on: the toggle the next tests hide.
+fn exploring() -> App {
+    let mut a = app("bash");
+    key(&mut a, KeyCode::Char('2'));
+    ctrl(&mut a, 'r');
+    assert!(a.explore, "^R turns it on in a bash pane");
+    typ(&mut a, "fix it");
+    a
+}
+
+#[test]
+fn explore_comes_back_on_after_a_hide() {
+    let mut a = exploring();
+    let b = round(&mut a, "explore");
+    assert!(b.explore, "the toggle is kept with the draft");
+}
+
+#[test]
+fn explore_off_comes_back_off() {
+    let mut a = app("bash");
+    key(&mut a, KeyCode::Char('2'));
+    let b = round(&mut a, "explore-off");
+    assert!(!b.explore);
+}
+
+#[test]
+fn explore_is_dropped_when_the_pane_runs_ssh_by_now() {
+    let mut a = exploring();
+    ctrl(&mut a, 'z');
+    let p = saved(&a, "explore-ssh");
+    let mut b = app("ssh");
+    b.unhide(read_hidden(&p, "%3", NOW + 5).unwrap());
+    assert!(!b.explore, "an ssh pane's folder is the client's");
+    assert_eq!(b.note.as_ref().map(|n| n.level), Some(Level::Warn));
+    assert!(note(&b).unwrap().contains("explore is off"), "{:?}", note(&b));
+    assert_eq!(b.draft, "fix it", "the rest comes back");
+}
+
+#[test]
+fn a_state_from_before_explore_comes_back_off() {
+    let mut a = exploring();
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    assert!(good.contains(",\"explore\":true"), "{good}");
+    let old = good.replace(",\"explore\":true", "");
+    let d = dir("explore-old");
+    write_hidden(&d.join("act"), &old).unwrap();
+    let h = read_hidden(&d.join("act.state"), "%3", NOW + 5).unwrap();
+    assert!(!h.explore, "a file with no toggle is a panel that had none");
+}
+
+#[test]
+fn an_explore_that_is_not_true_or_false_is_refused() {
+    let mut a = exploring();
+    ctrl(&mut a, 'z');
+    let good = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
+    let bad = good.replace("\"explore\":true", "\"explore\":\"yes\"");
+    assert!(refused("explore-type", &bad).contains("explore"), "{bad}");
+}

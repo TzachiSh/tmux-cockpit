@@ -482,3 +482,34 @@ pub fn split_shell(body: &str, lang: &str) -> Vec<Step> {
     }
     steps
 }
+
+/// The files a `claude -p --output-format json --verbose` call read, in order and
+/// each once; a Read the call refused is not one. `None` for any other output.
+pub fn files_read(out: &str) -> Option<Vec<String>> {
+    use serde_json::Value;
+    let Ok(Value::Array(events)) = serde_json::from_str::<Value>(out.trim()) else {
+        return None;
+    };
+    let content = |e: &Value, who: &str| {
+        let c = (e["type"] == who).then(|| e["message"]["content"].as_array()).flatten();
+        c.cloned().unwrap_or_default()
+    };
+    let refused: Vec<Value> = events
+        .iter()
+        .flat_map(|e| content(e, "user"))
+        .filter(|r| r["type"] == "tool_result" && r["is_error"] == true)
+        .map(|r| r["tool_use_id"].clone())
+        .collect();
+    let mut paths: Vec<String> = vec![];
+    for u in events.iter().flat_map(|e| content(e, "assistant")) {
+        if u["type"] != "tool_use" || u["name"] != "Read" || refused.contains(&u["id"]) {
+            continue;
+        }
+        if let Some(p) = u["input"]["file_path"].as_str()
+            && !paths.iter().any(|x| x == p)
+        {
+            paths.push(p.to_string());
+        }
+    }
+    Some(paths)
+}
