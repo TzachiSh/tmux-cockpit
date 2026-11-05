@@ -1381,7 +1381,8 @@ mod tests {
         ] {
             assert_eq!(comm_norm(raw), want, "{raw}");
         }
-        assert!(agentish(&comm_norm("claude\n")) && agentish(&comm_norm("2.1.318\n")) && !agentish(&comm_norm("bash\n")));
+        // agentish("claude") reads the tmux agent list, so only the pure half is pinned here
+        assert!(version_shaped(&comm_norm("2.1.318\n")) && !version_shaped(&comm_norm("bash\n")));
     }
 
     /// The live check: a shell, a grandchild with a name past 15 chars, and
