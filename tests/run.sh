@@ -7293,7 +7293,8 @@ is "--json exits 0 and says nothing about $TJSH" "0 no" \
 # ~/.claude; the slug is the cwd with every byte outside [A-Za-z0-9-] as "-".
 TJH=$(mktmpd); TJW=$(mktmpd)
 TJSLUG=$(printf '%s' "$TJW" | sed 's/[^A-Za-z0-9-]/-/g')
-TJUUID="0-$TJA"
+# a session id is a path component: the shared lookup (#500) takes only [A-Za-z0-9_-]
+TJUUID="0-${TJA#%}"
 mkdir -p "$TJH/.claude/projects/$TJSLUG"
 printf '%s\n' \
   "{\"type\":\"assistant\",\"timestamp\":\"2026-08-27T10:00:00.000Z\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"col1\tcol2\"}}]}}" \

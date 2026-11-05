@@ -278,7 +278,7 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
     // `file` can ask `claude agents`: only an agent pane has a transcript to find
-    let tr = if x.agent { super::transcript::file(&x.id) } else { None };
+    let tr = if x.agent { super::transcript::file(&x.id, f[3]) } else { None };
     let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
     let (opt, cwd) = (f[4].to_string(), f[3].to_string());
     x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])

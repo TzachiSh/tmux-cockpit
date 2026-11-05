@@ -28,13 +28,14 @@ pub(crate) fn under(root: &Path, path: &str) -> Option<PathBuf> {
 
 /// The transcript of a pane's session: @cockpit_transcript (the hook's `transcript_path`),
 /// else @cockpit_session, else `claude agents --json` joined on the pane's process tree;
-/// the first `<projects_dir()>/*/<sid>.jsonl`.
-pub fn file(pane: &str) -> Option<PathBuf> {
+/// then [`locate`], the lookup the board shares. `cwd` is the pane's pane_current_path.
+pub fn file(pane: &str, cwd: &str) -> Option<PathBuf> {
     if pane.is_empty() {
         return None;
     }
     let one = |args: &[&str]| super::tmux(args).unwrap_or_default().trim_end_matches('\n').to_string();
-    if let Some(p) = under(&projects_dir(), &one(&["show-option", "-pqv", "-t", pane, "@cockpit_transcript"])) {
+    let opt = one(&["show-option", "-pqv", "-t", pane, "@cockpit_transcript"]);
+    if let Some(p) = under(&projects_dir(), &opt) {
         return Some(p);
     }
     let mut sid = one(&["show-option", "-pqv", "-t", pane, "@cockpit_session"]);
@@ -42,22 +43,82 @@ pub fn file(pane: &str) -> Option<PathBuf> {
         let pp: i64 = one(&["display-message", "-p", "-t", pane, "#{pane_pid}"]).parse().ok()?;
         sid = agents().into_iter().find(|(pid, _)| descends(*pid, pp)).map(|(_, s)| s)?;
     }
-    // A glob or a path never reaches the lookup below.
+    // one look, so no memory of a miss: a session that just started is found
+    find(&projects_dir(), &opt, &sid, cwd, None)
+}
+
+thread_local! {
+    /// [`locate`]'s third step by session id: a found file until it is gone, a miss
+    /// for [`GLOB_MISS_TTL`], so the board's refresh does not list every project
+    /// dir each tick for a pane whose transcript is nowhere.
+    static GLOBBED: std::cell::RefCell<std::collections::HashMap<String, (std::time::Instant, Option<PathBuf>)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+const GLOB_MISS_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `<projects>/<cwd's slug>/<sid>.jsonl`, where Claude Code writes a session started in
+/// `cwd`; the slug maps every byte outside `[A-Za-z0-9-]` to `-`. None for no cwd.
+pub(crate) fn slug_path(sid: &str, cwd: &str) -> Option<PathBuf> {
+    slug_in(&projects_dir(), sid, cwd)
+}
+
+fn slug_in(dir: &Path, sid: &str, cwd: &str) -> Option<PathBuf> {
+    // Per byte, not per char: a two-byte glyph in the cwd becomes two dashes.
+    let slug: String = cwd
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b == b'-' { b as char } else { '-' })
+        .collect();
+    (!cwd.is_empty()).then(|| dir.join(slug).join(format!("{sid}.jsonl")))
+}
+
+/// #500: the one transcript lookup the board, `workdir` and the info screen share,
+/// so they read the same file. In order: `opt` (@cockpit_transcript) when it resolves
+/// to a regular file under [`projects_dir`] ([`under`]: no `..`, no symlink out, since
+/// an agent can set it); else `<projects>/<cwd's slug>/<sid>.jsonl`; else the first
+/// `<projects>/*/<sid>.jsonl`, sorted, dot dirs left out. None for a session id that
+/// could name a path or a glob. The board polls, so its third step keeps what it found
+/// until the file is gone and a miss for [`GLOB_MISS_TTL`].
+pub(crate) fn locate(opt: &str, sid: &str, cwd: &str) -> Option<PathBuf> {
+    find(&projects_dir(), opt, sid, cwd, Some(std::time::Instant::now()))
+}
+
+/// [`locate`]'s steps under the projects dir `dir`. With `now`, the third step uses and
+/// fills its memory, a miss counting as fresh until `now` is [`GLOB_MISS_TTL`] past it;
+/// the clock is a parameter so a test can step it.
+fn find(dir: &Path, opt: &str, sid: &str, cwd: &str, now: Option<std::time::Instant>) -> Option<PathBuf> {
+    if let Some(p) = under(dir, opt) {
+        return Some(p);
+    }
     if sid.is_empty() || !sid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
         return None;
     }
-    let dir = projects_dir();
+    if let Some(p) = slug_in(dir, sid, cwd).filter(|p| p.is_file()) {
+        return Some(p);
+    }
+    let seen = now.and_then(|_| GLOBBED.with(|c| c.borrow().get(sid).cloned()));
+    match (seen, now) {
+        (Some((_, Some(p))), _) if p.is_file() => return Some(p),
+        (Some((at, None)), Some(now)) if now.saturating_duration_since(at) < GLOB_MISS_TTL => return None,
+        _ => {}
+    }
     // The shell's glob: sorted, dot directories left out.
-    let mut names: Vec<_> = std::fs::read_dir(&dir)
-        .ok()?
+    let mut names: Vec<_> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
         .filter_map(|e| e.ok().map(|e| e.file_name()))
         .collect();
     names.retain(|n| !n.as_bytes().starts_with(b"."));
     names.sort();
-    names
+    let found = names
         .into_iter()
         .map(|n| dir.join(n).join(format!("{sid}.jsonl")))
-        .find(|p| p.is_file())
+        .find(|p| p.is_file());
+    if let Some(now) = now {
+        GLOBBED.with(|c| c.borrow_mut().insert(sid.to_string(), (now, found.clone())));
+    }
+    found
 }
 
 /// `claude agents --json` takes about 0.4 s and could hang: bounded to 2 s when
@@ -621,6 +682,58 @@ mod tests {
         for (input, want) in rows {
             assert_eq!(question(&input).as_deref(), want, "{input}");
         }
+    }
+
+    /// #500: `<root>/<project>/<sid>.jsonl`, written; its path.
+    fn put(root: &Path, project: &str, sid: &str) -> PathBuf {
+        std::fs::create_dir_all(root.join(project)).unwrap();
+        let p = root.join(project).join(format!("{sid}.jsonl"));
+        std::fs::write(&p, "{}").unwrap();
+        std::fs::canonicalize(&p).unwrap()
+    }
+
+    /// #500: the option outranks the cwd's slug, which outranks the glob; an option
+    /// outside the tree never counts; a session id that is a path finds nothing.
+    #[test]
+    fn find_takes_the_option_then_the_slug_then_the_glob() {
+        let (root, t) = tree();
+        let opt = put(&root, "-x", "s1");
+        let slugged = put(&root, "-w", "s1");
+        put(&root, "-a", "s1");
+        let o = opt.display().to_string();
+        assert_eq!(find(&root, &o, "s1", "/w", None), Some(opt), "the option");
+        assert_eq!(find(&root, "", "s1", "/w", None).as_deref(), Some(slugged.as_path()), "the slug");
+        let out = t.0.join("out.jsonl").display().to_string();
+        assert_eq!(find(&root, &out, "s1", "/w", None).as_deref(), Some(slugged.as_path()), "outside");
+        let first = std::fs::canonicalize(root.join("-a/s1.jsonl")).unwrap();
+        let found = find(&root, "", "s1", "/elsewhere", None).map(|p| std::fs::canonicalize(p).unwrap());
+        assert_eq!(found, Some(first), "the glob, sorted: -a before -w and -x");
+        // `../s1` would climb out of a project dir to this file
+        std::fs::write(root.join("s1.jsonl"), "{}").unwrap();
+        assert_eq!(find(&root, "", "../s1", "/w", None), None, "a path for an id");
+    }
+
+    /// #500: the board's memory of the glob: a found file is kept until it is gone,
+    /// then the glob runs again; a miss is kept until GLOB_MISS_TTL has passed on the
+    /// clock the test steps, never longer.
+    #[test]
+    fn the_glob_keeps_a_find_until_it_is_gone_and_a_miss_for_its_ttl() {
+        let (root, _t) = tree();
+        let t0 = std::time::Instant::now();
+        let at = |s: u64| Some(t0 + std::time::Duration::from_secs(s));
+        let real = |p: Option<PathBuf>| p.map(|p| std::fs::canonicalize(p).unwrap());
+        let a = put(&root, "-a", "s2");
+        assert_eq!(real(find(&root, "", "s2", "/x", at(0))), Some(a.clone()));
+        std::fs::remove_file(&a).unwrap();
+        let b = put(&root, "-b", "s2");
+        assert_eq!(real(find(&root, "", "s2", "/x", at(0))), Some(b), "a gone find is looked for again");
+        assert_eq!(find(&root, "", "s3", "/x", at(0)), None);
+        put(&root, "-a", "s3");
+        assert_eq!(find(&root, "", "s3", "/x", at(9)), None, "the miss is kept inside its ttl");
+        assert!(find(&root, "", "s3", "/x", at(10)).is_some(), "and looked for again after it");
+        assert_eq!(find(&root, "", "s4", "/x", None), None);
+        put(&root, "-a", "s4");
+        assert!(find(&root, "", "s4", "/x", None).is_some(), "an uncached look keeps no miss");
     }
 
     #[test]

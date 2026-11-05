@@ -106,7 +106,7 @@ fn every_failure_is_none() {
     assert_eq!(doing(&old), None);
     assert_eq!(tail(&old, 4096), None);
     assert_eq!(tail(Path::new(&open), 5), None);
-    assert_eq!(file(""), None);
+    assert_eq!(file("", ""), None);
     let missing = Path::new("/nonexistent/t.jsonl");
     let empty = Tmp::new("empty", "");
     let junk = Tmp::new("junk", "this is not json\n{oops\n");
@@ -189,10 +189,10 @@ impl Drop for Rig {
 #[test]
 fn file_takes_cockpit_session_and_the_first_project_holding_it() {
     let r = Rig::new("opt", "sid-aaa", 0);
-    assert_eq!(file("%1"), None, "no transcript file yet");
+    assert_eq!(file("%1", ""), None, "no transcript file yet");
     let want = r.session("a-proj", "sid-aaa");
     r.session("b-proj", "sid-aaa");
-    assert_eq!(file("%1"), Some(want));
+    assert_eq!(file("%1", ""), Some(want));
 }
 
 #[test]
@@ -201,7 +201,7 @@ fn file_refuses_a_session_id_that_is_a_glob_or_a_path() {
         let r = Rig::new("glob", sid, 0);
         r.session("a-proj", "sid-aaa");
         std::fs::write(r.dir.join(".claude/projects/outside.jsonl"), "").unwrap();
-        assert_eq!(file("%1"), None, "{sid}");
+        assert_eq!(file("%1", ""), None, "{sid}");
     }
 }
 
@@ -211,7 +211,7 @@ fn file_joins_claude_agents_on_the_pane_process_tree() {
     let r = Rig::new("agents", "", std::os::unix::process::parent_id());
     let want = r.session("b-proj", "sid-bbb");
     r.session("a-proj", "sid-aaa");
-    assert_eq!(file("%1"), Some(want));
+    assert_eq!(file("%1", ""), Some(want));
 }
 
 #[test]
@@ -220,7 +220,7 @@ fn a_blank_cockpit_tmux_is_none_not_a_panic() {
     let old = std::env::var_os("COCKPIT_TMUX");
     for v in ["", " "] {
         unsafe { std::env::set_var("COCKPIT_TMUX", v) };
-        assert_eq!(file("%1"), None, "COCKPIT_TMUX={v:?}");
+        assert_eq!(file("%1", ""), None, "COCKPIT_TMUX={v:?}");
     }
     unsafe {
         match old {

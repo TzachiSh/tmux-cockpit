@@ -1671,6 +1671,16 @@ reader keeps the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
+**Which transcript (#500):** the board, `workdir %N` and the info screen share one
+lookup, `transcript::locate`: `@cockpit_transcript` when it resolves to a regular
+file under the projects dir (`$CLAUDE_CONFIG_DIR/projects`, else
+`~/.claude/projects`; no `..`, no symlink out, since an agent can set the option),
+else `<projects>/<cwd's slug>/<session>.jsonl`, else the first
+`<projects>/*/<session>.jsonl`, sorted. The board polls, so it keeps that last step's
+find until the file is gone and a miss for 10 s; the info screen looks once. How the
+session id is found is each one's own: `@cockpit_session`, else `claude agents` on
+the board and the info screen, and never for `workdir`.
+
 **`--json`**: an array of objects with exactly these 15 keys, in this order:
 
 ```
