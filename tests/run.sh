@@ -12549,6 +12549,15 @@ for v in barex detachedx; do
        "$n" "$(bg_windows "$OGS")"
 done
 
+# A listed worktree whose directory was deleted is no forgery: goto names it gone, as on new git.
+git -C "$OGR" worktree add -q -b gone348 "$OGD/gone" >/dev/null 2>&1; rm -rf "$OGD/gone"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/gone"
+case "$BG_ERR" in
+    *"is gone"*) ok "without -z a deleted listed worktree is refused as gone, by name" ;;
+    *) bad "without -z a deleted listed worktree is refused as gone, by name" "is gone" \
+           "$BG_ERR" ;;
+esac
+
 "$TMUX_REAL" -L "$OGS" kill-server >/dev/null 2>&1
 
 # A whole `detached` line is a label: a detached tree nested in main keeps its own panes.

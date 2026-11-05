@@ -1,6 +1,7 @@
 //! What the branch popup reads from git (#246). Every call goes through
 //! `gitsafe`'s flags, so a repo's own config runs nothing as the user.
 use super::gitsafe::git;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
@@ -51,6 +52,7 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// (a line that is no worktree attribute) is dropped rather than guessed at. So
 /// is one with no `.git` in it (#348): a newline name can forge a whole
 /// `worktree <dir>` line. A main checkout's `.git` is a dir, a linked one's a file.
+/// A path that is gone is kept: it names no directory to open.
 fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
@@ -71,7 +73,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
     let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
         if let Some((p, b, ok)) = cur.take()
             && ok
-            && (nul || std::path::Path::new(&p).join(".git").exists())
+            && (nul || !Path::new(&p).exists() || Path::new(&p).join(".git").exists())
         {
             out.push((p, b));
         }
