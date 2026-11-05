@@ -2753,10 +2753,10 @@ is "an older revdiff is a warn row" "1" "$(dcrow "$dcout" "warn revdiff")"
 [ "$(dcge "$dctv" 3.8)" = no ] || is "and warnings exit 1" "1" "$dcrc"
 dcout=$(dc "$DBIN:$DSH:$DNO"); dcrc=$?
 is "no tmux on PATH is a fail row"          "1" "$(dcrow "$dcout" "fail tmux")"
+is "and a failure exits 2"                  "2" "$dcrc"
 mkdir -p "$DC/nexttmux"; dshim tmux "tmux next-3.9" "$DC/nexttmux"
 dcout=$(dc "$DC/nexttmux:$DBIN:$DSH:$DNO")
 is "a tmux built from master (next-3.9) is an ok row" "1" "$(dcrow "$dcout" "ok tmux")"
-is "and a failure exits 2"                  "2" "$dcrc"
 # tmux loads both files, so the run-shell line in either one wires the box.
 mkdir -p "$DH/.config/tmux"; printf 'set -g @unrelated 1\n' > "$DH/.config/tmux/tmux.conf"
 dcout=$(dc "$DCP")
