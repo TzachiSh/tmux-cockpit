@@ -3894,15 +3894,17 @@ pub fn drain<I>(first: Snapshot, rest: I, reads: &mut Reads, now: Instant) -> Dr
 where
     I: Iterator<Item = Snapshot>,
 {
-    let (mut snap, mut fetched, mut ok) = (first, None::<Duration>, None);
-    for s in rest {
-        if snap.fresh {
-            (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
+    let (mut fetched, mut ok) = (None::<Duration>, None);
+    let mut note = |s: &Snapshot| {
+        if s.fresh {
+            (fetched, ok) = (fetched.max(Some(s.took)), Some(s.ok));
         }
+    };
+    let mut snap = first;
+    note(&snap);
+    for s in rest {
+        note(&s);
         snap = s;
-    }
-    if snap.fresh {
-        (fetched, ok) = (fetched.max(Some(snap.took)), Some(snap.ok));
     }
     if let Some(ok) = ok {
         reads.got(ok, now);
