@@ -30,8 +30,8 @@ while [ $# -gt 0 ]; do
 done
 
 # The client that pressed prefix b, left on the pane by the key (#360). Taken and
-# cleared at start, before the other libs load (#480), so a second press while
-# this popup is open cannot take the goto.
+# cleared at start, before the other libs load (#480). That narrows the window to
+# bash start and pane.sh; a press inside it still takes this run's pin.
 CLIENT=""
 [ -n "${TMUX:-}" ] && CLIENT=$(take_pane_opt "$PANE_ID" @cockpit_branch_client)
 

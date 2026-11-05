@@ -12557,8 +12557,8 @@ fi
 
 echo "== client pins (#480): one take-and-clear helper, taken before the libs load =="
 # The popup keys leave the pressing client on the pane; the script takes it with
-# take_pane_opt (lib/pane.sh) before any other lib loads, so a second press from
-# another client while bash starts cannot be the one this run moves.
+# take_pane_opt (lib/pane.sh) before any other lib loads. That narrows the window
+# to bash start and pane.sh; a press inside it still takes this run's pin.
 if need_tmux "client pin take"; then :; else
 PTS="cockpit-pt480-$$"; SOCKS="$SOCKS $PTS"; PTD=$(mktmpd)
 "$TMUX_REAL" -L "$PTS" -f /dev/null new-session -d -s a -c "$PTD" 'exec sleep 300' >/dev/null 2>&1
