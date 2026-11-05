@@ -12996,7 +12996,7 @@ bc_where() {                  # -> "A=<session> B=<session> "
 bg_goto "$BCS" "$BCO" "$BCR" "$BCW"
 is "a goto with the pin moves the client that pressed the key" "A=z B=a " "$(bc_where)"
 is "and lands it on the pane in the worktree" "$BCZ" \
-   "$("$TMUX_REAL" -L "$BCS" display-message -p -c "$BCA" '#{pane_id}')"
+   "$("$TMUX_REAL" -L "$BCS" display-message -p -t "$BCA" '#{pane_id}')"
 is "the pin is cleared once taken" "" \
    "$("$TMUX_REAL" -L "$BCS" show-option -pqv -t "$BCO" @cockpit_branch_client)"
 # The binding sets the pin from #{client_name} before its popup opens.
