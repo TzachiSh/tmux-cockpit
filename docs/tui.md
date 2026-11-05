@@ -2287,7 +2287,10 @@ order are the board's. Unlike the fetch it never runs `claude agents`: a pane
 with no `@cockpit_session` has no transcript to read, so its dir is
 `@cockpit_dir`, else its launch dir. Lossy UTF-8, as above. Exit 0 with the
 line; exit 1 and nothing on stdout when the pane is not there, is not an
-agent's, or has no dir; exit 2 for a missing or malformed pane id.
+agent's, or its dir is not on disk (#507): a removed launch dir, or a name that is
+not UTF-8, which the lossy decode turns into a path that does not exist. The board
+still draws that path; a script gets no dir to cd into. Exit 2 for a missing or
+malformed pane id, with the usage on stderr only.
 
 ## The board as the review queue (#253)
 
