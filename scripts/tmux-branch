@@ -14,6 +14,8 @@ d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 . "${d%/*}/lib/git.sh" || exit 1
 # shellcheck source=lib/tui.sh
 . "${d%/*}/lib/tui.sh" || exit 1
+# shellcheck source=lib/workdir.sh
+. "${d%/*}/lib/workdir.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "${d%/*}/lib/fmt.sh" || exit 1
 
@@ -142,7 +144,7 @@ wt_list() {
 # one, any pane in it, else a new window there. Never a cd of an existing pane.
 # The path comes off cockpit-tui's line, so it is checked against git's own list.
 goto() {
-    local path=$1 w id agent cdir cwd dir ag='' sh='' found='' sep=$'\037' t=()
+    local path=$1 w id agent cdir cwd panes ag='' sh='' found='' sep=$'\037' t=()
     wt_list
     for w in ${WORKTREES[@]+"${WORKTREES[@]}"}; do [ "$w" = "$path" ] && found=1; done
     if [ -z "$found" ]; then
@@ -151,14 +153,21 @@ goto() {
     if [ ! -d "$path" ]; then
         printf 'cockpit: %s is gone · git worktree prune\n' "$path" >&2; pause; return 1
     fi
+    # One tree per pane, the one tmux-review reviews (#470). The binary is asked once,
+    # for every pane, and only when some pane's answer could differ from the rule.
+    panes=$(tmux list-panes -a \
+        -F "#{pane_id}$sep$WORKDIR_AGENT$sep#{@cockpit_dir}$sep#{pane_current_path}" 2>/dev/null)
+    WORKDIRS=()
+    while IFS="$sep" read -r id agent cdir cwd; do
+        workdir_need "$agent" "$cdir" && { pane_workdirs; break; }
+    done <<<"$panes"
     while IFS="$sep" read -r id agent cdir cwd; do
         [[ $id =~ ^%[0-9]+$ ]] || continue
-        # one tree per pane, as tmux-review's pane_dir: @cockpit_dir when it is a directory
-        dir=$cwd; [ -n "$cdir" ] && [ -d "$cdir" ] && dir=$cdir
-        owner_of "$dir"
+        workdir_pick "${WORKDIRS[$id]-}" "$cdir" "$cwd"
+        owner_of "$WORKDIR"
         [ "$OWNER" = "$path" ] || continue
         if [ "$agent" = 1 ]; then ag=${ag:-$id}; else sh=${sh:-$id}; fi
-    done < <(tmux list-panes -a -F "#{pane_id}$sep#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}$sep#{@cockpit_dir}$sep#{pane_current_path}" 2>/dev/null)
+    done <<<"$panes"
     id=${ag:-$sh}
     if [ -n "$id" ]; then
         # switch-client fails without a client; the selection below still applies.

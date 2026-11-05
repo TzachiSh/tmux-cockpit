@@ -5661,6 +5661,96 @@ is "and no tmux call ever carries it" "0" "$(grep -c PWNED "$PWD_SHIM/log" 2>/de
 is "--dir prints nothing for it" "" "$(PATH="$PWD_SHIM:$PATH" TMUX_LOG="$PWD_SHIM/log" "$DIR/scripts/tmux-review" --dir "$PWN" 2>/dev/null)"
 rm -rf "$PWD_SHIM"; unset -f pwrun
 
+echo "== tmux-review: the tree under review is the board's work dir, asked of cockpit-tui (#470) =="
+# An agent pane with no @cockpit_dir, launched in one dir, whose transcript says it works in a
+# repo: the board's row shows the repo, so r reviews the repo. The binary owns the rule; a stub
+# in its place logs each call, so a row can tell "asked and refused" from "never asked".
+if need_tmux "review work dir"; then :; else
+WD=$(mktmpd); WDS="cockpit-wd470-$$"; SOCKS="$SOCKS $WDS"
+# Under the launch dir's slug, where Claude Code keeps it and where the board looks.
+WDT="$WD/home/.claude/projects/$(printf '%s' "$WD/launch" | sed 's/[^A-Za-z0-9-]/-/g')"
+mkdir -p "$WD/launch" "$WD/other" "$WDT" "$WD/repo"
+(
+  cd "$WD/repo" || exit 1
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main . && echo a > f && git add f && git commit -q -m init && echo b >> f
+) >/dev/null 2>&1
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$WD/repo" \
+    > "$WDT/wd470.jsonl"
+"$TMUX_REAL" -L "$WDS" -f /dev/null new-session -d -s t -c "$WD/launch" 'exec -a claude sleep 300' \
+    >/dev/null 2>&1
+"$TMUX_REAL" -L "$WDS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+WDP=$("$TMUX_REAL" -L "$WDS" list-panes -a -F '#{pane_id}' | head -1)
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_session wd470 >/dev/null 2>&1
+WDSH=$("$TMUX_REAL" -L "$WDS" new-window -P -F '#{pane_id}' -d -t t: -c "$WD/launch" 'exec sleep 300')
+until_out claude "$TMUX_REAL" -L "$WDS" display-message -p -t "$WDP" '#{pane_current_command}'
+WDSP=$("$TMUX_REAL" -L "$WDS" display-message -p '#{socket_path}')
+# The stub's answer is $WD_CT's row; its cwd is $WD, where a relative "repo" is a directory.
+cat > "$WD/ct" <<EOF
+#!/bin/sh
+echo "\$*" >> "$WD/ct.log"
+case \$WD_CT in
+    ok)    printf '{"dir":"%s"}\n' "$WD/other" ;;
+    rel)   printf '{"dir":"repo"}\n' ;;
+    gone)  printf '{"dir":"%s"}\n' "$WD/no-such" ;;
+    bad)   printf 'dir: %s\n' "$WD/other" ;;
+    empty) ;;
+    fail)  printf '{"dir":"%s"}\n' "$WD/other"; exit 1 ;;
+    stale) echo "cockpit-tui: unknown screen info" >&2; exit 2 ;;
+    hang)  exec sleep 30 ;;
+esac
+EOF
+chmod +x "$WD/ct"
+wd() {                        # wd <args...>: tmux-review on the block's server, from $WD
+    (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
+        </dev/null 2>/dev/null)
+}
+wd_ct() {                     # wd_ct <row> <pane> -> "<calls> <dir>" with the stub as the binary
+    : > "$WD/ct.log"
+    local out; out=$(COCKPIT_TUI_BIN="$WD/ct" WD_CT=$1 wd --dir "$2")
+    printf '%s %s' "$(grep -c . "$WD/ct.log")" "$out"
+}
+is "a pane with no @cockpit_dir reviews its transcript's cwd, not its launch dir" "$WD/repo" \
+   "$(wd --dir "$WDP")"
+is "and --delta, the Stop hook's question, sees that tree's change" "0" \
+   "$(wd --delta "$WDP"; echo $?)"
+is "a stub's absolute directory is taken" "1 $WD/other" "$(wd_ct ok "$WDP")"
+for row in rel gone bad empty fail stale; do
+    is "a binary answering $row is asked once, and the launch dir stands" "1 $WD/launch" \
+       "$(wd_ct "$row" "$WDP")"
+done
+if command -v timeout >/dev/null 2>&1; then
+    is "a binary that hangs is cut off, and the launch dir stands" "1 $WD/launch" \
+       "$(wd_ct hang "$WDP")"
+else
+    skip_ "a binary that hangs is cut off (no timeout)"
+fi
+is "with the stub, then with no binary at all: its dir, then the launch dir" \
+   "$WD/other $WD/launch" \
+   "$(COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP") $(COCKPIT_TUI_BIN="$WD/none" wd --dir "$WDP")"
+# No jq: the answer cannot be read, so it is never asked for. PATH holds only what --dir runs.
+WDNJ=$(mktmpd)
+for c in env bash dirname basename readlink timeout sleep cat; do
+    ln -s "$(command -v "$c")" "$WDNJ/$c"
+done
+ln -s "$SHIM/tmux" "$WDNJ/tmux"
+cp -R "$WDNJ" "$WD/withjq"; ln -s "$(command -v jq)" "$WD/withjq/jq"
+is "the stub with jq on PATH, then without: its dir, then the launch dir" \
+   "$WD/other $WD/launch" \
+   "$(PATH="$WD/withjq" COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP") \
+$(PATH="$WDNJ" COCKPIT_TUI_BIN="$WD/ct" WD_CT=ok wd --dir "$WDP")"
+is "a pane that is gone prints nothing and asks nothing" "0 " "$(wd_ct ok %99999)"
+is "a shell pane is not asked: it has no transcript" "0 $WD/launch" "$(wd_ct ok "$WDSH")"
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir "$WD/launch" >/dev/null 2>&1
+is "an agent pane whose @cockpit_dir holds is not asked: that is the binary's first pick" \
+   "0 $WD/launch" "$(wd_ct ok "$WDP")"
+"$TMUX_REAL" -L "$WDS" set -p -t "$WDP" @cockpit_dir launch >/dev/null 2>&1
+is "a relative @cockpit_dir does not hold, so the binary is asked" "1 $WD/other" \
+   "$(wd_ct ok "$WDP")"
+"$TMUX_REAL" -L "$WDS" kill-server >/dev/null 2>&1
+unset -f wd wd_ct
+fi
+
 echo "== tmux-review: a temp git index is removed when the run is killed =="
 # tree_diff's mktemp index outlives a TERM unless a trap removes it. The git
 # shim TERMs the script mid-add, once the index copy exists.
@@ -12239,6 +12329,56 @@ esac
 "$TMUX_REAL" -L "$BCS" kill-server >/dev/null 2>&1
 unset -f bc_open bc_where
 rm -rf "$BCR" "$BCM" "$BCD"
+fi
+
+echo "== tmux-branch (#470): goto finds a pane by the work dir the board shows =="
+# An agent launched in the main checkout whose transcript works in the worktree is a pane of the
+# worktree, as r reviews it. The stub answers the picker once and hands --json to the binary,
+# or fails it with $BW_JSON=stale; each --json call is logged.
+if need_tmux "branch goto work dir"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"   # bg_server's fesc
+BWR=$(mktmpd); BWM=$(mktmpd); br_repo "$BWR" "$BWM"
+BWD=$(mktmpd); BWW="$BWD/wt"
+git -C "$BWR" worktree add -q "$BWW" held >/dev/null 2>&1
+BWT="$BWD/home/.claude/projects/$(printf '%s' "$BWR" | sed 's/[^A-Za-z0-9-]/-/g')"
+mkdir -p "$BWT"
+printf '{"type":"user","cwd":"%s","message":{"content":"hi"}}\n' "$BWW" > "$BWT/bw470.jsonl"
+BWS="cockpit-bw470-$$"; SOCKS="$SOCKS $BWS"
+bg_server "$BWS" "$BWD"   # the origin pane is in neither tree
+BWO=$("$TMUX_REAL" -L "$BWS" list-panes -a -F '#{pane_id}' | head -1)
+BWA=$(bg_pane "$BWS" "$BWR" 'exec -a claude sleep 300')
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA" @cockpit_session bw470 >/dev/null 2>&1
+until_out claude "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA" '#{pane_current_command}'
+cat > "$BWD/ct" <<EOF
+#!/bin/sh
+case \$1 in
+    branch) [ -e "$BWD/ran" ] && exit 1; : > "$BWD/ran"; echo "goto \$BW_GOTO"; exit 0 ;;
+    --json) echo json >> "$BWD/json.log"; [ "\$BW_JSON" = stale ] && exit 2 ;;
+esac
+exec "$COCKPIT_TUI_BIN" "\$@"
+EOF
+chmod +x "$BWD/ct"
+bw_goto() {                   # bw_goto <path> -> "<--json calls> <active pane> <windows>"
+    rm -f "$BWD/ran"; : > "$BWD/json.log"
+    "$TMUX_REAL" -L "$BWS" select-window -t "$BWO"
+    TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" HOME="$BWD/home" \
+        COCKPIT_TUI_BIN="$BWD/ct" BW_GOTO=$1 timeout 30 "$DIR/scripts/tmux-branch" -p "$BWO" "$BWR" \
+        </dev/null >/dev/null 2>&1
+    printf '%s %s %s' "$(grep -c . "$BWD/json.log")" "$(bg_active "$BWS")" "$(bg_windows "$BWS")"
+}
+is "goto the worktree selects the agent whose transcript works there, asking once" "1 $BWA 2" \
+   "$(bw_goto "$BWW")"
+BWSH=$(bg_pane "$BWS" "$BWR" 'exec sleep 300')
+is "and goto main skips that agent for a shell in main" "1 $BWSH 3" "$(bw_goto "$BWR")"
+is "a --json that fails is asked once, and the cwd rules again" "1 $BWA 3" \
+   "$(BW_JSON=stale bw_goto "$BWR")"
+"$TMUX_REAL" -L "$BWS" set -p -t "$BWA" @cockpit_dir "$BWW" >/dev/null 2>&1
+is "with every agent's @cockpit_dir holding, the binary is not asked" "0 $BWSH 3" \
+   "$(bw_goto "$BWR")"
+"$TMUX_REAL" -L "$BWS" kill-server >/dev/null 2>&1
+unset -f bw_goto
+rm -rf "$BWR" "$BWM" "$BWD"
 fi
 
 echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="

@@ -53,7 +53,7 @@ request() {                   # <pane>
         printf ' — nowhere to open the review\n' >&2
         exit 1
     fi
-    dir=$(pane_dir "$pane")
+    dir=$(pane_workdir "$pane")
     [ -n "$dir" ] || { printf 'tmux-review: pane %s is gone\n' "$pane" >&2; exit 1; }
     root=$(git_root "$dir"); sess=$(session_dir "$pane" "$root"); store="$sess/comments.md"
     (umask 077; mkdir -p -- "$sess" && [ ! -L "$store" ] && : >> "$store") || {
@@ -102,7 +102,7 @@ main_entry() {
         printf 'tmux-review: no tmux client to resolve a pane from\n' >&2
         exit 1
     fi
-    dir=$(pane_dir "$pane")
+    dir=$(pane_workdir "$pane")
     if [ -z "$dir" ]; then
         tmux display-message "$(fesc "cockpit: pane $pane is gone")" 2>/dev/null
         return 0

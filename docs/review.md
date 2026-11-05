@@ -11,12 +11,15 @@ The board lists every agent pane, on every session, blocked ones first. Each row
 shows its diff stat (`+a -d`, `clean`, `no repo`, `?N new`) and branch, so
 "which of my agents needs my eyes" is answered without visiting each pane.
 
-The tree a row diffs is the pane's cwd, unless the pane option `@cockpit_dir`
-names another. An agent that made its worktree by hand (`git worktree add`
-from the main checkout) keeps its process, and so its cwd, in the main
-checkout and drives the tree with `git -C`; its row would read clean master.
-One line from the agent fixes that, and every reader (the board, `--delta`
-for the Stop hook's ◆, `prefix + i`) follows it:
+The tree a row diffs is the pane option `@cockpit_dir` when it names a
+directory, else the session transcript's newest `cwd`, else the pane's cwd.
+`r` reviews that same tree: tmux-review asks `cockpit-tui info --json` for it
+(#470), and when the binary is missing, stale or gives no absolute directory
+it takes `@cockpit_dir`, else the cwd. An agent that made its worktree by hand
+(`git worktree add` from the main checkout) keeps its process, and so its cwd,
+in the main checkout and drives the tree with `git -C`; its row would read
+clean master. One line from the agent fixes that, and every reader (the board,
+`--delta` for the Stop hook's ◆, `prefix + i`) follows it:
 
 ```sh
 tmux set-option -p -t "$TMUX_PANE" @cockpit_dir ~/.cache/cockpit-wt/my-branch
@@ -35,7 +38,7 @@ From an **agent pane** the board opens with that pane selected, so `prefix + r`
 there is one `r` from its review. Finishing a review returns to the board, on
 the pane you just left; `q` is the way out.
 
-The review diffs the **git root of the pane's cwd**, and the header names it
+The review diffs the **git root of that tree**, and the header names it
 (`root: ~/.cache/cockpit-wt/api-work`). An agent that edits another worktree
 by absolute path from a main-checkout pane is reviewed on the wrong tree, and
 that line is how you notice. The fix is workflow, not the plugin: an agent that
