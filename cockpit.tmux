@@ -274,9 +274,10 @@ tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
 # tm --popup opens the popup itself: its height follows the session count,
-# which a display-popup size cannot express.
+# which a display-popup size cannot express. The pane goes in for a new session's
+# folder: inside the popup the session's active pane may be the popup (#494).
 Q_TM=$(sq "$DIR/scripts/tm")
-[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"
+[ -z "$sk" ] || ckey sessions "$sk" run-shell -b "$(fesc "$Q_TM") --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'"
 
 # run-shell sets no $TMUX_PANE, so the pane goes in as an argument (#45).
 [ -z "$jk" ] || ckey jump "$jk" run-shell "$(fesc "$(sq "$DIR/scripts/tmux-jump")") '#{pane_id}' '#{client_name}'"

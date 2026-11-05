@@ -1811,6 +1811,14 @@ tcsid=$("$TMUX_REAL" -L "$TC" display-message -p -t here '#{session_id}')
 ( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
 is "the new session starts where the pane was, not where the old session began" "$TCD/b" \
    "$("$TMUX_REAL" -L "$TC" display-message -p -t made: '#{session_path}' 2>/dev/null)"
+# On tmux master the popup is the session's active pane, so the session's active
+# pane is no longer the one prefix+s was pressed in (#494): the key passes it as
+# TM_PANE. Here a pane in a, with b's window active, stands in for that.
+tcpa=$("$TMUX_REAL" -L "$TC" display-message -p -t here:0 '#{pane_id}')
+( cd "$TCD/b" && env -u TMUX_PANE TM_PANE="$tcpa" TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" \
+    "$DIR/scripts/tm" fromkey </dev/null >/dev/null 2>&1 )
+is "with TM_PANE the new session starts in that pane's folder, not the active pane's" "$TCD/a" \
+   "$("$TMUX_REAL" -L "$TC" display-message -p -t fromkey: '#{session_path}' 2>/dev/null)"
 # With a real client on "here", popup-shaped tm must switch THAT client, not
 # attach a second one inside the popup (#45): in_client() wanted $TMUX_PANE,
 # which a popup never has.
@@ -3409,11 +3417,11 @@ pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4
 # 10/10 -- the binding is queryable the instant run-shell returns).
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 # tm --popup opens the popup itself, sized to the sessions, on the pressing
-# client and in its session.
+# client and in its session, with the pane it was pressed in (#494).
 case "$(pk s)" in
-    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"*)
+    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'"*)
         ok "prefix s is bound to the sessions popup" ;;
-    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h>" "$(pk s)" ;;
+    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h> <pane>" "$(pk s)" ;;
 esac
 case "$(pk g)" in *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
     *) ok "and g is left to tmux" ;; esac
@@ -11919,7 +11927,7 @@ tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W
     local a=$1; shift
     : > "$TP/log"
     env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
-        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
+        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$1" "$2" %7 "${@:3}" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
 is "desktop: 70% wide, rows + 5 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
@@ -11935,8 +11943,8 @@ is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
 tpsize '7|3||||' 200 12 >/dev/null
 case "$(cat "$TP/log")" in
-    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "but a window of its session, running tm" ;;
-    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... /tm" "$(cat "$TP/log")" ;;
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "but a window of its session, running tm" ;;
+    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE=%7 /tm" "$(cat "$TP/log")" ;;
 esac
 is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" "$(tpsize '7|3||||' 200 14)"
 tpsize '7|3||||' 200 13 >/dev/null
@@ -11944,14 +11952,18 @@ case "$(cat "$TP/log")" in WINDOW*) ok "and 13 lines is still a window" ;; *) ba
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "the popup goes to that client, in its session" ;;
-    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 .../tm" "$(cat "$TP/log")" ;;
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "the popup goes to that client, in its session" ;;
+    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 .../tm" "$(cat "$TP/log")" ;;
 esac
 tpsize '7|3||||' 56 30 --needs >/dev/null
 case "$(cat "$TP/log")" in
     *"/tm --needs") ok "--needs rides into the popup" ;;
     *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
 esac
+: > "$TP/log"
+env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '7\0373\037\037\037')" \
+    "$DIR/scripts/tm" --popup /dev/pts/9 '$3' 200 50 'x;y' >/dev/null 2>&1
+is "a pane that is not a pane id opens no popup" "" "$(cat "$TP/log")"
 
 echo "== tm sessions picker: prefix+s popup switches the client, and kill leaves it open (#245) =="
 # The real path: tm --popup opens the picker in a popup of a real client. The
@@ -12000,6 +12012,29 @@ until_cap "$TQO" o: '*session>*2 sessions*' && ok "and the popup stays open on t
 "$TMUX_REAL" -L "$TQO" send-keys -t o: Escape
 "$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix s: a session made in the picker starts in the pressed pane's folder (#494) =="
+# On tmux master the popup is the session's active pane, so the folder must come
+# from the pane the key was pressed in, which the binding passes. The session
+# starts in s and the pane sits in a, so the session's start dir is not an answer.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "prefix s new session (no bin/cockpit-tui; run make tui)"
+elif need_tmux "prefix s new session"; then :; else
+SN="cockpit-sn-$$"; SNO="cockpit-sno-$$"; SOCKS="$SOCKS $SN $SNO"; SND=$(mktmpd); mkdir -p "$SND/s" "$SND/a"
+"$TMUX_REAL" -L "$SN" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SND/s" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" new-window -t t: -c "$SND/a" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SNO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SND" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SN attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SN" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$SNO" send-keys -t o C-b s
+until_cap "$SNO" o '*session>*'
+"$TMUX_REAL" -L "$SNO" send-keys -t o z z q Enter
+until_out '?*' "$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}'
+is "the new session starts in the pane's folder, not the popup's or the session's" "$SND/a" \
+   "$("$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}' 2>/dev/null)"
+"$TMUX_REAL" -L "$SNO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SN" kill-server >/dev/null 2>&1
 fi
 
 echo "== revdiff: the doctor grades it and bootstrap.sh fetches it, verified =="
