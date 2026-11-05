@@ -230,6 +230,29 @@ fn a_blank_cockpit_tmux_is_none_not_a_panic() {
     }
 }
 
+/// #452: the newest main-thread row's cwd; a sidechain's, an empty or a
+/// non-string one never counts, and a transcript with none is None.
+#[test]
+fn cwd_is_the_newest_main_thread_cwd() {
+    let row = |cwd: serde_json::Value, side: bool| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type": "user", "cwd": cwd, "isSidechain": side, "message": {}})
+        )
+    };
+    let s = |c: &str| serde_json::Value::from(c);
+    let agent = format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "cwd": "/agent", "agentId": "a1", "message": {}})
+    );
+    let body =
+        row(s("/old"), false) + &row(s("/new"), false) + &row(s("/side"), true) + &agent + &row(s(""), false) + &row(7.into(), false);
+    let t = Tmp::new("cwd", &body);
+    assert_eq!(cockpit_tui::data::transcript::cwd(&t.0).as_deref(), Some("/new"));
+    let none = Tmp::new("cwdnone", &row(s(""), false));
+    assert_eq!(cockpit_tui::data::transcript::cwd(&none.0), None);
+}
+
 /// #453: an AskUserQuestion, `id`, asking `question` under `header`.
 fn ask(id: &str, question: &str, header: &str) -> String {
     let v = serde_json::json!({"type": "assistant", "version": "2.1.316", "message": {"content": [{"type": "tool_use",

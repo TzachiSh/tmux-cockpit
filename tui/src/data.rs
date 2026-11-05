@@ -133,6 +133,9 @@ pub struct Pane {
     pub msg: String,
     pub sess: String,
     pub path: String,
+    /// the dir the git facts came from: `@cockpit_dir`, else the transcript's
+    /// newest cwd, else `path` (#452); `fleet::work_dirs` picks it
+    pub dir: String,
     pub root: String,
     pub spool: String,
     pub pinned: usize,
@@ -175,6 +178,7 @@ impl Hash for Pane {
             msg,
             sess,
             path,
+            dir,
             root,
             spool,
             pinned,
@@ -195,7 +199,7 @@ impl Hash for Pane {
             ended,
         } = self;
         [
-            id, wher, name, cmd, title, msg, sess, path, root, spool, pid, review, doing, said, asked, loc, pm, win,
+            id, wher, name, cmd, title, msg, sess, path, dir, root, spool, pid, review, doing, said, asked, loc, pm, win,
         ]
         .hash(h);
         (state, pinned, delivered, subs_n, ended).hash(h);
@@ -282,14 +286,20 @@ struct Facts {
     newest: Option<SystemTime>,
     /// `Unknown` when the tail said nothing
     state: State,
+    /// the newest main-thread row's `cwd`, else the one the last read kept (#452)
+    cwd: String,
     /// the newest open AskUserQuestion's question, `""` when none is open
     ask: String,
 }
 
+/// A read's (len, mtime), the file's (device, inode), and what it said.
+type Tail = (u64, SystemTime, (u64, u64), Facts);
+
 thread_local! {
     /// Keyed on (len, mtime). The path is re-resolved every tick because
-    /// `/compact` and `--resume` rotate the file.
-    static TAILS: std::cell::RefCell<HashMap<String, (u64, SystemTime, Facts)>> =
+    /// `/compact` and `--resume` rotate the file. The (device, inode) says
+    /// whether a kept cwd is this file's (#452).
+    static TAILS: std::cell::RefCell<HashMap<String, Tail>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -325,13 +335,20 @@ fn read_facts(path: &str) -> Facts {
     let hit = TAILS.with(|c| {
         c.borrow()
             .get(path)
-            .filter(|(l, m, _)| *l == len && *m == mtime)
-            .map(|(_, _, v)| v.clone())
+            .filter(|(l, m, _, _)| *l == len && *m == mtime)
+            .map(|(_, _, _, v)| v.clone())
     });
     if let Some(fa) = hit {
         return fa;
     }
     let file = (md.dev(), md.ino());
+    // #452: the cwd the last read saw, unless another file stands at the path now
+    // (another inode, or this one rewritten shorter)
+    let seen_cwd = TAILS.with(|c| {
+        let c = c.borrow();
+        let e = c.get(path).filter(|(l, _, id, _)| *id == file && *l <= len);
+        e.map(|(_, _, _, f)| f.cwd.clone())
+    });
     // A gap past what the window can scan may hold a newer prompt: nothing is kept then.
     let kept = PROMPTS.with(|c| {
         let c = c.borrow();
@@ -347,6 +364,10 @@ fn read_facts(path: &str) -> Facts {
     // the window never grows to reach the ask.
     if fa.tool.is_empty() && fa.text.is_empty() && len > first && first < TAIL_MAX {
         fa = parse(tail(&mut f, len, TAIL_MAX));
+    }
+    // A quiet stretch of rows with no cwd must not push it out of the window.
+    if fa.cwd.is_empty() {
+        fa.cwd = seen_cwd.unwrap_or_default();
     }
     if fa.user.is_empty()
         && fa.user_at.is_none()
@@ -370,7 +391,7 @@ fn read_facts(path: &str) -> Facts {
             );
         }
     });
-    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
+    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, file, fa.clone())));
     fa
 }
 
@@ -396,6 +417,9 @@ fn parse(lines: Vec<String>) -> Facts {
         let ts = v["timestamp"].as_str().and_then(rfc3339);
         if ts.is_some() {
             fa.newest = ts;
+        }
+        if let Some(c) = v["cwd"].as_str().filter(|c| !c.is_empty()) {
+            fa.cwd = c.to_string();
         }
         match v["type"].as_str() {
             Some("user") => {
@@ -497,9 +521,10 @@ fn parse(lines: Vec<String>) -> Facts {
 }
 
 /// doing / said / asked and their ages, from the tail of the session transcript.
-fn read_transcript(p: &mut Pane) {
+/// Returns the transcript's cwd, `""` when it has none.
+fn read_transcript(p: &mut Pane) -> String {
     if p.sess.is_empty() {
-        return;
+        return String::new();
     }
     let fa = read_facts(&transcript_path(&p.sess, &p.path));
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
@@ -516,6 +541,7 @@ fn read_transcript(p: &mut Pane) {
     p.since = fa.at.and_then(age);
     p.asked_since = fa.user_at.and_then(age);
     p.idle_since = fa.newest.and_then(age);
+    fa.cwd
 }
 
 fn age(t: SystemTime) -> Option<u64> {
@@ -710,9 +736,9 @@ thread_local! {
     static GIT: std::cell::RefCell<GitCache> = std::cell::RefCell::default();
 }
 
-/// `dirs` is each pane's `(cwd, @cockpit_dir)`, in `ps` order.
-fn fill_git(ps: &mut [Pane], dirs: &[(String, String)]) {
-    // the tree each pane works in: @cockpit_dir over the cwd (#253)
+/// `dirs` is each pane's work dir candidates (`fleet::work_dirs`), in `ps` order.
+fn fill_git(ps: &mut [Pane], dirs: &[[String; 3]]) {
+    // the tree each pane works in: @cockpit_dir, the transcript's cwd, the cwd (#253, #452)
     let dirs = fleet::work_dirs(dirs);
     GIT.with(|c| {
         let GitCache { facts, seen } = &mut *c.borrow_mut();
@@ -734,7 +760,7 @@ fn fill_git(ps: &mut [Pane], dirs: &[(String, String)]) {
         }
         for (p, d) in ps.iter_mut().zip(&dirs) {
             let (_, (loc, pm, root)) = &facts[d];
-            (p.loc, p.pm, p.root) = (loc.clone(), pm.clone(), root.clone());
+            (p.loc, p.pm, p.root, p.dir) = (loc.clone(), pm.clone(), root.clone(), d.clone());
         }
     });
 }
@@ -920,11 +946,13 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
             p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
         }
-        read_transcript(&mut p);
+        let said_cwd = read_transcript(&mut p);
         (p.pinned, p.delivered) = spool_counts(&p.spool);
         // @cockpit_dir, @cockpit_subs and @cockpit_transcript come after the 13 a row from an
         // older format has, so such a row still reads: 13, 14 and 15 are optional
-        dirs.push((p.path.clone(), f.get(13).copied().unwrap_or_default().to_string()));
+        // #452: the work dir's candidates, in the order they are tried
+        let opt = f.get(13).copied().unwrap_or_default().to_string();
+        dirs.push([opt, said_cwd, p.path.clone()]);
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
         if let Some(d) = subagents::dir_of(f.get(15).copied().unwrap_or_default(), &p.sess, &p.path) {
             p.subs = subagents::read(&d, sessions::now());

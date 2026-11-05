@@ -138,23 +138,15 @@ row, when what you want is a handful of lines rather than a file. All three go
 out as OSC 52, so they reach the system clipboard only if your terminal accepts
 clipboard writes; some disable them by default.
 
-**Big files are named, not diffed.** To tell whether a file changed at all git
-hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB, and the popup
-is modal and rebuilds its rows on every reload. So a changed or untracked file
-over **32 MB** is kept away from git and reported on one notice row at the top
-of the list instead, though a tracked file whose size did not change is still
-hashed once, so git can tell it changed:
-
-```text
-data/dump.bin (412 MB) skipped — over 32 MB, review it directly
-```
-
-The row carries no comment, no `^Y` and no mark glyph, exactly like the row a
-diff too large to anchor line-by-line leaves. The file itself is untouched, and
-the tree still counts as dirty because of it, so a pane whose only change is a
-skipped file stays on the board and its review opens on that notice
-rather than on an empty diff. Put core dumps in `.gitignore`, as git's own
-templates do, and the review never sees them at all.
+**Big files are counted, not hashed.** To tell whether a file changed at all
+git hashes the whole of it, about 100 ms at 32 MB and 26 s at 1 GB. So when the
+cockpit asks whether a tree changed, a changed or untracked file over **32 MB**
+is kept away from git and counted as one binary change instead, though a
+tracked file whose size did not change is still hashed once, so git can tell it
+changed. The file itself is untouched, and the tree still counts as dirty
+because of it, so a pane whose only change is a big file stays on the board and
+its review still opens. Put core dumps in `.gitignore`, as git's own templates
+do, and the review never sees them at all.
 
 **`^B` picks what the diff is taken against.** The base is the first of three
 that holds: the checkpoint `refs/cockpit/reviewed/<branch>` when a review of

@@ -20,6 +20,18 @@ pub struct Base {
     pub mode: String,
 }
 
+/// Where the work dir came from (#452), in `fleet::work_dirs`' order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkFrom {
+    /// `@cockpit_dir`
+    Opt,
+    /// the session transcript's newest cwd
+    Transcript,
+    /// pane_current_path
+    #[default]
+    Cwd,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     pub id: String,
@@ -29,6 +41,13 @@ pub struct Facts {
     /// `@cockpit_dir` when set
     pub dir: Option<String>,
     pub dir_missing: bool,
+    /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
+    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule. Not
+    /// cleaned, since `info --json` hands it to scripts and the screen cleans it,
+    /// but decoded as lossy UTF-8 like every tmux read.
+    pub work: String,
+    /// which candidate `work` is
+    pub work_from: WorkFrom,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -258,13 +277,26 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     // No cwd at all: git_root("") would describe the caller's repo, not this pane's.
     let root = if path.is_empty() { String::new() } else { git_root(&path) };
     x.root = clean(&root);
-    if x.agent {
-        let ask;
-        (x.doing, ask) = doing_rows(&x.id);
-        // #453: the hook's text is generic; an open question says what is owed
-        if let Some(q) = ask.filter(|_| x.state == "needs-input") {
-            x.msg = q;
-        }
+    // `file` can ask `claude agents`: only an agent pane has a transcript to find
+    let tr = if x.agent { super::transcript::file(&x.id) } else { None };
+    let said = tr.as_deref().and_then(super::transcript::cwd).unwrap_or_default();
+    let (opt, cwd) = (f[4].to_string(), f[3].to_string());
+    x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])
+        .pop()
+        .unwrap_or_default();
+    // the same string as a higher candidate is that candidate: work_dirs' order
+    x.work_from = if !opt.is_empty() && x.work == opt {
+        WorkFrom::Opt
+    } else if !said.is_empty() && x.work == said {
+        WorkFrom::Transcript
+    } else {
+        WorkFrom::Cwd
+    };
+    let (doing, ask) = tr.as_deref().map(doing_rows).unwrap_or_default();
+    x.doing = doing;
+    // #453: the hook's text is generic; an open question says what is owed
+    if let Some(q) = ask.filter(|_| x.state == "needs-input") {
+        x.msg = q;
     }
     let sess = session_dir(&x.id, &root);
     if !root.is_empty() && !git(&root, &[], None, &["rev-parse", "-q", "--verify", "HEAD"]).trim().is_empty() {
@@ -280,8 +312,8 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
 
 /// The transcript's doing / said / asked, left out quietly when unreadable, and
 /// the open AskUserQuestion's question, cleaned at its source.
-fn doing_rows(pane: &str) -> (Vec<Doing>, Option<String>) {
-    let Some(text) = super::transcript::file(pane).and_then(|p| super::transcript::doing(&p)) else {
+fn doing_rows(path: &std::path::Path) -> (Vec<Doing>, Option<String>) {
+    let Some(text) = super::transcript::doing(path) else {
         return (vec![], None);
     };
     let ask = text.lines().find_map(|l| l.strip_prefix("ask\t")).map(String::from);

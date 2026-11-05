@@ -4,7 +4,6 @@
 #   tmux-review [-p pane_id]               no args: review that pane -- or,
 #                                          without -p, the CLIENT's active
 #                                          pane (what r on a board row runs)
-#   tmux-review --lines <dir>              the diff rows a review anchors to
 #   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key
 #                                          prompt; exits 20 (deliver), 21
 #                                          (approved), 127 (no revdiff), else
@@ -12,7 +11,7 @@
 #   tmux-review --compose <store>          the composed review, ready to deliver
 #   tmux-review --deliver <pane> <store>   one bracketed paste, typed-but-unsent
 #
-# --lines and --compose touch no tmux.
+# --compose touches no tmux.
 set -uo pipefail
 
 # bash 4+: on 3.2 `declare -A` fails and the assignment quietly makes an
@@ -40,10 +39,6 @@ shq() { printf '%q' "$1"; }
 . "$LIBDIR/pane.sh" || exit 1
 # shellcheck source=lib/fmt.sh
 . "$LIBDIR/fmt.sh" || exit 1
-
-# The path of lines_mode's notice rows ("diff too large"): not a file, no anchor.
-# shellcheck disable=SC2034  # read by the libs
-CAP_SENTINEL='(diff too large)'
 
 # How a pane names itself in the prompt. An unset pane_title reads as
 # #{host_short}, not empty, so the window name stands in.
@@ -74,7 +69,6 @@ tmux-review — review an agent's uncommitted diff, one comment at a time.
   tmux-review [-p pane_id]                review that pane (or, without -p, the
                                           client's active pane); prefix r opens
                                           the board, where r on a row runs this
-  tmux-review --lines <dir>              the diff rows a review anchors to
   tmux-review --loop <dir> <store>       the review: revdiff, then a one-key prompt
                                           (deliver, approve, review again, base,
                                           discard, leave); needs revdiff
@@ -115,7 +109,7 @@ need() {
     for l; do . "$LIBDIR/$l" || exit 1; done
 }
 case "${1:-}" in
-    --lines|--delta)            need review-diff.sh ;;
+    --delta)                    need review-diff.sh ;;
     --loop)                     need review-diff.sh review-revdiff.sh review-deliver.sh ;;
     --compose|--deliver|--done) need review-deliver.sh ;;
     --request)                  need review-deliver.sh review-fleet.sh ;;
@@ -123,8 +117,6 @@ case "${1:-}" in
 esac
 
 case "${1:-}" in
-    --lines)
-        shift; lines_mode "${1:-}" ;;
     --loop)
         shift; review_loop "${1:-}" "${2:-}" ;;
     --compose)

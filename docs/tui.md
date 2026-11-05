@@ -1675,7 +1675,7 @@ is agreed; changing any of it takes a comment on
 **`data::Pane`**, field for field:
 
 ```
-id, wher, name, cmd, state, title, msg, sess, path, root, spool, pinned,
+id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
 since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
 ```
@@ -1696,11 +1696,18 @@ its text block counts as the prompt. The board's worker polls, so it keeps the
 anchor for the whole turn. A one-shot `--json` or `--rows` reads each transcript
 once: a prompt already past the window reads `""` and `null`, as before.
 
-**`--json`**: an array of objects with exactly these 14 keys, in this order:
+**`dir` (#452):** the tree the git facts came from: `@cockpit_dir`, else the
+session transcript's newest main-thread `cwd`, else `path`. The first that is an
+absolute path naming a directory wins; `path` stays the pane's launch cwd. The
+reader keeps the last cwd it saw per transcript path, for the same file only
+(device and inode, and not shorter than at the last read), so a stretch of rows
+without one does not lose it.
+
+**`--json`**: an array of objects with exactly these 15 keys, in this order:
 
 ```
 id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
-session, path
+session, path, dir
 ```
 
 `where` is `sess:idx`, and nothing else: the window name is `data::Pane`'s
@@ -2218,7 +2225,9 @@ no longer exits with `info %N` for the wrapper, and `cockpit-board` has no
 screen) and `data::info` (the facts); both are in the module table.
 
 It shows, in this order: `pane`, `cwd`,
-`dir` (`@cockpit_dir`, and `missing` when the directory is gone), `root`,
+`dir` (`@cockpit_dir`, and `missing` when the directory is gone), a second
+`dir` row `<dir>  (transcript cwd)` when the work dir (#452) is the transcript's
+cwd, `root`,
 `state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
 `base`, `session`, `title`, `tui` and the review dir with its pinned and
@@ -2233,6 +2242,14 @@ Text from outside (a transcript, a title, a path) is stripped of control
 characters before it is drawn. It is not a text-entry screen: `esc` and `q`
 close it, `↑↓` `j` `k` `PgUp` `PgDn` scroll, `?` lists the keys.
 `tmux-review --info` is gone.
+
+**`cockpit-tui info --json %N`** (#452) prints one line, `{"dir": "<path>"}`: the
+work dir by the board's rule (`dir` in `--json` above), for scripts. Root, base and
+the review dir keep tmux-review's rule (`@cockpit_dir`, else the cwd), so the
+screen and `prefix r` name the same tree. The path is decoded as lossy UTF-8, as
+every tmux read is: a byte that is not UTF-8 becomes U+FFFD. Exit 0 with the
+line; exit 1 and nothing on stdout when the pane is not there; exit 2 for a
+missing or malformed pane id.
 
 ## The board as the review queue (#253)
 
@@ -2256,8 +2273,9 @@ the branch when HEAD is detached.
 
 **Where the facts come from.** `data/fleet.rs`, on the fetch thread. One diff
 scan per distinct repo root however many panes share it, at most 8 git processes
-at once, `@cockpit_dir` over the pane's cwd (the tree the agent works in), and
-the gitsafe flags. The list still makes no pane capture.
+at once, and the gitsafe flags. The tree the agent works in is `@cockpit_dir`,
+else the session transcript's newest cwd, else the pane's cwd (#452); a relative
+path never counts and gets no facts. The list still makes no pane capture.
 
 **Verbs.** `cockpit-board` gains one line, `kill %N` (#288 removed `request %N`).
 `kill %N` kills the pane, not its window (#301). The board writes the pane id
