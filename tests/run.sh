@@ -13715,10 +13715,11 @@ cat > "$MV/bin/cockpit-tui" <<'STUB'
 if [ "$1" = view ]; then
     { printf 'VIEW'; for a in "$@"; do printf ' [%s]' "$a"; done; echo; } >> "$TMUX_LOG"
     [ -z "${VIEW_ERR:-}" ] || { printf '%s\n' "$VIEW_ERR" >&2; exit "${VIEW_RC:-2}"; }
-    # VIEW_ONCE: the viewer prints VIEW_OUT once, then closes empty (#365's loop back)
+    # VIEW_ONCE=N: the viewer prints VIEW_OUT N times, then closes empty (#365's loop back)
     if [ -n "${VIEW_ONCE:-}" ]; then
-        [ -e "$TMUX_LOG.once" ] && exit 0
-        : > "$TMUX_LOG.once"
+        i=1; while [ -e "$TMUX_LOG.once$i" ]; do i=$((i + 1)); done   # builtins: PATH is bare
+        [ "$i" -gt "$VIEW_ONCE" ] && exit 0
+        : > "$TMUX_LOG.once$i"
     fi
     [ -z "${VIEW_ENV:-}" ] || printf 'VIEWENV [%s]\n' "${COCKPIT_VIEW_ASK-unset}" >> "$TMUX_LOG"
     printf '%s\n' "${VIEW_OUT-}"; exit "${VIEW_RC:-0}"
@@ -13728,11 +13729,11 @@ STUB
 chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/bin/bash"
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
-    : > "$MVL"; rm -f "$MVL.once"
+    : > "$MVL"; rm -f "$MVL".once*
     env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
         VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
-        VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" \
+        VIEW_ONCE="${VIEW_ONCE:-}" VIEW_ENV="${VIEW_ENV:-}" ${FUNCNEST:+FUNCNEST="$FUNCNEST"} \
         bash "${MV_SCRIPT:-$DIR/scripts/tmux-open-path}" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
@@ -13824,6 +13825,11 @@ is "--view: the viewer's ask 3 7 opens the panel on the pane, the file and the l
 is "--pick: the same, from the picker's own popup" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"PANEL [-p] [%1] [--ask] [$MV/w/a.md] [1] [1] env[unset]"$'\n'"VIEW [view] [--line] [1] [--] [$MV/w/a.md]" \
    "$(MV_SCRIPT="$MV/s/tmux-open-path" VIEW_ONCE=1 VIEW_OUT='ask 1 1' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+# a loop, not a call per ask: under a cap of 12 nested calls, 20 asks in a row
+# reopen the viewer 21 times; a recursion would die at the cap
+is "twenty asks in a row reopen the viewer each time, in a loop" "20 21" \
+   "$(MV_SCRIPT="$MV/s/tmux-open-path" FUNCNEST=12 VIEW_ONCE=20 VIEW_OUT='ask 2 4' mvrun '' --view %1 "$MV/w/a.md" '' \
+      | awk '/^PANEL/ {p++} /^VIEW / {v++} END {print p+0, v+0}')"
 is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]" \
    "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWENV)"
 for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
