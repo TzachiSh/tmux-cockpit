@@ -8164,6 +8164,61 @@ else bad "the busy agent's screen shows" "live · N lines" "$("$TMUX_REAL" -L "$
 "$TMUX_REAL" -L "$PR" kill-server >/dev/null 2>&1
 fi
 
+echo "== cockpit-tui board: a held j recaptures, and fetches only on the tick (#492) =="
+# Each new selection ran a full fetch, list-panes first: j held at 30 Hz was
+# about 20 fetches a second. A selection now recaptures off the last fetch's
+# panes. Each key here waits for its own capture-pane, so the counts are per
+# selection, not per second: 40 selections may cost the tick's few list-panes,
+# never 40. Then the keys go on until a list-panes comes, which a capture that
+# put the tick off again would never let happen.
+if need_tmux "a held j on the board"; then :; else
+PJ="cockpit-pj-$$"; SOCKS="$SOCKS $PJ"; PJD=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$1" >> %s/calls\nexec %s "$@"\n' \
+    "$PJD" "$TMUX_REAL" > "$PJD/tmux"
+chmod +x "$PJD/tmux"
+"$TMUX_REAL" -L "$PJ" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$PJD" \
+    'exec sleep 3600' >/dev/null 2>&1
+for s in alpha beta; do
+    pjp=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
+        "printf 'screen-of-$s\n'; exec -a claude sleep 3600")
+    "$TMUX_REAL" -L "$PJ" set -p -t "$pjp" @panestate running >/dev/null 2>&1
+done
+PJENV="COCKPIT_TMUX=$PJD/tmux XDG_STATE_HOME=$PJD COCKPIT_LOG=$PJD/tui.log"
+PJW=$("$TMUX_REAL" -L "$PJ" new-window -d -P -F '#{pane_id}' -t t: -c "$PJD" \
+    "env $PJENV $COCKPIT_TUI_BIN board")
+pj_n() { local n; n=$(grep -cx "$1" "$PJD/calls" 2>/dev/null); printf '%s' "${n:-0}"; }
+pj_key() {                    # <key>  one press, then poll for one more capture-pane
+    local n i
+    n=$(pj_n capture-pane)
+    "$TMUX_REAL" -L "$PJ" send-keys -t "$PJW" "$1"
+    for i in $(seq 1 "$POLLS"); do
+        [ "$(pj_n capture-pane)" -gt "$n" ] && return 0
+        sleep 0.02
+    done
+    return 1
+}
+if until_cap "$PJ" "$PJW" '*live · *screen-of-alpha*'; then
+    pjl=$(pj_n list-panes); pjmiss=0
+    for i in $(seq 1 20); do
+        pj_key j || pjmiss=$((pjmiss + 1))
+        pj_key k || pjmiss=$((pjmiss + 1))
+    done
+    pjf=$(( $(pj_n list-panes) - pjl ))
+    is "each of 40 held selections gets a capture" 0 "$pjmiss"
+    if [ "$pjf" -le 10 ]; then ok "and 40 selections cost at most 10 full fetches ($pjf)"
+    else bad "and 40 selections cost at most 10 full fetches" "at most 10 list-panes" "$pjf"; fi
+    pjl=$(pj_n list-panes); pjtick=
+    for i in $(seq 1 300); do
+        pj_key j; pj_key k
+        [ "$(pj_n list-panes)" -gt "$pjl" ] && { pjtick=1; break; }
+    done
+    if [ -n "$pjtick" ]; then ok "a held j still gets the tick's fetch (after $i pairs)"
+    else bad "a held j still gets the tick's fetch" "a list-panes within 300 pairs" "none"; fi
+else bad "the board shows alpha's screen" "live · screen-of-alpha" \
+    "$("$TMUX_REAL" -L "$PJ" capture-pane -p -t "$PJW")"; fi
+"$TMUX_REAL" -L "$PJ" kill-server >/dev/null 2>&1
+fi
+
 echo "== cockpit-panel: insert pastes without Enter, send adds it, and the text arrives clean =="
 # The panel is the one wrapper that writes into a pane, so it is driven for real:
 # a fake claude, a target running cat, the panel in a second window, send-keys.
