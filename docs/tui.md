@@ -2038,8 +2038,13 @@ padding column, and the footer says which lines an ask would take
 the last markdown block it touches with blank lines off the end. Only a launcher
 that routes that line sets `COCKPIT_VIEW_ASK=1`, and only then is `? ask`
 offered: without it `?` leaves a note and the viewer stays, so a launcher that
-reads only `edit` never loses the screen to it. `tmux-open-path` routes it to
-the panel's ask in a later change.
+reads only `edit` never loses the screen to it. `tmux-open-path` sets it on the
+viewer's command alone, checks the line (`ask`, then two numbers from 1 with no
+leading zero, the first not past the second, and nothing else), and runs
+`cockpit-panel -p <pane> --ask <file> <a> <b>` by its own path in the same
+popup, with the file and the pane its own, never the viewer's. When the panel
+closes, the viewer opens again at line `a`. See
+[Asking about code](#asking-about-code-365).
 `esc` clears the selection before the matches, and the help moved from `?` to
 `h` and `F1`. A tap and a release, then a press, a drag and a release, select
 from the first line to the drag's end. Under the floor card or the help a tap
