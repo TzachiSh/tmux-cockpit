@@ -26,10 +26,11 @@ concurrency:
 
 jobs:
   tui-test:
-    # Pinned: bump on purpose (#401). Back on 24.04: the tmux-driven tests run
-    # against the 3.8 the tmux action builds (the README's floor, #471), not the
-    # image's 3.4 (prints the 0x1f separator as `\037`) or 26.04's 3.6.
-    runs-on: ubuntu-24.04
+    # Pinned: bump on purpose (#401). 26.04, not 24.04: the shell suite's tools
+    # (cut, jq) are the ones a developer box has, and the two jobs share one cached
+    # tmux per image. The tmux-driven tests run on the 3.8 the tmux action builds
+    # (the README's floor, #471), not the image's 3.6.
+    runs-on: ubuntu-26.04
     env:
       # A missing tmux must fail the tmux tests, not pass them in 0.00 s (#471).
       COCKPIT_REQUIRE_TMUX: '1'

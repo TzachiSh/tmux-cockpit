@@ -18,7 +18,7 @@ runs:
     # ncurses, so a build from one image is not reused on another. The checksum
     # is in the key so that a changed pin can never hit the old build.
     - id: cache
-      uses: actions/cache@v4
+      uses: actions/cache/restore@v4
       with:
         path: ~/.cache/ci-tmux/${{ inputs.version }}
         key: tmux-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}-${{ env.ImageOS }}-${{ inputs.sha256 }}
@@ -42,6 +42,15 @@ runs:
         ./configure --prefix="$HOME/.cache/ci-tmux/$VERSION" >/dev/null
         make -j"$(nproc)" >/dev/null
         make install >/dev/null
+
+    # Saved here, not by actions/cache's post step: that one runs only if the whole
+    # job passed, and a red test run would then rebuild tmux on every retry.
+    - name: Save the build
+      if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.cache/ci-tmux/${{ inputs.version }}
+        key: ${{ steps.cache.outputs.cache-primary-key }}
 
     # A cache hit installs nothing, so the runtime libraries must already be on
     # the image. If one is missing, say so here rather than as a test failure.

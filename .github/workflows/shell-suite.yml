@@ -22,7 +22,10 @@ concurrency:
 
 jobs:
   shell-suite:
-    runs-on: ubuntu-24.04 # pin: bump on purpose (#401). The tmux build is cached per image.
+    # Pinned: bump on purpose (#401). 26.04, like tui-test, so one cached tmux serves
+    # both. Not 24.04: its GNU cut and jq 1.7 fail 5 rows that pass on the newer
+    # tools a developer box has (#478).
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     env:
       # A missing tmux must fail the tests, not pass them in 0.00 s (#471). The
@@ -40,6 +43,8 @@ jobs:
       - name: Show what the suite sees
         run: |
           tmux -V
+          jq --version
+          cut --version | head -1
           locale -a | grep -ix 'c\.utf-\?8' || echo "no C.UTF-8 locale"
           infocmp xterm-ghostty >/dev/null 2>&1 && echo "xterm-ghostty terminfo: present" || echo "xterm-ghostty terminfo: absent (its rows skip)"
       - run: make tui-bin
