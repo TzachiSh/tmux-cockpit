@@ -1,14 +1,10 @@
 //! #301: with no agent list (`@cockpit_agents_glob` empty, the plugin not
 //! loaded) a live `claude` looks like any command, so nothing is ended. Its own
 //! test binary: the agent list is a thread-local read once, the env process-wide.
-use cockpit_tui::data::list_panes;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+mod fake;
 
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-}
+use cockpit_tui::data::list_panes;
+use fake::write_exec;
 
 #[test]
 fn an_empty_agent_list_ends_nothing() {

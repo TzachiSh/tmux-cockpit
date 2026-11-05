@@ -363,6 +363,47 @@ until_cap "$PBO" o '*on beta*' && ok "prefix b opens on the pane's repo (beta), 
 "$TMUX_REAL" -L "$PBO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$PB" kill-server >/dev/null 2>&1
 fi
 
+echo "== prefix i, f and w open on the pane they were pressed in, not one an earlier key stored (#494) =="
+# Each popup key stores #{pane_id} on the session and its popup reads it back. A
+# key that forgot to store it would open on whatever pane the last key left there:
+# live, so nothing complains, but the wrong one. A stub cockpit-tui logs each call.
+if need_tmux "popup source pane"; then :; else
+SP="cockpit-sp-$$"; SPO="cockpit-spo-$$"; SOCKS="$SOCKS $SP $SPO"; SPD=$(mktmpd)
+# The board passes no pane to the binary, so for it the stub logs its caller's -p.
+cat > "$SPD/cockpit-tui" <<STUB
+#!/bin/sh
+[ "\$1" = --version ] && { echo "cockpit-tui 9.9.9"; exit 0; }
+[ "\$1" = board ] && set -- board "\$(ps -o args= -p \$PPID | grep -o -- '-p %[0-9]*')"
+printf '%s\\n' "\$*" >> "$SPD/log"
+STUB
+chmod +x "$SPD/cockpit-tui"
+COCKPIT_TUI_BIN="$SPD/cockpit-tui" XDG_STATE_HOME="$SPD/state" \
+    "$TMUX_REAL" -L "$SP" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SP" new-window -t t: -c "$SPD" 'exec sleep 300' >/dev/null 2>&1
+sp0=$("$TMUX_REAL" -L "$SP" display-message -p -t t:0 '#{pane_id}')
+sp1=$("$TMUX_REAL" -L "$SP" display-message -p -t t:1 '#{pane_id}')
+"$TMUX_REAL" -L "$SPO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SPD" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SP attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SP" list-clients -F '#{client_name}'
+spkey() {                     # <window> <key> <log line it must add>: press it there, wait for the popup to close
+    "$TMUX_REAL" -L "$SP" select-window -t "t:$1" >/dev/null 2>&1
+    "$TMUX_REAL" -L "$SPO" send-keys -t o C-b "$2"
+    until_file "$SPD/log" "*$3"
+    until_out 'closed' sh -c "\"$TMUX_REAL\" -L $SPO capture-pane -p -t o | grep -q -e 'info · %' -e 'panel · %' || echo closed"
+}
+spkey 0 i "info $sp0"
+spkey 1 f "panel $sp1"
+spkey 0 i "info $sp0"
+spkey 1 w "board"
+is "f opens on its own pane after i stored another, and i on its own after f" \
+   "info $sp0|panel $sp1|info $sp0" "$(head -3 "$SPD/log" | tr '\n' '|' | sed 's/|$//')"
+is "and the board key (w) passes the pane it was pressed in" "board -p $sp1" "$(sed -n 4p "$SPD/log")"
+is "the popup reads the stored pane once: none is left on the session for a key that forgets to store it" "" \
+   "$("$TMUX_REAL" -L "$SP" show-option -qv -t t: @cockpit_src_pane)"
+"$TMUX_REAL" -L "$SPO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SP" kill-server >/dev/null 2>&1
+fi
+
 echo "== the menu is not a way for a directory name to run tmux commands =="
 # display-menu expands an item's command as a format and THEN parses it as
 # tmux syntax, so a live #{pane_current_path} inside an item let a directory
@@ -1770,6 +1811,14 @@ tcsid=$("$TMUX_REAL" -L "$TC" display-message -p -t here '#{session_id}')
 ( cd "$TCD/a" && env -u TMUX_PANE TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" "$DIR/scripts/tm" made </dev/null >/dev/null 2>&1 )
 is "the new session starts where the pane was, not where the old session began" "$TCD/b" \
    "$("$TMUX_REAL" -L "$TC" display-message -p -t made: '#{session_path}' 2>/dev/null)"
+# On tmux master the popup is the session's active pane, so the session's active
+# pane is no longer the one prefix+s was pressed in (#494): the key passes it as
+# TM_PANE. Here a pane in a, with b's window active, stands in for that.
+tcpa=$("$TMUX_REAL" -L "$TC" display-message -p -t here:0 '#{pane_id}')
+( cd "$TCD/b" && env -u TMUX_PANE TM_PANE="$tcpa" TMUX="/tmp/tmux-$(id -u)/$TC,0,${tcsid#\$}" \
+    "$DIR/scripts/tm" fromkey </dev/null >/dev/null 2>&1 )
+is "with TM_PANE the new session starts in that pane's folder, not the active pane's" "$TCD/a" \
+   "$("$TMUX_REAL" -L "$TC" display-message -p -t fromkey: '#{session_path}' 2>/dev/null)"
 # With a real client on "here", popup-shaped tm must switch THAT client, not
 # attach a second one inside the popup (#45): in_client() wanted $TMUX_PANE,
 # which a popup never has.
@@ -3368,11 +3417,11 @@ pk() { "$TMUX_REAL" -L "$PS" list-keys -T prefix 2>/dev/null | awk -v k="$1" '$4
 # 10/10 -- the binding is queryable the instant run-shell returns).
 "$TMUX_REAL" -L "$PS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 # tm --popup opens the popup itself, sized to the sessions, on the pressing
-# client and in its session.
+# client and in its session, with the pane it was pressed in (#494).
 case "$(pk s)" in
-    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}'"*)
+    *"run-shell -b"*"/tm' --popup '#{client_name}' '#{session_id}' '#{client_width}' '#{client_height}' '#{pane_id}'"*)
         ok "prefix s is bound to the sessions popup" ;;
-    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h>" "$(pk s)" ;;
+    *) bad "prefix s is bound to the sessions popup" "run-shell -b tm --popup <client> <session> <w> <h> <pane>" "$(pk s)" ;;
 esac
 case "$(pk g)" in *--popup*) bad "and g is left to tmux" "no sessions popup on g" "$(pk g)" ;;
     *) ok "and g is left to tmux" ;; esac
@@ -4087,16 +4136,17 @@ fi
 echo "== branch popup passes the source pane id =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
 # must be told which pane the key/click actually fired on rather than
-# resolving it itself. The prefix+b bind passes -p resolved by the popup's own
-# sh from $TMUX's session id (#38), and the branch tap replays that bind; the
+# resolving it itself. The prefix+b bind stores #{pane_id} on the session and
+# the popup's own sh reads it back by $TMUX's session id (#38): on tmux master the
+# popup is the session's active pane. The branch tap replays that bind; the
 # key-press test above proves the resolution, this one pins the shape.
 if need_tmux "branch popup pane id"; then :; else
 BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
 "$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
-    *'-p \"$(tmux display-message -p -t'*) ok "prefix b passes the source pane id" ;;
-    *) bad "prefix b passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
+    *'@cockpit_src_pane "#{pane_id}"'*'-p \"$(tmux show-option -qv -t'*'@cockpit_src_pane)'*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" 'set-option -F @cockpit_src_pane "#{pane_id}", then -p "$(tmux show-option ... @cockpit_src_pane)"' \
          "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseUp1Control3)" in
@@ -7591,9 +7641,9 @@ case "$bw" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "the board popup passes -e COCK
     *) bad "the board popup passes -e COCKPIT_PANEL_MODE" "-e COCKPIT_PANEL_MODE=auto" "$bw" ;;
 esac
 # display-popup expands only -T and -d, so the pane id cannot be a format here
-# (#38): the popup's own sh resolves it.
-case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
-    *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
+# (#38): the key stores it on the session and the popup's own sh reads it back.
+case "$bw" in *'@cockpit_src_pane "#{pane_id}"'*'show-option -qv'*'@cockpit_src_pane'*) ok "and the binding resolves the source pane itself" ;;
+    *) bad "and the binding resolves the source pane itself" "@cockpit_src_pane set by the key, read by the popup" "$bw" ;;
 esac
 case "$(bkey "$B" r)" in *cockpit-board*) ok "prefix r opens the board, with no binary installed" ;;
     *) bad "prefix r opens the board, with no binary installed" "a display-popup running cockpit-board" "$(bkey "$B" r)" ;;
@@ -11878,7 +11928,7 @@ tpsize() {                    # tpsize <answer> <cols> <rows> [--needs] -- "-w W
     local a=$1; shift
     : > "$TP/log"
     env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '%s' "$a" | tr '|' '\037')" \
-        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$@" >/dev/null 2>&1
+        "$DIR/scripts/tm" --popup /dev/pts/9 '$3' "$1" "$2" %7 "${@:3}" >/dev/null 2>&1
     sed 's/.*\(-w [0-9]* -h [0-9]*\).*/\1/' "$TP/log"
 }
 is "desktop: 70% wide, rows + 5 under the 14-line floor" "-w 140 -h 14" "$(tpsize '7|3||||' 200 50)"
@@ -11894,8 +11944,8 @@ is "the size options are ceilings, percent or cells" "-w 120 -h 10" "$(tpsize '7
 is "and never floors" "-w 140 -h 14" "$(tpsize '7|3||90%|40|' 200 50)"
 tpsize '7|3||||' 200 12 >/dev/null
 case "$(cat "$TP/log")" in
-    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "but a window of its session, running tm" ;;
-    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... /tm" "$(cat "$TP/log")" ;;
+    "WINDOW -t \$3: -n sessions TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "but a window of its session, running tm" ;;
+    *) bad "but a window of its session, running tm" "WINDOW -t \$3: -n sessions TM_POPUP=1 ... TM_PANE=%7 /tm" "$(cat "$TP/log")" ;;
 esac
 is "a client of 14 lines gets its popup, at the floor and not 70% of 14" "-w 140 -h 14" "$(tpsize '7|3||||' 200 14)"
 tpsize '7|3||||' 200 13 >/dev/null
@@ -11903,14 +11953,18 @@ case "$(cat "$TP/log")" in WINDOW*) ok "and 13 lines is still a window" ;; *) ba
 is "--needs sizes for the needs-you band" "-w 56 -h 14" "$(tpsize '7|4||||' 56 30 --needs)"
 tpsize '7|3||||' 200 50 >/dev/null
 case "$(cat "$TP/log")" in
-    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 "*/tm) ok "the popup goes to that client, in its session" ;;
-    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 .../tm" "$(cat "$TP/log")" ;;
+    "-c /dev/pts/9 -t \$3 -w 140 -h 14 -T  sessions  -E TM_POPUP=1 TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 "*/tm) ok "the popup goes to that client, in its session" ;;
+    *) bad "the popup goes to that client, in its session" "-c /dev/pts/9 -t \$3 ... TM_SID=\\\$3 TM_CLIENT=/dev/pts/9 TM_PANE=%7 .../tm" "$(cat "$TP/log")" ;;
 esac
 tpsize '7|3||||' 56 30 --needs >/dev/null
 case "$(cat "$TP/log")" in
     *"/tm --needs") ok "--needs rides into the popup" ;;
     *) bad "--needs rides into the popup" "... tm --needs" "$(cat "$TP/log")" ;;
 esac
+: > "$TP/log"
+env -u TMUX PATH="$TP:$PATH" TP_LOG="$TP/log" TP_ANSWER="$(printf '7\0373\037\037\037')" \
+    "$DIR/scripts/tm" --popup /dev/pts/9 '$3' 200 50 'x;y' >/dev/null 2>&1
+is "a pane that is not a pane id opens no popup" "" "$(cat "$TP/log")"
 
 echo "== tm sessions picker: prefix+s popup switches the client, and kill leaves it open (#245) =="
 # The real path: tm --popup opens the picker in a popup of a real client. The
@@ -11959,6 +12013,29 @@ until_cap "$TQO" o: '*session>*2 sessions*' && ok "and the popup stays open on t
 "$TMUX_REAL" -L "$TQO" send-keys -t o: Escape
 "$TMUX_REAL" -L "$TQO" kill-server >/dev/null 2>&1
 "$TMUX_REAL" -L "$TQI" kill-server >/dev/null 2>&1
+fi
+
+echo "== prefix s: a session made in the picker starts in the pressed pane's folder (#494) =="
+# On tmux master the popup is the session's active pane, so the folder must come
+# from the pane the key was pressed in, which the binding passes. The session
+# starts in s and the pane sits in a, so the session's start dir is not an answer.
+if [ ! -x "$DIR/bin/cockpit-tui" ]; then
+    skip_ "prefix s new session (no bin/cockpit-tui; run make tui)"
+elif need_tmux "prefix s new session"; then :; else
+SN="cockpit-sn-$$"; SNO="cockpit-sno-$$"; SOCKS="$SOCKS $SN $SNO"; SND=$(mktmpd); mkdir -p "$SND/s" "$SND/a"
+"$TMUX_REAL" -L "$SN" -f /dev/null new-session -d -s t -x 120 -y 30 -c "$SND/s" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+"$TMUX_REAL" -L "$SN" new-window -t t: -c "$SND/a" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$SNO" -f /dev/null new-session -d -s o -x 120 -y 32 -c "$SND" \
+    "TERM=xterm-256color exec $TMUX_REAL -L $SN attach -t t" >/dev/null 2>&1
+until_out '?*' "$TMUX_REAL" -L "$SN" list-clients -F '#{client_name}'
+"$TMUX_REAL" -L "$SNO" send-keys -t o C-b s
+until_cap "$SNO" o '*session>*'
+"$TMUX_REAL" -L "$SNO" send-keys -t o z z q Enter
+until_out '?*' "$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}'
+is "the new session starts in the pane's folder, not the popup's or the session's" "$SND/a" \
+   "$("$TMUX_REAL" -L "$SN" display-message -p -t '=zzq:' '#{session_path}' 2>/dev/null)"
+"$TMUX_REAL" -L "$SNO" kill-server >/dev/null 2>&1; "$TMUX_REAL" -L "$SN" kill-server >/dev/null 2>&1
 fi
 
 echo "== revdiff: the doctor grades it and bootstrap.sh fetches it, verified =="
@@ -12509,6 +12586,165 @@ is "a new window lands in the session of the pane the popup came from" "2" "$(tx
 is "and not in the session \$TMUX names" "1" "$(tx list-windows -t d0 | grep -c .)"
 tx kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
+fi
+
+echo "== tmux-branch (#348): without worktree list -z, a tree has a .git, a label is a line =="
+# git before 2.36 has no -z, and a path with a newline in it can print any line it likes:
+# `inj<NL>worktree <dir>` forges a record for <dir>, `<dir><NL>barex` hangs a cut on <dir>.
+if need_tmux "branch goto, old git"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+OGR=$(mktmpd); OGM=$(mktmpd); br_repo "$OGR" "$OGM"
+OGD=$(mktmpd); OGP="$OGD/plain"; mkdir -p "$OGP"
+OGOLD=$(mktmpd); OGGIT=$(command -v git)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$OGGIT" > "$OGOLD/git"
+chmod +x "$OGOLD/git"
+git -C "$OGR" worktree add -q -b forge348 "$OGD/inj"$'\n'"worktree $OGP" >/dev/null 2>&1
+is "the plain porcelain carries the forged line" "worktree $OGP" \
+   "$(PATH="$OGOLD:$PATH" git -C "$OGR" worktree list --porcelain | grep -x -F "worktree $OGP")"
+OGS="cockpit-og348-$$"; SOCKS="$SOCKS $OGS"
+bg_server "$OGS" "$OGD"
+OGO=$("$TMUX_REAL" -L "$OGS" list-panes -a -F '#{pane_id}' | head -1)
+n=$(bg_windows "$OGS")
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGP"
+case "$BG_ERR" in
+    *"not a worktree"*) ok "a plain dir that a forged line names is refused, by name" ;;
+    *) bad "a plain dir that a forged line names is refused, by name" "not a worktree" "$BG_ERR" ;;
+esac
+is "and opens no window there" "$n" "$(bg_windows "$OGS")"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGR"
+is "the main checkout, whose .git is a directory, still opens" "$OGR" \
+   "$("$TMUX_REAL" -L "$OGS" display-message -p -t t: '#{pane_current_path}')"
+
+# A line that only starts with a label cuts the record. The path before the cut names
+# nothing, so a record kept by mistake reads as a gone worktree, not as a refusal (#532).
+for v in barex detachedx lockedx prunablex; do
+    git -C "$OGR" worktree add -q -b "cut-$v" "$OGD/nx-$v"$'\n'"$v" >/dev/null 2>&1
+    BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/nx-$v"
+    case "$BG_ERR" in
+        *"not a worktree"*) ok "a record cut by a line '$v' is no worktree, not a gone one" ;;
+        *) bad "a record cut by a line '$v' is no worktree, not a gone one" "not a worktree" \
+               "$BG_ERR" ;;
+    esac
+done
+
+# A listed worktree whose directory was deleted is no forgery: goto names it gone, as on new git.
+git -C "$OGR" worktree add -q -b gone348 "$OGD/gone" >/dev/null 2>&1; rm -rf "$OGD/gone"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/gone"
+case "$BG_ERR" in
+    *"is gone"*) ok "without -z a deleted listed worktree is refused as gone, by name" ;;
+    *) bad "without -z a deleted listed worktree is refused as gone, by name" "is gone" \
+           "$BG_ERR" ;;
+esac
+
+"$TMUX_REAL" -L "$OGS" kill-server >/dev/null 2>&1
+
+# A whole `detached` line is a label: a detached tree nested in main keeps its own panes.
+git -C "$OGR" worktree add -q --detach "$OGR/det" >/dev/null 2>&1
+OGS2="cockpit-og348b-$$"; SOCKS="$SOCKS $OGS2"
+bg_server "$OGS2" "$OGR/det"
+OGO2=$("$TMUX_REAL" -L "$OGS2" list-panes -a -F '#{pane_id}' | head -1)
+BG_SHIM=$OGOLD bg_goto "$OGS2" "$OGO2" "$OGR" "$OGR"
+is "a pane in a detached tree nested in main is not main's: a window opens" "2" \
+   "$(bg_windows "$OGS2")"
+"$TMUX_REAL" -L "$OGS2" kill-server >/dev/null 2>&1
+rm -rf "$OGR" "$OGM" "$OGD"
+fi
+
+echo "== tmux-branch (#532): without worktree list -z, a tree is this repo's and a lock a label =="
+# A forged `worktree <dir>` line may name any checkout with a .git. On the fallback a record
+# is kept only when its .git is this repo's common dir, or a .git file whose gitdir sits in
+# its worktrees/ and links back to that same file.
+if need_tmux "branch goto, old git, this repo"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+CGR=$(mktmpd); CGM=$(mktmpd); br_repo "$CGR" "$CGM"
+CGD=$(mktmpd); CGOLD=$(mktmpd)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$(command -v git)" > "$CGOLD/git"
+chmod +x "$CGOLD/git"
+CGS="cockpit-cg532-$$"; SOCKS="$SOCKS $CGS"
+bg_server "$CGS" "$CGD"
+CGO=$("$TMUX_REAL" -L "$CGS" list-panes -a -F '#{pane_id}' | head -1)
+cg_goto() { BG_SHIM=${CG_SHIM:-$CGOLD} bg_goto "$CGS" "$CGO" "${CG_DIR:-$CGR}" "$1"; }
+cg_refused() {                # cg_refused <label> <path>  goto names it no worktree, opens none
+    local n; n=$(bg_windows "$CGS")
+    cg_goto "$2"
+    case "$BG_ERR" in
+        *"not a worktree"*) ok "$1" ;;
+        *) bad "$1" "not a worktree" "$BG_ERR" ;;
+    esac
+    is "$1: no window opens" "$n" "$(bg_windows "$CGS")"
+}
+cg_opens() {                  # cg_opens <label> <path>  goto opens or selects a pane in it
+    "$TMUX_REAL" -L "$CGS" select-window -t "$CGO"
+    cg_goto "$2"
+    is "$1" "$2" "$("$TMUX_REAL" -L "$CGS" display-message -p -t t: '#{pane_current_path}')"
+}
+cg_forge() { git -C "$CGR" worktree add -q -b "$1" "$CGD/$1"$'\n'"worktree $2" >/dev/null 2>&1; }
+
+br_repo "$CGD/other" "$CGD/om"
+git -C "$CGD/other" worktree add -q "$CGD/olink" held >/dev/null 2>&1
+cg_forge fo532 "$CGD/other"
+cg_refused "a forged line naming another repo's main checkout is refused" "$CGD/other"
+cg_forge fl532 "$CGD/olink"
+cg_refused "a forged line naming another repo's linked tree is refused" "$CGD/olink"
+
+git -C "$CGR" worktree add -q -b our532 "$CGD/our tree" >/dev/null 2>&1
+mkdir -p "$CGD/plant"; cp "$CGD/our tree/.git" "$CGD/plant/.git"
+cg_forge fp532 "$CGD/plant"
+cg_refused "a .git file copied from this repo's tree does not link back: refused" "$CGD/plant"
+cg_opens "this repo's linked tree, a space in its path, still opens" "$CGD/our tree"
+
+# git 2.7 to 2.12 print `rev-parse --git-common-dir` as the subdirectory prefix plus the
+# path from the top: from sub/deep, `sub/deep/.git`. A pane's cwd is often a subdirectory.
+CG212=$(mktmpd)
+printf '%s\n' '#!/usr/bin/env bash' \
+    'case " $* " in *" worktree list "*" -z "*) exit 129 ;; esac' \
+    'case " $* " in *" rev-parse --git-common-dir ") ;; *) exec '"$(command -v git)"' "$@" ;; esac' \
+    'pre=("${@:1:$#-2}"); real='"$(command -v git)" \
+    'top=$("$real" "${pre[@]}" rev-parse --show-toplevel) || exit' \
+    'px=$("$real" "${pre[@]}" rev-parse --show-prefix)' \
+    'c=$("$real" "${pre[@]}" -C "$top" rev-parse --git-common-dir) || exit' \
+    'case $c in /*) echo "$c" ;; *) echo "$px$c" ;; esac' > "$CG212/git"
+chmod +x "$CG212/git"
+mkdir -p "$CGR/sub/deep"
+is "the 2.12 shim answers from a subdirectory as 2.12 did" "sub/deep/.git" \
+   "$(cd "$CGR/sub/deep" && PATH="$CG212:$PATH" git rev-parse --git-common-dir)"
+CG_SHIM=$CG212 CG_DIR=$CGR/sub/deep \
+    cg_opens "on git 2.12, from a subdirectory, this repo's linked tree still opens" "$CGD/our tree"
+
+# A tree's .git file read as git reads it: whole (git < 2.23 kept a trailing blank in the
+# id), a trailing slash, a symlinked entry, and a .git hard-linked to one of ours.
+cg_entry() { local g; IFS= read -r g < "$1/.git"; printf '%s' "${g#gitdir: }"; }
+git -C "$CGR" worktree add -q -b tsp532 "$CGD/tsp " >/dev/null 2>&1
+mv "$(cg_entry "$CGD/tsp ")" "$CGR/.git/worktrees/tsp "
+printf 'gitdir: %s\n' "$CGR/.git/worktrees/tsp " > "$CGD/tsp /.git"
+cg_opens "a tree whose worktree id ends in a blank opens" "$CGD/tsp "
+git -C "$CGR" worktree add -q -b sl532 "$CGD/sl" >/dev/null 2>&1
+printf 'gitdir: %s/\n' "$(cg_entry "$CGD/sl")" > "$CGD/sl/.git"
+cg_opens "a tree whose gitdir ends in a slash opens" "$CGD/sl"
+git -C "$CGR" worktree add -q -b al532 "$CGD/al" >/dev/null 2>&1
+ln -s "$(cg_entry "$CGD/al")" "$CGD/alias"
+printf 'gitdir: %s\n' "$CGD/alias" > "$CGD/al/.git"
+cg_opens "a tree whose gitdir is a symlink to its entry opens" "$CGD/al"
+mkdir -p "$CGD/hard"; ln "$CGD/our tree/.git" "$CGD/hard/.git"
+cg_forge fh532 "$CGD/hard"
+cg_opens "a dir whose .git is a hard link to one of ours counts, as it does for git" "$CGD/hard"
+
+git -C "$CGR" worktree add -q -b lk532 "$CGD/lk" >/dev/null 2>&1
+git -C "$CGR" worktree lock "$CGD/lk" >/dev/null 2>&1
+cg_opens "a tree whose line is a bare 'locked' still opens" "$CGD/lk"
+git -C "$CGR" worktree add -q -b lr532 "$CGD/lr" >/dev/null 2>&1
+git -C "$CGR" worktree lock --reason "on usb" "$CGD/lr" >/dev/null 2>&1
+cg_opens "a tree locked with a reason still opens" "$CGD/lr"
+
+git -C "$CGR" worktree add -q -b emp532 "$CGD/e"$'\n'"worktree " >/dev/null 2>&1
+cg_refused "an empty worktree path is no worktree" ""
+
+"$TMUX_REAL" -L "$CGS" kill-server >/dev/null 2>&1
+rm -rf "$CGR" "$CGM" "$CGD" "$CGOLD" "$CG212"
 fi
 
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="

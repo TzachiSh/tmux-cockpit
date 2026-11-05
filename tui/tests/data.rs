@@ -1,10 +1,12 @@
 //! The data layer's caches, classifier and pane reads, driven through PATH
 //! shims: no real tmux, no real ps, no clock assertion and no sleep. Every
 //! fixture is a literal, so a failure names one behaviour and not the box.
+mod fake;
+
 use cockpit_tui::data::gitsafe::{SAFE, no_filters, tree_stat};
 use cockpit_tui::data::{Pane, git_facts, list_panes, preview, screen, split_cursor, view};
+use fake::write_exec;
 use std::fs::{FileTimes, OpenOptions};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
@@ -37,11 +39,6 @@ impl Drop for Env {
             }
         }
     }
-}
-
-fn write_exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 pub struct Rig {
@@ -974,7 +971,13 @@ fn a_hanging_claude_agents_does_not_hang_the_read() {
     assert_eq!(ids(&ps), ["%1"]);
     assert_eq!(get(&ps, "%1").sess, "");
     assert!(took < std::time::Duration::from_secs(8), "the read took {took:?}");
-    // the fake ran, so the deadline was what ended it
+    // the fake ran (on its own thread, #492), so the deadline was what ended it
+    for _ in 0..2000 {
+        if r.dir.join("claude.pid").exists() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert!(r.dir.join("claude.pid").exists());
 }
 

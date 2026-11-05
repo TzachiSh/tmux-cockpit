@@ -2,6 +2,8 @@
 //! same stands in; the list must still name the worktree, and a path with a newline,
 //! which the plain porcelain cuts in two, must be left out rather than guessed at.
 //! Its own file: it sets PATH, and nothing else in this process may race it.
+mod fake;
+
 use cockpit_tui::data::branches;
 use std::path::Path;
 use std::process::Command;
@@ -42,8 +44,7 @@ fn without_z_the_plain_porcelain_names_the_worktree_and_skips_a_newline_path() {
         "#!/bin/sh\ncase \" $* \" in *\" worktree list \"*\" -z \"*) echo 'error: unknown switch z' >&2; exit 129 ;; esac\nexec {} \"$@\"\n",
         real.trim()
     );
-    std::fs::write(shim.join("git"), script).unwrap();
-    std::fs::set_permissions(shim.join("git"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fake::write_exec(&shim.join("git"), &script);
     let path = format!("{}:{}", shim.display(), std::env::var("PATH").unwrap());
     // SAFETY: this file holds one test, so no other thread reads the environment.
     unsafe { std::env::set_var("PATH", path) };

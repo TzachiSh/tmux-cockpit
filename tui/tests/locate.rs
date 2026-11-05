@@ -1,7 +1,8 @@
 //! #500: one transcript lookup. The board's `--json`, `workdir %N` and `info --json %N`
 //! find the same transcript for a pane, whichever step finds it, so they name the same
 //! dir. All three run as binaries under one shimmed tmux that answers each format.
-use std::os::unix::fs::PermissionsExt;
+mod fake;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -17,8 +18,7 @@ impl Drop for Rig {
 }
 
 fn exec(p: &Path, body: &str) {
-    std::fs::write(p, body).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(p, body);
 }
 
 fn slug(p: &str) -> String {

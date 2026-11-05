@@ -1,8 +1,9 @@
 //! #453: the info screen reads the open AskUserQuestion's question as the
 //! state's message. Its own binary: `gather` reads COCKPIT_TMUX and
 //! CLAUDE_CONFIG_DIR, process-global, so no other test shares them.
+mod fake;
+
 use cockpit_tui::data::info::gather;
-use std::os::unix::fs::PermissionsExt;
 
 /// A shimmed tmux whose pane %1 is in `state` with the hook's generic text, its
 /// transcript `body`. Returns the gathered (state, msg).
@@ -39,8 +40,7 @@ fn facts(tag: &str, state: &str, body: &str) -> (String, String) {
         d.display(),
         t.display()
     );
-    std::fs::write(&shim, sh).unwrap();
-    std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
+    fake::write_exec(&shim, &sh);
     // SAFETY: the one test in this binary, so no thread reads the environment meanwhile.
     unsafe {
         std::env::set_var("COCKPIT_TMUX", &shim);

@@ -1,6 +1,8 @@
 //! COCKPIT_READONLY must silence every write to a tmux server, the board's wake
 //! channel included: a probe run without it once left a dead `@cockpit_tui_pid`
 //! on the owner's live server.
+mod fake;
+
 use cockpit_tui::data::tmux_set;
 use cockpit_tui::push::Push;
 use std::sync::Mutex;
@@ -39,8 +41,7 @@ impl Drop for Env {
 /// A stand-in tmux that records its argv and runs nothing.
 fn shim(dir: &std::path::Path) -> (String, std::path::PathBuf) {
     let (bin, log) = (dir.join("tmux"), dir.join("argv"));
-    std::fs::write(&bin, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n", log.display())).unwrap();
-    std::fs::set_permissions(&bin, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fake::write_exec(&bin, &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\n", log.display()));
     (bin.display().to_string(), log)
 }
 

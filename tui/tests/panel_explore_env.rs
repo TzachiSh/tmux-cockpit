@@ -1,5 +1,8 @@
 //! Explore first (#416) under an inherited git environment: these tests set
-//! process env, so they run in a binary of their own, one at a time.
+//! process env, so they run in a binary of their own. Its tests still run in
+//! parallel threads, and only `with_env` takes `ENV`: setup outside it sees
+//! whatever another test has set at that moment.
+use cockpit_tui::data::gitsafe::REDIRECT;
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
@@ -25,8 +28,18 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(d)
 }
 
+/// A repo at `dir` whatever another test's [`with_env`] has set: [`REDIRECT`],
+/// gitsafe's list of what could point git elsewhere, is stripped as the code
+/// under test strips it. GIT_CEILING_DIRECTORIES, which a test here sets too,
+/// cannot move a `git init` of a named dir; it goes as well, defensively, and
+/// no row tests it.
 fn git_init(dir: &Path) {
-    let ok = std::process::Command::new("git")
+    let mut c = std::process::Command::new("git");
+    REDIRECT
+        .iter()
+        .chain(&["GIT_CEILING_DIRECTORIES"])
+        .for_each(|v| _ = c.env_remove(v));
+    let ok = c
         .args(["-c", "init.defaultBranch=main", "init", "-q"])
         .arg(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -94,6 +107,20 @@ fn with_env<T>(vars: &[(&str, &Path)], f: impl FnOnce() -> T) -> T {
     // SAFETY: every test here takes ENV first, so no other thread reads the env meanwhile.
     unsafe { vars.iter().for_each(|(k, v)| std::env::set_var(k, v)) };
     f()
+}
+
+/// The setup's `git init` makes `dir` a repo while another test's var names
+/// somewhere else: rows are the [`REDIRECT`] vars this file sets, each pointing
+/// at `other`.
+#[test]
+fn git_init_ignores_a_var_another_test_set() {
+    let g = scratch("setup");
+    let other = g.0.join("other");
+    for (var, val) in [("GIT_DIR", other.join(".git")), ("GIT_WORK_TREE", other.clone())] {
+        let dir = g.0.join(var);
+        with_env(&[(var, &val)], || git_init(&dir));
+        assert!(dir.join(".git/HEAD").is_file(), "{var}: no repo at {}", dir.display());
+    }
 }
 
 /// An inherited GIT_DIR and GIT_WORK_TREE naming an outer repo would pass every
