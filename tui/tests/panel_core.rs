@@ -400,8 +400,10 @@ fn hint_and_format_keep_math_and_json_in_every_window() {
     for window in ["shell", "claude", "ssh", "other"] {
         let pick = |out| picked(Ctx { out, window });
         let (hint, format) = (pick(OutType::Hint), pick(OutType::Format));
-        assert!(hint.contains(&"math") && hint.contains(&"plan"), "hint {window}: {hint:?}");
-        assert!(format.contains(&"json") && format.contains(&"plan"), "format {window}: {format:?}");
+        assert!(hint.contains(&"math"), "hint {window}: {hint:?}");
+        assert!(hint.contains(&"plan"), "hint {window}: {hint:?}");
+        assert!(format.contains(&"json"), "format {window}: {format:?}");
+        assert!(format.contains(&"plan"), "format {window}: {format:?}");
     }
 }
 
