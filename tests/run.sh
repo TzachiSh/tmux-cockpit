@@ -2844,10 +2844,8 @@ is "and names no latest-tools step" "0" "$(printf '%s\n' "$bsout" | grep -c 'lat
 is "and the run exits 0" "0" "$bsrc"
 bsout=$(bs --full --dry-run); bsrc=$?
 is "--full is a no-op: the run still exits 0" "0" "$bsrc"
-bssaid "and says so on one line" \
-    "bootstrap.sh: --full does nothing now: fzf and bat are not used" "$bsout"
-is "and the normal run happened (the revdiff step ran)" "1" \
-   "$(printf '%s\n' "$bsout" | grep -c '== revdiff ==')"
+bssaid "and says so on one line" "bootstrap.sh: --full does nothing now: fzf and bat are not used" "$bsout"
+is "and the normal run happened (the revdiff step ran)" "1" "$(printf '%s\n' "$bsout" | grep -c '== revdiff ==')"
 bsout=$(bs --latest --dry-run); is "--latest is a no-op too (exit 0)" "0" "$?"
 bsclear_check=$(bs --check --yes); is "--check runs alone" "2" "$?"
 bssaid "and says so" "--check runs alone" "$bsclear_check"
