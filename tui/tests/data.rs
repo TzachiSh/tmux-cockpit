@@ -78,6 +78,8 @@ impl Rig {
         let env = Env::set(&[
             ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
             ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
+            // no proc under it: the walk falls back to the fake `ps`, not the box's pids
+            ("COCKPIT_PROC_DIR", format!("{d}/proc")),
             ("HOME", d),
             ("COCKPIT_READONLY", "1".into()),
         ]);
@@ -90,6 +92,18 @@ impl Rig {
 
     fn rows(&self, rows: &[String]) {
         std::fs::write(self.dir.join("rows"), rows.join("\n") + "\n").unwrap();
+    }
+
+    /// A fake proc root: `(pid, comm, children)`; the walk reads it, not `ps`.
+    fn proc(&self, procs: &[(&str, &str, &str)]) {
+        let root = self.dir.join("proc");
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, comm, kids) in procs {
+            let d = root.join(pid);
+            std::fs::create_dir_all(d.join("task").join(pid)).unwrap();
+            std::fs::write(d.join("task").join(pid).join("children"), kids).unwrap();
+            std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+        }
     }
 
     fn ps(&self, table: &str) {
@@ -188,6 +202,24 @@ fn agent_panes_come_from_the_process_tree_and_not_from_a_name() {
         row("%2", "zsh", "-", "s2", "202"),
         row_at("%3", "henosis-claude-resume:0", "zsh", "-", "s3", "203", "/w"),
     ]);
+
+    assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
+}
+
+/// #492: with a proc root, the tree comes from `children` files and `ps` is not
+/// asked: the fake `ps` here lists only a shell, so a verdict of "agent" can
+/// only have come from the grandchild under /proc.
+#[test]
+fn a_pane_tree_is_walked_under_proc_and_ps_is_not_asked() {
+    let r = Rig::new("procwalk");
+    r.ps("");
+    r.proc(&[
+        ("400", "bash", "401 "),
+        ("401", "sh", "402 "),
+        ("402", "2.1.318", ""),
+        ("410", "zsh", ""),
+    ]);
+    r.rows(&[row("%1", "bash", "-", "s1", "400"), row("%2", "zsh", "-", "s2", "410")]);
 
     assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
 }

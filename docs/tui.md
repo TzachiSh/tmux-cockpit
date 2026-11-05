@@ -219,6 +219,7 @@ Read-only, and owned by bash: `@cockpit_session`, `@cockpit_dir`, `@panestate`,
 | `COCKPIT_ACTION` | file the one action line is written to. Unset sends it to stdout |
 | `COCKPIT_TMUX` | overrides the tmux argv. Unset follows `$TMUX` to whatever socket the pane is on |
 | `COCKPIT_LOG` | append target. The binding sets it to `${XDG_STATE_HOME:-$HOME/.local/state}/tmux-cockpit/tui.log` |
+| `COCKPIT_PROC_DIR` | the proc root the pane-tree walk reads (default `/proc`); a test seam. A root without `self/task` or without `children` files sends the lookup to `ps` |
 | `COCKPIT_READONLY` | any non-empty value: never write to a tmux server, the pid included. The panel wrapper then pastes and sends nothing and logs what it would have done |
 | `COCKPIT_GLYPHS` | `ascii` swaps the glyphs *and* the borders for the ambiguous-width fallback tier; the panel then prints nothing but ASCII, its key names included (`enter`, `tab`, `bksp`, `left`, `up/dn`). `nerd` draws the default, but for the subagent badge's nf-oct-workflow (U+F52E) in place of `✦`. The wrappers and the `prefix i` popup set it from `@cockpit_glyphs` (#293) |
 | `COCKPIT_CLAUDE` | the panel's `claude` binary. Unset is `claude` on `PATH` |

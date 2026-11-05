@@ -738,15 +738,17 @@ fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
 
 /// `pid` and everything under it with each name, in [`tree`] order: from
 /// `procs_t` when `ps` already ran this refresh, else a [`proc_tree`] walk,
-/// else one `ps` kept in `procs_t` for the next ask.
+/// else one `ps` kept in `procs_t` for the next ask. `COCKPIT_PROC_DIR` moves
+/// the proc root, so a test can aim the walk at a fake one or at none.
 fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
+    let root = std::env::var_os("COCKPIT_PROC_DIR").map_or_else(|| "/proc".into(), std::path::PathBuf::from);
     if procs_t.is_none()
-        && let Some(ps) = proc_tree(std::path::Path::new("/proc"), pid)
+        && let Some(ps) = proc_tree(&root, pid)
     {
         return ps
             .into_iter()
             .map(|p| {
-                let c = std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
+                let c = std::fs::read_to_string(root.join(&p).join("comm")).unwrap_or_default();
                 (p, comm_norm(&c))
             })
             .collect();
