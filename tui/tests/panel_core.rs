@@ -319,6 +319,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
         ("no-expected", "the export is broken"),
+        ("done-when", "add search to the notes app"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
     ];
@@ -377,6 +378,31 @@ fn the_examples_follow_the_picked_type_then_the_window() {
         }),
         want
     );
+}
+
+#[test]
+fn the_feature_example_goes_to_claude_windows_and_prompts_only() {
+    let pick = |out, window| picked(Ctx { out, window });
+    let rows = [
+        ("auto claude", pick(OutType::Auto, "claude"), true),
+        ("prompt shell", pick(OutType::Prompt, "shell"), true),
+        ("auto shell", pick(OutType::Auto, "shell"), false),
+        ("hint claude", pick(OutType::Hint, "claude"), false),
+        ("format claude", pick(OutType::Format, "claude"), false),
+    ];
+    for (row, got, sent) in rows {
+        assert_eq!(got.contains(&"done-when"), sent, "{row}: {got:?}");
+    }
+}
+
+#[test]
+fn hint_and_format_keep_math_and_json_in_every_window() {
+    for window in ["shell", "claude", "ssh", "other"] {
+        let pick = |out| picked(Ctx { out, window });
+        let (hint, format) = (pick(OutType::Hint), pick(OutType::Format));
+        assert!(hint.contains(&"math") && hint.contains(&"plan"), "hint {window}: {hint:?}");
+        assert!(format.contains(&"json") && format.contains(&"plan"), "format {window}: {format:?}");
+    }
 }
 
 #[test]
