@@ -5699,10 +5699,11 @@ wd() {                        # wd <args...>: tmux-review on the block's server,
     (cd "$WD" && TMUX="$WDSP,0,0" HOME="$WD/home" timeout 20 "$DIR/scripts/tmux-review" "$@" \
         </dev/null 2>/dev/null)
 }
-# With the binary under test: one that has `workdir` names the transcript's tree, and one
-# that has not (exit 2, "unknown screen") leaves the launch dir. Each run asserts one of them.
-wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>"$WD/probe.err" || wdrc=$?
-if (. "$DIR/scripts/lib/tui.sh" && tui_stale "$wdrc" "$WD/probe.err"); then
+# With the binary under test: one that has `workdir` answers this agent pane with exit 0 and
+# names the transcript's tree; one that has not (exit 2, whatever it says on stderr) leaves the
+# launch dir. Each run asserts one of them.
+wdrc=0; TMUX="$WDSP,0,0" "$COCKPIT_TUI_BIN" workdir "$WDP" >/dev/null 2>&1 || wdrc=$?
+if [ "$wdrc" != 0 ]; then
     is "a binary without workdir: a transcript-only pane keeps its launch dir" "$WD/launch" \
        "$(wd --dir "$WDP")"
 else
@@ -12426,8 +12427,8 @@ BWA3=$(bg_pane "$BWS" "$BWR" 'exec -a 2.1.246 sleep 300')
 until_out 2.1.246 "$TMUX_REAL" -L "$BWS" display-message -p -t "$BWA3" '#{pane_current_command}'
 bwrc=0
 TMUX="$("$TMUX_REAL" -L "$BWS" display-message -p '#{socket_path}'),0,0" \
-    "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>"$BWD/probe.err" || bwrc=$?
-if (. "$DIR/scripts/lib/tui.sh" && tui_stale "$bwrc" "$BWD/probe.err"); then
+    "$COCKPIT_TUI_BIN" workdir "$BWA3" >/dev/null 2>&1 || bwrc=$?
+if [ "$bwrc" != 0 ]; then
     read -r bwn bwp bww <<<"$(BW_ASK=real bw_goto "$BWV")"
     is "a binary without workdir: goto opens a window, the 2.1.246 pane not taken" "1 6 no" \
        "$bwn $bww $([ "$bwp" = "$BWA3" ] && echo yes || echo no)"
