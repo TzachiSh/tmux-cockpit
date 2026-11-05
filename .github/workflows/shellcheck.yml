@@ -26,10 +26,8 @@ jobs:
           curl -fsSL -o "$t/sc.tar.xz" "https://github.com/koalaman/shellcheck/releases/download/$v/shellcheck-$v.linux.x86_64.tar.xz"
           echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  $t/sc.tar.xz" | sha256sum -c -
           tar -xJf "$t/sc.tar.xz" -C "$t"
-          echo "$t/shellcheck-$v" >> "$GITHUB_PATH"
           "$t/shellcheck-$v/shellcheck" --version
       # make lint skips (exit 0) when shellcheck is not on PATH, and the call
-      # above uses the absolute path, so it cannot see a failed GITHUB_PATH. This
       # step runs after it, through PATH, which is what make lint will use.
       - name: shellcheck is on PATH
         run: shellcheck --version
