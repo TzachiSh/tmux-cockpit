@@ -454,8 +454,8 @@ fn read_only_turns_the_hooks_off_and_text_keeps_them() {
 fn a_read_only_call_starts_outside_the_repo() {
     let repo = PathBuf::from("/some/repo");
     let p = Profile::read_only(repo.clone(), true, 0.5, CAP);
-    assert_eq!(p.add_dirs, [repo]);
-    assert!(Profile::TEXT.add_dirs.is_empty());
+    assert_eq!(p.read_dirs, [repo]);
+    assert!(Profile::TEXT.read_dirs.is_empty());
 }
 
 /// review-432: a caller cannot forget the caps, as `read_only` takes them.

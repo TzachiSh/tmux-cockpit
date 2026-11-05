@@ -76,11 +76,12 @@ pub struct Profile {
     /// the user's and plugins' hooks; off is `--settings {"disableAllHooks":true}`.
     /// A hook is a command whatever the tools are, and a plugin's writes into the cwd
     pub hooks: bool,
-    /// `--add-dir`: folders the file tools may read beside the cwd. A folder is
-    /// never the cwd: there `claude -p` loads its `.claude/settings.json`, whose
-    /// hooks, `env` and `apiKeyHelper` run with no trust prompt (review-432). The
-    /// cwd is always the call's own dir.
-    pub add_dirs: Vec<PathBuf>,
+    /// Folders the file tools may read, passed as `--add-dir`: readable, never
+    /// the cwd. In its cwd `claude -p` loads a folder's `.claude/settings.json`
+    /// with no trust prompt, and its hooks, `env` and `apiKeyHelper` run
+    /// (review-432); through `--add-dir` only its skills load (probed). The cwd
+    /// is always the call's own dir.
+    pub read_dirs: Vec<PathBuf>,
 }
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
@@ -99,7 +100,7 @@ impl Profile {
         budget_usd: None,
         timeout: None,
         hooks: true,
-        add_dirs: Vec::new(),
+        read_dirs: Vec::new(),
     };
 
     /// Read the folder `repo`, added beside the cwd; with `research`, search and
@@ -114,7 +115,7 @@ impl Profile {
             skills: research,
             no_prompts: true,
             hooks: false,
-            add_dirs: vec![repo],
+            read_dirs: vec![repo],
             budget_usd: Some(budget_usd),
             timeout: Some(timeout),
         }
@@ -136,7 +137,7 @@ impl Profile {
         if !self.hooks {
             a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
         }
-        for d in &self.add_dirs {
+        for d in &self.read_dirs {
             a.extend(["--add-dir".into(), d.display().to_string()]);
         }
         if let Some(b) = self.budget_usd {
