@@ -1,0 +1,51 @@
+name: shell-suite
+
+# The ~2500-row suite behind tests/run.sh covers every script in scripts/. It ran
+# only on developers' machines until now (#476). Unfiltered, like tui.yml: any
+# change can break a script.
+on:
+  push:
+    branches: [master, 'scratch/**']
+  pull_request:
+
+permissions:
+  contents: read
+
+# Same group rule as tui.yml: per commit on master and scratch/*, never
+# cancelled; per PR merge ref otherwise, so a newer push cancels only the
+# superseded run of the same PR.
+concurrency:
+  group: >-
+    ${{ github.workflow }}-${{ (github.ref == 'refs/heads/master'
+    || startsWith(github.ref, 'refs/heads/scratch/')) && github.sha || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shell-suite:
+    # Pinned: bump on purpose (#401). 26.04, like tui-test, so one cached tmux serves
+    # both. Not 24.04: its GNU cut and jq 1.7 fail 5 rows that pass on the newer
+    # tools a developer box has (#478).
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      # A missing tmux must fail the tests, not pass them in 0.00 s (#471). The
+      # tests read this once the test-side check lands; the variable is set here
+      # first so that PR changes no workflow.
+      COCKPIT_REQUIRE_TMUX: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/tmux
+      # What the suite takes from the box, and what it does when it is absent:
+      #  - locale: C.UTF-8 is on the image; the blocks that need it SKIP if not.
+      #  - xterm-ghostty terminfo: not in the image's ncurses-term, so the two
+      #    phone-pty rows SKIP (visible in the final count).
+      #  - code: the prelude puts a stub first on PATH, so no editor is needed.
+      - name: Show what the suite sees
+        run: |
+          tmux -V
+          jq --version
+          cut --version | head -1
+          locale -a | grep -ix 'c\.utf-\?8' || echo "no C.UTF-8 locale"
+          infocmp xterm-ghostty >/dev/null 2>&1 && echo "xterm-ghostty terminfo: present" || echo "xterm-ghostty terminfo: absent (its rows skip)"
+      - run: make tui-bin
+      - run: J=4 make test-par

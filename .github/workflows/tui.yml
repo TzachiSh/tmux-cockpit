@@ -26,12 +26,17 @@ concurrency:
 
 jobs:
   tui-test:
-    # Pinned: bump on purpose (#401). 26.04, not 24.04: the tmux-driven tests run
-    # against the image's tmux, and 24.04's 3.4 prints the 0x1f field separator as
-    # `\037` (subs_tmux fails on it). 26.04 ships 3.6. The floor is 3.8.
+    # Pinned: bump on purpose (#401). 26.04, not 24.04: the shell suite's tools
+    # (cut, jq) are the ones a developer box has, and the two jobs share one cached
+    # tmux per image. The tmux-driven tests run on the 3.8 the tmux action builds
+    # (the README's floor, #471), not the image's 3.6.
     runs-on: ubuntu-26.04
+    env:
+      # A missing tmux must fail the tmux tests, not pass them in 0.00 s (#471).
+      COCKPIT_REQUIRE_TMUX: '1'
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/tmux
       # Exactly the floor, never "stable": pinning here is what catches an
       # accidental MSRV bump, and the number lives in Cargo.toml alone.
       - name: Pin the toolchain to Cargo.toml's rust-version
