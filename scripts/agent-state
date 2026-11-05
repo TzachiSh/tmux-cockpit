@@ -6,7 +6,8 @@
 #          agent-state <sub-taskstop|sub-reconcile>   the same log: a TaskStop, a Stop (#403)
 #          agent-state session [pane-id]   save the payload's session_id, transcript_path (#302)
 #                                          and cwd as @cockpit_dir (#312)
-#          agent-state sweep [seq]   every window's and session's summaries (tmux hooks)
+#          agent-state sweep [seq]   every window's and session's summaries (tmux hooks), and
+#                                          the agent-poll that serves the server (#448)
 #          agent-state poll <running|needs-input|error|done|off> <pane-id> [ask]   (agent-poll)
 # The pane defaults to $TMUX_PANE; tmux hooks have no TMUX_PANE, so they pass it.
 # Every @panestate write must go through here, or the window/fleet counters go stale.
@@ -133,6 +134,11 @@ if [ "$state" = sweep ]; then
     for s in $(tmux list-sessions -F '#{session_id}' 2>/dev/null); do T="'$s'"; body=""; sess_sums; add; done
     T=$w; body=""; fleet_sums; add
     flush
+    # The one poller per server (#448): the load and every window or pane change make sure it
+    # runs. Only a sweep that walked (a superseded one exited above), so a burst starts one.
+    d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+    # shellcheck source=lib/hook.sh
+    if . "${d%/*}/lib/hook.sh" 2>/dev/null; then ensure_poller "${d%/*}"; fi
     exit "$rc"
 fi
 

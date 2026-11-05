@@ -337,6 +337,73 @@ installed before it has none. That skill tells the agent when to concede. The
 goal itself stays set either way, since only Claude Code can clear it: your
 next prompt resumes it, `/goal clear` ends it.
 
+## Agent view and background jobs
+
+A pane that shows a background job, in the agent view or by `claude attach`, fires no
+hook of its own. The job's turn runs in a worker (`CLAUDE_CODE_SESSION_KIND=bg`) that
+has no `TMUX_PANE`, and the viewer relays only `agent_needs_input` and
+`agent_completed`. A worker's hook exits 0 without touching tmux: the worker's
+parent chain ends at a supervisor shared by every job, so a walk to a pane would
+write to whichever viewer started the supervisor. That stays.
+
+Instead `scripts/agent-poll` reads `claude agents --json --all`, the supported way to
+read job state from outside, and writes each pane through `agent-state poll`. A job's
+`state` maps `blocked` to `needs-input` (the ask is `<name> needs you`), `failed` to
+`error`, `working` to `running`, `done` to `done`; anything else is idle.
+
+**The bind rule (#448).** Pane P is bound to job J only when all of these hold:
+
+1. `pane_current_command` is `claude`. A shell after Ctrl+Z or `kill -9` keeps the
+   viewer's last title and is never bound.
+2. The title, with one optional leading `✳ ` taken off and whitespace runs collapsed,
+   is not empty and equals J's `name` collapsed the same way. Exact, whole string, case
+   sensitive. Attaching from the agent view sets the bare name, so the glyph is optional.
+3. Exactly one `kind == "background"` row with an `id` carries that name. Done rows
+   count, interactive sessions and rows without an id do not. Two jobs can share a
+   name; claude itself will not attach by it then.
+4. The title is not an agent view's own (`claude agents`, `N awaiting input · claude
+   agents`), and `allow-set-title` is on for P: with it off, the title goes stale for good.
+
+A bound pane shows J's state, and carries `@cockpit_job` (the id) and `@cockpit_job_name`
+(the name) so a wrong bind is visible. Both are cleared, and the state the poller wrote
+with them, as soon as the rule stops holding: the title changed, the pane left `claude`,
+or a second job took the name. A pane marked `@cockpit_agentview` that is not bound shows
+the worst state of all background jobs (blocked, then failed, working, done), as before.
+An unmarked pane that is not bound is not the poller's.
+
+**Residual false bind.** The title is set when the viewer's session emits one, not
+on every frame, and a `claude attach Y` on an idle job may emit none. A pane that ran
+`claude attach X` and then runs a live `claude attach Y` shows X's title until Y emits
+one, so it is bound to X, with X's state and X's name beside it. The pane command is
+`claude`, so the rule cannot tell. A foreground session that carries a job's exact
+name binds the same way, and its own hooks and the poller then write the same
+`@panestate`. A second signal, `@cockpit_job` set by a cockpit-run attach, would close the first.
+
+**Start and stop.** One poller runs per server, its pid in `@cockpit_poll_pid`. It
+starts from `agent-state sweep`: the config load runs one, and so does every window or
+pane change (`window-linked`, `pane-exited`, `session-closed` and the rest), after the
+debounce, so a burst starts one. An agent-view notification starts it too. A start is a
+compare-and-set on the slot, so a second one exits. It stays for as long as the server
+does and leaves when the server goes. It does not leave when no job exists, because
+nothing a job does can start it again, and an agent that begins a viewer in a shell
+fires no window event. `@cockpit_bg_poll off` never starts it. No foreground hook starts it, so a
+plain `Stop` costs what it did.
+
+Each tick is one `tmux list-panes -a`, a few milliseconds. `claude agents`, about 0.3 s,
+runs only when it can matter:
+
+- a marked agent view or a bound pane is waiting for a state;
+- a pane's title named two jobs, and may now name one (the other was removed);
+- the ids and titles of the `claude` panes differ from the last read, which is when a
+  new viewer, or a job's first title, appears.
+
+A box with no background job, or with `claude` panes whose titles do not change,
+pays the `list-panes` and nothing else. A read nobody waits on that cannot run, with no
+`claude` or `jq` on the server's PATH, says nothing; one a marked pane waits on is
+said once in `@cockpit_poll_err`.
+
+Lag is up to one tick, 10 s by default: a job that blocks shows on its pane at the next one.
+
 ## Known limits
 
 - A session started **before** a hook was added never fires it — Claude Code

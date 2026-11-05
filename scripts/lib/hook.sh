@@ -54,6 +54,21 @@ start_poller() {              # <scripts dir>
     return 0
 }
 
+# One poller runs on this server (#448). It binds a pane that shows a background job to that
+# job, and a background job's hooks never touch tmux (#174), so nothing from a job can start
+# it later: the sweeps (the load, and every window or pane change) do. Costs one tmux read
+# and, with the poller alive, one /proc read.
+ensure_poller() {             # <scripts dir>
+    local info pid
+    # COCKPIT_NO_AUTOSTART: the test suite's servers, which must not run the real claude.
+    [ -z "${COCKPIT_NO_AUTOSTART:-}" ] || return 0
+    info=$(tmux display-message -p '#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) || return 0
+    pid=${info%%|*}
+    [ "${info#*|}" = off ] && return 0
+    poll_alive "$pid" && return 0
+    start_poller "$1"
+}
+
 # <pane> shows an agent view (#174): its turn runs in a background worker that reports no
 # state of its own, so scripts/agent-poll owns the pane's @panestate from here on. Marks the
 # pane and makes sure one poller runs on this server. Costs one tmux read and, with the
