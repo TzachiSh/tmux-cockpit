@@ -308,9 +308,9 @@ fn the_text_profile_is_todays_argv() {
     assert_eq!(rig.read("cwd").trim(), cwd.display().to_string());
 }
 
-/// Read-only: three tools, approved under the repo only, the writers denied, no prompt
-/// to wait on, the permission mode pinned, json out, slash commands off, and the cwd
-/// the profile's.
+/// Read-only: three tools and no allow rule, the writers denied, no prompt to wait
+/// on, the permission mode pinned, json out, slash commands off, and the cwd the
+/// profile's.
 #[test]
 fn the_read_only_profile_reads_and_never_writes() {
     let rig = Rig::new("ro", ECHO_ARGV);
@@ -324,14 +324,12 @@ fn the_read_only_profile_reads_and_never_writes() {
         [
             "--tools",
             "Read,Grep,Glob",
-            "--allowedTools",
-            &format!("Read(/{repo_s}/**)"),
             "--disallowedTools",
             DENY,
             "--permission-prompts",
             "none",
             "--permission-mode",
-            "default",
+            "dontAsk",
             "--settings",
             "{\"disableAllHooks\":true}",
             "--add-dir",
@@ -353,8 +351,7 @@ fn the_read_only_profile_reads_and_never_writes() {
     assert_ne!(cwd, std::fs::canonicalize(&repo).unwrap().display().to_string());
 }
 
-/// Research adds the web and skills, and so drops `--disable-slash-commands`; the
-/// skills folder is readable, so a skill's own files are, and nothing else in home.
+/// Research adds the web and skills, approved, and so drops `--disable-slash-commands`.
 #[test]
 fn the_research_profile_adds_the_web_and_skills() {
     let rig = Rig::new("research", ECHO_ARGV);
@@ -369,13 +366,13 @@ fn the_research_profile_adds_the_web_and_skills() {
             "--tools",
             tools,
             "--allowedTools",
-            &format!("Read(/{dir}/**),Read(~/.claude/skills/**),WebSearch,WebFetch,Skill"),
+            "WebSearch,WebFetch,Skill",
             "--disallowedTools",
             DENY,
             "--permission-prompts",
             "none",
             "--permission-mode",
-            "default",
+            "dontAsk",
             "--settings",
             "{\"disableAllHooks\":true}",
             "--add-dir",
@@ -439,12 +436,11 @@ fn no_read_only_argv_offers_bash_and_every_one_denies_it() {
             let at = args.iter().position(|a| a == flag).unwrap_or_else(|| panic!("no {flag}: {args:?}"));
             args[at + 1].split(',').map(String::from).collect::<Vec<_>>()
         };
-        for flag in ["--tools", "--allowedTools"] {
-            assert!(
-                !value(flag).iter().any(|t| t.starts_with("Bash")),
-                "{flag} offers Bash, research {research}"
-            );
-        }
+        assert!(!value("--tools").iter().any(|t| t.starts_with("Bash")), "research {research}");
+        assert!(
+            !args.contains(&"--allowedTools".into()) || !value("--allowedTools").iter().any(|t| t.starts_with("Bash")),
+            "--allowedTools offers Bash, research {research}"
+        );
         assert!(value("--disallowedTools").contains(&"Bash".to_string()), "research {research}");
     }
 }
@@ -629,69 +625,63 @@ fn an_empty_or_non_utf8_read_dir_is_refused() {
 
 // ------------------------------------------------- confined reads (#365, #416)
 
-/// A bare `Read` in `--allowedTools` approves every path on the box. Each
-/// read-only allow names a folder, the repo's or (research) the skills'.
+/// Under `dontAsk` the read dirs are readable with no rule, and a bare Grep or
+/// Glob allow approved reads outside them (probed): no read-only allow names a
+/// file tool, scoped or not.
 #[test]
-fn a_read_only_allow_never_approves_an_unscoped_read() {
+fn a_read_only_allow_never_names_a_file_tool() {
     for research in [false, true] {
         let p = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
-        let reads: Vec<&String> = p
-            .allow
-            .iter()
-            .filter(|a| a.starts_with("Read") || a.starts_with("Grep") || a.starts_with("Glob"))
-            .collect();
-        assert_eq!(reads[0], "Read(//r/**)", "research {research}");
-        for a in reads {
-            assert!(a.ends_with("/**)"), "{a} reaches past a folder, research {research}");
+        for a in &p.allow {
+            assert!(
+                !["Read", "Grep", "Glob"].iter().any(|t| a.starts_with(t)),
+                "{a}, research {research}"
+            );
         }
     }
 }
 
-/// The user's `defaultMode` (auto, say) approves a read no rule allows, so a
-/// read-only call pins `default`: what no rule allows asks, and nobody answers.
+/// The user's `defaultMode` (auto, say) approves a read outside the read dirs,
+/// so a read-only call pins `dontAsk`, which refuses it (probed).
 #[test]
 fn a_read_only_call_pins_the_permission_mode() {
     for research in [false, true] {
         let p = Profile::read_only(PathBuf::from("/r"), research, 0.5, CAP);
         let a = p.argv();
         let at = a.iter().position(|x| x == "--permission-mode").expect("--permission-mode");
-        assert_eq!(a[at + 1], "default", "research {research}");
+        assert_eq!(a[at + 1], "dontAsk", "research {research}");
     }
     assert!(!Profile::TEXT.argv().contains(&"--permission-mode".to_string()));
 }
 
-/// A folder named `*` makes `Read(//d/*/**)` a rule for every sibling of it
-/// (probed), `?`, `[` and `{` alike; and `/` would make the rule the whole box.
-/// Each is refused before claude runs.
+/// `--add-dir /` makes every file readable (probed), so the root is refused
+/// before claude runs, however it is spelled.
 #[test]
-fn a_read_dir_that_would_widen_its_rule_is_refused() {
-    let rig = Rig::new("globdir", ECHO_ARGV);
-    for d in [
-        rig.dir.join("*"),
-        rig.dir.join("a?b"),
-        rig.dir.join("[ab]"),
-        rig.dir.join("{a,b}"),
-        PathBuf::from("/"),
-    ] {
-        let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
+fn the_root_is_refused_as_a_read_dir() {
+    let rig = Rig::new("rootdir", ECHO_ARGV);
+    for d in ["/", "//"] {
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(PathBuf::from(d), false, 0.5, CAP), "p");
         match answer(&mut req) {
-            Err(Fail::Failed(why)) => assert!(why.contains("rule"), "{d:?}: {why}"),
+            Err(Fail::Failed(why)) => assert!(why.contains("root"), "{d:?}: {why}"),
             other => panic!("{d:?} ran: {other:?}"),
         }
         assert!(rig.read("argv").is_empty(), "no claude ran for {d:?}");
     }
 }
 
-/// A space, a comma or a parenthesis stays inside its rule (probed), so such a
-/// folder is not refused.
+/// The folder goes in by `--add-dir`, never into rule syntax, so a glob
+/// character, a comma or a space in its name widens nothing (probed) and runs.
 #[test]
-fn a_read_dir_with_a_space_comma_or_paren_runs() {
-    let rig = Rig::new("spacedir", ECHO_ARGV);
-    let d = rig.dir.join("my repo, (copy)");
-    let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
-    assert_eq!(answer(&mut req), Ok("ok\n".into()));
-    let at = argv_after_prompt(&rig).iter().position(|a| a == "--allowedTools").unwrap();
-    assert_eq!(argv_after_prompt(&rig)[at + 1], format!("Read(/{}/**)", d.display()));
+fn a_read_dir_with_rule_characters_runs_as_named() {
+    let rig = Rig::new("oddname", ECHO_ARGV);
+    for name in ["*", "my repo, (copy)"] {
+        let d = rig.dir.join(name);
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(d.clone(), false, 0.5, CAP), "p");
+        assert_eq!(answer(&mut req), Ok("ok\n".into()), "{name}");
+        let args = argv_after_prompt(&rig);
+        let at = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[at + 1], d.display().to_string());
+    }
 }
 
 /// `--output-format json --verbose` prints the call's events, last its result.
@@ -708,18 +698,14 @@ fn a_json_call_answers_with_its_result() {
 /// The events stay readable after the answer, for `parse::files_read`; a text
 /// call has none.
 #[test]
-fn a_json_call_keeps_its_transcript_and_a_text_call_has_none() {
-    let rig = Rig::new("transcript", JSON_OK);
+fn a_json_call_keeps_its_raw_output_and_a_text_call_has_none() {
+    let rig = Rig::new("raw", JSON_OK);
     let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), false, 0.5, CAP), "p");
     answer(&mut req).unwrap();
-    assert!(
-        req.transcript().is_some_and(|t| t.contains(r#""name":"Read""#)),
-        "{:?}",
-        req.transcript()
-    );
+    assert!(req.raw().is_some_and(|t| t.contains(r#""name":"Read""#)), "{:?}", req.raw());
     let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
     answer(&mut req).unwrap();
-    assert_eq!(req.transcript(), None);
+    assert_eq!(req.raw(), None);
 }
 
 /// A json budget stop prints no text, only a result marked as one (probed): the
@@ -731,6 +717,10 @@ exit 1"#;
     let rig = Rig::new("jbudget", stop);
     let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), false, 0.5, CAP), "p");
     assert_eq!(answer(&mut req), Err(Fail::Failed("Error: Exceeded USD budget (0.5)".into())));
+    assert!(
+        req.raw().is_some_and(|t| t.contains("error_max_budget_usd")),
+        "a failed call keeps its raw output"
+    );
 }
 
 /// Any other error result fails with claude's first error, never the json.

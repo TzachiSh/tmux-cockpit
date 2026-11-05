@@ -67,7 +67,7 @@ pub struct Profile {
     pub allow: Vec<String>,
     pub deny: &'static [&'static str],
     /// `--permission-mode`. Unset, the user's `defaultMode` decides what no rule
-    /// covers, and `auto` approves a read outside every allow rule (probed).
+    /// covers, and `auto` approves a read outside the read dirs (probed).
     pub permission_mode: Option<&'static str>,
     pub output: Output,
     /// skills and slash commands; off is `--disable-slash-commands`
@@ -149,22 +149,23 @@ impl Profile {
     /// Read the folder `repo` and nothing outside it, added beside the cwd; with
     /// `research`, search and fetch the web and load skills too. The budget and
     /// the timeout are the owner's caps (#365 D7), so the type asks for both.
-    /// The one read approved is `Read(//<repo>/**)`, and the mode is `default`, so
-    /// any other read asks and, with no prompts, is refused (docs/tui.md). Research
-    /// approves the skills folder too, so a skill reads its own files.
+    /// The mode is `dontAsk`: the read dirs are readable and any other read is
+    /// refused, no allow rule needed (docs/tui.md, probed).
     pub fn read_only(repo: PathBuf, research: bool, budget_usd: f64, timeout: Duration) -> Profile {
         let tools = if research { RESEARCH } else { READ };
         // absolute: never read against the cache dir, never a `-` that passes for a flag
         let repo = std::path::absolute(&repo).unwrap_or(repo);
-        let mut allow = vec![format!("Read(/{}/**)", repo.display().to_string().trim_end_matches('/'))];
-        if research {
-            allow.extend(["Read(~/.claude/skills/**)", "WebSearch", "WebFetch", "Skill"].map(String::from));
-        }
+        // never Read, Grep or Glob: a bare Grep or Glob here approved reads outside (probed)
+        let allow = if research {
+            ["WebSearch", "WebFetch", "Skill"].map(String::from).to_vec()
+        } else {
+            vec![]
+        };
         Profile {
             tools,
             allow,
             deny: DENY,
-            permission_mode: Some("default"),
+            permission_mode: Some("dontAsk"),
             output: Output::Json,
             skills: research,
             no_prompts: true,
@@ -227,12 +228,12 @@ impl Profile {
 
 type Answer = Result<String, Fail>;
 
-/// An answer, and a json call's events.
+/// An answer, and a json call's stdout.
 type Done = (Answer, Option<String>);
 
 pub struct Request {
     rx: Receiver<Done>,
-    transcript: Option<String>,
+    raw: Option<String>,
     pid: Option<u32>,
     /// True once the child is reaped: from then on its pid may be someone else's.
     reaped: Arc<Mutex<bool>>,
@@ -275,7 +276,7 @@ impl Request {
         };
         Request {
             rx,
-            transcript: None,
+            raw: None,
             pid,
             reaped,
             done: false,
@@ -287,16 +288,17 @@ impl Request {
         if self.done {
             return None;
         }
-        let (a, t) = self.rx.try_recv().ok()?;
+        let (a, raw) = self.rx.try_recv().ok()?;
         self.done = true;
-        self.transcript = t;
+        self.raw = raw;
         Some(a)
     }
 
-    /// A json call's events, once [`Request::poll`] gave its answer: the input to
-    /// `parse::files_read`. `None` for a text call.
-    pub fn transcript(&self) -> Option<&str> {
-        self.transcript.as_deref()
+    /// A json call's stdout, its events, once [`Request::poll`] gave its answer,
+    /// a failed one too: the input to `parse::files_read`. `None` for a text
+    /// call, and for one that timed out or never started.
+    pub fn raw(&self) -> Option<&str> {
+        self.raw.as_deref()
     }
 
     /// `None` once reaped, when the number may already be someone else's.
@@ -348,14 +350,10 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
             d.display().to_string()
         ));
     }
-    // the folder is a glob in its read rule: a `*` in its name, or `/` itself,
-    // would approve reads outside it (probed)
-    if let Some(d) = p.read_dirs.iter().find(|d| {
-        let s = d.to_string_lossy();
-        s.trim_end_matches('/').is_empty() || s.contains(['*', '?', '[', ']', '{', '}', '\\'])
-    }) {
+    // `--add-dir /` makes every file a read dir's (probed)
+    if let Some(d) = p.read_dirs.iter().find(|d| d.to_string_lossy().trim_end_matches('/').is_empty()) {
         return Err(format!(
-            "{:?} is / or holds a glob character, so its read rule would reach past it; refused",
+            "{:?} is the root, so nothing would be outside it; refused",
             d.display().to_string()
         ));
     }
