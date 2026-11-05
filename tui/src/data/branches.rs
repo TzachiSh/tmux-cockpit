@@ -1,6 +1,7 @@
 //! What the branch popup reads from git (#246). Every call goes through
 //! `gitsafe`'s flags, so a repo's own config runs nothing as the user.
 use super::gitsafe::git;
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
@@ -48,7 +49,10 @@ fn refs(dir: &str, ns: &str) -> Vec<(String, String)> {
 /// Every worktree as `(path, branch)`. `-z` keeps a path with a newline in one
 /// record, but needs git 2.36; older git rejects it and prints nothing, so the
 /// plain porcelain is read instead, and a record whose path was cut by a newline
-/// (a line that is no worktree attribute) is dropped rather than guessed at.
+/// (a line that is no worktree attribute) is dropped rather than guessed at. So
+/// is one with no `.git` in it (#348): a newline name can forge a whole
+/// `worktree <dir>` line. A main checkout's `.git` is a dir, a linked one's a file.
+/// A path that is gone is kept: it names no directory to open.
 fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
     let z = git(dir, &[], None, &["worktree", "list", "--porcelain", "-z"]);
     if !z.is_empty() {
@@ -59,12 +63,17 @@ fn worktrees(dir: &str) -> Vec<(String, Option<String>)> {
 }
 
 fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String, Option<String>)> {
-    const ATTRS: [&str; 6] = ["HEAD ", "branch ", "bare", "detached", "locked", "prunable"];
+    // As git's porcelain prints them: `bare` and `detached` are a whole line,
+    // `locked` and `prunable` may carry a reason after a space.
+    const LABELS: [&str; 2] = ["bare", "detached"];
+    const PREFIXES: [&str; 4] = ["HEAD ", "branch ", "locked", "prunable"];
+    let attr = |f: &str| LABELS.contains(&f) || PREFIXES.iter().any(|a| f.starts_with(a));
     let mut out = Vec::new();
     let mut cur: Option<(String, Option<String>, bool)> = None;
     let mut flush = |cur: &mut Option<(String, Option<String>, bool)>| {
         if let Some((p, b, ok)) = cur.take()
             && ok
+            && (nul || !Path::new(&p).exists() || Path::new(&p).join(".git").exists())
         {
             out.push((p, b));
         }
@@ -76,7 +85,7 @@ fn records<'a>(fields: impl Iterator<Item = &'a str>, nul: bool) -> Vec<(String,
         } else if let Some((_, b, ok)) = cur.as_mut() {
             if let Some(r) = f.strip_prefix("branch refs/heads/") {
                 *b = Some(r.to_string());
-            } else if !nul && !f.is_empty() && !ATTRS.iter().any(|a| f.starts_with(a)) {
+            } else if !nul && !f.is_empty() && !attr(f) {
                 *ok = false;
             }
         }

@@ -419,7 +419,9 @@ pub fn help_rows_for(g: &Glyphs, copy: bool) -> Vec<(String, String)> {
         r("F1", "this help"),
     ];
     if copy {
-        rows.insert(11, r("alt-c", "copy: print this row's key, exit 10"));
+        // Under the choose key, found by its key so a new row cannot shift it.
+        let at = rows.iter().position(|(k, _)| k == g.key_enter).map_or(rows.len(), |i| i + 1);
+        rows.insert(at, r("alt-c", "copy: print this row's key, exit 10"));
     }
     rows
 }

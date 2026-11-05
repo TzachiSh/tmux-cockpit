@@ -12510,6 +12510,68 @@ tx kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
 fi
 
+echo "== tmux-branch (#348): without worktree list -z, a tree has a .git, a label is a line =="
+# git before 2.36 has no -z, and a path with a newline in it can print any line it likes:
+# `inj<NL>worktree <dir>` forges a record for <dir>, `<dir><NL>barex` hangs a cut on <dir>.
+if need_tmux "branch goto, old git"; then :; else
+# shellcheck source=../scripts/lib/fmt.sh
+. "$DIR/scripts/lib/fmt.sh"
+OGR=$(mktmpd); OGM=$(mktmpd); br_repo "$OGR" "$OGM"
+OGD=$(mktmpd); OGP="$OGD/plain"; mkdir -p "$OGP"
+OGOLD=$(mktmpd); OGGIT=$(command -v git)
+printf '#!/bin/sh\ncase " $* " in *" worktree list "*" -z "*) exit 129 ;; esac\nexec %s "$@"\n' \
+    "$OGGIT" > "$OGOLD/git"
+chmod +x "$OGOLD/git"
+git -C "$OGR" worktree add -q -b forge348 "$OGD/inj"$'\n'"worktree $OGP" >/dev/null 2>&1
+is "the plain porcelain carries the forged line" "worktree $OGP" \
+   "$(PATH="$OGOLD:$PATH" git -C "$OGR" worktree list --porcelain | grep -x -F "worktree $OGP")"
+OGS="cockpit-og348-$$"; SOCKS="$SOCKS $OGS"
+bg_server "$OGS" "$OGD"
+OGO=$("$TMUX_REAL" -L "$OGS" list-panes -a -F '#{pane_id}' | head -1)
+n=$(bg_windows "$OGS")
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGP"
+case "$BG_ERR" in
+    *"not a worktree"*) ok "a plain dir that a forged line names is refused, by name" ;;
+    *) bad "a plain dir that a forged line names is refused, by name" "not a worktree" "$BG_ERR" ;;
+esac
+is "and opens no window there" "$n" "$(bg_windows "$OGS")"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGR"
+is "the main checkout, whose .git is a directory, still opens" "$OGR" \
+   "$("$TMUX_REAL" -L "$OGS" display-message -p -t t: '#{pane_current_path}')"
+
+# A repo of its own has a .git; a line that only starts with a label still cuts the record.
+for v in barex detachedx; do
+    git init -q "$OGD/$v"
+    git -C "$OGR" worktree add -q -b "cut-$v" "$OGD/$v"$'\n'"$v" >/dev/null 2>&1
+    n=$(bg_windows "$OGS")
+    BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/$v"
+    is "a record cut by a line '$v' is no worktree: no window in the repo before the cut" \
+       "$n" "$(bg_windows "$OGS")"
+done
+
+# A listed worktree whose directory was deleted is no forgery: goto names it gone, as on new git.
+git -C "$OGR" worktree add -q -b gone348 "$OGD/gone" >/dev/null 2>&1; rm -rf "$OGD/gone"
+BG_SHIM=$OGOLD bg_goto "$OGS" "$OGO" "$OGR" "$OGD/gone"
+case "$BG_ERR" in
+    *"is gone"*) ok "without -z a deleted listed worktree is refused as gone, by name" ;;
+    *) bad "without -z a deleted listed worktree is refused as gone, by name" "is gone" \
+           "$BG_ERR" ;;
+esac
+
+"$TMUX_REAL" -L "$OGS" kill-server >/dev/null 2>&1
+
+# A whole `detached` line is a label: a detached tree nested in main keeps its own panes.
+git -C "$OGR" worktree add -q --detach "$OGR/det" >/dev/null 2>&1
+OGS2="cockpit-og348b-$$"; SOCKS="$SOCKS $OGS2"
+bg_server "$OGS2" "$OGR/det"
+OGO2=$("$TMUX_REAL" -L "$OGS2" list-panes -a -F '#{pane_id}' | head -1)
+BG_SHIM=$OGOLD bg_goto "$OGS2" "$OGO2" "$OGR" "$OGR"
+is "a pane in a detached tree nested in main is not main's: a window opens" "2" \
+   "$(bg_windows "$OGS2")"
+"$TMUX_REAL" -L "$OGS2" kill-server >/dev/null 2>&1
+rm -rf "$OGR" "$OGM" "$OGD"
+fi
+
 echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
 if need_tmux "branch goto client"; then :; else
 BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"

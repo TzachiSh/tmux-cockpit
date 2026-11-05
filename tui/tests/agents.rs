@@ -46,6 +46,11 @@ impl Rig {
         );
         write_exec(&dir.join("bin/ps"), "#!/bin/sh\nexit 1\n");
         write_exec(&dir.join("bin/git"), "#!/bin/sh\nexit 1\n");
+        // `exec $HOME/bin/sleep`: argv[0] keeps the rig's dir, so Drop can still verify the stub
+        let real = ["/usr/bin/sleep", "/bin/sleep"]
+            .into_iter()
+            .find(|p| std::path::Path::new(p).exists());
+        std::os::unix::fs::symlink(real.unwrap_or("/bin/sleep"), dir.join("bin/sleep")).unwrap();
         write_exec(&dir.join("bin/claude"), &format!("#!/bin/sh\necho 1 >> {d}/forks\n{claude_body}\n"));
         let root = dir.join("proc");
         std::fs::create_dir_all(root.join("self/task")).unwrap();
@@ -110,6 +115,18 @@ impl Rig {
     }
 }
 
+/// Is `pid` still this rig's stub? Its cmdline holds the stub's own path, which
+/// lives under the rig's dir, so a reused pid of anything else never matches.
+fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
+    let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    // "<dir>/": a bare prefix would also match another run's dir whose pid has more digits
+    let mut dir = dir.as_os_str().as_encoded_bytes().to_vec();
+    dir.push(b'/');
+    dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
+}
+
 impl Drop for Rig {
     fn drop(&mut self) {
         for (k, v) in &self.old {
@@ -123,11 +140,14 @@ impl Drop for Rig {
         }
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
-        if let Ok(p) = std::fs::read_to_string(self.dir.join("stubpid")) {
-            if let Ok(p) = p.trim().parse::<i32>() {
-                // SAFETY: a plain signal to a pid this rig's stub wrote.
-                unsafe { libc::kill(p, libc::SIGKILL) };
-            }
+        // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
+        // its pid reused, so kill it only while its cmdline still names this rig's dir.
+        if let Ok(p) = std::fs::read_to_string(self.dir.join("stubpid"))
+            && let Ok(p) = p.trim().parse::<i32>()
+            && stub_of(p, &self.dir)
+        {
+            // SAFETY: a plain signal to a pid whose cmdline names this rig's own dir.
+            unsafe { libc::kill(p, libc::SIGKILL) };
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -140,6 +160,47 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// A stub pid that was reused by an unrelated process is not killed: the rig only
+/// signals a pid whose cmdline still names its own dir (AGENTS.md).
+#[test]
+fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
+    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    {
+        let r = Rig::new("reused", ONE);
+        std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
+    }
+    let alive = other.try_wait().unwrap().is_none();
+    let _ = other.kill();
+    let _ = other.wait();
+    assert!(alive, "the rig's drop killed a process that was not its stub");
+}
+
+/// The positive path: an exec'd stub (argv[0] under the rig's bin) is reaped by Drop.
+#[test]
+fn the_rig_kills_its_own_execd_stub() {
+    let (pid, mut child) = {
+        let r = Rig::new("own", ONE);
+        let child = std::process::Command::new(r.dir.join("bin/sleep")).arg("30").spawn().unwrap();
+        std::fs::write(r.dir.join("stubpid"), child.id().to_string()).unwrap();
+        // between fork and exec the child still shows this test's own cmdline; wait for the exec
+        let execd = (0..200).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            stub_of(child.id() as i32, &r.dir)
+        });
+        assert!(execd, "the stub never showed the rig's dir in its cmdline");
+        (child.id(), child)
+    };
+    let gone = (0..100).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        matches!(child.try_wait(), Ok(Some(_)))
+    });
+    if !gone {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(gone, "the rig's drop left its own stub {pid} running");
 }
 
 /// The mechanism: the fetch waited for `claude agents`. The stub blocks until
@@ -485,7 +546,7 @@ fn a_one_shot_read_asks_once_for_pids_the_answer_lacks() {
 /// #294 on the one-shot path: a hung `claude` is killed at the deadline.
 #[test]
 fn a_one_shot_read_kills_a_hung_lookup() {
-    let r = Rig::with("hung", "echo $$ > $HOME/stubpid\nexec sleep 60", false);
+    let r = Rig::with("hung", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60", false);
     assert_eq!(r.sess(), "");
     let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
     wait_gone(pid.trim());
@@ -494,14 +555,14 @@ fn a_one_shot_read_kills_a_hung_lookup() {
 /// A board that quits mid-lookup takes the child with it.
 #[test]
 fn the_board_quitting_kills_a_lookup_in_flight() {
-    let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec sleep 60");
+    let r = Rig::new("quit", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
     let guard = Background::start();
     r.sess();
     let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            if !p.is_empty() {
-                break p.trim().to_string();
-            }
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
+            && !p.is_empty()
+        {
+            break p.trim().to_string();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
@@ -568,10 +629,10 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
     r.proc_dir("200", "bash", "");
     r.sess();
     let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            if !p.is_empty() {
-                break p.trim().to_string();
-            }
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
+            && !p.is_empty()
+        {
+            break p.trim().to_string();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
@@ -662,7 +723,7 @@ fn hup_child() {
 /// SIGHUP (a `kill-pane`) and SIGTERM end the board with `_exit`: the lookup child goes too.
 #[test]
 fn a_signalled_board_kills_a_lookup_in_flight() {
-    let r = Rig::new("sighup", "echo $$ > $HOME/stubpid\nexec sleep 60");
+    let r = Rig::new("sighup", "echo $$ > $HOME/stubpid\nexec $HOME/bin/sleep 60");
     let me = std::env::current_exe().unwrap();
     let st = std::process::Command::new(me)
         .args(["--exact", "hup_child", "--test-threads=1"])
