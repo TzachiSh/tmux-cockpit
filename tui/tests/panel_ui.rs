@@ -3675,10 +3675,13 @@ fn a_write_asking_at_zero_questions_is_told_once_to_write_now() {
     assert_eq!(a.view, View::Busy, "no error yet: {:?}", a.view);
     assert!(a.pending, "the retry goes out");
     let (_, prompt, _) = a.request_parts().unwrap();
-    let now = "(no questions left: write it now, and state each assumption as an Assumed: line)";
+    let now = concat!(
+        "(no questions left: write it now without guessing what only I know: have Claude Code ",
+        "come back to me with the options for it first, or leave a placeholder for it)"
+    );
     let want = format!("<turn role=\"user\">a3\n\n{now}");
     assert!(prompt.contains(&want), "{prompt}");
-    a.reply(Ok("<prompt>Do it.\nAssumed: a (b)</prompt>".into()));
+    a.reply(Ok("<prompt>Do it.</prompt>".into()));
     assert!(matches!(a.view, View::Result { .. }), "{:?}", a.view);
 }
 
