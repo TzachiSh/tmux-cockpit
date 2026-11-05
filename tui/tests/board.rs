@@ -2847,3 +2847,27 @@ fn x_is_offered_on_an_ended_agent() {
     assert!((kill().offered)(&p) && board::refused(kill(), &p).is_none());
     assert_eq!(board::Confirm::open(kill(), &p).unwrap().expect.as_deref(), Some("%3 @3"));
 }
+
+/// #460: a tile's title names the bound job, `→ <job>`, in place of its title.
+#[test]
+fn a_bound_viewer_tile_names_its_job() {
+    let th = Theme::fixed();
+    let (mut ps, pvs) = (fixture(), previews());
+    ps[0].job = "sweep".into();
+    let v = view(&ps, &pvs, &th, 1, 0);
+    let screen = draw(120, 30, |f| board::render(f, f.area(), &v));
+    let label = ps[0].label().to_string();
+    assert!(screen.contains("→ sweep"), "{screen}");
+    assert!(!screen.contains(&label), "the title {label:?} gave way: {screen}");
+}
+
+/// #460 review: find reads the job a bound row draws in place of its title.
+#[test]
+fn find_matches_the_bound_job_a_row_draws() {
+    let mut p = fixture().remove(0);
+    p.job = "nightlysweep".into();
+    assert!(
+        board::find_match(&p, "nightlysweep"),
+        "the row reads -> nightlysweep, find misses it"
+    );
+}

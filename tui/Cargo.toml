@@ -28,7 +28,7 @@ unicode-segmentation = "1.13"
 # The markdown viewer (#283). Pinned exactly, a release past its first two weeks
 # when picked; default features off drop the HTML writer and getopts (a CLI).
 pulldown-cmark = { version = "=0.13.4", default-features = false }
-# preserve_order: the 14 `--json` keys are a frozen contract and serde_json's
+# preserve_order: the 16 `--json` keys are a frozen contract and serde_json's
 # default map is a BTreeMap, which would emit them alphabetically.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 

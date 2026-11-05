@@ -453,3 +453,19 @@ fn a_transcript_work_dir_is_its_own_row_naming_its_source() {
     let gone = dirs(WorkFrom::Transcript, true);
     assert!(gone[0].ends_with("(@cockpit_dir, missing -- using transcript cwd)"), "{gone:?}");
 }
+
+/// #460: a viewer pane bound to a background job has a `job` row naming it
+/// and its id; an unbound pane has none.
+#[test]
+fn a_bound_job_is_its_own_row_with_its_id() {
+    let job = |j: Option<(&str, &str)>| {
+        let f = Facts {
+            job: j.map(|(n, i)| (n.to_string(), i.to_string())),
+            ..facts()
+        };
+        let r = info::rows(&f, &Theme::fixed().g, 200);
+        r.into_iter().filter(|(l, _)| l == "job").map(|(_, v)| v).collect::<Vec<_>>()
+    };
+    assert_eq!(job(Some(("sweep", "bg_7"))), vec!["sweep  (@cockpit_job bg_7)".to_string()]);
+    assert!(job(None).is_empty());
+}

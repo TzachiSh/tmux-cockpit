@@ -78,6 +78,8 @@ impl Rig {
         let env = Env::set(&[
             ("PATH", format!("{d}/bin:{}", std::env::var("PATH").unwrap_or_default())),
             ("COCKPIT_TMUX", format!("{d}/bin/tmux")),
+            // no proc under it: the walk falls back to the fake `ps`, not the box's pids
+            ("COCKPIT_PROC_DIR", format!("{d}/proc")),
             ("HOME", d),
             ("COCKPIT_READONLY", "1".into()),
         ]);
@@ -90,6 +92,18 @@ impl Rig {
 
     fn rows(&self, rows: &[String]) {
         std::fs::write(self.dir.join("rows"), rows.join("\n") + "\n").unwrap();
+    }
+
+    /// A fake proc root: `(pid, comm, children)`; the walk reads it, not `ps`.
+    fn proc(&self, procs: &[(&str, &str, &str)]) {
+        let root = self.dir.join("proc");
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, comm, kids) in procs {
+            let d = root.join(pid);
+            std::fs::create_dir_all(d.join("task").join(pid)).unwrap();
+            std::fs::write(d.join("task").join(pid).join("children"), kids).unwrap();
+            std::fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+        }
     }
 
     fn ps(&self, table: &str) {
@@ -188,6 +202,24 @@ fn agent_panes_come_from_the_process_tree_and_not_from_a_name() {
         row("%2", "zsh", "-", "s2", "202"),
         row_at("%3", "henosis-claude-resume:0", "zsh", "-", "s3", "203", "/w"),
     ]);
+
+    assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
+}
+
+/// #492: with a proc root, the tree comes from `children` files and `ps` is not
+/// asked: the fake `ps` here lists only a shell, so a verdict of "agent" can
+/// only have come from the grandchild under /proc.
+#[test]
+fn a_pane_tree_is_walked_under_proc_and_ps_is_not_asked() {
+    let r = Rig::new("procwalk");
+    r.ps("");
+    r.proc(&[
+        ("400", "bash", "401 "),
+        ("401", "sh", "402 "),
+        ("402", "2.1.318", ""),
+        ("410", "zsh", ""),
+    ]);
+    r.rows(&[row("%1", "bash", "-", "s1", "400"), row("%2", "zsh", "-", "s2", "410")]);
 
     assert_eq!(ids(&list_panes().unwrap()), ["%1"]);
 }
@@ -1519,4 +1551,25 @@ fn a_tool_use_after_the_open_question_keeps_the_hooks_message() {
     r.transcript("s1", &format!("{v}\n"));
     r.rows(&[hooked("%1", "needs-input", "s1")]);
     assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
+}
+
+/// #460: `@cockpit_job_name`, field 16, is the bound job's name, cleaned: it comes
+/// from a pane title. A row without it (an older format) has no job.
+#[test]
+fn the_bound_job_name_is_read_cleaned_and_absent_is_none() {
+    let r = Rig::new("jobname");
+    let base = row("%1", "claude", "running", "-", "100");
+    let job = "night\u{202e}ly\u{1b}[31m sweep";
+    r.rows(&[
+        format!("{base}\u{1f}\u{1f}\u{1f}\u{1f}{job}"),
+        row("%2", "claude", "running", "-", "101"),
+    ]);
+    let ps = list_panes().unwrap();
+    assert_eq!(
+        (get(&ps, "%1").job.as_str(), get(&ps, "%2").job.as_str()),
+        ("nightly[31m sweep", "")
+    );
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&ps)).unwrap();
+    let job_of = |id: &str| v.as_array().unwrap().iter().find(|o| o["id"] == id).unwrap()["job"].clone();
+    assert_eq!((job_of("%1"), job_of("%2")), ("nightly[31m sweep".into(), "".into()));
 }
