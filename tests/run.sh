@@ -11220,6 +11220,16 @@ git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# A failed approve says so in plain words: a stale ref is one cause of many
+# since approve fails closed (#441). The tmux shim logs each argument.
+rd_reset; : > "$RDS/comments.md"; RDTM=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/args"\n' "$RDTM" > "$RDTM/tmux"
+chmod +x "$RDTM/tmux"
+git -C "$RD" update-ref refs/cockpit/reviewed/main/x "$(git -C "$RD" rev-parse 'HEAD^{tree}')"
+is "a failed approve: the loop says it could not mark the branch, and nothing more" "0|1" \
+   "$(rd_loop al "$RD" "$RDS/comments.md" "$RDB:$RDTM:$PATH")|$(grep -cx \
+      'cockpit: could not mark the branch reviewed' "$RDTM/args")"
+git -C "$RD" update-ref -d refs/cockpit/reviewed/main/x; rm -rf "$RDTM"
 # 9. a file-level comment whose first line is a quote keeps it as body.
 rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
 rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"

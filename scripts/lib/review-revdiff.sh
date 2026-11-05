@@ -188,7 +188,7 @@ review_loop() {
                        continue; }
                    if approve "$dir"; then drop_store "$store"; exit 21; fi
                    tmux display-message \
-                       "cockpit: could not mark the branch reviewed (stale ref?)" 2>/dev/null
+                       "cockpit: could not mark the branch reviewed" 2>/dev/null
                    continue ;;
                 r) break ;;
                 b) [ -n "$nxt" ] || continue
