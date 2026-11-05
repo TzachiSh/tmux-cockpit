@@ -2729,7 +2729,7 @@ fn side_pane(f: &mut Frame, area: Rect, v: &View, i: Option<usize>) {
     f.render_widget(para, body);
 }
 
-/// `/src/api · ⑂feat/rate-limit · %3   ◆ review pending`: the path gives way
+/// `/src/api · ⑂feat/rate-limit · %3   ◆ review pending`: the work dir gives way
 /// first, cut in its middle, then goes, so the branch and the id stay.
 fn where_line(p: &Pane, w: usize, th: &Theme) -> Line<'static> {
     let g = &th.g;
@@ -2750,10 +2750,12 @@ fn where_line(p: &Pane, w: usize, th: &Theme) -> Line<'static> {
     let gap = if review.is_empty() { 0 } else { 3 + review.width() };
     let room = w.saturating_sub(gap);
     let path_w = room.saturating_sub(tail.width() + sep.width());
-    let text = if p.path.is_empty() || path_w < 8 {
+    // #452: the dir the branch came from; `path` only where no fetch set one
+    let dir = if p.dir.is_empty() { &p.path } else { &p.dir };
+    let text = if dir.is_empty() || path_w < 8 {
         g.trunc(&tail, room)
     } else {
-        format!("{}{sep}{tail}", g.trunc_middle(&p.path, path_w))
+        format!("{}{sep}{tail}", g.trunc_middle(dir, path_w))
     };
     let mut spans = vec![Span::styled(text, Style::new().fg(th.meta))];
     if !review.is_empty() && w >= gap {

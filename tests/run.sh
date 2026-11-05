@@ -1585,6 +1585,32 @@ is "an unchanged branch writes nothing" "0" "$(wc -l < "$WSLOG" | tr -d ' ')"
 printf 'ref: refs/heads/main\n' > "$WSD/repo/.git/HEAD"
 wset "$WSR"
 is "a switched branch lands" "main" "$(wsb "$WSR")"
+# #452: a worktree made by hand leaves the process in the main checkout, so the
+# branch comes from @cockpit_dir when it names a directory; a space in it is quoted.
+mkdir -p "$WSD/repo/.git/worktrees/wt1" "$WSD/wt dir"
+printf 'ref: refs/heads/fix/wt\n' > "$WSD/repo/.git/worktrees/wt1/HEAD"
+printf 'gitdir: %s\n' "$WSD/repo/.git/worktrees/wt1" > "$WSD/wt dir/.git"
+"$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$WSD/wt dir" >/dev/null 2>&1
+wset "$WSR"
+is "@cockpit_dir's worktree branch, not the cwd's" "fix/wt ⑂wt1" "$(wsb "$WSR")"
+"$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$WSD/gone" >/dev/null 2>&1
+wset "$WSR"
+is "a dangling @cockpit_dir falls back to the cwd" "main" "$(wsb "$WSR")"
+# A relative @cockpit_dir passes -d against the hook's own cwd, and git_label's walk
+# up never ends on a path with no slash: every hook fire left a spinning bash.
+# `timeout` is only the hang guard; the row asserts the exit and the fallback.
+if command -v timeout >/dev/null 2>&1; then
+    mkdir -p "$WSD/sub"
+    for rel in . sub; do
+        "$TMUX_REAL" -L "$WS" set-option -p -t "$WSR" @cockpit_dir "$rel" >/dev/null 2>&1
+        rc=0
+        (cd "$WSD" && TMUX="$SOCKDIR/$WS,0,0" timeout 5 "$DIR/scripts/tmux-where" branch --set "$WSR" \
+            >/dev/null 2>&1) || rc=$?
+        is "a relative @cockpit_dir ($rel) returns and falls back to the cwd" "0 main" "$rc $(wsb "$WSR")"
+    done
+else
+    skip_ "a relative @cockpit_dir returns (no timeout)"
+fi
 "$TMUX_REAL" -L "$WS" kill-server >/dev/null 2>&1
 fi
 

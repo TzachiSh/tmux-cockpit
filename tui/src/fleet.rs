@@ -95,7 +95,7 @@ pub fn rows_json(ps: &[Pane]) -> String {
                 "id": p.id, "where": p.wher, "state": p.state.as_str(), "title": p.label(),
                 "doing": p.doing, "said": p.said, "asked": p.asked, "msg": p.msg,
                 "since": p.since, "loc": p.loc, "diff": p.pm, "review": p.review,
-                "session": p.sess, "path": p.path,
+                "session": p.sess, "path": p.path, "dir": p.dir,
             })
         })
         .collect();
