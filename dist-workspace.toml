@@ -37,9 +37,11 @@ tag-namespace = "cockpit-tui"
 # plan, the global build, host and announce run on ci-cockpit, the self-hosted
 # runner TzachiSh/ci-box#367 set up, by its label: as the runner's uid, on an
 # image that carries cargo for them. The builds keep GitHub's runners. The musl
-# one would run as root in a job container on ci-cockpit and leave root-owned
-# files in its checkout (TzachiSh/ci-box#371), and no self-hosted runner runs
-# macOS.
+# one has two reasons. With a job container, dist runs it as root and leaves
+# root-owned files in the checkout (TzachiSh/ci-box#371). Without one, dist's
+# template runs `sudo apt-get install musl-tools` on the runner, which has no
+# sudo. No self-hosted runner runs macOS either. So no release tag can finish
+# until GitHub billing is restored (#457).
 [dist.github-custom-runners]
 global = "cockpit"
 # dist 0.32.0 picks macos-14 for this target; GitHub retires that image on

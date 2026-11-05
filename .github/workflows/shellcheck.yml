@@ -28,6 +28,9 @@ jobs:
           tar -xJf "$t/sc.tar.xz" -C "$t"
           echo "$t/shellcheck-$v" >> "$GITHUB_PATH"
           "$t/shellcheck-$v/shellcheck" --version
-      # make lint skips without shellcheck, so the --version above is what
-      # makes a failed install fail the job instead of linting nothing.
+      # make lint skips (exit 0) when shellcheck is not on PATH, and the call
+      # above uses the absolute path, so it cannot see a failed GITHUB_PATH. This
+      # step runs after it, through PATH, which is what make lint will use.
+      - name: shellcheck is on PATH
+        run: shellcheck --version
       - run: make lint
