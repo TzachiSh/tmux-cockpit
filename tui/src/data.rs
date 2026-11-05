@@ -729,6 +729,8 @@ fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
                 let s = std::fs::read_to_string(t.ok()?.path().join("children")).ok()?;
                 kids.extend(s.split_whitespace().map(str::to_string));
             }
+            // ps lists siblings by pid, the kernel by creation: find_session takes the first hit
+            kids.sort_by_key(|k| k.parse::<u64>().unwrap_or(0));
             q.extend(kids.into_iter().map(|c| (c, d + 1)));
         }
         out.push(p);
@@ -1377,6 +1379,14 @@ mod tests {
     }
 
     #[test]
+    fn proc_tree_lists_siblings_by_pid_as_ps_does() {
+        let r = fake_proc(&[("10", &["13 11 12 "]), ("11", &[""]), ("12", &[""]), ("13", &[""])]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into(), "13".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
     fn proc_tree_survives_a_cycle() {
         let r = fake_proc(&[("10", &["11 "]), ("11", &["10 "])]);
         assert_eq!(pids(&r, "10").unwrap(), ["10", "11"]);
@@ -1423,51 +1433,38 @@ mod tests {
         assert!(version_shaped(&comm_norm("2.1.318\n")) && !version_shaped(&comm_norm("bash\n")));
     }
 
-    /// The live check: a shell, a grandchild with a name past 15 chars, and
-    /// `ps` must agree on pids and on names, truncation included.
+    /// Kills the child on drop, so a failed assert cannot leave it running.
+    #[cfg(target_os = "linux")]
+    struct Reap(std::process::Child);
+    #[cfg(target_os = "linux")]
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            let _ = Command::new("pkill").args(["-KILL", "-P", &self.0.id().to_string()]).status();
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A child named past 15 chars: the walk and `ps` agree on pids and on the
+    /// truncated name.
     #[cfg(target_os = "linux")]
     #[test]
     fn lineage_on_the_real_proc_matches_ps() {
         let dir = std::env::temp_dir().join(format!("cockpit-lin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let py = Command::new("sh").args(["-c", "command -v python3"]).output().unwrap().stdout;
         let long = dir.join("claude-with-a-very-long-name");
-        std::os::unix::fs::symlink(
-            Command::new("sh")
-                .args(["-c", "command -v python3"])
-                .output()
-                .map(|o| String::from_utf8(o.stdout).unwrap())
-                .unwrap()
-                .trim(),
-            &long,
-        )
-        .unwrap();
-        let mut sh = Command::new("sh")
-            .arg("-c")
-            .arg(format!("{} -c 'import time; time.sleep(30)' & wait", long.display()))
-            .spawn()
-            .unwrap();
-        let pid = sh.id().to_string();
-        let mut want = vec![];
-        for _ in 0..2000 {
-            let mut t = procs();
-            want = tree(&pid, &t)
-                .into_iter()
-                .map(|p| (p.clone(), t.comm.remove(&p).unwrap_or_default()))
-                .collect();
-            if want.len() == 2 && proc_tree(std::path::Path::new("/proc"), &pid).is_some_and(|v| v.len() == 2) {
-                break;
-            }
-            std::thread::yield_now();
+        std::os::unix::fs::symlink(String::from_utf8(py).unwrap().trim(), &long).unwrap();
+        let cmd = format!("{} -c 'import time; time.sleep(30)' & wait", long.display());
+        let sh = Reap(Command::new("sh").arg("-c").arg(cmd).spawn().unwrap());
+        let pid = sh.0.id().to_string();
+        let mut t = procs();
+        while tree(&pid, &t).len() < 2 {
+            t = procs();
         }
-        let got = lineage(&pid, &mut None);
-        for (p, _) in &got {
-            // SAFETY: kill takes plain integers and touches no memory.
-            unsafe { libc::kill(p.parse().unwrap(), libc::SIGKILL) };
-        }
-        let _ = sh.wait();
+        let want: Vec<_> = tree(&pid, &t).into_iter().map(|p| (p.clone(), t.comm[&p].clone())).collect();
+        assert_eq!(lineage(&pid, &mut None), want);
+        assert_eq!(want[1].1.len(), 15);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(got.len(), 2);
-        assert_eq!(got, want);
-        assert_eq!(got[1].1.len(), 15);
     }
 }
