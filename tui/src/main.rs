@@ -14,7 +14,7 @@ fn panes() -> Vec<data::Pane> {
     }
 }
 
-const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden] | view [--line N] [--] <file> | --rows | --json | --version | -h";
+const USAGE: &str = "cockpit-tui board [--select %N] [--note <file>] | pick | files <dir> | branch [-C <dir>] | info [--text|--json] %N | workdir %N | sessions [--needs] [--current $N] | panel %N [--resume <state> --last ok|failed:<why>|hidden | --ask <file> <a> <b>] | view [--line N] [--] <file> | --rows | --json | --version | -h";
 
 fn unix_now() -> u64 {
     std::time::SystemTime::now()
@@ -22,24 +22,19 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-fn is_pane(p: &str) -> bool {
-    p.strip_prefix('%')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
 /// Never lists a wake channel in @cockpit_board_wake: those are the board's.
 fn panel(args: &[String]) {
-    let resume = match args.get(1..).unwrap_or_default() {
-        [] => None,
-        [r, f, l, last] if r == "--resume" && l == "--last" => Some((f.as_str(), last.as_str())),
-        _ => {
-            eprintln!("cockpit-tui: panel takes a pane id, then only --resume <state> --last <how>\n{USAGE}");
+    let (pane, start) = match cockpit_tui::panel::start_args(args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("cockpit-tui: {e}\n{USAGE}");
             std::process::exit(2);
         }
     };
-    let Some(pane) = args.first().map(String::as_str).filter(|p| is_pane(p)) else {
-        eprintln!("cockpit-tui: panel needs a pane id like %3\n{USAGE}");
-        std::process::exit(2);
+    let pane = pane.as_str();
+    let resume = match &start {
+        cockpit_tui::panel::Start::Resume(f, last) => Some((f.as_str(), last.as_str())),
+        _ => None,
     };
     // checked before the capture: a bad word is the user's to fix, not a pane problem
     let mode = std::env::var("COCKPIT_PANEL_MODE").ok();
@@ -59,7 +54,7 @@ fn panel(args: &[String]) {
     a.termux = cockpit_tui::panel::is_termux();
     // other panes' hidden panels the wrapper dropped: their panes are gone
     if let Ok(gone) = std::env::var("COCKPIT_PANEL_DROPPED") {
-        let gone: Vec<&str> = gone.split(' ').filter(|p| is_pane(p)).take(8).collect();
+        let gone: Vec<&str> = gone.split(' ').filter(|p| cockpit_tui::panel::is_pane(p)).take(8).collect();
         if !gone.is_empty() {
             a.say(
                 app::Level::Info,
@@ -83,6 +78,20 @@ fn panel(args: &[String]) {
             Err(e) => {
                 eprintln!("cockpit-tui: cannot resume from {f}: {e}");
                 a.say(app::Level::Error, format!("could not reopen the steps: {e}"));
+            }
+        }
+    }
+    // cockpit-panel says when an ask opens with a panel already hidden on the pane
+    a.hide_taken = std::env::var_os("COCKPIT_PANEL_HIDE_TAKEN").is_some_and(|v| v == "1");
+    // the viewer's `?` (#365): the lines are read here, as the viewer showed them
+    if let cockpit_tui::panel::Start::Ask(f, l1, l2) = &start {
+        match cockpit_tui::panel::ask::load(std::path::Path::new(f), *l1, *l2) {
+            Ok(q) => a.ask_open(q),
+            Err(e) => {
+                a.view = app::View::Error {
+                    line: format!("cannot ask about it: {e}"),
+                    hint: None,
+                }
             }
         }
     }
