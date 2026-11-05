@@ -611,3 +611,19 @@ fn preview_goldens() {
         golden(&format!("board-preview-{w}"), &t.backend().to_string());
     }
 }
+
+/// #460: a viewer pane bound to a background job names the job in place of its
+/// title, on the list row and the pane's own header, so a wrong bind shows.
+#[test]
+fn a_bound_viewer_pane_names_its_job_in_place_of_the_title() {
+    for (th, mark) in [(th(), "→"), (ascii(), "->")] {
+        let mut ps = trio();
+        ps[1].job = "sweep".into();
+        let n = nav(&ps, Sel::Pane("%4".into()));
+        let b = buf(180, 40, &list(&ps, &[], &th, &n));
+        let rows = list_part(&b, 64).join("\n");
+        assert!(rows.contains(&format!("{mark} sweep ")) && !rows.contains("tests"), "{rows}");
+        let head = pane_rows_text(&b, 64);
+        assert!(head[1].contains(&format!("api:1 {} {mark} sweep", th.g.dot)), "{head:#?}");
+    }
+}

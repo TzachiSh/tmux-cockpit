@@ -148,3 +148,18 @@ fn info_json_for_no_such_pane_is_exit_1_and_silent() {
     std::fs::write(t.0.join("display"), "").unwrap();
     assert_eq!(info_json(&env, "%9"), (Some(1), vec![]));
 }
+
+/// #460: gather reads `@cockpit_job_name` and `@cockpit_job`, the name cleaned
+/// (a pane title); with neither, no job.
+#[test]
+fn gather_reads_the_bound_job_cleaned() {
+    let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let t = Tmp::new("job");
+    let cwd = t.sub("cwd");
+    set(&rig(&t, &cwd, "", ""));
+    let plain = std::fs::read_to_string(t.0.join("display")).unwrap();
+    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}bg_7\u{1f}swe\u{202e}ep\u{7}")).unwrap();
+    assert_eq!(gather("%1").unwrap().job, Some(("sweep".to_string(), "bg_7".to_string())));
+    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}")).unwrap();
+    assert_eq!(gather("%1").unwrap().job, None);
+}

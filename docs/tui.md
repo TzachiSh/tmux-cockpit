@@ -1645,7 +1645,7 @@ is agreed; changing any of it takes a comment on
 ```
 id, wher, name, cmd, state, title, msg, sess, path, dir, root, spool, pinned,
 delivered, pid, review, doing, said, asked, loc, pm,
-since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>
+since: Option<u64>, asked_since: Option<u64>, idle_since: Option<u64>, job
 ```
 
 Derives `Default, Clone, Hash, PartialEq`. The durations are `u64` and not
@@ -1671,11 +1671,18 @@ reader keeps the last cwd it saw per transcript path, for the same file only
 (device and inode, and not shorter than at the last read), so a stretch of rows
 without one does not lose it.
 
-**`--json`**: an array of objects with exactly these 15 keys, in this order:
+**`job` (#460):** `@cockpit_job_name`, the background job agent-poll bound this
+viewer pane to by its title (docs/states-and-hooks.md), with control and bidi
+characters dropped since it comes from a pane title; `""` when unbound. The board
+draws `→ <job>` (`-> <job>` in ASCII) in place of the title on the row, the tile
+and the pane header, so a bind to the wrong job is plain to see. `title` and
+`--rows` keep the title.
+
+**`--json`**: an array of objects with exactly these 16 keys, in this order:
 
 ```
 id, where, state, title, doing, said, asked, msg, since, loc, diff, review,
-session, path, dir
+session, path, dir, job
 ```
 
 `where` is `sess:idx`, and nothing else: the window name is `data::Pane`'s
@@ -2191,7 +2198,8 @@ It shows, in this order: `pane`, `cwd`,
 `dir` (`@cockpit_dir`, and `missing` when the directory is gone), a second
 `dir` row `<dir>  (transcript cwd)` when the work dir (#452) is the transcript's
 cwd, `root`,
-`state` with `@panestate_msg`, the `doing` / `said` / `asked` rows with their
+`state` with `@panestate_msg`, `job` with `@cockpit_job` for a viewer pane
+bound to a background job (#460), the `doing` / `said` / `asked` rows with their
 ages and the `/btw` pointer for an agent pane, `review` with the queued spool,
 `base`, `session`, `title`, `tui` and the review dir with its pinned and
 delivered counts. The git root and the review base are Rust, on the `gitsafe`

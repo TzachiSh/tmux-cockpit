@@ -499,7 +499,7 @@ fn tile(f: &mut Frame, cell: Rect, p: &Pane, num: usize, pv: Option<Option<&str>
     ];
     if title_w > 0 {
         top.push(Span::styled(sep, Style::new().fg(th.faint)));
-        top.push(Span::styled(g.trunc(p.label(), title_w), Style::new().fg(title_c)));
+        top.push(Span::styled(g.trunc(&shown_label(p, g), title_w), Style::new().fg(title_c)));
         top.push(Span::raw(" "));
     }
 
@@ -2178,6 +2178,16 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'stat
     out
 }
 
+/// #460: a viewer pane bound to a background job is named `→ <job>` in place of
+/// its title, so a bind to the wrong job is plain to see.
+fn shown_label(p: &Pane, g: &Glyphs) -> String {
+    if p.job.is_empty() {
+        p.label().to_string()
+    } else {
+        format!("{} {}", g.arrow, p.job)
+    }
+}
+
 /// The mark before a branch name: ascii's is `@`, which a detached HEAD's
 /// `@sha` already starts with.
 fn branch_mark(g: &Glyphs, br: &str) -> &'static str {
@@ -2271,7 +2281,7 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
             band(Style::new().fg(th.label), sel, th),
         ),
         Span::styled(
-            pad(g.trunc(p.label(), name_w), name_w + 1),
+            pad(g.trunc(&shown_label(p, g), name_w), name_w + 1),
             band(Style::new().fg(name_c).add_modifier(dim), sel, th),
         ),
         Span::styled(pad(msg, msg_w), band(Style::new().fg(text_c).add_modifier(dim), sel, th)),
@@ -2696,7 +2706,7 @@ fn side_pane(f: &mut Frame, area: Rect, v: &View, i: Option<usize>) {
     let (gl, gl_c) = glyph(th, p);
     let (rv, rv_c) = th.review_mark(&p.review);
     let room = (area.width as usize).saturating_sub(2 + right.width() + 1 + 1 + gl.width() + rv.width() + 1);
-    let name = g.trunc(&format!("{} {} {}", p.wher, g.dot, p.label()), room);
+    let name = g.trunc(&format!("{} {} {}", p.wher, g.dot, shown_label(p, g)), room);
     let block = Block::bordered()
         .border_set(g.thick)
         .border_style(Style::new().fg(urgent_c.unwrap_or(th.accent)))
