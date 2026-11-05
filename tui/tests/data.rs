@@ -1163,3 +1163,166 @@ fn a_prompt_dated_after_now_has_no_age_in_the_window_or_kept() {
     append(&p, &turn_output(300));
     assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
 }
+
+/// #453: an assistant row asking `questions` through AskUserQuestion, as id `id`.
+fn ask_row(id: &str, questions: serde_json::Value) -> String {
+    let v = serde_json::json!({"type": "assistant", "timestamp": "2026-08-27T00:00:01.000Z",
+        "message": {"stop_reason": "tool_use", "content": [{"type": "tool_use", "id": id,
+        "name": "AskUserQuestion", "input": {"questions": questions}}]}});
+    format!("{v}\n")
+}
+
+fn answer_row(id: &str) -> String {
+    let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:09.000Z",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": "A"}]}});
+    format!("{v}\n")
+}
+
+/// A pane the Notification hook marked: state `state`, the hook's generic text.
+fn hooked(id: &str, state: &str, sess: &str) -> String {
+    let f = [
+        id,
+        "w:0",
+        "win",
+        "claude",
+        state,
+        "-",
+        "Claude needs your permission",
+        sess,
+        "/w",
+        "100",
+        "-",
+        "-",
+        "@1",
+    ];
+    f.join("\u{1f}")
+}
+
+fn q(question: &str, header: &str) -> serde_json::Value {
+    serde_json::json!({"question": question, "header": header, "options": [], "multiSelect": false})
+}
+
+/// #453: an open AskUserQuestion's first question is the row's message, not the
+/// hook's generic text, and its header is what the agent is doing.
+#[test]
+fn an_open_question_is_the_message_and_its_header_the_doing() {
+    let r = Rig::new("askmsg");
+    r.transcript("s1", &ask_row("tu1", serde_json::json!([q("Merge #445 now?", "Merge")])));
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    let ps = list_panes().unwrap();
+    assert_eq!(get(&ps, "%1").msg, "Merge #445 now?");
+    assert_eq!(get(&ps, "%1").doing, "AskUserQuestion: Merge");
+}
+
+/// #453: the count of the questions after the first rides on the message.
+#[test]
+fn more_questions_than_one_are_counted_on_the_message() {
+    let r = Rig::new("askmore");
+    let qs = serde_json::json!([q("Which runner?", "Runner"), q("b?", "B"), q("c?", "C")]);
+    r.transcript("s1", &ask_row("tu1", qs));
+    r.transcript("s2", &ask_row("tu1", serde_json::json!([q("Only?", "One")])));
+    r.rows(&[hooked("%1", "needs-input", "s1"), hooked("%2", "needs-input", "s2")]);
+    let ps = list_panes().unwrap();
+    assert_eq!(get(&ps, "%1").msg, "Which runner? (+2 more)");
+    assert_eq!(get(&ps, "%2").msg, "Only?", "one question carries no count");
+}
+
+/// #453: model-written text reaches the terminal, so its control and bidi
+/// characters go, and only its first non-blank line is a row.
+#[test]
+fn the_question_is_cleaned_and_cut_to_its_first_line() {
+    let r = Rig::new("askclean");
+    let raw = "\n \u{202e}\n\u{1b}[31mPick\u{202e}\u{2066} one\u{7}\tnow\nsecond line";
+    r.transcript("s1", &ask_row("tu1", serde_json::json!([q(raw, "H\u{202e}")])));
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    let p = list_panes().unwrap().into_iter().find(|p| p.id == "%1").unwrap();
+    assert_eq!(p.msg, "[31mPick one now");
+    assert_eq!(p.doing, "AskUserQuestion: H");
+}
+
+/// #453: an answered question says nothing: a later permission prompt keeps the hook's text.
+#[test]
+fn an_answered_question_leaves_the_hooks_message() {
+    let r = Rig::new("askdone");
+    r.transcript(
+        "s1",
+        &(ask_row("tu1", serde_json::json!([q("Merge?", "Merge")])) + &answer_row("tu1")),
+    );
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
+}
+
+/// #453: of two open questions the newer is shown; an answered one never is.
+#[test]
+fn the_newest_open_question_is_the_one_shown() {
+    let r = Rig::new("asknewest");
+    let (old, new) = (
+        ask_row("tu1", serde_json::json!([q("Old?", "O")])),
+        ask_row("tu2", serde_json::json!([q("New?", "N")])),
+    );
+    r.transcript("s1", &(old.clone() + &new));
+    r.transcript("s2", &(new + &old.replace("Old?", "Last?") + &answer_row("tu1")));
+    r.rows(&[hooked("%1", "needs-input", "s1"), hooked("%2", "needs-input", "s2")]);
+    let ps = list_panes().unwrap();
+    assert_eq!((get(&ps, "%1").msg.as_str(), get(&ps, "%2").msg.as_str()), ("New?", "New?"));
+}
+
+/// #453: the hooks said `running`, so nothing is owed: the message is left alone.
+#[test]
+fn a_running_pane_keeps_its_message_whatever_the_transcript_asks() {
+    let r = Rig::new("askrun");
+    r.transcript("s1", &ask_row("tu1", serde_json::json!([q("Merge?", "Merge")])));
+    r.rows(&[hooked("%1", "running", "s1")]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").msg, "Claude needs your permission");
+}
+
+/// #453: a pane no hook touched has no message; the open question is its message.
+#[test]
+fn a_question_is_the_message_of_a_pane_the_hooks_never_marked() {
+    let r = Rig::new("asknohook");
+    r.ps("100 1 claude\n");
+    r.transcript("s1", &ask_row("tu1", serde_json::json!([q("Merge?", "Merge")])));
+    r.rows(&[row("%1", "node", "-", "s1", "100")]);
+    let ps = list_panes().unwrap();
+    assert_eq!(
+        (get(&ps, "%1").state.as_str(), get(&ps, "%1").msg.as_str()),
+        ("needs-input", "Merge?")
+    );
+}
+
+/// #453: input of the wrong shape names no question, so the hook's text stays.
+/// Rows: no `questions`, an empty list, a string, a number question, a blank one.
+#[test]
+fn a_question_of_the_wrong_shape_leaves_the_hooks_message() {
+    let r = Rig::new("askshape");
+    let shapes = [
+        serde_json::Value::Null,
+        serde_json::json!([]),
+        serde_json::json!("Merge?"),
+        serde_json::json!([{"question": 7, "header": "Seven"}]),
+        serde_json::json!([q(" \u{202e}\t", "Blank")]),
+    ];
+    let mut rows = vec![];
+    for (i, s) in shapes.iter().enumerate() {
+        r.transcript(&format!("s{i}"), &ask_row("tu1", s.clone()));
+        rows.push(hooked(&format!("%{i}"), "needs-input", &format!("s{i}")));
+    }
+    r.rows(&rows);
+    let ps = list_panes().unwrap();
+    for (i, s) in shapes.iter().enumerate() {
+        assert_eq!(get(&ps, &format!("%{i}")).msg, "Claude needs your permission", "row {i}: {s}");
+    }
+}
+
+/// #453: `--json` carries the question as `msg` and the header in `doing`.
+#[test]
+fn the_json_rows_carry_the_question_and_its_header() {
+    let r = Rig::new("askjson");
+    r.transcript("s1", &ask_row("tu1", serde_json::json!([q("Merge?", "Merge")])));
+    r.rows(&[hooked("%1", "needs-input", "s1")]);
+    let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&list_panes().unwrap())).unwrap();
+    assert_eq!(
+        (v[0]["msg"].as_str(), v[0]["doing"].as_str()),
+        (Some("Merge?"), Some("AskUserQuestion: Merge"))
+    );
+}

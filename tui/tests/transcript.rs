@@ -229,3 +229,27 @@ fn a_blank_cockpit_tmux_is_none_not_a_panic() {
         }
     }
 }
+
+/// #453: an AskUserQuestion, `id`, asking `question` under `header`.
+fn ask(id: &str, question: &str, header: &str) -> String {
+    let v = serde_json::json!({"type": "assistant", "version": "2.1.316", "message": {"content": [{"type": "tool_use",
+        "id": id, "name": "AskUserQuestion", "input": {"questions": [{"question": question, "header": header}]}}]}});
+    format!("{v}\n")
+}
+
+fn answer(id: &str) -> String {
+    let v = serde_json::json!({"type": "user", "version": "2.1.316",
+        "message": {"content": [{"type": "tool_result", "tool_use_id": id}]}});
+    format!("{v}\n")
+}
+
+/// #453: the info screen's rows end with the open question, which outlives a
+/// later tool_use, and an answered one writes no row.
+#[test]
+fn an_open_question_is_an_ask_row_and_an_answered_one_is_not() {
+    let bash = r#"{"type":"assistant","version":"2.1.316","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}"#;
+    let open = Tmp::new("askopen", &format!("{}{bash}\n", ask("q1", "Merge\u{202e} now?", "Merge")));
+    let done = Tmp::new("askdone", &(ask("q1", "Merge?", "Merge") + &answer("q1")));
+    assert!(doing(&open.0).unwrap().ends_with("ask\tMerge now?\n"));
+    assert_eq!(doing(&done.0), None, "nothing open, said or asked");
+}

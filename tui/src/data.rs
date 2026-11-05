@@ -280,6 +280,8 @@ struct Facts {
     newest: Option<SystemTime>,
     /// `Unknown` when the tail said nothing
     state: State,
+    /// the newest open AskUserQuestion's question, `""` when none is open
+    ask: String,
 }
 
 thread_local! {
@@ -378,7 +380,8 @@ fn parse(lines: Vec<String>) -> Facts {
     let mut fa = Facts::default();
     // An AskUserQuestion is open until a user row carries its tool_result:
     // answers, dismissals and denials write one, an interrupt does not.
-    let mut asks: Vec<String> = vec![];
+    // (tool_use id, its question): the newest still open is the row's message (#453)
+    let mut asks: Vec<(String, Option<String>)> = vec![];
     let (mut turn_over, mut saw) = (false, false);
     for raw in lines {
         let Ok(v) = serde_json::from_str::<Value>(&raw) else { continue };
@@ -409,7 +412,7 @@ fn parse(lines: Vec<String>) -> Facts {
                         let (mut interrupted, mut result, mut typed) = (false, false, None);
                         for b in c.as_array().into_iter().flatten() {
                             if let Some(id) = b["tool_use_id"].as_str() {
-                                asks.retain(|a| a != id);
+                                asks.retain(|(a, _)| a != id);
                                 result = true;
                             }
                             // safe beside the tool_results: they carry no `text`
@@ -449,14 +452,16 @@ fn parse(lines: Vec<String>) -> Facts {
                         Some("tool_use") => {
                             let name = b["name"].as_str().unwrap_or("");
                             // The name alone when no field says more: never a bare `name:`.
-                            fa.tool = match transcript::pick(name, &b["input"]).map(|(p, s)| (p, first_line(s))) {
+                            // model-written, so bidi controls go too (#453)
+                            let pick = transcript::pick(name, &b["input"]);
+                            fa.tool = match pick.map(|(p, s)| (p, crate::pick::clean(&first_line(s)))) {
                                 Some((p, d)) if !d.is_empty() => format!("{name}: {p}{d}"),
                                 _ => name.to_string(),
                             };
                             if name == "AskUserQuestion"
                                 && let Some(id) = b["id"].as_str()
                             {
-                                asks.push(id.to_string());
+                                asks.push((id.to_string(), transcript::question(&b["input"])));
                             }
                         }
                         Some("text") => {
@@ -472,6 +477,7 @@ fn parse(lines: Vec<String>) -> Facts {
             _ => {}
         }
     }
+    fa.ask = asks.iter().rev().find_map(|(_, q)| q.clone()).unwrap_or_default();
     // An open question outranks a finished turn: the interrupt that ended the
     // turn left the picker's tool_use open, and the human still owes an answer.
     fa.state = match () {
@@ -493,6 +499,10 @@ fn read_transcript(p: &mut Pane) {
     // @panestate wins; the transcript speaks only for panes the hooks never touched.
     if p.state == State::Unknown {
         p.state = fa.state;
+    }
+    // #453: the hook's text is generic; an open question says what is owed
+    if p.state == State::NeedsInput && !fa.ask.is_empty() {
+        p.msg = fa.ask;
     }
     p.doing = fa.tool;
     p.said = fa.text;
