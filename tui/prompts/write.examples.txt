@@ -39,10 +39,10 @@ Help me plan moving the Coder workspace to the new server without downtime; it r
 <option>It stops with an error</option>
 <option>The file comes out empty</option>
 <option>Some values are wrong</option></reply></example>
-<example id="done-when" when="out:prompt window:claude"><screen>● The notes list now loads from SQLite.</screen><window>claude in {{home}}/projects/notes</window><request>add search to the notes app</request><questions_left>3</questions_left><reply><question>What should search do for it to count as done?</question>
-<option>Match words in note titles</option>
-<option>Match titles and note text</option>
-<option>Full text, ranked by relevance</option></reply></example>
+<example id="done-when" when="out:prompt window:claude"><screen>● The notes list now loads from SQLite.</screen><window>claude in {{home}}/projects/notes</window><request>add search to the notes app</request><questions_left>3</questions_left><reply><question>When is search done?</question>
+<option>A title word finds the note</option>
+<option>Any word in a note finds it</option>
+<option>Results update as I type</option></reply></example>
 <example id="command" when="out:command"><screen>(empty)</screen><request>list the 10 biggest files here</request><output_type>command</output_type><reply><command lang="bash">du -ah . | sort -rh | head -n 10</command></reply></example>
 <example id="steps" core="1"><screen>(empty)</screen><request>set up an ssh key for host lab, it is in my ssh config</request><reply><steps>
 <step><note>Create a key (press Enter at each question)</note><cmd lang="bash">ssh-keygen -t ed25519</cmd></step>
