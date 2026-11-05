@@ -37,16 +37,18 @@ The panel asks a text-only `claude -p` about the pane you are in and pastes
 the answer back into it. It is a port of type-panel. Claude runs with
 `--tools ""`, so it sees only the screen text it is sent and can neither edit a
 file nor run a command. The one exception is opt-in: with explore on (`^R`), a
-write may also read the pane's folder with Read, Grep and Glob, and still
-cannot write. The panel itself writes its system prompt to a cache
+write may also read files under the pane's folder with Read, Grep and Glob, and
+still cannot write. Its reads are not yet confined to that folder (only a deny
+list of key and token files is), and what it reads is neither redacted nor
+trusted: read the result before you send it. The panel itself writes its system prompt to a cache
 file and the answer to a private temp file for the paste.
 
 - **Compose**: type rough words. `^S` writes a prompt, command, steps,
   text or hint from them, `^F` fixes the spelling, `^T` inserts them as
   typed. `⇥` picks the output type and `^N` the model. `^R` turns on
-  explore first: the write may read a few files in the pane's folder, so the
-  prompt names real files and functions (local windows only, never ssh; up to
-  USD 0.15 and 90 s). The box has a
+  explore first: the write may read a few files under the pane's folder, so
+  the prompt names real files and functions (local windows only, never ssh;
+  up to USD 0.15 and 90 s per call). The box has a
   cursor: `←` `→`, `^←` `^→` by word, `Home` `End` (`^A` `^E`) and `Del`;
   `⌫`, `^W` and `^U` delete before it.
 - **Explain**: what the pane is doing, what should happen next, or your

@@ -1,6 +1,6 @@
 "╭ panel · %3 · work ───────────────────╮"
 "│ ○ explore on: the write may read     │"
-"│ this folder first                    │"
+"│ files under this folder first        │"
 "│ type: command   model: auto          │"
 "│ explore: on                          │"
 "│ fix it▏                              │"

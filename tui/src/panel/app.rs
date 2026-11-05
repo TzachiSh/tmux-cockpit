@@ -824,7 +824,7 @@ impl App {
         }
         if self.explore_dir().is_some() {
             self.explore = true;
-            return self.say(Level::Info, "explore on: the write may read this folder first");
+            return self.say(Level::Info, "explore on: the write may read files under this folder first");
         }
         let why = if self.local {
             "tmux gives no folder for this pane".to_string()
@@ -839,18 +839,37 @@ impl App {
         (self.local && !self.cap.path.is_empty()).then(|| PathBuf::from(&self.cap.path))
     }
 
-    /// A write with the toggle on, in a local window. Fix and Explain never read.
+    /// A write with the toggle on, in a window local when the panel opened. Fix and Explain never read.
     pub fn explores(&self, flow: &Flow) -> bool {
         self.explore && matches!(flow, Flow::Write { .. }) && self.explore_dir().is_some()
     }
 
     /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
-    /// write a read-only one on the pane's folder under the explore caps.
+    /// write a read-only one on the pane's folder under the explore caps, per call.
+    // TODO(#416): when 1b's Profile has its output-format field, ask json --verbose here and
+    // have reply() unwrap it and note parse::files_read's count on the result.
     pub fn profile_for(&self, flow: &Flow) -> Profile {
         match self.explore_dir() {
             Some(dir) if self.explores(flow) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
             _ => Profile::TEXT,
         }
+    }
+
+    /// [`hint`], but for an exploring call's own caps, which no setting raises: esc
+    /// leads back to the draft from any view a call starts on, and ^R is there.
+    fn fail_hint(&self, f: &Fail) -> Option<String> {
+        let exploring = self.run.as_ref().is_some_and(|r| self.explores(&r.flow));
+        let cap = match f {
+            Fail::Timeout => format!("{} s", EXPLORE_TIMEOUT.as_secs()),
+            Fail::Failed(t) if t.to_ascii_lowercase().contains("exceeded usd budget") => format!("USD {EXPLORE_BUDGET_USD}"),
+            _ => return hint(f).map(String::from),
+        };
+        if !exploring {
+            return hint(f).map(String::from);
+        }
+        Some(format!(
+            "explore stops each call at {cap}: r retries, or esc back to the draft, where ^R turns it off"
+        ))
     }
 
     fn need_draft(&mut self) -> bool {
@@ -1016,7 +1035,7 @@ impl App {
                 };
                 self.view = View::Error {
                     line,
-                    hint: hint(&f).map(String::from),
+                    hint: self.fail_hint(&f),
                 };
                 return;
             }
@@ -1692,8 +1711,6 @@ pub fn hint(f: &Fail) -> Option<&'static str> {
         Some("log in: run claude in a terminal and use /login, then r retries")
     } else if has(&["rate limit", "rate_limit", "usage limit", "429", "overloaded"]) {
         Some("a usage or rate limit: wait a minute, then r retries")
-    } else if t.contains("exceeded usd budget") {
-        Some("the explore's budget ran out: esc, ^R turns explore off, then write again")
     } else if !t.starts_with("cannot write") && t.contains("(os error 2)") {
         Some("claude is not installed here: install Claude Code, or set COCKPIT_CLAUDE to its path")
     } else {

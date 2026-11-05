@@ -1,5 +1,5 @@
 "╭ panel · %3 · work ───────────────────────────────────────────────────────────╮"
-"│ ○ explore on: the write may read this folder first                           │"
+"│ ○ explore on: the write may read files under this folder first               │"
 "│ type: command   model: auto   explore: on                                    │"
 "│ fix it▏                                                                      │"
 "│                                                                              │"

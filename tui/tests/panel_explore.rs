@@ -1,6 +1,6 @@
 //! Explore first (#416): a Compose toggle that lets a write read the pane's
 //! folder through a read-only profile. Fake claude scripts in temp dirs; no tmux.
-use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, Tile, View, hint};
+use cockpit_tui::panel::app::{App, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT, Level, Tile, View};
 use cockpit_tui::panel::capture::{Capture, window_kind};
 use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::prompts::{self, Ctx};
@@ -234,15 +234,99 @@ fn launch_sends_an_exploring_write_through_the_read_only_argv() {
         })
         .expect("the fake ran");
     let args: Vec<&str> = argv.lines().collect();
+    let cwd = std::fs::read_to_string(d.join("cwd")).unwrap_or_default();
+    let want = std::fs::canonicalize(&call.dir).unwrap();
+    assert_eq!(
+        cwd.trim(),
+        want.display().to_string(),
+        "the call's cwd is its own dir, never the repo"
+    );
     let add = args.iter().position(|x| *x == "--add-dir").expect("--add-dir");
     assert_eq!(args[add + 1], repo.display().to_string());
     assert!(args.contains(&"Read,Grep,Glob"), "{argv}");
     a.stop();
 }
 
+/// Compose, ^R on or off, a draft, ^S: a pending write.
+fn sent(explore: bool) -> App {
+    let mut a = app("bash", "/home/u/proj");
+    compose(&mut a);
+    if explore {
+        ctrl(&mut a, 'r');
+    }
+    a.draft = "fix it".into();
+    ctrl(&mut a, 's');
+    assert_eq!(a.view, View::Busy);
+    a
+}
+
+fn error_hint(a: &App) -> String {
+    match &a.view {
+        View::Error { hint, .. } => hint.clone().unwrap_or_default(),
+        v => panic!("not an error: {v:?}"),
+    }
+}
+
+/// The explore cap is fixed: COCKPIT_PANEL_TIMEOUT does not raise it, so the hint never offers it.
 #[test]
-fn a_spent_explore_budget_hints_at_the_toggle() {
-    let f = Fail::Failed("Error: Exceeded USD budget (0.15)".into());
-    let h = hint(&f).expect("a hint");
-    assert!(h.contains("^R"), "{h}");
+fn an_exploring_write_that_times_out_names_the_explore_cap() {
+    let mut a = sent(true);
+    a.timeout = EXPLORE_TIMEOUT;
+    a.reply(Err(Fail::Timeout));
+    let h = error_hint(&a);
+    assert!(h.contains("90 s") && h.contains("^R"), "{h}");
+    assert!(!h.contains("COCKPIT_PANEL_TIMEOUT"), "{h}");
+}
+
+#[test]
+fn a_text_write_that_times_out_still_offers_the_variable() {
+    let mut a = sent(false);
+    a.timeout = Duration::from_secs(120);
+    a.reply(Err(Fail::Timeout));
+    assert!(error_hint(&a).contains("COCKPIT_PANEL_TIMEOUT"));
+}
+
+/// Spent on an answer's call, the hint's way to ^R is esc to the question, esc to the draft.
+#[test]
+fn a_spent_explore_budget_hints_the_way_back_to_the_toggle() {
+    let mut a = sent(true);
+    a.reply(Ok("<question>Which?</question><option>a</option><option>b</option>".into()));
+    a.key(KeyEvent::from(KeyCode::Char('1')));
+    assert_eq!(a.view, View::Busy);
+    a.reply(Err(Fail::Failed("Error: Exceeded USD budget (0.15)".into())));
+    let h = error_hint(&a);
+    assert!(h.contains("USD 0.15") && h.contains("draft") && h.contains("^R"), "{h}");
+    a.key(KeyEvent::from(KeyCode::Esc));
+    assert!(matches!(a.view, View::Question { .. }), "{:?}", a.view);
+    a.key(KeyEvent::from(KeyCode::Esc));
+    assert_eq!(a.view, View::Compose, "esc again reaches the draft");
+    ctrl(&mut a, 'r');
+    assert!(!a.explore, "where ^R turns it off");
+}
+
+#[test]
+fn a_spent_budget_on_a_text_call_gets_no_explore_hint() {
+    let mut a = sent(false);
+    a.reply(Err(Fail::Failed("Error: Exceeded USD budget (0.15)".into())));
+    assert!(!error_hint(&a).contains("^R"));
+}
+
+/// The caps are per call: a write that keeps asking makes five exploring calls,
+/// each under the read-only profile, before it ends on an error.
+#[test]
+fn one_write_makes_at_most_five_exploring_calls_on_its_own() {
+    const Q: &str = "<question>Which?</question><option>a</option><option>b</option>";
+    let mut a = sent(true);
+    let mut calls = 0;
+    while a.view == View::Busy {
+        calls += 1;
+        let flow = a.run.as_ref().unwrap().flow.clone();
+        assert_ne!(a.profile_for(&flow), Profile::TEXT, "call {calls} explores");
+        a.reply(Ok(Q.into()));
+        if matches!(a.view, View::Question { .. }) {
+            a.key(KeyEvent::from(KeyCode::Char('1')));
+        }
+    }
+    assert_eq!(calls, 5);
+    assert!(matches!(a.view, View::Error { .. }), "{:?}", a.view);
 }
