@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const NOW: u64 = 1_800_000_000;
 
@@ -43,19 +43,38 @@ fn note(a: &App) -> Option<&str> {
     a.note.as_ref().map(|n| n.text.as_str())
 }
 
-fn dir(tag: &str) -> PathBuf {
+/// A test's directory, removed when the guard drops: on return and on a
+/// failed assert's unwind alike, so a run leaves nothing in the temp dir.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+fn dir(tag: &str) -> Scratch {
     let d = std::env::temp_dir().join(format!("cockpit-panel-hide-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    d
+    Scratch(d)
 }
 
-/// The body a hide at `NOW` writes, as `act.state` in a fresh directory.
-fn saved(a: &App, tag: &str) -> PathBuf {
+/// The body a hide at `NOW` writes, as `act.state` in a fresh directory; the
+/// file lives as long as the guard.
+fn saved(a: &App, tag: &str) -> (Scratch, PathBuf) {
     let d = dir(tag);
     let body = cockpit_tui::panel::action::hide_body(a, NOW).expect("kept");
     write_hidden(&d.join("act"), &body).unwrap();
-    d.join("act.state")
+    let p = d.join("act.state");
+    (d, p)
 }
 
 /// ^Z, the file, and a new panel on it: what the next `prefix f` shows.
@@ -63,7 +82,7 @@ fn round(a: &mut App, tag: &str) -> App {
     ctrl(a, 'z');
     assert!(a.hide && a.quit, "^Z closes the panel to hide it");
     assert!(a.action.is_none() && a.resume.is_none(), "and acts on nothing");
-    let p = saved(a, tag);
+    let (_d, p) = saved(a, tag);
     let mut b = app(&a.cap.cmd);
     b.unhide(read_hidden(&p, "%3", NOW + 5).unwrap());
     assert_eq!(b.view, a.view, "{tag}: the view comes back");
@@ -198,7 +217,7 @@ fn a_confirm_comes_back_as_the_view_it_was_opened_from() {
     key(&mut a, KeyCode::Char('s'));
     assert!(matches!(a.view, View::Confirm { .. }));
     ctrl(&mut a, 'z');
-    let p = saved(&a, "confirm");
+    let (_d, p) = saved(&a, "confirm");
     let mut b = app("bash");
     b.unhide(read_hidden(&p, "%3", NOW).unwrap());
     assert!(matches!(b.view, View::Result { .. }), "never on a yes: {:?}", b.view);
@@ -228,7 +247,7 @@ fn busy_refuses_to_hide_and_keeps_the_call() {
 fn a_hide_keeps_a_changed_command_so_the_paste_guard_still_refuses() {
     let mut a = replied("say hi", "<text>hi</text>");
     ctrl(&mut a, 'z');
-    let p = saved(&a, "cmd");
+    let (_d, p) = saved(&a, "cmd");
     let mut b = app("vim");
     b.unhide(read_hidden(&p, "%3", NOW).unwrap());
     assert_eq!(b.cap.cmd, "bash");
@@ -241,7 +260,7 @@ fn the_state_is_per_pane_private_and_never_overwritten() {
     let mut a = app("bash");
     key(&mut a, KeyCode::Char('2'));
     ctrl(&mut a, 'z');
-    let p = saved(&a, "pane");
+    let (_d, p) = saved(&a, "pane");
     assert_eq!(std::fs::metadata(&p).unwrap().permissions().mode() & 0o777, 0o600);
     assert!(read_hidden(&p, "%4", NOW).err().unwrap().contains("another pane"));
     let body = cockpit_tui::panel::action::hide_body(&a, NOW).unwrap();
@@ -255,7 +274,7 @@ fn the_state_is_per_pane_private_and_never_overwritten() {
 fn a_stale_state_is_dropped() {
     let mut a = app("bash");
     ctrl(&mut a, 'z');
-    let p = saved(&a, "stale");
+    let (_d, p) = saved(&a, "stale");
     assert!(read_hidden(&p, "%3", NOW + HIDE_AGE).is_ok(), "24 h is still in");
     let e = read_hidden(&p, "%3", NOW + HIDE_AGE + 1).err().unwrap();
     assert_eq!(e, "it is older than 24 h");
@@ -263,7 +282,8 @@ fn a_stale_state_is_dropped() {
 }
 
 fn refused(tag: &str, body: &str) -> String {
-    let p = dir(tag).join("s");
+    let d = dir(tag);
+    let p = d.join("s");
     std::fs::write(&p, body).unwrap();
     read_hidden(&p, "%3", NOW).err().expect(tag)
 }
@@ -286,7 +306,8 @@ fn a_corrupt_state_is_refused_whole() {
     assert!(refused("lines", &good.replacen('\n', "\n\n", 1)).contains("one body line"));
     let v1 = "cockpit-panel-state 1\npane %3\ncmd zsh\nlabel L\nsel 0\nverb paste\nstep 0\tbash\tn\tls\n";
     assert!(refused("v1", v1).contains("version 2"), "a steps file is no hidden panel");
-    let p = dir("v2").join("s");
+    let v2 = dir("v2");
+    let p = v2.join("s");
     std::fs::write(&p, &good).unwrap();
     assert!(read_state(&p, "%3").is_err(), "and the steps reader refuses a hidden panel");
 
@@ -426,7 +447,7 @@ fn explore_off_comes_back_off() {
 fn explore_is_dropped_when_the_pane_runs_ssh_by_now() {
     let mut a = exploring();
     ctrl(&mut a, 'z');
-    let p = saved(&a, "explore-ssh");
+    let (_d, p) = saved(&a, "explore-ssh");
     let mut b = app("ssh");
     b.unhide(read_hidden(&p, "%3", NOW + 5).unwrap());
     assert!(!b.explore, "an ssh pane's folder is the client's");
