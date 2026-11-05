@@ -328,6 +328,9 @@ fn a_name_with_a_control_or_bidi_character_is_refused_for_view_open_and_copy() {
         "a\u{202e}b.rs",
         "a\u{2066}b.rs",
         "a\u{2069}b.rs",
+        "a\u{61c}b.rs",
+        "a\u{200e}b.rs",
+        "a\u{200f}b.rs",
     ];
     for name in names {
         let s = Scratch::new();
