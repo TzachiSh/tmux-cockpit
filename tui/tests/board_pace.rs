@@ -319,3 +319,12 @@ fn a_failed_fetch_and_two_selections_are_one_failure() {
     assert_eq!(reads.fails, 1);
     assert!(!reads.lost(t + ms(30)), "no lost card after one failed read");
 }
+
+#[test]
+fn a_capture_drained_with_a_slow_fetch_does_not_hide_it() {
+    let t = Instant::now();
+    let rest = [snap(false, true, 3)].into_iter();
+    let d = board::drain(snap(true, true, 900), rest, &mut Reads::new(t), t);
+    assert_eq!(d.fetched, Some(ms(900)));
+    assert!(!d.snap.fresh, "the newest snapshot is the one drawn");
+}

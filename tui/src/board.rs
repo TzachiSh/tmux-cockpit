@@ -3773,7 +3773,7 @@ pub fn work(inbox: &mut impl Inbox, mut want: Want, mut job: impl FnMut(bool, &W
 pub struct Drained {
     /// the newest
     pub snap: Snapshot,
-    /// the newest's time if a fetch was among them; `None` if all were captures
+    /// the slowest fetch's time among them; `None` if all were captures
     pub fetched: Option<Duration>,
 }
 
@@ -3794,10 +3794,7 @@ pub fn drain(first: Snapshot, rest: impl Iterator<Item = Snapshot>, reads: &mut 
     if let Some(ok) = ok {
         reads.got(ok, now);
     }
-    Drained {
-        fetched: fetched.map(|_| snap.took),
-        snap,
-    }
+    Drained { snap, fetched }
 }
 
 /// What one turn of the key loop asks for a push wake and a resize event.
@@ -4079,6 +4076,7 @@ pub fn run(o: &Opts) -> Option<Exit> {
                 loaded = true;
                 // #291: one line a second filled tui.log; log only a slow fetch
                 // or a read that started or stopped failing
+                // the slowest fetch: a capture in the same drain must not hide it
                 if let Some(took) = fetched
                     && (took > SLOW_TICK || last_ok != Some(s.ok))
                 {
