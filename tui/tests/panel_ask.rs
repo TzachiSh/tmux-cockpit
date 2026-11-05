@@ -543,3 +543,15 @@ fn esc_on_a_busy_ask_returns_to_its_question() {
     key(&mut a, KeyCode::Enter);
     assert_eq!(a.run.as_ref().unwrap().turns.len(), 1, "the question went once");
 }
+
+/// review-464: an ask opened while a panel is hidden on its pane cannot hide
+/// too, as one pane keeps one hidden panel; ^Z says so and the ask stays open.
+#[test]
+fn a_second_hide_on_the_pane_is_refused() {
+    let (_d, mut a) = opened("hidetaken");
+    a.hide_taken = true;
+    a.key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL));
+    assert!(!a.hide && !a.quit, "it hid");
+    let n = a.note.as_ref().map(|n| n.text.clone()).unwrap_or_default();
+    assert!(n.contains("already hidden"), "{n}");
+}

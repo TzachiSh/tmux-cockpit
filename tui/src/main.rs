@@ -86,6 +86,8 @@ fn panel(args: &[String]) {
             }
         }
     }
+    // cockpit-panel says when an ask opens with a panel already hidden on the pane
+    a.hide_taken = std::env::var_os("COCKPIT_PANEL_HIDE_TAKEN").is_some_and(|v| v == "1");
     // the viewer's `?` (#365): the lines are read here, as the viewer showed them
     if let cockpit_tui::panel::Start::Ask(f, l1, l2) = &start {
         match cockpit_tui::panel::ask::load(std::path::Path::new(f), *l1, *l2) {

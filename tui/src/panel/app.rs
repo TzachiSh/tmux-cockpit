@@ -235,6 +235,9 @@ pub struct App {
     pub resume: Option<Resume>,
     /// ^Z: out with no action, and the whole state in `<action>.state` (#278).
     pub hide: bool,
+    /// A panel is hidden on this pane already (an ask left it so): ^Z cannot hide
+    /// this one too, as the pane keeps one.
+    pub hide_taken: bool,
     pub quit: bool,
     /// The step this run was resumed for, and its verb: the mark says what was done.
     pub last_step: Option<(usize, &'static str)>,
@@ -287,6 +290,7 @@ impl App {
             action: None,
             resume: None,
             hide: false,
+            hide_taken: false,
             reopened: false,
             quit: false,
             last_step: None,
@@ -638,6 +642,9 @@ impl App {
     fn hide_key(&mut self) {
         if self.view == View::Busy {
             return self.say(Level::Warn, "a call is out: esc cancels it, then ^Z hides");
+        }
+        if self.hide_taken {
+            return self.say(Level::Warn, "a panel is already hidden on this pane: q closes this one");
         }
         // u64::MAX: the longest timestamp the file can carry
         if hide_body(self, u64::MAX).is_none() {

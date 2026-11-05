@@ -797,19 +797,25 @@ is.
 - **What is read.** The panel reads the lines itself, as the viewer would show
   them: a file the viewer refuses (binary, over 1 MB, not UTF-8) is an error,
   and an end past the file's last line is held to it. At most 400 lines and
-  32 KB go inline, each behind its number; the call is told what was left out,
-  and reads the rest with its own Read. The code is redacted as the screen is,
-  and the screen itself is never sent.
+  32 KB go inline, each behind its number; the call is told what was left out
+  or cut short, and reads the rest with its own Read. Each line is redacted as
+  the screen is before it is numbered or cut (a key's PEM body line by line),
+  and the screen itself is never sent. A file name with a control or bidi
+  character is refused.
 - **The call.** `request::Profile::read_only(repo, research = true)`: Read,
   Grep, Glob, WebSearch, WebFetch and skills, with no hooks and the secret
-  paths denied (see the rule on actions above). The repo is the nearest folder
-  above the file with a `.git`, found by looking, never by running git, else
-  the file's folder. USD 0.50 and 300 s cap one ask; `esc` on the busy line
-  cancels it. The model is the panel's routing's, sonnet unless one is chosen.
+  paths denied, and no read outside the repo (see the rule on actions above).
+  The repo is the nearest folder above the file with a `.git`, found by
+  looking, never by running git, else the file's folder; never home, a folder
+  above it, or `/`, so a file whose folder is one of them is "not in a project
+  folder". The repo then passes `request::read_dir_ok`. USD 0.50 and 300 s cap
+  one ask; `esc` on the busy line cancels it and goes back to the question. The model is the panel's routing's, sonnet unless one is chosen.
 - **The answer** is the Explain answer view: `f` asks a follow-up in the same
   thread (the code and every turn are sent again; nothing is kept between
   panels), and a `<prompt>` the answer ends with can be inserted into or sent
-  to the pane's agent. `^Z` hides it like any other panel.
+  to the pane's agent. `^Z` hides it like any other panel, unless a panel is
+  hidden on the pane already: the pane keeps one, so the ask's `^Z` says so,
+  and `cockpit-panel` never moves a state over the one kept.
 - **The prompt** is `ask-code.txt`, overridden like the others.
 
 ### Code in the panel (#282)

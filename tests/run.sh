@@ -9081,6 +9081,7 @@ cat "$PND/line" > "\$COCKPIT_ACTION"
 [ -e "$PND/text" ] && cat "$PND/text" > "\$COCKPIT_ACTION.text"
 cat "$PND/cmd" > "\$COCKPIT_ACTION.cmd"
 printf '%s\n' "\$*" >> "$PND/bargv"
+printf '%s\n' "\${COCKPIT_PANEL_HIDE_TAKEN:-}" > "$PND/taken"
 [ -e "$PND/crash" ] && exit 3
 # A state file only on the first run: the resumed one leaves without a way back.
 [ -e "$PND/state" ] && [ "\${3:-}" != --resume ] && printf 'S\n' > "\$COCKPIT_ACTION.state"
@@ -9119,7 +9120,16 @@ PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKP
     "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
 is "--ask leaves a panel hidden on the pane where it is" "panel %5 --ask /r/x.rs 3 7|H" \
    "$(head -1 "$PND/bargv")|$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state" 2>/dev/null)"
-rm -rf "$PND/xdg"
+is "and the binary is told the pane's hidden slot is taken" "1" "$(cat "$PND/taken")"
+# review-464: a stub that does hide (no action line, a state) must not overwrite it
+printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"; : > "$PND/line"; touch "$PND/state"; : > "$PND/pargv"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "a hide on an ask leaves the panel hidden before it" "H" "$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state")"
+is "and says this one is closed" "1" "$(grep -c 'already hidden on %5; this one is closed' "$PND/pargv")"
+rm -f "$PND/state"; rm -rf "$PND/xdg"
+: > "$PND/bargv"; pask >/dev/null
+is "a plain run is not told the slot is taken" "" "$(cat "$PND/taken")"
 unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \

@@ -31,7 +31,8 @@ case "${1:-}" in
 esac
 # --ask (#365): the first run opens on the question; the binary checks the lines again
 if [ "${3:-}" = --ask ]; then
-    if [ "$#" -ne 6 ] || [ -z "$4" ] || ! [[ $5 =~ ^[1-9][0-9]{0,8}$ && $6 =~ ^[1-9][0-9]{0,8}$ ]] || [ "$5" -gt "$6" ]; then
+    n='^[1-9][0-9]{0,8}$'
+    if [ "$#" -ne 6 ] || [ -z "$4" ] || ! [[ $5 =~ $n && $6 =~ $n ]] || [ "$5" -gt "$6" ]; then
         printf 'usage: cockpit-panel -p <pane> --ask <file> <a> <b>\n' >&2; exit 2
     fi
     ask=(--ask "$4" "$5" "$6")
@@ -169,11 +170,16 @@ resume=() last=
 if [ "${#ask[@]}" -eq 0 ] && [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; } && mv -f "$saved" "$d/resume" 2>/dev/null; then
     resume=(--resume "$d/resume" --last hidden)
 fi
+# the pane keeps one hidden panel: an ask opened beside it is told, so its ^Z refuses
+taken=''
+if [ "${#ask[@]}" -gt 0 ] && [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; }; then taken=1; fi
 glyphs=$(tmux show-option -gqv @cockpit_glyphs 2>/dev/null)   # #293: the binary reads only the env
 while :; do
     rm -f "$f" "$f.text" "$f.cmd" "$f.state"
     # CLAUDECODE leaks in from the agent's environment and must not mark the call as its child.
-    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} ${ask[@]+"${ask[@]}"} 2>>"$LOG" || {
+    env -u CLAUDECODE COCKPIT_ACTION="$f" COCKPIT_LOG="$LOG" COCKPIT_PANEL_DROPPED="${dropped# }" \
+        ${glyphs:+"COCKPIT_GLYPHS=$glyphs"} ${taken:+COCKPIT_PANEL_HIDE_TAKEN=1} \
+        "$BIN" panel "$PANE" ${resume[@]+"${resume[@]}"} ${ask[@]+"${ask[@]}"} 2>>"$LOG" || {
         rc=$?
         tell "cockpit: the panel exited $rc — see $LOG"
         exit 0
@@ -182,6 +188,12 @@ while :; do
     # No action line and a state file: ^Z hid the panel. From the board the note
     # is the board's, and the board loop goes on as after esc.
     if [ ! -s "$f" ] && [ -s "$f.state" ]; then
+        # never over a panel already hidden here (a binary that missed the env)
+        if [ -n "$saved" ] && { [ -e "$saved" ] || [ -L "$saved" ]; }; then
+            log "not hiding over the panel already hidden on $PANE"
+            tell "cockpit: a panel is already hidden on $PANE; this one is closed"
+            exit 0
+        fi
         if [ -n "$saved" ] && mkdir -p "$HDIR" 2>/dev/null && chmod 700 "$HDIR" 2>/dev/null && mv -f "$f.state" "$saved"; then
             hk=$(tmux show-option -gqv @cockpit_panel_bound 2>/dev/null)
             if [ -n "$hk" ]; then hk="prefix $hk"; else hk="the panel key"; fi
