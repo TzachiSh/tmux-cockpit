@@ -522,3 +522,24 @@ fn the_ask_prompt_says_reads_stop_at_the_repo() {
     let p = cockpit_tui::panel::prompts::ASK_CODE;
     assert!(p.contains("a read outside the repository is refused"), "{p}");
 }
+
+/// review-464: esc on the first ask's call goes back to its question, typed as
+/// it was, and a resend carries it once.
+#[test]
+fn esc_on_a_busy_ask_returns_to_its_question() {
+    let (_d, mut a) = opened("busyesc");
+    typ(&mut a, "why?");
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.view, View::Busy);
+    key(&mut a, KeyCode::Esc);
+    match &a.view {
+        View::Input {
+            kind: InputKind::FollowUp,
+            text,
+            ..
+        } => assert_eq!(text, "why?"),
+        v => panic!("not the question box: {v:?}"),
+    }
+    key(&mut a, KeyCode::Enter);
+    assert_eq!(a.run.as_ref().unwrap().turns.len(), 1, "the question went once");
+}

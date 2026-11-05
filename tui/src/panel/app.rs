@@ -1272,6 +1272,18 @@ impl App {
                         InputKind::Explain => self.explain(&t, &t, back),
                         InputKind::Correct(i) => self.correct(i, t, back),
                         InputKind::FollowUp => {
+                            // an ask's first question: esc on its call comes back to it
+                            let first_ask = self
+                                .run
+                                .as_ref()
+                                .is_some_and(|r| matches!(r.flow, Flow::Ask(_)) && r.log.iter().all(|(you, _)| *you));
+                            let back = if first_ask {
+                                let (text, cur) = (t.clone(), t.len());
+                                let back = Box::new(back);
+                                View::Input { kind, text, cur, back }
+                            } else {
+                                back
+                            };
                             if let Some(r) = self.run.as_mut() {
                                 r.log.push((true, t.clone()));
                                 r.turns.push(Turn { role: Role::User, text: t });
