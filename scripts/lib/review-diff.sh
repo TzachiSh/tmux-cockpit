@@ -2,6 +2,12 @@
 # tmux-review's diff engine: the base, the diff, ^A's checkpoint.
 # Sourced by tmux-review, never run. Bash 4+.
 
+# Every git call, revdiff's too, is about the pane's own repo: a popup inherits
+# tmux's environment, where a dotfiles setup's GIT_DIR would point all of them
+# at another. Each tmux-review mode that reaches git sources this file before
+# its first git call. GIT_CEILING_DIRECTORIES stays: it only stops the search lower.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 # Files git would have to hash in full: 100 ms at 32 MB, 26 s at 1 GB, measured.
 BIGCAP=$(( 32 * 1024 * 1024 ))
 

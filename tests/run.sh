@@ -5065,6 +5065,30 @@ for td_row in 'mixed|1	0	staged.txt' 'mixed|1	0	unstaged.txt' \
     rm -rf "$TDF"
 done
 
+echo "== tree_diff: an inherited GIT_DIR or its kin never reviews another repo (#475) =="
+# A dotfiles setup can export GIT_DIR into tmux's environment, and every popup
+# inherits it. FAIL-first: on the old code each variable below turned the diff
+# into the other repo's, into none, or added a tracked big file as skipped.
+RVENV=$(mktmpd)
+(
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  for r in pane other; do
+    mkdir "$RVENV/$r" && cd "$RVENV/$r" || exit
+    git init -q -b main .
+    printf '%s\n' "$r one" > "$r.txt"; git add -A; git commit -q -m init
+    printf '%s\n' "$r one" "$r CHANGED" > "$r.txt"
+  done
+  # tracked past BIGCAP: only another index makes it untracked, so big
+  cd "$RVENV/pane" && dd if=/dev/null of=core bs=1048576 seek=33 && git add core && git commit -q -m core
+) >/dev/null 2>&1
+is "the pane repo's own numstat, nothing inherited" "1	0	pane.txt" "$(tdiff "$RVENV/pane" --numstat)"
+for v in GIT_DIR=@/.git GIT_WORK_TREE=@ GIT_COMMON_DIR=@/.git GIT_INDEX_FILE=@/.git/index; do
+    rvenvv=${v#*=}; rvenvv=${rvenvv//@/$RVENV/other}
+    is "${v%%=*} naming another repo leaves the pane's numstat" "1	0	pane.txt" \
+       "$(export "${v%%=*}=$rvenvv"; tdiff "$RVENV/pane" --numstat)"
+done
+rm -rf "$RVENV"
+
 echo "== tmux-review --lines is gone: an unknown option, status 2 (#390) =="
 TDL=$(mktmpd)
 "$DIR/scripts/tmux-review" --lines "$TDL" >"$TDL.out" 2>"$TDL.err"; tdlrc=$?
