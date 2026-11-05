@@ -3926,7 +3926,12 @@ pub fn run(o: &Opts) -> Option<Exit> {
         std::process::exit(1);
     }
     // the SIGHUP arm usually wins; this covers a hangup that brings no signal
-    crate::backend::exit_on_hangup(crate::push::cleanup);
+    crate::backend::exit_on_hangup(|| {
+        crate::push::cleanup();
+        crate::data::agents::kill_lookup();
+    });
+    // the lookup runs behind the fetch here; dropped at quit, it kills a call still running
+    let _agents = crate::data::agents::Background::start();
     let th = Theme::load();
     let active = crate::data::tmux(&["display-message", "-p", "#{pane_id}"])
         .unwrap_or_default()
