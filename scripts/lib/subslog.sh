@@ -108,14 +108,16 @@ subs_reconcile() {
     # One flat object at a time, commas and spaces between: whole strings or bytes other than
     # braces and brackets, so a nested object or array is no match, and what is left at the
     # end is not all separators, which writes nothing.
-    re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([a-z_]{1,32})"'
+    re='^[[:space:],]*\{(("([^"\\]|\\.)*"|[^][{}"])*)\}' rt='"type": ?"([A-Za-z_ ]{1,32})"'
     while [[ $arr =~ $re ]]; do
         ob=${BASH_REMATCH[1]} arr=${arr:${#BASH_REMATCH[0]}}
         [ $((n += 1)) -le 256 ] || return 0
         [[ $ob =~ $rt ]] || return 0
         ty=${BASH_REMATCH[1]}
         # Closed (#423): a type renamed by a Claude Code update would otherwise drop its agents
-        # from the set, and the set would end them all.
+        # from the set, and the set would end them all. The skipped labels are the non-agent
+        # ones code.claude.com/docs/en/hooks (Stop input) lists; a raw discriminant, the
+        # fallback for a type it does not know, is not one of them.
         case "$ty" in
         subagent)
             payload=$ob subs_id id; [ -n "$REPLY" ] || return 0
@@ -123,7 +125,7 @@ subs_reconcile() {
         teammate)
             subs_desc description "$ob" || return 0
             descs=$descs$'\t'$REPLY ;;
-        shell) ;;
+        shell | monitor | workflow | 'cloud session' | 'MCP task') ;;
         *) return 0 ;;
         esac
         [ $((${#ids} + ${#descs})) -le 3890 ] || return 0

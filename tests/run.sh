@@ -14043,6 +14043,9 @@ is "a nested array or object in an entry writes no set, never a short one" "0" "
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"},{"id":"a2","type":"local_agent"}')" >/dev/null
 ts sub-reconcile "$(tsfin '{"id":"a1","type":"subagent"},{"id":"a2"}')" >/dev/null
 is "a type it does not know, or none, writes no set: closed, so a renamed type ends no agent (#423)" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
+ts sub-reconcile "$(tsfin '{"id":"m1","type":"monitor","status":"running","description":"watch","server":"s","tool":"t"},{"id":"w1","type":"workflow","name":"w"},{"id":"c1","type":"cloud session"},{"id":"p1","type":"MCP task","server":"s","tool":"t"},{"id":"a1","type":"subagent"}')" >/dev/null
+is "a monitor, workflow, cloud session and MCP task beside a subagent: skipped, the set written" "set=[a1]" "$(tslive)"
+rm -rf "$TSD/state"
 TSTINY=$(for i in $(seq 1 257); do printf '{"type":"shell"},'; done)
 ts sub-reconcile "$(tsfin "${TSTINY%,}")" >/dev/null
 is "past 256 entries, however small, no set (#423)" "0" "$(find "$TSD/state" -type f 2>/dev/null | grep -c .)"
