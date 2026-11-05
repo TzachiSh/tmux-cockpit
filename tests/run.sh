@@ -3443,7 +3443,8 @@ sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS"
 is "the board takes the pin at start, so a later press cannot take its jump" "A=z B=a :" \
    "$(sc_where):$(cat "$SCD/seen")"
 sc_home
-"$TMUX_REAL" -L "$SC" set -pu -t "$SCS" @cockpit_board_client >/dev/null 2>&1
+# B's pin on the pane: -c names A, so A moves and the pin does not override it.
+"$TMUX_REAL" -L "$SC" set -p -t "$SCS" @cockpit_board_client "$SCB" >/dev/null 2>&1
 sc_run env COCKPIT_TUI_BIN="$SCD/tui" "$DIR/scripts/cockpit-board" -p "$SCS" -c "$SCA"
 is "cockpit-board -c moves that client, whatever the pane holds" "A=z B=a " "$(sc_where)"
 # The bindings hand the pressing client over: run-shell expands it at the press.
