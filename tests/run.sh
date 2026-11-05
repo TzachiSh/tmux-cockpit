@@ -5759,6 +5759,11 @@ is "a shell pane is not asked: the board does not count it" "0 $WD/launch" \
 # The board's live test, without its ps walk: a live Claude renames itself to its version, and
 # the hooks' @panestate marks a pane whatever it runs. A name with one dot is not a version.
 is "a pane running as 2.1.246 is an agent, so it is asked" "1 $WD/other" "$(wd_ct ok "$WDV")"
+# The board lowercases the command before the glob (#508): Claude and CLAUDE are claude.
+for argv0 in Claude CLAUDE; do
+    is "a pane running as $argv0 is an agent, so it is asked" "1 $WD/other" \
+       "$(wd_ct ok "$(wd_pane "$argv0")")"
+done
 WDV1=$(wd_pane 2.1)
 is "a pane running as 2.1 is not version-shaped, so it is not asked" "0 $WD/launch" \
    "$(wd_ct ok "$WDV1")"
