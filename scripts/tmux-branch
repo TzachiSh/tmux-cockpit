@@ -9,6 +9,10 @@ if [ "${BASH_VERSINFO[0]:-0}" -lt 4 ]; then
            "${BASH_SOURCE[0]##*/}" "${BASH_VERSION:-unknown}" >&2
     exit 1
 fi
+# The switch lands in the repo the picker listed, the pane's own: a popup
+# inherits tmux's environment, where a dotfiles setup's GIT_DIR would point it
+# at another. GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1

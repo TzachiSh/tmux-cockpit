@@ -2,6 +2,11 @@
 # tmux-review's diff engine: the base, the diff, ^A's checkpoint.
 # Sourced by tmux-review, never run. Bash 4+.
 
+# tmux-review unsets these at its top for every mode. The engine does it again
+# for a caller that sources it on its own: its git is about the dir it is
+# given, never a repo an inherited GIT_DIR names. The ceiling stays.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+
 # Files git would have to hash in full: 100 ms at 32 MB, 26 s at 1 GB, measured.
 BIGCAP=$(( 32 * 1024 * 1024 ))
 

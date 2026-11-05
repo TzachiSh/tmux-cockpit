@@ -886,12 +886,18 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   can name any folder as its tree (`core.worktree`, relative or absolute), and
   an inherited `GIT_DIR` or `GIT_WORK_TREE` can point git at another repo, so
   the root is checked: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and
-  `GIT_INDEX_FILE` are taken out of that git call's environment (a ceiling
-  stays: it only stops the search lower). Then the root is kept only if it
-  holds the pane's folder and its own `.git`, a folder or a `gitdir:` file, is
-  the repo's git dir. Otherwise it is the pane's folder. A linked worktree, a
-  submodule and a separate git dir pass. It is worked out once per panel, and
-  the `explore on` note names it.
+  `GIT_INDEX_FILE` are taken out of the environment of every git call the
+  panel and the board make (`gitsafe::REDIRECT`, #475), and `tmux-review`
+  and `tmux-branch` unset them too (a ceiling stays: it only stops the
+  search lower). The cost: a pane whose only repo is reached through an
+  exported `GIT_DIR` or `GIT_WORK_TREE`, such as a bare dotfiles repo with
+  `GIT_WORK_TREE=$HOME`, shows no repo on the board, the panel, the review
+  and the branch popup. The usual alias form,
+  `git --git-dir=… --work-tree=…`, sets no variable and is unaffected. Then
+  the root is kept only if it holds the pane's folder and its own `.git`, a
+  folder or a `gitdir:` file, is the repo's git dir. Otherwise it is the
+  pane's folder. A linked worktree, a submodule and a separate git dir pass.
+  It is worked out once per panel, and the `explore on` note names it.
 - **Only a local window.** `^R` is refused, with a warn note, when the window
   may be a shell on another machine: its command is not in `LOCAL_CMDS` and not
   an agent name (`capture::is_local`, #433's rule). It is also refused when tmux
@@ -1972,10 +1978,18 @@ because tmux latches a `wait-for -S` only when nobody waits: on a shared
 channel the waiter a SIGKILLed board left behind would take a wake that lands
 while a live board is between two waits, and that board would never see it.
 
-When the child returns the board refetches and starts another. Between the two
-nobody waits, and tmux keeps one bit per channel: the first `-S` in that window
-latches it, so the next wait returns at once, and a second `-S` in the same
-window frees it again. That refresh then waits for the 1 s tick.
+When the child returns the board asks for a fetch and starts another wait.
+Between the two nobody waits, and tmux keeps one bit per channel: the first
+`-S` in that window latches it, so the next wait returns at once, and a second
+`-S` in the same window frees it again. That refresh then waits for the 1 s
+tick.
+
+A wake asks for a fetch no sooner than `PUSH_GAP` (250 ms) after the last one
+ended: at once after a quiet gap, else at the gap's end, so the last wake of a
+storm is always fetched (#492). A new selection, a scroll, `v` and a resize to a
+new size fetch nothing: they recapture what is on screen at once, off the last
+fetch's panes. `^L` fetches at once. Each wake also raises SIGWINCH, which
+crossterm reports as a resize to the same size; that one asks for nothing.
 
 The waiter goes with the board on every exit path:
 
