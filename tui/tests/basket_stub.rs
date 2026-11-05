@@ -1,8 +1,9 @@
 //! The basket against a recording tmux stub, never a real server. One test in
 //! this binary: it points `COCKPIT_TMUX` at the stub for the process.
+mod fake;
+
 use cockpit_tui::basket;
 use cockpit_tui::refs::Ref;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 /// The scratch dir, removed however the test ends.
@@ -25,8 +26,8 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
         "#!/bin/sh\necho \"$*\" >> '{}'\n[ \"$1\" = display-message ] && echo %1\nexit 0\n",
         calls.display()
     );
-    std::fs::write(&stub, body).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // written by a cp child and renamed in, so running it never meets ETXTBSY (#542)
+    fake::write_exec(&stub, &body);
     let f = d.0.join("a.rs");
     std::fs::write(&f, "x\n").unwrap();
     let r = || Ref::new(&f, None, None).unwrap();
@@ -51,7 +52,7 @@ fn the_basket_never_reaches_a_tmux_it_was_not_given() {
     // name, so with the guard gone the call lands in its log, never on a server.
     let bin = d.0.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    std::fs::copy(&stub, bin.join("tmux")).unwrap();
+    fake::write_exec(&bin.join("tmux"), &body);
     let before = n();
     unsafe { std::env::set_var("COCKPIT_TMUX", bin.join("tmux").display().to_string()) };
     assert!(
