@@ -147,11 +147,14 @@ md_view() {
     fi
     # the viewer's ? (#365): the panel opens in this popup, then the viewer again
     local n='([1-9][0-9]{0,8})'
+    # the basket's pane (#365 child 5): this script's own, and only as `%N`
+    local bp=''
+    [[ $pane =~ ^%[0-9]+$ ]] && bp=$pane
     while :; do
         err=$(mktemp 2>/dev/null) || err=/dev/null
         # on the viewer alone: this launcher routes its `ask` (#365), and its `a`
         # adds to the basket of the pane the file came from (#365 child 5)
-        out=$(COCKPIT_VIEW_ASK=1 COCKPIT_BASKET_PANE="$pane" \
+        out=$(COCKPIT_VIEW_ASK=1 COCKPIT_BASKET_PANE="$bp" \
             "$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" 2>"$err"); rc=$?
         [ ! -s "$err" ] || cat "$err" >&2
         if tui_stale "$rc" "$err"; then rc=stale; fi

@@ -13775,6 +13775,10 @@ is "the viewer, and only the viewer, runs with COCKPIT_VIEW_ASK=1" "VIEWENV [1]"
 # #365 child 5: the viewer's `a` adds to this pane's basket; the launcher names it
 is "the viewer, and only the viewer, is told the pane its basket is" "VIEWPANE [%1]" \
    "$(VIEW_ENV=1 askrun '' --view %1 "$MV/w/a.md" '' | grep VIEWPANE)"
+for bp in 'x' '%' '%1;x' '%1 %2' '-t'; do
+    is "a pane [$bp] that is no %N id reaches the viewer as none" "VIEWPANE []" \
+       "$(VIEW_ENV=1 askrun '' --view "$bp" "$MV/w/a.md" '' | grep VIEWPANE)"
+done
 for o in 'ask 7 3' 'ask 0 1' 'ask 01 2' 'ask 1' 'ask 1 2 3' 'ask a b' 'ask 1234567890 1234567891' \
          "ask 1 2"$'\n'"ask 3 4" 'ask 1 2; touch x' ' ask 1 2' 'ask  1 2'; do
     case "$(askrun "$o" --view %1 "$MV/w/a.md" '')" in
