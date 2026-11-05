@@ -11731,8 +11731,8 @@ chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
 is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
-# head -c3, not cut -c1-1: ✕ is three bytes, and GNU cut counts bytes (#482).
-is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | head -c3)"
+# The whole first field, not cut -c1-1: GNU cut counts bytes, and ✕ is three (#482).
+is "and the board is told it was not killed" "✕" "$(awk 'NR >= 3 { print $1 }' "$KD/bargv")"
 
 V=$(kv_win vic-two)
 case "$(kv_run "kill $V" "$V $BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
