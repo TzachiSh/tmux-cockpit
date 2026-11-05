@@ -202,10 +202,12 @@ set*\ @catppuccin_window_current_text\ *)
             0) row warn hooks '0 cockpit hooks merged' 'install.sh --hooks' ;;
             *) row ok hooks "$n cockpit hooks merged" ;;
         esac
+        # `capture(...)? | .c`: jq 1.7 (Ubuntu 24.04) rejects a field written straight after
+        # the `?` as a syntax error, which 2>/dev/null turned into "0 of 6" (#481).
         # The board's subagent tree reads what these six append (#361); sub-taskstop and
         # sub-reconcile came later (#403), so a box set up before them has 4 of 6.
         subs=$(jq '[.hooks[]?[]?.hooks[]?.command? // ""
-                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")?.c]
+                    | capture("agent-state (?<c>sub-(start|stop|idle|end|taskstop|reconcile))$")? | .c]
                    | unique | length' \
                  "$HOME/.claude/settings.json" 2>/dev/null)
         case "$n:${subs:-0}" in

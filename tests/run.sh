@@ -11731,7 +11731,8 @@ chmod +x "$KD/shim/tmux"; : > "$KD/race"; KV_SHIM=$KD/shim
 kv_run "kill $C" "$C $CW" >/dev/null
 KV_SHIM=
 is "a pane that moves between the check and the kill takes nothing with it" "alive alive alive" "$(kv_alive "$C") $(kv_alive "$C2") $(kv_alive "$D")"
-is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | cut -c1-1)"
+# head -c3, not cut -c1-1: ✕ is three bytes, and GNU cut counts bytes (#482).
+is "and the board is told it was not killed" "✕" "$(sed -n '3,$p' "$KD/bargv" | head -c3)"
 
 V=$(kv_win vic-two)
 case "$(kv_run "kill $V" "$V $BW")" in "✕ cockpit: not killed: $V is now in window "*", you confirmed $BW") ok ".expect naming another window's id refuses" ;;
@@ -14859,5 +14860,11 @@ is "and the user's own Stop hook and cockpit's done and review-gate are all stil
 is "--check after: all 6" "ok all 6 subagent hooks merged" "$(tisub)"
 fi
 
+echo "== jq filters parse on jq 1.7 (Ubuntu 24.04): no field access straight after a call's ? (#481) =="
+# jq 1.7 rejects `f(x)?.c` as a syntax error; 1.7.1+ accepts it. The suite runs a newer
+# jq, so a shape check stands in: write `f(x)? | .c` instead.
+j17=$(grep -nE '[)]\?\.[A-Za-z_]' "$DIR/install.sh" "$DIR/cockpit.tmux" "$DIR"/scripts/* "$DIR"/scripts/lib/* 2>/dev/null \
+    | grep -vE '^[^:]*:[0-9]+:[[:space:]]*#')
+is "no shipped script writes f(...)?.field" "" "$j17"
 printf '  %d passed, %d failed, %d skipped\n' "$pass" "$fail" "$skipped"
 [ "$fail" -eq 0 ] || exit 1
