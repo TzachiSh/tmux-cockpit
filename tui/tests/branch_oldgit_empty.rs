@@ -1,5 +1,6 @@
 //! #532: without `-z`, a tree at `<dir><NL>worktree ` prints a `worktree ` line with
 //! an empty path. It names nothing, so it is dropped, as tmux-branch drops it.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

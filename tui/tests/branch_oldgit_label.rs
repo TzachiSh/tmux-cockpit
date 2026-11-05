@@ -1,5 +1,6 @@
 //! #348: without `-z`, `bare` and `detached` are attributes only as a whole line,
 //! as git prints them; `<path><NL>barex` cuts a path, it labels nothing.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

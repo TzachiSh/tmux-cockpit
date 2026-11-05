@@ -1,6 +1,7 @@
 //! #532: without `-z`, a tree at `<x><NL>worktree <w>` prints a record that pairs a
 //! real tree's path `<w>` with the cut tree's branch. `<w>`'s own HEAD names its
 //! real branch, so the forged branch is not hung on `<w>`.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 
