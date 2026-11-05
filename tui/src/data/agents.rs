@@ -264,7 +264,8 @@ impl State {
         if let Some(snap) = read_file(&s.path, root, epoch()) {
             let now = Instant::now();
             let seen = now.checked_sub(Duration::from_secs(epoch().saturating_sub(snap.at))).unwrap_or(now);
-            s.last_ask = Some(seen);
+            // a one-shot asks for a pid the file lacks, whatever the file's age
+            s.last_ask = BACKGROUND.load(Ordering::Relaxed).then_some(seen);
             for (pid, entry) in snap.by_pid {
                 let start = start_of(root, &pid);
                 s.pos.insert(pid, Pos { start, entry, seen });
@@ -425,6 +426,7 @@ fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
     let t0 = Instant::now();
     let out = claude_agents_json(AGENTS_DEADLINE);
     let root = proc_root();
+    let answered = out.as_deref().and_then(parse).is_some();
     let doc = {
         let mut g = STATE.lock().unwrap_or_else(|e| e.into_inner());
         let Some(s) = g.as_mut().filter(|s| s.gen_id == gen_id) else {
@@ -465,7 +467,10 @@ fn ask(gen_id: u64, path: &Path, asked: HashSet<String>) {
         }
         s.doc(&root)
     };
-    let _ = write_file(path, &doc);
+    // `at` is the time of an answer: a failed call writes nothing
+    if answered {
+        let _ = write_file(path, &doc);
+    }
 }
 
 /// `claude agents --json`'s stdout, or `None` on a spawn failure or when it

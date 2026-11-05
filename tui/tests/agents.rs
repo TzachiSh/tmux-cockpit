@@ -121,6 +121,14 @@ impl Drop for Rig {
                 }
             }
         }
+        // a red run must not leave a stub looping on a file that never comes
+        let _ = std::fs::write(self.dir.join("go"), "");
+        if let Ok(p) = std::fs::read_to_string(self.dir.join("stubpid")) {
+            if let Ok(p) = p.trim().parse::<i32>() {
+                // SAFETY: a plain signal to a pid this rig's stub wrote.
+                unsafe { libc::kill(p, libc::SIGKILL) };
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
@@ -221,9 +229,11 @@ fn a_pid_claude_does_not_know_is_not_asked_again() {
 fn a_claude_that_exits_empty_is_not_asked_again_either() {
     let r = Rig::new("neg2", "exit 1");
     r.sess();
-    r.wait_cache();
-    for _ in 0..3 {
+    wait_forks(&r, 1);
+    // no file to wait on (a failed call writes none): fetch over a window instead
+    for _ in 0..100 {
         r.sess();
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(r.forks(), 1);
 }
@@ -590,4 +600,77 @@ fn the_ps_walk_still_skips_a_lookup_child_that_has_just_ended() {
     write_exec(&r.dir.join("bin/ps"), &format!("#!/bin/sh\ncat {}/ps\n", r.dir.display()));
     let ids: Vec<_> = list_panes().unwrap().into_iter().map(|p| p.id).collect();
     assert_eq!(ids, ["%1"]);
+}
+
+/// `at` is the time of an answer: a stub that fails leaves a 70 s-old file as it was.
+#[test]
+fn a_failed_call_does_not_move_at() {
+    let r = Rig::new("atfail", "exit 1");
+    seeded_at(&r, 70, "s-old");
+    let before = std::fs::read_to_string(r.cache()).unwrap();
+    r.sess();
+    wait_forks(&r, 1);
+    // a write would come within ms of the stub's exit
+    for _ in 0..200 {
+        assert_eq!(std::fs::read_to_string(r.cache()).unwrap(), before);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A second case: an answer that is not JSON.
+#[test]
+fn a_reply_that_is_no_json_array_does_not_move_at() {
+    let r = Rig::new("atjunk", "echo not-json");
+    seeded_at(&r, 70, "s-old");
+    let before = std::fs::read_to_string(r.cache()).unwrap();
+    r.sess();
+    wait_forks(&r, 1);
+    for _ in 0..200 {
+        assert_eq!(std::fs::read_to_string(r.cache()).unwrap(), before);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A one-shot read asks for a pid the file does not list, however fresh the file.
+#[test]
+fn a_one_shot_asks_for_a_pane_a_fresh_file_lacks() {
+    let r = Rig::with("oneshot3", ONE, false);
+    r.seed(&format!(r#"{{"v":1,"at":{},"by_pid":{{}},"none":[]}}"#, now()));
+    assert_eq!(r.sess(), "s-100");
+    assert_eq!(r.forks(), 1);
+}
+
+/// The child half of the SIGHUP test: a board with a lookup in flight, hung up on.
+#[test]
+fn hup_child() {
+    if std::env::var_os("HUP_CHILD").is_none() {
+        return;
+    }
+    let _board = Background::start();
+    let _push = cockpit_tui::push::Push::start();
+    list_panes();
+    let stub = Path::new(&std::env::var("HOME").unwrap()).join("stubpid");
+    while std::fs::read_to_string(&stub).unwrap_or_default().is_empty() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    // SAFETY: raises the signal the board's handler is installed for.
+    unsafe { libc::raise(libc::SIGHUP) };
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    std::process::exit(3);
+}
+
+/// SIGHUP (a `kill-pane`) and SIGTERM end the board with `_exit`: the lookup child goes too.
+#[test]
+fn a_signalled_board_kills_a_lookup_in_flight() {
+    let r = Rig::new("sighup", "echo $$ > $HOME/stubpid\nexec sleep 60");
+    let me = std::env::current_exe().unwrap();
+    let st = std::process::Command::new(me)
+        .args(["--exact", "hup_child", "--test-threads=1"])
+        .env("HUP_CHILD", "1")
+        .stdout(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(st.code(), Some(0), "the handler's _exit(0), not the child's own exit");
+    let pid = std::fs::read_to_string(r.dir.join("stubpid")).unwrap();
+    wait_gone_within(pid.trim(), 200);
 }

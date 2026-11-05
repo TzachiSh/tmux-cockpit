@@ -2340,7 +2340,8 @@ that kills its process group. A session the cache holds is served whatever its
 age, and asked about again once the answer is 60 s old, so an id that changed
 under its pid shows within a minute. The one-shot `--json` and `--rows` have no
 later fetch: they ask and wait, under the same deadline and kill. A board that
-quits, or is hung up on, mid-call kills the call's process group. Until the first answer lands that pane shows what it
+quits, or is hung up on or signalled, mid-call kills the call's process group.
+Until the first answer lands that pane shows what it
 shows when the call fails, no session; the next fetch has it. A pid the call
 did not list is cached as a negative for 60 s, so it is not asked again; the
 call runs only for an agent pid that is neither a known positive nor a fresh
@@ -2363,11 +2364,12 @@ directory, written to a temp file in that directory and renamed over:
 - `cwd` is the session's LAUNCH dir, not where it works now (#448). A reader
   prefers the transcript's newest main-thread cwd, as the board does, and uses
   this only when it finds no transcript.
-- `at` is when a `claude agents --json` call answered, and nothing else moves it.
+- `at` is when a `claude agents --json` call answered with a JSON array, and
+  nothing else moves it: a failed or empty-handed call writes nothing.
 - A reader treats the file as absent when `at` is more than 90 s old, `v` is not
   1, it does not parse, it is not a regular file (a FIFO, a symlink) or it is over
-  1 MiB. It drops an entry whose session is not 1 to 64 letters, digits and dashes. It drops a key whose pid's start differs from the
-  key's. On macOS there is no `/proc`, so every entry is absent there and the
+  1 MiB. It drops an entry whose session is not 1 to 64 letters, digits and
+  dashes. It drops a key whose pid's start differs from the key's. On macOS there is no `/proc`, so every entry is absent there and the
   board keeps its answer in memory for 60 s instead.
 - While any agent pane lacks `@cockpit_session` the board asks at most once a
   minute, so the file is under 90 s old for as long as it matters. A second board
