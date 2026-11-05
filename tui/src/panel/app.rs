@@ -1154,9 +1154,9 @@ impl App {
         }
     }
 
-    /// A write that asks with no questions left is told once to write with its
-    /// assumptions stated. Asked again, or a fix, the error; esc then drops what
-    /// the call carried.
+    /// A write that asks with no questions left is told once to write it, with
+    /// Claude Code's options or a placeholder for what only the user knows. Asked
+    /// again, or a fix, the error; esc then drops what the call carried.
     fn write_now(&mut self, text: String, Carried { pending, from }: Carried) {
         let Some(r) = self.run.as_mut() else { return };
         (r.pending_turn, r.guessed_from) = (pending, from);
