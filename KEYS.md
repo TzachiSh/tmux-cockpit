@@ -81,8 +81,9 @@ the selection's end, or at the top line when there is none. `v` selects lines
 (a tap drops an anchor, a second tap or a drag ends it); the move keys and `n`
 `N` move its end. `?` asks about the selection, or the top line: the launcher
 opens the panel on the pane with the question box, and the viewer comes back
-after. `esc` clears the selection, then the matches, and `h` or `F1` lists the
-rest. See
+after. `a` adds the selection, or the whole file, to the pane's prompt basket,
+and `y` copies its reference (`src/x.rs:40-72`). `esc` clears the selection,
+then the matches, and `h` or `F1` lists the rest. See
 [docs/tui.md](docs/tui.md#the-markdown-viewer-283) and
 [a code file](docs/tui.md#a-code-file-365).
 

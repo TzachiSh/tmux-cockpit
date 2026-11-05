@@ -173,6 +173,11 @@ pub enum Out {
     Edit(usize),
     /// `?` (#365): ask about source lines `.0` to `.1`, `.0 <= .1`
     Ask(usize, usize),
+    /// `a` (#365 child 5): add these source lines, or the whole file, to the
+    /// pane's prompt basket; the run loop does it and the viewer stays
+    Add(Option<(usize, usize)>),
+    /// `y`: copy the reference to these lines, or to the file
+    Copy(Option<(usize, usize)>),
 }
 
 /// A line selection (#365), in source lines: `anchor` stays, `cursor` moves.
@@ -215,6 +220,8 @@ pub struct Screen {
     /// the launcher routes `ask <a> <b>` (`COCKPIT_VIEW_ASK=1`); without it `?`
     /// says so and stays, rather than close on a line nothing reads
     pub can_ask: bool,
+    /// the launcher named the pane whose basket `a` adds to (`COCKPIT_BASKET_PANE`)
+    pub can_add: bool,
 }
 
 impl Screen {
@@ -238,6 +245,7 @@ impl Screen {
             sel: None,
             ending: false,
             can_ask: false,
+            can_add: false,
         }
     }
 
@@ -527,6 +535,15 @@ impl Screen {
                 let (a, b) = self.ask_range();
                 return Out::Ask(a, b);
             }
+            KeyCode::Char('a' | 'y') if self.rows.is_empty() => {
+                self.note = Some("nothing here to add or copy".into());
+            }
+            KeyCode::Char('a') if !self.can_add => {
+                let why = "a needs a launcher that names the pane; y copies the reference";
+                self.note = Some(why.into());
+            }
+            KeyCode::Char('a') => return Out::Add(self.selection()),
+            KeyCode::Char('y') => return Out::Copy(self.selection()),
             KeyCode::Char('h') | KeyCode::F(1) => self.help = Some(0),
             KeyCode::Char('v') => self.toggle(),
             KeyCode::Char('/') => self.field = Some((String::new(), self.top)),
@@ -669,6 +686,8 @@ pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
         kv(&format!("{ud} n N"), "while selecting: move its end"),
         kv("tap tap", "tap a line, tap another; or drag"),
         kv("?", "ask about the selection or top line"),
+        kv("a", "add the selection, or the file, to the prompt basket"),
+        kv("y", "copy its reference: path:lines"),
         kv("esc", "clear the selection, then the matches"),
         kv("", "the file"),
         kv("e", "close; edit at the top or selected line"),
@@ -747,6 +766,9 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
             if s.can_ask {
                 h.push(kv("?", "ask"));
             }
+            if s.can_add {
+                h.push(kv("a", "add"));
+            }
             h.push(kv("h", "keys"));
             h.push((format!("{a}-{b}"), format!("{} {n} line{}", g.dot, if n == 1 { "" } else { "s" })));
             h.push(kv("v", if sel.live { "end" } else { "extend" }));
@@ -763,6 +785,9 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
                 h.push(kv("v", "select"));
                 if s.can_ask {
                     h.push(kv("?", "ask"));
+                }
+                if s.can_add {
+                    h.push(kv("a", "add"));
                 }
             }
             h.push(kv("h", "keys"));
@@ -923,6 +948,21 @@ pub fn main(args: &[String]) -> i32 {
     let m = mode(&name, doc.as_deref().unwrap_or(""));
     let mut s = Screen::new(&name, doc, opts).with_mode(m);
     s.can_ask = can_ask(std::env::var("COCKPIT_VIEW_ASK").ok().as_deref());
+    // the pane whose basket `a` adds to, named by the launcher (#365 child 5)
+    let pane = std::env::var("COCKPIT_BASKET_PANE").ok().filter(|p| crate::panel::is_pane(p));
+    s.can_add = pane.is_some();
+    let side = |s: &mut Screen, o: Out| match o {
+        Out::Stay => None,
+        Out::Add(l) => {
+            s.note = Some(add_note(path, l, pane.as_deref()));
+            None
+        }
+        Out::Copy(l) => {
+            s.note = Some(copy_note(path, l, pane.as_deref()));
+            None
+        }
+        o => Some(o),
+    };
     if let Some(n) = line {
         s = s.at_line(n);
     }
@@ -935,14 +975,18 @@ pub fn main(args: &[String]) -> i32 {
             break Out::Close;
         }
         match event::read() {
-            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match s.key(k, screen(&term)) {
-                Out::Stay => {}
-                o => break o,
-            },
-            Ok(Event::Mouse(m)) => match s.mouse(m, screen(&term)) {
-                Out::Stay => {}
-                o => break o,
-            },
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => {
+                let o = s.key(k, screen(&term));
+                if let Some(o) = side(&mut s, o) {
+                    break o;
+                }
+            }
+            Ok(Event::Mouse(m)) => {
+                let o = s.mouse(m, screen(&term));
+                if let Some(o) = side(&mut s, o) {
+                    break o;
+                }
+            }
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break Out::Close,
@@ -956,6 +1000,46 @@ pub fn main(args: &[String]) -> i32 {
         _ => {}
     }
     0
+}
+
+/// The source lines `a` and `y` act on; `None` is the whole file.
+type Lines = Option<(usize, usize)>;
+
+/// The ref `a` and `y` act on: these lines of `path`, or the whole file.
+fn ref_of(path: &std::path::Path, lines: Lines) -> Result<crate::refs::Ref, String> {
+    let n = |x: usize| u32::try_from(x).map_err(|_| "a line past the counter".to_string());
+    let lines = match lines {
+        Some((a, b)) => Some((n(a)?, n(b)?)),
+        None => None,
+    };
+    crate::refs::Ref::new(path, lines, None).map_err(|e| e.to_string())
+}
+
+/// `a`: add to the pane's basket, and the note that says how it went.
+fn add_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String {
+    let Some(pane) = pane else { return "no pane to add for".into() };
+    let r = match ref_of(path, lines) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    let shown = crate::basket::shown(Some(pane), &r);
+    match crate::basket::add(pane, r) {
+        Ok((n, true)) => format!("added {shown} ({n} in the basket)"),
+        Ok((n, false)) => format!("{shown} is in the basket already ({n})"),
+        Err(e) => e,
+    }
+}
+
+/// `y`: the ref's text to the clipboard, and the note.
+fn copy_note(path: &std::path::Path, lines: Lines, pane: Option<&str>) -> String {
+    let text = match ref_of(path, lines) {
+        Ok(r) => crate::basket::shown(pane, &r),
+        Err(e) => return e,
+    };
+    match crate::backend::copy(&text) {
+        Ok(()) => format!("copied {text}"),
+        Err(e) => format!("could not copy: {e}"),
+    }
 }
 
 fn usage(why: &str) -> i32 {

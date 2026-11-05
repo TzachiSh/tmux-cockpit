@@ -149,9 +149,10 @@ md_view() {
     local n='([1-9][0-9]{0,8})'
     while :; do
         err=$(mktemp 2>/dev/null) || err=/dev/null
-        # COCKPIT_VIEW_ASK=1, on the viewer alone: this launcher routes its `ask` (#365)
-        out=$(COCKPIT_VIEW_ASK=1 "$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" \
-            2>"$err"); rc=$?
+        # on the viewer alone: this launcher routes its `ask` (#365), and its `a`
+        # adds to the basket of the pane the file came from (#365 child 5)
+        out=$(COCKPIT_VIEW_ASK=1 COCKPIT_BASKET_PANE="$pane" \
+            "$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" 2>"$err"); rc=$?
         [ ! -s "$err" ] || cat "$err" >&2
         if tui_stale "$rc" "$err"; then rc=stale; fi
         [ "$err" = /dev/null ] || rm -f -- "$err"
