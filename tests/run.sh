@@ -4057,16 +4057,17 @@ fi
 echo "== branch popup passes the source pane id =="
 # Inside a popup $TMUX_PANE is the popup's own pseudo-pane, so tmux-branch
 # must be told which pane the key/click actually fired on rather than
-# resolving it itself. The prefix+b bind passes -p resolved by the popup's own
-# sh from $TMUX's session id (#38), and the branch tap replays that bind; the
+# resolving it itself. The prefix+b bind stores #{pane_id} on the session and
+# the popup's own sh reads it back by $TMUX's session id (#38): on tmux master the
+# popup is the session's active pane. The branch tap replays that bind; the
 # key-press test above proves the resolution, this one pins the shape.
 if need_tmux "branch popup pane id"; then :; else
 BPI="cockpit-bpi-$$"; SOCKS="$SOCKS $BPI"
 "$TMUX_REAL" -L "$BPI" -f /dev/null new-session -d -s t >/dev/null 2>&1
 "$TMUX_REAL" -L "$BPI" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix 2>/dev/null | awk '$4=="b"')" in
-    *'-p \"$(tmux display-message -p -t'*) ok "prefix b passes the source pane id" ;;
-    *) bad "prefix b passes the source pane id" '-p "$(tmux display-message -p -t ... "#{pane_id}")" in the bind' \
+    *'@cockpit_src_pane "#{pane_id}"'*'-p \"$(tmux show-option -qv -t'*'@cockpit_src_pane)'*) ok "prefix b passes the source pane id" ;;
+    *) bad "prefix b passes the source pane id" 'set-option -F @cockpit_src_pane "#{pane_id}", then -p "$(tmux show-option ... @cockpit_src_pane)"' \
          "$("$TMUX_REAL" -L "$BPI" list-keys -T prefix | awk '$4=="b"')" ;;
 esac
 case "$("$TMUX_REAL" -L "$BPI" list-keys -T root | grep MouseUp1Control3)" in
@@ -8174,9 +8175,9 @@ case "$bw" in *'-e COCKPIT_PANEL_MODE=auto'*) ok "the board popup passes -e COCK
     *) bad "the board popup passes -e COCKPIT_PANEL_MODE" "-e COCKPIT_PANEL_MODE=auto" "$bw" ;;
 esac
 # display-popup expands only -T and -d, so the pane id cannot be a format here
-# (#38): the popup's own sh resolves it.
-case "$bw" in *'display-message -p'*) ok "and the binding resolves the source pane itself" ;;
-    *) bad "and the binding resolves the source pane itself" "-p \$(tmux display-message -p ...)" "$bw" ;;
+# (#38): the key stores it on the session and the popup's own sh reads it back.
+case "$bw" in *'@cockpit_src_pane "#{pane_id}"'*'show-option -qv'*'@cockpit_src_pane'*) ok "and the binding resolves the source pane itself" ;;
+    *) bad "and the binding resolves the source pane itself" "@cockpit_src_pane set by the key, read by the popup" "$bw" ;;
 esac
 case "$(bkey "$B" r)" in *cockpit-board*) ok "prefix r opens the board, with no binary installed" ;;
     *) bad "prefix r opens the board, with no binary installed" "a display-popup running cockpit-board" "$(bkey "$B" r)" ;;

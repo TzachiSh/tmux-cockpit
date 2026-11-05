@@ -238,9 +238,12 @@ else tmux set-option -gu @cockpit_giveback; fi
 
 Q_BRANCH=$(sq "$DIR/scripts/tmux-branch")
 Q_OPEN=$(sq "$DIR/scripts/tmux-open-path")
-# The pane a popup came from, via the session id $TMUX ends in: display-popup
-# expands formats only in -T and -d, and inside it $TMUX_PANE is the popup's (#38).
-SRC_PANE='"$(tmux display-message -p -t "\$${TMUX##*,}" "#{pane_id}")"'
+# The pane a popup came from. display-popup expands formats only in -T and -d
+# (#38), so the key stores #{pane_id} on the session first and the popup reads it
+# back by the session id $TMUX ends in. Asking for the session's active pane
+# instead broke on tmux master, where the popup is a pane and the active one.
+SRC_SET=(set-option -F @cockpit_src_pane '#{pane_id}' '\;')
+SRC_PANE='"$(tmux show-option -qv -t "\$${TMUX##*,}" @cockpit_src_pane)"'
 
 if [ "$(tmux show-option -gqv mouse)" != on ]; then
     tmux display-message "tmux-cockpit: the click gestures need 'set -g mouse on'; prefix+b still works"
@@ -263,7 +266,7 @@ tmux bind-key -T cockpit t display-popup -E -w 78% -h 40% -T ' agents ' \
 tmux bind-key -n MouseDragEnd1Status switch-client -t =
 # A goto moves the pressing client, not the most recently active one (#360). The
 # popup cannot pass #{client_name}, so the key leaves it on the pane, as the board's.
-tmux bind-key b set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
+tmux bind-key b "${SRC_SET[@]}" set-option -pF @cockpit_branch_client '#{client_name}' '\;' \
     display-popup -E -w "$PW" -h "$PH" -T ' switch branch · #{b:pane_current_path} ' "$Q_BRANCH -p $SRC_PANE"
 
 # Replaces stock choose-tree on s; tmux 3.8 took g for its floating-pane menu.
@@ -278,7 +281,7 @@ Q_TM=$(sq "$DIR/scripts/tm")
 # The info screen is cockpit-tui's own (#252); esc or q closes it, so no `read`.
 # The binary reads $COCKPIT_GLYPHS, not @cockpit_glyphs (#293): read at open, so
 # setting the option needs no reload.
-[ -z "$ik" ] || ckey info "$ik" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
+[ -z "$ik" ] || ckey info "$ik" "${SRC_SET[@]}" display-popup -E -w "$PW" -h "$PH" -T ' info · #{pane_id} ' \
     "g=\$(tmux show-option -gqv @cockpit_glyphs); exec env \${g:+COCKPIT_GLYPHS=\"\$g\"} $(sq "$COCKPIT_TUI_BIN") info $SRC_PANE"
 
 Q_PANEL=$(sq "$DIR/scripts/cockpit-panel")
@@ -289,7 +292,7 @@ case "$pmode" in
     *) tmux display-message "tmux-cockpit: @cockpit_panel_mode is [$pmode]; use auto, pc or tablet (auto for now)"; pmode=auto ;;
 esac
 if [ -n "$pk" ]; then
-    ckey panel "$pk" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
+    ckey panel "$pk" "${SRC_SET[@]}" display-popup -E -e "COCKPIT_PANEL_MODE=${pmode:-auto}" -w 94% -h 90% \
         -T ' panel · #{pane_id} ' "$Q_PANEL -p $SRC_PANE"
 fi
 
@@ -299,7 +302,7 @@ Q_BOARD=$(sq "$DIR/scripts/cockpit-board")
 # (#296). The window forms pass it (-c: run-shell expands formats); the popup
 # cannot (display-popup expands none in its command), so its key leaves it on
 # the pane it was pressed in, for the board to take at start.
-pin=(set-option -pF @cockpit_board_client '#{client_name}' '\;')
+pin=("${SRC_SET[@]}" set-option -pF @cockpit_board_client '#{client_name}' '\;')
 # Bound even without the binary, so the wrapper can say "not installed".
 if [ -n "$bk" ]; then
     # Not SRC_PANE, for the same reason as the review window below (#45).
