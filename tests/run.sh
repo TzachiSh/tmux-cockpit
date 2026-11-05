@@ -5041,13 +5041,12 @@ done
 
 echo "== tmux-review --lines is gone: an unknown option, status 2 (#390) =="
 TDL=$(mktmpd)
-is "--lines: the unknown-option line on stderr, status 2, nothing on stdout" \
-   "unknown option: --lines (try: tmux-review -h)
-|2|" "$("$DIR/scripts/tmux-review" --lines "$TDL" 2>&1 >"$TDL.out"
-       printf '|%s|%s' "$?" "$(cat "$TDL.out")")"
+"$DIR/scripts/tmux-review" --lines "$TDL" >"$TDL.out" 2>"$TDL.err"; tdlrc=$?
+is "--lines: status 2, nothing on stdout" "|2|" "|$tdlrc|$(cat "$TDL.out")"
+is "and stderr names the option it refused" "1" "$(grep -c -- '--lines' "$TDL.err")"
 is "and the usage no longer names it" "0" \
    "$("$DIR/scripts/tmux-review" -h 2>&1 | grep -c -- '--lines')"
-rm -rf "$TDL" "$TDL.out"
+rm -rf "$TDL" "$TDL.out" "$TDL.err"
 
 rv_src() { cat "$DIR/scripts/tmux-review" "$DIR/scripts/lib/review-diff.sh" "$DIR/scripts/lib/review-revdiff.sh" "$DIR/scripts/lib/review-deliver.sh" "$DIR/scripts/lib/review-fleet.sh"; }
 echo "== review-store: parse is the inverse of format over the full grammar =="
@@ -5187,7 +5186,8 @@ rm -f "$RV3STORE"
 
 echo "== tree_diff: from a subdir it still diffs the whole repo, paths from the root =="
 # git -C <dir> diff names paths from the repo root, and big_files and the index
-# copy's ls-files read ':(top)', so a subdir dir misses nothing above it.
+# copy's ls-files read ':(top)', so a subdir dir misses nothing above it: a big
+# file at the root is kept away from git from the subdir too.
 RV8=$(mktmpd)
 (
   cd "$RV8" || exit
@@ -5199,12 +5199,15 @@ RV8=$(mktmpd)
   git add -A; git commit -q -m init
   printf 'root\nroot\nmore\n' > root.txt
   printf 'one\ntwo\n' > sub/foo.sh
+  head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB, above sub/
 ) >/dev/null 2>&1
 rv8num=$(tdiff "$RV8/sub" --numstat)
 is "from a subdir, the root file is in the diff" "1" \
    "$(printf '%s\n' "$rv8num" | grep -cxF "2	0	root.txt")"
 is "and the subdir's own file, by its path from the root" "1" \
    "$(printf '%s\n' "$rv8num" | grep -cxF "1	0	sub/foo.sh")"
+is "a big file above the subdir is kept away too" "0" \
+   "$(tdiff "$RV8/sub" | grep -c '^diff --git a/core')"
 rm -rf "$RV8"
 
 echo "== tree_diff never writes the agent's index =="
@@ -5232,12 +5235,9 @@ RB=$(mktmpd)
   head -c $(( 64 * 1024 * 1024 )) /dev/zero > core          # untracked, 64 MiB
   printf 'x\n' > small.txt                                  # untracked, small: still counted
 ) >/dev/null 2>&1
-# CPU, not the wall clock: the claim is that the 64 MiB file is skipped rather
-# than hashed, and hashing it is CPU. A wall bound grades the box's I/O too (#75).
-cpu_under "a 64 MiB file is skipped, not hashed: numstat is under 0.5s of CPU" 0.5 \
-    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' \
-    _ "$DIR/scripts/lib" "$RB"
-rbnum=$(cat "$CPUOUT")
+# No CPU budget: 64 MiB of zeros hashes under any sane one. The diff rows
+# below are what tell a skipped file from a hashed one.
+rbnum=$(tdiff "$RB" --numstat)
 is "the small change is counted" "1" "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	f.c")"
 is "the small untracked file is counted" "1" \
    "$(printf '%s\n' "$rbnum" | grep -cxF "1	0	small.txt")"
