@@ -1619,6 +1619,7 @@ pub fn bracketed_ok(cmd: &str) -> bool {
 pub fn hint(f: &Fail) -> Option<&'static str> {
     let t = match f {
         Fail::Timeout => return Some("r retries; COCKPIT_PANEL_TIMEOUT=<seconds> gives it longer"),
+        Fail::Budget { .. } => return None,
         Fail::Failed(t) => t.to_ascii_lowercase(),
     };
     let has = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
