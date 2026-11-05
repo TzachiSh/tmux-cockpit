@@ -22,11 +22,11 @@ make gate               # check-par, skipped via a content-keyed stamp if nothin
 ```
 
 `make test` and `make check` are unchanged and stay the merge gate — one
-process, source order. The six blocks marked `# group: serial` (a 50-pane
-fleet scan under 5 s, a 5000-row `--lines` build under 3 s, 50 MB of
-lockfile fixtures, …) run in
-their own serial shard, alone, before the rest: they measure the box's spare
-CPU as much as the code, and shard them apart and they flake under contention.
+process, source order. A block marked `# group: serial` runs in its own
+serial shard, alone, before the rest. The mark is for a block held to a CPU
+budget or built on a large fixture: such a block measures the box's spare CPU
+as much as the code, and sharded beside others it flakes under contention. No
+block carries the mark today.
 
 ## CI
 
