@@ -1,13 +1,19 @@
 #!/bin/bash
-# agent-poll: the state source for agent-view panes (#174). An agent view's turn runs in a
-# background worker that reports no state to its terminal, so a pane marked
-# @cockpit_agentview (by agent-state notify) is written from `claude agents --json --all`:
-# the worst background session wins, blocked > failed > working > done, and none or stopped
-# is idle. One poller per tmux server, its pid in the global @cockpit_poll_pid.
+# agent-poll: the state source for panes that show a background job (#174, #448). A job's
+# turn runs in a background worker that reports no state to the terminal showing it, so the
+# pane is written from `claude agents --json --all`:
+#   - a pane whose title names exactly one background job (the bind rule, JQ_PROG below) shows
+#     that job's state, and carries @cockpit_job <id> and @cockpit_job_name <name> while bound;
+#   - any other pane marked @cockpit_agentview (by agent-state notify) shows the worst background
+#     session, blocked > failed > working > done; none or stopped is idle.
+# One poller per tmux server, its pid in the global @cockpit_poll_pid, started by the load
+# and window-event sweeps (agent-state sweep) and by a relayed agent notification. It stays for
+# the life of the server: nothing a background job does may touch tmux (#174), so no hook could
+# start it when a job appears. A tick is a list-panes; claude is read only when it can matter.
 #   usage: agent-poll [--once]    --once: one poll, no publishing, then exit (the tests).
-# Every @cockpit_bg_poll seconds (default 10; "off" never starts). It leaves when no marked
-# pane is an agent any more, and on every signal; a failed or missing claude or jq writes
-# nothing and the poller waits for the next tick. Writes go through `agent-state poll`.
+# Every @cockpit_bg_poll seconds (default 10; "off" never starts). It leaves when the server
+# goes and on every signal; a failed or missing claude or jq writes nothing and the poller
+# waits for the next tick. Writes go through `agent-state poll`.
 set -u
 
 once=0; [ "${1:-}" = --once ] && once=1
@@ -58,56 +64,230 @@ poll_err() {                  # <reason> | "" ; one tmux call per change
     lasterr=$1
 }
 
-# One tick. 0: carry on. 1: nothing left to serve (or no server): stop.
-tick() {
-    local rows live="" line pane isagent owner="" worst name out st
-    local fmt='#{pane_id} #{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}'
-    rows=$(tmux list-panes -a -f '#{==:#{@cockpit_agentview},1}' \
-        -F "$fmt #{@cockpit_poll_pid}" 2>/dev/null) || return 1
-    while IFS= read -r line; do
-        [ -n "$line" ] || continue
-        pane=${line%% *}; line=${line#* }; isagent=${line%% *}; owner=${line#* }
-        if [ "$isagent" = 1 ]; then live="$live $pane"
-        else tmux set-option -pu -t "$pane" @cockpit_agentview 2>/dev/null   # claude left: not ours
+# Fields of a pane row, each behind a "." so none is empty and `read` cannot fold the tabs
+# (a leading empty field would vanish). The title is last: tmux escapes a tab in it.
+T=$'\t'
+PANE_FMT=".#{pane_id}$T.#{pane_current_command}$T.#{allow-set-title}"
+PANE_FMT="$PANE_FMT$T.#{?#{m:*|#{pane_current_command}|*,#{@cockpit_agents_glob}},1,0}"
+PANE_FMT="$PANE_FMT$T.#{@cockpit_agentview}$T.#{@cockpit_fg}"
+PANE_FMT="$PANE_FMT$T.#{@cockpit_job}$T.#{@cockpit_job_name}$T.#{@cockpit_job_state}"
+PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{@cockpit_poll_pid}$T.#{pane_title}"
+
+# jq program. Input: claude's JSON. $panes: "<pane id> TAB <@cockpit_fg> TAB <title>" lines of
+# the panes that may be bound. Output, tab-separated: `W worst blockedname` (today's worst of
+# all), then per pane `M pane jobid state name` (bound) or `D pane` (its title names two or
+# more jobs).
+# The bind rule (#448): the title, minus an optional leading "✳ " and with whitespace runs
+# collapsed, equals one background job's name, collapsed the same way; done jobs count; a
+# job without an id does not; an agent view's own title never binds. A pane with a foreground
+# session's mark (@cockpit_fg, the epoch second of its last hook state change) binds only to a
+# job that started after it: its own session, sent to the background with the left arrow. A
+# startedAt that is no number counts as the epoch.
+JQ_PROG='
+  def clean: tostring | gsub("[\u0000-\u001f\u007f]"; " ");
+  def norm: clean | [splits("\\s+")] | map(select(length > 0)) | join(" ");
+  if type != "array" then error("not an array") else . end
+  | [.[] | select(.kind == "background")] as $b
+  | [$b[] | select(.state == "blocked")] as $bl
+  | (if ($bl | length) > 0 then "blocked"
+     elif any($b[]; .state == "failed") then "failed"
+     elif any($b[]; .state == "working") then "working"
+     elif any($b[]; .state == "done") then "done"
+     else "idle" end) as $w
+  | [$b[] | select((.id | type) == "string" and (.id | length) > 0)
+     | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm),
+        at: (if (.startedAt | type) == "number" then .startedAt / 1000 else 0 end)}
+     | select(.name != "")] as $jobs
+  | [$panes | split("\n")[] | select(length > 0) | split("\t")
+     | {pane: .[0], fg: .[1],
+        t: (.[2:] | join(" ") | if startswith("✳ ") then .[2:] else . end | norm)}
+     | select(.t != "" and .t != "claude agents"
+              and (.t | endswith(" · claude agents") | not))] as $ps
+  | "W\t\($w)\t" + (if $w == "blocked"
+        then (($bl[0].name // $bl[0].id // "session") | clean) else "" end),
+    ($ps[] | . as $p | [$jobs[] | select(.name == $p.t)] as $m
+     | if ($m | length) == 1
+          and ($p.fg == "" or ($p.fg | test("^[0-9]{10,}$") and $m[0].at > ($p.fg | tonumber)))
+       then "M\t\($p.pane)\t\($m[0].id)\t\($m[0].state)\t\($m[0].name[0:120])"
+       elif ($m | length) > 1 and $p.fg == "" then "D\t\($p.pane)" else empty end)'
+
+# A job's state as the pane shows it. An unknown one (research preview) is idle.
+job_state() {                 # <claude state> -> the agent-state poll value
+    case "$1" in
+        blocked) echo needs-input ;; failed) echo error ;; working) echo running ;;
+        done) echo done ;; *) echo off ;;
+    esac
+}
+
+# The pane no longer shows the job it was bound to: forget it. Take back the state written for
+# it only when the poller wrote it (@cockpit_job_state is what it last wrote and @panestate
+# still holds that), and the pane is neither a marked agent view (the worst of all takes over)
+# nor a foreground session's (its hooks own the state).
+unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> <@cockpit_job_state>
+    tmux set-option -pu -t "$1" @cockpit_job \; set-option -pu -t "$1" @cockpit_job_name \; \
+        set-option -pu -t "$1" @cockpit_job_state 2>/dev/null
+    [ "$2" = 1 ] && return 0
+    [ -n "$3" ] && return 0
+    [ -n "$5" ] && [ "${4:-off}" = "$5" ] || return 0
+    "$here/agent-state" poll off "$1" >/dev/null 2>&1
+}
+
+# What one tick works from, set by scan_panes and read_jobs.
+lastsig="" watched=""
+S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT=""
+
+# One list-panes. Fills the S_ variables: S_LIVE the marked agent panes, S_BOUND the panes that
+# carry a job and may keep it, S_CAND "pane TAB title" for the panes that may be bound, S_SIG
+# the claude panes' ids and titles, S_ROWS one line per pane with what it carries,
+# S_SERIOUS set when a pane is waiting on a read. Panes that cannot hold what they carry
+# are cleaned here. 1: no server and no pane.
+scan_panes() {
+    local rows id cmd allow glob view fg job jname jstate pstate owner title marked
+    local seen=0 job_kept="" fgc
+    S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN=""
+    rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
+    while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner title; do
+        [ -n "$id" ] || continue
+        seen=1
+        id=${id#.}; cmd=${cmd#.}; allow=${allow#.}; glob=${glob#.}; view=${view#.}
+        fg=${fg#.}; job=${job#.}; jname=${jname#.}; jstate=${jstate#.}; pstate=${pstate#.}
+        S_OWN=${owner#.}; title=${title#.}
+        marked=""; [ "$view" = 1 ] && marked=1
+        if [ "$marked" = 1 ] && [ "$glob" != 1 ]; then
+            tmux set-option -pu -t "$id" @cockpit_agentview 2>/dev/null   # claude left: not ours
+            marked=""
         fi
+        # A foreground session's pane is its hooks' (agent-state sets the mark). Not an agent
+        # any more, it is nobody's.
+        if [ -n "$fg" ] && [ "$glob" != 1 ]; then
+            tmux set-option -pu -t "$id" @cockpit_fg 2>/dev/null; fg=""
+        fi
+        if [ "$marked" = 1 ]; then S_LIVE="$S_LIVE $id"; S_SERIOUS=1; fi
+        if [ "$cmd" = claude ]; then
+            S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
+            if [ "$allow" = 1 ] && [ -n "$title" ]; then
+                # A session waiting on the user fires no hook, so a ▲ that the poller hid would
+                # stay hidden: its mark compares as "never". (error is sticky and may bind.)
+                fgc=$fg; [ -z "$fg" ] || [ "$pstate" != needs-input ] || fgc=never
+                S_CAND="$S_CAND$id$T$fgc$T$title"$'\n'
+                case " $watched " in *" $id "*) S_SERIOUS=1 ;; esac
+                if [ -n "$job" ]; then S_BOUND="$S_BOUND $id"; S_SERIOUS=1; fi
+                job_kept=1
+            fi
+        fi
+        if [ -n "$job" ] && [ -z "$job_kept" ]; then
+            unbind "$id" "$marked" "$fg" "$pstate" "$jstate"; job=""; jname=""; jstate=""
+        fi
+        job_kept=""
+        S_ROWS="$S_ROWS$id$T.$job$T.$jname$T.$jstate$T.$pstate$T.$marked$T.$fg"$'\n'
     done <<EOT
 $rows
 EOT
-    [ -n "$live" ] || return 1
-    # Someone else holds the slot (it was taken over): leave it to them.
-    [ "$once" = 1 ] || [ "$owner" = "$$" ] || return 1
-    command -v jq >/dev/null 2>&1 || { poll_err "no jq on PATH"; return 0; }
-    command -v claude >/dev/null 2>&1 || { poll_err "no claude on PATH"; return 0; }
+    [ "$seen" = 1 ]
+}
+
+# Should claude be read, and what does it say? Sets R_OUT to the jq output. 1: not now.
+# `claude agents` (about 0.3 s) runs only when it can matter: a marked agent view or a bound
+# pane waits on a state, a pane's title named two jobs and may now name one, or the claude
+# panes' ids and titles differ from the last read (a new viewer, or a job's first title). A
+# box with no background job, or no viewer, pays the scan and nothing else.
+read_jobs() {
+    local out to=""
+    [ -n "$S_SERIOUS" ] || [ "$S_SIG" != "$lastsig" ] || return 1
+    [ -n "$S_SERIOUS" ] || [ -n "$S_SIG" ] || { lastsig=""; return 1; }
+    # A read nobody waits on stays quiet when it cannot run, and is tried once per change of
+    # the panes: a failing claude would otherwise be run again every tick, for nothing.
+    [ -n "$S_SERIOUS" ] || lastsig=$S_SIG
+    if ! command -v jq >/dev/null 2>&1; then
+        [ -n "$S_SERIOUS" ] && poll_err "no jq on PATH"; return 1
+    fi
+    if ! command -v claude >/dev/null 2>&1; then
+        [ -n "$S_SERIOUS" ] && poll_err "no claude on PATH"; return 1
+    fi
     # timeout is GNU coreutils; a box without it still polls, unbounded.
-    local to=""; command -v timeout >/dev/null 2>&1 && to="timeout 5"
+    command -v timeout >/dev/null 2>&1 && to="timeout 5"
     out=$($to claude agents --json --all 2>/dev/null) \
-        || { poll_err "claude agents failed"; return 0; }
-    # Line 1 the worst state, line 2 the name of the first blocked session. An unknown state
-    # (research preview) is in no bucket; anything but an array is an error, not "no sessions".
-    out=$(jq -r '
-        if type != "array" then error("not an array") else . end
-        | [.[] | select(.kind == "background")] as $b
-        | [$b[] | select(.state == "blocked")] as $bl
-        | (if ($bl | length) > 0 then "blocked"
-           elif any($b[]; .state == "failed") then "failed"
-           elif any($b[]; .state == "working") then "working"
-           elif any($b[]; .state == "done") then "done"
-           else "idle" end) as $w
-        | $w, (if $w == "blocked"
-               then (($bl[0].name // $bl[0].id // "session") | tostring
-                     | gsub("[\u0000-\u001f]"; " "))
-               else "" end)' 2>/dev/null <<<"$out") \
-        || { poll_err "claude agents gave unreadable json"; return 0; }
-    worst=${out%%$'\n'*}; name=${out#*$'\n'}
+        || { [ -n "$S_SERIOUS" ] && poll_err "claude agents failed"; return 1; }
+    # An unknown state (research preview) is in no bucket; anything but an array is an error,
+    # not "no sessions".
+    R_OUT=$(jq -r --arg panes "$S_CAND" "$JQ_PROG" 2>/dev/null <<<"$out") \
+        || { [ -n "$S_SERIOUS" ] && poll_err "claude agents gave unreadable json"; return 1; }
+    return 0
+}
+
+# What a bound pane carries now, from S_ROWS: sets row_job, row_name, row_jstate, row_pstate,
+# row_marked, row_fg.
+pane_row() {                  # <pane>
+    local r=${S_ROWS#*$'\n'"$1""$T"}
+    r=${r%%$'\n'*}
+    row_job=${r%%"$T"*}; r=${r#*"$T"}; row_job=${row_job#.}
+    row_name=${r%%"$T"*}; r=${r#*"$T"}; row_name=${row_name#.}
+    row_jstate=${r%%"$T"*}; r=${r#*"$T"}; row_jstate=${row_jstate#.}
+    row_pstate=${r%%"$T"*}; r=${r#*"$T"}; row_pstate=${row_pstate#.}
+    row_marked=${r%%"$T"*}; row_marked=${row_marked#.}
+    row_fg=${r#*"$T"}; row_fg=${row_fg#.}
+}
+
+# Write what R_OUT says: a bound pane its job's state, a marked one the worst of all. Bound
+# before and not now: the title moved on, or a second job took the name.
+apply_jobs() {
+    local tag a b c d worst="" wname="" st new="" dups="" arg id bound_now=""
+    local bpane bid bstate bname
+    while IFS=$T read -r tag a b c d; do
+        case "$tag" in
+            W) worst=$a; wname=$b ;;
+            D) dups="$dups $a" ;;
+            M) new="$new$a$T$b$T$c$T$d"$'\n' ;;
+        esac
+    done <<EOT
+$R_OUT
+EOT
     case "$worst" in
-        blocked) st=needs-input ;; failed) st=error ;; working) st=running ;;
-        done) st=done ;; idle) st=off ;;
-        *) poll_err "claude agents gave unreadable json"; return 0 ;;
+        blocked|failed|working|done|idle) ;;
+        *) [ -n "$S_SERIOUS" ] && poll_err "claude agents gave unreadable json"; return 0 ;;
     esac
     poll_err ""
-    for pane in $live; do
-        "$here/agent-state" poll "$st" "$pane" "$name needs you" >/dev/null 2>&1
+    lastsig=$S_SIG; watched=$dups
+    while IFS=$T read -r bpane bid bstate bname; do
+        [ -n "$bpane" ] || continue
+        bound_now="$bound_now $bpane"; watched="$watched $bpane"
+        pane_row "$bpane"
+        st=$(job_state "$bstate")
+        "$here/agent-state" poll "$st" "$bpane" "$bname needs you" >/dev/null 2>&1
+        if [ "$row_job" != "$bid" ] || [ "$row_name" != "$bname" ] \
+            || [ "$row_jstate" != "$st" ]; then
+            # tmux takes an argument's trailing `;` for a separator; `\;` is a literal one.
+            arg=$bname; case "$arg" in *\;) arg="${arg%;}\;" ;; esac
+            # An ex-foreground session (sent to the background) is a viewer now: its mark goes.
+            tmux set-option -p -t "$bpane" @cockpit_job "$bid" \; \
+                set-option -p -t "$bpane" @cockpit_job_name "$arg" \; \
+                set-option -p -t "$bpane" @cockpit_job_state "$st" \; \
+                set-option -pu -t "$bpane" @cockpit_fg 2>/dev/null
+        fi
+    done <<EOT
+$new
+EOT
+    for id in $S_BOUND; do
+        case " $bound_now " in *" $id "*) continue ;; esac
+        pane_row "$id"
+        unbind "$id" "$row_marked" "$row_fg" "$row_pstate" "$row_jstate"
     done
+    case "$worst" in
+        blocked) st=needs-input ;; failed) st=error ;; working) st=running ;;
+        done) st=done ;; *) st=off ;;
+    esac
+    for id in $S_LIVE; do
+        case " $bound_now " in *" $id "*) continue ;; esac
+        "$here/agent-state" poll "$st" "$id" "$wname needs you" >/dev/null 2>&1
+    done
+}
+
+# One tick. 0: carry on. 1: no server, or the slot is another poller's: stop.
+tick() {
+    scan_panes || return 1
+    # Someone else holds the slot (it was taken over): leave it to them.
+    [ "$once" = 1 ] || [ "$S_OWN" = "$$" ] || return 1
+    read_jobs && apply_jobs
     return 0
 }
 

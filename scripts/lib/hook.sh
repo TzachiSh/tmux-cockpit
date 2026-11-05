@@ -42,22 +42,49 @@ poll_alive() {                # <pid>
     [ "${comm##*/}" = agent-poll ]
 }
 
-# <pane> shows an agent view (#174): its turn runs in a background worker that reports no
-# state of its own, so scripts/agent-poll owns the pane's @panestate from here on. Marks the
-# pane and makes sure one poller runs on this server. Costs one tmux read and, with the
-# poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
-mark_agentview() {            # <pane> <scripts dir>
-    local info view pid every q
-    info=$(tmux display-message -p -t "$1" \
-        '#{@cockpit_agentview}|#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) || return 0
-    view=${info%%|*}; info=${info#*|}; pid=${info%%|*}; every=${info#*|}
-    [ "$every" = off ] && return 0
-    [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
-    poll_alive "$pid" && return 0
-    printf -v q '%q' "$2/agent-poll"
+# Start a poller, detached (run-shell -b), so the caller never waits for it. Two starts at once
+# are fine: the slot is a compare-and-set in the server and the loser exits.
+start_poller() {              # <scripts dir>
+    local q
+    printf -v q '%q' "$1/agent-poll"
     # run-shell expands formats: a # in the install path must stay a #.
     # shellcheck source=fmt.sh
     . "${BASH_SOURCE[0]%/*}/fmt.sh" 2>/dev/null || return 0
     tmux run-shell -b "$(fesc "$q")" 2>/dev/null
     return 0
+}
+
+# One poller runs on this server (#448). It binds a pane that shows a background job to that
+# job, and a background job's hooks never touch tmux (#174), so nothing from a job can start
+# it later: the sweeps (the load, and every window or pane change) do. Costs one tmux read
+# and, with the poller alive, one /proc read.
+ensure_poller() {             # <scripts dir>
+    local info pid
+    # COCKPIT_NO_AUTOSTART: the test suite's servers, which must not run the real claude.
+    [ -z "${COCKPIT_NO_AUTOSTART:-}" ] || return 0
+    info=$(tmux display-message -p '#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' 2>/dev/null) \
+        || return 0
+    pid=${info%%|*}
+    [ "${info#*|}" = off ] && return 0
+    poll_alive "$pid" && return 0
+    start_poller "$1"
+}
+
+# <pane> shows an agent view (#174): its turn runs in a background worker that reports no
+# state of its own, so scripts/agent-poll owns the pane's @panestate from here on. Marks the
+# pane and makes sure one poller runs on this server. Costs one tmux read and, with the
+# poller alive, one /proc read; the start is detached (run-shell -b) so the hook never waits.
+mark_agentview() {            # <pane> <scripts dir>
+    local info view fg pid every
+    info=$(tmux display-message -p -t "$1" \
+        '#{@cockpit_agentview}|#{@cockpit_fg}|#{@cockpit_poll_pid}|#{@cockpit_bg_poll}' \
+        2>/dev/null) || return 0
+    view=${info%%|*}; info=${info#*|}; fg=${info%%|*}; info=${info#*|}
+    pid=${info%%|*}; every=${info#*|}
+    [ "$every" = off ] && return 0
+    [ "$view" = 1 ] || tmux set-option -p -t "$1" @cockpit_agentview 1 2>/dev/null
+    # The agent view relays for this pane: it shows jobs now, whatever session ran in it before.
+    [ -z "$fg" ] || tmux set-option -pu -t "$1" @cockpit_fg 2>/dev/null
+    poll_alive "$pid" && return 0
+    start_poller "$2"
 }

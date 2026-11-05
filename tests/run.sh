@@ -98,6 +98,9 @@ PATH="$SHIM:$(path_without_mnt "$PATH")"; export PATH
 # No agent-view poller on the suite's server: a relayed agent_needs_input would start one, and
 # it runs the real `claude agents` (#174). The agent-view blocks use servers of their own.
 "$TMUX_REAL" -L "$SUITE_SOCK" set -g @cockpit_bg_poll off >/dev/null 2>&1
+# Nor on a block's server that loads cockpit.tmux: its load sweep starts the poller (#448), which
+# would read the real `claude agents` of whoever runs the suite. The poller blocks unset this.
+export COCKPIT_NO_AUTOSTART=1
 # The repo's own config, so the rendering assertions below test what we ship.
 "$TMUX_REAL" -L "$SUITE_SOCK" source-file "$DIR/examples/tmux.conf" >/dev/null 2>&1
 
@@ -10163,12 +10166,26 @@ av_setup() {                  # the fixtures every agent-view block needs; each 
     AVF="$DIR/tests/fixtures/agent-view"
     AVBIN=$(mktmpd); ln -s "$AVF/claude" "$AVBIN/claude"
     AVREC=$(mktmpd); AVLOG="$AVREC/calls"; : > "$AVLOG"
+    AVWD=$(mktmpd)
     cat > "$AVREC/tmux" <<SHIMEOF
 #!/bin/sh
 printf '%s\n' "\$*" >> "$AVLOG"
 exec "$TMUX_REAL" "\$@"
 SHIMEOF
     chmod +x "$AVREC/tmux"
+}
+
+av_wait() {                   # av_wait '<test command>': polls it up to 30s, the box may be loaded
+    local i; for i in $(seq 1 300); do eval "$1" && return 0; sleep 0.1; done; return 1
+}
+
+av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry to read, is not gone
+    # A killed process whose reaper is slow stays a zombie, and kill -0 succeeds on it. Counted
+    # as gone here on the hypothesis that one reaper stall made four runs miss at once (#386).
+    [ -n "${1:-}" ] || return 1
+    kill -0 "$1" 2>/dev/null || return 0
+    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    st=${st##*) }; [ "${st:0:1}" = Z ]
 }
 
 echo "== agent-view: a background worker's hooks touch nothing (#174) =="
@@ -10201,7 +10218,7 @@ echo "== agent-view: agent-poll --once writes the worst background state (#174) 
 av_setup
 av_srv() {                    # av_srv <tag>: a private server; sets AV AVT AVP
     AV="cockpit-av-$$-$1"; SOCKS="$SOCKS $AV"
-    "$TMUX_REAL" -L "$AV" -f /dev/null new-session -d -s t -x 80 -y 24 \
+    "$TMUX_REAL" -L "$AV" -f /dev/null new-session -d -s t -x 80 -y 24 -c "$AVWD" \
         'exec -a claude bash' >/dev/null 2>&1
     "$TMUX_REAL" -L "$AV" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
     "$TMUX_REAL" -L "$AV" set-environment -g PATH "$AVBIN:$PATH" >/dev/null 2>&1
@@ -10298,6 +10315,188 @@ is "with jq and claude both on the minimal PATH the poll does write" "0 needs-in
 av_tm kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-poll: a pane whose title names one background job shows that job (#448) =="
+av_setup
+# The bind rule: the pane runs claude, allow-set-title is on, and its title (an optional leading
+# "✳ " off, whitespace runs collapsed) equals the name of exactly one background job with an id,
+# done ones counted. Everything else keeps what it had: unmarked, nothing; marked, the worst.
+av_np() {                     # av_np <title> [command]: a pane; its id
+    local p
+    p=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' "exec -a ${2:-claude} sleep 300")
+    av_tm select-pane -t "$p" -T "$1"
+    printf '%s' "$p"
+}
+avj() {                       # avj <pane>: "<job>|<job name>|<state>|<ask>"
+    printf '%s|%s|%s|%s' "$(avo @cockpit_job "$1")" "$(avo @cockpit_job_name "$1")" \
+        "$(avo @panestate "$1")" "$(avo @panestate_msg "$1")"
+}
+if need_tmux "agent-poll bind"; then :; else
+av_srv bind
+av_tm set -g @cockpit_agents_glob '|claude|codex|'
+av_bind() { av_once bind.json >/dev/null; }
+# A table test: each row is a title, the pane's command, and what the pane shows after one poll.
+av_case() {                   # av_case <label> <title> <want> [command]
+    local p; p=$(av_np "$2" "${4:-claude}"); av_bind
+    is "$1" "$3" "$(avj "$p")"
+    av_tm kill-pane -t "$p"
+}
+av_case "an exact match shows the job's state (working -> running)" "alpha" "aa|alpha|running|"
+av_case "...with the leading glyph" "✳ alpha" "aa|alpha|running|"
+av_case "a blocked job -> needs-input, with its name in the ask" "fix the parser" \
+    "bb|fix the parser|needs-input|fix the parser needs you"
+av_case "a failed job -> error" "✳ two spaces" "ff|two spaces|error|"
+av_case "a done job counts: done" "gamma" "cc|gamma|done|"
+av_case "a stopped job is idle: the state stays clear, the job is shown" "idle job" "jj|idle job||"
+av_case "an unknown state is idle too" "odd" "kk|odd||"
+av_case "whitespace runs in the title collapse" "✳   two    spaces  " "ff|two spaces|error|"
+av_case "...and in the name" "wide gap" "gg|wide gap|running|"
+av_case "a glyph with a double space still strips" "✳  alpha" "aa|alpha|running|"
+# Not bound: the pane keeps what it had (nothing).
+av_case "no: a title that is only part of a name" "alph" "|||"
+av_case "no: case differs" "ALPHA" "|||"
+av_case "no: two jobs carry the name (one done)" "twin" "|||"
+av_case "no: the name is an interactive session's" "front" "|||"
+av_case "no: the job has no id" "noid" "|||"
+av_case "no: the agent view's own title" "claude agents" "|||"
+av_case "no: ... with a count" "2 awaiting input · claude agents" "|||"
+av_case "no: an empty title" "" "|||"
+av_case "no: the glyph alone" "✳ " "|||"
+av_case "no: the pane is not running claude (a shell with a stale title)" "alpha" "|||" sleep
+av_case "no: another agent from the agents glob is not claude" "alpha" "|||" codex
+AVOFF=$(av_np "alpha"); av_tm set-option -p -t "$AVOFF" allow-set-title off; av_bind
+is "no: allow-set-title is off on the pane, its title is stale for good" "|||" "$(avj "$AVOFF")"
+av_tm set-option -pu -t "$AVOFF" allow-set-title; av_bind
+is "...and on again, it binds" "aa|alpha|running|" "$(avj "$AVOFF")"
+# A name ending in ";" is a tmux separator as an argument: it is recorded as it is.
+AVSEMI=$(av_tm new-window -d -c "$AVWD" -P -F '#{pane_id}' \
+    "printf '\\033]0;semi;\\033\\\\'; exec -a claude sleep 300")
+av_wait '[ "$(av_tm display -p -t "$AVSEMI" "#{pane_title}")" = "semi;" ]'
+av_bind
+is "a name ending in a semicolon is recorded whole" "mm|semi;|running|" "$(avj "$AVSEMI")"
+av_tm kill-pane -t "$AVSEMI"
+# A marked pane: bound, its job's state; unbound, the worst of all as before.
+AVMK=$(av_np "alpha"); av_tm set-option -p -t "$AVMK" @cockpit_agentview 1
+AVMU=$(av_np "nothing"); av_tm set-option -p -t "$AVMU" @cockpit_agentview 1
+AVMD=$(av_np "twin"); av_tm set-option -p -t "$AVMD" @cockpit_agentview 1
+av_bind
+is "a marked pane that is bound shows its job, not the worst of all" "aa|alpha|running|" \
+   "$(avj "$AVMK")"
+is "a marked pane that is not bound keeps the worst of all" \
+   "||needs-input|fix the parser needs you" \
+   "$(avj "$AVMU")"
+is "a marked pane whose title names two jobs keeps the worst of all" \
+   "||needs-input|fix the parser needs you" "$(avj "$AVMD")"
+# Compare-then-set: a second poll of the same bind writes nothing (every set redraws).
+AVSETS="$AVREC/bsets"; : > "$AVSETS"
+av_tm set-hook -g after-set-option "run-shell 'echo \"#{hook_arguments}\" >> $AVSETS'"
+av_bind; : > "$AVSETS"; av_bind
+is "a poll that changes nothing writes nothing, bound panes included" "0" \
+   "$(wc -l < "$AVSETS" | tr -d ' ')"
+av_tm set-hook -gu after-set-option
+# The bind ends when the title moves on: the job and its name are cleared with the state.
+AVMV=$(av_np "alpha"); av_bind
+is "bound before the title changes" "aa|alpha|running|" "$(avj "$AVMV")"
+av_tm select-pane -t "$AVMV" -T "something else"; av_bind
+is "a title that moved on unbinds: job, name and state cleared" "|||" "$(avj "$AVMV")"
+av_tm select-pane -t "$AVMV" -T "gamma"; av_bind
+av_tm select-pane -t "$AVMV" -T "claude agents"; av_bind
+is "back to the agent view unbinds" "|||" "$(avj "$AVMV")"
+av_tm select-pane -t "$AVMV" -T "alpha"; av_bind
+av_tm respawn-pane -k -t "$AVMV" 'exec -a bash sleep 300'
+av_tm select-pane -t "$AVMV" -T "alpha"
+av_bind
+is "a pane that left claude unbinds, its stale state taken back" "|||" "$(avj "$AVMV")"
+# A second job taking the name unbinds too, and a marked pane falls back to the worst of all.
+AVMW=$(av_np "alpha"); av_tm set-option -p -t "$AVMW" @cockpit_agentview 1; av_bind
+av_tm select-pane -t "$AVMW" -T "twin"; av_bind
+is "a marked pane that unbinds falls back to the worst of all" \
+   "||needs-input|fix the parser needs you" \
+   "$(avj "$AVMW")"
+# The unbind takes back only a state the poller wrote.
+AVTB=$(av_np "alpha"); av_bind
+av_tm set-option -p -t "$AVTB" @panestate needs-input
+av_tm select-pane -t "$AVTB" -T "something else"; av_bind
+is "a state someone else wrote since is left when the bind ends" "||needs-input|" "$(avj "$AVTB")"
+AVTC=$(av_np "alpha"); av_bind
+av_tm set-option -p -t "$AVTC" @cockpit_fg 1
+av_tm select-pane -t "$AVTC" -T "something else"; av_bind
+is "a pane a foreground session owns keeps its state when the bind ends" "||running|" \
+   "$(avj "$AVTC")"
+# A foreground session's pane is its hooks', whatever its title says: they write the state,
+# and a job of the same name must not overwrite it.
+av_fg() {                     # av_fg <pane> <notification type> [message]: a hook of that session
+    printf '{"notification_type":"%s","message":"%s"}' "$2" "${3:-}" \
+        | env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" \
+            "$DIR/scripts/agent-state" notify >/dev/null 2>&1
+}
+AVF1=$(av_np "alpha"); av_fg "$AVF1" permission_prompt "perm fg"; av_bind
+is "a foreground pane titled like a job keeps its hooks' state" "||needs-input|perm fg" \
+   "$(avj "$AVF1")"
+AVF2=$(av_np "alpha"); av_tm set-option -p -t "$AVF2" @cockpit_agentview 1; av_bind
+is "a viewer bound to a job..." "aa|alpha|running|" "$(avj "$AVF2")"
+av_fg "$AVF2" permission_prompt "perm fg"; av_bind
+is "...turned foreground session (its hook unmarked it) is no longer the poller's" \
+   "||needs-input|perm fg" "$(avj "$AVF2")"
+av_tm select-pane -t "$AVF2" -T "something else"; av_bind
+is "...and a title change then does not wipe its state" "||needs-input|perm fg" "$(avj "$AVF2")"
+av_fgoff() {                  # av_fgoff <pane> <event>: that session's `off` hook
+    printf '{"session_id":"s","cwd":"/x","hook_event_name":"%s"}' "$2" \
+        | env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" \
+            "$DIR/scripts/agent-state" off >/dev/null 2>&1
+}
+# The left arrow in a foreground session sends it to the background and leaves the process in
+# the pane, no SessionEnd: the pane shows its own job from then on, which started after the
+# session's last state change. A job that started before it is some other session's.
+jq 'map(.startedAt = 99999999999999)' "$AVF/bind.json" > "$AVREC/late.json"
+av_late() { av_once bind.json AV_JSON="$AVREC/late.json" >/dev/null; }
+av_fgst() {                   # av_fgst <pane> <verb>: that session's state hook
+    env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" "$DIR/scripts/agent-state" "$2" \
+        </dev/null >/dev/null 2>&1
+}
+AVF4=$(av_np "alpha"); av_fgst "$AVF4" running; av_fgst "$AVF4" done; av_late
+is "a foreground pane whose title names a job that started after its last hook binds it" \
+   "aa|alpha|running|" "$(avj "$AVF4")"
+is "...and is no foreground session's pane any more" "" "$(avo @cockpit_fg "$AVF4")"
+# The mark is the epoch second of the last state change: set by a hook that changes nothing
+# (the pane has none), refreshed by one that does.
+AVF6=$(av_np "x"); av_tm set-option -p -t "$AVF6" @panestate needs-input
+av_fg "$AVF6" permission_prompt "same"
+is "a foreground hook that changes no state still marks the pane" "yes" \
+   "$([ -n "$(avo @cockpit_fg "$AVF6")" ] && echo yes || echo no)"
+av_tm set-option -p -t "$AVF6" @cockpit_fg 1000000000
+env TMUX="$AVT" TMUX_PANE="$AVF6" PATH="$AVBIN:$PATH" "$DIR/scripts/agent-state" running \
+    </dev/null >/dev/null 2>&1
+AVEPOCH=$(avo @cockpit_fg "$AVF6")
+is "...and a state change refreshes it to the present" "yes" \
+   "$([ "$AVEPOCH" -gt 1700000000 ] && echo yes || echo no)"
+AVF7=$(av_np "alpha"); av_fg "$AVF7" permission_prompt "perm fg"; av_late
+is "a session waiting on the user is never bound: its ▲ stays" "||needs-input|perm fg" \
+   "$(avj "$AVF7")"
+jq 'map(.startedAt = "2026-11-05T10:00:00Z")' "$AVF/bind.json" > "$AVREC/iso.json"
+AVISO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/iso.json" >/dev/null
+is "a startedAt that is no number breaks nothing: the pane still binds" "aa|alpha|running|" \
+   "$(avj "$AVISO")"
+AVF5=$(av_np "alpha"); av_fg "$AVF5" permission_prompt "perm fg"; av_bind
+is "a job that started before the session's last hook is not its own" "||needs-input|perm fg" \
+   "$(avj "$AVF5")"
+av_tm set-option -p -t "$AVF5" @cockpit_fg 1; av_late
+is "a mark that is no epoch second never binds" "||needs-input|perm fg" "$(avj "$AVF5")"
+AVF3=$(av_np "alpha"); av_fg "$AVF3" permission_prompt "perm fg"; av_fgoff "$AVF3" SessionStart
+is "a SessionStart's off keeps the foreground mark" "yes" \
+   "$([ -n "$(avo @cockpit_fg "$AVF3")" ] && echo yes || echo no)"
+av_fgoff "$AVF3" SessionEnd; av_bind
+is "a pane whose foreground session ended binds the job it attaches to" "aa|alpha|running|" \
+   "$(avj "$AVF3")"
+is "...the mark gone with the session" "" "$(avo @cockpit_fg "$AVF3")"
+av_tm set-option -p -t "$AVF1" @cockpit_fg 1000000000
+av_tm respawn-pane -k -t "$AVF1" 'exec -a bash sleep 300'; av_bind
+is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_fg "$AVF1")"
+av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
+av_tm select-pane -t "$AVF1" -T "alpha"; av_bind
+is "...and a viewer later in that pane binds" "aa|alpha|running|" "$(avj "$AVF1")"
+av_tm kill-server >/dev/null 2>&1
+fi
+
 echo "== agent-view: agent-state poll is compare-then-set and recomputes the counters (#174) =="
 av_setup
 if need_tmux "agent-view poll verb"; then :; else
@@ -10348,9 +10547,6 @@ av_polls() {                  # live agent-poll processes on this server
     done
     echo "$n"
 }
-av_wait() {                   # av_wait '<test command>': polls it up to 30s, the box may be loaded
-    local i; for i in $(seq 1 300); do eval "$1" && return 0; sleep 0.1; done; return 1
-}
 av_published() {              # the published pid is a live agent-poll
     local p; p=$(av_tm show-option -gqv @cockpit_poll_pid)
     [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
@@ -10358,9 +10554,13 @@ av_published() {              # the published pid is a live agent-poll
 av_hook permission_prompt
 is "an ordinary permission prompt is not an agent view: no mark, no poller" "|0" \
    "$(avo @cockpit_agentview)|$(av_runs)"
+is "a foreground hook marks the pane as its session's (#448)" "yes" \
+   "$([ -n "$(avo @cockpit_fg)" ] && echo yes || echo no)"
 av_tm set-option -pu -t "$AVP" @panestate
 av_hook agent_completed
 is "agent_completed marks the pane" "1" "$(avo @cockpit_agentview)"
+is "...and it is no foreground session's pane any more: the agent view relays for it" "" \
+   "$(avo @cockpit_fg)"
 is "...writes no state of its own" "" "$(avo @panestate)"
 is "...and starts the poller, once" "1" "$(av_runs)"
 av_wait av_published
@@ -10412,14 +10612,6 @@ av_start() {                  # a poller outside the hook path; its pid in AVPID
         "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>&1 &
     AVPID=$!
 }
-av_gone() {                   # av_gone <pid>: dead; no pid, or no /proc entry to read, is not gone
-    # A killed process whose reaper is slow stays a zombie, and kill -0 succeeds on it. Counted
-    # as gone here on the hypothesis that one reaper stall made four runs miss at once (#386).
-    [ -n "${1:-}" ] || return 1
-    kill -0 "$1" 2>/dev/null || return 0
-    local st; st=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
-    st=${st##*) }; [ "${st:0:1}" = Z ]
-}
 av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
 av_start; AVA=$AVPID
 av_wait '[ "$(av_pub)" = "$AVA" ]'
@@ -10439,12 +10631,8 @@ is "a poller whose slot was taken over does not release the new owner's pid" "99
 av_tm set-option -gu @cockpit_poll_pid
 av_start; AVA=$AVPID
 av_wait '[ "$(av_pub)" = "$AVA" ]'
-av_tm respawn-pane -k -t "$AVP" 'sleep 300'
-av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
-is "when no marked pane is an agent any more the poller exits" "yes" \
-   "$(av_gone "$AVA" && echo yes || echo no)"
-is "...and unpublishes" "" "$(av_pub)"
-av_tm respawn-pane -k -t "$AVP" 'exec -a claude bash'
+# (The poller no longer leaves when no marked pane is an agent: see the #448 blocks below.)
+kill -TERM "$AVA"; av_wait "av_gone \$AVA" || kill -9 "$AVA"; wait "$AVA" 2>/dev/null
 av_start; AVC=$AVPID
 av_wait '[ "$(av_pub)" = "$AVC" ]'
 kill -TERM "$AVC"; av_wait "av_gone \$AVC" || kill -9 "$AVC"; wait "$AVC" 2>/dev/null
@@ -10630,6 +10818,119 @@ wait "$AVA" "$AVB" 2>/dev/null
 av_tm kill-server >/dev/null 2>&1
 fi
 
+echo "== agent-poll: the sweeps start one poller, which reads claude only when it matters (#448) =="
+av_setup
+if need_tmux "agent-poll lifetime" || [ ! -d /proc/self ]; then :; else
+av_srv up
+av_tm set-option -g @cockpit_bg_poll 1
+AVLIVE="$AVREC/live.json"; AVCLOG="$AVREC/claude.log"; AVTRACE="$AVREC/up.trace"
+cp "$AVF/bind.json" "$AVLIVE"; : > "$AVCLOG"
+av_tm set-environment -g AV_JSON "$AVLIVE"
+av_tm set-environment -g AV_CLAUDELOG "$AVCLOG"
+av_pub() { av_tm show-option -gqv @cockpit_poll_pid; }
+av_runs() { grep -c '^run-shell -b ' "$AVLOG"; }
+av_reads() { wc -l < "$AVCLOG" | tr -d ' '; }
+av_ticks() { grep -c '^+* tick$' "$AVTRACE"; }
+av_sweep() {                  # av_sweep [env...]: the sweep a window event or the load runs
+    : > "$AVLOG"
+    env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE "$@" TMUX="$AVT" PATH="$AVREC:$AVBIN:$PATH" \
+        "$DIR/scripts/agent-state" sweep </dev/null >/dev/null 2>&1
+}
+av_after() {                  # av_after <n>: n more ticks of the traced poller have run
+    local t0; t0=$(av_ticks); av_wait "[ \$(av_ticks) -ge $((t0 + $1)) ]"
+}
+av_published() {
+    local p; p=$(av_pub)
+    [ -n "$p" ] && [ "$(cat "/proc/$p/comm" 2>/dev/null)" = agent-poll ]
+}
+# Where a poller starts.
+av_sweep COCKPIT_NO_AUTOSTART=1
+is "the suite's switch keeps a sweep from starting a poller" "0" "$(av_runs)"
+av_tm set-option -g @cockpit_bg_poll off
+av_sweep
+is "@cockpit_bg_poll off: a sweep starts none" "0" "$(av_runs)"
+av_tm set-option -g @cockpit_bg_poll 1
+av_tm set-option -g @cockpit_sweep_seq 9
+: > "$AVLOG"
+env -u COCKPIT_NO_AUTOSTART -u TMUX_PANE TMUX="$AVT" PATH="$AVREC:$AVBIN:$PATH" \
+    "$DIR/scripts/agent-state" sweep 5 </dev/null >/dev/null 2>&1
+is "a sweep that a newer event superseded starts none" "0" "$(av_runs)"
+av_sweep
+is "a sweep on a server with no poller starts one" "1" "$(av_runs)"
+av_wait av_published
+is "...which publishes its pid" "yes" "$(av_published && echo yes || echo no)"
+AVUP=$(av_pub)
+av_sweep
+is "a sweep with the poller alive starts none" "0" "$(av_runs)"
+is "...one poller on the server" "$AVUP" "$(av_pub)"
+kill -TERM "$AVUP"; av_wait '[ -z "$(av_pub)" ]'
+# A poller of our own, traced: the ticks are counted, never timed.
+: > "$AVTRACE"; : > "$AVCLOG"
+av_tm set-option -g @cockpit_bg_poll 1
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
+    AV_DELAY=0.3 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
+AVTP=$!
+av_wait '[ "$(av_pub)" = "$AVTP" ]'
+av_wait '[ "$(av_reads)" -ge 1 ]'
+av_after 4
+is "a box with no viewer and no job pays one read for the panes it found, then none" "1" \
+   "$(av_reads)"
+av_tm respawn-pane -k -t "$AVP" 'exec -a bash sleep 300'
+av_after 3
+is "no claude pane at all: still no read, and the poller stays" "1 yes" \
+   "$(av_reads) $(kill -0 "$AVTP" 2>/dev/null && echo yes || echo no)"
+# A viewer that appears later is served with no restart: nothing in a job could have started one.
+AVV=$(av_np "alpha")
+av_wait '[ "$(avj "$AVV")" = "aa|alpha|running|" ]'
+is "a viewer pane that appears later is bound, by the poller already running" "aa|alpha|running|" \
+   "$(avj "$AVV")"
+is "...still the one poller" "$AVTP" "$(av_pub)"
+n0=$(av_reads)
+av_wait "[ \$(av_reads) -ge $((n0 + 3)) ]" && AVYES=yes || AVYES=no
+is "a bound pane is read every tick" "yes" "$AVYES"
+av_tm select-pane -t "$AVV" -T "gamma"
+av_wait '[ "$(avj "$AVV")" = "cc|gamma|done|" ]'
+is "a title change is seen, and the pane follows it to the other job" "cc|gamma|done|" \
+   "$(avj "$AVV")"
+av_tm select-pane -t "$AVV" -T "nothing"
+av_wait '[ "$(avj "$AVV")" = "|||" ]'
+is "the bind ends with the title" "|||" "$(avj "$AVV")"
+n0=$(av_reads); av_after 4
+is "...and the reads stop with it" "$n0" "$(av_reads)"
+# A title that named two jobs is watched: the pane binds when one goes, with no title change.
+av_tm select-pane -t "$AVV" -T "twin"
+av_wait '[ "$(av_reads)" -gt "$n0" ]'
+n0=$(av_reads)
+av_wait "[ \$(av_reads) -ge $((n0 + 3)) ]" && AVYES=yes || AVYES=no
+is "a title naming two jobs is read every tick" "yes" "$AVYES"
+is "...and is bound to neither" "|||" "$(avj "$AVV")"
+jq '[.[] | select(.id != "ee")]' "$AVF/bind.json" > "$AVLIVE.tmp" && mv "$AVLIVE.tmp" "$AVLIVE"
+av_wait '[ "$(avj "$AVV")" = "dd|twin|running|" ]'
+is "...and binds the tick the other one is gone" "dd|twin|running|" "$(avj "$AVV")"
+# A read nobody waits on that fails is tried once per change of the panes, not every tick.
+av_tm select-pane -t "$AVV" -T "nothing"
+av_wait '[ "$(avj "$AVV")" = "|||" ]'
+kill -TERM "$AVTP"; av_wait "av_gone $AVTP" || kill -9 "$AVTP"; wait "$AVTP" 2>/dev/null
+: > "$AVTRACE"; : > "$AVCLOG"
+env -u TMUX_PANE TMUX="$AVT" PATH="$AVBIN:$PATH" AV_JSON="$AVLIVE" AV_CLAUDELOG="$AVCLOG" \
+    AV_RC=1 bash -x "$DIR/scripts/agent-poll" </dev/null >/dev/null 2>"$AVTRACE" &
+AVTP=$!
+av_wait '[ "$(av_reads)" -ge 1 ]'
+av_after 5
+is "a failing read nobody waits on is not run again every tick" "1" "$(av_reads)"
+av_tm select-pane -t "$AVV" -T "something new"
+av_wait '[ "$(av_reads)" -ge 2 ]' && AVYES=yes || AVYES=no
+is "...but is tried again when a title changes" "yes" "$AVYES"
+is "...and says nothing: no marked pane was waiting" "" \
+   "$(av_tm show-option -gqv @cockpit_poll_err)"
+# The server going takes the poller with it.
+av_tm kill-server >/dev/null 2>&1
+av_wait "av_gone $AVTP" && AVLEFT=yes || AVLEFT=no
+av_gone "$AVTP" || kill -9 "$AVTP" 2>/dev/null
+wait "$AVTP" 2>/dev/null
+is "the poller leaves when its server does" "yes" "$AVLEFT"
+fi
+
 echo "== agent-view: a poller that cannot read the sessions leaves the reason (#174) =="
 av_setup
 if need_tmux "agent-view poll_err"; then :; else
@@ -10672,6 +10973,11 @@ is "a good tick clears it" "" "$(av_err "$AVE3" blocked.json)"
 is "and says nothing" "0" \
    "$(av_tm show-messages 2>/dev/null | grep -v ' command: ' | grep -c 'cannot poll: $')"
 unset -f av_said
+# #448: a read nobody is waiting on (the claude panes only changed) stays quiet about a missing
+# tool; with a marked agent view waiting, it is said (above).
+av_tm set-option -pu -t "$AVP" @cockpit_agentview
+is "no marked pane: a missing claude is not an error" "" "$(av_err "$AVE2" blocked.json)"
+is "...nor a missing jq" "" "$(av_err "$AVE1" blocked.json)"
 "$TMUX_REAL" -L "$AVO" kill-server >/dev/null 2>&1
 av_tm kill-server >/dev/null 2>&1
 rm -rf "$AVOD"

@@ -146,7 +146,7 @@ None is required.
 | `@cockpit_glyphs` | unset | `ascii` for plain glyphs in the board, the panel, info, the branch picker, `tm` and sessions; `nerd` draws the default there, but for the board's subagent badge |
 | `@thm_<role>`, `@thm_<role>_light` | the plugin's palette | the colours; see [docs/status-bar.md](docs/status-bar.md#colours) |
 | `@cockpit_rewake_cap` | `10` | cap on `/goal` rewakes per pane; `0` disables |
-| `@cockpit_bg_poll` | `10` | seconds between polls of agent views' background state; `off` disables; an empty, invalid or `0` value falls back to 10 |
+| `@cockpit_bg_poll` | `10` | seconds between ticks of the poller that gives a pane showing a background job its state (agent view, `claude attach`); `off` disables and the poller never starts; an empty, invalid or `0` value falls back to 10 |
 
 For a bar of your own, `@cockpit_statusbar off` and the
 `#{E:@cockpit_where_path}`, `#{E:@cockpit_where_branch}` and
@@ -166,6 +166,22 @@ them, and `error` does not overwrite `needs-input`. Only work resuming
 
 The formats believe the state only while the pane is running a command that
 matches `@cockpit_agents`, so a crashed agent does not leave a stale marker.
+
+**The agent view and background jobs.** A pane that shows a background job (the
+agent view, or `claude attach`) runs no hook of its own: the job's turn runs in a
+worker, and nothing a worker does may touch tmux. One poller per server, started
+by the config load and by window events, reads `claude agents --json --all`
+and writes the state. A pane is bound to a job when it runs `claude`, has
+`allow-set-title` on, and its title (the optional `✳ ` off, whitespace runs
+collapsed) equals the name of exactly one background job. The pane then shows that
+job's state, and `@cockpit_job` and `@cockpit_job_name` say which job. Any other
+pane marked as an agent view shows the worst state of all jobs, as before. A
+title is a hint, not an identity: a fresh `claude attach Y` that has not yet
+printed a title still shows the old name, and so the old job, until it does (a second
+signal would close that: #461). Drawing the
+bound job's name on the board is a follow-up (#460). A pane running a foreground session is
+never bound, whatever its title. The
+details are in [docs/states-and-hooks.md](docs/states-and-hooks.md#agent-view-and-background-jobs).
 
 Actions (jump, review, the board, the path picker) are shell scripts bound to keys.
 The required `cockpit-tui` binary draws the board and the panel; it writes a

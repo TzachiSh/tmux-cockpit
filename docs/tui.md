@@ -408,6 +408,14 @@ way out; the title reads `0 of 13`, and `↵` still keeps the filter as typed:
 The tiles (`v`) take no filter: `/` is a list key, and a kept filter waits in
 the list for `v` to come back.
 
+**Background jobs (#448).** A pane that shows a background job (the agent view,
+`claude attach`) takes its state from the job, not from hooks: `scripts/agent-poll`
+binds it when the pane's title names exactly one job, and records the job on the pane
+as `@cockpit_job` (id) and `@cockpit_job_name` (name), both cleared when the bind
+ends. The board does not draw them yet (#460). A row's state is the bound job's, and the
+rule, its residual false bind and how the poller starts are in
+[states-and-hooks.md](states-and-hooks.md#agent-view-and-background-jobs).
+
 **Subagents (#313).** An agent with subagents running or failed carries a
 badge, the first of its row's extra cells, in two widths by the room the row
 has: `✦2·1✕` (running, failed; the failed count only when there is one), then
