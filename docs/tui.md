@@ -840,8 +840,16 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
 - **The folder is the repo.** It is the git toplevel of the pane's folder
   (`capture::toplevel`: `rev-parse --show-toplevel` under gitsafe's flags, in
   the repo block's 300 ms), so a pane in `repo/src` explores `repo`. Outside a
-  repo, or past that time, it is the pane's own folder. It is worked out once
-  per panel, and the `explore on` note names it.
+  repo, or past that time, it is the pane's own folder. A repo's own config
+  can name any folder as its tree (`core.worktree`, relative or absolute), and
+  an inherited `GIT_DIR` or `GIT_WORK_TREE` can point git at another repo, so
+  the root is checked: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR` and
+  `GIT_INDEX_FILE` are taken out of that git call's environment (a ceiling
+  stays: it only stops the search lower). Then the root is kept only if it
+  holds the pane's folder and its own `.git`, a folder or a `gitdir:` file, is
+  the repo's git dir. Otherwise it is the pane's folder. A linked worktree, a
+  submodule and a separate git dir pass. It is worked out once per panel, and
+  the `explore on` note names it.
 - **Only a local window.** `^R` is refused, with a warn note, when the window
   may be a shell on another machine: its command is not in `LOCAL_CMDS` and not
   an agent name (`capture::is_local`, #433's rule). It is also refused when tmux

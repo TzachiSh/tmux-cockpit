@@ -156,7 +156,15 @@ const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-
 /// gitsafe's flags, no lock taken under the user's own git, no prompt, no
 /// transport; its own process group so a timeout kills what it forked.
 fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
+    spawn_git_unset(dir, extra, args, &[])
+}
+
+/// [`spawn_git`] with the variables `unset` taken out of git's environment.
+fn spawn_git_unset(dir: &str, extra: &[String], args: &[&str], unset: &[&str]) -> Option<Git> {
     let mut c = Command::new("git");
+    for v in unset {
+        c.env_remove(v);
+    }
     c.arg("-C")
         .arg(dir)
         .args(SAFE)
@@ -247,12 +255,43 @@ fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
     Ran::TimedOut
 }
 
-/// The work tree's root above `dir` (`rev-parse --show-toplevel`, under
-/// [`spawn_git`]'s flags), or `None` outside a repo or past `budget`.
+/// What an inherited environment points git at instead of the repo `dir` is in.
+/// GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
+const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+
+/// The work tree of the repo `dir` is in, under [`spawn_git`]'s flags, or `None`
+/// outside a repo, past `budget`, or when it is not `dir`'s own (see [`own_tree`]).
 pub fn toplevel(dir: &str, budget: Duration) -> Option<String> {
-    let g = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
-    let top = finish(g, Instant::now() + budget, "rev-parse --show-toplevel").ok()?;
-    Some(top.trim_end_matches('\n').to_string()).filter(|t| !t.is_empty())
+    let args = ["rev-parse", "--show-toplevel", "--absolute-git-dir"];
+    let g = spawn_git_unset(dir, &[], &args, &REDIRECT);
+    let out = finish(g, Instant::now() + budget, "rev-parse --show-toplevel").ok()?;
+    let mut lines = out.lines();
+    let (top, gitdir) = (lines.next()?, lines.next()?);
+    own_tree(Path::new(dir), Path::new(top), Path::new(gitdir)).then(|| top.to_string())
+}
+
+/// `top` holds `dir`, and its own `.git` (a folder, or a `gitdir:` file as in a
+/// linked worktree or a submodule) is the repo's git dir: a repo's `core.worktree`
+/// can name any folder as its tree, a parent repo or one outside, and is not trusted.
+fn own_tree(dir: &Path, top: &Path, gitdir: &Path) -> bool {
+    let canon = |p: &Path| std::fs::canonicalize(p).ok();
+    let (Some(dir), Some(top), Some(gitdir)) = (canon(dir), canon(top), canon(gitdir)) else {
+        return false;
+    };
+    if !dir.starts_with(&top) {
+        return false;
+    }
+    let dot = top.join(".git");
+    let own = match std::fs::symlink_metadata(&dot) {
+        Ok(m) if m.is_dir() => canon(&dot),
+        Ok(m) if m.is_file() => {
+            let body = std::fs::read_to_string(&dot).ok();
+            let named = body.as_deref().and_then(|b| b.strip_prefix("gitdir:")).map(|p| top.join(p.trim()));
+            named.and_then(|p| canon(&p))
+        }
+        _ => None,
+    };
+    own == Some(gitdir)
 }
 
 /// `lines` indented under `head`, the first `cap` of them and a count of the rest.

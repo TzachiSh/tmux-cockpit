@@ -602,16 +602,6 @@ fn a_pane_in_a_repos_subfolder_explores_the_repo() {
     );
 }
 
-#[test]
-fn a_folder_outside_any_repo_keeps_the_pane_folder() {
-    let g = scratch("norepo");
-    let dir = g.0.join("notes");
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut a = app("bash", &dir.display().to_string());
-    a.explore = true;
-    assert_eq!(added(&a), Some(dir.display().to_string()));
-}
-
 /// A file name is the model's to report: a bidi or control character in it never reaches the screen.
 #[test]
 fn a_read_path_with_a_bidi_mark_is_noted_clean() {
@@ -619,4 +609,128 @@ fn a_read_path_with_a_bidi_mark_is_noted_clean() {
     let (_g, call, repo) = faked("bidi", &out, 0);
     let a = answered(&call, &repo, true);
     assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/ab.rs"));
+}
+
+// ---------------------------------------------------------------- a repo's config cannot move the root
+
+/// git in `dir` with `args`, isolated from the user's and the system's config.
+fn git(dir: &Path, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.hooksPath=/dev/null"])
+        .args(["-c", "protocol.file.allow=always", "-c", "init.defaultBranch=main"])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+}
+
+/// `pane` with explore on: the folder its call would add.
+fn root_of(pane: &Path) -> Option<String> {
+    let mut a = app("bash", &pane.display().to_string());
+    a.explore = true;
+    added(&a)
+}
+
+fn canon(p: &Path) -> String {
+    std::fs::canonicalize(p).unwrap().display().to_string()
+}
+
+#[test]
+fn a_relative_core_worktree_cannot_widen_the_root() {
+    let g = scratch("wt-up");
+    let evil = g.0.join("dl/evil");
+    std::fs::create_dir_all(&evil).unwrap();
+    git(&evil, &["init", "-q"]);
+    git(&evil, &["config", "core.worktree", "../.."]);
+    assert_eq!(root_of(&evil), Some(evil.display().to_string()));
+}
+
+#[test]
+fn an_absolute_core_worktree_cannot_move_the_root() {
+    let g = scratch("wt-abs");
+    let (evil, other) = (g.0.join("evil"), g.0.join("other"));
+    std::fs::create_dir_all(&evil).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    git(&evil, &["init", "-q"]);
+    git(&evil, &["config", "core.worktree", &other.display().to_string()]);
+    assert_eq!(root_of(&evil), Some(evil.display().to_string()));
+}
+
+/// The moved root even names this repo back in its own .git file: the pane is not inside it.
+#[test]
+fn a_root_the_pane_is_not_inside_is_refused_whatever_its_git_file_says() {
+    let g = scratch("wt-file");
+    let (evil, other) = (g.0.join("evil"), g.0.join("other"));
+    std::fs::create_dir_all(&evil).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    git(&evil, &["init", "-q"]);
+    git(&evil, &["config", "core.worktree", &other.display().to_string()]);
+    std::fs::write(other.join(".git"), format!("gitdir: {}\n", evil.join(".git").display())).unwrap();
+    assert_eq!(root_of(&evil), Some(evil.display().to_string()));
+}
+
+/// `core.worktree=../..` (from the git dir) into a parent that is a repo of its
+/// own: its .git exists and holds the pane, and still is not this repo's.
+#[test]
+fn a_core_worktree_into_a_parent_repo_cannot_widen_the_root() {
+    let g = scratch("wt-parent");
+    let (outer, inner) = (g.0.join("outer"), g.0.join("outer/inner"));
+    std::fs::create_dir_all(&inner).unwrap();
+    git(&outer, &["init", "-q"]);
+    git(&inner, &["init", "-q"]);
+    git(&inner, &["config", "core.worktree", "../.."]);
+    assert_eq!(root_of(&inner), Some(inner.display().to_string()));
+}
+
+#[test]
+fn a_linked_worktree_explores_its_own_tree() {
+    let g = scratch("linked");
+    let main = g.0.join("main");
+    std::fs::create_dir_all(&main).unwrap();
+    git(&main, &["init", "-q"]);
+    git(&main, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&main, &["worktree", "add", "-q", "../wt"]);
+    let wt = g.0.join("wt");
+    std::fs::create_dir_all(wt.join("src")).unwrap();
+    assert_eq!(root_of(&wt.join("src")), Some(canon(&wt)));
+}
+
+#[test]
+fn a_submodule_explores_its_own_tree() {
+    let g = scratch("submod");
+    let (lib, sup) = (g.0.join("lib"), g.0.join("super"));
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::create_dir_all(&sup).unwrap();
+    git(&lib, &["init", "-q"]);
+    git(&lib, &["commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&sup, &["init", "-q"]);
+    git(&sup, &["submodule", "add", "-q", &lib.display().to_string(), "lib"]);
+    let sub = sup.join("lib");
+    assert!(sub.join(".git").is_file(), "a submodule's .git is a file");
+    // from a folder below it, so the pane's own folder is not the same answer
+    std::fs::create_dir_all(sub.join("src")).unwrap();
+    assert_eq!(root_of(&sub.join("src")), Some(canon(&sub)));
+}
+
+#[test]
+fn a_separate_git_dir_explores_its_tree() {
+    let g = scratch("sepdir");
+    let (repo, store) = (g.0.join("repo"), g.0.join("store"));
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    git(
+        &g.0,
+        &[
+            "init",
+            "-q",
+            "--separate-git-dir",
+            &store.display().to_string(),
+            &repo.display().to_string(),
+        ],
+    );
+    assert!(repo.join(".git").is_file());
+    assert_eq!(root_of(&repo.join("src")), Some(canon(&repo)));
 }

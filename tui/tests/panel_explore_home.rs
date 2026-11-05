@@ -3,13 +3,23 @@
 use cockpit_tui::panel::app::{App, Level, Tile, View};
 use cockpit_tui::panel::capture::Capture;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::path::PathBuf;
+
+/// A fresh temp dir, removed on drop: a failed `git init` or assert leaves nothing.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
 
 /// A pane in a plain folder under a HOME that is a repo: the repo is HOME, so it is refused.
 #[test]
 fn a_repo_at_home_is_refused_from_a_folder_inside_it() {
-    let d = std::env::temp_dir().join(format!("cockpit-panel-explore-home-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    let home = d.join("home");
+    let g = Scratch(std::env::temp_dir().join(format!("cockpit-panel-explore-home-{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&g.0);
+    let home = g.0.join("home");
     std::fs::create_dir_all(home.join("proj/src")).unwrap();
     let ok = std::process::Command::new("git")
         .args(["-c", "init.defaultBranch=main", "init", "-q"])
@@ -31,11 +41,8 @@ fn a_repo_at_home_is_refused_from_a_folder_inside_it() {
     a.key(KeyEvent::from(KeyCode::Char(char::from(b'1' + i as u8))));
     assert_eq!(a.view, View::Compose);
     a.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
-    let refused = !a.explore;
-    let n = a.note.clone();
-    let _ = std::fs::remove_dir_all(&d);
-    assert!(refused, "the repo is HOME: {n:?}");
-    let n = n.expect("a note");
+    assert!(!a.explore, "the repo is HOME: {:?}", a.note);
+    let n = a.note.clone().expect("a note");
     assert_eq!(n.level, Level::Warn);
     assert!(n.text.contains("home folder"), "{}", n.text);
 }
