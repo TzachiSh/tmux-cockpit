@@ -326,6 +326,29 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
     ids.iter().filter(|(_, needle)| block.contains(needle)).map(|(id, _)| *id).collect()
 }
 
+/// Each example's reply, parsed the way the panel parses a write (#503).
+fn example_replies() -> Vec<cockpit_tui::panel::parse::Reply> {
+    use cockpit_tui::panel::parse;
+    let replies: Vec<&str> = WRITE_EXAMPLES.split("<reply>").skip(1).collect();
+    assert!(replies.len() >= 10, "the pool has its examples: {}", replies.len());
+    let body = |r: &str| r.split("</reply>").next().unwrap_or("").to_string();
+    replies.iter().map(|r| parse::write(&body(r), OutType::Auto).reply).collect()
+}
+
+#[test]
+fn every_example_question_offers_exactly_two_options() {
+    use cockpit_tui::panel::parse::Reply;
+    let asks: Vec<usize> = example_replies()
+        .iter()
+        .filter_map(|r| match r {
+            Reply::Question { options, .. } => Some(options.len()),
+            _ => None,
+        })
+        .collect();
+    assert!(asks.len() >= 3, "the pool shows questions: {asks:?}");
+    assert!(asks.iter().all(|n| *n == 2), "the panel adds its own answer as a third: {asks:?}");
+}
+
 #[test]
 fn the_core_examples_always_go_and_the_fill_order_tops_up() {
     let core = ["crash", "investigate", "message", "which-file", "unclear", "no-expected", "steps"];
