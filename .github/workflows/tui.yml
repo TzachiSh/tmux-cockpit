@@ -7,7 +7,12 @@ on:
 
 jobs:
   tui-test:
-    runs-on: ubuntu-latest
+    # ci-cockpit, TzachiSh/ci-box#367. The job container brings rustup and a
+    # linker, and is thrown away after the job, so rustup default below
+    # changes nothing on the runner.
+    runs-on: [self-hosted, cockpit]
+    container: rust:1-bookworm
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Exactly the floor, never "stable": pinning here is what catches an

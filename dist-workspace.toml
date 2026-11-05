@@ -36,5 +36,16 @@ tag-namespace = "cockpit-tui"
 
 # dist 0.32.0 picks macos-14 for this target; GitHub retires that image on
 # 2026-11-02 and its brownouts cancel the job (runner-images#13518).
+#
+# Everything Linux runs on ci-cockpit, the self-hosted runner TzachiSh/ci-box#367
+# set up, by its label. plan, the global build, host and announce run on the
+# runner itself, whose image carries cargo for them. The musl build runs in a
+# rust container, where dist calls apt-get without sudo. The mac builds stay on
+# GitHub's runners: no self-hosted one runs macOS.
 [dist.github-custom-runners]
+global = "cockpit"
 aarch64-apple-darwin = "macos-15"
+
+[dist.github-custom-runners.x86_64-unknown-linux-musl]
+runner = "cockpit"
+container = { image = "rust:1-bookworm", host = "x86_64-unknown-linux-gnu", package-manager = "apt" }
