@@ -110,6 +110,16 @@ impl Rig {
     }
 }
 
+/// Is `pid` still this rig's stub? Its cmdline holds the stub's own path, which
+/// lives under the rig's dir, so a reused pid of anything else never matches.
+fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
+    let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let dir = dir.as_os_str().as_encoded_bytes();
+    !dir.is_empty() && cmd.windows(dir.len()).any(|w| w == dir)
+}
+
 impl Drop for Rig {
     fn drop(&mut self) {
         for (k, v) in &self.old {
@@ -123,11 +133,14 @@ impl Drop for Rig {
         }
         // a red run must not leave a stub looping on a file that never comes
         let _ = std::fs::write(self.dir.join("go"), "");
-        if let Ok(p) = std::fs::read_to_string(self.dir.join("stubpid")) {
-            if let Ok(p) = p.trim().parse::<i32>() {
-                // SAFETY: a plain signal to a pid this rig's stub wrote.
-                unsafe { libc::kill(p, libc::SIGKILL) };
-            }
+        // AGENTS.md: never signal a pid nobody verified. The stub may be long gone and
+        // its pid reused, so kill it only while its cmdline still names this rig's dir.
+        if let Ok(p) = std::fs::read_to_string(self.dir.join("stubpid"))
+            && let Ok(p) = p.trim().parse::<i32>()
+            && stub_of(p, &self.dir)
+        {
+            // SAFETY: a plain signal to a pid whose cmdline names this rig's own dir.
+            unsafe { libc::kill(p, libc::SIGKILL) };
         }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -140,6 +153,21 @@ fn now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+/// A stub pid that was reused by an unrelated process is not killed: the rig only
+/// signals a pid whose cmdline still names its own dir (AGENTS.md).
+#[test]
+fn the_rig_never_kills_a_pid_that_is_not_its_stub() {
+    let mut other = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+    {
+        let r = Rig::new("reused", ONE);
+        std::fs::write(r.dir.join("stubpid"), other.id().to_string()).unwrap();
+    }
+    let alive = other.try_wait().unwrap().is_none();
+    let _ = other.kill();
+    let _ = other.wait();
+    assert!(alive, "the rig's drop killed a process that was not its stub");
 }
 
 /// The mechanism: the fetch waited for `claude agents`. The stub blocks until
@@ -498,10 +526,10 @@ fn the_board_quitting_kills_a_lookup_in_flight() {
     let guard = Background::start();
     r.sess();
     let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            if !p.is_empty() {
-                break p.trim().to_string();
-            }
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
+            && !p.is_empty()
+        {
+            break p.trim().to_string();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
@@ -568,10 +596,10 @@ fn a_real_claude_beside_the_lookup_child_keeps_the_pane_an_agent() {
     r.proc_dir("200", "bash", "");
     r.sess();
     let pid = loop {
-        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid")) {
-            if !p.is_empty() {
-                break p.trim().to_string();
-            }
+        if let Ok(p) = std::fs::read_to_string(r.dir.join("stubpid"))
+            && !p.is_empty()
+        {
+            break p.trim().to_string();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
