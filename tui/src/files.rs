@@ -206,6 +206,10 @@ impl Files {
             self.say("a newline in the name: it cannot be sent on one line");
             return Outcome::Continue;
         }
+        if path.to_string_lossy().chars().any(|c| c.is_control() || pick::is_bidi(c)) {
+            self.say("a control or bidi character in the path: it cannot be sent safely");
+            return Outcome::Continue;
+        }
         Outcome::Choose(answer_line(verb, &path))
     }
 
