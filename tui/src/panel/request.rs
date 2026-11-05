@@ -103,9 +103,9 @@ impl Profile {
     };
 
     /// Read the folder `repo`, added beside the cwd; with `research`, search and
-    /// fetch the web and load skills too. No budget or timeout of its own: the
-    /// caller sets them.
-    pub fn read_only(repo: PathBuf, research: bool) -> Profile {
+    /// fetch the web and load skills too. The budget and the timeout are the
+    /// owner's caps (#365 D7), so the type asks for both.
+    pub fn read_only(repo: PathBuf, research: bool, budget_usd: f64, timeout: Duration) -> Profile {
         let tools = if research { RESEARCH } else { READ };
         Profile {
             tools,
@@ -115,7 +115,8 @@ impl Profile {
             no_prompts: true,
             hooks: false,
             add_dirs: vec![repo],
-            ..Profile::TEXT
+            budget_usd: Some(budget_usd),
+            timeout: Some(timeout),
         }
     }
 

@@ -267,6 +267,9 @@ fn a_bad_byte_does_not_lose_the_answer() {
 
 // ---------------------------------------------------------------- profiles (#365)
 
+/// The ask's cap in these tests: long enough never to fire.
+const CAP: Duration = Duration::from_secs(300);
+
 const ECHO_ARGV: &str = "printf '%s\\n' \"$@\" > $D/argv\npwd > $D/cwd\necho ok";
 
 /// The argv after `-p` and the system prompt file, one per line.
@@ -304,7 +307,7 @@ fn the_read_only_profile_reads_and_never_writes() {
     let rig = Rig::new("ro", ECHO_ARGV);
     let repo = rig.dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    let mut req = spawn_with(&rig.call(30), &Profile::read_only(repo.clone(), false), "p");
+    let mut req = spawn_with(&rig.call(30), &Profile::read_only(repo.clone(), false, 0.5, CAP), "p");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     let repo_s = repo.display().to_string();
     assert_eq!(
@@ -322,6 +325,8 @@ fn the_read_only_profile_reads_and_never_writes() {
             "{\"disableAllHooks\":true}",
             "--add-dir",
             &repo_s,
+            "--max-budget-usd",
+            "0.5",
             "--no-session-persistence",
             "--strict-mcp-config",
             "--disable-slash-commands"
@@ -338,10 +343,7 @@ fn the_read_only_profile_reads_and_never_writes() {
 #[test]
 fn the_research_profile_adds_the_web_and_skills() {
     let rig = Rig::new("research", ECHO_ARGV);
-    let p = Profile {
-        budget_usd: Some(0.5),
-        ..Profile::read_only(rig.dir.clone(), true)
-    };
+    let p = Profile::read_only(rig.dir.clone(), true, 0.5, CAP);
     let mut req = spawn_with(&rig.call(30), &p, "p");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     let tools = "Read,Grep,Glob,WebSearch,WebFetch,Skill";
@@ -373,7 +375,7 @@ fn the_research_profile_adds_the_web_and_skills() {
 #[test]
 fn every_read_only_profile_denies_the_writers() {
     for research in [false, true] {
-        let p = Profile::read_only(PathBuf::from("/"), research);
+        let p = Profile::read_only(PathBuf::from("/"), research, 0.5, CAP);
         for t in ["Bash", "Edit", "Write", "NotebookEdit", "Agent"] {
             assert!(
                 p.deny.contains(&t) && !p.tools.contains(&t) && !p.allow.contains(&t),
@@ -410,7 +412,7 @@ fn a_budget_stop_is_shown_as_claude_said_it() {
 fn no_read_only_argv_offers_bash_and_every_one_denies_it() {
     for research in [false, true] {
         let rig = Rig::new(&format!("nobash{research}"), ECHO_ARGV);
-        let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), research), "p");
+        let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), research, 0.5, CAP), "p");
         assert_eq!(answer(&mut req), Ok("ok\n".into()));
         let args = argv_after_prompt(&rig);
         let value = |flag: &str| {
@@ -433,13 +435,13 @@ fn no_read_only_argv_offers_bash_and_every_one_denies_it() {
 #[test]
 fn read_only_turns_the_hooks_off_and_text_keeps_them() {
     for research in [false, true] {
-        let p = Profile::read_only(PathBuf::from("/"), research);
+        let p = Profile::read_only(PathBuf::from("/"), research, 0.5, CAP);
         assert!(!p.hooks, "research {research}");
     }
     let text = Profile::TEXT;
     assert!(text.hooks, "the panel's own calls keep their hooks");
     let rig = Rig::new("hooks", ECHO_ARGV);
-    let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), true), "p");
+    let mut req = spawn_with(&rig.call(30), &Profile::read_only(rig.dir.clone(), true, 0.5, CAP), "p");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     let args = argv_after_prompt(&rig);
     let at = args.iter().position(|a| a == "--settings").expect("--settings");
@@ -451,7 +453,14 @@ fn read_only_turns_the_hooks_off_and_text_keeps_them() {
 #[test]
 fn a_read_only_call_starts_outside_the_repo() {
     let repo = PathBuf::from("/some/repo");
-    let p = Profile::read_only(repo.clone(), true);
+    let p = Profile::read_only(repo.clone(), true, 0.5, CAP);
     assert_eq!(p.add_dirs, [repo]);
     assert!(Profile::TEXT.add_dirs.is_empty());
+}
+
+/// review-432: a caller cannot forget the caps, as `read_only` takes them.
+#[test]
+fn read_only_carries_its_budget_and_timeout() {
+    let p = Profile::read_only(PathBuf::from("/r"), false, 0.25, Duration::from_secs(7));
+    assert_eq!((p.budget_usd, p.timeout), (Some(0.25), Some(Duration::from_secs(7))));
 }
