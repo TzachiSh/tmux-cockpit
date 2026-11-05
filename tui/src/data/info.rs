@@ -20,6 +20,18 @@ pub struct Base {
     pub mode: String,
 }
 
+/// Where the work dir came from (#452), in `fleet::work_dirs`' order.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkFrom {
+    /// `@cockpit_dir`
+    Opt,
+    /// the session transcript's newest cwd
+    Transcript,
+    /// pane_current_path
+    #[default]
+    Cwd,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     pub id: String,
@@ -30,11 +42,12 @@ pub struct Facts {
     pub dir: Option<String>,
     pub dir_missing: bool,
     /// the dir the board's git facts use: `@cockpit_dir`, else the transcript's
-    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule. Raw, not
-    /// cleaned: `info --json` hands it to scripts, and the screen cleans it.
+    /// newest cwd, else the cwd (#452). `root` keeps tmux-review's rule. Not
+    /// cleaned, since `info --json` hands it to scripts and the screen cleans it,
+    /// but decoded as lossy UTF-8 like every tmux read.
     pub work: String,
-    /// where `work` came from: `@cockpit_dir`, `transcript cwd` or `cwd`
-    pub work_from: &'static str,
+    /// which candidate `work` is
+    pub work_from: WorkFrom,
     pub root: String,
     pub state: String,
     pub msg: String,
@@ -271,10 +284,13 @@ pub fn gather(pane: &str) -> Result<Facts, String> {
     x.work = super::fleet::work_dirs(&[[opt.clone(), said.clone(), cwd]])
         .pop()
         .unwrap_or_default();
-    x.work_from = match () {
-        _ if !opt.is_empty() && x.work == opt => "@cockpit_dir",
-        _ if !said.is_empty() && x.work == said => "transcript cwd",
-        _ => "cwd",
+    // the same string as a higher candidate is that candidate: work_dirs' order
+    x.work_from = if !opt.is_empty() && x.work == opt {
+        WorkFrom::Opt
+    } else if !said.is_empty() && x.work == said {
+        WorkFrom::Transcript
+    } else {
+        WorkFrom::Cwd
     };
     x.doing = tr.as_deref().map(doing_rows).unwrap_or_default();
     let sess = session_dir(&x.id, &root);

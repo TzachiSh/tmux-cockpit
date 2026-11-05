@@ -205,3 +205,14 @@ fn the_transcript_cwd_sits_between_the_option_and_the_pane_path() {
     ];
     assert_eq!(work_dirs(&panes), vec![opt.path(), said.path(), "/main".to_string()]);
 }
+
+/// #452 review: a relative candidate would be read against the board's own cwd,
+/// so it never counts; a relative path left over gets no git facts at all.
+#[test]
+fn a_relative_candidate_never_counts_and_gets_no_facts() {
+    let panes = [cands(".", "src", "/main")];
+    assert_eq!(work_dirs(&panes), vec!["/main".to_string()]);
+    // the test runs inside a checkout, so "." would describe it
+    let s = scan(&[".".to_string()]);
+    assert_eq!((s.facts["."].clone(), s.stats), (Default::default(), 0));
+}

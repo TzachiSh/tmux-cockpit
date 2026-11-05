@@ -288,10 +288,14 @@ struct Facts {
     cwd: String,
 }
 
+/// A read's (len, mtime), the file's (device, inode), and what it said.
+type Tail = (u64, SystemTime, (u64, u64), Facts);
+
 thread_local! {
     /// Keyed on (len, mtime). The path is re-resolved every tick because
-    /// `/compact` and `--resume` rotate the file.
-    static TAILS: std::cell::RefCell<HashMap<String, (u64, SystemTime, Facts)>> =
+    /// `/compact` and `--resume` rotate the file. The (device, inode) says
+    /// whether a kept cwd is this file's (#452).
+    static TAILS: std::cell::RefCell<HashMap<String, Tail>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -327,15 +331,20 @@ fn read_facts(path: &str) -> Facts {
     let hit = TAILS.with(|c| {
         c.borrow()
             .get(path)
-            .filter(|(l, m, _)| *l == len && *m == mtime)
-            .map(|(_, _, v)| v.clone())
+            .filter(|(l, m, _, _)| *l == len && *m == mtime)
+            .map(|(_, _, _, v)| v.clone())
     });
     if let Some(fa) = hit {
         return fa;
     }
-    // #452: the cwd the last read saw, unless the file shrank and is another one
-    let seen_cwd = TAILS.with(|c| c.borrow().get(path).filter(|(l, _, _)| *l <= len).map(|(_, _, f)| f.cwd.clone()));
     let file = (md.dev(), md.ino());
+    // #452: the cwd the last read saw, unless another file stands at the path now
+    // (another inode, or this one rewritten shorter)
+    let seen_cwd = TAILS.with(|c| {
+        let c = c.borrow();
+        let e = c.get(path).filter(|(l, _, id, _)| *id == file && *l <= len);
+        e.map(|(_, _, _, f)| f.cwd.clone())
+    });
     // A gap past what the window can scan may hold a newer prompt: nothing is kept then.
     let kept = PROMPTS.with(|c| {
         let c = c.borrow();
@@ -378,7 +387,7 @@ fn read_facts(path: &str) -> Facts {
             );
         }
     });
-    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, fa.clone())));
+    TAILS.with(|c| c.borrow_mut().insert(path.to_string(), (len, mtime, file, fa.clone())));
     fa
 }
 

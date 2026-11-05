@@ -241,7 +241,12 @@ fn cwd_is_the_newest_main_thread_cwd() {
         )
     };
     let s = |c: &str| serde_json::Value::from(c);
-    let body = row(s("/old"), false) + &row(s("/new"), false) + &row(s("/side"), true) + &row(s(""), false) + &row(7.into(), false);
+    let agent = format!(
+        "{}\n",
+        serde_json::json!({"type": "user", "cwd": "/agent", "agentId": "a1", "message": {}})
+    );
+    let body =
+        row(s("/old"), false) + &row(s("/new"), false) + &row(s("/side"), true) + &agent + &row(s(""), false) + &row(7.into(), false);
     let t = Tmp::new("cwd", &body);
     assert_eq!(cockpit_tui::data::transcript::cwd(&t.0).as_deref(), Some("/new"));
     let none = Tmp::new("cwdnone", &row(s(""), false));

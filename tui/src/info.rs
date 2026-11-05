@@ -4,7 +4,7 @@
 //! a text-entry screen, so esc and q both close it.
 use crate::chrome;
 use crate::data::fmt_dur;
-use crate::data::info::{Facts, gather};
+use crate::data::info::{Facts, WorkFrom, gather};
 use crate::panel::view::wrap;
 use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -49,7 +49,7 @@ pub fn rows(x: &Facts, g: &Glyphs, w: usize) -> Vec<(String, String)> {
     let dash = g.dash;
     let mut r: Vec<(&str, String)> = vec![("pane", format!("{}  {}  ({})", x.id, x.wher, x.cmd)), ("cwd", x.cwd.clone())];
     // #452: the transcript's cwd, when the board's stat used it, is its own row
-    let said = x.work_from == "transcript cwd";
+    let said = x.work_from == WorkFrom::Transcript;
     if let Some(d) = &x.dir {
         let note = match (x.dir_missing, said) {
             (false, _) => "@cockpit_dir",
@@ -236,7 +236,7 @@ pub fn text(x: &Facts) -> String {
 
 /// `cockpit-tui info [--text|--json] %N`: the screen alone, until esc or q. Exit 2
 /// for a bad pane id, 1 for no terminal or no such pane. `--json` is for scripts:
-/// `{"dir": ...}`, the work dir the board's stat uses (#452).
+/// `{"dir": ...}`, the work dir the board's stat uses (#452), as lossy UTF-8.
 pub fn main(args: &[String]) -> i32 {
     let (flag, args) = match args.split_first() {
         Some((f, rest)) if f == "--text" || f == "--json" => (f.as_str(), rest),

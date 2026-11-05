@@ -1,7 +1,7 @@
 //! The info screen (#252): the rows, the keys, the goldens, and the two ports
 //! the shell used to own -- git root and review base. Fixtures are literals and
 //! scratch repos; no tmux. COCKPIT_BLESS=1 cargo test rewrites the goldens.
-use cockpit_tui::data::info::{Base, Doing, Facts, cksum, clean, git_root, review_base};
+use cockpit_tui::data::info::{Base, Doing, Facts, WorkFrom, cksum, clean, git_root, review_base};
 use cockpit_tui::info::{self, Out, Screen};
 use cockpit_tui::theme::Theme;
 use crossterm::event::KeyCode;
@@ -438,7 +438,7 @@ fn review_base_origin_head_outranks_a_local_master() {
 /// that source; one from `@cockpit_dir` or the cwd is already on its row.
 #[test]
 fn a_transcript_work_dir_is_its_own_row_naming_its_source() {
-    let dirs = |from: &'static str, missing: bool| {
+    let dirs = |from: WorkFrom, missing: bool| {
         let f = Facts {
             work: "/x/wt".into(),
             work_from: from,
@@ -448,8 +448,8 @@ fn a_transcript_work_dir_is_its_own_row_naming_its_source() {
         let r = info::rows(&f, &Theme::fixed().g, 200);
         r.into_iter().filter(|(l, _)| l == "dir").map(|(_, v)| v).collect::<Vec<_>>()
     };
-    assert!(dirs("transcript cwd", false).contains(&"/x/wt  (transcript cwd)".to_string()));
-    assert!(dirs("@cockpit_dir", false).iter().all(|v| !v.contains("transcript")));
-    let gone = dirs("transcript cwd", true);
+    assert!(dirs(WorkFrom::Transcript, false).contains(&"/x/wt  (transcript cwd)".to_string()));
+    assert!(dirs(WorkFrom::Opt, false).iter().all(|v| !v.contains("transcript")));
+    let gone = dirs(WorkFrom::Transcript, true);
     assert!(gone[0].ends_with("(@cockpit_dir, missing -- using transcript cwd)"), "{gone:?}");
 }

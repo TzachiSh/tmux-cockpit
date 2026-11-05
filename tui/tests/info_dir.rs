@@ -1,7 +1,7 @@
 //! #452: the info screen, `info --json` and the board name one work dir. Its own
 //! binary: `gather` reads COCKPIT_TMUX, CLAUDE_CONFIG_DIR and HOME, process-global,
 //! so every test here holds `ENV`.
-use cockpit_tui::data::info::{Facts, gather};
+use cockpit_tui::data::info::{Facts, WorkFrom, gather, git_root};
 use cockpit_tui::data::list_panes;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -9,11 +9,12 @@ use std::sync::Mutex;
 
 static ENV: Mutex<()> = Mutex::new(());
 
-/// A scratch tree, removed on drop: `<tmp>/cockpit-info-dir-<tag>-<pid>`.
+/// A scratch tree under cargo's own scratch dir, removed on drop, so a failing
+/// assert leaves nothing in the system temp dir.
 struct Tmp(PathBuf);
 impl Tmp {
     fn new(tag: &str) -> Tmp {
-        let d = std::env::temp_dir().join(format!("cockpit-info-dir-{tag}-{}", std::process::id()));
+        let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("info-dir-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         Tmp(d)
@@ -102,15 +103,20 @@ fn the_work_dir_follows_the_board_order_and_root_does_not() {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
     let t = Tmp::new("order");
     let (wt, opt, cwd) = (t.sub("wt"), t.sub("opt"), t.sub("cwd"));
+    // wt its own repo: had root followed the work dir, it would be wt itself
+    let git = std::process::Command::new("git")
+        .args(["init", "-q", &wt])
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .status();
+    assert!(git.unwrap().success());
     let x = facts(&t, &cwd, "", &wt);
-    assert_eq!(
-        (x.work.as_str(), x.work_from, x.root.as_str()),
-        (wt.as_str(), "transcript cwd", cwd.as_str())
-    );
+    assert_eq!((x.work.as_str(), x.work_from), (wt.as_str(), WorkFrom::Transcript));
+    assert_eq!(x.root, git_root(&cwd), "root keeps tmux-review's rule, off the cwd");
+    assert_ne!(x.root, wt);
     let x = facts(&t, &cwd, &opt, &wt);
-    assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), "@cockpit_dir"));
+    assert_eq!((x.work.as_str(), x.work_from), (opt.as_str(), WorkFrom::Opt));
     let x = facts(&t, &cwd, "", "/no/such/wt");
-    assert_eq!((x.work.as_str(), x.work_from), (cwd.as_str(), "cwd"));
+    assert_eq!((x.work.as_str(), x.work_from), (cwd.as_str(), WorkFrom::Cwd));
 }
 
 /// The orchestrator's tmux-review will read `info --json %N`'s `dir`: the dir the

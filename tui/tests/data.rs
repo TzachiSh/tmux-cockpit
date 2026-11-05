@@ -1164,7 +1164,7 @@ fn a_prompt_dated_after_now_has_no_age_in_the_window_or_kept() {
     assert_eq!(asked_of(&r, "%1"), ("go".to_string(), None));
 }
 
-/// #452: a row of `kind` carrying `cwd`, as a main-thread or a sidechain row.
+/// #452: a user row carrying `cwd`, main-thread or sidechain.
 fn cwd_row(cwd: &str, side: bool) -> String {
     let v = serde_json::json!({"type": "user", "timestamp": "2026-08-27T00:00:00.000Z", "cwd": cwd,
         "isSidechain": side, "message": {"content": [{"type": "tool_result", "tool_use_id": "x"}]}});
@@ -1246,4 +1246,20 @@ fn the_json_rows_carry_the_work_dir_beside_the_launch_path() {
     dir_of(&r, "", &cwd_row(&wt, false));
     let v: serde_json::Value = serde_json::from_str(&cockpit_tui::fleet::rows_json(&list_panes().unwrap())).unwrap();
     assert_eq!((v[0]["path"].as_str(), v[0]["dir"].as_str()), (Some("/w"), Some(wt.as_str())));
+}
+
+/// #452 review: another file replacing the transcript at the same path, even a
+/// longer one, is another session's: the old file's cwd is not kept.
+#[test]
+fn a_replaced_transcript_keeps_no_cwd_from_the_old_file() {
+    let r = Rig::new("dirreplace");
+    let wt = r.sub("wt");
+    assert_eq!(dir_of(&r, "", &cwd_row(&wt, false)), wt);
+    // created beside it while the old file still exists, so its inode differs,
+    // then renamed over it
+    let p = r.dir.join(".claude/projects/-w/s1.jsonl");
+    std::fs::write(p.with_extension("new"), turn_output(1)).unwrap();
+    std::fs::rename(p.with_extension("new"), &p).unwrap();
+    r.rows(&[format!("{}\u{1f}", row("%1", "claude", "running", "s1", "100"))]);
+    assert_eq!(get(&list_panes().unwrap(), "%1").dir, "/w");
 }

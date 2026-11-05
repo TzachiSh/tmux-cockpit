@@ -45,16 +45,20 @@ pub fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec
 }
 
 /// The tree a pane works in, from its candidates in order: `@cockpit_dir`, the
-/// session transcript's newest cwd, pane_current_path (#452). The first that
-/// names a directory wins, else the last. A worktree made by hand keeps the
-/// process in the main checkout, so the cwd comes last; a dangling option (the
-/// tree was removed) falls through. tmux-review's `pane_dir` rule, extended.
-/// Every candidate is off a read the fetch already made, so this forks nothing.
+/// session transcript's newest cwd, pane_current_path (#452). The first that is
+/// an absolute path naming a directory wins, else the last. A relative one would
+/// be read against the board's own cwd, so it never counts. A worktree made by
+/// hand keeps the process in the main checkout, so the cwd comes last; a dangling
+/// option (the tree was removed) falls through. tmux-review's `pane_dir` rule,
+/// extended. Every candidate is off a read the fetch already made, so this forks
+/// nothing.
 pub fn work_dirs(panes: &[[String; 3]]) -> Vec<String> {
     panes
         .iter()
         .map(|[opt, said, cwd]| {
-            let dir = [opt, said].into_iter().find(|d| !d.is_empty() && Path::new(d).is_dir());
+            let dir = [opt, said]
+                .into_iter()
+                .find(|d| Path::new(d).is_absolute() && Path::new(d).is_dir());
             dir.unwrap_or(cwd).clone()
         })
         .collect()
@@ -67,6 +71,10 @@ pub fn scan(paths: &[String]) -> Scan {
     uniq.dedup();
     // root, git dir, common dir, HEAD and branch: one fork per path
     let probes = par_map(&uniq, |p| {
+        // #452: a relative path, or none, would describe the board's own tree
+        if !Path::new(p).is_absolute() {
+            return None;
+        }
         let out = git(
             p,
             &[],
