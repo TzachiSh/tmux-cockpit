@@ -89,8 +89,8 @@ tree_diff() {
     tree_diff_done
 }
 
-# tree_diff's way out, on every path: its temp dir gone, its traps cleared.
-# Reads the caller's $tmp.
+# tree_diff's and approve's way out, on every path: the temp dir gone, the
+# traps cleared. Reads the caller's $tmp.
 tree_diff_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
 
 # The private dir and what goes in it, for a caller that adds to a copy of
@@ -358,15 +358,30 @@ lines_mode() {
 # `git branch -D`, and a branch "feat" after a checkpoint at "feat/x" collides
 # in refs/ and blocks a later approve. Purge by hand:
 #   git for-each-ref --format='%(refname)' refs/cockpit/reviewed | xargs -n1 git update-ref -d
+# The add runs on a private copy of the index (scratch_index, shared with
+# tree_diff) and stays out of every gitlink, whose repo would run its own
+# filters (#441). update-index
+# then records each gitlink as add -A did: its HEAD, read from its refs with
+# no status run, or the entry dropped when the dir is gone. An empty DIR is
+# refused: git -C "" is the cwd.
 approve() {                   # <dir>
-    local dir=$1 idx gd br tree
-    idx=$(mktemp) || return 1
-    trap 'rm -f -- "$idx"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
-    gd=$(git -C "$dir" rev-parse --absolute-git-dir 2>/dev/null) || { rm -f -- "$idx"; trap - EXIT HUP INT TERM; return 1; }
-    cp -p -- "$gd/index" "$idx" 2>/dev/null || rm -f -- "$idx"
+    local dir=$1 tmp idx gd top br tree rp
+    local -a from=() links=()
+    [ -n "$dir" ] || return 1
+    mapfile -t rp < <(git -C "$dir" rev-parse --absolute-git-dir --show-toplevel 2>/dev/null)
+    gd=${rp[0]-}; top=${rp[1]-}
+    [ -n "$top" ] || return 1
+    scratch_index "$dir" "$gd" || return 1
+    if [ "${#from[@]}" -gt 0 ]; then
+        (set -C; gitlink_excludes "$tmp/staged" "$tmp/gitlinks" '') 2>/dev/null \
+            || { tree_diff_done; return 1; }
+        links=(-C "$top" update-index -z --remove --stdin)
+    fi
     br=$(git -C "$dir" --no-optional-locks rev-parse --abbrev-ref HEAD 2>/dev/null)
-    tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A 2>/dev/null \
+    tree=$(GIT_INDEX_FILE=$idx git -C "$dir" add -A ${from[@]+"${from[@]}"} 2>/dev/null \
+           && { [ "${#links[@]}" -eq 0 ] \
+                || GIT_INDEX_FILE=$idx git "${links[@]}" < "$tmp/gitlinks" 2>/dev/null; } \
            && GIT_INDEX_FILE=$idx git -C "$dir" write-tree 2>/dev/null)
-    rm -f -- "$idx"; trap - EXIT HUP INT TERM
+    tree_diff_done
     [ -n "$tree" ] && git -C "$dir" update-ref "refs/cockpit/reviewed/${br:-HEAD}" "$tree" 2>/dev/null
 }
