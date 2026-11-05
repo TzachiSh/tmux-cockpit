@@ -464,3 +464,42 @@ fn read_only_carries_its_budget_and_timeout() {
     let p = Profile::read_only(PathBuf::from("/r"), false, 0.25, Duration::from_secs(7));
     assert_eq!((p.budget_usd, p.timeout), (Some(0.25), Some(Duration::from_secs(7))));
 }
+
+/// The model's cwd is not the repo any more, so the system prompt names where the
+/// repo is and that the file tools take absolute paths. Text calls send theirs as is.
+#[test]
+fn a_read_only_call_is_told_where_the_repo_is() {
+    let rig = Rig::new("where", ECHO_ARGV);
+    let repo = rig.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let mut req = Request::spawn_with(
+        &rig.call(30),
+        &Profile::read_only(repo.clone(), false, 0.5, CAP),
+        "SYS",
+        "p",
+        "default",
+    );
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let argv = rig.read("argv");
+    let file = argv
+        .lines()
+        .skip_while(|l| *l != "--system-prompt-file")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let sent = std::fs::read_to_string(file).unwrap();
+    assert!(sent.starts_with("SYS\n\n"), "{sent}");
+    assert!(sent.contains(&format!("The repository is at {}.", repo.display())), "{sent}");
+    assert!(sent.contains("Read, Grep and Glob take absolute paths"), "{sent}");
+    let rig = Rig::new("where-text", ECHO_ARGV);
+    let mut req = spawn_with(&rig.call(30), &Profile::TEXT, "p");
+    assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let argv = rig.read("argv");
+    let file = argv
+        .lines()
+        .skip_while(|l| *l != "--system-prompt-file")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    assert_eq!(std::fs::read_to_string(file).unwrap(), "S");
+}

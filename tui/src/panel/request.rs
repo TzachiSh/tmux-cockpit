@@ -123,6 +123,18 @@ impl Profile {
 
     /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
     /// argv from before profiles, byte for byte.
+    /// What the system prompt adds for a call with read dirs: its cwd is not the
+    /// repo, so the model is told where the repo is and how the tools reach it.
+    pub fn where_note(&self) -> Option<String> {
+        let dirs: Vec<String> = self.read_dirs.iter().map(|d| d.display().to_string()).collect();
+        (!dirs.is_empty()).then(|| {
+            format!(
+                "The repository is at {}. Read, Grep and Glob take absolute paths under it; your working directory is not the repository.",
+                dirs.join(" and ")
+            )
+        })
+    }
+
     pub fn argv(&self) -> Vec<String> {
         let mut a = vec!["--tools".to_string(), self.tools.join(",")];
         if !self.allow.is_empty() {
@@ -239,7 +251,11 @@ fn kill_group(reaped: &Mutex<bool>, pid: u32) {
 }
 
 fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::process::Child, String> {
-    let file = prompt_file(&call.dir, system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
+    let system = match p.where_note() {
+        Some(n) => format!("{system}\n\n{n}"),
+        None => system.to_string(),
+    };
+    let file = prompt_file(&call.dir, &system).map_err(|e| format!("cannot write the system prompt: {e}"))?;
     let mut c = Command::new(&call.claude);
     c.arg("-p")
         .args(super::route::model_argv(model))
