@@ -1,15 +1,16 @@
 //! The panel's state machine: views, keys, and the request round trip. No
 //! terminal here, so every transition is a unit test away.
 use super::action::{Hidden, hide_body, sanitize, state_body};
-use super::capture::{Capture, SSH_LIKE, Session, session_state, window_kind};
+use super::capture::{Capture, SSH_LIKE, Session, is_local, session_state, window_kind};
 use super::envelope::{Flow, OutType, Role, Turn, build_counted};
 use super::parse::{self, Opt, Reply, Step};
 use super::prompts::{self, Ctx};
 use super::redact::redact;
-use super::request::{Call, Fail, Request};
+use super::request::{Call, Fail, Profile, Request};
 use super::route::{Route, route};
 use super::view::{TABLET_MIN_H, TABLET_MIN_W};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 
@@ -36,6 +37,10 @@ pub const TAP_GUARD_MS: u64 = 300;
 /// A resumed panel's first view: the close, the paste and the reopen fit inside
 /// a slow double tap, and the reopened Steps put a button under the same finger.
 pub const RESUME_GUARD_MS: u64 = 800;
+/// An explore-first write's caps (#416): the prompt and a few reads on sonnet fit, and
+/// more reading than that is the agent's task, so the call ends rather than keeps the user.
+pub const EXPLORE_BUDGET_USD: f64 = 0.15;
+pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
@@ -213,6 +218,12 @@ pub struct App {
     pub cur: usize,
     pub out: OutType,
     pub model: usize,
+    /// ^R on Compose: a write may read the pane's folder first (#416). Kept
+    /// for the panel's life and across a hide, never on a file of its own.
+    pub explore: bool,
+    /// The pane, as captured when the panel opened, runs where its folder is:
+    /// [`is_local`]. A resume's older command does not change it.
+    local: bool,
     pub run: Option<Run>,
     /// Set by a transition, cleared by [`App::launch`], which owns the fork.
     pub pending: bool,
@@ -265,6 +276,7 @@ pub struct App {
 impl App {
     pub fn new(pane: &str, cap: Capture) -> App {
         let screen_hidden = redact(&cap.screen).1;
+        let local = is_local(&cap.cmd);
         App {
             pane: pane.into(),
             session: session_state(&cap.screen, &cap.name, &cap.cmd),
@@ -274,6 +286,8 @@ impl App {
             cur: 0,
             out: OutType::Auto,
             model: 0,
+            explore: false,
+            local,
             run: None,
             pending: false,
             req: None,
@@ -347,20 +361,24 @@ impl App {
         self.session = session_state(&self.cap.screen, &self.cap.name, &self.cap.cmd);
         (self.view, self.busy_back, self.run) = (h.view, h.busy_back, h.run);
         (self.draft, self.cur, self.out, self.model) = (h.draft, h.cur, h.out, h.model);
+        // the pane may run ssh by now: its folder is then the client's, never read
+        self.explore = h.explore && self.explore_dir().is_some();
         let last = self.tiles().len() - 1;
         if let View::Home { sel } = &mut self.view {
             *sel = (*sel).min(last);
         }
         self.first_guard = RESUME_GUARD_MS;
-        if now == self.cap.cmd {
-            self.say(Level::Info, "back where you left it");
-        } else {
-            let was = self.cap.cmd.clone();
-            self.say(
-                Level::Warn,
-                format!("back where you left it; the pane now runs {now}, not {was}, so a paste is refused"),
-            );
+        let mut back = "back where you left it".to_string();
+        let moved = now != self.cap.cmd;
+        if moved {
+            let was = &self.cap.cmd;
+            back.push_str(&format!("; the pane now runs {now}, not {was}, so a paste is refused"));
         }
+        let dropped = h.explore && !self.explore;
+        if dropped {
+            back.push_str("; explore is off, as this pane's folder cannot be read");
+        }
+        self.say(if moved || dropped { Level::Warn } else { Level::Info }, back);
     }
 
     /// The ★ tile first: what this window most likely wants. When that is
@@ -780,6 +798,7 @@ impl App {
                 }
             }
             KeyCode::Char('n') if ctrl => self.model = (self.model + 1) % MODELS.len(),
+            KeyCode::Char('r') if ctrl => self.toggle_explore(),
             // by row as drawn, so the box's width as `render` wraps it; before a frame, unwrapped
             KeyCode::Up | KeyCode::Down => {
                 let w = self.size.map_or(usize::MAX, |(w, _)| usize::from(w).saturating_sub(4));
@@ -793,6 +812,44 @@ impl App {
                 let n = edit(&mut self.draft, &mut self.cur, k, ctrl, true);
                 self.cap_note(n)
             }
+        }
+    }
+
+    /// ^R: explore first on or off. Refused for a window whose folder is not
+    /// the one it shows (#433's rule), or that has none.
+    fn toggle_explore(&mut self) {
+        if self.explore {
+            self.explore = false;
+            return self.say(Level::Info, "explore off: the write reads the screen only");
+        }
+        if self.explore_dir().is_some() {
+            self.explore = true;
+            return self.say(Level::Info, "explore on: the write may read this folder first");
+        }
+        let why = if self.local {
+            "tmux gives no folder for this pane".to_string()
+        } else {
+            format!("{} may run on another machine, so its folder is not the one shown", self.cap.cmd)
+        };
+        self.say(Level::Warn, format!("explore refused: {why}"));
+    }
+
+    /// The folder an exploring write may read: the pane's, in a local window.
+    fn explore_dir(&self) -> Option<PathBuf> {
+        (self.local && !self.cap.path.is_empty()).then(|| PathBuf::from(&self.cap.path))
+    }
+
+    /// A write with the toggle on, in a local window. Fix and Explain never read.
+    pub fn explores(&self, flow: &Flow) -> bool {
+        self.explore && matches!(flow, Flow::Write { .. }) && self.explore_dir().is_some()
+    }
+
+    /// What the call for `flow` may use: [`Profile::TEXT`], or for an exploring
+    /// write a read-only one on the pane's folder under the explore caps.
+    pub fn profile_for(&self, flow: &Flow) -> Profile {
+        match self.explore_dir() {
+            Some(dir) if self.explores(flow) => Profile::read_only(dir, false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT),
+            _ => Profile::TEXT,
         }
     }
 
@@ -869,10 +926,17 @@ impl App {
     fn request_noted(&self) -> Option<((String, String, String), Option<String>)> {
         let r = self.run.as_ref()?;
         let (system, note) = match &r.flow {
-            Flow::Write { out, .. } => prompts::write_noted(&Ctx {
-                out: *out,
-                window: window_kind(&self.cap.name, &self.cap.cmd),
-            }),
+            Flow::Write { out, .. } => {
+                let ctx = Ctx {
+                    out: *out,
+                    window: window_kind(&self.cap.name, &self.cap.cmd),
+                };
+                if self.explores(&r.flow) {
+                    prompts::write_explore_noted(&ctx)
+                } else {
+                    prompts::write_noted(&ctx)
+                }
+            }
             Flow::Fix { .. } => prompts::fix_noted(),
             Flow::Explain => prompts::explain_noted(),
         };
@@ -888,8 +952,9 @@ impl App {
             if let Some(n) = note {
                 self.say(Level::Warn, n);
             }
-            self.timeout = call.timeout;
-            self.req = Some(Request::spawn(call, &system, &prompt, &model));
+            let p = self.run.as_ref().map_or(Profile::TEXT, |r| self.profile_for(&r.flow));
+            self.timeout = p.timeout.unwrap_or(call.timeout);
+            self.req = Some(Request::spawn_with(call, &p, &system, &prompt, &model));
             self.started = Some(Instant::now());
         }
     }
@@ -1627,6 +1692,8 @@ pub fn hint(f: &Fail) -> Option<&'static str> {
         Some("log in: run claude in a terminal and use /login, then r retries")
     } else if has(&["rate limit", "rate_limit", "usage limit", "429", "overloaded"]) {
         Some("a usage or rate limit: wait a minute, then r retries")
+    } else if t.contains("exceeded usd budget") {
+        Some("the explore's budget ran out: esc, ^R turns explore off, then write again")
     } else if !t.starts_with("cannot write") && t.contains("(os error 2)") {
         Some("claude is not installed here: install Claude Code, or set COCKPIT_CLAUDE to its path")
     } else {
