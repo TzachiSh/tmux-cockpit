@@ -10449,7 +10449,11 @@ av_fgoff() {                  # av_fgoff <pane> <event>: that session's `off` ho
 # session's last state change. A job that started before it is some other session's.
 jq 'map(.startedAt = 99999999999999)' "$AVF/bind.json" > "$AVREC/late.json"
 av_late() { av_once bind.json AV_JSON="$AVREC/late.json" >/dev/null; }
-AVF4=$(av_np "alpha"); av_fg "$AVF4" permission_prompt "perm fg"; av_late
+av_fgst() {                   # av_fgst <pane> <verb>: that session's state hook
+    env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" "$DIR/scripts/agent-state" "$2" \
+        </dev/null >/dev/null 2>&1
+}
+AVF4=$(av_np "alpha"); av_fgst "$AVF4" running; av_fgst "$AVF4" done; av_late
 is "a foreground pane whose title names a job that started after its last hook binds it" \
    "aa|alpha|running|" "$(avj "$AVF4")"
 is "...and is no foreground session's pane any more" "" "$(avo @cockpit_fg "$AVF4")"
@@ -10465,6 +10469,13 @@ env TMUX="$AVT" TMUX_PANE="$AVF6" PATH="$AVBIN:$PATH" "$DIR/scripts/agent-state"
 AVEPOCH=$(avo @cockpit_fg "$AVF6")
 is "...and a state change refreshes it to the present" "yes" \
    "$([ "$AVEPOCH" -gt 1700000000 ] && echo yes || echo no)"
+AVF7=$(av_np "alpha"); av_fg "$AVF7" permission_prompt "perm fg"; av_late
+is "a session waiting on the user is never bound: its ▲ stays" "||needs-input|perm fg" \
+   "$(avj "$AVF7")"
+jq 'map(.startedAt = "2026-11-05T10:00:00Z")' "$AVF/bind.json" > "$AVREC/iso.json"
+AVISO=$(av_np "alpha"); av_once bind.json AV_JSON="$AVREC/iso.json" >/dev/null
+is "a startedAt that is no number breaks nothing: the pane still binds" "aa|alpha|running|" \
+   "$(avj "$AVISO")"
 AVF5=$(av_np "alpha"); av_fg "$AVF5" permission_prompt "perm fg"; av_bind
 is "a job that started before the session's last hook is not its own" "||needs-input|perm fg" \
    "$(avj "$AVF5")"

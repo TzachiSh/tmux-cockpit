@@ -81,7 +81,8 @@ PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{@cockpit_poll_pid}$T.#{pane_title}"
 # collapsed, equals one background job's name, collapsed the same way; done jobs count; a
 # job without an id does not; an agent view's own title never binds. A pane with a foreground
 # session's mark (@cockpit_fg, the epoch second of its last hook state change) binds only to a
-# job that started after it: its own session, sent to the background with the left arrow.
+# job that started after it: its own session, sent to the background with the left arrow. A
+# startedAt that is no number counts as the epoch.
 JQ_PROG='
   def clean: tostring | gsub("[\u0000-\u001f\u007f]"; " ");
   def norm: clean | [splits("\\s+")] | map(select(length > 0)) | join(" ");
@@ -95,7 +96,7 @@ JQ_PROG='
      else "idle" end) as $w
   | [$b[] | select((.id | type) == "string" and (.id | length) > 0)
      | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm),
-        at: ((.startedAt // 0) / 1000)}
+        at: (if (.startedAt | type) == "number" then .startedAt / 1000 else 0 end)}
      | select(.name != "")] as $jobs
   | [$panes | split("\n")[] | select(length > 0) | split("\t")
      | {pane: .[0], fg: .[1],
@@ -142,7 +143,7 @@ S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN="" R_OUT
 # are cleaned here. 1: no server and no pane.
 scan_panes() {
     local rows id cmd allow glob view fg job jname jstate pstate owner title marked
-    local seen=0 job_kept=""
+    local seen=0 job_kept="" fgc
     S_LIVE="" S_BOUND="" S_CAND="" S_SIG="" S_ROWS=$'\n' S_SERIOUS="" S_OWN=""
     rows=$(tmux list-panes -a -F "$PANE_FMT" 2>/dev/null) || return 1
     while IFS=$T read -r id cmd allow glob view fg job jname jstate pstate owner title; do
@@ -165,7 +166,10 @@ scan_panes() {
         if [ "$cmd" = claude ]; then
             S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
             if [ "$allow" = 1 ] && [ -n "$title" ]; then
-                S_CAND="$S_CAND$id$T$fg$T$title"$'\n'
+                # A session waiting on the user fires no hook, so a ▲ that the poller hid would
+                # stay hidden: its mark compares as "never". (error is sticky and may bind.)
+                fgc=$fg; [ -z "$fg" ] || [ "$pstate" != needs-input ] || fgc=never
+                S_CAND="$S_CAND$id$T$fgc$T$title"$'\n'
                 case " $watched " in *" $id "*) S_SERIOUS=1 ;; esac
                 if [ -n "$job" ]; then S_BOUND="$S_BOUND $id"; S_SERIOUS=1; fi
                 job_kept=1

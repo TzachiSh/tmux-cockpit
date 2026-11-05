@@ -409,7 +409,10 @@ the background with the left arrow, which stays in the same process with no `Ses
 its own job. `/bg` instead ends the foreground process, so `SessionEnd` fires; and
 `SessionEnd`'s `agent-state off` removes the mark, as does the agent view's relayed
 notification, and the poller does when the pane stops running an agent. A mark with no
-usable epoch (no builtin clock in the hook's bash, or an older value) never binds.
+usable epoch (no builtin clock in the hook's bash, or an older value) never binds, and neither
+does the mark of a pane at `needs-input`: a session waiting on the user fires no hook, so a ▲
+the poller hid would stay hidden. (`error` is sticky past `Stop`, and still binds.) The left
+arrow pressed at a permission prompt still works: the relayed `agent_needs_input` clears the mark.
 Residual: an idle foreground session whose title equals a job that started after its last
 state change binds until its next hook, which clears the bind; a job started during a long
 turn counts the same way.
