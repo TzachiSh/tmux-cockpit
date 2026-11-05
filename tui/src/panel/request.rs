@@ -70,14 +70,17 @@ pub struct Profile {
     pub skills: bool,
     /// `--permission-prompts none`
     pub no_prompts: bool,
-    /// the child's cwd, where the file tools start; `None` is the call's dir
-    pub cwd: Option<PathBuf>,
     pub budget_usd: Option<f64>,
     /// over the call's own, for a call that reads before it answers
     pub timeout: Option<Duration>,
     /// the user's and plugins' hooks; off is `--settings {"disableAllHooks":true}`.
     /// A hook is a command whatever the tools are, and a plugin's writes into the cwd
     pub hooks: bool,
+    /// `--add-dir`: folders the file tools may read beside the cwd. A folder is
+    /// never the cwd: there `claude -p` loads its `.claude/settings.json`, whose
+    /// hooks, `env` and `apiKeyHelper` run with no trust prompt (review-432). The
+    /// cwd is always the call's own dir.
+    pub add_dirs: Vec<PathBuf>,
 }
 
 const READ: &[&str] = &["Read", "Grep", "Glob"];
@@ -93,15 +96,16 @@ impl Profile {
         deny: &[],
         skills: false,
         no_prompts: false,
-        cwd: None,
         budget_usd: None,
         timeout: None,
         hooks: true,
+        add_dirs: Vec::new(),
     };
 
-    /// Read the repo at `cwd`; with `research`, search and fetch the web and load
-    /// skills too. No budget or timeout of its own: the caller sets them.
-    pub fn read_only(cwd: PathBuf, research: bool) -> Profile {
+    /// Read the folder `repo`, added beside the cwd; with `research`, search and
+    /// fetch the web and load skills too. No budget or timeout of its own: the
+    /// caller sets them.
+    pub fn read_only(repo: PathBuf, research: bool) -> Profile {
         let tools = if research { RESEARCH } else { READ };
         Profile {
             tools,
@@ -110,14 +114,14 @@ impl Profile {
             skills: research,
             no_prompts: true,
             hooks: false,
-            cwd: Some(cwd),
+            add_dirs: vec![repo],
             ..Profile::TEXT
         }
     }
 
     /// The flags after the system prompt file. [`Profile::TEXT`]'s are the panel's
     /// argv from before profiles, byte for byte.
-    fn argv(&self) -> Vec<String> {
+    pub fn argv(&self) -> Vec<String> {
         let mut a = vec!["--tools".to_string(), self.tools.join(",")];
         if !self.allow.is_empty() {
             a.extend(["--allowedTools".into(), self.allow.join(",")]);
@@ -130,6 +134,9 @@ impl Profile {
         }
         if !self.hooks {
             a.extend(["--settings".into(), r#"{"disableAllHooks":true}"#.into()]);
+        }
+        for d in &self.add_dirs {
+            a.extend(["--add-dir".into(), d.display().to_string()]);
         }
         if let Some(b) = self.budget_usd {
             a.extend(["--max-budget-usd".into(), b.to_string()]);
@@ -237,7 +244,7 @@ fn start(call: &Call, p: &Profile, system: &str, model: &str) -> Result<std::pro
         .arg("--system-prompt-file")
         .arg(&file)
         .args(p.argv())
-        .current_dir(p.cwd.as_deref().unwrap_or(&call.dir))
+        .current_dir(&call.dir)
         // The hooks key off TMUX_PANE: without it this call is no pane's agent.
         .env("COCKPIT_PANEL_CALL", "1")
         .env_remove("CLAUDECODE")

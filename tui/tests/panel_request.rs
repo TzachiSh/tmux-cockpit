@@ -306,6 +306,7 @@ fn the_read_only_profile_reads_and_never_writes() {
     std::fs::create_dir_all(&repo).unwrap();
     let mut req = spawn_with(&rig.call(30), &Profile::read_only(repo.clone(), false), "p");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
+    let repo_s = repo.display().to_string();
     assert_eq!(
         argv_after_prompt(&rig),
         [
@@ -319,12 +320,18 @@ fn the_read_only_profile_reads_and_never_writes() {
             "none",
             "--settings",
             "{\"disableAllHooks\":true}",
+            "--add-dir",
+            &repo_s,
             "--no-session-persistence",
             "--strict-mcp-config",
             "--disable-slash-commands"
         ]
     );
-    assert_eq!(rig.read("cwd").trim(), std::fs::canonicalize(&repo).unwrap().display().to_string());
+    // review-432's blocker: a cwd in the repo loads its .claude/settings.json,
+    // whose hooks, env and apiKeyHelper run in -p. The repo goes in by --add-dir.
+    let cwd = rig.read("cwd").trim().to_string();
+    assert_eq!(cwd, std::fs::canonicalize(rig.call(30).dir).unwrap().display().to_string());
+    assert_ne!(cwd, std::fs::canonicalize(&repo).unwrap().display().to_string());
 }
 
 /// Research adds the web and skills, and so drops `--disable-slash-commands`.
@@ -338,6 +345,7 @@ fn the_research_profile_adds_the_web_and_skills() {
     let mut req = spawn_with(&rig.call(30), &p, "p");
     assert_eq!(answer(&mut req), Ok("ok\n".into()));
     let tools = "Read,Grep,Glob,WebSearch,WebFetch,Skill";
+    let dir = rig.dir.display().to_string();
     assert_eq!(
         argv_after_prompt(&rig),
         [
@@ -351,6 +359,8 @@ fn the_research_profile_adds_the_web_and_skills() {
             "none",
             "--settings",
             "{\"disableAllHooks\":true}",
+            "--add-dir",
+            &dir,
             "--max-budget-usd",
             "0.5",
             "--no-session-persistence",
@@ -434,4 +444,14 @@ fn read_only_turns_the_hooks_off_and_text_keeps_them() {
     let args = argv_after_prompt(&rig);
     let at = args.iter().position(|a| a == "--settings").expect("--settings");
     assert_eq!(args[at + 1], r#"{"disableAllHooks":true}"#);
+}
+
+/// No profile can give a call a folder as its cwd: there is no such field, and a
+/// read-only call starts in the panel's cache dir with the repo added.
+#[test]
+fn a_read_only_call_starts_outside_the_repo() {
+    let repo = PathBuf::from("/some/repo");
+    let p = Profile::read_only(repo.clone(), true);
+    assert_eq!(p.add_dirs, [repo]);
+    assert!(Profile::TEXT.add_dirs.is_empty());
 }

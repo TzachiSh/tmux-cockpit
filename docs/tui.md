@@ -1739,7 +1739,12 @@ tell the two quiet answers apart: `[]` with exit 0 is "no agents", exit 1 is
   `--tools ""`, and a read-only profile (#365) has only Read, Grep and Glob (and,
   for research, WebSearch, WebFetch and skills), each pre-approved, with Bash,
   Edit, Write, NotebookEdit and Agent denied by rule as well and every permission
-  prompt refused. A tool that writes or runs a command breaks this rule.
+  prompt refused. A read-only call also runs no hook (`disableAllHooks`), and
+  never has a pane's folder as its cwd: there `claude -p` would load the folder's
+  `.claude/settings.json`, whose hooks, `env` and `apiKeyHelper` run with no
+  trust prompt. The folder goes in by `--add-dir`, the cwd stays the panel's
+  cache dir. A tool, a hook or a cwd that writes or runs a command breaks this
+  rule.
   Pasting into a pane stays a printed action that a wrapper runs.
 - **Every tmux write goes through one function** that `COCKPIT_READONLY`
   disables, the pid publish included.
