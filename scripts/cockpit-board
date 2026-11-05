@@ -36,10 +36,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-if [ -z "$CLIENT" ] && is_pane "$PANE"; then
-    CLIENT=$(tmux show-option -pqv -t "$PANE" @cockpit_board_client \; \
-        set-option -pu -t "$PANE" @cockpit_board_client 2>/dev/null)
-fi
+[ -n "$CLIENT" ] || CLIENT=$(take_pane_opt "$PANE" @cockpit_board_client)
 # In a popup a bare display-message picks the most recently active client.
 say=(display-message); is_pane "$PANE" && say+=(-t "$PANE")
 

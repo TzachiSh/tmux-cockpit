@@ -12555,6 +12555,67 @@ unset -f bc_open bc_where
 rm -rf "$BCR" "$BCM" "$BCD"
 fi
 
+echo "== client pins (#480): one take-and-clear helper, taken before the libs load =="
+# The popup keys leave the pressing client on the pane; the script takes it with
+# take_pane_opt (lib/pane.sh) before any other lib loads, so a second press from
+# another client while bash starts cannot be the one this run moves.
+if need_tmux "client pin take"; then :; else
+PTS="cockpit-pt480-$$"; SOCKS="$SOCKS $PTS"; PTD=$(mktmpd)
+"$TMUX_REAL" -L "$PTS" -f /dev/null new-session -d -s a -c "$PTD" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PTS" new-session -d -s z -c "$PTD" 'exec -a claude sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$PTS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+PTP=$("$TMUX_REAL" -L "$PTS" list-panes -t a -F '#{pane_id}')
+PTZ=$("$TMUX_REAL" -L "$PTS" list-panes -t z -F '#{pane_id}')
+"$TMUX_REAL" -L "$PTS" set -p -t "$PTZ" @panestate needs-input >/dev/null 2>&1
+pt_get() { "$TMUX_REAL" -L "$PTS" show-option -pqv -t "$PTP" "$1" 2>/dev/null; }
+pt_set() { "$TMUX_REAL" -L "$PTS" set -p -t "$PTP" "$1" "$2" >/dev/null 2>&1; }
+# Every tmux the helper runs is logged to $PTD/calls, one line per call.
+mkdir "$PTD/rec"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/calls"\nexec "%s" "$@"\n' "$PTD" "$TMUX_REAL" \
+    > "$PTD/rec/tmux"
+chmod +x "$PTD/rec/tmux"
+pt_take() {                   # -> "<stdout>:<status>:<tmux calls>", stderr in $PTD/err
+    local out rc; : > "$PTD/calls"
+    out=$(export TMUX="$SOCKDIR/$PTS,0,0" PATH="$PTD/rec:$PATH"
+        . "$DIR/scripts/lib/pane.sh"; take_pane_opt "$@" 2>"$PTD/err"); rc=$?
+    printf '%s:%s:%s' "$out" "$rc" "$(grep -c . "$PTD/calls")"
+}
+pt_set @pt_pin client-a
+is "take_pane_opt prints the option's value, in one tmux call" "client-a:0:1" \
+   "$(pt_take "$PTP" @pt_pin)"
+is "and the option is unset after it" "" "$(pt_get @pt_pin)"
+is "an option that is not set prints nothing and succeeds" ":0:1" "$(pt_take "$PTP" @pt_pin)"
+is "with no arguments it fails and runs no tmux" ":1:0" "$(pt_take)"
+for id in '' '%' '%1x' 1 -t; do
+    is "a pane id that is not %<digits> fails and runs no tmux: '$id'" ":1:0" \
+       "$(pt_take "$id" @pt_pin)"
+done
+for opt in '' pt_pin '@'; do
+    is "an option that is not @<name> fails, naming the argument: '$opt'" ":2:0:option" \
+       "$(pt_take "$PTP" "$opt"):$(grep -o option "$PTD/err" | head -1)"
+done
+# Two control clients on a; B attaches last, so a bare switch-client moves B.
+pt_open() {
+    mkfifo "$PTD/$1" && "$TMUX_REAL" -L "$PTS" -C attach -t a <> "$PTD/$1" >/dev/null 2>&1 &
+}
+pt_open A; PTPA=$!
+until_out '?*' "$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}'
+PTA=$("$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}')
+pt_open B; PTPB=$!
+until_out "*"$'\n'"*" "$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name}'
+printf '#!/bin/sh\necho "jump %s" > "$COCKPIT_ACTION"\n' "$PTZ" > "$PTD/jump"; chmod +x "$PTD/jump"
+"$TMUX_REAL" -L "$PTS" set -pu -t "$PTP" @cockpit_board_client >/dev/null 2>&1
+env TMUX="$SOCKDIR/$PTS,0,0" COCKPIT_LOG="$PTD/log" COCKPIT_TUI_BIN="$PTD/jump" \
+    timeout 30 "$DIR/scripts/cockpit-board" -p "$PTP" </dev/null >/dev/null 2>&1
+is "with no pin and no -c the board's jump is a bare switch-client: B moves" "A=a B=z " \
+   "$("$TMUX_REAL" -L "$PTS" list-clients -F '#{client_name} #{client_session}' 2>/dev/null \
+      | awk -v a="$PTA" '{ print ($1 == a ? "A" : "B") "=" $2 }' | sort | tr '\n' ' ')"
+"$TMUX_REAL" -L "$PTS" kill-server >/dev/null 2>&1
+wait "$PTPA" "$PTPB" 2>/dev/null
+unset -f pt_get pt_set pt_take pt_open
+rm -rf "$PTD"
+fi
+
 echo "== tmux-branch (#470): goto finds a pane by the work dir the board shows =="
 # An agent launched in the main checkout that works in the worktree is a pane of the worktree,
 # as r reviews it. The stub answers the picker once, and `workdir %N` from $BWD/map (one

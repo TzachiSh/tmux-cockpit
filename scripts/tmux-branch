@@ -14,6 +14,8 @@ fi
 # at another. GIT_CEILING_DIRECTORIES stays: it can only stop the search lower.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
 d=${BASH_SOURCE[0]}; [ -L "$d" ] && d=$(readlink "$d")
+# shellcheck source=lib/pane.sh
+. "${d%/*}/lib/pane.sh" || exit 1
 # shellcheck source=lib/git.sh
 . "${d%/*}/lib/git.sh" || exit 1
 # shellcheck source=lib/tui.sh
@@ -38,10 +40,7 @@ done
 # The client that pressed prefix b, left on the pane by the key (#360). Taken and
 # cleared at start, so a second press while this popup is open cannot take the goto.
 CLIENT=""
-if [[ $PANE_ID =~ ^%[0-9]+$ ]] && [ -n "${TMUX:-}" ]; then
-    CLIENT=$(tmux show-option -pqv -t "$PANE_ID" @cockpit_branch_client \; \
-        set-option -pu -t "$PANE_ID" @cockpit_branch_client 2>/dev/null)
-fi
+[ -n "${TMUX:-}" ] && CLIENT=$(take_pane_opt "$PANE_ID" @cockpit_branch_client)
 
 DIR="${1:-}"
 # A popup's $PWD is the session's start dir, and a bare display-message picks
