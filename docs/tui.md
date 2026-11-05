@@ -2369,8 +2369,9 @@ directory, written to a temp file in that directory and renamed over:
 - A reader treats the file as absent when `at` is more than 90 s old, `v` is not
   1, it does not parse, it is not a regular file (a FIFO, a symlink) or it is over
   1 MiB. It drops an entry whose session is not 1 to 64 letters, digits and
-  dashes. It drops a key whose pid's start differs from the key's. On macOS there is no `/proc`, so every entry is absent there and the
-  board keeps its answer in memory for 60 s instead.
+  dashes. It drops a key whose pid's start differs from the key's. On macOS
+  there is no `/proc`, so every entry is absent there and the board keeps its
+  answer in memory for 60 s instead.
 - While any agent pane lacks `@cockpit_session` the board asks at most once a
   minute, so the file is under 90 s old for as long as it matters. A second board
   starts from a fresh file.
