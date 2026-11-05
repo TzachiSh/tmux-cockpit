@@ -73,12 +73,15 @@ PANE_FMT="$PANE_FMT$T.#{@cockpit_agentview}$T.#{@cockpit_fg}"
 PANE_FMT="$PANE_FMT$T.#{@cockpit_job}$T.#{@cockpit_job_name}$T.#{@cockpit_job_state}"
 PANE_FMT="$PANE_FMT$T.#{@panestate}$T.#{@cockpit_poll_pid}$T.#{pane_title}"
 
-# jq program. Input: claude's JSON. $panes: "<pane id> TAB <title>" lines of the panes that may
-# be bound. Output, tab-separated: `W worst blockedname` (today's worst of all), then per
-# pane `M pane jobid state name` (bound) or `D pane` (its title names two or more jobs).
+# jq program. Input: claude's JSON. $panes: "<pane id> TAB <@cockpit_fg> TAB <title>" lines of
+# the panes that may be bound. Output, tab-separated: `W worst blockedname` (today's worst of
+# all), then per pane `M pane jobid state name` (bound) or `D pane` (its title names two or
+# more jobs).
 # The bind rule (#448): the title, minus an optional leading "✳ " and with whitespace runs
 # collapsed, equals one background job's name, collapsed the same way; done jobs count; a
-# job without an id does not; an agent view's own title never binds.
+# job without an id does not; an agent view's own title never binds. A pane with a foreground
+# session's mark (@cockpit_fg, the epoch second of its last hook state change) binds only to a
+# job that started after it: its own session, sent to the background with the left arrow.
 JQ_PROG='
   def clean: tostring | gsub("[\u0000-\u001f\u007f]"; " ");
   def norm: clean | [splits("\\s+")] | map(select(length > 0)) | join(" ");
@@ -91,18 +94,21 @@ JQ_PROG='
      elif any($b[]; .state == "done") then "done"
      else "idle" end) as $w
   | [$b[] | select((.id | type) == "string" and (.id | length) > 0)
-     | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm)}
+     | {id: (.id | clean), state: ((.state // "none") | clean), name: ((.name // "") | norm),
+        at: ((.startedAt // 0) / 1000)}
      | select(.name != "")] as $jobs
   | [$panes | split("\n")[] | select(length > 0) | split("\t")
-     | {pane: .[0], t: (.[1:] | join(" ") | if startswith("✳ ") then .[2:] else . end | norm)}
+     | {pane: .[0], fg: .[1],
+        t: (.[2:] | join(" ") | if startswith("✳ ") then .[2:] else . end | norm)}
      | select(.t != "" and .t != "claude agents"
               and (.t | endswith(" · claude agents") | not))] as $ps
   | "W\t\($w)\t" + (if $w == "blocked"
         then (($bl[0].name // $bl[0].id // "session") | clean) else "" end),
     ($ps[] | . as $p | [$jobs[] | select(.name == $p.t)] as $m
      | if ($m | length) == 1
+          and ($p.fg == "" or ($p.fg | test("^[0-9]{10,}$") and $m[0].at > ($p.fg | tonumber)))
        then "M\t\($p.pane)\t\($m[0].id)\t\($m[0].state)\t\($m[0].name[0:120])"
-       elif ($m | length) > 1 then "D\t\($p.pane)" else empty end)'
+       elif ($m | length) > 1 and $p.fg == "" then "D\t\($p.pane)" else empty end)'
 
 # A job's state as the pane shows it. An unknown one (research preview) is idle.
 job_state() {                 # <claude state> -> the agent-state poll value
@@ -116,11 +122,11 @@ job_state() {                 # <claude state> -> the agent-state poll value
 # it only when the poller wrote it (@cockpit_job_state is what it last wrote and @panestate
 # still holds that), and the pane is neither a marked agent view (the worst of all takes over)
 # nor a foreground session's (its hooks own the state).
-unbind() {                    # <pane> <marked: 1|""> <fg: 1|""> <@panestate> <@cockpit_job_state>
+unbind() {                    # <pane> <marked: 1|""> <fg mark|""> <@panestate> <@cockpit_job_state>
     tmux set-option -pu -t "$1" @cockpit_job \; set-option -pu -t "$1" @cockpit_job_name \; \
         set-option -pu -t "$1" @cockpit_job_state 2>/dev/null
     [ "$2" = 1 ] && return 0
-    [ "$3" = 1 ] && return 0
+    [ -n "$3" ] && return 0
     [ -n "$5" ] && [ "${4:-off}" = "$5" ] || return 0
     "$here/agent-state" poll off "$1" >/dev/null 2>&1
 }
@@ -152,14 +158,14 @@ scan_panes() {
         fi
         # A foreground session's pane is its hooks' (agent-state sets the mark). Not an agent
         # any more, it is nobody's.
-        if [ "$fg" = 1 ] && [ "$glob" != 1 ]; then
+        if [ -n "$fg" ] && [ "$glob" != 1 ]; then
             tmux set-option -pu -t "$id" @cockpit_fg 2>/dev/null; fg=""
         fi
         if [ "$marked" = 1 ]; then S_LIVE="$S_LIVE $id"; S_SERIOUS=1; fi
-        if [ "$cmd" = claude ] && [ "$fg" != 1 ]; then
+        if [ "$cmd" = claude ]; then
             S_SIG="$S_SIG$id$T$allow$T$title"$'\n'
             if [ "$allow" = 1 ] && [ -n "$title" ]; then
-                S_CAND="$S_CAND$id$T$title"$'\n'
+                S_CAND="$S_CAND$id$T$fg$T$title"$'\n'
                 case " $watched " in *" $id "*) S_SERIOUS=1 ;; esac
                 if [ -n "$job" ]; then S_BOUND="$S_BOUND $id"; S_SERIOUS=1; fi
                 job_kept=1
@@ -248,9 +254,11 @@ EOT
             || [ "$row_jstate" != "$st" ]; then
             # tmux takes an argument's trailing `;` for a separator; `\;` is a literal one.
             arg=$bname; case "$arg" in *\;) arg="${arg%;}\;" ;; esac
+            # An ex-foreground session (sent to the background) is a viewer now: its mark goes.
             tmux set-option -p -t "$bpane" @cockpit_job "$bid" \; \
                 set-option -p -t "$bpane" @cockpit_job_name "$arg" \; \
-                set-option -p -t "$bpane" @cockpit_job_state "$st" 2>/dev/null
+                set-option -p -t "$bpane" @cockpit_job_state "$st" \; \
+                set-option -pu -t "$bpane" @cockpit_fg 2>/dev/null
         fi
     done <<EOT
 $new

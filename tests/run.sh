@@ -10439,6 +10439,45 @@ is "...turned foreground session (its hook unmarked it) is no longer the poller'
    "||needs-input|perm fg" "$(avj "$AVF2")"
 av_tm select-pane -t "$AVF2" -T "something else"; av_bind
 is "...and a title change then does not wipe its state" "||needs-input|perm fg" "$(avj "$AVF2")"
+av_fgoff() {                  # av_fgoff <pane> <event>: that session's `off` hook
+    printf '{"session_id":"s","cwd":"/x","hook_event_name":"%s"}' "$2" \
+        | env TMUX="$AVT" TMUX_PANE="$1" PATH="$AVBIN:$PATH" \
+            "$DIR/scripts/agent-state" off >/dev/null 2>&1
+}
+# The left arrow in a foreground session sends it to the background and leaves the process in
+# the pane, no SessionEnd: the pane shows its own job from then on, which started after the
+# session's last state change. A job that started before it is some other session's.
+jq 'map(.startedAt = 99999999999999)' "$AVF/bind.json" > "$AVREC/late.json"
+av_late() { av_once bind.json AV_JSON="$AVREC/late.json" >/dev/null; }
+AVF4=$(av_np "alpha"); av_fg "$AVF4" permission_prompt "perm fg"; av_late
+is "a foreground pane whose title names a job that started after its last hook binds it" \
+   "aa|alpha|running|" "$(avj "$AVF4")"
+is "...and is no foreground session's pane any more" "" "$(avo @cockpit_fg "$AVF4")"
+# The mark is the epoch second of the last state change: set by a hook that changes nothing
+# (the pane has none), refreshed by one that does.
+AVF6=$(av_np "x"); av_tm set-option -p -t "$AVF6" @panestate needs-input
+av_fg "$AVF6" permission_prompt "same"
+is "a foreground hook that changes no state still marks the pane" "yes" \
+   "$([ -n "$(avo @cockpit_fg "$AVF6")" ] && echo yes || echo no)"
+av_tm set-option -p -t "$AVF6" @cockpit_fg 1000000000
+env TMUX="$AVT" TMUX_PANE="$AVF6" PATH="$AVBIN:$PATH" "$DIR/scripts/agent-state" running \
+    </dev/null >/dev/null 2>&1
+AVEPOCH=$(avo @cockpit_fg "$AVF6")
+is "...and a state change refreshes it to the present" "yes" \
+   "$([ "$AVEPOCH" -gt 1700000000 ] && echo yes || echo no)"
+AVF5=$(av_np "alpha"); av_fg "$AVF5" permission_prompt "perm fg"; av_bind
+is "a job that started before the session's last hook is not its own" "||needs-input|perm fg" \
+   "$(avj "$AVF5")"
+av_tm set-option -p -t "$AVF5" @cockpit_fg 1; av_late
+is "a mark that is no epoch second never binds" "||needs-input|perm fg" "$(avj "$AVF5")"
+AVF3=$(av_np "alpha"); av_fg "$AVF3" permission_prompt "perm fg"; av_fgoff "$AVF3" SessionStart
+is "a SessionStart's off keeps the foreground mark" "yes" \
+   "$([ -n "$(avo @cockpit_fg "$AVF3")" ] && echo yes || echo no)"
+av_fgoff "$AVF3" SessionEnd; av_bind
+is "a pane whose foreground session ended binds the job it attaches to" "aa|alpha|running|" \
+   "$(avj "$AVF3")"
+is "...the mark gone with the session" "" "$(avo @cockpit_fg "$AVF3")"
+av_tm set-option -p -t "$AVF1" @cockpit_fg 1000000000
 av_tm respawn-pane -k -t "$AVF1" 'exec -a bash sleep 300'; av_bind
 is "the foreground mark goes when the pane leaves the agent" "" "$(avo @cockpit_fg "$AVF1")"
 av_tm respawn-pane -k -t "$AVF1" 'exec -a claude sleep 300'
@@ -10504,7 +10543,8 @@ av_published() {              # the published pid is a live agent-poll
 av_hook permission_prompt
 is "an ordinary permission prompt is not an agent view: no mark, no poller" "|0" \
    "$(avo @cockpit_agentview)|$(av_runs)"
-is "a foreground hook marks the pane as its session's (#448)" "1" "$(avo @cockpit_fg)"
+is "a foreground hook marks the pane as its session's (#448)" "yes" \
+   "$([ -n "$(avo @cockpit_fg)" ] && echo yes || echo no)"
 av_tm set-option -pu -t "$AVP" @panestate
 av_hook agent_completed
 is "agent_completed marks the pane" "1" "$(avo @cockpit_agentview)"

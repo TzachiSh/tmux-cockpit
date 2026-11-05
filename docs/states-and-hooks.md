@@ -380,14 +380,20 @@ on every frame, and a `claude attach Y` on an idle job may emit none. A pane tha
 one, so it is bound to X, with X's state. The pane command is `claude`, so the rule
 cannot tell. A second signal, `@cockpit_job` set by a cockpit-run attach, would close it (#461).
 
-**A foreground session is never bound.** A hook of a pane's own session (one with
-`TMUX_PANE`) sets `@cockpit_fg` on the pane, in the tmux call it makes anyway, and clears
-any bind it had. The poller skips a pane that carries the mark, so a session whose title
-equals a job's name keeps the state its hooks write. The mark goes when the pane stops
-running an agent, and when the agent view relays a notification for the pane (it shows
-jobs now). Until a fresh session's first hook has run, it can be bound for a tick or two. A
-pane that was a foreground session and becomes a viewer without a relayed notification
-stays unbound.
+**A foreground session is not bound to a job of its own name.** A hook of a pane's own
+session (one with `TMUX_PANE`) sets `@cockpit_fg` on the pane, to the epoch second of the
+session's last state change, and clears any bind the pane had. The poller binds such a pane
+only to a job that started *after* that second, and then drops the mark. So a session whose
+title equals another job's name keeps the state its hooks write, while a session sent to
+the background with the left arrow, which stays in the same process with no `SessionEnd`
+(measured on claude 2.1.318: the job's `startedAt` is the moment of the keypress), binds to
+its own job. `/bg` instead ends the foreground process, so `SessionEnd` fires; and
+`SessionEnd`'s `agent-state off` removes the mark, as does the agent view's relayed
+notification, and the poller does when the pane stops running an agent. A mark with no
+usable epoch (no builtin clock in the hook's bash, or an older value) never binds.
+Residual: an idle foreground session whose title equals a job that started after its last
+state change binds until its next hook, which clears the bind; a job started during a long
+turn counts the same way.
 
 **Start and stop.** One poller runs per server, its pid in `@cockpit_poll_pid`. It
 starts from `agent-state sweep`: the config load runs one, and so does every window or
