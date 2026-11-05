@@ -676,6 +676,42 @@ fn planted_git_config_never_runs() {
     assert_eq!(pm, "+5 -1  ?1 new", "the hardened diff still measures the tree");
 }
 
+/// The board may start with a dotfiles setup's GIT_DIR, or one of its kin, in
+/// its environment: a row's name, branch, diff count and root stay the pane repo's.
+#[test]
+fn an_inherited_git_variable_never_moves_a_boards_row() {
+    let r = Repo::new("redirect");
+    // tracked past the cap: only the inherited index makes it look untracked, so big
+    std::fs::File::create(r.dir.join("core")).unwrap().set_len(33 * 1024 * 1024).unwrap();
+    r.git(&["add", "core"]);
+    r.git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "core"]);
+    let other = r.dir.join(".git/other"); // inside .git: never in the pane repo's tree
+    let o = other.display().to_string();
+    let git = |args: &[&str]| assert!(r.git(&[&["-C", o.as_str()][..], args].concat()).status.success());
+    std::fs::create_dir_all(&other).unwrap();
+    git(&["init", "-q", "-b", "elsewhere"]);
+    std::fs::write(other.join("g"), "x\n").unwrap();
+    git(&["add", "-A"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@e", "commit", "-q", "-m", "other"]);
+    let want = git_facts(&r.path());
+    assert_eq!(want.1, "clean", "{want:?}");
+    let rows = [
+        ("GIT_DIR", format!("{o}/.git")),
+        ("GIT_WORK_TREE", o.clone()),
+        ("GIT_COMMON_DIR", format!("{o}/.git")),
+        ("GIT_INDEX_FILE", format!("{o}/.git/index")),
+    ];
+    let moved: Vec<&str> = rows
+        .into_iter()
+        .filter(|(var, val)| {
+            let _e = Env::set(&[(var, val.clone())]); // `r` holds ENV
+            git_facts(&r.path()) != want
+        })
+        .map(|(var, _)| var)
+        .collect();
+    assert_eq!(moved, Vec::<&str>::new(), "these moved the row");
+}
+
 fn stat(r: &Repo, base: Option<&str>) -> Option<(u64, u64, u64, String)> {
     tree_stat(&r.path(), &r.dir.join(".git").display().to_string(), base)
 }
