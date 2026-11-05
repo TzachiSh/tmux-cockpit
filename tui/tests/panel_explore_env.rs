@@ -25,8 +25,21 @@ fn scratch(tag: &str) -> Scratch {
     Scratch(d)
 }
 
+/// What another test's [`with_env`] could point the setup's git at instead of
+/// `dir`. Tests run in parallel threads and only `with_env` takes `ENV`, so a
+/// git spawned here sees whatever another test has set at that moment.
+const GIT_ENV: [&str; 5] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_CEILING_DIRECTORIES",
+];
+
 fn git_init(dir: &Path) {
-    let ok = std::process::Command::new("git")
+    let mut c = std::process::Command::new("git");
+    GIT_ENV.iter().for_each(|v| _ = c.env_remove(v));
+    let ok = c
         .args(["-c", "init.defaultBranch=main", "init", "-q"])
         .arg(dir)
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -94,6 +107,19 @@ fn with_env<T>(vars: &[(&str, &Path)], f: impl FnOnce() -> T) -> T {
     // SAFETY: every test here takes ENV first, so no other thread reads the env meanwhile.
     unsafe { vars.iter().for_each(|(k, v)| std::env::set_var(k, v)) };
     f()
+}
+
+/// The setup's `git init` makes `dir` a repo while another test's var names
+/// somewhere else: rows are the vars this file sets, each pointing at `other`.
+#[test]
+fn git_init_ignores_a_var_another_test_set() {
+    let g = scratch("setup");
+    let other = g.0.join("other");
+    for (var, val) in [("GIT_DIR", other.join(".git")), ("GIT_WORK_TREE", other.clone())] {
+        let dir = g.0.join(var);
+        with_env(&[(var, &val)], || git_init(&dir));
+        assert!(dir.join(".git/HEAD").is_file(), "{var}: no repo at {}", dir.display());
+    }
 }
 
 /// An inherited GIT_DIR and GIT_WORK_TREE naming an outer repo would pass every
