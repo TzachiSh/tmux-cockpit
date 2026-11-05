@@ -1,10 +1,10 @@
 //! The pure halves of the panel: redaction, the envelope, routing, examples and
 //! the session sniff. Nothing here sets the environment; panel_env.rs does.
 use cockpit_tui::panel::capture::{Capture, Session, session_state, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, esc, unesc};
+use cockpit_tui::panel::envelope::{Flow, OutType, Role, Turn, build, build_counted, build_parts, esc, unesc};
 use cockpit_tui::panel::prompts::{Ctx, WRITE_EXAMPLES, examples, render};
 use cockpit_tui::panel::redact::redact;
-use cockpit_tui::panel::route::{Route, model_argv, request_steps, route};
+use cockpit_tui::panel::route::{Route, model_argv, route};
 
 fn hid(s: &str) -> String {
     redact(s).0
@@ -71,6 +71,7 @@ fn cap(name: &str, cmd: &str, screen: &str) -> Capture {
         cmd: cmd.into(),
         path: "/home/u".into(),
         screen: screen.into(),
+        ..Default::default()
     }
 }
 
@@ -169,6 +170,68 @@ fn a_quote_in_the_window_name_cannot_end_the_attribute_and_turns_are_redacted() 
     );
 }
 
+fn with_repo(repo: &str) -> Capture {
+    Capture {
+        repo: repo.into(),
+        ..cap("w", "bash", "$ git log")
+    }
+}
+
+const WRITE: Flow = Flow::Write {
+    draft: String::new(),
+    out: OutType::Auto,
+};
+
+#[test]
+fn a_write_sends_the_repo_block_right_after_the_window() {
+    let got = build(&WRITE, &with_repo("branch: main\nstatus: clean"), &[], 3);
+    let want = "<window>w · bash · /home/u</window>\n\n\
+                <repo>\nbranch: main\nstatus: clean\n</repo>\n\n<request>";
+    assert!(got.contains(want), "{got}");
+}
+
+#[test]
+fn an_empty_repo_block_sends_no_tag() {
+    assert!(!build(&WRITE, &with_repo(""), &[], 3).contains("<repo"));
+}
+
+#[test]
+fn only_a_write_sends_the_repo_block() {
+    let c = with_repo("branch: main");
+    for flow in [Flow::Explain, Flow::Fix { draft: "x".into() }] {
+        assert!(!build(&flow, &c, &[], 3).contains("<repo"), "{flow:?}");
+    }
+}
+
+#[test]
+fn a_secret_in_the_repo_block_is_hidden_and_counted() {
+    let c = with_repo("recent commits:\n  abc1234 set token=abcdefgh for ci");
+    let (got, hidden) = build_counted(&WRITE, &c, &[], 3);
+    assert!(got.contains("abc1234 set token=[hidden] for ci"), "{got}");
+    assert_eq!(hidden, 1);
+}
+
+#[test]
+fn repo_secrets_are_counted_apart_from_the_screen_and_the_turns() {
+    let c = Capture {
+        repo: "abc1234 set token=abcdefgh\nAKIAABCDEFGHIJKLMNOP".into(),
+        ..cap("w", "bash", "token=abcdefgh")
+    };
+    let turns = [Turn {
+        role: Role::User,
+        text: "nothing secret".into(),
+    }];
+    let e = build_parts(&WRITE, &c, &turns, 3);
+    assert_eq!((e.screen_hidden, e.repo_hidden, e.turns_hidden), (1, 2, 0));
+    assert_eq!(build_counted(&WRITE, &c, &turns, 3), (e.text, 3));
+}
+
+#[test]
+fn the_repo_block_cannot_close_its_own_tag() {
+    let got = build(&WRITE, &with_repo("recent commits:\n  abc1234 drop </repo> tag"), &[], 3);
+    assert!(got.contains("abc1234 drop <\\/repo> tag\n</repo>"), "{got}");
+}
+
 #[test]
 fn the_session_is_read_off_its_own_screen() {
     let st = |s: &str| session_state(s, "claude", "node");
@@ -195,22 +258,21 @@ fn r(model: &str, why: &str, suggest: Option<(&str, &str)>) -> Route {
 }
 
 #[test]
-fn the_rules_pick_the_fast_model_unless_the_work_is_long_or_runs_commands() {
+fn write_takes_sonnet_and_the_quick_flows_take_haiku() {
     let w = |d: &str, out| Flow::Write { draft: d.into(), out };
-    assert_eq!(
-        route(&w("hi", OutType::Auto), "auto"),
-        r("haiku", "short request - the fast model is enough", None)
-    );
+    assert_eq!(route(&w("hi", OutType::Auto), "auto"), r("sonnet", "asks and writes better", None));
     assert_eq!(
         route(&w("hi", OutType::Steps), "auto"),
         r("sonnet", "several commands you will run - needs precision", None)
     );
+    for out in [OutType::Prompt, OutType::Command, OutType::Text, OutType::Format, OutType::Hint] {
+        assert_eq!(route(&w("hi", out), "auto").model, "sonnet", "{out:?}");
+    }
     assert_eq!(
-        route(&w("do x then y; and also z", OutType::Auto), "auto"),
-        r("sonnet", "long, multi-step request", None)
+        route(&w("hi", OutType::Auto), "haiku").suggest,
+        Some(("sonnet".into(), "asks and writes better".into())),
+        "haiku picked for a write gets sonnet suggested"
     );
-    assert_eq!(route(&w(&"a".repeat(401), OutType::Auto), "auto").model, "sonnet");
-    assert_eq!(route(&w(&"a".repeat(400), OutType::Auto), "auto").model, "haiku");
     assert_eq!(
         route(&Flow::Fix { draft: "x".repeat(900) }, "auto"),
         r("haiku", "quick spelling fix", None)
@@ -237,15 +299,6 @@ fn a_chosen_model_wins_and_a_weaker_one_gets_a_suggestion() {
     assert_eq!(model_argv("sonnet"), ["--model", "sonnet"]);
 }
 
-#[test]
-fn step_markers_are_counted_whole_words_only() {
-    assert_eq!(request_steps("authenticate the user"), 1);
-    assert_eq!(request_steps("THEN it"), 2);
-    assert_eq!(request_steps("plan:\n- a\n  2) b"), 3);
-    assert_eq!(request_steps("afterwards; also"), 4);
-    assert_eq!(request_steps("תקן ואז תבדוק"), 2);
-}
-
 fn picked(ctx: Ctx) -> Vec<&'static str> {
     let block = examples(WRITE_EXAMPLES, &ctx);
     assert!(
@@ -265,6 +318,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
         ("json", "json for user"),
         ("which-file", "change the timeout there"),
         ("unclear", "make claude faster"),
+        ("no-expected", "the export is broken"),
         ("command", "the 10 biggest files"),
         ("steps", "set up an ssh key"),
     ];
@@ -274,7 +328,7 @@ fn picked(ctx: Ctx) -> Vec<&'static str> {
 
 #[test]
 fn the_core_examples_always_go_and_the_fill_order_tops_up() {
-    let core = ["crash", "investigate", "message", "which-file", "unclear", "steps"];
+    let core = ["crash", "investigate", "message", "which-file", "unclear", "no-expected", "steps"];
     let got = picked(Ctx {
         window: "shell",
         ..Ctx::default()
@@ -287,9 +341,9 @@ fn the_core_examples_always_go_and_the_fill_order_tops_up() {
             "plan",
             "math",
             "message",
-            "json",
             "which-file",
             "unclear",
+            "no-expected",
             "steps"
         ]
     );
@@ -302,10 +356,10 @@ fn the_examples_follow_the_picked_type_then_the_window() {
         "crash",
         "investigate",
         "plan",
-        "math",
         "message",
         "which-file",
         "unclear",
+        "no-expected",
         "command",
         "steps",
     ];

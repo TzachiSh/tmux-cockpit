@@ -6165,7 +6165,7 @@ is "the store itself is gone" "absent" "$([ -e "$RASESS/comments.md" ] && echo p
 RACTL2=$(ra_shell)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" "$RAENV XDG_STATE_HOME=$(printf '%q' "$RASTATE") '$DIR/scripts/tmux-review' -p $RAAP" Enter
 review_enter "$RA" "$RACTL2"
-# approve() works on a cp -p COPY of the index (tree_diff's own discipline) --
+# approve() works on a COPY of the index (scratch_index, shared with tree_diff) --
 # the agent's real index must read back byte-unchanged mtime-wise.
 RAIDXBEFORE=$(stat -c %Y "$RADIR/.git/index" 2>/dev/null)
 "$TMUX_REAL" -L "$RA" send-keys -t "$RACTL2" a
@@ -6446,6 +6446,35 @@ PATH="$TDK/bin:$PATH" TMPDIR="$TDK/tmp" bash -c '. "$1/git.sh"; . "$1/review-dif
 is "the run was killed mid-diff (exit 143)" "143" "$tdrc"
 is "and its temp index is gone" "" "$(ls -A "$TDK/tmp")"
 rm -rf "$TDK"
+
+echo "== tmux-review: tree_diff never writes its temp index through a symlink =="
+# The shared temp dir is the agent's to write too, and it can see tree_diff's
+# names. The mktemp shim plays an agent that won the race: the name it hands
+# back already holds a symlink to a victim, at the index copy's own name.
+TDS=$(mktmpd); mkdir -p "$TDS/repo" "$TDS/tmp" "$TDS/bin"; chmod 755 "$TDS/tmp"
+( cd "$TDS/repo" || exit; export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main .; printf 'a\n' > f; git add -A; git commit -q -m init; printf 'b\n' >> f ) >/dev/null 2>&1
+printf 'keep\n' > "$TDS/victim"
+cat > "$TDS/bin/mktemp" <<STUB
+#!/bin/sh
+d=$TDS/race; mkdir -m 700 "\$d"; ln -s "$TDS/victim" "\$d/index"; ln -s "$TDS/victim" "\$d/staged"
+case "\$1" in -d) echo "\$d" ;; *) ln -s "$TDS/victim" "\$d.f"; echo "\$d.f" ;; esac
+STUB
+chmod +x "$TDS/bin/mktemp"
+tds_diff() { bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$TDS/repo"; }
+PATH="$TDS/bin:$PATH" tds_diff >/dev/null 2>&1
+is "symlinks raced in at the index copy's and the file list's names: the victim is untouched" "keep" "$(cat "$TDS/victim")"
+# The git shim reads the mode of the dir the index copy sits in, at the add.
+rm -f "$TDS/bin/mktemp"
+cat > "$TDS/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$TDS/mode" ;; esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$TDS/bin/git"
+PATH="$TDS/bin:$PATH" TMPDIR="$TDS/tmp" tds_diff >/dev/null 2>&1
+is "the index copy sits in a dir only the user can open" "drwx------" "$(cat "$TDS/mode" 2>/dev/null)"
+rm -rf "$TDS"; unset -f tds_diff
 
 # group: deliver
 echo "== tmux-review --deliver: guards refuse before anything is pasted =="
@@ -10711,7 +10740,248 @@ is "git.sh's git add refuses it in one line, status 1" "git.sh: refusing: filter
 "$DIR/scripts/tmux-review" --lines "$GD/r" >/dev/null 2>&1
 is "and nothing ran: git.sh, diffstat and tmux-review --lines" "" "$(ls "$GD/PWNED" 2>/dev/null)"
 rm -rf "$GD"
+
+# #434: a gitlink's repo has its own config, a clean filter included, and
+# tree_diff's add and diff each run status inside it unless kept out. A filter
+# planted in a submodule and in an embedded repo at a non-UTF-8 path, proven
+# live, must run under neither tree_diff nor diffstat, which still agree. The
+# planted submodule's pointer stays put: a moved one skips the dirt check.
+ds_subs() {                   # <dir>: $1/r, a.txt changed, n.txt new, submodule bump moved
+    ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+      cd "$1" || exit; e=$(printf 'bad\377name')
+      git init -q -b main in && printf 'x\n' > in/f.txt && git -C in add -A && git -C in commit -q -m i
+      git init -q -b main r && cd r && printf 'a\n' > a.txt && mkdir d && printf 'd\n' > d/x
+      printf 'z\n' > z.txt   # sorts last: the excludes loop ends on a file, not a gitlink
+      git add -A && git commit -q -m first
+      git -c protocol.file.allow=always submodule add -q "$1/in" sub
+      git -c protocol.file.allow=always submodule add -q "$1/in" bump
+      git init -q -b main "$e" && printf 'e\n' > "$e/e.txt" && git -C "$e" add -A && git -C "$e" commit -q -m e
+      git add "$e" && git commit -q -m subs
+      printf 'y\n' > bump/g.txt && git -C bump add g.txt && git -C bump commit -q -m bump && printf 'b\n' > a.txt
+      printf 'n\n' > n.txt
+      git config -f .git/modules/sub/config filter.mark.clean "touch $1/PWNED.sub; cat"
+      git config -f "$e/.git/config" filter.mark.clean "touch $1/PWNED.emb; cat"
+      printf '* filter=mark\n' | tee .git/modules/sub/info/attributes > "$e/.git/info/attributes"
+      touch -t 203001010000 sub/f.txt "$e/e.txt"; git status --porcelain >/dev/null
+      ls "$1" | grep -c '^PWNED\.'; rm -f "$1"/PWNED.*; touch -t 203101010000 sub/f.txt "$e/e.txt"
+    ) 2>/dev/null | tail -n 1
+}
+GD=$(mktmpd)
+is "a gitlink's planted clean filter fires under plain git status: both of them" "2" "$(ds_subs "$GD")"
+mkdir "$GD/tmp"
+dss=$(TMPDIR="$GD/tmp" ds_shell "$GD/r")
+is "tree_diff runs no gitlink's own clean filter" "" "$(ls "$GD" | grep '^PWNED')"
+is "and counts the submodule's moved pointer, as diffstat does" "3	2	1	+3 -2  ?1 new" "$dss"
+# Each run after a fresh mtime, so a run that refreshed a gitlink's index
+# cannot leave the next one nothing to hash.
+ds_redirty() { rm -f "$GD"/PWNED.*; touch -t "$1" "$GD/r/sub/f.txt" "$GD/r/$(printf 'bad\377name')/e.txt"; }
+ds_redirty 203201010000
+is "diffstat runs none either, and counts the same" "$dss|" \
+   "$(TMPDIR="$GD/tmp" "$DSB" diffstat "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+ds_redirty 203301010000
+dsl=$(TMPDIR="$GD/tmp" "$DIR/scripts/tmux-review" --lines "$GD/r/d" 2>/dev/null)
+is "nor does tmux-review --lines from a subdir, outside the gitlinks" "" "$(ls "$GD" | grep '^PWNED')"
+is "whose rows still hold the new file at the top" "1" "$(printf '%s\n' "$dsl" | grep -c '^n\.txt	1	n	')"
+is "a relative TMPDIR: tree_diff counts what an absolute one does" "$dss" "$(cd "$GD" && TMPDIR=tmp ds_shell "$GD/r")"
+is "and neither leaves anything in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# Excludes that never reach their file: while ls-files writes $tmp/staged, the
+# shim points $tmp/pathspec beside it at DS_SINK. /dev/full fails each write,
+# /dev/null keeps none, and noclobber refuses a file. Each way tree_diff fails,
+# runs no add, and the file keeps what it held.
+mkdir "$GD/bin"
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" ls-files "*) o=\$(readlink "/proc/\$\$/fd/1"); ln -s "\$DS_SINK" "\${o%/*}/pathspec" ;; esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$GD/bin/git"; printf 'keep\n' > "$GD/victim"
+for sink in /dev/full:203401010000 /dev/null:203501010000 "$GD/victim:203601010000"; do
+    ds_redirty "${sink##*:}"
+    is "excludes written to ${sink%:*}: tree_diff fails, and runs no add" "1|" \
+       "$(DS_SINK=${sink%:*} PATH="$GD/bin:$PATH" bash -c '. "$1/git.sh"; . "$1/review-diff.sh"
+           tree_diff "$2" --numstat >/dev/null; echo "$?"' _ "$DIR/scripts/lib" "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+done
+is "and the file stays as it was" "keep" "$(cat "$GD/victim")"
+# A write cut short in a regular file (a file size limit here, a full disk in
+# life) leaves part of a record behind: still a failure.
+is "a short write under the excludes is a failure too" "1" \
+   "$(cd "$GD" && printf '160000 0123 0\t%s\0' "$(printf 'a%.0s' $(seq 1500))" > staged \
+      && bash -c 'ulimit -f 1; trap "" XFSZ; . "$1/review-diff.sh"; gitlink_excludes staged out; echo "$?"' \
+         _ "$DIR/scripts/lib" 2>/dev/null </dev/null)"
+rm -rf "$GD"
+# An unborn HEAD takes tree_diff's other path, the worktree then the index.
+GD=$(mktmpd)
+is "unborn HEAD, a staged embedded repo: its plant fires under plain git status" "1" \
+   "$( ( export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+         cd "$GD" && git init -q -b main r && cd r && git init -q -b main e && printf 'e\n' > e/e.txt
+         git -C e add -A && git -C e commit -q -m e && git add e
+         git config -f e/.git/config filter.mark.clean "touch $GD/PWNED; cat"
+         printf '* filter=mark\n' > e/.git/info/attributes
+         touch -t 203001010000 e/e.txt; git status --porcelain >/dev/null
+         ls "$GD" | grep -c '^PWNED$'; rm -f "$GD/PWNED"; touch -t 203101010000 e/e.txt ) 2>/dev/null | tail -n 1)"
+ds_shell "$GD/r" >/dev/null
+is "and tree_diff's unborn path runs it in neither diff" "" "$(ls "$GD" | grep '^PWNED')"
+rm -rf "$GD"
 unset -f ds_shell
+
+echo "== tmux-review: approve keeps out of every gitlink, in a private temp dir (#441) =="
+# ^A's approve() had tree_diff's two flaws (#434, #435): an add -A that ran
+# status in every gitlink's repo, and a mktemp index cp wrote through. The
+# checkpoint it records must not move: ap_oracle runs the old steps, add -A on
+# a copy of the index then write-tree, and the ref must name that same tree.
+ap_run() {                    # <dir>: approve's status, in a fresh bash
+    bash -c '. "$1/git.sh"; . "$1/review-diff.sh"; approve "$2"; echo "$?"' \
+        _ "$DIR/scripts/lib" "$1" 2>/dev/null
+}
+ap_oracle() {                 # <repo root>: the tree the old approve recorded
+    local i; i=$(mktmpf); cp -p -- "$1/.git/index" "$i"
+    GIT_INDEX_FILE=$i git -C "$1" add -A >/dev/null 2>&1 \
+        && GIT_INDEX_FILE=$i git -C "$1" write-tree
+    rm -f -- "$i"
+}
+ap_ref() { git -C "$1" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null; }
+ap_unref() { git -C "$1" update-ref -d refs/cockpit/reviewed/main 2>/dev/null; }
+GD=$(mktmpd); mkdir "$GD/tmp" "$GD/bin"
+( cd "$GD" || exit
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
+  git init -q -b main p && cd p && printf 'a\n' > a && printf 'g\n' > gone
+  mkdir d && printf 'x\n' > d/x && git add -A && git commit -q -m one
+  printf 'b\n' >> a && rm gone && printf 'n\n' > d/n ) >/dev/null 2>&1
+is "no gitlinks: approve exits 0" "0" "$(TMPDIR="$GD/tmp" ap_run "$GD/p")"
+is "and records the old approve's tree, byte for byte" "$(ap_oracle "$GD/p")" "$(ap_ref "$GD/p")"
+is "and leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
+ap_unref "$GD/p"
+is "a relative TMPDIR: the same tree" "0|$(ap_oracle "$GD/p")" \
+   "$(cd "$GD" && TMPDIR=tmp ap_run "$GD/p")|$(ap_ref "$GD/p")"
+is "and nothing left in it" "" "$(ls -A "$GD/tmp")"
+ap_unref "$GD/p"
+is "an empty dir argument fails, even from inside a repo, and writes no ref" "1|" \
+   "$(cd "$GD/p" && ap_run "")|$(ap_ref "$GD/p")"
+is "a dir that is not a repo fails and leaves nothing" "1|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/tmp")|$(ls -A "$GD/tmp")"
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" add "*) ls -ld "\$(dirname "\$GIT_INDEX_FILE")" | cut -c1-10 > "$GD/mode" ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+chmod +x "$GD/bin/git"; chmod 755 "$GD/tmp"
+PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" ap_run "$GD/p" >/dev/null
+is "the index copy sits in a dir only the user can open" "drwx------" \
+   "$(cat "$GD/mode" 2>/dev/null)"
+# ds_subs's repo: a filter planted in a submodule and in an embedded repo at a
+# non-UTF-8 path, proven live by plain git status, and a second submodule
+# whose pointer moved.
+is "a gitlink's planted clean filter fires under plain git status: both of them" "2" \
+   "$(ds_subs "$GD")"
+# The mktemp shim plays an agent that won the race: the dir it hands back
+# already holds a symlink to the victim at one of approve's names, and so
+# does the file it would hand back without -d.
+for at in "index staged" pathspec gitlinks; do
+    printf 'keep\n' > "$GD/victim"
+    cat > "$GD/bin/mktemp" <<STUB
+#!/bin/sh
+d=$GD/race; rm -rf "\$d" "\$d.f"; mkdir -m 700 "\$d"
+for n in $at; do ln -s "$GD/victim" "\$d/\$n"; done
+case "\$1" in -d) echo "\$d" ;; *) ln -s "$GD/victim" "\$d.f"; echo "\$d.f" ;; esac
+STUB
+    chmod +x "$GD/bin/mktemp"
+    PATH="$GD/bin:$PATH" ap_run "$GD/r" >/dev/null
+    is "a symlink raced in at $at: the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
+done
+rm -rf "$GD/bin/mktemp" "$GD/race" "$GD/race.f"; ap_unref "$GD/r"
+ds_redirty 204001010000
+is "approve exits 0 and runs no gitlink's clean filter" "0|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+apsub=$(ap_ref "$GD/r")
+is "the checkpoint holds the moved pointer" "$(git -C "$GD/r/bump" rev-parse HEAD)" \
+   "$(git -C "$GD/r" rev-parse "$apsub:bump" 2>/dev/null)"
+is "and is the old approve's tree, byte for byte" "$(ap_oracle "$GD/r")" "$apsub"
+ap_unref "$GD/r"; ds_redirty 204101010000
+is "approve from a subdir: the same tree, no filter run" "0|$apsub|" \
+   "$(TMPDIR="$GD/tmp" ap_run "$GD/r/d")|$(ap_ref "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+ap_unref "$GD/r"; mv "$GD/r/bump" "$GD/bump.away"
+is "a submodule dir gone: dropped from the checkpoint, as the old approve did" \
+   "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
+ap_unref "$GD/r"; mv "$GD/bump.away" "$GD/r/bump"
+# A skip-worktree gitlink, as a sparse checkout leaves one: add -A never
+# touches it, dir there with its pointer moved or dir gone, and neither may
+# approve.
+git -C "$GD/r" update-index --skip-worktree bump
+for at in there gone; do
+    [ "$at" = there ] || mv "$GD/r/bump" "$GD/bump.away"
+    is "a skip-worktree submodule, dir $at: the old approve's tree" \
+       "0|$(ap_oracle "$GD/r")" "$(ap_run "$GD/r")|$(ap_ref "$GD/r")"
+    ap_unref "$GD/r"
+done
+mv "$GD/bump.away" "$GD/r/bump"; git -C "$GD/r" update-index --no-skip-worktree bump
+is "and nothing left in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# A list that never reaches its file: while ls-files writes $tmp/staged, the
+# shim points AP_NAME beside it at AP_SINK. Each way approve fails, adds
+# nothing and writes no ref; the shim logs every add it sees.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" ls-files "*) o=\$(readlink "/proc/\$\$/fd/1"); ln -s "\$AP_SINK" "\${o%/*}/\$AP_NAME" ;;
+    *" add "*) echo add >> "$GD/adds" ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+n=2042; printf 'keep\n' > "$GD/victim"
+for row in pathspec:/dev/full pathspec:/dev/null pathspec:file \
+           gitlinks:/dev/full gitlinks:/dev/null gitlinks:file; do
+    ds_redirty "${n}01010000"; n=$((n + 1)); rm -f "$GD/adds"
+    sink=${row#*:}; [ "$sink" != file ] || sink=$GD/victim
+    is "the ${row%%:*} list sent to ${row#*:}: approve fails, adds nothing, writes no ref" "1|||" \
+       "$(AP_NAME=${row%%:*} AP_SINK=$sink PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" ap_run "$GD/r"
+          )|$(cat "$GD/adds" 2>/dev/null)|$(ap_ref "$GD/r")|$(ls "$GD" | grep '^PWNED')"
+    ap_unref "$GD/r"
+done
+is "and the victim keeps its 5 bytes" "5" "$(wc -c < "$GD/victim")"
+is "and a failed approve leaves nothing in TMPDIR" "" "$(ls -A "$GD/tmp")"
+# The agent's index moves between the copy and the listing. The add runs on
+# the copy, so the gitlink list must come from it too: the shim drops sub
+# from the real index while the list is read, and sub is still in the copy.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in
+    *" ls-files -s "*)
+        env -u GIT_INDEX_FILE $(command -v git) -C "$GD/r" \$AP_RACE >/dev/null 2>&1 ;;
+esac
+exec $(command -v git) "\$@"
+STUB
+ds_redirty 205001010000
+is "sub dropped from the real index mid-listing: approve runs no filter" "0|" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(ls "$GD" | grep '^PWNED')"
+git -C "$GD/r" reset -q -- sub; ap_unref "$GD/r"; ds_redirty 205101010000
+is "and tree_diff runs none either" "" \
+   "$(AP_RACE="update-index --force-remove sub" PATH="$GD/bin:$PATH" bash -c '. "$1/git.sh"
+      . "$1/review-diff.sh"; tree_diff "$2" --numstat' _ "$DIR/scripts/lib" "$GD/r" >/dev/null 2>&1
+      git -C "$GD/r" reset -q -- sub; ls "$GD" | grep '^PWNED')"
+# The other way: an embedded repo staged while the list is read is untracked
+# in the copy, and add -A records it at its HEAD, as the old approve did.
+( cd "$GD/r" && git init -q -b main late && printf 'l\n' > late/l && git -C late add l \
+  && git -C late -c user.name=t -c user.email=t@e commit -q -m l ) >/dev/null 2>&1
+is "an embedded repo staged mid-listing: approve records it at its HEAD" \
+   "0|$(git -C "$GD/r/late" rev-parse HEAD)" \
+   "$(AP_RACE="add late" PATH="$GD/bin:$PATH" ap_run "$GD/r"
+      )|$(r=$(ap_ref "$GD/r") && git -C "$GD/r" rev-parse "$r:late" 2>/dev/null)"
+git -C "$GD/r" rm -q --cached late >/dev/null 2>&1; rm -rf "$GD/r/late"; ap_unref "$GD/r"
+# Killed mid-add: the trap takes the whole temp dir. The add runs in a
+# command substitution, so the shim TERMs approve's own shell by its pid.
+cat > "$GD/bin/git" <<STUB
+#!/usr/bin/env bash
+case " \$* " in *" add "*) kill -TERM "\$AP_PID"; exit 0 ;; esac
+exec $(command -v git) "\$@"
+STUB
+is "approve killed mid-add exits 143, its temp dir gone" "143|" \
+   "$(PATH="$GD/bin:$PATH" TMPDIR="$GD/tmp" bash -c 'export AP_PID=$$; . "$1/git.sh"
+      . "$1/review-diff.sh"; approve "$2"' _ "$DIR/scripts/lib" "$GD/p" >/dev/null 2>&1
+      echo "$?")|$(ls -A "$GD/tmp")"
+rm -rf "$GD"
+unset -f ds_subs ds_redirty ap_run ap_oracle ap_ref ap_unref
 
 echo "== tm: picking a session from a real popup switches the client =="
 # A server started from inside another tmux pane keeps that $TMUX_PANE in its
@@ -10950,6 +11220,16 @@ git -C "$RD" update-ref -d refs/cockpit/reviewed/main
 printf '## f:2 (+)\n> B\nkeep\n\n' > "$RDS/comments.md"
 is "a with comments pinned does nothing; l leaves" "0" "$(rd_loop al "$RD" "$RDS/comments.md")"
 is "and no checkpoint was written" "" "$(git -C "$RD" rev-parse -q --verify refs/cockpit/reviewed/main 2>/dev/null)"
+# A failed approve says so in plain words: a stale ref is one cause of many
+# since approve fails closed (#441). The tmux shim logs each argument.
+rd_reset; : > "$RDS/comments.md"; RDTM=$(mktmpd)
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" >> "%s/args"\n' "$RDTM" > "$RDTM/tmux"
+chmod +x "$RDTM/tmux"
+git -C "$RD" update-ref refs/cockpit/reviewed/main/x "$(git -C "$RD" rev-parse 'HEAD^{tree}')"
+is "a failed approve: the loop says it could not mark the branch, and nothing more" "0|1" \
+   "$(rd_loop al "$RD" "$RDS/comments.md" "$RDB:$RDTM:$PATH")|$(grep -cx \
+      'cockpit: could not mark the branch reviewed' "$RDTM/args")"
+git -C "$RD" update-ref -d refs/cockpit/reviewed/main/x; rm -rf "$RDTM"
 # 9. a file-level comment whose first line is a quote keeps it as body.
 rd_reset; mkdir -p "$RDS"; printf '## f (file-level)\n> not a quote\nnote\n\n' > "$RDS/comments.md"
 rd_loop rl "$RD" "$RDS/comments.md" >/dev/null; parse_store "$RDS/comments.md"
@@ -13030,6 +13310,7 @@ case "$1" in
       case " $* " in
           *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
           *window_id*)         printf '@0\n' ;;
+          *is_touch*)          printf '0\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
   new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
@@ -13382,10 +13663,11 @@ case "$1" in
       case " $* " in
           *pane_current_path*) printf '%s\n' "${CLICK_DIR:-}" ;;
           *window_id*)         printf '@0\n' ;;
+          *is_touch*)          printf '%s\n' "${TOUCH:-0}" ;;
           *pane_width*)        printf '90 30\n' ;;
           *)                   printf 'MSG %s\n' "${!#}" >> "$TMUX_LOG" ;;
       esac ;;
-  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG" ;;
+  new-window) printf 'NEWWIN %s\n' "${!#}" >> "$TMUX_LOG"; exit "${NEWWIN_RC:-0}" ;;
   display-popup) shift; { printf 'POPUP'; printf ' [%s]' "$@"; echo; } >> "$TMUX_LOG"; exit "${POPUP_RC:-0}" ;;
   list-clients) [ -z "${NO_CLIENT:-}" ] && printf 'c\n' ;;
 esac
@@ -13404,9 +13686,9 @@ chmod +x "$MV/bin/tmux" "$MV/bin/cockpit-tui"; ln -s "$(command -v bash)" "$MV/b
 for t in mktemp rm cat; do ln -s "$(command -v $t)" "$MV/bin/$t"; done   # the stderr capture
 mvrun() {                     # mvrun <click line> <args...> -- the log after one run
     : > "$MVL"
-    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR=ed \
+    env -i PATH="$MV/bin" HOME="$MV" TMUX_LOG="$MVL" CLICK_DIR="$MV/w" CLICK_LINE="$1" OPEN_EDITOR="${MV_ED:-ed}" TOUCH="${TOUCH:-}" \
         COCKPIT_TUI_BIN="${MV_BIN:-$MV/bin/cockpit-tui}" MD_VIEW="${MD_VIEW:-}" VIEW_OUT="${VIEW_OUT-}" \
-        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" \
+        VIEW_ERR="${VIEW_ERR:-}" VIEW_RC="${VIEW_RC:-}" PICK_KEY="${PICK_KEY:-0}" POPUP_RC="${POPUP_RC:-}" NO_CLIENT="${NO_CLIENT:-}" NEWWIN_RC="${NEWWIN_RC:-}" \
         bash "$DIR/scripts/tmux-open-path" "${@:2}" </dev/null >/dev/null 2>"$MV/err"
     cat "$MVL"
 }
@@ -13446,6 +13728,14 @@ is "the popup's title drops a bidi override and control characters" "[-T] [ bq[2
 is "--view runs the viewer at the line and opens the editor where e left it" \
    "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +12 $MV/w/a.md" \
    "$(VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+# a touch client: the viewer's e opens a terminal editor, at +N for the editors that take it
+for e in vi vim nvim nano emacs micro; do
+    is "--view on touch, e: $e gets +12" "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN $e +12 $MV/w/a.md" \
+       "$(TOUCH=1 MV_ED=$e VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
+done
+is "--view on touch, e: an editor outside the list gets the file only" \
+   "VIEW [view] [--line] [7] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md" \
+   "$(TOUCH=1 VIEW_OUT='edit 12' mvrun '' --view %1 "$MV/w/a.md" 7)"
 is "--view without a line passes none" "VIEW [view] [--] [$MV/w/a.md]" "$(mvrun '' --view %1 "$MV/w/a.md" '')"
 for o in 'edit 3; touch x' 'edit' 'edit x' 'open 3' 'edit 3 4'; do
     case "$(VIEW_OUT="$o" mvrun '' --view %1 "$MV/w/a.md" '')" in
@@ -13468,6 +13758,30 @@ esac
 # From the picker's popup the viewer draws in place: tmux has one popup per client.
 is "a .md chosen in the picker opens the viewer in the picker's own popup" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed +5 $MV/w/a.md" "$(VIEW_OUT='edit 5' PICK_KEY=0 mvrun 'a.md t.txt' --pick %1)"
+# a refused new-window is said, not swallowed (#366): the editor row and the touch row
+is "a window tmux refuses to open is a note, from the editor path" \
+   "NEWWIN ed  $MV/w/t.txt"$'\n'"MSG cockpit: tmux could not open a window for t.txt" "$(NEWWIN_RC=1 mvrun 'x' --view %1 "$MV/w/t.txt" '')"
+is "and from the touch client's terminal editor" \
+   "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
+   "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
+
+echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
+# One table, one row per character: removing any one from the helper fails its row.
+PNO=$(mktmpf)
+( . "$DIR/scripts/lib/fmt.sh"; export LC_ALL=C.UTF-8
+  for row in "U+061C|\xd8\x9c" "U+200E|\xe2\x80\x8e" "U+200F|\xe2\x80\x8f" "U+202A|\xe2\x80\xaa" \
+             "U+202B|\xe2\x80\xab" "U+202C|\xe2\x80\xac" "U+202D|\xe2\x80\xad" "U+202E|\xe2\x80\xae" \
+             "U+2066|\xe2\x81\xa6" "U+2067|\xe2\x81\xa7" "U+2068|\xe2\x81\xa8" "U+2069|\xe2\x81\xa9" \
+             "ESC|\x1b" "BEL|\x07" "C1 U+0085|\xc2\x85" "DEL|\x7f"; do
+      got=$(plain_name "$(printf %b "a${row#*|}b.md")")
+      if [ "$got" = ab.md ]; then echo "ok ${row%%|*}"; else echo "bad ${row%%|*} [$got]"; fi
+  done
+  [ "$(plain_name 'p#(x) é ‌q.md')" = 'p#(x) é ‌q.md' ] && echo "ok kept" || echo "bad kept"
+) > "$PNO" 2>&1
+while IFS= read -r pn; do
+    case $pn in ok\ *) ok "plain_name drops/keeps: ${pn#ok }" ;; *) bad "plain_name drops/keeps: ${pn#bad }" "ab.md" "$pn" ;; esac
+done < "$PNO"
+is "plain_name: seventeen rows ran" "17" "$(grep -c . "$PNO")"
 
 echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a hostile name runs nothing =="
 # The real binary in a real popup: an outer server's pane is the inner server's
@@ -13525,7 +13839,7 @@ echo "== tmux-open-path --folder: the file browser, and what is done with the li
 if need_tmux "folder browser"; then :; else
 FB=$(mktmpd); FBS="cockpit-fb-$$"; SOCKS="$SOCKS $FBS"
 FBD="$FB/proj"; mkdir -p "$FB/bin" "$FBD/sub"
-FBF="$FBD/a b's.txt"; : > "$FBF"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
+FBF="$FBD/a b's.txt"; : > "$FBF"; mkfifo "$FBD/fifo"; ln -s /dev/null "$FBD/devnull"; : > "$FBD/sub/n.md"; : > "$FBD/sub/n.txt"
 FBNL="$FBD/two"$'\n'"lines.txt"; : > "$FBNL"     # a real file whose name is two lines
 printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FB" > "$FB/bin/code"
 for e in ed-cockpit ed-visual ed-editor nvim; do
@@ -13543,6 +13857,8 @@ cat > "$FB/bin/cockpit-tui" <<STUB
 #!/bin/sh
 printf '%s\n' "\$*" > "$FB/tui.args"
 cat "$FB/errtext" >&2
+# the viewer prints what vout holds (an \`edit N\` for its e key), the browser its answer
+[ "\$1" = view ] && { cat "$FB/vout"; exit 0; }
 cat "$FB/answer"
 exit \$(cat "$FB/rc")
 STUB
@@ -13559,7 +13875,7 @@ fb() {
     "$TMUX_REAL" -L "$FBS" set -g @cockpit_touch "$touch"
     "$TMUX_REAL" -L "$FBS" set -g remain-on-exit on    # the shim editors exit at once
     printf %b "$ans" > "$FB/answer"; echo "$rc" > "$FB/rc"; : > "$FB/errtext"
-    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"
+    : > "$FB/calls"; : > "$FB/code.log"; : > "$FB/ed.log"; printf %b "${FBV:-}" > "$FB/vout"
     ( cd "$FB" && env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0" "$@" \
         "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1 )
 }
@@ -13619,13 +13935,45 @@ is "touch: @cockpit_editor beats \$VISUAL" "$FB/bin/ed-cockpit [$FBF]" "$(cat "$
 fb on "open $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
 is "touch: the window is named for the file and starts in its folder" "n.txt $FBD/sub" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "n.txt $FBD/sub")"
-# a markdown file goes to the viewer, drawn in the browser's popup, touch or not (#283)
+# view: any regular file goes to the viewer, drawn in the browser's popup, touch or not (#406)
 for fbt in on off; do
-    fb "$fbt" "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
-    is "$fbt: a markdown file picked in the browser opens in the viewer" "view -- $FBD/sub/n.md" "$(cat "$FB/tui.args" 2>/dev/null)"
-    is "$fbt: and no editor window opens for it" "" \
-       "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | grep -Fx n.md)"
+    for fbv in n.md n.txt; do
+        fb "$fbt" "view $FBD/sub/$fbv\n" 0 "VISUAL=$FB/bin/ed-visual"
+        is "$fbt: view $fbv opens the viewer on the exact path" "view -- $FBD/sub/$fbv" "$(cat "$FB/tui.args" 2>/dev/null)"
+        is "$fbt: and no editor, no code, no window opens for $fbv" "0|0" \
+           "$(fbn run-shell)|$(fbn new-window)"
+    done
 done
+# the viewer's e prints `edit N` (FBV): a touch client gets a terminal editor at that line, a PC code
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim"
+fbwait "$FB/ed.log"
+is "touch: the viewer's e opens a terminal editor at the line, not code" "$FB/bin/nvim [+7] [$FBD/sub/n.txt]|0" \
+   "$(cat "$FB/ed.log")|$(grep -c . "$FB/code.log")"
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: an editor with no +N known gets the file only" "$FB/bin/ed-visual [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+FBV='edit 7\n' fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+case "$(cat "$FB/code.log")" in
+    *"[--goto][$FBD/sub/n.txt:7:1]"*) ok "non-touch: the viewer's e still goes to code at the line" ;;
+    *) bad "non-touch: the viewer's e still goes to code at the line" "--goto n.txt:7:1" "$(cat "$FB/code.log")" ;;
+esac
+# open on a markdown file on a touch client is a terminal editor, never the viewer
+fb on "open $FBD/sub/n.md\n" 0 "VISUAL=$FB/bin/ed-visual"
+fbwait "$FB/ed.log"
+is "touch: open on a markdown file goes to term_edit, not the viewer" "$FB/bin/ed-visual [$FBD/sub/n.md]|files $FBD" \
+   "$(cat "$FB/ed.log")|$(cat "$FB/tui.args")"
+# open on markdown is the editor now: the viewer has its own verb
+fb off "open $FBD/sub/n.md\n" 0
+fbwait "$FB/code.log"
+is "open on a markdown file goes to code, not the viewer" "files $FBD|1" \
+   "$(cat "$FB/tui.args")|$(fbn run-shell)"
+# a viewer that cannot take the file (@cockpit_md_view off) falls back to the editor's routing
+"$TMUX_REAL" -L "$FBS" set -g @cockpit_md_view off
+fb off "view $FBD/sub/n.txt\n" 0
+fbwait "$FB/code.log"
+is "view with the viewer off falls back to code" "1|1" "$(fbn run-shell)|$(grep -c 'n.txt' "$FB/code.log")"
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_md_view
 
 # names that are tmux formats: -n and -c expand #(), so term_edit escapes both
 FBH="$FBD/#(touch\${IFS}PWN)dir"; mkdir -p "$FBH"; FBHF="$FBH/#(touch\${IFS}PWN).txt"; : > "$FBHF"
@@ -13635,6 +13983,31 @@ is "touch, format-looking names: the editor got the exact path" "$FB/bin/ed-visu
 is "touch, format-looking names: the window name and folder are literal" "#(touch\${IFS}PWN).txt $FBH" \
    "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name} #{pane_start_path}' | grep -Fx "#(touch\${IFS}PWN).txt $FBH")"
 is "touch, format-looking names: nothing ran" "" "$(find "$FB" "$PWD" -maxdepth 3 -name PWN 2>/dev/null)"
+
+# an editor with arguments: the +N decision reads its first word only (#425)
+FBV='edit 7\n' fb on "view $FBD/sub/n.txt\n" 0 "VISUAL=$FB/bin/nvim -u NONE"
+fbwait "$FB/ed.log"
+is "touch: an editor with arguments keeps them and still gets +N" \
+   "$FB/bin/nvim [-u] [NONE] [+7] [$FBD/sub/n.txt]" "$(cat "$FB/ed.log")"
+
+# a name tmux refuses as a window name still opens (#366): the name drops the control
+# characters and the bidi override, the editor gets the real path
+FBC="$FBD/e"$'\e]2;OWNED\a'"x.txt"; : > "$FBC"
+FBB="$FBD/p"$'\xe2\x80\xae'"q.txt"; : > "$FBB"
+for row in "$FBC|e]2;OWNEDx.txt" "$FBB|pq.txt"; do
+    for t in on off; do
+        "$TMUX_REAL" -L "$FBS" set -g @cockpit_editor "$FB/bin/ed-cockpit"
+        for w in $("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_index}' | sed 1d); do
+            "$TMUX_REAL" -L "$FBS" kill-window -t "t:$w"; done
+        fb "$t" "open ${row%%|*}\n" 0
+        fbwait "$FB/ed.log"
+        is "name with control or bidi characters, touch $t: the editor got the real path" \
+           "$FB/bin/ed-cockpit [${row%%|*}]" "$(cat "$FB/ed.log")"
+        is "and the window is named without them" "${row#*|}" \
+           "$("$TMUX_REAL" -L "$FBS" list-windows -t t -F '#{window_name}' | sed 1d)"
+    done
+done
+"$TMUX_REAL" -L "$FBS" set -gu @cockpit_editor
 
 # a touch client with no editor anywhere: one note, no window
 mkdir -p "$FB/nobin"
@@ -13657,7 +14030,11 @@ is "esc: nothing runs and nothing is said" "0|0|0|0" \
 # the printed line is untrusted: each of these must open and copy nothing
 for row in "two lines|open $FBF\\nopen $FBF" "unknown verb|rm $FBF" "missing path|open $FBD/nope" \
            "relative path|open proj/sub/n.md" "newline in the name|open $FBD/two\\nlines.txt" "no path|open" "empty|" "upper case verb|OPEN $FBF" \
-           "missing past dotdot|open $FBD/../nope"; do
+           "missing past dotdot|open $FBD/../nope" \
+           "view of a fifo|view $FBD/fifo" "view of a link to /dev/null|view $FBD/devnull" \
+           "view of a folder|view $FBD/sub" "view of a missing path|view $FBD/nope" \
+           "view of a relative path|view proj/sub/n.md" "view, two lines|view $FBF\\nview $FBF" \
+           "view, upper case|VIEW $FBF" "view, no path|view"; do
     for t in on off; do
         fb "$t" "${row#*|}\n" 0 "VISUAL=$FB/bin/ed-visual"
         is "refused (${row%%|*}, touch $t): no editor, no code, no copy" "0|0|0|1" \
@@ -13672,6 +14049,51 @@ env PATH="$FB/bin:$PATH" COCKPIT_TUI_BIN="$FB/bin/cockpit-tui" TMUX="$FBSOCK,0,0
     "$DIR/scripts/tmux-open-path" --browse "$FBP" </dev/null >"$FB/out" 2>&1
 is "a stale cockpit-tui is told apart" "1" "$(grep -c 'older than the plugin' "$FB/calls")"
 "$TMUX_REAL" -L "$FBS" kill-server >/dev/null 2>&1
+fi
+
+echo "== tmux-open-path --browse: the real cockpit-tui files, keys in, the exact path out (#372) =="
+# Each side of the printed-line contract is pinned alone above (the Rust tests,
+# the stub rows). This one runs the whole chain: the real binary in a pane of a
+# private server, keys to pick a file whose name holds spaces and $(touch PWN),
+# alt-e to a stub code on PATH, Enter to the real viewer. Polled, never slept.
+if need_tmux "real browser chain"; then :
+elif [ ! -x "$DIR/bin/cockpit-tui" ]; then skip_ "real browser chain (no bin/cockpit-tui)"
+else
+FR=$(mktmpd); FRS="cockpit-fr-$$"; SOCKS="$SOCKS $FRS"
+FRD="$FR/proj"; mkdir -p "$FR/bin" "$FRD"
+FRF="$FRD/a b \$(touch PWN) c.txt"; printf 'VIEWBODY-%s\n' "$$" > "$FRF"; : > "$FRD/0first.txt"
+printf '#!/bin/sh\nprintf "[%%s]" "$0" "$@" >> "%s/code.log"\n' "$FR" > "$FR/bin/code"
+chmod +x "$FR/bin/code"; : > "$FR/code.log"
+( cd "$FR" && PATH="$FR/bin:$PATH" "$TMUX_REAL" -L "$FRS" -f /dev/null new-session -d -s t -x 100 -y 30 \
+    -c "$FRD" 'exec sleep 3600' >/dev/null 2>&1 )
+"$TMUX_REAL" -L "$FRS" set -g remain-on-exit on >/dev/null 2>&1
+FRP=$("$TMUX_REAL" -L "$FRS" list-panes -t t -F '#{pane_id}')
+# frstart: the browser in the pane, on the folder, until it lists the file
+frstart() {
+    "$TMUX_REAL" -L "$FRS" respawn-pane -k -t "$FRP" -c "$FRD" \
+        "exec '$DIR/scripts/tmux-open-path' --browse '$FRP'" >/dev/null 2>&1
+    until_cap "$FRS" "$FRP" '*0first.txt*'
+}
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*PWN*'; then
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" M-e
+    if until_file "$FR/code.log" '*--goto*'; then
+        is "alt-e on the picked name: code gets the exact path, spaces and all" \
+           "[$FR/bin/code][--goto][$FRF:1:1]" "$(cat "$FR/code.log")"
+    else bad "alt-e on the picked name: code gets the exact path, spaces and all" "[--goto][$FRF:1:1]" "$(cat "$FR/code.log")"; fi
+else bad "the real browser lists the folder and takes the filter" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+: > "$FR/code.log"
+if frstart && "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" -l 'touch PWN' && until_cap "$FRS" "$FRP" '*PWN*'; then
+    "$TMUX_REAL" -L "$FRS" send-keys -t "$FRP" Enter
+    if until_cap "$FRS" "$FRP" "*VIEWBODY-$$*"; then ok "Enter on the picked name opens the real viewer on that file"
+    else bad "Enter on the picked name opens the real viewer on that file" "VIEWBODY-$$" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+    case "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP")" in
+        *"$(basename "$FRF")"*) ok "the viewer's title is the file's name" ;;
+        *) bad "the viewer's title is the file's name" "$(basename "$FRF")" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -4)" ;;
+    esac
+else bad "the real browser lists the folder and takes the filter (view)" "0first.txt, then PWN" "$("$TMUX_REAL" -L "$FRS" capture-pane -p -t "$FRP" | head -12)"; fi
+is "the viewer opened no editor and no code" "" "$(cat "$FR/code.log")"
+is "no PWN appeared in the folder, the server's cwd or the checkout" "" "$(find "$FR" "$DIR" -maxdepth 3 -name PWN -not -path '*/tui/target/*' 2>/dev/null)"
+"$TMUX_REAL" -L "$FRS" kill-server >/dev/null 2>&1
 fi
 
 echo "== agent-state sub-*: the documented subagent hooks append to a per-session log (#361) =="

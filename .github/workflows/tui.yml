@@ -7,7 +7,16 @@ on:
 
 jobs:
   tui-test:
-    runs-on: ubuntu-latest
+    # ci-cockpit, TzachiSh/ci-box#367. The job container brings make and a
+    # linker, which the runner image lacks. It runs as the runner's uid, so the
+    # checkout stays cleanable by the next job. The toolchain lands in the
+    # image's own rustup home, so rustup default below changes nothing on the
+    # runner.
+    runs-on: [self-hosted, cockpit]
+    container:
+      image: rust:1-bookworm
+      options: --user 1000:1000
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       # Exactly the floor, never "stable": pinning here is what catches an

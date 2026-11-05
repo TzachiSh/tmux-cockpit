@@ -80,7 +80,7 @@ pub struct Pick {
 /// Characters that reorder what is drawn: the direction marks and the bidi
 /// embeddings, overrides and isolates. A row could otherwise display one name and
 /// print another. U+200C and U+200D stay: Persian, Indic scripts and emoji need them.
-fn is_bidi(c: char) -> bool {
+pub(crate) fn is_bidi(c: char) -> bool {
     matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 

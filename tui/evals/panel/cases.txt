@@ -4,6 +4,8 @@
 #   kind:    bug, feature, investigate, plan, refactor, review, research, message, command, ops, hint, format
 #   window:  name · cmd · path, as the panel captures them
 #   out:     the output type picked in the panel (default auto)
+#   out_is:  for write or either, a reply that is not a question must be this type
+#            (prompt, steps, command, text, format or hint); auto is not one
 #   expect:  ask    - the right first move is a question
 #            write  - the input settles it: no question
 #            either - an on-target question, or a reply with every must, both serve
@@ -16,7 +18,10 @@
 # A key or a section given twice is an error. A screen cannot hold a line that
 # starts with "--- " or "=== ": those start a section or a case.
 #   note:    why the label is what it is
-# then "--- screen" (optional) and "--- request".
+# then "--- screen" (optional), "--- repo" (optional) and "--- request".
+# A repo body is the <repo> block the panel sends for a window in a git repo
+# (capture.rs repo_state): branch, root, status, recent commits, diff --stat and the
+# screen's paths, each section's lines indented by two.
 #
 # Label rule: ask only when the possible readings lead to different work, or a
 # fact only the owner knows is missing and a wrong guess changes the work. A
@@ -32,6 +37,14 @@ note: subject: two candidate APIs on screen
 --- screen
 $ ls
 api-gateway  billing-api  docs  web
+--- repo
+branch: main...origin/main
+root: /home/u/projects/shop
+status: clean
+recent commits:
+  2f8a1c9 billing-api: invoice export
+  e40b6d7 api-gateway: rate limit per key
+  9c1d3e5 web: cart page
 --- request
 add caching to the api
 
@@ -39,13 +52,21 @@ add caching to the api
 kind: ops
 window: bash · bash · /home/u/projects/web
 expect: ask
-ask_any: login-v2; v2
+ask_any: login-v2; v2; login branch
 note: subject: two branches match "the login branch"
 --- screen
 $ git branch
   feature/login
   feature/login-v2
 * main
+--- repo
+branch: main...origin/main
+root: /home/u/projects/web
+status: clean
+recent commits:
+  6d0e2b1 Merge pull request #57 from u/feature/nav
+  a93c7f4 nav: sticky header
+  15be0d8 ci: cache node modules
 --- request
 merge the login branch into main
 
@@ -58,6 +79,17 @@ note: two readings: delete log files, or log less from the code; one deletes dat
 --- screen
 $ ls logs
 api.log  api.log.1  api.log.2  worker.log
+--- repo
+branch: main...origin/main
+root: /home/u/projects/api
+status:
+   M src/log.py
+recent commits:
+  e2b9a71 log: json lines
+  4f01c6d api: health endpoint
+diff --stat:
+  src/log.py | 4 ++--
+  1 file changed, 2 insertions(+), 2 deletions(-)
 --- request
 clean up the logs
 
@@ -66,7 +98,7 @@ kind: feature
 window: claude · claude · /home/u/projects/prices
 expect: either
 ask_any: lru; skip; batch|batching; combine; both
-must: LRU; batch
+must: LRU; batch|batching|batched
 note: "2" and "3" read as contradicting (3 says skip caching) or as combinable; asking or a combined prompt both serve
 --- screen
 ● Prices are fetched on every request. Three ways forward:
@@ -81,13 +113,23 @@ go with 2 and 3
 kind: bug
 window: bash · bash · /home/u/projects/reports
 expect: ask
-ask_any: expected; format; timezone; time zone; one day; off by; instead; supposed to; correct
+ask_any: expected; should be; format; timezone; time zone; one day; off by; instead; supposed to; correct
 note: bug with no expected behaviour: only the owner knows what is wrong with these dates
 --- screen
 $ python report.py --month 10
 Customer      Date         Amount
 Acme          2026-10-03   120.00
 Globex        2026-10-07   80.50
+--- repo
+branch: main...origin/main
+root: /home/u/projects/reports
+status: clean
+recent commits:
+  3e1f0a2 report: group rows by customer
+  b77c9d4 report: month filter
+  0d2a6e1 db: read dates as UTC
+paths on screen:
+  exists: report.py
 --- request
 dates in the report are wrong
 
@@ -95,10 +137,19 @@ dates in the report are wrong
 kind: bug
 window: bash · bash · /home/u/projects/billing
 expect: ask
-ask_any: example; expected; customer|customers; how much; amount; by how
+ask_any: example; expected; customer|customers; how much; amount; by how; too high; too low; what goes wrong; wrong with the totals; off about
 note: no symptom detail and nothing on screen: which customers, expected vs actual
 --- screen
 (empty)
+--- repo
+branch: main...origin/main
+root: /home/u/projects/billing
+status:
+  ?? notes.txt
+recent commits:
+  91c4b0e invoice: apply volume discounts
+  7a2e5d1 tax: per-region rates
+  c58f3e9 invoice: pdf layout
 --- request
 invoice totals are off for some customers
 
@@ -107,7 +158,7 @@ kind: message
 window: bash · bash · /home/u
 expect: either
 ask_any: date; how long; until
-must: Dana; slip
+must: Dana; slip|slips|slipping|delayed|late
 note: the new date is the owner's to give, but they may not have one: asking or "date to follow" both serve
 --- request
 write to dana that the release slips
@@ -149,6 +200,13 @@ $ make help
 build            build the image
 deploy-staging   deploy to staging
 deploy-prod      deploy to production
+--- repo
+branch: main...origin/main [ahead 1]
+root: /home/u/projects/web
+status: clean
+recent commits:
+  b1e4a07 home: new hero image
+  52fd9c3 Merge pull request #63 from u/fix/footer
 --- request
 deploy it
 
@@ -156,7 +214,7 @@ deploy it
 kind: ops
 window: claude · claude · /home/u/projects/tool
 expect: ask
-ask_any: last commit; last one; all three; all 3; a1b2c3d; d4e5f6a; 789abcd; revert; drop; reset
+ask_any: last commit; last one; all three; all 3; three commits; a1b2c3d; d4e5f6a; 789abcd; revert; drop; reset; keep changes; discard
 note: "that" can be the last commit or all three
 --- screen
 ● Committed a1b2c3d "parse: accept tabs"
@@ -171,7 +229,7 @@ kind: feature
 window: bash · bash · /home/u/projects/web
 expect: either
 ask_any: toggle; system; os; follow; switch; automatic
-must: plan
+must: plan|planning|plans
 note: a product choice the owner makes; asking now or a plan-first prompt that lets them choose both serve
 --- request
 add dark mode
@@ -186,6 +244,13 @@ note: two open PRs of the user's, "my pr" is either
 $ gh pr list --author @me
 #91  feat: export to csv      feat/csv
 #88  fix: session timeout     fix/timeout
+--- repo
+branch: main...origin/main
+root: /home/u/projects/web
+status: clean
+recent commits:
+  0a7d5e2 Merge pull request #85 from u/feat/search
+  d3b81f6 search: debounce input
 --- request
 review my pr
 
@@ -318,8 +383,11 @@ what is 15% of 240
 kind: format
 window: bash · bash · /home/u
 out: format
-expect: write
+expect: either
+ask_any: compose; kubernetes; k8s; deployment
 must: 8080; replicas
+out_is: format
+note: fits Docker Compose and Kubernetes alike: asking which, or a valid file of either, both serve
 --- request
 yaml for service web, port 8080, 3 replicas
 
@@ -328,6 +396,7 @@ kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
 must: app.rs
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: plan only, the agent reads the file itself
 --- request
 plan how to split src/app.rs into smaller modules, just the plan
@@ -364,6 +433,7 @@ kind: investigate
 window: claude · claude · /home/u/projects/platform
 expect: write
 must: subagent|subagents; auth; queue; mailer
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: three independent failures: parallel subagents fit (best practices: parallel, isolated, independent work)
 --- screen
 ● All three services fail on startup after the upgrade:
@@ -417,7 +487,8 @@ use the brainstorming skill to work out how the board should show subagents
 kind: plan
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: plan; before
+must: plan|planning|plans; before
+must_not: autopilot; ralph; ultrawork; ultrathink
 note: a large change: plan and wait for an OK before editing (explore, plan, code)
 --- request
 move the whole config loader from yaml to toml, it touches a lot of files
@@ -426,9 +497,9 @@ move the whole config loader from yaml to toml, it touches a lot of files
 kind: review
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: diff|uncommitted|staged
+must: diff|staged
 must_not: subagent|subagents
-note: review of uncommitted work: read the diff, report, no edits
+note: review of uncommitted work: read the diff, report, no edits; "uncommitted" is the request's word, so it is no must
 --- request
 review my uncommitted changes before i commit, just report problems
 
@@ -466,8 +537,9 @@ kind: research
 window: bash · bash · /home/u/projects/api
 expect: write
 must: node; source|sources|cite|nodejs.org
+out_is: prompt
 holdout: yes
-note: a current fact: web search with sources
+note: a current fact: web search with sources; a hint from memory can name nodejs.org and still be stale, so only a prompt passes
 --- request
 which node version is the current LTS and should our Dockerfile move to it
 
@@ -475,7 +547,7 @@ which node version is the current LTS and should our Dockerfile move to it
 kind: refactor
 window: claude · claude · /home/u/projects/tool
 expect: write
-must: 0.5.0
+must: 0.5.0|v0.5.0
 must_not: subagent|subagents; skill|skills
 holdout: yes
 note: a one-line edit: nothing to delegate
@@ -502,3 +574,130 @@ holdout: yes
 note: the staging host is not in the input; the agent may find it in a deploy config, so asking or a find-it-first prompt both serve
 --- request
 copy the build to the staging server
+
+# Added for the #424 review: a feature with no done-when and no scope.
+
+=== h-feature-done
+kind: feature
+window: claude · claude · /home/u/projects/dashboard
+expect: either
+ask_any: done; trigger|triggers; notify|notified
+must: plan|planning|plans
+out_is: prompt
+holdout: yes
+note: what counts as done is the owner's call: a question about it, or a prompt that plans first, both serve; a question about the channel is what to build, not done
+--- screen
+● The dashboard now shows the weekly totals per team.
+--- request
+add notifications to the dashboard
+
+# Added for the #421 review: a bug whose failure Claude Code can run itself.
+
+=== runnable-failure
+kind: bug
+window: claude · claude · /home/u/projects/engine
+expect: write
+must: cargo test
+must_not: autopilot; ralph; ultrawork; ultrathink
+note: no example on screen, but the failing command is named: Claude Code runs it, nothing to ask
+--- request
+cargo test fails on main since the merge, fix it
+
+# Added for #413: the <repo> block settles what a guess or a question would.
+
+=== last-commit-test
+kind: bug
+window: bash · bash · /home/u/projects/calc
+expect: write
+must: parses_negative; src/parser.rs; leading minus|9f3c2a1
+note: the repo block names the last commit; the screen names the test and its file
+--- screen
+$ cargo test -q
+running 42 tests
+test parser::tests::parses_negative ... FAILED
+thread 'parser::tests::parses_negative' panicked at src/parser.rs:88:9
+test result: FAILED. 41 passed; 1 failed
+--- repo
+branch: feat/negatives
+root: /home/u/projects/calc
+status: clean
+recent commits:
+  9f3c2a1 parser: accept a leading minus
+  41be07d lexer: split signs from numbers
+  c03d9e2 readme: build steps
+paths on screen:
+  exists: src/parser.rs
+--- request
+fix the failing test from my last commit
+
+=== review-my-changes
+kind: review
+window: claude · claude · /home/u/projects/shop
+expect: write
+must: feat/cart-discounts; cart.py
+note: "my changes" are the branch and its changed files, both in the repo block
+--- screen
+● Done. The discount rules are in place and the tests pass.
+--- repo
+branch: feat/cart-discounts...origin/feat/cart-discounts [ahead 2]
+root: /home/u/projects/shop
+status:
+   M shop/cart.py
+   M tests/test_cart.py
+recent commits:
+  e1a77c0 cart: percentage and fixed discounts
+  5b20f19 cart: discount model
+  0aa31de checkout: round totals once
+diff --stat:
+  shop/cart.py       | 38 ++++++++++++++++++++++++++++++--------
+  tests/test_cart.py | 21 +++++++++++++++++++++
+  2 files changed, 51 insertions(+), 8 deletions(-)
+--- request
+review my changes
+
+=== test-the-changed-function
+kind: feature
+window: bash · bash · /home/u/projects/site
+expect: write
+must: slugify
+note: without the repo block "which function" is open; the diff names the one file changed, and Claude Code can read the diff
+--- screen
+$ npm test
+Tests: 18 passed, 18 total
+--- repo
+branch: main...origin/main
+root: /home/u/projects/site
+status:
+   M src/text/slugify.ts
+recent commits:
+  77ad0e4 text: trim titles before the slug
+  2c9b1f3 nav: breadcrumbs
+diff --stat:
+  src/text/slugify.ts | 9 ++++++---
+  1 file changed, 6 insertions(+), 3 deletions(-)
+--- request
+add a test for the function I just changed
+
+=== math-in-a-repo
+kind: hint
+window: bash · bash · /home/u/projects/engine
+expect: write
+must: 351
+must_not: feat/simd-decode; simd
+note: a request unrelated to the repo: the block must not leak into the answer
+--- screen
+$ cargo bench
+decode/1k    time: [41.2 µs 41.5 µs 41.9 µs]
+--- repo
+branch: feat/simd-decode...origin/feat/simd-decode [ahead 3]
+root: /home/u/projects/engine
+status:
+   M src/decode.rs
+recent commits:
+  4c0e9b2 decode: simd lanes for the hot loop
+  8f13a7d bench: 1k and 64k inputs
+diff --stat:
+  src/decode.rs | 52 +++++++++++++++++++++++++++++++++++++-----------
+  1 file changed, 40 insertions(+), 12 deletions(-)
+--- request
+what is 15% of 2340

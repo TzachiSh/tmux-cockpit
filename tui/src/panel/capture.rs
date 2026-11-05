@@ -1,6 +1,14 @@
 //! The target pane as the panel sees it, and what a Claude Code session on it
 //! is doing, read off its own UI text.
+use crate::data::gitsafe::{FILTER_CONFIG, SAFE, filter_flags};
 use crate::data::tmux;
+use std::io::Read;
+use std::os::unix::process::CommandExt;
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Capture {
@@ -9,6 +17,8 @@ pub struct Capture {
     pub path: String,
     /// Raw, not redacted: the envelope redacts it on the way out.
     pub screen: String,
+    /// [`repo_state`] of `path`, raw like the screen; "" outside a repo.
+    pub repo: Repo,
 }
 
 pub fn is_claude(name: &str, cmd: &str) -> bool {
@@ -38,12 +48,364 @@ pub fn capture(pane: &str) -> Option<Capture> {
     while lines.last().is_some_and(|l| l.trim().is_empty()) {
         lines.pop();
     }
+    let screen = lines.join("\n");
+    // An ssh or container window's path is the local client's, not the shell it shows.
+    let local = LOCAL_CMDS.contains(&cmd.as_str()) || crate::data::agentish(&cmd);
+    let repo = if path.is_empty() || !local {
+        Repo::default()
+    } else {
+        Repo::start(&path, &screen, REPO_BUDGET)
+    };
     Some(Capture {
         name,
         cmd,
         path,
-        screen: lines.join("\n"),
+        screen,
+        repo,
     })
+}
+
+/// The whole repo block's time: a slow or huge repo costs the panel this much.
+pub const REPO_BUDGET: Duration = Duration::from_millis(300);
+/// What [`Repo::get`] waits past the budget for the worker's last send.
+const REPO_SLACK: Duration = Duration::from_millis(50);
+const STATUS_CAP: usize = 15;
+const STAT_CAP: usize = 10;
+const PATHS_CAP: usize = 10;
+
+/// The repo block, filled by a thread [`capture`] starts, so the first frame
+/// and the Explain and Fix calls never wait for git. [`Repo::get`] waits for
+/// it, never past the budget and its slack.
+#[derive(Clone, Default)]
+pub struct Repo(Arc<RepoCell>);
+
+#[derive(Default)]
+struct RepoCell {
+    pending: Mutex<Option<(Receiver<String>, Instant)>>,
+    done: OnceLock<String>,
+}
+
+impl Repo {
+    /// A block already known: a test's, or the eval's.
+    pub fn ready(s: impl Into<String>) -> Repo {
+        let c = RepoCell::default();
+        let _ = c.done.set(s.into());
+        Repo(Arc::new(c))
+    }
+
+    /// [`repo_state_within`] on its own thread.
+    pub fn start(dir: &str, screen: &str, budget: Duration) -> Repo {
+        let end = Instant::now() + budget;
+        let (tx, rx) = channel();
+        let (dir, screen) = (dir.to_string(), screen.to_string());
+        std::thread::spawn(move || repo_work(&dir, &screen, end, &|b| drop(tx.send(b))));
+        let c = RepoCell {
+            pending: Mutex::new(Some((rx, end + REPO_SLACK))),
+            done: OnceLock::new(),
+        };
+        Repo(Arc::new(c))
+    }
+
+    /// The block, or the last part of it the worker sent before the deadline.
+    pub fn get(&self) -> &str {
+        self.0.done.get_or_init(|| {
+            let taken = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let Some((rx, end)) = taken else {
+                return String::new();
+            };
+            let mut last = String::new();
+            while let Ok(b) = rx.recv_timeout(end.saturating_duration_since(Instant::now())) {
+                last = b;
+            }
+            last
+        })
+    }
+}
+
+impl From<&str> for Repo {
+    fn from(s: &str) -> Repo {
+        Repo::ready(s)
+    }
+}
+
+impl From<String> for Repo {
+    fn from(s: String) -> Repo {
+        Repo::ready(s)
+    }
+}
+
+impl PartialEq for Repo {
+    fn eq(&self, o: &Repo) -> bool {
+        self.get() == o.get()
+    }
+}
+
+impl std::fmt::Debug for Repo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Repo").field(&self.get()).finish()
+    }
+}
+
+struct Git {
+    child: Child,
+    out: Receiver<Vec<u8>>,
+}
+
+/// Every call's flags past gitsafe's: no colour, whatever the user's or the
+/// repo's config says.
+const PLAIN: [&str; 6] = ["-c", "color.ui=false", "-c", "color.status=false", "-c", "color.diff=false"];
+
+/// gitsafe's flags, no lock taken under the user's own git, no prompt, no
+/// transport; its own process group so a timeout kills what it forked.
+fn spawn_git(dir: &str, extra: &[String], args: &[&str]) -> Option<Git> {
+    let mut c = Command::new("git");
+    c.arg("-C")
+        .arg(dir)
+        .args(SAFE)
+        .args(PLAIN)
+        .args(extra)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .process_group(0);
+    // The panel quitting mid-block takes its git calls with it.
+    #[cfg(target_os = "linux")]
+    {
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: the closure runs between fork and exec and calls only prctl,
+        // getppid and _exit, all async-signal-safe; it allocates nothing.
+        unsafe {
+            c.pre_exec(move || {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong);
+                if libc::getppid() != parent {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut child = c.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let (tx, out) = channel();
+    std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = stdout.read_to_end(&mut b);
+        let _ = tx.send(b);
+    });
+    Some(Git { child, out })
+}
+
+/// A call dropped unfinished, on an early return say, is killed with its group.
+impl Drop for Git {
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            // Not reaped yet, so the pid and its group are still this child's.
+            // SAFETY: killpg takes a plain integer and touches no memory.
+            unsafe { libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL) };
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// How a git call ended.
+enum Ran {
+    Ok(String),
+    Failed,
+    TimedOut,
+}
+
+impl Ran {
+    fn ok(self) -> Option<String> {
+        match self {
+            Ran::Ok(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// Its stdout if it exited 0 by `end`; killed with its group otherwise. A
+/// timeout is logged with `part`, the panel's stderr being tui.log.
+fn finish(g: Option<Git>, end: Instant, part: &str) -> Ran {
+    let Some(mut g) = g else {
+        return Ran::Failed;
+    };
+    let out = g.out.recv_timeout(end.saturating_duration_since(Instant::now())).ok();
+    // stdout closed is not exited: wait out what is left of the budget
+    while let Some(b) = &out {
+        match g.child.try_wait() {
+            Ok(Some(st)) if st.success() => return Ran::Ok(String::from_utf8_lossy(b).into()),
+            Ok(Some(_)) => return Ran::Failed,
+            Ok(None) if Instant::now() < end => std::thread::sleep(Duration::from_millis(1)),
+            _ => break,
+        }
+    }
+    drop(g); // the kill
+    eprintln!("cockpit-tui: repo block: git {part} timed out, left out");
+    Ran::TimedOut
+}
+
+/// `lines` indented under `head`, the first `cap` of them and a count of the rest.
+fn section(b: &mut String, head: &str, lines: &[&str], cap: usize) {
+    b.push_str(head);
+    b.push('\n');
+    for l in lines.iter().take(cap) {
+        b.push_str(&format!("  {l}\n"));
+    }
+    if lines.len() > cap {
+        b.push_str(&format!("  and {} more\n", lines.len() - cap));
+    }
+}
+
+/// The git state of `dir` for the write call's `<repo>` block: branch, the
+/// work tree's root, short status, the last five commits, the diff stat
+/// against HEAD, and which paths on `screen` exist. "" when `dir` is not in a
+/// work tree. Plain git under [`REPO_BUDGET`]; a part that runs out of time is
+/// left out and the rest kept.
+pub fn repo_state(dir: &str, screen: &str) -> String {
+    repo_state_within(dir, screen, REPO_BUDGET)
+}
+
+pub fn repo_state_within(dir: &str, screen: &str, budget: Duration) -> String {
+    Repo::start(dir, screen, budget).get().to_string()
+}
+
+/// The block, sent once git is done and again with the screen's paths: a
+/// stat that hangs (NFS, an automount) costs the paths, not the git part.
+fn repo_work(dir: &str, screen: &str, end: Instant, send: &dyn Fn(String)) {
+    if dir.is_empty() {
+        return;
+    }
+    // Shows the root and that `dir` is in a work tree; it runs no filter.
+    let top = spawn_git(dir, &[], &["rev-parse", "--show-toplevel"]);
+    // `git config` exits 1 when nothing matches, so only a timeout fails here.
+    let cfg = match finish(spawn_git(dir, &[], &FILTER_CONFIG), end, "config") {
+        Ran::Ok(s) => s,
+        Ran::Failed => String::new(),
+        Ran::TimedOut => return,
+    };
+    let Some(mut filters) = filter_flags(&cfg) else {
+        return;
+    };
+    // A diff refreshes the index and writes it back, under the lock, on a
+    // stat-dirty file; a kill in mid-write would leave index.lock behind.
+    let keep = ["core.quotePath=false", "status.relativePaths=false", "diff.autoRefreshIndex=false"];
+    filters.extend(keep.iter().flat_map(|k| ["-c".to_string(), k.to_string()]));
+    let sub = "--ignore-submodules=all"; // a submodule's own filters would run
+    let status = spawn_git(dir, &filters, &["status", "--short", "--branch", sub]);
+    let log = spawn_git(dir, &filters, &["log", "-5", "--oneline", "--no-decorate"]);
+    let diff = spawn_git(dir, &filters, &["diff", "--stat", "--no-ext-diff", "--no-textconv", sub, "HEAD"]);
+    let Some(top) = finish(top, end, "rev-parse").ok() else {
+        return;
+    };
+    let (status, log, diff) = (finish(status, end, "status"), finish(log, end, "log"), finish(diff, end, "diff"));
+    let log = log.ok().filter(|l| !l.trim().is_empty());
+    let sha = log.as_deref().and_then(|l| l.split_whitespace().next());
+    let mut b = String::new();
+    match status {
+        Ran::Ok(status) => {
+            let mut lines = status.lines();
+            let head = lines.next().and_then(|l| l.strip_prefix("## ")).unwrap_or("");
+            let branch = match (head, sha) {
+                ("HEAD (no branch)", Some(sha)) => format!("detached at {sha}"),
+                ("HEAD (no branch)", None) => "detached".into(),
+                (h, _) => match h.strip_prefix("No commits yet on ") {
+                    Some(b) => format!("{b} (no commits yet)"),
+                    None => h.into(),
+                },
+            };
+            b.push_str(&format!("branch: {branch}\nroot: {}\n", top.trim()));
+            let changed: Vec<&str> = lines.collect();
+            if changed.is_empty() {
+                b.push_str("status: clean\n");
+            } else {
+                section(&mut b, "status:", &changed, STATUS_CAP);
+            }
+        }
+        Ran::TimedOut => b.push_str(&format!("branch: unknown\nroot: {}\nstatus: timed out\n", top.trim())),
+        Ran::Failed => return,
+    }
+    if let Some(log) = log {
+        section(&mut b, "recent commits:", &log.lines().collect::<Vec<_>>(), 5);
+    }
+    if let Some(diff) = diff.ok().filter(|d| !d.trim().is_empty()) {
+        let all: Vec<&str> = diff.lines().collect();
+        if let Some((summary, files)) = all.split_last() {
+            section(&mut b, "diff --stat:", files, STAT_CAP);
+            b.push_str(&format!("  {summary}\n"));
+        }
+    }
+    send(b.trim_end().to_string());
+    let paths = screen_paths(screen);
+    let home = std::env::var("HOME").unwrap_or_default();
+    let mut seen: Vec<String> = Vec::new();
+    for t in &paths {
+        if Instant::now() >= end {
+            break;
+        }
+        let bare = t.strip_prefix('@').unwrap_or(t);
+        let p = match bare.strip_prefix("~/") {
+            Some(r) => format!("{home}/{r}"),
+            None if bare.starts_with('/') => bare.to_string(),
+            None => Path::new(dir).join(bare).display().to_string(),
+        };
+        if Path::new(&p).exists() {
+            seen.push(format!("exists: {t}"));
+        } else if ["@/", "~/", "./"].iter().any(|x| t.starts_with(x)) {
+            // a bare `dir/name.ext` that is not there is most likely not a path
+            seen.push(format!("missing: {t}"));
+        }
+    }
+    if !seen.is_empty() {
+        let seen: Vec<&str> = seen.iter().map(String::as_str).collect();
+        section(&mut b, "paths on screen:", &seen, PATHS_CAP);
+        send(b.trim_end().to_string());
+    }
+}
+
+/// `name.ext`, an extension of one to eight letters or digits, not all digits.
+fn has_ext(file: &str) -> bool {
+    file.rsplit_once('.').is_some_and(|(n, e)| {
+        let alnum = e.bytes().all(|c| c.is_ascii_alphanumeric());
+        let number = n.bytes().chain(e.bytes()).all(|c| c.is_ascii_digit());
+        !n.is_empty() && (1..=8).contains(&e.len()) && alnum && !number
+    })
+}
+
+/// Tokens on `screen` that look like files: `@/abs`, `~/x`, `./x`, and any
+/// `dir/name.ext`; quotes, brackets and a `:line:col` tail stripped. A range
+/// (`a..b`), a host (`github.com/x`), a URL and a fraction are not taken. The
+/// first [`PATHS_CAP`] distinct ones, in screen order.
+pub fn screen_paths(screen: &str) -> Vec<String> {
+    let mut got: Vec<String> = Vec::new();
+    for w in screen.split_whitespace() {
+        let mut t = w
+            .trim_start_matches(|c| "\"'`([{<".contains(c))
+            .trim_end_matches(|c| "\"'`)]}>,;.:".contains(c));
+        while let Some((l, r)) = t.rsplit_once(':')
+            && !r.is_empty()
+            && r.bytes().all(|c| c.is_ascii_digit())
+        {
+            t = l;
+        }
+        // `:` is not pathy, so a URL never gets past this
+        let pathy = t.chars().all(|c| c.is_alphanumeric() || "._/-+@~".contains(c)) && !t.contains("..");
+        let prefixed = ["@/", "~/", "./"].iter().any(|p| t.len() > p.len() && t.starts_with(p));
+        // a first segment with a dot is a host: github.com/foo/bar.git
+        let host = t.split_once('/').is_some_and(|(h, _)| h.contains('.') && h != ".");
+        let named = !host && t.rsplit_once('/').is_some_and(|(_, f)| has_ext(f));
+        if pathy && (prefixed || named) && !got.iter().any(|g| g == t) {
+            got.push(t.to_string());
+            if got.len() == PATHS_CAP {
+                break;
+            }
+        }
+    }
+    got
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -164,6 +526,23 @@ fn errored(tail: &[&str]) -> bool {
 
 /// The commands that make a window an ssh session: a remote shell on the far side.
 pub const SSH_LIKE: [&str; 6] = ["ssh", "proot", "coder", "mosh", "mosh-client", "autossh"];
+
+/// The commands that run in the folder tmux reports for them: with the board's
+/// agent names (a Claude renamed to its version, say), the only ones
+/// [`capture`] sends a repo block for (#429). Anything else may be the client
+/// of a shell elsewhere: ssh, `docker exec`, `kubectl exec`, `incus exec`, and
+/// whatever comes next. Such a pane loses the block rather than carry the wrong
+/// machine's. `node` is Claude Code, Codex or Gemini installed from npm.
+/// The limit: tmux names the foreground process, so a shell script that runs
+/// ssh or `docker exec` as a child reads as its interpreter, `bash`, and local.
+// rows by kind: shells, editors, agents. rustfmt would give each its own line.
+#[rustfmt::skip]
+pub const LOCAL_CMDS: [&str; 30] = [
+    "bash", "zsh", "fish", "sh", "dash", "ksh", "mksh", "tcsh", "csh",
+    "nu", "xonsh", "elvish", "pwsh",
+    "nvim", "vim", "vi", "nano", "emacs", "hx", "kak", "micro",
+    "claude", "codex", "gemini", "aider", "opencode", "goose", "crush", "cursor-agent", "node",
+];
 
 /// The window kind the write examples are picked by.
 pub fn window_kind(name: &str, cmd: &str) -> &'static str {

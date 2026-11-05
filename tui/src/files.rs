@@ -1,7 +1,7 @@
 //! `cockpit-tui files <dir>`: the file browser (#363). It lists one folder in the
-//! shared picker, walks the tree and prints one line: `open <path>` or
-//! `copy <path>`. It never mutates; `scripts/tmux-open-path --folder` checks the
-//! line again and acts.
+//! shared picker, walks the tree and prints one line: `view <path>`,
+//! `open <path>` (the editor) or `copy <path>`. It never mutates;
+//! `scripts/tmux-open-path --folder` checks the line again and acts.
 //!
 //! The row's key is the file's own name, as bytes, so the printed path is exact
 //! whatever the name holds; the row's text is for the eye and drops control and
@@ -206,11 +206,24 @@ impl Files {
             self.say("a newline in the name: it cannot be sent on one line");
             return Outcome::Continue;
         }
+        if path.to_string_lossy().chars().any(|c| c.is_control() || pick::is_bidi(c)) {
+            self.say("a control or bidi character in the path: it cannot be sent safely");
+            return Outcome::Continue;
+        }
         Outcome::Choose(answer_line(verb, &path))
     }
 
-    /// ↵ opens a file and enters a folder; ← and ⌫ on an empty filter go up; `.` on
-    /// an empty filter shows or hides dotfiles; everything else is the picker's.
+    /// alt-e: the editor for a file; a folder has nothing to edit.
+    fn edit(&mut self) -> Outcome {
+        match self.selected() {
+            Some((_, false)) => self.leaf("open"),
+            _ => Outcome::Continue,
+        }
+    }
+
+    /// ↵ views a file (alt-e opens it in the editor) and enters a folder; ← and ⌫
+    /// on an empty filter go up; `.` on an empty filter shows or hides dotfiles;
+    /// everything else is the picker's.
     /// A note is cleared by the next key.
     pub fn key(&mut self, k: KeyEvent, area: Rect) -> Outcome {
         self.note = None;
@@ -222,8 +235,9 @@ impl Files {
                     self.go(p, None, area);
                     Outcome::Continue
                 }
-                _ => self.leaf("open"),
+                _ => self.leaf("view"),
             },
+            KeyCode::Char('e') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.edit(),
             KeyCode::Char('c') if walk && k.modifiers.contains(KeyModifiers::ALT) => self.leaf("copy"),
             KeyCode::Left if walk && plain => {
                 self.up(area);
@@ -276,8 +290,9 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
     let left = g.key_left;
     let fitted = chrome::fit(
         vec![
-            h(g.key_enter, "open"),
+            h(g.key_enter, "view"),
             h(left, "up"),
+            h("alt-e", "edit"),
             h(".", if hidden { "dotfiles on" } else { "dotfiles off" }),
             h("alt-i", if ignored { "ignored on" } else { "ignored off" }),
             h("alt-c", "copy"),
@@ -290,7 +305,7 @@ pub fn hints(g: &Glyphs, w: usize, hidden: bool, ignored: bool) -> Vec<(String, 
     if fitted.iter().any(|(k, _)| k == g.key_enter) {
         fitted
     } else {
-        vec![h(g.key_enter, "open"), h("esc", "close")]
+        vec![h(g.key_enter, "view"), h("esc", "close")]
     }
 }
 
@@ -299,7 +314,7 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     let mut rows = pick::help_rows_for(g, true);
     let left = g.key_left;
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == g.key_enter) {
-        r.1 = "open the file (print its path), or go into the folder".into();
+        r.1 = "view the file (print its path), or go into the folder".into();
     }
     let at = rows.iter().position(|(k, _)| k == g.key_enter).map_or(rows.len(), |i| i + 1);
     rows.insert(
@@ -308,6 +323,8 @@ pub fn help(g: &Glyphs) -> Vec<(String, String)> {
     );
     rows.insert(at + 1, (".".into(), "show or hide dotfiles (on an empty filter)".into()));
     rows.insert(at + 2, ("alt-i".into(), "show or hide what .gitignore hides, drawn dim".into()));
+    let edit = "open the file in the editor: print its path, exit";
+    rows.insert(at + 3, ("alt-e".into(), edit.into()));
     if let Some(r) = rows.iter_mut().find(|(k, _)| k == "alt-c") {
         r.1 = "copy: print this row's path, exit".into();
     }
@@ -342,7 +359,7 @@ pub fn draw(f: &mut ratatui::Frame, area: Rect, u: &Files, th: &Theme) {
 
 const USAGE: &str = "cockpit-tui files <dir>";
 
-/// Exit 0 with `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
+/// Exit 0 with `view <path>`, `open <path>` or `copy <path>` on stdout, 1 for esc, 2 for a bad
 /// argument, a folder that cannot be read or no terminal.
 pub fn main(args: &[String]) -> i32 {
     let [dir] = args else {

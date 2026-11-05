@@ -307,3 +307,119 @@ fn an_override_that_cannot_be_read_is_a_warn_note_on_the_busy_view() {
     assert_eq!(a.timeout, Duration::from_secs(77), "the limit comes from the call");
     a.stop();
 }
+
+fn git_init(dir: &Path) {
+    let ok = std::process::Command::new("git")
+        .args(["-c", "init.defaultBranch=main", "init", "-q"])
+        .arg(dir)
+        .status()
+        .unwrap();
+    assert!(ok.success());
+}
+
+#[test]
+fn a_shell_pane_in_a_repo_carries_its_repo_block() {
+    let e = Env::new("capture-repo", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    fake_tmux(&e, "w\\tbash\\t$D/r\\n");
+    let c = capture("%8").unwrap();
+    assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{:?}", c.repo);
+}
+
+#[test]
+fn an_ssh_pane_or_no_path_carries_no_repo_block() {
+    let e = Env::new("capture-ssh", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    // rows: the window line tmux prints
+    for display in ["w\\tssh\\t$D/r\\n", "w\\tmosh-client\\t$D/r\\n", "w\\tbash\\t\\n"] {
+        fake_tmux(&e, display);
+        assert_eq!(capture("%9").unwrap().repo.get(), "", "{display}");
+    }
+}
+
+#[test]
+fn a_hung_git_is_killed_with_what_it_forked_at_the_budget() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-hung", &[("PATH", Some(path))]);
+    // every call hangs: the rev-parse started beside the config read must die too
+    e.exec("git", "[ \"$2\" = $D ] || exit 1; sleep 1000 & echo $! >> $D/kids; wait");
+    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    assert_eq!(got, "");
+    let kids = std::fs::read_to_string(e.dir.join("kids")).unwrap();
+    assert_eq!(kids.lines().count(), 2, "rev-parse and config ran");
+    // gone, or a zombie its new parent has not reaped yet
+    let dead = |k: &str| std::fs::read_to_string(format!("/proc/{k}/stat")).map_or(true, |s| s.contains(") Z "));
+    assert!(until(|| kids.lines().all(dead)), "{kids} lives");
+}
+
+/// A fake git on PATH: `body` runs for `sub`, the other subcommands answer as a
+/// repo on `main` with one commit.
+fn fake_git(e: &Env, sub: &str, body: &str) {
+    e.exec(
+        "git",
+        &format!(
+            "[ \"$2\" = $D ] || exit 1\n\
+             for a; do case $a in config|rev-parse|status|log|diff) s=$a; break ;; esac; done\n\
+             if [ \"$s\" = {sub} ]; then {body}; fi\n\
+             case $s in\nconfig) exit 1 ;;\nrev-parse) echo /r ;;\nstatus) echo '## main' ;;\n\
+             log) echo 'abc1234 first' ;;\nesac"
+        ),
+    );
+}
+
+#[test]
+fn a_status_that_times_out_keeps_the_log() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-status-hung", &[("PATH", Some(path))]);
+    fake_git(&e, "status", "exec sleep 1000");
+    let got = cockpit_tui::panel::capture::repo_state(&e.dir.display().to_string(), "");
+    assert!(got.contains("status: timed out") && got.contains("abc1234 first"), "{got}");
+}
+
+#[test]
+fn capture_returns_before_git_answers() {
+    let path = format!("$D:{}", std::env::var("PATH").unwrap_or_default());
+    let e = Env::new("repo-lazy", &[("PATH", Some(path)), ("COCKPIT_TMUX", None)]);
+    // git waits for a file the test writes only once capture() is back
+    fake_git(&e, "config", "while [ ! -e $D/go ]; do sleep 0.01; done");
+    fake_tmux(&e, "w\\tbash\\t$D\\n");
+    let c = capture("%4").unwrap();
+    std::fs::write(e.dir.join("go"), "").unwrap();
+    assert!(c.repo.get().starts_with("branch: main"), "{:?}", c.repo);
+}
+
+// --- #429: the repo block goes only where the shell runs here ---
+
+#[test]
+fn a_container_or_unknown_command_pane_carries_no_repo_block() {
+    let e = Env::new("capture-container", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    // rows: pane_current_command, a folder that is only the local client's;
+    // toolbox stands for any command not on the list, and "" for none at all
+    for cmd in ["docker", "podman", "kubectl", "lxc", "incus", "nerdctl", "toolbox", ""] {
+        fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
+        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd:?}");
+    }
+}
+
+#[test]
+fn a_local_shell_editor_or_agent_pane_keeps_its_repo_block() {
+    let e = Env::new("capture-local", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    // rows: pane_current_command; 2.1.246 is a live Claude renamed to its version
+    for cmd in ["zsh", "fish", "nvim", "vim", "claude", "codex", "2.1.246", "cursor-agent"] {
+        fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
+        let c = capture("%9").unwrap();
+        assert!(c.repo.get().starts_with("branch: main (no commits yet)"), "{cmd}: {:?}", c.repo);
+    }
+}
+
+#[test]
+fn every_ssh_like_command_carries_no_repo_block() {
+    let e = Env::new("capture-ssh-like", &[("COCKPIT_TMUX", None)]);
+    git_init(&e.dir.join("r"));
+    for cmd in cockpit_tui::panel::capture::SSH_LIKE {
+        fake_tmux(&e, &format!("w\\t{cmd}\\t$D/r\\n"));
+        assert_eq!(capture("%9").unwrap().repo.get(), "", "{cmd}");
+    }
+}

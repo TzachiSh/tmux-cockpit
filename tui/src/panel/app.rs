@@ -39,6 +39,11 @@ pub const RESUME_GUARD_MS: u64 = 800;
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
+/// The one retry a write gets when it asks with no questions left.
+const WRITE_NOW: &str = concat!(
+    "(no questions left: write it now, ",
+    "and state each assumption as an Assumed: line)"
+);
 
 pub const QUICK: [(&str, &str); 4] = [
     ("What is it doing?", "What is happening here right now?"),
@@ -79,6 +84,8 @@ pub enum InputKind {
     Other,
     Explain,
     FollowUp,
+    /// A correction to the result's `Assumed:` line of this index.
+    Correct(usize),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -167,6 +174,14 @@ pub struct Resume {
     pub verb: &'static str,
 }
 
+/// What a call carried when its reply came: the turn in flight, and the rounds
+/// to give back if it is dropped.
+#[derive(Clone, Copy)]
+struct Carried {
+    pending: bool,
+    from: Option<usize>,
+}
+
 /// One request's conversation: the question rounds and, for Explain, the log.
 pub struct Run {
     pub flow: Flow,
@@ -184,7 +199,7 @@ pub struct Run {
     pub why: String,
     /// The last turn and log entry were added for the call in flight.
     pub pending_turn: bool,
-    /// The rounds before a best guess, so a cancelled guess can be undone.
+    /// The rounds before a best guess or a correction, so a cancelled one can be undone.
     pub guessed_from: Option<usize>,
 }
 
@@ -942,8 +957,11 @@ impl App {
             }
         };
         let Some(r) = self.run.as_mut() else { return };
-        r.pending_turn = false;
-        r.guessed_from = None;
+        // what the call carried, for a write that asks with no questions left
+        let carried = Carried {
+            pending: std::mem::take(&mut r.pending_turn),
+            from: r.guessed_from.take(),
+        };
         let (rounds, max) = (r.rounds, r.max);
         let mut cut = None;
         let reply = match &r.flow {
@@ -963,12 +981,7 @@ impl App {
             Reply::Question { text, options } if rounds < max => self.ask(text, options),
             Reply::Question { text, .. } if explain => self.answer(out.trim().into(), format!("(Claude still asks: {text})"), None),
             // a question is not text to paste: no Result, so no insert or send
-            Reply::Question { text, .. } => {
-                self.view = View::Error {
-                    line: format!("no questions left, and Claude still asks: {text}"),
-                    hint: Some("esc goes back: add what it asks to the draft and write again".into()),
-                };
-            }
+            Reply::Question { text, .. } => self.write_now(text, carried),
             Reply::Answer { text, ready } => self.answer(out.trim().into(), text, ready),
             Reply::Prompt(t) => self.result("Prompt for Claude Code", t),
             Reply::Text(t) if matches!(self.run.as_ref().map(|r| &r.flow), Some(Flow::Fix { .. })) => self.result("Fixed text", t),
@@ -1016,6 +1029,34 @@ impl App {
                 };
             }
         }
+    }
+
+    /// A write that asks with no questions left is told once to write with its
+    /// assumptions stated. Asked again, or a fix, the error; esc then drops what
+    /// the call carried.
+    fn write_now(&mut self, text: String, Carried { pending, from }: Carried) {
+        let Some(r) = self.run.as_mut() else { return };
+        (r.pending_turn, r.guessed_from) = (pending, from);
+        let write = matches!(r.flow, Flow::Write { .. });
+        let last = r.turns.last_mut().filter(|t| t.role == Role::User && pending);
+        if !write || last.as_ref().is_some_and(|t| t.text.ends_with(WRITE_NOW)) {
+            self.view = View::Error {
+                line: format!("no questions left, and Claude still asks: {text}"),
+                hint: Some("esc goes back; put what it asks in your request and write again".into()),
+            };
+            return;
+        }
+        eprintln!("cockpit-tui: a write asked with no questions left, retrying once");
+        // into the turn in flight, so a cancel drops the answer with it
+        match last {
+            Some(t) => t.text = format!("{}\n\n{WRITE_NOW}", t.text),
+            None => r.turns.push(Turn {
+                role: Role::User,
+                text: WRITE_NOW.into(),
+            }),
+        }
+        r.pending_turn = true;
+        self.retry();
     }
 
     fn result(&mut self, label: &str, text: String) {
@@ -1182,7 +1223,7 @@ impl App {
         }
     }
 
-    fn input_key(&mut self, k: KeyEvent, ctrl: bool, kind: InputKind, mut text: String, mut cur: usize, back: View) {
+    fn input_key(&mut self, k: KeyEvent, ctrl: bool, mut kind: InputKind, mut text: String, mut cur: usize, back: View) {
         match k.code {
             KeyCode::Esc => {
                 self.note = None;
@@ -1196,6 +1237,7 @@ impl App {
                     return match kind {
                         InputKind::Other => self.pick(t),
                         InputKind::Explain => self.explain(&t, &t, back),
+                        InputKind::Correct(i) => self.correct(i, t, back),
                         InputKind::FollowUp => {
                             if let Some(r) = self.run.as_mut() {
                                 r.log.push((true, t.clone()));
@@ -1207,6 +1249,12 @@ impl App {
                             self.busy(back);
                         }
                     };
+                }
+            }
+            // which assumption the correction is for: the next, round to the first
+            KeyCode::Tab => {
+                if let (InputKind::Correct(i), View::Result { text: t, .. }) = (kind, &back) {
+                    kind = InputKind::Correct((i + 1) % assumed(t).len().max(1));
                 }
             }
             _ => self.cap_note(edit(&mut text, &mut cur, k, ctrl, false)),
@@ -1245,6 +1293,15 @@ impl App {
                 self.view = View::Result { label, text, scroll };
             }
             KeyCode::Char('r') => self.retry_from(View::Result { label, text, scroll }),
+            KeyCode::Char('a') if self.correctable(&text) => {
+                let back = Box::new(View::Result { label, text, scroll });
+                self.view = View::Input {
+                    kind: InputKind::Correct(0),
+                    text: String::new(),
+                    cur: 0,
+                    back,
+                };
+            }
             KeyCode::Char('c') => {
                 (self.draft, self.cur) = (String::new(), 0);
                 let n = put(&mut self.draft, &mut self.cur, &text);
@@ -1255,6 +1312,36 @@ impl App {
             KeyCode::Esc => self.leave(),
             _ => self.view = View::Result { label, text, scroll },
         }
+    }
+
+    /// A written result with `Assumed:` lines: `a` corrects one.
+    pub fn correctable(&self, text: &str) -> bool {
+        let write = self.run.as_ref().is_some_and(|r| matches!(r.flow, Flow::Write { .. }));
+        write && !assumed(text).is_empty()
+    }
+
+    /// One more round with the owner's correction as a turn. It takes a
+    /// question from the budget, but never past it: the owner's own word is
+    /// not refused at zero.
+    fn correct(&mut self, i: usize, fix: String, back: View) {
+        let turn = match &back {
+            View::Result { text, .. } => assumed(text).get(i).map(|line| {
+                let redo = "Write it again with this in place of that assumption. It was:";
+                format!("Correction to \"{line}\": {fix}\n{redo}\n{text}")
+            }),
+            _ => None,
+        };
+        let (Some(turn), Some(r)) = (turn, self.run.as_mut()) else {
+            return self.view = back;
+        };
+        r.turns.push(Turn {
+            role: Role::User,
+            text: turn,
+        });
+        r.guessed_from = Some(r.rounds);
+        r.rounds = (r.rounds + 1).min(r.max);
+        r.pending_turn = true;
+        self.busy(back);
     }
 
     fn retry_from(&mut self, here: View) {
@@ -1391,6 +1478,20 @@ impl App {
             _ => {}
         }
     }
+}
+
+/// The `Assumed: <what> (<why>)` lines the result ends with, trimmed, in order.
+/// Only the closing run: one inside the prompt, a quoted log say, is the prompt's.
+pub fn assumed(text: &str) -> Vec<&str> {
+    let mut all: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .rev()
+        .skip_while(|l| l.is_empty())
+        .take_while(|l| l.starts_with("Assumed:"))
+        .collect();
+    all.reverse();
+    all
 }
 
 /// The shared text-box keys, at the cursor `cur`. `multi` makes Enter a

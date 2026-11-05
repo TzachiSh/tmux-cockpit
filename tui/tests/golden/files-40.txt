@@ -11,4 +11,4 @@
 "                                        "
 "                                        "
 "                                        "
-" ↵ open   ← up   F1 keys   esc close    "
+" ↵ view   ← up   F1 keys   esc close    "

@@ -33,11 +33,13 @@ popup on the pane's current folder (#363). Type to filter; `↵` on a folder goe
 into it, `←` (or `⌫` on an empty filter) goes up, and `.` on an empty filter shows
 or hides dotfiles, `alt-i` shows or hides what `.gitignore`,
 `.ignore` and git's global excludes hide (shown entries are drawn dim; `.git` is
-never listed). The footer names both keys and their state. Folders sort first. `↵` on a file opens it, `alt-c` copies its
+never listed). The footer names both keys and their state. Folders sort first. `↵` on a file shows it in the viewer, `alt-e` opens it in the editor, `alt-c` copies its
 absolute path (a folder's too), `esc` leaves. The header shows the folder, cut on
 the left when it is long, and browsing above the repo root is allowed.
 
-A file opens the way a clicked path does (VS Code, or `@cockpit_editor`), except
+`↵` sends any regular file to `cockpit-tui view` (a popup of its own, drawn in place from the
+browser's popup), on a touch client too; `@cockpit_md_view off` or a missing binary falls back to the editor
+routing below. `alt-e` opens a file the way a clicked path does (VS Code, or `@cockpit_editor`), except
 on a touch client (`@cockpit_is_touch`, see [status-bar.md](status-bar.md)): VS
 Code would open on the PC's screen and show a phone nothing, so the file opens in
 a terminal editor window next to the pane. The editor is `@cockpit_editor`, else
@@ -45,7 +47,7 @@ a terminal editor window next to the pane. The editor is `@cockpit_editor`, else
 file and starts in its folder. With none of them found the status line says so.
 
 The browser prints one line and `tmux-open-path --folder` checks it before acting:
-one line, the verb `open` or `copy`, an absolute path that exists. A file name
+one line, the verb `view`, `open` or `copy`, an absolute path that exists (a regular file for `view`). A file name
 with a newline in it cannot be sent, so the browser says so and prints nothing.
 Names are drawn without control and bidi characters; the printed path is exact.
 
@@ -55,7 +57,10 @@ read-only in `cockpit-tui view`, in a popup the size of the pane, or in the
 picker's own popup when it was chosen there (tmux has one popup per client).
 `e` closes the viewer and opens the file in the editor, at the source line of
 the top row it showed; a clicked `README.md:40` opens the viewer at line 40.
-`set -g @cockpit_md_view off` sends markdown to the editor directly, as before.
+`set -g @cockpit_md_view off` sends markdown to the editor directly, as before, and
+the file browser's `↵` stops viewing too: every file goes to the editor. On a touch client the
+viewer's `e` opens the terminal editor (see above), at the line when the editor takes `+N`
+(vi, vim, nvim, nano, emacs, micro), instead of VS Code on the PC.
 The viewer's keys are in [docs/tui.md](tui.md#the-markdown-viewer-283).
 
 Rows keep their line numbers — a clicked `src/app.ts:31` reads as

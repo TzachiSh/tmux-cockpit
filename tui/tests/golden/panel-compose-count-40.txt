@@ -8,5 +8,5 @@
 "│ word word word word word word word   │"
 "│ word word word word word ▏           │"
 "│                                      │"
-"│ → sonnet · long, multi-step request  │"
+"│ → sonnet · asks and writes better    │"
 "╰ ^S write  F1 keys  esc home ─────────╯"

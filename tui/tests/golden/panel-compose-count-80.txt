@@ -16,5 +16,5 @@
 "│ word word word word word word word word word word word word word word word   │"
 "│ word word word word word word word word word word ▏                          │"
 "│                                                                              │"
-"│ → sonnet · long, multi-step request                                          │"
+"│ → sonnet · asks and writes better                                            │"
 "╰ ^S write  ^F fix spelling  ^T insert as typed  ⇥ type  F1 keys  esc home ────╯"

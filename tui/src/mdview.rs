@@ -1,13 +1,15 @@
 //! The markdown viewer (#283): `cockpit-tui view [--line N] [--] <file>`, what
-//! the path picker opens a lone `.md` in. It renders the file read-only on
+//! the path picker opens a lone `.md` in. Any other file is numbered code
+//! through `highlight` (#365, [`code`]). It renders the file read-only on
 //! /dev/tty and prints `edit <line>` when `e` hands it to the editor. Nothing in
 //! the file is run or followed; a file that is too big, binary or not UTF-8 is
 //! a note, never a hang.
+pub mod code;
 pub mod render;
 
 use crate::chrome;
 use crate::pick::{clean, open_screen, restore_tty, screen};
-use crate::theme::Theme;
+use crate::theme::{Glyphs, Theme};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -55,6 +57,61 @@ pub fn load(path: &std::path::Path, cap: u64) -> Result<String, String> {
     }
     let s = String::from_utf8(b).map_err(|_| "not UTF-8 text".to_string())?;
     Ok(s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s))
+}
+
+/// The launcher's word, `COCKPIT_VIEW_ASK`: exactly `1` turns the ask on. A
+/// launcher that reads only `edit` would lose the screen to an `ask` line.
+pub fn can_ask(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
+/// What the viewer draws a file as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Markdown,
+    /// whole, numbered, through `highlight`; `None` is plain text
+    Code(Option<crate::highlight::Lang>),
+}
+
+/// The name's extension decides: markdown's four, else a language the lexer
+/// knows. With no extension it knows, the first line's `#!` names the
+/// interpreter (`env` and its flags skipped, a version cut off). Anything else
+/// is plain text, numbered: never markdown.
+pub fn mode(name: &str, text: &str) -> Mode {
+    // tmux-open-path's `*.md` glob: a name ending in it, a bare `.md` included,
+    // which has no extension to `Path`
+    let low = name.to_ascii_lowercase();
+    if [".md", ".markdown", ".mdown", ".mkd"].iter().any(|e| low.ends_with(e)) {
+        return Mode::Markdown;
+    }
+    let ext = std::path::Path::new(&low).extension().map(|e| e.to_string_lossy().into_owned());
+    Mode::Code(ext.as_deref().and_then(crate::highlight::lang).or_else(|| shebang(text)))
+}
+
+fn shebang(text: &str) -> Option<crate::highlight::Lang> {
+    let first = text.lines().next()?.strip_prefix("#!")?;
+    let mut words = first.split_whitespace();
+    let mut prog = words.next()?.rsplit('/').next()?;
+    if prog == "env" {
+        // env's flags, the argument `-u` and `-C` take, and `NAME=value` words
+        prog = loop {
+            let w = words.next()?;
+            match w {
+                "-u" | "-C" | "--unset" | "--chdir" => {
+                    words.next();
+                }
+                _ if w.starts_with('-') || w.contains('=') => {}
+                _ => break w,
+            }
+        };
+    }
+    let prog = prog.trim_end_matches(|c: char| c.is_ascii_digit() || c == '.');
+    let tag = match prog {
+        "node" | "nodejs" | "deno" | "bun" | "ts-node" | "tsx" => "js",
+        "dash" | "ash" | "mksh" => "sh",
+        p => p,
+    };
+    crate::highlight::lang(tag)
 }
 
 /// A search match: a row and a byte range of its text.
@@ -114,11 +171,24 @@ pub enum Out {
     Close,
     /// `e`: the editor, at this source line
     Edit(usize),
+    /// `?` (#365): ask about source lines `.0` to `.1`, `.0 <= .1`
+    Ask(usize, usize),
+}
+
+/// A line selection (#365), in source lines: `anchor` stays, `cursor` moves.
+/// `live` while the keys or a drag still move the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sel {
+    pub anchor: usize,
+    pub cursor: usize,
+    pub live: bool,
 }
 
 pub struct Screen {
     /// the file's name as the title shows it, made safe to draw
     pub name: String,
+    /// markdown, or code (#365)
+    pub mode: Mode,
     pub doc: Result<String, String>,
     pub opts: Opts,
     rows: Vec<Row>,
@@ -137,12 +207,21 @@ pub struct Screen {
     pub note: Option<String>,
     /// the source line to open at, until the first layout finds its row
     want: Option<usize>,
+    /// the line selection, if any (#365)
+    pub sel: Option<Sel>,
+    /// the press that ends a selection (a second tap, or a drag) is down: its
+    /// release ends the selection
+    ending: bool,
+    /// the launcher routes `ask <a> <b>` (`COCKPIT_VIEW_ASK=1`); without it `?`
+    /// says so and stays, rather than close on a line nothing reads
+    pub can_ask: bool,
 }
 
 impl Screen {
     pub fn new(name: &str, doc: Result<String, String>, opts: Opts) -> Self {
         Screen {
             name: clean(name),
+            mode: Mode::Markdown,
             doc,
             opts,
             rows: vec![],
@@ -156,13 +235,135 @@ impl Screen {
             cur: None,
             note: None,
             want: None,
+            sel: None,
+            ending: false,
+            can_ask: false,
         }
+    }
+
+    /// Draws the file as `m`.
+    pub fn with_mode(mut self, m: Mode) -> Self {
+        self.mode = m;
+        self
     }
 
     /// Opens at the first row of the block holding source line `n`.
     pub fn at_line(mut self, n: usize) -> Self {
         self.want = Some(n);
         self
+    }
+
+    /// The selection's source lines, low to high.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.sel.map(|s| (s.anchor.min(s.cursor), s.anchor.max(s.cursor)))
+    }
+
+    /// The lines an ask covers: the selection, or the start line alone, out to the
+    /// end of the last block it touches (a markdown row carries its block's first
+    /// line), blank lines off its end.
+    pub fn ask_range(&self) -> (usize, usize) {
+        let (a, b) = self.selection().unwrap_or_else(|| {
+            let l = self.start_line();
+            (l, l)
+        });
+        let src: Vec<&str> = match &self.doc {
+            Ok(t) => t.lines().collect(),
+            Err(_) => vec![],
+        };
+        let next = self.rows.iter().find(|r| r.line > b).map(|r| r.line - 1);
+        let mut end = next.unwrap_or(src.len()).max(b);
+        while end > b && src.get(end - 1).is_some_and(|l| l.trim().is_empty()) {
+            end -= 1;
+        }
+        (a, end)
+    }
+
+    /// Where `v` and a bare `?` start: the top row's line. A click starts its own
+    /// selection, so no clicked line outlives it (review-438).
+    fn start_line(&self) -> usize {
+        self.line()
+    }
+
+    /// The source lines the rows carry, each once, in order.
+    fn row_lines(&self) -> Vec<usize> {
+        let mut v: Vec<usize> = self.rows.iter().map(|r| r.line).collect();
+        v.dedup();
+        v
+    }
+
+    /// The row line `n` steps from line `from` (negative is up), held to the file.
+    fn step(&self, from: usize, n: isize) -> usize {
+        let ls = self.row_lines();
+        if ls.is_empty() {
+            return from;
+        }
+        let i = ls.iter().rposition(|&l| l <= from).unwrap_or(0) as isize;
+        ls[(i + n).clamp(0, ls.len() as isize - 1) as usize]
+    }
+
+    /// Moves the selection's end to `l`, keeping its first row on screen.
+    fn reach(&mut self, l: usize, room: usize) {
+        let Some(s) = &mut self.sel else { return };
+        s.cursor = l;
+        let r = self.rows.iter().position(|r| r.line == l).unwrap_or(0);
+        if r < self.top {
+            self.top = r;
+        } else if r >= self.top + room.max(1) {
+            self.top = r + 1 - room.max(1);
+        }
+        self.top = self.top.min(self.bottom(room));
+    }
+
+    /// A key that moves a live selection's end, as it would scroll the view.
+    fn extend(&mut self, c: KeyCode, room: usize) -> bool {
+        let Some(cur) = self.sel.filter(|s| s.live).map(|s| s.cursor) else {
+            return false;
+        };
+        let page = room.saturating_sub(1).max(1) as isize;
+        let to = match c {
+            KeyCode::Up | KeyCode::Char('k') => self.step(cur, -1),
+            KeyCode::Down | KeyCode::Char('j') => self.step(cur, 1),
+            KeyCode::PageUp => self.step(cur, -page),
+            KeyCode::PageDown | KeyCode::Char(' ') => self.step(cur, page),
+            KeyCode::Char('g') | KeyCode::Home => self.step(0, 0),
+            KeyCode::Char('G') | KeyCode::End => self.step(usize::MAX, 0),
+            KeyCode::Char('n' | 'N') => {
+                self.next(c == KeyCode::Char('N'), room);
+                match self.cur {
+                    Some(i) => self.rows[self.hits[i].row].line,
+                    None => return true,
+                }
+            }
+            _ => return false,
+        };
+        self.reach(to, room);
+        true
+    }
+
+    /// `v`: start a selection at the start line, end the live one, or take an ended
+    /// one up again.
+    fn toggle(&mut self) {
+        self.sel = match self.sel {
+            None => {
+                let l = self.start_line();
+                Some(Sel {
+                    anchor: l,
+                    cursor: l,
+                    live: true,
+                })
+            }
+            Some(s) => Some(Sel { live: !s.live, ..s }),
+        };
+    }
+
+    /// The source line of the body row at screen row `y`, if one is there.
+    fn line_at(&self, y: u16, area: Rect) -> Option<usize> {
+        let first = area.y + 1;
+        let k = usize::from(y.checked_sub(first)?);
+        if k >= body_rows(area) {
+            return None;
+        }
+        self.rows.get(self.top + k).map(|r| r.line)
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -176,10 +377,15 @@ impl Screen {
             return;
         }
         let keep = self.want.take().or_else(|| self.rows.get(self.top).map(|r| r.line));
-        self.rows = match &self.doc {
-            Ok(s) => render::render(s, w, self.opts),
-            Err(_) => vec![],
+        // the old rows go before the new are built, or a resize holds both
+        self.rows = Vec::new();
+        self.texts = Vec::new();
+        self.rows = match (&self.doc, self.mode) {
+            (Ok(s), Mode::Markdown) => render::render(s, w, self.opts),
+            (Ok(s), Mode::Code(lang)) => code::render(s, lang, w),
+            (Err(_), _) => vec![],
         };
+        // a code row's line number is drawn at the frame, never in its text
         self.texts = self.rows.iter().map(Row::text).collect();
         self.width = w;
         if let Some(l) = keep {
@@ -281,7 +487,7 @@ impl Screen {
         let room = body_rows(area);
         if let Some(t) = self.help {
             let rows = (area.height as usize).saturating_sub(2);
-            self.help = chrome::scroll(k.code, t, help_rows(self.opts.ascii).len().saturating_sub(rows), rows);
+            self.help = chrome::scroll(k.code, t, help_for(self.opts.ascii, self.mode).len().saturating_sub(rows), rows);
             return Out::Stay;
         }
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
@@ -294,21 +500,40 @@ impl Screen {
             return Out::Stay;
         }
         let small = area.width < MIN_W || area.height < MIN_H;
+        if !small && self.extend(k.code, room) {
+            return Out::Stay;
+        }
         match k.code {
             KeyCode::Char('q') => return Out::Close,
+            // esc takes one layer at a time: the selection, then the matches, then the viewer
+            KeyCode::Esc if !small && self.sel.is_some() => self.sel = None,
             KeyCode::Esc if !small && !self.query.is_empty() => {
                 self.query.clear();
                 self.refind();
                 self.cur = None;
             }
             KeyCode::Esc => return Out::Close,
-            KeyCode::Char('e') => return Out::Edit(self.line()),
+            KeyCode::Char('e') => return Out::Edit(self.sel.map_or_else(|| self.line(), |s| s.cursor)),
             _ if small => {}
-            KeyCode::Char('?') | KeyCode::F(1) => self.help = Some(0),
+            // `?` asks (#365); the help is on F1 and h
+            KeyCode::Char('?') if !self.can_ask => {
+                self.note = Some("? needs a launcher that routes ask; h shows the keys".into());
+            }
+            // an empty file, or one the viewer refused, has no line to ask about
+            KeyCode::Char('?' | 'v') if self.rows.is_empty() => {
+                self.note = Some("nothing here to select or ask about".into());
+            }
+            KeyCode::Char('?') => {
+                let (a, b) = self.ask_range();
+                return Out::Ask(a, b);
+            }
+            KeyCode::Char('h') | KeyCode::F(1) => self.help = Some(0),
+            KeyCode::Char('v') => self.toggle(),
             KeyCode::Char('/') => self.field = Some((String::new(), self.top)),
             KeyCode::Char('n') => self.next(false, room),
             KeyCode::Char('N') => self.next(true, room),
-            KeyCode::Char('u') => {
+            // a code file has no links to show: `u` neither toggles nor lays out
+            KeyCode::Char('u') if self.mode == Mode::Markdown => {
                 self.opts.urls = !self.opts.urls;
                 self.width = 0;
                 self.layout(body_width(area));
@@ -327,14 +552,84 @@ impl Screen {
         }
     }
 
-    /// The wheel scrolls; a click does nothing.
-    pub fn mouse(&mut self, m: MouseEvent, area: Rect) {
+    /// The wheel scrolls. On a row, a click drops a selection's anchor and a
+    /// second ends it (two taps, the phone's way), a drag moves its end, and a
+    /// shift-click extends it. On the footer, a hint is its key.
+    pub fn mouse(&mut self, m: MouseEvent, area: Rect) -> Out {
+        // only what is drawn takes a tap: not the rows under the floor card or
+        // the help, nor footer chips they hide
+        if self.help.is_some() || area.width < MIN_W || area.height < MIN_H {
+            return Out::Stay;
+        }
         let room = body_rows(area);
+        let left = MouseEventKind::Down(crossterm::event::MouseButton::Left);
         match m.kind {
             MouseEventKind::ScrollUp => self.top = self.top.saturating_sub(WHEEL),
             MouseEventKind::ScrollDown => self.top = (self.top + WHEEL).min(self.bottom(room)),
+            k if k == left && m.row + 1 == area.y + area.height => return self.tap_footer(m.column, area),
+            k if k == left => {
+                let Some(l) = self.line_at(m.row, area) else { return Out::Stay };
+                self.ending = false;
+                self.sel = Some(match self.sel {
+                    Some(s) if m.modifiers.contains(KeyModifiers::SHIFT) => Sel {
+                        cursor: l,
+                        live: false,
+                        ..s
+                    },
+                    // the second press: a drag from here still moves the end, and
+                    // the release ends the selection
+                    Some(s) if s.live => {
+                        self.ending = true;
+                        Sel { cursor: l, ..s }
+                    }
+                    _ => Sel {
+                        anchor: l,
+                        cursor: l,
+                        live: true,
+                    },
+                });
+            }
+            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                if let (Some(l), Some(s)) = (self.line_at(m.row, area), self.sel.as_mut())
+                    && s.live
+                {
+                    s.cursor = l;
+                    self.ending = true;
+                }
+            }
+            MouseEventKind::Up(crossterm::event::MouseButton::Left) if self.ending => {
+                self.ending = false;
+                if let Some(s) = &mut self.sel {
+                    s.live = false;
+                }
+            }
             _ => {}
         }
+        Out::Stay
+    }
+
+    /// A tap on the footer: the hint under it, pressed. Laid out as
+    /// `chrome::footer` lays it out: a space, then each hint 3 apart.
+    fn tap_footer(&mut self, x: u16, area: Rect) -> Out {
+        if self.field.is_some() || self.note.is_some() {
+            return Out::Stay;
+        }
+        let g = if self.opts.ascii { Glyphs::ascii() } else { Glyphs::unicode() };
+        let shown = chrome::fit(hints(self, &g), area.width as usize, 3);
+        let mut at = 1;
+        for (k, v) in shown {
+            let w = render::cols(&k) + 1 + render::cols(&v) + 1;
+            if (at..at + w).contains(&usize::from(x)) {
+                let code = match k.as_str() {
+                    "esc" => KeyCode::Esc,
+                    k if k.chars().count() == 1 => KeyCode::Char(k.chars().next().unwrap_or(' ')),
+                    _ => return Out::Stay,
+                };
+                return self.key(KeyEvent::new(code, KeyModifiers::NONE), area);
+            }
+            at += w + 2;
+        }
+        Out::Stay
     }
 }
 
@@ -346,6 +641,15 @@ pub fn body_rows(area: Rect) -> usize {
 /// The body's columns: the frame and a column of padding each side.
 pub fn body_width(area: Rect) -> usize {
     (area.width as usize).saturating_sub(4)
+}
+
+/// The help for `m`: markdown's, less `u`'s row for code, which has no links.
+pub fn help_for(ascii: bool, m: Mode) -> Vec<(String, String)> {
+    let mut rows = help_rows(ascii);
+    if let Mode::Code(_) = m {
+        rows.retain(|(k, _)| k != "u");
+    }
+    rows
 }
 
 pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
@@ -360,11 +664,16 @@ pub fn help_rows(ascii: bool) -> Vec<(String, String)> {
         kv("", "find"),
         kv("/", "find; a capital makes case count"),
         kv("n N", "the next, the previous match"),
-        kv("esc", "clear the matches"),
+        kv("", "select and ask"),
+        kv("v", "select lines; v again ends it"),
+        kv(&format!("{ud} n N"), "while selecting: move its end"),
+        kv("tap tap", "tap a line, tap another; or drag"),
+        kv("?", "ask about the selection or top line"),
+        kv("esc", "clear the selection, then the matches"),
         kv("", "the file"),
-        kv("e", "close, and edit it at the top line"),
+        kv("e", "close; edit at the top or selected line"),
         kv("u", "show or hide link addresses"),
-        kv("?", "this help"),
+        kv("h F1", "this help"),
         kv("q esc ^C", "close"),
     ]
 }
@@ -425,15 +734,39 @@ fn line(th: &Theme, row: &Row, hits: &[(usize, usize, bool)]) -> Line<'static> {
     Line::from(out)
 }
 
-fn hints(s: &Screen, th: &Theme) -> Vec<(String, String)> {
+/// The footer's hints. A selection shows its lines, as `?` would ask about
+/// them, and says what `v` does next.
+fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
     let kv = |k: &str, v: &str| (k.to_string(), v.to_string());
-    let mut h = vec![kv("/", "find")];
-    if !s.hits.is_empty() {
-        h.push(kv("n N", "next"));
+    let mut h = vec![];
+    match s.sel {
+        Some(sel) => {
+            let (a, b) = s.ask_range();
+            let n = b - a + 1;
+            // `?` and the help outrank the range: a narrow footer drops the range first
+            if s.can_ask {
+                h.push(kv("?", "ask"));
+            }
+            h.push(kv("h", "keys"));
+            h.push((format!("{a}-{b}"), format!("{} {n} line{}", g.dot, if n == 1 { "" } else { "s" })));
+            h.push(kv("v", if sel.live { "end" } else { "extend" }));
+            h.push(kv("esc", "clear"));
+            h.push(kv("e", "edit"));
+        }
+        None => {
+            h.push(kv("/", "find"));
+            if !s.hits.is_empty() {
+                h.push(kv("n N", "next"));
+            }
+            h.push(kv("v", "select"));
+            if s.can_ask {
+                h.push(kv("?", "ask"));
+            }
+            h.push(kv("h", "keys"));
+            h.push(kv("e", "edit"));
+            h.push(kv(g.key_updown, "scroll"));
+        }
     }
-    h.push(kv("e", "edit"));
-    h.push(kv(th.g.key_updown, "scroll"));
-    h.push(kv("?", "keys"));
     h.push(kv("q", "close"));
     h
 }
@@ -462,7 +795,7 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
         return;
     }
     if let Some(top) = s.help {
-        chrome::help(f, area, th, &help_rows(th.g.ascii), top);
+        chrome::help(f, area, th, &help_for(th.g.ascii, s.mode), top);
         return;
     }
     s.layout(body_width(area));
@@ -508,16 +841,40 @@ pub fn render(f: &mut Frame, area: Rect, th: &Theme, s: &mut Screen) {
                     .enumerate()
                     .map(|(i, h)| (h.from, h.to, s.cur == Some(from + i)))
                     .collect();
-                line(th, &s.rows[r], &hs)
+                let mut l = line(th, &s.rows[r], &hs);
+                if let Some(g) = code::gutter(&s.rows, r) {
+                    l.spans.insert(0, Span::styled(g, ink_style(th, Ink::of(Kind::Meta))));
+                }
+                l
             })
             .collect(),
     };
     f.render_widget(Paragraph::new(lines), inner);
+    // the selected rows: a bar in the padding column, and the sel band where there is colour
+    if let (Ok(_), Some((a, b))) = (&s.doc, s.sel.map(|_| s.ask_range())) {
+        let live = s.sel.filter(|x| x.live).map(|x| x.cursor);
+        for (k, r) in (s.top..last).enumerate() {
+            let l = s.rows[r].line;
+            if l < a || l > b {
+                continue;
+            }
+            let y = inner.y + k as u16;
+            let mut st = Style::new().fg(th.accent);
+            if live == Some(l) {
+                st = st.add_modifier(Modifier::BOLD);
+            }
+            f.render_widget(Span::styled(th.g.active, st), Rect::new(inner.x - 1, y, 1, 1));
+            if th.sel != Color::Reset {
+                f.buffer_mut()
+                    .set_style(Rect::new(inner.x, y, inner.width, 1), Style::new().bg(th.sel));
+            }
+        }
+    }
     let w = area.width as usize;
     let foot_line = match (&s.field, &s.note) {
         (Some((text, _)), _) => field_line(th, s, text, w),
         (None, Some(n)) => Line::styled(format!(" {}", th.g.trunc(n, w.saturating_sub(2))), Style::new().fg(th.needs)),
-        _ => chrome::footer(th, hints(s, th), w, 3),
+        _ => chrome::footer(th, hints(s, &th.g), w, 3),
     };
     f.render_widget(Paragraph::new(foot_line), foot);
 }
@@ -559,7 +916,10 @@ pub fn main(args: &[String]) -> i32 {
         urls: true,
         colour: th.accent != Color::Reset,
     };
-    let mut s = Screen::new(&name, load(path, MAX_FILE), opts);
+    let doc = load(path, MAX_FILE);
+    let m = mode(&name, doc.as_deref().unwrap_or(""));
+    let mut s = Screen::new(&name, doc, opts).with_mode(m);
+    s.can_ask = can_ask(std::env::var("COCKPIT_VIEW_ASK").ok().as_deref());
     if let Some(n) = line {
         s = s.at_line(n);
     }
@@ -576,7 +936,10 @@ pub fn main(args: &[String]) -> i32 {
                 Out::Stay => {}
                 o => break o,
             },
-            Ok(Event::Mouse(m)) => s.mouse(m, screen(&term)),
+            Ok(Event::Mouse(m)) => match s.mouse(m, screen(&term)) {
+                Out::Stay => {}
+                o => break o,
+            },
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break Out::Close,
@@ -584,8 +947,10 @@ pub fn main(args: &[String]) -> i32 {
     };
     drop(term);
     restore_tty();
-    if let Out::Edit(n) = out {
-        println!("edit {n}");
+    match out {
+        Out::Edit(n) => println!("edit {n}"),
+        Out::Ask(a, b) => println!("ask {a} {b}"),
+        _ => {}
     }
     0
 }
