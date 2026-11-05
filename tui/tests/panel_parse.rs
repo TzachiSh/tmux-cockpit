@@ -1,6 +1,6 @@
 //! Reply parsing: one literal reply per behaviour, pure functions only.
 use cockpit_tui::panel::envelope::OutType;
-use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, fix, write};
+use cockpit_tui::panel::parse::{Opt, Parsed, Reply, Step, cut_off, explain, files_read, fix, write};
 
 fn opt(label: &str, recommended: bool) -> Opt {
     Opt {
@@ -306,4 +306,69 @@ fn explain_splits_the_prompt_for_the_agent_out() {
             ready: None
         }
     );
+}
+
+// ---------------------------------------------------------------- files read (#416)
+
+/// One assistant turn with these tool calls, `(id, name, path)`.
+fn uses(calls: &[(&str, &str, &str)]) -> String {
+    let c: Vec<String> = calls
+        .iter()
+        .map(|(id, name, p)| format!(r#"{{"type":"tool_use","id":"{id}","name":"{name}","input":{{"file_path":"{p}","pattern":"x"}}}}"#))
+        .collect();
+    format!(r#"{{"type":"assistant","message":{{"content":[{}]}}}}"#, c.join(","))
+}
+
+/// The tool results for these ids, `(id, is_error)`.
+fn results(rs: &[(&str, bool)]) -> String {
+    let c: Vec<String> = rs
+        .iter()
+        .map(|(id, e)| format!(r#"{{"type":"tool_result","tool_use_id":"{id}","is_error":{e},"content":"…"}}"#))
+        .collect();
+    format!(r#"{{"type":"user","message":{{"content":[{}]}}}}"#, c.join(","))
+}
+
+const RESULT: &str = r#"{"type":"result","subtype":"success","result":"<prompt>p</prompt>"}"#;
+
+#[test]
+fn files_read_lists_each_read_once_in_order() {
+    let out = format!(
+        "[{},{},{},{},{RESULT}]",
+        uses(&[("a", "Read", "/r/b.rs"), ("b", "Grep", "/r")]),
+        results(&[("a", false), ("b", false)]),
+        uses(&[("c", "Read", "/r/a.rs"), ("d", "Read", "/r/b.rs"), ("e", "Glob", "/r")]),
+        results(&[("c", false), ("d", false), ("e", false)]),
+    );
+    assert_eq!(files_read(&out), Some(vec!["/r/b.rs".to_string(), "/r/a.rs".to_string()]));
+}
+
+#[test]
+fn files_read_leaves_out_a_refused_read() {
+    let out = format!(
+        "[{},{},{RESULT}]",
+        uses(&[("a", "Read", "/r/.env"), ("b", "Read", "/r/main.rs")]),
+        results(&[("a", true), ("b", false)])
+    );
+    assert_eq!(files_read(&out), Some(vec!["/r/main.rs".to_string()]));
+}
+
+#[test]
+fn files_read_of_a_call_that_read_nothing_is_empty() {
+    assert_eq!(files_read(&format!("[{RESULT}]")), Some(vec![]));
+    assert_eq!(files_read("[]"), Some(vec![]));
+}
+
+#[test]
+fn files_read_is_none_for_output_that_is_not_the_verbose_json() {
+    for out in ["", "<prompt>p</prompt>", RESULT, "{", "[1, \"x\"", "null"] {
+        assert_eq!(files_read(out), None, "{out:?}");
+    }
+}
+
+#[test]
+fn files_read_skips_malformed_entries() {
+    let bad = r#"[{"type":"assistant","message":{"content":"text"}},
+        {"type":"assistant","message":{"content":[{"type":"tool_use","id":"a","name":"Read","input":{"file_path":7}}]}},
+        {"type":"assistant"}, 3]"#;
+    assert_eq!(files_read(bad), Some(vec![]));
 }
