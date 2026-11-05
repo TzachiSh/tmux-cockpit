@@ -121,8 +121,10 @@ fn stub_of(pid: i32, dir: &std::path::Path) -> bool {
     let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
         return false;
     };
-    let dir = dir.as_os_str().as_encoded_bytes();
-    !dir.is_empty() && cmd.windows(dir.len()).any(|w| w == dir)
+    // "<dir>/": a bare prefix would also match another run's dir whose pid has more digits
+    let mut dir = dir.as_os_str().as_encoded_bytes().to_vec();
+    dir.push(b'/');
+    dir.len() > 1 && cmd.windows(dir.len()).any(|w| w == dir.as_slice())
 }
 
 impl Drop for Rig {
