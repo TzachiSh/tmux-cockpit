@@ -1788,6 +1788,10 @@ mod tests {
         let spent = call_output(Err(Fail::Budget { limit_usd: 0.15 }), Some(events));
         assert_eq!(spent.as_deref(), Ok(events), "a stop keeps its events");
         assert_eq!(call_output(Ok("text".into()), None).as_deref(), Ok("text"));
+        // claude's API error says success in its subtype: is_error decides
+        let api = r#"[{"type":"result","subtype":"success","is_error":true,"result":"API Error: 400 bad request"}]"#;
+        let out = call_output(Err(Fail::Failed("API Error: 400 bad request".into())), Some(api)).unwrap();
+        assert_eq!(unwrap_json(&out).unwrap_err(), "API Error: 400 bad request");
         assert_eq!(call_output(Err(Fail::Timeout), None), Err("took too long".into()));
     }
 

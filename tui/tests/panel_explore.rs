@@ -539,3 +539,28 @@ fn many_reads_list_three_names_and_count_the_rest() {
     let a = answered(&call, &repo, true);
     assert_eq!(note(&a).map(|n| n.1), Some("read 5 files: a.rs, b.rs, c.rs and 2 more"));
 }
+
+/// claude's API error: `subtype` success, `is_error` true. An Error in claude's
+/// words whatever the exit, and no reads note for a call that read nothing.
+#[test]
+fn an_api_error_marked_success_is_an_error_with_no_reads_note() {
+    let api = r#"[{"type":"result","subtype":"success","is_error":true,"result":"API Error: 400 bad request"}]"#;
+    for code in [1, 0] {
+        let (_g, call, repo) = faked(&format!("api{code}"), api, code);
+        let a = answered(&call, &repo, true);
+        let (line, _) = error(&a);
+        assert!(line.contains("API Error: 400 bad request"), "exit {code}: {line}");
+        assert_eq!(note(&a), None, "exit {code}");
+    }
+}
+
+/// The same error after a read: the read was paid for, so the Error says so.
+#[test]
+fn an_api_error_after_a_read_still_notes_it() {
+    let api = r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 500 overloaded"}"#;
+    let out = format!("[{},{},{api}]", read("a", "$R/src/a.rs"), result("a", false));
+    let (_g, call, repo) = faked("api-read", &out, 1);
+    let a = answered(&call, &repo, true);
+    assert!(error(&a).0.contains("API Error: 500"), "{:?}", a.view);
+    assert_eq!(note(&a).map(|n| n.1), Some("read 1 file: src/a.rs"));
+}

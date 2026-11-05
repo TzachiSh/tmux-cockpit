@@ -983,8 +983,10 @@ impl App {
         let Some(a) = self.req.as_mut().and_then(Request::poll) else {
             return false;
         };
-        // read before reply(), which drops the Request; Some only for a json call
+        // read before reply(), which drops the Request; Some only for a json call.
+        // A failed call that read nothing has nothing to add to its error
         let read = self.req.as_ref().and_then(Request::raw).and_then(parse::files_read);
+        let read = read.filter(|r| a.is_ok() || !r.is_empty());
         self.reply(a);
         self.note_reads(read);
         true

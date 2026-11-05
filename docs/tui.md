@@ -872,7 +872,9 @@ folder, then writing`, and tablet mode has an `[ explore ]` button.
   `read 2 files: src/a.rs, lib/b.rs`, paths under the folder shown relative to
   it, three named and the rest counted; `read no files` when it read none. The
   count is `parse::files_read` over `Request::raw()`, the call's json events, so
-  a refused read is left out and a budget stop still says what it read. After a
+  a refused read is left out and a budget stop still says what it read; a failed
+  call that read nothing adds nothing to its error. claude's API error, marked
+  `is_error` under a `success` subtype, is an error in claude's words. After a
   warning on that view (a reply cut off) the note is added to it, never in its
   place. A text call has no events and gets no note.
 - **Accepted risks** (#416):
