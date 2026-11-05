@@ -3,6 +3,7 @@
 use cockpit_tui::panel::app::App;
 use cockpit_tui::panel::capture::Capture;
 use cockpit_tui::panel::envelope::{Flow, OutType};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -54,14 +55,45 @@ fn root_of(pane: &Path) -> Option<String> {
     Some(argv[i + 1].clone())
 }
 
-/// `vars` set while `f` runs, then removed, under the lock.
+/// A panicking test inside `with_env` leaves no var behind for the next one.
+#[test]
+fn a_panic_inside_with_env_still_restores_the_vars() {
+    let g = scratch("panic");
+    let before = {
+        let _l = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::var_os("GIT_WORK_TREE")
+    };
+    let r = std::panic::catch_unwind(|| with_env(&[("GIT_WORK_TREE", &g.0)], || panic!("in the test body")));
+    assert!(r.is_err(), "the body panicked");
+    let _l = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(std::env::var_os("GIT_WORK_TREE"), before);
+}
+
+/// The values a [`with_env`] replaced, put back on drop: a panic in its body
+/// unwinds through here too.
+struct Restore(Vec<(String, Option<OsString>)>);
+
+impl Drop for Restore {
+    fn drop(&mut self) {
+        for (k, v) in &self.0 {
+            // SAFETY: dropped before the ENV guard that every test here takes first.
+            unsafe {
+                match v {
+                    Some(v) => std::env::set_var(k, v),
+                    None => std::env::remove_var(k),
+                }
+            }
+        }
+    }
+}
+
+/// `vars` set while `f` runs, then put back, under the lock.
 fn with_env<T>(vars: &[(&str, &Path)], f: impl FnOnce() -> T) -> T {
     let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _r = Restore(vars.iter().map(|(k, _)| (k.to_string(), std::env::var_os(k))).collect());
     // SAFETY: every test here takes ENV first, so no other thread reads the env meanwhile.
     unsafe { vars.iter().for_each(|(k, v)| std::env::set_var(k, v)) };
-    let r = f();
-    unsafe { vars.iter().for_each(|(k, _)| std::env::remove_var(k)) };
-    r
+    f()
 }
 
 /// An inherited GIT_DIR and GIT_WORK_TREE naming an outer repo would pass every

@@ -39,6 +39,11 @@ pub const SAFE: [&str; 23] = [
     "protocol.ext.allow=never",
 ];
 
+/// What an inherited environment points git at instead of the repo `-C dir` is
+/// in: a dotfiles setup's GIT_DIR, say. GIT_CEILING_DIRECTORIES stays: it can
+/// only stop the search lower.
+pub const REDIRECT: [&str; 4] = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"];
+
 /// stdout, and whether git exited 0: a failed diff must not read as clean.
 fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (bool, String) {
     let (ok, out) = run_raw(dir, extra, index, args);
@@ -48,6 +53,9 @@ fn run(dir: &str, extra: &[String], index: Option<&Path>, args: &[&str]) -> (boo
 /// [`run`] with stdout as git wrote it: a path need not be UTF-8.
 fn run_raw<S: AsRef<OsStr>>(dir: &str, extra: &[String], index: Option<&Path>, args: &[S]) -> (bool, Vec<u8>) {
     let mut c = Command::new("git");
+    for v in REDIRECT {
+        c.env_remove(v);
+    }
     c.arg("-C")
         .arg(dir)
         .args(SAFE)

@@ -44,10 +44,11 @@ pub const EXPLORE_TIMEOUT: Duration = Duration::from_secs(90);
 const ROUNDS_WRITE: usize = 3;
 const ROUNDS_EXPLAIN: usize = 6;
 const BEST_GUESS: &str = "(no preference - use your best guess and state the assumption)";
-/// The one retry a write gets when it asks with no questions left.
+/// The one retry a write gets when it asks with no questions left: still no
+/// guess at what only the user knows (#503).
 const WRITE_NOW: &str = concat!(
-    "(no questions left: write it now, ",
-    "and state each assumption as an Assumed: line)"
+    "(no questions left: write it now without guessing what only I know: have Claude Code ",
+    "come back to me with the options for it first, or leave a placeholder for it)"
 );
 
 pub const QUICK: [(&str, &str); 4] = [
@@ -1186,9 +1187,9 @@ impl App {
         }
     }
 
-    /// A write that asks with no questions left is told once to write with its
-    /// assumptions stated. Asked again, or a fix, the error; esc then drops what
-    /// the call carried.
+    /// A write that asks with no questions left is told once to write it, with
+    /// Claude Code's options or a placeholder for what only the user knows. Asked
+    /// again, or a fix, the error; esc then drops what the call carried.
     fn write_now(&mut self, text: String, Carried { pending, from }: Carried) {
         let Some(r) = self.run.as_mut() else { return };
         (r.pending_turn, r.guessed_from) = (pending, from);
