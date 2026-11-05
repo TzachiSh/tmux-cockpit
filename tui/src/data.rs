@@ -901,64 +901,16 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         }
         // `session:window`; a session name never holds a `:` (tmux swaps it)
         sessions.insert(f[1].rsplit_once(':').map_or(f[1], |(s, _)| s).to_string());
-        // A pane carrying @panestate counts whatever it runs: the hooks are the
-        // source of truth, and a wrapper hides `claude` behind its own argv0.
-        let raw = unsentinel(f[4]);
-        // The name is a fast path that skips the `ps` fork; the tree decides.
-        let by_cmd = agentish(f[3]);
-        let mut in_tree = || {
-            let t = procs_t.get_or_insert_with(procs);
-            tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
-        };
-        // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
-        let by_tree = !by_cmd
-            && if raw.is_empty() {
-                in_tree()
-            } else {
-                tree_cached((f[0], f[9], f[3]), in_tree)
-            };
-        let live = by_cmd || by_tree;
-        if raw.is_empty() && !live {
+        let Some((mut p, live_by)) = row_pane(&f, &mut procs_t) else {
             continue;
-        }
-        let mut p = Pane {
-            id: f[0].into(),
-            wher: f[1].into(),
-            name: f[2].into(),
-            cmd: f[3].into(),
-            state: raw.as_str().into(),
-            title: unsentinel(f[5]),
-            msg: unsentinel(f[6]),
-            sess: unsentinel(f[7]),
-            path: f[8].into(),
-            pid: f[9].into(),
-            review: unsentinel(f[10]),
-            spool: unsentinel(f[11]),
-            win: f[12].into(),
-            ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
-            ..Default::default()
         };
-        log_ended_flip(
-            &p,
-            if by_cmd {
-                "command"
-            } else if by_tree {
-                "tree"
-            } else {
-                "none"
-            },
-        );
+        log_ended_flip(&p, live_by);
         if p.sess.is_empty() {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
             p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
         }
-        let said_cwd = read_transcript(&mut p);
+        dirs.push(work_candidates(&mut p, &f));
         (p.pinned, p.delivered) = spool_counts(&p.spool);
-        // @cockpit_dir, @cockpit_subs and @cockpit_transcript come after the 13 a row from an
-        // older format has, so such a row still reads: 13 to 16 are optional
-        // #452: the work dir's candidates, in the order they are tried
-        let opt = f.get(13).copied().unwrap_or_default().to_string();
-        dirs.push([opt, said_cwd, p.path.clone()]);
         p.subs_n = f.get(14).and_then(|n| n.parse().ok()).unwrap_or(0);
         // a pane title, so untrusted: control and bidi characters go
         p.job = crate::pick::clean(f.get(16).copied().unwrap_or_default()).trim().to_string();
@@ -970,6 +922,90 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
     fill_git(&mut ps, &dirs);
     ps.sort_by_key(|p| p.state);
     Some((ps, sessions))
+}
+
+/// One FIELDS row to its Pane, or `None` when the row is not an agent's: the
+/// board's agent test. Shared by the fetch and `workdir` (#500), so the two
+/// cannot disagree on which panes are agents. The second value names what found
+/// the agent, for the ended-flip log.
+fn row_pane(f: &[&str], procs_t: &mut Option<Procs>) -> Option<(Pane, &'static str)> {
+    // the floor list_fleet names
+    if f.len() < 13 {
+        return None;
+    }
+    // A pane carrying @panestate counts whatever it runs: the hooks are the
+    // source of truth, and a wrapper hides `claude` behind its own argv0.
+    let raw = unsentinel(f[4]);
+    // The name is a fast path that skips the `ps` fork; the tree decides.
+    let by_cmd = agentish(f[3]);
+    let mut in_tree = || {
+        let t = procs_t.get_or_insert_with(procs);
+        tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
+    };
+    // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
+    let by_tree = !by_cmd
+        && if raw.is_empty() {
+            in_tree()
+        } else {
+            tree_cached((f[0], f[9], f[3]), in_tree)
+        };
+    let live = by_cmd || by_tree;
+    if raw.is_empty() && !live {
+        return None;
+    }
+    let p = Pane {
+        id: f[0].into(),
+        wher: f[1].into(),
+        name: f[2].into(),
+        cmd: f[3].into(),
+        state: raw.as_str().into(),
+        title: unsentinel(f[5]),
+        msg: unsentinel(f[6]),
+        sess: unsentinel(f[7]),
+        path: f[8].into(),
+        pid: f[9].into(),
+        review: unsentinel(f[10]),
+        spool: unsentinel(f[11]),
+        win: f[12].into(),
+        ended: ended(&raw, live, AGENT_GLOB.with(|g| !g.is_empty())),
+        ..Default::default()
+    };
+    let by = if by_cmd {
+        "command"
+    } else if by_tree {
+        "tree"
+    } else {
+        "none"
+    };
+    Some((p, by))
+}
+
+/// Reads `p`'s transcript into it and returns its work dir's candidates (#452), in
+/// the order `fleet::work_dirs` tries them. @cockpit_dir, @cockpit_subs and
+/// @cockpit_transcript come after the 13 a row from an older format has, so such a
+/// row still reads: 13 to 16 are optional.
+fn work_candidates(p: &mut Pane, f: &[&str]) -> [String; 3] {
+    let said_cwd = read_transcript(p);
+    let opt = f.get(13).copied().unwrap_or_default().to_string();
+    [opt, said_cwd, p.path.clone()]
+}
+
+/// #500: the board's `Pane.dir` for one pane, off one `display-message` of the
+/// board's own FIELDS and the same per-row code as the fetch. `None` for a pane
+/// that is not there, is not an agent's, or has no dir. Unlike the fetch it never
+/// runs `claude agents` (hundreds of ms): a pane with no @cockpit_session has no
+/// transcript to read, so its dir is @cockpit_dir, else its launch dir.
+pub fn workdir(pane: &str) -> Option<String> {
+    let out = tmux(&["display-message", "-p", "-t", pane, FIELDS])?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split(SEP).collect();
+    // A missing pane exits 0 with every field empty: the resolved id is the test,
+    // before the agent test can fork `ps` for a pid that is not there.
+    if f[0] != pane {
+        return None;
+    }
+    let (mut p, _) = row_pane(&f, &mut None)?;
+    let cands = work_candidates(&mut p, &f);
+    fleet::work_dirs(&[cands]).pop().filter(|d| !d.is_empty())
 }
 
 /// A pane can hold one multi-megabyte line, and the ANSI parser re-runs over the
