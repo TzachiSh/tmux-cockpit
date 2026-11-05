@@ -12966,6 +12966,51 @@ tx kill-server >/dev/null 2>&1
 rm -rf "$BGR" "$BGM" "$BGD"
 fi
 
+echo "== tmux-branch (#360): a goto moves the client that pressed prefix b, not the busiest one =="
+if need_tmux "branch goto client"; then :; else
+BCR=$(mktmpd); BCM=$(mktmpd); br_repo "$BCR" "$BCM"
+BCD=$(mktmpd); BCW="$BCD/wt"
+git -C "$BCR" worktree add -q "$BCW" held >/dev/null 2>&1
+BCS="cockpit-bc360-$$"; SOCKS="$SOCKS $BCS"
+"$TMUX_REAL" -L "$BCS" -f /dev/null new-session -d -s a -c "$BCR" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BCS" new-session -d -s z -c "$BCW" 'exec sleep 300' >/dev/null 2>&1
+"$TMUX_REAL" -L "$BCS" set -g @cockpit_agents_glob '|claude|' >/dev/null 2>&1
+BCO=$("$TMUX_REAL" -L "$BCS" list-panes -t a -F '#{pane_id}')
+BCZ=$("$TMUX_REAL" -L "$BCS" list-panes -t z -F '#{pane_id}')
+# Two control clients on a, over fifos held open read-write. B attaches last, so
+# B is the one a bare switch-client picks.
+bc_open() {
+    mkfifo "$BCD/$1" && "$TMUX_REAL" -L "$BCS" -C attach -t a <> "$BCD/$1" >/dev/null 2>&1 &
+}
+bc_open A
+until_out '?*' "$TMUX_REAL" -L "$BCS" list-clients -F '#{client_name}'
+BCA=$("$TMUX_REAL" -L "$BCS" list-clients -F '#{client_name}')
+bc_open B
+until_out "*"$'\n'"*" "$TMUX_REAL" -L "$BCS" list-clients -F '#{client_name}'
+bc_where() {                  # -> "A=<session> B=<session> "
+    "$TMUX_REAL" -L "$BCS" list-clients -F '#{client_name} #{client_session}' 2>/dev/null \
+        | awk -v a="$BCA" '{ print ($1 == a ? "A" : "B") "=" $2 }' | sort | tr '\n' ' '
+}
+# The key leaves A on the pane it was pressed in; the script takes it at start.
+"$TMUX_REAL" -L "$BCS" set -p -t "$BCO" @cockpit_branch_client "$BCA" >/dev/null 2>&1
+bg_goto "$BCS" "$BCO" "$BCR" "$BCW"
+is "a goto with the pin moves the client that pressed the key" "A=z B=a " "$(bc_where)"
+is "and lands it on the pane in the worktree" "$BCZ" \
+   "$("$TMUX_REAL" -L "$BCS" display-message -p -t "$BCA" '#{pane_id}')"
+is "the pin is cleared once taken" "" \
+   "$("$TMUX_REAL" -L "$BCS" show-option -pqv -t "$BCO" @cockpit_branch_client)"
+# The binding sets the pin from #{client_name} before its popup opens.
+"$TMUX_REAL" -L "$BCS" run-shell "$DIR/cockpit.tmux" >/dev/null 2>&1
+case "$("$TMUX_REAL" -L "$BCS" list-keys -T prefix b 2>/dev/null)" in
+    *"@cockpit_branch_client"*"#{client_name}"*"display-popup"*) ok "prefix b pins #{client_name} on the pane before its popup" ;;
+    *) bad "prefix b pins #{client_name} on the pane before its popup" "set-option -pF @cockpit_branch_client '#{client_name}' ; display-popup" \
+           "$("$TMUX_REAL" -L "$BCS" list-keys -T prefix b 2>/dev/null | cut -c1-200)" ;;
+esac
+"$TMUX_REAL" -L "$BCS" kill-server >/dev/null 2>&1
+unset -f bc_open bc_where
+rm -rf "$BCR" "$BCM" "$BCD"
+fi
+
 echo "== tm: create NAME in the sessions picker starts in ~/NAME when that is a git repo (#304) =="
 # The picker is a stub that answers "new-session -" with NAME; tmux is a stub that logs
 # new-session's argv. A pty on stdin makes tm take the picker path.
