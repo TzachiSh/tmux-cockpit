@@ -810,7 +810,8 @@ is.
   above it, or `/`, so a file whose folder is one of them is "not in a project
   folder". The repo then passes `request::read_dir_ok`. USD 0.50 and 300 s cap
   one ask; `esc` on the busy line cancels it and goes back to the question. The model is the panel's routing's, sonnet unless one is chosen.
-- **The answer** is the Explain answer view: `f` asks a follow-up in the same
+- **The answer** is the Explain answer view, its note naming the files the
+  call read, from the repo (as an exploring write's does): `f` asks a follow-up in the same
   thread (the code and every turn are sent again; nothing is kept between
   panels), and a `<prompt>` the answer ends with can be inserted into or sent
   to the pane's agent. `^Z` hides it like any other panel, unless a panel is
