@@ -63,7 +63,7 @@ note() { [ "$DRY" -eq 1 ] || tmux display-message "$(fesc "$*")"; }
 shq() { printf '%q' "$1"; }
 
 open_one() {
-    local file=$1 ln=$2 col=$3 editor
+    local file=$1 ln=$2 col=$3 editor wn
     md_view "$file" "$ln" && return
     vscode_lib
     editor=$(tmux show-options -gqv @cockpit_editor)
@@ -81,8 +81,11 @@ open_one() {
     if [ -n "$editor" ]; then
         # -t: without it the window lands in the most recent client's session.
         # -c and -n expand formats, the command does not (#289): escape only those.
-        tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "${file##*/}")" \
-             "$editor ${ln:++$ln} $(shq "$file")"
+        # the window name drops what tmux refuses (#366); the editor keeps the real path
+        wn=$(plain_name "${file##*/}")
+        tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "$wn")" \
+             "$editor ${ln:++$ln} $(shq "$file")" \
+            || note "cockpit: tmux could not open a window for $wn"
         return
     fi
     if command -v code >/dev/null 2>&1; then
@@ -121,7 +124,7 @@ $(shq "$file:${ln:-1}:${col:-1}") >/dev/null 2>&1")"
 # A third argument "any" lifts the markdown-extension gate: the browser's view
 # verb sends every regular file here (#406).
 md_view() {
-    local file=$1 ln=$2 any=${3:-} out rc err size title b
+    local file=$1 ln=$2 any=${3:-} out rc err size title
     if [ "$any" != any ]; then
         case ${file,,} in *.md|*.markdown|*.mdown|*.mkd) ;; *) return 1 ;; esac
     fi
@@ -134,13 +137,8 @@ md_view() {
         # command's (129 when the client detaches)
         [ -n "$(tmux list-clients -t "$pane" -F x 2>/dev/null)" ] || return 1
         size=$(tmux display-message -p -t "$pane" '#{pane_width} #{pane_height}')
-        # the border draws the name: no control character and no bidi mark,
-        # which would reorder it (U+200E-F, U+202A-E, U+2066-9, as UTF-8)
-        title=${file##*/}; title=${title//[[:cntrl:]]/}
-        for b in $'\xe2\x80\x8e' $'\xe2\x80\x8f' $'\xe2\x80\xaa' $'\xe2\x80\xab' $'\xe2\x80\xac' \
-                 $'\xe2\x80\xad' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x81\xa7' $'\xe2\x81\xa8' $'\xe2\x81\xa9'; do
-            title=${title//"$b"/}
-        done
+        # the border draws the name: no control character, no bidi mark
+        title=$(plain_name "${file##*/}")
         # -d and -T expand formats, the command does not (#289)
         tmux display-popup -t "$pane" -E -x P -y P -w "${size% *}" -h "${size#* }" \
             -d "$(fesc "$dir")" -T "$(fesc " $title ")" \
@@ -176,7 +174,7 @@ touch_client() {
 
 # A terminal editor in a window of its own, in the file's folder; never VS Code.
 term_edit() {
-    local file=$1 ln=${2:-} editor fd bin at=
+    local file=$1 ln=${2:-} editor fd bin wn at=
     [[ $ln =~ ^[0-9]+$ ]] || ln=
     editor=$(tmux show-options -gqv @cockpit_editor)
     [ -n "$editor" ] || editor=${VISUAL:-${EDITOR:-}}
@@ -189,8 +187,10 @@ term_edit() {
     bin=${editor%% *}; bin=${bin##*/}
     case $bin in vi|vim|nvim|nano|emacs|micro) at=${ln:++$ln} ;; esac
     fd=${file%/*}; fd=${fd:-/}
-    tmux new-window -t "$win" -a -c "$(fesc "$fd")" -n "$(fesc "${file##*/}")" \
-         "$editor ${at:+$at }$(shq "$file")"
+    wn=$(plain_name "${file##*/}")
+    tmux new-window -t "$win" -a -c "$(fesc "$fd")" -n "$(fesc "$wn")" \
+         "$editor ${at:+$at }$(shq "$file")" \
+        || { note "cockpit: tmux could not open a window for $wn"; return 1; }
 }
 
 # The one line cockpit-tui files printed. It lists names anyone can create, so

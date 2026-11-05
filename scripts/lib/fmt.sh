@@ -16,3 +16,17 @@ fesc() {
   done
   printf '%s' "$out${run//#/##}"
 }
+
+# A file name as a title: no control character and no bidi mark, which would
+# reorder what the eye reads (U+200E-F, U+202A-E, U+2066-9, as UTF-8). tmux
+# refuses a window name holding a control character (#366), and a popup border
+# draws its title raw. For the title or the -n only: the editor keeps the real path.
+plain_name() {
+  local s=$1 b
+  s=${s//[[:cntrl:]]/}
+  for b in $'\xe2\x80\x8e' $'\xe2\x80\x8f' $'\xe2\x80\xaa' $'\xe2\x80\xab' $'\xe2\x80\xac' \
+           $'\xe2\x80\xad' $'\xe2\x80\xae' $'\xe2\x81\xa6' $'\xe2\x81\xa7' $'\xe2\x81\xa8' $'\xe2\x81\xa9'; do
+    s=${s//"$b"/}
+  done
+  printf '%s' "$s"
+}
