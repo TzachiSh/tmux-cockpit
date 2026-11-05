@@ -3,7 +3,14 @@ name: tui
 # Unfiltered: the shell scripts call the binary, so every change can break it.
 on:
   push:
-  pull_request:
+
+# One runner (ci-cockpit) takes every job in turn, so each run costs the queue.
+# Push alone: a PR's checks are its head commit's, and a pull_request trigger
+# beside it ran every job twice. A newer push to a branch cancels its older run;
+# master keeps every run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/master' }}
 
 jobs:
   tui-test:
