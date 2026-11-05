@@ -17,21 +17,17 @@
 //! A case with `explore: <fixture>` (evals/panel/explore.txt, #416) runs on a
 //! temp copy of `evals/panel/fixtures/<fixture>` as the pane's folder, through
 //! the panel's explore-first call; `--no-explore` runs it as a text call instead.
-use cockpit_tui::panel::app::{EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT};
-use cockpit_tui::panel::capture::{Capture, window_kind};
-use cockpit_tui::panel::envelope::{Flow, OutType, build};
+use cockpit_tui::panel::app::{App, View};
+use cockpit_tui::panel::capture::Capture;
+use cockpit_tui::panel::envelope::{Flow, OutType};
 use cockpit_tui::panel::parse::{self, Reply, files_read};
-use cockpit_tui::panel::prompts::{self, Ctx};
 use cockpit_tui::panel::request::{Call, Profile, Request};
 use cockpit_tui::panel::route::route;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-/// A copy of the panel's private `ROUNDS_WRITE` (app.rs): the first call sees
-/// all of it. Change both together.
-const QUESTIONS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Expect {
@@ -570,34 +566,17 @@ fn main() {
                 _ => c.path.clone(),
             };
             let explore = c.explore.is_some() && !o.no_explore;
-            let cap = Capture {
-                name: c.name.clone(),
-                cmd: c.cmd.clone(),
-                path: path.clone(),
-                screen: c.screen.clone(),
-                repo: c.repo.as_str().into(),
-            };
+            let (system, prompt, profile) = panel_call(c, &path, explore);
             let flow = Flow::Write {
                 draft: c.request.clone(),
                 out: c.out,
-            };
-            let ctx = Ctx {
-                out: c.out,
-                window: window_kind(&c.name, &c.cmd),
-            };
-            // the panel's own pick: App::profile_for and request_noted
-            let (system, profile) = if explore {
-                let p = Profile::read_only(path.into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT);
-                (prompts::write_explore(&ctx), p)
-            } else {
-                (prompts::write(&ctx), Profile::TEXT)
             };
             let h = fnv(&system);
             if !hashes.contains(&h) {
                 hashes.push(h);
             }
+            // --model takes any name, so the route is the rig's, not the App's four
             let model = route(&flow, &o.model).model;
-            let prompt = build(&flow, &cap, &[], QUESTIONS);
             // Spawned here, on the main thread: the child's death signal follows it.
             let req = Request::spawn_with(&call, &profile, &system, &prompt, &model);
             live.push(Job {
@@ -694,6 +673,25 @@ fn main() {
     if let Some(d) = staged {
         let _ = std::fs::remove_dir_all(&d);
     }
+}
+
+/// The system prompt, the user prompt and the profile the panel itself sends for
+/// case `c` on `path`: an App in Compose, its ^S, then its own picks.
+fn panel_call(c: &Case, path: &str, explore: bool) -> (String, String, Profile) {
+    let cap = Capture {
+        name: c.name.clone(),
+        cmd: c.cmd.clone(),
+        path: path.into(),
+        screen: c.screen.clone(),
+        repo: c.repo.as_str().into(),
+    };
+    let mut a = App::new("%0", cap);
+    (a.view, a.out, a.explore) = (View::Compose, c.out, explore);
+    (a.draft, a.cur) = (c.request.clone(), c.request.len());
+    a.key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+    let (system, prompt, _) = a.request_parts().expect("^S on a draft starts a write");
+    let profile = a.run.as_ref().map_or(Profile::TEXT, |r| a.profile_for(&r.flow));
+    (system, prompt, profile)
 }
 
 /// The fixtures the `explore:` cases name, copied to a fresh temp dir of the
@@ -1680,6 +1678,38 @@ mod tests {
                 out.push_str(&std::fs::read_to_string(e.path()).unwrap());
             }
         }
+    }
+
+    /// The rig sends what the panel's own App picks: the prompts, the envelope
+    /// with its three questions, and the profile, for a text and an exploring write.
+    #[test]
+    fn the_rig_sends_the_panels_own_call() {
+        use cockpit_tui::panel::app::{EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT};
+        use cockpit_tui::panel::capture::window_kind;
+        use cockpit_tui::panel::envelope::build;
+        use cockpit_tui::panel::prompts::{self, Ctx};
+        let c = &parse_cases(ONE).unwrap()[0];
+        let ctx = Ctx {
+            out: c.out,
+            window: window_kind(&c.name, &c.cmd),
+        };
+        let cap = Capture {
+            name: c.name.clone(),
+            cmd: c.cmd.clone(),
+            path: "/r".into(),
+            screen: c.screen.clone(),
+            repo: c.repo.as_str().into(),
+        };
+        let flow = Flow::Write {
+            draft: c.request.clone(),
+            out: c.out,
+        };
+        let (system, prompt, profile) = panel_call(c, "/r", false);
+        assert_eq!((system, profile), (prompts::write(&ctx), Profile::TEXT));
+        assert_eq!(prompt, build(&flow, &cap, &[], 3));
+        let (system, _, profile) = panel_call(c, "/r", true);
+        assert_eq!(system, prompts::write_explore(&ctx));
+        assert_eq!(profile, Profile::read_only("/r".into(), false, EXPLORE_BUDGET_USD, EXPLORE_TIMEOUT));
     }
 
     #[test]
