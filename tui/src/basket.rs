@@ -152,3 +152,34 @@ pub fn shown(pane: Option<&str>, r: &Ref) -> String {
         refs::render(std::slice::from_ref(r), Path::new(&dir))
     }
 }
+
+const USAGE: &str = "usage: cockpit-tui basket add <pane> <file>";
+
+/// `cockpit-tui basket add <pane> <file>`: the browser's alt-a, as
+/// tmux-open-path routes it. The exit code (0 added or there already, 1
+/// refused, 2 usage) and the line to show; the line names the ref, never
+/// the basket's other contents.
+pub fn cli(args: &[String]) -> (i32, String) {
+    let [verb, pane, file] = args else { return (2, USAGE.into()) };
+    if verb != "add" {
+        return (2, USAGE.into());
+    }
+    let r = match Ref::new(file, None, None) {
+        Ok(r) if r.path().is_file() => r,
+        Ok(_) => return (1, "not a file; only a file goes in the basket".into()),
+        Err(e) => return (1, e.to_string()),
+    };
+    let shown = shown(Some(pane), &r);
+    match add(pane, r) {
+        Ok((n, true)) => (0, format!("added {shown} ({n} in the basket)")),
+        Ok((n, false)) => (0, format!("{shown} is in the basket already ({n})")),
+        Err(e) => (1, e),
+    }
+}
+
+/// [`cli`], printed: the line on stdout, for the launcher to show.
+pub fn main(args: &[String]) -> i32 {
+    let (code, line) = cli(args);
+    println!("{line}");
+    code
+}
