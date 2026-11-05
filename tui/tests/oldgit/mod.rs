@@ -1,5 +1,6 @@
 //! A git before 2.36, which rejects `worktree list -z`: a shim on PATH that does
-//! the same. Each test file that uses it holds one test, since it sets PATH.
+//! the same. Each test file that uses it holds one test, since it sets PATH, and
+//! declares `mod fake;`, which writes the shim.
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -43,9 +44,7 @@ pub fn shim(root: &Path) {
          exec {} \"$@\"\n",
         real.trim()
     );
-    std::fs::write(dir.join("git"), script).unwrap();
-    let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
-    std::fs::set_permissions(dir.join("git"), mode).unwrap();
+    crate::fake::write_exec(&dir.join("git"), &script);
     let path = format!("{}:{}", dir.display(), std::env::var("PATH").unwrap());
     // SAFETY: the caller's file holds one test, so no other thread reads the environment.
     unsafe { std::env::set_var("PATH", path) };
@@ -70,7 +69,7 @@ pub fn shim_212(root: &Path) {
          c=$({real} \"${{pre[@]}}\" -C \"$top\" rev-parse --git-common-dir) || exit\n\
          case $c in /*) echo \"$c\" ;; *) echo \"$px$c\" ;; esac\n"
     );
-    std::fs::write(dir.join("git"), script).unwrap();
+    crate::fake::write_exec(&dir.join("git"), &script);
 }
 
 pub fn held(bs: &[cockpit_tui::data::branches::Branch], name: &str) -> Option<String> {

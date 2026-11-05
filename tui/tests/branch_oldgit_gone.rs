@@ -1,5 +1,6 @@
 //! #348: without `-z`, the `.git` check drops a forged record, not a worktree
 //! whose directory was deleted: that one stays listed, so goto can say it is gone.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

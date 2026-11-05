@@ -1,6 +1,7 @@
 //! #532: git 2.7 to 2.12 print `rev-parse --git-common-dir` as the subdirectory
 //! prefix plus the path from the top. Read from a pane's subdirectory, that names no
 //! dir, so the common dir is asked for from the top.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 

@@ -3,6 +3,7 @@
 //! a `.git` dir that is its common dir, or a `.git` file whose gitdir sits in that
 //! dir's `worktrees/` and links back to the same file. Links are followed, as git
 //! follows them, and then the branch must be the one that tree's HEAD names.
+mod fake;
 mod oldgit;
 use cockpit_tui::data::branches;
 
