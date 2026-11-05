@@ -9094,6 +9094,33 @@ pact() {                      # <action-line> <text> [notext] -> every tmux argv
     PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 </dev/null >/dev/null 2>&1
     tr '\n' ';' < "$PND/pargv" | sed "s/cockpit-panel-[0-9]*/B/g"
 }
+# --ask (#365): the first run opens on the viewer's question; a run after an
+# action goes back with --resume alone; anything but two line numbers a <= b is refused
+pask() {                      # <args after -p %5> -> the binary's argv, one run a line, and the exit code
+    : > "$PND/bargv"; printf 'paste %%5\n' > "$PND/line"; printf 'hi' > "$PND/text"; printf 'zsh\n' > "$PND/cmd"; printf 'zsh\n' > "$PND/now"
+    PATH="$PND/rec:$PATH" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" "$PND/p/scripts/cockpit-panel" -p %5 "$@" </dev/null >/dev/null 2>&1
+    echo "rc=$?"; cat "$PND/bargv"
+}
+is "--ask reaches the binary on the first run" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7" "$(pask --ask /r/x.rs 3 7)"
+touch "$PND/state"
+is "and a run after an action resumes without it" "rc=0"$'\n'"panel %5 --ask /r/x.rs 3 7"$'\n'"panel %5 --resume ${PND}/RESUME --last ok" \
+   "$(pask --ask /r/x.rs 3 7 | sed "s#--resume [^ ]*/resume#--resume ${PND}/RESUME#")"
+rm -f "$PND/state"
+for pa in "--ask /r/x.rs 7 3" "--ask /r/x.rs 0 1" "--ask /r/x.rs 01 2" "--ask /r/x.rs 3" "--ask /r/x.rs 3 7 8" "--ask  3 7" "--x /r 1 2"; do
+    # shellcheck disable=SC2086
+    is "cockpit-panel -p %5 $pa is refused before the binary runs" "rc=2" "$(pask $pa)"
+done
+is "--ask with an empty file is refused" "rc=2" "$(pask --ask '' 3 7)"
+# a panel hidden on the pane stays hidden: the ask opens on its question, not on it.
+# `display` answers $PND/now, so 4242 is the server's pid that keys the hidden file.
+mkdir -p "$PND/xdg/tmux-cockpit/panel"; printf 'H\n' > "$PND/xdg/tmux-cockpit/panel/4242-5.state"
+: > "$PND/bargv"; printf '4242\n' > "$PND/now"; printf 'paste %%5\n' > "$PND/line"
+PATH="$PND/rec:$PATH" XDG_STATE_HOME="$PND/xdg" COCKPIT_LOG="$PND/tui.log" COCKPIT_TUI_BIN="$PND/p/bin/cockpit-tui" \
+    "$PND/p/scripts/cockpit-panel" -p %5 --ask /r/x.rs 3 7 </dev/null >/dev/null 2>&1
+is "--ask leaves a panel hidden on the pane where it is" "panel %5 --ask /r/x.rs 3 7|H" \
+   "$(head -1 "$PND/bargv")|$(cat "$PND/xdg/tmux-cockpit/panel/4242-5.state" 2>/dev/null)"
+rm -rf "$PND/xdg"
+unset -f pask
 is "send %5 loads the text, pastes it bracketed, deletes the buffer, presses Enter, says so" \
    "load-buffer -b B -;hi;paste-buffer -p -d -b B -t %5;send-keys -t %5 Enter;display-message -t %5 cockpit: sent to %5;" \
    "$(pact 'send %5' hi)"
