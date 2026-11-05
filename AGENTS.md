@@ -37,17 +37,25 @@ stays on `master`.
 ## Touch only your own worktree and branch
 
 Several Claude sessions work on this repo at once, each with its own lanes.
-A worktree, and the branch checked out in it, belong to the agent that created
-it. Never `reset`, `merge`, `rebase`, commit or push in a worktree or on a branch
-you did not create, even to "help". If its owner needs master merged in, or a fix
-made, message that session. Unpushed commits live only in the owner's worktree,
-and a `git reset` there loses them: that happened once already. The same goes
-for a PR's branch: one owner pushes to it.
+The owner of a branch is the session or lane named on its PR: the PR body and
+comments open with that name. A worktree belongs to whoever made it for that
+branch. `git worktree list` shows where each one is.
 
-The main checkout's `.omc/notepad.md` and project memory are shared by every
-session. Start each entry with your session's name. After a `/clear` or a
-compaction, trust only entries that carry your name. Another session's notes
-are not your state: one session once took over another's PRs that way.
+- Never `reset`, `merge`, `rebase`, commit or push in another owner's worktree,
+  or push to another owner's branch. Unpushed commits live only in the owner's
+  worktree, and a `git reset` there loses them.
+- If the owner needs master merged in or a fix made, message that session.
+- Reading is always allowed: fetching a PR's head, checking it out detached in a
+  worktree you create, building and testing it there, and reviewing it.
+- If the owner is gone (no running session or lane answers), you may take the
+  branch over. Say so in a PR comment first, then work in a new worktree you
+  create from the remote branch. From then on you are its owner.
+
+Every session shares the main checkout's `.omc/notepad.md` and
+`.omc/project-memory.json`. Start each entry you write there with your session
+name. After a `/clear` or a compaction, an entry without your session name is
+not your state, even if it looks like it. One session once took over another's
+PRs by reading those files as its own.
 
 ## Never signal a pid the hook has not verified
 
