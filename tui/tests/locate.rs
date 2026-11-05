@@ -61,6 +61,8 @@ impl Rig {
             ("HOME", s.to_string()),
             ("COCKPIT_READONLY", "1".into()),
             ("XDG_STATE_HOME", format!("{s}/state")),
+            // #505: the fake `ps` is the process table, so no live /proc pid leaks in
+            ("COCKPIT_PROC_DIR", format!("{s}/proc")),
         ];
         Rig { d, env }
     }

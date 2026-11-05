@@ -95,7 +95,7 @@ pub struct Profile {
 
 /// `--output-format`: a text call's stdout is its answer; a json one's is its
 /// events (`--verbose`), the answer their result, the rest kept for
-/// [`Request::transcript`].
+/// [`Request::raw`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Output {
     Text,
