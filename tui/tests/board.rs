@@ -2860,3 +2860,14 @@ fn a_bound_viewer_tile_names_its_job() {
     assert!(screen.contains("→ sweep"), "{screen}");
     assert!(!screen.contains(&label), "the title {label:?} gave way: {screen}");
 }
+
+/// #460 review: find reads the job a bound row draws in place of its title.
+#[test]
+fn find_matches_the_bound_job_a_row_draws() {
+    let mut p = fixture().remove(0);
+    p.job = "nightlysweep".into();
+    assert!(
+        board::find_match(&p, "nightlysweep"),
+        "the row reads -> nightlysweep, find misses it"
+    );
+}

@@ -162,4 +162,7 @@ fn gather_reads_the_bound_job_cleaned() {
     assert_eq!(gather("%1").unwrap().job, Some(("sweep".to_string(), "bg_7".to_string())));
     std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}")).unwrap();
     assert_eq!(gather("%1").unwrap().job, None);
+    // a name with no id is no bind (agent-poll sets both at once): never `(@cockpit_job )`
+    std::fs::write(t.0.join("display"), format!("{plain}\u{1f}\u{1f}lone")).unwrap();
+    assert_eq!(gather("%1").unwrap().job, None);
 }

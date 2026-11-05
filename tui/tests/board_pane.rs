@@ -627,3 +627,25 @@ fn a_bound_viewer_pane_names_its_job_in_place_of_the_title() {
         assert!(head[1].contains(&format!("api:1 {} {mark} sweep", th.g.dot)), "{head:#?}");
     }
 }
+
+/// #460 review: at the name column's 6-column floor the mark must not eat the
+/// name: a bound row keeps at least its job's first characters, in ASCII too.
+#[test]
+fn a_narrow_bound_row_keeps_part_of_the_job_name() {
+    for th in [th(), ascii()] {
+        let mut ps = trio();
+        ps[1].job = "nightly-dependency-sweep".into();
+        let n = nav(&ps, Sel::Pane("%4".into()));
+        let rows = list_part(&buf(120, 20, &list(&ps, &[], &th, &n)), 48).join("\n");
+        assert!(rows.contains(&format!("{} nig", th.g.arrow)), "{rows}");
+    }
+}
+
+/// #460 review: the kill confirm names a bound pane by its job, as its row does.
+#[test]
+fn the_confirm_title_names_the_bound_job() {
+    let mut ps = trio();
+    ps[1].job = "sweep".into();
+    let title = board::Confirm::open(&board::EXTRAS[0], &ps[1]).unwrap().title;
+    assert!(title.ends_with(" · sweep") && !title.contains("tests"), "{title:?}");
+}

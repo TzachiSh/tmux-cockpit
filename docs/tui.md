@@ -1675,8 +1675,13 @@ without one does not lose it.
 viewer pane to by its title (docs/states-and-hooks.md), with control and bidi
 characters dropped since it comes from a pane title; `""` when unbound. The board
 draws `→ <job>` (`-> <job>` in ASCII) in place of the title on the row, the tile
-and the pane header, so a bind to the wrong job is plain to see. `title` and
-`--rows` keep the title.
+and the pane header, so a bind to the wrong job is plain to see, and find (`/`)
+reads it. In place of the title, not beside it: the name column has no room for
+both, and what it hides is the window name or an old `@cockpit_title`, not the
+title the bind matched. That title stays in the info screen, in `--json`'s `title`
+and in `--rows`. A bound row's name column grows by the mark's width, so even at
+its 6-column floor the job keeps a few characters. The kill confirm names the job
+too.
 
 **`--json`**: an array of objects with exactly these 16 keys, in this order:
 

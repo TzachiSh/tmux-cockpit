@@ -1518,15 +1518,16 @@ pub fn state_word(s: State) -> &'static str {
 }
 
 /// D7: every space-separated term is a substring, ignoring case, of one of
-/// the session, the window index, the window name, the title, the state word,
-/// the message or doing line, or a subagent's type or description (#313). An
-/// empty filter matches everything.
+/// the session, the window index, the window name, the title, the bound job a
+/// viewer row draws in its place (#460), the state word, the message or doing
+/// line, or a subagent's type or description (#313). An empty filter matches
+/// everything.
 pub fn find_match(p: &Pane, filter: &str) -> bool {
     let word = if p.ended { ENDED } else { state_word(p.state) };
     // #313: and its subagents' types and descriptions
     let subs: Vec<&str> = p.subs.iter().flat_map(|s| [s.ty.as_str(), s.desc.as_str()]).collect();
     let subs = subs.join("\n");
-    let fields = [session(p), window(p), &p.name, &p.title, word, &p.msg, &p.doing, &subs];
+    let fields = [session(p), window(p), &p.name, &p.title, &p.job, word, &p.msg, &p.doing, &subs];
     // one line per field: a term holds no newline, so it never spans two
     let hay = fields.join("\n").to_lowercase();
     filter.to_lowercase().split_whitespace().all(|t| hay.contains(t))
@@ -2179,7 +2180,10 @@ pub fn row_extra(p: &Pane, th: &Theme, room: u16, seen: &Seen) -> Vec<Span<'stat
 }
 
 /// #460: a viewer pane bound to a background job is named `→ <job>` in place of
-/// its title, so a bind to the wrong job is plain to see.
+/// its title, so a bind to the wrong job is plain to see. In place of, not
+/// beside: the name column has no room for both, and what it hides is the window
+/// name or an old @cockpit_title, not the title the bind matched. The title stays
+/// in info, `--json` and `--rows`.
 fn shown_label(p: &Pane, g: &Glyphs) -> String {
     if p.job.is_empty() {
         p.label().to_string()
@@ -2232,7 +2236,9 @@ fn agent_row(p: &Pane, num: Option<usize>, sel: bool, active: bool, ww: usize, w
     // `▎ 1 ▲◆ ` + window + ` ` + name + ` ` + msg + extra + ` ` + rail + mark
     let fixed = 7 + ww + 1 + 1 + 1 + RAIL_W + 1;
     let flex = w.saturating_sub(fixed + extra_w);
-    let name_w = (flex / 4).clamp(6, 20).min(flex);
+    // #460: a bound row's mark is extra, so the job keeps the name column's share
+    let mark_w = if p.job.is_empty() { 0 } else { g.arrow.width() + 1 };
+    let name_w = ((flex / 4).clamp(6, 20) + mark_w).min(flex);
     let msg_w = flex.saturating_sub(name_w);
     let msg = match p.state {
         _ if p.ended => ENDED.to_string(),
@@ -3387,7 +3393,8 @@ impl Confirm {
             id: p.id.clone(),
             verb: e.verb,
             yes: e.label,
-            title: format!("{} · {} · {}", e.label, p.wher, p.label()),
+            // #460: a bound pane by its job, as its row names it (no mark: no glyphs here)
+            title: format!("{} · {} · {}", e.label, p.wher, if p.job.is_empty() { p.label() } else { &p.job }),
             ask: (e.confirm?)(p),
             expect: e.expect.map(|f| f(p)),
         })
