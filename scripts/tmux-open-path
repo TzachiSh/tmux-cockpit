@@ -85,7 +85,7 @@ open_one() {
         wn=$(plain_name "${file##*/}")
         tmux new-window -t "$win" -a -c "$(fesc "$dir")" -n "$(fesc "$wn")" \
              "$editor ${ln:++$ln} $(shq "$file")" \
-            || note "cockpit: tmux could not open a window for $wn"
+            || note "cockpit: tmux could not open a window for ${wn:-a file}"
         return
     fi
     if command -v code >/dev/null 2>&1; then
@@ -190,7 +190,7 @@ term_edit() {
     wn=$(plain_name "${file##*/}")
     tmux new-window -t "$win" -a -c "$(fesc "$fd")" -n "$(fesc "$wn")" \
          "$editor ${at:+$at }$(shq "$file")" \
-        || { note "cockpit: tmux could not open a window for $wn"; return 1; }
+        || { note "cockpit: tmux could not open a window for ${wn:-a file}"; return 1; }
 }
 
 # The one line cockpit-tui files printed. It lists names anyone can create, so

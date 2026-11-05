@@ -13596,6 +13596,24 @@ is "and from the touch client's terminal editor" \
    "VIEW [view] [--] [$MV/w/a.md]"$'\n'"NEWWIN ed $MV/w/a.md"$'\n'"MSG cockpit: tmux could not open a window for a.md" \
    "$(NEWWIN_RC=1 VIEW_OUT='edit 5' TOUCH=1 mvrun 'x' --view %1 "$MV/w/a.md" '')"
 
+echo "== tmux-open-path (#366): plain_name drops each control and bidi character, keeps the rest =="
+# One table, one row per character: removing any one from the helper fails its row.
+PNO=$(mktmpf)
+( . "$DIR/scripts/lib/fmt.sh"; export LC_ALL=C.UTF-8
+  for row in "U+061C|\xd8\x9c" "U+200E|\xe2\x80\x8e" "U+200F|\xe2\x80\x8f" "U+202A|\xe2\x80\xaa" \
+             "U+202B|\xe2\x80\xab" "U+202C|\xe2\x80\xac" "U+202D|\xe2\x80\xad" "U+202E|\xe2\x80\xae" \
+             "U+2066|\xe2\x81\xa6" "U+2067|\xe2\x81\xa7" "U+2068|\xe2\x81\xa8" "U+2069|\xe2\x81\xa9" \
+             "ESC|\x1b" "BEL|\x07" "C1 U+0085|\xc2\x85" "DEL|\x7f"; do
+      got=$(plain_name "$(printf %b "a${row#*|}b.md")")
+      if [ "$got" = ab.md ]; then echo "ok ${row%%|*}"; else echo "bad ${row%%|*} [$got]"; fi
+  done
+  [ "$(plain_name 'p#(x) é ‌q.md')" = 'p#(x) é ‌q.md' ] && echo "ok kept" || echo "bad kept"
+) > "$PNO" 2>&1
+while IFS= read -r pn; do
+    case $pn in ok\ *) ok "plain_name drops/keeps: ${pn#ok }" ;; *) bad "plain_name drops/keeps: ${pn#bad }" "ab.md" "$pn" ;; esac
+done < "$PNO"
+is "plain_name: seventeen rows ran" "17" "$(grep -c . "$PNO")"
+
 echo "== tmux-open-path (#283): the viewer in a real popup, e to the editor, a hostile name runs nothing =="
 # The real binary in a real popup: an outer server's pane is the inner server's
 # client, keys go in through it, and an editor shim's log is what the asserts read.
