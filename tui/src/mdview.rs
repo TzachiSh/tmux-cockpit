@@ -758,9 +758,12 @@ fn hints(s: &Screen, g: &Glyphs) -> Vec<(String, String)> {
             if !s.hits.is_empty() {
                 h.push(kv("n N", "next"));
             }
-            h.push(kv("v", "select"));
-            if s.can_ask {
-                h.push(kv("?", "ask"));
+            // nothing to select or ask about in an empty or refused file
+            if !s.rows.is_empty() {
+                h.push(kv("v", "select"));
+                if s.can_ask {
+                    h.push(kv("?", "ask"));
+                }
             }
             h.push(kv("h", "keys"));
             h.push(kv("e", "edit"));

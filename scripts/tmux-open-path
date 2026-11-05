@@ -145,17 +145,31 @@ md_view() {
             "$(shq "$0") --view $(shq "$pane") $(shq "$file") $(shq "$ln")"
         return 0
     fi
-    err=$(mktemp 2>/dev/null) || err=/dev/null
-    out=$("$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" 2>"$err"); rc=$?
-    [ ! -s "$err" ] || cat "$err" >&2
-    if tui_stale "$rc" "$err"; then rc=stale; fi
-    [ "$err" = /dev/null ] || rm -f -- "$err"
-    case $rc in
-        0) ;;
-        stale) note "cockpit: $TUI_STALE_MSG"; return 1 ;;
-        *) note "cockpit: the viewer exited $rc · opening the editor"; return 1 ;;
-    esac
-    # what the viewer printed is untrusted until it is `edit <digits>`
+    # the viewer's ? (#365): the panel opens in this popup, then the viewer again
+    local n='([1-9][0-9]{0,8})'
+    while :; do
+        err=$(mktemp 2>/dev/null) || err=/dev/null
+        # COCKPIT_VIEW_ASK=1, on the viewer alone: this launcher routes its `ask` (#365)
+        out=$(COCKPIT_VIEW_ASK=1 "$COCKPIT_TUI_BIN" view ${ln:+--line "$ln"} -- "$file" \
+            2>"$err"); rc=$?
+        [ ! -s "$err" ] || cat "$err" >&2
+        if tui_stale "$rc" "$err"; then rc=stale; fi
+        [ "$err" = /dev/null ] || rm -f -- "$err"
+        case $rc in
+            0) ;;
+            stale) note "cockpit: $TUI_STALE_MSG"; return 1 ;;
+            *) note "cockpit: the viewer exited $rc · opening the editor"; return 1 ;;
+        esac
+        # what the viewer printed is untrusted until it is `edit <digits>` or
+        # `ask <a> <b>`, two line numbers, a <= b; the file and the pane are this script's own
+        if ! [[ $out =~ ^ask\ $n\ $n$ ]] || [ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]; then
+            break
+        fi
+        ln=${BASH_REMATCH[1]}
+        "${d%/*}/cockpit-panel" -p "$pane" --ask "$file" "$ln" "${BASH_REMATCH[2]}"
+        # a file gone meanwhile ends it, as the gates above would
+        [ -f "$file" ] || return 0
+    done
     [[ $out =~ ^edit\ ([0-9]+)$ ]] || return 0
     # a touch client has no use for VS Code: a terminal editor, at the line
     if touch_client; then term_edit "$file" "${BASH_REMATCH[1]}"; return 0; fi
