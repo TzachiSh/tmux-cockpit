@@ -17,15 +17,18 @@ big_files() {                 # <dir>
     | awk -F'\t' -v cap="$BIGCAP" 'NF == 2 && $1 + 0 > cap'
 }
 
-# One `:(top,exclude,literal)<path>` NUL record per gitlink in STAGED (the
-# `ls-files -s -z --full-name` output) written to OUT, the path byte for byte.
+# One `<prefix><path>` NUL record per gitlink in STAGED (the `ls-files -s -z
+# --full-name` output) written to OUT, the path byte for byte. PREFIX defaults
+# to `:(top,exclude,literal)`, the pathspec that keeps an add out of it.
 # A read takes one record, never the list: a shell variable cannot hold a NUL.
 # Status 1 when a write fails, or when there was a gitlink and OUT is not a
 # file holding its records: the caller must then run no add at all.
-gitlink_excludes() {          # <staged> <out>
-    local r n=0
+gitlink_excludes() {          # <staged> <out> [prefix]
+    local r n=0 pre=${3-':(top,exclude,literal)'}
     while IFS= read -r -d '' r; do
-        case $r in 160000\ *) printf ':(top,exclude,literal)%s\0' "${r#*$'\t'}" || return 1; n=$((n + 1)) ;; esac
+        case $r in 160000\ *)
+            printf '%s%s\0' "$pre" "${r#*$'\t'}" || return 1; n=$((n + 1)) ;;
+        esac
     done < "$1" > "$2" || return 1
     [ "$n" -eq 0 ] || { [ -f "$2" ] && [ -s "$2" ]; }
 }
@@ -55,21 +58,8 @@ tree_diff() {
     mapfile -t rp < <(git -C "$dir" --no-optional-locks rev-parse --absolute-git-dir HEAD --abbrev-ref HEAD 2>/dev/null)
     gd=${rp[0]-}; head=${rp[1]-}; br=${rp[2]-}
     [ -n "$gd" ] || return 1
-    tmp=$(mktemp -d) || return 1
-    case $tmp in /*) ;; *) tmp=$PWD/$tmp ;; esac   # git reads GIT_INDEX_FILE from -C's dir
-    trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
-    idx=$tmp/index
-    { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null || rm -f -- "$idx"
     local -a from=()
-    (set -C; git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' > "$tmp/staged") 2>/dev/null \
-        || { tree_diff_done; return 1; }
-    # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
-    # to run. An error (2) runs the loop all the same.
-    grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
-    if [ $? -ne 1 ]; then
-        (set -C; gitlink_excludes "$tmp/staged" "$tmp/pathspec") 2>/dev/null || { tree_diff_done; return 1; }
-        [ ! -s "$tmp/pathspec" ] || from=(--pathspec-from-file="$tmp/pathspec" --pathspec-file-nul)
-    fi
+    scratch_index "$dir" "$gd" || return 1
     GIT_INDEX_FILE=$idx git -C "$dir" --no-optional-locks add -N -A ${from[@]+"${from[@]}"} 2>/dev/null
     # Only a pathspec stops git hashing the big files. Exclusions alone still
     # leave the diff whole-worktree wide.
@@ -102,6 +92,32 @@ tree_diff() {
 # tree_diff's way out, on every path: its temp dir gone, its traps cleared.
 # Reads the caller's $tmp.
 tree_diff_done() { rm -rf -- "$tmp"; trap - EXIT HUP INT TERM; }
+
+# The private dir and what goes in it, for a caller that adds to a copy of
+# the index. Sets the caller's tmp (the dir), idx (the copy, $tmp/index, absent
+# when there is no index yet), and from (the add's pathspec options, empty when
+# no gitlink is staged), with the traps tree_diff_done clears. $tmp/staged
+# holds the staged entries. Status 1 when the list or the excludes do not land:
+# the dir is gone, and the caller must run no add.
+scratch_index() {             # <dir> <gitdir>
+    local dir=$1 gd=$2
+    tmp=$(mktemp -d) || return 1
+    case $tmp in /*) ;; *) tmp=$PWD/$tmp ;; esac   # git reads GIT_INDEX_FILE from -C's dir
+    trap 'rm -rf -- "$tmp"' EXIT; trap 'trap "" HUP INT TERM; exit 143' HUP INT TERM
+    idx=$tmp/index
+    { (set -C; cat -- "$gd/index" > "$idx") && touch -r "$gd/index" -- "$idx"; } 2>/dev/null \
+        || rm -f -- "$idx"
+    (set -C; git -C "$dir" --no-optional-locks ls-files -s -z --full-name -- ':(top)' \
+        > "$tmp/staged") 2>/dev/null || { tree_diff_done; return 1; }
+    # grep's 1: no record holds "160000 ", so there is no gitlink and no loop
+    # to run. An error (2) runs the loop all the same.
+    grep -q -a -F -e '160000 ' -- "$tmp/staged" 2>/dev/null
+    if [ $? -ne 1 ]; then
+        (set -C; gitlink_excludes "$tmp/staged" "$tmp/pathspec") 2>/dev/null \
+            || { tree_diff_done; return 1; }
+        [ ! -s "$tmp/pathspec" ] || from=(--pathspec-from-file="$tmp/pathspec" --pathspec-file-nul)
+    fi
+}
 
 # --- which base ---------------------------------------------------------------
 # The first case that holds:
