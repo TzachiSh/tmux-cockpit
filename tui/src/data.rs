@@ -671,8 +671,7 @@ fn procs() -> Procs {
             continue;
         }
         let comm: String = it.collect::<Vec<_>>().join(" ");
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
-        t.comm.insert(pid.into(), base.trim_start_matches('-').to_ascii_lowercase());
+        t.comm.insert(pid.into(), comm_norm(&comm));
         t.kids.entry(ppid.into()).or_default().push(pid.into());
     }
     t
@@ -699,6 +698,66 @@ fn tree(pid: &str, t: &Procs) -> Vec<String> {
     out
 }
 
+/// `ps comm=` and a `/proc/<pid>/comm` read both give the kernel's 15-char
+/// name, so one normalisation serves both: basename, no login dash, lowercase.
+fn comm_norm(comm: &str) -> String {
+    let comm = comm.split_whitespace().collect::<Vec<_>>().join(" ");
+    let base = comm.rsplit('/').next().unwrap_or(&comm);
+    base.trim_start_matches('-').to_ascii_lowercase()
+}
+
+/// #492: the pids under `pid` (itself first off the stack, as [`tree`] orders
+/// them) from `<root>/<pid>/task/<tid>/children`, reading only that subtree,
+/// where `ps -axww` lists every process on the box. `None` when `root` is not a
+/// proc with `children` (macOS, or a kernel without CONFIG_PROC_CHILDREN) or a
+/// process vanished mid-walk: the caller then asks `ps`, which is always right.
+fn proc_tree(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+    if !root.join("self/task").is_dir() {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut out = vec![];
+    let mut q = vec![(pid.to_string(), 0usize)];
+    while let Some((p, d)) = q.pop() {
+        if !seen.insert(p.clone()) {
+            continue;
+        }
+        if d < MAX_DEPTH {
+            let tasks = root.join(&p).join("task");
+            let mut kids = vec![];
+            for t in std::fs::read_dir(&tasks).ok()? {
+                let s = std::fs::read_to_string(t.ok()?.path().join("children")).ok()?;
+                kids.extend(s.split_whitespace().map(str::to_string));
+            }
+            q.extend(kids.into_iter().map(|c| (c, d + 1)));
+        }
+        out.push(p);
+    }
+    Some(out)
+}
+
+/// `pid` and everything under it with each name, in [`tree`] order: from
+/// `procs_t` when `ps` already ran this refresh, else a [`proc_tree`] walk,
+/// else one `ps` kept in `procs_t` for the next ask.
+fn lineage(pid: &str, procs_t: &mut Option<Procs>) -> Vec<(String, String)> {
+    if procs_t.is_none()
+        && let Some(ps) = proc_tree(std::path::Path::new("/proc"), pid)
+    {
+        return ps
+            .into_iter()
+            .map(|p| {
+                let c = std::fs::read_to_string(format!("/proc/{p}/comm")).unwrap_or_default();
+                (p, comm_norm(&c))
+            })
+            .collect();
+    }
+    let t = procs_t.get_or_insert_with(procs);
+    tree(pid, t)
+        .into_iter()
+        .map(|p| (p.clone(), t.comm.get(&p).cloned().unwrap_or_default()))
+        .collect()
+}
+
 /// A live Claude renames itself to its version, so `2.1.246` and `2_1_246` are
 /// agent names too.
 pub(crate) fn agentish(comm: &str) -> bool {
@@ -711,8 +770,11 @@ fn version_shaped(s: &str) -> bool {
     seps >= 2 && s.starts_with(|c: char| c.is_ascii_digit()) && s.chars().all(|c| c.is_ascii_digit() || c == '.' || c == '_')
 }
 
-fn find_session(pid: &str, t: &Procs, agents: &HashMap<String, String>) -> String {
-    tree(pid, t).iter().find_map(|p| agents.get(p).cloned()).unwrap_or_default()
+fn find_session(pid: &str, procs_t: &mut Option<Procs>, agents: &HashMap<String, String>) -> String {
+    lineage(pid, procs_t)
+        .iter()
+        .find_map(|(p, _)| agents.get(p).cloned())
+        .unwrap_or_default()
 }
 
 /// repo⑂branch, the `±` string and the repo root, for one path.
@@ -900,10 +962,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         let raw = unsentinel(f[4]);
         // The name is a fast path that skips the `ps` fork; the tree decides.
         let by_cmd = agentish(f[3]);
-        let mut in_tree = || {
-            let t = procs_t.get_or_insert_with(procs);
-            tree(f[9], t).iter().any(|p| t.comm.get(p).is_some_and(|c| agentish(c)))
-        };
+        let mut in_tree = || lineage(f[9], &mut procs_t).iter().any(|(_, c)| agentish(c));
         // #301: a marked pane's verdict is cached, or every ended row forks `ps` each tick
         let by_tree = !by_cmd
             && if raw.is_empty() {
@@ -944,7 +1003,7 @@ pub fn list_fleet() -> Option<(Vec<Pane>, std::collections::BTreeSet<String>)> {
         );
         if p.sess.is_empty() {
             let agents = agents.get_or_insert_with(agent_sessions_cached);
-            p.sess = find_session(&p.pid, procs_t.get_or_insert_with(procs), agents);
+            p.sess = find_session(&p.pid, &mut procs_t, agents);
         }
         let said_cwd = read_transcript(&mut p);
         (p.pinned, p.delivered) = spool_counts(&p.spool);
@@ -1221,5 +1280,155 @@ mod tests {
                 {"type": "tool_use", "id": "t1", "name": c[0], "input": c[1]}]}});
             assert_eq!(parse(vec![row.to_string()]).tool, c[2].as_str().unwrap(), "{l}");
         }
+    }
+
+    /// A fake `/proc`: `kids` maps pid to one `children` string per task.
+    fn fake_proc(kids: &[(&str, &[&str])]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!("cockpit-proc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(root.join("self/task")).unwrap();
+        for (pid, tasks) in kids {
+            for (i, c) in tasks.iter().enumerate() {
+                let d = root
+                    .join(pid)
+                    .join("task")
+                    .join(format!("{}", pid.parse::<u32>().unwrap() + i as u32));
+                std::fs::create_dir_all(&d).unwrap();
+                std::fs::write(d.join("children"), c).unwrap();
+            }
+        }
+        root
+    }
+
+    fn pids(root: &std::path::Path, pid: &str) -> Option<Vec<String>> {
+        let r = proc_tree(root, pid);
+        std::fs::remove_dir_all(root).unwrap();
+        r
+    }
+
+    #[test]
+    fn proc_tree_reaches_a_grandchild() {
+        let r = fake_proc(&[("10", &["11 12 "]), ("11", &["13 "]), ("12", &[""]), ("13", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12", "13"]);
+    }
+
+    #[test]
+    fn proc_tree_reaches_the_children_of_every_thread() {
+        let r = fake_proc(&[("10", &["11 ", "12 "]), ("11", &[""]), ("12", &[""])]);
+        let mut got = pids(&r, "10").unwrap();
+        got.sort();
+        assert_eq!(got, ["10", "11", "12"]);
+    }
+
+    #[test]
+    fn proc_tree_orders_like_tree() {
+        let r = fake_proc(&[
+            ("10", &["11 12 "]),
+            ("11", &["13 14 "]),
+            ("12", &[""]),
+            ("13", &[""]),
+            ("14", &[""]),
+        ]);
+        let mut t = Procs::default();
+        t.kids.insert("10".into(), vec!["11".into(), "12".into()]);
+        t.kids.insert("11".into(), vec!["13".into(), "14".into()]);
+        assert_eq!(pids(&r, "10").unwrap(), tree("10", &t));
+    }
+
+    #[test]
+    fn proc_tree_survives_a_cycle() {
+        let r = fake_proc(&[("10", &["11 "]), ("11", &["10 "])]);
+        assert_eq!(pids(&r, "10").unwrap(), ["10", "11"]);
+    }
+
+    #[test]
+    fn proc_tree_stops_at_the_depth_cap() {
+        let chain: Vec<(String, String)> = (0..MAX_DEPTH + 3).map(|i| ((10 + i).to_string(), format!("{} ", 11 + i))).collect();
+        let kids: Vec<(&str, Vec<&str>)> = chain.iter().map(|(p, c)| (p.as_str(), vec![c.as_str()])).collect();
+        let kids: Vec<(&str, &[&str])> = kids.iter().map(|(p, c)| (*p, c.as_slice())).collect();
+        let r = fake_proc(&kids);
+        assert_eq!(pids(&r, "10").unwrap().len(), MAX_DEPTH + 1);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_children_file() {
+        let r = fake_proc(&[("10", &["11 "])]);
+        std::fs::create_dir_all(r.join("11/task/11")).unwrap();
+        assert_eq!(pids(&r, "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_when_the_pane_pid_is_gone() {
+        assert_eq!(pids(&fake_proc(&[]), "10"), None);
+    }
+
+    #[test]
+    fn proc_tree_is_none_without_a_proc() {
+        assert_eq!(proc_tree(std::path::Path::new("/nonexistent-proc"), "1"), None);
+    }
+
+    #[test]
+    fn comm_norm_matches_what_procs_stored() {
+        for (raw, want) in [
+            ("claude", "claude"),
+            ("-Bash", "bash"),
+            ("/usr/bin/Node", "node"),
+            ("2.1.318", "2.1.318"),
+            ("a  b", "a b"),
+        ] {
+            assert_eq!(comm_norm(raw), want, "{raw}");
+        }
+        assert!(agentish(&comm_norm("claude\n")) && agentish(&comm_norm("2.1.318\n")) && !agentish(&comm_norm("bash\n")));
+    }
+
+    /// The live check: a shell, a grandchild with a name past 15 chars, and
+    /// `ps` must agree on pids and on names, truncation included.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn lineage_on_the_real_proc_matches_ps() {
+        let dir = std::env::temp_dir().join(format!("cockpit-lin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let long = dir.join("claude-with-a-very-long-name");
+        std::os::unix::fs::symlink(
+            Command::new("sh")
+                .args(["-c", "command -v python3"])
+                .output()
+                .map(|o| String::from_utf8(o.stdout).unwrap())
+                .unwrap()
+                .trim(),
+            &long,
+        )
+        .unwrap();
+        let mut sh = Command::new("sh")
+            .arg("-c")
+            .arg(format!("{} -c 'import time; time.sleep(30)' & wait", long.display()))
+            .spawn()
+            .unwrap();
+        let pid = sh.id().to_string();
+        let mut want = vec![];
+        for _ in 0..2000 {
+            let mut t = procs();
+            want = tree(&pid, &t)
+                .into_iter()
+                .map(|p| (p.clone(), t.comm.remove(&p).unwrap_or_default()))
+                .collect();
+            if want.len() == 2 && proc_tree(std::path::Path::new("/proc"), &pid).is_some_and(|v| v.len() == 2) {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        let got = lineage(&pid, &mut None);
+        for (p, _) in &got {
+            // SAFETY: kill takes plain integers and touches no memory.
+            unsafe { libc::kill(p.parse().unwrap(), libc::SIGKILL) };
+        }
+        let _ = sh.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got, want);
+        assert_eq!(got[1].1.len(), 15);
     }
 }
